@@ -17,7 +17,7 @@ Once code exists, contributions follow the tasks in [plan/implementation/](plan/
 1. Search the open and closed [issues](https://github.com/syntropyai-hq/syntropy/issues) and [pull requests](https://github.com/syntropyai-hq/syntropy/pulls). If one covers your point, add your evidence there.
 2. Read [AGENTS.md](AGENTS.md) and the RFC and ADRs for the part you want to change. [plan/README.md](plan/README.md) maps them.
 3. For anything larger than a focused fix, open an issue first that says what problem it solves, what it changes and what it costs. A change to a decision needs an ADR (below).
-4. For implementation work, pick a task from the [roadmap](plan/implementation/roadmap.md). If the work you want has no task, propose one in an issue or add it to the right epic in your PR.
+4. For implementation work, pick a task from the [project board](https://github.com/orgs/syntropyai-hq/projects/1). Every task in the plan is an issue there. Take one that is ready (nothing it is blocked by is still open) and unassigned, and say in a comment that you're taking it. If the work you want has no task, propose one in an issue or add it to the right epic in your PR.
 
 ## Issues
 
@@ -35,7 +35,7 @@ Don't report a security problem in a public issue. Use [SECURITY.md](SECURITY.md
 ## Pull requests
 
 - **One change per PR.** For implementation work that means one task. Keep unrelated formatting, refactors and dependency changes out.
-- **Say what it implements.** Name the task ID and cite the RFC sections and ADRs the change implements. If it changes the plan, say which documents and why.
+- **Say what it implements.** Name the task ID, put `Closes #<issue>` for its issue, and cite the RFC sections and ADRs the change implements. If it changes the plan, say which documents and why.
 - **Title.** A conventional commit, `type(scope): subject`. `type` is one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore` or `revert`, and `scope` is a crate name or an area, for example `docs(plan): fix the RAM tier figure in RFC-0020 §5`. PRs are squash-merged, so the title becomes the commit message, and the `pr-title` check enforces the form ([RFC-0062](plan/rfcs/RFC-0062-ci-cd-and-release-engineering.md) §8.3). A breaking marker (`!` or a `BREAKING CHANGE:` footer) needs a maintainer's approval.
 - **Sign off every commit.** Each commit carries a Developer Certificate of Origin line, `Signed-off-by: Your Name <you@example.com>`, matching the commit's author. `git commit -s` adds it. By signing off you certify the [DCO](https://developercertificate.org/) for that commit, and the `dco` check rejects a commit without it ([ADR-0018](plan/decisions/ADR-0018-licence.md)). There is no CLA.
 - **Pass the gates.** Your PR runs the same gates as every other change: build, lint and format, tests, the parity and conformance gates, performance gates where it touches a measured path, the dependency and licence policy, the naming check and the task-graph check, then an independent review agent. Run the plan tools after any change to an epic file ([AGENTS.md](AGENTS.md#plan-tools)).

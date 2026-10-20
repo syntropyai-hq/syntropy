@@ -644,7 +644,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | DIST-E3-T09 | spike | Spike at the start of M1, once a Developer-ID-signed build exists: macOS Local Network privacy for a per-user launch agent on macOS 15 and… | OQ-NET-15 | 0 |
 | DIST-E7-T20 | spike | Spike, late in M1: the raw-path RDMA probe on a TB5 Mac pair, R-MBP plus one Mac mini or two minis, on macOS 26.2 or later | – | 2 |
 | COMP-E11-T12 | spike | Spike for RFC-0041 open question 5: sparse files on Windows and APFS over a month-long simulated GC workload | OQ-MF-09 | 0 |
-| PROD-E8-T13 | spike | Windows and macOS part of PROD-E8-T09: Spikes: GPU per-term timing method per backend (timed graph variant or resident… | – | 0 |
+| PROD-E8-T13 | spike | Windows and macOS part of PROD-E8-T09: Spikes: GPU per-term timing method per backend | – | 0 |
 | PROD-E10-T11 | spike | Spike, pulled from M2 into M1: headless Macs (RFC-0052 open question 4, answered), run with FileVault on on macOS 15 and 26 | – | 1 |
 | PROD-E12-T12 | spike | Spike: Windows logon-task breakaway | OQ-PKG-14 | 3 |
 | QUAL-E13-T13 | spike | Spike: laptop noise | OQ-PRC-12 | 0 |
