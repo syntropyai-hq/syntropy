@@ -440,6 +440,10 @@ def write_issue(gh, ctx, item, existing):
     parent = existing.get(item["parent"], {}).get("id") if item["parent"] else None
     r = gh.mutate(f"create {item['id']}", CREATE_Q, r=ctx["repo_id"],
                   p=[ctx["project"]["id"]], par=parent, **v)
+    if r is not None and not (r.get("createIssue") or {}).get("issue"):
+        # GitHub answers an over-limit write with an empty payload; the caller
+        # pauses, re-reads what exists and resumes, so nothing is duplicated.
+        raise RuntimeError(f"empty response creating {item['id']}")
     issue = r["createIssue"]["issue"] if r else {"id": f"NEW-{item['id']}", "number": 0}
     rec = {"id": issue["id"], "number": issue["number"], "digest": digest(item),
            "blocked_by": set()}
@@ -452,8 +456,9 @@ def main():
     ap.add_argument("--repo", default="syntropyai-hq/syntropy")
     ap.add_argument("--phase", choices=("setup", "issues", "deps", "all"), default="all")
     ap.add_argument("--banned", type=Path, help="the D5 banned-terms file (required to write)")
-    ap.add_argument("--interval", type=float, default=7.5,
-                    help="seconds between writes (default 7.5, about 480 an hour)")
+    ap.add_argument("--interval", type=float, default=9.0,
+                    help="seconds between writes (default 9, about 400 an hour, "
+                         "under GitHub's 500 with room for other activity)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if not args.dry_run and not (args.banned and args.banned.is_file()):
@@ -486,7 +491,21 @@ def main():
         check_banned(epic_items + [task_issue(by_id[t], epic_map[by_id[t]["epic"]],
                      sizes.get(t), deps[t], numbers, base) for t in order], args.banned)
 
-    if "issues" in phases:
+    def resilient(phase_fn):
+        """Run a phase; on an interruption, pause, re-read GitHub and resume."""
+        nonlocal existing
+        for attempt in range(30):
+            try:
+                return phase_fn()
+            except (RuntimeError, KeyError, TypeError) as err:
+                if gh.dry_run:
+                    raise
+                print(f"interrupted ({str(err)[:160]}); resuming in 5 minutes", flush=True)
+                time.sleep(300)
+                existing = existing_issues(gh)
+        raise SystemExit("gave up after 30 interruptions")
+
+    def issues_phase():
         changed = 0
         for item in epic_items:
             changed += write_issue(gh, ctx, item, existing)[1]
@@ -499,7 +518,7 @@ def main():
                 print(f"tasks {n}/{len(order)}, {gh.writes} writes so far", flush=True)
         print(f"issues: {changed} created or updated")
 
-    if "deps" in phases:
+    def deps_phase():
         added = 0
         # Earliest milestone first, so the work people start on is linked first;
         # the sort is stable, so each milestone keeps its dependency order.
@@ -516,6 +535,11 @@ def main():
                     if added % 100 == 0:
                         print(f"dependency links {added}", flush=True)
         print(f"dependency links: {added} added")
+
+    if "issues" in phases:
+        resilient(issues_phase)
+    if "deps" in phases:
+        resilient(deps_phase)
     print(f"done: {gh.writes} writes")
 
 
