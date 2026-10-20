@@ -501,7 +501,9 @@ def main():
 
     if "deps" in phases:
         added = 0
-        for t in order:
+        # Earliest milestone first, so the work people start on is linked first;
+        # the sort is stable, so each milestone keeps its dependency order.
+        for t in sorted(order, key=lambda t: epics.phase_index(by_id[t]["phase"])):
             if t not in existing:
                 continue
             for d in deps[t]:
