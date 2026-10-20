@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 500" width="760" height="500" role="img" aria-labelledby="tiers-title tiers-desc">
+  <title id="tiers-title">Memory tiers inside one machine</title>
+  <desc id="tiers-desc">VRAM holds what every token reads plus an adaptive expert cache, and the GPU computes from it. RAM holds the full weight set, and the CPU computes cache misses there in place. NVMe holds every expert and large tables, and next-layer predictions prefetch from it into RAM. The GPU and CPU exchange activations, never weights.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+    .title { font-size: 17px; font-weight: 600; }
+    .body { font-size: 13.5px; }
+    .label { font-size: 13px; }
+    .frame { fill: none; stroke: #8c959f; stroke-width: 1.5; stroke-dasharray: 6 5; }
+    .vram { fill: #e8f0fe; stroke: #4a72c4; stroke-width: 1.5; }
+    .ram  { fill: #e6f4ea; stroke: #3c8a55; stroke-width: 1.5; }
+    .nvme { fill: #fcefe0; stroke: #b06d22; stroke-width: 1.5; }
+    .proc { fill: #f1eefb; stroke: #6b5bb5; stroke-width: 1.5; }
+    .note { fill: #f6f8fa; stroke: #8c959f; stroke-width: 1; }
+    .pill { fill: #ffffff; stroke: #8c959f; stroke-width: 1; }
+    .arrow { fill: none; stroke: #6e7781; stroke-width: 2; }
+    .head { fill: #6e7781; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .frame { stroke: #6e7681; }
+      .vram { fill: #13233f; stroke: #6d93e0; }
+      .ram  { fill: #12291b; stroke: #5bb378; }
+      .nvme { fill: #2f220f; stroke: #d6944a; }
+      .proc { fill: #211b38; stroke: #9a8ae0; }
+      .note { fill: #161b22; stroke: #6e7681; }
+      .pill { fill: #0d1117; stroke: #6e7681; }
+      .arrow { stroke: #8b949e; }
+      .head { fill: #8b949e; }
+    }
+  </style>
+  <defs>
+    <marker id="tiers-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <rect class="frame" x="12" y="24" width="736" height="468" rx="16"/>
+  <rect class="pill" x="30" y="12" width="118" height="24" rx="12"/>
+  <text class="label" x="89" y="28.5" text-anchor="middle">one machine</text>
+
+  <!-- memory tiers -->
+  <rect class="vram" x="40" y="56" width="400" height="104" rx="10"/>
+  <text class="title" x="58" y="82">VRAM</text>
+  <text class="body" x="58" y="106">what every token reads: attention, dense layers,</text>
+  <text class="body" x="58" y="125">shared experts and the KV cache, plus an adaptive</text>
+  <text class="body" x="58" y="144">cache of the most-used MoE experts</text>
+
+  <rect class="ram" x="40" y="216" width="400" height="104" rx="10"/>
+  <text class="title" x="58" y="242">RAM</text>
+  <text class="body" x="58" y="266">the full weight set, resident; experts that miss</text>
+  <text class="body" x="58" y="285">the VRAM cache are computed here by the CPU</text>
+  <text class="body" x="58" y="304">instead of crossing PCIe for every token</text>
+
+  <rect class="nvme" x="40" y="376" width="400" height="96" rx="10"/>
+  <text class="title" x="58" y="402">NVMe</text>
+  <text class="body" x="58" y="426">every expert in its own 4 KiB-aligned extent,</text>
+  <text class="body" x="58" y="445">large lookup tables and parked sessions,</text>
+  <text class="body" x="58" y="464">read with direct I/O</text>
+
+  <!-- processors -->
+  <rect class="proc" x="540" y="56" width="190" height="104" rx="10"/>
+  <text class="title" x="558" y="82">GPU</text>
+  <text class="body" x="558" y="106">reads VRAM</text>
+  <text class="body" x="558" y="125">computes the hot set</text>
+  <text class="body" x="558" y="144">and expert-cache hits</text>
+
+  <rect class="proc" x="540" y="216" width="190" height="104" rx="10"/>
+  <text class="title" x="558" y="242">CPU</text>
+  <text class="body" x="558" y="266">reads RAM</text>
+  <text class="body" x="558" y="285">computes misses in place,</text>
+  <text class="body" x="558" y="304">alongside the GPU</text>
+
+  <rect class="note" x="540" y="376" width="190" height="96" rx="10"/>
+  <text class="body" x="558" y="402">NVMe is never a</text>
+  <text class="body" x="558" y="421">compute site: its bytes</text>
+  <text class="body" x="558" y="440">are read into RAM or</text>
+  <text class="body" x="558" y="459">VRAM before use</text>
+
+  <!-- tier to processor -->
+  <line class="arrow" x1="440" y1="108" x2="538" y2="108" marker-end="url(#tiers-arrow)"/>
+  <line class="arrow" x1="440" y1="268" x2="538" y2="268" marker-end="url(#tiers-arrow)"/>
+
+  <!-- between tiers -->
+  <line class="arrow" x1="240" y1="376" x2="240" y2="322" marker-end="url(#tiers-arrow)"/>
+  <rect class="pill" x="98" y="337" width="284" height="24" rx="12"/>
+  <text class="label" x="240" y="353.5" text-anchor="middle">prefetch from next-layer predictions</text>
+
+  <line class="arrow" x1="240" y1="216" x2="240" y2="162" marker-end="url(#tiers-arrow)"/>
+  <rect class="pill" x="76" y="177" width="328" height="24" rx="12"/>
+  <text class="label" x="240" y="193.5" text-anchor="middle">cache fills, and streaming for large batches</text>
+
+  <!-- between processors -->
+  <line class="arrow" x1="635" y1="162" x2="635" y2="214" marker-start="url(#tiers-arrow)" marker-end="url(#tiers-arrow)"/>
+  <rect class="pill" x="551" y="177" width="168" height="24" rx="12"/>
+  <text class="label" x="635" y="193.5" text-anchor="middle">activations, not weights</text>
+</svg>
