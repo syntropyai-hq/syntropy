@@ -247,43 +247,54 @@ fn cpu_arch() -> impl Strategy<Value = CpuArch> {
     prop_oneof![Just(CpuArch::X86_64), Just(CpuArch::Aarch64)]
 }
 
-fn isa_level() -> impl Strategy<Value = IsaLevel> {
+fn cpu_isa() -> impl Strategy<Value = CpuIsa> {
     prop_oneof![
-        Just(IsaLevel::X86_64V2),
-        Just(IsaLevel::X86_64V3),
-        Just(IsaLevel::X86_64V4),
-        Just(IsaLevel::Aarch64V8_0),
-        Just(IsaLevel::Aarch64V8_2Dotprod),
-        Just(IsaLevel::Aarch64V9Sve2),
+        Just(CpuIsa::X86V2),
+        Just(CpuIsa::X86V3),
+        Just(CpuIsa::X86V4),
+        Just(CpuIsa::X86V4Amx),
+        Just(CpuIsa::Arm80),
+        Just(CpuIsa::Arm82Dot),
+        Just(CpuIsa::Arm86I8mm),
+        Just(CpuIsa::Arm92Sme2),
     ]
+}
+
+fn api_ids() -> impl Strategy<Value = ApiIds> {
+    (any::<u32>(), any::<u32>()).prop_map(|(vendor, device)| ApiIds { vendor, device })
 }
 
 fn device_class() -> impl Strategy<Value = DeviceClass> {
     prop_oneof![
         any::<u16>().prop_map(|sm| DeviceClass::Cuda { sm }),
         any::<u32>().prop_map(|gfx| DeviceClass::Hip { gfx }),
-        (apple_family(), any::<u16>())
-            .prop_map(|(family, cores)| DeviceClass::Metal { family, cores }),
-        (any::<u32>(), any::<u32>(), any::<u32>()).prop_map(|(vendor, device, driver)| {
+        (apple_family(), any::<bool>())
+            .prop_map(|(family, metal4)| DeviceClass::Metal { family, metal4 }),
+        (any::<u32>(), any::<bool>(), any::<u8>()).prop_map(|(vendor, coopmat, subgroup)| {
             DeviceClass::Vulkan {
                 vendor,
-                device,
-                driver: VkDriverId(driver),
+                coopmat,
+                subgroup,
             }
         }),
-        (cpu_arch(), isa_level()).prop_map(|(arch, level)| DeviceClass::Cpu { arch, level }),
+        cpu_isa().prop_map(|isa| DeviceClass::Cpu { isa }),
         (any::<u32>(), any::<u32>()).prop_map(|(vendor, model)| DeviceClass::Npu { vendor, model }),
     ]
 }
 
 fn driver_info() -> impl Strategy<Value = DriverInfo> {
-    (text(), prop::option::of(text()), prop::option::of(path())).prop_map(
-        |(driver, runtime, loader)| DriverInfo {
+    (
+        text(),
+        prop::option::of(text()),
+        prop::option::of(path()),
+        prop::option::of(any::<u32>().prop_map(VkDriverId)),
+    )
+        .prop_map(|(driver, runtime, loader, vk_driver)| DriverInfo {
             driver,
             runtime,
             loader,
-        },
-    )
+            vk_driver,
+        })
 }
 
 fn pci_address() -> impl Strategy<Value = PciAddress> {
@@ -468,6 +479,7 @@ fn device_problem() -> impl Strategy<Value = DeviceProblem> {
             }
         }),
         exclusion_source().prop_map(|by| DeviceProblem::Excluded { by }),
+        api_ids().prop_map(|api| DeviceProblem::ApiIdsMismatch { api }),
     ]
 }
 
@@ -480,9 +492,11 @@ fn device_info_ext() -> impl Strategy<Value = DeviceInfoExt> {
         prop::option::of(cpu_topology()),
         prop::option::of(power_info()),
         small(device_problem()),
+        any::<Option<u16>>(),
+        prop::option::of(api_ids()),
     )
         .prop_map(
-            |(driver, pci, uuid, luid, cpu, power, problems)| DeviceInfoExt {
+            |(driver, pci, uuid, luid, cpu, power, problems, gpu_cores, api_ids)| DeviceInfoExt {
                 driver,
                 pci,
                 uuid,
@@ -490,6 +504,8 @@ fn device_info_ext() -> impl Strategy<Value = DeviceInfoExt> {
                 cpu,
                 power,
                 problems,
+                gpu_cores,
+                api_ids,
             },
         )
 }
@@ -1230,7 +1246,8 @@ round_trip_tests! {
     rt_device_class: device_class();
     rt_apple_gpu_family: apple_family();
     rt_cpu_arch: cpu_arch();
-    rt_isa_level: isa_level();
+    rt_cpu_isa: cpu_isa();
+    rt_api_ids: api_ids();
     rt_device_info_ext: device_info_ext();
     rt_driver_info: driver_info();
     rt_pci_info: pci_info();
@@ -1553,4 +1570,73 @@ fn link_info_metered_defaults() {
     let back = decode_without(&link, "metered");
     assert!(!back.metered);
     assert_eq!(back.id, link.id);
+}
+
+/// A `DeviceInfoExt` and a `DriverInfo` written before ADR-0405's fields existed decode, with
+/// `gpu_cores`, `api_ids` and `vk_driver` unset.
+#[test]
+fn records_without_adr_0405_fields_decode() {
+    let driver = DriverInfo {
+        driver: String::from("580.65"),
+        runtime: Some(String::from("13.0")),
+        loader: None,
+        vk_driver: Some(VkDriverId(4)),
+    };
+    let back = decode_without(&driver, "vk_driver");
+    assert_eq!(back.vk_driver, None);
+    assert_eq!(back.driver, driver.driver);
+
+    let ext = DeviceInfoExt {
+        driver,
+        gpu_cores: Some(10),
+        api_ids: Some(ApiIds {
+            vendor: 0x10de,
+            device: 0x2684,
+        }),
+        ..DeviceInfoExt::default()
+    };
+    let back = decode_without(&ext, "gpu_cores");
+    assert_eq!(back.gpu_cores, None);
+    assert_eq!(back.api_ids, ext.api_ids);
+    let back = decode_without(&ext, "api_ids");
+    assert_eq!(back.api_ids, None);
+    assert_eq!(back.gpu_cores, Some(10));
+
+    // A pre-ADR-0405 driver record inside an ext record, as JSON.
+    let ext: DeviceInfoExt = serde_json::from_str(
+        r#"{ "driver": { "driver": "1.4", "runtime": null, "loader": null } }"#,
+    )
+    .unwrap();
+    assert_eq!(ext.driver.vk_driver, None);
+    assert_eq!(ext.gpu_cores, None);
+}
+
+/// The CPU class carries a `CpuIsa`, and every variant has the encoding its name gives.
+#[test]
+fn cpu_isa_and_npu_encodings() {
+    let class = DeviceClass::Cpu {
+        isa: CpuIsa::X86V4Amx,
+    };
+    assert_eq!(
+        serde_json::to_value(class).unwrap(),
+        serde_json::json!({ "Cpu": { "isa": "X86V4Amx" } })
+    );
+    let npu = DeviceClass::Npu {
+        vendor: 1,
+        model: 2,
+    };
+    assert_eq!(
+        serde_json::to_value(npu).unwrap(),
+        serde_json::json!({ "Npu": { "vendor": 1, "model": 2 } })
+    );
+    let problem = DeviceProblem::ApiIdsMismatch {
+        api: ApiIds {
+            vendor: 0x1002,
+            device: 0x744c,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&problem).unwrap(),
+        serde_json::json!({ "ApiIdsMismatch": { "api": { "vendor": 0x1002, "device": 0x744c } } })
+    );
 }

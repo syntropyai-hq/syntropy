@@ -10,12 +10,15 @@ use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use syntropy_core::resource::{AppleGpuFamily, DeviceKind, GgmlBackend, PciAddress};
+use syntropy_core::resource::{DeviceKind, GgmlBackend, PciAddress};
 use syntropy_core::{Blake3, Bytes};
 
 use crate::error::ErrorCode;
 
-pub use syntropy_core::resource::DeviceFeatures;
+/// `DeviceClass`, `CpuIsa` and `DeviceFeatures` are `core`'s types, re-exported: one
+/// definition each for `ProviderDevice`, `DeviceInfo`, `PackKey`, `OpCert` and the selection
+/// key (ADR-0405 decision 1).
+pub use syntropy_core::resource::{CpuIsa, DeviceClass, DeviceFeatures};
 
 /// A provider's name: `"cuda"`, `"metal"`, `"cpu"`, `"hip"`, `"vulkan"`, `"ggml-cuda"`, ...
 /// (RFC-0040 §2.2).
@@ -81,7 +84,7 @@ pub struct ProviderDevice {
     pub kind: DeviceKind,
     /// The name the driver reports.
     pub name: String,
-    /// The device class as RFC-0040 §2.2 defines it.
+    /// The device class (RFC-0040 §2.2; ADR-0405), decided at `enumerate`.
     pub class: DeviceClass,
     /// Capability bits detected at runtime (ADR-0014 rule 1).
     pub features: DeviceFeatures,
@@ -89,80 +92,6 @@ pub struct ProviderDevice {
     pub memory: DeviceMemoryInfo,
     /// NUMA domain, where known.
     pub numa: Option<u16>,
-}
-
-/// A device's class as RFC-0040 §2.2 defines it: part of `PackKey` (RFC-0001 §5.6), so two
-/// devices with equal classes accept the same pack.
-///
-/// **This is not `syntropy_core::resource::DeviceClass`.** RFC-0010 §1.2 defines a
-/// `DeviceClass` with different fields (Metal by family and core count, Vulkan by vendor,
-/// device and driver, CPU by architecture and ISA level, plus an `Npu` variant), and `core`
-/// implements that one. The two RFCs conflict, and which definition `PackKey` uses is a
-/// maintainer decision (issue #1499, item 1).
-///
-/// This type is conditional on ADR-0405 (PR #1523, Proposed). Its decision 1 would move
-/// `DeviceClass` to `core`, with RFC-0040's variants plus `Npu`, and this would become a
-/// re-export of it. Until a decision is accepted, this crate carries RFC-0040's definition
-/// as COMP-E1-T01 lists it, and `core`'s type is unchanged.
-///
-/// RFC-0040 names the Metal family type `AppleFamily`; this uses `core`'s
-/// [`AppleGpuFamily`], RFC-0010's type for the same Metal GPU family.
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum DeviceClass {
-    /// An NVIDIA GPU by compute capability: 75, 80, 86, 89, 90, 100, 120, 121, ...
-    Cuda {
-        /// Compute capability, major × 10 + minor.
-        sm: u16,
-    },
-    /// An AMD GPU by `gfx` target: 0x1100, 0x1201, 0x942, ...
-    Hip {
-        /// The `gfx` target number.
-        gfx: u32,
-    },
-    /// An Apple GPU.
-    Metal {
-        /// The Metal GPU family.
-        family: AppleGpuFamily,
-        /// Whether the device runs the Metal 4 language revision.
-        metal4: bool,
-    },
-    /// A GPU driven through Vulkan.
-    Vulkan {
-        /// PCI vendor ID.
-        vendor: u32,
-        /// Whether cooperative matrix is available.
-        coopmat: bool,
-        /// Subgroup size.
-        subgroup: u8,
-    },
-    /// The CPU cores of one NUMA domain.
-    Cpu {
-        /// The ISA level the CPU provider dispatches to (RFC-0040 §7.3).
-        isa: CpuIsa,
-    },
-}
-
-/// The CPU provider's ISA levels (RFC-0040 §7.3). Detection is COMP-E3-T01's work.
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum CpuIsa {
-    /// SSE4.2 and POPCNT: the correctness floor.
-    X86V2,
-    /// AVX2, FMA and F16C.
-    X86V3,
-    /// AVX-512 F, BW, VL and DQ.
-    X86V4,
-    /// `X86V4` plus AMX-TILE and AMX-INT8.
-    X86V4Amx,
-    /// NEON.
-    Arm80,
-    /// NEON with SDOT/UDOT and FP16 arithmetic.
-    Arm82Dot,
-    /// `Arm82Dot` plus I8MM and BF16.
-    Arm86I8mm,
-    /// `Arm86I8mm` plus SME2.
-    Arm92Sme2,
 }
 
 /// Free and budgeted device memory (RFC-0040 §2.2; `memory_info` in §2.1).
