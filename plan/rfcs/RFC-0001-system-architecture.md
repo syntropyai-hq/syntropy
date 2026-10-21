@@ -2163,7 +2163,7 @@ With speculative decoding, the per-token cost is the verify-window cost divided 
 | `W_eff` | kernel quality and access pattern | kernel providers (RFC-0040) | η ≥ 0.80 dense on `Vram`/`Unified`, ≥ 0.63 grouped MoE; CPU in place ≥ 0.75 × min(probed DRAM read rate, the scheme's in-cache ALU-bound rate), gated for schemes whose ALU-bound rate exceeds the DRAM rate and reported for the others (SC-1) |
 | `t_miss` | hit rate, prefetch precision, NVMe rate | expert cache (RFC-0023), I/O path (RFC-0021) | t_tok ≤ 1.10 · t_overlap(h), whose NVMe term counts mispredicted prefetch bytes (SC-5); NVMe ≥ 0.85 × probe (SC-7); ≥ 50% of NVMe misses submitted to the device before the layer's router runs (SC-8) |
 | `n_switch · t_switch` | CPU↔GPU splits inside a layer | executor (RFC-0012), tier manager (RFC-0020) | no host synchronise inside a step (invariant 9); hand-offs only where the plan has them |
-| `t_fixed` | launches, graph replay, host work, host waits | executor and scheduler (RFC-0012) | t_fixed ≤ 0.2 · B_ref / W_probe (SC-2) on CUDA and HIP, and on dense stages on every backend. Metal and Vulkan MoE stages need one host wait per host-interacting MoE layer (RFC-0012 §7.5), so SC-2 is provisional there until the M1 spike measures the value |
+| `t_fixed` | launches, graph replay, host work, host waits | executor and scheduler (RFC-0012) | t_fixed ≤ 0.2 · B_ref / W_probe (SC-2) on CUDA and HIP, and on dense stages on every backend. Metal and Vulkan MoE stages need one host wait per host-interacting MoE layer (RFC-0012 §7.5), so SC-2 is provisional there until the M0b spike PLC-E7-T20 measures the value |
 | `α_e + S/β_e` | link choice, frame size, receive path | transport (RFC-0031), distributed execution (RFC-0032) | per hop ≤ α_probe + S/β_probe + 2·t_switch (SC-12) |
 | `t_sample + t_emit` | sampler, grammar masks, detokenisation, egress | scheduler (RFC-0012), API (RFC-0050) | inside `t_fixed` of the tail stage; detokenisation and egress off the dispatcher thread |
 | Unexplained remainder | anything the model misses | every RFC; measured by RFC-0061 | ≤ 5% of t_tok on one device (SC-3), on a pipeline (SC-13) |
@@ -2266,7 +2266,7 @@ M1a's single-device tiering on Windows and on macOS with Apple silicon. Its scop
 - Hardware runs for fork pull requests start, each run approved by a maintainer (RFC-0062 §3).
 - The Thunderbolt 5 RDMA raw-path probe on a pair of Macs, which decides whether Mac-pair TP and SC-17 stay in M3 (RFC-0031, RFC-0032).
 - The pairing protocol's commit-then-reveal exchange, modelled and tested against a grinding relay before `PairRequest` freezes (RFC-0030 §6).
-- Exit: SC-1 to SC-11 and SC-18 to SC-21 on the Windows and Apple single-device rigs, wherever each applies. SC-2 on Metal and Vulkan MoE stages is provisional until the M1 spike sets it (`00-vision-and-scope.md` SC-2). If the Ultra-class Mac in the test matrix has 256 GB, scenario (b1)'s single-node case is measured on a model that fits it (ADR-0610).
+- Exit: SC-1 to SC-11 and SC-18 to SC-21 on the Windows and Apple single-device rigs, wherever each applies. SC-2 on Metal and Vulkan MoE stages is provisional until the M0b spike PLC-E7-T20 sets it (`00-vision-and-scope.md` SC-2). If the Ultra-class Mac in the test matrix has 256 GB, scenario (b1)'s single-node case is measured on a model that fits it (ADR-0610).
 
 ### M2: multiple devices on a LAN
 Several machines on one LAN, and the public launch: the M2 release carries the announcement and the public benchmark page.
@@ -2494,7 +2494,7 @@ The domain RFCs' proposed amendments, and corrections to this RFC's first draft,
 | node key `debug.bench_api` | §12, §13 | — |
 | extension object `syntropy`; `Syntropy-Fidelity`, `-Approximate`, `-Warning` headers | §10.4 | — |
 | LAN admission defaults to `confirm` with a 6-digit SAS (ADR-0302) | §12 (Z2) | SC-25 already reworded |
-| SC-2 as written for CUDA/HIP and dense stages; provisional for Metal and Vulkan MoE stages until the M1 spike | §14, §16 M1; vision SC-2 | the spike is PLC-E7-T20, the successor this revision allows |
+| SC-2 as written for CUDA/HIP and dense stages; provisional for Metal and Vulkan MoE stages until the spike (M0b, corrected 2026-10-22) | §14, §16 M1; vision SC-2 | the spike is PLC-E7-T20, the successor this revision allows |
 | mark SC-2 provisional for those stages | §14; vision SC-2 | — |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` owned by RFC-0032 | §2.2, §5.4 (`PlanEpoch` terms), §5.10, §5.13, §15; glossary (coordinator, event log, commands, events, `apply()`, lease); ADR-0009 item 1 | — |
 | the §5.13 table | §5.13 | — |
