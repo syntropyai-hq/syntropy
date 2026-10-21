@@ -42,9 +42,11 @@ Don't report a security problem in a public issue. Use [SECURITY.md](SECURITY.md
 - **Check before you commit (optional).** `git config core.hooksPath .githooks` turns on the repository's git hooks.
   - Before each commit they run `cargo fmt --all --check` when Rust files are staged, and the plan tools when files under `plan/` are staged.
   - They check that the commit message has a sign-off matching the author and a conventional subject.
-  - If you hold the naming check's banned-terms list, which is kept outside the repository, also run `git config syntropy.bannedTerms <path>`. The hooks then check the staged files and the message against it, and report only file and line.
+  - If you hold the naming check's banned-terms list, which is kept outside the repository, also run `git config syntropy.bannedTerms <path>`. The hooks then check the staged files, their paths and the message against it. They report only where a term is: a file and line, or a path's number in the list of staged files. They never print the term.
 
   The hooks build nothing, and they skip a check whose input is missing with a one-line notice. The gates still run on every PR.
+
+  The hooks are code from the branch you have checked out. With this setting, git runs whatever `.githooks` that branch carries, as with any hook kept in a repository, and checking the branch out is enough to run them. Before you check out a branch you don't trust, such as someone else's pull request, turn the hooks off with `git config --unset core.hooksPath`. Set the hooks path again once you are back on a branch you trust; for a single command, `git -c core.hooksPath=/dev/null …` does the same. If the hooks are reached from another repository or another worktree, they run only the sign-off and subject checks.
 - **Hardware runs for forks.** A PR from a fork gets the hosted gates and the review agent. Runs on the project's lab hardware start in M1b, and a maintainer approves each one, for a specific commit, after reading the diff.
 - **Update the docs in the same PR** where the change alters what a user or developer needs to know.
 
