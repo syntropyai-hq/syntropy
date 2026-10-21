@@ -442,7 +442,8 @@ mod tests {
             assert_eq!(i.features, DeviceFeatures::empty(), "without {drop}");
             assert!(
                 i.flags
-                    .contains(IsaFlags::AVX512VNNI | IsaFlags::AVX512FP16)
+                    .contains(IsaFlags::AVX512VNNI | IsaFlags::AVX512BF16 | IsaFlags::AVX512FP16),
+                "IsaFlags keeps each extension without {drop}"
             );
         }
     }
