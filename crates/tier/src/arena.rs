@@ -11,7 +11,7 @@
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use syntropy_core::{Bytes, DeviceId, LayerIx, TierId};
+use syntropy_core::{Bytes, DeviceId, ExtentRef, LayerIx, TensorGroupId, TierId};
 
 /// Why an arena exists. There is one budget per (tier, purpose), so one purpose cannot starve
 /// another (RFC-0020 §2, RFC-0001 §9.1).
@@ -163,15 +163,17 @@ pub struct SegmentSpec {
 /// The tier manager's whole layout for one runner, derived from the plan before any byte is
 /// allocated (RFC-0020 §3). `TierManager::plan_arenas` (TIER-E1-T02) builds it as a pure
 /// function of (plan, stages, census, profile, config).
-//
-// TODO(#1491): add `nvme_extents: Vec<(TensorGroupId, ExtentRef)>` once TIER-E5-T01 adds
-// `ExtentRef` to `syntropy-core`; use it from there, never define it twice. The field gets
-// `#[serde(default)]`, so records written before it still decode.
+///
+/// Every field defaults (container `#[serde(default)]`), so a record that predates a field
+/// still decodes, in map form and, for trailing fields, in sequence form.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ArenaPlan {
     /// Every arena of the runner.
     pub arenas: Vec<ArenaSpec>,
+    /// The extent of every group homed on `Nvme`, which has no arena (RFC-0020 §2). The
+    /// pack sidecar gives them (RFC-0041); `ExtentRef` is `syntropy-core`'s (RFC-0020 §3).
+    pub nvme_extents: Vec<(TensorGroupId, ExtentRef)>,
     /// One budget line per tier, for the ledger check and SC-11.
     pub per_tier: Vec<(TierId, TierBudgetLine)>,
 }

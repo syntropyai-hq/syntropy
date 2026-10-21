@@ -37,4 +37,10 @@ pub use manager::TierCommand;
 pub use os::{CgroupMem, CommitCharge, HostRange, MemSnapshot, Psi, ReclaimStalls};
 pub use pin::{PinProgress, PinState};
 pub use pressure::PressureLevel;
-pub use residency::{BufferView, StepFence, ViewKind};
+pub use residency::{BufferView, HomeState, StepFence, ViewKind};
+/// RFC-0020 §3's supporting types that `syntropy-core` defines, because `syntropy-io` carries
+/// them a layer below this crate (RFC-0020 §3, revised 2026-10-21). Re-exported, never
+/// redefined.
+pub use syntropy_core::{ExtentRef, FileIx, HostRegion, StepLayer};
+/// The I/O ticket [`HomeState::Loading`] records, from `syntropy-io` (RFC-0021 §2).
+pub use syntropy_io::IoTicket;

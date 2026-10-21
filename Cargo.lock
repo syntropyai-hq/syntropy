@@ -367,6 +367,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "syntropy-core",
+ "syntropy-io",
 ]
 
 [[package]]

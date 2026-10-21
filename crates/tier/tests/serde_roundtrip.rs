@@ -14,7 +14,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
 use syntropy_core::plan::DeltaItem;
-use syntropy_core::{Bytes, DeviceId, LayerIx, NodeId, PlanDelta, PlanEpoch, StageIx, TierId};
+use syntropy_core::{
+    Bytes, DeviceId, LayerIx, NodeId, PlanDelta, PlanEpoch, StageIx, TensorGroupId, TierId,
+};
 use syntropy_tier::*;
 
 // ---- Strategies -------------------------------------------------------------------------
@@ -134,12 +136,37 @@ fn tier_budget_line() -> impl Strategy<Value = TierBudgetLine> {
         })
 }
 
+fn extent_ref() -> impl Strategy<Value = ExtentRef> {
+    (any::<u16>(), any::<u64>(), bytes()).prop_map(|(file, offset, len)| ExtentRef {
+        file: FileIx(file),
+        offset,
+        len,
+    })
+}
+
 fn arena_plan() -> impl Strategy<Value = ArenaPlan> {
     (
         prop::collection::vec(arena_spec(), 0..4),
+        prop::collection::vec((any::<u32>().prop_map(TensorGroupId), extent_ref()), 0..6),
         prop::collection::vec((tier_id(), tier_budget_line()), 0..4),
     )
-        .prop_map(|(arenas, per_tier)| ArenaPlan { arenas, per_tier })
+        .prop_map(|(arenas, nvme_extents, per_tier)| ArenaPlan {
+            arenas,
+            nvme_extents,
+            per_tier,
+        })
+}
+
+fn home_state() -> impl Strategy<Value = HomeState> {
+    prop_oneof![
+        Just(HomeState::Absent),
+        any::<u64>().prop_map(|t| HomeState::Loading {
+            ticket: IoTicket(t)
+        }),
+        Just(HomeState::Resident),
+        pin_class().prop_map(|have| HomeState::Underpinned { have }),
+        Just(HomeState::Extent),
+    ]
 }
 
 fn arena_ref() -> impl Strategy<Value = ArenaRef> {
@@ -305,6 +332,18 @@ proptest! {
 
     #[test]
     fn arena_ref_round_trips(v in arena_ref()) { round_trip(&v); }
+
+    #[test]
+    fn home_state_round_trips(v in home_state()) { round_trip(&v); }
+
+    #[test]
+    fn arena_plan_round_trips_in_sequence_form(v in arena_plan()) {
+        // The same record as a sequence: [arenas, nvme_extents, per_tier].
+        let map = serde_json::to_value(&v).unwrap();
+        let seq = serde_json::json!([map["arenas"], map["nvme_extents"], map["per_tier"]]);
+        let back: ArenaPlan = serde_json::from_value(seq).unwrap();
+        prop_assert_eq!(back, v);
+    }
 
     #[test]
     fn pin_progress_round_trips(v in pin_progress()) { round_trip(&v); tolerates_unknown_fields(&v); }
@@ -488,5 +527,69 @@ fn arena_spec_short_sequence_defaults_elastic() {
             ..back
         },
         full
+    );
+}
+
+fn fixture_plan() -> ArenaPlan {
+    ArenaPlan {
+        arenas: vec![fixture_arena()],
+        nvme_extents: vec![(
+            TensorGroupId(9),
+            ExtentRef {
+                file: FileIx(1),
+                offset: 4096,
+                len: Bytes(8192),
+            },
+        )],
+        per_tier: vec![(fixture_arena().tier, TierBudgetLine::default())],
+    }
+}
+
+#[test]
+fn arena_plan_without_nvme_extents_decodes_in_map_form() {
+    let full = fixture_plan();
+    let json = without(serde_json::to_value(&full).unwrap(), &["nvme_extents"]);
+    let back: ArenaPlan = serde_json::from_value(json).unwrap();
+    assert!(back.nvme_extents.is_empty());
+    assert_eq!(back.per_tier, full.per_tier);
+    assert_eq!(back.arenas, full.arenas);
+}
+
+#[test]
+fn arena_plan_short_sequences_default_the_trailing_fields() {
+    let full = fixture_plan();
+    let map = serde_json::to_value(&full).unwrap();
+    let back: ArenaPlan = serde_json::from_value(serde_json::json!([map["arenas"]])).unwrap();
+    assert_eq!(
+        back,
+        ArenaPlan {
+            arenas: full.arenas.clone(),
+            ..ArenaPlan::default()
+        }
+    );
+    let back: ArenaPlan =
+        serde_json::from_value(serde_json::json!([map["arenas"], map["nvme_extents"]])).unwrap();
+    assert_eq!(
+        back,
+        ArenaPlan {
+            per_tier: Vec::new(),
+            ..full
+        }
+    );
+}
+
+#[test]
+fn home_state_defaults_to_absent_and_loading_carries_the_ticket_as_a_number() {
+    assert_eq!(HomeState::default(), HomeState::Absent);
+    let loading = HomeState::Loading {
+        ticket: IoTicket(42),
+    };
+    assert_eq!(
+        serde_json::to_string(&loading).unwrap(),
+        r#"{"Loading":{"ticket":42}}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<HomeState>(r#"{"Loading":{"ticket":42}}"#).unwrap(),
+        loading
     );
 }
