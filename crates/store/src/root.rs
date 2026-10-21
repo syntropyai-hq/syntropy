@@ -20,8 +20,10 @@
 //! The lock file stays empty. On Windows the lock is a mandatory byte-range lock, so no other
 //! handle could read it. The holder writes its process ID to `locks/writer.pid` instead, which
 //! is never locked, and a refused process reports that ID. The ID is only a diagnostic: writing
-//! or reading it never decides whether a root opens. It can name a previous holder in the
-//! moment between a new holder taking the lock and writing the file.
+//! or reading it never decides whether a root opens. A holder that cannot write the file
+//! removes it instead, so a refusal reports no ID rather than an earlier holder's. The ID can
+//! still name a previous holder in the moment between a new holder taking the lock and writing
+//! the file, or when the file can be neither written nor removed.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
@@ -268,10 +270,42 @@ fn ensure_dir(path: &Path) -> Result<(), StoreError> {
 }
 
 /// Records this process's ID in `writer.pid`. Called only by the lock holder. Best effort: the
-/// ID is a diagnostic, so a failed write leaves the root open and the ID unreported.
+/// ID is a diagnostic, so a failure leaves the root open. When the write fails, for example on
+/// a `writer.pid` that is not writable, the file still holds an earlier holder's ID, which may
+/// be a dead or reused process. Removing it makes a refusal report no ID instead.
 fn record_holder(pid_path: &Path) {
-    let _ = fs::write(pid_path, format!("{}\n", std::process::id()));
+    if fs::write(pid_path, format!("{}\n", std::process::id())).is_ok() {
+        return;
+    }
+    if fs::remove_file(pid_path).is_err() {
+        remove_read_only_file(pid_path);
+    }
 }
+
+/// Windows refuses to delete a file with the read-only attribute. Clear the attribute, then
+/// delete the file. Best effort.
+#[cfg(windows)]
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "on Windows this clears only the read-only attribute; it widens no access mode"
+)]
+fn remove_read_only_file(path: &Path) {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if !meta.is_file() {
+        return;
+    }
+    let mut perms = meta.permissions();
+    perms.set_readonly(false);
+    if fs::set_permissions(path, perms).is_ok() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// On Unix a file's own mode never blocks deleting it, so there is nothing more to try.
+#[cfg(not(windows))]
+fn remove_read_only_file(_path: &Path) {}
 
 /// The process ID the lock's holder recorded in `writer.pid`, if the file can be read and holds
 /// one. `None` when it is missing, unreadable or malformed, or the holder has not written it yet.
@@ -326,6 +360,43 @@ mod tests {
             Some(std::process::id())
         );
         assert_eq!(fs::metadata(root.layout().writer_lock()).unwrap().len(), 0);
+    }
+
+    /// Holder A exits and leaves its ID in `writer.pid`. The file is then made read-only, so
+    /// holder B cannot overwrite it. A refusal while B holds the root must not name A. This is
+    /// the review's reproduction, in one process (see `the_holder_id_is_best_effort`).
+    #[test]
+    fn a_holder_that_cannot_record_its_id_removes_the_stale_one() {
+        let tmp = TempDir::new();
+        let path = tmp.join("models");
+        let pid_path = WritableRoot::open(&path).unwrap().layout().writer_pid();
+        let stale = u32::MAX;
+        assert_ne!(stale, std::process::id());
+        fs::write(&pid_path, format!("{stale}\n")).unwrap();
+        let mut perms = fs::metadata(&pid_path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&pid_path, perms).unwrap();
+        // A privileged user (root on Unix) can still write a read-only file. Then holder B's
+        // write succeeds and the stale ID is overwritten instead of removed.
+        let write_blocked = OpenOptions::new().write(true).open(&pid_path).is_err();
+
+        let held = WritableRoot::open(&path).unwrap();
+        let reported = match WritableRoot::open(&path) {
+            Err(StoreError::WriterLocked { holder_pid, .. }) => holder_pid,
+            other => panic!("expected WriterLocked, got {other:?}"),
+        };
+        assert_ne!(
+            reported,
+            Some(stale),
+            "the refusal named the earlier holder"
+        );
+        if write_blocked {
+            assert_eq!(reported, None);
+            assert!(!pid_path.exists(), "the stale writer.pid was left in place");
+        } else {
+            assert_eq!(reported, Some(std::process::id()));
+        }
+        drop(held);
     }
 
     /// A second handle in the same process conflicts with the first on every OS (`flock` locks
