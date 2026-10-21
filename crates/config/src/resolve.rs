@@ -21,8 +21,9 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use serde::de::DeserializeOwned;
 use toml::Value;
 
@@ -826,39 +827,40 @@ impl<'a> LineIndex<'a> {
     }
 }
 
-/// The node's current [`ResolvedConfig`], replaced whole by a reload.
+/// The node's current [`ResolvedConfig`], replaced whole by a reload (RFC-0054 §9.1).
 ///
 /// A reader takes the current snapshot with [`SharedConfig::load`] and keeps it as long as it
-/// needs; a reload builds a new snapshot and stores it with [`SharedConfig::replace`]. No
-/// reader sees a mix of two snapshots. The pointer sits behind a `std` read-write lock: a
-/// reader holds the read lock only while it clones the `Arc`. RFC-0054 §9.1 asks for a
-/// lock-free store; that needs `unsafe`, which this crate forbids, or a new dependency, and the
-/// reload task decides between them.
-#[derive(Debug)]
+/// needs. A reload builds a new snapshot and stores it with [`SharedConfig::replace`], one atomic
+/// pointer store. Readers take no locks, and no reader sees a mix of two snapshots.
 pub struct SharedConfig {
-    current: RwLock<Arc<ResolvedConfig>>,
+    current: ArcSwap<ResolvedConfig>,
 }
 
 impl SharedConfig {
     /// Holds `config` as the current snapshot.
     pub fn new(config: ResolvedConfig) -> Self {
         Self {
-            current: RwLock::new(Arc::new(config)),
+            current: ArcSwap::from_pointee(config),
         }
     }
 
     /// The current snapshot.
     pub fn load(&self) -> Arc<ResolvedConfig> {
-        // A poisoned lock still holds a whole `Arc`: the store below cannot leave it half
-        // written.
-        Arc::clone(&self.current.read().unwrap_or_else(PoisonError::into_inner))
+        self.current.load_full()
     }
 
     /// Makes `config` the current snapshot and returns the one it replaced.
     pub fn replace(&self, config: ResolvedConfig) -> Arc<ResolvedConfig> {
-        let new = Arc::new(config);
-        let mut current = self.current.write().unwrap_or_else(PoisonError::into_inner);
-        std::mem::replace(&mut *current, new)
+        self.current.swap(Arc::new(config))
+    }
+}
+
+/// Redacts secrets, as `config show` does.
+impl fmt::Debug for SharedConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedConfig")
+            .field("current", &self.load())
+            .finish()
     }
 }
 
