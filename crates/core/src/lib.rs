@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod dtype;
+pub mod fidelity;
 pub mod numerics;
 pub mod quant;
 
