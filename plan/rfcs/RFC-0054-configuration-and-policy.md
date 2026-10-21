@@ -792,6 +792,12 @@ error[config/0003]: unknown key `resource.ram_headroon`
    | ^^^^^^^^^^^^ did you mean `ram_headroom`?
 ```
 
+*Note 2026-10-22:* the renderer never prints a secret's value (§3, §10.1). For an error on a secret-typed key, the source line is shown with its value replaced by `[redacted]`, as `config show` prints it.
+- **What counts as secret-typed:** a key whose type (`KeySchema::ty`) is `Secret<…>` or `SecretSource`, or a table or array of them, such as `obs.otlp.headers`, so every key under it.
+- **How the renderer decides:** by the key's path, looked up in the schema, never from the parsed value. The likeliest leak comes before any value parses. An unquoted token such as `api_key = sk-…` is a phase 1 syntax error, and the TOML parser's own snippet of that line would print it.
+- **When the key is unknown:** if the renderer cannot tell which key a line belongs to, it withholds that line's value too.
+- **Tests:** PROD-E1-T03's golden tests cover every case, phase 1 included.
+
 **Startup.** `syntropy serve` refuses to start on any phase 1–4 error and prints every error, not only the first. `syntropy config check [--file <path>] [--strict]` runs phases 1–5 without a daemon; `--strict` turns phase 5 warnings and empty override matches into errors for CI use.
 
 **Error codes** (domain `Config`; never reused):
