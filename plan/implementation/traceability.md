@@ -452,7 +452,7 @@ Not GAPs, listed under Gaps for the owning area: 0 SC milestone mismatches and 0
 | RFC-0060 | §7 | Per-architecture conformance gate | 9: PROD-E6-T15, QUAL-E6-T06–T10, QUAL-E6-T14, QUAL-E6-T21–T22 | ok |
 | RFC-0060 | §8 | Multi-node simulator | 19: QUAL-E3-T12, QUAL-E3-T16, QUAL-E7-T07, QUAL-E7-T11, QUAL-E7-T13, QUAL-E8-T01–T13, QUAL-E9-T12 | ok |
 | RFC-0060 | §9 | Chaos and fault injection | 15: QUAL-E9-T01–T14, QUAL-E11-T11 | ok |
-| RFC-0060 | §10 | Fuzzing | 9: QUAL-E10-T01–T08, QUAL-E17-T13 | ok |
+| RFC-0060 | §10 | Fuzzing | 10: DIST-E8-T17, QUAL-E10-T01–T08, QUAL-E17-T13 | ok |
 | RFC-0060 | §11 | Cross-platform test matrix | 15: QUAL-E11-T01–T15 | ok |
 | RFC-0060 | §12 | Test data and model fixtures | 17: TIER-E8-T01, TIER-E8-T18, TIER-E10-T18, QUAL-E7-T01–T14 | ok |
 | RFC-0060 | §13 | Flakiness, quarantine and failure triage | 2: QUAL-E3-T14–T15 | ok |
