@@ -97,7 +97,8 @@ fn rule_1(graph: &Graph) -> Vec<Finding> {
 }
 
 /// Rule 2: every edge between members, dev edges included, goes to a lower layer. Every crate
-/// except `core` may use `obs` and `config`, and every crate may use `core`. Edges into the
+/// except `core` may use `obs` and `config`, every crate may use `core`, and a crate may use the
+/// macro crate that holds its own macros (`config` → `config-derive`). Edges into the
 /// dev-only row are rule 9's; `core`'s normal and build edges are rule 1's. Tools have no
 /// workspace edges either way.
 fn rule_2(graph: &Graph, layers: &Layers) -> Vec<Finding> {
@@ -130,7 +131,8 @@ fn rule_2(graph: &Graph, layers: &Layers) -> Vec<Finding> {
                     let rule_1_covers = from_name == policy::CORE && edge.kinds.production();
                     let to_core = to_name == policy::CORE;
                     let shared = policy::SHARED.contains(&to_name) && from_name != policy::CORE;
-                    if rule_1_covers || to_core || shared || to_layer < from_layer {
+                    let own_macros = policy::MACRO_CRATES.contains(&(from_name, to_name));
+                    if rule_1_covers || to_core || shared || own_macros || to_layer < from_layer {
                         continue;
                     }
                     format!(
@@ -365,7 +367,7 @@ mod tests {
 
     const TABLE: &str = r#"
 [layers]
-0 = ["core", "obs", "config"]
+0 = ["core", "obs", "config", "config-derive"]
 1 = ["manifest", "kernels", "io", "net"]
 2 = ["graph", "kernels-cpu", "kernels-loader", "tier", "solver", "store"]
 3 = ["exec", "cluster"]
@@ -381,6 +383,7 @@ tools = ["xtask"]
         "core",
         "obs",
         "config",
+        "config-derive",
         "manifest",
         "kernels",
         "io",
@@ -466,6 +469,7 @@ tools = ["xtask"]
             ("cli", "daemon", "normal"),
             ("cli", "runner", "normal"),
             ("cli", "config", "normal"),
+            ("config", "config-derive", "normal"),
             ("cli", "obs", "normal"),
             ("testkit", "exec", "normal"),
             ("testkit", "daemon", "normal"),
@@ -538,6 +542,7 @@ tools = ["xtask"]
                 ("core", "obs", "dev"),
                 ("xtask", "core", "normal"),
                 ("cli", "xtask", "build"),
+                ("obs", "config-derive", "normal"),
             ],
         );
         assert_eq!(
@@ -552,6 +557,8 @@ tools = ["xtask"]
                 "rule 2: `kernels` (layer 1) has a dev dependency on `kernels-cpu` (layer 2); a \
                  crate depends only on crates in lower layers",
                 "rule 2: `manifest` (layer 1) has a normal dependency on `solver` (layer 2); a \
+                 crate depends only on crates in lower layers",
+                "rule 2: `obs` (layer 0) has a normal dependency on `config-derive` (layer 0); a \
                  crate depends only on crates in lower layers",
                 "rule 2: `xtask` is a tool outside the crate graph, but has a normal dependency \
                  on `core`; tools depend on no workspace crate",

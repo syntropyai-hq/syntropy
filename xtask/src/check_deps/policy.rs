@@ -19,6 +19,11 @@ pub const CORE_EXTERNALS: &[&str] = &["serde", "thiserror", "smallvec", "bitflag
 /// Rule 2: every crate except `core` may depend on these, whatever its layer.
 pub const SHARED: &[&str] = &["obs", "config"];
 
+/// Rule 2: a crate and the proc-macro crate that holds its macros, as `(crate, macro crate)`. The
+/// two share a layer, and the crate may depend on its macro crate (RFC-0001 §4.2 rule 2, note of
+/// 2026-10-21).
+pub const MACRO_CRATES: &[(&str, &str)] = &[("config", "config-derive")];
+
 /// Rule 3 and rule 8 apply to every crate whose name starts with this, `kernels-loader` included.
 pub const PROVIDER_PREFIX: &str = "kernels-";
 
@@ -295,6 +300,11 @@ pub fn allows_unsafe(name: &str) -> bool {
 pub fn named_crates() -> Vec<&'static str> {
     let mut names = vec![CORE, DAEMON, SOLVER, CORE_BINARY_CRATE];
     names.extend(SHARED);
+    names.extend(
+        MACRO_CRATES
+            .iter()
+            .flat_map(|&(owner, macros)| [owner, macros]),
+    );
     names.extend(COMPUTE);
     names.extend(COMPUTE_MUST_NOT_REACH);
     names.extend(ADR_0012_NO_TOKIO);

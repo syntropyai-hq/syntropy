@@ -265,6 +265,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 0 | `core` | IDs, units, dtypes and quant schemes, `Error`, `ResourceGraph`, `CapabilityProfile`, `PlacementPlan` and its parts, policy objects and the pure functions over them (such as `budget::host_usable`, which `probe`, `solver` and `tier` all call), `RunnerState`, session and sequence IDs, `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore` and `Outbox` (§5.14), the `ConformanceManifest` types, and the `BuildId` type (its value is built in `cli`, so a commit change does not invalidate every crate's build cache). Plain data, pure functions and invariant checks only | — | 0001 (per-type owners in §5) |
 | 0 | `obs` | span and metric naming, counters and histograms usable from hot threads, telemetry ring codec, `fault_point!` (compiled only under the `fault-injection` feature, rule 10), exporters | `core` | 0053 |
 | 0 | `config` | layered loading, schema, policy resolution, per-request override validation | `core` | 0054 |
+| 0 | `config-derive` | the `#[derive(ConfigSection)]` macro of the schema as code (RFC-0054 §10.3), which `config` re-exports. A proc-macro must be its own crate; it has no runtime code | — | 0054 |
 | 1 | `manifest` | GGUF and safetensors readers, `TensorCensus`, `ModelManifest`, KV formula, pack sidecar format, tokenizer data extraction | `core` | 0041 |
 | 1 | `kernels` | `KernelProvider` trait, `OpKey` registry, per-device op selection (certificates, then microbenchmark, §5.7), buffer, stream and event abstractions, the F32 reference semantics of every op (`kernels::reference`), and the `#[repr(C)]` types and `export!` macro of the provider-library ABI (`kernels::abi`). No `unsafe` | `core` | 0040 |
 | 1 | `io` | I/O engines: io_uring, IoRing, IOCP, `preadv` pool, `F_NOCACHE`, mmap fallback; per-core submission rings; registered buffers | `core` | 0021 |
@@ -299,6 +300,7 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 2. **A crate depends only on crates in lower layers.** `obs` and `config` are the exception: every crate except `core` may use them.
    - *Note 2026-10-21:* every crate may also depend on `core`, which depends on none (rule 1). That is how `obs` and `config` depend on `core` inside layer 0, as §4.1's table has them.
    - *Note 2026-10-21:* `xtask`, the CI task runner (RFC-0062 §1), is a workspace member outside the crate graph: no crate depends on it, and it depends on no workspace crate. `ci/layers.toml` lists it as a tool.
+   - *Note 2026-10-21:* `config-derive` is part of `config`. It holds `config`'s derive macro, because a proc-macro must be its own crate, so `config` depends on it inside layer 0 and re-exports the macro. Other crates use the macro through `config`, whose path the generated code names.
 3. **Compute crates never depend on control or network crates.** `graph`, `kernels`, every `kernels-*`, `io`, `tier`, `exec` and `sched` must not depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`. The runner bridges compute and network through SPSC rings (§8.3). This keeps the hot path free of async runtimes (ADR-0012) and lets `exec` and `sched` run under `testkit` with no network at all.
 4. **`daemon` never links or loads a GPU provider.** It may depend on `kernels` for types, but not on any `kernels-*` crate, `kernels-loader` included, and it never opens a backend module. Only runner and probe processes load provider libraries, and the daemon learns about GPUs from a probe-mode process (RFC-0040 §10.5, ADR-0507 rule 4). This is invariant 3 (§2.3) enforced at link time.
 5. **`solver` and `cluster::apply` are pure.** No I/O, no clocks, no threads apart from HiGHS (run single-threaded with a fixed seed). Given the same inputs the solver returns the same plan, so plans are reproducible in tests and on every node. The other protocol cores follow invariant 12.
@@ -2665,3 +2667,11 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | every crate may depend on `core` | §4.2 rule 2 | §4.1's table has `obs` and `config` depend on `core` inside layer 0, which "lower layers only" would forbid |
 | `xtask` is a workspace member outside the crate graph, with no workspace edges either way | §4.2 rule 2 | §4.1 does not list it, and `ci/layers.toml` needs a row for every member |
 | rule 9 covers `bench` as well as `testkit` | §4.2 rule 9 | both sit on §4.1's dev-only row |
+
+### 18.8 The config derive crate (2026-10-21)
+
+RFC-0054 §10.3 puts the schema in `syntropy-config` as a derive macro. A proc-macro must be its own crate, which §4.1 did not list.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `config-derive` joins layer 0, with no workspace dependencies; `config` depends on it and re-exports `#[derive(ConfigSection)]` | §4.1; §4.2 rule 2 (dated note) | PROD-E1-T01 builds the derive; `ci/layers.toml` needs a row for every member, and "lower layers only" would forbid `config`'s edge to a crate in its own layer |
