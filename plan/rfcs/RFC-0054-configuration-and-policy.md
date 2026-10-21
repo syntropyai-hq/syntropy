@@ -210,6 +210,16 @@ Configuration values map onto the RFC-0001 §5.1 unit newtypes. A bare integer i
 
 Durations, sizes and fractions in output (`config show`, the dashboard) are printed in the same syntax, so any printed value can be pasted back.
 
+*Note 2026-10-21 (open, for the maintainers):* PROD-E1-T01 accepts a few forms beyond this table, so that every value prints in a form that parses back:
+- `Duration` also takes `us` and `ns`, because a `Nanos` value need not be a whole millisecond.
+- `ByteSize` also takes `B` and `kB`, and a fractional size rounds to the nearest byte.
+
+Options:
+- (a) keep these forms, as implemented;
+- (b) accept only the listed forms and print a sub-millisecond duration as a decimal of `ms`.
+
+Recommended default: (a).
+
 ### 4. Policy objects
 
 RFC-0001 §11.3 defines these types in `syntropy-core`, and §5.13 assigns them to this RFC. They are plain data with invariant checks and serde defaults, so the event log, IPC and the solver can carry them. This RFC adds fields under the RFC-0001 §5 rules and renames nothing.
@@ -435,6 +445,27 @@ Each crate declares its own config section (RFC-0001 §11.2), and the domain RFC
 
 The scopes column lists every scope a section uses. The table is generated from the domain crates' section declarations; it is not hand-written, and the copy above is a snapshot. The schema derive (§10.3) fails the build if two sections register the same prefix. A CI check fails if a key's declared scope differs from the owning RFC's key table.
 
+*Note 2026-10-21 (open, for the maintainers): where a duplicate prefix fails.* A derive sees one struct, so it cannot see a prefix that another crate registers. PROD-E1-T01 puts the check in `syntropy_config::Registry::new`, a `const fn` that panics when two sections claim one prefix. In a `static` or `const` item that panic is a compile error; in a `let` it happens at run time.
+
+Options:
+- (a) the binary's registry, which PROD-E1-T02 builds, is a `static`, so a duplicate prefix fails that build;
+- (b) a link-time check through one exported symbol per prefix, which needs `unsafe` attributes in every crate that declares a section, and RFC-0001 §4.2 rule 8 forbids those;
+- (c) only the CI test of PROD-E1-T16.
+
+Recommended default: (a), as implemented, with (c) as the cross-check the paragraph above already plans. The sentence "the schema derive fails the build" stands until the maintainers choose.
+
+*Note 2026-10-21 (open, for the maintainers): keys carved out of another prefix.* The table carves keys out of other sections' prefixes: `net.relay_mode` (0030) sits inside RFC-0031's other `net.*` keys, and `rdma.encrypt_untrusted` (0034) inside `rdma.*`. PROD-E1-T01 expresses this as claims:
+- a section owns `prefix.*` by default;
+- a section marked `#[config(shared)]`, and every top-level section, owns only its own keys, each by its full path;
+- two equal claims fail the build, as in the note above.
+
+Options:
+- (a) shared sections, as implemented;
+- (b) the table's owner declares the carved-out keys too, with each key naming its own owner;
+- (c) no carve-outs: the carved-out keys move under their owners' prefixes, which renames keys this table fixes.
+
+Recommended default: (a).
+
 #### 5.2 Node keys owned by the product RFCs
 
 | Key | Type | Default | Reload | Owner |
@@ -505,6 +536,8 @@ The scopes column lists every scope a section uses. The table is generated from 
 | `update.local_drain` | Duration | `"120s"`: how long an update waits for local-ingress sequences before restarting (RFC-0052 §7.3 step 6) | hot | 0052 |
 | `update.restart_budget` | Duration | `"10s"` [target]: the planned-restart window announced to peers as `back_within_ms` (RFC-0052 §7.3); at most the cluster's `membership.restart_grace` (RFC-0030 §5.9), checked at validation | hot | 0052 |
 | `debug.parity_api`, `debug.bench_api`, `debug.telemetry_api` | bool | `false` in every build; loopback only (§7.1) | hot | 0054 (gate); 0060, 0061 |
+
+*Note 2026-10-21 (open, OQ-PRD-25):* the table above declares `api.provenance` as a bool and `api.provenance.retention` beneath it, as RFC-0050 §10 uses them. TOML cannot hold a key as both a value and a table, so no file can set both. The register lists the options and a recommended default.
 
 #### 5.3 Cluster keys owned here
 
@@ -845,7 +878,31 @@ pub struct ResourceSection {
 }
 ```
 
+*Note 2026-10-21 (open, for the maintainers): the default grammar.* The derive PROD-E1-T01 builds reads the example's `default = "by_mode(ram_headroom)"` as the literal string `"by_mode(ram_headroom)"`, so a default has to say which kind it is:
+- a TOML-shaped value, such as `"16GiB"`, `64`, `false`, `["a", "b"]` or `{ k = "v" }`;
+- `unset`, for an `Option` key;
+- `computed("rule text")`, whose text `Origin::Default { computed }` prints (§2.2).
+
+Options:
+- (a) that grammar, as implemented, under which the example reads `default = computed("by_mode(ram_headroom)")`;
+- (b) a string default that does not parse as the key's type counts as a computed rule, which turns a typo in a fixed default into a silent rule;
+- (c) a separate `computed = "…"` attribute.
+
+Recommended default: (a). Section authors should not copy the example above as written.
+
 Cluster-scope keys add two attributes: `introduced_at = <feature level>`, which is required (a cluster-scope key without it fails to compile), and `authority = Member | Keyholder`, which defaults to `Member` and is forced to `Keyholder` under the prefixes of §2.3 step 10. For example: `#[config(scope = Cluster, introduced_at = FEATURE_LEVEL_V1, authority = Keyholder, reload = Hot, default = "confirm")]` on `cluster.lan_admission`.
+
+*Note 2026-10-21 (open, for the maintainers): authority on instance keys.* The paragraph above gives `introduced_at` and `authority` to cluster-scope keys. But §2.3 step 10 makes the exactness and pin fields of the `policy.*` tables keyholder-only, and those are instance keys (§5.4), which the tables store in the event log. PROD-E1-T01:
+- lets instance keys carry `authority`, default `member` and forced to `keyholder` for `fidelity`, `default_fidelity`, `approximate.*`, `pin` and `tensor_override`;
+- lets instance keys carry an optional `introduced_at`;
+- rejects both attributes on node and request keys.
+
+Options:
+- (a) as implemented;
+- (b) declare each `policy.*` table as one cluster key whose type carries per-field authority;
+- (c) as (a), but require `introduced_at` on instance keys too, since a newer policy field in the log raises the mixed-version question of §2.3 step 9.
+
+Recommended default: (a), leaving (c) to RFC-0032's owner.
 
 A derive macro generates, from that one definition:
 1. the parser and phase 2–4 validators;

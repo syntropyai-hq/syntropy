@@ -1037,5 +1037,5 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | DIST-E11-T16 | spike | Spike: prefill/decode disaggregation on rig (c) (a RAM copy of the remote layers on the GPU node, plus KV shipping) | OQ-PL-13 | 0 |
 | DIST-E17-T07 | spike | Spike, then implementation: OpenSSF Model Signing verification (`models.signatures = off \| verify_if_present \| require`… | OQ-SEC-03 | 0 |
 
-**Open questions needed by M4:** 4 (benchmark 1, spike 3). Each one names a task that records the answer.
+**Open questions needed by M4:** 5 (benchmark 1, decision 1, spike 3). Each one names a task that records the answer.
 <!-- END GENERATED -->

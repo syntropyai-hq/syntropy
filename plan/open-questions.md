@@ -1,6 +1,6 @@
 # Open questions
 
-This register lists the technical questions the Syntropy plan still leaves open, and the answers to the ones it has settled. It collects RFC-0001 §17, the "Open questions" sections of the 24 domain RFCs, the measurements that ADR revisit clauses still wait on, and the spike and decision tasks in `plan/implementation/epics/`. 135 questions are open. Answered questions are in [Settled](#settled) at the end, each with the ADR or RFC section that holds the answer.
+This register lists the technical questions the Syntropy plan still leaves open, and the answers to the ones it has settled. It collects RFC-0001 §17, the "Open questions" sections of the 24 domain RFCs, the measurements that ADR revisit clauses still wait on, and the spike and decision tasks in `plan/implementation/epics/`. 136 questions are open. Answered questions are in [Settled](#settled) at the end, each with the ADR or RFC section that holds the answer.
 
 How to read it:
 - **RFC** is the RFC that records the answer. Where two are listed, the first one holds it.
@@ -192,6 +192,7 @@ When a question closes, move it to Settled with the ADR or RFC section that answ
 | OQ-PRD-21 | Per backend, is a timed variant of each captured graph cheaper than event nodes left in every graph, for GPU per-term timing? | The timing budget is 0.5% of step time. | RFC-0053, RFC-0012, RFC-0040 | spike on CUDA graphs and Metal indirect command buffers (RFC-0053 OQ1) | PROD-E8-T09 | M1a |
 | OQ-PRD-22 | On `Unified` tiers, do measured CPU and GPU terms add up as the solver's split assumes, or is a combined `UnifiedRead` term more honest? | CPU and GPU share one memory bus there. | RFC-0053 | decision from M1b Apple and Strix Halo measurements (RFC-0053 OQ2) | PROD-E8-T09 | M1b |
 | OQ-PRD-24 | Does warnings-and-above flood the Windows event log on flapping Wi-Fi links despite repeat suppression? | The event log is shared with the rest of the system. | RFC-0053 | benchmark: M1b soak tests (RFC-0053 OQ5) | PROD-E8-T09 | M1b |
+| OQ-PRD-25 | RFC-0054 §5.2 and RFC-0050 §10 make `api.provenance` a bool and put `api.provenance.retention` beneath it, but TOML cannot hold a key as both a value and a table. Which name changes? Options: (a) `api.provenance.enabled` with `api.provenance.retention`, which keeps one table [recommended]; (b) `api.provenance` with `api.provenance_retention`; (c) `api.provenance` as a table whose presence enables the record. | No config file can set both keys, and `syntropy_config::Registry::check` (PROD-E1-T01) reports `ValueIsTable` once both are registered. The answer renames a key in RFC-0054 §5.2 and RFC-0050 §10, so it is for the maintainers. | RFC-0054, RFC-0050 | decision by the maintainers | PROD-E4-T16 | M4 |
 
 ## Process, lab and release
 
