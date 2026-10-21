@@ -16,7 +16,11 @@ use std::process::{Command, Output};
 use syntropy_bench::{sc_map, scenario};
 
 const VISION: &str = "# Vision\n\n| SC-1 | a | b |\n| SC-2 | c | d |\n";
-const EPICS: &str = "| ID | Task |\n|---|---|\n| QUAL-E13-T02 | something |\n";
+const EPICS: &str = "| ID | Task | Milestone | Depends on | Acceptance criteria | Implements |\n\
+                     |---|---|---|---|---|---|\n\
+                     | QUAL-E13-T02 | the SC-1 and SC-2 scenarios | M0b | none | reported nightly \
+                     | RFC-0061 §4.2 |\n";
+const EPICS_PATH: &str = "plan/implementation/epics/QUAL.md";
 const RFC_HEAD: &str = "# RFC-0061\n\n#### 4.2 Success criteria\n\n\
                         <!-- BEGIN GENERATED: sc-table -->\n";
 const RFC_TAIL: &str = "<!-- END GENERATED -->\n\n#### 6.2 Rigs (ADR-0610)\n\n\
@@ -26,7 +30,7 @@ fn row(n: u32) -> String {
     format!(
         "[[sc]]\nid = \"SC-{n}\"\nscenarios = \"`decode.single.*`\"\n\
          patterns = [\"decode.single.*\"]\nrigs = \"R-ADA\"\nmeasured = \"`t_tok`\"\n\
-         pass = \"≤ 1.05×\"\nowners = [\"QUAL-E13-T02\"]\n\n"
+         pass = \"≤ 1.05×\"\nadded_owners = [\"QUAL-E13-T02\"]\n\n"
     )
 }
 
@@ -56,11 +60,12 @@ impl Repo {
     fn with_map(name: &str, mapped: &[u32]) -> Repo {
         let repo = Repo::new(name);
         repo.write("plan/00-vision-and-scope.md", VISION);
-        repo.write("plan/implementation/epics/QUAL.md", EPICS);
+        repo.write(EPICS_PATH, EPICS);
         let map: String = mapped.iter().map(|&n| row(n)).collect();
         repo.write(sc_map::SC_MAP, &map);
-        let rows = sc_map::parse(&map).expect("test map parses");
-        let table = sc_map::render(&rows, &[]);
+        let map = sc_map::parse(&map).expect("test map parses");
+        let tasks = sc_map::tasks(&repo.root.join(sc_map::EPICS));
+        let table = sc_map::render(&map, &tasks, &[]);
         repo.write(sc_map::RFC_0061, &format!("{RFC_HEAD}{table}{RFC_TAIL}"));
         repo
     }
@@ -290,6 +295,70 @@ fn a_scenario_removed_and_re_added_needs_a_higher_version_than_its_last() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 }
 
+/// An epic edit that makes a task cite a criterion makes the table stale, and the check names
+/// the row and the task until the table is rendered again or the map says why the task is not
+/// an owner.
+#[test]
+fn a_new_sc_citation_fails_until_the_table_or_the_map_follows() {
+    let repo = Repo::with_map("citation", &[1, 2]);
+    repo.commit_as_base();
+    let ok = repo.run(&["check"]);
+    assert_eq!(ok.status.code(), Some(0), "{}", stderr(&ok));
+    let cited = format!(
+        "{EPICS}| QUAL-E13-T09 | a microbenchmark | M1a | none | reported against SC-2 | \
+         RFC-0061 §9 |\n"
+    );
+    repo.write(EPICS_PATH, &cited);
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(
+        err.contains(
+            "SC-2: `QUAL-E13-T09` is an owner now (its acceptance criteria name SC-2), but the \
+             table doesn't list it"
+        ),
+        "{err}"
+    );
+    assert!(err.contains("section is stale"), "{err}");
+
+    // Either the table follows...
+    let render = repo.run(&["render", "--write"]);
+    assert!(render.status.success());
+    assert!(repo.rfc().contains("pending; QUAL-E13-T02, QUAL-E13-T09 |"));
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    // ...or the map says why the citation is not ownership, and the table drops it again.
+    let map = fs::read_to_string(repo.root.join(sc_map::SC_MAP)).expect("map");
+    repo.write(
+        sc_map::SC_MAP,
+        &format!(
+            "{map}[[not_owner]]\ntask = \"QUAL-E13-T09\"\nsc = [\"SC-2\"]\n\
+             reason = \"it reports SC-2 for context only\"\n"
+        ),
+    );
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("the table lists `QUAL-E13-T09`, which is no longer an owner"),
+        "{}",
+        stderr(&output)
+    );
+    let _ = repo.run(&["render", "--write"]);
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    // An exclusion whose citation is gone is stale.
+    repo.write(EPICS_PATH, EPICS);
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("not_owner `QUAL-E13-T09` is not a task"),
+        "{}",
+        stderr(&output)
+    );
+}
+
 #[test]
 fn a_new_file_in_a_shallow_clone_fails_closed() {
     let origin = Repo::with_map("shallow-origin", &[1, 2]);
@@ -348,11 +417,11 @@ fn an_unreadable_scenario_file_is_reported() {
 fn the_repository_map_is_complete_and_the_table_current() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let read = |rel: &str| fs::read_to_string(root.join(rel)).expect(rel);
-    let rows = sc_map::parse(&read(sc_map::SC_MAP)).expect("map parses");
+    let map = sc_map::parse(&read(sc_map::SC_MAP)).expect("map parses");
     let vision = sc_map::vision_ids(&read(sc_map::VISION));
     assert_eq!(vision, (1..=32).collect::<Vec<u32>>());
-    let tasks = sc_map::task_ids(&root.join(sc_map::EPICS));
-    assert_eq!(sc_map::check(&rows, &vision, &tasks), Vec::<String>::new());
+    let tasks = sc_map::tasks(&root.join(sc_map::EPICS));
+    assert_eq!(sc_map::check(&map, &vision, &tasks), Vec::<String>::new());
     let rfc = read(sc_map::RFC_0061);
     let rigs = scenario::rig_ids(&rfc);
     for rig in ["R-ADA", "R-BW", "R-ULTRA-A", "R-TB5", "R-PAIR10", "S2"] {
@@ -363,7 +432,7 @@ fn the_repository_map_is_complete_and_the_table_current() {
     let ids: Vec<String> = scenarios.iter().map(|s| s.id.0.clone()).collect();
     assert_eq!(
         sc_map::section(&rfc),
-        Some(sc_map::render(&rows, &ids).as_str()),
+        Some(sc_map::render(&map, &tasks, &ids).as_str()),
         "RFC-0061 §4.2 is stale: run `syntropy-bench scenarios render --write`"
     );
 }

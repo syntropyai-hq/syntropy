@@ -227,9 +227,9 @@ fn parse_scenarios(args: &[&str]) -> Result<Scenarios, String> {
 
 /// Everything `check` and `render` read, from `root`.
 struct Repo {
-    rows: Vec<sc_map::Row>,
+    map: sc_map::Map,
     vision: Vec<u32>,
-    tasks: std::collections::BTreeSet<String>,
+    tasks: std::collections::BTreeMap<String, sc_map::Task>,
     rfc: String,
 }
 
@@ -242,12 +242,12 @@ fn read_repo(root: &Path) -> Result<Repo, String> {
             )
         })
     };
-    let rows =
+    let map =
         sc_map::parse(&read(sc_map::SC_MAP)?).map_err(|e| format!("{}: {e}", sc_map::SC_MAP))?;
     Ok(Repo {
-        rows,
+        map,
         vision: sc_map::vision_ids(&read(sc_map::VISION)?),
-        tasks: sc_map::task_ids(&root.join(sc_map::EPICS)),
+        tasks: sc_map::tasks(&root.join(sc_map::EPICS)),
         rfc: read(sc_map::RFC_0061)?,
     })
 }
@@ -271,24 +271,35 @@ fn scenarios_check(root: &Path, base: Option<&str>) -> u8 {
     }
 
     failures.extend(
-        sc_map::check(&repo.rows, &repo.vision, &repo.tasks)
+        sc_map::check(&repo.map, &repo.vision, &repo.tasks)
             .into_iter()
             .map(|p| format!("{}: {p}", sc_map::SC_MAP)),
     );
 
     let ids: Vec<String> = scenarios.iter().map(|s| s.id.0.clone()).collect();
-    let table = sc_map::render(&repo.rows, &ids);
+    let table = sc_map::render(&repo.map, &repo.tasks, &ids);
     match sc_map::section(&repo.rfc) {
         None => failures.push(format!(
             "{}: no `{}` generated section",
             sc_map::RFC_0061,
             sc_map::SECTION
         )),
-        Some(body) if body != table => failures.push(format!(
-            "{}: the `{}` section is stale; run `syntropy-bench scenarios render --write`",
-            sc_map::RFC_0061,
-            sc_map::SECTION
-        )),
+        Some(body) if body != table => {
+            // Name each row whose owners the epics changed, then the fix.
+            failures.extend(
+                sc_map::owner_drift(body, &repo.map, &repo.tasks)
+                    .into_iter()
+                    .map(|d| format!("{}: {d}", sc_map::RFC_0061)),
+            );
+            failures.push(format!(
+                "{}: the `{}` section is stale; run `syntropy-bench scenarios render --write`, \
+                 or record in {}'s `[[not_owner]]` why a task that cites a criterion doesn't \
+                 own it",
+                sc_map::RFC_0061,
+                sc_map::SECTION,
+                sc_map::SC_MAP
+            ));
+        }
         Some(_) => {}
     }
 
@@ -298,7 +309,7 @@ fn scenarios_check(root: &Path, base: Option<&str>) -> u8 {
     eprintln!(
         "scenarios check: {} scenario files, {} SC rows, {} problems",
         scenarios.len(),
-        repo.rows.len(),
+        repo.map.sc.len(),
         failures.len()
     );
     if failures.is_empty() { PASS } else { FAIL }
@@ -315,7 +326,7 @@ fn scenarios_render(root: &Path, write: bool) -> u8 {
     let rigs = scenario::rig_ids(&repo.rfc);
     let (scenarios, _) = scenario::load(root, &rigs);
     let ids: Vec<String> = scenarios.iter().map(|s| s.id.0.clone()).collect();
-    let table = sc_map::render(&repo.rows, &ids);
+    let table = sc_map::render(&repo.map, &repo.tasks, &ids);
     if !write {
         print!("{table}");
         return PASS;
