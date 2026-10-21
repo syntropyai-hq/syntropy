@@ -649,7 +649,12 @@ sequenceDiagram
 - `u32_le` reads the digest's first four bytes as a little-endian integer. The two groups of three digits keep their leading zeros, as in `000 782`.
 - `syntropy-cluster`'s `pairing` module implements both derivations. Five golden vectors are in `crates/cluster/tests/pairing/vectors.txt`, each with the bytes it hashes.
 
-The model's seeds are fixed, so its results are reproducible. Against the first draft, an attacker that pairs with the keyholder before answering the joiner matched the codes in all 20 trials, after at most 3.14 × 10⁶ hashes. Against the committed exchange, it matched 12 times in 10⁷ attempts, within the bound of 25 for a 10⁻⁶ rate. In neither order of its two connections did it hold a nonce whose code it could compute against a fixed target, so it never ground. `cargo xtask test pairing-grind` reruns both.
+The model's seeds are fixed, so its results are reproducible. Its attacker plays three strategies, a fixed set rather than every possible attacker:
+- **Keyholder first, honest reveal.** Against the first draft it matched the codes in all 20 trials, after at most 3.14 × 10⁶ hashes.
+- **Either order, honest reveal, against the committed exchange.** Given what each order shows the attacker, no nonce it chooses has a code it can compute while the other code is fixed, so it has nothing to grind. That follows from the order of the messages, not from the run. In 10⁷ such attempts the two codes matched 12 times, within the bound of 25 for a 10⁻⁶ rate.
+- **Cheating reveal.** The attacker answers the joiner first and learns its code. It then commits to the keyholder and, after the challenge, grinds a reveal whose code matches. It found one in all 20 attempts, and the commitment check denied all 20. A keyholder that skips the check, or a request that shows `nonce_c`, lets the attack through, and the tests then fail.
+
+The model bounds one attempt; retries are bounded by the rate limits of this section and §6.7. `cargo xtask test pairing-grind` reruns all three strategies.
 
 #### 6.3 Pairing window and open mode
 

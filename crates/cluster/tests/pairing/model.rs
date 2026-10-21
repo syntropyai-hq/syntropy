@@ -133,7 +133,8 @@ impl Joiner {
     }
 }
 
-/// A keyholder of the real cluster: it draws `nonce_k` only when a request arrives.
+/// A keyholder of the real cluster. Its `nonce_k` is fixed when it is built and leaves it only
+/// in the challenge that answers a request, so no one learns it earlier.
 pub struct Keyholder {
     exchange: Exchange,
     pub id: NodeId,
@@ -201,27 +202,47 @@ impl Keyholder {
     }
 }
 
-/// The order in which the attacker serves its two connections.
+/// The strategies the model's attacker plays. They are not every possible attacker: each is one
+/// way to sequence its two connections, and in each the attacker grinds only where the strategy
+/// gives it both a fixed code to match and a nonce whose code it can compute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Order {
-    /// Pair with the keyholder first, then answer the joiner: the order that breaks the first
-    /// draft, because the keyholder's code is fixed before the attacker picks `nonce_k`.
+    /// Pair with the keyholder first, revealing honestly, then answer the joiner: the order that
+    /// breaks the first draft, because the keyholder's code is fixed before the attacker picks
+    /// `nonce_k`.
     KeyholderFirst,
-    /// Answer the joiner first, then pair with the keyholder.
+    /// Answer the joiner first, then pair with the keyholder, revealing honestly.
     JoinerFirst,
+    /// Answer the joiner first and learn its code from its reveal; then commit to anything, take
+    /// the keyholder's challenge, and grind a reveal whose code matches. That reveal does not
+    /// open the commitment, so the keyholder's commitment check is what stops it. Against the
+    /// first draft, which has no reveal, this plays as [`Order::JoinerFirst`].
+    CheatingReveal,
 }
 
 /// The result of one relayed pairing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Outcome {
-    /// The two codes matched, so the user's pick approves the attacker.
+    /// The keyholder accepted every message and the two codes matched, so the user's pick
+    /// approves the attacker.
     pub matched: bool,
+    /// The keyholder ended the pairing with `Rejected { Denied }`.
+    pub denied: bool,
+    /// The attacker's grinding found a nonce whose code equals its target.
+    pub hit: bool,
     /// BLAKE3 evaluations the attacker spent grinding.
     pub hashes: u64,
 }
 
 /// What the attacker grinds toward: the code to match, and the code a candidate nonce gives.
 type Aim<'a> = (Sas, &'a dyn Fn(&Nonce) -> Sas);
+
+/// The attacker's grinding so far.
+#[derive(Default)]
+struct Spent {
+    hashes: u64,
+    hit: bool,
+}
 
 /// An attacker between a joiner and a keyholder, with its own node key and a lookalike cluster.
 pub struct Attacker {
@@ -232,17 +253,18 @@ pub struct Attacker {
 }
 
 impl Attacker {
-    /// Picks the next nonce to send. When the attacker knows the code to match and can compute
-    /// the code this nonce fixes, it grinds: it draws candidates until one matches or the budget
-    /// runs out. Otherwise any value is as good as another, and it draws one.
-    fn choose(&self, rng: &mut SplitMix64, hashes: &mut u64, aim: Option<Aim<'_>>) -> Nonce {
+    /// Picks the next nonce to send. Given an aim, the attacker grinds: it draws candidates until
+    /// one gives the target code or the budget runs out. Without one, any value is as good as
+    /// another, and it draws one.
+    fn choose(&self, rng: &mut SplitMix64, spent: &mut Spent, aim: Option<Aim<'_>>) -> Nonce {
         let Some((target, code_for)) = aim else {
             return rng.nonce();
         };
         for _ in 0..self.budget {
             let candidate = rng.nonce();
-            *hashes += 1;
+            spent.hashes += 1;
             if code_for(&candidate) == target {
+                spent.hit = true;
                 return candidate;
             }
         }
@@ -260,7 +282,7 @@ impl Attacker {
         }
     }
 
-    /// One relayed pairing attempt. The attacker grinds wherever the exchange lets it.
+    /// One relayed pairing attempt, played with `order`.
     pub fn relay(
         &self,
         exchange: Exchange,
@@ -268,8 +290,28 @@ impl Attacker {
         joiner: &mut Joiner,
         keyholder: &mut Keyholder,
         rng: &mut SplitMix64,
-    ) -> Result<Outcome, Denied> {
-        let mut hashes = 0;
+    ) -> Outcome {
+        let mut spent = Spent::default();
+        let result = self.play(exchange, order, joiner, keyholder, rng, &mut spent);
+        let denied = result.is_err();
+        let matched = !denied && joiner.sas().is_some() && joiner.sas() == keyholder.sas();
+        Outcome {
+            matched,
+            denied,
+            hit: spent.hit,
+            hashes: spent.hashes,
+        }
+    }
+
+    fn play(
+        &self,
+        exchange: Exchange,
+        order: Order,
+        joiner: &mut Joiner,
+        keyholder: &mut Keyholder,
+        rng: &mut SplitMix64,
+        spent: &mut Spent,
+    ) -> Result<(), Denied> {
         let request = joiner.request();
         // The joiner's nonce, if the request shows it. A commitment hides it: recovering it is a
         // preimage search, 2⁻¹²⁸ per hash.
@@ -278,6 +320,7 @@ impl Attacker {
             Request::Committed { .. } => None,
         };
         let joiner_id = joiner.id;
+        let keyholder_id = keyholder.id;
         let joiner_code = |nonce_c: Nonce, nonce_k: &Nonce| {
             SasInputs {
                 cluster_id: self.cluster_id,
@@ -291,7 +334,7 @@ impl Attacker {
         match order {
             Order::KeyholderFirst => {
                 // Pair with the keyholder as a joiner, honestly, so its reveal opens.
-                let own_nonce_c = self.choose(rng, &mut hashes, None);
+                let own_nonce_c = self.choose(rng, spent, None);
                 let challenge =
                     keyholder.on_request(self.id, self.request(exchange, own_nonce_c))?;
                 if exchange == Exchange::Committed {
@@ -307,19 +350,19 @@ impl Attacker {
                 // only if it knows the joiner's nonce.
                 let nonce_k = match known_nonce_c {
                     Some(nonce_c) => {
-                        hashes += 1;
+                        spent.hashes += 1;
                         let target = SasInputs {
                             cluster_id: challenge.cluster_id,
                             joiner: self.id,
-                            keyholder: keyholder.id,
+                            keyholder: keyholder_id,
                             nonce_c: own_nonce_c,
                             nonce_k: challenge.nonce_k,
                         }
                         .sas();
                         let code_for = |nonce_k: &Nonce| joiner_code(nonce_c, nonce_k);
-                        self.choose(rng, &mut hashes, Some((target, &code_for)))
+                        self.choose(rng, spent, Some((target, &code_for)))
                     }
-                    None => self.choose(rng, &mut hashes, None),
+                    None => self.choose(rng, spent, None),
                 };
                 joiner.on_challenge(
                     self.id,
@@ -329,10 +372,10 @@ impl Attacker {
                     },
                 );
             }
-            Order::JoinerFirst => {
+            Order::JoinerFirst | Order::CheatingReveal => {
                 // Nothing on the keyholder's side is fixed yet, so there is no code to aim at.
-                let nonce_k = self.choose(rng, &mut hashes, None);
-                joiner.on_challenge(
+                let nonce_k = self.choose(rng, spent, None);
+                let reveal = joiner.on_challenge(
                     self.id,
                     Challenge {
                         cluster_id: self.cluster_id,
@@ -341,31 +384,43 @@ impl Attacker {
                 );
                 // The joiner's code is now fixed. The keyholder's code depends on the nonce it
                 // draws after the attacker's request, so the attacker cannot compute it while
-                // choosing its own nonce.
-                let own_nonce_c = self.choose(rng, &mut hashes, None);
-                keyholder.on_request(self.id, self.request(exchange, own_nonce_c))?;
+                // choosing what to send or commit to.
+                let own_nonce_c = self.choose(rng, spent, None);
+                let challenge =
+                    keyholder.on_request(self.id, self.request(exchange, own_nonce_c))?;
                 if exchange == Exchange::Committed {
-                    keyholder.on_reveal(
-                        self.id,
-                        Reveal {
-                            nonce_c: own_nonce_c,
-                        },
-                    )?;
+                    let revealed = if order == Order::CheatingReveal {
+                        // Both codes now depend only on known values and the nonce the attacker
+                        // reveals, so it grinds that nonce instead of opening its commitment.
+                        let nonce_c = reveal
+                            .map(|r| r.nonce_c)
+                            .expect("a committed joiner reveals after the challenge");
+                        spent.hashes += 1;
+                        let target = joiner_code(nonce_c, &nonce_k);
+                        let code_for = |candidate: &Nonce| {
+                            SasInputs {
+                                cluster_id: challenge.cluster_id,
+                                joiner: self.id,
+                                keyholder: keyholder_id,
+                                nonce_c: *candidate,
+                                nonce_k: challenge.nonce_k,
+                            }
+                            .sas()
+                        };
+                        self.choose(rng, spent, Some((target, &code_for)))
+                    } else {
+                        own_nonce_c
+                    };
+                    keyholder.on_reveal(self.id, Reveal { nonce_c: revealed })?;
                 }
             }
         }
-        let matched = joiner.sas().is_some() && joiner.sas() == keyholder.sas();
-        Ok(Outcome { matched, hashes })
+        Ok(())
     }
 }
 
 /// One attempt with fresh parties drawn from `rng`.
-pub fn attempt(
-    exchange: Exchange,
-    order: Order,
-    budget: u64,
-    rng: &mut SplitMix64,
-) -> Result<Outcome, Denied> {
+pub fn attempt(exchange: Exchange, order: Order, budget: u64, rng: &mut SplitMix64) -> Outcome {
     let mut joiner = Joiner::new(exchange, NodeId(rng.key()), rng.nonce());
     let mut keyholder = Keyholder::new(exchange, NodeId(rng.key()), rng.key(), rng.nonce());
     let attacker = Attacker {

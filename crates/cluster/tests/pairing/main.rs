@@ -4,17 +4,21 @@
 //! relay and a keyholder, and the golden vectors of its fields and SAS (RFC-0030 §6.2, §6.7;
 //! RFC-0034 §6.5 and Testing; ADR-0302 revision of 2026-10-20 item 1).
 //!
-//! The statistical runs are seeded, so each gives the same result on every run. The default
-//! tests run a prefix of each: 10⁴ committed attempts and one first-draft trial. The full runs,
-//! 10⁷ committed attempts and 20 first-draft trials, are ignored here and run release-optimised
-//! (RFC-0060 §1.3's `test-release` profile) by `cargo xtask test pairing-grind`, because the dev
-//! profile builds `blake3` without optimisation: one hash takes about 12.7 µs there and 0.2 µs
-//! release-optimised.
+//! The statistical runs are seeded, so each gives the same result on every run. Against the
+//! committed exchange the attacker plays the strategies of [`model::Order`]: the two that reveal
+//! honestly alternate over 10⁷ attempts, and the one that grinds a cheating reveal runs 20 times.
+//! Against the first draft it plays keyholder-first in 20 trials. The default tests run a prefix
+//! of each: 10⁴ honest attempts, one cheating attempt and one first-draft trial. The full runs are
+//! ignored here and run release-optimised (RFC-0060 §1.3's `test-release` profile) by
+//! `cargo xtask test pairing-grind`, because the dev profile builds `blake3` without
+//! optimisation: one hash takes about 12.7 µs there and 0.2 µs release-optimised.
 //!
 //! Runtimes [measured, 2026-10-22, AMD Ryzen 9 5950X under WSL2, toolchain 1.99.1, each test
-//! on one thread]: in `test-release`, 4.7 s for the 20 first-draft trials and 9.0 s for the 10⁷
-//! committed attempts, 9.1 s together because the harness runs them in parallel; in the dev
-//! profile, 4.6 s for the smoke runs, almost all of it the first-draft trial's 370,734 hashes.
+//! on one thread]: in `test-release`, 4.4 s for the 20 first-draft trials and 14.5 s for the
+//! committed run, whose 20 cheating reveals spend 2.5 × 10⁷ hashes besides the 10⁷ honest
+//! attempts; 14.2 s together, because the harness runs the two in parallel. In the dev profile
+//! the smoke runs take 4.9 s: the first-draft trial's 370,734 hashes and the cheating reveal's
+//! 247,508, in parallel.
 
 mod model;
 mod spec;
@@ -30,14 +34,18 @@ const BUDGET: u64 = 10_000_000;
 /// "At most 25 times in 10⁷ attempts".
 const ATTEMPTS: u64 = 10_000_000;
 const BOUND: u64 = 25;
+/// Cheating-reveal attempts in the full run.
+const CHEATS: u64 = 20;
 /// First-draft trials in the full run.
 const TRIALS: u64 = 20;
 /// The smoke runs: a prefix of each full run.
 const SMOKE_ATTEMPTS: u64 = 10_000;
 const SMOKE_BOUND: u64 = 1;
+const SMOKE_CHEATS: u64 = 1;
 const SMOKE_TRIALS: u64 = 1;
 
 const COMMITTED_SEED: u64 = 0xC0DE_0000_0000_0001;
+const CHEAT_SEED: u64 = 0xC4EA_0000_0000_0001;
 const FIRST_DRAFT_SEED: u64 = 0xD4AF_0000_0000_0001;
 
 /// P(X > k) for X ~ Poisson(λ), summed term by term above k.
@@ -56,28 +64,43 @@ fn poisson_tail_above(lambda: f64, k: u64) -> f64 {
     tail
 }
 
-/// `attempts` relayed pairings against the committed exchange, alternating the attacker's
-/// order. Returns how many matched.
-fn committed_matches(attempts: u64) -> u64 {
-    let mut rng = SplitMix64(COMMITTED_SEED);
+/// The committed exchange: `attempts` relayed pairings alternating the two honest-reveal
+/// strategies, then `cheats` pairings with a cheating reveal. Returns the matches, the denials
+/// and the hashes each cheating reveal took to find its match.
+fn committed_outcomes(attempts: u64, cheats: u64) -> (u64, u64, Vec<u64>) {
     let mut matches = 0;
+    let mut denials = 0;
+    let mut rng = SplitMix64(COMMITTED_SEED);
     for i in 0..attempts {
         let order = if i % 2 == 0 {
             Order::KeyholderFirst
         } else {
             Order::JoinerFirst
         };
-        let outcome = attempt(Exchange::Committed, order, BUDGET, &mut rng)
-            .unwrap_or_else(|_| panic!("attempt {i}: the attacker's honest reveal was denied"));
-        // In neither order does the attacker hold a nonce whose code it can compute while the
-        // other code is fixed, so it never grinds.
+        let outcome = attempt(Exchange::Committed, order, BUDGET, &mut rng);
+        // Given what each of these orders shows it, the attacker never holds a nonce whose code
+        // it can compute while the other code is fixed, so it has nothing to grind.
         assert_eq!(
             outcome.hashes, 0,
             "attempt {i} ({order:?}): the attacker ground"
         );
+        assert!(!outcome.denied, "attempt {i} ({order:?}): denied");
         matches += u64::from(outcome.matched);
     }
-    matches
+    let mut cheat_hashes = Vec::new();
+    let mut rng = SplitMix64(CHEAT_SEED);
+    for i in 0..cheats {
+        let outcome = attempt(Exchange::Committed, Order::CheatingReveal, BUDGET, &mut rng);
+        // The attacker found a reveal whose code matches, so only the commitment check stops it.
+        assert!(
+            outcome.hit,
+            "cheat {i}: no matching reveal within {BUDGET} hashes"
+        );
+        matches += u64::from(outcome.matched);
+        denials += u64::from(outcome.denied);
+        cheat_hashes.push(outcome.hashes);
+    }
+    (matches, denials, cheat_hashes)
 }
 
 /// `trials` relayed pairings against the first draft, in the keyholder-first order. Each must
@@ -91,8 +114,8 @@ fn first_draft_hashes(trials: u64) -> Vec<u64> {
                 Order::KeyholderFirst,
                 BUDGET,
                 &mut rng,
-            )
-            .unwrap_or_else(|_| panic!("trial {t}: denied"));
+            );
+            assert!(!outcome.denied, "trial {t}: denied");
             assert!(
                 outcome.matched,
                 "trial {t}: no match within {BUDGET} hashes"
@@ -112,9 +135,13 @@ fn the_bounds_follow_from_poisson_tails_below_1e_4() {
     // The smoke prefix: mean 0.01, P(X > 1) < 10⁻⁴.
     let smoke = poisson_tail_above(SMOKE_ATTEMPTS as f64 * 1e-6, SMOKE_BOUND);
     assert!(smoke < 1e-4, "{smoke}");
-    // A first-draft trial needs more than 10⁷ hashes with probability (1 − 10⁻⁶)^10⁷ ≈ e⁻¹⁰.
+    // A first-draft trial, or a cheating reveal, needs more than 10⁷ hashes with probability
+    // (1 − 10⁻⁶)^10⁷ ≈ e⁻¹⁰.
     let miss = (1.0f64 - 1e-6).powf(BUDGET as f64);
-    assert!(miss < 5e-5 && TRIALS as f64 * miss < 1e-3, "{miss}");
+    assert!(
+        miss < 5e-5 && (TRIALS + CHEATS) as f64 * miss < 2e-3,
+        "{miss}"
+    );
 }
 
 #[test]
@@ -125,13 +152,17 @@ fn smoke_the_first_draft_is_ground() {
 
 #[test]
 fn smoke_the_committed_exchange_is_not_ground() {
-    let matches = committed_matches(SMOKE_ATTEMPTS);
-    eprintln!("committed, smoke: {matches} matches in {SMOKE_ATTEMPTS} attempts");
-    assert!(matches <= SMOKE_BOUND);
+    let (matches, denials, cheat_hashes) = committed_outcomes(SMOKE_ATTEMPTS, SMOKE_CHEATS);
+    eprintln!(
+        "committed, smoke: {matches} matches in {SMOKE_ATTEMPTS} honest attempts and \
+         {SMOKE_CHEATS} cheating reveals, {denials} denied; hashes per cheat {cheat_hashes:?}"
+    );
+    assert!(matches <= SMOKE_BOUND, "{matches} matches");
+    assert_eq!(denials, SMOKE_CHEATS, "a cheating reveal was accepted");
 }
 
 #[test]
-#[ignore = "full run, 4.7 s release-optimised [measured]: cargo xtask test pairing-grind"]
+#[ignore = "full run, 4.4 s release-optimised [measured]: cargo xtask test pairing-grind"]
 fn the_first_draft_is_ground_within_ten_million_hashes_in_every_trial() {
     let hashes = first_draft_hashes(TRIALS);
     eprintln!(
@@ -141,18 +172,25 @@ fn the_first_draft_is_ground_within_ten_million_hashes_in_every_trial() {
 }
 
 #[test]
-#[ignore = "full run, 9.0 s release-optimised [measured]: cargo xtask test pairing-grind"]
+#[ignore = "full run, 14.5 s release-optimised [measured]: cargo xtask test pairing-grind"]
 fn the_committed_exchange_matches_at_most_25_times_in_ten_million_attempts() {
-    let matches = committed_matches(ATTEMPTS);
-    eprintln!("committed: {matches} matches in {ATTEMPTS} attempts");
+    let (matches, denials, cheat_hashes) = committed_outcomes(ATTEMPTS, CHEATS);
+    eprintln!(
+        "committed: {matches} matches in {ATTEMPTS} honest attempts and {CHEATS} cheating \
+         reveals, {denials} denied; hashes per cheat {cheat_hashes:?}"
+    );
     assert!(matches <= BOUND, "{matches} matches");
+    assert_eq!(denials, CHEATS, "a cheating reveal was accepted");
 }
 
 #[test]
 fn only_the_keyholder_first_order_grinds_the_first_draft() {
     let mut rng = SplitMix64(7);
-    let outcome = attempt(Exchange::FirstDraft, Order::JoinerFirst, BUDGET, &mut rng).unwrap();
-    assert_eq!(outcome.hashes, 0);
+    for order in [Order::JoinerFirst, Order::CheatingReveal] {
+        let outcome = attempt(Exchange::FirstDraft, order, BUDGET, &mut rng);
+        assert_eq!(outcome.hashes, 0, "{order:?}");
+        assert!(!outcome.denied, "{order:?}");
+    }
 }
 
 /// N pairs directly with K, with no relay.
@@ -242,7 +280,7 @@ fn vectors_path() -> PathBuf {
 fn the_vectors_file_matches_the_spec() {
     let text = spec::render(&spec::vectors());
     let path = vectors_path();
-    if std::env::var_os("SYNTROPY_BLESS_GOLDEN").is_some() {
+    if std::env::var("SYNTROPY_BLESS_GOLDEN").as_deref() == Ok("1") {
         std::fs::write(&path, &text).unwrap();
     }
     let file = std::fs::read_to_string(&path)

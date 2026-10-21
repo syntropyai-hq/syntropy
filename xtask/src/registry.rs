@@ -326,8 +326,9 @@ pub const SUITES: &[Entry] = &[
     },
     Entry {
         name: "pairing-grind",
-        summary: "L2: the full grinding-relay runs of the pairing model (DIST-E5-T14), 20 first-draft \
-                  trials and ten million committed attempts, release-optimised",
+        summary: "L2: the full grinding-relay runs of the pairing model (DIST-E5-T14): 20 first-draft \
+                  trials, ten million honest-reveal attempts and 20 cheating reveals, \
+                  release-optimised",
         defined_in: "RFC-0034 Testing and validation",
         params: &[],
         // The default tests run a seeded prefix of each; the dev profile is too slow for the
