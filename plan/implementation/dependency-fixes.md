@@ -475,3 +475,5 @@ Four M0 tasks stopped this week on criteria their own dependencies could not sho
 | QUAL-E16-T24's version check names each environment's tools | QUAL-E16-T24 | R9 | macOS has no CUDA toolchain (RFC-0062 §4.1) |
 | QUAL-E3-T02's dependency-path check is `check-deps` rule 9 | QUAL-E3-T02 | R9 | a compile-fail test can't show a rule about dependency paths |
 | QUAL-E5-T19's types are in `core`; RFC-0060 §5.5 gets a dated note | QUAL-E5-T19 | R9 | §5.5 said "core / net", and only `core` lets `exec` build against them (rule 3) |
+| PLC-E7-T11 → DIST-E1-T06 | PLC-E7-T11 | R9 | found in review: the runner exit moved from COMP-E9-T04 is followed by a clean restart, and PLC-E7-T11's existing criteria check the supervisor's action; both are the supervisor's (DIST-E1-T06, RFC-0040 §10.4, RFC-0001 §3.4), which PLC-E7-T11 did not reach |
+| QUAL-E15-T23 marked **Maintainer action** | QUAL-E15-T23 | R9 | found in review: fitting the spare GPU in R-ADA's slot is lab work, which QUAL-E15-T02's marker covered before the split |
