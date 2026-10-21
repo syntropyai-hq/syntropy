@@ -14,6 +14,7 @@ Rules, as cited in the "Rule applied" column:
 - **R6 M0a closure.** An M0a task may depend only on M0a tasks. The walking skeleton's seed tasks and their full dependency closure are M0a; every other M0 task is M0b.
 - **R7 platform split.** A plain M1 task is M1b when it is Windows, macOS, Metal or Apple work; every other M1 task is M1a. A cross-platform M1a task that depended on such work loses that edge. A new M1b extension task, "Windows and macOS part of <ID>", depends on it and on the platform tasks, and carries its criteria on the Windows and macOS rigs.
 - **R8 false edge.** An edge whose prerequisite the dependent's acceptance criteria do not use is cut, or re-pointed to the smaller task that delivers what they use.
+- **R9 criteria closure.** A task depends on every task that produces something its acceptance criteria use. When that producer is in a later milestone, the criterion moves to a task in that milestone: an existing task that covers it, or a new one.
 - **Word resolution.** A dependency written in words was rewritten as explicit task IDs (descriptive text kept in parentheses), or resolved with an entry in `map-overrides.tsv`.
 
 Read "A → B" as "A depends on B".
@@ -278,3 +279,18 @@ RFC-0001 §16 splits M0 into M0a (the walking skeleton) and M0b, and M1 into M1a
 | Walking-skeleton seeds and their closure become M0a | `SEEDS` in `tools/milestone_split.py` | R6 | the end-to-end path for `llama` on the CPU and CUDA, its kernels, its family certificate, and the merge, conformance and parity gates |
 | Windows, macOS, Metal and Apple tasks become M1b; each cross-platform M1a task that depended on them gets an M1b extension task | the rule in `tools/milestone_split.py`, `--mode cut` | R7 | M1a ships for Linux before the Windows and Apple ports; `--list` names the cut edges and the extension rows |
 | Added the phase order, M0a closure and the plan-rule notes (`AC-LATER`, `SPIKE-LEAF`, `SPIKE-NOBOX`, `RIG-PATH`, `RIG-LATER`) | `tools/epics.py`, `tools/depcheck.py`, `tools/README.md` | Tooling | enforces RFC-0001 §16's milestone order and makes its milestone rules visible |
+
+## Pass 5 (2026-10-21): dependencies the acceptance criteria use
+
+`depcheck.py` reads the Depends-on and Milestone cells, not the acceptance criteria. Several M0 tasks with `none` in their Depends-on cell had criteria that need another task's work, so the board showed them as ready before they could be finished. This pass applies R9 to them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E1-T06 defines `DoorbellLayer` and `RouteSlot`; dropped COMP-E1-T06 → TIER-E8-T01; added TIER-E8-T01 → COMP-E1-T06 | TIER-E8-T01, COMP-E1-T06 | R1 | Every provider's router op writes the doorbell, and `kernels::moe::assign` reads it. Providers depend only on `kernels` (RFC-0001 §4.1, §4.2 rule 2), so the types live there. RFC-0023 §2 still specifies the layout, which RFC-0040 §3.4 implements. TIER-E8-T01 keeps the per-plan sizing, the statistics ring and the trace recorder. This replaces the reason given above for "Dropped TIER-E8-T01 → COMP-E5-T04", which named TIER-E8-T01 as the layout's provider |
+| TIER-E8-T01 → QUAL-E1-T01, QUAL-E4-T01, QUAL-E7-T01 | TIER-E8-T01 | R9 | its recorder criterion runs `RefExecutor` on the nano `qwen_moe` fixture |
+| Split: the parity-corpus traces → TIER-E8-T18 (M0b), which depends on TIER-E8-T01, QUAL-E5-T02, QUAL-E4-T01 and QUAL-E7-T06 | TIER-E8-T01, TIER-E8-T18 | R9, R3b | corpus v1 is M0b, and RFC-0060 §12.4 records routing traces from real checkpoints |
+| The doorbell layout criterion, split by backend: CPU → COMP-E1-T06; CUDA → COMP-E9-T01 (M0b); Metal → COMP-E6-T05 (M1b); both of the latter → COMP-E1-T06 | TIER-E8-T01, COMP-E1-T06, COMP-E9-T01, COMP-E6-T05 | R9 | each check needs its backend's compiler: COMP-E9-T01 builds the CUDA layout tests, and the Metal provider arrives in M1b |
+| The `SOURCES.toml` lint criterion moved from QUAL-E5-T01 to QUAL-E5-T02 | QUAL-E5-T01, QUAL-E5-T02 | R9 | no task built the lint. QUAL-E5-T02 builds the corpus tooling and its manifest lint, and QUAL-E5-T01 stays a first-week spike with no dependencies |
+| PROD-E12-T11 → DIST-E17-T13; dropped PROD-E12-T11's hostile-mirror criterion | PROD-E12-T11, PROD-E12-T04 | R9 | the spike signs its test repository with the hardware tokens and KMS account DIST-E17-T13 provisions. PROD-E12-T04, which depends on PROD-E12-T11, already rejects a nightly key that signs a stable or beta path |
+| Split: the derived-name template test → PROD-E10-T23 (M1b) | PROD-E10-T02, PROD-E10-T23 | R9, R3b | M0 has no installers (RFC-0052 Rollout). The templates that carry derived names come from PROD-E10-T04, PROD-E10-T05 and PROD-E12-T17, all M1b |
+| PROD-E2-T01 → PROD-E1-T01 | PROD-E2-T01 | R9 | the `api.bind` schema default is declared through the config derive and its registry |
