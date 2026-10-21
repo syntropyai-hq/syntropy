@@ -68,10 +68,10 @@ All of this is specified in the design, and none of it is built yet.
 This is the planned command line from [RFC-0051](plan/rfcs/RFC-0051-cli-and-dashboard.md). None of these commands exist yet.
 
 ```sh
-syntropy run                       # asks one question, then recommends a model that fits
-syntropy plan <model> --explain    # preview a placement and its predicted speed without loading it
-syntropy cluster approve <id>      # admit a machine on your LAN after matching its six-digit code
-syntropy invite create             # a single-use token for a laptop away from home
+syntropy run                     # asks one question, then recommends a model that fits
+syntropy plan <model> --explain  # preview placement and predicted speed without loading
+syntropy cluster approve <id>    # admit a LAN machine after matching its six-digit code
+syntropy invite create           # a single-use token for a laptop away from home
 ```
 
 Each machine serves the APIs at `http://127.0.0.1:7433` by default, so existing OpenAI and Anthropic clients and SDKs work unchanged ([RFC-0050](plan/rfcs/RFC-0050-api-surface.md)):
