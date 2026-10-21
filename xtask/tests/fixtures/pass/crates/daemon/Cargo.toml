@@ -1,0 +1,11 @@
+[package]
+name = "syntropy-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+syntropy-kernels = { path = "../kernels" }
+syntropy-net = { path = "../net" }
+syntropy-config = { path = "../config" }

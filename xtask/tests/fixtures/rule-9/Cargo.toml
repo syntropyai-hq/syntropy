@@ -1,0 +1,18 @@
+# A check-deps fixture: production crates with normal and build dependencies on dev-only crates (rule 9).
+# xtask/tests/check_deps.rs runs `cargo xtask check-deps` on it and names the findings it expects.
+[workspace]
+resolver = "3"
+members = [
+    "crates/api",
+    "crates/bench",
+    "crates/core",
+    "crates/runner",
+    "crates/store",
+    "crates/testkit",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

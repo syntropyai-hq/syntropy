@@ -12,11 +12,14 @@
 //! built at. One binary can serve several checkouts through a shared `CARGO_TARGET_DIR` or a
 //! copied `target/`, and it must check the one it was asked to.
 //!
+//! `cargo xtask check-deps` checks the crate dependency rules of RFC-0001 §4.2 ([`check_deps`]).
+//!
 //! The tool sits outside the crate graph of RFC-0001 §4.1: no crate depends on it, and it depends
-//! on none.
+//! on none. `ci/layers.toml` lists it as a tool, and `check-deps` holds it to that.
 
 #![forbid(unsafe_code)]
 
+mod check_deps;
 mod cli;
 mod registry;
 mod run;
@@ -89,6 +92,20 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
             let context = run::Context { root, args };
             let verdict = run::run(kind, entry, &context, &mut run::System, &mut io::stderr())?;
             Ok(exit_code(&verdict))
+        }
+        Command::CheckDeps { manifest_path } => {
+            let manifest = match manifest_path {
+                Some(path) => PathBuf::from(path),
+                None => match workspace_root(std::env::var_os("CARGO_MANIFEST_DIR")) {
+                    Ok(root) => root.join("Cargo.toml"),
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        return Ok(EXIT_USAGE);
+                    }
+                },
+            };
+            let pass = check_deps::run(&manifest, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
         }
     }
 }

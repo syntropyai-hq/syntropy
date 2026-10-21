@@ -1,0 +1,9 @@
+[package]
+name = "syntropy-kernels-cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio-shim = { path = "../../../externals/tokio-shim" }

@@ -2,7 +2,7 @@
 
 //! Argument parsing for `cargo xtask`, with no dependencies beyond `std`.
 //!
-//! A new top-level command, such as `check-deps` (QUAL-E1-T03), is a variant of [`Command`], a
+//! A top-level command, such as `check-deps` (QUAL-E1-T03), is a variant of [`Command`], a
 //! branch in [`parse`] and a line in [`USAGE`]. A job's or suite's own options are declared in
 //! its registry entry (`Entry::params`), and [`parse`] accepts exactly those.
 
@@ -18,6 +18,9 @@ Commands:
   ci --list               list the CI jobs and their options
   test <suite> [options]  run a test suite (RFC-0060 §1.2)
   test --list             list the test suites and their options
+  check-deps [--manifest-path <path>]
+                          check the crate dependency rules of RFC-0001 §4.2 (RFC-0062 §12.1)
+                          on this workspace, or on the workspace of <path>; `lint` runs it
   help                    print this message
 
 An option is `--name <value>` or `--name=<value>`, given at most once.
@@ -26,7 +29,7 @@ Exit status: 0 when every step passes, 1 when a step fails, 2 on a usage error o
 was not started by `cargo xtask`.";
 
 /// The top-level commands, in the order `USAGE` lists them.
-const COMMANDS: &[&str] = &["ci", "test", "help"];
+const COMMANDS: &[&str] = &["ci", "test", "check-deps", "help"];
 
 /// What the command line asks for. Names and options are resolved against the registry while
 /// parsing, so every [`Command::Run`] names an entry that exists, with options it accepts.
@@ -38,6 +41,10 @@ pub enum Command<'r> {
         kind: Kind,
         entry: &'r Entry,
         args: Args,
+    },
+    /// `check-deps`, on the workspace of `manifest_path` when given, else on this checkout.
+    CheckDeps {
+        manifest_path: Option<String>,
     },
 }
 
@@ -187,6 +194,7 @@ pub fn parse<'r>(
         }
         "ci" => parse_run(Kind::Job, rest, jobs),
         "test" => parse_run(Kind::Suite, rest, suites),
+        "check-deps" => parse_check_deps(rest),
         other if other.starts_with('-') => Err(UsageError::UnknownOption(other.to_owned())),
         other => Err(UsageError::UnknownCommand(other.to_owned())),
     }
@@ -265,6 +273,46 @@ fn parse_params(kind: Kind, entry: &Entry, args: &[String]) -> Result<Args, Usag
         values.push((param.name, value.to_owned()));
     }
     Ok(Args(values))
+}
+
+/// `check-deps [--manifest-path <path>]` and `check-deps --help`.
+fn parse_check_deps(args: &[String]) -> Result<Command<'static>, UsageError> {
+    const MANIFEST_PATH: &str = "--manifest-path";
+    if let Some((first, rest)) = args.split_first()
+        && matches!(first.as_str(), "-h" | "--help")
+    {
+        no_more(rest)?;
+        return Ok(Command::Help);
+    }
+    let mut manifest_path = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        if name != MANIFEST_PATH {
+            return Err(if arg.starts_with('-') {
+                UsageError::UnknownOption(name.to_owned())
+            } else {
+                UsageError::UnexpectedArgument(arg.clone())
+            });
+        }
+        let value = match inline {
+            Some(value) => value,
+            None => match rest.next() {
+                Some(value) if !value.starts_with('-') => value.as_str(),
+                _ => "",
+            },
+        };
+        if value.is_empty() {
+            return Err(UsageError::MissingValue(MANIFEST_PATH));
+        }
+        if manifest_path.replace(value.to_owned()).is_some() {
+            return Err(UsageError::RepeatedOption(MANIFEST_PATH));
+        }
+    }
+    Ok(Command::CheckDeps { manifest_path })
 }
 
 fn no_more(rest: &[String]) -> Result<(), UsageError> {
@@ -454,7 +502,7 @@ mod tests {
         );
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
-            "unknown command `frob`; valid commands: ci, test, help"
+            "unknown command `frob`; valid commands: ci, test, check-deps, help"
         );
         assert_eq!(
             parse_real("--frob"),
@@ -590,6 +638,69 @@ mod tests {
             parse_real("ci nosuchjob extra"),
             Err(UsageError::UnknownName { .. })
         ));
+    }
+
+    #[test]
+    fn check_deps_takes_an_optional_manifest_path() {
+        assert_eq!(
+            parse_real("check-deps"),
+            Ok(Command::CheckDeps {
+                manifest_path: None
+            })
+        );
+        for line in [
+            "check-deps --manifest-path a/Cargo.toml",
+            "check-deps --manifest-path=a/Cargo.toml",
+        ] {
+            assert_eq!(
+                parse_real(line),
+                Ok(Command::CheckDeps {
+                    manifest_path: Some("a/Cargo.toml".into())
+                }),
+                "`{line}`"
+            );
+        }
+        assert_eq!(parse_real("check-deps --help"), Ok(Command::Help));
+    }
+
+    #[test]
+    fn check_deps_rejects_anything_else() {
+        for (line, error) in [
+            (
+                "check-deps --fix",
+                UsageError::UnknownOption("--fix".into()),
+            ),
+            (
+                "check-deps --fix=yes",
+                UsageError::UnknownOption("--fix".into()),
+            ),
+            (
+                "check-deps Cargo.toml",
+                UsageError::UnexpectedArgument("Cargo.toml".into()),
+            ),
+            (
+                "check-deps --manifest-path",
+                UsageError::MissingValue("--manifest-path"),
+            ),
+            (
+                "check-deps --manifest-path=",
+                UsageError::MissingValue("--manifest-path"),
+            ),
+            (
+                "check-deps --manifest-path --fix",
+                UsageError::MissingValue("--manifest-path"),
+            ),
+            (
+                "check-deps --manifest-path a --manifest-path=b",
+                UsageError::RepeatedOption("--manifest-path"),
+            ),
+            (
+                "check-deps --help extra",
+                UsageError::UnexpectedArgument("extra".into()),
+            ),
+        ] {
+            assert_eq!(parse_real(line), Err(error), "`{line}`");
+        }
     }
 
     #[test]

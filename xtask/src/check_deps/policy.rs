@@ -1,0 +1,264 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! The crates and features that the rules of RFC-0001 §4.2 name, as the check applies them.
+//!
+//! Workspace crates are named as in RFC-0001: `exec` is the crate `syntropy-exec`. The layer table
+//! itself is data in `ci/layers.toml` (RFC-0062 §12.1); everything else a rule names is here, next
+//! to the rule it comes from. A unit test checks that every workspace crate named here is in the
+//! real layer table, so renaming a crate without updating this file fails the tests.
+
+/// Every workspace member's package name starts with this (RFC-0001 §4.1).
+pub const PREFIX: &str = "syntropy-";
+
+/// Rule 1: `core` depends on no workspace crate.
+pub const CORE: &str = "core";
+
+/// Rule 1: the only external crates `core` may depend on, as a normal or build dependency.
+pub const CORE_EXTERNALS: &[&str] = &["serde", "thiserror", "smallvec", "bitflags"];
+
+/// Rule 2: every crate except `core` may depend on these, whatever its layer.
+pub const SHARED: &[&str] = &["obs", "config"];
+
+/// Rule 3 and rule 8 apply to every crate whose name starts with this, `kernels-loader` included.
+pub const PROVIDER_PREFIX: &str = "kernels-";
+
+/// Rule 3: the compute crates, besides every `kernels-*` crate.
+pub const COMPUTE: &[&str] = &["graph", "kernels", "io", "tier", "exec", "sched"];
+
+/// Rule 3: workspace crates no compute crate may reach through normal dependencies.
+pub const COMPUTE_MUST_NOT_REACH: &[&str] = &["net", "cluster", "store", "api", "daemon"];
+
+/// Rule 3 and ADR-0012 §6: the async runtime no compute crate may reach.
+pub const TOKIO: &str = "tokio";
+
+/// ADR-0012 §6 names these crates (and every `kernels-*`) for the no-tokio invariant. Rule 3
+/// already covers them; a finding on one of them cites both.
+pub const ADR_0012_NO_TOKIO: &[&str] = &["exec", "io"];
+
+/// Rule 4: the crate that never links a `kernels-*` crate.
+pub const DAEMON: &str = "daemon";
+
+/// Rule 5: the crate that must stay pure.
+pub const SOLVER: &str = "solver";
+
+/// Rule 5: workspace crates that do I/O, which `solver` must not reach.
+pub const SOLVER_MUST_NOT_REACH: &[&str] = &["io", "net", "ipc", "store"];
+
+/// Rule 5: external crates `solver` must not reach: async runtimes and sockets, filesystem crates
+/// and thread pools (RFC-0062 §12.1 names tokio and filesystem crates). Clock and `std::net` calls
+/// are source-level, so this metadata check cannot see them.
+pub const SOLVER_MUST_NOT_REACH_EXTERNAL: &[&str] = &[
+    "tokio",
+    "async-std",
+    "smol",
+    "mio",
+    "socket2",
+    "walkdir",
+    "tempfile",
+    "notify",
+    "fs-err",
+    "rayon",
+    "rayon-core",
+    "threadpool",
+];
+
+/// Rule 6: an external system and the one workspace crate that may use it.
+pub struct System {
+    /// The system's name, for messages.
+    pub name: &'static str,
+    /// External packages that bind it, matched by package name.
+    pub packages: &'static [&'static str],
+    /// Native libraries that bind it, matched by a package's `links` key.
+    pub links: &'static [&'static str],
+    /// The one workspace crate allowed to reach it.
+    pub only_in: &'static str,
+}
+
+/// Rule 6: one crate per external system. A system with no binding crate listed is not checked
+/// until the task that adopts one lists it here. IoRing and IOCP are calls through the Windows API
+/// crates that the async ecosystem also uses, so a package name cannot single them out, and the
+/// Thunderbolt RDMA API has no binding crate yet.
+pub const SYSTEMS: &[System] = &[
+    System {
+        name: "iroh",
+        packages: &["iroh", "iroh-base", "iroh-net", "iroh-relay", "iroh-quinn"],
+        links: &[],
+        only_in: "net",
+    },
+    System {
+        name: "ibverbs",
+        packages: &["ibverbs", "ibverbs-sys", "rdma-sys"],
+        links: &[],
+        only_in: "net",
+    },
+    System {
+        name: "io_uring",
+        packages: &["io-uring", "tokio-uring", "glommio", "monoio"],
+        links: &[],
+        only_in: "io",
+    },
+    System {
+        name: "HiGHS",
+        packages: &["highs", "highs-sys"],
+        links: &[],
+        only_in: "solver",
+    },
+    System {
+        name: "ggml",
+        packages: &["ggml"],
+        links: &["ggml"],
+        only_in: "kernels-ggml",
+    },
+    System {
+        name: "the CUDA runtime",
+        packages: &["cudarc", "cust"],
+        links: &["cuda"],
+        only_in: "kernels-cuda",
+    },
+    System {
+        name: "Vulkan",
+        packages: &["ash", "vulkano"],
+        links: &[],
+        only_in: "kernels-vulkan",
+    },
+    System {
+        name: "Metal",
+        packages: &["metal", "objc2-metal"],
+        links: &[],
+        only_in: "kernels-metal",
+    },
+];
+
+/// Rule 7: the core binary is this bin target of this crate.
+pub const CORE_BINARY_CRATE: &str = "cli";
+pub const CORE_BINARY: &str = "syntropy";
+
+/// Rule 7: one vendor GPU runtime, as it shows in an ELF dynamic section.
+pub struct VendorRuntime {
+    pub name: &'static str,
+    /// Shared-library stems: `libcuda` matches `libcuda.so` and `libcuda.so.1`.
+    pub libraries: &'static [&'static str],
+    /// Symbol prefixes. A prefix matches a symbol when the next character is an ASCII capital or
+    /// `_`, so `cu` matches `cuInit` and not `cupcake`.
+    pub symbol_prefixes: &'static [&'static str],
+}
+
+/// Rule 7: vendor GPU runtimes, which reach a host only inside backend modules.
+pub const VENDOR_RUNTIMES: &[VendorRuntime] = &[
+    VendorRuntime {
+        name: "CUDA",
+        libraries: &[
+            "libcuda",
+            "libcudart",
+            "libcublas",
+            "libcublasLt",
+            "libnvrtc",
+            "libnvJitLink",
+            "libnvidia-ml",
+        ],
+        symbol_prefixes: &["cu", "cuda", "__cuda", "cublas", "nvrtc", "nvml"],
+    },
+    VendorRuntime {
+        name: "HIP",
+        libraries: &[
+            "libamdhip64",
+            "libhiprtc",
+            "librocblas",
+            "libhipblas",
+            "libhipblaslt",
+            "librocm_smi64",
+        ],
+        symbol_prefixes: &["hip", "rocblas", "hipblas", "rsmi"],
+    },
+    VendorRuntime {
+        name: "Vulkan",
+        libraries: &["libvulkan"],
+        symbol_prefixes: &["vk"],
+    },
+    VendorRuntime {
+        name: "oneAPI",
+        libraries: &["libze_loader", "libsycl"],
+        symbol_prefixes: &["ze"],
+    },
+    VendorRuntime {
+        name: "OpenCL",
+        libraries: &["libOpenCL"],
+        symbol_prefixes: &["cl"],
+    },
+];
+
+/// Rule 8: crates allowed `unsafe`, besides every `kernels-*` crate.
+pub const UNSAFE_ALLOWED: &[&str] = &["io", "tier", "net", "ipc"];
+
+/// Rule 10: the crates release artefacts are built from: the core binary, and the provider
+/// libraries of the backend modules (rule 7). The check resolves each one's features on its own,
+/// as its artefact is built.
+pub const RELEASE_CRATES: &[&str] = &["cli", "kernels-cuda", "kernels-hip", "kernels-vulkan"];
+
+/// Rule 10: test-only features, which never reach a release.
+pub const TEST_FEATURES: &[&str] = &["fault-injection", "debug-taps", "guards"];
+
+/// Whether `name` is a `kernels-*` crate.
+pub fn is_provider(name: &str) -> bool {
+    name.starts_with(PROVIDER_PREFIX)
+}
+
+/// Rule 3: whether `name` is a compute crate.
+pub fn is_compute(name: &str) -> bool {
+    is_provider(name) || COMPUTE.contains(&name)
+}
+
+/// Rule 8: whether `name` may use `unsafe`.
+pub fn allows_unsafe(name: &str) -> bool {
+    is_provider(name) || UNSAFE_ALLOWED.contains(&name)
+}
+
+/// Every workspace crate this module names, for the test that ties it to `ci/layers.toml`.
+#[cfg(test)]
+pub fn named_crates() -> Vec<&'static str> {
+    let mut names = vec![CORE, DAEMON, SOLVER, CORE_BINARY_CRATE];
+    names.extend(SHARED);
+    names.extend(COMPUTE);
+    names.extend(COMPUTE_MUST_NOT_REACH);
+    names.extend(ADR_0012_NO_TOKIO);
+    names.extend(SOLVER_MUST_NOT_REACH);
+    names.extend(SYSTEMS.iter().map(|system| system.only_in));
+    names.extend(UNSAFE_ALLOWED);
+    names.extend(RELEASE_CRATES);
+    names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kernels_itself_is_compute_but_not_a_provider_and_has_no_unsafe() {
+        assert!(is_compute("kernels"));
+        assert!(!is_provider("kernels"));
+        assert!(!allows_unsafe("kernels"));
+        for provider in ["kernels-cuda", "kernels-loader", "kernels-ggml"] {
+            assert!(is_provider(provider) && is_compute(provider) && allows_unsafe(provider));
+        }
+    }
+
+    #[test]
+    fn control_crates_are_not_compute() {
+        for name in [
+            "net", "cluster", "store", "api", "daemon", "solver", "runner", "cli",
+        ] {
+            assert!(!is_compute(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn each_system_names_at_least_one_binding() {
+        for system in SYSTEMS {
+            assert!(
+                !system.packages.is_empty() || !system.links.is_empty(),
+                "{}",
+                system.name
+            );
+        }
+    }
+}

@@ -1,0 +1,14 @@
+# A check-deps fixture: the core binary links a CUDA provider, and so the CUDA runtime (rule 7).
+# xtask/tests/check_deps.rs runs `cargo xtask check-deps` on it and names the findings it expects.
+[workspace]
+resolver = "3"
+members = [
+    "crates/cli",
+    "crates/kernels-cuda",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

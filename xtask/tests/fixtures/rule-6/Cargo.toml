@@ -1,0 +1,15 @@
+# A check-deps fixture: iroh used outside `net`, and ggml's native library declared outside `kernels-ggml` (rule 6).
+# xtask/tests/check_deps.rs runs `cargo xtask check-deps` on it and names the findings it expects.
+[workspace]
+resolver = "3"
+members = [
+    "crates/kernels-cpu",
+    "crates/net",
+    "crates/store",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

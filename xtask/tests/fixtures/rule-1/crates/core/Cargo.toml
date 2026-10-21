@@ -1,0 +1,10 @@
+[package]
+name = "syntropy-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+syntropy-obs = { path = "../obs" }
+tokio = { path = "../../../externals/tokio" }
