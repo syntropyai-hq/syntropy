@@ -691,8 +691,17 @@ mod tests {
                 .to_string(),
             "job `pr-title` needs `--roster`"
         );
+        assert_eq!(
+            parse_real("ci pr-title --event e --commits c --label-events l --roster r")
+                .unwrap_err()
+                .to_string(),
+            "job `pr-title` needs `--version-file`"
+        );
         assert!(
-            parse_real("ci pr-title --event e --commits c --label-events l --roster r").is_ok()
+            parse_real(
+                "ci pr-title --event e --commits c --label-events l --roster r --version-file v"
+            )
+            .is_ok()
         );
     }
 

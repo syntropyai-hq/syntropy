@@ -260,6 +260,12 @@ pub const JOBS: &[Entry] = &[
                 help: "the maintainer roster to trust, such as the base branch's governance/maintainers.toml",
                 required: true,
             },
+            Param {
+                name: "--version-file",
+                value: "<file>",
+                help: "the product version to compare Release-As with: the base branch's version.txt",
+                required: true,
+            },
         ],
         steps: &[Step {
             name: "pr-title",
@@ -413,7 +419,13 @@ mod tests {
             .collect();
         assert_eq!(
             required,
-            ["--event", "--commits", "--label-events", "--roster"]
+            [
+                "--event",
+                "--commits",
+                "--label-events",
+                "--roster",
+                "--version-file"
+            ]
         );
     }
 

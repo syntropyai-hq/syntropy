@@ -12,6 +12,9 @@
 //!   when a maintainer applied it: an agent identity, an App or any other account applying it
 //!   does not count. A PR of one commit must also have a valid title as that commit's subject,
 //!   because with the squash setting `COMMIT_OR_PR_TITLE` such a PR lands on `main` under it.
+//!   A `!` header anywhere in a commit message (a footer or a nested commit) is a marker too, and
+//!   so is a `Release-As:` footer that would release a new major version (ADR-0621 decision 3:
+//!   a maintainer approves it).
 //!
 //! Inputs are the payloads the REST API returns, saved to files:
 //! - the PR: the `pull_request` event payload (`$GITHUB_EVENT_PATH`), or `GET /pulls/{n}`;
@@ -251,11 +254,150 @@ pub fn has_breaking_footer(text: &str) -> bool {
     text.lines().any(|line| {
         let line =
             line.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '-' | '>'));
+        // The parser's separators are `:` and ` #`; spaces before either are allowed here too.
         ["BREAKING CHANGE", "BREAKING-CHANGE"].iter().any(|token| {
-            line.strip_prefix(token)
-                .is_some_and(|rest| rest.starts_with(':') || rest.starts_with(" #"))
+            line.strip_prefix(token).is_some_and(|rest| {
+                let rest = rest.trim_start();
+                rest.starts_with(':') || rest.starts_with('#')
+            })
         })
     })
+}
+
+/// A conventional-commit header with a breaking `!`, as the release tooling's parser reads one
+/// wherever it can start a commit: a type, an optional `(scope)`, then `!:`, or `! #` as a
+/// footer's separator. That covers a subject line, a footer such as `feat!: …` (release-please
+/// splits footers that look like commits into commits of their own) and a nested commit's header.
+/// The type is what the parser takes (`@conventional-commits/parser` v0.4.1, `type()`): any run of
+/// characters up to a paren, its whitespace, a newline, `!` or `:`, so `feat2`, `a-b` and
+/// non-ASCII types count. Leading spaces and list markers are skipped, which errs towards a
+/// marker; prose such as `Note: …` has no `!` before its colon.
+pub fn is_breaking_header(line: &str) -> bool {
+    /// The parser's whitespace: ZWNBSP, tab, vertical tab, form feed, space and no-break space.
+    fn ends_type(c: char) -> bool {
+        matches!(
+            c,
+            '(' | ')'
+                | '!'
+                | ':'
+                | '\r'
+                | '\n'
+                | ' '
+                | '\t'
+                | '\u{b}'
+                | '\u{c}'
+                | '\u{a0}'
+                | '\u{feff}'
+        )
+    }
+    let line = line.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '-' | '>'));
+    let word = line.find(ends_type).unwrap_or(line.len());
+    if word == 0 {
+        return false;
+    }
+    let mut rest = &line[word..];
+    if let Some(scope) = rest.strip_prefix('(') {
+        let Some(close) = scope.find(')') else {
+            return false;
+        };
+        if scope[..close].contains('(') {
+            return false;
+        }
+        rest = &scope[close + 1..];
+    }
+    rest.starts_with("!:") || rest.starts_with("! #")
+}
+
+/// The messages release-please reads out of one message. `splitMessages()` cuts each
+/// `BEGIN_NESTED_COMMIT` … `END_NESTED_COMMIT` block out as a message of its own, wherever the
+/// token stands, and joins what follows each block onto the outer message. That join can splice
+/// text from either side of a block into one token, such as a footer. The original message comes
+/// first, so a scan over all of these reads at least what a scan of the message alone reads.
+pub fn release_messages(message: &str) -> Vec<String> {
+    let mut parts = message.split("BEGIN_NESTED_COMMIT");
+    let mut outer = parts.next().unwrap_or("").to_owned();
+    let mut nested = Vec::new();
+    for part in parts {
+        let mut pieces = part.split("END_NESTED_COMMIT");
+        nested.push(pieces.next().unwrap_or("").to_owned());
+        outer.push_str(&pieces.collect::<Vec<_>>().join("END_NESTED_COMMIT"));
+    }
+    let mut messages = vec![message.to_owned()];
+    if !nested.is_empty() {
+        messages.push(outer);
+        messages.extend(nested);
+    }
+    messages
+}
+
+/// Whether any message release-please reads out of `message` holds a breaking header on any line.
+pub fn has_breaking_header(message: &str) -> bool {
+    release_messages(message)
+        .iter()
+        .any(|m| m.lines().any(is_breaking_header))
+}
+
+/// Whether any message release-please reads out of `message` holds a breaking-change footer.
+fn has_release_footer(message: &str) -> bool {
+    release_messages(message)
+        .iter()
+        .any(|m| has_breaking_footer(m))
+}
+
+/// The `Release-As` values of every message release-please reads out of `message`, once each.
+fn release_as_values(message: &str) -> Vec<String> {
+    let mut values: Vec<String> = release_messages(message)
+        .iter()
+        .flat_map(|m| {
+            release_as(m)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    values.sort();
+    values.dedup();
+    values
+}
+
+/// The value of every `Release-As` footer in `text`. release-please reads the token without
+/// regard to case and releases that version, whatever the commits say. The parser's footer
+/// separators are `:` and ` #`; any spaces before either are allowed here too, which errs towards
+/// a marker.
+pub fn release_as(text: &str) -> Vec<&str> {
+    const TOKEN: &str = "release-as";
+    text.lines()
+        .filter_map(|line| {
+            let line = line
+                .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '-' | '>'));
+            if !line.get(..TOKEN.len())?.eq_ignore_ascii_case(TOKEN) {
+                return None;
+            }
+            let rest = line[TOKEN.len()..].trim_start();
+            let value = rest.strip_prefix(':').or_else(|| rest.strip_prefix('#'))?;
+            Some(value.trim())
+        })
+        .collect()
+}
+
+/// The major number of a version such as `1.2.3` or `v1.2.3`.
+fn major(version: &str) -> Option<u64> {
+    let version = version.trim().trim_start_matches('v');
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor_patch_ok = parts.next().is_some_and(|m| m.parse::<u64>().is_ok())
+        && parts.next().is_some_and(|p| {
+            p.split(['-', '+'])
+                .next()
+                .is_some_and(|n| n.parse::<u64>().is_ok())
+        });
+    minor_patch_ok.then_some(major)
+}
+
+/// Whether a `Release-As` value releases a new major version over `current`. A value that is not
+/// a version counts as one, so the check fails closed.
+fn is_major_release(value: &str, current_major: u64) -> bool {
+    major(value).is_none_or(|m| m > current_major)
 }
 
 /// The `BEGIN_COMMIT_OVERRIDE` … `END_COMMIT_OVERRIDE` section of a PR body, which release-please
@@ -304,14 +446,22 @@ pub fn applied_by_maintainer(
 }
 
 /// Every `pr-title` problem.
+/// Every `pr-title` problem. `version` is the product version in `version.txt`, against which a
+/// `Release-As` footer is a major release or not.
 pub fn pr_title(
     pr: &PullRequest,
     commits: &[Commit],
     events: &[LabelEvent],
     roster: &Roster,
     scopes: &[String],
+    version: &str,
 ) -> Vec<String> {
     let mut problems = Vec::new();
+    let Some(current_major) = major(version) else {
+        return vec![format!(
+            "version.txt holds `{version}`, which is not a version"
+        )];
+    };
     if let Err(problem) = parse_title(&pr.title, scopes) {
         problems.push(problem);
     }
@@ -331,26 +481,41 @@ pub fn pr_title(
     if has_breaking_bang(&pr.title) {
         markers.push("`!` in the title".to_owned());
     }
-    if has_breaking_footer(&pr.body) {
+    if has_release_footer(&pr.body) {
         markers.push("a `BREAKING CHANGE:` footer in the PR body".to_owned());
     }
-    if commit_override(&pr.body)
-        .is_some_and(|section| section.lines().any(|line| has_breaking_bang(line.trim())))
-    {
+    // The override is read with the parser's rule and with the broader one this check used
+    // before it, so it never gets narrower.
+    if commit_override(&pr.body).is_some_and(|section| {
+        has_breaking_header(section) || section.lines().any(|line| has_breaking_bang(line.trim()))
+    }) {
         markers.push("a `!` header in the PR body's commit override".to_owned());
     }
-    for commit in commits {
-        if has_breaking_bang(subject(&commit.message)) {
+    for value in release_as_values(&pr.body) {
+        if is_major_release(&value, current_major) {
             markers.push(format!(
-                "`!` in the subject of commit {}",
-                short(&commit.sha)
+                "a `Release-As: {value}` footer in the PR body, a major release from {version}"
             ));
         }
-        if has_breaking_footer(&commit.message) {
+    }
+    for commit in commits {
+        let sha = short(&commit.sha);
+        if has_breaking_bang(subject(&commit.message)) {
+            markers.push(format!("`!` in the subject of commit {sha}"));
+        } else if has_breaking_header(&commit.message) {
             markers.push(format!(
-                "a `BREAKING CHANGE:` footer in commit {}",
-                short(&commit.sha)
+                "a `!` header in the body of commit {sha} (a footer or a nested commit)"
             ));
+        }
+        if has_release_footer(&commit.message) {
+            markers.push(format!("a `BREAKING CHANGE:` footer in commit {sha}"));
+        }
+        for value in release_as_values(&commit.message) {
+            if is_major_release(&value, current_major) {
+                markers.push(format!(
+                    "a `Release-As: {value}` footer in commit {sha}, a major release from {version}"
+                ));
+            }
         }
     }
     if !markers.is_empty()
@@ -614,8 +779,9 @@ pub fn dco_step(context: &Context) -> Result<(), String> {
 }
 
 /// `cargo xtask ci pr-title --event <file> --commits <file> --label-events <file>
-/// --roster <file>`. The roster decides whose label counts, so the caller names a trusted copy,
-/// such as the base branch's, never one the PR under check could have changed.
+/// --roster <file> --version-file <file>`. The roster decides whose label counts and the version
+/// file whether a `Release-As` is a major release, so the caller names trusted copies of both,
+/// such as the base branch's, never ones the PR under check could have changed.
 pub fn pr_title_step(context: &Context) -> Result<(), String> {
     let pr = parse_pull_request(&read_arg(context, "--event")?)?;
     let commits = parse_commits(&read_arg(context, "--commits")?)?;
@@ -624,7 +790,17 @@ pub fn pr_title_step(context: &Context) -> Result<(), String> {
     let roster =
         Roster::parse(&read_arg(context, "--roster")?).map_err(|e| format!("roster: {e}"))?;
     let scopes = scopes(&context.root)?;
-    report(pr_title(&pr, &commits, &events, &roster, &scopes))
+    // The current version decides whether a `Release-As` is a major release, so like the roster
+    // it comes from a copy the PR under check cannot have changed.
+    let version = read_arg(context, "--version-file")?;
+    report(pr_title(
+        &pr,
+        &commits,
+        &events,
+        &roster,
+        &scopes,
+        version.trim(),
+    ))
 }
 
 #[cfg(test)]

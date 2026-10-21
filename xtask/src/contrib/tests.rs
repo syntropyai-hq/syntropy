@@ -43,6 +43,7 @@ fn title_problems(event: &str, commit_list: &str, label_events: &str) -> Vec<Str
         &parse_label_events(label_events).unwrap(),
         &roster(),
         &scopes(),
+        "0.0.0",
     )
 }
 
@@ -264,6 +265,10 @@ fn breaking_footers_are_found_as_the_release_tooling_finds_them() {
     ));
     assert!(has_breaking_footer("x\n\nBREAKING CHANGE #42"));
     assert!(has_breaking_footer("x\n\nBREAKING-CHANGE #42"));
+    assert!(has_breaking_footer("x\n\nBREAKING CHANGE #1"));
+    // Spaces before a separator, which errs towards a marker.
+    assert!(has_breaking_footer("x\n\nBREAKING CHANGE  : spaced"));
+    assert!(has_breaking_footer("x\n\nBREAKING-CHANGE   #1"));
     // release-please's extra rule: `BREAKING-CHANGE:` anywhere.
     assert!(has_breaking_footer(
         "a `BREAKING-CHANGE:` written inline still counts"
@@ -404,6 +409,7 @@ fn a_breaking_commit_subject_needs_the_label() {
         &parse_label_events(fixture!("label-events-none.http")).unwrap(),
         &roster(),
         &scopes(),
+        "0.0.0",
     );
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("`!` in the subject of commit 111111111111"));
@@ -439,6 +445,7 @@ fn a_single_commit_subject_must_be_a_valid_title() {
         &[],
         &roster(),
         &scopes(),
+        "0.0.0",
     );
     assert_eq!(problems, Vec::<String>::new());
 }
@@ -628,4 +635,191 @@ fn the_real_workspace_scopes_include_crates_areas_and_others() {
     ] {
         assert!(parse_title(title, &scopes).is_ok(), "{title}");
     }
+}
+
+// ---- pr-title: markers release-please finds in commit bodies ----
+
+#[test]
+fn a_breaking_type_footer_needs_the_label() {
+    // The review's probe (a): `feat!: …` as a footer, which release-please splits out as a
+    // breaking commit of its own.
+    let problems = title_problems(
+        fixture!("event-plain.json"),
+        fixture!("commits-footer-breaking-type.json"),
+        fixture!("label-events-none.http"),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("a `!` header in the body of commit 333333333333"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_nested_breaking_commit_needs_the_label() {
+    // The review's probe (b): a `BEGIN_NESTED_COMMIT` block holding `feat!: …`.
+    let problems = title_problems(
+        fixture!("event-plain.json"),
+        fixture!("commits-nested-breaking.json"),
+        fixture!("label-events-none.http"),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("a `!` header in the body of commit 444444444444"),
+        "{problems:?}"
+    );
+    // release-please cuts the block out wherever the token stands, even mid-line.
+    assert!(has_breaking_header(
+        "feat(core): x\n\nSee BEGIN_NESTED_COMMITfeat!: y END_NESTED_COMMIT\n"
+    ));
+}
+
+#[test]
+fn breaking_headers_follow_the_parser_grammar() {
+    for line in [
+        "feat!: drop the widget",
+        "feat(core)!: drop the widget",
+        "fix(net-io)!: change the frame",
+        "  feat!: indented",
+        "* feat!: in a squash list",
+        "Note!: any word counts, which errs towards a marker",
+        "feat2!: a digit in the type",
+        "a-b!: a hyphen in the type",
+        "a_b!: an underscore in the type",
+        "fé!: a non-ASCII type",
+        "`feat!: x` quoted, which the parser reads as a type with a backtick",
+        "feat! #42 as a footer with the hash separator",
+    ] {
+        assert!(is_breaking_header(line), "{line}");
+    }
+    for line in [
+        "feat(core): not breaking",
+        "Note: plain prose",
+        "This is great!: a space before the bang",
+        "| `feat!: x` in a table",
+        "feat(core!: unclosed scope",
+        "!: no word",
+        "feat (core)!: a space before the scope",
+        "feat\t!: a tab before the bang",
+    ] {
+        assert!(!is_breaking_header(line), "{line}");
+    }
+}
+
+#[test]
+fn a_major_release_as_needs_the_label() {
+    // `Release-As: 1.0.0` from 0.0.0 is a major release (ADR-0621 decision 3).
+    let problems = title_problems(
+        fixture!("event-plain.json"),
+        fixture!("commits-release-as-major.json"),
+        fixture!("label-events-none.http"),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains(
+            "a `Release-As: 1.0.0` footer in commit 555555555555, a major release from 0.0.0"
+        ),
+        "{problems:?}"
+    );
+    // With a maintainer's label, it passes.
+    let problems = title_problems(
+        fixture!("event-breaking-labelled.json"),
+        fixture!("commits-release-as-major.json"),
+        fixture!("label-events-maintainer.http"),
+    );
+    assert_eq!(problems, Vec::<String>::new());
+}
+
+#[test]
+fn release_as_is_a_marker_only_for_a_new_major_version() {
+    let pr = parse_pull_request(fixture!("event-plain.json")).unwrap();
+    let with = |message: &str, version: &str| {
+        let commit = Commit {
+            sha: "6".repeat(40),
+            author_name: "Carol".into(),
+            author_email: "carol@example.org".into(),
+            message: format!(
+                "feat(core): x\n\n{message}\nSigned-off-by: Carol <carol@example.org>"
+            ),
+        };
+        pr_title(&pr, &[commit], &[], &roster(), &scopes(), version)
+    };
+    // A minor or patch pin is not a major release; the token is read without regard to case.
+    assert_eq!(with("Release-As: 0.2.0", "0.0.0"), Vec::<String>::new());
+    assert_eq!(with("release-as: 1.9.0", "1.4.0"), Vec::<String>::new());
+    assert_eq!(with("RELEASE-AS: v2.0.0", "1.4.0").len(), 1);
+    assert_eq!(with("release-as: 1.0.0-rc.1", "0.0.0").len(), 1);
+    // A value that is not a version fails closed.
+    assert_eq!(with("Release-As: next", "0.0.0").len(), 1);
+    // The parser's other footer separator, and spaces before a separator.
+    assert_eq!(with("Release-As #2.0.0", "1.4.0").len(), 1);
+    assert_eq!(with("release-as : 2.0.0", "1.4.0").len(), 1);
+    assert_eq!(with("Release-As #1.5.0", "1.4.0"), Vec::<String>::new());
+    // Not a footer: the token mid-line, or a longer token.
+    assert_eq!(
+        with("We discussed Release-As: 9.0.0 here", "0.0.0"),
+        Vec::<String>::new()
+    );
+    assert_eq!(with("Release-Asap: 9.0.0", "0.0.0"), Vec::<String>::new());
+    // In the PR body, as release-please could read it from an override.
+    let body_pr = PullRequest {
+        body: "Release-As: 3.0.0\n".into(),
+        ..pr
+    };
+    let commit = commits(fixture!("commits-one-breaking-subject.json"))
+        .into_iter()
+        .map(|c| Commit {
+            message: "feat(core): x\n".into(),
+            ..c
+        })
+        .collect::<Vec<_>>();
+    let problems = pr_title(&body_pr, &commit, &[], &roster(), &scopes(), "0.0.0");
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("a `Release-As: 3.0.0` footer in the PR body")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn versions_parse_as_release_please_writes_them() {
+    assert_eq!(major("0.0.0"), Some(0));
+    assert_eq!(major("v1.2.3"), Some(1));
+    assert_eq!(major("2.0.0-rc.1"), Some(2));
+    assert_eq!(major("1.2"), None);
+    assert_eq!(major("next"), None);
+    let pr = parse_pull_request(fixture!("event-plain.json")).unwrap();
+    let problems = pr_title(&pr, &[], &[], &roster(), &scopes(), "unknown");
+    assert_eq!(
+        problems,
+        ["version.txt holds `unknown`, which is not a version"]
+    );
+}
+
+#[test]
+fn text_spliced_around_a_nested_commit_is_read_as_release_please_joins_it() {
+    // `splitMessages()` joins what follows a block onto the outer message, so `BREAKING` before
+    // a block and ` CHANGE: …` after it become one footer.
+    let problems = title_problems(
+        fixture!("event-plain.json"),
+        fixture!("commits-nested-splice.json"),
+        fixture!("label-events-none.http"),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("a `BREAKING CHANGE:` footer in commit 777777777777"),
+        "{problems:?}"
+    );
+    // The same splice builds a `Release-As` footer.
+    let spliced = "feat(core): x\n\nRelease\
+                   BEGIN_NESTED_COMMIT\nfix(core): y\nEND_NESTED_COMMIT-As: 9.0.0\n";
+    assert_eq!(release_as_values(spliced), ["9.0.0"]);
+    // And the messages are the original, the rebuilt outer one, and each block.
+    let messages = release_messages("a\nBEGIN_NESTED_COMMITb\nEND_NESTED_COMMITc");
+    assert_eq!(
+        messages,
+        ["a\nBEGIN_NESTED_COMMITb\nEND_NESTED_COMMITc", "a\nc", "b\n"]
+    );
+    assert_eq!(release_messages("no nested commit"), ["no nested commit"]);
 }
