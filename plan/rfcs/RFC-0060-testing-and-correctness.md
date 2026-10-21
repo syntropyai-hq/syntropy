@@ -496,7 +496,7 @@ The sources are listed in `testdata/corpus/SOURCES.toml` (QUAL-E5-T01, 2026-10-2
 |---|---|---|
 | `chat` | Taskmaster-1, -2 and -3 (CC BY 4.0, 2019–2020) | — |
 | `code` | ten repositories in ten languages: Rust, C (public domain), Go, Python, Java, C++, TypeScript, JavaScript, Ruby, C#; each under MIT, BSD-3-Clause, Apache-2.0 or public domain | — |
-| `long` | PG-19 test and validation books (Apache-2.0; public-domain texts), train books as a reserve; only books whose creators died before 1956, dated from the Project Gutenberg catalogue's RDF records and Wikidata (both CC0) | — |
+| `long` | PG-19 test and validation books (Apache-2.0; public-domain texts), train books as a reserve; only books whose creators died before 1956, dated from the Project Gutenberg catalogue's offline RDF archive and Wikidata (both CC0) | — |
 | `tool` | project frames over schemas and instances from the JSON Schema Test Suite (MIT) | tool names and descriptions from public-apis (MIT) |
 | `multi` | Aya Dataset original annotations (Apache-2.0) | MASSIVE 1.1 (CC BY 4.0, 2022) |
 | `stress` | generated per tokenizer by the project | — |

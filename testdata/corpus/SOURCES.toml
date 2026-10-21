@@ -29,6 +29,7 @@
 #                      false: no item may be text produced by a hosted
 #                      commercial model service (OQ-FID-17)
 #   provenance         who wrote the text, and when
+#   access             how the source may be fetched, where its terms restrict it
 #   select             the selection rule QUAL-E5-T02 implements
 #   notes              anything else a reviewer needs
 #
@@ -532,19 +533,28 @@ notes = "Items reproduce vocabulary strings from the tokenizer under test. An it
 id = "gutenberg-catalogue-rdf"
 used_by = ["pg19"]
 kind = "snapshot"
-name = "Project Gutenberg catalogue, per-ebook RDF records"
-url = "https://www.gutenberg.org/cache/epub/<ebook>/pg<ebook>.rdf"
-revision = "fetched per book at import; QUAL-E5-T02 records each record's fetch date and SHA-256"
+name = "Project Gutenberg catalogue, offline RDF archive"
+url = "https://www.gutenberg.org/cache/epub/feeds/rdf-files.tar.bz2"
+revision = "one snapshot per corpus version: QUAL-E5-T02 downloads the archive once, records its fetch date, Last-Modified and SHA-256, keeps the copy in the fixture store, and reads every record from that copy"
+revision_date = "2026-10-20"
+files = [
+  # Object headers on 2026-10-21 (no ETag is sent). The archive is rebuilt
+  # often, so these describe the current object, not a pin; the pin is the
+  # copy QUAL-E5-T02 stores.
+  { path = "rdf-files.tar.bz2", bytes = 126801976, last_modified = "2026-10-20T14:35:59Z" },
+]
 licence = "CC0-1.0"
-licence_url = "https://www.gutenberg.org/cache/epub/10146/pg10146.rdf"
-licence_evidence = "Each record declares its own licence: `<cc:Work rdf:about=\"\"><cc:license rdf:resource=\"https://creativecommons.org/publicdomain/zero/1.0/\"/>`. Read in the record for PG-19 test book 10146 on 2026-10-21. The `dcterms:license` element in the same record is the ebook's licence, not the record's. The offline-catalogue page (https://www.gutenberg.org/ebooks/offline_catalogs.html) states no licence of its own."
+licence_url = "https://www.gutenberg.org/policy/robot_access.html"
+licence_evidence = "Project Gutenberg's robot-access policy, \"How to Get Catalog Data\": \"The catalog data are granted to the public domain.\" Each record also declares its own licence: `<cc:Work rdf:about=\"\"><cc:license rdf:resource=\"https://creativecommons.org/publicdomain/zero/1.0/\"/>`, read in the record for PG-19 test book 10146 on 2026-10-21. The `dcterms:license` element in a record is the ebook's licence, not the record's. The offline-catalogue page (https://www.gutenberg.org/ebooks/offline_catalogs.html) says the archive holds the same per-ebook records."
 licence_files = [
+  { path = "policy/robot_access.html (as read)", sha256 = "693a2e867094b0612cd9630a5b1b5e840732a1d939671a98779e2660949c3c51" },
   { path = "pg10146.rdf (sample record)", sha256 = "a8d396e065319f6fa674091b419332747d5170015789f28996a6e151812c4898" },
 ]
 hosted_service_output = false
-provenance = "Catalogue records maintained by Project Gutenberg. Records are regenerated daily, so the pin is the per-record fetch date and hash."
+provenance = "Catalogue records maintained by Project Gutenberg."
+access = "Offline archive only. The same policy says the website is for human users only and that automated access gets an IP block; the catalogue archive and mirrors are its stated exceptions. QUAL-E5-T02 never fetches per-book pages or records from the website."
 select = "Only `dcterms:creator` and contributor-role (`marcrel:*`) agents, with their `pgterms:deathdate` and the agent URI (2009/agents/<id>, the Project Gutenberg author ID). No free text from the record, such as its summary, is used."
-notes = "Death dates are missing in some records: the sample record's author has a birth year and no death year, which is why wikidata is the fallback."
+notes = "Death dates are missing in some records: the sample record's author has a birth year and no death year, which is why wikidata is the fallback. Records are looked up in the archive by ebook number, the number in each PG-19 object name."
 
 [[metadata]]
 id = "wikidata"
@@ -559,4 +569,4 @@ licence_evidence = "Wikidata:Copyright (revision 1523614187): all structured dat
 hosted_service_output = false
 provenance = "Community-edited structured data."
 select = "Entities with P1938 (Project Gutenberg author ID) equal to the creator's ID from the catalogue record; their P570 (date of death). An ID matching no entity, or more than one, gives no date."
-notes = "Linking by ebook is not enough: on 2026-10-21 only 14 of the 150 PG-19 test and validation ebook numbers had an entity with P2034 (Project Gutenberg ebook ID), and none of those had an author (P50). Linking by author ID through the catalogue record avoids name matching."
+notes = "Linking by ebook is not enough: on 2026-10-21 only 14 of the 150 PG-19 test and validation ebook numbers had an entity with P2034 (Project Gutenberg ebook ID), and none of those had an author (P50). Linking by author ID through the catalogue record avoids name matching. Queries follow the Wikimedia User-Agent policy (https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy): \"an informative User-Agent string with contact information\"."
