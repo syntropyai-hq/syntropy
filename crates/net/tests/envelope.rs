@@ -486,6 +486,28 @@ fn a_body_holds_exactly_one_item() {
 }
 
 #[test]
+fn a_body_that_compression_grows_past_64_mib_is_refused() {
+    // Incompressible bytes whose CBOR body is exactly the limit: a 5-byte head and
+    // `MAX_BODY - 5` bytes of xorshift output. zstd stores them in raw blocks, adding a frame
+    // header and a 3-byte header per block, so the compressed body is over the limit.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let bytes: Vec<u8> = (0..MAX_BODY - 5)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect();
+    let value = ciborium::Value::Bytes(bytes);
+    assert_eq!(envelope::to_cbor(&value).unwrap().len(), MAX_BODY);
+    match envelope::encode(&value).map(|frame| frame.len()) {
+        Err(EncodeError::TooLarge { len }) => assert!(len > MAX_BODY, "{len}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn frames_are_checked_against_their_len_field() {
     let frame = envelope::encode(&Inner {
         term: 1,
