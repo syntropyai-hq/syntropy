@@ -10,18 +10,22 @@ script again overwrites the title, body, labels, milestone and type of any
 issue whose generated content changed, and leaves alone status, assignees,
 comments and open or closed state.
 
-The script adopts an issue only if its body carries the task marker and the
-account running the script opened it; markers on anyone else's issues are
-counted and ignored, and two adoptable issues with the same ID stop the run
-before any write. Synced issues whose task or epic has left the plan are
-listed as orphans and left open.
+The script adopts an issue only if its body carries the task marker and its
+author is an owner, member or collaborator of the repository (GitHub's
+authorAssociation), so any maintainer can run it. Markers on anyone else's
+issues are counted and ignored. Before the first write of any phase, setup
+included, the run stops if two adopted issues carry the same ID, or if it
+adopted nothing although the repository already has marked issues or more
+issues than half the plan: the board exists, and creating it again would
+duplicate it. Synced issues whose task or epic has left the plan are listed
+as orphans and left open.
 
 A run that writes first fetches origin's main branch, and refuses to start
-if the plan inputs (the epic files, and sizing.py, which turns them into
-labels) differ from it. A run from an out-of-date checkout would otherwise
-undo newer issue text and links. Only those inputs are compared, not HEAD,
-so a branch that changes only the other tools can still run. --dry-run
-skips the check.
+if the plan inputs (PLAN_INPUTS: the epic files and the tools that turn them
+into issue text, labels and links) differ from it. A run from an out-of-date
+checkout would otherwise undo newer issue text and links. Only those inputs
+are compared, not HEAD or this script, so a branch that changes only this
+script can still run. --dry-run skips that check.
 
     python3 gh_sync.py --dry-run                       # what would change
     python3 gh_sync.py --banned FILE --phase setup     # labels, milestones, issue type, project, its README, views
@@ -59,10 +63,17 @@ import roadmap  # noqa: E402
 TOOLS_DIR = Path(__file__).resolve().parent
 PLAN_DIR = TOOLS_DIR.parent.parent
 REPO_ROOT = PLAN_DIR.parent
-# What the script reads from the plan: the epic files (directly and through
-# epics.py, depcheck.py and sizing.py), and sizing.py's rules for size and
-# maintainer labels. Paths are relative to the repository root.
-PLAN_INPUTS = ("plan/implementation/epics", "plan/implementation/tools/sizing.py")
+# What a run's output depends on: the epic files, and the code that turns
+# them into issue text, labels and links. epics.py parses the rows,
+# depcheck.py the dependency edges, roadmap.py's KIND_RE the spike label, and
+# sizing.py the size and maintainer labels. check_fresh() compares these with
+# origin/main. gh_sync.py itself is left out on purpose, so a branch that
+# changes only this script can still run against the live board. Paths are
+# relative to the repository root.
+PLAN_INPUTS = ("plan/implementation/epics",
+               *(f"plan/implementation/tools/{f}"
+                 for f in ("epics.py", "depcheck.py", "roadmap.py", "sizing.py")))
+TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
 
 PROJECT_TITLE = "Syntropy"
 MARKER = "syntropy-task"
@@ -443,24 +454,27 @@ def check_banned(items, banned):
 # ------------------------------------------------------------ GitHub state
 
 ISSUES_Q = """query($o:String!,$n:String!,$after:String){ repository(owner:$o,name:$n){
-  issues(first:100, after:$after, states:[OPEN,CLOSED]){ pageInfo{hasNextPage endCursor}
-    nodes{ id number body author{ login } blockedBy(first:50){ nodes{ id } } } } } }"""
+  issues(first:100, after:$after, states:[OPEN,CLOSED]){ totalCount
+    pageInfo{hasNextPage endCursor}
+    nodes{ id number body authorAssociation blockedBy(first:50){ nodes{ id } } } } } }"""
 
 
-def existing_issues(gh, login):
-    """The synced issues by task or epic ID, and how many markers were ignored.
+def existing_issues(gh):
+    """The synced issues by task or epic ID, how many markers were ignored,
+    and how many issues the repository has.
 
     Anyone can open an issue on a public repository and copy a marker into
-    it, so only issues opened by the account running the sync are adopted.
-    Two adoptable issues with the same ID stop the run before any write."""
-    found, ignored, clashes, after = {}, 0, [], None
+    it, so only issues whose author is an owner, member or collaborator are
+    adopted. Two adopted issues with the same ID stop the run."""
+    found, ignored, clashes, after, total = {}, 0, [], None, 0
     while True:
         r = gh.query(ISSUES_Q, o=gh.owner, n=gh.name, after=after)["repository"]["issues"]
+        total = r["totalCount"]
         for n in r["nodes"]:
             m = re.search(rf"<!-- {MARKER}: (\S+) (\w+) -->", n["body"] or "")
             if not m:
                 continue
-            if (n["author"] or {}).get("login") != login:
+            if n["authorAssociation"] not in TRUSTED:
                 ignored += 1
                 continue
             if m[1] in found:
@@ -472,10 +486,27 @@ def existing_issues(gh, login):
             break
         after = r["pageInfo"]["endCursor"]
     if clashes:
-        raise SystemExit(f"{len(clashes)} ID(s) carried by two issues opened by {login}: "
+        raise SystemExit(f"{len(clashes)} ID(s) carried by two adopted issues: "
                          f"{'; '.join(clashes[:10])}. Stopped before the next write; "
                          f"close the extra issue or remove its marker, then run again.")
-    return found, ignored
+    return found, ignored, total
+
+
+def check_adoption(existing, ignored, total, planned):
+    """Stop before the first write if the board exists but nothing was adopted.
+
+    A run that adopts nothing creates the whole board, which is right only
+    on a repository the sync has never written to. If the repository already
+    has marked issues, or more issues than half of the `planned` epics and
+    tasks, the board exists and adoption has failed: its author may have left
+    the organisation, or the marker or the token may be wrong. Creating it
+    again would duplicate it. An interrupted first run adopted something, so
+    it still resumes."""
+    if not existing and (ignored or total > planned // 2):
+        raise SystemExit(f"adopted no issues, but the repository has {total} issues and "
+                         f"{ignored} task marker(s) on issues whose author isn't an owner, "
+                         f"member or collaborator. Creating the board again would duplicate "
+                         f"it, so nothing was written.")
 
 
 def setup(gh, ctx):
@@ -610,6 +641,26 @@ def main():
 
     gh = GitHub(args.repo, args.interval, args.dry_run)
     login = gh.query("query{ viewer{ login } }")["viewer"]["login"]
+    # Every stop check runs here, before setup(), whose label, milestone,
+    # project and view writes are the first writes of a run.
+    existing, ignored, total = existing_issues(gh)
+    print(f"run as {login}: {len(records)} tasks, {len(epic_map)} epics, "
+          f"{sum(len(d) for d in deps.values())} dependency links; "
+          f"{len(existing)} already on GitHub; "
+          f"{ignored} marker(s) on other authors' issues ignored")
+    orphans = sorted((v["number"], k) for k, v in existing.items()
+                     if k not in by_id and k not in epic_map)
+    print(f"{len(orphans)} orphan(s), synced issues whose task or epic is no longer "
+          f"in the plan, left open" + (": " if orphans else "")
+          + ", ".join(f"#{n} {k}" for n, k in orphans))
+    check_adoption(existing, ignored, total, len(records) + len(epic_map))
+
+    epic_items = [epic_issue(e, base) for e in epic_map.values()]
+    if args.banned:
+        numbers = {k: v["number"] for k, v in existing.items()}
+        check_banned(epic_items + [task_issue(by_id[t], epic_map[by_id[t]["epic"]],
+                     sizes.get(t), deps[t], numbers, base) for t in order], args.banned)
+
     ctx = {}
     phases = ("setup", "issues", "deps") if args.phase == "all" else (args.phase,)
     if "setup" in phases or args.dry_run:
@@ -617,22 +668,6 @@ def main():
     else:
         setup(GitHub(args.repo, 0, True), ctx)  # read-only: fills in the IDs
     lookup(gh, ctx)
-    existing, ignored = existing_issues(gh, login)
-    print(f"{len(records)} tasks, {len(epic_map)} epics, "
-          f"{sum(len(d) for d in deps.values())} dependency links; "
-          f"{len(existing)} already on GitHub, opened by {login}; "
-          f"{ignored} marker(s) on other authors' issues ignored")
-    orphans = sorted((v["number"], k) for k, v in existing.items()
-                     if k not in by_id and k not in epic_map)
-    print(f"{len(orphans)} orphan(s), synced issues whose task or epic is no longer "
-          f"in the plan, left open" + (": " if orphans else "")
-          + ", ".join(f"#{n} {k}" for n, k in orphans))
-
-    epic_items = [epic_issue(e, base) for e in epic_map.values()]
-    if args.banned:
-        numbers = {k: v["number"] for k, v in existing.items()}
-        check_banned(epic_items + [task_issue(by_id[t], epic_map[by_id[t]["epic"]],
-                     sizes.get(t), deps[t], numbers, base) for t in order], args.banned)
 
     def resilient(phase_fn):
         """Run a phase; on an interruption (a rate limit, a network or server
@@ -642,7 +677,7 @@ def main():
         for attempt in range(30):
             try:
                 if attempt:
-                    existing, _ = existing_issues(gh, login)
+                    existing, _, _ = existing_issues(gh)
                 return phase_fn()
             except Interrupted as err:
                 if gh.dry_run:
