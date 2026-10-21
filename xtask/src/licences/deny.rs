@@ -78,39 +78,83 @@ fn parse_version(stdout: &str) -> Option<String> {
 /// (`YYYY-MM-DD`). Each entry must be on its own line, and a comment on that line or on the
 /// comment lines just above it must give an issue link (`https://.../issues/<n>`) and an expiry
 /// date (`expires YYYY-MM-DD`) no earlier than `today`.
+///
+/// The check fails closed. Table headers and keys are read as TOML reads them, so `[ advisories ]`
+/// and a quoted `"ignore"` are the same list. Any other spelling of `advisories.ignore`, such as a
+/// dotted key at the top level, an inline `advisories = { … }` table or an `[advisories.…]` table,
+/// is a problem, because its entries cannot be checked. So is a quoted key with an escape, and an
+/// advisory ID (`RUSTSEC-…`, `GHSA-…`) anywhere outside the one list the check reads.
 pub fn ignore_problems(text: &str, today: &str) -> Vec<String> {
+    const ADVISORIES: &str = "advisories";
+    const IGNORE: &str = "ignore";
     let mut problems = Vec::new();
-    let mut in_section = false;
+    let mut table: Vec<String> = Vec::new();
     let mut in_ignore = false;
     let mut notes: Vec<&str> = Vec::new();
     for (index, raw) in text.lines().enumerate() {
         let number = index + 1;
+        let at = format!("{DENY_TOML}:{number}");
         let code = strip_comment(raw).trim();
         let comment = raw.trim()[code.len()..]
             .trim()
             .trim_start_matches('#')
             .trim();
         if !in_ignore {
+            if let Some(id) = advisory_id(code) {
+                problems.push(format!(
+                    "{at}: the advisory `{id}` appears outside the `ignore = [` list of \
+                     `[advisories]`, where its issue link and expiry cannot be checked \
+                     (RFC-0062 §11.2)"
+                ));
+            }
             if code.starts_with('[') {
-                in_section = code == "[advisories]";
+                let inner = code.trim_start_matches('[').trim_end_matches(']');
+                match key_path(inner) {
+                    Ok(Some(path)) => {
+                        if path.first().is_some_and(|p| p == ADVISORIES) && path.len() > 1 {
+                            problems.push(format!(
+                                "{at}: `{code}` is not read; `[advisories]` holds `ignore` as an \
+                                 array (RFC-0062 §11.2)"
+                            ));
+                        }
+                        table = path;
+                    }
+                    Ok(None) => {}
+                    Err(error) => problems.push(format!("{at}: {error}")),
+                }
                 continue;
             }
-            let Some((key, value)) = code.split_once('=') else {
+            let Some((key, value)) = split_key_value(code) else {
                 continue;
             };
-            if !in_section || key.trim() != "ignore" {
-                continue;
-            }
-            match value.trim() {
-                "[]" => {}
-                "[" => {
-                    in_ignore = true;
-                    notes.clear();
+            let key = match key_path(key) {
+                Ok(Some(key)) => key,
+                Ok(None) => continue,
+                Err(error) => {
+                    problems.push(format!("{at}: {error}"));
+                    continue;
                 }
-                _ => problems.push(format!(
-                    "{DENY_TOML}:{number}: write `ignore` as `[`, one entry per line with its \
-                     comment, then `]` (RFC-0062 §11.2)"
-                )),
+            };
+            let full: Vec<&str> = table.iter().chain(&key).map(String::as_str).collect();
+            let value = value.trim();
+            if full == [ADVISORIES, IGNORE] && table == [ADVISORIES] {
+                match value {
+                    "[]" => {}
+                    "[" => {
+                        in_ignore = true;
+                        notes.clear();
+                    }
+                    _ => problems.push(format!(
+                        "{at}: write `ignore` as `[`, one entry per line with its comment, then \
+                         `]` (RFC-0062 §11.2)"
+                    )),
+                }
+            } else if full.starts_with(&[ADVISORIES, IGNORE]) || full == [ADVISORIES] {
+                problems.push(format!(
+                    "{at}: `{}` sets the advisories' `ignore` list in a form this check does not \
+                     read; write it as `ignore = [` inside `[advisories]` (RFC-0062 §11.2)",
+                    key.join(".")
+                ));
             }
             continue;
         }
@@ -133,7 +177,7 @@ pub fn ignore_problems(text: &str, today: &str) -> Vec<String> {
         note.push(' ');
         note.push_str(comment);
         notes.clear();
-        let at = format!("{DENY_TOML}:{number}: the ignored advisory `{id}`");
+        let at = format!("{at}: the ignored advisory `{id}`");
         if !has_issue_link(&note) {
             problems.push(format!(
                 "{at} has no issue link (`https://.../issues/<n>`) in its comment (RFC-0062 §11.2)"
@@ -155,6 +199,79 @@ pub fn ignore_problems(text: &str, today: &str) -> Vec<String> {
         ));
     }
     problems
+}
+
+/// The parts of the TOML key `text`, such as `["advisories", "ignore"]` for
+/// `advisories . "ignore"`. `Ok(None)` when `text` is not a key, such as the inside of an inline
+/// table on a continuation line. A quoted part with an escape is an error, because this check
+/// does not decode escapes and must not misread a key.
+fn key_path(text: &str) -> Result<Option<Vec<String>>, String> {
+    let mut parts = Vec::new();
+    let mut rest = text.trim();
+    loop {
+        let (part, after) = if let Some(body) = rest.strip_prefix('"') {
+            let Some(end) = body.find('"') else {
+                return Ok(None);
+            };
+            if body[..end].contains('\\') {
+                return Err(format!(
+                    "the quoted key `\"{}\"` has an escape, which this check does not read; \
+                     write the key plainly",
+                    &body[..end]
+                ));
+            }
+            (&body[..end], &body[end + 1..])
+        } else if let Some(body) = rest.strip_prefix('\'') {
+            let Some(end) = body.find('\'') else {
+                return Ok(None);
+            };
+            (&body[..end], &body[end + 1..])
+        } else {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .unwrap_or(rest.len());
+            if end == 0 {
+                return Ok(None);
+            }
+            (&rest[..end], &rest[end..])
+        };
+        parts.push(part.to_owned());
+        let after = after.trim_start();
+        if after.is_empty() {
+            return Ok(Some(parts));
+        }
+        let Some(next) = after.strip_prefix('.') else {
+            return Ok(None);
+        };
+        rest = next.trim_start();
+    }
+}
+
+/// `code` split at its first `=` outside a string: the key and the value.
+fn split_key_value(code: &str) -> Option<(&str, &str)> {
+    let mut quote = None;
+    for (at, c) in code.char_indices() {
+        match (quote, c) {
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None, '=') => return Some((&code[..at], &code[at + 1..])),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The first advisory ID in `code`: `RUSTSEC-YYYY-NNNN` or `GHSA-xxxx-xxxx-xxxx`.
+fn advisory_id(code: &str) -> Option<&str> {
+    let start = ["RUSTSEC-", "GHSA-"]
+        .iter()
+        .filter_map(|prefix| code.find(prefix))
+        .min()?;
+    let rest = &code[start..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
 }
 
 /// Whether `note` holds an `https://` link to an issue: `/issues/` followed by its number.
@@ -420,9 +537,111 @@ mod tests {
 
     #[test]
     fn entries_on_one_line_fail() {
+        // The one-line list is unread, so its ID also counts as outside the list.
         let found = ignore_problems(&advisories("ignore = [\"RUSTSEC-2026-0001\"]"), TODAY);
-        assert_eq!(found.len(), 1, "{found:#?}");
-        assert!(found[0].contains("one entry per line"), "{found:#?}");
+        assert_eq!(found.len(), 2, "{found:#?}");
+        assert!(
+            found[0].contains("appears outside the `ignore = [` list"),
+            "{found:#?}"
+        );
+        assert!(found[1].contains("one entry per line"), "{found:#?}");
+    }
+
+    /// The review's three spellings of `advisories.ignore`, and the other forms TOML allows, each
+    /// with one advisory and no comment.
+    #[test]
+    fn every_spelling_of_the_ignore_list_is_checked_or_refused() {
+        for (text, expected) in [
+            // Read as the canonical list, so the entry's missing comment is found.
+            (
+                "[ advisories ]\nignore = [\n    \"RUSTSEC-2020-0071\",\n]\n",
+                "`RUSTSEC-2020-0071` has no issue link",
+            ),
+            (
+                "[\"advisories\"]\nignore = [\n    \"RUSTSEC-2020-0071\",\n]\n",
+                "`RUSTSEC-2020-0071` has no issue link",
+            ),
+            (
+                "[advisories]\n\"ignore\" = [\n    \"RUSTSEC-2020-0071\",\n]\n",
+                "`RUSTSEC-2020-0071` has no issue link",
+            ),
+            (
+                "[advisories]\n'ignore' = [\n    \"RUSTSEC-2020-0071\",\n]\n",
+                "`RUSTSEC-2020-0071` has no issue link",
+            ),
+            // Refused: forms the check does not read.
+            (
+                "advisories.ignore = [\n    \"RUSTSEC-2020-0071\",\n]\n",
+                "`advisories.ignore` sets the advisories' `ignore` list in a form",
+            ),
+            (
+                "advisories . \"ignore\" = []\n",
+                "`advisories.ignore` sets the advisories' `ignore` list in a form",
+            ),
+            (
+                "advisories = { ignore = [\"RUSTSEC-2020-0071\"] }\n",
+                "`advisories` sets the advisories' `ignore` list in a form",
+            ),
+            ("[advisories.ignore]\n", "`[advisories.ignore]` is not read"),
+            (
+                "[[advisories.ignore]]\nid = \"RUSTSEC-2020-0071\"\n",
+                "`[[advisories.ignore]]` is not read",
+            ),
+            (
+                "[advisories]\n\"ign\\u006fre\" = []\n",
+                "has an escape, which this check does not read",
+            ),
+        ] {
+            let found = ignore_problems(text, TODAY);
+            assert!(
+                found.iter().any(|p| p.contains(expected)),
+                "{text:?}: expected `{expected}` in {found:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_advisory_id_outside_the_ignore_list_fails() {
+        for text in [
+            "[graph]\nexclude = [\"RUSTSEC-2020-0071\"]\n",
+            "[advisories]\nignored = [\"GHSA-abcd-efgh-ijkl\"]\nignore = []\n",
+            "[advisories]\nignore = [] # but RUSTSEC-2020-0071 in a comment is fine\nx = \"RUSTSEC-2020-0071\"\n",
+        ] {
+            let found = ignore_problems(text, TODAY);
+            assert_eq!(found.len(), 1, "{text:?}: {found:#?}");
+            assert!(
+                found[0].contains("appears outside the `ignore = [` list"),
+                "{found:#?}"
+            );
+        }
+        assert_eq!(
+            ignore_problems(
+                "# RUSTSEC-2020-0071 only in a comment\n[advisories]\nignore = []\n",
+                TODAY
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn keys_are_read_as_toml_reads_them() {
+        let key = |text: &str| key_path(text).unwrap();
+        assert_eq!(key("ignore"), Some(vec!["ignore".to_owned()]));
+        assert_eq!(key(" \"ignore\" "), Some(vec!["ignore".to_owned()]));
+        assert_eq!(
+            key("advisories . 'ignore'"),
+            Some(vec!["advisories".to_owned(), "ignore".to_owned()])
+        );
+        assert_eq!(key("{ crate"), None);
+        assert_eq!(key("a b"), None);
+        assert!(key_path("\"a\\tb\"").is_err());
+        assert_eq!(split_key_value("a = \"x=y\""), Some(("a ", " \"x=y\"")));
+        assert_eq!(split_key_value("\"a=b\","), None);
+        assert_eq!(
+            advisory_id("x = [\"RUSTSEC-2020-0071\"]"),
+            Some("RUSTSEC-2020-0071")
+        );
+        assert_eq!(advisory_id("allow = [\"MIT\"]"), None);
     }
 
     #[test]

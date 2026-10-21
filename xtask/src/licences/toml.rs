@@ -144,16 +144,17 @@ pub fn string_array(text: &str, section: &str, key: &str) -> Result<Option<Vec<S
     Ok(None)
 }
 
-/// `line` up to a `#` that is not inside a basic string.
+/// `line` up to a `#` that is not inside a basic (`"…"`) or literal (`'…'`) string.
 pub fn strip_comment(line: &str) -> &str {
-    let mut in_string = false;
+    let mut quote: Option<char> = None;
     let mut escaped = false;
     for (at, c) in line.char_indices() {
-        match c {
+        match (quote, c) {
             _ if escaped => escaped = false,
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            '#' if !in_string => return &line[..at],
+            (Some('"'), '\\') => escaped = true,
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None, '#') => return &line[..at],
             _ => {}
         }
     }
@@ -309,5 +310,7 @@ allow = []
         assert_eq!(strip_comment("a = \"x#y\" # z"), "a = \"x#y\" ");
         assert_eq!(strip_comment("a = \"x\\\"#y\""), "a = \"x\\\"#y\"");
         assert_eq!(strip_comment("# all"), "");
+        assert_eq!(strip_comment("a = 'x#y' # z"), "a = 'x#y' ");
+        assert_eq!(strip_comment("a = 'x\\' # z"), "a = 'x\\' ");
     }
 }
