@@ -5,12 +5,19 @@
 #   - uses: ./.github/actions/setup-rust
 #     with:
 #       cache-key: lint
+#       cache: read-write   # trusted runs only; the default, read-only, never saves
 #   - run: cargo xtask ci lint
+#
+# Caches are read-only unless a job opts in. A build of untrusted code, such as a fork's commit
+# in `build-untrusted.yml`, gets no cache writes (RFC-0062 §3.3 item 3), so such a job must leave
+# `cache` at read-only or set it to off. §5.2 sets the same rule for the kernel cache: only
+# trusted contexts write it.
 
 name: Set up Rust
 description: >-
   Installs the Rust toolchain and components pinned in rust-toolchain.toml, then restores the
-  cargo registry, git and target caches, and saves them when the job succeeds.
+  cargo registry, git and target caches. It saves them only when the job opts in with
+  `cache: read-write`.
 
 inputs:
   cache-key:
@@ -20,10 +27,11 @@ inputs:
     required: true
   cache:
     description: >-
-      `read-write` restores the caches and saves them when the job succeeds; `read-only` restores
-      them and never saves, for runs that must not write caches (RFC-0062 §3.3); `off` skips them.
+      `read-only` (the default) restores the caches and never saves them. `read-write` also saves
+      them when the job succeeds; use it only in trusted runs, never in a build of untrusted code
+      (RFC-0062 §3.3 item 3). `off` skips the caches.
     required: false
-    default: read-write
+    default: read-only
 
 outputs:
   toolchain:
