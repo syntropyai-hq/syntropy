@@ -2,8 +2,9 @@
 #
 # QUAL-E5-T01 picked these sources and read each licence at the pinned
 # revision on the `verified` date. This file lists sources only. Corpus items,
-# their per-item licence records and the token streams come from QUAL-E5-T02,
-# and the item text lives in the fixture store, not in git (RFC-0060 §1.2).
+# their per-item licence records and the `smoke` tier's token streams come
+# from QUAL-E5-T22, the other tiers' token streams from QUAL-E5-T02, and the
+# item text lives in the fixture store, not in git (RFC-0060 §1.2).
 #
 # Fields of a [[source]] table:
 #   id                 stable key that item manifests cite
@@ -30,8 +31,8 @@
 #                      commercial model service (OQ-FID-17)
 #   provenance         who wrote the text, and when
 #   access             how the source may be fetched, where its terms restrict it
-#   user_agent         the User-Agent QUAL-E5-T02 sends, where the source asks for one
-#   select             the selection rule QUAL-E5-T02 implements
+#   user_agent         the User-Agent QUAL-E5-T22 sends, where the source asks for one
+#   select             the selection rule QUAL-E5-T22 implements
 #   notes              anything else a reviewer needs
 #
 # A [[metadata]] table is a source of facts about items, not of item text.
@@ -364,7 +365,7 @@ files = [
   # SHA-256 of the sorted lines "<name> <size> <md5Hash> <generation>\n" from
   # the GCS JSON API object listing of each prefix, where <name> is the full
   # object name with its prefix (for example "test/10146.txt"); bare file
-  # names give a different hash. QUAL-E5-T02 recomputes it before import and
+  # names give a different hash. QUAL-E5-T22 recomputes it before import and
   # fails on a mismatch, then checks each object's MD5 and records a SHA-256
   # over its bytes.
   { path = "test/", objects = 100, bytes = 41289101, listing_sha256 = "ee09996fb15f9071f2c1059c84ba79c45992beeaa4e86b6598f251be3434ab3c" },
@@ -386,7 +387,7 @@ select = """
 Whole books. Per tokenizer, books of at least 32K tokens fill the 32K slots and books of at least 128K tokens the 128K slots, each cut to the slot length at a token boundary from the start. Books come from test/ and validation/; train/ is drawn from, in object-name order, only if those two leave a tier short.
 Death-year rule: a book is kept only if every creator its catalogue record names (author, and any translator, editor or other contributor) died before 1956, so the text is out of copyright under life-plus-70 terms as well as in the US. The death year comes from the book's record in gutenberg-catalogue-rdf (the object name's number is the ebook number); where that record has no death date, from wikidata via the creator's Project Gutenberg author ID. A book with any creator undated in both, or dated 1956 or later, is not imported. Each kept item records every creator's death year and the record it came from.
 """
-notes = "By size, 79 test books exceed about 32K tokens and 18 exceed about 128K [estimate: object bytes at about 4 characters per token]; the `calibration` tier needs 62 and 2. The validation split adds 41 and 8, and train/ 22,167 and 6,475. How many books the death-year rule keeps is not measured: QUAL-E5-T02 reports it."
+notes = "By size, 79 test books exceed about 32K tokens and 18 exceed about 128K [estimate: object bytes at about 4 characters per token]; the `calibration` tier needs 62 and 2. The validation split adds 41 and 8, and train/ 22,167 and 6,475. How many books the death-year rule keeps is not measured: QUAL-E5-T22 reports it."
 
 # ---------------------------------------------------------------- tool
 
@@ -442,7 +443,7 @@ licence_evidence = "Syntropy-authored files are MIT OR Apache-2.0 (ADR-0018 deci
 hosted_service_output = false
 provenance = "Written for this corpus by the project. Every item made from them is marked template-generated (RFC-0060 §5.2)."
 select = """
-Recipe, implemented by QUAL-E5-T02:
+Recipe, implemented by QUAL-E5-T22:
 1. A frame is a fixed conversation shape: system turn with a tool list; user request; assistant tool call; tool result; assistant answer. Shapes cover one call, parallel calls, a call with nested object and array arguments, a rejected call followed by a corrected one, and a structured-output turn where the assistant answers with one JSON object that must match a given schema.
 2. Tool definitions: `name` and `description` from tool-public-apis, `parameters` from tool-json-schema-test-suite.
 3. Call arguments and tool results are instances from the same test group; natural-language user turns are filled from frame text with slot values drawn from those instances.
@@ -486,7 +487,7 @@ url = "https://amazon-massive-nlu-dataset.s3.amazonaws.com/amazon-massive-datase
 revision = "amazon-massive-dataset-1.1"
 revision_date = "2022-11-07"
 files = [
-  # S3 multipart ETag and size read from the object's headers; QUAL-E5-T02
+  # S3 multipart ETag and size read from the object's headers; QUAL-E5-T22
   # records the archive's SHA-256 at first import.
   { path = "amazon-massive-dataset-1.1.tar.gz", s3_etag = "51e0da2a3ff7a016f109e1d1b4306e93-3", bytes = 40251390 },
 ]
@@ -519,7 +520,7 @@ licence_evidence = "Syntropy-authored generator output, MIT OR Apache-2.0 (ADR-0
 hosted_service_output = false
 provenance = "Generated per tokenizer by the project. The only input is the tokenizer itself, which comes with a fixture whose source and licence testdata/fixtures.toml records."
 select = """
-Recipe, implemented by QUAL-E5-T02, per tokenizer:
+Recipe, implemented by QUAL-E5-T22, per tokenizer:
 1. Repeated tokens: runs of one frequent token, one rare token and one single-byte token, at 64, 512 and 4,096 repeats.
 2. Whitespace: runs of spaces, tabs, newlines and CRLF pairs up to 8,192 characters, and the same with U+00A0, U+3000 and U+2028.
 3. The maximal-length token: the vocabulary entry with the most bytes, alone, repeated, and inside ordinary text.
@@ -536,12 +537,12 @@ used_by = ["pg19"]
 kind = "snapshot"
 name = "Project Gutenberg catalogue, offline RDF archive"
 url = "https://www.gutenberg.org/cache/epub/feeds/rdf-files.tar.bz2"
-revision = "one snapshot per corpus version: QUAL-E5-T02 downloads the archive once, records its fetch date, Last-Modified and SHA-256, keeps the copy in the fixture store, and reads every record from that copy"
+revision = "one snapshot per corpus version: QUAL-E5-T22 downloads the archive once, records its fetch date, Last-Modified and SHA-256, keeps the copy in the fixture store, and reads every record from that copy"
 revision_date = "2026-10-20"
 files = [
   # Object headers on 2026-10-21 (no ETag is sent). The archive is rebuilt
   # often, so these describe the current object, not a pin; the pin is the
-  # copy QUAL-E5-T02 stores.
+  # copy QUAL-E5-T22 stores.
   { path = "rdf-files.tar.bz2", bytes = 126801976, last_modified = "2026-10-20T14:35:59Z" },
 ]
 licence = "CC0-1.0"
@@ -553,7 +554,7 @@ licence_files = [
 ]
 hosted_service_output = false
 provenance = "Catalogue records maintained by Project Gutenberg."
-access = "Offline archive only. The same policy says the website is for human users only and that automated access gets an IP block; the catalogue archive and mirrors are its stated exceptions. QUAL-E5-T02 never fetches per-book pages or records from the website."
+access = "Offline archive only. The same policy says the website is for human users only and that automated access gets an IP block; the catalogue archive and mirrors are its stated exceptions. QUAL-E5-T22 never fetches per-book pages or records from the website."
 select = "Only `dcterms:creator` and contributor-role (`marcrel:*`) agents, with their `pgterms:deathdate` and the agent URI (2009/agents/<id>, the Project Gutenberg author ID). No free text from the record, such as its summary, is used."
 notes = "Death dates are missing in some records: the sample record's author has a birth year and no death year, which is why wikidata is the fallback. Records are looked up in the archive by ebook number, the number in each PG-19 object name."
 
@@ -563,7 +564,7 @@ used_by = ["pg19"]
 kind = "dataset"
 name = "Wikidata structured data"
 url = "https://www.wikidata.org/"
-revision = "per entity: QUAL-E5-T02 records each entity's revision id (`lastrevid`) at fetch"
+revision = "per entity: QUAL-E5-T22 records each entity's revision id (`lastrevid`) at fetch"
 licence = "CC0-1.0"
 licence_url = "https://www.wikidata.org/w/index.php?title=Wikidata:Copyright&oldid=1523614187"
 licence_evidence = "Wikidata:Copyright (revision 1523614187): all structured data from the main, Property, Lexeme and EntitySchema namespaces is available under CC0. Wikidata:Licensing (revision 2548950862, 2026-09-24) says the same. Text in other namespaces is CC BY-SA and is not used."
