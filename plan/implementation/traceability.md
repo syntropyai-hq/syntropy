@@ -359,7 +359,7 @@ No GAPs.
 | RFC-0040 | §12 | Configuration knobs | 3: COMP-E1-T08, COMP-E1-T14, COMP-E9-T07 | ok |
 | RFC-0040 | §13 | Failure handling and error codes | 2: COMP-E1-T08, COMP-E9-T16 | ok |
 | RFC-0041 | §1 | Identities | 2: COMP-E10-T06, COMP-E10-T11 | ok |
-| RFC-0041 | §2 | Source readers | 6: COMP-E10-T01–T05, COMP-E10-T10 | ok |
+| RFC-0041 | §2 | Source readers | 7: COMP-E10-T01–T05, COMP-E10-T10, COMP-E16-T06 | ok |
 | RFC-0041 | §3 | The census builder | 4: COMP-E10-T07–T08, COMP-E10-T12–T13 | ok |
 | RFC-0041 | §4 | The model store | 11: DIST-E14-T20, COMP-E11-T01–T03, COMP-E11-T09, COMP-E11-T14, COMP-E11-T16, COMP-E11-T18, COMP-E11-T20–T22 | ok |
 | RFC-0041 | §5 | Packs | 12: DIST-E8-T16, COMP-E11-T04–T09, COMP-E11-T11, COMP-E11-T15–T16, COMP-E11-T19–T20 | ok |
@@ -369,7 +369,7 @@ No GAPs.
 | RFC-0041 | §9 | Configuration knobs | 4: DIST-E14-T20, COMP-E10-T09, COMP-E11-T21–T22 | ok |
 | RFC-0041 | §10 | Failure handling and error codes | 2: COMP-E10-T09, COMP-E12-T16 | ok |
 | RFC-0042 | §1 | Data types, schemes and dtype classes | 1: COMP-E13-T01 | ok |
-| RFC-0042 | §2 | Schemes and their exact dequantisation | 5: COMP-E13-T02, COMP-E13-T04, COMP-E13-T07, COMP-E13-T10–T11 | ok |
+| RFC-0042 | §2 | Schemes and their exact dequantisation | 6: COMP-E13-T02, COMP-E13-T04, COMP-E13-T07, COMP-E13-T10–T11, COMP-E16-T06 | ok |
 | RFC-0042 | §3 | Kernel paths and fallbacks per scheme | 5: COMP-E3-T11, COMP-E5-T03, COMP-E13-T04, COMP-E13-T08, COMP-E13-T12 | ok |
 | RFC-0042 | §4 | Accumulation and activation precision | 13: COMP-E3-T08, COMP-E3-T11, COMP-E5-T12, COMP-E7-T01, COMP-E13-T02–T03, COMP-E13-T05–T06, COMP-E13-T10, COMP-E14-T06, COMP-E16-T06, COMP-E16-T09, COMP-E16-T19 | ok |
 | RFC-0042 | §5 | Implementing the exactness contract: what is measured | 9: COMP-E14-T01–T03, COMP-E14-T11, COMP-E14-T13, COMP-E14-T15, COMP-E14-T21, COMP-E14-T24, QUAL-E5-T02 | ok |
