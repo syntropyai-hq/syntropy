@@ -18,6 +18,10 @@
 //! a failed `changes`, even though every job after it was skipped. A job that `changes` lists but
 //! `ci-gate` does not wait for fails too, so a new job cannot be left out of the gate.
 //!
+//! `pr.yml` runs this command from a checkout of the base branch, built with no cache, so a PR
+//! cannot change how its own jobs are judged (RFC-0062 §2.2, note 2026-10-22). A change here takes
+//! effect when it merges.
+//!
 //! The hardware clause, a passing `hw/<job>` status for each job in `hw_required` with its rules
 //! per event, is QUAL-E1-T07's.
 
@@ -30,6 +34,13 @@ pub const CHANGES: &str = "changes";
 
 /// The output of [`CHANGES`] that lists them.
 pub const JOBS_OUTPUT: &str = "jobs";
+
+/// Jobs `pr.yml` waits for whose suites later tasks add, with those tasks. Until then `changes`
+/// does not list them, and the summary names the tasks beside their skip.
+pub const PLANNED: &[(&str, &str)] = &[
+    ("hosted-l3", "QUAL-E3-T09/T10"),
+    ("hosted-parity-nano", "QUAL-E5-T06"),
+];
 
 /// A job's result, as the `needs` context reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,7 +112,10 @@ pub fn evaluate(text: &str) -> Evaluation {
         let line = match (outcome, is_listed) {
             (Outcome::Success, true) => format!("{job}: success"),
             (Outcome::Success, false) => format!("{job}: success (not listed by `{CHANGES}`)"),
-            (Outcome::Skipped, false) => format!("{job}: skipped, not listed by `{CHANGES}`"),
+            (Outcome::Skipped, false) => match PLANNED.iter().find(|(name, _)| *name == job) {
+                Some((_, tasks)) => format!("{job}: skipped, planned: {tasks}"),
+                None => format!("{job}: skipped, not listed by `{CHANGES}`"),
+            },
             (Outcome::Skipped, true) => {
                 evaluation.problems.push(format!(
                     "`{job}` was skipped, but `{CHANGES}` listed it, so it had to run"
@@ -251,8 +265,8 @@ mod tests {
             evaluation.lines,
             [
                 "build: success",
-                "hosted-l3: skipped, not listed by `changes`",
-                "hosted-parity-nano: skipped, not listed by `changes`",
+                "hosted-l3: skipped, planned: QUAL-E3-T09/T10",
+                "hosted-parity-nano: skipped, planned: QUAL-E5-T06",
                 "hosted-test: success",
                 "lint: success",
             ]

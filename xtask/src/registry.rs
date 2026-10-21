@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::run::Context;
-use crate::{ci_gate, codeowners, contrib, repo_settings};
+use crate::{ci_gate, codeowners, contrib, repo_settings, toolchain};
 
 /// A named job or suite: the steps it runs, in order.
 #[derive(Debug, PartialEq, Eq)]
@@ -162,6 +162,14 @@ pub const JOBS: &[Entry] = &[
         defined_in: "RFC-0062 §2.3 and §12.4",
         params: &[],
         steps: &[
+            // First, so a run on a cargo that ignored `rust-toolchain.toml` says so up front.
+            Step {
+                name: "toolchain",
+                action: Action::Builtin {
+                    shown: "cargo and rustc are the release rust-toolchain.toml pins",
+                    run: toolchain::step,
+                },
+            },
             Step {
                 name: "fmt",
                 action: Action::Cargo(&["fmt", "--all", "--check"]),
@@ -509,6 +517,7 @@ mod tests {
         assert_eq!(
             commands,
             [
+                "xtask: cargo and rustc are the release rust-toolchain.toml pins",
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
                 "cargo xtask check-deps",

@@ -35,6 +35,7 @@ mod registry;
 mod repo_settings;
 mod roster;
 mod run;
+mod toolchain;
 
 use std::ffi::OsString;
 use std::io::{self, Write};

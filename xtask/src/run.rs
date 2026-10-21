@@ -290,6 +290,7 @@ mod tests {
         assert_eq!(
             ran,
             [
+                "toolchain",
                 "fmt",
                 "clippy",
                 "check-deps",
