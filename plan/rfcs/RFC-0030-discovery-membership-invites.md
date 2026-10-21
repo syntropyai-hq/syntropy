@@ -127,7 +127,7 @@ Runner endpoint addresses are not discovered. A runner reports its endpoint to i
 | Source | What it says about 7434 and 7435 |
 |---|---|
 | IANA Service Name and Transport Protocol Port Number Registry, updated 2026-10-20 ([CSV](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.csv)) | 7432–7436 is one "Unassigned" range, TCP and UDP. The neighbours are 7430–7431 (OpenView DM) and 7437 (Faximum) |
-| nmap-services, the scanner's port list with observed open frequencies ([master](https://raw.githubusercontent.com/nmap/nmap/master/nmap-services)) | No 7434 entry on either protocol. 7435/tcp is `unknown`, with open frequency 0.000304, 640th of the 4,259 TCP ports it has seen open: something listens there on some internet hosts, with no service named |
+| nmap-services, the scanner's port list with observed open frequencies ([master](https://raw.githubusercontent.com/nmap/nmap/master/nmap-services)) | No 7434 entry on either protocol. 7435/tcp is `unknown`, with open frequency 0.000304, ranking 600th to 687th of the 4,259 TCP ports it has seen open, because 88 ports tie at that frequency: something listens there on some internet hosts, with no service named |
 | Wikipedia, "List of TCP and UDP port numbers", [revision 1381161196](https://en.wikipedia.org/w/index.php?title=List_of_TCP_and_UDP_port_numbers&oldid=1381161196) (2026-10-20) | No entry for 7432–7436; the nearest are 7402 and 7471 |
 | Synology DSM, ["What network ports are used by DSM services?"](https://kb.synology.com/en-uk/DSM/tutorial/What_network_ports_are_used_by_Synology_services) | **Overlap.** Synology High Availability lists "7400-7999 (HA)", TCP/UDP. Migration Assistant lists "7400-7499 (DRBD)". Both ranges cover 7433–7435 |
 | QNAP QTS 5.0, ["QNAP Service Ports"](https://docs.qnap.com/operating-system/qts/5.0.x/en-us/qnap-service-ports-C25795F.html) | Nothing between 7000 and 8000, and no range covering either port |
@@ -149,6 +149,7 @@ The Synology overlap is the one conflict found. It is not a reason to move:
 - Neither row names a UDP service on 7434 or 7435. Migration Assistant labels its range DRBD, which runs over TCP. The HA row labels 7400–7999 only "HA", for TCP and UDP together.
 - A pair beside 7433 cannot avoid the range, because 7433 is inside it too. A pair elsewhere would lose the single firewall rule for 7433–7435.
 - Nmap's 7435/tcp observation names no software, and no home-software list claims the port. Where something already holds a port on a host, the iroh endpoint falls back to an ephemeral UDP port (table above). What the TCP fallback does when TCP 7435 is taken is open as OQ-NET-31, which RFC-0031 §5.3 answers.
+- The survey covers the default ports, not §10's bind-failure fallback. That fallback tries `port + 1 … port + 8`, so from 7434 it reaches 7435, Syntropy's own iroh port, and 7437, which IANA assigns to Faximum. A node that moves its beacon socket also stops hearing peers, which send to 7434 (§4.4). This is open as OQ-NET-32, which §10 answers.
 
 The daemon binds discovery and iroh sockets to all interfaces except those matching `discovery.ignore_interfaces`. The default list covers container bridges (`docker*`, `br-*`, `veth*`, `virbr*`, `vmnet*`, `vboxnet*`) and the loopback interface.
 
