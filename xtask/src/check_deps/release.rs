@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The rules that need cargo to resolve or build a release crate: rule 7 (the core binary links no
-//! vendor GPU runtime) and rule 10 (test-only features never reach a release).
+//! vendor GPU runtime) and rule 10 (test-only features never reach a release). Rule 10's second
+//! half, [`default_features`], reads only `cargo metadata`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -96,6 +97,84 @@ pub fn rule_10(manifest: &Path, graph: &Graph) -> Outcome {
         }
     }
     Outcome::Ran(findings)
+}
+
+/// Rule 10, defaults: no member turns a test-only feature on by default (QUAL-E3-T04). A crate
+/// that did would build every dependent that keeps default features with it, release crates
+/// included. Each member's `default` is expanded through its own `[features]` table. A finding is
+/// a test feature of its own on that path, or an `x/y` or `x?/y` entry naming test feature `y` of
+/// a member dependency `x`. `dep:x` entries enable no feature and are skipped.
+pub fn default_features(graph: &Graph) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for at in graph.members() {
+        let package = graph.package(at);
+        let short = graph.short(at);
+        if !package.features.contains_key("default") {
+            continue;
+        }
+        // Breadth first from `default`; `parent` records which feature enabled each one.
+        let mut parent: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut queue = VecDeque::from(["default"]);
+        let mut seen = BTreeSet::from(["default"]);
+        while let Some(feature) = queue.pop_front() {
+            for entry in package.features.get(feature).into_iter().flatten() {
+                let entry = entry.as_str();
+                if entry.starts_with("dep:") {
+                    continue;
+                }
+                let found = match entry.split_once('/') {
+                    Some((key, dep_feature)) => {
+                        let key = key.strip_suffix('?').unwrap_or(key);
+                        let dep = package
+                            .dependencies
+                            .iter()
+                            .find(|dep| dep.key() == key)
+                            .map(|dep| dep.name.as_str());
+                        match dep {
+                            Some(name)
+                                if policy::TEST_FEATURES.contains(&dep_feature)
+                                    && graph
+                                        .members()
+                                        .iter()
+                                        .any(|m| graph.package(*m).name == name) =>
+                            {
+                                let dep_short = name.strip_prefix(PREFIX).unwrap_or(name);
+                                Some(format!("`{dep_short}/{dep_feature}`"))
+                            }
+                            _ => None,
+                        }
+                    }
+                    None if policy::TEST_FEATURES.contains(&entry) => Some(format!("`{entry}`")),
+                    None => {
+                        if seen.insert(entry) {
+                            parent.insert(entry, feature);
+                            queue.push_back(entry);
+                        }
+                        None
+                    }
+                };
+                if let Some(what) = found {
+                    let mut path = vec![entry, feature];
+                    let mut at = feature;
+                    while let Some(up) = parent.get(at) {
+                        path.push(up);
+                        at = up;
+                    }
+                    path.reverse();
+                    findings.push(Finding::new(
+                        Rule::Numbered(10),
+                        format!(
+                            "`{short}` turns on {what} by default ({}); test-only features are \
+                             never default features, or every dependent that keeps default \
+                             features would build with them",
+                            path.join(" → ")
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    findings
 }
 
 /// One line of `cargo tree --prefix depth --format "{p}\t{f}"`: the package name and its
@@ -263,6 +342,90 @@ fn names_vendor_symbol(vendor: &policy::VendorRuntime, symbol: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn defaults(graph: &Graph) -> Vec<String> {
+        default_features(graph)
+            .iter()
+            .map(Finding::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn a_test_feature_among_a_crates_defaults_is_reported() {
+        let graph = Graph::test(&["obs", "exec"], &[], &[])
+            .with_features("obs", &[("default", &["guards"]), ("guards", &[])], &[])
+            .with_features(
+                "exec",
+                &[
+                    ("default", &["extra"]),
+                    ("extra", &["fault-injection", "dep:helper"]),
+                    ("fault-injection", &[]),
+                ],
+                &[],
+            );
+        assert_eq!(
+            defaults(&graph),
+            [
+                "rule 10: `exec` turns on `fault-injection` by default (default → extra → \
+                 fault-injection); test-only features are never default features, or every \
+                 dependent that keeps default features would build with them",
+                "rule 10: `obs` turns on `guards` by default (default → guards); test-only \
+                 features are never default features, or every dependent that keeps default \
+                 features would build with them",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_default_that_turns_on_a_members_test_feature_is_reported() {
+        let graph = Graph::test(&["obs", "testkit", "bench", "net"], &["serde"], &[])
+            .with_features("obs", &[("guards", &[]), ("debug-taps", &[])], &[])
+            .with_features(
+                "testkit",
+                &[
+                    ("default", &["helpers"]),
+                    ("helpers", &["syntropy-obs/guards"]),
+                ],
+                &[("syntropy-obs", "syntropy-obs")],
+            )
+            .with_features(
+                "bench",
+                &[("default", &["o?/debug-taps"])],
+                &[("o", "syntropy-obs")],
+            )
+            // An external crate's feature of the same name is not a test feature.
+            .with_features(
+                "net",
+                &[("default", &["serde/guards"])],
+                &[("serde", "serde")],
+            );
+        let found = defaults(&graph);
+        assert_eq!(found.len(), 2, "{found:#?}");
+        assert!(found[0].starts_with(
+            "rule 10: `bench` turns on `obs/debug-taps` by default (default → o?/debug-taps)"
+        ));
+        assert!(found[1].starts_with(
+            "rule 10: `testkit` turns on `obs/guards` by default (default → helpers → \
+             syntropy-obs/guards)"
+        ));
+    }
+
+    #[test]
+    fn test_features_outside_the_defaults_pass() {
+        let graph = Graph::test(&["obs", "exec"], &[], &[])
+            .with_features(
+                "obs",
+                &[
+                    ("default", &["std"]),
+                    ("std", &["default"]),
+                    ("fault-injection", &[]),
+                    ("guards", &["fault-injection"]),
+                ],
+                &[],
+            )
+            .with_features("exec", &[("debug-taps", &["syntropy-obs/guards"])], &[]);
+        assert_eq!(defaults(&graph), Vec::<String>::new());
+    }
 
     #[test]
     fn tree_lines_give_the_package_and_its_features() {

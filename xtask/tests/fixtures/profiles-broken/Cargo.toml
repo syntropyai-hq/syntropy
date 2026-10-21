@@ -1,0 +1,28 @@
+# A `cargo xtask build` fixture that breaks its profiles: `test-release` lacks debug assertions,
+# and the release crate turns on a test-only feature. xtask/tests/build_profiles.rs expects
+# `cargo xtask build` to fail on both.
+[workspace]
+resolver = "3"
+members = [
+    "crates/cli",
+    "crates/exec",
+    "crates/obs",
+    "crates/testkit",
+    "crates/xtask",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[profile.test-release]
+inherits = "release"
+
+[profile.chaos]
+inherits = "release"

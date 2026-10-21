@@ -1,4 +1,5 @@
-# A check-deps fixture: release crates built with test-only features of `obs` (rule 10).
+# A check-deps fixture: release crates built with test-only features of `obs`, and a crate that
+# turns one on by default (rule 10).
 # xtask/tests/check_deps.rs runs `cargo xtask check-deps` on it and names the findings it expects.
 [workspace]
 resolver = "3"
