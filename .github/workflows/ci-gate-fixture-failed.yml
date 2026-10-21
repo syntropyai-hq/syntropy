@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# QUAL-E1-T06 evidence, on this branch only: ci-gate fails when a listed job fails.
+# Its ci-gate job is pr.yml's, step for step, but for `needs`.
+
+name: "ci-gate fixture: a failed job fails"
+
+on:
+  push:
+    branches: ["ci-evidence/qual-e1-t06-gate"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      jobs: ${{ steps.jobs.outputs.jobs }}
+    steps:
+      - id: jobs
+        run: echo 'jobs=["lint","build"]' >> "$GITHUB_OUTPUT"
+
+  lint:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'lint')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "lint passes"
+
+  build:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'build')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "build fails"; exit 1
+
+  ci-gate:
+    needs: [changes, lint, build]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the base branch, not the PR
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ci-gate
+          cache: "off"
+      - name: Record the jobs' results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: printf '%s\n' "$NEEDS" | tee "$RUNNER_TEMP/needs.json"
+      # Bootstrap: while the base branch has no `ci-gate` job, which is true only until the PR
+      # that adds it merges, that PR is judged by its own. A base whose `xtask` fails to build
+      # fails here, and never falls back.
+      - name: Find the base branch's ci-gate
+        id: evaluator
+        run: |
+          jobs="$(cargo xtask ci --list)"
+          if awk '$1 == "ci-gate" { found = 1 } END { exit !found }' <<<"$jobs"; then
+            echo "source=base" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the base branch has no ci-gate job yet, so this PR's own evaluator judges it"
+            echo "source=pr" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out this PR, to bootstrap the evaluator
+        if: steps.evaluator.outputs.source == 'pr'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          persist-credentials: false
+      - name: cargo xtask ci ci-gate
+        working-directory: ${{ steps.evaluator.outputs.source == 'pr' && 'pr' || '.' }}
+        run: |
+          rustup toolchain install --no-self-update
+          cargo xtask ci ci-gate --needs "$RUNNER_TEMP/needs.json"
