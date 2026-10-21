@@ -32,7 +32,9 @@
 //! message. Types never use `deny_unknown_fields`.
 //!
 //! **Size.** A CBOR body over 64 KiB is zstd-compressed at level 3. No body, before or after
-//! compression, may exceed 64 MiB; larger state travels on the blob plane by digest.
+//! compression, may exceed 64 MiB; larger state travels on the blob plane by digest. The decoder
+//! also refuses a zstd window over 64 MiB, so decompressing one message takes at most the limit
+//! plus one window.
 //!
 //! **Decoding is total.** Every function that reads bytes returns a [`DecodeError`] for any input
 //! it cannot accept, never panics, and checks every declared length against the limit and the
@@ -55,6 +57,13 @@ pub const COMPRESS_ABOVE: usize = 64 << 10;
 
 /// The zstd level for compressed bodies.
 pub const ZSTD_LEVEL: i32 = 3;
+
+/// The largest zstd window a compressed body may ask the decoder for, as a power of two: 2^26
+/// bytes, [`MAX_BODY`] itself. A frame never needs a window larger than its content, and content
+/// over the limit is refused anyway, so a larger window would only cost the reader memory.
+/// zstd's own default allows 2^27.
+pub const ZSTD_WINDOW_LOG_MAX: u32 = 26;
+const _: () = assert!(1 << ZSTD_WINDOW_LOG_MAX == MAX_BODY);
 
 /// The bytes of the `len` field.
 pub const LEN_BYTES: usize = 4;
@@ -337,19 +346,44 @@ pub fn decode_datagram<T: DeserializeOwned>(datagram: &[u8]) -> Result<(u8, T), 
     Ok((tag, from_cbor(body)?))
 }
 
-/// The decompressed body, refused once it passes [`MAX_BODY`]: a small compressed body cannot
-/// make the reader allocate more than the limit.
+/// The decompressed body, refused once it passes [`MAX_BODY`]. A small compressed body cannot
+/// make the reader hold more than the limit and one window:
+/// - a frame header that declares content over the limit is refused before decoding starts;
+/// - a frame that asks for a window over 2^[`ZSTD_WINDOW_LOG_MAX`] bytes fails to decode;
+/// - the output grows by doubling from 64 KiB, its capacity never past `MAX_BODY + 1` bytes, and
+///   reading stops at that byte.
 fn decompress(body: &[u8]) -> Result<Vec<u8>, DecodeError> {
-    let decoder = zstd::stream::read::Decoder::with_buffer(body)
-        .map_err(|error| DecodeError::Decompress(error.to_string()))?;
-    let mut out = Vec::new();
-    decoder
-        .take(MAX_BODY as u64 + 1)
-        .read_to_end(&mut out)
-        .map_err(|error| DecodeError::Decompress(error.to_string()))?;
-    if out.len() > MAX_BODY {
-        return Err(DecodeError::TooLarge { len: out.len() });
+    let failed = |error: std::io::Error| DecodeError::Decompress(error.to_string());
+    if let Ok(Some(declared)) = zstd::zstd_safe::get_frame_content_size(body)
+        && declared > MAX_BODY as u64
+    {
+        return Err(DecodeError::TooLarge {
+            len: usize::try_from(declared).unwrap_or(usize::MAX),
+        });
     }
+    let mut decoder = zstd::stream::read::Decoder::with_buffer(body).map_err(failed)?;
+    decoder
+        .window_log_max(ZSTD_WINDOW_LOG_MAX)
+        .map_err(failed)?;
+    let mut out = Vec::new();
+    let mut filled = 0;
+    loop {
+        if filled == out.len() {
+            if filled > MAX_BODY {
+                return Err(DecodeError::TooLarge { len: filled });
+            }
+            let grown = (out.len() * 2).clamp(COMPRESS_ABOVE, MAX_BODY + 1);
+            out.reserve_exact(grown - out.len());
+            out.resize(grown, 0);
+        }
+        match decoder.read(&mut out[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(failed(error)),
+        }
+    }
+    out.truncate(filled);
     Ok(out)
 }
 

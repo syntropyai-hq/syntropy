@@ -10,12 +10,14 @@
 //!   error.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 
 use proptest::prelude::*;
 use serde::{Deserialize, Serialize, Serializer};
 use syntropy_core::ErrorClass;
 use syntropy_net::ctl::envelope::{
     self, COMPRESS_ABOVE, DecodeError, EncodeError, Encoding, LEN_BYTES, MAX_BODY,
+    ZSTD_WINDOW_LOG_MAX,
 };
 
 /// A value that touches every encoding rule: integers at each width boundary, signed and
@@ -268,18 +270,71 @@ fn a_body_over_64_mib_is_refused_on_both_sides() {
         envelope::message_len(declared).unwrap_err(),
         DecodeError::TooLarge { len: MAX_BODY + 1 }
     );
-    // A small compressed body that expands past the limit is cut off at the limit.
-    let bomb = zstd::bulk::compress(&vec![0u8; MAX_BODY + 1], 3).unwrap();
-    let mut frame = u32::try_from(1 + bomb.len())
+}
+
+/// A stream frame `len | enc | body`, built by hand so it can carry what `encode` never sends.
+fn frame_of(enc: Encoding, body: &[u8]) -> Vec<u8> {
+    let mut frame = u32::try_from(1 + body.len())
         .unwrap()
         .to_le_bytes()
         .to_vec();
-    frame.push(Encoding::ZstdCbor as u8);
-    frame.extend_from_slice(&bomb);
+    frame.push(enc as u8);
+    frame.extend_from_slice(body);
+    frame
+}
+
+/// `content` as one zstd frame from the streaming encoder, which declares no content size, with
+/// a window of 2^`window_log` bytes.
+fn zstd_unsized(content: &[u8], window_log: u32) -> Vec<u8> {
+    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+    encoder.include_contentsize(false).unwrap();
+    encoder.window_log(window_log).unwrap();
+    encoder.write_all(content).unwrap();
+    let frame = encoder.finish().unwrap();
+    assert!(matches!(
+        zstd::zstd_safe::get_frame_content_size(&frame),
+        Ok(None)
+    ));
+    frame
+}
+
+#[test]
+fn a_compressed_body_that_expands_past_64_mib_is_refused() {
+    let zeros = vec![0u8; MAX_BODY + 1];
+    // A frame header that declares too much content is refused before decoding starts: its
+    // first 18 bytes, every zstd frame header and part of a block, are enough.
+    let declared = zstd::bulk::compress(&zeros, 3).unwrap();
+    for body in [&declared[..], &declared[..18]] {
+        let error = envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, body)).unwrap_err();
+        assert_eq!(error, DecodeError::TooLarge { len: MAX_BODY + 1 });
+        assert_eq!(error.class(), ErrorClass::InvalidRequest);
+    }
+    // A frame that declares no size is cut off at the limit's first extra byte.
+    let unsized_bomb = zstd_unsized(&zeros, 21);
+    assert!(
+        unsized_bomb.len() < 64 << 10,
+        "{} bytes",
+        unsized_bomb.len()
+    );
     assert_eq!(
-        envelope::decode::<String>(&frame).unwrap_err(),
+        envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &unsized_bomb)).unwrap_err(),
         DecodeError::TooLarge { len: MAX_BODY + 1 }
     );
+}
+
+#[test]
+fn a_zstd_window_over_64_mib_is_refused() {
+    let text = text_of_body_len(COMPRESS_ABOVE + 1);
+    let cbor = envelope::to_cbor(&text).unwrap();
+    let at_limit = zstd_unsized(&cbor, ZSTD_WINDOW_LOG_MAX);
+    assert_eq!(
+        envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &at_limit)).unwrap(),
+        text
+    );
+    let over = zstd_unsized(&cbor, ZSTD_WINDOW_LOG_MAX + 1);
+    let error = envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &over)).unwrap_err();
+    assert!(matches!(error, DecodeError::Decompress(_)), "{error:?}");
+    assert_eq!(error.class(), ErrorClass::Integrity);
 }
 
 #[test]
