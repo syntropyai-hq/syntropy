@@ -36,20 +36,20 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 | 10 | QUAL-E3-T25 | M0a | `CountingAlloc` and `alloc_count_this_thread` in `testkit::guards` (split from QUAL-E3-T11, so M0a… | QUAL-E1-T01 | 2 | 8 | 922 |
 | 11 | QUAL-E15-T17 | M0a | The rest of the M0 rigs (ADR-0610 decision 1): R-BW (RTX 5090, AVX-512 dual-CCD CPU, 128 GB, Gen5… | QUAL-E15-T01–T02 | 5 | 18 | 910 |
 | 12 | DIST-E1-T01 | M0a | Lock-free SPSC ring library: power-of-two capacity, cache-line-padded indices, preallocated slots… | QUAL-E1-T01, QUAL-E3-T25 | 3 | 5 | 899 |
-| 13 | QUAL-E3-T01 | M0a | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 12 | 889 |
+| 13 | QUAL-E3-T01 | M0a | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 12 | 895 |
 | 14 | QUAL-E1-T05 | M0a | Contribution checks: `dco` (every commit signed off, matching author), `pr-title` (conventional… | QUAL-E1-T02 | 3 | 4 | 886 |
 | 15 | QUAL-E1-T06 | M0a | `pr.yml` skeleton: `changes`, `lint`, `build-<os>` (the `pr` profile, plus a Linux `test-release`… | QUAL-E1-T02, QUAL-E1-T05 | 4 | 16 | 883 |
-| 16 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01 | 5 | 6 | 873 |
-| 17 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver through `cudarc`, driver ≥ 580 check… | COMP-E1-T01, COMP-E9-T04, QUAL-E15-T02, QUAL-E15-T17 | 6 | 7 | 854 |
-| 18 | PLC-E1-T01 | M0a | Core graph types: `DeviceId`/`TierId`/`LinkId` ordinal rules, `Measured<T>` with… | QUAL-E1-T01 | 2 | 8 | 847 |
-| 19 | QUAL-E3-T02 | M0a | `testkit` deterministic clock and entropy: `SimClock` (advanced only by its owner), `SimEntropy`… | QUAL-E3-T01 | 5 | 7 | 836 |
+| 16 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01 | 5 | 6 | 879 |
+| 17 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver through `cudarc`, driver ≥ 580 check… | COMP-E1-T01, COMP-E9-T04, QUAL-E15-T02, QUAL-E15-T17 | 6 | 7 | 860 |
+| 18 | PLC-E1-T01 | M0a | Core graph types: `DeviceId`/`TierId`/`LinkId` ordinal rules, `Measured<T>` with… | QUAL-E1-T01 | 2 | 8 | 851 |
+| 19 | QUAL-E3-T02 | M0a | `testkit` deterministic clock and entropy: `SimClock` (advanced only by its owner), `SimEntropy`… | QUAL-E3-T01 | 5 | 7 | 842 |
 | 20 | DIST-E1-T02 | M0a | Shared-memory region: header (magic, build ID, heartbeat, step counter, `RunnerState` discriminant)… | DIST-E1-T01 | 4 | 4 | 818 |
-| 21 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request IDs, `Hello`… | DIST-E1-T02 | 5 | 19 | 815 |
-| 22 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 6 | 811 |
-| 23 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and HTTP range implementations: coalescing, the header-read… | QUAL-E1-T01 | 2 | 3 | 809 |
-| 24 | COMP-E15-T01 | M0a | IR types (`ModelGraph`, `LayerProgram`, `Program`, `Node`, `WeightRef`, `GroupSel`, `TensorRole`… | COMP-E1-T02, QUAL-E1-T03 | 6 | 5 | 805 |
-| 25 | COMP-E10-T02 | M0a | GGUF reader: v2 and v3, little-endian only; limits on tensor count, KV pairs, string, array and… | COMP-E10-T01 | 3 | 7 | 795 |
-| 26 | COMP-E16-T01 | M0a | `Family` trait and static registry; `MetaView` over GGUF metadata and… | COMP-E10-T02, COMP-E15-T01 | 7 | 11 | 788 |
+| 21 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and HTTP range implementations: coalescing, the header-read… | QUAL-E1-T01 | 2 | 3 | 817 |
+| 22 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request IDs, `Hello`… | DIST-E1-T02 | 5 | 19 | 815 |
+| 23 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 6 | 811 |
+| 24 | COMP-E15-T01 | M0a | IR types (`ModelGraph`, `LayerProgram`, `Program`, `Node`, `WeightRef`, `GroupSel`, `TensorRole`… | COMP-E1-T02, QUAL-E1-T03 | 6 | 5 | 811 |
+| 25 | COMP-E10-T02 | M0a | GGUF reader: v2 and v3, little-endian only; limits on tensor count, KV pairs, string, array and… | COMP-E10-T01 | 3 | 7 | 803 |
+| 26 | COMP-E16-T01 | M0a | `Family` trait and static registry; `MetaView` over GGUF metadata and… | COMP-E10-T02, COMP-E15-T01 | 7 | 11 | 796 |
 | 27 | COMP-E7-T01 | M0a | Vendoring and the core's static build: ggml's tensor library at the `third_party/ggml.lock` commit… | QUAL-E1-T01, QUAL-E16-T24 | 6 | 8 | 770 |
 | 28 | COMP-E1-T05 | M0a | Arguments and the step descriptor: `OpArgs`, `TensorArg`, `BufferView` binding; the C layout of… | COMP-E1-T02 | 6 | 9 | 753 |
 | 29 | QUAL-E8-T01 | M0a | `SimWorld` core: event queue ordered by (time, RNG tie-break, sequence); `SimClock` advanced only… | QUAL-E3-T02 | 6 | 4 | 752 |
@@ -61,7 +61,7 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 ### Tasks per milestone and area
 
 <!-- BEGIN GENERATED: roadmap-counts -->
-Generated by `tools/roadmap.py` from 1408 tasks and 3614 dependency edges. Every task sits in exactly one milestone.
+Generated by `tools/roadmap.py` from 1408 tasks and 3617 dependency edges. Every task sits in exactly one milestone.
 
 | Milestone | PLC | TIER | DIST | COMP | PROD | QUAL | Total |
 |---|---|---|---|---|---|---|---|
@@ -479,7 +479,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | DIST-E17 | Security hardening: encryption policy, integrity, signing hierarchy and privacy | 3 | 1 | 7 | COMP-E11, PROD-E12, QUAL-E16 |
 | COMP-E1 | Kernel provider core | 4 | 1 | 2 | – |
 | COMP-E2 | Op selection, certification, coverage and kernel targets | 9 | 1 | 15 | PLC-E6, COMP-E3, COMP-E4, COMP-E5, COMP-E11, QUAL-E4, QUAL-E6, QUAL-E12, QUAL-E17 |
-| COMP-E3 | CPU provider | 11 | 2 | 8 | PLC-E7, COMP-E1, COMP-E2, COMP-E11, COMP-E13, COMP-E15 |
+| COMP-E3 | CPU provider | 11 | 2 | 8 | PLC-E7, COMP-E1, COMP-E2, COMP-E5, COMP-E11, COMP-E13, COMP-E15 |
 | COMP-E4 | CUDA provider: runtime, memory, doorbells and capture | 7 | 1 | 2 | PLC-E7, TIER-E8 |
 | COMP-E5 | CUDA provider: kernels | 15 | 1 | 4 | TIER-E6, COMP-E1, COMP-E4, COMP-E10, COMP-E13, COMP-E14, QUAL-E5 |
 | COMP-E7 | ggml provider | 1 | 2 | 2 | QUAL-E4 |
