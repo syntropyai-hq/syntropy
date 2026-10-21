@@ -1,0 +1,93 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Opt-in checks before each commit. Enable them with `git config core.hooksPath .githooks`.
+#
+#   rustfmt       `cargo fmt --all --check`, when Rust files are staged
+#   plan tools    epics.py, depcheck.py, and deps_report.py, trace.py and roadmap.py with --check,
+#                 when files under plan/ are staged; they run on the staged plan, not the working tree
+#   naming check  plan/implementation/tools/naming_check.py --staged (AGENTS.md, "Naming (D5)"),
+#                 when a banned-terms list is set: `git config syntropy.bannedTerms <path>`
+#
+# POSIX sh, so it runs in Git for Windows' shell and on macOS. It never builds anything. A check
+# whose input is missing (nothing of its kind staged, no cargo, no Python 3, no list) is skipped
+# with one notice line, and the other checks still run.
+
+set -u
+
+root=$(git rev-parse --show-toplevel) || exit 2
+cd "$root" || exit 2
+# shellcheck source=common.sh
+. "$root/.githooks/common.sh"
+
+failed=""
+
+note() {
+    printf 'pre-commit: %s\n' "$*"
+}
+
+# True when an added, copied, modified or renamed staged path matches the pathspecs.
+staged() {
+    ! git diff --cached --quiet --diff-filter=ACMR -- "$@"
+}
+
+python=$(find_python) || python=""
+
+# rustfmt reads the working tree, so a partly staged Rust file is checked as it is on disk.
+if ! staged '*.rs'; then
+    note "rustfmt: skipped, no Rust files staged"
+elif ! command -v cargo >/dev/null 2>&1; then
+    note "rustfmt: skipped, cargo is not on PATH"
+elif cargo fmt --all --check; then
+    note "rustfmt: ok"
+else
+    note "rustfmt: FAIL: run 'cargo fmt --all' and stage the result"
+    failed="$failed rustfmt"
+fi
+
+if ! staged plan; then
+    note "plan tools: skipped, nothing under plan/ staged"
+elif [ -z "$python" ]; then
+    note "plan tools: skipped, no Python 3 found (python3 or python)"
+else
+    # The tools find the plan from their own location, so a copy of the staged plan/ tree is
+    # checked exactly as it will be committed.
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/syntropy-pre-commit.XXXXXX") || exit 2
+    trap 'rm -rf "$tmp"' EXIT
+    if ! tree=$(git write-tree) || ! git archive --format=tar "$tree" plan | (cd "$tmp" && tar -xf -); then
+        note "plan tools: FAIL: could not copy the staged plan"
+        failed="$failed plan-tools"
+    else
+        plan_ok=yes
+        for step in epics depcheck "deps_report --check" "trace --check" "roadmap --check"; do
+            # $step is a script name and an optional flag, split on purpose.
+            # shellcheck disable=SC2086
+            set -- $step
+            tool=$1
+            shift
+            if ! "$python" "$tmp/plan/implementation/tools/$tool.py" "$@" >"$tmp/out" 2>&1; then
+                cat "$tmp/out"
+                note "plan tools: FAIL: $tool.py $*"
+                plan_ok=no
+            fi
+        done
+        if [ "$plan_ok" = yes ]; then
+            note "plan tools: ok"
+        else
+            note "plan tools: run the generators that failed (python3 plan/implementation/tools/<tool>.py) and stage the result"
+            failed="$failed plan-tools"
+        fi
+    fi
+fi
+
+if [ -z "$python" ]; then
+    note "naming check: skipped, no Python 3 found (python3 or python)"
+elif ! "$python" "$root/plan/implementation/tools/naming_check.py" --staged; then
+    failed="$failed naming"
+fi
+
+if [ -n "$failed" ]; then
+    note "commit refused:$failed"
+    exit 1
+fi
+exit 0

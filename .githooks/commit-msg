@@ -1,0 +1,74 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Opt-in checks on each commit message. Enable them with `git config core.hooksPath .githooks`.
+#
+#   sign-off      a `Signed-off-by:` line that matches the commit's author (the DCO, CONTRIBUTING.md)
+#   subject       a conventional-commit subject, `type(scope): subject`, with a type AGENTS.md
+#                 allows; the pr-title check QUAL-E1-T05 adds to xtask supersedes this one
+#   naming check  plan/implementation/tools/naming_check.py --message (AGENTS.md, "Naming (D5)"),
+#                 when a banned-terms list is set: `git config syntropy.bannedTerms <path>`
+#
+# POSIX sh, so it runs in Git for Windows' shell and on macOS. A check whose input is missing is
+# skipped with one notice line, and the other checks still run.
+
+set -u
+
+message=$1
+root=$(git rev-parse --show-toplevel) || exit 2
+# shellcheck source=common.sh
+. "$root/.githooks/common.sh"
+
+failed=""
+
+note() {
+    printf 'commit-msg: %s\n' "$*"
+}
+
+# The message as git records it: the part below a `git commit -v` scissors line dropped, then
+# comment lines and surplus blank lines stripped.
+clean=$(sed '/^. -\{24\} >8 -\{24\}$/,$d' "$message" | git stripspace --strip-comments) || exit 2
+if [ -z "$clean" ]; then
+    exit 0 # git aborts an empty message itself
+fi
+subject=$(printf '%s\n' "$clean" | sed -n '1p')
+
+case $subject in
+'fixup! '* | 'squash! '* | 'amend! '*)
+    note "subject: skipped for a commit that autosquash will fold into another"
+    ;;
+*)
+    if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+        note "subject: skipped for a merge commit"
+    elif ! printf '%s\n' "$subject" |
+        grep -Eq '^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)(\([^()]+\))?!?: [^ ]'; then
+        note "subject: FAIL: write 'type(scope): subject', with type one of feat, fix, perf, refactor, docs, test, build, ci, chore or revert"
+        failed="$failed subject"
+    else
+        note "subject: ok"
+    fi
+    ;;
+esac
+
+# `git var GIT_AUTHOR_IDENT` is "Name <email> <seconds> <zone>"; the sign-off carries the first two.
+author=$(git var GIT_AUTHOR_IDENT | sed 's/ [0-9][0-9]* [-+][0-9][0-9]*$//') || exit 2
+if ! printf '%s\n' "$clean" | grep -Fqxi "Signed-off-by: $author"; then
+    note "sign-off: FAIL: add 'Signed-off-by: $author' (git commit -s)"
+    failed="$failed sign-off"
+else
+    note "sign-off: ok"
+fi
+
+if python=$(find_python); then
+    if ! "$python" "$root/plan/implementation/tools/naming_check.py" --message "$message"; then
+        failed="$failed naming"
+    fi
+else
+    note "naming check: skipped, no Python 3 found (python3 or python)"
+fi
+
+if [ -n "$failed" ]; then
+    note "commit refused:$failed"
+    exit 1
+fi
+exit 0
