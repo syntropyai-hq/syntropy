@@ -61,7 +61,9 @@ exceptions = []
 unused-allowed-license = "allow"
 
 [licenses.private]
-# Workspace crates are checked too: each must say `MIT OR Apache-2.0` (ADR-0018 §1).
+# Workspace crates are checked too, against the same allow list. That check would pass a crate
+# with `license = "MIT"`, so it does not prove ADR-0018 §1's exact `MIT OR Apache-2.0`: every
+# crate inherits that from `[workspace.package]` with `license.workspace = true`.
 ignore = false
 
 [bans]
