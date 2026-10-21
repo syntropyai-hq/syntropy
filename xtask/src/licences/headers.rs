@@ -4,8 +4,10 @@
 //! `SPDX-License-Identifier: MIT OR Apache-2.0` (ADR-0018 §1, RFC-0062 §12.2).
 //!
 //! The check covers Rust (build scripts included), CUDA, HIP, Metal Shading Language, Slang, the
-//! C and C++ sources and headers kernels share, and CMake and shell build scripts. The header is
-//! the first line, or the second after a `#!` line, written as a `//`, `#` or `/* */` comment.
+//! C and C++ sources and headers kernels share, and CMake and shell build scripts. A shell script
+//! with no extension, such as a git hook, is covered too: a file with no extension whose first
+//! line is a shell's `#!` line. The header is the first line, or the second after a `#!` line,
+//! written as a `//`, `#` or `/* */` comment.
 //! Vendored third-party code, which keeps its own licence, is skipped: `third_party/` and every
 //! `crates/kernels-*/vendor/`, which `cargo xtask third-party` checks instead. So are build
 //! output (`target/`) and `.git/`.
@@ -14,7 +16,7 @@
 //! CI's checkout, so an untracked build or vendoring output in a local tree does not fail the
 //! check. Anywhere else, such as a test fixture, the check walks the tree and checks every file.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -35,7 +37,10 @@ const NAMES: &[&str] = &["CMakeLists.txt"];
 /// Directory names never entered, at any depth.
 const SKIPPED_DIRS: &[&str] = &[".git", "target"];
 
-/// Whether the check covers the file at `path`.
+/// Shells whose scripts the check covers when they have no extension (issue #1574).
+const SHELLS: &[&str] = &["sh", "bash", "dash", "ksh", "zsh"];
+
+/// Whether the check covers the file at `path` by its name or extension.
 pub fn covered(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     NAMES.contains(&name)
@@ -43,6 +48,50 @@ pub fn covered(path: &Path) -> bool {
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| EXTENSIONS.contains(&e))
+}
+
+/// Whether `line` is a `#!` line that runs one of [`SHELLS`]: `#!/bin/sh`, `#! /bin/bash`,
+/// `#!/usr/bin/env bash` or `#!/usr/bin/env -S bash -e`, but not `#!/usr/bin/env python3` or a Rust
+/// inner attribute such as `#![forbid(unsafe_code)]`.
+pub fn is_shell_shebang(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("#!") else {
+        return false;
+    };
+    let base = |program: &str| program.rsplit('/').next().unwrap_or(program).to_owned();
+    let mut words = rest.split_whitespace();
+    let Some(program) = words.next() else {
+        return false;
+    };
+    let interpreter = if base(program) == "env" {
+        // `env`'s own flags, such as `-S`, and `NAME=value` assignments come first.
+        words.find(|word| !word.starts_with('-') && !word.contains('='))
+    } else {
+        Some(program)
+    };
+    interpreter.is_some_and(|program| SHELLS.contains(&base(program).as_str()))
+}
+
+/// Whether the file at `path` is a shell script with no extension: its first line, read from at
+/// most the first 256 bytes, is a shell's `#!` line. A binary file or a plain text file has no
+/// such line, so it is never checked.
+fn is_extensionless_shell_script(path: &Path) -> bool {
+    if path.extension().is_some() {
+        return false;
+    }
+    let mut start = Vec::with_capacity(256);
+    let read = std::fs::File::open(path).and_then(|file| file.take(256).read_to_end(&mut start));
+    if read.is_err() || !start.starts_with(b"#!") {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&start);
+    let line = text.lines().next().unwrap_or("");
+    is_shell_shebang(line.trim_end_matches('\r'))
+}
+
+/// Whether the check covers the file at `path`: by name or extension ([`covered`]), or as an
+/// extension-less shell script.
+fn checked(path: &Path) -> bool {
+    covered(path) || is_extensionless_shell_script(path)
 }
 
 /// What is wrong with the start of `text`, if anything.
@@ -85,7 +134,7 @@ pub fn files(root: &Path) -> io::Result<Vec<PathBuf>> {
                     .fold(root.to_path_buf(), |path, part| path.join(part))
             })
             // A tracked file deleted in the work tree is not part of the next commit.
-            .filter(|path| covered(path) && path.is_file())
+            .filter(|path| path.is_file() && checked(path))
             .collect();
         found.sort();
         return Ok(found);
@@ -138,7 +187,7 @@ fn walk(root: &Path) -> io::Result<Vec<PathBuf>> {
                 if !skipped && !is_vendored(&relative(root, &path)) {
                     pending.push(path);
                 }
-            } else if covered(&path) && !is_vendored(&relative(root, &path)) {
+            } else if path.is_file() && checked(&path) && !is_vendored(&relative(root, &path)) {
                 found.push(path);
             }
         }
@@ -217,6 +266,36 @@ mod tests {
             "tool.py",
         ] {
             assert!(!covered(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn shell_shebangs_are_told_from_other_first_lines() {
+        for line in [
+            "#!/bin/sh",
+            "#!/bin/bash",
+            "#! /bin/sh",
+            "#!/usr/bin/env bash",
+            "#!/usr/bin/env -S bash -eu",
+            "#!/usr/bin/env LC_ALL=C sh",
+            "#!/bin/zsh",
+            "#!/usr/bin/dash -e",
+            "#!/bin/ksh",
+        ] {
+            assert!(is_shell_shebang(line), "{line}");
+        }
+        for line in [
+            "#!/usr/bin/env python3",
+            "#!/usr/bin/perl",
+            "#![forbid(unsafe_code)]",
+            "#!",
+            "#!/usr/bin/env",
+            "#!/usr/bin/env -S",
+            "# not a shebang",
+            "",
+            "#!/bin/shell-tool",
+        ] {
+            assert!(!is_shell_shebang(line), "{line}");
         }
     }
 

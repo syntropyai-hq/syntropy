@@ -349,6 +349,94 @@ fn in_a_git_work_tree_the_tracked_files_are_checked() {
     );
 }
 
+/// Issue #1574: a shell script with no extension, such as a git hook, is checked like a `.sh`
+/// file, and its header may follow the `#!` line. Extension-less files that are not shell
+/// scripts are left alone.
+#[test]
+fn an_extensionless_shell_script_is_checked() {
+    let root = scratch("spdx-shebang");
+    write(
+        &root,
+        ".githooks/pre-commit",
+        "#!/bin/sh\nexec cargo xtask ci lint\n",
+    );
+    write(
+        &root,
+        ".githooks/commit-msg",
+        &format!("#!/usr/bin/env bash\n# {HEADER}\nexit 0\n"),
+    );
+    write(&root, "bin/check", "#!/usr/bin/env -S bash -eu\r\necho\r\n");
+    // Not shell scripts: a Python script, plain text, a binary and a probe fixture.
+    write(&root, "tools/report", "#!/usr/bin/env python3\nprint()\n");
+    write(&root, "NOTES", "no header needed\n");
+    write(
+        &root,
+        "crates/probe/tests/fixtures/proc/cpuinfo",
+        "processor : 0\n",
+    );
+    let blob = root.join("data/blob");
+    std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+    std::fs::write(&blob, [0x7f, b'E', b'L', b'F', 0, 1, 2, 3]).unwrap();
+
+    let (code, log) = xtask(&["spdx", "--root", root.to_str().unwrap()]);
+    assert_eq!(code, Some(1), "{log}");
+    assert_eq!(
+        lines(&log, "spdx: "),
+        [
+            ".githooks/pre-commit: has no SPDX line",
+            "bin/check: has no SPDX line",
+            "FAIL: 2 of 3 source files lack `SPDX-License-Identifier: MIT OR Apache-2.0` on their \
+             first line, or on the line after a `#!` line (ADR-0018 §1)",
+        ],
+        "{log}"
+    );
+
+    write(
+        &root,
+        ".githooks/pre-commit",
+        &format!("#!/bin/sh\n# {HEADER}\nexec cargo xtask ci lint\n"),
+    );
+    write(
+        &root,
+        "bin/check",
+        &format!("#!/usr/bin/env -S bash -eu\r\n# {HEADER}\r\necho\r\n"),
+    );
+    let (code, log) = xtask(&["spdx", "--root", root.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "{log}");
+    assert!(
+        log.contains("spdx: PASS: 3 source files start with"),
+        "{log}"
+    );
+}
+
+/// Issue #1574 in a git work tree: a tracked extension-less hook is checked, and an untracked
+/// one is not.
+#[test]
+fn a_tracked_extensionless_hook_is_checked_in_a_git_work_tree() {
+    let root = scratch("spdx-shebang-git");
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    write(&root, ".githooks/commit-msg", "#!/bin/sh\nexit 0\n");
+    write(&root, "bin/untracked", "#!/bin/sh\nexit 0\n");
+    git(&["add", ".githooks/commit-msg"]);
+    let (code, log) = xtask(&["spdx", "--root", root.to_str().unwrap()]);
+    assert_eq!(code, Some(1), "{log}");
+    assert_eq!(
+        lines(&log, "spdx: ")[0],
+        ".githooks/commit-msg: has no SPDX line",
+        "{log}"
+    );
+    assert!(!log.contains("bin/untracked"), "{log}");
+}
+
 #[test]
 fn source_files_with_the_spdx_line_pass() {
     let root = scratch("spdx-pass");
