@@ -136,10 +136,13 @@ pub(super) fn parse_scaled(s: &str, units: &[(&str, u64)]) -> Result<u64, ValueE
     let digits: u128 = format!("{int}{frac}")
         .parse()
         .map_err(|_| bad("malformed"))?;
+    // 30 digits are below 2^100, but times a 2^40 scale they can pass 2^128: check each step.
     let divisor = 10u128.pow(frac.len() as u32);
-    let scaled = digits * u128::from(scale);
-    let rounded = (scaled + divisor / 2) / divisor;
-    u64::try_from(rounded).map_err(|_| too_big())
+    let scaled = digits
+        .checked_mul(u128::from(scale))
+        .and_then(|n| n.checked_add(divisor / 2))
+        .ok_or_else(too_big)?;
+    u64::try_from(scaled / divisor).map_err(|_| too_big())
 }
 
 impl Serialize for ByteSize {
@@ -214,6 +217,14 @@ mod tests {
             assert!(s.parse::<ByteSize>().is_err(), "{s:?} should not parse");
         }
         assert!("17000000TiB".parse::<ByteSize>().is_err());
+        // 30 digits times 2^40 passes 2^128: rejected, not wrapped or panicking.
+        let huge = "9".repeat(30) + "TiB";
+        assert_eq!(
+            huge.parse::<ByteSize>().unwrap_err().kind(),
+            super::super::ValueErrorKind::OutOfRange
+        );
+        let huge = "9".repeat(20) + "." + &"9".repeat(10) + "TB";
+        assert!(huge.parse::<ByteSize>().is_err());
         assert!(serde_json::from_str::<ByteSize>("-4").is_err());
     }
 
