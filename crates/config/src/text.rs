@@ -7,6 +7,7 @@ use std::fmt;
 
 use toml::Value;
 
+use crate::registry::Registry;
 use crate::schema::{KeySchema, is_bare_key, write_toml_string};
 use crate::value::{REDACTED, SecretSource};
 
@@ -104,6 +105,66 @@ pub(crate) fn shown(key: &KeySchema, value: &Value) -> String {
         return String::from(REDACTED);
     }
     Inline(value).to_string()
+}
+
+/// A `policy."<selector>"` table as `config show` prints it, and whether anything in it is
+/// redacted. The table's entries are instance keys, written relative to the table (RFC-0054
+/// §5.4):
+/// - an entry that is an instance key whose type holds no secret prints as written;
+/// - an entry whose key holds a secret ([`KeySchema::holds_secret`]) prints `[redacted]`;
+/// - an entry that no instance key names prints `[redacted]` too, because an unknown key may be
+///   a misspelt secret. Validating the table is the policy tables' task.
+///
+/// A table that groups instance keys, such as `approximate`, is walked entry by entry.
+pub(crate) fn policy_shown(registry: &Registry, value: &Value) -> (String, bool) {
+    let Value::Table(table) = value else {
+        return (String::from(REDACTED), true);
+    };
+    let mut redacted = false;
+    let text = policy_table(registry, table, "", &mut redacted);
+    (text, redacted)
+}
+
+fn policy_table(
+    registry: &Registry,
+    table: &toml::Table,
+    prefix: &str,
+    redacted: &mut bool,
+) -> String {
+    if table.is_empty() {
+        return String::from("{}");
+    }
+    let entries: Vec<String> = table
+        .iter()
+        .map(|(name, value)| {
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}.{name}")
+            };
+            let key = registry
+                .key(&path)
+                .filter(|k| k.scope == crate::Scope::Instance);
+            let under = |k: &KeySchema| {
+                k.scope == crate::Scope::Instance
+                    && k.path.len() > path.len()
+                    && k.path.starts_with(&path)
+                    && k.path.as_bytes()[path.len()] == b'.'
+            };
+            let shown = match (key, value) {
+                (Some(key), value) if !key.holds_secret => Inline(value).to_string(),
+                (None, Value::Table(inner)) if registry.keys().any(under) => {
+                    policy_table(registry, inner, &path, redacted)
+                }
+                _ => {
+                    *redacted = true;
+                    String::from(REDACTED)
+                }
+            };
+            format!("{} = {shown}", Key(name))
+        })
+        .collect();
+    format!("{{ {} }}", entries.join(", "))
 }
 
 #[cfg(test)]

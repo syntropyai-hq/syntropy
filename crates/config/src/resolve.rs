@@ -281,25 +281,56 @@ pub struct Proposal {
     pub key: Option<&'static KeySchema>,
     /// The proposed value. Private for the same reason as [`Resolved`]'s.
     value: Value,
+    /// The value as `config show` prints it, computed with the registry when the proposal is
+    /// made, so a `policy.*` table is redacted entry by entry.
+    shown: String,
+    /// Whether `shown` redacts anything.
+    redacted: bool,
     /// The layer that set it.
     pub origin: Origin,
 }
 
 impl Proposal {
-    /// The proposed value, unless the key's type holds a secret (see [`Resolved::value`]).
+    /// A cluster key's proposal.
+    fn cluster(key: &'static KeySchema, value: Value, origin: Origin) -> Self {
+        Self {
+            path: key.path.to_owned(),
+            key: Some(key),
+            shown: text::shown(key, &value),
+            redacted: text::is_secret(key),
+            value,
+            origin,
+        }
+    }
+
+    /// A `policy."<selector>"` table's proposal. Each entry is redacted unless it is an
+    /// instance key whose type holds no secret ([`text::policy_shown`]).
+    fn policy(path: String, registry: &Registry, value: Value, origin: Origin) -> Self {
+        let (shown, redacted) = text::policy_shown(registry, &value);
+        Self {
+            path,
+            key: None,
+            value,
+            shown,
+            redacted,
+            origin,
+        }
+    }
+
+    /// The proposed value, unless any of it is redacted in `config show`: a secret-typed
+    /// cluster key, or a `policy.*` table with a secret-typed or unknown entry (see
+    /// [`Resolved::value`]).
     pub fn value(&self) -> Option<&Value> {
-        match self.key {
-            Some(key) if text::is_secret(key) => None,
-            _ => Some(&self.value),
+        if self.redacted {
+            None
+        } else {
+            Some(&self.value)
         }
     }
 
     /// The value as `config show` prints it, with secrets redacted.
     pub fn shown(&self) -> String {
-        match self.key {
-            Some(key) => text::shown(key, &self.value),
-            None => text::Inline(&self.value).to_string(),
-        }
+        self.shown.clone()
     }
 }
 
@@ -573,15 +604,8 @@ impl<'r> Resolution<'r> {
                 Some(())
             }
             Scope::Cluster => {
-                self.proposals.insert(
-                    key.path.to_owned(),
-                    Proposal {
-                        path: key.path.to_owned(),
-                        key: Some(key),
-                        value,
-                        origin,
-                    },
-                );
+                self.proposals
+                    .insert(key.path.to_owned(), Proposal::cluster(key, value, origin));
                 Some(())
             }
             Scope::Instance | Scope::Request => None,
@@ -684,12 +708,7 @@ impl<'r> Resolution<'r> {
                 let path = format!("{POLICY_TABLE}.{}", text::Key(selector));
                 self.proposals.insert(
                     path.clone(),
-                    Proposal {
-                        path,
-                        key: None,
-                        value: body.clone(),
-                        origin: at(segments),
-                    },
+                    Proposal::policy(path, self.registry, body.clone(), at(segments)),
                 );
             } else {
                 self.errors.push(Problem::new(

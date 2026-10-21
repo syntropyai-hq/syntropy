@@ -464,8 +464,36 @@ struct NestedSecretSection {
     headers: Vec<Header>,
 }
 
-static SECRET_MAP: Registry =
-    Registry::new(&[&SecretMapSection::SCHEMA, &NestedSecretSection::SCHEMA]);
+/// Instance keys, which `[policy."<selector>"]` tables hold, one of them a secret.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "", scope = Instance, owner = "RFC-0054")]
+struct PolicyKeys {
+    /// What the plan optimizes.
+    #[config(reload = Instance, default = "latency")]
+    objective: String,
+    /// A token the draft model's source needs.
+    #[config(reload = Instance, default = unset)]
+    draft_token: Option<syntropy_config::Secret<String>>,
+}
+
+/// Instance keys grouped under `approximate`, one of them a secret.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "approximate", scope = Instance, owner = "RFC-0054")]
+struct ApproximateKeys {
+    /// Lossy KV.
+    #[config(reload = Instance, default = false)]
+    kv_lossy: bool,
+    /// A token for a knob's endpoint.
+    #[config(reload = Instance, default = unset)]
+    endpoint_token: Option<syntropy_config::Secret<String>>,
+}
+
+static SECRET_MAP: Registry = Registry::new(&[
+    &SecretMapSection::SCHEMA,
+    &NestedSecretSection::SCHEMA,
+    &PolicyKeys::SCHEMA,
+    &ApproximateKeys::SCHEMA,
+]);
 
 /// A key whose type holds a secret prints `[redacted]` whole, whatever its value looks like: an
 /// entry named `env` or `file` in a table of secrets is a secret, not a `SecretSource`
@@ -532,6 +560,41 @@ fn a_secret_nested_in_a_struct_or_an_array_of_tables_never_prints() {
     let resolved = resolve_secrets(&file(headers), &Env::default(), &Flags::new());
     let section = resolved.section::<NestedSecretSection>().expect("builds");
     assert_eq!(section.headers[0].value.expose_for("test"), "canary-9");
+}
+
+/// A `policy.*` table is a proposal printed whole, so each entry is redacted by its instance
+/// key's `holds_secret` flag; an entry no instance key names is redacted too, since it may be a
+/// misspelt secret.
+#[test]
+fn a_secret_in_a_policy_table_never_prints() {
+    let text = "[policy.\"qwen3*\"]\nobjective = \"throughput\"\ndraft_token = \"canary-p1\"\n\
+                mystery = \"canary-p2\"\n\n[policy.\"qwen3*\".approximate]\nkv_lossy = true\n\
+                endpoint_token = \"canary-p3\"\n\n[policy.plain]\nobjective = \"latency\"\n";
+    let files = vec![ConfigFile::new("/c.toml", text)];
+    let resolved = resolve_secrets(&files, &Env::default(), &Flags::new());
+    let shown = command::show_resolved(&resolved);
+    assert!(!shown.contains("canary"), "{shown}");
+    assert!(
+        shown.contains(
+            "policy.\"qwen3*\" = { approximate = { endpoint_token = [redacted], kv_lossy = true \
+             }, draft_token = [redacted], mystery = [redacted], objective = \"throughput\" }"
+        ),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("policy.plain = { objective = \"latency\" }"),
+        "{shown}"
+    );
+    let proposal = |path: &str| {
+        resolved
+            .proposals()
+            .iter()
+            .find(|p| p.path == path)
+            .expect(path)
+    };
+    assert_eq!(proposal("policy.\"qwen3*\"").value(), None);
+    assert!(proposal("policy.plain").value().is_some());
+    assert!(!format!("{resolved:?}").contains("canary"));
 }
 
 /// A malformed `--set` never echoes its value, whatever the separator.
