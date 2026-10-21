@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 214" width="960" height="214" role="img" aria-labelledby="roadmap-dark-title roadmap-dark-desc">
+  <title id="roadmap-dark-title">Milestones</title>
+  <desc id="roadmap-dark-desc">Seven milestones from M0a to M4. M0a, the walking skeleton on one Linux machine, is in progress. M1a is the first preview release, M1b adds Windows and Apple silicon, M2 is the launch with machines on a LAN, M3 is feature complete, and M4 is 1.0.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif; fill: #f0f6fc; }
+    .c { font-size: 17px; font-weight: 650; }
+    .d { font-size: 13px; fill: #9198a1; }
+    .p { font-size: 12.5px; font-weight: 600; }
+    .p2 { font-size: 12.5px; font-weight: 600; fill: #9198a1; }
+  </style>
+  <rect x="0.75" y="0.75" width="958.5" height="212.5" rx="18" fill="#151b23" stroke="#3d444d" stroke-width="1.5"/>
+  <defs><linearGradient id="rm-dark" x1="0" x2="1"><stop offset="0" stop-color="#6f9bf0"/><stop offset="1" stop-color="#a58ff2"/></linearGradient></defs>
+  <line x1="80" y1="100" x2="880" y2="100" stroke="#3d444d" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round"/>
+  <line x1="36" y1="100" x2="140.0" y2="100" stroke="url(#rm-dark)" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="80.0" cy="100" r="17" fill="#6f9bf0" fill-opacity="0.18"/>
+  <circle cx="80.0" cy="100" r="9" fill="#6f9bf0"/>
+  <rect x="32.0" y="42" width="96" height="24" rx="12" fill="#6f9bf0"/>
+  <text x="80.0" y="58.5" class="p" text-anchor="middle" style="fill:#0d1117">in progress</text>
+  <text x="80.0" y="142" class="c" text-anchor="middle">M0a</text>
+  <text x="80.0" y="164" class="d" text-anchor="middle">walking skeleton,</text>
+  <text x="80.0" y="182" class="d" text-anchor="middle">one Linux machine</text>
+  <circle cx="213.33333333333334" cy="100" r="8" fill="#151b23" stroke="#656c76" stroke-width="2.5"/>
+  <text x="213.33333333333334" y="142" class="c" text-anchor="middle">M0b</text>
+  <text x="213.33333333333334" y="164" class="d" text-anchor="middle">an MoE family,</text>
+  <text x="213.33333333333334" y="182" class="d" text-anchor="middle">certified kernels</text>
+  <circle cx="346.6666666666667" cy="100" r="8" fill="#151b23" stroke="#656c76" stroke-width="2.5"/>
+  <rect x="287.56666666666666" y="42" width="118.2" height="24" rx="12" fill="#0d1117" stroke="#3d444d" stroke-width="1.2"/>
+  <text x="346.6666666666667" y="58.5" class="p2" text-anchor="middle">first preview</text>
+  <text x="346.6666666666667" y="142" class="c" text-anchor="middle">M1a</text>
+  <text x="346.6666666666667" y="164" class="d" text-anchor="middle">VRAM, RAM and</text>
+  <text x="346.6666666666667" y="182" class="d" text-anchor="middle">NVMe tiering</text>
+  <circle cx="480.0" cy="100" r="8" fill="#151b23" stroke="#656c76" stroke-width="2.5"/>
+  <rect x="443.1" y="42" width="73.80000000000001" height="24" rx="12" fill="#0d1117" stroke="#3d444d" stroke-width="1.2"/>
+  <text x="480.0" y="58.5" class="p2" text-anchor="middle">preview</text>
+  <text x="480.0" y="142" class="c" text-anchor="middle">M1b</text>
+  <text x="480.0" y="164" class="d" text-anchor="middle">Windows and</text>
+  <text x="480.0" y="182" class="d" text-anchor="middle">Apple silicon</text>
+  <circle cx="613.3333333333334" cy="100" r="8" fill="#151b23" stroke="#656c76" stroke-width="2.5"/>
+  <rect x="580.1333333333333" y="42" width="66.4" height="24" rx="12" fill="#0d1117" stroke="#3d444d" stroke-width="1.2"/>
+  <text x="613.3333333333334" y="58.5" class="p2" text-anchor="middle">launch</text>
+  <text x="613.3333333333334" y="142" class="c" text-anchor="middle">M2</text>
+  <text x="613.3333333333334" y="164" class="d" text-anchor="middle">machines on a LAN,</text>
+  <text x="613.3333333333334" y="182" class="d" text-anchor="middle">first dashboard</text>
+  <circle cx="746.6666666666667" cy="100" r="8" fill="#151b23" stroke="#656c76" stroke-width="2.5"/>
+  <rect x="676.4666666666667" y="42" width="140.4" height="24" rx="12" fill="#0d1117" stroke="#3d444d" stroke-width="1.2"/>
+  <text x="746.6666666666667" y="58.5" class="p2" text-anchor="middle">feature complete</text>
+  <text x="746.6666666666667" y="142" class="c" text-anchor="middle">M3</text>
+  <text x="746.6666666666667" y="164" class="d" text-anchor="middle">invites, recovery,</text>
+  <text x="746.6666666666667" y="182" class="d" text-anchor="middle">native HIP, Vulkan</text>
+  <circle cx="880.0" cy="100" r="8" fill="#151b23" stroke="#656c76" stroke-width="2.5"/>
+  <rect x="857.9" y="42" width="44.2" height="24" rx="12" fill="#0d1117" stroke="#3d444d" stroke-width="1.2"/>
+  <text x="880.0" y="58.5" class="p2" text-anchor="middle">1.0</text>
+  <text x="880.0" y="142" class="c" text-anchor="middle">M4</text>
+  <text x="880.0" y="164" class="d" text-anchor="middle">signed installers,</text>
+  <text x="880.0" y="182" class="d" text-anchor="middle">every platform tier</text>
+</svg>

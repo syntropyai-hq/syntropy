@@ -1,32 +1,105 @@
-# Syntropy
+<!-- Translated copies: README.zh-CN.md, README.ja.md, README.de.md, README.fr.md, README.es.md and README.pt-BR.md. Update them in the same change. -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/logo-dark.svg">
+    <img src="docs/media/logo-light.svg" alt="Syntropy" width="360">
+  </picture>
+</p>
 
-Syntropy runs one large language model across the GPUs, RAM, NVMe drives and machines you already own, and decides where every byte of the model lives from measurements taken on that hardware.
+<p align="center"><b>English</b>&emsp;<a href="README.zh-CN.md">简体中文</a>&emsp;<a href="README.ja.md">日本語</a>&emsp;<a href="README.de.md">Deutsch</a>&emsp;<a href="README.fr.md">Français</a>&emsp;<a href="README.es.md">Español</a>&emsp;<a href="README.pt-BR.md">Português</a></p>
 
-[![Licence: MIT OR Apache-2.0](https://img.shields.io/badge/licence-MIT%20OR%20Apache--2.0-blue)](#licence-and-credits)
+<h3 align="center">Run one large model across every GPU, memory tier and machine you own</h3>
 
-> **Syntropy is in design.** The Cargo workspace and a stub for every crate exist, but the crates are still empty. The repository holds the complete design under [`plan/`](plan/README.md), and implementation starts at milestone M0a. Everything on this page describes what is designed and planned, not something you can run today.
+<p align="center">Placement decided by measuring your hardware. Output that matches the reference by default.<br>
+Rust, with native kernels for CUDA, HIP, Metal, Vulkan and the CPU.</p>
 
-A gaming PC with a 24 GB graphics card and 64 GB of RAM, a laptop with 48 GB of unified memory and a 128 GB mini PC under the TV can't each hold a 235-billion-parameter mixture-of-experts model, which is 142 GB at 4-bit. Between them they have 264 GB. Syntropy treats them as one computer with several kinds of memory. It measures how fast each GPU and CPU reads each memory tier, chooses one placement for the whole model, and keeps compute next to the bytes: whichever device's memory holds a weight is the device that computes it. Across machines, only activations travel during decode. Inside a machine, a weight that isn't in the GPU's cache is computed by the CPU where it sits instead of being copied over PCIe for every token. Unless you turn on a shortcut, the output matches a reference implementation within published tolerances.
+<p align="center">
+  <a href="#roadmap"><img src="https://img.shields.io/badge/status-pre--alpha%2C_M0a_in_progress-7b5fd0" alt="Status: pre-alpha, M0a in progress"></a>
+  <a href="#licence-and-credits"><img src="https://img.shields.io/badge/licence-MIT_OR_Apache--2.0-3f6fd1" alt="Licence: MIT OR Apache-2.0"></a>
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/Rust-2024_edition-c2572b?logo=rust&logoColor=white" alt="Rust 2024 edition"></a>
+  <a href="PLATFORMS.md"><img src="https://img.shields.io/badge/platforms-Linux%2C_Windows%2C_macOS-2f9a5a" alt="Platforms: Linux, Windows, macOS"></a>
+</p>
+
+<p align="center">
+  <a href="#how-does-it-work"><b>How&nbsp;it&nbsp;works</b></a>&emsp;
+  <a href="#roadmap"><b>Roadmap</b></a>&emsp;
+  <a href="PLATFORMS.md"><b>Platforms</b></a>&emsp;
+  <a href="plan/README.md"><b>The&nbsp;design</b></a>&emsp;
+  <a href="CONTRIBUTING.md"><b>Contributing</b></a>
+</p>
+
+> [!IMPORTANT]
+> **Syntropy is being built, and there is nothing to install yet.** The complete design is in [`plan/`](plan/README.md), and implementation is under way at milestone M0a. Everything on this page describes what is designed and planned, not something you can run today.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/memory-pool-dark.svg">
+    <img src="docs/media/memory-pool-light.svg" width="860" alt="Three machines drawn to the same scale. A gaming PC with 24 GB of VRAM and 64 GB of RAM has 88 GB, a laptop has 48 GB of unified memory and a mini PC has 128 GB. Each falls short of a 142 GB model. Together they have 264 GB, which holds the model with 122 GB to spare.">
+  </picture>
+</p>
+
+A gaming PC with a 24 GB graphics card and 64 GB of RAM, a laptop with 48 GB of unified memory and a 128 GB mini PC under the TV can't each hold a 235-billion-parameter mixture-of-experts model, which is 142 GB at 4-bit. Between them they have 264 GB.
+
+Syntropy treats them as one computer with several kinds of memory. It measures how fast each GPU and CPU reads each memory tier, chooses one placement for the whole model, and keeps compute next to the bytes: the device whose memory holds a weight is the device that computes with it. Across machines, only activations travel during decode. Inside a machine, a weight that isn't in the GPU's cache is computed by the CPU where it sits, instead of being copied over PCIe for every token.
 
 ## Features
 
-All of this is specified in the design and none of it is built yet.
+All of this is specified in the design, and none of it is built yet.
 
-- **Every memory tier does work.** The hottest weights and MoE experts sit in an adaptive VRAM cache, the full weight set stays resident in RAM where the CPU computes cache misses in place, and cold experts and large tables are read from NVMe with direct I/O when they are needed.
-- **One placement for the whole model.** A single plan decides which machines take part, which contiguous layer range each one runs, which tier holds each tensor group and which device computes it, and it records why each group landed where it did.
-- **Measured, not looked up.** Each machine probes what its GPUs, CPUs, drives and network links deliver using Syntropy's real kernels, and the placement is built from those measurements rather than from spec sheets.
+### Inside one machine
+
+- **Every memory tier does work.** The hottest weights and MoE experts sit in an adaptive VRAM cache. The full weight set stays resident in RAM, where the CPU computes cache misses in place. Cold experts and large tables are read from NVMe with direct I/O when they are needed.
 - **Experts fetched before they're needed.** The prediction of the next layer's experts runs inside the router kernel, so the NVMe and RAM reads for the next layer are under way while the current one computes.
-- **A ring of machines.** Across a network the model splits into pipeline stages that hand hidden states straight to the next machine, and a layer is split across machines only on links, such as RDMA over Thunderbolt 5, whose measured latency passes a gate.
-- **No setup on a LAN, one token off it.** Machines on the same network find each other, a new one is admitted once you confirm the same six-digit code on both screens, and a laptop away from home joins with an invite token that is single-use by default.
-- **Speculative decoding that keeps the answer.** MTP heads or a draft model propose several tokens, the model checks them all in one pass, and the acceptance rule preserves the model's own output distribution.
+- **Measured, not looked up.** Each machine probes what its GPUs, CPUs, drives and network links deliver, using Syntropy's real kernels. Placement is built from those measurements, not from spec sheets.
+
+### Across machines
+
+- **One placement for the whole model.** A single plan decides which machines take part, which layer range each one runs, which tier holds each tensor group and which device computes it. It records why each group landed where it did.
+- **A ring of machines.** The model splits into pipeline stages that hand hidden states straight to the next machine. A single layer is split across machines only on links, such as RDMA over Thunderbolt 5, whose measured latency passes a gate.
+- **No setup on a LAN, one token off it.** Machines on the same network find each other. A new one is admitted once you confirm the same six-digit code on both screens. A laptop away from home joins with an invite token that is single-use by default.
+- **A lost machine doesn't lose the answer.** Each stage keeps what it recently sent. When a stage machine drops out and the others have room, generation resumes without an error reaching the client.
+
+### For you and your tools
+
 - **Exact unless you say otherwise.** Shortcuts that change output, such as skipping experts that miss the cache, are opt-in, named, and listed on every response they touched.
-- **A lost machine doesn't lose the answer.** Each stage keeps what it recently sent, so when a stage machine drops out and the others have room, generation resumes without an error reaching the client.
+- **Speculative decoding that keeps the answer.** MTP heads or a draft model propose several tokens, the model checks them all in one pass, and the acceptance rule preserves the model's own output distribution.
 - **The APIs your tools already use.** OpenAI- and Anthropic-shaped APIs and a native one, served from whichever machine the request reaches.
 - **Native code throughout.** A Rust system layer, native kernels for CUDA, HIP, Metal, Vulkan and the CPU, and ggml as a per-operation fallback for breadth.
 
-## Status
+## A first look
 
-The design is complete and implementation starts at M0a. The plan is 25 RFCs, 96 ADRs, and 1,382 tasks across six areas of the code, each task with testable acceptance criteria and the RFC sections and ADRs it implements. The milestones carry no dates. [RFC-0001 §16](plan/rfcs/RFC-0001-system-architecture.md#16-milestones) defines each one's scope and exit criteria, [ADR-0020](plan/decisions/ADR-0020-platform-support-tiers.md) the platforms each one releases, and the [roadmap](plan/implementation/roadmap.md) lists every milestone's tasks in dependency order.
+This is the planned command line from [RFC-0051](plan/rfcs/RFC-0051-cli-and-dashboard.md). None of these commands exist yet.
+
+```sh
+syntropy run                     # asks one question, then recommends a model that fits
+syntropy plan <model> --explain  # preview placement and predicted speed without loading
+syntropy cluster approve <id>    # admit a LAN machine after matching its six-digit code
+syntropy invite create           # a single-use token for a laptop away from home
+```
+
+Each machine serves the APIs at `http://127.0.0.1:7433` by default, so existing OpenAI and Anthropic clients and SDKs work unchanged ([RFC-0050](plan/rfcs/RFC-0050-api-surface.md)):
+
+```sh
+curl http://127.0.0.1:7433/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "<model>", "stream": true,
+       "messages": [{"role": "user", "content": "Why is decode memory-bound?"}]}'
+```
+
+## Roadmap
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/milestones-dark.svg">
+    <img src="docs/media/milestones-light.svg" width="860" alt="Seven milestones from M0a to M4. M0a, the walking skeleton on one Linux machine, is in progress. M1a is the first preview release, M1b adds Windows and Apple silicon, M2 is the launch with machines on a LAN, M3 is feature complete, and M4 is 1.0.">
+  </picture>
+</p>
+
+The design is complete: 25 RFCs, 98 ADRs, and 1,411 tasks across six areas of the code, each task with testable acceptance criteria and the RFC sections and ADRs it implements. The milestones carry no dates. [RFC-0001 §16](plan/rfcs/RFC-0001-system-architecture.md#16-milestones) defines each one's scope and exit criteria, [ADR-0020](plan/decisions/ADR-0020-platform-support-tiers.md) the platforms each one releases, and the [roadmap](plan/implementation/roadmap.md) lists every milestone's tasks in dependency order. Progress is tracked on the [project board](https://github.com/orgs/syntropyai-hq/projects/1).
+
+<details>
+<summary><b>What each milestone delivers</b></summary>
+<br>
 
 | Milestone | What it delivers |
 |---|---|
@@ -38,15 +111,17 @@ The design is complete and implementation starts at M0a. The plan is 25 RFCs, 96
 | **M3** | Feature complete: invite links, recovery from a lost machine, tensor and expert parallelism on fast links, speculation across machines, native HIP and Vulkan kernels, and a throughput mode for several users. |
 | **M4** | 1.0: Tier 2 and Tier 3 platforms, signed installers and updates, and performance regression gates on reference hardware. |
 
+</details>
+
 ## What it will run on
 
-Platforms are supported at one of three tiers ([ADR-0020](plan/decisions/ADR-0020-platform-support-tiers.md)). The tier describes support at 1.0. [PLATFORMS.md](PLATFORMS.md) has the full matrix and the milestone at which each platform first ships.
+Each platform has a support tier ([ADR-0020](plan/decisions/ADR-0020-platform-support-tiers.md)), which describes its support at 1.0. [PLATFORMS.md](PLATFORMS.md) has the full matrix, with minimum versions, backends and the milestone at which each platform first ships.
 
-| Tier | Promise | Platforms |
-|---|---|---|
-| **1** | Supported. Prebuilt, signed builds. Parity and performance are tested on real hardware, and a failure blocks the release. | Linux x86_64 with NVIDIA; Windows 11 x86_64 with NVIDIA; macOS 15+ on Apple silicon; CPU-only on all three |
-| **2** | Supported with known gaps. Prebuilt builds, parity enforced, performance tracked. The gaps are listed in the release notes. | Linux with AMD ROCm; Vulkan on AMD, Intel and NVIDIA GPUs; AMD Strix Halo; GB10-class Linux arm64; Raspberry Pi 5-class boards (CPU); RDMA NICs; several GPUs in one machine |
-| **3** | Best effort. Builds published as experimental. | Android and iOS as nodes; Intel SYCL; CUDA 12 for Pascal and Volta GPUs; WebGPU; Windows 10 22H2; Linux under WSL2 with an NVIDIA GPU |
+<img src="https://img.shields.io/badge/tier_1-supported-2f9a5a" alt="Tier 1: supported"><br>Linux x86_64 with NVIDIA, Windows 11 x86_64 with NVIDIA, macOS 15+ on Apple silicon, and CPU-only on all three. Prebuilt, signed builds. Parity and performance are tested on real hardware, and a failure blocks the release.
+
+<img src="https://img.shields.io/badge/tier_2-known_gaps-3f6fd1" alt="Tier 2: supported with known gaps"><br>Linux with AMD ROCm; Vulkan on AMD, Intel and NVIDIA GPUs; AMD Strix Halo; GB10-class Linux arm64; Raspberry Pi 5-class boards (CPU); RDMA NICs; several GPUs in one machine. Prebuilt builds, parity enforced, performance tracked. The gaps are listed in the release notes.
+
+<img src="https://img.shields.io/badge/tier_3-best_effort-818b98" alt="Tier 3: best effort"><br>Android and iOS as nodes; Intel SYCL; CUDA 12 for Pascal and Volta GPUs; WebGPU; Windows 10 22H2; Linux under WSL2 with an NVIDIA GPU. Builds published as experimental.
 
 Not planned for 1.0: macOS on Intel, 32-bit operating systems, Windows on arm64, and a node running inside a browser.
 
@@ -62,19 +137,20 @@ Generating one token for one user reads every active weight and the whole KV cac
 - **RAM** holds the full weight set. When a token needs an expert that isn't in the GPU's cache, the CPU computes it there, alongside the GPU, instead of copying it over PCIe. A desktop CPU reads dual-channel DDR5 at 76–122 GB/s, about 3–5× what PCIe 4.0 x16 delivers to the GPU.
 - **NVMe** holds cold experts and large lookup tables, stored as whole-expert extents and read with direct I/O. The next-layer prediction starts those reads before the router asks for them.
 
-Syntropy's tier manager owns every resident byte, so the operating system's page cache never decides what stays in memory. Weights are streamed to the GPU only for large batches such as long prompt chunks, and only where the measured break-even says copying beats computing in place.
+Syntropy's tier manager owns every resident byte, so the operating system's page cache never decides what stays in memory. Weights are streamed to the GPU only for large batches, such as long prompt chunks, and only where the measured break-even says copying beats computing in place.
 
 ### Across machines
 
 <p align="center"><img src="docs/media/ring.svg" width="760" alt="Three machines in a ring, each running a layer range: hidden states pass from one to the next, the last samples the token and returns it to the first and streams it to the machine that received the request"></p>
 
-The model is cut into stages by layer range, one stage per machine, and the stages form a ring. The first stage embeds the input, each stage passes its hidden state directly to the next, and the last stage samples the token, returns it round the ring, and streams it to the machine that received the request. A pipeline adds capacity rather than single-stream speed, so the gain comes from moving bytes onto faster memory, and a slow machine is left out of the ring when it would only add a hop.
+The model is cut into stages by layer range, one stage per machine, and the stages form a ring. The first stage embeds the input, and each stage passes its hidden state directly to the next. The last stage samples the token, returns it round the ring, and streams it to the machine that received the request. A pipeline adds capacity rather than single-stream speed, so the gain comes from moving bytes onto faster memory. A slow machine is left out of the ring when it would only add a hop.
 
 Splitting a single layer across machines, with tensor or expert parallelism, costs a network round trip per layer per token. Syntropy does it only on links whose measured collective latency is low enough for it to pay. In practice that means RDMA-class links. Wi-Fi never qualifies.
 
 One machine is elected coordinator and keeps the cluster's event log of membership and plans. It never sees a token and isn't on the request path, so losing it fails no request.
 
-The longer explanation is [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). The full designs are in the RFCs: tiers and residency ([RFC-0020](plan/rfcs/RFC-0020-tier-manager-and-residency.md)), the weight I/O path ([RFC-0021](plan/rfcs/RFC-0021-weight-io-path.md)), the expert cache ([RFC-0023](plan/rfcs/RFC-0023-moe-expert-cache-prediction-prefetch.md)), placement ([RFC-0011](plan/rfcs/RFC-0011-joint-placement-solver.md)), distributed execution ([RFC-0032](plan/rfcs/RFC-0032-distributed-execution.md)), and discovery and invites ([RFC-0030](plan/rfcs/RFC-0030-discovery-membership-invites.md)).
+> [!TIP]
+> The longer, plain-language explanation is [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). The full designs are in the RFCs: tiers and residency ([RFC-0020](plan/rfcs/RFC-0020-tier-manager-and-residency.md)), the weight I/O path ([RFC-0021](plan/rfcs/RFC-0021-weight-io-path.md)), the expert cache ([RFC-0023](plan/rfcs/RFC-0023-moe-expert-cache-prediction-prefetch.md)), placement ([RFC-0011](plan/rfcs/RFC-0011-joint-placement-solver.md)), distributed execution ([RFC-0032](plan/rfcs/RFC-0032-distributed-execution.md)), and discovery and invites ([RFC-0030](plan/rfcs/RFC-0030-discovery-membership-invites.md)).
 
 ## Exact by default
 
@@ -103,7 +179,7 @@ Byte-identical output across different devices is not promised, because differen
 
 Every number in the plan is labelled as a `[target]`, an `[estimate]` with its derivation, or a cited measurement of hardware. None is a Syntropy benchmark, because there is nothing to benchmark yet.
 
-## How it's built
+## Contributing
 
 AI agents build Syntropy by executing the plan's tasks. An agent takes one task, implements it on its own branch, and opens one change that meets the task's acceptance criteria and cites the RFC sections and ADRs it implements. The task graph decides what can start.
 
@@ -117,7 +193,7 @@ A change merges only when all of these pass ([ADR-0021](plan/decisions/ADR-0021-
 
 The parity harness and the conformance gates are built first, in M0, before the kernels and model families they check. Maintainers also approve the sensitive classes of change: keys, signing, admission and the update client, CI and release configuration, agent instruction files, new model families, new direct dependencies, and any change a gate cannot check or that needs a gate waived.
 
-Outside contributions are welcome under the same gates. [AGENTS.md](AGENTS.md) is the working guide for agents, and [CONTRIBUTING.md](CONTRIBUTING.md) covers issues, pull requests, evidence and AI-assisted work.
+Outside contributions are welcome under the same gates. [CONTRIBUTING.md](CONTRIBUTING.md) covers issues, pull requests, evidence and AI-assisted work, and [AGENTS.md](AGENTS.md) is the working guide for agents.
 
 ## Security
 
