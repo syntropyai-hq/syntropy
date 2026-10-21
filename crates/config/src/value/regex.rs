@@ -44,17 +44,12 @@ impl Regex {
                 pattern.len()
             )));
         }
-        let compiled = regex::RegexBuilder::new(&format!(r"\A(?:{pattern})\z"))
-            .size_limit(SIZE_LIMIT)
-            .dfa_size_limit(SIZE_LIMIT)
-            .nest_limit(NEST_LIMIT)
-            .build()
-            .map_err(|e| match e {
-                regex::Error::CompiledTooBig(limit) => ValueError::bad_regex(format!(
-                    "`{pattern}` compiles to more than {limit} bytes; simplify it"
-                )),
-                other => ValueError::bad_regex(format!("`{pattern}` does not compile: {other}")),
-            })?;
+        // The pattern must parse on its own first. Unbalanced parentheses would otherwise close
+        // the wrapper's group early: `a)|(b` becomes `\A(?:a)|(b)\z`, which matches any name
+        // that starts with `a` or ends with `b`. Once the pattern parses alone, its groups are
+        // balanced, so the wrapper anchors all of it.
+        build(pattern, pattern)?;
+        let compiled = build(&format!(r"\A(?:{pattern})\z"), pattern)?;
         Ok(Self {
             pattern: pattern.to_owned(),
             compiled,
@@ -75,6 +70,21 @@ impl Regex {
     pub fn captures<'n>(&self, name: &'n str) -> Option<regex::Captures<'n>> {
         self.compiled.captures(name)
     }
+}
+
+/// Compiles `text` within the limits, naming `pattern` in an error.
+fn build(text: &str, pattern: &str) -> Result<regex::Regex, ValueError> {
+    regex::RegexBuilder::new(text)
+        .size_limit(SIZE_LIMIT)
+        .dfa_size_limit(SIZE_LIMIT)
+        .nest_limit(NEST_LIMIT)
+        .build()
+        .map_err(|e| match e {
+            regex::Error::CompiledTooBig(limit) => ValueError::bad_regex(format!(
+                "`{pattern}` compiles to more than {limit} bytes; simplify it"
+            )),
+            other => ValueError::bad_regex(format!("`{pattern}` does not compile: {other}")),
+        })
 }
 
 impl fmt::Debug for Regex {
@@ -134,6 +144,24 @@ mod tests {
         // An alternation at the top level is still anchored as a whole.
         let re = Regex::new("a|b").unwrap();
         assert!(re.is_full_match("a") && re.is_full_match("b") && !re.is_full_match("ab"));
+    }
+
+    #[test]
+    fn rejects_patterns_that_would_escape_the_anchors() {
+        // Each is invalid alone. Wrapped unchecked, each compiled with the anchors on one
+        // alternative only, and `blk\.0\.)|(.*` matched every name.
+        for pattern in [r"a)|(b", r"blk\.0\.)|(.*", r"x)(?:y"] {
+            let err = Regex::new(pattern).unwrap_err();
+            assert_eq!(err.kind(), ValueErrorKind::BadRegex, "{pattern}");
+            assert!(err.message().contains("does not compile"), "{err}");
+        }
+        // Balanced groups and top-level alternations stay anchored as a whole.
+        let re = Regex::new(r"(a)|(b)").unwrap();
+        assert!(re.is_full_match("a") && re.is_full_match("b"));
+        assert!(!re.is_full_match("axyz") && !re.is_full_match("zzzb"));
+        let re = Regex::new(r"blk\.0\..*|token_embd\.weight").unwrap();
+        assert!(re.is_full_match("token_embd.weight"));
+        assert!(!re.is_full_match("output.weight"));
     }
 
     #[test]
