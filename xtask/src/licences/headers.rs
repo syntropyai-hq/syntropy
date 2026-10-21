@@ -9,9 +9,14 @@
 //! Vendored third-party code, which keeps its own licence, is skipped: `third_party/` and every
 //! `crates/kernels-*/vendor/`, which `cargo xtask third-party` checks instead. So are build
 //! output (`target/`) and `.git/`.
+//!
+//! The files checked are the ones git tracks when the root is the top of a git work tree, as in
+//! CI's checkout, so an untracked build or vendoring output in a local tree does not fail the
+//! check. Anywhere else, such as a test fixture, the check walks the tree and checks every file.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use super::{count, is_vendored, relative};
 
@@ -66,9 +71,60 @@ pub fn problem(text: &str) -> Option<String> {
     }
 }
 
-/// Every covered file under `root` that is not vendored, sorted. Unreadable directories are
+/// Every covered file under `root` that is not vendored, sorted: the files git tracks when `root`
+/// is the top of a git work tree, else every file in the tree. Unreadable directories are
 /// errors, so nothing is skipped quietly.
 pub fn files(root: &Path) -> io::Result<Vec<PathBuf>> {
+    if let Some(tracked) = tracked(root) {
+        let mut found: Vec<PathBuf> = tracked
+            .iter()
+            .filter(|rel| !is_vendored(rel))
+            .filter(|rel| !rel.split('/').any(|part| SKIPPED_DIRS.contains(&part)))
+            .map(|rel| {
+                rel.split('/')
+                    .fold(root.to_path_buf(), |path, part| path.join(part))
+            })
+            // A tracked file deleted in the work tree is not part of the next commit.
+            .filter(|path| covered(path) && path.is_file())
+            .collect();
+        found.sort();
+        return Ok(found);
+    }
+    walk(root)
+}
+
+/// The files git tracks, `/`-separated and relative to `root`, when `root` is the top of a git
+/// work tree; `None` when it is not, or git cannot say.
+fn tracked(root: &Path) -> Option<Vec<String>> {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| output.stdout)
+    };
+    let top = String::from_utf8(git(&["rev-parse", "--show-toplevel"])?).ok()?;
+    let top = std::fs::canonicalize(top.trim_end_matches(['\n', '\r'])).ok()?;
+    if top != std::fs::canonicalize(root).ok()? {
+        return None;
+    }
+    let listed = String::from_utf8(git(&["ls-files", "-z"])?).ok()?;
+    Some(
+        listed
+            .split('\0')
+            .filter(|rel| !rel.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// Every covered file in the tree under `root` that is not vendored, sorted.
+fn walk(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {

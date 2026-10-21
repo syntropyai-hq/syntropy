@@ -297,6 +297,58 @@ fn a_source_file_without_the_spdx_line_fails() {
     );
 }
 
+/// In a git work tree the check reads the files git tracks, as CI's checkout has them, so an
+/// untracked build or vendoring output does not fail it and a tracked file without the header
+/// does.
+#[test]
+fn in_a_git_work_tree_the_tracked_files_are_checked() {
+    let root = scratch("spdx-git");
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    write(&root, "crates/core/src/lib.rs", &format!("// {HEADER}\n"));
+    write(&root, "crates/core/src/bare.rs", "fn bare() {}\n");
+    // Untracked outputs of a local build or `cargo vendor`, never committed.
+    write(
+        &root,
+        "target-ci/debug/build/x/out/bindings.rs",
+        "generated\n",
+    );
+    write(&root, "vendor/serde/src/lib.rs", "upstream\n");
+    git(&["add", "crates/core/src/lib.rs", "crates/core/src/bare.rs"]);
+
+    let (code, log) = xtask(&["spdx", "--root", root.to_str().unwrap()]);
+    assert_eq!(code, Some(1), "{log}");
+    assert_eq!(
+        lines(&log, "spdx: "),
+        [
+            "crates/core/src/bare.rs: has no SPDX line",
+            "FAIL: 1 of 2 source files lack `SPDX-License-Identifier: MIT OR Apache-2.0` on their \
+             first line, or on the line after a `#!` line (ADR-0018 §1)",
+        ],
+        "{log}"
+    );
+
+    write(
+        &root,
+        "crates/core/src/bare.rs",
+        &format!("// {HEADER}\nfn bare() {{}}\n"),
+    );
+    let (code, log) = xtask(&["spdx", "--root", root.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "{log}");
+    assert!(
+        log.contains("spdx: PASS: 2 source files start with"),
+        "{log}"
+    );
+}
+
 #[test]
 fn source_files_with_the_spdx_line_pass() {
     let root = scratch("spdx-pass");
