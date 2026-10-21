@@ -1,47 +1,47 @@
 error: a section is `""` or dotted lower-case segments, such as "api.auth"
- --> tests/ui/misuse.rs:7:20
+ --> tests/ui/misuse.rs:8:20
   |
-7 | #[config(section = "Bad-Prefix", owner = "0054")]
+8 | #[config(section = "Bad-Prefix", owner = "0054")]
   |                    ^^^^^^^^^^^^
 
 error: config section `Malformed` needs `scope = Node | Cluster | Instance | Request` (RFC-0054 §2.1)
- --> tests/ui/misuse.rs:8:8
+ --> tests/ui/misuse.rs:9:8
   |
-8 | struct Malformed {
+9 | struct Malformed {
   |        ^^^^^^^^^
 
 error: an owner is an RFC, written `"RFC-NNNN"`
- --> tests/ui/misuse.rs:7:42
+ --> tests/ui/misuse.rs:8:42
   |
-7 | #[config(section = "Bad-Prefix", owner = "0054")]
+8 | #[config(section = "Bad-Prefix", owner = "0054")]
   |                                          ^^^^^^
 
 error: `authority` applies to cluster and instance keys; `node_keys.a` is a node key
-  --> tests/ui/misuse.rs:19:53
+  --> tests/ui/misuse.rs:20:53
    |
-19 |     #[config(reload = Hot, default = 1, authority = Keyholder)]
+20 |     #[config(reload = Hot, default = 1, authority = Keyholder)]
    |                                                     ^^^^^^^^^
 
 error: `introduced_at` applies to cluster and instance keys; `node_keys.b` is a node key
-  --> tests/ui/misuse.rs:22:57
+  --> tests/ui/misuse.rs:23:57
    |
-22 |     #[config(reload = Hot, default = 1, introduced_at = 1)]
+23 |     #[config(reload = Hot, default = 1, introduced_at = 1)]
    |                                                         ^
 
 error: unknown key attribute; expected `reload`, `default`, `min`, `max`, `scope`, `owner`, `introduced_at` or `authority`
-  --> tests/ui/misuse.rs:25:41
+  --> tests/ui/misuse.rs:26:41
    |
-25 |     #[config(reload = Hot, default = 1, units = "bytes")]
+26 |     #[config(reload = Hot, default = 1, units = "bytes")]
    |                                         ^^^^^
 
 error: `serde(rename)` is not supported on a config section: a key's name is its field's name, so the schema, the docs and the environment variable names match the file
-  --> tests/ui/misuse.rs:29:13
+  --> tests/ui/misuse.rs:30:13
    |
-29 |     #[serde(rename = "dee")]
+30 |     #[serde(rename = "dee")]
    |             ^^^^^^
 
 error: expected a reload class: `Hot`, `Instance` or `Node` (RFC-0054 §9.1)
-  --> tests/ui/misuse.rs:32:23
+  --> tests/ui/misuse.rs:33:23
    |
-32 |     #[config(reload = Sometimes, default = maybe)]
+33 |     #[config(reload = Sometimes, default = maybe)]
    |                       ^^^^^^^^^

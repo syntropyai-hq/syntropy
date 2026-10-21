@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Two sections that claim one prefix, in one registry.
 use serde::Deserialize;
 use syntropy_config::{ConfigSection, Registry};

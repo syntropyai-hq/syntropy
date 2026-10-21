@@ -1,53 +1,53 @@
 error: `allow_approximate` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves the cluster key `allow_approximate` for keyholders
-  --> tests/ui/keyholder_name_member.rs:10:75
+  --> tests/ui/keyholder_name_member.rs:11:75
    |
-10 |     #[config(reload = Hot, default = true, introduced_at = 1, authority = Member)]
+11 |     #[config(reload = Hot, default = true, introduced_at = 1, authority = Member)]
    |                                                                           ^^^^^^
 
 error: `network_scope` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves the cluster key `network_scope` for keyholders
-  --> tests/ui/keyholder_name_member.rs:13:84
+  --> tests/ui/keyholder_name_member.rs:14:84
    |
-13 |     #[config(reload = Hot, default = "lan+invites", introduced_at = 1, authority = Member)]
+14 |     #[config(reload = Hot, default = "lan+invites", introduced_at = 1, authority = Member)]
    |                                                                                    ^^^^^^
 
 error: `cluster_aliases` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves the cluster key `cluster_aliases` for keyholders
-  --> tests/ui/keyholder_name_member.rs:16:73
+  --> tests/ui/keyholder_name_member.rs:17:73
    |
-16 |     #[config(reload = Hot, default = {}, introduced_at = 1, authority = Member)]
+17 |     #[config(reload = Hot, default = {}, introduced_at = 1, authority = Member)]
    |                                                                         ^^^^^^
 
 error: `update.cluster_coordinated` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves cluster keys under `update.*` for keyholders
-  --> tests/ui/keyholder_name_member.rs:25:92
+  --> tests/ui/keyholder_name_member.rs:26:92
    |
-25 |     #[config(reload = Hot, default = true, scope = Cluster, introduced_at = 1, authority = Member)]
+26 |     #[config(reload = Hot, default = true, scope = Cluster, introduced_at = 1, authority = Member)]
    |                                                                                            ^^^^^^
 
 error: `fidelity` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves the exactness field `fidelity` for keyholders
-  --> tests/ui/keyholder_name_member.rs:34:64
+  --> tests/ui/keyholder_name_member.rs:35:64
    |
-34 |     #[config(reload = Instance, default = "exact", authority = Member)]
+35 |     #[config(reload = Instance, default = "exact", authority = Member)]
    |                                                                ^^^^^^
 
 error: `default_fidelity` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves the exactness field `default_fidelity` for keyholders
-  --> tests/ui/keyholder_name_member.rs:37:64
+  --> tests/ui/keyholder_name_member.rs:38:64
    |
-37 |     #[config(reload = Instance, default = "exact", authority = Member)]
+38 |     #[config(reload = Instance, default = "exact", authority = Member)]
    |                                                                ^^^^^^
 
 error: `pin` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves the pin field `pin` for keyholders
-  --> tests/ui/keyholder_name_member.rs:40:59
+  --> tests/ui/keyholder_name_member.rs:41:59
    |
-40 |     #[config(reload = Instance, default = [], authority = Member)]
+41 |     #[config(reload = Instance, default = [], authority = Member)]
    |                                                           ^^^^^^
 
 error: `tensor_override` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves the pin field `tensor_override` for keyholders
-  --> tests/ui/keyholder_name_member.rs:43:59
+  --> tests/ui/keyholder_name_member.rs:44:59
    |
-43 |     #[config(reload = Instance, default = [], authority = Member)]
+44 |     #[config(reload = Instance, default = [], authority = Member)]
    |                                                           ^^^^^^
 
 error: `approximate.topk_reduce` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves the approximate knobs `approximate.*` for keyholders
-  --> tests/ui/keyholder_name_member.rs:55:62
+  --> tests/ui/keyholder_name_member.rs:56:62
    |
-55 |     #[config(reload = Instance, default = false, authority = Member)]
+56 |     #[config(reload = Instance, default = false, authority = Member)]
    |                                                              ^^^^^^
