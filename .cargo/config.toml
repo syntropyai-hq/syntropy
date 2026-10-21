@@ -1,0 +1,4 @@
+# `cargo xtask <command>` runs the workspace's own task runner (RFC-0062 §1, RFC-0060 §1.2).
+# `--locked` keeps a local run and a CI run on the same Cargo.lock.
+[alias]
+xtask = "run --quiet --locked --package syntropy-xtask --"
