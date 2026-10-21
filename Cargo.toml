@@ -40,6 +40,8 @@ members = [
     # Dev only
     "crates/testkit",
     "crates/bench",
+    # Task runner for CI jobs and test suites (RFC-0062 §1, RFC-0060 §1.2); outside the crate graph
+    "xtask",
 ]
 
 [workspace.package]

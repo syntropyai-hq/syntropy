@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Shared setup for every job that runs `cargo xtask` (RFC-0062 §1). Use it after checkout:
+#
+#   - uses: ./.github/actions/setup-rust
+#     with:
+#       cache-key: lint
+#       cache: read-write   # trusted runs only; the default, read-only, never saves
+#   - run: cargo xtask ci lint
+#
+# Caches are read-only unless a job opts in. A build of untrusted code, such as a fork's commit
+# in `build-untrusted.yml`, gets no cache writes (RFC-0062 §3.3 item 3), so such a job must leave
+# `cache` at read-only or set it to off. §5.2 sets the same rule for the kernel cache: only
+# trusted contexts write it.
+
+name: Set up Rust
+description: >-
+  Installs the Rust toolchain and components pinned in rust-toolchain.toml, then restores the
+  cargo registry, git and target caches. It saves them only when the job opts in with
+  `cache: read-write`.
+
+inputs:
+  cache-key:
+    description: >-
+      Names this job's cache, such as `lint` or `hosted-test-linux`, so jobs that build different
+      things keep separate target directories.
+    required: true
+  cache:
+    description: >-
+      `read-only` (the default) restores the caches and never saves them. `read-write` also saves
+      them when the job succeeds; use it only in trusted runs, never in a build of untrusted code
+      (RFC-0062 §3.3 item 3). `off` skips the caches.
+    required: false
+    default: read-only
+
+outputs:
+  toolchain:
+    description: The toolchain rustup installed, such as `1.99.1-x86_64-unknown-linux-gnu`.
+    value: ${{ steps.toolchain.outputs.name }}
+  cache-hit:
+    description: '`true` when the cache was restored from an exact key match.'
+    value: ${{ steps.cache-rw.outputs.cache-hit || steps.cache-ro.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check inputs
+      shell: bash
+      env:
+        CACHE_MODE: ${{ inputs.cache }}
+        CACHE_KEY: ${{ inputs.cache-key }}
+      run: |
+        case "$CACHE_MODE" in
+          read-write|read-only|off) ;;
+          *) echo "::error::cache must be read-write, read-only or off, not '$CACHE_MODE'"; exit 1 ;;
+        esac
+        if [ -z "$CACHE_KEY" ]; then
+          echo "::error::cache-key must not be empty"
+          exit 1
+        fi
+
+    # With no argument, rustup installs the toolchain rust-toolchain.toml names, with the profile
+    # and components listed there.
+    - name: Install the pinned toolchain
+      id: toolchain
+      shell: bash
+      env:
+        CACHE_KEY: ${{ inputs.cache-key }}
+      run: |
+        rustup toolchain install --no-self-update
+        name="$(rustup show active-toolchain | cut -d ' ' -f 1)"
+        echo "name=$name" >> "$GITHUB_OUTPUT"
+        echo "cache-prefix=rust-$RUNNER_OS-$name-$CACHE_KEY-" >> "$GITHUB_OUTPUT"
+        rustc --version --verbose
+        cargo --version
+        cargo fmt --version
+        cargo clippy --version
+
+    # Incremental artefacts are not reused between CI runs and only make the cache larger.
+    - name: Set the cargo environment
+      shell: bash
+      run: |
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+        echo "CARGO_TERM_COLOR=always" >> "$GITHUB_ENV"
+
+    - name: Restore and save the cargo caches
+      id: cache-rw
+      if: inputs.cache == 'read-write'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ steps.toolchain.outputs.cache-prefix }}${{ hashFiles('Cargo.lock') }}
+        restore-keys: ${{ steps.toolchain.outputs.cache-prefix }}
+
+    - name: Restore the cargo caches without saving
+      id: cache-ro
+      if: inputs.cache == 'read-only'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ steps.toolchain.outputs.cache-prefix }}${{ hashFiles('Cargo.lock') }}
+        restore-keys: ${{ steps.toolchain.outputs.cache-prefix }}
