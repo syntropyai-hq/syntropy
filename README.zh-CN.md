@@ -172,7 +172,7 @@ Syntropy 的层级管理器管理每一个常驻字节，因此留在内存中�
 | 路径 | 内容 |
 |---|---|
 | [`plan/00-vision-and-scope.md`](plan/00-vision-and-scope.md) | 问题、使用场景、平台矩阵、目标模型、成功标准 SC-1 到 SC-32（全部是目标值），以及“功能完整”的含义 |
-| [`plan/decisions/`](plan/decisions/) | ADR。ADR-0000 包含产品准则 D1–D8，ADR-0001 到 ADR-0021 是基础决策，其余按领域编号 |
+| [`plan/decisions/`](plan/decisions/) | ADR。ADR-0000 包含产品准则 D1–D8，ADR-0001 到 ADR-0022 是基础决策，其余按领域编号 |
 | [`plan/rfcs/`](plan/rfcs/) | RFC-0001（系统架构），以及 24 份领域 RFC，涵盖放置、层级、分布式执行、计算、产品和质量 |
 | [`plan/implementation/`](plan/implementation/README.md) | 六个 epic 文件中的任务、路线图、依赖报告、可追溯性、风险登记册，以及检查它们的脚本 |
 | [`plan/open-questions.md`](plan/open-questions.md) | 尚未确定的事项，每一项都注明了由哪个任务或哪项测量来解决 |
