@@ -110,10 +110,22 @@ impl SecretSource {
                 }
                 Ok(Secret::new(text))
             }
-            SecretSource::Env(var) => std::env::var(var)
-                .map(Secret::new)
-                .map_err(|e| unavailable(format!("cannot read the secret variable `{var}`: {e}"))),
+            SecretSource::Env(var) => std::env::var(var).map(Secret::new).map_err(|e| {
+                unavailable(format!(
+                    "cannot read the secret variable `{var}`: {}",
+                    describe_var_error(&e)
+                ))
+            }),
         }
+    }
+}
+
+/// Why a variable could not be read, without its value: `VarError::NotUnicode`'s own `Display`
+/// prints the value's bytes, which here are the secret.
+fn describe_var_error(error: &std::env::VarError) -> &'static str {
+    match error {
+        std::env::VarError::NotPresent => "it is not set",
+        std::env::VarError::NotUnicode(_) => "its value is not valid UTF-8",
     }
 }
 
@@ -233,6 +245,26 @@ mod tests {
 
         let source: SecretSource = serde_json::from_str("\"inline\"").unwrap();
         assert_eq!(source.resolve().unwrap().expose_for("test"), "inline");
+    }
+
+    #[test]
+    fn a_variable_error_never_holds_the_value() {
+        assert_eq!(
+            describe_var_error(&std::env::VarError::NotPresent),
+            "it is not set"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let value = std::ffi::OsString::from_vec(b"hunter2\xff".to_vec());
+            let error = std::env::VarError::NotUnicode(value);
+            // The standard library's message would carry the value.
+            assert!(error.to_string().contains("hunter2"));
+            assert!(!describe_var_error(&error).contains("hunter2"));
+        }
+        let source = SecretSource::Env("SYNTROPY_CONFIG_TEST_UNSET_SECRET_VARIABLE".to_owned());
+        let err = source.resolve().unwrap_err();
+        assert!(err.message().ends_with("it is not set"), "{err}");
     }
 
     #[test]
