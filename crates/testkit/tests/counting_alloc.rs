@@ -64,32 +64,37 @@ fn n_allocations_on_one_thread_read_n_more_there_and_none_on_another() {
 }
 
 #[test]
+// The plant is a `Vec::push`, the call the criterion names; `vec![i]` would make the same
+// allocation without it.
+#[allow(clippy::vec_init_then_push)]
 fn a_planted_vec_push_inside_a_measured_loop_is_counted() {
-    let mut scratch: Vec<u64> = Vec::with_capacity(64);
-    let mut planted: Vec<u64> = Vec::new();
+    const ROUNDS: u64 = 64;
+    let mut scratch: Vec<u64> = Vec::with_capacity(ROUNDS as usize);
 
     // The loop as it should be: it writes only into storage reserved before it.
     let before = alloc_count_this_thread();
-    for i in 0..64 {
+    for i in 0..ROUNDS {
         scratch.push(black_box(i));
     }
     let clean = alloc_count_this_thread() - before;
 
-    // The same loop with a planted `Vec::push` into a vector that has no storage yet.
+    // The same loop with a planted `Vec::push` into a new vector each round. One push into an
+    // empty `Vec` allocates exactly once and never grows, so the count rests on `alloc` alone.
     scratch.clear();
     let before = alloc_count_this_thread();
-    for i in 0..64 {
+    for i in 0..ROUNDS {
         scratch.push(black_box(i));
+        let mut planted: Vec<u64> = Vec::new();
         planted.push(black_box(i));
+        black_box(&planted);
     }
     let with_the_plant = alloc_count_this_thread() - before;
 
     assert_eq!(clean, 0, "the loop allocates without the plant");
-    assert!(
-        with_the_plant >= 1,
-        "the planted push was not counted ({with_the_plant} allocations)"
+    assert_eq!(
+        with_the_plant, ROUNDS,
+        "each planted push should count once ({with_the_plant} allocations in {ROUNDS} rounds)"
     );
-    assert_eq!(black_box(planted.len()), 64);
 }
 
 #[test]

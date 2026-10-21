@@ -7,12 +7,20 @@
 //!
 //! - requires `#![deny(unsafe_code)]` (or `forbid`) among each production crate root's leading
 //!   inner attributes, so the compiler refuses `unsafe` everywhere the `allow` does not reach;
-//! - reads every `.rs` file under the crate's source directory, with comments and literals
-//!   blanked, so a mention in prose never counts;
+//! - reads every `.rs` file under the directory of each production target's root (the library's
+//!   and every bin's), with comments and literals blanked, so a mention in prose never counts;
 //! - refuses any `unsafe` token, and any lint attribute naming `unsafe_code`, outside the one
 //!   allowed item, apart from the root's own leading level;
 //! - requires the one `#[allow(unsafe_code)]` to sit on `unsafe impl <path ending in the trait>
-//!   for …`, and every `unsafe` in that file to lie within that item.
+//!   for …`, and every `unsafe` in that file to lie within that item;
+//! - refuses every way to compile code it does not read: a `path` in an attribute (`#[path]`,
+//!   also inside `cfg_attr`), an `include!` call, `include` named in a `use`, which could rename
+//!   the macro, and a build script, whose output only `include!` could bring in.
+//!
+//! With those refused, the compiler can reach a module only through `mod` declarations, which
+//! resolve to `.rs` files under the directory of the file that declares them, so the files read
+//! are every file the crate's production targets compile. A text check covers every `cfg` at
+//! once, where the compiler's own list of the files it read covers one configuration.
 //!
 //! The text checks do not depend on the compiler, so a stray `allow` or an `unsafe` the compiler
 //! would also refuse is reported here by its file and line.
@@ -33,11 +41,7 @@ pub fn check(graph: &Graph, at: usize, module: &UnsafeModule) -> Vec<Finding> {
     // Each production crate root must deny `unsafe_code`.
     let mut roots = Vec::new();
     for target in &package.targets {
-        if !target
-            .kind
-            .iter()
-            .any(|kind| matches!(kind.as_str(), "lib" | "rlib" | "bin" | "proc-macro"))
-        {
+        if !target.kind.iter().any(|kind| production(kind)) {
             continue;
         }
         let shown = shown_path(&graph.root, &target.src_path);
@@ -54,28 +58,54 @@ pub fn check(graph: &Graph, at: usize, module: &UnsafeModule) -> Vec<Finding> {
             ))),
         }
     }
-    // The crate's source directory: the one that holds its library root.
-    let Some(src) = package
+    // A build script's output can reach the crate only through `include!`, which is refused
+    // below; the script is refused too, so generated code has no way in at all.
+    for target in &package.targets {
+        if target.kind.iter().any(|kind| kind == "custom-build") {
+            findings.push(finding(format!(
+                "`{name}` has a build script, {}; its `unsafe` exception allows none, because \
+                 the check cannot read the code a build script generates",
+                shown_path(&graph.root, &target.src_path)
+            )));
+        }
+    }
+    // The crate's directory, the parent of the one that holds its library root.
+    let Some(crate_dir) = package
         .targets
         .iter()
         .find(|target| target.kind.iter().any(|kind| kind == "lib"))
         .and_then(|lib| lib.src_path.parent())
+        .and_then(Path::parent)
         .map(Path::to_path_buf)
     else {
         return findings;
     };
-    let Some(crate_dir) = src.parent() else {
-        return findings;
-    };
     let allowed = crate_dir.join(module.file);
+    // The directory of every production target's root, without one that another one holds.
+    let mut dirs: Vec<PathBuf> = package
+        .targets
+        .iter()
+        .filter(|target| target.kind.iter().any(|kind| production(kind)))
+        .filter_map(|target| target.src_path.parent().map(Path::to_path_buf))
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    let held = |dir: &PathBuf| {
+        dirs.iter()
+            .any(|other| other != dir && dir.starts_with(other))
+    };
+    let dirs: Vec<PathBuf> = dirs.iter().filter(|dir| !held(dir)).cloned().collect();
     let mut files = Vec::new();
-    if let Err(error) = rust_files(&src, &mut files) {
-        findings.push(finding(format!(
-            "cannot list {}: {error}",
-            shown_path(&graph.root, &src)
-        )));
+    for dir in &dirs {
+        if let Err(error) = rust_files(dir, &mut files) {
+            findings.push(finding(format!(
+                "cannot list {}: {error}",
+                shown_path(&graph.root, dir)
+            )));
+        }
     }
     files.sort();
+    files.dedup();
     for file in files {
         let shown = shown_path(&graph.root, &file);
         let source = match std::fs::read_to_string(&file) {
@@ -98,6 +128,11 @@ pub fn check(graph: &Graph, at: usize, module: &UnsafeModule) -> Vec<Finding> {
     findings
 }
 
+/// Whether a target of `kind` is built into the crate itself, as a library or a binary.
+fn production(kind: &str) -> bool {
+    matches!(kind, "lib" | "rlib" | "bin" | "proc-macro")
+}
+
 /// Every `.rs` file under `dir`, recursively.
 fn rust_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
@@ -116,7 +151,7 @@ fn rust_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
 /// root's own.
 fn check_other_file(source: &str, level_end: Option<usize>) -> Vec<String> {
     let code = code_only(source);
-    let mut problems = Vec::new();
+    let mut problems = unread_code(&code);
     for (at, ident) in idents(&code) {
         match ident {
             "unsafe" => problems.push(format!(
@@ -146,7 +181,7 @@ fn check_allowed_file(source: &str, module: &UnsafeModule) -> Vec<String> {
         .filter(|(_, ident)| *ident == "unsafe")
         .map(|(at, _)| at)
         .collect();
-    let mut problems = Vec::new();
+    let mut problems = unread_code(&code);
     if mentions.len() != 1 {
         problems.push(format!(
             "{}: names `unsafe_code` {} times; exactly one `#[allow(unsafe_code)]`, on \
@@ -178,6 +213,78 @@ fn check_allowed_file(source: &str, module: &UnsafeModule) -> Vec<String> {
         }
     }
     problems
+}
+
+/// Every way `code` could compile a file this check does not read, each as `<line>: <what>`:
+/// a `path` set in an attribute, an `include!` call, and `include` named in a `use`.
+fn unread_code(code: &str) -> Vec<String> {
+    let attributes = attribute_spans(code);
+    let uses = use_spans(code);
+    let mut problems = Vec::new();
+    for (at, ident) in idents(code) {
+        let after = skip_space(code, at + ident.len());
+        let what = match ident {
+            "include" if code[after..].starts_with('!') && !code[after..].starts_with("!=") => {
+                "calls `include!`, which compiles a file this check does not read"
+            }
+            "include" if uses.iter().any(|&(start, end)| (start..end).contains(&at)) => {
+                "names `include` in a `use`, which could call `include!` by another name"
+            }
+            "path"
+                if code[after..].starts_with('=')
+                    && !code[after..].starts_with("==")
+                    && attributes
+                        .iter()
+                        .any(|&(start, end)| (start..end).contains(&at)) =>
+            {
+                "sets a module `path` in an attribute, which can load a file this check does not \
+                 read"
+            }
+            _ => continue,
+        };
+        problems.push(format!(
+            "{}: {what}; `unsafe` is denied, not forbidden, here, so every file must be read",
+            line_of(code, at)
+        ));
+    }
+    problems
+}
+
+/// The span of every attribute in `code`, `#[…]` or `#![…]`, from `#` to its closing `]`.
+fn attribute_spans(code: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    for (at, _) in code.match_indices('#') {
+        let mut open = skip_space(code, at + 1);
+        if code[open..].starts_with('!') {
+            open = skip_space(code, open + 1);
+        }
+        if !code[open..].starts_with('[') {
+            continue;
+        }
+        let mut depth = 0usize;
+        for (offset, c) in code[open..].char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        spans.push((at, open + offset + 1));
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    spans
+}
+
+/// The span of every `use` declaration in `code`, from `use` to its `;`.
+fn use_spans(code: &str) -> Vec<(usize, usize)> {
+    idents(code)
+        .filter(|(_, ident)| *ident == "use")
+        .filter_map(|(at, _)| code[at..].find(';').map(|end| (at, at + end + 1)))
+        .collect()
 }
 
 /// When the `unsafe_code` at `at` is inside an outer `#[allow(unsafe_code)]` on `unsafe impl
@@ -539,6 +646,57 @@ pub fn alloc_count_this_thread() -> u64 {
             words,
             ["a", "b", "c", "d", "e", "f", "g", "b", "h", "a", "i"]
         );
+    }
+
+    #[test]
+    fn a_module_path_in_any_attribute_is_refused() {
+        for source in [
+            "#[path = \"../outside.rs\"]\npub mod probe;\n",
+            "#[cfg_attr(unix, path = \"unix.rs\")]\nmod probe;\n",
+            "#![cfg_attr(all(), path=\"x.rs\")]\n",
+            "mod a {\n    # [ path = \"b.rs\" ]\n    mod b;\n}\n",
+            "macro_rules! m { ($p:literal) => { #[path = $p] mod x; } }\n",
+        ] {
+            let problems = check_other_file(source, None);
+            assert_eq!(problems.len(), 1, "{source}: {problems:?}");
+            assert!(
+                problems[0].contains("sets a module `path` in an attribute"),
+                "{source}: {problems:?}"
+            );
+        }
+        // The allowed file is held to the same rule.
+        let problems =
+            check_allowed_file(&format!("{ALLOWED}#[path = \"x.rs\"]\nmod x;\n"), &TESTKIT);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+    }
+
+    #[test]
+    fn include_by_any_name_is_refused() {
+        for source in [
+            "include!(\"probe.inc\");\n",
+            "core::include ! (\"x.rs\");\n",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n",
+            "macro_rules! m { () => { include!(\"x\") } }\n",
+            "use core::include as inc;\n",
+            "pub use std::{include, vec};\n",
+        ] {
+            let problems = check_other_file(source, None);
+            assert_eq!(problems.len(), 1, "{source}: {problems:?}");
+            assert!(problems[0].contains("include"), "{source}: {problems:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_uses_of_the_words_path_and_include_pass() {
+        let source = "\
+            #![doc = include_str!(\"../README.md\")]\n\
+            const DATA: &[u8] = include_bytes!(\"data.bin\");\n\
+            #[doc = \"path = x and include!(y)\"]\n\
+            pub fn include(path: &str) -> bool { let include = path.len(); include != 0 }\n\
+            pub struct Filter { pub include: bool, pub path: String }\n\
+            fn f() { let path = 1; if path == 1 {} }\n\
+            use std::path::Path;\n";
+        assert_eq!(check_other_file(source, None), Vec::<String>::new());
     }
 
     #[test]

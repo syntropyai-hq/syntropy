@@ -232,6 +232,51 @@ fn rule_8_crates_outside_the_allow_list_forbid_unsafe_code() {
     );
 }
 
+// `testkit` denies `unsafe` rather than forbidding it, so an `allow` in a file the scope check
+// does not read would turn it back on. Each way to compile such a file is refused.
+
+#[test]
+fn rule_8_a_path_module_outside_src_is_refused() {
+    fails_with(
+        "rule-8-path",
+        8,
+        &["`testkit`: crates/testkit/src/lib.rs:8: sets a module `path` in an attribute"],
+    );
+}
+
+#[test]
+fn rule_8_include_of_a_file_that_is_not_rs_is_refused() {
+    fails_with(
+        "rule-8-include",
+        8,
+        &["`testkit`: crates/testkit/src/lib.rs:9: calls `include!`"],
+    );
+}
+
+#[test]
+fn rule_8_a_build_script_and_its_generated_code_are_refused() {
+    fails_with(
+        "rule-8-build-script",
+        8,
+        &[
+            "`testkit` has a build script, crates/testkit/build.rs",
+            "`testkit`: crates/testkit/src/lib.rs:9: calls `include!`",
+        ],
+    );
+}
+
+#[test]
+fn rule_8_a_bin_target_outside_src_is_read() {
+    fails_with(
+        "rule-8-bin",
+        8,
+        &[
+            "`testkit`: crates/testkit/tools/helper.rs:5: sets a lint level for `unsafe_code`",
+            "`testkit`: crates/testkit/tools/helper.rs:8: uses `unsafe` outside the one allowed impl",
+        ],
+    );
+}
+
 #[test]
 fn rule_9_dev_only_crates_are_only_dev_dependencies() {
     fails_with(

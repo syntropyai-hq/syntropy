@@ -28,7 +28,8 @@
 //! - **Rule 8**: every lib and bin crate root outside the `unsafe` allow-list sets
 //!   `#![forbid(unsafe_code)]`. `testkit` holds the one module-scoped exception: its root sets
 //!   `#![deny(unsafe_code)]`, and its only `unsafe` is the `GlobalAlloc` impl in `src/guards.rs`,
-//!   under its one `#[allow(unsafe_code)]` ([`unsafe_scope`]).
+//!   under its one `#[allow(unsafe_code)]`. No `#[path]`, `include!` or build script may bring in
+//!   a file the check does not read ([`unsafe_scope`]).
 //! - **Rule 9**: no production crate has a normal or build edge to a dev-only crate (`testkit`,
 //!   `bench`).
 //! - **Rule 10**: the features `cargo tree` resolves for each release crate's own build (normal and
