@@ -333,7 +333,11 @@ fn rigs_check_passes_valid_inventories_and_fails_invalid_ones() {
 /// value, the CRLF copy keeps every golden fingerprint.
 #[test]
 fn a_multi_line_value_fails_the_check_whatever_the_line_endings() {
-    let text = std::fs::read_to_string(data("inventory.toml")).unwrap();
+    // The checkout's own line endings, LF or CRLF (Git for Windows' default), normalised to LF,
+    // so each variant below has exactly the endings it names.
+    let text = std::fs::read_to_string(data("inventory.toml"))
+        .unwrap()
+        .replace("\r\n", "\n");
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rigs-line-endings");
     std::fs::create_dir_all(&dir).unwrap();
     let multi_line = text.replacen(
