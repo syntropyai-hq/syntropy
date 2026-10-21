@@ -452,7 +452,7 @@ No GAPs.
 | RFC-0060 | §12 | Test data and model fixtures | 17: TIER-E8-T01, TIER-E8-T18, TIER-E10-T18, QUAL-E7-T01–T14 | ok |
 | RFC-0060 | §13 | Flakiness, quarantine and failure triage | 2: QUAL-E3-T14–T15 | ok |
 | RFC-0061 | §1 | Metrics and definitions | 5: QUAL-E12-T02, QUAL-E12-T09, QUAL-E12-T14, QUAL-E12-T16, QUAL-E13-T06 | ok |
-| RFC-0061 | §2 | Benchmark identity and result schema | 2: QUAL-E12-T01, QUAL-E15-T01 | ok |
+| RFC-0061 | §2 | Benchmark identity and result schema | 3: QUAL-E12-T01, QUAL-E12-T06, QUAL-E15-T01 | ok |
 | RFC-0061 | §3 | Measurement protocol | 8: QUAL-E7-T13, QUAL-E12-T02–T05, QUAL-E12-T07, QUAL-E12-T15, QUAL-E14-T03 | ok |
 | RFC-0061 | §4 | Scenario catalogue and success-criteria mapping | 16: PLC-E7-T21, QUAL-E13-T01–T07, QUAL-E13-T10–T12, QUAL-E13-T15–T16, QUAL-E13-T19–T21 | ok |
 | RFC-0061 | §5 | Roofline and model-efficiency reporting | 7: QUAL-E12-T09–T11, QUAL-E12-T13, QUAL-E12-T16–T18 | ok |
