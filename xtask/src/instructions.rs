@@ -23,7 +23,8 @@
 //! agent tooling loads instructions through it, so an unlisted file is never loaded as one.
 //! `--list` prints the entries. With `--ref <rev>`, the list and the file both come from that
 //! commit, so a run that trusts `main` reads `main`'s list and files whatever the working tree
-//! holds: a PR can neither add its own file to the list nor change a listed file's text.
+//! holds: a PR can neither add its own file to the list nor change a listed file's text. Run it
+//! from a checkout of `main`, never from a PR's tree, or the loader itself is the PR's.
 
 use std::path::Path;
 use std::process::Command;

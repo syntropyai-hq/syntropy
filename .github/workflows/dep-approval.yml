@@ -29,10 +29,12 @@ defaults:
 jobs:
   rerun-dep-diff:
     # A new PR comment matters when it holds the approval line. An edit or a deletion always
-    # does, since it may withdraw an approval whose line is gone. Anyone may comment, and
-    # `dep-diff` decides whose approval counts.
+    # does, since it may withdraw an approval whose line is gone. Only a comment by a member or
+    # collaborator starts a re-run, so outsiders cannot queue them; `dep-diff` still decides, by
+    # the roster, whose approval counts.
     if: >-
       github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
       (github.event.action != 'created' || contains(github.event.comment.body, 'dep-diff approved'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -52,7 +54,16 @@ jobs:
           for _ in $(seq 1 50); do
             run="$(gh api "repos/$REPO/actions/runs?head_sha=$head&event=pull_request&per_page=100" \
               --jq '[.workflow_runs[] | select(.path == ".github/workflows/pr-meta.yml")]
-                    | sort_by(.created_at) | last | "\(.id) \(.status)"')"
+                    | sort_by(.created_at) | last | "\(.id) \(.status) \(.conclusion)"')"
+            # A run that waits for a maintainer's approval is never re-run from here: that
+            # would start a fork's workflow without the approval (RFC-0062 §3.3 item 1).
+            case "$run" in
+              *" action_required"*)
+                echo "::notice::pr-meta run ${run%% *} waits for approval; nothing to re-run"
+                exit 0
+                ;;
+            esac
+            run="${run% *}"
             id="${run% *}"
             status="${run#* }"
             if [ -z "$id" ] || [ "$id" = null ]; then
