@@ -257,17 +257,57 @@ fn the_type_error_lists_the_allowed_types() {
 }
 
 #[test]
-fn breaking_footers_are_found_at_line_start_only() {
+fn breaking_footers_are_found_as_the_release_tooling_finds_them() {
+    // The parser's footer: the token at the start of a line, then `:` or ` #`.
     assert!(has_breaking_footer(
         "x\n\nBREAKING CHANGE: the format changes"
     ));
-    assert!(has_breaking_footer("BREAKING-CHANGE: the format changes"));
+    assert!(has_breaking_footer("x\n\nBREAKING CHANGE #42"));
+    assert!(has_breaking_footer("x\n\nBREAKING-CHANGE #42"));
+    // release-please's extra rule: `BREAKING-CHANGE:` anywhere.
+    assert!(has_breaking_footer(
+        "a `BREAKING-CHANGE:` written inline still counts"
+    ));
+    // Erring towards a marker: indented or listed tokens.
+    assert!(has_breaking_footer("x\n\n  BREAKING CHANGE: indented"));
+    assert!(has_breaking_footer(
+        "x\n\n* BREAKING CHANGE: in a squash list"
+    ));
+    assert!(has_breaking_footer("x\n\n- BREAKING CHANGE: in a list"));
+    // Not markers: the spaced token inline, lower case, or no separator.
     assert!(!has_breaking_footer(
         "a `BREAKING CHANGE:` footer is described here"
     ));
     assert!(!has_breaking_footer(
         "breaking change: lower case is not a footer"
     ));
+    assert!(!has_breaking_footer("breaking-change footer in the body"));
+    assert!(!has_breaking_footer("BREAKING CHANGES are listed below"));
+}
+
+#[test]
+fn a_breaking_header_in_a_commit_override_needs_the_label() {
+    let event = r#"{"pull_request": {"title": "feat(core): add the widget", "labels": [], "commits": 3,
+        "body": "What this changes.\n\nBEGIN_COMMIT_OVERRIDE\nfeat(core)!: drop the widget\nEND_COMMIT_OVERRIDE\n"}}"#;
+    let problems = title_problems(
+        event,
+        fixture!("commits-signed-off.json"),
+        fixture!("label-events-none.http"),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("a `!` header in the PR body's commit override"),
+        "{problems:?}"
+    );
+    // Outside an override section, a `!` line in the body is prose.
+    let event = r#"{"pull_request": {"title": "feat(core): add the widget", "labels": [], "commits": 3,
+        "body": "An example title:\nfeat(core)!: drop the widget\n"}}"#;
+    let problems = title_problems(
+        event,
+        fixture!("commits-signed-off.json"),
+        fixture!("label-events-none.http"),
+    );
+    assert_eq!(problems, Vec::<String>::new());
 }
 
 // ---- pr-title: the label ----

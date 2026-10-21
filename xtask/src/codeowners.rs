@@ -242,6 +242,14 @@ impl Pattern {
         if end > parts.len() || (self.directory && end == parts.len()) {
             return false;
         }
+        // As on GitHub, `/docs/*` covers the files directly in `docs/`, not deeper ones: a file
+        // pattern whose last segment has a `*` matches whole paths only. A bare `*` matches every
+        // path.
+        let glob_last = self.segments.last().is_some_and(|s| s.contains('*'));
+        let bare_star = !self.anchored && self.segments == ["*"];
+        if glob_last && !bare_star && !self.directory && end != parts.len() {
+            return false;
+        }
         self.segments
             .iter()
             .zip(&parts[start..end])
@@ -522,6 +530,10 @@ mod tests {
             ("AGENTS.md", "docs/AGENTS.md.bak", false),
             ("*", "anything/at/all.rs", true),
             ("*.toml", "crates/core/Cargo.toml", true),
+            ("/.github/*", ".github/CODEOWNERS", true),
+            ("/.github/*", ".github/workflows/pr.yml", false),
+            ("/crates/*", "crates/core/src/lib.rs", false),
+            ("/crates/*/src/keys.rs", "crates/core/src/keys.rs", true),
             ("/ci", "ci/jobs.toml", true),
             ("/ci", "cid/jobs.toml", false),
         ];

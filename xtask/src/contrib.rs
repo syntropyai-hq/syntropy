@@ -239,10 +239,30 @@ fn short(sha: &str) -> &str {
     &sha[..sha.len().min(12)]
 }
 
-/// A `BREAKING CHANGE:` or `BREAKING-CHANGE:` footer line, as conventional commits define them.
+/// A breaking-change footer, as the release tooling reads one. release-please (v17) matches
+/// `BREAKING-CHANGE:` anywhere in a message, and its parser takes `BREAKING CHANGE` or
+/// `BREAKING-CHANGE` at the start of a line, followed by `:` or ` #`. Both are matched here, as
+/// they are there, in upper case only. Leading spaces and list markers (`*`, `-`, `>`) before the
+/// token are skipped too, which the tooling does not do, so the check errs towards a marker.
 pub fn has_breaking_footer(text: &str) -> bool {
-    text.lines()
-        .any(|line| line.starts_with("BREAKING CHANGE:") || line.starts_with("BREAKING-CHANGE:"))
+    if text.contains("BREAKING-CHANGE:") {
+        return true;
+    }
+    text.lines().any(|line| {
+        let line =
+            line.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '-' | '>'));
+        ["BREAKING CHANGE", "BREAKING-CHANGE"].iter().any(|token| {
+            line.strip_prefix(token)
+                .is_some_and(|rest| rest.starts_with(':') || rest.starts_with(" #"))
+        })
+    })
+}
+
+/// The `BEGIN_COMMIT_OVERRIDE` … `END_COMMIT_OVERRIDE` section of a PR body, which release-please
+/// reads in place of the merged commit's message.
+fn commit_override(body: &str) -> Option<&str> {
+    let (_, rest) = body.split_once("BEGIN_COMMIT_OVERRIDE")?;
+    Some(rest.split("END_COMMIT_OVERRIDE").next().unwrap_or(rest))
 }
 
 /// Whether `label` is on the PR because a maintainer applied it. `Ok` names the maintainer;
@@ -313,6 +333,11 @@ pub fn pr_title(
     }
     if has_breaking_footer(&pr.body) {
         markers.push("a `BREAKING CHANGE:` footer in the PR body".to_owned());
+    }
+    if commit_override(&pr.body)
+        .is_some_and(|section| section.lines().any(|line| has_breaking_bang(line.trim())))
+    {
+        markers.push("a `!` header in the PR body's commit override".to_owned());
     }
     for commit in commits {
         if has_breaking_bang(subject(&commit.message)) {
