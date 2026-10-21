@@ -286,6 +286,19 @@ class HookTest(unittest.TestCase):
         self.assertIn("commit-msg: sign-off: ok", output)
         self.assertIn("naming check: skipped, this repository has no", output)
 
+    def test_pre_commit_runs_the_plan_tools_when_plan_files_are_only_deleted(self):
+        # A clone of this repository, with one generated file deleted and nothing else staged:
+        # the staged plan no longer matches what trace.py generates.
+        clone = self.dir / "clone"
+        subprocess.run(["git", "clone", "-q", str(REPO), str(clone)], env=self.env, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "rm", "-q", "plan/implementation/traceability.md"], cwd=clone,
+                       env=self.env, check=True, capture_output=True)
+        code, output = self.run_hook([], cwd=clone, hook="pre-commit")
+        self.assertEqual(code, 1, output)
+        self.assertNotIn("plan tools: skipped", output)
+        self.assertIn("pre-commit: plan tools: FAIL: trace.py --check", output)
+
     def test_pre_commit_runs_for_a_repository_without_the_hooks_or_tools(self):
         code, output = self.run_hook([], cwd=self.other_repo(), hook="pre-commit")
         self.assertEqual(code, 0, output)

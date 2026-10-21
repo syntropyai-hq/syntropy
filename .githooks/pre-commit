@@ -5,7 +5,8 @@
 #
 #   rustfmt       `cargo fmt --all --check`, when Rust files are staged
 #   plan tools    epics.py, depcheck.py, and deps_report.py, trace.py and roadmap.py with --check,
-#                 when files under plan/ are staged; they run on the staged plan, not the working tree
+#                 when files under plan/ are staged, deletions included; they run on the staged
+#                 plan, not the working tree
 #   naming check  plan/implementation/tools/naming_check.py --staged (AGENTS.md, "Naming (D5)"),
 #                 when a banned-terms list is set: `git config syntropy.bannedTerms <path>`
 #
@@ -30,9 +31,16 @@ note() {
     printf 'pre-commit: %s\n' "$*"
 }
 
-# True when an added, copied, modified or renamed staged path matches the pathspecs.
+# True when an added, copied, modified or renamed staged path matches the pathspecs: what
+# rustfmt has to read.
 staged() {
     ! git diff --cached --quiet --diff-filter=ACMR -- "$@"
+}
+
+# True when any staged change matches the pathspecs, deletions included: deleting a plan file can
+# leave the generated files stale as surely as editing one.
+changed() {
+    ! git diff --cached --quiet -- "$@"
 }
 
 python=$(find_python) || python=""
@@ -49,7 +57,7 @@ else
     failed="$failed rustfmt"
 fi
 
-if ! staged plan; then
+if ! changed plan; then
     note "plan tools: skipped, nothing under plan/ staged"
 elif [ -z "$python" ]; then
     note "plan tools: skipped, no Python 3 found (python3 or python)"
