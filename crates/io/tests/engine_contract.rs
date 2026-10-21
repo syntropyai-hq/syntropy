@@ -66,10 +66,52 @@ fn allocations_on_this_thread() -> u64 {
     ALLOCATIONS.with(Cell::get)
 }
 
-/// An engine that completes every operation in full on the next `reap`, touching no memory.
+/// One 4 KiB page, aligned the way RFC-0021 §6 aligns destinations.
+#[repr(C, align(4096))]
+struct Page([u8; 4096]);
+
+const PAGE: u64 = 4096;
+
+/// Memory the tests own, handed out one page per slot, as the tier manager hands out slots.
+///
+/// Each test keeps at most one submitted request per slot until its completion is reaped, and
+/// keeps the pool alive until every engine it registered with is dropped.
+struct Pool {
+    pages: Vec<Page>,
+}
+
+impl Pool {
+    fn new(slots: usize) -> Self {
+        Self {
+            pages: (0..slots).map(|_| Page([0; 4096])).collect(),
+        }
+    }
+
+    fn base(&mut self) -> u64 {
+        self.pages.as_mut_ptr() as u64
+    }
+
+    fn slot(&mut self, slot: usize) -> IoDest {
+        assert!(slot < self.pages.len());
+        let addr = self.base() + slot as u64 * PAGE;
+        // SAFETY: the page belongs to this pool, which outlives every request in these tests;
+        // each test has at most one submitted request per slot until it reaps that request's
+        // completion; and each request's extent is one page long.
+        unsafe { IoDest::raw(addr) }
+    }
+
+    fn region(&mut self) -> HostRegion {
+        HostRegion {
+            addr: self.base(),
+            len: Bytes(self.pages.len() as u64 * PAGE),
+        }
+    }
+}
+
+/// An engine that completes every operation in full on the next `reap` and touches no memory.
 /// Its in-flight list is allocated once, at construction, like a real engine's ring.
 struct ImmediateEngine {
-    in_flight: Vec<IoOp>,
+    in_flight: Vec<(IoTicket, Bytes)>,
     depth: usize,
 }
 
@@ -106,7 +148,10 @@ impl IoEngine for ImmediateEngine {
         Ok(FileIx(0))
     }
 
-    fn register_buffers(&mut self, regions: &[HostRegion]) -> Result<Vec<BufIndex>, IoError> {
+    unsafe fn register_buffers(
+        &mut self,
+        regions: &[HostRegion],
+    ) -> Result<Vec<BufIndex>, IoError> {
         (0..regions.len())
             .map(|i| {
                 u16::try_from(i)
@@ -119,17 +164,19 @@ impl IoEngine for ImmediateEngine {
     fn submit(&mut self, batch: &mut SubmitBatch) -> Result<u32, IoError> {
         let room = self.depth - self.in_flight.len();
         let n = room.min(batch.len());
-        self.in_flight.extend_from_slice(&batch.pending()[..n]);
+        for op in &batch.pending()[..n] {
+            self.in_flight.push((op.ticket(), op.extent().len));
+        }
         batch.consume(n);
         Ok(u32::try_from(n).unwrap())
     }
 
     fn reap(&mut self, out: &mut CompletionBuf, _wait: Wait) -> u32 {
         let n = out.remaining().min(self.in_flight.len());
-        for op in self.in_flight.drain(..n) {
+        for (ticket, len) in self.in_flight.drain(..n) {
             let c = ReadCompletion {
-                ticket: op.ticket(),
-                result: Ok(Bytes(op.extent().len)),
+                ticket,
+                result: Ok(len),
                 latency: Nanos(0),
             };
             out.push(c)
@@ -139,7 +186,7 @@ impl IoEngine for ImmediateEngine {
     }
 
     fn cancel(&mut self, ticket: IoTicket) -> CancelOutcome {
-        match self.in_flight.iter().position(|op| op.ticket() == ticket) {
+        match self.in_flight.iter().position(|(t, _)| *t == ticket) {
             Some(i) => {
                 self.in_flight.remove(i);
                 CancelOutcome::Cancelled
@@ -149,39 +196,34 @@ impl IoEngine for ImmediateEngine {
     }
 
     fn in_flight(&self) -> (u32, Bytes) {
-        let bytes = self.in_flight.iter().map(|op| op.extent().len).sum();
+        let bytes = self.in_flight.iter().map(|(_, len)| len.0).sum();
         (u32::try_from(self.in_flight.len()).unwrap(), Bytes(bytes))
     }
 }
 
-fn read(ticket: u64, priority: IoPriority) -> IoOp {
+fn extent(file: u16, ticket: u64) -> ExtentRef {
+    ExtentRef {
+        file: FileIx(file),
+        offset: ticket * PAGE,
+        len: Bytes(PAGE),
+    }
+}
+
+fn read(ticket: u64, priority: IoPriority, dest: IoDest) -> IoOp {
     IoOp::Read(ReadRequest {
         ticket: IoTicket(ticket),
-        extent: ExtentRef {
-            file: 0,
-            offset: ticket * 65536,
-            len: 65536,
-        },
-        dest: IoDest::Raw {
-            addr: 0x10_0000 + ticket * 65536,
-        },
+        extent: extent(0, ticket),
+        dest,
         priority,
         useful_until: None,
     })
 }
 
-fn write(ticket: u64) -> IoOp {
+fn write(ticket: u64, src: IoDest) -> IoOp {
     IoOp::Write(WriteRequest {
         ticket: IoTicket(ticket),
-        extent: ExtentRef {
-            file: 1,
-            offset: ticket * 4096,
-            len: 4096,
-        },
-        src: IoDest::Fixed {
-            buf: BufIndex(0),
-            offset: 0,
-        },
+        extent: extent(1, ticket),
+        src,
         priority: IoPriority::Background,
         sync: SyncMode::DataSync,
     })
@@ -189,16 +231,20 @@ fn write(ticket: u64) -> IoOp {
 
 #[test]
 fn submit_accepts_a_prefix_and_leaves_the_rest() {
+    let mut pool = Pool::new(5);
     let mut engine = ImmediateEngine::new(2);
     let mut batch = SubmitBatch::with_capacity(8);
     for t in 0..5 {
-        batch.push(read(t, IoPriority::Demand)).unwrap();
+        let dest = pool.slot(t);
+        batch
+            .push(read(t as u64, IoPriority::Demand, dest))
+            .unwrap();
     }
 
     assert_eq!(engine.submit(&mut batch), Ok(2));
     let left: Vec<_> = batch.pending().iter().map(IoOp::ticket).collect();
     assert_eq!(left, [IoTicket(2), IoTicket(3), IoTicket(4)]);
-    assert_eq!(engine.in_flight(), (2, Bytes(2 * 65536)));
+    assert_eq!(engine.in_flight(), (2, Bytes(2 * PAGE)));
 
     // Depth is full: nothing more is accepted until a completion is reaped.
     assert_eq!(engine.submit(&mut batch), Ok(0));
@@ -207,10 +253,14 @@ fn submit_accepts_a_prefix_and_leaves_the_rest() {
 
 #[test]
 fn reap_appends_no_more_than_the_buffer_holds() {
+    let mut pool = Pool::new(4);
     let mut engine = ImmediateEngine::new(4);
     let mut batch = SubmitBatch::with_capacity(4);
     for t in 0..4 {
-        batch.push(read(t, IoPriority::PrefetchNear)).unwrap();
+        let dest = pool.slot(t);
+        batch
+            .push(read(t as u64, IoPriority::PrefetchNear, dest))
+            .unwrap();
     }
     assert_eq!(engine.submit(&mut batch), Ok(4));
 
@@ -223,15 +273,17 @@ fn reap_appends_no_more_than_the_buffer_holds() {
     // The completion that did not fit stays with the engine for the next call.
     assert_eq!(engine.reap(&mut out, Wait::Until(Nanos(100_000))), 1);
     assert_eq!(out.as_slice()[0].ticket, IoTicket(3));
-    assert_eq!(out.as_slice()[0].result, Ok(Bytes(65536)));
+    assert_eq!(out.as_slice()[0].result, Ok(Bytes(PAGE)));
     assert_eq!(engine.in_flight(), (0, Bytes(0)));
 }
 
 #[test]
 fn cancel_reports_its_outcome() {
+    let mut pool = Pool::new(1);
     let mut engine = ImmediateEngine::new(4);
     let mut batch = SubmitBatch::with_capacity(4);
-    batch.push(read(7, IoPriority::PrefetchFar)).unwrap();
+    let dest = pool.slot(0);
+    batch.push(read(7, IoPriority::PrefetchFar, dest)).unwrap();
     engine.submit(&mut batch).unwrap();
     assert_eq!(engine.cancel(IoTicket(7)), CancelOutcome::Cancelled);
     assert_eq!(engine.cancel(IoTicket(7)), CancelOutcome::NotFound);
@@ -239,59 +291,60 @@ fn cancel_reports_its_outcome() {
 
 #[test]
 fn an_engine_moves_onto_its_thread_as_a_trait_object() {
+    let mut pool = Pool::new(2);
     let mut engine: Box<dyn IoEngine> = Box::new(ImmediateEngine::new(2));
-    let regions = [
-        HostRegion {
-            addr: 0x20_0000,
-            len: Bytes(1 << 30),
-        },
-        HostRegion {
-            addr: 0x4020_0000,
-            len: Bytes(1 << 30),
-        },
-    ];
-    assert_eq!(
-        engine.register_buffers(&regions),
-        Ok(vec![BufIndex(0), BufIndex(1)])
-    );
+    let regions = [pool.region()];
+    // SAFETY: the pool owns the region and outlives the engine, which is dropped inside the
+    // thread joined below; nothing else uses the pool's memory until then.
+    let bufs = unsafe { engine.register_buffers(&regions) };
+    assert_eq!(bufs, Ok(vec![BufIndex(0)]));
     assert_eq!(
         engine.open(Path::new("model.pack"), OpenMode::Read),
         Ok(FileIx(0))
     );
     assert_eq!(engine.kind(), EngineKind::PreadPool);
 
+    // SAFETY: buffer 0 was registered with this engine just above and covers two pages; the
+    // write reads page 1, one page long, and is the only request on it.
+    let src = unsafe { IoDest::fixed(BufIndex(0), PAGE) };
     let handle = std::thread::spawn(move || {
         let mut batch = SubmitBatch::with_capacity(1);
-        batch.push(write(1)).unwrap();
+        batch.push(write(1, src)).unwrap();
         engine.submit(&mut batch).unwrap();
         let mut out = CompletionBuf::with_capacity(1);
         engine.reap(&mut out, Wait::None);
         out.as_slice()[0]
     });
     let c = handle.join().unwrap();
+    drop(pool);
     assert_eq!(c.ticket, IoTicket(1));
-    assert_eq!(c.result, Ok(Bytes(4096)));
+    assert_eq!(c.result, Ok(Bytes(PAGE)));
 }
 
 /// The I/O loop's steady state: push chunks, submit, reap, drain, including pushes into a full
-/// batch and reaps into a full buffer. After the buffers and the engine are built at `Warming`,
-/// none of it allocates.
+/// batch and reaps into a full buffer. After the buffers, the engine and the memory are set up at
+/// `Warming`, none of it allocates.
 #[test]
 fn steady_state_submit_and_reap_allocate_nothing() {
+    const BATCH: usize = 32;
+    let mut pool = Pool::new(BATCH);
     let mut engine = ImmediateEngine::new(16);
-    let mut batch = SubmitBatch::with_capacity(32);
+    let mut batch = SubmitBatch::with_capacity(BATCH);
     let mut out = CompletionBuf::with_capacity(8);
     let mut reaped = 0u64;
     let mut rejected = 0u64;
 
     let before = allocations_on_this_thread();
     for round in 0..1_000u64 {
-        for i in 0..40 {
-            let t = round * 40 + i;
+        // Every round drains before the next, and at most `BATCH` pushes per round are
+        // accepted, so slot `i` has one request at a time.
+        for i in 0..40usize {
+            let t = round * 40 + i as u64;
+            let dest = pool.slot(i % BATCH);
             let op = if i % 10 == 9 {
-                write(t)
+                write(t, dest)
             } else {
-                read(t, IoPriority::ALL[(i % 5) as usize])
+                read(t, IoPriority::ALL[i % 5], dest)
             };
             if batch.push(op).is_err() {
                 rejected += 1;

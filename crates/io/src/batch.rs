@@ -183,6 +183,7 @@ impl CompletionBuf {
 mod tests {
     use super::*;
     use crate::engine::BufIndex;
+    use crate::engine::FileIx;
     use crate::error::{IoError, IoErrorCode};
     use crate::request::{ExtentRef, IoDest, IoPriority, IoTicket, ReadRequest};
     use crate::units::{Bytes, Nanos};
@@ -191,14 +192,13 @@ mod tests {
         IoOp::Read(ReadRequest {
             ticket: IoTicket(ticket),
             extent: ExtentRef {
-                file: 0,
+                file: FileIx(0),
                 offset: ticket * 4096,
-                len: 4096,
+                len: Bytes(4096),
             },
-            dest: IoDest::Fixed {
-                buf: BufIndex(0),
-                offset: ticket * 4096,
-            },
+            // SAFETY: these tests never submit a batch to an engine, so no memory is accessed
+            // through this destination.
+            dest: unsafe { IoDest::fixed(BufIndex(0), ticket * 4096) },
             priority: IoPriority::Demand,
             useful_until: None,
         })

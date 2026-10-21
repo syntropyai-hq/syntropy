@@ -31,7 +31,7 @@ pub use engine::{
 };
 pub use error::{IoError, IoErrorCode};
 pub use request::{
-    ExtentRef, IoDest, IoOp, IoPriority, IoTicket, ReadCompletion, ReadRequest, StepLayer,
-    SyncMode, WriteRequest,
+    ExtentRef, IoDest, IoDestKind, IoOp, IoPriority, IoTicket, ReadCompletion, ReadRequest,
+    StepLayer, SyncMode, WriteRequest,
 };
 pub use units::{Bytes, Nanos};

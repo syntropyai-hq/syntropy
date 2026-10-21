@@ -4,7 +4,7 @@
 - Area: tiers (tiered memory engine inside a node)
 - Depends on: RFC-0001 (§2.3, §3.3, §5.2, §5.4, §5.5, §8, §9, §10.3, §11.3), RFC-0010, RFC-0011, RFC-0012, RFC-0021, RFC-0022, RFC-0023, RFC-0040, RFC-0054; ADR-0005, ADR-0006, ADR-0007, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0020, ADR-0200, ADR-0201, ADR-0202
 - Date: 2026-10-19
-- Revised: 2026-10-20: streaming at decode where measured faster (§10); open question 4 answered
+- Revised: 2026-10-20: streaming at decode where measured faster (§10); open question 4 answered. 2026-10-21: `ExtentRef` and `StepLayer` are defined in `syntropy-io` (§3)
 
 ## Summary
 
@@ -297,6 +297,8 @@ pub enum PressureLevel { Normal, Moderate, High, Critical }           // §11.2
 /// the published word is greater than or equal to its encoding.
 pub struct StepLayer { pub step: u64, pub layer: u16 }
 ```
+
+**Where `ExtentRef` and `StepLayer` live** (revised 2026-10-21). Both are defined in `syntropy-io`, and `tier` re-exports them. RFC-0021 §2's `ReadRequest` carries them, and `io` is a layer below `tier` (RFC-0001 §4.1, §4.2 rule 2). `ExtentRef` is `{ file: FileIx, offset: u64, len: Bytes }`, because interfaces take no bare integers for sizes (RFC-0001 §5.1); `FileIx` is the index the I/O engine's `open` returns. `ArenaPlan` carries `ExtentRef` and round-trips through serde, so `ExtentRef` needs serde derives in the crate that defines it.
 
 ### 4. Building arenas per tier kind and platform
 

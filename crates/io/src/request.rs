@@ -4,14 +4,15 @@
 //!
 //! Dispatchers, housekeeping and the loader post [`ReadRequest`]s and [`WriteRequest`]s on
 //! their SPSC rings to a volume's I/O thread, which returns one [`ReadCompletion`] per request
-//! on the producer's own ring (RFC-0021 §1). Every type here is `Copy`, so the rings move them
-//! without allocating.
+//! on the producer's own ring (RFC-0021 §1). The rings move these values without allocating.
+//! A request is neither `Copy` nor `Clone`, because its [`IoDest`] is not: once submitted, it
+//! cannot be submitted again.
 //!
 //! [`ExtentRef`] and [`StepLayer`] are the supporting types RFC-0020 §3 defines. They live here
 //! rather than in `syntropy-tier`, because a [`ReadRequest`] carries them and this crate sits a
 //! layer below `tier` (RFC-0001 §4.1, §4.2 rule 2).
 
-use crate::engine::BufIndex;
+use crate::engine::{BufIndex, FileIx};
 use crate::error::IoError;
 use crate::units::{Bytes, Nanos};
 
@@ -25,15 +26,17 @@ pub struct IoTicket(pub u64);
 /// A byte range of one file on a volume (RFC-0020 §3).
 ///
 /// `offset` and `len` are multiples of the volume's [`DioAlign`](crate::DioAlign), as RFC-0021
-/// §6 requires of every request.
+/// §6 requires of every request. RFC-0020 §3 writes `file` and `len` as bare integers; here they
+/// are [`FileIx`] and [`Bytes`], because interfaces never take bare integers for sizes (RFC-0001
+/// §5.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ExtentRef {
-    /// Index of the file among the files the I/O thread opened.
-    pub file: u16,
+    /// The file, as the I/O thread opened it.
+    pub file: FileIx,
     /// Offset of the first byte in the file.
     pub offset: u64,
-    /// Length in bytes.
-    pub len: u64,
+    /// Length of the range.
+    pub len: Bytes,
 }
 
 /// A point in a device's execution: the step number and the layer within it (RFC-0020 §3).
@@ -70,14 +73,12 @@ impl StepLayer {
     }
 }
 
-/// Where a read puts its bytes, or where a write takes them from (RFC-0021 §2).
+/// What an [`IoDest`] names: the two destination kinds of RFC-0021 §2.
 ///
-/// The tier manager owns every buffer an `IoDest` names (RFC-0021 §1). It guarantees that the
-/// memory is valid, aligned to the volume's [`DioAlign`](crate::DioAlign) (RFC-0021 §6), and
-/// neither read nor written by anyone else from submission until the request's completion is
-/// reaped. Engines write into the memory on the strength of that guarantee.
+/// Plain data, returned by [`IoDest::kind`] for engines to read. Turning it into an `IoDest`
+/// takes one of the `unsafe` constructors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum IoDest {
+pub enum IoDestKind {
     /// A slot in an `IO_FIXED` arena (RFC-0020 §2): engine buffer index plus offset.
     Fixed {
         /// The registered buffer, as [`IoEngine::register_buffers`](crate::IoEngine::register_buffers)
@@ -91,6 +92,97 @@ pub enum IoDest {
         /// Address of the first byte.
         addr: u64,
     },
+}
+
+/// Where a read puts its bytes, or where a write takes them from (RFC-0021 §2).
+///
+/// An engine reads and writes the memory an `IoDest` names, so whoever names it must vouch for
+/// that memory. The field is private and the constructors, [`IoDest::fixed`] and
+/// [`IoDest::raw`], are `unsafe`. The obligation therefore sits with the tier manager, which owns
+/// every destination buffer (RFC-0021 §1) and may use `unsafe` (RFC-0001 §4.2 rule 8; ADR-0001
+/// item 4). Other crates, including those under `forbid(unsafe_code)`, only forward the values
+/// it hands them. An `IoDest` is neither `Copy` nor `Clone`, so a request that has been
+/// submitted cannot be submitted again from a stale copy.
+///
+/// Code without `unsafe` cannot make one:
+///
+/// ```compile_fail,E0133
+/// let dest = syntropy_io::IoDest::raw(0x1000);
+/// ```
+///
+/// ```compile_fail,E0451
+/// use syntropy_io::{IoDest, IoDestKind};
+/// let dest = IoDest { kind: IoDestKind::Raw { addr: 0x1000 } };
+/// ```
+///
+/// ```compile_fail,E0599
+/// fn twice(dest: &syntropy_io::IoDest) -> syntropy_io::IoDest {
+///     dest.clone()
+/// }
+/// ```
+///
+/// With `unsafe`, and a contract the caller keeps, it compiles:
+///
+/// ```
+/// use syntropy_io::{IoDest, IoDestKind};
+/// // SAFETY: this destination is never put in a request, so no engine accesses the address.
+/// let dest = unsafe { IoDest::raw(0x1000) };
+/// assert_eq!(dest.kind(), IoDestKind::Raw { addr: 0x1000 });
+/// ```
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct IoDest {
+    kind: IoDestKind,
+}
+
+impl IoDest {
+    /// A slot in a registered buffer: `offset` bytes into buffer `buf`.
+    ///
+    /// The offset should also be a multiple of the volume's
+    /// [`DioAlign::mem`](crate::DioAlign::mem); the I/O thread rejects a misaligned request
+    /// before submission (RFC-0021 §6). That is a correctness check, not part of the safety
+    /// contract.
+    ///
+    /// # Safety
+    ///
+    /// From the submission of the request that carries this destination until its completion
+    /// has been reaped, where `len` is that request's extent length:
+    /// - `buf` was returned by [`IoEngine::register_buffers`](crate::IoEngine::register_buffers)
+    ///   on the engine the request is submitted to, and `offset .. offset + len` lies inside
+    ///   that buffer;
+    /// - nothing else reads or writes that range: no other request, thread or device.
+    #[must_use]
+    pub const unsafe fn fixed(buf: BufIndex, offset: u64) -> Self {
+        Self {
+            kind: IoDestKind::Fixed { buf, offset },
+        }
+    }
+
+    /// Any memory the tier manager owns, starting at `addr`.
+    ///
+    /// The address should also be aligned to the volume's
+    /// [`DioAlign::mem`](crate::DioAlign::mem), and to at least 4096 bytes; the I/O thread rejects
+    /// a misaligned request before submission (RFC-0021 §6). That is a correctness check, not part
+    /// of the safety contract.
+    ///
+    /// # Safety
+    ///
+    /// From the submission of the request that carries this destination until its completion
+    /// has been reaped, where `len` is that request's extent length:
+    /// - `addr .. addr + len` is one allocation the caller owns, valid for writes when the request
+    ///   is a read and for reads when it is a write;
+    /// - nothing else reads or writes that range: no other request, thread or device.
+    #[must_use]
+    pub const unsafe fn raw(addr: u64) -> Self {
+        Self {
+            kind: IoDestKind::Raw { addr },
+        }
+    }
+
+    /// What this destination names.
+    #[must_use]
+    pub const fn kind(&self) -> IoDestKind {
+        self.kind
+    }
 }
 
 /// The class of a request, which decides its place in the I/O thread's queues (RFC-0021 §3.2).
@@ -123,7 +215,7 @@ impl IoPriority {
 }
 
 /// A read from a volume into tier-manager memory (RFC-0021 §2; RFC-0001 §8.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ReadRequest {
     /// Producer-unique; echoed in the completion.
     pub ticket: IoTicket,
@@ -150,7 +242,7 @@ pub enum SyncMode {
 }
 
 /// A write from tier-manager memory to a volume (RFC-0021 §2, §13).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct WriteRequest {
     /// Producer-unique; echoed in the completion.
     pub ticket: IoTicket,
@@ -185,7 +277,7 @@ pub struct ReadCompletion {
 ///
 /// The I/O thread splits each request into chunks (RFC-0021 §3.3) and hands each chunk to the
 /// engine as one `IoOp`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum IoOp {
     /// A read.
     Read(ReadRequest),
@@ -285,24 +377,32 @@ mod tests {
     #[test]
     fn io_op_accessors() {
         let extent = ExtentRef {
-            file: 2,
+            file: FileIx(2),
             offset: 4096,
-            len: 8192,
+            len: Bytes(8192),
         };
+        // SAFETY: neither request is submitted to an engine, so no memory is accessed through
+        // these destinations.
+        let (fixed, raw) = unsafe { (IoDest::fixed(BufIndex(1), 0), IoDest::raw(0x1000)) };
+        assert_eq!(
+            fixed.kind(),
+            IoDestKind::Fixed {
+                buf: BufIndex(1),
+                offset: 0
+            }
+        );
+        assert_eq!(raw.kind(), IoDestKind::Raw { addr: 0x1000 });
         let read = IoOp::Read(ReadRequest {
             ticket: IoTicket(11),
             extent,
-            dest: IoDest::Fixed {
-                buf: BufIndex(1),
-                offset: 0,
-            },
+            dest: fixed,
             priority: IoPriority::PrefetchNear,
             useful_until: Some(StepLayer { step: 5, layer: 2 }),
         });
         let write = IoOp::Write(WriteRequest {
             ticket: IoTicket(12),
             extent,
-            src: IoDest::Raw { addr: 0x1000 },
+            src: raw,
             priority: IoPriority::Background,
             sync: SyncMode::DataSync,
         });

@@ -4,7 +4,7 @@
 - Area: tiers (I/O engine)
 - Depends on: RFC-0001 (§2.3, §3.3, §8.2–§8.4, §9.1, §9.4), RFC-0010, RFC-0020, RFC-0022, RFC-0023, RFC-0040, RFC-0041, RFC-0052; ADR-0005, ADR-0007, ADR-0012, ADR-0013, ADR-0014, ADR-0020, ADR-0203, ADR-0204
 - Date: 2026-10-19
-- Revised: 2026-10-20: GPUDirect Storage and DirectStorage dropped from v1 (§9); reads never reach punched source ranges (§6); per-volume write accounting from SMART (§13); open questions 3 (FileVault part), 6 and the `RowLookup` question answered
+- Revised: 2026-10-20: GPUDirect Storage and DirectStorage dropped from v1 (§9); reads never reach punched source ranges (§6); per-volume write accounting from SMART (§13); open questions 3 (FileVault part), 6 and the `RowLookup` question answered. 2026-10-21: destinations and buffer registration go through `unsafe` (§2); §2's interface details as `syntropy-io` defines them
 
 ## Summary
 
@@ -109,6 +109,20 @@ pub struct DioAlign { pub mem: u32, pub offset: u32 }
 ```
 
 `SubmitBatch` and `CompletionBuf` are preallocated per thread at `Warming`, so the loop never allocates.
+
+**Destinations are named through `unsafe`** (revised 2026-10-21). An engine reads and writes whatever memory a request names. If any crate could name memory in safe code, a crate under `forbid(unsafe_code)` could direct a write into memory it does not own, and every engine's `// SAFETY:` comment would rest on code that cannot hold `unsafe` (RFC-0001 §4.2 rule 8; ADR-0001 item 4). So the obligation sits with the tier manager, which owns every destination (§1) and may use `unsafe`:
+- `IoDest` is a struct with a private field, built only by `unsafe fn IoDest::fixed(buf, offset)` and `unsafe fn IoDest::raw(addr)`. Each states its contract in a `# Safety` section: the range is the caller's, valid for the transfer, and used by nothing else from submission until the completion is reaped. Engines read it through `IoDest::kind()`, which returns the plain `IoDestKind { Fixed { buf, offset }, Raw { addr } }`.
+- `IoDest` is neither `Copy` nor `Clone`, so `ReadRequest`, `WriteRequest` and `IoOp` are not either. A request moves into the batch, and safe code cannot resubmit a stale copy after its slot is reused. The rings still move requests without allocating.
+- `register_buffers` is an `unsafe fn`: each region stays the caller's, and valid, until the engine is dropped. `HostRegion` stays plain data.
+- `ReadCompletion` and the other types stay `Copy`.
+
+**Interface details `syntropy-io` settles** (revised 2026-10-21). Where the block above is silent or differs:
+1. `register_buffers` returns `Vec<BufIndex>`, not `SmallVec<[BufIndex; 16]>`. Registration runs at `Loading`, outside the loop.
+2. A write completes as a `ReadCompletion`; `result` is the bytes written. From an engine, a count below the extent's length is a short transfer, which the I/O thread resubmits (§16).
+3. `SubmitBatch` holds `IoOp { Read(ReadRequest), Write(WriteRequest) }`, one per chunk (§3.3). `submit` accepts a prefix and removes it from the batch, so what remains was not submitted.
+4. `Wait::Until(Nanos)` is a relative timeout: block until a completion arrives or that much time passes.
+5. `BufIndex` is 16 bits, the narrower of the native indexes (io_uring's `buf_index`; I/O rings take 32), so every value is valid on every engine.
+6. `CancelOutcome::Cancelled` still produces a completion, carrying `IO_CANCELLED`. `TooLate` completes normally and the I/O thread discards it as stale.
 
 ### 3. Threads, rings, priorities and queue depth
 

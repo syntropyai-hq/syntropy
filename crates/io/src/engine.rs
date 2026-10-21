@@ -53,7 +53,7 @@ pub struct DioAlign {
 /// What an engine supports on this host and volume (RFC-0021 §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EngineCaps {
-    /// Registered (fixed) buffers are in use, so [`IoDest::Fixed`](crate::IoDest::Fixed)
+    /// Registered (fixed) buffers are in use, so [`IoDestKind::Fixed`](crate::IoDestKind::Fixed)
     /// destinations avoid per-request page pinning.
     pub fixed_buffers: bool,
     /// Registered file handles are in use.
@@ -84,9 +84,9 @@ pub struct BufIndex(pub u16);
 /// A range of host memory, owned by the tier manager, to register with the engine as a buffer
 /// (RFC-0021 §2, §4.1).
 ///
-/// The memory must stay valid, and registered with no other engine, until the engine is
-/// dropped. RFC-0021 §2 and RFC-0040 §2.1 name this type without fields; this is the smallest
-/// shape registration needs.
+/// Plain data: naming a range is harmless, and the obligation sits with the caller of the
+/// `unsafe` [`IoEngine::register_buffers`]. RFC-0021 §2 and RFC-0040 §2.1 name this type without
+/// fields; this is the smallest shape registration needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HostRegion {
     /// Address of the first byte, aligned per RFC-0021 §6.
@@ -116,7 +116,7 @@ pub enum Wait {
     /// Never block: return the completions that are ready.
     None,
     /// Block in the kernel until a completion arrives or this much time passes. The I/O thread
-    /// passes the time to its next ring check, at most 100 µs [target] (RFC-0021 §3.1).
+    /// passes the time to its next ring check, at most 100 µs \[target\] (RFC-0021 §3.1).
     Until(Nanos),
 }
 
@@ -138,6 +138,10 @@ pub enum CancelOutcome {
 ///
 /// One instance per I/O thread. Not `Sync`: it is driven only by its thread. `Send`, so the
 /// runner can build it and move it onto the thread.
+///
+/// The memory an engine reads and writes is named only through `unsafe` calls:
+/// [`IoEngine::register_buffers`] and the [`IoDest`](crate::IoDest) constructors. Its other
+/// methods are safe.
 pub trait IoEngine: Send {
     /// Which engine this is.
     fn kind(&self) -> EngineKind;
@@ -153,7 +157,25 @@ pub trait IoEngine: Send {
     /// RFC-0021 §2 returns a `SmallVec<[BufIndex; 16]>`; this crate takes no `smallvec`
     /// dependency yet, and registration happens at `Loading`, outside the I/O loop, so a `Vec`
     /// costs nothing on the hot path.
-    fn register_buffers(&mut self, regions: &[HostRegion]) -> Result<Vec<BufIndex>, IoError>;
+    ///
+    /// Code without `unsafe` cannot call it:
+    ///
+    /// ```compile_fail,E0133
+    /// use syntropy_io::{Bytes, HostRegion, IoEngine};
+    /// fn register(engine: &mut dyn IoEngine) {
+    ///     let any = [HostRegion { addr: 0x1000, len: Bytes(1 << 30) }];
+    ///     let _ = engine.register_buffers(&any);
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// Each region is memory the caller owns, valid for reads and writes over its whole length,
+    /// and stays so (not freed, unmapped or given to anything else) until the engine is dropped.
+    /// Once registered, the engine and the device may read or write it at any time through
+    /// [`IoDest::fixed`](crate::IoDest::fixed) destinations.
+    unsafe fn register_buffers(&mut self, regions: &[HostRegion])
+    -> Result<Vec<BufIndex>, IoError>;
 
     /// Never blocks. Returns how many were accepted; the rest stay with the caller.
     ///
