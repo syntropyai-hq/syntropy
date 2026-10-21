@@ -1,0 +1,695 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BenchResult",
+  "description": "A Syntropy benchmark result, schema 1 (RFC-0061 §2.2). syntropy_bench::schema::BenchResult::from_json is the reference reader. Every property is required; a property that may be absent is written as null.",
+  "type": "object",
+  "properties": {
+    "schema": {"const": 1},
+    "key": {"$ref": "#/$defs/BenchKey"},
+    "started_unix_ms": {"$ref": "#/$defs/u64"},
+    "repetitions": {"type": "array", "items": {"$ref": "#/$defs/RepResult"}},
+    "summary": {"$ref": "#/$defs/Summary"},
+    "terms": {"$ref": "#/$defs/TermBreakdown"},
+    "bounds": {"$ref": "#/$defs/Bounds"},
+    "plan": {"$ref": "#/$defs/PlanDigest"},
+    "parity": {"$ref": "#/$defs/ParityRef"},
+    "env": {"$ref": "#/$defs/EnvCapture"},
+    "config_hash": {"$ref": "#/$defs/Blake3"},
+    "baseline_engine": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/BaselineRun"}]},
+    "verdict": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/GateVerdict"}]},
+    "trust": {"$ref": "#/$defs/Trust"}
+  },
+  "required": [
+    "schema",
+    "key",
+    "started_unix_ms",
+    "repetitions",
+    "summary",
+    "terms",
+    "bounds",
+    "plan",
+    "parity",
+    "env",
+    "config_hash",
+    "baseline_engine",
+    "verdict",
+    "trust"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "u16": {"type": "integer", "minimum": 0, "maximum": 65535},
+    "u32": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "u64": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "Blake3": {
+      "description": "A BLAKE3 digest, 64 lowercase hex digits.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "GitSha": {
+      "description": "A git commit ID, 40 lowercase hex digits.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "BenchKey": {
+      "description": "RFC-0061 §2.1. Two results are comparable only when their keys are equal in every field except build.",
+      "type": "object",
+      "properties": {
+        "scenario": {"$ref": "#/$defs/ScenarioId"},
+        "scenario_version": {"$ref": "#/$defs/u16"},
+        "model": {"$ref": "#/$defs/ModelId"},
+        "quant": {"$ref": "#/$defs/QuantClass"},
+        "prompt_tokens": {"$ref": "#/$defs/u32"},
+        "gen_tokens": {"$ref": "#/$defs/u32"},
+        "concurrency": {"$ref": "#/$defs/u16"},
+        "objective": {"$ref": "#/$defs/Objective"},
+        "fidelity": {"$ref": "#/$defs/ExactnessPolicy"},
+        "spec": {"$ref": "#/$defs/SpecSetting"},
+        "prefix": {"$ref": "#/$defs/PrefixSetting"},
+        "topology": {"$ref": "#/$defs/TopologyId"},
+        "interconnect": {"$ref": "#/$defs/InterconnectId"},
+        "rig": {"$ref": "#/$defs/RigFingerprint"},
+        "thermal": {"$ref": "#/$defs/ThermalProtocol"},
+        "expert_cache": {"$ref": "#/$defs/CacheStart"},
+        "build": {"$ref": "#/$defs/BuildId"}
+      },
+      "required": [
+        "scenario",
+        "scenario_version",
+        "model",
+        "quant",
+        "prompt_tokens",
+        "gen_tokens",
+        "concurrency",
+        "objective",
+        "fidelity",
+        "spec",
+        "prefix",
+        "topology",
+        "interconnect",
+        "rig",
+        "thermal",
+        "expert_cache",
+        "build"
+      ],
+      "additionalProperties": false
+    },
+    "ScenarioId": {
+      "description": "<class>.<mode>.<model>.<quant>[.<variant>] (RFC-0061 §4.1).",
+      "type": "string"
+    },
+    "ModelId": {
+      "description": "The content identity of a model variant (RFC-0001 §5.1).",
+      "$ref": "#/$defs/Blake3"
+    },
+    "QuantClass": {
+      "description": "A quantization class as scenario IDs spell it.",
+      "type": "string"
+    },
+    "TopologyId": {"description": "The nodes and their roles in the plan.", "type": "string"},
+    "InterconnectId": {"description": "The links between nodes, or none.", "type": "string"},
+    "RigFingerprint": {
+      "description": "BLAKE3 of the rig inventory record (RFC-0061 §2.1, §6.3).",
+      "$ref": "#/$defs/Blake3"
+    },
+    "Objective": {
+      "oneOf": [
+        {"const": "latency"},
+        {
+          "type": "object",
+          "properties": {
+            "throughput": {
+              "type": "object",
+              "properties": {"per_sequence_floor_tps": {"type": "number"}},
+              "required": ["per_sequence_floor_tps"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["throughput"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ExactnessPolicy": {
+      "oneOf": [
+        {"const": "exact"},
+        {
+          "type": "object",
+          "properties": {
+            "approximate": {
+              "type": "object",
+              "properties": {
+                "knobs": {
+                  "type": "array",
+                  "items": {"$ref": "#/$defs/ApproxKnob"},
+                  "uniqueItems": true
+                }
+              },
+              "required": ["knobs"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["approximate"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ApproxKnob": {
+      "description": "An approximation knob of ADR-0019 §6.",
+      "enum": [
+        "expert_skip",
+        "expert_defer",
+        "miss_low_precision",
+        "topk_reduce",
+        "kv_lossy",
+        "wire_compress",
+        "approx_attention",
+        "spec_lenient"
+      ]
+    },
+    "SpecSetting": {
+      "oneOf": [
+        {"enum": ["off", "auto"]},
+        {
+          "type": "object",
+          "properties": {"force": {"$ref": "#/$defs/SpecConfig"}},
+          "required": ["force"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SpecConfig": {
+      "type": "object",
+      "properties": {
+        "source": {"$ref": "#/$defs/DraftSource"},
+        "max_window": {"$ref": "#/$defs/u16"}
+      },
+      "required": ["source", "max_window"],
+      "additionalProperties": false
+    },
+    "DraftSource": {
+      "oneOf": [
+        {"enum": ["mtp", "draft_head"]},
+        {
+          "type": "object",
+          "properties": {
+            "draft_model": {
+              "type": "object",
+              "properties": {"model": {"$ref": "#/$defs/ModelId"}},
+              "required": ["model"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["draft_model"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PrefixSetting": {"enum": ["cold", "warm"]},
+    "ThermalProtocol": {
+      "oneOf": [
+        {"const": "cold"},
+        {
+          "type": "object",
+          "properties": {
+            "sustained": {
+              "type": "object",
+              "properties": {"preload_s": {"$ref": "#/$defs/u32"}},
+              "required": ["preload_s"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["sustained"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "CacheStart": {
+      "description": "The MoE expert cache's starting state (RFC-0061 §3.2); dense scenarios record learned.",
+      "enum": ["learned", "cold"]
+    },
+    "BuildId": {
+      "description": "Build identity (RFC-0001 §5.2, RFC-0062 §8.1).",
+      "type": "object",
+      "properties": {
+        "version": {"type": "string"},
+        "commit": {"$ref": "#/$defs/GitSha"},
+        "profile": {"$ref": "#/$defs/BuildProfile"},
+        "target": {"type": "string"},
+        "toolchain": {"$ref": "#/$defs/Blake3"}
+      },
+      "required": ["version", "commit", "profile", "target", "toolchain"],
+      "additionalProperties": false
+    },
+    "BuildProfile": {
+      "description": "RFC-0062 §4.4.",
+      "enum": ["dev", "test-release", "chaos", "pr", "release"]
+    },
+    "Trust": {
+      "description": "Set by the writer of record; an untrusted result never gates, becomes a baseline or is published (RFC-0061 §10.3).",
+      "enum": ["trusted", "untrusted"]
+    },
+    "RepResult": {
+      "description": "One repetition's raw metrics (RFC-0061 §1.2, §2.2).",
+      "type": "object",
+      "properties": {
+        "ttft_s": {"type": "number"},
+        "tpot_s": {"type": "number"},
+        "itl_s": {"type": "array", "items": {"type": "number"}},
+        "prefill_tps": {"type": "number"},
+        "aggregate_tps": {"type": ["number", "null"]},
+        "floor_attainment": {"type": ["number", "null"]},
+        "steps": {"$ref": "#/$defs/StepTraceRef"},
+        "energy_j_per_token": {"type": ["number", "null"]}
+      },
+      "required": [
+        "ttft_s",
+        "tpot_s",
+        "itl_s",
+        "prefill_tps",
+        "aggregate_tps",
+        "floor_attainment",
+        "steps",
+        "energy_j_per_token"
+      ],
+      "additionalProperties": false
+    },
+    "StepTraceRef": {
+      "oneOf": [
+        {"const": "not_collected"},
+        {
+          "type": "object",
+          "properties": {
+            "stored": {
+              "type": "object",
+              "properties": {"object": {"type": "string"}, "digest": {"$ref": "#/$defs/Blake3"}},
+              "required": ["object", "digest"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["stored"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Summary": {
+      "description": "Descriptive statistics over the repetitions (RFC-0061 §3.3).",
+      "type": "object",
+      "properties": {
+        "ttft_s": {"$ref": "#/$defs/MedianCi"},
+        "tpot_s": {"$ref": "#/$defs/MedianCi"},
+        "prefill_tps": {"$ref": "#/$defs/MedianCi"},
+        "aggregate_tps": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/MedianCi"}]},
+        "floor_attainment": {"type": ["number", "null"]},
+        "itl_s": {"$ref": "#/$defs/Percentiles"},
+        "itl_event_s": {"$ref": "#/$defs/Percentiles"},
+        "cv": {"type": ["number", "null"]}
+      },
+      "required": [
+        "ttft_s",
+        "tpot_s",
+        "prefill_tps",
+        "aggregate_tps",
+        "floor_attainment",
+        "itl_s",
+        "itl_event_s",
+        "cv"
+      ],
+      "additionalProperties": false
+    },
+    "MedianCi": {
+      "type": "object",
+      "properties": {
+        "median": {"type": "number"},
+        "ci95_low": {"type": "number"},
+        "ci95_high": {"type": "number"}
+      },
+      "required": ["median", "ci95_low", "ci95_high"],
+      "additionalProperties": false
+    },
+    "Percentiles": {
+      "type": "object",
+      "properties": {
+        "p50": {"type": "number"},
+        "p90": {"type": "number"},
+        "p99": {"type": "number"},
+        "max": {"type": "number"}
+      },
+      "required": ["p50", "p90", "p99", "max"],
+      "additionalProperties": false
+    },
+    "TermBreakdown": {
+      "description": "RFC-0061 §1.3, §5.2.",
+      "type": "object",
+      "properties": {
+        "rows": {"type": "array", "items": {"$ref": "#/$defs/TermRow"}},
+        "remainder_s": {"type": ["number", "null"]}
+      },
+      "required": ["rows", "remainder_s"],
+      "additionalProperties": false
+    },
+    "TermRow": {
+      "type": "object",
+      "properties": {
+        "term": {"$ref": "#/$defs/Term"},
+        "bytes": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/u64"}]},
+        "w_probe_bps": {"type": ["number", "null"]},
+        "w_ach_bps": {"type": ["number", "null"]},
+        "predicted_s": {"type": ["number", "null"]},
+        "model_s": {"type": ["number", "null"]},
+        "measured_s": {"type": "number"},
+        "flagged": {"type": "boolean"}
+      },
+      "required": [
+        "term",
+        "bytes",
+        "w_probe_bps",
+        "w_ach_bps",
+        "predicted_s",
+        "model_s",
+        "measured_s",
+        "flagged"
+      ],
+      "additionalProperties": false
+    },
+    "Term": {
+      "oneOf": [
+        {"const": "sample"},
+        {
+          "type": "object",
+          "properties": {
+            "kernel": {
+              "type": "object",
+              "properties": {
+                "stage": {"$ref": "#/$defs/u16"},
+                "tier": {"$ref": "#/$defs/TierKind"},
+                "kernel_class": {"type": "string"}
+              },
+              "required": ["stage", "tier", "kernel_class"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["kernel"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "miss": {
+              "type": "object",
+              "properties": {"stage": {"$ref": "#/$defs/u16"}},
+              "required": ["stage"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["miss"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "fixed": {
+              "type": "object",
+              "properties": {"stage": {"$ref": "#/$defs/u16"}},
+              "required": ["stage"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["fixed"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "hop": {
+              "type": "object",
+              "properties": {"from": {"$ref": "#/$defs/u16"}, "to": {"$ref": "#/$defs/u16"}},
+              "required": ["from", "to"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["hop"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "TierKind": {
+      "description": "RFC-0001 §5.2.",
+      "enum": ["vram", "unified", "host_pinned", "host_pageable", "nvme"]
+    },
+    "Bounds": {
+      "description": "RFC-0061 §5.1.",
+      "type": "object",
+      "properties": {
+        "t_model_s": {"type": ["number", "null"]},
+        "t_peak_s": {"type": ["number", "null"]},
+        "overlap": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/OverlapBound"}]}
+      },
+      "required": ["t_model_s", "t_peak_s", "overlap"],
+      "additionalProperties": false
+    },
+    "OverlapBound": {
+      "type": "object",
+      "properties": {"t_overlap_s": {"type": "number"}, "hit_rate": {"type": "number"}},
+      "required": ["t_overlap_s", "hit_rate"],
+      "additionalProperties": false
+    },
+    "PlanDigest": {
+      "type": "object",
+      "properties": {
+        "epoch": {"$ref": "#/$defs/PlanEpoch"},
+        "stages": {"type": "array", "items": {"$ref": "#/$defs/StageDigest"}},
+        "predicted_t_tok_s": {"type": ["number", "null"]}
+      },
+      "required": ["epoch", "stages", "predicted_t_tok_s"],
+      "additionalProperties": false
+    },
+    "PlanEpoch": {
+      "type": "object",
+      "properties": {"term": {"$ref": "#/$defs/u64"}, "seq": {"$ref": "#/$defs/u64"}},
+      "required": ["term", "seq"],
+      "additionalProperties": false
+    },
+    "StageDigest": {
+      "type": "object",
+      "properties": {
+        "node": {"type": "string"},
+        "layer_start": {"$ref": "#/$defs/u16"},
+        "layer_end": {"$ref": "#/$defs/u16"},
+        "tier_bytes": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/TierKind"},
+          "additionalProperties": {"$ref": "#/$defs/u64"}
+        }
+      },
+      "required": ["node", "layer_start", "layer_end", "tier_bytes"],
+      "additionalProperties": false
+    },
+    "ParityRef": {
+      "description": "RFC-0061 §3.6, RFC-0060 §5.9.",
+      "type": "object",
+      "properties": {
+        "report": {"$ref": "#/$defs/Blake3"},
+        "path": {"type": "string"},
+        "verdict": {"$ref": "#/$defs/ParityVerdict"}
+      },
+      "required": ["report", "path", "verdict"],
+      "additionalProperties": false
+    },
+    "ParityVerdict": {"enum": ["pass", "fail", "reference_defect"]},
+    "EnvCapture": {
+      "description": "RFC-0061 §3.5.",
+      "type": "object",
+      "properties": {
+        "rig_id": {"type": "string"},
+        "checks": {"type": "array", "items": {"$ref": "#/$defs/EnvCheck"}},
+        "dirty": {"type": ["string", "null"]},
+        "driver": {"type": ["string", "null"]},
+        "firmware": {"type": "object", "additionalProperties": {"type": "string"}},
+        "kernel": {"type": "string"},
+        "microcode": {"type": ["string", "null"]},
+        "gpu_clock_mhz": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/ClockRange"}]}
+      },
+      "required": [
+        "rig_id",
+        "checks",
+        "dirty",
+        "driver",
+        "firmware",
+        "kernel",
+        "microcode",
+        "gpu_clock_mhz"
+      ],
+      "additionalProperties": false
+    },
+    "EnvCheck": {
+      "type": "object",
+      "properties": {
+        "check": {"$ref": "#/$defs/EnvCheckKind"},
+        "passed": {"type": "boolean"},
+        "observed": {"type": "string"}
+      },
+      "required": ["check", "passed", "observed"],
+      "additionalProperties": false
+    },
+    "EnvCheckKind": {
+      "enum": [
+        "power_source",
+        "power_plan",
+        "other_processes",
+        "memory_paged_out",
+        "temperatures",
+        "page_cache",
+        "network",
+        "os_background_work"
+      ]
+    },
+    "ClockRange": {
+      "type": "object",
+      "properties": {"min_mhz": {"$ref": "#/$defs/u32"}, "max_mhz": {"$ref": "#/$defs/u32"}},
+      "required": ["min_mhz", "max_mhz"],
+      "additionalProperties": false
+    },
+    "BaselineRun": {
+      "description": "RFC-0061 §7.6.",
+      "type": "object",
+      "properties": {
+        "engine": {"type": "string"},
+        "version": {"type": "string"},
+        "commit": {"type": "string"},
+        "command": {"type": "array", "items": {"type": "string"}},
+        "config_files": {"type": "array", "items": {"$ref": "#/$defs/FileDigest"}},
+        "sweep": {"type": "array", "items": {"$ref": "#/$defs/SweepPoint"}},
+        "model": {"$ref": "#/$defs/BaselineModel"},
+        "fidelity_settings": {"$ref": "#/$defs/BaselineFidelity"},
+        "measured_fidelity": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/MeasuredFidelity"}]},
+        "repetitions": {"type": "array", "items": {"$ref": "#/$defs/BaselineRep"}}
+      },
+      "required": [
+        "engine",
+        "version",
+        "commit",
+        "command",
+        "config_files",
+        "sweep",
+        "model",
+        "fidelity_settings",
+        "measured_fidelity",
+        "repetitions"
+      ],
+      "additionalProperties": false
+    },
+    "FileDigest": {
+      "type": "object",
+      "properties": {"path": {"type": "string"}, "blake3": {"$ref": "#/$defs/Blake3"}},
+      "required": ["path", "blake3"],
+      "additionalProperties": false
+    },
+    "SweepPoint": {
+      "type": "object",
+      "properties": {
+        "options": {"type": "object", "additionalProperties": {"type": "string"}},
+        "decode_tps": {"type": "number"}
+      },
+      "required": ["options", "decode_tps"],
+      "additionalProperties": false
+    },
+    "BaselineModel": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "unchanged": {
+              "type": "object",
+              "properties": {"file": {"$ref": "#/$defs/Blake3"}},
+              "required": ["file"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["unchanged"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "format_adjusted": {
+              "type": "object",
+              "properties": {
+                "command": {"type": "array", "items": {"type": "string"}},
+                "file": {"$ref": "#/$defs/Blake3"}
+              },
+              "required": ["command", "file"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["format_adjusted"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "BaselineFidelity": {
+      "oneOf": [
+        {"const": "exact"},
+        {
+          "type": "object",
+          "properties": {
+            "default": {
+              "type": "object",
+              "properties": {"approximations": {"type": "array", "items": {"type": "string"}}},
+              "required": ["approximations"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["default"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "MeasuredFidelity": {
+      "type": "object",
+      "properties": {
+        "top_n": {"$ref": "#/$defs/u16"},
+        "top1_agreement": {"type": "number"},
+        "kl_top_n": {"type": "number"}
+      },
+      "required": ["top_n", "top1_agreement", "kl_top_n"],
+      "additionalProperties": false
+    },
+    "BaselineRep": {
+      "type": "object",
+      "properties": {
+        "ttft_s": {"type": "number"},
+        "tpot_s": {"type": "number"},
+        "aggregate_tps": {"type": ["number", "null"]}
+      },
+      "required": ["ttft_s", "tpot_s", "aggregate_tps"],
+      "additionalProperties": false
+    },
+    "GateVerdict": {
+      "description": "RFC-0061 §8.",
+      "type": "object",
+      "properties": {
+        "gate": {"$ref": "#/$defs/GateKind"},
+        "against": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/BuildId"}]},
+        "metrics": {"type": "array", "items": {"$ref": "#/$defs/MetricVerdict"}},
+        "outcome": {"$ref": "#/$defs/GateOutcome"},
+        "override_reason": {"type": ["string", "null"]}
+      },
+      "required": ["gate", "against", "metrics", "outcome", "override_reason"],
+      "additionalProperties": false
+    },
+    "GateKind": {"enum": ["pr", "trend", "bisection", "release"]},
+    "MetricVerdict": {
+      "type": "object",
+      "properties": {
+        "metric": {"type": "string"},
+        "r_hat": {"type": "number"},
+        "band": {"type": "number"},
+        "p_value": {"type": ["number", "null"]},
+        "outcome": {"$ref": "#/$defs/GateOutcome"}
+      },
+      "required": ["metric", "r_hat", "band", "p_value", "outcome"],
+      "additionalProperties": false
+    },
+    "GateOutcome": {"enum": ["pass", "fail", "report_only"]}
+  }
+}

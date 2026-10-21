@@ -1,0 +1,310 @@
+{
+  "schema": 1,
+  "key": {
+    "scenario": "tiered.single.fixture.q4km.sustained",
+    "scenario_version": 3,
+    "model": "3333333333333333333333333333333333333333333333333333333333333333",
+    "quant": "q4km",
+    "prompt_tokens": 2048,
+    "gen_tokens": 128,
+    "concurrency": 1,
+    "objective": "latency",
+    "fidelity": "exact",
+    "spec": "off",
+    "prefix": "cold",
+    "topology": "single",
+    "interconnect": "none",
+    "rig": "4444444444444444444444444444444444444444444444444444444444444444",
+    "thermal": {
+      "sustained": {
+        "preload_s": 600
+      }
+    },
+    "expert_cache": "learned",
+    "build": {
+      "version": "0.1.0",
+      "commit": "1111111111111111111111111111111111111111",
+      "profile": "release",
+      "target": "x86_64-unknown-linux-gnu",
+      "toolchain": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  },
+  "started_unix_ms": 1700000000000,
+  "repetitions": [
+    {
+      "ttft_s": 0.25,
+      "tpot_s": 0.0625,
+      "itl_s": [
+        0.0625,
+        0.0625,
+        0.125
+      ],
+      "prefill_tps": 1024.0,
+      "aggregate_tps": null,
+      "floor_attainment": null,
+      "steps": {
+        "stored": {
+          "object": "steps/0.trace",
+          "digest": "0101010101010101010101010101010101010101010101010101010101010101"
+        }
+      },
+      "energy_j_per_token": 2.5
+    },
+    {
+      "ttft_s": 0.25,
+      "tpot_s": 0.0625,
+      "itl_s": [
+        0.0625,
+        0.0625,
+        0.125
+      ],
+      "prefill_tps": 1024.0,
+      "aggregate_tps": 16.0,
+      "floor_attainment": 1.0,
+      "steps": "not_collected",
+      "energy_j_per_token": null
+    }
+  ],
+  "summary": {
+    "ttft_s": {
+      "median": 0.0625,
+      "ci95_low": 0.06,
+      "ci95_high": 0.065
+    },
+    "tpot_s": {
+      "median": 0.0625,
+      "ci95_low": 0.06,
+      "ci95_high": 0.065
+    },
+    "prefill_tps": {
+      "median": 1024.0,
+      "ci95_low": 1000.0,
+      "ci95_high": 1050.0
+    },
+    "aggregate_tps": {
+      "median": 16.0,
+      "ci95_low": 15.5,
+      "ci95_high": 16.5
+    },
+    "floor_attainment": 1.0,
+    "itl_s": {
+      "p50": 0.0625,
+      "p90": 0.07,
+      "p99": 0.08,
+      "max": 0.125
+    },
+    "itl_event_s": {
+      "p50": 0.0625,
+      "p90": 0.07,
+      "p99": 0.08,
+      "max": 0.125
+    },
+    "cv": 0.01
+  },
+  "terms": {
+    "rows": [
+      {
+        "term": {
+          "kernel": {
+            "stage": 0,
+            "tier": "vram",
+            "kernel_class": "DenseGemv"
+          }
+        },
+        "bytes": 1073741824,
+        "w_probe_bps": 900000000000.0,
+        "w_ach_bps": 850000000000.0,
+        "predicted_s": 0.0012,
+        "model_s": 0.0011,
+        "measured_s": 0.0013,
+        "flagged": true
+      },
+      {
+        "term": {
+          "miss": {
+            "stage": 0
+          }
+        },
+        "bytes": null,
+        "w_probe_bps": null,
+        "w_ach_bps": null,
+        "predicted_s": null,
+        "model_s": null,
+        "measured_s": 0.0001,
+        "flagged": false
+      },
+      {
+        "term": {
+          "fixed": {
+            "stage": 0
+          }
+        },
+        "bytes": null,
+        "w_probe_bps": null,
+        "w_ach_bps": null,
+        "predicted_s": 0.0002,
+        "model_s": 0.0002,
+        "measured_s": 0.0002,
+        "flagged": false
+      },
+      {
+        "term": {
+          "hop": {
+            "from": 0,
+            "to": 1
+          }
+        },
+        "bytes": 16384,
+        "w_probe_bps": 300000000.0,
+        "w_ach_bps": null,
+        "predicted_s": 0.0001,
+        "model_s": 0.0001,
+        "measured_s": 0.0001,
+        "flagged": false
+      },
+      {
+        "term": "sample",
+        "bytes": null,
+        "w_probe_bps": null,
+        "w_ach_bps": null,
+        "predicted_s": null,
+        "model_s": null,
+        "measured_s": 0.00005,
+        "flagged": false
+      }
+    ],
+    "remainder_s": 0.00001
+  },
+  "bounds": {
+    "t_model_s": 0.06,
+    "t_peak_s": 0.05,
+    "overlap": {
+      "t_overlap_s": 0.055,
+      "hit_rate": 0.9
+    }
+  },
+  "plan": {
+    "epoch": {
+      "term": 1,
+      "seq": 2
+    },
+    "stages": [
+      {
+        "node": "node-a",
+        "layer_start": 0,
+        "layer_end": 32,
+        "tier_bytes": {
+          "vram": 17179869184,
+          "host_pinned": 34359738368
+        }
+      }
+    ],
+    "predicted_t_tok_s": 0.06
+  },
+  "parity": {
+    "report": "0202020202020202020202020202020202020202020202020202020202020202",
+    "path": "expert-tiered",
+    "verdict": "pass"
+  },
+  "env": {
+    "rig_id": "R-FIXTURE",
+    "checks": [
+      {
+        "check": "power_source",
+        "passed": true,
+        "observed": "mains"
+      },
+      {
+        "check": "temperatures",
+        "passed": true,
+        "observed": "within 2 °C"
+      }
+    ],
+    "dirty": null,
+    "driver": "fixture-driver 1.0",
+    "firmware": {
+      "vbios": "1.2.3"
+    },
+    "kernel": "6.6.0",
+    "microcode": null,
+    "gpu_clock_mhz": {
+      "min_mhz": 2400,
+      "max_mhz": 2500
+    }
+  },
+  "config_hash": "0303030303030303030303030303030303030303030303030303030303030303",
+  "baseline_engine": {
+    "engine": "fixture-engine",
+    "version": "1.0.0",
+    "commit": "abc123",
+    "command": [
+      "fixture-engine",
+      "--model",
+      "model.gguf"
+    ],
+    "config_files": [
+      {
+        "path": "engine.toml",
+        "blake3": "0404040404040404040404040404040404040404040404040404040404040404"
+      }
+    ],
+    "sweep": [
+      {
+        "options": {
+          "threads": "8"
+        },
+        "decode_tps": 15.0
+      }
+    ],
+    "model": {
+      "format_adjusted": {
+        "command": [
+          "convert",
+          "model.gguf"
+        ],
+        "file": "0505050505050505050505050505050505050505050505050505050505050505"
+      }
+    },
+    "fidelity_settings": {
+      "default": {
+        "approximations": [
+          "expert_skip"
+        ]
+      }
+    },
+    "measured_fidelity": {
+      "top_n": 20,
+      "top1_agreement": 0.99,
+      "kl_top_n": 0.001
+    },
+    "repetitions": [
+      {
+        "ttft_s": 0.3,
+        "tpot_s": 0.07,
+        "aggregate_tps": null
+      }
+    ]
+  },
+  "verdict": {
+    "gate": "pr",
+    "against": {
+      "version": "0.1.0",
+      "commit": "7777777777777777777777777777777777777777",
+      "profile": "release",
+      "target": "x86_64-unknown-linux-gnu",
+      "toolchain": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "metrics": [
+      {
+        "metric": "decode_rate",
+        "r_hat": -0.01,
+        "band": 0.02,
+        "p_value": 0.25,
+        "outcome": "pass"
+      }
+    ],
+    "outcome": "pass",
+    "override_reason": null
+  },
+  "trust": "trusted"
+}
