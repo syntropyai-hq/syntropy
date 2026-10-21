@@ -83,19 +83,9 @@ pub struct Segment {
     pub handle: u64,
 }
 
-/// A range of the tier manager's host memory to register with, or import into, a device
-/// (RFC-0001 §5.7 `register_host` and `import`).
-///
-/// RFC-0040 §2.1 and RFC-0021 §2 name this type without fields. It is defined here with the
-/// same shape as the `HostRegion` that open PR #1491 adds to `core` for the I/O engine; when
-/// that lands, this becomes a re-export of `core`'s type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct HostRegion {
-    /// Address of the first byte.
-    pub addr: u64,
-    /// Length of the range.
-    pub len: Bytes,
-}
+/// The range of host memory `register_host` and `import` take (RFC-0001 §5.7): `core`'s
+/// type, which the I/O engine registers too (RFC-0021 §2).
+pub use syntropy_core::HostRegion;
 
 /// A host range registered with a device (RFC-0001 §5.7; RFC-0020 §6). It lives until it is
 /// passed back to [`HostRegistrar::unregister`]. RFC-0001 names the type without fields;
