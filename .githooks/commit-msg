@@ -68,7 +68,9 @@ else
     note "sign-off: ok"
 fi
 
-if [ ! -f "$naming" ]; then
+if ! same_repository "$hooks"; then
+    note "naming check: skipped, this repository is not the one these hooks belong to"
+elif [ ! -f "$naming" ]; then
     note "naming check: skipped, this repository has no plan/implementation/tools/naming_check.py"
 elif python=$(find_python); then
     if ! "$python" "$naming" --message "$message"; then

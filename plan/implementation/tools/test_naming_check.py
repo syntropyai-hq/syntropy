@@ -335,13 +335,13 @@ class HookTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_hook(self, lines, cwd=REPO, hook="commit-msg"):
+    def run_hook(self, lines, cwd=REPO, hook="commit-msg", hooks=REPO / ".githooks", env=None):
         message = self.dir / "COMMIT_EDITMSG"
         message.write_bytes("\r\n".join(lines + [""]).encode("utf-8"))
         args = [message.as_posix()] if hook == "commit-msg" else []
         done = subprocess.run(
-            ["sh", (REPO / ".githooks" / hook).as_posix(), *args],
-            cwd=cwd, env=self.env, capture_output=True, check=False)
+            ["sh", (hooks / hook).as_posix(), *args],
+            cwd=cwd, env=env or self.env, capture_output=True, check=False)
         output = (done.stdout + done.stderr).decode()
         self.assertNotIn("zorblax", output.lower(), "the output names a term")
         return done.returncode, output
@@ -365,7 +365,7 @@ class HookTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("commit-msg: subject: ok", output)
         self.assertIn("commit-msg: sign-off: ok", output)
-        self.assertIn("naming check: skipped, this repository has no", output)
+        self.assertIn("naming check: skipped, this repository is not the one these hooks belong to", output)
 
     def test_pre_commit_runs_the_plan_tools_when_plan_files_are_only_deleted(self):
         # A clone of this repository, with one generated file deleted and nothing else staged:
@@ -375,7 +375,9 @@ class HookTest(unittest.TestCase):
                        capture_output=True)
         subprocess.run(["git", "rm", "-q", "plan/implementation/traceability.md"], cwd=clone,
                        env=self.env, check=True, capture_output=True)
-        code, output = self.run_hook([], cwd=clone, hook="pre-commit")
+        # The hooks under test, placed in the clone so they belong to the repository they check.
+        shutil.copytree(REPO / ".githooks", clone / ".githooks", dirs_exist_ok=True)
+        code, output = self.run_hook([], cwd=clone, hook="pre-commit", hooks=clone / ".githooks")
         self.assertEqual(code, 1, output)
         self.assertNotIn("plan tools: skipped", output)
         self.assertIn("pre-commit: plan tools: FAIL: trace.py --check", output)
@@ -384,7 +386,58 @@ class HookTest(unittest.TestCase):
         code, output = self.run_hook([], cwd=self.other_repo(), hook="pre-commit")
         self.assertEqual(code, 0, output)
         self.assertIn("pre-commit: rustfmt: skipped, no Rust files staged", output)
-        self.assertIn("naming check: skipped, this repository has no", output)
+        self.assertIn("naming check: skipped, this repository is not the one these hooks belong to", output)
+
+    def test_hooks_run_no_code_from_another_repository(self):
+        # Another repository that ships its own naming_check.py and plan tools, and stages Rust
+        # and plan files: the hooks must not run any of them.
+        repo = self.other_repo()
+        tools = repo / "plan" / "implementation" / "tools"
+        tools.mkdir(parents=True)
+        marker = self.dir / "ran"
+        planted = f"open({str(marker)!r}, 'a').write('ran\\n')\n"
+        for name in ("naming_check.py", "epics.py", "depcheck.py"):
+            (tools / name).write_text(planted, encoding="utf-8")
+        (repo / "lib.rs").write_text("fn  f( ) {}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, env=self.env, check=True,
+                       capture_output=True)
+        # git exports GIT_DIR to hooks in a linked worktree; it must not make the other
+        # repository look like the hooks' own.
+        env = dict(self.env, GIT_DIR=str(repo / ".git"))
+        code, output = self.run_hook([], cwd=repo, hook="pre-commit", env=env)
+        self.assertEqual(code, 0, output)
+        self.assertIn("pre-commit: rustfmt: skipped, this repository is not the one these hooks belong to", output)
+        self.assertIn("pre-commit: plan tools: skipped, this repository is not the one these hooks belong to", output)
+        self.assertIn("naming check: skipped, this repository is not the one these hooks belong to", output)
+        code, output = self.run_hook(
+            ["docs: a message", "", "Signed-off-by: Test <test@example.invalid>"], cwd=repo,
+            env=env)
+        self.assertEqual(code, 0, output)
+        self.assertIn("naming check: skipped, this repository is not the one these hooks belong to", output)
+        self.assertFalse(marker.exists(), "a hook ran code from the other repository")
+
+    def test_hooks_in_a_linked_worktree_of_their_repository_still_run_its_tools(self):
+        # git exports GIT_DIR to hooks in a linked worktree; the trust check must still see the
+        # worktree and the hooks' checkout as one repository.
+        clone = self.dir / "clone"
+        subprocess.run(["git", "clone", "-q", str(REPO), str(clone)], env=self.env, check=True,
+                       capture_output=True)
+        shutil.copytree(REPO / ".githooks", clone / ".githooks", dirs_exist_ok=True)
+        worktree = self.dir / "linked"
+        subprocess.run(["git", "worktree", "add", "-q", "--detach", str(worktree)], cwd=clone,
+                       env=self.env, check=True, capture_output=True)
+        git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=worktree,
+                                 env=self.env, check=True, capture_output=True).stdout.strip()
+        env = dict(self.env, GIT_DIR=git_dir.decode())
+        message = self.dir / "COMMIT_EDITMSG"
+        message.write_text("docs: a message\n\nSigned-off-by: Test <test@example.invalid>\n",
+                           encoding="utf-8")
+        done = subprocess.run(
+            ["sh", (clone / ".githooks" / "commit-msg").as_posix(), message.as_posix()],
+            cwd=worktree, env=env, capture_output=True, check=False)
+        output = (done.stdout + done.stderr).decode()
+        self.assertEqual(done.returncode, 0, output)
+        self.assertIn("naming check: PASS", output)
 
     def message(self, *body):
         return ["docs: a message saved with CRLF endings", "", *body,

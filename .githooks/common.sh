@@ -14,3 +14,18 @@ find_python() {
     done
     return 1
 }
+
+# True when the repository being committed to shares its git directory with the checkout that
+# holds these hooks, the directory above $1. Only then do the hooks run code from that repository
+# (cargo fmt, the plan tools, naming_check.py), which is then as trusted as the hooks themselves.
+# Hooks that core.hooksPath points at from another repository run no code from it, as git itself
+# never runs a repository's own hooks.
+same_repository() {
+    here=$(git rev-parse --path-format=absolute --git-common-dir) || return 1
+    # git exports GIT_DIR and GIT_INDEX_FILE to hooks; clear them to ask about the hooks' checkout.
+    theirs=$(
+        unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
+        git -C "$1/.." rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+    ) || return 1
+    [ "$here" = "$theirs" ]
+}

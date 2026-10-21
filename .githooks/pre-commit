@@ -12,7 +12,9 @@
 #
 # POSIX sh, so it runs in Git for Windows' shell and on macOS. It never builds anything. A check
 # whose input is missing (nothing of its kind staged, no cargo, no Python 3, no list) is skipped
-# with one notice line, and the other checks still run.
+# with one notice line, and the other checks still run. The three checks run code from the
+# repository being committed to, so they run only when that is the repository these hooks belong
+# to (same_repository in common.sh).
 
 set -u
 
@@ -44,10 +46,17 @@ changed() {
 }
 
 python=$(find_python) || python=""
+if same_repository "$hooks"; then
+    own=yes
+else
+    own=no
+fi
 
 # rustfmt reads the working tree, so a partly staged Rust file is checked as it is on disk.
 if ! staged '*.rs'; then
     note "rustfmt: skipped, no Rust files staged"
+elif [ "$own" != yes ]; then
+    note "rustfmt: skipped, this repository is not the one these hooks belong to"
 elif ! command -v cargo >/dev/null 2>&1; then
     note "rustfmt: skipped, cargo is not on PATH"
 elif cargo fmt --all --check; then
@@ -59,6 +68,8 @@ fi
 
 if ! changed plan; then
     note "plan tools: skipped, nothing under plan/ staged"
+elif [ "$own" != yes ]; then
+    note "plan tools: skipped, this repository is not the one these hooks belong to"
 elif [ -z "$python" ]; then
     note "plan tools: skipped, no Python 3 found (python3 or python)"
 elif [ ! -f "$tools/epics.py" ]; then
@@ -94,7 +105,9 @@ else
     fi
 fi
 
-if [ -z "$python" ]; then
+if [ "$own" != yes ]; then
+    note "naming check: skipped, this repository is not the one these hooks belong to"
+elif [ -z "$python" ]; then
     note "naming check: skipped, no Python 3 found (python3 or python)"
 elif [ ! -f "$tools/naming_check.py" ]; then
     note "naming check: skipped, this repository has no $tools/naming_check.py"
