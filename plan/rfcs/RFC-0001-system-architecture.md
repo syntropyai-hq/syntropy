@@ -2342,7 +2342,7 @@ The full register is `plan/open-questions.md`.
 
 ## 18. Amendment log
 
-The change history of this RFC since its first draft: what changed, the sections touched and the technical reason, grouped by the date the change landed. A domain RFC's requested amendment is listed when this RFC took it. Changes these passes need in other documents are in §18.5.
+The change history of this RFC since its first draft: what changed, the sections touched and the technical reason, grouped by the date the change landed. A domain RFC's requested amendment is listed when this RFC took it. Changes these passes need in other documents are in §18.6.
 
 ### 18.1 Amendment pass (2026-10-19)
 
@@ -2542,7 +2542,7 @@ Each earlier change was re-checked against the text as it reads. These were miss
 | the Linux pinning gate follows RFC-0020 §6: no free-page test anywhere; each step gated on MemAvailable minus the reserve, cgroup headroom and the per-NUMA available estimate; the commit forces reclaim and registration pins only resident pages; distress from PSI `some avg10`, or the `allocstall_*` counters without PSI, plus step latency; give-up only after sustained pressure | §9.2 (Linux row); ADR-0007 item 3, Context, Revisions | the 2026-10-19 text gated registration on MemFree after committing, which can deadlock |
 | SC-22 states the ≈11 s critical path, the ≤ 5 s model probe, `probe.model_wait` at 7 s, and the sustained NVMe run after the first load or in an idle window, never during `Packing` or `Loading` | vision SC-22 | it said the sustained run happens during model load, which RFC-0010 S2 no longer does. RFC-0021 §10 still says so (§18.1) |
 | "within 2× the spread" means "not shown to exceed" it under RFC-0060 §5.4's one-sided test at the report's α, with that section's power target | ADR-0019 decision 3 note, Revisions | the reading matches ADR-0601 and ADR-0422, which already used it; the note also records their 3× per-category multiple |
-| the b2 prefill figure's NVMe-resident pool bytes stream at `W_nvme`, once per chunk or per layer-major group | `research/hardware-and-performance-model.md` §4 b2 (dated note); vision SC-18 pointer | closes the §18.5 request; the ≈281 GB and ≈47 s are RFC-0012 §4.4's estimate |
+| the b2 prefill figure's NVMe-resident pool bytes stream at `W_nvme`, once per chunk or per layer-major group | `research/hardware-and-performance-model.md` §4 b2 (dated note); vision SC-18 pointer | closes the §18.6 request; the ≈281 GB and ≈47 s are RFC-0012 §4.4's estimate |
 | SC-17's bound is `α_eff ≤ α_wire + S/β + 2 · t_switch`, 31.5–76.5 µs for a 28 KiB partial at 2.5 GB/s | vision SC-17 | the row above was marked applied, but only SC-16 and the cross-reference had changed; SC-17's 20 µs low end was below the wire time alone. RFC-0032 still quotes the old bound (§18.1) |
 | the frame extension is bounded by the plan's maximum rows times per-row metadata, not 4 KiB, per RFC-0031 amendment 1 | §5.8 (`ActivationFrame` comment) | not in the log before this pass |
 | `TokenEntry::rng_counter` is u64, as in `ResumePoint` and on the wire | §5.8 | the sampler key rule had landed, but not its u64 counter width |
@@ -2619,7 +2619,13 @@ M0 and M1 are split, every milestone follows the same rules, three foundation AD
 | §9.1 gains the ggml-only device row: the M2 Vulkan preview's buffers are allocated through ggml at `Loading`, recorded in the arena directory, and fixed per epoch | §9.1 | a device whose only provider is ggml has no elastic arenas, yet the tier manager still accounts for every byte (ADR-0007) |
 | `prefix_scope`'s comment: `None` is the local principal, and pages wholly inside the shared span are keyed with the empty salt | §5.8 | matches RFC-0022 §7.1 and RFC-0050 §9.5 |
 
-### 18.5 Changes requested in other documents
+### 18.5 Decision revisions (2026-10-21)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| ADR-0621 decision 3: the PR title's scope may be left out, and a scope that is given is a crate, an area, `plan`, `deps` or `release`; release-please's PR title is fixed to `chore(release): release…` (RFC-0062 §8.2), and RFC-0062 §8.3 counts a breaking marker in any commit's subject | ADR-0621 decision 3; RFC-0062 §8.2, §8.3, §12.3 | QUAL-E1-T05's criteria require `feat!: x`, which has no scope, to pass once labelled; `plan` scopes the design documents' titles; `deps` is Renovate's scope; release-please's default title puts the branch name in the scope; and a single-commit PR lands under its commit's subject |
+
+### 18.6 Changes requested in other documents
 
 Changes these passes need in documents this RFC does not edit. The Area column names the domain whose documents change.
 

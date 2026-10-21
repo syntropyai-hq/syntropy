@@ -1,0 +1,36 @@
+[
+  {
+    "sha": "1111111111111111111111111111111111111111",
+    "commit": {
+      "author": {
+        "name": "Carol Contributor",
+        "email": "carol@example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "committer": {
+        "name": "Carol Contributor",
+        "email": "carol@example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "message": "feat(core)!: drop the widget\n\nSigned-off-by: Carol Contributor <carol@example.org>\n",
+      "comment_count": 0
+    },
+    "author": {
+      "login": "carol",
+      "id": 4242,
+      "type": "User",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "carol",
+      "id": 4242,
+      "type": "User",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0000000000000000000000000000000000000000"
+      }
+    ]
+  }
+]

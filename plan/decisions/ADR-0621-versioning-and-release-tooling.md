@@ -34,7 +34,7 @@ Releases must ship exactly the bits that passed RFC-0060's and RFC-0061's gates.
    - Tags `v*` are created only by release-please. A tag ruleset rejects any other creation, update or deletion, and its only bypass actor is the release App.
    - Rulesets on `main` and `release/*` block force-pushes and deletion. No agent identity can push to them, create a tag or approve its own change.
 3. **Commits.**
-   - Squash merges only. The PR title is a conventional commit with a crate or area scope.
+   - Squash merges only. The PR title is a conventional commit. Its scope may be left out; a scope that is given is a crate, an area, `plan`, `deps` or `release` (revised 2026-10-21).
    - A breaking marker (`!` or `BREAKING CHANGE:`) requires the `semver-major-approved` label, which only a maintainer applies (**Maintainer action**). Agents never add a breaking marker without it.
    - Every commit carries a DCO sign-off, checked by one `dco` check that treats agent-authored commits like any other. There is no separate rule for agent-written code.
    - Before 1.0, breaking changes bump the minor version.
@@ -81,4 +81,5 @@ Releases must ship exactly the bits that passed RFC-0060's and RFC-0061's gates.
 - A security release introduces a regression that a soak would have caught. Then adopt the 24-hour `beta` soak for security releases.
 
 ## Revisions
+- Revised 2026-10-21: decision 3 makes the title's scope optional and adds three scopes besides crates and areas. QUAL-E1-T05's acceptance criteria require `feat!: x`, which has no scope, to pass once labelled, so the earlier rule contradicted the task that enforces it. `plan` is the scope of design-document titles, used since the first PRs. `deps` is Renovate's scope for dependency updates. `release` is the release PR's scope: RFC-0062 §8.2 sets release-please's title pattern to `chore(release): release…`, because its default puts the branch name in the scope.
 - Revised 2026-10-20: decision 2 gives release-please its own release App, because the dispatcher App now holds only Contents read, and adds rulesets on `main` and `release/*`. Decision 3 records one `dco` check for every commit, agent-authored included. Decision 7 adds the expedited security-release path, so a fix does not wait for the 7-day soak. The release-branch spike moves to M0, while the cherry-pick fallback is cheapest to adopt.

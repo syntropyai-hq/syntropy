@@ -414,6 +414,7 @@ RFC-0034 owns the key hierarchy: which keys exist, their roots, rotation and rev
   "include-component-in-tag": false,
   "draft": true,
   "force-tag-creation": true,
+  "pull-request-title-pattern": "chore(release): release${component} ${version}",
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Fixes" },
@@ -427,6 +428,7 @@ RFC-0034 owns the key hierarchy: which keys exist, their roots, rotation and rev
 }
 ```
 
+- **Release PR title** (revised 2026-10-21). release-please's default title, `chore${scope}: release${component} ${version}`, puts the target branch in the scope, which gives `chore(main): …` and `chore(release/vX.Y): …`. Neither is an allowed scope (§8.3), so the pattern above fixes the scope to `release` on every branch.
 - **Before 1.0**, a breaking change bumps the minor version and a feature bumps the minor version.
 - **1.0.0** is cut at M4 with a `Release-As: 1.0.0` footer, approved by a maintainer.
 - **Token** (revised 2026-10-19). GitHub documents that events triggered by `GITHUB_TOKEN` do not create new workflow runs, except `workflow_dispatch` and `repository_dispatch`. A tag that release-please created with it would therefore never start `release.yml`. `release-please.yml` runs in a `release-please` environment restricted to `main` and `release/*`. It mints an installation token for the **release App** with `actions/create-github-app-token`, narrowed to `permission-contents: write` and `permission-pull-requests: write`, and passes that token to release-please. The release PR's CI and the tag push then start workflows as any other push does.
@@ -438,8 +440,8 @@ RFC-0034 owns the key hierarchy: which keys exist, their roots, rotation and rev
 | Rule | Check |
 |---|---|
 | Squash merge only; the PR title becomes the commit message | branch protection |
-| The PR title is a conventional commit: `type(scope): subject`, with `type` ∈ {feat, fix, perf, refactor, docs, test, build, ci, chore, revert} and `scope` a crate name or area | `pr-title` required check |
-| A breaking marker (`!` or a `BREAKING CHANGE:` footer) requires the label `semver-major-approved`, applied only by a maintainer | `pr-title` check |
+| The PR title is a conventional commit: `type(scope): subject`, with `type` ∈ {feat, fix, perf, refactor, docs, test, build, ci, chore, revert}. The scope may be left out, as in `feat!: x`; when it is given, it is a crate name, an area, or `plan` (the design documents), `deps` (dependency updates) or `release` (release PRs) (revised 2026-10-21) | `pr-title` required check |
+| A breaking marker (`!` or a `BREAKING CHANGE:` footer) requires the label `semver-major-approved`, applied only by a maintainer. A marker counts wherever it can reach `main` or release-please: the title, the PR body and its `BEGIN_COMMIT_OVERRIDE` section, and any line of any commit message, footers such as `feat!: …` and nested commits included. A `Release-As` footer that would release a new major version needs the label too, since a maintainer approves it (ADR-0621 decision 3) (revised 2026-10-21) | `pr-title` check |
 | Every commit carries a DCO `Signed-off-by` matching its author (ADR-0018 §2). Agent-authored commits are treated like any other, with the same single check and no separate rule | `dco` required check |
 | Tags `v*` are created only by release-please, acting as the release App; creating, updating or deleting a `v*` tag as anyone else is rejected | tag ruleset on `refs/tags/v*` (restrict creations, updates and deletions), whose only bypass actor is the release App |
 | `main` and `release/*` cannot be force-pushed or deleted, and no agent identity can push to them, create a tag or approve its own change | branch rulesets; the weekly organisation audit (§12.6) |
@@ -635,10 +637,17 @@ A new direct dependency also passes a registry check that reports its first-publ
 #### 12.3 Contribution checks
 
 - `dco`: every commit in the PR has a `Signed-off-by` matching its author (ADR-0018 §2), for agent-authored and contributors' commits alike. It is the only check on authorship, with no separate rule for agent-written code.
-- `pr-title`: the rules of §8.3.
+- `pr-title`: the rules of §8.3. A PR of one commit must also have a valid title as that commit's subject, because the squash setting `COMMIT_OR_PR_TITLE` lands such a PR under the subject.
+- **Running `dco` and `pr-title`** (revised 2026-10-21). Both judge a PR's metadata, so the PR must not be able to change how it is judged:
+  - they run as `cargo xtask ci dco` and `cargo xtask ci pr-title` from a checkout of the base branch, never the PR's own `xtask`;
+  - `pr-title`'s `--roster` is the base branch's `governance/maintainers.toml`, and its `--version-file`, against which a `Release-As` footer is a major release or not, is the base branch's `version.txt`;
+  - the inputs are the `pull_request` event payload, `GET /pulls/{n}/commits` and `GET /issues/{n}/events`, each fetched with `gh api --paginate`, and the events also with `--include`. The checks refuse a commits list that does not match the PR's commit count, a PR of 250 commits or more (the API cannot list it whole), and a label history whose last recorded page links to a next one;
+  - `pr-title` runs again on the `labeled`, `unlabeled` and `edited` events as well as `opened`, `synchronize` and `reopened`. On `merge_group`, which has no PR payload, both report success, because they are required on every member PR's head;
+  - the repository setting `squash_merge_commit_title` is `PR_TITLE`, and merge commits and rebase merges are off (§8.3). Until it is set, the single-commit rule above covers the gap.
+- **Security-critical code by module name** (revised 2026-10-21). Until the tasks that write it place the security-critical code below, `CODEOWNERS` owns it by module name, directly under `crates/<crate>/src/`, as `<name>.rs` or `<name>/`. `keys`, `signing` and `updater` are owned in any crate, and `admission` and `cluster_key` in `net` and `cluster`. Code for these concerns in a module of another name or deeper in the tree has no code owner, so it goes in these modules. The `lint` check's sample paths cover each one (`xtask/src/codeowners.rs`).
 - `CODEOWNERS` names no area owners (ADR-0021 §3) and never names an agent identity. It makes a maintainer a required reviewer, in addition to the review agent, for the changes that need one:
   - security-critical paths: key handling and signing; cluster admission and the cluster-key code inside `net` and `cluster`; the update client; and the hardware dispatcher and lab configuration (`bench/lab/`, `lab/`);
-  - CI and release configuration: `.github/`, `ci/`, `release-please-config.json`, `deny.toml`, `supply-chain/` (the `cargo vet` store) and `governance/` (delegations and maintainer-action records);
+  - CI and release configuration: `.github/`, `ci/`, `release-please-config.json`, `deny.toml`, `supply-chain/` (the `cargo vet` store) and `governance/` (delegations and maintainer-action records); and the release state, `version.txt` and `.release-please-manifest.json`, which a PR could otherwise change to move the version with no marker (revised 2026-10-21);
   - registering a new model family in the graph registry (RFC-0043);
   - any change where a gate is waived. A waiver is not a path, so it is enforced by the override labels that only a maintainer can apply (§8.3; RFC-0061 §8.3).
   - any change that no gate can check. The review agent flags it as "not covered by any gate" with the `gate:uncovered` label, which only the review agent or a maintainer can set. It is enforced the same way as a waiver: a PR carrying the label merges only with a maintainer's approval.

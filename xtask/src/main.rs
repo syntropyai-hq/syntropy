@@ -21,7 +21,10 @@
 
 mod check_deps;
 mod cli;
+mod codeowners;
+mod contrib;
 mod registry;
+mod roster;
 mod run;
 
 use std::ffi::OsString;

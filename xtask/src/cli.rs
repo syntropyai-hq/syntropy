@@ -78,6 +78,16 @@ impl Kind {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Args(Vec<(&'static str, String)>);
 
+impl Args {
+    /// The value given for `name`, such as `--commits`.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(given, _)| *given == name)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
 impl fmt::Display for Args {
     /// ` --name value` for each option, so a label reads like the command line.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -113,6 +123,12 @@ pub enum UsageError {
     },
     MissingValue(&'static str),
     RepeatedOption(&'static str),
+    /// A required option left out.
+    MissingOption {
+        kind: Kind,
+        entry: &'static str,
+        option: &'static str,
+    },
     UnexpectedArgument(String),
 }
 
@@ -167,6 +183,11 @@ impl fmt::Display for UsageError {
                 valid.join(", ")
             ),
             UsageError::MissingValue(option) => write!(f, "option `{option}` needs a value"),
+            UsageError::MissingOption {
+                kind,
+                entry,
+                option,
+            } => write!(f, "{} `{entry}` needs `{option}`", kind.noun()),
             UsageError::RepeatedOption(option) => {
                 write!(f, "option `{option}` is given more than once")
             }
@@ -272,6 +293,17 @@ fn parse_params(kind: Kind, entry: &Entry, args: &[String]) -> Result<Args, Usag
         }
         values.push((param.name, value.to_owned()));
     }
+    if let Some(missing) = entry
+        .params
+        .iter()
+        .find(|param| param.required && !values.iter().any(|(seen, _)| *seen == param.name))
+    {
+        return Err(UsageError::MissingOption {
+            kind,
+            entry: entry.name,
+            option: missing.name,
+        });
+    }
     Ok(Args(values))
 }
 
@@ -352,13 +384,28 @@ mod tests {
                     name: "--base",
                     value: "<ref>",
                     help: "the merge base",
+                    required: false,
                 },
                 Param {
                     name: "--head",
                     value: "<ref>",
                     help: "the head",
+                    required: false,
                 },
             ],
+            steps: STEP,
+            pending: &[],
+        },
+        Entry {
+            name: "gamma",
+            summary: "third, with a required option",
+            defined_in: "RFC-0062 §8.3",
+            params: &[Param {
+                name: "--input",
+                value: "<file>",
+                help: "the input",
+                required: true,
+            }],
             steps: STEP,
             pending: &[],
         },
@@ -436,12 +483,12 @@ mod tests {
             UsageError::UnknownName {
                 kind: Kind::Job,
                 name: "nosuchjob".into(),
-                valid: vec!["alpha", "beta-two"],
+                valid: vec!["alpha", "beta-two", "gamma"],
             }
         );
         assert_eq!(
             err.to_string(),
-            "unknown job `nosuchjob`; valid jobs: alpha, beta-two"
+            "unknown job `nosuchjob`; valid jobs: alpha, beta-two, gamma"
         );
     }
 
@@ -466,7 +513,7 @@ mod tests {
     fn a_missing_name_lists_every_valid_name() {
         assert_eq!(
             parse_fixture("ci").unwrap_err().to_string(),
-            "`ci` needs a job name; valid jobs: alpha, beta-two"
+            "`ci` needs a job name; valid jobs: alpha, beta-two, gamma"
         );
         assert!(matches!(
             parse_real("test"),
@@ -593,6 +640,68 @@ mod tests {
         assert_eq!(
             UsageError::MissingValue("--base").to_string(),
             "option `--base` needs a value"
+        );
+    }
+
+    #[test]
+    fn a_required_option_must_be_given() {
+        assert_eq!(
+            parse_fixture("ci gamma"),
+            Err(UsageError::MissingOption {
+                kind: Kind::Job,
+                entry: "gamma",
+                option: "--input",
+            })
+        );
+        assert_eq!(
+            parse_fixture("ci gamma").unwrap_err().to_string(),
+            "job `gamma` needs `--input`"
+        );
+        assert_eq!(
+            fixture_args("ci gamma --input x"),
+            [("--input", "x".to_owned())]
+        );
+    }
+
+    #[test]
+    fn get_returns_a_given_value() {
+        let Ok(Command::Run { args, .. }) = parse_fixture("ci beta-two --head h --base=b") else {
+            panic!("did not parse");
+        };
+        assert_eq!(args.get("--base"), Some("b"));
+        assert_eq!(args.get("--head"), Some("h"));
+        assert_eq!(args.get("--tip"), None);
+    }
+
+    #[test]
+    fn the_contribution_jobs_need_their_inputs() {
+        assert_eq!(
+            parse_real("ci dco --event e").unwrap_err().to_string(),
+            "job `dco` needs `--commits`"
+        );
+        assert_eq!(
+            parse_real("ci pr-title --event e --commits c")
+                .unwrap_err()
+                .to_string(),
+            "job `pr-title` needs `--label-events`"
+        );
+        assert_eq!(
+            parse_real("ci pr-title --event e --commits c --label-events l")
+                .unwrap_err()
+                .to_string(),
+            "job `pr-title` needs `--roster`"
+        );
+        assert_eq!(
+            parse_real("ci pr-title --event e --commits c --label-events l --roster r")
+                .unwrap_err()
+                .to_string(),
+            "job `pr-title` needs `--version-file`"
+        );
+        assert!(
+            parse_real(
+                "ci pr-title --event e --commits c --label-events l --roster r --version-file v"
+            )
+            .is_ok()
         );
     }
 

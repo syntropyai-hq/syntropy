@@ -1,0 +1,125 @@
+[
+  {
+    "sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "node_id": "C_dddddddddd",
+    "commit": {
+      "author": {
+        "name": "Carol Contributor",
+        "email": "carol@example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "committer": {
+        "name": "Carol Contributor",
+        "email": "carol@example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "message": "fix(core): handle the empty widget\n\nNo sign-off on this one.\n",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null
+      }
+    },
+    "author": {
+      "login": "carol",
+      "id": 58886888,
+      "type": "User",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "carol",
+      "id": 58886888,
+      "type": "User",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0000000000000000000000000000000000000000"
+      }
+    ]
+  },
+  {
+    "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "node_id": "C_eeeeeeeeee",
+    "commit": {
+      "author": {
+        "name": "project-agent[bot]",
+        "email": "1234+project-agent[bot]@users.noreply.github.com",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "committer": {
+        "name": "project-agent[bot]",
+        "email": "1234+project-agent[bot]@users.noreply.github.com",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "message": "test(core): cover the empty widget\n\nAn agent-authored commit with no sign-off.\n",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null
+      }
+    },
+    "author": {
+      "login": "project-agent[bot]",
+      "id": 54748019,
+      "type": "Bot",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "project-agent[bot]",
+      "id": 54748019,
+      "type": "Bot",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0000000000000000000000000000000000000000"
+      }
+    ]
+  },
+  {
+    "sha": "ffffffffffffffffffffffffffffffffffffffff",
+    "node_id": "C_ffffffffff",
+    "commit": {
+      "author": {
+        "name": "Carol Contributor",
+        "email": "carol@example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "committer": {
+        "name": "Carol Contributor",
+        "email": "carol@example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "message": "chore(core): tidy\n\nSigned off by someone else.\n\nSigned-off-by: Alice Maintainer <alice@example.org>\n",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null
+      }
+    },
+    "author": {
+      "login": "carol",
+      "id": 58886888,
+      "type": "User",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "carol",
+      "id": 58886888,
+      "type": "User",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0000000000000000000000000000000000000000"
+      }
+    ]
+  }
+]
