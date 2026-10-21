@@ -23,3 +23,16 @@ pub enum PressureLevel {
     /// Critical pressure.
     Critical,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_is_normal_and_levels_are_ordered() {
+        assert_eq!(PressureLevel::default(), PressureLevel::Normal);
+        assert!(PressureLevel::Normal < PressureLevel::Moderate);
+        assert!(PressureLevel::Moderate < PressureLevel::High);
+        assert!(PressureLevel::High < PressureLevel::Critical);
+    }
+}

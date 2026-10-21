@@ -38,7 +38,9 @@ pub struct MemSnapshot {
     /// The cgroup's memory limits and usage, where the process runs in one.
     pub cgroup: Option<CgroupMem>,
     /// Windows: commit limit − commit charge. `None` on every other OS, which has no commit
-    /// accounting to respect. See [`commit_headroom`].
+    /// accounting to respect. See [`commit_headroom`]. This is a plain `pub` field, so the rule
+    /// holds only for values built through [`commit_headroom`], which every `OsMemory` adapter
+    /// is to use.
     pub commit_headroom: Option<Bytes>,
     /// Bytes this process holds locked.
     pub own_locked: Bytes,
@@ -228,7 +230,9 @@ pub fn numa_available(node_meminfo: &str, numa_reserve: Bytes) -> Option<Bytes> 
 
 /// [`numa_available`] for every node under `dir` (normally [`SYS_NODE_DIR`]), sorted by node.
 /// A node whose `meminfo` is unreadable or incomplete is left out; a missing directory (no
-/// NUMA information, or not Linux) gives an empty list.
+/// NUMA information, or not Linux) gives an empty list. A node absent from the list has no
+/// estimate, not a zero one: the pinning gate (RFC-0020 §6, TIER-E2) must handle a missing
+/// node explicitly.
 pub fn read_numa_available(dir: &Path, numa_reserve: Bytes) -> SmallVec<[(u16, Bytes); 4]> {
     let mut out: SmallVec<[(u16, Bytes); 4]> = SmallVec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -368,20 +372,47 @@ mod tests {
         assert_eq!(numa_available("", Bytes(0)), None);
     }
 
+    fn node_meminfo(node: u16, free_kib: u64) -> String {
+        format!(
+            "Node {node} MemFree: {free_kib} kB\nNode {node} Active(file): 1 kB\n\
+             Node {node} Inactive(file): 1 kB\nNode {node} SReclaimable: 1 kB\n"
+        )
+    }
+
     #[test]
-    fn read_numa_available_reads_each_node_in_order() {
+    fn read_numa_available_reads_each_node_in_numeric_order() {
         let dir = std::env::temp_dir().join(format!("syntropy-tier-numa-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        for (name, text) in [("node1", NODE0), ("node0", NODE0), ("node2", "")] {
-            std::fs::create_dir_all(dir.join(name)).unwrap();
-            std::fs::write(dir.join(name).join("meminfo"), text).unwrap();
+        // Created out of order and named so that name order (node1, node10, node2) differs
+        // from numeric order: the result must not depend on readdir order.
+        for n in [10u16, 2, 1] {
+            let node = dir.join(format!("node{n}"));
+            std::fs::create_dir_all(&node).unwrap();
+            std::fs::write(node.join("meminfo"), node_meminfo(n, u64::from(n) * 1000)).unwrap();
         }
+        std::fs::create_dir_all(dir.join("node3")).unwrap();
+        std::fs::write(dir.join("node3").join("meminfo"), "").unwrap();
         std::fs::create_dir_all(dir.join("power")).unwrap();
-        let got = read_numa_available(&dir, Bytes(GIB));
+        let got = read_numa_available(&dir, Bytes(0));
         std::fs::remove_dir_all(&dir).unwrap();
-        let one = numa_available(NODE0, Bytes(GIB)).unwrap();
-        // node2's meminfo is incomplete, so it is left out rather than reported as zero.
-        assert_eq!(got.as_slice(), &[(0, one), (1, one)]);
+        let want = |n: u64| Bytes((n * 1000 + 3) * 1024);
+        // node3's meminfo is incomplete, so it is left out rather than reported as zero.
+        assert_eq!(
+            got.as_slice(),
+            &[(1, want(1)), (2, want(2)), (10, want(10))]
+        );
+    }
+
+    #[test]
+    fn numa_available_rejects_a_unit_other_than_kb() {
+        assert_eq!(
+            numa_available(&node_meminfo(0, 5), Bytes(0)),
+            Some(Bytes(8 * 1024))
+        );
+        let mb = node_meminfo(0, 5).replace("MemFree: 5 kB", "MemFree: 5 MB");
+        assert_eq!(numa_available(&mb, Bytes(0)), None);
+        let bare = node_meminfo(0, 5).replace("MemFree: 5 kB", "MemFree: 5");
+        assert_eq!(numa_available(&bare, Bytes(0)), None);
     }
 
     #[test]

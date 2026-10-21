@@ -164,8 +164,8 @@ pub struct SegmentSpec {
 /// allocated (RFC-0020 §3). `TierManager::plan_arenas` (TIER-E1-T02) builds it as a pure
 /// function of (plan, stages, census, profile, config).
 //
-// TODO(#1491): add `nvme_extents: Vec<(TensorGroupId, ExtentRef)>` once `ExtentRef` lands in
-// `syntropy-io` (TIER-E5-T01), re-exported here, never defined twice. The field gets
+// TODO(#1491): add `nvme_extents: Vec<(TensorGroupId, ExtentRef)>` once TIER-E5-T01 adds
+// `ExtentRef` to `syntropy-core`; use it from there, never define it twice. The field gets
 // `#[serde(default)]`, so records written before it still decode.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

@@ -428,3 +428,65 @@ fn pin_progress_eta_defaults_to_none() {
         serde_json::from_str(r#"{"done":1,"target":2,"state":"Running"}"#).unwrap();
     assert_eq!(back.eta_ms, None);
 }
+
+// ---- Serde defaults in sequence form ------------------------------------------------------
+//
+// A struct may also arrive as a sequence (a JSON array; compact formats always use one). There
+// a missing trailing field is an `invalid_length` error unless the field has
+// `#[serde(default)]`, even for an `Option`. These tests pin the defaults of the trailing
+// fields; a defaulted field in the middle (`ArenaSpec::numa`) cannot be left out of a sequence.
+
+#[test]
+fn slot_class_short_sequence_defaults_layer() {
+    let back: SlotClass = serde_json::from_str("[64,3]").unwrap();
+    assert_eq!(
+        back,
+        SlotClass {
+            size: Bytes(64),
+            count: 3,
+            layer: None
+        }
+    );
+}
+
+#[test]
+fn pin_progress_short_sequence_defaults_eta() {
+    let back: PinProgress = serde_json::from_str(r#"[1,2,"Running"]"#).unwrap();
+    assert_eq!(
+        back,
+        PinProgress {
+            done: Bytes(1),
+            target: Bytes(2),
+            state: PinState::Running,
+            eta_ms: None
+        }
+    );
+}
+
+#[test]
+fn arena_spec_short_sequence_defaults_elastic() {
+    const ORDER: [&str; 10] = [
+        "tier",
+        "purpose",
+        "bytes",
+        "max_bytes",
+        "geometry",
+        "pin",
+        "numa",
+        "registrations",
+        "dma_devices",
+        "pin_priority",
+    ];
+    let full = fixture_arena();
+    let map = serde_json::to_value(&full).unwrap();
+    let seq: Vec<serde_json::Value> = ORDER.iter().map(|k| map[*k].clone()).collect();
+    let back: ArenaSpec = serde_json::from_value(serde_json::Value::Array(seq)).unwrap();
+    assert_eq!(back.elastic, None);
+    assert_eq!(
+        ArenaSpec {
+            elastic: full.elastic,
+            ..back
+        },
+        full
+    );
+}

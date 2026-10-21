@@ -4,9 +4,10 @@
 //! defines [`StepFence`] and [`BufferView`]; `ResidencyMap` comes in TIER-E1-T04 and leases in
 //! TIER-E1-T05.
 //
-// TODO(#1491): add `HomeState` (RFC-0020 §3) once `IoTicket` lands in `syntropy-io`
-// (TIER-E5-T01). Its `Loading { ticket: IoTicket }` variant needs that type, and it must be
-// re-exported from `syntropy-io`, never defined twice.
+// TODO(#1491): add `HomeState` (RFC-0020 §3) once TIER-E5-T01 adds `IoTicket` to
+// `syntropy-io`. Its `Loading { ticket: IoTicket }` variant uses that type, never a second
+// definition. `IoTicket` has no serde derives, so the ticket goes through a `#[serde(with)]`
+// adapter over its `u64`, as `manager`'s `arc_delta` does for `PlanDelta`.
 
 #![forbid(unsafe_code)]
 
