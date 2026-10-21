@@ -17,8 +17,9 @@ use proptest::prelude::*;
 use serde::Deserialize;
 use syntropy_config::{
     ByteSize, Checked, Code, ConfigFile, ConfigSection, Deprecated, Env, Environment, Findings,
-    Flags, HoldsSecret, Layers, NodeSelector, Origin, Os, Phase, Problem, Regex, Registry,
-    ResolvedConfig, Rule, RuleInput, Secret, SecretSource, Severity, diagnostic, validate,
+    Flags, HoldsSecret, HostEnvironment, Layers, NodeSelector, Origin, Os, PathUse, Phase, Problem,
+    Regex, Registry, ResolvedConfig, Rule, RuleInput, Secret, SecretSource, Severity, diagnostic,
+    validate,
 };
 
 /// Top-level node keys, with a secret.
@@ -153,13 +154,17 @@ static REGISTRY: Registry = Registry::new(&[
 #[derive(Default)]
 struct FakeHost {
     unusable: Vec<PathBuf>,
+    /// Paths that are regular files, so unusable where a directory is expected.
+    files: Vec<PathBuf>,
     open_to_others: Vec<PathBuf>,
 }
 
 impl Environment for FakeHost {
-    fn usable(&self, path: &Path) -> Result<(), String> {
+    fn usable(&self, path: &Path, expected: PathUse) -> Result<(), String> {
         if self.unusable.iter().any(|p| p == path) {
             Err(String::from("permission denied"))
+        } else if expected == PathUse::Directory && self.files.iter().any(|p| p == path) {
+            Err(String::from("it is a file, not a directory"))
         } else {
             Ok(())
         }
@@ -179,7 +184,7 @@ fn checked(
     files: &[(&str, &str)],
     env: &[(&str, &str)],
     flags: &[&str],
-    host: &FakeHost,
+    host: &dyn Environment,
     rules: &[Rule],
 ) -> Checked {
     let files: Vec<ConfigFile> = files
@@ -206,6 +211,69 @@ fn checked(
 
 fn one_file(text: &str) -> Checked {
     checked(&[(FILE, text)], &[], &[], &FakeHost::default(), &[])
+}
+
+/// Phase 5: `node.state_dir` must be a writable directory, so a regular file there is an error,
+/// with the test double and with the host's own check; the check leaves no file behind
+/// (RFC-0054 §8).
+#[test]
+fn a_state_dir_must_be_a_writable_directory() {
+    let codes = |c: &Checked| -> Vec<Option<Code>> { c.errors().iter().map(|p| p.code).collect() };
+    let host = FakeHost {
+        files: vec![PathBuf::from("/srv/state.toml")],
+        ..FakeHost::default()
+    };
+    let c = checked(
+        &[(FILE, "[node]\nstate_dir = \"/srv/state.toml\"\n")],
+        &[],
+        &[],
+        &host,
+        &[],
+    );
+    assert_eq!(codes(&c), [Some(Code::PathUnusable)], "{:#?}", c.errors());
+    assert!(
+        c.errors()[0].message.contains("not a directory"),
+        "{:#?}",
+        c.errors()
+    );
+
+    let dir = std::env::temp_dir().join(format!("syntropy-state-dir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let file = dir.join("state.toml");
+    std::fs::write(&file, "").expect("write");
+    // A TOML literal string holds a path's backslashes as written.
+    let state_dir = |path: &Path| format!("[node]\nstate_dir = '{}'\n", path.display());
+    let on_host =
+        |path: &Path| checked(&[(FILE, &state_dir(path))], &[], &[], &HostEnvironment, &[]);
+    let c = on_host(&file);
+    assert_eq!(codes(&c), [Some(Code::PathUnusable)], "{:#?}", c.errors());
+    assert!(
+        c.errors()[0].message.contains("not a directory"),
+        "{:#?}",
+        c.errors()
+    );
+    let c = on_host(&dir);
+    assert!(c.outcome.is_ok(), "{:#?}", c.errors());
+    let c = on_host(&dir.join("not-yet"));
+    assert!(
+        c.outcome.is_ok(),
+        "a missing directory can be created: {:#?}",
+        c.errors()
+    );
+    let mut left: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    left.sort();
+    assert_eq!(left, ["state.toml"], "the write check removes its file");
+    std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
 /// A phase-4 rule as PROD-E5-T02 will write one: a non-loopback bind is refused here.

@@ -132,10 +132,14 @@ pub const BUILTIN_RULES: &[Rule] = &[
 /// library; the daemon's implementation, which `serve` (PROD-E6-T02) supplies, also answers
 /// direct I/O through `io` and interface names through `net`, which `config` cannot depend on.
 pub trait Environment {
-    /// Whether `path`, or the directory it would be created in, can be used: an existing
-    /// directory is writable, an existing file is readable, and a missing path's nearest
-    /// existing ancestor is a writable directory. The error says why not.
-    fn usable(&self, path: &Path) -> Result<(), String>;
+    /// Whether `path`, or the directory it would be created in, can be used as `expected`.
+    /// - [`PathUse::Directory`]: an existing path is a writable directory, and a missing path's
+    ///   nearest existing ancestor is a writable directory it can be created in.
+    /// - [`PathUse::Any`]: an existing directory is writable, an existing file is readable,
+    ///   and a missing path's nearest existing ancestor is a writable directory.
+    ///
+    /// The error says why not.
+    fn usable(&self, path: &Path, expected: PathUse) -> Result<(), String>;
 
     /// Whether the file at `path` is readable by its group or others; `None` where the system
     /// has no such permission bits, or the file cannot be read.
@@ -153,16 +157,49 @@ pub trait Environment {
     }
 }
 
+/// What a path key names, for [`Environment::usable`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathUse {
+    /// A directory the node writes in, such as `node.state_dir`.
+    Directory,
+    /// A file or a directory.
+    Any,
+}
+
+impl PathUse {
+    /// What the key at `path` names: a directory when its last segment is `dir` or `dirs`, or
+    /// ends in `_dir` or `_dirs`, as `node.state_dir` does; anything otherwise. A key that names
+    /// a directory follows that naming, so phase 5 checks it as one.
+    pub fn of(path: &str) -> PathUse {
+        let name = path.rsplit('.').next().unwrap_or(path);
+        let directory =
+            ["dir", "dirs"].contains(&name) || name.ends_with("_dir") || name.ends_with("_dirs");
+        if directory {
+            PathUse::Directory
+        } else {
+            PathUse::Any
+        }
+    }
+}
+
 /// [`Environment`] from the standard library alone.
+///
+/// Checking that a directory is writable has a side effect: [`Environment::usable`] creates
+/// an empty file, `.syntropy-write-check-<pid>`, in each existing directory a path key names,
+/// or in the nearest existing ancestor of a missing one, and removes it at once. The standard
+/// library has no check that writes nothing.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostEnvironment;
 
 impl Environment for HostEnvironment {
-    fn usable(&self, path: &Path) -> Result<(), String> {
+    fn usable(&self, path: &Path, expected: PathUse) -> Result<(), String> {
         let mut probe = path;
         loop {
             match std::fs::metadata(probe) {
                 Ok(meta) if meta.is_dir() => return writable_dir(probe),
+                Ok(_) if probe == path && expected == PathUse::Directory => {
+                    return Err(String::from("it is a file, not a directory"));
+                }
                 Ok(_) if probe == path => {
                     return std::fs::File::open(probe)
                         .map(|_| ())
@@ -193,7 +230,8 @@ impl Environment for HostEnvironment {
     }
 }
 
-/// Whether this process can create a file in `dir`: it creates one and removes it.
+/// Whether this process can create a file in `dir`: it creates an empty one, with a name no
+/// other file has (`create_new`), and removes it.
 fn writable_dir(dir: &Path) -> Result<(), String> {
     let probe = dir.join(format!(".syntropy-write-check-{}", std::process::id()));
     std::fs::OpenOptions::new()
@@ -272,8 +310,9 @@ fn paths_in(value: &toml::Value) -> Vec<&str> {
     }
 }
 
-/// Phase 5: every path a node key names exists, or can be created, and can be used. An unusable
-/// `node.state_dir` is an error; any other path is a warning (RFC-0054 §8).
+/// Phase 5: every path a node key names exists, or can be created, and can be used, as a
+/// writable directory where the key names one ([`PathUse::of`]). An unusable `node.state_dir`
+/// is an error; any other path is a warning (RFC-0054 §8).
 fn paths_usable(input: &RuleInput<'_>, findings: &mut Findings) {
     for resolved in input.config.iter() {
         if resolved.key.scope != Scope::Node || !path_typed(resolved.key) {
@@ -283,7 +322,8 @@ fn paths_usable(input: &RuleInput<'_>, findings: &mut Findings) {
             continue;
         };
         for path in paths_in(value) {
-            if let Err(why) = input.environment.usable(Path::new(path)) {
+            let expected = PathUse::of(resolved.key.path);
+            if let Err(why) = input.environment.usable(Path::new(path), expected) {
                 let problem = Problem::new(
                     Code::PathUnusable,
                     Some(resolved.origin.clone()),
@@ -468,6 +508,39 @@ mod tests {
         assert_eq!(code, Code::OutOfRange);
         assert!(message.contains("config_version = 2"), "{message}");
         assert!(message.contains("reads version 1"), "{message}");
+    }
+
+    #[test]
+    fn a_directory_key_needs_a_directory() {
+        let dir = std::env::temp_dir().join(format!("syntropy-usable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("f");
+        std::fs::write(&file, "").expect("write");
+        let host = HostEnvironment;
+        assert!(host.usable(&file, PathUse::Directory).is_err());
+        assert_eq!(host.usable(&file, PathUse::Any), Ok(()));
+        assert_eq!(host.usable(&dir, PathUse::Directory), Ok(()));
+        assert_eq!(
+            host.usable(&dir.join("new/sub"), PathUse::Directory),
+            Ok(())
+        );
+        assert!(
+            host.usable(&file.join("under-a-file"), PathUse::Directory)
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(&dir).expect("read dir").count(), 1);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn directory_keys_are_named_as_directories() {
+        let named = PathUse::of;
+        assert_eq!(named("node.state_dir"), PathUse::Directory);
+        assert_eq!(named("store.dirs"), PathUse::Directory);
+        assert_eq!(named("store.cache_dirs"), PathUse::Directory);
+        assert_eq!(named("api.tls.cert"), PathUse::Any);
+        assert_eq!(named("node.dirty"), PathUse::Any);
     }
 
     #[test]

@@ -150,8 +150,8 @@ pub use syntropy_config_derive::HoldsSecret;
 /// A TOML value, as the layers hold it.
 pub use toml::Value;
 pub use validate::{
-    BUILTIN_RULES, CONFIG_VERSION, Checked, Environment, Findings, HostEnvironment, Phase, Rule,
-    RuleInput, config_version_problem, load_and_validate, validate,
+    BUILTIN_RULES, CONFIG_VERSION, Checked, Environment, Findings, HostEnvironment, PathUse, Phase,
+    Rule, RuleInput, config_version_problem, load_and_validate, validate,
 };
 pub use value::{
     ByteSize, DeviceApi, DeviceSelector, Duration, Fraction, InRange, LayerRange, ModelSelector,
