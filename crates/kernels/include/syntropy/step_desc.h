@@ -4,12 +4,17 @@
  * The step descriptor and the per-sequence sampler state (RFC-0040 §3.5, §3.8; ADR-0404
  * items 1 and 2).
  *
- * This header is the one definition of both layouts. Kernels in every language include it;
- * `crates/kernels/src/step/mirror.rs` is the Rust mirror generated from it, and the
- * `syntropy-kernels` tests fail when the two differ (`SYNTROPY_BLESS_GENERATED=1` rewrites the
- * mirror). The generator reads a small subset of C: `#define NAME value`, and structs whose
- * members are `uint32_t`, `int32_t` or `uint64_t`, with `SYN_ALIGNAS(n)` on the first member
- * to raise the struct's alignment. A `///` comment documents the item below it.
+ * This header is the one definition of both layouts. `crates/kernels/src/step/mirror.rs` is the
+ * Rust mirror generated from it, and the `syntropy-kernels` tests fail when the two differ
+ * (`SYNTROPY_BLESS_GENERATED=1` rewrites the mirror). The tests also compile it as C11 and
+ * C++11 when a compiler is present (always in CI). It is not checked as Metal Shading Language
+ * or Slang: the Metal and Vulkan providers verify or port it when they land.
+ *
+ * The generator reads a small subset of C and refuses anything else: `#define NAME value`;
+ * `#ifndef`, `#if`, `#else`, `#endif` and `#include` outside structs, with structs and
+ * constants only at the include guard's level; structs whose members are `uint32_t`, `int32_t`
+ * or `uint64_t`, one per line, with `SYN_ALIGNAS(n)` on the first member to raise the struct's
+ * alignment; and comments that fill their lines. A `///` comment documents the item below it.
  *
  * Every value that changes from step to step is in the descriptor. A step descriptor is this
  * header followed by its arrays, at the byte offsets the header names; the host sizes the
@@ -20,9 +25,7 @@
 #ifndef SYNTROPY_STEP_DESC_H
 #define SYNTROPY_STEP_DESC_H
 
-#if !defined(__METAL_VERSION__)
 #include <stdint.h>
-#endif
 
 #if defined(__cplusplus)
 #define SYN_ALIGNAS(n) alignas(n)
@@ -118,4 +121,5 @@ struct syn_sampler_state {
     uint64_t rng_counter;
 };
 
-#endif /* SYNTROPY_STEP_DESC_H */
+/* SYNTROPY_STEP_DESC_H */
+#endif

@@ -4,8 +4,10 @@
 //! its structs out by the C rules, and writes the Rust mirror (RFC-0040 §1, "kernel argument
 //! structs have one source of truth").
 //!
-//! It reads only the subset of C the header's comment names, and rejects anything else inside
-//! a struct, so a member the generator cannot lay out never passes silently. It needs no C
+//! It reads only the subset of C the header's comment names and fails closed: a preprocessor
+//! directive it does not know (`#pragma pack` among them), any directive inside a struct, a
+//! struct or constant under a condition, and a block comment sharing a line with code are all
+//! errors, so a member the generator cannot lay out never passes silently. It needs no C
 //! compiler; the tests also run one when the machine has it.
 
 use std::fmt::Write as _;
@@ -135,40 +137,79 @@ pub(super) fn parse(text: &str) -> Result<Header, String> {
     let mut docs: Vec<String> = Vec::new();
     let mut open: Option<CStruct> = None;
     let mut in_block_comment = false;
+    // Depth of `#if`/`#ifndef` nesting; 1 is inside the include guard.
+    let mut depth = 0u32;
 
     for (ix, raw) in text.lines().enumerate() {
         let line = raw.trim();
         let at = |msg: &str| format!("{HEADER_PATH}:{}: {msg}: `{line}`", ix + 1);
+        // Block comments must fill their lines: code before `/*` or after `*/` on the same
+        // line would otherwise be skipped with the comment.
         if in_block_comment {
-            in_block_comment = !line.contains("*/");
+            if let Some(end) = line.find("*/") {
+                if !line[end + 2..].trim().is_empty() {
+                    return Err(at("code after a block comment"));
+                }
+                in_block_comment = false;
+            }
             continue;
+        }
+        if let Some(rest) = line.strip_prefix("/*") {
+            match rest.find("*/") {
+                None => in_block_comment = true,
+                Some(end) if !rest[end + 2..].trim().is_empty() => {
+                    return Err(at("code after a block comment"));
+                }
+                Some(_) => {}
+            }
+            continue;
+        }
+        if line.contains("/*") || line.contains("*/") {
+            return Err(at("a block comment inside a line"));
         }
         if let Some(doc) = line.strip_prefix("///") {
             docs.push(doc.strip_prefix(' ').unwrap_or(doc).to_owned());
             continue;
         }
-        if line.starts_with("/*") {
-            in_block_comment = !line.contains("*/");
-            continue;
-        }
         if line.is_empty() {
             continue;
         }
-        if let Some(def) = line.strip_prefix("#define ") {
-            let (name, value) = def.split_once(' ').unwrap_or((def, ""));
-            if name.starts_with("SYN_") && !name.contains('(') {
-                let (expr, value) =
-                    parse_value(value.trim()).ok_or_else(|| at("unreadable value"))?;
-                defines.push(Define {
-                    docs: std::mem::take(&mut docs),
-                    name: name.to_owned(),
-                    expr,
-                    value,
-                });
+        if let Some(directive) = line.strip_prefix('#') {
+            if open.is_some() {
+                return Err(at("a preprocessor directive inside a struct"));
             }
-            continue;
-        }
-        if line.starts_with('#') {
+            let directive = directive.trim_start();
+            let word = directive
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or("");
+            match word {
+                "if" | "ifndef" => depth += 1,
+                "endif" => {
+                    depth = depth
+                        .checked_sub(1)
+                        .ok_or_else(|| at("unbalanced #endif"))?
+                }
+                "else" | "include" => {}
+                "define" => {
+                    let def = directive["define".len()..].trim_start();
+                    let (name, value) = def.split_once(' ').unwrap_or((def, ""));
+                    if name.starts_with("SYN_") && !name.contains('(') {
+                        if depth > 1 {
+                            return Err(at("a constant under a condition"));
+                        }
+                        let (expr, value) =
+                            parse_value(value.trim()).ok_or_else(|| at("unreadable value"))?;
+                        defines.push(Define {
+                            docs: std::mem::take(&mut docs),
+                            name: name.to_owned(),
+                            expr,
+                            value,
+                        });
+                    }
+                }
+                _ => return Err(at("a preprocessor directive the generator does not read")),
+            }
             continue;
         }
         if let Some(s) = open.as_mut() {
@@ -216,6 +257,9 @@ pub(super) fn parse(text: &str) -> Result<Header, String> {
             .strip_prefix("struct ")
             .and_then(|l| l.strip_suffix(" {"))
         {
+            if depth > 1 {
+                return Err(at("a struct under a condition"));
+            }
             open = Some(CStruct {
                 docs: std::mem::take(&mut docs),
                 c_name: tag.to_owned(),
@@ -229,6 +273,12 @@ pub(super) fn parse(text: &str) -> Result<Header, String> {
     }
     if open.is_some() {
         return Err(format!("{HEADER_PATH}: unterminated struct"));
+    }
+    if in_block_comment {
+        return Err(format!("{HEADER_PATH}: unterminated block comment"));
+    }
+    if depth != 0 {
+        return Err(format!("{HEADER_PATH}: unbalanced #if"));
     }
     Ok(Header { defines, structs })
 }

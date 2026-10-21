@@ -45,8 +45,9 @@ pub use op::{
 pub use provider::{CollectiveOps, KernelProvider};
 pub use reference::{RefDevice, RefMode};
 pub use step::{
-    HandshakeError, Parity, ParityHandshake, RowEntry, SamplerState, SeqEntry, StepDesc,
-    StepDescError, StepDescLayout, StepDescLimits, StepDescriptor, StepFlags, TapFields, kv_writes,
+    HandshakeError, Parity, ParityFlags, ParityHandshake, RowEntry, SamplerState, SeqEntry,
+    StepDesc, StepDescError, StepDescLayout, StepDescLimits, StepDescriptor, StepFlags, TapFields,
+    kv_writes,
 };
 pub use stream::{
     CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPriority, WaitCmp, WakeKind,

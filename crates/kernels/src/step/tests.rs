@@ -149,7 +149,8 @@ fn compiler(env: &str, default: &str) -> Option<String> {
 }
 
 /// When a C or C++ compiler is present, it compiles the header with `_Static_assert`s of the
-/// Rust compiler's layout. The other tests do not need one.
+/// Rust compiler's layout. The other tests do not need one, but CI (`CI` set) must have both:
+/// there a missing compiler fails the test instead of skipping it.
 #[test]
 fn c_compiler_agrees_when_present() {
     let dir = std::env::temp_dir().join(format!("syntropy-step-desc-{}", std::process::id()));
@@ -162,6 +163,10 @@ fn c_compiler_agrees_when_present() {
         ("CXX", "c++", "check.cpp", "-std=c++11"),
     ] {
         let Some(cc) = compiler(env, default) else {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "no {default} compiler found in CI (set {env} to one)"
+            );
             eprintln!("skipped: no {default} compiler found (set {env} to use one)");
             continue;
         };
@@ -235,6 +240,49 @@ fn generator_rejects_what_it_cannot_lay_out() {
         ("struct syn_x {\n    uint32_t a;\n", "unterminated"),
         ("#define SYN_X banana\n", "unreadable value"),
         ("typedef int foo;\n", "outside the subset"),
+        // Review of #1622: a member after an inline block comment was dropped, and
+        // `#pragma pack` was skipped.
+        (
+            "struct syn_x {\n    uint32_t a;\n    /* reserved */ uint64_t pad0;\n};\n",
+            "code after a block comment",
+        ),
+        (
+            "struct syn_x {\n    uint32_t a; /* note */\n};\n",
+            "a block comment inside a line",
+        ),
+        (
+            "struct syn_x {\n    uint32_t a;\n    /* note\n     */ uint32_t b;\n};\n",
+            "code after a block comment",
+        ),
+        ("/* open\nstruct syn_x {\n", "unterminated block comment"),
+        (
+            "#pragma pack(push, 4)\nstruct syn_x {\n    uint32_t a;\n};\n",
+            "does not read",
+        ),
+        (
+            "struct syn_x {\n#pragma pack(1)\n    uint32_t a;\n};\n",
+            "directive inside a struct",
+        ),
+        (
+            "struct syn_x {\n#if 0\n    uint32_t a;\n#endif\n};\n",
+            "directive inside a struct",
+        ),
+        ("#undef SYN_X\n", "does not read"),
+        ("#elif 1\n", "does not read"),
+        (
+            "#ifndef G\n#if 0\nstruct syn_x {\n};\n#endif\n#endif\n",
+            "under a condition",
+        ),
+        (
+            "#ifndef G\n#if 0\n#define SYN_X 1\n#endif\n#endif\n",
+            "under a condition",
+        ),
+        ("#endif\n", "unbalanced #endif"),
+        ("#ifndef G\n", "unbalanced #if"),
+        (
+            "struct syn_x {\n    uint32_t a; // note\n};\n",
+            "expected a member",
+        ),
     ] {
         let err = cgen::parse(text).unwrap_err();
         assert!(err.contains(why), "{text:?}: {err}");
@@ -783,11 +831,10 @@ fn errors_display() {
 /// previous use is not finished and fully consumed (`DC[p]` and `O[p]` raised and reset to 0),
 /// whenever the bytes it copies are not the ones submitted, and whenever it raises a flag the
 /// host has not reset (a stale 1).
-struct FakeDevice {
+struct FakeDevice<'a> {
     layout: StepDescLayout,
     mirrors: [Vec<u8>; 2],
-    dc: [AtomicU32; 2],
-    o: [AtomicU32; 2],
+    bells: &'a Doorbells,
     /// Queued replays: the parity and its mirror's bytes at submission.
     queue: VecDeque<(Parity, Vec<u8>)>,
     /// The replay that has copied its descriptor and not yet raised `O`.
@@ -800,15 +847,41 @@ struct FakeDevice {
     violations: Vec<String>,
 }
 
-impl FakeDevice {
-    fn new(layout: StepDescLayout) -> Self {
+/// The doorbell slots of `DC[0]`, `DC[1]`, `O[0]` and `O[1]`: what a provider maps from its
+/// pinned doorbell page. Owned apart from the device so the handshake can borrow them.
+struct Doorbells {
+    dc: [AtomicU32; 2],
+    o: [AtomicU32; 2],
+}
+
+impl Doorbells {
+    /// Fresh slots at 0: the handshake arms them at 1 when it binds them.
+    fn new() -> Self {
+        Self {
+            dc: [AtomicU32::new(0), AtomicU32::new(0)],
+            o: [AtomicU32::new(0), AtomicU32::new(0)],
+        }
+    }
+
+    fn flags(&self) -> ParityFlags<'_> {
+        ParityFlags {
+            dc: [&self.dc[0], &self.dc[1]],
+            o: [&self.o[0], &self.o[1]],
+        }
+    }
+
+    fn handshake(&self) -> ParityHandshake<'_> {
+        ParityHandshake::new(self.flags()).unwrap()
+    }
+}
+
+impl<'a> FakeDevice<'a> {
+    fn new(layout: StepDescLayout, bells: &'a Doorbells) -> Self {
         let size = layout.size() as usize;
         Self {
             layout,
             mirrors: [vec![0; size], vec![0; size]],
-            // Both start at 1 (RFC-0040 §4.2 rule 5).
-            dc: [AtomicU32::new(1), AtomicU32::new(1)],
-            o: [AtomicU32::new(1), AtomicU32::new(1)],
+            bells,
             queue: VecDeque::new(),
             running: None,
             in_use: [false; 2],
@@ -818,10 +891,6 @@ impl FakeDevice {
         }
     }
 
-    fn flags(&self) -> ([&AtomicU32; 2], [&AtomicU32; 2]) {
-        ([&self.dc[0], &self.dc[1]], [&self.o[0], &self.o[1]])
-    }
-
     /// Checks that parity `p`'s previous use is over and both its flags are back at 0.
     fn check_free(&mut self, p: Parity, action: &str) {
         let i = p.index();
@@ -829,7 +898,7 @@ impl FakeDevice {
             self.violations
                 .push(format!("{action} {i} while its previous use runs"));
         }
-        for (name, flag) in [("DC", &self.dc[i]), ("O", &self.o[i])] {
+        for (name, flag) in [("DC", &self.bells.dc[i]), ("O", &self.bells.o[i])] {
             if flag.load(Ordering::Acquire) != 0 {
                 self.violations
                     .push(format!("{action} {i} before {name}[{i}] was consumed"));
@@ -860,7 +929,7 @@ impl FakeDevice {
     /// Advances the stream by one event. Returns whether anything happened.
     fn tick(&mut self) -> bool {
         if let Some(p) = self.running.take() {
-            Self::raise(&self.o[p.index()], "O", p, &mut self.violations);
+            Self::raise(&self.bells.o[p.index()], "O", p, &mut self.violations);
             self.in_use[p.index()] = false;
             self.done += 1;
             return true;
@@ -877,7 +946,7 @@ impl FakeDevice {
             Ok(d) => self.copied.push(d.step),
             Err(e) => self.violations.push(format!("unreadable descriptor: {e}")),
         }
-        Self::raise(&self.dc[p.index()], "DC", p, &mut self.violations);
+        Self::raise(&self.bells.dc[p.index()], "DC", p, &mut self.violations);
         self.running = Some(p);
         true
     }
@@ -907,10 +976,10 @@ fn host_action() -> impl Strategy<Value = HostAction> {
 /// Runs `actions` through the handshake against the fake device. Every action the handshake
 /// refuses is skipped, as a dispatcher would retry it later. Returns the device and the step
 /// numbers of the descriptors submitted, in order.
-fn drive(actions: &[HostAction]) -> (FakeDevice, Vec<u64>) {
+fn drive<'a>(actions: &[HostAction], bells: &'a Doorbells) -> (FakeDevice<'a>, Vec<u64>) {
     let layout = StepDescLayout::new(limits(4, 2, 1, 1)).unwrap();
-    let mut dev = FakeDevice::new(layout);
-    let mut hs = ParityHandshake::new();
+    let mut hs = bells.handshake();
+    let mut dev = FakeDevice::new(layout, bells);
     let mut written: [Option<u64>; 2] = [None, None];
     let mut submitted = Vec::new();
     let mut next_step = 0u64;
@@ -933,10 +1002,10 @@ fn drive(actions: &[HostAction]) -> (FakeDevice, Vec<u64>) {
                 }
             }
             HostAction::ConsumeDc(p) => {
-                let _ = hs.consume_dc(p, &dev.dc[p.index()]);
+                let _ = hs.consume_dc(p);
             }
             HostAction::ConsumeO(p) => {
-                let _ = hs.consume_o(p, &dev.o[p.index()]);
+                let _ = hs.consume_o(p);
             }
             HostAction::Tick => {
                 dev.tick();
@@ -955,7 +1024,8 @@ proptest! {
     fn parity_is_never_reused_before_both_flags_are_consumed(
         actions in prop::collection::vec(host_action(), 0..400),
     ) {
-        let (mut dev, submitted) = drive(&actions);
+        let bells = Doorbells::new();
+        let (mut dev, submitted) = drive(&actions, &bells);
         while dev.tick() {}
         prop_assert!(dev.violations.is_empty(), "{:?}", dev.violations);
         prop_assert_eq!(&dev.copied, &submitted);
@@ -979,7 +1049,8 @@ fn two_steps_in_flight_make_progress() {
         }
         actions.extend([HostAction::Tick; 3]);
     }
-    let (mut dev, submitted) = drive(&actions);
+    let bells = Doorbells::new();
+    let (mut dev, submitted) = drive(&actions, &bells);
     while dev.tick() {}
     assert!(dev.violations.is_empty(), "{:?}", dev.violations);
     assert!(submitted.len() >= 1000, "{} steps", submitted.len());
@@ -995,7 +1066,9 @@ fn the_fake_device_catches_a_host_that_skips_the_handshake() {
     let d = sample(&layout);
 
     // Resubmitting without consuming the flags at 1 from the start.
-    let mut dev = FakeDevice::new(layout);
+    let bells = Doorbells::new();
+    let _armed = bells.handshake();
+    let mut dev = FakeDevice::new(layout, &bells);
     d.write(&layout, &mut dev.mirrors[0]).unwrap();
     dev.submit(Parity::Even);
     while dev.tick() {}
@@ -1007,10 +1080,8 @@ fn the_fake_device_catches_a_host_that_skips_the_handshake() {
     );
 
     // Rewriting a queued mirror before the device copied it.
-    let mut dev = FakeDevice::new(layout);
-    for f in dev.dc.iter().chain(&dev.o) {
-        f.store(0, Ordering::Release);
-    }
+    let bells = Doorbells::new();
+    let mut dev = FakeDevice::new(layout, &bells);
     d.write(&layout, &mut dev.mirrors[1]).unwrap();
     dev.submit(Parity::Odd);
     let mut d2 = d.clone();
@@ -1030,9 +1101,9 @@ fn the_fake_device_catches_a_host_that_skips_the_handshake() {
 fn handshake_refusals() {
     let layout = StepDescLayout::new(limits(4, 2, 1, 1)).unwrap();
     let d = sample(&layout);
-    let dev = FakeDevice::new(layout);
+    let dev = Doorbells::new();
     let mut m = vec![0u8; layout.size() as usize];
-    let mut hs = ParityHandshake::default();
+    let mut hs = dev.handshake();
     let p = Parity::Even;
 
     // Both flags start at 1 and are owed: nothing may be written or submitted yet.
@@ -1043,18 +1114,15 @@ fn handshake_refusals() {
     );
     assert!(m.iter().all(|&b| b == 0));
     assert_eq!(hs.submit(p), Err(HandshakeError::DescriptorNotConsumed(p)));
-    assert_eq!(hs.consume_dc(p, &dev.dc[0]), Ok(true));
+    assert_eq!(hs.consume_dc(p), Ok(true));
     assert_eq!(dev.dc[0].load(Ordering::Acquire), 0);
-    assert_eq!(
-        hs.consume_dc(p, &dev.dc[0]),
-        Err(HandshakeError::NothingPending(p))
-    );
+    assert_eq!(hs.consume_dc(p), Err(HandshakeError::NothingPending(p)));
     assert_eq!(
         hs.write(p, &d, &layout, &mut m),
         Err(HandshakeError::StepNotDone(p))
     );
     assert_eq!(hs.submit(p), Err(HandshakeError::StepNotDone(p)));
-    assert_eq!(hs.consume_o(p, &dev.o[0]), Ok(true));
+    assert_eq!(hs.consume_o(p), Ok(true));
     assert!(hs.is_free(p));
     // The other parity is untouched.
     assert!(!hs.is_free(p.other()));
@@ -1072,34 +1140,95 @@ fn handshake_refusals() {
     hs.write(p, &d, &layout, &mut m).unwrap();
     hs.submit(p).unwrap();
     // Submitted: owed again; a flag still at 0 is not consumed.
-    assert_eq!(hs.consume_dc(p, &dev.dc[0]), Ok(false));
-    assert_eq!(hs.consume_o(p, &dev.o[0]), Ok(false));
+    assert_eq!(hs.consume_dc(p), Ok(false));
+    assert_eq!(hs.consume_o(p), Ok(false));
     assert_eq!(hs.submit(p), Err(HandshakeError::DescriptorNotConsumed(p)));
     // Submitted once, so a second submit needs a second write too.
     dev.dc[0].store(1, Ordering::Release);
     dev.o[0].store(1, Ordering::Release);
-    assert_eq!(hs.consume_o(p, &dev.o[0]), Ok(true));
-    assert_eq!(hs.consume_dc(p, &dev.dc[0]), Ok(true));
+    assert_eq!(hs.consume_o(p), Ok(true));
+    assert_eq!(hs.consume_dc(p), Ok(true));
     assert_eq!(hs.submit(p), Err(HandshakeError::NotWritten(p)));
 }
 
 /// After a capture or an abandoned step every flag is re-armed at 1 and owed again.
 #[test]
 fn rearm_restores_the_start_state() {
-    let layout = StepDescLayout::new(limits(4, 2, 1, 1)).unwrap();
-    let dev = FakeDevice::new(layout);
-    let mut hs = ParityHandshake::new();
+    let bells = Doorbells::new();
+    let mut hs = bells.handshake();
+    // Binding arms all four at 1.
+    for f in bells.dc.iter().chain(&bells.o) {
+        assert_eq!(f.load(Ordering::Acquire), 1);
+    }
     for p in Parity::BOTH {
-        hs.consume_dc(p, &dev.dc[p.index()]).unwrap();
-        hs.consume_o(p, &dev.o[p.index()]).unwrap();
+        hs.consume_dc(p).unwrap();
+        hs.consume_o(p).unwrap();
     }
     assert!(Parity::BOTH.iter().all(|&p| hs.is_free(p)));
-    let (dc, o) = dev.flags();
-    hs.rearm(dc, o);
-    assert_eq!(hs, ParityHandshake::new());
-    for f in dev.dc.iter().chain(&dev.o) {
+    hs.rearm();
+    for f in bells.dc.iter().chain(&bells.o) {
         assert_eq!(f.load(Ordering::Acquire), 1);
+    }
+    for p in Parity::BOTH {
+        assert!(!hs.is_free(p));
+        assert_eq!(hs.consume_dc(p), Ok(true));
+        assert_eq!(hs.consume_o(p), Ok(true));
     }
     assert_eq!(Parity::Even.other(), Parity::Odd);
     assert_eq!(Parity::Odd.other().index(), 0);
+}
+
+/// The flags are bound once, by name. Binding refuses two names for one slot, and each consume
+/// reads only its own flag, so `O[p]` raised alone never frees `DC[p]`.
+#[test]
+fn flags_cannot_be_swapped_or_shared() {
+    let bells = Doorbells::new();
+    for flags in [
+        ParityFlags {
+            dc: [&bells.o[0], &bells.dc[1]],
+            o: [&bells.o[0], &bells.o[1]],
+        },
+        ParityFlags {
+            dc: [&bells.dc[0], &bells.dc[0]],
+            o: [&bells.o[0], &bells.o[1]],
+        },
+        ParityFlags {
+            dc: [&bells.dc[0], &bells.dc[1]],
+            o: [&bells.o[1], &bells.o[1]],
+        },
+    ] {
+        assert_eq!(
+            ParityHandshake::new(flags).err(),
+            Some(HandshakeError::AliasedFlags)
+        );
+    }
+    // A refused binding stores nothing.
+    for f in bells.dc.iter().chain(&bells.o) {
+        assert_eq!(f.load(Ordering::Acquire), 0);
+    }
+
+    let mut hs = bells.handshake();
+    let p = Parity::Odd;
+    hs.consume_dc(p).unwrap();
+    hs.consume_o(p).unwrap();
+    let layout = StepDescLayout::new(limits(4, 2, 1, 1)).unwrap();
+    let mut m = vec![0u8; layout.size() as usize];
+    hs.write(p, &sample(&layout), &layout, &mut m).unwrap();
+    hs.submit(p).unwrap();
+    // Only O[1] rises: DC[1] stays owed, and neither the other parity's flags nor O[1] free it.
+    bells.o[1].store(1, Ordering::Release);
+    assert_eq!(hs.consume_dc(p), Ok(false));
+    assert_eq!(hs.consume_o(p), Ok(true));
+    assert_eq!(bells.dc[1].load(Ordering::Acquire), 0);
+    assert_eq!(
+        hs.write(p, &sample(&layout), &layout, &mut m),
+        Err(HandshakeError::DescriptorNotConsumed(p))
+    );
+    bells.dc[1].store(1, Ordering::Release);
+    assert_eq!(hs.consume_dc(p), Ok(true));
+    assert!(hs.is_free(p));
+    assert_eq!(
+        HandshakeError::AliasedFlags.to_string(),
+        "two step flags share one slot"
+    );
 }

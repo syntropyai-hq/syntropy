@@ -29,7 +29,7 @@ pub use desc::{
     TapFields, kv_writes,
 };
 pub use mirror::{SamplerState, StepDesc};
-pub use parity::{HandshakeError, Parity, ParityHandshake};
+pub use parity::{HandshakeError, Parity, ParityFlags, ParityHandshake};
 
 #[cfg(test)]
 mod cgen;

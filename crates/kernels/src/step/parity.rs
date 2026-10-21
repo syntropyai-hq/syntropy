@@ -60,6 +60,8 @@ pub enum HandshakeError {
     /// Nothing is owed on that flag: it was consumed already, and the parity was not
     /// resubmitted since.
     NothingPending(Parity),
+    /// Two of the flags given to [`ParityHandshake::new`] are the same slot.
+    AliasedFlags,
     /// Writing the descriptor failed.
     Descriptor(StepDescError),
 }
@@ -77,6 +79,7 @@ impl fmt::Display for HandshakeError {
             Self::NothingPending(p) => {
                 write!(f, "no set is owed on this flag of parity {}", p.index())
             }
+            Self::AliasedFlags => write!(f, "two step flags share one slot"),
             Self::Descriptor(e) => write!(f, "step descriptor: {e}"),
         }
     }
@@ -111,37 +114,64 @@ impl Slot {
     };
 }
 
+/// The four step-level flags of one graph's two parities (RFC-0040 §4.2 rule 5): 4-byte
+/// host-mapped slots, `AtomicU32` here, each on its own 64-byte line. Both arrays are indexed
+/// by [`Parity::index`].
+///
+/// The fields are named, and [`ParityHandshake::new`] binds them once and refuses two fields
+/// that are the same slot, so no later call can pass `O[p]` where `DC[p]` belongs.
+#[derive(Clone, Copy, Debug)]
+pub struct ParityFlags<'a> {
+    /// The descriptor-consumed flags `DC[0]` and `DC[1]`.
+    pub dc: [&'a AtomicU32; 2],
+    /// The step-done flags `O[0]` and `O[1]`.
+    pub o: [&'a AtomicU32; 2],
+}
+
+impl ParityFlags<'_> {
+    fn all(&self) -> [&AtomicU32; 4] {
+        [self.dc[0], self.dc[1], self.o[0], self.o[1]]
+    }
+}
+
 /// The host's record of both parities' flags, which gates every mirror write and every
 /// submission (RFC-0040 §4.2 rule 5).
 ///
-/// The flags themselves are 4-byte host-mapped slots (`AtomicU32` here), passed to each call
-/// that touches one. The host consumes a flag with an acquire load that sees 1, then a release
-/// store of 0.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParityHandshake {
+/// It holds the flags it was built with. The host consumes a flag with an acquire load that
+/// sees 1, then a release store of 0.
+#[derive(Clone, Debug)]
+pub struct ParityHandshake<'a> {
+    flags: ParityFlags<'a>,
     slots: [Slot; 2],
 }
 
-impl Default for ParityHandshake {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ParityHandshake {
-    /// The state matching flags that start at 1: both parities owe their `DC` and `O`.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            slots: [Slot::ARMED; 2],
+impl<'a> ParityHandshake<'a> {
+    /// Binds `flags` and arms them: stores 1 to all four, so both parities owe their `DC` and
+    /// `O` as if a previous use had just finished (RFC-0040 §4.2 rule 5: both start at 1).
+    ///
+    /// # Errors
+    ///
+    /// [`HandshakeError::AliasedFlags`] when two of the four are the same slot. Nothing is
+    /// stored then.
+    pub fn new(flags: ParityFlags<'a>) -> Result<Self, HandshakeError> {
+        let all = flags.all();
+        for (i, a) in all.iter().enumerate() {
+            if all[i + 1..].iter().any(|b| std::ptr::eq(*a, *b)) {
+                return Err(HandshakeError::AliasedFlags);
+            }
         }
+        let mut hs = Self {
+            flags,
+            slots: [Slot::ARMED; 2],
+        };
+        hs.rearm();
+        Ok(hs)
     }
 
     /// Re-arms after a capture or an abandoned step: stores 1 to every flag and owes each of
-    /// them to the host again (RFC-0040 §4.2). `dc` and `o` are indexed by
-    /// [`Parity::index`].
-    pub fn rearm(&mut self, dc: [&AtomicU32; 2], o: [&AtomicU32; 2]) {
-        for flag in dc.into_iter().chain(o) {
+    /// them to the host again (RFC-0040 §4.2).
+    pub fn rearm(&mut self) {
+        for flag in self.flags.all() {
             flag.store(1, Ordering::Release);
         }
         self.slots = [Slot::ARMED; 2];
@@ -164,8 +194,9 @@ impl ParityHandshake {
     /// # Errors
     ///
     /// [`HandshakeError::NothingPending`] when no set of `DC[p]` is owed.
-    pub fn consume_dc(&mut self, p: Parity, dc: &AtomicU32) -> Result<bool, HandshakeError> {
-        Self::consume(&mut self.slots[p.index()].dc_pending, p, dc)
+    pub fn consume_dc(&mut self, p: Parity) -> Result<bool, HandshakeError> {
+        let flag = self.flags.dc[p.index()];
+        Self::consume(&mut self.slots[p.index()].dc_pending, p, flag)
     }
 
     /// Consumes `O[p]` if the device has raised it: returns whether it had.
@@ -173,8 +204,9 @@ impl ParityHandshake {
     /// # Errors
     ///
     /// [`HandshakeError::NothingPending`] when no set of `O[p]` is owed.
-    pub fn consume_o(&mut self, p: Parity, o: &AtomicU32) -> Result<bool, HandshakeError> {
-        Self::consume(&mut self.slots[p.index()].o_pending, p, o)
+    pub fn consume_o(&mut self, p: Parity) -> Result<bool, HandshakeError> {
+        let flag = self.flags.o[p.index()];
+        Self::consume(&mut self.slots[p.index()].o_pending, p, flag)
     }
 
     /// Whether parity `p`'s previous use is fully consumed, so its mirror may be written and
