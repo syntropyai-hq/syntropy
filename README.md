@@ -4,7 +4,7 @@ Syntropy runs one large language model across the GPUs, RAM, NVMe drives and mac
 
 [![Licence: MIT OR Apache-2.0](https://img.shields.io/badge/licence-MIT%20OR%20Apache--2.0-blue)](#licence-and-credits)
 
-> **Syntropy is in design.** No code exists yet. The repository holds the complete design under [`plan/`](plan/README.md), and implementation starts at milestone M0a. Everything on this page describes what is designed and planned, not something you can run today.
+> **Syntropy is in design.** The Cargo workspace and a stub for every crate exist, but the crates are still empty. The repository holds the complete design under [`plan/`](plan/README.md), and implementation starts at milestone M0a. Everything on this page describes what is designed and planned, not something you can run today.
 
 A gaming PC with a 24 GB graphics card and 64 GB of RAM, a laptop with 48 GB of unified memory and a 128 GB mini PC under the TV can't each hold a 235-billion-parameter mixture-of-experts model, which is 142 GB at 4-bit. Between them they have 264 GB. Syntropy treats them as one computer with several kinds of memory. It measures how fast each GPU and CPU reads each memory tier, chooses one placement for the whole model, and keeps compute next to the bytes: whichever device's memory holds a weight is the device that computes it. Across machines, only activations travel during decode. Inside a machine, a weight that isn't in the GPU's cache is computed by the CPU where it sits instead of being copied over PCIe for every token. Unless you turn on a shortcut, the output matches a reference implementation within published tolerances.
 

@@ -1,6 +1,6 @@
 # Syntropy design
 
-This directory is Syntropy's complete design and implementation plan. No code exists yet: everything here is a decision, a specification, or a task waiting to be built. The [repository README](../README.md) is the front page and explains what Syntropy is. This page is the index to the design.
+This directory is Syntropy's complete design and implementation plan. The Cargo workspace and a stub for every crate exist, but the crates are still empty. Everything here is a decision, a specification, or a task waiting to be built. The [repository README](../README.md) is the front page and explains what Syntropy is. This page is the index to the design.
 
 In one paragraph: Syntropy runs one large language model across every machine you own, and across every memory tier inside each one. A single placement decides which layers run on which machine, which weights stay in VRAM, which sit in RAM and are computed there by the CPU, and which are read from NVMe as needed. The goal is the largest model, at the highest tokens/s, that your hardware can physically deliver, with output that matches a reference within published tolerances. It should install with one command, find the other machines on your network by itself, and add a laptop that's away from home with an invite token.
 
