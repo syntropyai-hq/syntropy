@@ -123,9 +123,10 @@ pub enum SpillCompute {
         /// The largest pass, in query rows, the CPU attends.
         max_rows: u16,
     },
-    /// Host pages are always streamed to the GPU. The serde default, filling the field in
-    /// records that predate it: it is the unmeasured default for MLA and every kind with
-    /// `g_eff ≥ 32` (RFC-0022 §5.3), and it is correct for every kind.
+    /// Host pages are always streamed to the GPU. The serde default, which fills the field
+    /// only in records that predate it. RFC-0022 §5.3's unmeasured defaults are per kind:
+    /// `GpuStream` for MLA and for any kind with `g_eff ≥ 32`, and
+    /// `CpuSplit { max_rows: T*_kv }` for GQA and MHA; the solver sets the field from them.
     #[default]
     GpuStream,
 }

@@ -7,7 +7,7 @@
 
 use smallvec::smallvec;
 use syntropy_core::plan::*;
-use syntropy_core::resource::TransportKind;
+use syntropy_core::resource::{HostPoolInfo, TransportKind};
 use syntropy_core::*;
 
 // ---- Fixture ----------------------------------------------------------------------------
@@ -16,10 +16,13 @@ use syntropy_core::*;
 // 2..4, TAIL). The embedding (group 0, RowLookup) and the LM head (group 3, Head) are tied:
 // one tensor record, two groups, one copy on each node.
 //
+// Tiers per node: 0 is VRAM, 1 is HostPinned and 2 is HostPageable. The two host tiers form
+// one NUMA domain's pool, with a pin limit of 1000 and a joint usable of 1000.
+//
 // Usage per tier with the fixture's numbers:
-//   A VRAM: embedding 10 + layer group 20 + KV 30 + scratch 5 = 65 of 100
-//   A RAM:  expert cache 40                                  = 40 of 1000
-//   B VRAM: layer group 20 + head 10 + KV 30 + scratch 5     = 65 of 100
+//   A VRAM:       embedding 10 + layer group 20 + KV 30 + scratch 5 = 65 of 100
+//   A HostPinned: expert cache 40                                  = 40 of 1000
+//   B VRAM:       layer group 20 + head 10 + KV 30 + scratch 5     = 65 of 100
 
 const A: NodeId = NodeId([0xA; 32]);
 const B: NodeId = NodeId([0xB; 32]);
@@ -131,15 +134,27 @@ fn group(id: u32, role: GroupRole, bytes: u64, shared_with: Option<u32>) -> Grou
     }
 }
 
+fn pool(node: NodeId, usable: u64, pin_limit: u64) -> HostPoolInfo {
+    HostPoolInfo {
+        numa: 0,
+        tiers: [tier(node, 1), tier(node, 2)],
+        usable: Bytes(usable),
+        pin_limit: Bytes(pin_limit),
+    }
+}
+
 struct Bounds {
+    n_layers: u16,
     groups: Vec<GroupFacts>,
     usable: Vec<(TierId, Bytes)>,
     scratch_tiers: Vec<(DeviceId, TierId)>,
+    host_pools: Vec<HostPoolInfo>,
 }
 
 impl Bounds {
     fn new() -> Self {
         Bounds {
+            n_layers: 4,
             groups: vec![
                 group(0, GroupRole::RowLookup, 10, Some(3)),
                 group(1, GroupRole::Other, 20, None),
@@ -149,19 +164,23 @@ impl Bounds {
             usable: vec![
                 (tier(A, 0), Bytes(100)),
                 (tier(A, 1), Bytes(1000)),
+                (tier(A, 2), Bytes(1000)),
                 (tier(B, 0), Bytes(100)),
                 (tier(B, 1), Bytes(1000)),
+                (tier(B, 2), Bytes(1000)),
             ],
             scratch_tiers: vec![(gpu(A), tier(A, 0)), (gpu(B), tier(B, 0))],
+            host_pools: vec![pool(A, 1000, 1000), pool(B, 1000, 1000)],
         }
     }
 
     fn get(&self) -> PlanBounds<'_> {
         PlanBounds {
-            n_layers: 4,
+            n_layers: self.n_layers,
             groups: &self.groups,
             usable: &self.usable,
             scratch_tiers: &self.scratch_tiers,
+            host_pools: &self.host_pools,
         }
     }
 
@@ -384,6 +403,19 @@ fn rejects_a_tail_without_the_tail_role() {
     );
 }
 
+#[test]
+fn rejects_a_tail_role_on_an_earlier_stage() {
+    let mut plan = valid_plan();
+    plan.stages[0].role = StageRole::HEAD | StageRole::TAIL;
+    assert_eq!(
+        check(&plan),
+        Err(PlanViolation::RoleMismatch {
+            stage: StageIx(0),
+            role: StageRole::HEAD | StageRole::TAIL,
+        })
+    );
+}
+
 // ---- Invariant 3: RowLookup on the head, Head on the tail --------------------------------
 
 #[test]
@@ -474,8 +506,8 @@ fn counts_the_expert_cache() {
 
 #[test]
 fn counts_the_duplicated_embedding_and_head_on_each_node() {
-    // The tied head is one tensor record, but B holds its own copy: 65 bytes, of which the
-    // head's 10 are the duplicate. Without it B would need only 55.
+    // RFC-0011 C9's `E_dup · e_p`: the tail is not the head, so B holds its own copy of the
+    // tied rows. B uses 65 bytes, of which the head's 10 are the duplicate.
     let mut bounds = Bounds::new();
     bounds.set_usable(tier(B, 0), 64);
     assert_eq!(
@@ -490,7 +522,8 @@ fn counts_the_duplicated_embedding_and_head_on_each_node() {
 
 #[test]
 fn counts_tied_groups_once_on_one_tier() {
-    // One stage on A: both tied groups on A VRAM hold one copy, 10 + 20 + 20 + 30 + 5 = 85.
+    // RFC-0011 C6: a one-stage plan counts the shared rows once.
+    // A VRAM holds 10 + 20 + 20 + 30 + 5 = 85.
     let mut plan = valid_plan();
     plan.stages = vec![stage(0, A, 0..4, StageRole::HEAD | StageRole::TAIL)];
     plan.tensors = vec![
@@ -563,5 +596,163 @@ fn violations_display_a_reason() {
     assert_eq!(
         v.to_string(),
         "tier 0 holds 101 bytes, above its usable 100"
+    );
+}
+
+// ---- Tied rows across tiers, MTP lookups, host pools and replicas ------------------------
+
+fn one_stage_plan() -> PlacementPlan {
+    let mut plan = valid_plan();
+    plan.stages = vec![stage(0, A, 0..4, StageRole::HEAD | StageRole::TAIL)];
+    plan.tensors = vec![
+        assign(0, A, 1),
+        assign(1, A, 0),
+        assign(2, A, 0),
+        assign(3, A, 0),
+    ];
+    plan.kv = vec![kv(0, A, 30)];
+    plan.scratch = vec![(gpu(A), Bytes(5))];
+    plan
+}
+
+#[test]
+fn counts_tied_rows_once_across_tiers_of_a_one_stage_plan() {
+    // RFC-0011 C6: "a one-stage plan counts the shared rows once", whichever tiers the two
+    // groups sit on. The embedding is in A's HostPinned, the tied head in A's VRAM; VRAM
+    // holds only 20 + 20 + 30 + 5 = 75.
+    let mut bounds = Bounds::new();
+    bounds.set_usable(tier(A, 0), 75);
+    assert_eq!(one_stage_plan().validate(&bounds.get()), Ok(()));
+    bounds.set_usable(tier(A, 0), 74);
+    assert_eq!(
+        one_stage_plan().validate(&bounds.get()),
+        Err(PlanViolation::OverCapacity {
+            tier: tier(A, 0),
+            used: Bytes(75),
+            usable: Bytes(74),
+        })
+    );
+}
+
+/// The fixture with an MTP module as layer 4 on the tail. Group 4 is the module's own
+/// `RowLookup` group over the embedding record, homed in B's HostPageable.
+fn mtp_plan_and_bounds() -> (PlacementPlan, Bounds) {
+    let mut plan = valid_plan();
+    plan.stages[1].layers = LayerIx(2)..LayerIx(5);
+    plan.tensors.push(assign(4, B, 2));
+    let mut bounds = Bounds::new();
+    bounds.n_layers = 5;
+    bounds
+        .groups
+        .push(group(4, GroupRole::TailLookup, 10, Some(0)));
+    (plan, bounds)
+}
+
+#[test]
+fn accepts_an_mtp_lookup_on_the_tail() {
+    let (plan, bounds) = mtp_plan_and_bounds();
+    assert_eq!(plan.validate(&bounds.get()), Ok(()));
+}
+
+#[test]
+fn rejects_an_mtp_lookup_off_the_tail() {
+    let (mut plan, bounds) = mtp_plan_and_bounds();
+    plan.tensors[4] = assign(4, A, 2);
+    assert_eq!(
+        plan.validate(&bounds.get()),
+        Err(PlanViolation::LookupOffTail {
+            group: TensorGroupId(4),
+            owner: A,
+            tail: B,
+        })
+    );
+}
+
+#[test]
+fn charges_an_mtp_lookup_on_a_tail_that_is_not_the_head() {
+    // RFC-0011 C9's `E_dup · e_p`: B's HostPageable holds the module's 10 bytes of rows.
+    let (plan, mut bounds) = mtp_plan_and_bounds();
+    bounds.set_usable(tier(B, 2), 9);
+    assert_eq!(
+        plan.validate(&bounds.get()),
+        Err(PlanViolation::OverCapacity {
+            tier: tier(B, 2),
+            used: Bytes(10),
+            usable: Bytes(9),
+        })
+    );
+}
+
+#[test]
+fn counts_an_mtp_lookup_once_in_a_one_stage_plan() {
+    // RFC-0011 C6: one stage, so the module's rows are the prologue's and add nothing.
+    let mut plan = one_stage_plan();
+    plan.stages[0].layers = LayerIx(0)..LayerIx(5);
+    plan.tensors.push(assign(4, A, 2));
+    let mut bounds = Bounds::new();
+    bounds.n_layers = 5;
+    bounds
+        .groups
+        .push(group(4, GroupRole::TailLookup, 10, Some(0)));
+    bounds.set_usable(tier(A, 2), 0);
+    assert_eq!(plan.validate(&bounds.get()), Ok(()));
+}
+
+#[test]
+fn rejects_a_host_pool_counted_twice() {
+    // 900 bytes HostPinned + 900 bytes HostPageable: each fits its own tier's usable of 1000,
+    // but the domain's pool holds only 1000 (RFC-0011 C9's joint host rows).
+    let mut plan = valid_plan();
+    plan.expert_cache[0].bytes = Bytes(900);
+    plan.kv.push(KvBudget {
+        tier: tier(A, 2),
+        bytes: Bytes(900),
+        ..kv(0, A, 0)
+    });
+    assert_eq!(
+        check(&plan),
+        Err(PlanViolation::HostPoolOverCapacity {
+            tiers: [tier(A, 1), tier(A, 2)],
+            used: Bytes(1800),
+            usable: Bytes(1000),
+        })
+    );
+}
+
+#[test]
+fn accepts_a_host_pool_at_exact_capacity() {
+    let mut plan = valid_plan();
+    plan.expert_cache[0].bytes = Bytes(500);
+    plan.kv.push(KvBudget {
+        tier: tier(A, 2),
+        bytes: Bytes(500),
+        ..kv(0, A, 0)
+    });
+    assert_eq!(check(&plan), Ok(()));
+}
+
+#[test]
+fn rejects_pinned_bytes_over_the_pin_limit() {
+    let mut bounds = Bounds::new();
+    bounds.host_pools[0] = pool(A, 1000, 39);
+    assert_eq!(
+        valid_plan().validate(&bounds.get()),
+        Err(PlanViolation::HostPinOverLimit {
+            tier: tier(A, 1),
+            used: Bytes(40),
+            pin_limit: Bytes(39),
+        })
+    );
+}
+
+#[test]
+fn rejects_replicas_it_cannot_charge() {
+    let mut plan = valid_plan();
+    plan.tensors[2].replicas = smallvec![A];
+    assert_eq!(
+        check(&plan),
+        Err(PlanViolation::ReplicasUnchecked {
+            group: TensorGroupId(2)
+        })
     );
 }

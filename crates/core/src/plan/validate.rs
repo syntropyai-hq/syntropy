@@ -3,15 +3,15 @@
 //! [`PlacementPlan::validate`]: RFC-0060 §3.2's P-solver-1 invariants.
 //!
 //! A plan is valid when:
-//! 1. the census has exactly one [`TierAssignment`] per tensor group, and its home tier is
-//!    on its owner (RFC-0001 §5.4);
+//! 1. the census has exactly one [`TierAssignment`] per tensor group, its home tier is on its
+//!    owner (RFC-0001 §5.4), and it lists no replicas (see [`PlanViolation::ReplicasUnchecked`]);
 //! 2. the stages are in ring order and their layer ranges cover `[0, n_layers)` exactly
 //!    once, with `HEAD` on the first stage and `TAIL` on the last;
-//! 3. every `RowLookup` group is owned by the head's node and every `Head` group by the
-//!    tail's node;
-//! 4. on every node, every tier's usage is at most its `usable`, counting the groups homed
-//!    there, KV, scratch and expert-cache budgets, and both copies of a tied embedding and
-//!    head that sit on different tiers.
+//! 3. the prologue's `RowLookup` groups are owned by the head's node, and `Head` groups and
+//!    MTP modules' own `RowLookup` groups by the tail's node (RFC-0011 C6);
+//! 4. every tier's usage is at most its `usable`, and every NUMA domain's host RAM passes
+//!    RFC-0011 C9's joint host rows. Usage counts the groups homed on the tier, KV, scratch
+//!    and expert-cache budgets, and the shared rows a tail holds (RFC-0011 C6, C9).
 //!
 //! The census lives in `syntropy-manifest`, above `core`, so the caller passes the facts the
 //! check needs as a [`PlanBounds`].
@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::ids::{DeviceId, LayerIx, NodeId, StageIx, TensorGroupId, TierId};
+use crate::resource::HostPoolInfo;
 use crate::units::Bytes;
 
 use super::stage::StageRole;
@@ -31,28 +32,38 @@ use super::{PlacementPlan, TierAssignment};
 pub struct GroupFacts {
     /// The group.
     pub id: TensorGroupId,
-    /// Whether its placement is pinned to the head or the tail.
+    /// Which stage must hold it, if any.
     pub role: GroupRole,
     /// Its stored size.
     pub bytes: Bytes,
-    /// The group that shares its tensor record: a tied embedding's `RowLookup` group and the
-    /// `Head` group (RFC-0001 §5.3 `TensorGroup::shared_with`).
+    /// `TensorGroup::shared_with` (RFC-0001 §5.3, RFC-0041 §3.1): the prologue's `RowLookup`
+    /// group whose tensor record this group reads, for a tied LM head's `Head` group and for
+    /// an MTP module's own `RowLookup` group.
     pub shared_with: Option<TensorGroupId>,
 }
 
-/// The part of a group's `TensorClass` that P-solver-1 constrains (RFC-0001 §5.3).
+/// Which stage must hold a group (RFC-0011 C6), derived from its `TensorClass` (RFC-0001
+/// §5.3).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GroupRole {
-    /// `TensorClass::RowLookup`: must be owned by the head stage's node.
+    /// A `TensorClass::RowLookup` group of the prologue (token, n-gram and per-layer
+    /// embedding tables): owned by the head stage's node.
     RowLookup,
-    /// `TensorClass::Head`: must be owned by the tail stage's node.
+    /// A `TensorClass::RowLookup` group of an MTP module, that is, of a layer with
+    /// `LayerSpec::mtp`. It is linked by `shared_with` to the prologue's group and is placed
+    /// on the tail with the MTP layers (RFC-0011 C6, RFC-0041 §3.1, RFC-0043 §2.2 item 3).
+    TailLookup,
+    /// `TensorClass::Head`: owned by the tail stage's node.
     Head,
     /// Any other class.
     Other,
 }
 
-/// What a plan is checked against: the census and the tiers' budgets.
+/// What a plan is checked against: the census and the budgets of the tiers it may use.
+///
+/// Every budget is C9's right-hand side (RFC-0011 §6): already net of the fixed reserves
+/// (`reserve_i`) and of the bytes other instances hold on the tier.
 #[derive(Clone, Copy, Debug)]
 pub struct PlanBounds<'a> {
     /// The number of layers the stages must cover: decoder layers plus MTP modules, whose
@@ -65,6 +76,8 @@ pub struct PlanBounds<'a> {
     /// The tier that holds each device's scratch: its memory tier (`Vram` or `Unified`) for a
     /// GPU, its NUMA domain's host tier for a CPU.
     pub scratch_tiers: &'a [(DeviceId, TierId)],
+    /// One record per NUMA domain the plan may use (RFC-0010 §2.2), for C9's joint host rows.
+    pub host_pools: &'a [HostPoolInfo],
 }
 
 /// The first P-solver-1 invariant a plan breaks (RFC-0060 §3.2).
@@ -94,6 +107,13 @@ pub enum PlanViolation {
         owner: NodeId,
         /// Its home tier.
         home: TierId,
+    },
+    /// A `TierAssignment` lists replicas, which `validate` cannot charge yet, so it fails
+    /// closed. RFC-0011 §11.2 charges a replica's bytes "to that stage's tier in C9", but the
+    /// plan records only the replica's `NodeId`, not the tier holding it.
+    ReplicasUnchecked {
+        /// The group.
+        group: TensorGroupId,
     },
     /// The plan has no stages.
     NoStages,
@@ -132,7 +152,7 @@ pub enum PlanViolation {
         /// Its roles.
         role: StageRole,
     },
-    /// A `RowLookup` group is not owned by the head's node.
+    /// A prologue `RowLookup` group is not owned by the head's node.
     LookupOffHead {
         /// The group.
         group: TensorGroupId,
@@ -140,6 +160,15 @@ pub enum PlanViolation {
         owner: NodeId,
         /// The head's node.
         head: NodeId,
+    },
+    /// An MTP module's `RowLookup` group is not owned by the tail's node.
+    LookupOffTail {
+        /// The group.
+        group: TensorGroupId,
+        /// Its owner.
+        owner: NodeId,
+        /// The tail's node.
+        tail: NodeId,
     },
     /// A `Head` group is not owned by the tail's node.
     HeadOffTail {
@@ -169,6 +198,26 @@ pub enum PlanViolation {
         /// What it may hold.
         usable: Bytes,
     },
+    /// A NUMA domain's `HostPinned` tier holds more than the domain's `pin_limit` (RFC-0011
+    /// C9's first joint host row).
+    HostPinOverLimit {
+        /// The `HostPinned` tier.
+        tier: TierId,
+        /// What the plan puts there.
+        used: Bytes,
+        /// The domain's `pin_limit`.
+        pin_limit: Bytes,
+    },
+    /// A NUMA domain's `HostPinned` and `HostPageable` tiers together hold more than the
+    /// domain's `host_usable` (RFC-0011 C9's second joint host row).
+    HostPoolOverCapacity {
+        /// `[HostPinned, HostPageable]` of the domain.
+        tiers: [TierId; 2],
+        /// What the plan puts in both.
+        used: Bytes,
+        /// The domain's `host_usable`.
+        usable: Bytes,
+    },
 }
 
 impl fmt::Display for PlanViolation {
@@ -195,6 +244,11 @@ impl fmt::Display for PlanViolation {
                 f,
                 "tensor group {} is homed on tier {} of another node than its owner",
                 group.0, home.ordinal
+            ),
+            Self::ReplicasUnchecked { group } => write!(
+                f,
+                "tensor group {} lists replicas, whose tiers the plan does not record",
+                group.0
             ),
             Self::NoStages => f.write_str("the plan has no stages"),
             Self::StageOutOfOrder { position, stage } => write!(
@@ -228,6 +282,11 @@ impl fmt::Display for PlanViolation {
                 "row-lookup group {} is not owned by the head's node",
                 group.0
             ),
+            Self::LookupOffTail { group, .. } => write!(
+                f,
+                "MTP row-lookup group {} is not owned by the tail's node",
+                group.0
+            ),
             Self::HeadOffTail { group, .. } => {
                 write!(f, "head group {} is not owned by the tail's node", group.0)
             }
@@ -248,6 +307,24 @@ impl fmt::Display for PlanViolation {
                 "tier {} holds {} bytes, above its usable {}",
                 tier.ordinal, used.0, usable.0
             ),
+            Self::HostPinOverLimit {
+                tier,
+                used,
+                pin_limit,
+            } => write!(
+                f,
+                "pinned tier {} holds {} bytes, above its domain's pin limit {}",
+                tier.ordinal, used.0, pin_limit.0
+            ),
+            Self::HostPoolOverCapacity {
+                tiers,
+                used,
+                usable,
+            } => write!(
+                f,
+                "host tiers {} and {} hold {} bytes together, above their domain's usable {}",
+                tiers[0].ordinal, tiers[1].ordinal, used.0, usable.0
+            ),
         }
     }
 }
@@ -258,6 +335,10 @@ impl PlacementPlan {
     /// Checks RFC-0060 §3.2's P-solver-1 invariants against the census and tier budgets in
     /// `bounds`, and returns the first one the plan breaks. Checks run in the module's order;
     /// within one check, in census, ring or tier order, so the result is deterministic.
+    ///
+    /// A plan whose `TierAssignment`s list replicas fails with
+    /// [`PlanViolation::ReplicasUnchecked`] until the plan records where replicas sit
+    /// (RFC-0011 §11.2; M2).
     pub fn validate(&self, bounds: &PlanBounds<'_>) -> Result<(), PlanViolation> {
         let assigned = self.check_assignments(bounds)?;
         self.check_stages(bounds.n_layers)?;
@@ -265,7 +346,7 @@ impl PlacementPlan {
         self.check_usage(bounds, &assigned)
     }
 
-    /// Invariant 1: one `TierAssignment` per census group, homed on its owner.
+    /// Invariant 1: one `TierAssignment` per census group, homed on its owner, no replicas.
     fn check_assignments(
         &self,
         bounds: &PlanBounds<'_>,
@@ -285,6 +366,9 @@ impl PlacementPlan {
                     owner: t.owner,
                     home: t.home,
                 });
+            }
+            if !t.replicas.is_empty() {
+                return Err(PlanViolation::ReplicasUnchecked { group: t.group });
             }
         }
         if let Some(g) = bounds.groups.iter().find(|g| !assigned.contains_key(&g.id)) {
@@ -336,7 +420,8 @@ impl PlacementPlan {
         Ok(())
     }
 
-    /// Invariant 3: `RowLookup` groups on the head's node, `Head` groups on the tail's.
+    /// Invariant 3: prologue lookups on the head's node; heads and MTP lookups on the tail's
+    /// (RFC-0011 C6).
     fn check_head_and_tail(
         &self,
         bounds: &PlanBounds<'_>,
@@ -356,6 +441,13 @@ impl PlacementPlan {
                         head: head.node,
                     });
                 }
+                GroupRole::TailLookup if owner != tail.node => {
+                    return Err(PlanViolation::LookupOffTail {
+                        group: g.id,
+                        owner,
+                        tail: tail.node,
+                    });
+                }
                 GroupRole::Head if owner != tail.node => {
                     return Err(PlanViolation::HeadOffTail {
                         group: g.id,
@@ -369,7 +461,16 @@ impl PlacementPlan {
         Ok(())
     }
 
-    /// Invariant 4: every tier's usage at most its `usable`.
+    /// Invariant 4: every tier's usage at most its `usable`, and C9's joint host rows.
+    ///
+    /// Shared rows follow RFC-0011 C6 and C9. A tail-side group that reads the prologue's
+    /// embedding record (a tied LM head's `Head` group, an MTP module's `RowLookup` group:
+    /// `shared_with` is set and the role is `Head` or `TailLookup`) is C9's duplicated-row
+    /// term `E_dup · e_p`. `e_p` is 1 only when the tail is not the head, so "a one-stage
+    /// plan counts the shared rows once" (C6): there the group adds nothing, whichever tier it
+    /// is homed on. In a plan with two or more stages it is charged in full. C9 puts those
+    /// rows in the tail's `HostPageable`; `validate` charges them to the group's recorded home
+    /// tier, which is that tier for a plan the solver assembled under C9.
     fn check_usage(
         &self,
         bounds: &PlanBounds<'_>,
@@ -381,17 +482,14 @@ impl PlacementPlan {
             *total = Bytes(total.0.saturating_add(bytes.0));
         };
 
+        let tail_is_head = self.stages.len() == 1;
         for g in bounds.groups {
-            let home = assigned[&g.id].home;
-            // A tied embedding and head share one tensor record. Two copies are resident only
-            // when the two groups sit on different tiers; on one tier the record is held once,
-            // charged to the lower group ID.
-            let held_by_twin = g.shared_with.is_some_and(|twin| {
-                twin < g.id && assigned.get(&twin).is_some_and(|t| t.home == home)
-            });
-            if !held_by_twin {
-                charge(home, g.bytes);
+            let duplicated_row = g.shared_with.is_some()
+                && matches!(g.role, GroupRole::Head | GroupRole::TailLookup);
+            if duplicated_row && tail_is_head {
+                continue;
             }
+            charge(assigned[&g.id].home, g.bytes);
         }
         for kv in &self.kv {
             charge(kv.tier, kv.bytes);
@@ -409,7 +507,7 @@ impl PlacementPlan {
             charge(tier, bytes);
         }
 
-        for (tier, used) in used {
+        for (&tier, &used) in &used {
             let usable = bounds
                 .usable
                 .iter()
@@ -418,6 +516,27 @@ impl PlacementPlan {
                 .ok_or(PlanViolation::UnknownTier { tier })?;
             if used > usable {
                 return Err(PlanViolation::OverCapacity { tier, used, usable });
+            }
+        }
+
+        // C9's joint host rows, per NUMA domain (RFC-0001 §5.2, RFC-0020 §5).
+        let on = |tier: TierId| used.get(&tier).copied().unwrap_or_default();
+        for pool in bounds.host_pools {
+            let [pinned, pageable] = pool.tiers;
+            if on(pinned) > pool.pin_limit {
+                return Err(PlanViolation::HostPinOverLimit {
+                    tier: pinned,
+                    used: on(pinned),
+                    pin_limit: pool.pin_limit,
+                });
+            }
+            let both = Bytes(on(pinned).0.saturating_add(on(pageable).0));
+            if both > pool.usable {
+                return Err(PlanViolation::HostPoolOverCapacity {
+                    tiers: pool.tiers,
+                    used: both,
+                    usable: pool.usable,
+                });
             }
         }
         Ok(())
