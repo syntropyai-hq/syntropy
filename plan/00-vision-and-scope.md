@@ -344,7 +344,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M1a: Linux preview (CUDA and CPU tiering)
 
-463 tasks in the epics (`implementation/roadmap.md`, M1a).
+464 tasks in the epics (`implementation/roadmap.md`, M1a).
 
 - [ ] Tier manager with DMA-registered `HostPinned` and locked `HostPageable` arenas per NUMA domain, the Linux budgets, and progressive locking and registration; packs with 4 KiB alignment; the io_uring and thread-pool I/O engines (RFC-0020, RFC-0021, RFC-0041).
 - [ ] Expert cache with decayed LFU, CPU execute-in-place for misses, next-layer prediction fused into the router op, and prefetch. How much of the NVMe expert tier M1a takes on follows the hit curves from S-01's routing traces. Until those exist, the model class that fits in RAM leads, and DeepSeek-V3 at Q4 is a capacity demonstration (RFC-0023).
