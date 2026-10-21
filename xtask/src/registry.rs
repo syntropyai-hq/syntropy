@@ -346,19 +346,13 @@ pub const JOBS: &[Entry] = &[
             Param {
                 name: "--event",
                 value: "<file>",
-                help: "the pull_request event payload, for the head commit and the labels",
+                help: "the pull_request event payload, for the head commit",
                 required: false,
             },
             Param {
                 name: "--reviews",
                 value: "<file>",
                 help: "every review, as GET /repos/{owner}/{repo}/pulls/{n}/reviews returns them",
-                required: false,
-            },
-            Param {
-                name: "--label-events",
-                value: "<file>",
-                help: "the label history, as GET /repos/{owner}/{repo}/issues/{n}/events returns it",
                 required: false,
             },
             Param {

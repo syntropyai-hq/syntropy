@@ -1,0 +1,14 @@
+# A dep-diff fixture workspace (head-patch). xtask/tests/dep_diff.rs compares each head-* with base.
+[workspace]
+resolver = "3"
+members = ["crates/a", "crates/b"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Swaps serde, which the base already uses, for a fork, with no new dependency entry.
+[patch.crates-io]
+serde = { git = "https://example.invalid/serde-fork.git" }

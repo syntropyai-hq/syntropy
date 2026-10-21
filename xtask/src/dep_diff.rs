@@ -9,18 +9,21 @@
 //!   normal, build or dev dependency and no manifest in the base does. A version bump of a crate
 //!   the base already uses is not new; the same name from another source, such as a git fork, is;
 //! - a vendored component in `third_party/licences.toml`, by its `upstream`, that the base does
-//!   not list.
+//!   not list;
+//! - a setting that changes where dependencies come from, added or changed: a `[patch]` or
+//!   `[replace]` table in the root manifest, or a `[source]`, `[registries]`, `[registry]`,
+//!   `[patch]` or `[replace]` table in any `.cargo/config.toml`. A patch or a source replacement
+//!   swaps a crate the workspace already uses for other code, so it needs the same approval.
 //!
 //! Path dependencies between workspace members are not new dependencies: `check-deps` judges
 //! those edges (RFC-0001 §4.2).
 //!
 //! Its two steps:
-//! - **`dep-diff`** lists what is new and fails unless a maintainer has approved it, by an
-//!   approving review on the PR's current head commit, or by applying the `dependency-approved`
-//!   label (its label history read as for `semver-major-approved`, RFC-0062 §8.3). The PR's data
-//!   comes from `--event`, `--reviews` (`GET /pulls/{n}/reviews`, every page), `--label-events`
-//!   (`GET /issues/{n}/events` with `--include`, every page) and `--roster`; without them, as in a
-//!   local run, nothing can approve, and a new dependency fails.
+//! - **`dep-diff`** lists what is new and fails unless a maintainer has approved it, with an
+//!   approving review on the PR's current head commit. A push after the review needs a new one,
+//!   because GitHub ties a review to the commit it was given on. The PR's data comes from
+//!   `--event`, `--reviews` (`GET /pulls/{n}/reviews`, every page) and `--roster`; without them,
+//!   as in a local run, nothing can approve, and a new dependency fails.
 //! - **`registry`** looks up each new crates.io dependency and prints its first-publish date, its
 //!   first recorded publisher and its owners, for the maintainer's review. It fails when the name
 //!   does not resolve on crates.io, which catches a typosquatted or invented name, and when the
@@ -38,14 +41,10 @@ use std::process::Command;
 
 use serde_json::Value;
 
-use crate::contrib::{applied_by_maintainer, parse_label_events, parse_pull_request};
 use crate::licences::manifest;
 use crate::registry::cargo;
 use crate::roster::Roster;
 use crate::run::Context;
-
-/// The label a maintainer applies to approve a new dependency.
-pub const APPROVAL_LABEL: &str = "dependency-approved";
 
 /// The source cargo records for a crates.io dependency.
 const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
@@ -68,11 +67,15 @@ pub struct NewDependencies {
     pub crates: BTreeMap<Crate, Vec<String>>,
     /// Each new vendored component's `upstream`.
     pub vendored: Vec<String>,
+    /// Each setting that changes where dependencies come from, added or changed: a `[patch]` or
+    /// `[replace]` table in the root manifest, or a source, registry or patch table in a
+    /// `.cargo/config.toml`, as `<file>: <line>`.
+    pub sources: Vec<String>,
 }
 
 impl NewDependencies {
     pub fn is_empty(&self) -> bool {
-        self.crates.is_empty() && self.vendored.is_empty()
+        self.crates.is_empty() && self.vendored.is_empty() && self.sources.is_empty()
     }
 
     /// One line per new dependency.
@@ -93,6 +96,11 @@ impl NewDependencies {
             self.vendored
                 .iter()
                 .map(|upstream| format!("new vendored component from {upstream}")),
+        );
+        lines.extend(
+            self.sources
+                .iter()
+                .map(|setting| format!("new dependency source setting in {setting}")),
         );
         lines
     }
@@ -206,7 +214,124 @@ pub fn compare(
             .map(|(krate, users)| (krate.clone(), users.clone()))
             .collect(),
         vendored: head_vendored.difference(base_vendored).cloned().collect(),
+        sources: Vec::new(),
     }
+}
+
+/// The tables of a Cargo manifest or configuration file that decide where dependencies come
+/// from: in `Cargo.toml`, `[patch.*]` and `[replace]`; in `.cargo/config.toml`, those and
+/// `[source.*]`, `[registries.*]` and `[registry]`, and the same keys written dotted
+/// (`source.crates-io.replace-with = …`). A patch or a source replacement swaps a crate the
+/// workspace already uses for other code without adding a dependency, so it needs the same
+/// approval.
+const MANIFEST_TABLES: &[&str] = &["patch", "replace"];
+const CONFIG_TABLES: &[&str] = &["patch", "replace", "source", "registries", "registry"];
+
+/// The setting lines of `text` under `tables`, each as `[<header>] <line>` or `<line>` for a
+/// dotted key at the top, with comments and surrounding space removed.
+pub fn source_settings(text: &str, tables: &[&str]) -> BTreeSet<String> {
+    let first_key = |name: &str| {
+        name.trim_matches(|c| c == '[' || c == ']')
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .to_owned()
+    };
+    let mut settings = BTreeSet::new();
+    // `None` before any header, where dotted keys sit; `Some(None)` under another table.
+    let mut header: Option<Option<String>> = None;
+    for line in text.lines() {
+        let line = crate::licences::toml::strip_comment(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            let name = line
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim()
+                .to_owned();
+            let matching = tables.contains(&first_key(&name).as_str()).then_some(name);
+            if let Some(name) = &matching {
+                settings.insert(format!("[{name}]"));
+            }
+            header = Some(matching);
+            continue;
+        }
+        match &header {
+            Some(Some(name)) => {
+                settings.insert(format!("[{name}] {line}"));
+            }
+            Some(None) => {}
+            None => {
+                let key = line
+                    .split(['=', '.'])
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"');
+                if tables.contains(&key) {
+                    settings.insert(line.to_owned());
+                }
+            }
+        }
+    }
+    settings
+}
+
+/// Every `.cargo/config.toml` and `.cargo/config` under `root`, root-relative, except under
+/// `skip` (the head checkout, when it lies inside the base), `target/` and `.git/`.
+fn cargo_configs(root: &Path, skip: Option<&Path>) -> Result<Vec<String>, String> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+            let path = entry.path();
+            let name = entry.file_name();
+            let kind = entry
+                .file_type()
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            if !kind.is_dir() || skip.is_some_and(|skip| path == skip) {
+                continue;
+            }
+            if name == ".cargo" {
+                for file in ["config.toml", "config"] {
+                    if path.join(file).is_file() {
+                        let relative = path.join(file);
+                        let relative = relative.strip_prefix(root).unwrap_or(&relative);
+                        found.push(relative.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            } else if name != "target" && name != ".git" {
+                pending.push(path);
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Each source setting of the tree at `root`, as `<file>: <setting>`.
+fn sources(root: &Path, skip: Option<&Path>) -> Result<BTreeSet<String>, String> {
+    let read = |relative: &str| {
+        std::fs::read_to_string(root.join(relative)).map_err(|e| format!("{relative}: {e}"))
+    };
+    let mut all: BTreeSet<String> = source_settings(&read("Cargo.toml")?, MANIFEST_TABLES)
+        .into_iter()
+        .map(|setting| format!("Cargo.toml: {setting}"))
+        .collect();
+    for file in cargo_configs(root, skip)? {
+        all.extend(
+            source_settings(&read(&file)?, CONFIG_TABLES)
+                .into_iter()
+                .map(|setting| format!("{file}: {setting}")),
+        );
+    }
+    Ok(all)
 }
 
 /// The new dependencies of the context's `--head` over its `--base`.
@@ -223,12 +348,18 @@ fn new_dependencies(context: &Context) -> Result<NewDependencies, String> {
     let head = dir("--head")?;
     let base_crates = declared(&metadata(&base, &base)?)?;
     let head_crates = declared(&metadata(&head, &base)?)?;
-    Ok(compare(
+    let mut new = compare(
         &base_crates,
         &head_crates,
         &vendored(&base)?,
         &vendored(&head)?,
-    ))
+    );
+    let base_sources = sources(&base, head.starts_with(&base).then_some(head.as_path()))?;
+    new.sources = sources(&head, None)?
+        .difference(&base_sources)
+        .cloned()
+        .collect();
+    Ok(new)
 }
 
 /// A review of `GET /pulls/{n}/reviews`, reduced to what approval reads.
@@ -297,7 +428,7 @@ fn head_sha(event: &str) -> Result<String, String> {
 }
 
 /// The PR data that can carry an approval, all or none of it given.
-const PR_DATA: &[&str] = &["--event", "--reviews", "--label-events", "--roster"];
+const PR_DATA: &[&str] = &["--event", "--reviews", "--roster"];
 
 /// Who approved the new dependencies, or why nobody has.
 fn approval(context: &Context) -> Result<String, String> {
@@ -308,8 +439,8 @@ fn approval(context: &Context) -> Result<String, String> {
         .collect();
     if given.is_empty() {
         return Err(
-            "no PR data was given (`--event`, `--reviews`, `--label-events`, `--roster`), so \
-             nothing can approve them"
+            "no PR data was given (`--event`, `--reviews`, `--roster`), so nothing can approve \
+             them"
                 .to_owned(),
         );
     }
@@ -328,18 +459,10 @@ fn approval(context: &Context) -> Result<String, String> {
     let roster = Roster::parse(&read("--roster")?).map_err(|e| format!("roster: {e}"))?;
     let head = head_sha(&event)?;
     let reviews = parse_reviews(&read("--reviews")?)?;
-    if let Some(login) = approving_review(&reviews, &head, &roster) {
-        return Ok(format!("approved by `{login}`, in a review of {head}"));
-    }
-    let pr = parse_pull_request(&event)?;
-    let events = parse_label_events(&read("--label-events")?)?;
-    match applied_by_maintainer(APPROVAL_LABEL, &pr.labels, &events, &roster) {
-        Ok(login) => Ok(format!(
-            "approved by `{login}`, who applied `{APPROVAL_LABEL}`"
-        )),
-        Err(label) => Err(format!(
-            "no maintainer has approved them: no maintainer's approving review on the head \
-             commit {head}, and {label}"
+    match approving_review(&reviews, &head, &roster) {
+        Some(login) => Ok(format!("approved by `{login}`, in a review of {head}")),
+        None => Err(format!(
+            "no maintainer has approved them in a review of the head commit {head}"
         )),
     }
 }
@@ -368,8 +491,8 @@ pub fn step(context: &Context) -> Result<(), String> {
             };
             Err(format!(
                 "{count} new direct {what} {needs} a maintainer's approval (RFC-0062 §12.3): \
-                 {reason}. A maintainer approves with an approving review on the head commit, or \
-                 by applying `{APPROVAL_LABEL}`"
+                 {reason}. A maintainer approves with an approving review on the head commit, \
+                 and a later push needs a new one"
             ))
         }
     }

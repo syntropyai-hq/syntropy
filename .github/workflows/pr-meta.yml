@@ -136,7 +136,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      issues: read
     steps:
       - name: Pass on a merge group
         if: github.event_name == 'merge_group'
@@ -161,16 +160,13 @@ jobs:
         with:
           cache-key: pr-meta
           cache: "off"
-      - name: Fetch the PR's reviews and label history
+      - name: Fetch the PR's reviews
         if: github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" > "$RUNNER_TEMP/reviews.json"
-          gh api --include --paginate "repos/$REPO/issues/$NUMBER/events" \
-            > "$RUNNER_TEMP/label-events.http"
+        run: gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" > "$RUNNER_TEMP/reviews.json"
       # Bootstrap: until the base branch has the `dep-diff` job, which holds only until the PR
       # that adds it merges, that PR is judged by its own. A base that fails to build fails here.
       - name: Find the base branch's dep-diff
@@ -194,5 +190,4 @@ jobs:
             --head "$GITHUB_WORKSPACE/pr" \
             --event "$GITHUB_EVENT_PATH" \
             --reviews "$RUNNER_TEMP/reviews.json" \
-            --label-events "$RUNNER_TEMP/label-events.http" \
             --roster "$GITHUB_WORKSPACE/governance/maintainers.toml"

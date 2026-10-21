@@ -11,16 +11,14 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dep-diff")
 }
 
-/// The PR data options for `event`, `reviews` and `labels`, the names of files in `pr/`.
-fn pr(event: &str, reviews: &str, labels: &str) -> Vec<String> {
+/// The PR data options for the `reviews` file in `pr/`.
+fn pr(reviews: &str) -> Vec<String> {
     let at = |file: &str| fixtures().join("pr").join(file).display().to_string();
     vec![
         "--event".into(),
-        at(event),
+        at("event.json"),
         "--reviews".into(),
         at(reviews),
-        "--label-events".into(),
-        at(labels),
         "--roster".into(),
         at("roster.toml"),
     ]
@@ -64,41 +62,23 @@ fn a_new_dev_dependency_fails_until_a_maintainer_approves() {
         "{log}"
     );
 
-    // PR data with no approval, a stale one, a contributor's, and a withdrawn one.
-    for (reviews, labels) in [
-        ("reviews-none.json", "label-events-none.http"),
-        ("reviews-stale.json", "label-events-none.http"),
-        ("reviews-contributor.json", "label-events-none.http"),
-        ("reviews-withdrawn.json", "label-events-none.http"),
+    // PR data with no approval, one on an earlier commit, a contributor's, and a withdrawn one.
+    for reviews in [
+        "reviews-none.json",
+        "reviews-stale.json",
+        "reviews-contributor.json",
+        "reviews-withdrawn.json",
     ] {
-        let (code, log) = run("head-dev-dependency", &pr("event.json", reviews, labels));
+        let (code, log) = run("head-dev-dependency", &pr(reviews));
         assert_eq!(code, Some(1), "{reviews}: {log}");
         assert!(
-            log.contains("no maintainer has approved them"),
+            log.contains("no maintainer has approved them in a review of the head commit"),
             "{reviews}: {log}"
         );
     }
-    // A label a contributor applied does not count.
-    let (code, log) = run(
-        "head-dev-dependency",
-        &pr(
-            "event-labelled.json",
-            "reviews-none.json",
-            "label-events-contributor.http",
-        ),
-    );
-    assert_eq!(code, Some(1), "{log}");
-    assert!(log.contains("`carol`, who is not a maintainer"), "{log}");
 
     // A maintainer's approving review on the head commit passes it.
-    let (code, log) = run(
-        "head-dev-dependency",
-        &pr(
-            "event.json",
-            "reviews-approved.json",
-            "label-events-none.http",
-        ),
-    );
+    let (code, log) = run("head-dev-dependency", &pr("reviews-approved.json"));
     assert_eq!(code, Some(0), "{log}");
     assert!(
         log.contains(
@@ -106,20 +86,35 @@ fn a_new_dev_dependency_fails_until_a_maintainer_approves() {
         ),
         "{log}"
     );
-    // So does `dependency-approved` applied by a maintainer.
-    let (code, log) = run(
-        "head-dev-dependency",
-        &pr(
-            "event-labelled.json",
-            "reviews-none.json",
-            "label-events-maintainer.http",
-        ),
-    );
-    assert_eq!(code, Some(0), "{log}");
+}
+
+#[test]
+fn a_patch_or_a_source_replacement_needs_approval_too() {
+    let (code, log) = run("head-patch", &[]);
+    assert_eq!(code, Some(1), "{log}");
     assert!(
-        log.contains("dep-diff: approved by `alice`, who applied `dependency-approved`"),
+        log.contains(
+            "dep-diff: new dependency source setting in Cargo.toml: [patch.crates-io] serde = { \
+             git = \"https://example.invalid/serde-fork.git\" }"
+        ),
         "{log}"
     );
+    let (code, log) = run("head-source-replacement", &[]);
+    assert_eq!(code, Some(1), "{log}");
+    assert!(
+        log.contains(
+            "dep-diff: new dependency source setting in crates/a/.cargo/config.toml: \
+             [source.crates-io] replace-with = \"mirror\""
+        ),
+        "{log}"
+    );
+    assert!(
+        log.contains("[source.mirror] registry = \"https://example.invalid/index\""),
+        "{log}"
+    );
+    // Approval covers them as it covers a new crate.
+    let (code, log) = run("head-patch", &pr("reviews-approved.json"));
+    assert_eq!(code, Some(0), "{log}");
 }
 
 #[test]
@@ -145,11 +140,7 @@ fn a_new_vendored_component_fails() {
 
 #[test]
 fn a_crate_name_that_does_not_exist_fails_the_registry_check() {
-    let approved = pr(
-        "event.json",
-        "reviews-approved.json",
-        "label-events-none.http",
-    );
+    let approved = pr("reviews-approved.json");
     let (code, log) = run("head-typo", &approved);
     assert_eq!(code, Some(1), "{log}");
     // Approval does not excuse it: dep-diff passes, and the registry step fails.

@@ -45,8 +45,8 @@
 #    maintainer's approval (QUAL-E1-T19). Close them and remove the role.
 # 5. A new dependency needs a maintainer: as the test account with the Write role, open a PR that
 #    adds a dev-dependency no manifest uses yet to one crate. `dep-diff` fails and the PR cannot
-#    merge. A maintainer's approving review on its head commit, or the `dependency-approved`
-#    label applied by a maintainer, turns `dep-diff` green. Close it and remove the role.
+#    merge. A maintainer's approving review on its head commit turns `dep-diff` green, and a push
+#    after it turns it red again. Close it and remove the role.
 
 set -euo pipefail
 

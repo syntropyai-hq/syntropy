@@ -210,6 +210,7 @@ fn new_crates(crates: &[(&str, &str)]) -> NewDependencies {
             })
             .collect(),
         vendored: Vec::new(),
+        sources: Vec::new(),
     }
 }
 
@@ -250,4 +251,69 @@ fn crate_names_are_checked_before_they_reach_a_url() {
     for bad in ["", "1abc", "a/b", "a?b", "../x", "a b", &"x".repeat(65)] {
         assert!(!valid_name(bad), "{bad}");
     }
+}
+
+#[test]
+fn source_settings_are_the_patch_replace_and_source_tables() {
+    let manifest = "\
+[workspace]
+members = [\"crates/*\"]
+
+[dependencies]
+patch = \"1\" # a crate named patch, not a table
+
+[patch.crates-io]
+serde = { git = \"https://example.invalid/serde\" } # a fork
+
+[replace]
+\"foo:0.1.0\" = { path = \"../foo\" }
+";
+    let settings: Vec<String> = source_settings(manifest, MANIFEST_TABLES)
+        .into_iter()
+        .collect();
+    assert_eq!(
+        settings,
+        [
+            "[patch.crates-io]",
+            "[patch.crates-io] serde = { git = \"https://example.invalid/serde\" }",
+            "[replace]",
+            "[replace] \"foo:0.1.0\" = { path = \"../foo\" }",
+        ]
+    );
+    // Dotted keys at the top of a config file count too; other tables do not.
+    let config = "source.crates-io.replace-with = \"mirror\"\n[build]\nrustflags = []\n\
+                  [registries.mine]\nindex = \"https://example.invalid/index\"\n";
+    let settings: Vec<String> = source_settings(config, CONFIG_TABLES).into_iter().collect();
+    assert_eq!(
+        settings,
+        [
+            "[registries.mine]",
+            "[registries.mine] index = \"https://example.invalid/index\"",
+            "source.crates-io.replace-with = \"mirror\"",
+        ]
+    );
+    assert!(source_settings("[build]\njobs = 4\n", CONFIG_TABLES).is_empty());
+}
+
+#[test]
+fn configs_are_found_at_any_depth_except_in_the_head_inside_the_base() {
+    let root =
+        std::env::temp_dir().join(format!("syntropy-dep-diff-configs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for dir in [".cargo", "crates/a/.cargo", "pr/.cargo", "target/.cargo"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+        std::fs::write(root.join(dir).join("config.toml"), "").unwrap();
+    }
+    let found = cargo_configs(&root, Some(&root.join("pr"))).unwrap();
+    assert_eq!(found, [".cargo/config.toml", "crates/a/.cargo/config.toml"]);
+    let found = cargo_configs(&root, None).unwrap();
+    assert_eq!(
+        found,
+        [
+            ".cargo/config.toml",
+            "crates/a/.cargo/config.toml",
+            "pr/.cargo/config.toml"
+        ]
+    );
+    std::fs::remove_dir_all(&root).unwrap();
 }
