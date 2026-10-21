@@ -224,6 +224,8 @@ Recommended default: (a).
 
 RFC-0001 §11.3 defines these types in `syntropy-core`, and §5.13 assigns them to this RFC. They are plain data with invariant checks and serde defaults, so the event log, IPC and the solver can carry them. This RFC adds fields under the RFC-0001 §5 rules and renames nothing.
 
+*Note 2026-10-22 (OQ-PRD-27):* the field types these objects hold that `config` parses (`Reserve`, `Fraction`, the selectors behind `DeviceFilter` and `NodeFilter`, tensor-override patterns, `KeyPath` and `ConfigValue`) have plain-data forms in `core`, so the objects can live there under RFC-0001 §4.2 rule 1. `config` parses text into them and validates it. Patterns are held in `core` as their source text, and `config` keeps the compiled regex.
+
 #### 4.1 `Objective`
 
 RFC-0001 §11.3 defines the type. This RFC adds two optional fields with serde defaults, under the RFC-0001 §5 rules:

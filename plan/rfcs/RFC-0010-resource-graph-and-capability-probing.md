@@ -337,12 +337,14 @@ pub struct GraphDelta {
 | Step | Process | Needs a driver context | Output |
 |---|---|---|---|
 | E1 Host facts: OS, CPU topology and ISA, RAM, NUMA, cgroups, power source, WSL2 or container detection | daemon | no | `NodeInfo`, CPU `DeviceInfo`, host `TierInfo` |
-| E2 GPU inventory from management APIs: NVML, AMD SMI or amdgpu sysfs, DXGI/DXCore, IOKit | daemon | no | provisional GPU `DeviceInfo` with PCI, UUID/LUID, VRAM total and OS budget |
+| E2 GPU inventory from management APIs: NVML, AMD SMI or amdgpu sysfs, DXGI/DXCore, IOKit | probe runner (revised 2026-10-22) | no | provisional GPU `DeviceInfo` with PCI, UUID/LUID, VRAM total and OS budget |
 | E3 Storage volumes for the store and extra tier paths | daemon | no | `Nvme` `TierInfo` with `VolumeInfo` |
 | E4 Network interfaces and RDMA devices | daemon (`net` crate) | no | NIC endpoints; `LinkInfo` records once peers are known |
 | E5 Provider enumeration: `KernelProvider::enumerate` for every provider in the build, then `open` per device | probe runner | yes | `DeviceClass`, `features`, `backends`, context reserve, confirmed VRAM |
 
 The daemon starts E1–E4 at once and spawns the probe runner (`syntropy __runner --probe`) in parallel. The runner's `ProbeResult` is merged with E2 by UUID, LUID or PCI address. A GPU that E2 lists but no provider opens keeps its `DeviceInfo` with `DeviceProblem::NoProvider` or `DriverTooOld`, so `syntropy doctor` can say why it is idle; the solver filters it out.
+
+*Note 2026-10-22 (OQ-PRC-26, RFC-0001 §4.2 rule 8):* E2 runs in the probe runner, not the daemon. Its management APIs load vendor libraries and need `unsafe`, which the daemon may not do (RFC-0001 §4.2 rules 4 and 8). The probe runner calls them through `kernels-loader`, which rule 6 lets load them, and returns the records with its `ProbeResult`; the daemon merges them as above. E1's and E3's system calls that need `unsafe` go in `io`.
 
 Vendor libraries are loaded with `dlopen`/`LoadLibraryExW` from the driver install (`libnvidia-ml.so.1`, `nvml.dll`, `libamd_smi.so`, `libcuda.so.1`, `nvcuda.dll`, `libamdhip64`, the Vulkan loader). A missing library means "no such device", never an error (RFC-0001 §4.2 rule 7).
 
@@ -393,6 +395,8 @@ pub struct RdmaPortInfo { pub nic: u16, pub kind: RdmaKind, pub max_qp: u16, pub
 **Unified-memory devices** (ADR-0014 capacity rules): Apple → one `Unified` tier, `usable = min(recommendedMaxWorkingSetSize, RAM − resource.ram_headroom, available + own − resource.ram_headroom)` (RFC-0020 §5: the third term keeps memory other programs are using out of the budget), affinity {GPU, CPU}, and no `HostPinned` tier. GB10-class → `Unified`, `usable = MemAvailable − 6 GiB`, because `cudaMemGetInfo` undercounts. Strix Halo → `Unified` sized by the GPU-visible heap the driver reports (carve-out plus GTT on Linux, the DXGI budget on Windows), affinity {iGPU, CPU}. When detection is uncertain, the device is modelled as discrete with a measured PCIe term, which is correct and conservative.
 
 **Usable capacity.** Discrete VRAM is confirmed by allocation in the probe runner: reserve address space, then map 256 MiB physical segments until mapping fails or `free − resource.vram_headroom` is reached, then release (CUDA VMM `cuMemCreate`/`cuMemMap`, HIP equivalents, Vulkan `vkAllocateMemory` against the budget). On Windows the probe never allocates past the DXGI local budget, because WDDM over-commits by demoting to system memory instead of failing. Host and unified tiers are not allocation-probed at startup: wiring or locking most of RAM would stall the user's machine (`tiered-memory-inference.md` §10.2). Their `usable` comes from the OS budget and RFC-0020's rule, and is corrected from the first `Loading` that falls short (`Capacity` in `Loading`, RFC-0001 §10.1), with the correction stored in the profile cache.
+
+*Note 2026-10-22 (OQ-HW-13):* in M0a the Windows E2 path is checked on the agent pool's NVIDIA host booted into Windows (QUAL-E15-T16), an untimed host, because R-WIN arrives in M1b. R-WIN takes over from M1b.
 
 
 ### 3. Startup microbenchmark suite

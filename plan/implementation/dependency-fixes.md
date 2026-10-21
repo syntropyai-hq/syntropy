@@ -484,3 +484,8 @@ Four M0 tasks stopped this week on criteria their own dependencies could not sho
 | PROD-E1-T04 gated on OQ-PRD-27 | PROD-E1-T04 | R9 | its `core` types hold field types that are in `config`, and rule 1 forbids that edge |
 | QUAL-E3-T05 gated on OQ-PRC-27 | QUAL-E3-T05 | R9 | P-core-2 and P-core-3 test code that `tier` and `config` build in tasks it doesn't reach |
 | QUAL-E11-T05 marked **Maintainer action** for the AMX cloud instance | QUAL-E11-T05 | R9 | RFC-0061 §6.2 runs AMX on an on-demand cloud instance, and no task provisioned it |
+| The maintainers settled OQ-PRC-26, OQ-HW-13, OQ-IO-27, OQ-IO-28, OQ-IO-29, OQ-MOE-15, OQ-PRD-27 and OQ-PRC-27 on 2026-10-22 with the recommended defaults; every gate on them is dropped | PLC-E1-T03, PLC-E1-T04, PLC-E1-T06, PLC-E1-T14, DIST-E2-T01, TIER-E1-T02, DIST-E1-T01, TIER-E5-T02, TIER-E8-T09, PROD-E1-T04, QUAL-E3-T05 | R9 | each row now names the answer it builds on |
+| PLC-E1-T04 → QUAL-E15-T16 | PLC-E1-T04 | R9 | OQ-HW-13: its Windows check runs on the agent pool's NVIDIA host in M0a |
+| Added TIER-E1-T13 (M0a) → QUAL-E1-T01; TIER-E1-T02, DIST-E1-T03 → TIER-E1-T13 | TIER-E1-T13, TIER-E1-T02, DIST-E1-T03 | R9 | OQ-IO-27: `LedgerGrant` is plain data in `core`; the ledger check and the `Init` message both use it |
+| Added DIST-E1-T12 (M0a) → QUAL-E1-T03; DIST-E1-T01 → DIST-E1-T12; TIER-E5-T02 → DIST-E1-T01 | DIST-E1-T12, DIST-E1-T01, TIER-E5-T02 | R9 | OQ-IO-29: the ring lives in the new layer-1 `spsc` crate, added as `config-derive` was (RFC-0001 §18.8); the I/O thread's rings use it |
+| TIER-E1-T03, PROD-E1-T10 → QUAL-E3-T05 | TIER-E1-T03, PROD-E1-T10, QUAL-E3-T05 | R9 | OQ-PRC-27: they own P-tier-3 and P-config-2, registered in QUAL-E3-T05's property registry |
