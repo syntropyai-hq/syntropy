@@ -7,9 +7,11 @@
 //! - `pr-title`: the title is `type(scope): subject` or `type: subject`, with an allowed type and,
 //!   when there is one, an allowed scope. The acceptance criteria use `feat!: x`, so the scope is
 //!   optional (as in conventional commits), but a scope that is given must be known. A breaking
-//!   marker, `!` in the title or a `BREAKING CHANGE:` footer in the PR body or a commit message,
-//!   needs the `semver-major-approved` label, and the label counts only when a maintainer applied
-//!   it. An agent identity, an App or any other account applying it does not count.
+//!   marker, `!` in the title or in any commit's subject, or a `BREAKING CHANGE:` footer in the
+//!   PR body or a commit message, needs the `semver-major-approved` label. The label counts only
+//!   when a maintainer applied it: an agent identity, an App or any other account applying it
+//!   does not count. A PR of one commit must also have a valid title as that commit's subject,
+//!   because with the squash setting `COMMIT_OR_PR_TITLE` such a PR lands on `main` under it.
 //!
 //! Inputs are the payloads the REST API returns, saved to files:
 //! - the PR: the `pull_request` event payload (`$GITHUB_EVENT_PATH`), or `GET /pulls/{n}`;
@@ -17,7 +19,9 @@
 //! - its label history: `GET /issues/{n}/events`.
 //!
 //! A file may hold several JSON arrays one after another, as `gh api --paginate` prints pages,
-//! and their items are read as one list.
+//! and their items are read as one list. The label history must be recorded with
+//! `gh api --include --paginate`: nothing else shows that its last page was fetched. A commits
+//! list is shown complete by the PR's commit count.
 
 use std::path::Path;
 
@@ -113,7 +117,7 @@ pub fn dco(commits: &[Commit]) -> Vec<String> {
     }
     let mut problems = Vec::new();
     for commit in commits {
-        let short = &commit.sha[..commit.sha.len().min(12)];
+        let short = short(&commit.sha);
         let author = format!("{} <{}>", commit.author_name, commit.author_email);
         let sign_offs = sign_offs(&commit.message);
         if sign_offs.is_empty() {
@@ -218,6 +222,23 @@ pub fn parse_title<'t>(title: &'t str, scopes: &[String]) -> Result<Title<'t>, S
     })
 }
 
+/// `type!:` or `type(scope)!:`: a `!` just before the first `:`.
+pub fn has_breaking_bang(title: &str) -> bool {
+    title
+        .split_once(':')
+        .is_some_and(|(head, _)| head.ends_with('!'))
+}
+
+/// A commit message's first line.
+fn subject(message: &str) -> &str {
+    message.lines().next().unwrap_or("")
+}
+
+/// The first 12 characters of a commit SHA, for messages.
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(12)]
+}
+
 /// A `BREAKING CHANGE:` or `BREAKING-CHANGE:` footer line, as conventional commits define them.
 pub fn has_breaking_footer(text: &str) -> bool {
     text.lines()
@@ -271,27 +292,40 @@ pub fn pr_title(
     scopes: &[String],
 ) -> Vec<String> {
     let mut problems = Vec::new();
-    let title_breaking = match parse_title(&pr.title, scopes) {
-        Ok(title) => title.breaking,
-        Err(problem) => {
-            problems.push(problem);
-            // Still look for a breaking marker, so a malformed title cannot hide one.
-            pr.title
-                .split_once(':')
-                .is_some_and(|(head, _)| head.ends_with('!'))
-        }
-    };
+    if let Err(problem) = parse_title(&pr.title, scopes) {
+        problems.push(problem);
+    }
+    // With the squash title setting `COMMIT_OR_PR_TITLE`, a PR of one commit lands on `main`
+    // under that commit's subject, not the PR title, so the subject must pass as a title too.
+    if let [only] = commits
+        && let Err(problem) = parse_title(subject(&only.message), scopes)
+    {
+        problems.push(format!(
+            "the PR's only commit, {}, lands on `main` under its own subject, so the subject \
+             must follow the title rule too: {problem}",
+            short(&only.sha)
+        ));
+    }
     let mut markers = Vec::new();
-    if title_breaking {
+    // A malformed title or subject is still read for a marker, so it cannot hide one.
+    if has_breaking_bang(&pr.title) {
         markers.push("`!` in the title".to_owned());
     }
     if has_breaking_footer(&pr.body) {
         markers.push("a `BREAKING CHANGE:` footer in the PR body".to_owned());
     }
     for commit in commits {
+        if has_breaking_bang(subject(&commit.message)) {
+            markers.push(format!(
+                "`!` in the subject of commit {}",
+                short(&commit.sha)
+            ));
+        }
         if has_breaking_footer(&commit.message) {
-            let short = &commit.sha[..commit.sha.len().min(12)];
-            markers.push(format!("a `BREAKING CHANGE:` footer in commit {short}"));
+            markers.push(format!(
+                "a `BREAKING CHANGE:` footer in commit {}",
+                short(&commit.sha)
+            ));
         }
     }
     if !markers.is_empty()
@@ -325,6 +359,95 @@ pub fn scopes(root: &Path) -> Result<Vec<String>, String> {
 }
 
 // ---- reading payloads ----
+
+/// One HTTP response that `gh api --include` recorded: its status, whether its `Link` header
+/// points to a next page, and its body.
+struct Page {
+    status: u16,
+    next: bool,
+    body: String,
+}
+
+/// The pages of a file `gh api --include` wrote, or `None` for a file of bare JSON. Each page is
+/// an `HTTP/` status line, headers, a blank line and the body.
+fn recorded_pages(text: &str, what: &str) -> Result<Option<Vec<Page>>, String> {
+    if !text.trim_start().starts_with("HTTP/") {
+        return Ok(None);
+    }
+    let mut pages = Vec::new();
+    let mut lines = text
+        .lines()
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .peekable();
+    while let Some(status_line) = lines.next() {
+        if status_line.trim().is_empty() {
+            continue;
+        }
+        let number = pages.len() + 1;
+        let status = status_line
+            .strip_prefix("HTTP/")
+            .and_then(|rest| rest.split_whitespace().nth(1))
+            .and_then(|code| code.parse::<u16>().ok())
+            .ok_or_else(|| format!("{what}: page {number} has no readable `HTTP/` status line"))?;
+        let mut next = false;
+        loop {
+            match lines.next() {
+                None => return Err(format!("{what}: page {number} ends inside its headers")),
+                Some("") => break,
+                Some(header) => {
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.trim().eq_ignore_ascii_case("link")
+                    {
+                        next = value.split(',').any(|link| link.contains("rel=\"next\""));
+                    }
+                }
+            }
+        }
+        let mut body = String::new();
+        while let Some(line) = lines.next_if(|line| !line.starts_with("HTTP/")) {
+            body.push_str(line);
+            body.push('\n');
+        }
+        pages.push(Page { status, next, body });
+    }
+    Ok(Some(pages))
+}
+
+/// The items of a list endpoint's response. A recorded file must show every page: each one a
+/// success, the last with no `rel="next"`. `require_recorded` refuses bare JSON, for a list whose
+/// completeness nothing else can show.
+fn list_items(text: &str, what: &str, require_recorded: bool) -> Result<Vec<Value>, String> {
+    let Some(pages) = recorded_pages(text, what)? else {
+        if require_recorded {
+            return Err(format!(
+                "{what}: record the list with `gh api --include --paginate`, so the check can \
+                 see that its last page was fetched"
+            ));
+        }
+        return array_items(text, what);
+    };
+    let Some(last) = pages.last() else {
+        return Err(format!("{what}: no pages"));
+    };
+    if last.next {
+        return Err(format!(
+            "{what}: the last recorded page links to a next one (`rel=\"next\"`), so the list \
+             is incomplete; fetch every page with `--paginate`"
+        ));
+    }
+    let mut items = Vec::new();
+    for (i, page) in pages.iter().enumerate() {
+        if !(200..300).contains(&page.status) {
+            return Err(format!(
+                "{what}: page {} has HTTP status {}",
+                i + 1,
+                page.status
+            ));
+        }
+        items.extend(array_items(&page.body, what)?);
+    }
+    Ok(items)
+}
 
 /// The items of every JSON array in `text`, in order. A file may hold several arrays, one per
 /// page, as `gh api --paginate` prints them.
@@ -367,8 +490,9 @@ fn string_at<'v>(value: &'v Value, path: &str, what: &str) -> Result<&'v str, St
         .ok_or_else(|| format!("{what}: `{path}` is {}, not a string", kind_of(at)))
 }
 
+/// A commits list, bare or recorded with `--include`. `check_commit_count` shows it complete.
 pub fn parse_commits(text: &str) -> Result<Vec<Commit>, String> {
-    array_items(text, "commits")?
+    list_items(text, "commits", false)?
         .iter()
         .enumerate()
         .map(|(i, item)| {
@@ -416,7 +540,9 @@ pub fn parse_pull_request(text: &str) -> Result<PullRequest, String> {
 /// The `labeled` and `unlabeled` events of `GET /issues/{n}/events`; other events are skipped.
 pub fn parse_label_events(text: &str) -> Result<Vec<LabelEvent>, String> {
     let mut events = Vec::new();
-    for (i, item) in array_items(text, "label events")?.iter().enumerate() {
+    // Nothing counts a PR's events, so only the recorded `Link` headers can show the history
+    // complete; a truncated history could otherwise end on an earlier maintainer's label.
+    for (i, item) in list_items(text, "label events", true)?.iter().enumerate() {
         let what = format!("label events[{i}]");
         let applied = match string_at(item, "event", &what)? {
             "labeled" => true,

@@ -26,6 +26,11 @@ fn scopes() -> Vec<String> {
         .into()
 }
 
+/// `body` as `gh api --include` records a single, last page.
+fn recorded(body: &str) -> String {
+    format!("HTTP/2.0 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\r\n{body}\n")
+}
+
 fn commits(text: &str) -> Vec<Commit> {
     parse_commits(text).unwrap()
 }
@@ -272,7 +277,7 @@ fn a_plain_title_passes_without_any_label() {
     let problems = title_problems(
         fixture!("event-plain.json"),
         fixture!("commits-signed-off.json"),
-        fixture!("label-events-none.json"),
+        fixture!("label-events-none.http"),
     );
     assert_eq!(problems, Vec::<String>::new());
 }
@@ -282,7 +287,7 @@ fn a_breaking_title_without_the_label_fails() {
     let problems = title_problems(
         fixture!("event-breaking-unlabelled.json"),
         fixture!("commits-signed-off.json"),
-        fixture!("label-events-none.json"),
+        fixture!("label-events-none.http"),
     );
     assert_eq!(
         problems,
@@ -298,7 +303,7 @@ fn the_same_title_with_a_maintainer_applied_label_passes() {
     let problems = title_problems(
         fixture!("event-breaking-labelled.json"),
         fixture!("commits-signed-off.json"),
-        fixture!("label-events-maintainer.json"),
+        fixture!("label-events-maintainer.http"),
     );
     assert_eq!(problems, Vec::<String>::new());
 }
@@ -307,23 +312,23 @@ fn the_same_title_with_a_maintainer_applied_label_passes() {
 fn a_label_applied_by_anyone_but_a_maintainer_does_not_count() {
     for (events, wanted) in [
         (
-            fixture!("label-events-agent.json"),
+            fixture!("label-events-agent.http"),
             "applied by `project-review-agent`, an agent identity",
         ),
         (
-            fixture!("label-events-app.json"),
+            fixture!("label-events-app.http"),
             "applied by `project-agent[bot]` through a GitHub App",
         ),
         (
-            fixture!("label-events-contributor.json"),
+            fixture!("label-events-contributor.http"),
             "applied by `carol`, who is not a maintainer",
         ),
         (
-            fixture!("label-events-reapplied-by-agent.json"),
+            fixture!("label-events-reapplied-by-agent.http"),
             "applied by `project-review-agent`, an agent identity",
         ),
         (
-            fixture!("label-events-none.json"),
+            fixture!("label-events-none.http"),
             "has no event applying `semver-major-approved`",
         ),
     ] {
@@ -338,11 +343,116 @@ fn a_label_applied_by_anyone_but_a_maintainer_does_not_count() {
 }
 
 #[test]
+fn a_breaking_commit_subject_needs_the_label() {
+    // The review's probe: a plain, unlabelled PR whose commit subject carries `!`.
+    let problems = title_problems(
+        fixture!("event-plain.json"),
+        fixture!("commits-one-breaking-subject.json"),
+        fixture!("label-events-none.http"),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("marked breaking (`!` in the subject of commit 111111111111)"),
+        "{problems:?}"
+    );
+    // The same subject among several commits is a marker too.
+    let mut several = commits(fixture!("commits-signed-off.json"));
+    several.extend(commits(fixture!("commits-one-breaking-subject.json")));
+    let problems = pr_title(
+        &parse_pull_request(fixture!("event-plain.json")).unwrap(),
+        &several,
+        &parse_label_events(fixture!("label-events-none.http")).unwrap(),
+        &roster(),
+        &scopes(),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("`!` in the subject of commit 111111111111"));
+    // With a maintainer's label, it passes.
+    let problems = title_problems(
+        fixture!("event-breaking-labelled.json"),
+        fixture!("commits-one-breaking-subject.json"),
+        fixture!("label-events-maintainer.http"),
+    );
+    assert_eq!(problems, Vec::<String>::new());
+}
+
+#[test]
+fn a_single_commit_subject_must_be_a_valid_title() {
+    let problems = title_problems(
+        fixture!("event-one-commit.json"),
+        fixture!("commits-one-bad-subject.json"),
+        fixture!("label-events-none.http"),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].starts_with(
+            "the PR's only commit, 222222222222, lands on `main` under its own subject"
+        ),
+        "{problems:?}"
+    );
+    // With more than one commit the PR title is what lands, so a loose subject passes.
+    let mut several = commits(fixture!("commits-signed-off.json"));
+    several.extend(commits(fixture!("commits-one-bad-subject.json")));
+    let problems = pr_title(
+        &parse_pull_request(fixture!("event-plain.json")).unwrap(),
+        &several,
+        &[],
+        &roster(),
+        &scopes(),
+    );
+    assert_eq!(problems, Vec::<String>::new());
+}
+
+#[test]
+fn a_truncated_label_history_fails_closed() {
+    // The review's second probe: the reapplied-by-agent history cut to its first page, which
+    // ends on the maintainer's `labeled`, as an unpaginated fetch would leave it.
+    let error = parse_label_events(fixture!("label-events-truncated.http")).unwrap_err();
+    assert!(error.contains("links to a next one"), "{error}");
+    // The full history, over two recorded pages, reads every event.
+    let events = parse_label_events(fixture!("label-events-reapplied-by-agent.http")).unwrap();
+    assert_eq!(events.len(), 3);
+}
+
+#[test]
+fn a_label_history_must_be_recorded_with_its_headers() {
+    let error = parse_label_events("[]").unwrap_err();
+    assert!(
+        error.contains("record the list with `gh api --include --paginate`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn recorded_pages_read_crlf_headers_and_every_page() {
+    let two_pages = "HTTP/2.0 200 OK\r\nLink: <https://x/?page=2>; rel=\"next\"\r\n\r\n[1, 2]\n\
+                     HTTP/2.0 200 OK\r\nLink: <https://x/?page=1>; rel=\"prev\"\r\n\r\n[3]\n";
+    let items = list_items(two_pages, "list", true).unwrap();
+    assert_eq!(items.len(), 3);
+    let failed = "HTTP/2.0 404 Not Found\r\n\r\n{\"message\": \"Not Found\"}\n";
+    let error = list_items(failed, "list", true).unwrap_err();
+    assert!(error.contains("page 1 has HTTP status 404"), "{error}");
+    let cut = "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n";
+    let error = list_items(cut, "list", true).unwrap_err();
+    assert!(error.contains("ends inside its headers"), "{error}");
+}
+
+#[test]
+fn a_recorded_commits_list_must_be_complete_too() {
+    let body = fixture!("commits-signed-off.json");
+    assert_eq!(commits(&recorded(body)).len(), 3);
+    let truncated =
+        format!("HTTP/2.0 200 OK\r\nLink: <https://x/?page=2>; rel=\"next\"\r\n\r\n{body}\n");
+    let error = parse_commits(&truncated).unwrap_err();
+    assert!(error.contains("links to a next one"), "{error}");
+}
+
+#[test]
 fn an_app_account_without_the_app_field_is_still_an_agent() {
-    let events = parse_label_events(
+    let events = parse_label_events(&recorded(
         r#"[{"event": "labeled", "label": {"name": "semver-major-approved"},
              "actor": {"login": "renovate[bot]"}, "created_at": "2026-10-21T09:00:00Z"}]"#,
-    )
+    ))
     .unwrap();
     let labels = vec![BREAKING_LABEL.to_owned()];
     let why = applied_by_maintainer(BREAKING_LABEL, &labels, &events, &roster()).unwrap_err();
@@ -355,14 +465,14 @@ fn a_breaking_footer_needs_the_label_too() {
     let problems = title_problems(
         fixture!("event-footer-labelled.json"),
         fixture!("commits-signed-off.json"),
-        fixture!("label-events-maintainer.json"),
+        fixture!("label-events-maintainer.http"),
     );
     assert_eq!(problems, Vec::<String>::new());
     // In the body, with an agent's label: fails and names the footer.
     let problems = title_problems(
         fixture!("event-footer-labelled.json"),
         fixture!("commits-signed-off.json"),
-        fixture!("label-events-agent.json"),
+        fixture!("label-events-agent.http"),
     );
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("a `BREAKING CHANGE:` footer in the PR body"));
@@ -373,7 +483,7 @@ fn a_breaking_footer_needs_the_label_too() {
     let problems = title_problems(
         fixture!("event-plain.json"),
         commit,
-        fixture!("label-events-none.json"),
+        fixture!("label-events-none.http"),
     );
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
@@ -389,7 +499,7 @@ fn a_malformed_breaking_title_still_needs_the_label() {
     let problems = title_problems(
         event,
         fixture!("commits-signed-off.json"),
-        fixture!("label-events-none.json"),
+        fixture!("label-events-none.http"),
     );
     assert_eq!(problems.len(), 2, "{problems:?}");
     assert!(problems[0].contains("`wip` is not an allowed type"));
@@ -399,14 +509,14 @@ fn a_malformed_breaking_title_still_needs_the_label() {
 #[test]
 fn the_label_history_is_replayed_in_time_order() {
     // Out of order on input: the removal is the latest event, so the label does not count.
-    let events = parse_label_events(
+    let events = parse_label_events(&recorded(
         r#"[
         {"event": "unlabeled", "label": {"name": "semver-major-approved"},
          "actor": {"login": "alice"}, "created_at": "2026-10-21T10:00:00Z"},
         {"event": "labeled", "label": {"name": "semver-major-approved"},
          "actor": {"login": "alice"}, "created_at": "2026-10-21T09:00:00Z"}
     ]"#,
-    )
+    ))
     .unwrap();
     let labels = vec![BREAKING_LABEL.to_owned()];
     let why = applied_by_maintainer(BREAKING_LABEL, &labels, &events, &roster()).unwrap_err();
@@ -418,11 +528,11 @@ fn the_label_history_is_replayed_in_time_order() {
 
 #[test]
 fn other_labels_and_events_do_not_count() {
-    let events = parse_label_events(
+    let events = parse_label_events(&recorded(
         r#"[{"event": "labeled", "label": {"name": "maintainer-approval"},
              "actor": {"login": "alice"}, "created_at": "2026-10-21T09:00:00Z"},
             {"event": "assigned", "actor": {"login": "alice"}, "created_at": "2026-10-21T09:00:00Z"}]"#,
-    )
+    ))
     .unwrap();
     assert_eq!(events.len(), 1);
     let labels = vec![BREAKING_LABEL.to_owned()];
