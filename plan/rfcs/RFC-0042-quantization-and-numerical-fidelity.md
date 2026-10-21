@@ -4,7 +4,7 @@
 - Area: compute and models
 - Depends on: RFC-0001 (§2.3 invariant 8, §5.1, §5.4, §5.8, §10.2), RFC-0012, RFC-0022, RFC-0031, RFC-0032, RFC-0040, RFC-0041, RFC-0043, RFC-0050, RFC-0051, RFC-0054, RFC-0060, RFC-0061; ADR-0000 (D3), ADR-0002, ADR-0005, ADR-0010, ADR-0014, ADR-0017, ADR-0019, ADR-0601; ADR-0420 to ADR-0422
 - Date: 2026-10-19
-- Revised: 2026-10-20: the model-definition oracle (§7.1); the calibration budget with attention counted and the GPU calibration reference (§6.2); certified context length (§5.7); per-model knobs only (§10); cross-device identity not promised (Non-goals); open question 7 answered
+- Revised: 2026-10-20: the model-definition oracle (§7.1); the calibration budget with attention counted and the GPU calibration reference (§6.2); certified context length (§5.7); per-model knobs only (§10); cross-device identity not promised (Non-goals); open question 7 answered. 2026-10-21: the class order, scheme identity, unlisted plain types and undefined values in a model's class (§1.2); open question 8
 
 ## Summary
 
@@ -76,7 +76,7 @@ pub enum ActQuant { None, Bf16, Q8Block32, Q8K256, Fp8Dynamic { group: u16 }, Mx
 
 #### 1.2 Dtype classes
 
-ADR-0019 sets tolerances per dtype class. Every scheme maps to exactly one class:
+ADR-0019 sets tolerances per dtype class. Every scheme maps to exactly one class. The table lists the classes from the highest precision to the lowest, in ADR-0019 decision 3's order, and every comparison between classes uses that order: `Float16`, `Fp8`, `Int8`, `Bits4`, `Sub4`.
 
 | Class | Schemes |
 |---|---|
@@ -88,7 +88,9 @@ ADR-0019 sets tolerances per dtype class. Every scheme maps to exactly one class
 
 ADR-0019 names "4-bit integer and FP4 families" as one class. Five- and six-bit types join it here, because they round at the same order of error and nothing calibrated separates them yet (Open questions).
 
-**A model's class** is the class of the lowest-precision scheme that carries at least 10 % of the model's batch-1 `read_per_token` bytes (RFC-0041 §3.1). A Kimi-K2-Thinking-class checkpoint (INT4 routed experts, BF16 hot set) is therefore `Bits4`; a GGUF whose bulk is Q4_K with a Q6_K output head is `Bits4`.
+`Plain` types the table does not list take their class from their element format and width, because RFC-0041 §2.2 reads any tensor without a quantisation config as `Plain(dtype)`: `F64`, `I16`, `I32` and `I64` are `Float16`; `F8E4M3` and `F8E5M2` are `Fp8`; `I8` and `U8` are `Int8`; `F4E2M1`, `F6E2M3` and `F6E3M2` are `Bits4`. Three kinds of value have no class: `Plain(F8E8M0)`, because E8M0 is a scale format that RFC-0041 §2.2 binds to its weight as an auxiliary extent; an `Fp8 { format }` other than E4M3 or E5M2 (§2.3); and a `PackedInt { bits }` other than 4 or 8 (§2.4).
+
+**A model's class** is the class of the lowest-precision scheme that carries at least 10 % of the model's batch-1 `read_per_token` bytes (RFC-0041 §3.1). A Kimi-K2-Thinking-class checkpoint (INT4 routed experts, BF16 hot set) is therefore `Bits4`; a GGUF whose bulk is Q4_K with a Q6_K output head is `Bits4`. Each distinct `QuantScheme` value is its own scheme, block or group size included: `PackedInt { bits: 4, group: 32, .. }` and `PackedInt { bits: 4, group: 128, .. }` are two schemes, and each must reach 10 % on its own. The bytes of every tensor group with the same scheme are summed first, and the 10 % applies to that sum, never to one group or to a whole class. A census that holds a scheme with no class fails, whatever that scheme's share. When no scheme reaches 10 %, which takes at least eleven distinct schemes, the class is undefined and the census fails too (open question 8).
 
 ### 2. Schemes and their exact dequantisation
 
@@ -739,6 +741,7 @@ All figures are **estimates** or **targets** with derivations; none is a Syntrop
 
 6. ~~Reference cost on 1T-class models~~ **Resolved:** 1T-class models are never calibration models (§6.2's budget rule). They are judged against the class ceilings by RFC-0060 §5.7, whose layer-sampled runs stay inside its 48 h rule.
 7. ~~Op-level inputs~~ **Answered (2026-10-20; OQ-FID-13):** keep both kinds of input. Op cases use random inputs scaled by recorded activation statistics and replay recorded real activations from fixture models, because random inputs may miss real outliers.
+8. **A model with no scheme at 10 %.** §1.2 defines a model's class through a scheme that carries at least 10 % of `read_per_token`. A model with at least eleven distinct schemes, such as a GGUF that mixes many block types, can have none. The options are the class of the scheme carrying the most bytes, with ties going to the lower class; the lowest class present; or the lowest class whose schemes together carry 10 %. The recommended default is the first, because it is the class of what the model mostly reads. The maintainers decide (OQ-FID-23). Until then the census fails closed: `DTypeClass::of_model` returns `NoSchemeAtThreshold`.
 
 ## Proposed amendments to RFC-0001
 

@@ -172,7 +172,7 @@ pub struct CensusSummary {
     pub version: u16,                       // schema version; consumers accept current and previous
     pub model: Option<ModelId>,             // None for a catalogue variant that is not yet registered
     pub family: FamilyTag,                  // RFC-0043 §5.1's frozen tag
-    pub dtype_class: DtypeClass,            // the model's class (RFC-0042 §1.2)
+    pub dtype_class: DTypeClass,            // the model's class (RFC-0042 §1.2)
     pub n_layers: u32, pub hidden: u32, pub vocab: u32, pub residual_streams: u8, pub max_context: u32,
     pub layers: Vec<LayerSummary>,          // decoder layers in order, then MTP layers
     pub lookups: Vec<LookupSummary>,        // one per RowLookup table

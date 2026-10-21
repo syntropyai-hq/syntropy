@@ -2,6 +2,14 @@
 
 //! Identifiers, units, plan types, policy objects and the pure functions over them.
 //!
-//! Stub: layer 0 in RFC-0001 §4.1, designed in RFC-0001 §5. Nothing is implemented yet.
+//! Layer 0 in RFC-0001 §4.1, designed in RFC-0001 §5.
 
 #![forbid(unsafe_code)]
+
+pub mod dtype;
+pub mod numerics;
+pub mod quant;
+
+pub use dtype::{DType, GgmlType};
+pub use numerics::{AccumKind, ActQuant, Numerics};
+pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
