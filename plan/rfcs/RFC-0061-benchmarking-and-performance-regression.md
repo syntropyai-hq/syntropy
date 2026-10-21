@@ -332,7 +332,7 @@ The table is generated from `bench/sc-map.toml` (revised 2026-10-22). To change 
 | SC-27 | RFC-0060 chaos F-03 | lab; sim | failed in-flight requests | 0 | not a scenario file; QUAL-E13-T06 |
 | SC-28 | RFC-0060 chaos F-01, F-02 with timing | lab | resume time against the RFC-0033 formula | within the formula; no client-visible error | not a scenario file; QUAL-E13-T07 |
 | SC-29 | RFC-0060 parity, every release | Tier 1 | parity verdicts | all pass; approximate settings visible in API, CLI and dashboard | not a scenario file; QUAL-E5-T10 |
-| SC-30 | every `decode.single.*`, `pipeline.*`, `tiered.*` scenario | reference rigs | `|t_pred − t_meas| / t_meas` | ≤ 0.15 | pending; QUAL-E13-T05 |
+| SC-30 | every `decode.single.*`, `pipeline.*`, `tiered.*` scenario | reference rigs | `\|t_pred − t_meas\| / t_meas` | ≤ 0.15 | pending; QUAL-E13-T05 |
 | SC-31 | `solver.regress.*` (§9) | any CPU host | slow-solve time (≤ 8 nodes), routing time, DP feasibility | ≤ 2 s; ≤ 1 ms; feasible whenever one exists | pending; QUAL-E13-T05, QUAL-E13-T15 |
 | SC-32 | the release gate (§8.4); publishing rules (§11) | Tier 1 rigs | per-scenario deltas against the previous release | no reference benchmark outside its noise band; every published number fully keyed | not a scenario file; QUAL-E14-T05 |
 <!-- END GENERATED -->

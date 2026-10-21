@@ -143,9 +143,9 @@ pub fn check(rows: &[Row], vision: &[u32], tasks: &BTreeSet<String>) -> Vec<Stri
         ] {
             if text.trim().is_empty() {
                 problems.push(format!("{}: `{cell}` is empty", row.id));
-            } else if text.contains('\n') || text.contains(" | ") {
+            } else if text.contains('\n') {
                 problems.push(format!(
-                    "{}: `{cell}` must be one line with no ` | `, so it fits a table cell",
+                    "{}: `{cell}` must be one line, so it fits a table cell",
                     row.id
                 ));
             }
@@ -216,17 +216,19 @@ pub fn status(row: &Row, scenario_ids: &[String]) -> String {
     }
 }
 
-/// RFC-0061 §4.2's table, from the map and the scenario files that exist.
+/// RFC-0061 §4.2's table, from the map and the scenario files that exist. A `|` in a cell is
+/// written `\|`, which a Markdown table reads as a literal `|`, inside a code span too.
 pub fn render(rows: &[Row], scenario_ids: &[String]) -> String {
+    let cell = |text: &str| text.replace('|', "\\|");
     let mut table = String::from(HEADER);
     for row in rows {
         table.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} |\n",
             row.id,
-            row.scenarios,
-            row.rigs,
-            row.measured,
-            row.pass,
+            cell(&row.scenarios),
+            cell(&row.rigs),
+            cell(&row.measured),
+            cell(&row.pass),
             status(row, scenario_ids)
         ));
     }
@@ -304,7 +306,7 @@ mod tests {
         let mut bad = row(1);
         bad.owners = vec![String::from("QUAL-E99-T01")];
         bad.pass = String::new();
-        bad.rigs = String::from("a | b");
+        bad.rigs = String::from("a\nb");
         bad.patterns = vec![String::from("Decode.x"), String::from("Decode.x")];
         let problems = check(&[bad], &[1], &tasks());
         for want in [
@@ -375,6 +377,18 @@ mod tests {
         assert_eq!(section(&new), Some(table.as_str()));
         assert!(new.starts_with("intro\n") && new.ends_with(&format!("{END}\noutro\n")));
         assert_eq!(section("no markers"), None);
+    }
+
+    #[test]
+    fn a_pipe_in_a_cell_is_escaped() {
+        let mut r = row(1);
+        r.measured = String::from("`|t_pred − t_meas| / t_meas`");
+        assert!(check(std::slice::from_ref(&r), &[1], &tasks()).is_empty());
+        let table = render(&[r], &[]);
+        assert!(
+            table.contains("| `\\|t_pred − t_meas\\| / t_meas` |"),
+            "{table}"
+        );
     }
 
     #[test]
