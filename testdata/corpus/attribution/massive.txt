@@ -1,0 +1,31 @@
+MASSIVE 1.1
+
+Copyright Amazon.com, Inc. or its affiliates.
+Creators: Jack FitzGerald, Christopher Hench, Charith Peris, Scott Mackie,
+Kay Rottmann, Ana Sanchez, Aaron Nash, Liam Urbach, Vishesh Kakarala,
+Richa Singh, Swetha Ranganath, Laurie Crist, Misha Britan, Wouter Leeuwis,
+Gokhan Tur and Prem Natarajan.
+
+Source: https://amazon-massive-nlu-dataset.s3.amazonaws.com/amazon-massive-dataset-1.1.tar.gz
+Notice: https://github.com/alexa/massive/blob/f966f21846043aabef9b0f974fa7970027f43738/NOTICE.md
+
+Licence: Creative Commons Attribution 4.0 International (CC BY 4.0),
+https://creativecommons.org/licenses/by/4.0/
+The licensor provides the material as is and makes no warranties about it.
+
+MASSIVE localizes the English text of SLURP:
+  SLURP: A Spoken Language Understanding Resource Package, by
+  Emanuele Bastianelli, Andrea Vanzo, Pawel Swietojanski and Verena Rieser.
+  Source: https://github.com/pswietojanski/slurp/tree/8eb16545762be97ace75334109d73824217311f1
+  SLURP's text is licensed under CC BY 4.0,
+  https://creativecommons.org/licenses/by/4.0/
+  (SLURP's audio is under CC BY-NC 4.0 and is not used.)
+
+Changes: Syntropy's parity corpus (parity-corpus-v1 and later) uses the
+utterance text of selected locales. Consecutive utterances of one locale are
+joined with newlines into one item, and each item is tokenized per model
+tokenizer. The utterance text is otherwise unchanged.
+
+Paper: FitzGerald et al., "MASSIVE: A 1M-Example Multilingual Natural Language
+Understanding Dataset with 51 Typologically-Diverse Languages", 2022,
+arXiv:2204.08582.

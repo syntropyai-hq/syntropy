@@ -490,6 +490,19 @@ Each sequence also has **decode segments**: ranges of scored positions evaluated
 
 A corpus version is frozen once published. A change creates vN+1, and the baseline spread and the RFC-0042 ceilings are recomputed for it (ADR-0601).
 
+The sources are listed in `testdata/corpus/SOURCES.toml` (QUAL-E5-T01, 2026-10-21). Each entry has its pinned revision, file hashes, licence, the licence file read at that revision, and the selection rule QUAL-E5-T02 implements. CC-BY sources have their attribution files in `testdata/corpus/attribution/`. Code and template repositories are pinned to their last commit before 2021-06-01, so their text predates public hosted code-generation services. Every category has a primary source:
+
+| Category | Primary | Secondary |
+|---|---|---|
+| `chat` | OpenAssistant Conversations 2 (Apache-2.0), messages not marked synthetic | Taskmaster-1 (CC BY 4.0, 2019) |
+| `code` | ten repositories in ten languages: Rust, C (public domain), Go, Python, Java, C++, TypeScript, JavaScript, Ruby, C#; each under MIT, BSD-3-Clause, Apache-2.0 or public domain | — |
+| `long` | PG-19 test and validation books (Apache-2.0; public-domain texts) | — |
+| `tool` | project frames over schemas and instances from the JSON Schema Test Suite (MIT) | tool names and descriptions from public-apis (MIT) |
+| `multi` | Aya Dataset original annotations (Apache-2.0) | MASSIVE 1.1 (CC BY 4.0, 2022); OpenAssistant Conversations 2, non-English |
+| `stress` | generated per tokenizer by the project | — |
+
+The `chat` and `multi` primaries were crowd-written in 2023 and rely on contributor rules against pasting hosted-service output. Each of those categories also has a secondary written before hosted chat services were public (Taskmaster-1 in 2019, MASSIVE released in April 2022), so either primary can be dropped without leaving its category empty.
+
 #### 5.3 Reference blocks
 
 Storing full-vocabulary logits is too large: 152K vocabulary × 4 B = 608 KB per position, or ≈ 30 GB for one `standard` run of 49,152 scored positions [estimate]. The reference therefore stores a **RefBlock** per scored position. Every value that a later subtraction could cancel is stored in F64.
@@ -1486,7 +1499,7 @@ Milestones follow RFC-0001 §16 (M0–M4).
 1. **F_ref, the reference executor's sustained F32 throughput** on the lab CPU host, assumed 100–200 GFLOPS, and now also on the GPU reference (§4.1). It sets which models need sampled layers (§5.7) and, since the calibration reference moved to a GPU, how large R-LABCPU must be. Spike in M0, on a candidate host before R-LABCPU is sized: run `RefExecutor` on Qwen3-0.6B-class and 8B-class fixtures in both modes and measure (QUAL-E5-T08).
 2. **K for RefBlocks.** Is K = 256 enough for `KL_K` to be within 1% of exact KL on large-vocabulary models with flat tails? Settled by the M0 tightness check (§5.4).
 3. **The per-category factor** (3× its category baseline) and τ_tie = 0.05 nats are starting defaults. Calibrate on the M0 families and record the result in ADR-0601.
-4. **Corpus sourcing.** *Answered (OQ-FID-17).* The licence list and exclusions are in §5.2; the `tool` category is template-generated under CC0 or MIT. QUAL-E5-T01 picks the sources and verifies each at its pinned revision.
+4. **Corpus sourcing.** *Answered (OQ-FID-17).* The licence list and exclusions are in §5.2; the `tool` category is template-generated under CC0 or MIT. QUAL-E5-T01 picked the sources and verified each at its pinned revision on 2026-10-21: `testdata/corpus/SOURCES.toml`, summarised in §5.2.
 5. **Real-checkpoint roster** (§12.2). *Answered (OQ-MF-04).* The licence rule and the picks are in §12.2, including GLM-4.7-Flash for the GLM class; each pick, and the Qwen-hybrid checkpoint, is confirmed as a desk check in QUAL-E7-T06.
 6. **Ceiling floors φ.** Will any dtype class need a non-zero floor (ADR-0019's revisit clause) once tensor-core kernels are measured against a spread that may be near zero for 8-bit and BF16? Settled by RFC-0042's M0 calibration.
 7. **GPU fault injection on real hardware.** *Answered (OQ-PRC-08).* Yes, without a vendor facility: a test-only kernel, built only with the `fault-injection` feature, raises a sticky error on the real driver path. Hardware Xid faults stay on provider fault points. QUAL-E9-T10 is a 1-day confirmation on R-ADA in M1.
