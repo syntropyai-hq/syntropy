@@ -493,7 +493,9 @@ class HookTest(unittest.TestCase):
         # Commit only the planted script: the hooks under test stay uncommitted in the clone.
         self.git_in(clone, "add", "plan/implementation/tools/naming_check.py")
         self.git_in(clone, "commit", "-q", "-m", "plant")
-        self.git_in(clone, "switch", "-q", "-")
+        # Back to where the clone started. `git switch -` refuses to return to a detached HEAD,
+        # which is how a pull request's merge ref is checked out; `git checkout -` does not.
+        self.git_in(clone, "checkout", "-q", "-")
         worktree = self.dir / "linked"
         self.git_in(clone, "worktree", "add", "-q", str(worktree), "untrusted")
         (worktree / "new.md").write_text("clean\n", encoding="utf-8")
