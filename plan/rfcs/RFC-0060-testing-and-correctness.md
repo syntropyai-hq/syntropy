@@ -5,7 +5,7 @@
 - Depends on: RFC-0001; ADR-0002, ADR-0003, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0017, ADR-0019, ADR-0020; ADR-0600, ADR-0601, ADR-0602, ADR-0603
 - Expanded by: RFC-0042 (tolerance tables), RFC-0043 (per-family fixtures and boundaries), RFC-0033 (recovery expectations for chaos scenarios), RFC-0062 (where and when each suite runs)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2)
+- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9)
 
 ## Summary
 
@@ -104,7 +104,7 @@ Every CI job calls an `xtask` entry point, so every suite runs locally with the 
 
 | Profile | Cargo features | Used by |
 |---|---|---|
-| `test` | `fault-injection`, `debug-taps`, `guards`; debug assertions on | L1–L3, L6 |
+| `dev` | `fault-injection`, `debug-taps`, `guards`; debug assertions on | L1–L3, L6 |
 | `test-release` | release optimisation, `fault-injection`, `debug-taps`, `guards`; debug assertions on | L4, L5 diagnosis and guard runs, L7 |
 | `chaos` | release optimisation, `fault-injection` | L8 in the lab |
 | `release` | neither test feature | shipping artefacts, every RFC-0061 measurement, and the gating parity runs of every RC |
@@ -113,6 +113,7 @@ Every CI job calls an `xtask` entry point, so every suite runs locally with the 
 - `debug-taps` compiles intra-layer diagnostic tap points into step programs, for bisection (§5.6).
 - `guards` compiles the hot-path guards (§3.5): lock and driver-call counters in the hot crates, and the counting allocator as the runner binary's global allocator. A cargo feature is used, not `cfg(test)`, because `cfg(test)` is set only while a crate's own unit tests compile, never when it is a dependency of the runner binary that L5 runs on real hardware.
 - A release build containing any of these features fails the L0 check.
+- *Renamed 2026-10-22 (#1556):* the first row was called `test`. It is cargo's `dev` profile, the name RFC-0062 §4.4 and `cargo xtask build --profile dev` use.
 
 The teacher-forced logit tap (§5.5) is not a cargo feature. It ships in every build, because the warm-up canary already drives the same teacher-forced path in production (RFC-0001 §3.3). Runtime gating protects it: the node key `debug.parity_api` defaults to `false`, and the endpoint answers only on loopback binds. So release-candidate parity runs on the exact signed artefacts that will ship, not on a rebuild. Layer-output and stage-boundary taps (RFC-0040's `HiddenTap` parity variant), including the KV-prefix export `RefExecutor::layer_local` needs (§5.7), also ship in every build behind `debug.parity_api`. The runner builds them as a separate step-program variant, and only for a parity sequence that requests taps. The production step program is unchanged: with the gate off, captured-graph hashes match a build compiled without the tap variant, which the L5 suite checks. Parity runs that must match the shipping step program exactly (captured graphs, §6.1 dimension `capture`) use end-to-end metrics without taps.
 
@@ -490,7 +491,7 @@ Each sequence also has **decode segments**: ranges of scored positions evaluated
 
 A corpus version is frozen once published. A change creates vN+1, and the baseline spread and the RFC-0042 ceilings are recomputed for it (ADR-0601).
 
-The sources are listed in `testdata/corpus/SOURCES.toml` (QUAL-E5-T01, 2026-10-21). Each entry has its pinned revision, file hashes, licence, the licence file read at that revision, provenance, and the selection rule QUAL-E5-T02 implements. CC-BY sources have their attribution files in `testdata/corpus/attribution/`. Code and template repositories are pinned to their last commit before 2021-06-01, before large-model code-generation services were public. Every category has a primary source:
+The sources are listed in `testdata/corpus/SOURCES.toml` (QUAL-E5-T01, 2026-10-21). Each entry has its pinned revision, file hashes, licence, the licence file read at that revision, provenance, and the selection rule QUAL-E5-T22 implements. CC-BY sources have their attribution files in `testdata/corpus/attribution/`. Code and template repositories are pinned to their last commit before 2021-06-01, before large-model code-generation services were public. Every category has a primary source:
 
 | Category | Primary | Secondary |
 |---|---|---|
@@ -1070,7 +1071,7 @@ Runs are not deterministic. The same checkers run on the event logs and client t
 
 Faults are injected at three levels, from cheapest to most realistic:
 - **in the simulator**, as `SimEvent::Fault`, deterministic, every PR;
-- **through fault points** compiled into `test` and `chaos` builds (§9.2), on any OS;
+- **through fault points** compiled into `dev` and `chaos` builds (§9.2), on any OS;
 - **from outside the process** on lab hardware: signals, power, network impairment, block-layer faults.
 
 RFC-0033 owns what the system must do after each fault. This section owns how each fault is produced and how the outcome is checked.

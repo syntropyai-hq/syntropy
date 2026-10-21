@@ -1,0 +1,19 @@
+# Serves crates.io from `../registry`, so the fixture resolves offline and cargo reports each
+# stand-in as a crates.io package. Cargo reads this file only when it runs from this directory,
+# which `cargo xtask deny` and `cargo xtask notices` arrange.
+[source.crates-io]
+replace-with = "fixture-registry"
+
+[source.fixture-registry]
+directory = "../registry"
+
+# The registry deny.toml does not allow, served from `../elsewhere`.
+[registries.elsewhere]
+index = "sparse+https://registry.example.invalid/index/"
+
+[source.elsewhere]
+registry = "sparse+https://registry.example.invalid/index/"
+replace-with = "fixture-elsewhere"
+
+[source.fixture-elsewhere]
+directory = "../elsewhere"

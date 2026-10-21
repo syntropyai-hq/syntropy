@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The licence manifest of vendored third-party code (ADR-0018 §3, RFC-0062 §11.3, §12.2).
+#
+# Every file under `third_party/` and every `crates/kernels-*/vendor/` tree gets its own entry,
+# licence and notice files included. A vendored tree such as ggml's gets one entry per file it
+# carries, never one entry for the directory, so the notices can name each file's licence. This
+# file and the lock files beside it (such as `ggml.lock`) are Syntropy's own and need no entry.
+#
+# `cargo xtask third-party` checks this file in `lint`: every vendored file is listed, every
+# entry names an existing file, its licence is an SPDX expression the allow list in `deny.toml`
+# meets, and its notice file exists. `cargo xtask notices` reads it for THIRD-PARTY-NOTICES.
+# Adding a component here is a new direct dependency, which needs a maintainer's approval
+# (RFC-0062 §12.3).
+#
+# Each entry, as one `[[file]]` table of strings:
+#
+#   [[file]]
+#   path = "third_party/ggml/src/ggml.c"     # root-relative, `/` separators; a file, not a directory
+#   upstream = "https://github.com/ggml-org/ggml"
+#   version = "<release tag or commit>"
+#   license = "MIT"                          # an SPDX expression
+#   notice = "third_party/ggml/LICENSE"      # the file with its copyright and licence text
+#
+# No third-party code is vendored yet.

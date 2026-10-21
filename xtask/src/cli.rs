@@ -2,12 +2,14 @@
 
 //! Argument parsing for `cargo xtask`, with no dependencies beyond `std`.
 //!
-//! A new top-level command, such as `check-deps` (QUAL-E1-T03), is a variant of [`Command`], a
+//! A top-level command, such as `check-deps` (QUAL-E1-T03), is a variant of [`Command`], a
 //! branch in [`parse`] and a line in [`USAGE`]. A job's or suite's own options are declared in
-//! its registry entry (`Entry::params`), and [`parse`] accepts exactly those.
+//! its registry entry (`Entry::params`), and [`parse`] accepts exactly those. The licence
+//! commands (QUAL-E1-T04) declare theirs to [`parse_options`].
 
 use std::fmt;
 
+use crate::build::{self, Profile};
 use crate::registry::{self, Entry};
 
 pub const USAGE: &str = "\
@@ -18,6 +20,25 @@ Commands:
   ci --list               list the CI jobs and their options
   test <suite> [options]  run a test suite (RFC-0060 §1.2)
   test --list             list the test suites and their options
+  check-deps [--manifest-path <path>]
+                          check the crate dependency rules of RFC-0001 §4.2 (RFC-0062 §12.1)
+                          on this workspace, or on the workspace of <path>; `lint` runs it
+  build --profile <p> [--manifest-path <path>]
+                          build in profile dev, test-release, chaos or release with its test
+                          features, then check the build against the profile (RFC-0062 §4.4)
+  deny [--manifest-path <path>] [--advisories]
+                          run cargo-deny with deny.toml (ADR-0018 §3, RFC-0062 §11.2): the
+                          licence, ban and source checks, or with --advisories the RustSec
+                          advisories, which need network access; `lint` runs both
+  spdx [--root <dir>]     check the SPDX header of every source file (ADR-0018 §1); `lint`
+                          runs it
+  third-party [--root <dir>]
+                          check that third_party/licences.toml lists every vendored file
+                          (ADR-0018 §3, RFC-0062 §12.2); `lint` runs it
+  notices [--manifest-path <path>] [--out <file>]
+                          generate THIRD-PARTY-NOTICES for the release build (ADR-0018 §6) and
+                          write it to <file>; without --out, only check it can be generated,
+                          which is what `lint` runs
   help                    print this message
 
 An option is `--name <value>` or `--name=<value>`, given at most once.
@@ -26,7 +47,17 @@ Exit status: 0 when every step passes, 1 when a step fails, 2 on a usage error o
 was not started by `cargo xtask`.";
 
 /// The top-level commands, in the order `USAGE` lists them.
-const COMMANDS: &[&str] = &["ci", "test", "help"];
+const COMMANDS: &[&str] = &[
+    "ci",
+    "test",
+    "check-deps",
+    "build",
+    "deny",
+    "spdx",
+    "third-party",
+    "notices",
+    "help",
+];
 
 /// What the command line asks for. Names and options are resolved against the registry while
 /// parsing, so every [`Command::Run`] names an entry that exists, with options it accepts.
@@ -38,6 +69,34 @@ pub enum Command<'r> {
         kind: Kind,
         entry: &'r Entry,
         args: Args,
+    },
+    /// `check-deps`, on the workspace of `manifest_path` when given, else on this checkout.
+    CheckDeps {
+        manifest_path: Option<String>,
+    },
+    /// `build`, in `profile`, of the workspace of `manifest_path` when given, else of this
+    /// checkout.
+    Build {
+        profile: &'static Profile,
+        manifest_path: Option<String>,
+    },
+    /// `deny`: cargo-deny's licence, ban and source checks, or its advisories.
+    Deny {
+        manifest_path: Option<String>,
+        advisories: bool,
+    },
+    /// `spdx`: the SPDX headers under `root`, else under this checkout.
+    Spdx {
+        root: Option<String>,
+    },
+    /// `third-party`: the vendored-file manifest under `root`, else under this checkout.
+    ThirdParty {
+        root: Option<String>,
+    },
+    /// `notices`: generate `THIRD-PARTY-NOTICES`, writing it to `out` when given.
+    Notices {
+        manifest_path: Option<String>,
+        out: Option<String>,
     },
 }
 
@@ -70,6 +129,16 @@ impl Kind {
 /// `params`, and appears at most once.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Args(Vec<(&'static str, String)>);
+
+impl Args {
+    /// The value given for `name`, such as `--commits`.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(given, _)| *given == name)
+            .map(|(_, value)| value.as_str())
+    }
+}
 
 impl fmt::Display for Args {
     /// ` --name value` for each option, so a label reads like the command line.
@@ -106,7 +175,22 @@ pub enum UsageError {
     },
     MissingValue(&'static str),
     RepeatedOption(&'static str),
+    /// A required option left out.
+    MissingOption {
+        kind: Kind,
+        entry: &'static str,
+        option: &'static str,
+    },
     UnexpectedArgument(String),
+    /// `build` without `--profile`.
+    MissingProfile {
+        valid: Vec<&'static str>,
+    },
+    /// `build --profile` with a name no profile has.
+    UnknownProfile {
+        name: String,
+        valid: Vec<&'static str>,
+    },
 }
 
 impl fmt::Display for UsageError {
@@ -160,10 +244,25 @@ impl fmt::Display for UsageError {
                 valid.join(", ")
             ),
             UsageError::MissingValue(option) => write!(f, "option `{option}` needs a value"),
+            UsageError::MissingOption {
+                kind,
+                entry,
+                option,
+            } => write!(f, "{} `{entry}` needs `{option}`", kind.noun()),
             UsageError::RepeatedOption(option) => {
                 write!(f, "option `{option}` is given more than once")
             }
             UsageError::UnexpectedArgument(arg) => write!(f, "unexpected argument `{arg}`"),
+            UsageError::MissingProfile { valid } => write!(
+                f,
+                "`build` needs `--profile <p>`; valid profiles: {}",
+                valid.join(", ")
+            ),
+            UsageError::UnknownProfile { name, valid } => write!(
+                f,
+                "unknown profile `{name}`; valid profiles: {}",
+                valid.join(", ")
+            ),
         }
     }
 }
@@ -187,6 +286,30 @@ pub fn parse<'r>(
         }
         "ci" => parse_run(Kind::Job, rest, jobs),
         "test" => parse_run(Kind::Suite, rest, suites),
+        "check-deps" => parse_check_deps(rest),
+        "build" => parse_build(rest),
+        "deny" => parse_options(rest, &["--manifest-path"], &["--advisories"]).map(|o| {
+            o.or_help(|o| Command::Deny {
+                manifest_path: o.value("--manifest-path"),
+                advisories: o.flag("--advisories"),
+            })
+        }),
+        "spdx" => parse_options(rest, &["--root"], &[]).map(|o| {
+            o.or_help(|o| Command::Spdx {
+                root: o.value("--root"),
+            })
+        }),
+        "third-party" => parse_options(rest, &["--root"], &[]).map(|o| {
+            o.or_help(|o| Command::ThirdParty {
+                root: o.value("--root"),
+            })
+        }),
+        "notices" => parse_options(rest, &["--manifest-path", "--out"], &[]).map(|o| {
+            o.or_help(|o| Command::Notices {
+                manifest_path: o.value("--manifest-path"),
+                out: o.value("--out"),
+            })
+        }),
         other if other.starts_with('-') => Err(UsageError::UnknownOption(other.to_owned())),
         other => Err(UsageError::UnknownCommand(other.to_owned())),
     }
@@ -264,7 +387,199 @@ fn parse_params(kind: Kind, entry: &Entry, args: &[String]) -> Result<Args, Usag
         }
         values.push((param.name, value.to_owned()));
     }
+    if let Some(missing) = entry
+        .params
+        .iter()
+        .find(|param| param.required && !values.iter().any(|(seen, _)| *seen == param.name))
+    {
+        return Err(UsageError::MissingOption {
+            kind,
+            entry: entry.name,
+            option: missing.name,
+        });
+    }
     Ok(Args(values))
+}
+
+/// `check-deps [--manifest-path <path>]` and `check-deps --help`.
+fn parse_check_deps(args: &[String]) -> Result<Command<'static>, UsageError> {
+    const MANIFEST_PATH: &str = "--manifest-path";
+    if let Some((first, rest)) = args.split_first()
+        && matches!(first.as_str(), "-h" | "--help")
+    {
+        no_more(rest)?;
+        return Ok(Command::Help);
+    }
+    let mut manifest_path = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        if name != MANIFEST_PATH {
+            return Err(if arg.starts_with('-') {
+                UsageError::UnknownOption(name.to_owned())
+            } else {
+                UsageError::UnexpectedArgument(arg.clone())
+            });
+        }
+        let value = match inline {
+            Some(value) => value,
+            None => match rest.next() {
+                Some(value) if !value.starts_with('-') => value.as_str(),
+                _ => "",
+            },
+        };
+        if value.is_empty() {
+            return Err(UsageError::MissingValue(MANIFEST_PATH));
+        }
+        if manifest_path.replace(value.to_owned()).is_some() {
+            return Err(UsageError::RepeatedOption(MANIFEST_PATH));
+        }
+    }
+    Ok(Command::CheckDeps { manifest_path })
+}
+
+/// `build --profile <p> [--manifest-path <path>]` and `build --help`.
+fn parse_build(args: &[String]) -> Result<Command<'static>, UsageError> {
+    const PROFILE: &str = "--profile";
+    const MANIFEST_PATH: &str = "--manifest-path";
+    if let Some((first, rest)) = args.split_first()
+        && matches!(first.as_str(), "-h" | "--help")
+    {
+        no_more(rest)?;
+        return Ok(Command::Help);
+    }
+    let mut profile = None;
+    let mut manifest_path = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        let (option, slot) = match name {
+            PROFILE => (PROFILE, &mut profile),
+            MANIFEST_PATH => (MANIFEST_PATH, &mut manifest_path),
+            _ if arg.starts_with('-') => return Err(UsageError::UnknownOption(name.to_owned())),
+            _ => return Err(UsageError::UnexpectedArgument(arg.clone())),
+        };
+        let value = match inline {
+            Some(value) => value,
+            None => match rest.next() {
+                Some(value) if !value.starts_with('-') => value.as_str(),
+                _ => "",
+            },
+        };
+        if value.is_empty() {
+            return Err(UsageError::MissingValue(option));
+        }
+        if slot.replace(value.to_owned()).is_some() {
+            return Err(UsageError::RepeatedOption(option));
+        }
+    }
+    let Some(name) = profile else {
+        return Err(UsageError::MissingProfile {
+            valid: build::names(),
+        });
+    };
+    let profile = build::find(&name).ok_or_else(|| UsageError::UnknownProfile {
+        name,
+        valid: build::names(),
+    })?;
+    Ok(Command::Build {
+        profile,
+        manifest_path,
+    })
+}
+
+/// The options given to a top-level command: values and flags, each at most once, or `--help`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Options {
+    help: bool,
+    values: Vec<(&'static str, String)>,
+    flags: Vec<&'static str>,
+}
+
+impl Options {
+    fn value(&self, name: &str) -> Option<String> {
+        self.values
+            .iter()
+            .find(|(given, _)| *given == name)
+            .map(|(_, value)| value.clone())
+    }
+
+    fn flag(&self, name: &str) -> bool {
+        self.flags.contains(&name)
+    }
+
+    /// [`Command::Help`] for `--help`, else the command `build` makes from the options.
+    fn or_help(self, build: impl FnOnce(&Options) -> Command<'static>) -> Command<'static> {
+        if self.help {
+            Command::Help
+        } else {
+            build(&self)
+        }
+    }
+}
+
+/// Parses a top-level command's options: each of `values` as `--name <value>` or
+/// `--name=<value>`, each of `flags` as a bare `--name`, each at most once; or a lone `--help`.
+fn parse_options(
+    args: &[String],
+    values: &[&'static str],
+    flags: &[&'static str],
+) -> Result<Options, UsageError> {
+    if let Some((first, rest)) = args.split_first()
+        && matches!(first.as_str(), "-h" | "--help")
+    {
+        no_more(rest)?;
+        return Ok(Options {
+            help: true,
+            ..Options::default()
+        });
+    }
+    let mut options = Options::default();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        if let Some(flag) = flags.iter().find(|flag| **flag == name) {
+            if inline.is_some() {
+                return Err(UsageError::UnexpectedArgument(arg.clone()));
+            }
+            if options.flags.contains(flag) {
+                return Err(UsageError::RepeatedOption(flag));
+            }
+            options.flags.push(flag);
+            continue;
+        }
+        let Some(option) = values.iter().find(|option| **option == name) else {
+            return Err(if arg.starts_with('-') {
+                UsageError::UnknownOption(name.to_owned())
+            } else {
+                UsageError::UnexpectedArgument(arg.clone())
+            });
+        };
+        let value = match inline {
+            Some(value) => value,
+            None => match rest.next() {
+                Some(value) if !value.starts_with('-') => value.as_str(),
+                _ => "",
+            },
+        };
+        if value.is_empty() {
+            return Err(UsageError::MissingValue(option));
+        }
+        if options.values.iter().any(|(seen, _)| seen == option) {
+            return Err(UsageError::RepeatedOption(option));
+        }
+        options.values.push((option, value.to_owned()));
+    }
+    Ok(options)
 }
 
 fn no_more(rest: &[String]) -> Result<(), UsageError> {
@@ -304,13 +619,28 @@ mod tests {
                     name: "--base",
                     value: "<ref>",
                     help: "the merge base",
+                    required: false,
                 },
                 Param {
                     name: "--head",
                     value: "<ref>",
                     help: "the head",
+                    required: false,
                 },
             ],
+            steps: STEP,
+            pending: &[],
+        },
+        Entry {
+            name: "gamma",
+            summary: "third, with a required option",
+            defined_in: "RFC-0062 §8.3",
+            params: &[Param {
+                name: "--input",
+                value: "<file>",
+                help: "the input",
+                required: true,
+            }],
             steps: STEP,
             pending: &[],
         },
@@ -388,12 +718,12 @@ mod tests {
             UsageError::UnknownName {
                 kind: Kind::Job,
                 name: "nosuchjob".into(),
-                valid: vec!["alpha", "beta-two"],
+                valid: vec!["alpha", "beta-two", "gamma"],
             }
         );
         assert_eq!(
             err.to_string(),
-            "unknown job `nosuchjob`; valid jobs: alpha, beta-two"
+            "unknown job `nosuchjob`; valid jobs: alpha, beta-two, gamma"
         );
     }
 
@@ -418,7 +748,7 @@ mod tests {
     fn a_missing_name_lists_every_valid_name() {
         assert_eq!(
             parse_fixture("ci").unwrap_err().to_string(),
-            "`ci` needs a job name; valid jobs: alpha, beta-two"
+            "`ci` needs a job name; valid jobs: alpha, beta-two, gamma"
         );
         assert!(matches!(
             parse_real("test"),
@@ -454,7 +784,8 @@ mod tests {
         );
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
-            "unknown command `frob`; valid commands: ci, test, help"
+            "unknown command `frob`; valid commands: ci, test, check-deps, build, deny, spdx, \
+             third-party, notices, help"
         );
         assert_eq!(
             parse_real("--frob"),
@@ -549,6 +880,68 @@ mod tests {
     }
 
     #[test]
+    fn a_required_option_must_be_given() {
+        assert_eq!(
+            parse_fixture("ci gamma"),
+            Err(UsageError::MissingOption {
+                kind: Kind::Job,
+                entry: "gamma",
+                option: "--input",
+            })
+        );
+        assert_eq!(
+            parse_fixture("ci gamma").unwrap_err().to_string(),
+            "job `gamma` needs `--input`"
+        );
+        assert_eq!(
+            fixture_args("ci gamma --input x"),
+            [("--input", "x".to_owned())]
+        );
+    }
+
+    #[test]
+    fn get_returns_a_given_value() {
+        let Ok(Command::Run { args, .. }) = parse_fixture("ci beta-two --head h --base=b") else {
+            panic!("did not parse");
+        };
+        assert_eq!(args.get("--base"), Some("b"));
+        assert_eq!(args.get("--head"), Some("h"));
+        assert_eq!(args.get("--tip"), None);
+    }
+
+    #[test]
+    fn the_contribution_jobs_need_their_inputs() {
+        assert_eq!(
+            parse_real("ci dco --event e").unwrap_err().to_string(),
+            "job `dco` needs `--commits`"
+        );
+        assert_eq!(
+            parse_real("ci pr-title --event e --commits c")
+                .unwrap_err()
+                .to_string(),
+            "job `pr-title` needs `--label-events`"
+        );
+        assert_eq!(
+            parse_real("ci pr-title --event e --commits c --label-events l")
+                .unwrap_err()
+                .to_string(),
+            "job `pr-title` needs `--roster`"
+        );
+        assert_eq!(
+            parse_real("ci pr-title --event e --commits c --label-events l --roster r")
+                .unwrap_err()
+                .to_string(),
+            "job `pr-title` needs `--version-file`"
+        );
+        assert!(
+            parse_real(
+                "ci pr-title --event e --commits c --label-events l --roster r --version-file v"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn an_option_is_given_at_most_once() {
         assert_eq!(
             parse_fixture("ci beta-two --base a --base=b"),
@@ -590,6 +983,213 @@ mod tests {
             parse_real("ci nosuchjob extra"),
             Err(UsageError::UnknownName { .. })
         ));
+    }
+
+    #[test]
+    fn check_deps_takes_an_optional_manifest_path() {
+        assert_eq!(
+            parse_real("check-deps"),
+            Ok(Command::CheckDeps {
+                manifest_path: None
+            })
+        );
+        for line in [
+            "check-deps --manifest-path a/Cargo.toml",
+            "check-deps --manifest-path=a/Cargo.toml",
+        ] {
+            assert_eq!(
+                parse_real(line),
+                Ok(Command::CheckDeps {
+                    manifest_path: Some("a/Cargo.toml".into())
+                }),
+                "`{line}`"
+            );
+        }
+        assert_eq!(parse_real("check-deps --help"), Ok(Command::Help));
+    }
+
+    #[test]
+    fn check_deps_rejects_anything_else() {
+        for (line, error) in [
+            (
+                "check-deps --fix",
+                UsageError::UnknownOption("--fix".into()),
+            ),
+            (
+                "check-deps --fix=yes",
+                UsageError::UnknownOption("--fix".into()),
+            ),
+            (
+                "check-deps Cargo.toml",
+                UsageError::UnexpectedArgument("Cargo.toml".into()),
+            ),
+            (
+                "check-deps --manifest-path",
+                UsageError::MissingValue("--manifest-path"),
+            ),
+            (
+                "check-deps --manifest-path=",
+                UsageError::MissingValue("--manifest-path"),
+            ),
+            (
+                "check-deps --manifest-path --fix",
+                UsageError::MissingValue("--manifest-path"),
+            ),
+            (
+                "check-deps --manifest-path a --manifest-path=b",
+                UsageError::RepeatedOption("--manifest-path"),
+            ),
+            (
+                "check-deps --help extra",
+                UsageError::UnexpectedArgument("extra".into()),
+            ),
+        ] {
+            assert_eq!(parse_real(line), Err(error), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn build_takes_a_profile_and_an_optional_manifest_path() {
+        let test_release = build::find("test-release").unwrap();
+        for line in [
+            "build --profile test-release",
+            "build --profile=test-release",
+        ] {
+            assert_eq!(
+                parse_real(line),
+                Ok(Command::Build {
+                    profile: test_release,
+                    manifest_path: None
+                }),
+                "`{line}`"
+            );
+        }
+        assert_eq!(
+            parse_real("build --manifest-path a/Cargo.toml --profile release"),
+            Ok(Command::Build {
+                profile: build::find("release").unwrap(),
+                manifest_path: Some("a/Cargo.toml".into())
+            })
+        );
+        assert_eq!(parse_real("build --help"), Ok(Command::Help));
+    }
+
+    #[test]
+    fn build_rejects_a_missing_or_unknown_profile_and_anything_else() {
+        assert_eq!(
+            parse_real("build").unwrap_err().to_string(),
+            "`build` needs `--profile <p>`; valid profiles: dev, test-release, chaos, release"
+        );
+        assert_eq!(
+            parse_real("build --profile pr").unwrap_err().to_string(),
+            "unknown profile `pr`; valid profiles: dev, test-release, chaos, release"
+        );
+        for (line, error) in [
+            ("build --profile", UsageError::MissingValue("--profile")),
+            (
+                "build --profile --manifest-path x",
+                UsageError::MissingValue("--profile"),
+            ),
+            (
+                "build --profile dev --profile=chaos",
+                UsageError::RepeatedOption("--profile"),
+            ),
+            (
+                "build --profile dev --fix",
+                UsageError::UnknownOption("--fix".into()),
+            ),
+            ("build dev", UsageError::UnexpectedArgument("dev".into())),
+        ] {
+            assert_eq!(parse_real(line), Err(error), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn the_licence_commands_take_their_options() {
+        for (line, command) in [
+            (
+                "deny",
+                Command::Deny {
+                    manifest_path: None,
+                    advisories: false,
+                },
+            ),
+            (
+                "deny --advisories --manifest-path=a/Cargo.toml",
+                Command::Deny {
+                    manifest_path: Some("a/Cargo.toml".into()),
+                    advisories: true,
+                },
+            ),
+            ("spdx", Command::Spdx { root: None }),
+            (
+                "spdx --root fixtures/x",
+                Command::Spdx {
+                    root: Some("fixtures/x".into()),
+                },
+            ),
+            ("third-party", Command::ThirdParty { root: None }),
+            (
+                "third-party --root=x",
+                Command::ThirdParty {
+                    root: Some("x".into()),
+                },
+            ),
+            (
+                "notices",
+                Command::Notices {
+                    manifest_path: None,
+                    out: None,
+                },
+            ),
+            (
+                "notices --out target/THIRD-PARTY-NOTICES --manifest-path m/Cargo.toml",
+                Command::Notices {
+                    manifest_path: Some("m/Cargo.toml".into()),
+                    out: Some("target/THIRD-PARTY-NOTICES".into()),
+                },
+            ),
+            ("deny --help", Command::Help),
+            ("notices -h", Command::Help),
+        ] {
+            assert_eq!(parse_real(line), Ok(command), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn the_licence_commands_reject_anything_else() {
+        for (line, error) in [
+            ("deny --fix", UsageError::UnknownOption("--fix".into())),
+            (
+                "deny licenses",
+                UsageError::UnexpectedArgument("licenses".into()),
+            ),
+            (
+                "deny --advisories=yes",
+                UsageError::UnexpectedArgument("--advisories=yes".into()),
+            ),
+            (
+                "deny --advisories --advisories",
+                UsageError::RepeatedOption("--advisories"),
+            ),
+            ("spdx --root", UsageError::MissingValue("--root")),
+            (
+                "spdx --manifest-path x",
+                UsageError::UnknownOption("--manifest-path".into()),
+            ),
+            (
+                "third-party --root a --root b",
+                UsageError::RepeatedOption("--root"),
+            ),
+            ("notices --out", UsageError::MissingValue("--out")),
+            ("notices --out --check", UsageError::MissingValue("--out")),
+            (
+                "notices --help x",
+                UsageError::UnexpectedArgument("x".into()),
+            ),
+        ] {
+            assert_eq!(parse_real(line), Err(error), "`{line}`");
+        }
     }
 
     #[test]

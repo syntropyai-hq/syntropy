@@ -1,0 +1,10 @@
+[package]
+name = "syntropy-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+syntropy-kernels = { path = "../kernels" }
+syntropy-kernels-cpu = { path = "../kernels-cpu" }

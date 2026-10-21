@@ -1,0 +1,9 @@
+# The layer table of this fixture, in the form of ci/layers.toml.
+
+[layers]
+0 = []
+1 = ["kernels"]
+2 = ["kernels-loader", "kernels-cpu"]
+3 = ["exec"]
+4 = []
+5 = ["daemon"]

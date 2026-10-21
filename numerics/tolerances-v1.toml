@@ -1,0 +1,281 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Tolerance table v1: the thresholds of the exactness contract (RFC-0042 §5.2, §6, §7.1;
+# ADR-0019 decision 3; ADR-0422 decisions 4-7). `syntropy-kernels` embeds the newest
+# `tolerances-v<N>.toml` in every build and stamps its version into results and responses.
+# `numerics.tolerances` points a build at another file, which marks it unofficial (RFC-0042 §11).
+#
+# Every entry has a `status`:
+#   "pending"      no value yet. Calibration has not run, so the entry carries no numbers.
+#   "provisional"  a published ceiling that rests on dense calibration models only, or, for a
+#                  layer-local ceiling, on fewer than three families with that layer kind
+#                  (RFC-0042 §5.2, §6.2). It still gates.
+#   "final"        a published value.
+# Values come only from calibration (COMP-E14-T03 at M0b, COMP-E14-T04 at M1a) and from op
+# conformance on ggml pin bumps (RFC-0042 §6.4). None has been measured yet, so this version
+# holds no numbers. A release build refuses to start a model whose dtype class has a pending
+# end-to-end ceiling (`ToleranceMissing`, numerics code 1).
+#
+# Dtype classes (RFC-0042 §1.2): float16, fp8, int8, bits4, sub4.
+# Corpus categories (RFC-0060 §5.2): chat, code, long, tool, multi, stress.
+
+schema = 1
+version = 1
+
+# End-to-end ceilings C(d), pooled and per category (RFC-0042 §6.1, §6.2): kl_mean and kl_p99
+# in nats, top1 as the top-1 disagreement rate. Each is the maximum over the class's
+# calibration models of max(2 S, phi) pooled or max(3 S_c, phi) per category, rounded up to
+# two significant digits. A class's scopes are all pending or all published.
+
+[end_to_end.float16]
+pooled = { status = "pending" }
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+[end_to_end.fp8]
+pooled = { status = "pending" }
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+[end_to_end.int8]
+pooled = { status = "pending" }
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+[end_to_end.bits4]
+pooled = { status = "pending" }
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+[end_to_end.sub4]
+pooled = { status = "pending" }
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+# Design effects deff_c per class and category (RFC-0042 §6.2; RFC-0060 §5.4): the variance
+# of the top-1 disagreement rate under a sequence bootstrap divided by the binomial variance.
+# Values below 1 are published as 1. Published entries carry `value`.
+
+[design_effect.float16]
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+[design_effect.fp8]
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+[design_effect.int8]
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+[design_effect.bits4]
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+[design_effect.sub4]
+chat = { status = "pending" }
+code = { status = "pending" }
+long = { status = "pending" }
+tool = { status = "pending" }
+multi = { status = "pending" }
+stress = { status = "pending" }
+
+# Canary ceilings C_canary(d) (RFC-0042 §6.2; RFC-0060 §5.8): the 99.9th percentile, over
+# correct candidates in calibration, of the mean KL_8 over the canary positions whose
+# reference margin is at least tau_tie. Published entries carry `value`, in nats.
+[canary]
+float16 = { status = "pending" }
+fp8 = { status = "pending" }
+int8 = { status = "pending" }
+bits4 = { status = "pending" }
+sub4 = { status = "pending" }
+
+# Layer-local ceilings C_ll(kind, d, statistic) (RFC-0042 §5.2; RFC-0060 §5.7): the maximum
+# of tau_ll over the class's calibration models with that layer kind, rounded up to two
+# significant digits. Every layer kind has rel_l2_mean and rel_l2_p99. The head window also
+# has top1 (disagreement rate) and kl_k (KL_K of its logits, in nats). Published entries carry
+# `value`.
+
+[layer_local.float16.dense_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.float16.moe_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.float16.full_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.float16.sliding_window_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.float16.linear_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.float16.head_window]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+top1 = { status = "pending" }
+kl_k = { status = "pending" }
+
+[layer_local.fp8.dense_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.fp8.moe_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.fp8.full_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.fp8.sliding_window_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.fp8.linear_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.fp8.head_window]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+top1 = { status = "pending" }
+kl_k = { status = "pending" }
+
+[layer_local.int8.dense_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.int8.moe_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.int8.full_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.int8.sliding_window_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.int8.linear_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.int8.head_window]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+top1 = { status = "pending" }
+kl_k = { status = "pending" }
+
+[layer_local.bits4.dense_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.bits4.moe_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.bits4.full_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.bits4.sliding_window_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.bits4.linear_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.bits4.head_window]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+top1 = { status = "pending" }
+kl_k = { status = "pending" }
+
+[layer_local.sub4.dense_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.sub4.moe_ffn]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.sub4.full_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.sub4.sliding_window_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.sub4.linear_attention]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+
+[layer_local.sub4.head_window]
+rel_l2_mean = { status = "pending" }
+rel_l2_p99 = { status = "pending" }
+top1 = { status = "pending" }
+kl_k = { status = "pending" }
+
+# Op-level tolerances per op class and dtype class (RFC-0042 §6.4), one `[[op]]` entry each:
+#   [[op]]
+#   op = "<op class>"   class = "<dtype class>"   status = "final"
+#   eps_op, ceiling_op, ceiling_op_max, tol_op, tol_ref   (rel_l2, or max_abs_scaled for
+#                                                         ceiling_op_max; tol_ref = tol_op)
+# None yet: op conformance (QUAL-E4-T04) computes them over the op registry (COMP-E1-T02).
+
+# The model-definition oracle's tolerance per family (RFC-0042 §7.1; ADR-0422 decision 7).
+# A published entry has `s_pub_source` ("publisher", or "ref" when the publisher's code cannot
+# run in F64 and S_ref stands in for S_pub) and, for each of kl_mean, kl_p99, top1 and
+# norm_rel, `{ s_pub, s_ref, tau_def }` with tau_def = 2 max(s_pub, s_ref). `llama` and
+# `qwen_moe` are certified from M0 (RFC-0043 §9.2).
+[definitional.llama]
+status = "pending"
+
+[definitional.qwen_moe]
+status = "pending"

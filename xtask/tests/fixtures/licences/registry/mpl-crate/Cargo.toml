@@ -1,0 +1,9 @@
+# A stand-in for a crates.io package, served offline from this directory through the
+# fixtures' `.cargo/config.toml`. Its `license` is fixture data for the licence checks
+# (xtask/tests/licences.rs).
+[package]
+name = "mpl-crate"
+version = "2.1.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://example.org/mpl-crate"

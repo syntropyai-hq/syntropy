@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::cli::{Args, Kind};
-use crate::registry::{Entry, Step};
+use crate::registry::{Action, Entry, Step};
 
 /// What every step of one run sees.
 #[derive(Debug)]
@@ -24,14 +24,20 @@ pub trait Exec {
     fn exec(&mut self, step: &Step, context: &Context) -> Result<(), String>;
 }
 
-/// Runs each step as a child process from the workspace root, inheriting stdout and stderr.
+/// Runs a `cargo` step as a child process from the workspace root, inheriting stdout and
+/// stderr, and a builtin step inside this process.
 pub struct System;
 
 impl Exec for System {
     fn exec(&mut self, step: &Step, context: &Context) -> Result<(), String> {
-        let mut command = step.action.command();
-        command.current_dir(&context.root);
-        outcome(&mut command, &step.action.display())
+        match (&step.action, step.action.command()) {
+            (Action::Builtin { run, .. }, _) => run(context),
+            (_, Some(mut command)) => {
+                command.current_dir(&context.root);
+                outcome(&mut command, &step.action.display())
+            }
+            (_, None) => Err(format!("`{}` starts no process", step.action.display())),
+        }
     }
 }
 
@@ -77,6 +83,14 @@ pub fn run(
         log.flush()?;
         match exec.exec(step, context) {
             Ok(()) => writeln!(log, "{label}: {} passed", step.name)?,
+            Err(reason) if reason.contains('\n') => {
+                // A check that found several problems: one indented line each.
+                writeln!(log, "{label}: {} failed:", step.name)?;
+                for line in reason.lines() {
+                    writeln!(log, "  {line}")?;
+                }
+                failed.push(step.name);
+            }
             Err(reason) => {
                 writeln!(log, "{label}: {} failed: {reason}", step.name)?;
                 failed.push(step.name);
@@ -138,7 +152,7 @@ pub fn list(entries: &[Entry], out: &mut dyn Write) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::cli::{self, Command as Cli};
-    use crate::registry::{Action, JOBS, Param, Pending, find};
+    use crate::registry::{JOBS, Param, Pending, find};
 
     /// Records each step it is asked to run, and fails the steps named in `fail`.
     struct Fake {
@@ -234,6 +248,23 @@ mod tests {
     }
 
     #[test]
+    fn a_multi_line_reason_prints_one_indented_line_each() {
+        struct Two;
+        impl Exec for Two {
+            fn exec(&mut self, _step: &Step, _context: &Context) -> Result<(), String> {
+                Err("first problem\nsecond problem".into())
+            }
+        }
+        let mut log = Vec::new();
+        run(Kind::Job, &THREE, &here(), &mut Two, &mut log).unwrap();
+        let log = String::from_utf8(log).unwrap();
+        assert!(
+            log.contains("xtask ci three: one failed:\n  first problem\n  second problem\n"),
+            "{log}"
+        );
+    }
+
+    #[test]
     fn every_failure_is_named() {
         let (verdict, _, log) = run_fake(&THREE, &["one", "three"]);
         assert_eq!(verdict, Verdict::Fail(vec!["one", "three"]));
@@ -256,7 +287,21 @@ mod tests {
         let lint = find(JOBS, "lint").unwrap();
         let (verdict, ran, log) = run_fake(lint, &[]);
         assert_eq!(verdict, Verdict::Pass);
-        assert_eq!(ran, ["fmt", "clippy"]);
+        assert_eq!(
+            ran,
+            [
+                "fmt",
+                "clippy",
+                "check-deps",
+                "codeowners",
+                "rigs",
+                "deny",
+                "advisories",
+                "spdx",
+                "third-party",
+                "notices",
+            ]
+        );
         for pending in lint.pending {
             assert!(log.contains(pending.task), "{log}");
         }
@@ -282,6 +327,7 @@ mod tests {
                 name: "--base",
                 value: "<ref>",
                 help: "the merge base",
+                required: false,
             }],
             steps: &[],
             pending: &[],
@@ -306,6 +352,7 @@ mod tests {
                 name: "--base",
                 value: "<ref>",
                 help: "the merge base",
+                required: false,
             }],
             steps: &[Step {
                 name: "only",
@@ -346,7 +393,9 @@ mod tests {
 
     #[test]
     fn a_non_zero_exit_fails_with_its_status() {
-        let mut command = Action::Cargo(&["syntropy-xtask-no-such-subcommand"]).command();
+        let mut command = Action::Cargo(&["syntropy-xtask-no-such-subcommand"])
+            .command()
+            .unwrap();
         command.stderr(std::process::Stdio::null());
         let reason = outcome(&mut command, "cargo syntropy-xtask-no-such-subcommand").unwrap_err();
         // `ExitStatus` prints as "exit status: N" on Unix and "exit code: N" on Windows.

@@ -1,0 +1,3 @@
+# Fixture roster for the contribution-check tests.
+maintainers = ["alice", "bob"]
+agents = ["project-review-agent"]

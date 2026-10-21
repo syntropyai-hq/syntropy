@@ -1,0 +1,47 @@
+# The crate layers of RFC-0001 §4.1. `cargo xtask check-deps` (QUAL-E1-T03, RFC-0062 §12.1) reads
+# this table and checks every dependency edge between workspace members against it (RFC-0001 §4.2
+# rule 2), and it reads the dev-only row for rule 9.
+#
+# Each name is a crate directory under `crates/`, and the crate is `syntropy-<name>`. Every
+# workspace member appears exactly once, and every name here is a workspace member. A unit test in
+# xtask checks this table against the one in RFC-0001 §4.1, so change both together.
+#
+# The check reads a subset of TOML: `[section]` headers, `key = ["name", ...]` arrays (which may
+# span lines) and `#` comments.
+
+[layers]
+# A crate depends only on crates in lower layers (rule 2). Two exceptions come from the rules:
+# every crate except `core` may depend on `obs` and `config` (rule 2), and every crate may depend
+# on `core`, which depends on no workspace crate (rule 1). That is how `obs` and `config` depend on
+# `core` inside layer 0, as §4.1's table has them. `config-derive` holds `config`'s derive macro,
+# since Rust requires a proc-macro to be its own crate: `config` may depend on it in the same
+# layer, and no other crate may (RFC-0001 §4.2 rule 2, note of 2026-10-21).
+0 = ["core", "obs", "config", "config-derive"]
+1 = ["manifest", "kernels", "io", "net", "ipc"]
+2 = [
+    "graph",
+    "kernels-cuda",
+    "kernels-hip",
+    "kernels-metal",
+    "kernels-vulkan",
+    "kernels-cpu",
+    "kernels-ggml",
+    "kernels-loader",
+    "tier",
+    "solver",
+    "text",
+    "probe",
+    "store",
+]
+3 = ["exec", "cluster"]
+4 = ["sched", "api"]
+5 = ["runner", "daemon"]
+6 = ["cli"]
+
+[outside]
+# Layer "—" of RFC-0001 §4.1: dev only. They may depend on any workspace crate, and a production
+# crate may use them only as a dev-dependency (rule 9).
+dev-only = ["testkit", "bench"]
+# Workspace members outside the crate graph of §4.1, such as the CI task runner: no crate depends
+# on them, and they depend on no workspace crate.
+tools = ["xtask"]

@@ -1,0 +1,10 @@
+[package]
+name = "syntropy-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+syntropy-core = { path = "../core" }
+syntropy-testkit = { path = "../testkit" }

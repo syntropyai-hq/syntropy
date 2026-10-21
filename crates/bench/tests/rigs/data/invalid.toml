@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Fixture data for crates/bench/tests/rigs: a made-up inventory that lists one memory slot twice.
+
+version = 1
+
+[[rig]]
+id = "R-FIXTURE-BAD"
+os_image = "lab-linux-fixture-1"
+kernel = "6.8.0-fixture"
+power_plan = "performance"
+room_sensor = "fixture-room-1"
+
+[rig.cpu]
+model = "Fixture Desktop CPU 8-core"
+
+[[rig.memory]]
+slot = "DIMM_A1"
+size_gib = 32
+speed_mts = 6000
+part = "FIXTURE-32G-6000"
+
+[[rig.memory]]
+slot = "DIMM_A1"
+size_gib = 32
+speed_mts = 6000
+part = "FIXTURE-32G-6000"

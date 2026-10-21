@@ -1,0 +1,9 @@
+# The layer table of this fixture, in the form of ci/layers.toml.
+
+[layers]
+0 = ["core"]
+1 = ["manifest", "kernels"]
+2 = ["solver", "kernels-cpu"]
+
+[outside]
+tools = ["xtask"]

@@ -1,0 +1,7 @@
+# A licence fixture: a scratch crate depends on a crate from a registry deny.toml does not allow.
+# xtask/tests/licences.rs runs the licence checks on it and names the result it expects.
+[workspace]
+resolver = "3"
+members = [
+    "crates/scratch",
+]

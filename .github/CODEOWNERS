@@ -1,0 +1,57 @@
+# Code owners: the changes RFC-0062 §12.3 reserves for a maintainer's approval, on top of the
+# review agent's. Every rule names the maintainers in governance/maintainers.toml, and no rule
+# ever names an agent identity (ADR-0021, RFC-0062 §12.6).
+#
+# There are no area owners. Everything not listed here merges on the gates and the review agent,
+# including kernels, the solver and the rest of `net` and `cluster`.
+#
+# `cargo xtask ci lint` checks this file: every owner is a maintainer and none is an agent, every
+# RFC-0062 §12.3 path class is covered, and no path outside them gets an owner. The check accepts
+# `/dir/`, `/path`, `*` inside a segment, and bare names; see xtask/src/codeowners.rs.
+#
+# Three items on §12.3's list are not paths: a waived gate and a change no gate covers are
+# enforced by labels (QUAL-E1-T18), and a new crate dependency by the dep-diff check
+# (QUAL-E1-T19).
+
+# CI and release configuration
+/.github/                       @devdaviddr @xunholy
+/ci/                            @devdaviddr @xunholy
+/release-please-config.json     @devdaviddr @xunholy
+/.release-please-manifest.json  @devdaviddr @xunholy
+/version.txt                    @devdaviddr @xunholy
+/deny.toml                      @devdaviddr @xunholy
+/supply-chain/                  @devdaviddr @xunholy
+/governance/                    @devdaviddr @xunholy
+
+# Security-critical: the hardware dispatcher and lab configuration
+/bench/lab/                     @devdaviddr @xunholy
+/lab/                           @devdaviddr @xunholy
+
+# Security-critical code, owned by module name until the tasks that write it place it. Key
+# handling, signing and the update client, in any crate:
+/crates/*/src/keys.rs           @devdaviddr @xunholy
+/crates/*/src/keys/             @devdaviddr @xunholy
+/crates/*/src/signing.rs        @devdaviddr @xunholy
+/crates/*/src/signing/          @devdaviddr @xunholy
+/crates/*/src/updater.rs        @devdaviddr @xunholy
+/crates/*/src/updater/          @devdaviddr @xunholy
+# Cluster admission and the cluster key, in `net` and `cluster`:
+/crates/net/src/admission.rs    @devdaviddr @xunholy
+/crates/net/src/admission/      @devdaviddr @xunholy
+/crates/net/src/cluster_key.rs  @devdaviddr @xunholy
+/crates/net/src/cluster_key/    @devdaviddr @xunholy
+/crates/cluster/src/admission.rs    @devdaviddr @xunholy
+/crates/cluster/src/admission/      @devdaviddr @xunholy
+/crates/cluster/src/cluster_key.rs  @devdaviddr @xunholy
+/crates/cluster/src/cluster_key/    @devdaviddr @xunholy
+
+# Registering a new model family: the graph registry (RFC-0043 §1), not the family modules.
+/crates/graph/src/families.rs       @devdaviddr @xunholy
+/crates/graph/src/families/mod.rs   @devdaviddr @xunholy
+
+# Agent instruction and configuration files. The list in ci/agent-instructions.toml (QUAL-E1-T19)
+# lives under /ci/ above.
+AGENTS.md                       @devdaviddr @xunholy
+
+# A new vendored component in the licence manifest
+/third_party/licences.toml      @devdaviddr @xunholy

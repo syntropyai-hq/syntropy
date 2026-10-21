@@ -1,0 +1,16 @@
+# A check-deps fixture: the solver reaches a workspace I/O crate and an async runtime (rule 5).
+# xtask/tests/check_deps.rs runs `cargo xtask check-deps` on it and names the findings it expects.
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/manifest",
+    "crates/net",
+    "crates/solver",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

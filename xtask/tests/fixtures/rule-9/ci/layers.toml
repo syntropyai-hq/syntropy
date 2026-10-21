@@ -1,0 +1,12 @@
+# The layer table of this fixture, in the form of ci/layers.toml.
+
+[layers]
+0 = ["core"]
+1 = []
+2 = ["store"]
+3 = []
+4 = ["api"]
+5 = ["runner"]
+
+[outside]
+dev-only = ["testkit", "bench"]

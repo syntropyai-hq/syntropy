@@ -1,0 +1,13 @@
+# The maintainers: the people whose approval RFC-0062 §12.3 requires, and the only accounts whose
+# `semver-major-approved` label counts (§8.3). `.github/CODEOWNERS` may name only these accounts.
+# Logins compare without regard to case.
+#
+# Read by `cargo xtask ci lint` (the CODEOWNERS check) and `cargo xtask ci pr-title`. A change to
+# this file needs a maintainer's approval, because `governance/` is code-owned. The delegation
+# registry of QUAL-E1-T17 can take this file over.
+maintainers = ["devdaviddr", "xunholy"]
+
+# Accounts that agents act through. They are never maintainers or code owners, and a label they
+# apply never counts as a maintainer's. GitHub App accounts (`…[bot]`) count as agent identities
+# without being listed here.
+agents = []

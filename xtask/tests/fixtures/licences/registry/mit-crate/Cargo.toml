@@ -1,0 +1,8 @@
+# A stand-in for a crates.io package, served offline from this directory through the
+# fixtures' `.cargo/config.toml`. Its `license` is fixture data for the licence checks
+# (xtask/tests/licences.rs).
+[package]
+name = "mit-crate"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
