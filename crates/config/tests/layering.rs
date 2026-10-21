@@ -22,9 +22,9 @@ use std::sync::{Arc, Barrier};
 use proptest::prelude::*;
 use serde::Deserialize;
 use syntropy_config::{
-    ByteSize, Checked, Code, ConfigFile, ConfigSection, Dirs, Env, Flags, HoldsSecret, Layers,
-    Locations, Mode, Origin, Os, Registry, ResolvedConfig, SecretSource, SharedConfig, Value,
-    command, diagnostic, load, order_dropins,
+    ByteSize, Checked, Code, ConfigFile, ConfigSection, Dirs, Env, Flags, HoldsSecret,
+    HostEnvironment, Layers, Locations, Mode, Origin, Os, Registry, ResolvedConfig, SecretSource,
+    SharedConfig, Value, command, diagnostic, load, load_and_validate, order_dropins,
 };
 
 /// Keys for the layering tests.
@@ -1056,6 +1056,55 @@ fn snapshots_swap_whole() {
     }
     assert_eq!(int(&shared.load(), "t.d"), Some(n));
     assert!(n >= MIN_SWAPS, "the writer stopped after {n} swaps");
+}
+
+/// A file that cannot be read is reported beside every other file's errors, and the files that
+/// can be read still render with their source lines (RFC-0054 §8: every error, not only the
+/// first).
+#[test]
+fn an_unreadable_file_does_not_hide_the_other_files_errors() {
+    let root = TempDir::new("unreadable");
+    let locations = root.locations(Mode::Service);
+    fs::create_dir_all(&locations.dropin_dir).expect("mkdir");
+    fs::write(&locations.system_file, b"t.a = \"\xff\"\n").expect("write");
+    let dropin = locations.dropin_dir.join("50-x.toml");
+    fs::write(&dropin, "t.b = \"unterminated\n").expect("write");
+    let scan = locations.scan().expect("scans");
+    let codes = |errors: &[syntropy_config::Problem]| -> Vec<Option<Code>> {
+        errors.iter().map(|p| p.code).collect()
+    };
+    let expected = [Some(Code::PathUnusable), Some(Code::Syntax)];
+
+    let Err(rejected) = load(&REGISTRY, Os::Linux, &scan, &Env::default(), &Flags::new()) else {
+        panic!("both files are errors");
+    };
+    assert_eq!(codes(&rejected.errors), expected, "{:#?}", rejected.errors);
+
+    let checked = load_and_validate(
+        &REGISTRY,
+        Os::Linux,
+        &scan,
+        &Env::default(),
+        &Flags::new(),
+        |_| None,
+        &[],
+        &HostEnvironment,
+    );
+    assert_eq!(codes(checked.errors()), expected, "{:#?}", checked.errors());
+    assert_eq!(
+        checked.files.len(),
+        1,
+        "the readable drop-in is kept for rendering"
+    );
+    let rendered = checked.render(&REGISTRY);
+    assert!(rendered.contains("error[config/0011]"), "{rendered}");
+    assert!(rendered.contains("is not UTF-8"), "{rendered}");
+    assert!(rendered.contains("error[config/0001]"), "{rendered}");
+    assert!(
+        rendered.contains(&format!("{}:1:", dropin.display())),
+        "{rendered}"
+    );
+    assert!(rendered.contains("1 | t.b = "), "{rendered}");
 }
 
 #[test]
