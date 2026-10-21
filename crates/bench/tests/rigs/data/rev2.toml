@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Fixture data for crates/bench/tests/rigs: the second revision of rev1.toml's inventory.
+# R-FIXTURE-A: the GPU driver updated and DIMM_B2 now runs at 5600 MT/s. R-FIXTURE-B is gone,
+# R-FIXTURE-C is new, and R-FIXTURE-D's record is the same, with its memory listed in the other
+# order and its keys spaced differently.
+
+version = 1
+
+[[rig]]
+id = "R-FIXTURE-A"
+os_image = "lab-linux-fixture-1"
+kernel = "6.8.0-fixture"
+power_plan = "performance"
+room_sensor = "fixture-room-1"
+
+[rig.cpu]
+model = "Fixture Desktop CPU 24-core"
+microcode = "0x114"
+
+[[rig.memory]]
+slot = "DIMM_A2"
+size_gib = 64
+speed_mts = 6000
+part = "FIXTURE-64G-6000-A"
+
+[[rig.memory]]
+slot = "DIMM_B2"
+size_gib = 64
+speed_mts = 5600
+part = "FIXTURE-64G-6000-B"
+
+[[rig.gpu]]
+slot = "PCIEX16_1"
+model = "Fixture GPU 24 GB"
+vbios = "95.02.18.80.5F"
+driver = "580.82.07"
+pcie = "gen4x16"
+
+[[rig]]
+id = "R-FIXTURE-C"
+os_image = "lab-linux-fixture-1"
+kernel = "6.8.0-fixture"
+power_plan = "performance"
+room_sensor = "fixture-room-1"
+
+[rig.cpu]
+model = "Fixture Turing Host CPU"
+microcode = "0x2f"
+
+[[rig.memory]]
+slot = "DIMM_A1"
+size_gib = 32
+speed_mts = 3200
+part = "FIXTURE-32G-3200"
+
+[[rig]]
+id     = "R-FIXTURE-D"
+kernel = "6.8.0-fixture"
+os_image   = "lab-linux-fixture-1"
+power_plan = "performance"
+room_sensor = "fixture-room-1"
+
+[rig.cpu]
+microcode = "0xf8"
+model = "Fixture Small CPU 6-core"
+
+[[rig.memory]]
+part = "FIXTURE-16G-3200-B"
+slot = "DIMM_B1"
+speed_mts = 3200
+size_gib = 16
+
+[[rig.memory]]
+slot = "DIMM_A1"
+size_gib = 16
+speed_mts = 3200
+part = "FIXTURE-16G-3200-A"

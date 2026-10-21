@@ -189,6 +189,22 @@ pub const JOBS: &[Entry] = &[
                     run: codeowners::step,
                 },
             },
+            // The rig inventory of RFC-0061 §6.3 (QUAL-E15-T01).
+            Step {
+                name: "rigs",
+                action: Action::Cargo(&[
+                    "run",
+                    "--quiet",
+                    "--locked",
+                    "--package",
+                    "syntropy-bench",
+                    "--bin",
+                    "syntropy-bench",
+                    "--",
+                    "rigs",
+                    "check",
+                ]),
+            },
             // The licence policy of ADR-0018 (RFC-0062 §11.2, §12.2; QUAL-E1-T04). `advisories` is
             // the only step that needs the network, and it fails closed without it.
             Step {
@@ -413,6 +429,8 @@ mod tests {
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
                 "cargo xtask check-deps",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
+                "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- rigs \
+                 check",
                 "cargo xtask deny",
                 "cargo xtask deny --advisories",
                 "cargo xtask spdx",
