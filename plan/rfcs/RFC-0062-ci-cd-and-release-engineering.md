@@ -100,6 +100,12 @@ Renovate runs as the hosted Renovate app, so dependency scanning uses no Actions
 
 The first job of `pr.yml`, `changes`, runs `cargo xtask ci changes --base <merge-base>` and outputs the jobs to run as JSON. Downstream jobs read it from `needs.changes.outputs` and skip themselves when not listed. Workflow-level `paths:` filters are not used for required work, because a workflow skipped that way leaves its required checks pending.
 
+*Note, 2026-10-22 (QUAL-E1-T06).* `ci-gate` and `changes` judge a PR from the base branch, as `dco` and `pr-title` do (§12.3). Each checks out the base commit (`pull_request.base.sha`, or `merge_group.base_sha`), builds that `xtask` with no cache, and runs its command there. `pr.yml`'s own jobs still build and test the PR. Otherwise a PR could edit the evaluator to pass whatever its jobs did, or make `changes` list nothing, so that every job skips and the gate passes.
+- `ci-gate` does this from QUAL-E1-T06. `changes` does it from QUAL-E1-T07, which applies the base's `ci/jobs.toml` and rules engine to the PR's diff.
+- A change to either evaluator takes effect when it merges. The PR that makes the change is judged by the base's version.
+- While the base has no `ci-gate` job, which is true only until the PR that adds it merges, that PR's own evaluator judges it.
+- The workflow file itself comes from the PR's merge ref. A PR that edits `pr.yml` can still choose its own evaluator, which is why a change to `.github/` needs a maintainer's approval (§12.3).
+
 ```toml
 # ci/jobs.toml (excerpt): rules evaluated by `cargo xtask ci changes`
 [job.hosted-test]
@@ -154,8 +160,8 @@ paths = ["docs/**", "plan/**", "*.md"]
 - `changes` lists `lint`, `build` and `hosted-test` on every run, until QUAL-E1-T07 computes the affected-job set (§2.2).
 - `build-<target>` runs `cargo xtask ci build`, which builds the `dev` profile until QUAL-E16-T21 adds the `pr` profile. On Linux it also runs `cargo xtask ci build-test-release`.
 - `hosted-test-<os>` runs `cargo xtask test unit`.
-- `hosted-l3` and `hosted-parity-nano` are in `ci-gate`'s `needs` but not listed, because their suites do not exist yet (QUAL-E3-T10, QUAL-E5-T06). Each fails if it is listed before then.
-- `ci-gate` runs `cargo xtask ci ci-gate`, which reads each job's result from the `needs` context. Beyond the row above, it fails when `changes` did not succeed, when a job `changes` listed was skipped, and when `changes` lists a job that `ci-gate` does not wait for. It runs even in a cancelled run, because a skipped `ci-gate` would report success.
+- `hosted-l3` and `hosted-parity-nano` are in `ci-gate`'s `needs` but not listed, so they show as skipped, because their suites do not exist yet (planned: QUAL-E3-T09/T10 and QUAL-E5-T06). Each fails if it is listed before then.
+- `ci-gate` runs the base branch's `cargo xtask ci ci-gate` (§2.2 note), which reads each job's result from the `needs` context. Beyond the row above, it fails when `changes` did not succeed, when a job `changes` listed was skipped, and when `changes` lists a job that `ci-gate` does not wait for. It runs even in a cancelled run, because a skipped `ci-gate` would report success. Its summary names the tasks that add the planned jobs' suites.
 - The hosted runners are pinned by label: `ubuntu-24.04`, `macos-26` and `windows-2025`.
 
 #### 2.4 Platform promises to jobs
@@ -658,6 +664,7 @@ A new direct dependency also passes a registry check that reports its first-publ
   - the inputs are the `pull_request` event payload, `GET /pulls/{n}/commits` and `GET /issues/{n}/events`, each fetched with `gh api --paginate`, and the events also with `--include`. The checks refuse a commits list that does not match the PR's commit count, a PR of 250 commits or more (the API cannot list it whole), and a label history whose last recorded page links to a next one;
   - `pr-title` runs again on the `labeled`, `unlabeled` and `edited` events as well as `opened`, `synchronize` and `reopened`. On `merge_group`, which has no PR payload, both report success, because they are required on every member PR's head;
   - the repository setting `squash_merge_commit_title` is `PR_TITLE`, and merge commits and rebase merges are off (§8.3). Until it is set, the single-commit rule above covers the gap.
+  - *Note, 2026-10-22 (QUAL-E1-T06):* `ci-gate` and `changes` follow the same rule: they run from the base branch's `xtask`, built with no cache (§2.2 note). `dco` and `pr-title` build with no cache too, because code a PR runs in any other job can write a cache entry under the PR's ref.
 - **Security-critical code by module name** (revised 2026-10-21). Until the tasks that write it place the security-critical code below, `CODEOWNERS` owns it by module name, directly under `crates/<crate>/src/`, as `<name>.rs` or `<name>/`. `keys`, `signing` and `updater` are owned in any crate, and `admission` and `cluster_key` in `net` and `cluster`. Code for these concerns in a module of another name or deeper in the tree has no code owner, so it goes in these modules. The `lint` check's sample paths cover each one (`xtask/src/codeowners.rs`).
 - `CODEOWNERS` names no area owners (ADR-0021 §3) and never names an agent identity. It makes a maintainer a required reviewer, in addition to the review agent, for the changes that need one:
   - security-critical paths: key handling and signing; cluster admission and the cluster-key code inside `net` and `cluster`; the update client; and the hardware dispatcher and lab configuration (`bench/lab/`, `lab/`);
