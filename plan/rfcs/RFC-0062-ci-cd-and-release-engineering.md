@@ -628,7 +628,7 @@ A new direct dependency also passes a registry check that reports its first-publ
 | 5. `solver` and `cluster::apply` are pure | no `tokio`, `std::net` or filesystem crates in `solver`'s graph; a clippy `disallowed-methods` list for clock and I/O calls in `cluster::apply` and the protocol cores (RFC-0060 §2) |
 | 6. One crate per external system | an allow-list mapping each external crate (iroh, ibverbs bindings, io_uring, HiGHS bindings, the ggml binding, GPU runtime bindings) to its one permitted workspace crate |
 | 7. Backends are cargo features resolved at runtime | the core binary built with no GPU features must link no vendor runtime (checked on its dynamic-symbol table) |
-| 8. `unsafe` confined | `#![forbid(unsafe_code)]` present in every crate not on the allow-list (`kernels-*`, `io`, `tier`, `net`, `ipc`) |
+| 8. `unsafe` confined | `#![forbid(unsafe_code)]` present in every crate not on the allow-list (`kernels-*`, `io`, `tier`, `net`, `ipc`); `testkit` sets `#![deny(unsafe_code)]` instead, and its only `unsafe` is the `GlobalAlloc` impl in `src/guards.rs` under its one `#[allow(unsafe_code)]` (RFC-0001 §4.2 rule 8, note 2026-10-22) |
 | 9. `testkit` is a dev-dependency only | no normal or build dependency edge to `testkit` |
 | RFC-0060 A6: no test features in `release` | the resolved feature set of the release build excludes `fault-injection`, `debug-taps` and `guards` |
 
