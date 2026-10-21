@@ -152,9 +152,9 @@ impl std::error::Error for SchemaError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Trust {
-    /// Written by a `lab.yml` job on an untainted rig or by the trusted ingestion job.
+    /// Written by a `lab.yml` job on an untainted rig.
     Trusted,
-    /// Derived from a fork's run.
+    /// Every other result, including each fork-derived result the ingestion job stores.
     Untrusted,
 }
 
