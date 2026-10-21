@@ -30,6 +30,7 @@
 #                      commercial model service (OQ-FID-17)
 #   provenance         who wrote the text, and when
 #   access             how the source may be fetched, where its terms restrict it
+#   user_agent         the User-Agent QUAL-E5-T02 sends, where the source asks for one
 #   select             the selection rule QUAL-E5-T02 implements
 #   notes              anything else a reviewer needs
 #
@@ -569,4 +570,5 @@ licence_evidence = "Wikidata:Copyright (revision 1523614187): all structured dat
 hosted_service_output = false
 provenance = "Community-edited structured data."
 select = "Entities with P1938 (Project Gutenberg author ID) equal to the creator's ID from the catalogue record; their P570 (date of death). An ID matching no entity, or more than one, gives no date."
-notes = "Linking by ebook is not enough: on 2026-10-21 only 14 of the 150 PG-19 test and validation ebook numbers had an entity with P2034 (Project Gutenberg ebook ID), and none of those had an author (P50). Linking by author ID through the catalogue record avoids name matching. Queries follow the Wikimedia User-Agent policy (https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy): \"an informative User-Agent string with contact information\"."
+notes = "Linking by ebook is not enough: on 2026-10-21 only 14 of the 150 PG-19 test and validation ebook numbers had an entity with P2034 (Project Gutenberg ebook ID), and none of those had an author (P50). Linking by author ID through the catalogue record avoids name matching. Queries follow the Wikimedia User-Agent policy (https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy): \"an informative User-Agent string with contact information\". The string is `user_agent`; its contact is the repository URL, never a person's name or email."
+user_agent = "syntropy-corpus-import/<version> (https://github.com/syntropyai-hq/syntropy)"
