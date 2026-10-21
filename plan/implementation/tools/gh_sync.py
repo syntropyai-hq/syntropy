@@ -10,10 +10,12 @@ script again overwrites the title, body, labels, milestone and type of any
 issue whose generated content changed, and leaves alone status, assignees,
 comments and open or closed state.
 
-The script adopts an issue only if its body carries the task marker and its
-author is an owner, member or collaborator of the repository (GitHub's
-authorAssociation), so any maintainer can run it. Markers on anyone else's
-issues are counted and ignored. Before the first write of any phase, setup
+The script adopts an issue only if all three hold: its body ends with the
+task marker; its author is an owner, member or collaborator of the
+repository (GitHub's authorAssociation), whoever runs the sync; and it is an
+item of the organisation's project number PROJECT_NUMBER, which only accounts
+with write access to that project can add to. Markers on other issues are
+counted and ignored. Before the first write of any phase, setup
 included, the run stops if two adopted issues carry the same ID, or if it
 adopted nothing although the repository already has marked issues or more
 issues than half the plan: the board exists, and creating it again would
@@ -76,6 +78,10 @@ PLAN_INPUTS = ("plan/implementation/epics",
 TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
 
 PROJECT_TITLE = "Syntropy"
+# The board is the organisation's project with this number. Adoption and
+# setup() match it by number and owner, not by title, because any member who
+# can create projects could make another one with the same title.
+PROJECT_NUMBER = 1
 MARKER = "syntropy-task"
 MILESTONES = ("M0a", "M0b", "M1a", "M1b", "M2", "M3", "M4")
 
@@ -456,7 +462,9 @@ def check_banned(items, banned):
 ISSUES_Q = """query($o:String!,$n:String!,$after:String){ repository(owner:$o,name:$n){
   issues(first:100, after:$after, states:[OPEN,CLOSED]){ totalCount
     pageInfo{hasNextPage endCursor}
-    nodes{ id number body authorAssociation blockedBy(first:50){ nodes{ id } } } } } }"""
+    nodes{ id number body authorAssociation blockedBy(first:50){ nodes{ id } }
+      projectItems(first:20){ nodes{ project{ number owner{ ... on Organization{ login } } } } }
+    } } } }"""
 
 
 def existing_issues(gh):
@@ -464,17 +472,24 @@ def existing_issues(gh):
     and how many issues the repository has.
 
     Anyone can open an issue on a public repository and copy a marker into
-    it, so only issues whose author is an owner, member or collaborator are
-    adopted. Two adopted issues with the same ID stop the run."""
+    it, and an organisation member may have read access only. So an issue is
+    adopted only if its body ends with the marker, its author is an owner,
+    member or collaborator, and it is an item of the board (the org's project
+    PROJECT_NUMBER, owner checked), which needs write access to the project.
+    The sync creates every issue straight into the board. Two adopted issues
+    with the same ID stop the run."""
     found, ignored, clashes, after, total = {}, 0, [], None, 0
     while True:
         r = gh.query(ISSUES_Q, o=gh.owner, n=gh.name, after=after)["repository"]["issues"]
         total = r["totalCount"]
         for n in r["nodes"]:
-            m = re.search(rf"<!-- {MARKER}: (\S+) (\w+) -->", n["body"] or "")
+            m = re.search(rf"<!-- {MARKER}: (\S+) (\w+) -->\s*\Z", n["body"] or "")
             if not m:
                 continue
-            if n["authorAssociation"] not in TRUSTED:
+            on_board = any(i["project"]["number"] == PROJECT_NUMBER
+                           and (i["project"]["owner"] or {}).get("login") == gh.owner
+                           for i in n["projectItems"]["nodes"])
+            if n["authorAssociation"] not in TRUSTED or not on_board:
                 ignored += 1
                 continue
             if m[1] in found:
@@ -504,9 +519,10 @@ def check_adoption(existing, ignored, total, planned):
     it still resumes."""
     if not existing and (ignored or total > planned // 2):
         raise SystemExit(f"adopted no issues, but the repository has {total} issues and "
-                         f"{ignored} task marker(s) on issues whose author isn't an owner, "
-                         f"member or collaborator. Creating the board again would duplicate "
-                         f"it, so nothing was written.")
+                         f"{ignored} task marker(s) on issues that weren't adopted (author "
+                         f"not an owner, member or collaborator, or issue not on project "
+                         f"#{PROJECT_NUMBER}). Creating the board again would duplicate it, "
+                         f"so nothing was written.")
 
 
 def setup(gh, ctx):
@@ -537,13 +553,16 @@ def setup(gh, ctx):
     ctx["types"] = types
 
     project = next((p for p in repo["owner"]["projectsV2"]["nodes"]
-                    if p["title"] == PROJECT_TITLE), None)
+                    if p["number"] == PROJECT_NUMBER), None)
     if not project:
         r = gh.mutate("create the project", """mutation($o:ID!,$r:ID!,$t:String!){
             createProjectV2(input:{ownerId:$o, repositoryId:$r, title:$t}){
             projectV2{ id number url } } }""", o=ctx["owner_id"], r=ctx["repo_id"],
                       t=PROJECT_TITLE)
         project = r["createProjectV2"]["projectV2"] if r else {"id": "PROJECT", "url": "(new)"}
+        if r and project["number"] != PROJECT_NUMBER:
+            raise SystemExit(f"created the project as #{project['number']}; set PROJECT_NUMBER "
+                             f"to {project['number']} in gh_sync.py and run again")
         gh.mutate("make the project public", """mutation($p:ID!,$d:String!,$r:String!){
             updateProjectV2(input:{projectId:$p, public:true, shortDescription:$d, readme:$r}){
             projectV2{ id } } }""", p=project["id"],
@@ -647,7 +666,8 @@ def main():
     print(f"run as {login}: {len(records)} tasks, {len(epic_map)} epics, "
           f"{sum(len(d) for d in deps.values())} dependency links; "
           f"{len(existing)} already on GitHub; "
-          f"{ignored} marker(s) on other authors' issues ignored")
+          f"{ignored} marker(s) ignored (author not trusted, or issue not on "
+          f"project #{PROJECT_NUMBER})")
     orphans = sorted((v["number"], k) for k, v in existing.items()
                      if k not in by_id and k not in epic_map)
     print(f"{len(orphans)} orphan(s), synced issues whose task or epic is no longer "
