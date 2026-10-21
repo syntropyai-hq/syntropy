@@ -609,6 +609,8 @@ pub enum TapMode {
 
 At the tail, `ForceMode` replaces sampling. The token that goes back around the ring is the teacher token, so every stage sees exactly the decode or verify traffic it would see in service. The tap returns results in `TokenEntry::tap` (amendment A4). The endpoint that accepts a `ParityTapSpec` is `POST /v1/syntropy/parity` on the native API. The node config key `debug.parity_api` enables it; it defaults to `false` and answers on loopback binds only (§1.3).
 
+**Crate** (revised 2026-10-22). The block's "core / net" means `syntropy-core`. `ParityTapSpec`, `ForceMode`, `TapMode` and `LogitTap` live there, because the tail in `exec` and the driver both build against them, and RFC-0001 §4.2 rule 3 keeps compute crates such as `exec` off `net`. `net` carries them on the wire without defining them.
+
 #### 5.6 Layer-level error and bisection
 
 Any build with `debug.parity_api` set returns layer-output and stage-boundary hidden states when the parity request asks for them (§1.3). `debug-taps` builds add intra-layer taps for bisection. The report then carries `rel_l2(h_cand, h_ref)` per tapped layer, per category. When a gate fails, `cargo xtask parity bisect` re-runs the failing case with taps on every layer and reports the first layer whose relative error jumps by more than 4× over the previous layer. It then runs that layer's ops through op-level conformance (§4.2) with the captured inputs, which turns an end-to-end failure into a single op case in most runs.

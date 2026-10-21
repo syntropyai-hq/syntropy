@@ -524,23 +524,30 @@ Requantizing produces a **different model**, never an approximate mode of the sa
 **Per-model knobs only, never a named preset.** Exact output is the default, and a preset that bundles several knobs would make leaving it a one-word choice. Knobs are set one at a time, per model in its configuration or per request where the table allows; there is no bundle such as a "fast" mode that turns on several at once. Each knob's harness report is its `KnobCost` entry in the release's `ConformanceManifest` (RFC-0001 §5.15): per (knob, family, dtype class), the measured mean and p99 KL and top-1 disagreement against the exact path. RFC-0051's single informational line in `syntropy plan` and the dashboard preview reads the cost from `KnobCost` and the predicted speed gain from the solver; a knob with no `KnobCost` entry is never offered there, and cannot be enabled (`KnobUnavailable`).
 
 ```rust
-pub enum ExactnessPolicy { Exact, Approximate(ApproxKnobs) }
-pub struct ApproxKnobs {
-    pub expert_skip: Option<ExpertSkip>,        // per sequence
-    pub expert_defer: bool,                     // per sequence
-    pub miss_low_precision: Option<QuantScheme>,// instance
-    pub topk_reduce: Option<u8>,                // per sequence: experts used per token
-    pub kv_lossy: Option<KvDType>,              // instance
-    pub wire_compress: Option<WireDType>,       // instance
-    pub approx_attention: Option<ApproxAttn>,   // instance
-    pub spec_lenient: Option<f32>,              // per sequence: acceptance relaxation
-    pub act_lowp: Option<ActQuant>,             // instance; proposed in M3 (below)
+// The shapes RFC-0001 §11.3 and §18 adopted, with RFC-0054 §4.1's parameters field
+// (revised 2026-10-22; this block had a struct of knobs and a separate u16 flag set).
+pub enum ExactnessPolicy {
+    Exact,
+    Approximate { knobs: ApproxKnobs, params: ApproxParams },
 }
-bitflags! { pub struct ApproxFlags: u16 {      // TokenEntry::approx (RFC-0001 §5.8)
-    const EXPERT_SKIP = 1; const EXPERT_DEFER = 2; const MISS_LOW_PRECISION = 4; const TOPK_REDUCE = 8;
-    const KV_LOSSY = 16; const WIRE_COMPRESS = 32; const APPROX_ATTENTION = 64; const SPEC_LENIENT = 128;
-    const ACT_LOWP = 256;
+bitflags! { pub struct ApproxKnobs: u32 {      // one bit table (RFC-0001 §11.3)
+    const EXPERT_SKIP = 1 << 0; const EXPERT_DEFER = 1 << 1; const MISS_LOW_PRECISION = 1 << 2;
+    const TOPK_REDUCE = 1 << 3; const KV_LOSSY = 1 << 4; const WIRE_COMPRESS = 1 << 5;
+    const APPROX_ATTENTION = 1 << 6; const SPEC_LENIENT = 1 << 7;
+    const ACT_LOWP = 1 << 8;                   // proposed in M3 (below)
 }}
+pub type ApproxFlags = ApproxKnobs;            // TokenEntry::approx (RFC-0001 §5.8)
+pub struct ApproxParams {                      // per-knob parameters; types owned here
+    pub expert_skip: Option<ExpertSkipParams>,       // per sequence
+    pub expert_defer: Option<ExpertDeferParams>,     // per sequence
+    pub miss_low_precision: Option<QuantScheme>,     // instance
+    pub topk_reduce: Option<TopkReduceParams>,       // per sequence: experts used per token
+    pub kv_lossy: Option<KvDType>,                   // instance
+    pub wire_compress: Option<WireDType>,            // instance
+    pub approx_attention: Option<ApproxAttnParams>,  // instance
+    pub spec_lenient: Option<LenientParams>,         // per sequence: acceptance relaxation
+    pub act_lowp: Option<ActQuant>,                  // instance; proposed in M3 (below)
+}
 ```
 
 | Knob | What it changes | Scope | Set by |
