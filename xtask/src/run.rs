@@ -294,6 +294,7 @@ mod tests {
                 "clippy",
                 "check-deps",
                 "codeowners",
+                "rigs",
                 "deny",
                 "advisories",
                 "spdx",

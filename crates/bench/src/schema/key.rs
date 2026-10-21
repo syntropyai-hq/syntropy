@@ -234,10 +234,11 @@ pub struct InterconnectId(pub String);
 
 /// A BLAKE3 digest of the rig's inventory record (RFC-0061 §2.1, §6.3).
 ///
-/// The record covers CPU model and microcode, DIMM population and speed, GPU model, VBIOS and
-/// driver, NVMe model, firmware and slot, the BIOS settings that move performance, OS image
-/// and kernel, and the power plan. A new fingerprint starts a new baseline epoch for the rig,
-/// and no gate compares results across epochs. QUAL-E15-T01 computes it.
+/// It covers the whole record of `bench/lab/rigs.toml`: CPU model and microcode, memory modules,
+/// GPU model, VBIOS and driver, NVMe model, firmware and slot, NICs, the BIOS settings that move
+/// performance, each negotiated PCIe link, OS image and kernel, the power plan and the room
+/// sensor. A new fingerprint starts a new baseline epoch for the rig, and no gate compares
+/// results across epochs. [`crate::rigs::Rig::fingerprint`] computes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RigFingerprint(pub Blake3);
