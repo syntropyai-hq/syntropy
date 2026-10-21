@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# The contribution checks `dco` and `pr-title` (RFC-0062 §12.3), two of the three required checks
-# (§2.5). They judge a PR's commits, title, body and labels, so the PR must not be able to change
+# The contribution checks `dco` and `pr-title` (RFC-0062 §12.3), and `dep-diff` for new direct
+# dependencies (§12.3, §11.4), all required checks (§2.5). They judge a PR's commits, title, body,
+# labels, reviews and manifests, so the PR must not be able to change
 # how it is judged. Each job checks out the base branch, never the PR, and runs the base branch's
 # `cargo xtask` with the base branch's `governance/maintainers.toml` and `version.txt`. It restores
 # no cache, so nothing the PR ran elsewhere reaches the build.
@@ -19,6 +20,9 @@ name: pr-meta
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+  # A maintainer's review can approve a new dependency, so `dep-diff` runs again on reviews.
+  pull_request_review:
+    types: [submitted, dismissed]
   merge_group:
     types: [checks_requested]
 
@@ -27,7 +31,7 @@ permissions:
 
 concurrency:
   group: pr-meta-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 defaults:
   run:
@@ -46,7 +50,7 @@ jobs:
         if: github.event_name == 'merge_group'
         run: echo "dco is required on each member PR's head (RFC-0062 §12.3)"
       - name: Check out the base branch, not the PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -54,20 +58,20 @@ jobs:
       # No cache: code the PR runs in any other job can write a cache entry under this PR's ref,
       # and a restored `target/` could hold an `xtask` built from the PR. Built from scratch, the
       # check is the base branch's.
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name != 'merge_group'
         uses: ./.github/actions/setup-rust
         with:
           cache-key: pr-meta
           cache: "off"
       - name: Fetch every commit of the PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
         run: gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" > "$RUNNER_TEMP/commits.json"
       - name: cargo xtask ci dco
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         run: >-
           cargo xtask ci dco
           --event "$GITHUB_EVENT_PATH"
@@ -94,20 +98,20 @@ jobs:
           echo "::error::the base branch changed; push to the PR so pr.yml runs ci-gate against the new base"
           exit 1
       - name: Check out the base branch, not the PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
       # No cache, as in `dco`.
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name != 'merge_group'
         uses: ./.github/actions/setup-rust
         with:
           cache-key: pr-meta
           cache: "off"
       # The label history is fetched with its headers, which show that the last page was read.
       - name: Fetch every commit and the label history of the PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -117,7 +121,7 @@ jobs:
           gh api --include --paginate "repos/$REPO/issues/$NUMBER/events" \
             > "$RUNNER_TEMP/label-events.http"
       - name: cargo xtask ci pr-title
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         run: >-
           cargo xtask ci pr-title
           --event "$GITHUB_EVENT_PATH"
@@ -125,3 +129,70 @@ jobs:
           --label-events "$RUNNER_TEMP/label-events.http"
           --roster "$GITHUB_WORKSPACE/governance/maintainers.toml"
           --version-file "$GITHUB_WORKSPACE/version.txt"
+
+  dep-diff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Pass on a merge group
+        if: github.event_name == 'merge_group'
+        run: echo "dep-diff is required on each member PR's head (RFC-0062 §12.3)"
+      - name: Check out the base branch, not the PR
+        if: github.event_name != 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      # The PR merged into its base, read as data: `cargo metadata --no-deps` on its manifests,
+      # and its licence manifest. None of its code runs.
+      - name: Check out the PR's manifests, as data
+        if: github.event_name != 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          persist-credentials: false
+      # No cache, as in `dco`.
+      - if: github.event_name != 'merge_group'
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: pr-meta
+          cache: "off"
+      - name: Fetch the PR's reviews and label history
+        if: github.event_name != 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" > "$RUNNER_TEMP/reviews.json"
+          gh api --include --paginate "repos/$REPO/issues/$NUMBER/events" \
+            > "$RUNNER_TEMP/label-events.http"
+      # Bootstrap: until the base branch has the `dep-diff` job, which holds only until the PR
+      # that adds it merges, that PR is judged by its own. A base that fails to build fails here.
+      - name: Find the base branch's dep-diff
+        id: evaluator
+        if: github.event_name != 'merge_group'
+        run: |
+          jobs="$(cargo xtask ci --list)"
+          if awk '$1 == "dep-diff" { found = 1 } END { exit !found }' <<<"$jobs"; then
+            echo "dir=$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the base branch has no dep-diff job yet, so this PR's own judges it"
+            echo "dir=$GITHUB_WORKSPACE/pr" >> "$GITHUB_OUTPUT"
+          fi
+      - name: cargo xtask ci dep-diff
+        if: github.event_name != 'merge_group'
+        working-directory: ${{ steps.evaluator.outputs.dir }}
+        run: |
+          rustup toolchain install --no-self-update
+          cargo xtask ci dep-diff \
+            --base "$GITHUB_WORKSPACE" \
+            --head "$GITHUB_WORKSPACE/pr" \
+            --event "$GITHUB_EVENT_PATH" \
+            --reviews "$RUNNER_TEMP/reviews.json" \
+            --label-events "$RUNNER_TEMP/label-events.http" \
+            --roster "$GITHUB_WORKSPACE/governance/maintainers.toml"

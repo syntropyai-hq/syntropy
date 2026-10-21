@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::run::Context;
-use crate::{ci_gate, codeowners, contrib, repo_settings, toolchain};
+use crate::{ci_gate, codeowners, contrib, dep_diff, instructions, repo_settings, toolchain};
 
 /// A named job or suite: the steps it runs, in order.
 #[derive(Debug, PartialEq, Eq)]
@@ -197,6 +197,14 @@ pub const JOBS: &[Entry] = &[
                     run: codeowners::step,
                 },
             },
+            Step {
+                name: "agent-instructions",
+                action: Action::Builtin {
+                    shown: "ci/agent-instructions.toml is well formed and CODEOWNERS owns every \
+                            file it lists",
+                    run: instructions::step,
+                },
+            },
             // The rig inventory of RFC-0061 §6.3 (QUAL-E15-T01).
             Step {
                 name: "rigs",
@@ -315,6 +323,73 @@ pub const JOBS: &[Entry] = &[
                 run: contrib::pr_title_step,
             },
         }],
+        pending: &[],
+    },
+    Entry {
+        name: "dep-diff",
+        summary: "a new direct dependency or vendored component has a maintainer's approval, and \
+                  each new crate resolves on crates.io",
+        defined_in: "RFC-0062 §11.4 and §12.3",
+        params: &[
+            Param {
+                name: "--base",
+                value: "<dir>",
+                help: "a checkout of the PR's base commit",
+                required: true,
+            },
+            Param {
+                name: "--head",
+                value: "<dir>",
+                help: "a checkout of the PR merged into its base",
+                required: true,
+            },
+            Param {
+                name: "--event",
+                value: "<file>",
+                help: "the pull_request event payload, for the head commit and the labels",
+                required: false,
+            },
+            Param {
+                name: "--reviews",
+                value: "<file>",
+                help: "every review, as GET /repos/{owner}/{repo}/pulls/{n}/reviews returns them",
+                required: false,
+            },
+            Param {
+                name: "--label-events",
+                value: "<file>",
+                help: "the label history, as GET /repos/{owner}/{repo}/issues/{n}/events returns it",
+                required: false,
+            },
+            Param {
+                name: "--roster",
+                value: "<file>",
+                help: "the maintainer roster to trust: the base branch's governance/maintainers.toml",
+                required: false,
+            },
+            Param {
+                name: "--registry",
+                value: "<dir>",
+                help: "recorded crates.io answers to read instead of asking crates.io",
+                required: false,
+            },
+        ],
+        steps: &[
+            Step {
+                name: "dep-diff",
+                action: Action::Builtin {
+                    shown: "every new direct dependency has a maintainer's approval",
+                    run: dep_diff::step,
+                },
+            },
+            Step {
+                name: "registry",
+                action: Action::Builtin {
+                    shown: "every new crate resolves on crates.io, with its publisher printed",
+                    run: dep_diff::registry_step,
+                },
+            },
+        ],
         pending: &[],
     },
     Entry {
@@ -522,6 +597,8 @@ mod tests {
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
                 "cargo xtask check-deps",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
+                "xtask: ci/agent-instructions.toml is well formed and CODEOWNERS owns every file it \
+                 lists",
                 "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- rigs \
                  check",
                 "cargo xtask deny",

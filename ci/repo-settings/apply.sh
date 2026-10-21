@@ -40,8 +40,13 @@
 #    `semver-major-approved`. `pr-title` fails, naming the test account as not a maintainer.
 #    Close the PR, delete the branch and remove the Triage role.
 # 4. Code-owner review, if `ruleset-main-code-owners.json` is kept: as the test account with the
-#    Write role, open a PR that changes a file under `.github/`. It cannot merge without a
-#    maintainer's approval. Close it and remove the role.
+#    Write role, open a PR that changes a file under `.github/`, and one that changes a file
+#    `ci/agent-instructions.toml` lists, such as `AGENTS.md`. Neither can merge without a
+#    maintainer's approval (QUAL-E1-T19). Close them and remove the role.
+# 5. A new dependency needs a maintainer: as the test account with the Write role, open a PR that
+#    adds a dev-dependency no manifest uses yet to one crate. `dep-diff` fails and the PR cannot
+#    merge. A maintainer's approving review on its head commit, or the `dependency-approved`
+#    label applied by a maintainer, turns `dep-diff` green. Close it and remove the role.
 
 set -euo pipefail
 
