@@ -5,7 +5,7 @@
 - Depends on: RFC-0001 (§13, §14, §16), RFC-0060, RFC-0010, RFC-0053; ADR-0004, ADR-0008, ADR-0013, ADR-0017, ADR-0019, ADR-0020; ADR-0610, ADR-0611, ADR-0612
 - Expanded by: RFC-0062 (when and where benchmark jobs run), every domain RFC (its microbenchmarks, §9)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2)
+- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2); 2026-10-22 (§4.3's ADR-0017 row names loaded draft heads, as ADR-0017's revised item 7 does)
 
 ## Summary
 
@@ -331,7 +331,7 @@ Several foundation ADRs name a measurement that would reopen them. Each such mea
 | ADR-0012 | a tokio-hosted dispatcher is within 2% on `t_fixed` and p99 step time | `exec.dispatcher.ab` (an experimental build flag) | once at M1, then per RC |
 | ADR-0013 | `UringDirect` is within 5% of `PreadPool` in throughput and within 20% in CPU time per GB at expert sizes | `io.engine.uring_vs_pread` | nightly on Linux rigs |
 | ADR-0014 | each feature against its fallback, for speed | `feat.<feature>.vs_fallback` | nightly on the rig with the feature |
-| ADR-0017 | trained draft heads, wide trees and pipelined speculation are enabled by default only after a gain on Tier 1 | `spec.<mode>.<family>` pairs | nightly from M3 |
+| ADR-0017 | loaded draft heads, wide trees and pipelined speculation are enabled by default only after a gain on Tier 1 | `spec.<mode>.<family>` pairs | nightly from M3 |
 
 ### 5. Roofline and model-efficiency reporting
 
