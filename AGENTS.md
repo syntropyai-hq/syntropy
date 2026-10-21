@@ -122,7 +122,7 @@ The board's issues mirror the epic files, so change a task in its epic file, nev
 
 `sizing.py` and `schedsim.py` print `[estimate]` figures only. Never copy their output into a document as a fact.
 
-Before pushing, run the same lint job CI runs: `cargo xtask ci lint`. Today it runs `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`, and after its verdict it lists the checks still to come: `cargo xtask check-deps` with the `unsafe` placement and release-feature checks (QUAL-E1-T03), `cargo-deny` and the licence manifest (QUAL-E1-T04), DCO and the PR title (QUAL-E1-T05), and the workflow lints (QUAL-E1-T09). `cargo xtask ci --list` and `cargo xtask test --list` name the jobs and test suites, which `xtask/src/registry.rs` defines. CI will run the same commands once QUAL-E1-T06 adds `pr.yml`.
+Before pushing, run the same lint job CI runs: `cargo xtask ci lint`. Today it runs `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`, and after its verdict it lists the checks RFC-0062 §2.3 and §12.4 put in `lint` that it doesn't run yet, with the task that adds each: `cargo xtask check-deps` with the `unsafe` placement and release-feature checks (QUAL-E1-T03), `cargo-deny` and the licence manifest (QUAL-E1-T04), DCO and the PR title (QUAL-E1-T05), and the workflow lints (QUAL-E1-T09). Other task rows add more checks to `lint`. `cargo xtask ci --list` and `cargo xtask test --list` name the jobs and test suites, which `xtask/src/registry.rs` defines. CI will run the same commands once QUAL-E1-T06 adds `pr.yml`.
 
 ## Writing style
 
