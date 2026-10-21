@@ -432,7 +432,7 @@ No GAPs.
 | RFC-0054 | §2 | Scopes, layers and precedence | 4: PROD-E1-T02, PROD-E1-T08, PROD-E1-T15, PROD-E1-T22 | ok |
 | RFC-0054 | §3 | Value types and units | 1: PROD-E1-T01 | ok |
 | RFC-0054 | §4 | Policy objects | 5: PROD-E1-T04, PROD-E1-T07, PROD-E1-T18, PROD-E1-T21, PROD-E6-T17 | ok |
-| RFC-0054 | §5 | Key reference | 9: PROD-E1-T01, PROD-E1-T08, PROD-E1-T14, PROD-E1-T16, PROD-E1-T18, PROD-E1-T21–T22, PROD-E6-T18, PROD-E11-T07 | ok |
+| RFC-0054 | §5 | Key reference | 10: PROD-E1-T01, PROD-E1-T08, PROD-E1-T14, PROD-E1-T16, PROD-E1-T18, PROD-E1-T21–T22, PROD-E2-T01, PROD-E6-T18, PROD-E11-T07 | ok |
 | RFC-0054 | §6 | Per-model policy, placement pins and tensor overrides | 2: PROD-E1-T08–T09 | ok |
 | RFC-0054 | §7 | Per-request overrides | 4: PROD-E1-T05, PROD-E1-T10, PROD-E1-T20, PROD-E4-T01 | ok |
 | RFC-0054 | §8 | Validation | 3: PROD-E1-T03, PROD-E1-T19, PROD-E1-T22 | ok |
