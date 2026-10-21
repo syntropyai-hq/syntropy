@@ -36,8 +36,12 @@ pub const PATH: &str = "bench/lab/rigs.toml";
 pub const VERSION: u16 = 1;
 
 /// Prefixed to the canonical encoding before hashing, so a fingerprint can never equal another
-/// BLAKE3 digest of the same bytes, and a new format version changes every fingerprint.
-const DOMAIN: &[u8] = b"syntropy rig inventory fingerprint v1\0";
+/// BLAKE3 digest of the same bytes. It names [`VERSION`], so a new format version changes every
+/// fingerprint without a second constant to keep in step: `syntropy rig inventory fingerprint
+/// v1` and a NUL byte for version 1.
+fn domain() -> String {
+    format!("syntropy rig inventory fingerprint v{VERSION}\0")
+}
 
 /// `bench/lab/rigs.toml`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -344,10 +348,11 @@ impl Rig {
         problems
     }
 
-    /// The fingerprint of RFC-0061 §2.1: BLAKE3 over [`DOMAIN`] and [`Rig::canonical`].
+    /// The fingerprint of RFC-0061 §2.1: BLAKE3 over a domain string that names [`VERSION`],
+    /// then [`Rig::canonical`].
     pub fn fingerprint(&self) -> RigFingerprint {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(DOMAIN);
+        hasher.update(domain().as_bytes());
         hasher.update(&self.canonical());
         RigFingerprint(Blake3(*hasher.finalize().as_bytes()))
     }
@@ -787,6 +792,17 @@ other = { c_states = "on" }
              s8:os_images11:lab-linux-1\
              s10:power_plans11:performance\
              s11:room_sensors6:room-1"
+        );
+    }
+
+    /// Review N2 on #1568: the domain carries the format version, and for version 1 it is the
+    /// string the golden fingerprints were computed with.
+    #[test]
+    fn the_domain_names_the_format_version() {
+        assert_eq!(VERSION, 1);
+        assert_eq!(
+            domain().as_bytes(),
+            b"syntropy rig inventory fingerprint v1\0"
         );
     }
 
