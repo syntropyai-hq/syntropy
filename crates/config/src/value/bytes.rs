@@ -31,6 +31,9 @@ const UNITS: &[(&str, u64)] = &[
     ("TB", 1_000_000_000_000),
 ];
 
+/// Decimal places accepted in a size, after trailing zeros: far finer than a byte at any unit.
+const MAX_DECIMALS: usize = 18;
+
 /// Units used on output, largest first. Output is always IEC.
 const IEC_OUT: &[(&str, u64)] = &[("TiB", TIB), ("GiB", GIB), ("MiB", MIB), ("KiB", KIB)];
 
@@ -51,28 +54,52 @@ impl ByteSize {
     }
 
     /// `n` KiB.
+    ///
+    /// # Panics
+    ///
+    /// If the size exceeds 2^64 - 1 bytes. In a `const` item that is a compile error.
     pub const fn kib(n: u64) -> Self {
-        Self(Bytes(n * KIB))
+        Self(Bytes(scaled(n, KIB)))
     }
 
     /// `n` MiB.
+    ///
+    /// # Panics
+    ///
+    /// If the size exceeds 2^64 - 1 bytes. In a `const` item that is a compile error.
     pub const fn mib(n: u64) -> Self {
-        Self(Bytes(n * MIB))
+        Self(Bytes(scaled(n, MIB)))
     }
 
     /// `n` GiB.
+    ///
+    /// # Panics
+    ///
+    /// If the size exceeds 2^64 - 1 bytes. In a `const` item that is a compile error.
     pub const fn gib(n: u64) -> Self {
-        Self(Bytes(n * GIB))
+        Self(Bytes(scaled(n, GIB)))
     }
 
     /// `n` TiB.
+    ///
+    /// # Panics
+    ///
+    /// If the size exceeds 2^64 - 1 bytes. In a `const` item that is a compile error.
     pub const fn tib(n: u64) -> Self {
-        Self(Bytes(n * TIB))
+        Self(Bytes(scaled(n, TIB)))
     }
 
     /// The size as the core unit type.
     pub const fn bytes(self) -> Bytes {
         self.0
+    }
+}
+
+/// `n × scale`, panicking rather than wrapping when it exceeds `u64`.
+const fn scaled(n: u64, scale: u64) -> u64 {
+    match n.checked_mul(scale) {
+        Some(bytes) => bytes,
+        None => panic!("the size is larger than 2^64 - 1 bytes"),
     }
 }
 
@@ -128,15 +155,25 @@ pub(super) fn parse_scaled(s: &str, units: &[(&str, u64)]) -> Result<u64, ValueE
     let Some(&(_, scale)) = units.iter().find(|(name, _)| *name == unit) else {
         return Err(bad(&format!("`{unit}` is not a unit")));
     };
-    // digits × scale / 10^frac, in u128 so nothing in range overflows, then rounded.
+    // digits × scale / 10^frac in u128, then rounded. Leading and trailing zeros carry no
+    // value, so they do not count against the digit limits.
     let too_big = || ValueError::out_of_range(format!("`{s}` is larger than 2^64 - 1 bytes"));
-    if int.len() + frac.len() > 30 {
+    let int = int.trim_start_matches('0');
+    let frac = frac.trim_end_matches('0');
+    // A whole part of 21 or more digits is at least 10^20 bytes, above 2^64 - 1.
+    if int.len() > 20 {
         return Err(too_big());
     }
-    let digits: u128 = format!("{int}{frac}")
+    if frac.len() > MAX_DECIMALS {
+        return Err(bad(&format!(
+            "it has more than {MAX_DECIMALS} decimal places"
+        )));
+    }
+    let digits: u128 = format!("0{int}{frac}")
         .parse()
         .map_err(|_| bad("malformed"))?;
-    // 30 digits are below 2^100, but times a 2^40 scale they can pass 2^128: check each step.
+    // At most 38 digits fit u128, but times a 2^40 scale they can pass 2^128, which also means
+    // the size passes 2^64 - 1 bytes: check each step.
     let divisor = 10u128.pow(frac.len() as u32);
     let scaled = digits
         .checked_mul(u128::from(scale))
@@ -203,6 +240,23 @@ mod tests {
     }
 
     #[test]
+    fn zeros_do_not_count_against_the_digit_limits() {
+        let padded = "0".repeat(40) + "1KiB";
+        assert_eq!(padded.parse(), Ok(ByteSize::kib(1)));
+        let trailing = "1.".to_owned() + &"0".repeat(40) + "KiB";
+        assert_eq!(trailing.parse(), Ok(ByteSize::kib(1)));
+        assert_eq!("18446744073709551615B".parse(), Ok(ByteSize::b(u64::MAX)));
+        assert_eq!("0.5B".parse(), Ok(ByteSize::b(1)));
+    }
+
+    #[test]
+    fn constructors_panic_rather_than_wrap() {
+        assert_eq!(ByteSize::tib(16_777_215).bytes(), Bytes(16_777_215 << 40));
+        let result = std::panic::catch_unwind(|| ByteSize::tib(16_777_216));
+        assert!(result.is_err(), "2^24 TiB is 2^64 bytes");
+    }
+
+    #[test]
     fn rounds_fractions_to_the_nearest_byte() {
         // 0.1 GiB = 107374182.4 bytes.
         assert_eq!("0.1GiB".parse(), Ok(ByteSize::b(107_374_182)));
@@ -225,6 +279,14 @@ mod tests {
         );
         let huge = "9".repeat(20) + "." + &"9".repeat(10) + "TB";
         assert!(huge.parse::<ByteSize>().is_err());
+        let too_precise = "1.".to_owned() + &"0".repeat(18) + "1KiB";
+        let err = too_precise.parse::<ByteSize>().unwrap_err();
+        assert!(err.message().contains("decimal places"), "{err}");
+        assert!(
+            ("1".to_owned() + &"0".repeat(20) + "B")
+                .parse::<ByteSize>()
+                .is_err()
+        );
         assert!(serde_json::from_str::<ByteSize>("-4").is_err());
     }
 
