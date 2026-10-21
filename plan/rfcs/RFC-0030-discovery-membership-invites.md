@@ -148,7 +148,7 @@ The Synology overlap is the one conflict found. It is not a reason to move:
 - It applies only on a Synology NAS that is in an HA pair or in the middle of a migration. DSM is not a Syntropy platform.
 - Neither row names a UDP service on 7434 or 7435. Migration Assistant labels its range DRBD, which runs over TCP. The HA row labels 7400–7999 only "HA", for TCP and UDP together.
 - A pair beside 7433 cannot avoid the range, because 7433 is inside it too. A pair elsewhere would lose the single firewall rule for 7433–7435.
-- Nmap's 7435/tcp observation names no software, and no home-software list claims the port. Where something already holds a port on a host, the iroh endpoint falls back to an ephemeral UDP port (table above). What the TCP fallback does when TCP 7435 is taken is not yet specified (RFC-0031 §5.3).
+- Nmap's 7435/tcp observation names no software, and no home-software list claims the port. Where something already holds a port on a host, the iroh endpoint falls back to an ephemeral UDP port (table above). What the TCP fallback does when TCP 7435 is taken is open as OQ-NET-31, which RFC-0031 §5.3 answers.
 
 The daemon binds discovery and iroh sockets to all interfaces except those matching `discovery.ignore_interfaces`. The default list covers container bridges (`docker*`, `br-*`, `veth*`, `virbr*`, `vmnet*`, `vboxnet*`) and the loopback interface.
 

@@ -1,6 +1,6 @@
 # Open questions
 
-This register lists the technical questions the Syntropy plan still leaves open, and the answers to the ones it has settled. It collects RFC-0001 §17, the "Open questions" sections of the 24 domain RFCs, the measurements that ADR revisit clauses still wait on, and the spike and decision tasks in `plan/implementation/epics/`. 136 questions are open. Answered questions are in [Settled](#settled) at the end, each with the ADR or RFC section that holds the answer.
+This register lists the technical questions the Syntropy plan still leaves open, and the answers to the ones it has settled. It collects RFC-0001 §17, the "Open questions" sections of the 24 domain RFCs, the measurements that ADR revisit clauses still wait on, and the spike and decision tasks in `plan/implementation/epics/`. 138 questions are open. Answered questions are in [Settled](#settled) at the end, each with the ADR or RFC section that holds the answer.
 
 How to read it:
 - **RFC** is the RFC that records the answer. Where two are listed, the first one holds it.
@@ -112,6 +112,7 @@ When a question closes, move it to Settled with the ADR or RFC section that answ
 | OQ-NET-26 | Should prefix-cache entries carry boundary history? Positions served from the prefix cache were never sent across a boundary, so recovery for them cascades towards the head. | Matters for agent workloads with long shared prefixes. | RFC-0033, RFC-0022 | benchmark on agent workloads (RFC-0033 OQ5) | DIST-E14-T16 | M3 |
 | OQ-NET-28 | How close are ADR-0312's time-to-resume predictions to measured recoveries? | Errors above 50% choose the wrong recovery strategy (ADR-0312 revisit). | RFC-0033 | benchmark from the chaos suite | DIST-E16-T06 | M3 |
 | OQ-NET-29 | Does QUIC stream delivery add more than 50 µs at p99 over datagram delivery for decode frames on the LAN? | ADR-0308's trigger for revisiting the frame mapping. | RFC-0031 | benchmark (RFC-0061 `net.hop.*` rows) | QUAL-E13-T10 | M2 |
+| OQ-NET-31 | What does the TCP fallback do when TCP 7435 is already taken on a host? RFC-0030 §3 gives the UDP iroh endpoint a fallback to an ephemeral port, but RFC-0031 §5.3 says nothing for TCP. | The fallback is the only path when UDP is blocked, so a silent bind failure leaves the node unreachable exactly then. Nmap lists 7435/tcp as open on some internet hosts with no service named (RFC-0030 §3's home-software check). | RFC-0031 §5.3 | decision. Options: (a) bind an ephemeral TCP port and advertise it as the UDP endpoint's fallback is advertised, with a `doctor` warning, because the installer's port-based firewall rule for TCP 7435 does not cover it; (b) run with no inbound TCP listener and report it; (c) refuse to start the daemon and name the port. Recommended default: (a), because it matches the UDP endpoint's rule and keeps the node reachable | DIST-E7-T05 | M2 |
 
 ## Security and trust
 
