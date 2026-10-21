@@ -490,7 +490,7 @@ Each sequence also has **decode segments**: ranges of scored positions evaluated
 
 A corpus version is frozen once published. A change creates vN+1, and the baseline spread and the RFC-0042 ceilings are recomputed for it (ADR-0601).
 
-The sources are listed in `testdata/corpus/SOURCES.toml` (QUAL-E5-T01, 2026-10-21). Each entry has its pinned revision, file hashes, licence, the licence file read at that revision, provenance, and the selection rule QUAL-E5-T02 implements. CC-BY sources have their attribution files in `testdata/corpus/attribution/`. Code and template repositories are pinned to their last commit before 2021-06-01, before large-model code-generation services were public. Every category has a primary source:
+The sources are listed in `testdata/corpus/SOURCES.toml` (QUAL-E5-T01, 2026-10-21). Each entry has its pinned revision, file hashes, licence, the licence file read at that revision, provenance, and the selection rule QUAL-E5-T22 implements. CC-BY sources have their attribution files in `testdata/corpus/attribution/`. Code and template repositories are pinned to their last commit before 2021-06-01, before large-model code-generation services were public. Every category has a primary source:
 
 | Category | Primary | Secondary |
 |---|---|---|
