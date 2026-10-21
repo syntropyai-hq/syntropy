@@ -6,6 +6,9 @@ members = [
     "crates/core",
     "crates/obs",
     "crates/config",
+    # The `#[derive(ConfigSection)]` macro that `config` re-exports (RFC-0054 §10.3); no workspace
+    # dependencies
+    "crates/config-derive",
     # Layer 1
     "crates/manifest",
     "crates/kernels",
@@ -53,9 +56,15 @@ publish = false
 
 [workspace.dependencies]
 bitflags = { version = "2", features = ["serde"] }
+proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 smallvec = { version = "1", features = ["serde"] }
+syn = { version = "3.0.9", default-features = false, features = ["derive", "parsing", "printing", "proc-macro"] }
 # TOML reading only (no writer): the RFC-0042 tolerance tables, `numerics/tolerances-v<N>.toml`.
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
+trybuild = "1.0.122"
+zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
