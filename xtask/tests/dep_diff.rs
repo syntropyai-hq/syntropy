@@ -183,3 +183,58 @@ fn approval_reads_all_of_the_pr_data_or_none() {
         "{log}"
     );
 }
+
+#[test]
+fn a_configuration_that_uses_include_counts_on_every_pr() {
+    // Built at run time: committed, such a file would count on every later PR too.
+    let tree =
+        std::env::temp_dir().join(format!("syntropy-dep-diff-include-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tree);
+    copy(&fixtures().join("base"), &tree);
+    std::fs::create_dir_all(tree.join(".cargo")).unwrap();
+    std::fs::write(
+        tree.join(".cargo/config.toml"),
+        "[[include]]\npath = \"more.toml\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tree.join(".cargo/more.toml"),
+        "[alias]\nprobe = \"version\"\n",
+    )
+    .unwrap();
+    // The base is the same tree, so nothing changed, and it still needs approval.
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args(["ci", "dep-diff", "--base"])
+        .arg(&tree)
+        .arg("--head")
+        .arg(&tree)
+        .arg("--registry")
+        .arg(fixtures().join("registry"))
+        .output()
+        .expect("xtask runs");
+    let log = String::from_utf8(output.stderr).expect("UTF-8 output");
+    std::fs::remove_dir_all(&tree).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{log}");
+    assert!(
+        log.contains(
+            "dep-diff: new dependency source setting in .cargo/config.toml, compared on every PR \
+             because it uses `include`, which loads settings from files this check does not \
+             follow"
+        ),
+        "{log}"
+    );
+}
+
+/// Copies the tree at `from` to `to`.
+fn copy(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}

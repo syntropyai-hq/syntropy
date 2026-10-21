@@ -296,7 +296,7 @@ serde = { git = \"https://example.invalid/serde\" } # a fork
 }
 
 #[test]
-fn configs_are_found_at_any_depth_except_in_the_head_inside_the_base() {
+fn configs_are_found_at_any_depth_except_in_the_head_inside_the_base_and_target() {
     let root =
         std::env::temp_dir().join(format!("syntropy-dep-diff-configs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -310,7 +310,7 @@ fn configs_are_found_at_any_depth_except_in_the_head_inside_the_base() {
         std::fs::create_dir_all(root.join(dir)).unwrap();
         std::fs::write(root.join(dir).join("config.toml"), "").unwrap();
     }
-    // A fixture workspace of its own: its configuration never reaches this workspace's builds.
+    // A fixture workspace of its own is read too: telling it apart would rest on its text.
     std::fs::write(
         root.join("tests/fixture/Cargo.toml"),
         "[workspace]\nmembers = []\n",
@@ -319,7 +319,11 @@ fn configs_are_found_at_any_depth_except_in_the_head_inside_the_base() {
     let found = cargo_configs(&root, Some(&root.join("pr"))).unwrap();
     assert_eq!(
         found.configs,
-        [".cargo/config.toml", "crates/a/.cargo/config.toml"]
+        [
+            ".cargo/config.toml",
+            "crates/a/.cargo/config.toml",
+            "tests/fixture/.cargo/config.toml"
+        ]
     );
     let found = cargo_configs(&root, None).unwrap();
     assert_eq!(
@@ -327,7 +331,8 @@ fn configs_are_found_at_any_depth_except_in_the_head_inside_the_base() {
         [
             ".cargo/config.toml",
             "crates/a/.cargo/config.toml",
-            "pr/.cargo/config.toml"
+            "pr/.cargo/config.toml",
+            "tests/fixture/.cargo/config.toml"
         ]
     );
     assert!(found.links.is_empty());
@@ -365,20 +370,18 @@ fn a_key_spelt_so_the_check_cannot_read_it_counts_as_a_setting() {
         source_settings(&changed, CONFIG_TABLES),
         source_settings(hidden, CONFIG_TABLES)
     );
-    // `include` is a setting, and its files are named for reading.
-    assert!(!source_settings("include = \"more.toml\"\n", CONFIG_TABLES).is_empty());
+    // A configuration that uses `include`, or holds a multi-line string, cannot be read with
+    // certainty, in any spelling of the key.
+    for text in [
+        "[[include]]\npath = \"more.toml\"\n",
+        "include = [\"more.toml\"]\n",
+        "'include' = [\"more.toml\"]\n",
+        "[alias]\nx = \"\"\"\n[build]\n\"\"\"\n",
+    ] {
+        assert!(unreadable(text).is_some(), "{text} was read as certain");
+    }
     assert_eq!(
-        included(
-            ".cargo/config.toml",
-            "include = [\"more.toml\", \"../../x.toml\"]\n"
-        ),
-        [Some(".cargo/more.toml".to_owned()), None]
-    );
-    assert_eq!(
-        included(
-            "crates/a/.cargo/config.toml",
-            "[[include]]\npath = \"../shared.toml\"\n"
-        ),
-        [Some("crates/a/shared.toml".to_owned())]
+        unreadable("[build]\njobs = 4\n[alias]\nb = \"build\"\n"),
+        None
     );
 }

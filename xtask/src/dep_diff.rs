@@ -13,7 +13,9 @@
 //! - a setting that changes where dependencies come from, added or changed: a `[patch]` or
 //!   `[replace]` table in the root manifest, or a `[source]`, `[registries]`, `[registry]`,
 //!   `[patch]` or `[replace]` table in any `.cargo/config.toml`. A patch or a source replacement
-//!   swaps a crate the workspace already uses for other code, so it needs the same approval.
+//!   swaps a crate the workspace already uses for other code, so it needs the same approval. A
+//!   configuration file this check cannot read with certainty, because it uses `include` or holds
+//!   a multi-line string, counts on every PR while it stays.
 //!
 //! Path dependencies between workspace members are not new dependencies: `check-deps` judges
 //! those edges (RFC-0001 §4.2).
@@ -318,9 +320,8 @@ pub struct Found {
 }
 
 /// Every `.cargo/config.toml` and `.cargo/config` under `root`, root-relative, except under
-/// `skip` (the head checkout, when it lies inside the base), `target/`, `.git/` and the root of
-/// another workspace, such as a test fixture's. A configuration file applies to the builds cargo
-/// runs in its directory and below, so one inside another workspace never reaches this one's.
+/// `skip` (the head checkout, when it lies inside the base), `target/` and `.git/`. Test
+/// fixtures' files are read too: telling them apart would rest on text the PR controls.
 fn cargo_configs(root: &Path, skip: Option<&Path>) -> Result<Found, String> {
     let relative = |path: &Path| {
         path.strip_prefix(root)
@@ -357,7 +358,7 @@ fn cargo_configs(root: &Path, skip: Option<&Path>) -> Result<Found, String> {
                         found.configs.push(relative(&path.join(file)));
                     }
                 }
-            } else if !is_workspace_root(&path) {
+            } else {
                 pending.push(path);
             }
         }
@@ -367,53 +368,23 @@ fn cargo_configs(root: &Path, skip: Option<&Path>) -> Result<Found, String> {
     Ok(found)
 }
 
-/// Whether `dir` holds the root manifest of a workspace of its own: a `Cargo.toml` with a
-/// `[workspace]` table.
-fn is_workspace_root(dir: &Path) -> bool {
-    std::fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|text| {
-        text.lines()
-            .any(|line| crate::licences::toml::strip_comment(line).trim() == "[workspace]")
-    })
-}
-
-/// The root-relative files an `include` in the configuration file `file` names: each quoted
-/// string ending in `.toml` on an `include` line or in an `[[include]]` table, relative to
-/// `file`'s directory. `None` for one that leaves the tree.
-fn included(file: &str, text: &str) -> Vec<Option<String>> {
-    let dir = Path::new(file).parent().unwrap_or(Path::new(""));
-    let mut in_include = false;
-    let mut paths = Vec::new();
-    for line in text.lines() {
-        let line = crate::licences::toml::strip_comment(line).trim();
-        if line.starts_with('[') {
-            in_include = line.trim_matches(|c| c == '[' || c == ']').trim() == "include";
-            continue;
-        }
-        let key = line.split('=').next().unwrap_or("").trim();
-        if !(in_include || key == "include") {
-            continue;
-        }
-        for (k, quoted) in line.split('"').enumerate() {
-            if k % 2 == 1 && quoted.ends_with(".toml") {
-                let mut parts: Vec<String> = Vec::new();
-                let mut inside = !quoted.starts_with('/');
-                for part in dir
-                    .join(quoted)
-                    .to_string_lossy()
-                    .replace('\\', "/")
-                    .split('/')
-                {
-                    match part {
-                        "" | "." => {}
-                        ".." => inside &= parts.pop().is_some(),
-                        part => parts.push(part.to_owned()),
-                    }
-                }
-                paths.push(inside.then(|| parts.join("/")));
-            }
-        }
+/// Why a cargo configuration file cannot be read with certainty, if it cannot: it uses `include`,
+/// which loads settings from other files, or it holds a multi-line string, which could hide a
+/// table header. Such a file counts as a new setting on every PR while it stays.
+pub fn unreadable(text: &str) -> Option<&'static str> {
+    if text.contains("\"\"\"") || text.contains("\'\'\'") {
+        return Some("it holds a multi-line string, which could hide a table header");
     }
-    paths
+    let includes = text.lines().any(|line| {
+        let line = crate::licences::toml::strip_comment(line).trim();
+        let path = match line.strip_prefix('[') {
+            Some(header) => header.trim_matches(|c| c == '[' || c == ']'),
+            None => line.split('=').next().unwrap_or(""),
+        };
+        !line.is_empty() && names_a_table(path, &["include"])
+    });
+    includes
+        .then_some("it uses `include`, which loads settings from files this check does not follow")
 }
 
 /// Each source setting of the tree at `root`, as `<file>: <setting>`.
@@ -433,23 +404,6 @@ fn sources(root: &Path, skip: Option<&Path>) -> Result<BTreeSet<String>, String>
     }
     for file in found.configs {
         let text = read(&file)?;
-        for path in included(&file, &text) {
-            match path {
-                Some(path) => match read(&path) {
-                    Ok(included) => all.extend(
-                        source_settings(&included, CONFIG_TABLES)
-                            .into_iter()
-                            .map(|setting| format!("{path} (included by {file}): {setting}")),
-                    ),
-                    Err(_) => {
-                        all.insert(format!("{file}: includes {path}, which cannot be read"));
-                    }
-                },
-                None => {
-                    all.insert(format!("{file}: includes a file outside the tree"));
-                }
-            }
-        }
         all.extend(
             source_settings(&text, CONFIG_TABLES)
                 .into_iter()
@@ -484,6 +438,14 @@ fn new_dependencies(context: &Context) -> Result<NewDependencies, String> {
         .difference(&base_sources)
         .cloned()
         .collect();
+    // A file the check cannot read with certainty counts on every PR, whatever the base holds.
+    for file in cargo_configs(&head, None)?.configs {
+        let text = std::fs::read_to_string(head.join(&file)).map_err(|e| format!("{file}: {e}"))?;
+        if let Some(why) = unreadable(&text) {
+            new.sources
+                .push(format!("{file}, compared on every PR because {why}"));
+        }
+    }
     Ok(new)
 }
 
