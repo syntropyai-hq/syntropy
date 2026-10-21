@@ -637,12 +637,18 @@ pub fn load(root: &Path, known_rigs: &BTreeSet<String>) -> (Vec<Scenario>, Vec<P
     (scenarios, problems)
 }
 
-/// Checks that every scenario file that differs from its copy at the base commit has a higher
-/// `scenario_version` there (RFC-0061 §4.1). A new file needs no bump.
+/// Checks that every scenario file that differs from its last version has a higher
+/// `scenario_version` than that version (RFC-0061 §4.1: "Any change to the file bumps
+/// `scenario_version`").
+///
+/// A file's last version is its copy at the base commit. A file absent there may have been
+/// retired: its last version is then its copy at the newest commit in the base's history that
+/// added or changed it, so a scenario re-added after a deletion can't reuse a version with a
+/// different definition. A file that never existed in that history is new and needs no bump.
 ///
 /// `base` names the base commit. Without it, the base is `git merge-base HEAD origin/main`. The
-/// check fails closed: an `Err` means the base could not be found, and the message says how to
-/// fix that.
+/// check fails closed: an `Err` means the base, or the history a re-added file needs, could not
+/// be read, and the message says how to fix that.
 pub fn check_versions(root: &Path, base: Option<&str>) -> Result<Vec<Problem>, String> {
     let sha = resolve_base(root, base)?;
     let listing = git(
@@ -669,8 +675,9 @@ pub fn check_versions(root: &Path, base: Option<&str>) -> Result<Vec<Problem>, S
     };
     let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
     paths.sort();
+    let mut shallow: Option<bool> = None;
     for path in paths {
-        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+        if path.is_dir() || path.extension().and_then(|e| e.to_str()) != Some("toml") {
             continue;
         }
         let name = path
@@ -678,36 +685,85 @@ pub fn check_versions(root: &Path, base: Option<&str>) -> Result<Vec<Problem>, S
             .and_then(|n| n.to_str())
             .unwrap_or_default();
         let rel = format!("{SCENARIO_DIR}/{name}");
-        if !at_base.contains(&rel) {
-            continue;
-        }
-        let Ok(now) = fs::read(&path) else {
-            continue;
-        };
-        let then = git(root, &["show", &format!("{sha}:{rel}")])?;
-        if now == then {
-            continue;
-        }
         let problem = |message: String| Problem {
             path: PathBuf::from(&rel),
             message,
         };
+        let now = match fs::read(&path) {
+            Ok(now) => now,
+            Err(e) => {
+                problems.push(problem(format!(
+                    "cannot read, so its `scenario_version` cannot be checked: {e}"
+                )));
+                continue;
+            }
+        };
+        let (then, at, retired) = if at_base.contains(&rel) {
+            (
+                git(root, &["show", &format!("{sha}:{rel}")])?,
+                sha.clone(),
+                false,
+            )
+        } else {
+            if *shallow.get_or_insert(is_shallow(root)?) {
+                return Err(format!(
+                    "the scenario_version check cannot tell whether `{rel}` existed before the \
+                     base commit {}, because this clone's history is shallow. Fetch the full \
+                     history (`git fetch --unshallow`, or fetch-depth 0 in CI).",
+                    short(&sha)
+                ));
+            }
+            let last = git(
+                root,
+                &[
+                    "log",
+                    "-1",
+                    "--format=%H",
+                    "--diff-filter=AMR",
+                    &sha,
+                    "--",
+                    &rel,
+                ],
+            )?;
+            let last = String::from_utf8_lossy(&last).trim().to_string();
+            if last.is_empty() {
+                // Never in the base's history: a new scenario.
+                continue;
+            }
+            (git(root, &["show", &format!("{last}:{rel}")])?, last, true)
+        };
+        if now == then {
+            continue;
+        }
+        let place = if retired {
+            format!(
+                "at commit {}, its last version before it was removed",
+                short(&at)
+            )
+        } else {
+            format!("at the base commit {}", short(&at))
+        };
         match (version_of(&then), version_of(&now)) {
             (Some(old), Some(new)) if new > old => {}
             (Some(old), Some(new)) => problems.push(problem(format!(
-                "changed since the base commit {} without a `scenario_version` bump: it was {old} \
-                 there and is {new} now; raise it to {}",
-                short(&sha),
+                "changed without a `scenario_version` bump: it was {old} {place}, and is {new} \
+                 now; raise it to {}",
                 old + 1
             ))),
             (None, _) => problems.push(problem(format!(
-                "has no readable `scenario_version` at the base commit {}",
-                short(&sha)
+                "has no readable `scenario_version` at commit {}",
+                short(&at)
             ))),
             (_, None) => problems.push(problem(String::from("has no readable `scenario_version`"))),
         }
     }
     Ok(problems)
+}
+
+/// Whether the repository's history is shallow, so older commits may be missing.
+fn is_shallow(root: &Path) -> Result<bool, String> {
+    let out = git(root, &["rev-parse", "--is-shallow-repository"])?;
+    Ok(String::from_utf8_lossy(&out).trim() == "true")
 }
 
 fn version_of(bytes: &[u8]) -> Option<i64> {

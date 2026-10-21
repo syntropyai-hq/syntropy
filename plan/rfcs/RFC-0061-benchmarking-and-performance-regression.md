@@ -290,7 +290,7 @@ Every segment is lowercase letters, digits and `_`. The first is one of the clas
 
 A scenario names its model by its `fixtures.toml` checkpoint ID (RFC-0060 §12.3), because `BenchKey.model` is a `ModelId` content digest that only the census computes. The runner resolves the ID when it loads the checkpoint. A scenario that runs no model has no value for `BenchKey`'s required `model` and `quant` fields; that gap in QUAL-E12-T01's schema is open.
 
-`syntropy-bench scenarios check`, which the `lint` job runs, checks each file against these rules and against the rig IDs of §6.2. It also checks the version rule against a base commit: `git merge-base HEAD origin/main`, unless `--base` names another. It fails when it can't find that commit.
+`syntropy-bench scenarios check`, which the `lint` job runs, checks each file against these rules and against the rig IDs of §6.2. It also checks the version rule against a base commit: `git merge-base HEAD origin/main`, unless `--base` names another. A file absent at the base that the base's history once held, such as a retired scenario added back, is checked against its last version in that history, so a re-added scenario can't reuse a version with a different definition. The check fails when it can't find the base, or when a shallow clone hides the history a re-added file needs.
 
 #### 4.2 Success criteria
 

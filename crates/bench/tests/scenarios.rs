@@ -161,7 +161,8 @@ fn a_scenario_changed_without_a_version_bump_fails() {
     let output = repo.run(&["check"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        stderr(&output).contains("without a `scenario_version` bump: it was 1 there and is 1 now"),
+        stderr(&output)
+            .contains("changed without a `scenario_version` bump: it was 1 at the base commit"),
         "{}",
         stderr(&output)
     );
@@ -243,6 +244,99 @@ fn a_bad_scenario_file_is_reported_with_its_path() {
     );
     assert!(
         err.contains("rig `R-NOWHERE` is not a rig of RFC-0061 §6.2"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_scenario_removed_and_re_added_needs_a_higher_version_than_its_last() {
+    let repo = Repo::with_map("readd", &[1, 2]);
+    let v3 = SCENARIO.replace("scenario_version = 1", "scenario_version = 3");
+    repo.write(SCENARIO_PATH, &v3);
+    let _ = repo.run(&["render", "--write"]);
+    repo.git(&["add", "--all"]);
+    repo.git(&["commit", "--quiet", "--message", "add at version 3"]);
+    repo.git(&["rm", "--quiet", SCENARIO_PATH]);
+    let _ = repo.run(&["render", "--write"]);
+    repo.commit_as_base();
+
+    // Re-added with a different definition at a version it already had: refused.
+    let changed = format!("{v3}prefix = \"warm\"\n");
+    repo.write(
+        SCENARIO_PATH,
+        &changed.replace("scenario_version = 3", "scenario_version = 1"),
+    );
+    let _ = repo.run(&["render", "--write"]);
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(
+        err.contains("it was 3 at commit ")
+            && err.contains("its last version before it was removed, and is 1 now; raise it to 4"),
+        "{err}"
+    );
+
+    // The same definition re-added unchanged keeps its version.
+    repo.write(SCENARIO_PATH, &v3);
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    // A changed definition above the last version passes.
+    repo.write(
+        SCENARIO_PATH,
+        &changed.replace("scenario_version = 3", "scenario_version = 4"),
+    );
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+}
+
+#[test]
+fn a_new_file_in_a_shallow_clone_fails_closed() {
+    let origin = Repo::with_map("shallow-origin", &[1, 2]);
+    origin.commit_as_base();
+    origin.write("README", "second commit\n");
+    origin.commit_as_base();
+    let clone = Repo {
+        root: std::env::temp_dir().join(format!(
+            "syntropy-bench-{}-shallow-clone",
+            std::process::id()
+        )),
+    };
+    let _ = fs::remove_dir_all(&clone.root);
+    let url = format!("file://{}", origin.root.display());
+    let status = Command::new("git")
+        .args(["clone", "--quiet", "--depth", "1", &url])
+        .arg(&clone.root)
+        .status()
+        .expect("git runs");
+    assert!(status.success());
+    clone.write(SCENARIO_PATH, SCENARIO);
+    let _ = clone.run(&["render", "--write"]);
+    let output = clone.run(&["check", "--base", "HEAD"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(err.contains("this clone's history is shallow"), "{err}");
+    assert!(err.contains("git fetch --unshallow"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_scenario_file_is_reported() {
+    let repo = Repo::with_map("unreadable", &[1, 2]);
+    repo.commit_as_base();
+    let path = repo
+        .root
+        .join("bench/scenarios/decode.single.gone.q4km.toml");
+    fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+    std::os::unix::fs::symlink("no-such-target.toml", &path).expect("symlink");
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(
+        err.contains(
+            "bench/scenarios/decode.single.gone.q4km.toml: cannot read, so its \
+             `scenario_version` cannot be checked"
+        ),
         "{err}"
     );
 }

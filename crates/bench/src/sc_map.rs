@@ -347,17 +347,17 @@ mod tests {
     #[test]
     fn owners_are_tasks_listed_once() {
         let mut r = row(1);
-        assert_eq!(check(std::slice::from_ref(&r), &[1], &tasks()), Vec::<String>::new());
+        assert_eq!(
+            check(std::slice::from_ref(&r), &[1], &tasks()),
+            Vec::<String>::new()
+        );
         r.owners = vec![String::from("QUAL-E13-T20"), String::from("QUAL-E13-T20")];
         assert_eq!(
             check(std::slice::from_ref(&r), &[1], &tasks()),
             ["SC-1: owner `QUAL-E13-T20` is listed twice"]
         );
         r.owners.clear();
-        assert_eq!(
-            check(&[r], &[1], &tasks()),
-            ["SC-1: `owners` is empty"]
-        );
+        assert_eq!(check(&[r], &[1], &tasks()), ["SC-1: `owners` is empty"]);
     }
 
     #[test]
