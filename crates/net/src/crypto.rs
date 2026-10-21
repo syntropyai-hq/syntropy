@@ -3,9 +3,12 @@
 //! Cryptographic helpers (RFC-0034 §3). Owner: RFC-0034.
 //!
 //! - **Ed25519 (RFC 8032) with strict verification.** [`verify`] refuses a public key that is not
-//!   canonically encoded or is of small order, a signature whose `S` is not reduced (`S ≥ ℓ`) or
-//!   whose `R` is of small order or not canonically encoded, and then checks the cofactorless
-//!   equation `[S]B = R + [k]A`.
+//!   canonically encoded, is of small order, or is not of prime order (`[ℓ]A ≠ identity`), a
+//!   signature whose `S` is not reduced (`S ≥ ℓ`) or whose `R` is of small order or not
+//!   canonically encoded, and then checks the cofactorless equation `[S]B = R + [k]A`. A key
+//!   `A + T`, with `T` of small order, would verify signatures made with `A`'s secret whenever
+//!   `T`'s order divides `k`, so one secret could sign under eight public keys; every honest key
+//!   is `[a]B` and has prime order.
 //! - **Domain separation.** Every signature, hash and derivation names a [`Context`] from the
 //!   registry of RFC-0034 §3. The context string comes first in what is signed or hashed:
 //!   [`SigningKey::sign`] signs `ctx ‖ message`, and [`hash`] is `BLAKE3(ctx ‖ message)`. No
@@ -198,6 +201,9 @@ pub enum SignatureError {
     NonCanonicalKey,
     /// The public key is a point of small order, which can verify forged signatures.
     SmallOrderKey,
+    /// The public key has a small-order component (`[ℓ]A ≠ identity`), so a secret for another
+    /// key could sign under it.
+    MixedOrderKey,
     /// The signature is malformed (`S ≥ ℓ`, or `R` not a canonical point of large order) or does
     /// not verify.
     Invalid,
@@ -209,6 +215,7 @@ impl fmt::Display for SignatureError {
             SignatureError::MalformedKey => "the public key is not a curve point",
             SignatureError::NonCanonicalKey => "the public key is not canonically encoded",
             SignatureError::SmallOrderKey => "the public key is of small order",
+            SignatureError::MixedOrderKey => "the public key is not of prime order",
             SignatureError::Invalid => "the signature does not verify",
         })
     }
@@ -274,6 +281,11 @@ fn verify_raw(
     }
     if key.is_weak() {
         return Err(SignatureError::SmallOrderKey);
+    }
+    // `verify_strict` checks only for small order. A key with a small-order component passes
+    // that check, so test `[ℓ]A = identity` too (RFC-0034 §3, note of 2026-10-22).
+    if !key.to_edwards().is_torsion_free() {
+        return Err(SignatureError::MixedOrderKey);
     }
     // `verify_strict` refuses `S ≥ ℓ` and an `R` of small order, and compares the recomputed `R`
     // with the signature's `R` byte for byte, so a non-canonical `R` fails too.

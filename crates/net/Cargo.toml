@@ -14,6 +14,9 @@ ed25519-dalek.workspace = true
 subtle.workspace = true
 
 [dev-dependencies]
+# `hazmat` signs with a chosen public key in the challenge, and `digest` exports its SHA-512, to
+# build the mixed-order key vector.
+ed25519-dalek = { workspace = true, features = ["digest", "hazmat"] }
 proptest.workspace = true
 # Reads the official BLAKE3 test vectors (`third_party/blake3/test_vectors.json`).
 serde_json.workspace = true

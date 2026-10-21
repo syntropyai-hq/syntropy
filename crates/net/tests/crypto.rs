@@ -231,38 +231,105 @@ fn a_signature_with_a_small_order_r_is_refused() {
     );
 }
 
+/// `y` with the sign bit `sign`, as the 32 bytes of a key: canonical when `y < p`.
+fn encoding(y_low: u8, rest: u8, top: u8) -> [u8; PUBLIC_KEY_LEN] {
+    let mut bytes = [rest; PUBLIC_KEY_LEN];
+    bytes[0] = y_low;
+    bytes[31] = top;
+    bytes
+}
+
 #[test]
 fn a_non_canonical_key_encoding_is_refused() {
-    // A point whose y is below 19 also has the encoding y + p, which is below 2^255. Find one
-    // that is a curve point of large order.
-    let (y, canonical) = (2u8..19)
-        .find_map(|y| {
-            let mut bytes = [0u8; 32];
-            bytes[0] = y;
-            let key = ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok()?;
-            (!key.is_weak()).then_some((y, key))
-        })
-        .expect("a curve point with y below 19");
-    let mut non_canonical = [0xff; PUBLIC_KEY_LEN];
-    non_canonical[0] = 0xed + y;
-    non_canonical[31] = 0x7f;
-    // The library decodes the second encoding to the same point.
-    let decoded = ed25519_dalek::VerifyingKey::from_bytes(&non_canonical).unwrap();
-    assert_eq!(decoded.to_edwards(), canonical.to_edwards());
+    // A non-canonical encoding names y + p for a y below 19 (the only values with a second
+    // encoding below 2^255), or sets the sign bit on a point whose x is 0. Try every one.
     let signature = [0u8; SIGNATURE_LEN];
-    assert_eq!(
-        crypto::verify(&non_canonical, Context::Cert, b"m", &signature),
-        Err(SignatureError::NonCanonicalKey)
+    let mut tried = 0;
+    let mut lenient_accepts = 0;
+    for y in 0u8..19 {
+        for sign in [0u8, 0x80] {
+            let non_canonical = encoding(0xed + y, 0xff, 0x7f | sign);
+            let Ok(decoded) = ed25519_dalek::VerifyingKey::from_bytes(&non_canonical) else {
+                continue;
+            };
+            // ed25519-dalek decodes under ZIP-215 rules, so it reads y + p as y.
+            let canonical = ed25519_dalek::VerifyingKey::from_bytes(&encoding(y, 0, sign));
+            assert_eq!(
+                decoded.to_edwards(),
+                canonical.unwrap().to_edwards(),
+                "y = {y}"
+            );
+            // With the re-encode check: refused for what it is.
+            assert_eq!(
+                crypto::verify(&non_canonical, Context::Cert, b"m", &signature),
+                Err(SignatureError::NonCanonicalKey),
+                "y = {y}"
+            );
+            // Without it: ed25519-dalek's own key check in `verify_strict` is only `is_weak`,
+            // which lets through every such point of large order...
+            lenient_accepts += usize::from(!decoded.is_weak());
+            // ...and the small-order and prime-order checks would still refuse it: no point with
+            // y below 19 has prime order.
+            assert!(
+                decoded.is_weak() || !decoded.to_edwards().is_torsion_free(),
+                "y = {y}"
+            );
+            tried += 1;
+        }
+    }
+    assert!(
+        tried > 0 && lenient_accepts > 0,
+        "{tried} tried, {lenient_accepts}"
     );
-    // The canonical encoding gets past the key checks, to the signature.
+    // x = 0 with the sign bit set: y = 1 (the identity) and y = p - 1.
+    for key in [encoding(1, 0, 0x80), encoding(0xec, 0xff, 0xff)] {
+        assert!(crypto::verify(&key, Context::Cert, b"m", &signature).is_err());
+    }
+}
+
+#[test]
+fn a_key_with_a_small_order_component_is_refused() {
+    let seed: [u8; SEED_LEN] = std::array::from_fn(|i| i as u8);
+    let honest = ed25519_dalek::VerifyingKey::from_bytes(&golden_key().public_key()).unwrap();
+    assert!(honest.to_edwards().is_torsion_free());
+    // A + T, with T = (0, -1), the point of order 2.
+    let order_two = ed25519_dalek::VerifyingKey::from_bytes(&encoding(0xec, 0xff, 0x7f)).unwrap();
+    let mixed = (honest.to_edwards() + order_two.to_edwards())
+        .compress()
+        .to_bytes();
+    let mixed_key = ed25519_dalek::VerifyingKey::from_bytes(&mixed).unwrap();
+    assert!(!mixed_key.is_weak());
+    // A's secret signs under A + T: putting A + T in the challenge k gives a signature that
+    // verifies whenever k is even, because then [k]T is the identity.
+    let expanded: [u8; 64] = <ed25519_dalek::Sha512 as ed25519_dalek::Digest>::digest(seed).into();
+    let secret = ed25519_dalek::hazmat::ExpandedSecretKey::from_bytes(&expanded);
+    let (message, signature) = (0u32..64)
+        .find_map(|i| {
+            let message = format!("mixed-order key {i}");
+            let prefixed = [Context::Cert.as_str().as_bytes(), message.as_bytes()].concat();
+            let signature = ed25519_dalek::hazmat::raw_sign::<ed25519_dalek::Sha512>(
+                &secret, &prefixed, &mixed_key,
+            );
+            mixed_key
+                .verify_strict(&prefixed, &signature)
+                .is_ok()
+                .then(|| (message, signature.to_bytes()))
+        })
+        .expect("an even challenge within 64 messages");
+    // ed25519-dalek's `verify_strict` accepted it above; the prime-order check refuses it.
     assert_eq!(
-        crypto::verify(&canonical.to_bytes(), Context::Cert, b"m", &signature),
-        Err(SignatureError::Invalid)
+        crypto::verify(&mixed, Context::Cert, message.as_bytes(), &signature),
+        Err(SignatureError::MixedOrderKey)
     );
-    // y = 1 with the sign bit set names x = -0: the identity again, not canonically encoded.
-    let mut negative_zero_x = IDENTITY;
-    negative_zero_x[31] = 0x80;
-    assert!(crypto::verify(&negative_zero_x, Context::Cert, b"m", &signature).is_err());
+    // The same holds with T of order 4: (sqrt(-1), 0).
+    let order_four = ed25519_dalek::VerifyingKey::from_bytes(&[0u8; 32]).unwrap();
+    let mixed_four = (honest.to_edwards() + order_four.to_edwards())
+        .compress()
+        .to_bytes();
+    assert_eq!(
+        crypto::verify(&mixed_four, Context::Cert, b"m", &[0u8; SIGNATURE_LEN]),
+        Err(SignatureError::MixedOrderKey)
+    );
 }
 
 #[test]
