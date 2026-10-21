@@ -284,6 +284,14 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-kernels"
 version = "0.0.0"
+dependencies = [
+ "bitflags",
+ "proptest",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "syntropy-core",
+]
 
 [[package]]
 name = "syntropy-kernels-cpu"
