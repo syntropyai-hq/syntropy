@@ -36,6 +36,9 @@ Problems (any of them makes the exit status 1):
                milestone, so a task that spans two is split into a core task
                and an extension task
     MALFORMED, DUPLICATE   rows epics.py could not read
+    COUNT      plan/open-questions.md's "N questions are open" differs from
+               the number of `| OQ-` rows above `## Settled`, or an open ID
+               is listed twice or also sits under Settled
 
 Notes (listed with --only, never a problem):
 
@@ -56,6 +59,7 @@ Usage:
     python3 depcheck.py --graph OUT.json      # also write the graph
     python3 depcheck.py --only LATER,CYCLE    # list only these kinds
     python3 depcheck.py --task PLC-E4-T17     # one task's edges both ways
+    python3 depcheck.py --register FILE       # check another register's count
 
 The graph file must be written outside plan/.
 """
@@ -84,7 +88,10 @@ TIMEBOX = re.compile(r"\btime-?box", re.I)
 RIG = re.compile(r"\bR-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)?\b")
 RIG_EPIC = "QUAL-E15"
 FATAL = ("MALFORMED", "DUPLICATE", "MULTI", "WORDFORM", "DANGLING", "CYCLE",
-         "LATER", "M0CLOSURE")
+         "LATER", "M0CLOSURE", "COUNT")
+REGISTER = PLAN_DIR / "open-questions.md"
+OQ_ROW = re.compile(r"^\| (OQ-[A-Z]+-\d+) \|")
+OPEN_COUNT = re.compile(r"\b(\d+) questions are open\b")
 
 
 def split_outside(text, sep):
@@ -223,7 +230,48 @@ def tarjan(nodes, succ):
     return out
 
 
-def analyse(epics_dir=epics.EPICS_DIR):
+def register_problems(path=REGISTER):
+    """COUNT problems in the open-question register: the intro's "N questions are
+    open" must equal the number of `| OQ-` rows above `## Settled`, and each open
+    ID must appear once and not also under Settled."""
+    path = Path(path)
+    lines = path.read_text(encoding="utf-8").split("\n")
+    name = path.name
+    out = []
+
+    def add(line, task, detail):
+        out.append({"kind": "COUNT", "task": task, "file": name, "line": line,
+                    "detail": detail})
+
+    settled = next((i for i, l in enumerate(lines) if l.strip() == "## Settled"),
+                   len(lines))
+    open_ids, settled_ids = {}, set()
+    for i, l in enumerate(lines):
+        m = OQ_ROW.match(l)
+        if not m:
+            continue
+        if i < settled:
+            if m.group(1) in open_ids:
+                add(i + 1, m.group(1), f"{m.group(1)} is listed twice above "
+                    f"`## Settled` (first at line {open_ids[m.group(1)]})")
+            else:
+                open_ids[m.group(1)] = i + 1
+        else:
+            settled_ids.add(m.group(1))
+    for oq in sorted(set(open_ids) & settled_ids):
+        add(open_ids[oq], oq, f"{oq} is open and also listed under Settled")
+    rows = sum(1 for l in lines[:settled] if OQ_ROW.match(l))
+    hit = next(((i, OPEN_COUNT.search(l)) for i, l in enumerate(lines)
+                if OPEN_COUNT.search(l)), None)
+    if hit is None:
+        add(0, "", "no \"N questions are open\" sentence")
+    elif int(hit[1].group(1)) != rows:
+        add(hit[0] + 1, "", f"the intro says {hit[1].group(1)} questions are "
+            f"open, but {rows} `| OQ-` rows sit above `## Settled`")
+    return out
+
+
+def analyse(epics_dir=epics.EPICS_DIR, register=REGISTER):
     records, load_problems = epics.load(epics_dir)
     tasks = {r["id"]: r for r in records}
     problems = []  # dicts: kind, task, file, line, detail
@@ -241,6 +289,8 @@ def analyse(epics_dir=epics.EPICS_DIR):
         problems.append({"kind": p["kind"], "task": p["id"],
                          "file": p["file"], "line": p["line"],
                          "detail": p["detail"]})
+    if register is not None:
+        problems.extend(register_problems(register))
 
     for rec in records:
         if not SINGLE.match(rec["milestone"].strip()):
@@ -454,8 +504,10 @@ def main():
                     help="print only the summary")
     ap.add_argument("--epics", default=str(epics.EPICS_DIR),
                     help="directory holding the epic files")
+    ap.add_argument("--register", default=str(REGISTER),
+                    help="the open-question register whose count to check")
     args = ap.parse_args()
-    res = analyse(args.epics)
+    res = analyse(args.epics, args.register)
     tasks = res["tasks"]
 
     if args.task:
@@ -480,7 +532,8 @@ def main():
                         key=lambda p: (FATAL.index(p["kind"]),
                                        epics.id_key(p["task"]))):
             if only is None or p["kind"] in only:
-                print(f"{p['kind']}: {p['file']}:{p['line']} {p['task']}: "
+                who = f" {p['task']}" if p["task"] else ""
+                print(f"{p['kind']}: {p['file']}:{p['line']}{who}: "
                       f"{p['detail']}")
         if only:
             for n in res["notes"]:
@@ -515,7 +568,7 @@ def main():
           f"LATER: {count['LATER']}  "
           f"M0CLOSURE: {count['M0CLOSURE']} ({m0_tasks} M0 tasks)")
     print(f"MALFORMED: {count['MALFORMED']}  DUPLICATE: {count['DUPLICATE']}  "
-          f"MULTI: {count['MULTI']}")
+          f"MULTI: {count['MULTI']}  COUNT: {count['COUNT']}")
     print(f"not problems: TBD: {len(res['tbds'])} "
           f"(M0: {ncount['M0-TBD']})  SPLIT: {ncount['SPLIT']}  "
           f"gated edges: {gated}  gate segments: {len(res['gates'])}  "
