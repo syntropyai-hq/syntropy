@@ -231,7 +231,7 @@ The list is the first that is set of `--banned FILE`, `SYNTROPY_BANNED_TERMS` an
 
 The opt-in git hooks in `.githooks/` run it. `git config core.hooksPath .githooks` turns them on:
 - `pre-commit` runs `cargo fmt --all --check` when Rust files are staged, then `epics.py`, `depcheck.py` and the three generators with `--check` on a copy of the staged `plan/` when files under `plan/` are staged, then `naming_check.py --staged`.
-- `commit-msg` checks for a `Signed-off-by` line that matches the author and a conventional-commit subject, then runs `naming_check.py --message`.
+- `commit-msg` checks for a `Signed-off-by` line that matches the author and a conventional-commit subject, then runs `naming_check.py --message`. Those two checks are a local subset of `cargo xtask ci dco` and `cargo xtask ci pr-title`, which CI runs over a PR's data and which stay authoritative.
 
 The hooks are POSIX `sh` and build nothing. They read their shared `common.sh` from their own directory, so `core.hooksPath` can point at a `.githooks` anywhere, and they take the plan tools and the naming check from the repository being committed to. A check whose input is missing (nothing of its kind staged, no `cargo`, no Python 3, no list, no tools in the repository) prints one notice line, and the other checks still run.
 

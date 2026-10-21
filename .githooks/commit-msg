@@ -5,9 +5,13 @@
 #
 #   sign-off      a `Signed-off-by:` line that matches the commit's author (the DCO, CONTRIBUTING.md)
 #   subject       a conventional-commit subject, `type(scope): subject`, with a type AGENTS.md
-#                 allows; the pr-title check QUAL-E1-T05 adds to xtask supersedes this one
+#                 allows
 #   naming check  plan/implementation/tools/naming_check.py --message (AGENTS.md, "Naming (D5)"),
 #                 when a banned-terms list is set: `git config syntropy.bannedTerms <path>`
+#
+# The authoritative checks are `cargo xtask ci dco` and `cargo xtask ci pr-title` (QUAL-E1-T05),
+# which CI runs over a PR's data; pr-title also checks the scope list and the breaking-marker
+# label. They need a build and a PR, so this hook keeps its own minimal sign-off and subject checks.
 #
 # POSIX sh, so it runs in Git for Windows' shell and on macOS. A check whose input is missing is
 # skipped with one notice line, and the other checks still run.
