@@ -94,6 +94,8 @@ flowchart LR
 
 Renovate runs as the hosted Renovate app, so dependency scanning uses no Actions minutes. Its PRs then run `pr.yml` like any other PR.
 
+*Note, 2026-10-22 (QUAL-E1-T06).* `dco` and `pr-title` run in `pr-meta.yml`, a workflow of their own, on `pull_request` (`opened`, `synchronize`, `reopened`, `edited`, `labeled` and `unlabeled`) and `merge_group`, in the concurrency group `pr-meta-<number>`. `pr-title` has to run again on label and edit events (§12.3). In `pr.yml`, such a run would also post a `ci-gate` with every hosted job skipped, and a skipped job passes (§2.5), so a label event could replace a failing gate with a passing one. For the same reason both jobs check in full on every PR event. Both build `xtask` without a cache: code the PR runs in any other job can write a cache entry under the PR's ref, and a restored build could hold an `xtask` built from the PR. `pr.yml` runs on `opened`, `synchronize` and `reopened`.
+
 #### 2.2 The affected-job set
 
 The first job of `pr.yml`, `changes`, runs `cargo xtask ci changes --base <merge-base>` and outputs the jobs to run as JSON. Downstream jobs read it from `needs.changes.outputs` and skip themselves when not listed. Workflow-level `paths:` filters are not used for required work, because a workflow skipped that way leaves its required checks pending.
@@ -147,6 +149,14 @@ paths = ["docs/**", "plan/**", "*.md"]
 | `cross-build-t2t3` | hosted Linux | closure includes `kernels-*`, `io` or `net` | build-only checks for ROCm, Vulkan, arm64, Android NDK and iOS targets (§4) | ≤ 10 min |
 | `hw-cuda-ada`, `hw-cuda-bw`, `hw-cuda-win`, `hw-metal-floor`, `hw-metal-ultra`, `hw-cpu-avx512` | lab rigs, through `lab.yml` (§3) | listed in `hw_required`, or requested by `/hw run` | op conformance for the rig architecture; parity smoke on the shipping set; `pr-quick` ABBA bench | ≤ 20 min per rig |
 | `ci-gate` | hosted Linux | always, last | on `pull_request`: fails if any listed job failed or was cancelled, or if a job in `hw_required` has no passing `hw/<job>` status on the PR head ("hardware run required"); on `merge_group`: hosted jobs only, plus the `hw:queue` members' statuses (§2.5); skipped hosted jobs pass | < 1 min |
+
+*Note, 2026-10-22 (QUAL-E1-T06).* The first `pr.yml`:
+- `changes` lists `lint`, `build` and `hosted-test` on every run, until QUAL-E1-T07 computes the affected-job set (§2.2).
+- `build-<target>` runs `cargo xtask ci build`, which builds the `dev` profile until QUAL-E16-T21 adds the `pr` profile. On Linux it also runs `cargo xtask ci build-test-release`.
+- `hosted-test-<os>` runs `cargo xtask test unit`.
+- `hosted-l3` and `hosted-parity-nano` are in `ci-gate`'s `needs` but not listed, because their suites do not exist yet (QUAL-E3-T10, QUAL-E5-T06). Each fails if it is listed before then.
+- `ci-gate` runs `cargo xtask ci ci-gate`, which reads each job's result from the `needs` context. Beyond the row above, it fails when `changes` did not succeed, when a job `changes` listed was skipped, and when `changes` lists a job that `ci-gate` does not wait for. It runs even in a cancelled run, because a skipped `ci-gate` would report success.
+- The hosted runners are pinned by label: `ubuntu-24.04`, `macos-26` and `windows-2025`.
 
 #### 2.4 Platform promises to jobs
 
@@ -695,6 +705,17 @@ ADR-0624 sets the rules; this section places them in the pipeline.
 - Changes to `.github/`, `ci/`, `deny.toml`, the release-please configuration and `bench/lab/` need a maintainer's approval plus the review agent's (§12.3). Agent identities are never code owners, cannot push to `main` or `release/*`, cannot create tags and cannot approve their own changes.
 - Access is reviewed every quarter: members, App installations and their permissions, environment reviewers, and delegations against `governance/delegations.toml`.
 - A weekly job reads these settings through the REST API and fails on any drift from this list (QUAL-E1-T23).
+
+*Note, 2026-10-22 (QUAL-E1-T06).* The repository's part of this baseline is declared in `ci/repo-settings/`, as one REST request body per setting and per ruleset. `ci/repo-settings/apply.sh` sends them (**Maintainer action**: only an organisation owner can), and `cargo xtask ci repo-settings` reads the repository through the REST API and fails on any declared setting or rule that is not in force. The declared state:
+- squash merges only, titled by the PR (§8.3);
+- secret scanning with push protection, and private vulnerability reporting (§13);
+- the Actions policy: full-length SHA pins, and only actions owned by GitHub or by the organisation, so every other action is blocked until a reviewed change to `actions-selected-actions.json` allows it;
+- workflow approval for all outside contributors (§3.3 item 1);
+- a `main` ruleset with no bypass actor: no deletion, no force-push, changes only through a squash-merged PR, and `ci-gate`, `dco` and `pr-title` required from the GitHub Actions app, so a commit status posted by any other account does not count;
+- a second `main` ruleset requiring a code owner's review, which repository admins can bypass when they merge a PR, because GitHub does not let an author approve their own PR;
+- a `release/*` ruleset with no deletion and no force-push.
+
+The rules endpoint the check reads does not show bypass actors; the weekly audit checks them (QUAL-E1-T23).
 
 ### 13. Vulnerability handling
 
