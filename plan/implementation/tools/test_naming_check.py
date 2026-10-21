@@ -230,6 +230,16 @@ class NamingCheckTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("stdin:2: matches a banned term (D5)", output)
 
+    def test_a_staged_submodule_is_skipped(self):
+        repo = self.repo()
+        # A gitlink whose commit is not in this repository, as a real submodule's is not.
+        self.git(repo, "update-index", "--add", "--cacheinfo", "160000," + "1" * 40 + ",sub")
+        (repo / "a.md").write_text("clean\n", encoding="utf-8")
+        self.git(repo, "add", "a.md")
+        code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)
+        self.assertEqual(code, 0, output)
+        self.assertIn("naming check: PASS: 1 checked", output)
+
     def test_nothing_staged_is_skipped_with_a_notice(self):
         repo = self.repo()
         code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)

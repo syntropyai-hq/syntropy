@@ -131,7 +131,9 @@ def blobs(revision, paths):
         header_end = out.index(b"\n", at)
         header = out[at:header_end].split()
         at = header_end + 1
-        if header[-1] == b"missing":
+        if header[-1] == b"missing" or len(header) < 3:
+            # Not in the object database. A staged submodule (a gitlink) whose commit lives in
+            # the submodule's own repository comes back as "<oid> submodule", with no size.
             continue
         kind, size = header[1], int(header[2])
         content = out[at:at + size]
