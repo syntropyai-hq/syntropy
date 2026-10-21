@@ -140,6 +140,38 @@ pub struct Blake3(pub [u8; 32]);
 #[serde(transparent)]
 pub struct GraphVersion(pub u64);
 
+/// One committed ring of stages serving one model. Allocated by the coordinator, never
+/// reused (RFC-0001 §5.1). Owner: RFC-0011.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InstanceId(pub u64);
+
+/// Content identity of a model variant (RFC-0001 §5.1, §5.3; ADR-0411). Owner: RFC-0041.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModelId(pub Blake3);
+
+/// A decoder layer's index. MTP modules take indices after the last decoder layer
+/// (RFC-0001 §5.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LayerIx(pub u16);
+
+/// A routed expert's index within its layer (RFC-0001 §5.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ExpertIx(pub u16);
+
+/// A stage's position in the ring; 0 is the head (RFC-0001 §5.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StageIx(pub u16);
+
+/// Index into `TensorCensus::groups`, the solver's placement unit (RFC-0001 §5.1, §5.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TensorGroupId(pub u32);
+
 #[cfg(test)]
 mod tests {
     use super::*;

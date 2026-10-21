@@ -1,0 +1,635 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Serde properties of the placement plan types (PLC-E4-T17, RFC-0001 §5.4, RFC-0011 §2).
+//!
+//! Every type round-trips through a serde format unchanged, and every record decodes when it
+//! carries fields this build does not know. JSON stands in for any self-describing format.
+
+use std::fmt::Debug;
+
+use proptest::prelude::*;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use smallvec::SmallVec;
+use syntropy_core::plan::*;
+use syntropy_core::resource::TransportKind;
+use syntropy_core::*;
+
+// ---- Strategies -------------------------------------------------------------------------
+
+fn f32s() -> impl Strategy<Value = f32> + Clone {
+    -1.0e6f32..1.0e6
+}
+
+fn node_id() -> impl Strategy<Value = NodeId> {
+    any::<[u8; 32]>().prop_map(NodeId)
+}
+
+fn blake3() -> impl Strategy<Value = Blake3> {
+    any::<[u8; 32]>().prop_map(Blake3)
+}
+
+fn device_id() -> impl Strategy<Value = DeviceId> {
+    (node_id(), any::<u16>()).prop_map(|(node, ordinal)| DeviceId { node, ordinal })
+}
+
+fn tier_id() -> impl Strategy<Value = TierId> {
+    (node_id(), any::<u16>()).prop_map(|(node, ordinal)| TierId { node, ordinal })
+}
+
+fn rdma_kind() -> impl Strategy<Value = RdmaKind> {
+    prop_oneof![
+        Just(RdmaKind::RoceV2),
+        Just(RdmaKind::InfiniBand),
+        Just(RdmaKind::Thunderbolt5)
+    ]
+}
+
+fn link_id() -> impl Strategy<Value = LinkId> {
+    let endpoint = prop_oneof![
+        device_id().prop_map(Endpoint::Device),
+        tier_id().prop_map(Endpoint::Tier),
+    ];
+    let kind = prop_oneof![
+        Just(LinkKind::MemoryBus),
+        Just(LinkKind::Pcie),
+        Just(LinkKind::Storage),
+        Just(LinkKind::Network(NetMedium::WiFi)),
+        rdma_kind().prop_map(|r| LinkKind::Network(NetMedium::Rdma(r))),
+    ];
+    (endpoint.clone(), endpoint, kind, any::<u8>()).prop_map(|(src, dst, kind, path)| LinkId {
+        src,
+        dst,
+        kind,
+        path,
+    })
+}
+
+fn bytes() -> impl Strategy<Value = Bytes> {
+    any::<u64>().prop_map(Bytes)
+}
+
+fn nanos() -> impl Strategy<Value = Nanos> {
+    any::<u64>().prop_map(Nanos)
+}
+
+fn layer() -> impl Strategy<Value = LayerIx> {
+    any::<u16>().prop_map(LayerIx)
+}
+
+fn stage_ix() -> impl Strategy<Value = StageIx> {
+    any::<u16>().prop_map(StageIx)
+}
+
+fn group_id() -> impl Strategy<Value = TensorGroupId> {
+    any::<u32>().prop_map(TensorGroupId)
+}
+
+fn small<A: smallvec::Array + Debug + 'static>(
+    s: impl Strategy<Value = A::Item>,
+) -> impl Strategy<Value = SmallVec<A>>
+where
+    A::Item: Debug,
+{
+    // Up to two past the inline capacity, so both the inline and the spilled forms occur.
+    prop::collection::vec(s, 0..A::size() + 3).prop_map(SmallVec::from_vec)
+}
+
+fn plan_epoch() -> impl Strategy<Value = PlanEpoch> {
+    (any::<u64>(), any::<u64>()).prop_map(|(term, seq)| PlanEpoch { term, seq })
+}
+
+fn objective() -> impl Strategy<Value = Objective> {
+    prop_oneof![
+        Just(Objective::Latency),
+        f32s().prop_map(|per_sequence_floor_tps| Objective::Throughput {
+            per_sequence_floor_tps
+        }),
+    ]
+}
+
+fn exactness() -> impl Strategy<Value = ExactnessPolicy> {
+    prop_oneof![
+        Just(ExactnessPolicy::Exact),
+        any::<u32>().prop_map(|bits| ExactnessPolicy::Approximate {
+            knobs: ApproxKnobs::from_bits_truncate(bits)
+        }),
+    ]
+}
+
+fn transport() -> impl Strategy<Value = TransportKind> {
+    prop_oneof![
+        Just(TransportKind::SharedMemory),
+        rdma_kind().prop_map(TransportKind::Rdma),
+        Just(TransportKind::Quic),
+        Just(TransportKind::QuicRelay),
+        Just(TransportKind::Tcp),
+    ]
+}
+
+fn wire_dtype() -> impl Strategy<Value = WireDType> {
+    prop_oneof![
+        Just(WireDType::F32),
+        Just(WireDType::BF16),
+        Just(WireDType::F16),
+        Just(WireDType::Q8B32),
+        Just(WireDType::F8E4M3B32),
+    ]
+}
+
+fn hop_plan() -> impl Strategy<Value = HopPlan> {
+    (link_id(), transport(), wire_dtype(), nanos()).prop_map(
+        |(link, transport, wire, predicted)| HopPlan {
+            link,
+            transport,
+            wire,
+            predicted,
+        },
+    )
+}
+
+fn tp_split() -> impl Strategy<Value = TpSplit> {
+    (
+        small(any::<u16>()),
+        small(any::<u32>()),
+        prop::option::of(small(any::<u32>())),
+    )
+        .prop_map(|(attn, ffn, experts)| TpSplit { attn, ffn, experts })
+}
+
+fn stage_member() -> impl Strategy<Value = StageMember> {
+    (node_id(), small(device_id()), link_id()).prop_map(|(node, devices, link)| StageMember {
+        node,
+        devices,
+        link,
+    })
+}
+
+fn expert_owner_map() -> impl Strategy<Value = ExpertOwnerMap> {
+    prop::collection::vec((layer(), prop::collection::vec(any::<u8>(), 0..4)), 0..3)
+        .prop_map(|layers| ExpertOwnerMap { layers })
+}
+
+fn parallelism_mode() -> impl Strategy<Value = ParallelismMode> {
+    prop_oneof![
+        Just(ParallelismMode::Local),
+        (small(device_id()), tp_split())
+            .prop_map(|(devices, split)| ParallelismMode::IntraNodeTp { devices, split }),
+        (
+            small(stage_member()),
+            tp_split(),
+            prop_oneof![Just(CollectiveAlgo::OneShot), Just(CollectiveAlgo::Ring)]
+        )
+            .prop_map(
+                |(members, split, collective)| ParallelismMode::CrossNodeTp {
+                    members,
+                    split,
+                    collective
+                }
+            ),
+        (small(stage_member()), expert_owner_map())
+            .prop_map(|(members, owners)| ParallelismMode::CrossNodeEp { members, owners }),
+    ]
+}
+
+fn stage_assignment() -> impl Strategy<Value = StageAssignment> {
+    (
+        stage_ix(),
+        node_id(),
+        layer(),
+        layer(),
+        any::<u8>(),
+        parallelism_mode(),
+        hop_plan(),
+        nanos(),
+    )
+        .prop_map(
+            |(stage, node, start, end, role, mode, next_hop, predicted_step)| StageAssignment {
+                stage,
+                node,
+                layers: start..end,
+                role: StageRole::from_bits_truncate(role),
+                mode,
+                next_hop,
+                predicted_step,
+            },
+        )
+}
+
+fn tier_assignment() -> impl Strategy<Value = TierAssignment> {
+    let stream =
+        (device_id(), link_id(), any::<u32>()).prop_map(|(device, via, min_tokens)| StreamSite {
+            device,
+            via,
+            min_tokens,
+        });
+    (
+        group_id(),
+        node_id(),
+        tier_id(),
+        device_id(),
+        prop::option::of(stream),
+        small(node_id()),
+    )
+        .prop_map(
+            |(group, owner, home, decode, batched, replicas)| TierAssignment {
+                group,
+                owner,
+                home,
+                compute: ComputeSite { decode, batched },
+                replicas,
+            },
+        )
+}
+
+fn cache_policy() -> impl Strategy<Value = CachePolicy> {
+    prop_oneof![
+        (f32s(), any::<u16>(), f32s(), any::<u16>(), any::<bool>()).prop_map(
+            |(decay, adapt_every_steps, hysteresis, max_replace, guard)| {
+                CachePolicy::DecayedLfu {
+                    decay,
+                    adapt_every_steps,
+                    hysteresis,
+                    max_replace,
+                    guard,
+                }
+            }
+        ),
+        Just(CachePolicy::Lru),
+        Just(CachePolicy::Static),
+    ]
+}
+
+fn expert_cache_budget() -> impl Strategy<Value = ExpertCacheBudget> {
+    (
+        device_id(),
+        tier_id(),
+        bytes(),
+        prop::option::of(prop::collection::vec(bytes(), 0..4)),
+        cache_policy(),
+        f32s(),
+        prop_oneof![Just(MissSplitMode::Fitted), Just(MissSplitMode::Fixed)],
+    )
+        .prop_map(
+            |(device, tier, bytes, per_layer, policy, copied_share, mode)| ExpertCacheBudget {
+                device,
+                tier,
+                bytes,
+                per_layer,
+                policy,
+                miss_split: MissSplit { copied_share, mode },
+            },
+        )
+}
+
+fn kv_budget() -> impl Strategy<Value = KvBudget> {
+    let dtype = prop_oneof![
+        Just(KvDType::Native),
+        any::<u16>().prop_map(|block| KvDType::Q8 { block }),
+        (any::<u16>(), any::<bool>()).prop_map(|(block, rotate)| KvDType::K8V4 { block, rotate }),
+    ];
+    let spill_compute = prop_oneof![
+        any::<u16>().prop_map(|max_rows| SpillCompute::CpuSplit { max_rows }),
+        Just(SpillCompute::GpuStream),
+    ];
+    (
+        stage_ix(),
+        tier_id(),
+        bytes(),
+        dtype,
+        prop::option::of(tier_id()),
+        spill_compute,
+    )
+        .prop_map(
+            |(stage, tier, bytes, dtype, spill, spill_compute)| KvBudget {
+                stage,
+                tier,
+                bytes,
+                dtype,
+                spill,
+                spill_compute,
+            },
+        )
+}
+
+fn prefetch_window() -> impl Strategy<Value = PrefetchWindow> {
+    (tier_id(), tier_id(), bytes(), any::<u16>()).prop_map(
+        |(from, to, max_inflight, lookahead_layers)| PrefetchWindow {
+            from,
+            to,
+            max_inflight,
+            lookahead_layers,
+        },
+    )
+}
+
+fn speculative_config() -> impl Strategy<Value = SpeculativeConfig> {
+    let source = prop_oneof![
+        any::<u8>().prop_map(|heads| DraftSource::Mtp { heads }),
+        group_id().prop_map(|group| DraftSource::DraftHead { group }),
+        (blake3(), device_id()).prop_map(|(m, device)| DraftSource::DraftModel {
+            model: ModelId(m),
+            device
+        }),
+    ];
+    let tree = prop::option::of(
+        prop::collection::vec(any::<u16>(), 0..6).prop_map(|parents| TreeShape { parents }),
+    );
+    (source, any::<u16>(), tree).prop_map(|(source, max_window, tree)| SpeculativeConfig {
+        source,
+        max_window,
+        tree,
+        acceptance: Acceptance::Exact,
+    })
+}
+
+fn batching_limits() -> impl Strategy<Value = BatchingLimits> {
+    (
+        any::<u32>(),
+        any::<u32>(),
+        any::<u16>(),
+        small(any::<u32>()),
+    )
+        .prop_map(
+            |(max_sequences, prefill_chunk, micro_batch, prefill_ladder)| BatchingLimits {
+                max_sequences,
+                prefill_chunk,
+                micro_batch,
+                prefill_ladder,
+            },
+        )
+}
+
+fn predicted_cost() -> impl Strategy<Value = PredictedCost> {
+    let jitter = (f32s(), nanos()).prop_map(|(stall_rate, t_tok_p99)| Jitter {
+        stall_rate,
+        t_tok_p99,
+    });
+    (
+        (nanos(), nanos(), f32s(), small((any::<u32>(), nanos()))),
+        ((any::<u32>(), nanos()), prop::option::of(nanos())),
+        (prop::option::of(jitter), any::<u32>()),
+        (small((any::<u16>(), nanos())), prop::option::of(f32s())),
+    )
+        .prop_map(
+            |(
+                (t_tok, t_pass, tokens_per_pass, ttft),
+                (ttft_ref, ttft_cap),
+                (jitter, context_length),
+                (pass_by_window, throughput),
+            )| PredictedCost {
+                t_tok,
+                t_pass,
+                tokens_per_pass,
+                ttft,
+                ttft_ref,
+                ttft_cap,
+                jitter,
+                context_length,
+                pass_by_window,
+                throughput,
+            },
+        )
+}
+
+fn assumption() -> impl Strategy<Value = Assumption> {
+    let input = prop_oneof![
+        (device_id(), tier_id(), any::<u16>()).prop_map(|(device, tier, block)| {
+            AssumedInput::QuantBw {
+                device,
+                tier,
+                scheme: QuantScheme::Mxfp4 { block },
+            }
+        }),
+        layer().prop_map(|layer| AssumedInput::HitCurve { layer }),
+        link_id().prop_map(|link| AssumedInput::LinkP99 { link }),
+    ];
+    let source = prop_oneof![
+        Just(MeasureSource::Prior),
+        Just(MeasureSource::Startup),
+        Just(MeasureSource::Online),
+    ];
+    (input, source, nanos()).prop_map(|(input, source, sensitivity)| Assumption {
+        input,
+        source,
+        sensitivity,
+    })
+}
+
+fn placement_plan() -> impl Strategy<Value = PlacementPlan> {
+    (
+        (
+            plan_epoch(),
+            any::<u64>(),
+            blake3(),
+            any::<u64>(),
+            blake3(),
+            objective(),
+            exactness(),
+        ),
+        (
+            prop::collection::vec(stage_assignment(), 0..3),
+            prop::collection::vec(tier_assignment(), 0..4),
+            prop::collection::vec(expert_cache_budget(), 0..2),
+            prop::collection::vec(kv_budget(), 0..3),
+            prop::collection::vec(prefetch_window(), 0..2),
+            prop::collection::vec((device_id(), bytes()), 0..2),
+        ),
+        (
+            prop::option::of(speculative_config()),
+            batching_limits(),
+            predicted_cost(),
+            prop::collection::vec(assumption(), 0..2),
+        ),
+    )
+        .prop_map(
+            |(
+                (epoch, instance, model, graph, policy, objective, exactness),
+                (stages, tensors, expert_cache, kv, prefetch, scratch),
+                (speculative, batching, predicted, assumptions),
+            )| PlacementPlan {
+                epoch,
+                instance: InstanceId(instance),
+                model: ModelId(model),
+                graph: GraphVersion(graph),
+                policy,
+                objective,
+                exactness,
+                stages,
+                tensors,
+                expert_cache,
+                kv,
+                prefetch,
+                scratch,
+                speculative,
+                batching,
+                predicted,
+                assumptions,
+            },
+        )
+}
+
+fn delta_item() -> impl Strategy<Value = DeltaItem> {
+    prop_oneof![
+        (device_id(), expert_cache_budget())
+            .prop_map(|(device, budget)| DeltaItem::ExpertCache { device, budget }),
+        (stage_ix(), small(kv_budget()))
+            .prop_map(|(stage, budgets)| DeltaItem::Kv { stage, budgets }),
+        prefetch_window().prop_map(|window| DeltaItem::Prefetch { window }),
+        prop::option::of(speculative_config()).prop_map(|config| DeltaItem::Speculative { config }),
+        batching_limits().prop_map(|limits| DeltaItem::Batching { limits }),
+        predicted_cost().prop_map(|cost| DeltaItem::Predicted { cost }),
+        (stage_ix(), node_id(), node_id(), hop_plan()).prop_map(|(stage, prev, next, hop)| {
+            DeltaItem::Relink {
+                stage,
+                prev,
+                next,
+                hop,
+            }
+        }),
+        small(stage_ix()).prop_map(|stages| DeltaItem::ExtendShard { stages }),
+    ]
+}
+
+fn plan_delta() -> impl Strategy<Value = PlanDelta> {
+    (
+        plan_epoch(),
+        plan_epoch(),
+        prop::collection::vec(delta_item(), 0..4),
+    )
+        .prop_map(|(from, to, changes)| PlanDelta { from, to, changes })
+}
+
+// ---- Properties -------------------------------------------------------------------------
+
+fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) {
+    let json = serde_json::to_string(value).expect("serialize");
+    let back: T = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(&back, value, "round trip through {json}");
+}
+
+macro_rules! round_trip_tests {
+    ($($name:ident: $strategy:expr;)*) => {
+        proptest! {
+            $(
+                #[test]
+                fn $name(value in $strategy) {
+                    round_trip(&value);
+                }
+            )*
+        }
+    };
+}
+
+round_trip_tests! {
+    rt_instance_id: any::<u64>().prop_map(InstanceId);
+    rt_model_id: blake3().prop_map(ModelId);
+    rt_layer_ix: layer();
+    rt_expert_ix: any::<u16>().prop_map(ExpertIx);
+    rt_stage_ix: stage_ix();
+    rt_tensor_group_id: group_id();
+    rt_plan_epoch: plan_epoch();
+    rt_plan_digest: blake3().prop_map(PlanDigest);
+    rt_objective: objective();
+    rt_exactness_policy: exactness();
+    rt_stage_assignment: stage_assignment();
+    rt_parallelism_mode: parallelism_mode();
+    rt_hop_plan: hop_plan();
+    rt_tier_assignment: tier_assignment();
+    rt_expert_cache_budget: expert_cache_budget();
+    rt_kv_budget: kv_budget();
+    rt_prefetch_window: prefetch_window();
+    rt_speculative_config: speculative_config();
+    rt_batching_limits: batching_limits();
+    rt_predicted_cost: predicted_cost();
+    rt_assumption: assumption();
+    rt_placement_plan: placement_plan();
+    rt_delta_item: delta_item();
+    rt_plan_delta: plan_delta();
+}
+
+/// Decodes `value` after adding an unknown field to every record in its JSON form.
+fn decodes_with_future_fields<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) {
+    let mut json = serde_json::to_value(value).expect("serialize");
+    add_future_fields_to_records(&mut json);
+    let back: T = serde_json::from_value(json.clone())
+        .unwrap_or_else(|e| panic!("decode with unknown fields failed: {e}\n{json}"));
+    assert_eq!(&back, value);
+}
+
+/// Adds an unknown field to every JSON object in `value`, recursively. Externally tagged enum
+/// objects (one key starting with an upper-case letter) are skipped, and so are the
+/// `{start, end}` objects of a `Range`, whose serde form is std's and closed.
+fn add_future_fields_to_records(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let is_variant = map.len() == 1
+                && map
+                    .keys()
+                    .next()
+                    .is_some_and(|k| k.starts_with(|c: char| c.is_ascii_uppercase()));
+            let is_range = map.len() == 2 && map.contains_key("start") && map.contains_key("end");
+            for v in map.values_mut() {
+                add_future_fields_to_records(v);
+            }
+            if !is_variant && !is_range {
+                map.insert(
+                    "field_from_a_future_build".to_owned(),
+                    serde_json::json!({ "nested": [1, 2, 3], "flag": true }),
+                );
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(add_future_fields_to_records),
+        _ => {}
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn plan_decodes_with_future_fields(value in placement_plan()) {
+        decodes_with_future_fields(&value);
+    }
+
+    #[test]
+    fn delta_decodes_with_future_fields(value in plan_delta()) {
+        decodes_with_future_fields(&value);
+    }
+}
+
+#[test]
+fn kv_budget_without_spill_compute_defaults_to_gpu_stream() {
+    let budget = KvBudget {
+        stage: StageIx(1),
+        tier: TierId {
+            node: NodeId([7; 32]),
+            ordinal: 2,
+        },
+        bytes: Bytes(1 << 30),
+        dtype: KvDType::Native,
+        spill: None,
+        spill_compute: SpillCompute::CpuSplit { max_rows: 5 },
+    };
+    let mut json = serde_json::to_value(budget).expect("serialize");
+    json.as_object_mut()
+        .expect("a record")
+        .remove("spill_compute");
+    let back: KvBudget = serde_json::from_value(json).expect("decode");
+    assert_eq!(back.spill_compute, SpillCompute::GpuStream);
+    assert_eq!(
+        KvBudget {
+            spill_compute: SpillCompute::GpuStream,
+            ..budget
+        },
+        back
+    );
+}
+
+#[test]
+fn plan_epochs_order_by_term_then_seq() {
+    let e = |term, seq| PlanEpoch { term, seq };
+    assert!(e(1, 9) < e(2, 0));
+    assert!(e(2, 0) < e(2, 1));
+    assert_eq!(e(3, 3).cmp(&e(3, 3)), std::cmp::Ordering::Equal);
+}
