@@ -104,7 +104,7 @@ Each generator rewrites only the text between its `<!-- BEGIN GENERATED: name --
 
 `sizing.py` and `schedsim.py` print `[estimate]` figures only. Never copy their output into a document as a fact.
 
-Once code exists, run the same lint job CI runs before pushing: `cargo xtask ci lint` (`cargo fmt`, `clippy`, `cargo-deny`, `cargo xtask check-deps`, the `unsafe` placement check, the release-feature check, the licence manifest, DCO and the PR title). The tasks that build it are QUAL-E1-T02 and QUAL-E1-T06.
+Once `cargo xtask` exists (QUAL-E1-T02), run the same lint job CI runs before pushing: `cargo xtask ci lint` (`cargo fmt`, `clippy`, `cargo-deny`, `cargo xtask check-deps`, the `unsafe` placement check, the release-feature check, the licence manifest, DCO and the PR title). The tasks that build it are QUAL-E1-T02 and QUAL-E1-T06.
 
 ## Writing style
 
