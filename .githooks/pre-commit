@@ -15,10 +15,14 @@
 
 set -u
 
+# common.sh comes from this hook's own directory, wherever core.hooksPath points. The tools come
+# from the repository being committed to.
+hooks=$(CDPATH="" cd -- "$(dirname -- "$0")" && pwd) || exit 2
 root=$(git rev-parse --show-toplevel) || exit 2
 cd "$root" || exit 2
 # shellcheck source=common.sh
-. "$root/.githooks/common.sh"
+. "$hooks/common.sh"
+tools=plan/implementation/tools
 
 failed=""
 
@@ -49,6 +53,8 @@ if ! staged plan; then
     note "plan tools: skipped, nothing under plan/ staged"
 elif [ -z "$python" ]; then
     note "plan tools: skipped, no Python 3 found (python3 or python)"
+elif [ ! -f "$tools/epics.py" ]; then
+    note "plan tools: skipped, this repository has no $tools"
 else
     # The tools find the plan from their own location, so a copy of the staged plan/ tree is
     # checked exactly as it will be committed.
@@ -65,7 +71,7 @@ else
             set -- $step
             tool=$1
             shift
-            if ! "$python" "$tmp/plan/implementation/tools/$tool.py" "$@" >"$tmp/out" 2>&1; then
+            if ! "$python" "$tmp/$tools/$tool.py" "$@" >"$tmp/out" 2>&1; then
                 cat "$tmp/out"
                 note "plan tools: FAIL: $tool.py $*"
                 plan_ok=no
@@ -82,7 +88,9 @@ fi
 
 if [ -z "$python" ]; then
     note "naming check: skipped, no Python 3 found (python3 or python)"
-elif ! "$python" "$root/plan/implementation/tools/naming_check.py" --staged; then
+elif [ ! -f "$tools/naming_check.py" ]; then
+    note "naming check: skipped, this repository has no $tools/naming_check.py"
+elif ! "$python" "$tools/naming_check.py" --staged; then
     failed="$failed naming"
 fi
 

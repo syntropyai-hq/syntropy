@@ -15,7 +15,7 @@ Scripts that read the six epic files in `../epics/`, check the task graph and wr
 | `schedsim.py` | `sizing.py`, and the graph from `depcheck.py` or a `depcheck.py --graph` file | nothing; prints `[estimate]` elapsed time to each milestone exit under agent concurrency, serial lab rigs, maintainer latency and gate throughput, and the unconstrained floor |
 | `gh_sync.py` | the epics, `depcheck.py`'s edges, `sizing.py`, the D5 banned-terms list (`--banned`, kept outside the repository); needs the `gh` CLI logged in with the `repo`, `project` and `read:org` scopes (`read:org` so that members' issues read as members) | GitHub, not `plan/`: one issue per epic and task on the project board, sub-issues, labels, milestones and "blocked by" links; re-runs update only what changed |
 | `naming_check.py` | the files staged for commit or changed against a base ref, a commit message, standard input or named files; the D5 banned-terms list (`--banned`, `SYNTROPY_BANNED_TERMS` or `git config syntropy.bannedTerms`), read through `gh_sync.load_banned` | nothing; prints `path:line` for each matching line, never the term |
-| `test_naming_check.py` | – | nothing; the unit tests for `naming_check.py`, each with its own throwaway term list, and tests of the commit-msg hook on messages saved with CRLF endings (skipped without a POSIX `sh`) |
+| `test_naming_check.py` | – | nothing; the unit tests for `naming_check.py`, each with its own throwaway term list, and tests that run the hooks: commit-msg on messages saved with CRLF endings, and both hooks for a repository without the hooks or tools (skipped without a POSIX `sh`) |
 
 ## `epics.py`
 
@@ -233,7 +233,7 @@ The opt-in git hooks in `.githooks/` run it. `git config core.hooksPath .githook
 - `pre-commit` runs `cargo fmt --all --check` when Rust files are staged, then `epics.py`, `depcheck.py` and the three generators with `--check` on a copy of the staged `plan/` when files under `plan/` are staged, then `naming_check.py --staged`.
 - `commit-msg` checks for a `Signed-off-by` line that matches the author and a conventional-commit subject, then runs `naming_check.py --message`.
 
-The hooks are POSIX `sh` and build nothing. A check whose input is missing (nothing of its kind staged, no `cargo`, no Python 3, no list) prints one notice line, and the other checks still run.
+The hooks are POSIX `sh` and build nothing. They read their shared `common.sh` from their own directory, so `core.hooksPath` can point at a `.githooks` anywhere, and they take the plan tools and the naming check from the repository being committed to. A check whose input is missing (nothing of its kind staged, no `cargo`, no Python 3, no list, no tools in the repository) prints one notice line, and the other checks still run.
 
 ## After editing an epic file
 

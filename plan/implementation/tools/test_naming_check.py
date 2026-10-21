@@ -230,9 +230,10 @@ class NamingCheckTest(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("sh"), "needs a POSIX sh on PATH")
-class CommitMsgHookTest(unittest.TestCase):
-    """The commit-msg hook in .githooks/, run on a message saved with CRLF endings, as an editor on
-    Windows may save it. The hook runs in this checkout with a throwaway list and author."""
+class HookTest(unittest.TestCase):
+    """The hooks in .githooks/: commit-msg on messages saved with CRLF endings, as an editor on
+    Windows may save them, and both hooks run for a repository that is not this one, as when
+    core.hooksPath points at a .githooks elsewhere. They run with a throwaway list and author."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -253,15 +254,43 @@ class CommitMsgHookTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_hook(self, lines):
+    def run_hook(self, lines, cwd=REPO, hook="commit-msg"):
         message = self.dir / "COMMIT_EDITMSG"
         message.write_bytes("\r\n".join(lines + [""]).encode("utf-8"))
+        args = [message.as_posix()] if hook == "commit-msg" else []
         done = subprocess.run(
-            ["sh", (REPO / ".githooks" / "commit-msg").as_posix(), message.as_posix()],
-            cwd=REPO, env=self.env, capture_output=True, check=False)
+            ["sh", (REPO / ".githooks" / hook).as_posix(), *args],
+            cwd=cwd, env=self.env, capture_output=True, check=False)
         output = (done.stdout + done.stderr).decode()
         self.assertNotIn("zorblax", output.lower(), "the output names a term")
         return done.returncode, output
+
+    def other_repo(self):
+        """A repository with no .githooks and no plan tools, with one file staged."""
+        repo = self.dir / "other"
+        repo.mkdir()
+        git = ["git", "-c", "init.defaultBranch=main"]
+        subprocess.run([*git, "init", "-q"], cwd=repo, env=self.env, check=True,
+                       capture_output=True)
+        (repo / "readme.txt").write_text("hello\n", encoding="utf-8")
+        subprocess.run([*git, "add", "readme.txt"], cwd=repo, env=self.env, check=True,
+                       capture_output=True)
+        return repo
+
+    def test_commit_msg_runs_for_a_repository_without_the_hooks_or_tools(self):
+        code, output = self.run_hook(
+            ["docs: a message", "", "Signed-off-by: Test <test@example.invalid>"],
+            cwd=self.other_repo())
+        self.assertEqual(code, 0, output)
+        self.assertIn("commit-msg: subject: ok", output)
+        self.assertIn("commit-msg: sign-off: ok", output)
+        self.assertIn("naming check: skipped, this repository has no", output)
+
+    def test_pre_commit_runs_for_a_repository_without_the_hooks_or_tools(self):
+        code, output = self.run_hook([], cwd=self.other_repo(), hook="pre-commit")
+        self.assertEqual(code, 0, output)
+        self.assertIn("pre-commit: rustfmt: skipped, no Rust files staged", output)
+        self.assertIn("naming check: skipped, this repository has no", output)
 
     def message(self, *body):
         return ["docs: a message saved with CRLF endings", "", *body,

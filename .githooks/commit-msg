@@ -15,9 +15,13 @@
 set -u
 
 message=$1
+# common.sh comes from this hook's own directory, wherever core.hooksPath points. The naming check
+# comes from the repository being committed to.
+hooks=$(CDPATH="" cd -- "$(dirname -- "$0")" && pwd) || exit 2
 root=$(git rev-parse --show-toplevel) || exit 2
 # shellcheck source=common.sh
-. "$root/.githooks/common.sh"
+. "$hooks/common.sh"
+naming=$root/plan/implementation/tools/naming_check.py
 
 failed=""
 
@@ -60,8 +64,10 @@ else
     note "sign-off: ok"
 fi
 
-if python=$(find_python); then
-    if ! "$python" "$root/plan/implementation/tools/naming_check.py" --message "$message"; then
+if [ ! -f "$naming" ]; then
+    note "naming check: skipped, this repository has no plan/implementation/tools/naming_check.py"
+elif python=$(find_python); then
+    if ! "$python" "$naming" --message "$message"; then
         failed="$failed naming"
     fi
 else
