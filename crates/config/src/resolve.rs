@@ -22,7 +22,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -72,31 +72,90 @@ impl ConfigFile {
     /// Reads every file `scan` found, in merge order. Returns every file that cannot be read
     /// or is not UTF-8.
     pub fn read_all(scan: &Scan) -> Result<Vec<ConfigFile>, Vec<Problem>> {
+        let (files, unreadable) = Self::read_each(scan);
+        if unreadable.is_empty() {
+            Ok(files)
+        } else {
+            Err(unreadable.into_iter().map(|(_, problem)| problem).collect())
+        }
+    }
+
+    /// Reads every file `scan` found, in merge order: the files that could be read, and for
+    /// each one that cannot be read or is not UTF-8, its path and the problem.
+    fn read_each(scan: &Scan) -> (Vec<ConfigFile>, Vec<(PathBuf, Problem)>) {
         let mut files = Vec::new();
-        let mut problems = Vec::new();
+        let mut unreadable = Vec::new();
         for path in scan.files() {
             match std::fs::read(&path) {
                 Ok(bytes) => match String::from_utf8(bytes) {
                     Ok(text) => files.push(ConfigFile::new(path, text)),
-                    Err(_) => problems.push(Problem::new(
+                    Err(_) => {
+                        let problem = Problem::new(
+                            Code::PathUnusable,
+                            None,
+                            format!("{}: the file is not UTF-8", path.display()),
+                        );
+                        unreadable.push((path, problem));
+                    }
+                },
+                Err(e) => {
+                    let problem = Problem::new(
                         Code::PathUnusable,
                         None,
-                        format!("{}: the file is not UTF-8", path.display()),
-                    )),
-                },
-                Err(e) => problems.push(Problem::new(
-                    Code::PathUnusable,
-                    None,
-                    format!("{}: cannot read the file: {e}", path.display()),
-                )),
+                        format!("{}: cannot read the file: {e}", path.display()),
+                    );
+                    unreadable.push((path, problem));
+                }
             }
         }
-        if problems.is_empty() {
-            Ok(files)
-        } else {
-            Err(problems)
-        }
+        (files, unreadable)
     }
+}
+
+/// Reads the files `scan` found and resolves the ones that can be read, so a file that cannot
+/// be read is reported beside every other file's errors, not alone (RFC-0054 §8: every error,
+/// not only the first). Returns the files read, for rendering, and the outcome. The errors stay
+/// in merge order: each file's in turn, a file that cannot be read in its place, then the
+/// environment's and the flags'.
+pub(crate) fn read_and_resolve(
+    registry: &Registry,
+    os: Os,
+    scan: &Scan,
+    env: &Env,
+    flags: &Flags,
+    computed: impl Fn(&'static KeySchema) -> Option<Value>,
+) -> (Vec<ConfigFile>, Result<ResolvedConfig, Rejected>) {
+    let (files, unreadable) = ConfigFile::read_each(scan);
+    let layers = Layers {
+        os,
+        files: &files,
+        env,
+        flags,
+    };
+    let outcome = ResolvedConfig::resolve_with(registry, layers, computed);
+    if unreadable.is_empty() {
+        return (files, outcome);
+    }
+    let (errors, warnings) = match outcome {
+        Ok(config) => (Vec::new(), config.warnings().to_vec()),
+        Err(rejected) => (rejected.errors, rejected.warnings),
+    };
+    let order = scan.files();
+    let place = |path: &Path| order.iter().position(|p| p == path).unwrap_or(order.len());
+    let mut errors: Vec<(usize, Problem)> = unreadable
+        .into_iter()
+        .map(|(path, problem)| (place(&path), problem))
+        .chain(errors.into_iter().map(|problem| {
+            let at = match &problem.at {
+                Some(Origin::File { path, .. }) => place(path),
+                _ => order.len(),
+            };
+            (at, problem)
+        }))
+        .collect();
+    errors.sort_by_key(|(at, _)| *at);
+    let errors = errors.into_iter().map(|(_, problem)| problem).collect();
+    (files, Err(Rejected { errors, warnings }))
 }
 
 /// One value set on the command line.
@@ -1153,7 +1212,8 @@ impl fmt::Debug for SharedConfig {
 
 /// Reads the files `scan` found and resolves them with the environment and flags: the whole
 /// load a daemon or `config check` performs. A file that cannot be read is an error, like a
-/// syntax error.
+/// syntax error, and the files that can be read are still resolved, so their errors are
+/// reported with it.
 pub fn load(
     registry: &Registry,
     os: Os,
@@ -1161,19 +1221,7 @@ pub fn load(
     env: &Env,
     flags: &Flags,
 ) -> Result<ResolvedConfig, Rejected> {
-    let files = ConfigFile::read_all(scan).map_err(|errors| Rejected {
-        errors,
-        warnings: Vec::new(),
-    })?;
-    ResolvedConfig::resolve(
-        registry,
-        Layers {
-            os,
-            files: &files,
-            env,
-            flags,
-        },
-    )
+    read_and_resolve(registry, os, scan, env, flags, |_| None).1
 }
 
 #[cfg(test)]

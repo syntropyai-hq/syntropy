@@ -24,7 +24,7 @@ use serde::Deserialize;
 use syntropy_config::{
     ByteSize, Checked, Code, ConfigFile, ConfigSection, Dirs, Env, Flags, HoldsSecret, Layers,
     Locations, Mode, Origin, Os, Registry, ResolvedConfig, SecretSource, SharedConfig, Value,
-    command, load, order_dropins,
+    command, diagnostic, load, order_dropins,
 };
 
 /// Keys for the layering tests.
@@ -563,12 +563,12 @@ fn a_secret_nested_in_a_struct_or_an_array_of_tables_never_prints() {
 }
 
 /// A `policy.*` table is a proposal printed whole, so each entry is redacted by its instance
-/// key's `holds_secret` flag; an entry no instance key names is redacted too, since it may be a
-/// misspelt secret.
+/// key's `holds_secret` flag. An entry no instance key names is an `unknown_key` error, which
+/// never prints its value, since it may be a misspelt secret.
 #[test]
 fn a_secret_in_a_policy_table_never_prints() {
     let text = "[policy.\"qwen3*\"]\nobjective = \"throughput\"\ndraft_token = \"canary-p1\"\n\
-                mystery = \"canary-p2\"\n\n[policy.\"qwen3*\".approximate]\nkv_lossy = true\n\
+                \n[policy.\"qwen3*\".approximate]\nkv_lossy = true\n\
                 endpoint_token = \"canary-p3\"\n\n[policy.plain]\nobjective = \"latency\"\n";
     let files = vec![ConfigFile::new("/c.toml", text)];
     let resolved = resolve_secrets(&files, &Env::default(), &Flags::new());
@@ -577,7 +577,7 @@ fn a_secret_in_a_policy_table_never_prints() {
     assert!(
         shown.contains(
             "policy.\"qwen3*\" = { approximate = { endpoint_token = [redacted], kv_lossy = true \
-             }, draft_token = [redacted], mystery = [redacted], objective = \"throughput\" }"
+             }, draft_token = [redacted], objective = \"throughput\" }"
         ),
         "{shown}"
     );
@@ -595,6 +595,26 @@ fn a_secret_in_a_policy_table_never_prints() {
     assert_eq!(proposal("policy.\"qwen3*\"").value(), None);
     assert!(proposal("policy.plain").value().is_some());
     assert!(!format!("{resolved:?}").contains("canary"));
+
+    // An entry no instance key names is rejected, and its error withholds the value.
+    let text = "[policy.\"qwen3*\"]\nmystery = \"canary-p2\"\n";
+    let files = vec![ConfigFile::new("/c.toml", text)];
+    let layers = Layers {
+        os: Os::Linux,
+        files: &files,
+        env: &Env::default(),
+        flags: &Flags::new(),
+    };
+    let Err(rejected) = ResolvedConfig::resolve(&SECRET_MAP, layers) else {
+        panic!("an unknown policy entry is an error");
+    };
+    assert_eq!(rejected.errors.len(), 1, "{:#?}", rejected.errors);
+    assert_eq!(rejected.errors[0].code, Some(Code::UnknownKey));
+    let rendered =
+        diagnostic::render_all(&rejected.errors, &rejected.warnings, &files, &SECRET_MAP);
+    assert!(rendered.contains("2 | mystery = [redacted]"), "{rendered}");
+    assert!(!rendered.contains("canary"), "{rendered}");
+    assert!(!format!("{rejected:?}").contains("canary"));
 }
 
 /// `section()` on a secret-typed key with a value of the wrong shape: serde's own error for a

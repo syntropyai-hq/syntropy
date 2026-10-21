@@ -14,7 +14,7 @@ use crate::discovery::{Os, Scan};
 use crate::env::Env;
 use crate::origin::Origin;
 use crate::registry::Registry;
-use crate::resolve::{ConfigFile, Flags, Layers, Proposal, Rejected, ResolvedConfig};
+use crate::resolve::{ConfigFile, Flags, Proposal, Rejected, ResolvedConfig, read_and_resolve};
 use crate::schema::{KeySchema, Scope};
 
 /// The key whose unusable path is an error, not a warning (RFC-0054 §8 phase 5).
@@ -413,26 +413,8 @@ pub fn load_and_validate(
     rules: &[Rule],
     environment: &dyn Environment,
 ) -> Checked {
-    let files = match ConfigFile::read_all(scan) {
-        Ok(files) => files,
-        Err(errors) => {
-            return Checked {
-                files: Vec::new(),
-                outcome: Err(Rejected {
-                    errors,
-                    warnings: Vec::new(),
-                }),
-            };
-        }
-    };
-    let layers = Layers {
-        os,
-        files: &files,
-        env,
-        flags,
-    };
-    let outcome = ResolvedConfig::resolve_with(registry, layers, computed)
-        .and_then(|config| validate(registry, config, rules, environment));
+    let (files, outcome) = read_and_resolve(registry, os, scan, env, flags, computed);
+    let outcome = outcome.and_then(|config| validate(registry, config, rules, environment));
     Checked { files, outcome }
 }
 
