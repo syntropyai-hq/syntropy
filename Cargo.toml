@@ -57,3 +57,5 @@ proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 smallvec = { version = "1", features = ["serde"] }
+# TOML reading only (no writer): the RFC-0042 tolerance tables, `numerics/tolerances-v<N>.toml`.
+toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
