@@ -655,7 +655,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | PROD-E12-T12 | spike | Spike: Windows logon-task breakaway | OQ-PKG-14 | 3 |
 | QUAL-E13-T13 | spike | Spike: laptop noise | OQ-PRC-12 | 0 |
 
-**Open questions needed by M1b:** 13 (benchmark 3, decision 1, spike 9). Each one names a task that records the answer.
+**Open questions needed by M1b:** 14 (benchmark 3, decision 2, spike 9). Answered by no task: OQ-PRC-24.
 <!-- END GENERATED -->
 
 ## M2: multiple devices on a LAN
