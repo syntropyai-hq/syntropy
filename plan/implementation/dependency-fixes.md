@@ -515,3 +515,11 @@ ADR-0405 (option A, with V1 for exactness on Vulkan) keeps one `DeviceClass` in 
 | Added QUAL-E6-T23 (M2) → QUAL-E6-T04, QUAL-E6-T16, COMP-E2-T11 | QUAL-E6-T23 | R9 | V1's runtime rule, label and fallback for Vulkan-domain providers: the Vulkan counterpart of QUAL-E6-T16, which "Exactness on Vulkan" names |
 | COMP-E8-T10 → QUAL-E6-T23; QUAL-E4-T11 → QUAL-E6-T23 | COMP-E8-T10, QUAL-E4-T11 | R9 | the M2 ggml Vulkan preview's conformance run and the M3 Vulkan conformance issue Vulkan certificates, which V1 makes full only on the rig's device and driver |
 | COMP-E8-T04 gains a criterion for decision 3's `subgroup` rule; no edge | COMP-E8-T04 | R9 | the native Vulkan provider computes the class at `enumerate`. `kernels`' current `Vulkan` variant already has `subgroup`, so the criterion needs no new type |
+
+## PROD-E1-T03's layering inputs (2026-10-22)
+
+PROD-E1-T03's redaction criterion names cases that only PROD-E1-T02's layering produces, so the task now depends on it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T03 → PROD-E1-T02 | PROD-E1-T03 | R9 | Three of PROD-E1-T03's cases use PROD-E1-T02's outputs: values from `--set`, values from the `SYNTROPY_A__B` mapping, and the warning for an unknown `SYNTROPY_*` variable. PROD-E1-T02 depends only on PROD-E1-T01, so the edge adds no cycle, and it runs M0b → M0a |
