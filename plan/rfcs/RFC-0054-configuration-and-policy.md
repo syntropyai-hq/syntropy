@@ -464,7 +464,7 @@ Options:
 - (b) the table's owner declares the carved-out keys too, with each key naming its own owner;
 - (c) no carve-outs: the carved-out keys move under their owners' prefixes, which renames keys this table fixes.
 
-Recommended default: (a).
+Recommended default: (a). Nothing yet checks a shared section's keys against this table, so a shared section could add a key inside another owner's subtree, such as `security.x` inside RFC-0034's `security.*`. Under (a), PROD-E1-T16's CI check should compare every shared section's keys with the carve-outs this table lists.
 
 #### 5.2 Node keys owned by the product RFCs
 
