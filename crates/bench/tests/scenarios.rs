@@ -261,6 +261,20 @@ fn a_scenario_removed_and_re_added_needs_a_higher_version_than_its_last() {
     let _ = repo.run(&["render", "--write"]);
     repo.git(&["add", "--all"]);
     repo.git(&["commit", "--quiet", "--message", "add at version 3"]);
+    // Changed once before it is removed: its last version is 5, not the 3 it was added at.
+    let v5 = format!(
+        "{}objective = \"latency\"\n",
+        v3.replace("scenario_version = 3", "scenario_version = 5")
+    )
+    .replace("objective = \"latency\"\ngrid", "grid");
+    repo.write(SCENARIO_PATH, &v5);
+    repo.git(&[
+        "commit",
+        "--quiet",
+        "--all",
+        "--message",
+        "change to version 5",
+    ]);
     repo.git(&["rm", "--quiet", SCENARIO_PATH]);
     let _ = repo.run(&["render", "--write"]);
     repo.commit_as_base();
@@ -276,20 +290,33 @@ fn a_scenario_removed_and_re_added_needs_a_higher_version_than_its_last() {
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     let err = stderr(&output);
     assert!(
-        err.contains("it was 3 at commit ")
-            && err.contains("its last version before it was removed, and is 1 now; raise it to 4"),
+        err.contains("it was 5 at commit ")
+            && err.contains("its last version before it was removed, and is 1 now; raise it to 6"),
         "{err}"
     );
 
-    // The same definition re-added unchanged keeps its version.
-    repo.write(SCENARIO_PATH, &v3);
+    // Above the version it was added at, but below its last one: still refused.
+    repo.write(
+        SCENARIO_PATH,
+        &changed.replace("scenario_version = 3", "scenario_version = 4"),
+    );
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("is 4 now; raise it to 6"),
+        "{}",
+        stderr(&output)
+    );
+
+    // The last definition re-added unchanged keeps its version.
+    repo.write(SCENARIO_PATH, &v5);
     let output = repo.run(&["check"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 
     // A changed definition above the last version passes.
     repo.write(
         SCENARIO_PATH,
-        &changed.replace("scenario_version = 3", "scenario_version = 4"),
+        &changed.replace("scenario_version = 3", "scenario_version = 6"),
     );
     let output = repo.run(&["check"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
