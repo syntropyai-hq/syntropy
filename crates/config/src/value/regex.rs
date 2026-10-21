@@ -9,16 +9,16 @@ use std::str::FromStr;
 
 use super::{ValueError, serde_via_str};
 
-/// The longest pattern accepted, in bytes [target]: a chosen budget, far above any tensor-name
+/// The longest pattern accepted, in bytes \[target\]: a chosen budget, far above any tensor-name
 /// override, that bounds parse time on hostile input.
 pub const MAX_PATTERN_LEN: usize = 1024;
 
-/// The largest compiled program accepted, in bytes [target]: a chosen budget. A tensor-name
+/// The largest compiled program accepted, in bytes \[target\]: a chosen budget. A tensor-name
 /// pattern compiles to a few KiB; a pattern such as `(\w{100}){100}` compiles far above this
 /// and is rejected (RFC-0054 testing table: "regex size limits enforced").
 pub const SIZE_LIMIT: usize = 256 * 1024;
 
-/// Nesting depth accepted [target]: a chosen budget against stack exhaustion while parsing.
+/// Nesting depth accepted \[target\]: a chosen budget against stack exhaustion while parsing.
 const NEST_LIMIT: u32 = 64;
 
 /// A regular expression, written as a TOML literal string such as

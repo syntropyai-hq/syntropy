@@ -35,7 +35,7 @@ const UNITS: &[(&str, u64)] = &[
 ///   and `ns` exist so that every [`Nanos`] value prints in a form that parses back.
 /// - Each component is a whole number. `"1.5s"` is rejected; write `"1s500ms"`.
 /// - Output is compound with zero components left out (`"1m30s"`), and `"0s"` for zero.
-/// - `"never"`, where a key allows it, is an `Option<Duration>` of `None`: see [`never`].
+/// - `"never"`, where a key allows it, is an `Option<Duration>` of `None`: see [`never`](mod@never).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Duration(pub Nanos);
 
