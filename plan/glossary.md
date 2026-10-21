@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (2026-10-20)
 - **Date:** 2026-10-19
+- **Revised:** 2026-10-22 (device class; derived certification on Vulkan; ADR-0405)
 
 This is the canonical vocabulary for every Syntropy plan document, RFC and ADR, and for the code. Where a term has a type in code, its name is given in `code` font. Names marked *(proposed)* are placeholders until RFC-0001 fixes them. "Owner" is the RFC or ADR that defines the behaviour behind the term; it names a document, never a person (§16). The words in [§15, Rejected synonyms](#15-rejected-synonyms) are not used anywhere.
 
@@ -42,6 +43,8 @@ This is the canonical vocabulary for every Syntropy plan document, RFC and ADR, 
 ## 2. Hardware and resources
 
 **Device.** A compute engine on a node: a discrete GPU, an integrated or APU GPU, a CPU complex (one device per NUMA domain) or an NPU. *Code:* `DeviceId`, `DeviceKind`, `DeviceInfo`. *Owner:* RFC-0010.
+
+**Device class.** The key that decides which kernels and pack layouts apply to a device: backend plus the facts that change the pack layout or the kernel objects the providers load, such as CUDA `sm_89`, Metal Apple9 with the Metal 4 library, or `X86V4Amx`. Two devices of one class run the same kernels and accept the same packs. It keys packs, certificates and the selection cache, and is computed when the provider enumerates the device. *Code:* `DeviceClass`, `CpuIsa`. *Owner:* RFC-0040 §2.2, ADR-0405.
 
 **NUMA domain.** A set of cores with uniform access to one bank of memory. Each NUMA domain's CPU complex is a separate device, so CPU execute-in-place stays NUMA-local. *Owner:* RFC-0010.
 
@@ -244,7 +247,7 @@ Tokens and activations never cross the control plane. *Owner:* RFC-0032 and RFC-
 
 **Exact mode.** The default (D3, ADR-0019). Output must stay within published per-dtype tolerances of a reference forward pass at the same quantization, measured as teacher-forced top-1 agreement and KL divergence. Byte-identical output across heterogeneous devices is not promised, and the product says so. Every path the solver or scheduler can choose in exact mode must pass the parity harness, and a path that fails is approximate whatever it was meant to be. Requests ask for it with `fidelity: "exact"`, which is always honoured or fails. *Code:* `ExactnessPolicy::Exact`. *Owner:* RFC-0042, RFC-0060.
 
-**Derived certification.** How an op runs in exact mode on a Tier 1 device class that no lab rig can execute: it is certified on a related architecture with the same `source_key`, its binary for the target is compatible (the same CUDA major, or JIT from identical PTX), and the warm-up canary passes with it selected on first load. Output served this way is labelled `exact (derived certification)`. If the canary fails, the op drops to a provider with a full certificate (ADR-0602). *Code:* `OpCert::source_key`. *Owner:* RFC-0060.
+**Derived certification.** How an op runs in exact mode on a Tier 1 device class that no lab rig can execute: it is certified on a related architecture with the same `source_key`, its binary for the target is compatible (the same CUDA major, or JIT from identical PTX), and the warm-up canary passes with it selected on first load. Output served this way is labelled `exact (derived certification)`. If the canary fails, the op drops to a provider with a full certificate (ADR-0602). On Vulkan it also covers a device or driver of a certified class other than the rig's: the device loads identical SPIR-V from the same shader-variant set, and the canary passes (ADR-0405). *Code:* `OpCert::source_key`, `OpCert::rig`. *Owner:* RFC-0060.
 
 **Conformance manifest.** The signed, per-release record of what the parity harness certified: op, family, wire, path and approximate-knob certificates, keyed by content so they stay valid across builds that leave those bytes unchanged. Op selection, the solver's BF16 wire choice and the scheduler's run-time limits read it. *Code:* `ConformanceManifest`. *Owner:* RFC-0060.
 

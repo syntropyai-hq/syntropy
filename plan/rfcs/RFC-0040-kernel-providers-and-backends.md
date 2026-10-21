@@ -4,7 +4,7 @@
 - Area: compute and models
 - Depends on: RFC-0001 (§2.3, §4, §5.7, §8, §9), RFC-0010, RFC-0012, RFC-0020, RFC-0022, RFC-0023, RFC-0041, RFC-0042, RFC-0043, RFC-0052, RFC-0060, RFC-0062; ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0012, ADR-0014, ADR-0019, ADR-0020, ADR-0201, ADR-0205; ADR-0400 to ADR-0404
 - Date: 2026-10-19
-- Revised: 2026-10-20: OS GPU watchdogs (§4.5); the functional doorbell probe (§4.2); the ggml-only Vulkan preview at M2 (§7.5); NVIDIA's libraries fetched at `setup` rather than shipped (§10.3); encoder and reserved ops (§3.1); the router and penalty rules (§7.1); the GPUDirect Storage port not built (§7.7); upstream patches (§8.4); the M0 spike harnesses (Rollout, Open questions)
+- Revised: 2026-10-20: OS GPU watchdogs (§4.5); the functional doorbell probe (§4.2); the ggml-only Vulkan preview at M2 (§7.5); NVIDIA's libraries fetched at `setup` rather than shipped (§10.3); encoder and reserved ops (§3.1); the router and penalty rules (§7.1); the GPUDirect Storage port not built (§7.7); upstream patches (§8.4); the M0 spike harnesses (Rollout, Open questions); 2026-10-22: one `DeviceClass` in `core`, decided at `enumerate`, and derived certificates on Vulkan (§2.1, §2.2, §6.2, §7.2, §7.3, §7.5; ADR-0405)
 
 ## Summary
 
@@ -153,6 +153,8 @@ pub trait KernelProvider: Send + Sync {
 
 `unsupported()` builds `Error { class: Unsupported, code: (Kernels, 1), .. }`. `poll` and `synchronize` have no defaults because every backend can implement them.
 
+**The device class is decided at `enumerate`** (ADR-0405 decision 3, 2026-10-22). `enumerate` returns `ProviderDevice::class`, so every field of the class is known before `open`. Each provider computes the class with one pure function of the device's reported properties, the OS facts, the AMX permission result and `features.disable`. `open` applies the same function to the same inputs and gets the same class. It never loads a different variant set or function table than the class names. If `open` cannot obtain what the class assumes, it fails with an error that names the mismatch, and the node re-probes.
+
 #### 2.2 Supporting types
 
 ```rust
@@ -174,14 +176,26 @@ pub struct ProviderDevice {
     pub numa: Option<u16>,
 }
 
-/// Part of PackKey (RFC-0001 §5.6). Two devices with equal classes accept the same pack.
+/// syntropy-core types (ADR-0405): `kernels` re-exports DeviceClass, CpuIsa and DeviceFeatures and
+/// defines none of its own. Part of PackKey (RFC-0001 §5.6), OpCert and SelectionKey (§6.5). Two
+/// devices with equal classes run the same kernels and accept the same pack. A field belongs in the
+/// class only when a change in it can change the pack layout or the set of kernel objects the
+/// providers load for the device; other facts stay in DeviceInfoExt (RFC-0010 §1.2).
 pub enum DeviceClass {
     Cuda { sm: u16 },                       // 75, 80, 86, 89, 90, 100, 120, 121, …
     Hip { gfx: u32 },                       // 0x1100, 0x1201, 0x942, …
-    Metal { family: AppleFamily, metal4: bool },
+    Metal { family: AppleGpuFamily, metal4: bool },
+    /// `subgroup`: the subgroup size of the shader variant set the provider will load, 32 or 64.
+    /// Computed at `enumerate` from the subgroup size control properties (minSubgroupSize,
+    /// maxSubgroupSize, the required-size stages), never copied from a reported default: 32 if the
+    /// device can run the variant set at 32, else 64 if it can at 64, else the native Vulkan
+    /// provider does not claim the device. A device that offers both is class 32. `coopmat` is
+    /// computed the same way, from the cooperative-matrix properties and features.disable.
     Vulkan { vendor: u32, coopmat: bool, subgroup: u8 },
-    Cpu { isa: CpuIsa },                    // X86V2, X86V3, X86V4, X86V4Amx, Arm80, Arm82Dot, Arm86I8mm, Arm92Sme2
+    Cpu { isa: CpuIsa },
+    Npu { vendor: u32, model: u32 },        // RFC-0010's addition; no provider produces it in v1
 }
+pub enum CpuIsa { X86V2, X86V3, X86V4, X86V4Amx, Arm80, Arm82Dot, Arm86I8mm, Arm92Sme2 }   // §7.3
 
 bitflags! { pub struct DeviceFeatures: u64 {
     // GPU matrix and numeric paths
@@ -239,6 +253,8 @@ pub trait HostRegistrar: Send {
 bitflags! { pub struct HostRegFlags: u8 { const DMA = 1; const MAPPED = 2; } }   // the tier manager maps its Registrations onto these
 pub struct Segment { pub reservation: u64, pub offset: Bytes, pub bytes: Bytes, pub handle: u64 }
 ```
+
+*Revised 2026-10-22 (ADR-0405):* `DeviceClass`, `CpuIsa` and `DeviceFeatures` live in `syntropy-core`, and `kernels` re-exports them (COMP-E1-T16). RFC-0010 §1.2 had its own `DeviceClass` with other variants, and now points here. `AppleFamily` is renamed `AppleGpuFamily`, the name `core` already uses. `Npu` comes from RFC-0010. `ProviderDevice` is unchanged.
 
 #### 2.3 Memory domains and device ownership
 
@@ -718,11 +734,11 @@ A candidate is a (provider, prepared variant) inside the device's memory domain 
 
 | Level | Condition | Use |
 |---|---|---|
-| **Certified** | an `OpCert` whose provider, device class, `OpKey` and shape class match, and whose `kernel` equals `caps.kernel_hash` | selected normally |
-| **Derived** | no `OpCert` for this device class, but one exists for the same provider, `OpKey`, shape class and `source_key` on another device class of the same vendor family | selected in exact mode only when (a) the `source_key` matches, (b) the binary is compatible under CUDA's same-major rule or is JIT-compiled from identical PTX, and (c) the first-load canary matches the reference digest. It is labelled `exact (derived certification)` in response metadata and the dashboard. A failed canary falls back to a fully certified provider, or marks the path approximate if none exists (RFC-0060 §6.4, ADR-0602 decision 7) |
+| **Certified** | an `OpCert` whose provider, device class, `OpKey` and shape class match, and whose `kernel` equals `caps.kernel_hash`. For a Vulkan-domain provider (the native Vulkan provider or ggml's Vulkan backend), the device and driver must also be the rig's that `OpCert::rig` records | selected normally |
+| **Derived** | no `OpCert` for this device class, but one exists for the same provider, `OpKey`, shape class and `source_key` on another device class of the same vendor family | selected in exact mode only when (a) the `source_key` matches, (b) the binary is compatible under CUDA's same-major rule or is JIT-compiled from identical PTX, and (c) the first-load canary matches the reference digest. It is labelled `exact (derived certification)` in response metadata and the dashboard. A failed canary falls back to a fully certified provider, or marks the path approximate if none exists (RFC-0060 §6.4, ADR-0602 decision 7). **On a Vulkan-domain provider** (ADR-0405, V1): an `OpCert` exists for this device class, but the device or driver is not its rig's, or the device's identity is unknown. Condition (b) is replaced by: the device loads identical SPIR-V, with the `OpCert`'s `source_key` and `kernel` (the hash of the SPIR-V module), from the same shader-variant set as the rig. Conditions (a) and (c), the label and the fallback are as above |
 | none | neither | never selected, in exact or approximate mode (RFC-0060 §4.2); selection falls through to the next provider holding a certificate, normally ggml |
 
-Certificates are content-keyed: an `OpCert` survives every build in which the kernel's object bytes are unchanged (ADR-0602 decision 4). **The lab can certify more targets than it has.** CUDA runs a cubin built for compute capability X.y on any device of capability X.z with z ≥ y. RFC-0060's op conformance therefore loads the `sm_80` and `sm_86` objects explicitly on the `sm_89` rig, which certifies them without an Ampere card. Targets that no rig can execute (`sm_75`, `sm_90` and `sm_100` in today's lab) are the case derived certificates exist for.
+Certificates are content-keyed: an `OpCert` survives every build in which the kernel's object bytes are unchanged (ADR-0602 decision 4). **The lab can certify more targets than it has.** CUDA runs a cubin built for compute capability X.y on any device of capability X.z with z ≥ y. RFC-0060's op conformance therefore loads the `sm_80` and `sm_86` objects explicitly on the `sm_89` rig, which certifies them without an Ampere card. Targets that no rig can execute (`sm_75`, `sm_90` and `sm_100` in today's lab) are the case derived certificates exist for. *Revised 2026-10-22 (ADR-0405):* on Vulkan they also cover the devices and drivers of a certified class other than the rig's. Each driver compiles the SPIR-V into its own machine code at pipeline creation, so a class-wide certificate would otherwise certify code no rig ran. QUAL-E6-T23 implements the rule. An `OpCert` that records no rig identity never certifies a Vulkan-domain op.
 
 A manifest is valid when it is signed by a key the build's profile accepts (RFC-0060 §6.4's three signers). A build with no valid manifest selects ggml ops wherever ggml maps the op, plus the CPU provider's native ops for the ops ggml cannot run (§8.2: `LogitsProcess`, `TopKTopP`, `SampleSeeded`, `VerifyAccept`, `ApplyTableDeltas`, `KvPack`, `KvUnpack`, and the attention and mixing ops of families that need them), on single-device shapes, with the F32 wire, all labelled "uncertified" (ADR-0602 decision 6). Without those CPU ops the mode could not produce a token.
 
@@ -833,7 +849,7 @@ Datacenter-only paths (sm_90a warpgroup MMA, sm_100a tensor-memory MMA) are out 
 
 #### 7.2 Metal (Tier 1; M1)
 
-**Runtime binding.** `objc2-metal` bindings; `MTLCreateSystemDefaultDevice`. `DeviceClass::Metal { family, metal4 }` comes from `supportsFamily` (Apple7 and newer; macOS 15 floor) and the Metal 4 family check on macOS 26+.
+**Runtime binding.** `objc2-metal` bindings; `MTLCreateSystemDefaultDevice`. `DeviceClass::Metal { family, metal4 }` comes from `supportsFamily` (Apple7 and newer; macOS 15 floor) and the Metal 4 family check on macOS 26+. Both are computed at `enumerate` (§2.1): `metal4` from the family check, the OS version and `features.disable` (ADR-0405 decision 3).
 
 **Two embedded libraries.** `metal4.metallib`, compiled with the Metal 4 language revision, uses `MTLTensor` resources and the Metal Performance Primitives tensor operations (`matmul2d`) for matrix tiles. On M5-class GPUs these run on the GPU neural accelerators; on older Apple GPUs they run on the shader cores. `metal3.metallib`, compiled with Metal 3.2, uses `simdgroup_matrix` 8×8 tiles. The provider loads the Metal 4 library when the OS and family allow it, and selection (§6) still benchmarks both where both load: a public characterisation of the M4-class tensor path found FP8 `matmul2d` emulated on the shader cores. Measurement, not the API version, decides.
 
@@ -853,7 +869,9 @@ Datacenter-only paths (sm_90a warpgroup MMA, sm_100a tensor-memory MMA) are out 
 
 The CPU provider computes everything that runs on a CPU device: dense layers homed in `HostPinned`, expert misses in place (RFC-0001 §6.3), CPU-only nodes, and prefill on CPU stages. One CPU device exists per NUMA domain (RFC-0001 §5.1). Its "streams" are the CPU compute pool's work queues, its events are atomics, and capture is a no-op.
 
-**ISA levels and detection.** The provider classifies the host once at `open` and fills a per-op function-pointer table. Hot loops never test features.
+**ISA levels and detection.** `CpuIsa` is `core`'s type; this provider detects it (ADR-0405). It classifies the host at `enumerate`, which reports the level as the CPU device's class, and `open` applies the same detection and fills a per-op function-pointer table for that level (§2.1). Hot loops never test features.
+
+*AMX at `enumerate`* (revised 2026-10-22, ADR-0405 decision 3). On Linux the AMX permission is granted per process, and `enumerate` (in the probe runner) and `open` (in the serving runner) may run in different processes. `enumerate` makes the request in its own process. It reports `X86V4Amx` only if the request is granted and `features.disable` does not list `amx`. `open` makes the request again. If it is denied there, `open` fails with `AmxDenied` (13), naming the mismatch, and the node re-probes, which yields `X86V4`. The provider never runs AVX-512 kernels under an `X86V4Amx` class, because the pack holds the `cpu.amx16` layout.
 
 | `CpuIsa` | Requires | Detection |
 |---|---|---|
@@ -907,7 +925,7 @@ The CPU provider is also a correctness tool: `kernels::reference` is separate co
 **The native provider (M3)**, below, joins the same module.
 
 - **Binding.** `ash` with the loader opened dynamically; Vulkan 1.3 minimum, 1.4 preferred (ADR-0014). Required: buffer device address, timeline semaphores, 8- and 16-bit storage, `shaderInt8`, `shaderFloat16`, subgroup size control. Used when exposed: `VK_KHR_cooperative_matrix`, `VK_NV_cooperative_matrix2`, `VK_KHR_shader_integer_dot_product`, `VK_KHR_shader_bfloat16`, `VK_EXT_memory_budget`, `VK_EXT_external_memory_host`.
-- **Shaders.** Slang sources compiled offline by `slangc` to SPIR-V. Each kernel has variants over {subgroup 32, 64} × {cooperative matrix, subgroup arithmetic} × {integer dot, none}; `open` picks the variant set that matches the device's properties, and selection benchmarks the rest. Pipeline caches persist per (device UUID, driver version) in the state directory.
+- **Shaders.** Slang sources compiled offline by `slangc` to SPIR-V. Each kernel has variants over {subgroup 32, 64} × {cooperative matrix, subgroup arithmetic} × {integer dot, none}. `enumerate` fixes the subgroup and cooperative-matrix axes in the device's class by §2.2's rule, `open` loads the variant set that class names (ADR-0405 decision 3), and selection benchmarks the variants inside it. Pipeline caches persist per (device UUID, driver version) in the state directory.
 - **Submission.** Pre-recorded command buffers per segment, split at every `wait_host` (§4.2). Each split is a submission, so Vulkan's `t_fixed` per MoE layer is higher than CUDA's or Metal's. That cost is measured and given to the solver, which can then prefer `Hip` on AMD or a coarser execute-in-place split.
 - **Memory.** Device-local allocations bound to large buffers sub-allocated by the tier manager. Host registration uses `VK_EXT_external_memory_host` where the driver supports it; otherwise the tier manager adopts a `HOST_VISIBLE` allocation as its pinned arena for that device. Resizable-BAR memory (`HOST_VISIBLE | DEVICE_LOCAL` larger than 256 MiB) is reported as `REBAR` and may hold doorbell pages and step descriptors.
 

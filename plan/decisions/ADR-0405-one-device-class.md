@@ -1,6 +1,6 @@
 # ADR-0405: One `DeviceClass` in `core`, with kernel-level variants, for placement, packs and certificates
 
-- Status: Proposed
+- Status: Accepted (2026-10-22): option A, with V1 for exactness on Vulkan; whether V1 covers Metal is open (OQ-KB-22)
 - Date: 2026-10-21
 - Deciders: maintainers (drafted by an implementing agent)
 - Related: ADR-0005, ADR-0014, ADR-0016, ADR-0019, ADR-0401, ADR-0402, ADR-0410, ADR-0602, ADR-0622; RFC-0001 §4.2, §5.2, §5.6, §5.13, §5.15; RFC-0010 §1.2, §2.1; RFC-0011 §3.3, §4; RFC-0032 §5.2; RFC-0040 §2.2, §6.2, §6.5, §7.2, §7.3, §7.5; RFC-0041 §1, §8.5; RFC-0060 §6.4; RFC-0061 §6.2
@@ -63,7 +63,7 @@ Facts that bear on the choice:
 
 ## Decision
 
-**Option A** (proposed).
+**Option A.**
 
 1. **One type.** `DeviceClass` is defined once and lives in `syntropy-core`. `syntropy-kernels` re-exports it (`pub use`) and never defines its own. `ProviderDevice::class`, `DeviceInfo::class`, `PackKey::class`, `OpCert::class` and `SelectionKey::class` all use it. `DeviceFeatures` is treated the same way.
 2. **What a class separates.** A field belongs in `DeviceClass` only when a change in it can change the pack layout or the set of kernel objects the providers load for the device. Facts that change neither stay outside the class, in the fields decision 4 lists.
@@ -100,9 +100,9 @@ Facts that bear on the choice:
 6. **Pack directory name.** `packs/<device-class>/` (ADR-0410) uses one text form of the class. It is a pure, one-to-one function of the class value, and it never changes between releases for an unchanged value. When a node's class changes (decision 3 and Consequences), its new packs go in a new directory. The old directory is never renamed; the store reclaims it under the pack budget like any unused pack. RFC-0041 defines the form.
 7. **Order of work.** The `core` type changes before any pack, certificate or saved profile is written. See "Interim behaviour" for COMP-E1-T01.
 
-## Exactness on Vulkan (needs a maintainer decision)
+## Exactness on Vulkan (decided 2026-10-22: V1)
 
-This section records a choice that D3 and ADR-0019 make the maintainers' to settle, together with the RFC-0060 §6.4 owner. This ADR does not settle it.
+This section records a choice that D3 and ADR-0019 make the maintainers' to settle, together with the RFC-0060 §6.4 owner. The maintainers chose **V1** on 2026-10-22, when they accepted this ADR. They did not rule on whether V1 covers Metal (the Metal item below); that is open question OQ-KB-22.
 
 **The problem.** Under option A, an `OpCert` for a Vulkan class is earned on one rig GPU with one driver. Read as today's rules read it, that certificate covers every GPU of the same `(vendor, coopmat, subgroup)` as a full certificate. But the object that runs on a Vulkan device is not the SPIR-V that was certified. Each device's driver compiles the SPIR-V into its own machine code at pipeline creation. A different GPU model or driver build can change floating-point contraction or accumulation order. Decision 2's test ("the set of kernel objects the providers load") sees only the SPIR-V. Option B kept `device` and `driver` in the class and so avoided this, at the cost of a class per GPU model and driver.
 
@@ -111,7 +111,7 @@ This section records a choice that D3 and ADR-0019 make the maintainers' to sett
 - **CUDA:** kernels are compiled offline to SASS per `sm`. A binary JIT-compiled from PTX is already covered by the derived rule (RFC-0060 §6.4 condition 2).
 - **HIP:** code objects are compiled offline per `gfx` target, the class's own field.
 - **CPU:** the same machine code runs on every CPU of one `CpuIsa`.
-- **Metal:** the library is compiled offline per family, but the OS finishes compiling it to GPU code at pipeline creation. Within one family and one OS release this is one compiler; an OS update can change it. This is the same problem in a milder form, and the chosen rule should state whether it covers Metal too.
+- **Metal:** the library is compiled offline per family, but the OS finishes compiling it to GPU code at pipeline creation. Within one family and one OS release this is one compiler; an OS update can change it. This is the same problem in a milder form, and the chosen rule should state whether it covers Metal too. *2026-10-22:* the maintainers chose V1 without ruling on Metal. The question is OQ-KB-22.
 
 **Options:**
 
@@ -123,17 +123,17 @@ This section records a choice that D3 and ADR-0019 make the maintainers' to sett
 
 **Recommended default: V1.** It keeps exact mode sound on every device through the canary and the label, keeps option A's pack sharing, and uses the derived-certificate path the plan already has. If the maintainers find the canary too weak a guard for a driver change, V2 is the strict fallback.
 
-**Interim rule.** Today's `OpCert` records no rig device or driver, so no lookup can tell the rig's device from another. Until the V1/V2/V3 choice lands, no op of a Vulkan-domain provider (the native Vulkan provider or ggml's Vulkan backend) is selectable in exact mode. Native Vulkan is M3. The ggml-only Vulkan preview is M2 (COMP-E8-T10), so the choice must land before that task's conformance run, or the preview ships with no exact-mode Vulkan ops.
+**Interim rule.** Today's `OpCert` records no rig device or driver, so no lookup can tell the rig's device from another. Until the V1/V2/V3 choice lands, no op of a Vulkan-domain provider (the native Vulkan provider or ggml's Vulkan backend) is selectable in exact mode. Native Vulkan is M3. The ggml-only Vulkan preview is M2 (COMP-E8-T10), so the choice must land before that task's conformance run, or the preview ships with no exact-mode Vulkan ops. *Since 2026-10-22:* V1 is chosen, and the interim rule holds until QUAL-E6-T23 implements it. An `OpCert` that records no rig identity never certifies a Vulkan-domain op.
 
-**Tracking.** The choice is open question OQ-KB-21 in `plan/open-questions.md`, decided by the maintainers with the RFC-0060 §6.4 owner, needed by M2 for COMP-E8-T10.
+**Tracking.** The choice was open question OQ-KB-21 in `plan/open-questions.md`, needed by M2 for COMP-E8-T10. It is settled (V1, 2026-10-22). Whether the rule covers Metal is OQ-KB-22.
 
-**Task rows the chosen rule needs.** Under V1 or V2: QUAL-E6-T04 (`OpCert`, a `core` type from M0) gains the rig's device and driver identity; under V1, a Vulkan counterpart of QUAL-E6-T16 (derived certificates) implements the runtime rule, the label and the fallback. Under V3: the PLC task of edit 8 adds `device` and `driver` back to `Vulkan`. In each case COMP-E8-T10 and QUAL-E4-T11 (Vulkan conformance) depend on the task that implements the rule.
+**Task rows the chosen rule needs.** Under V1 or V2: QUAL-E6-T04 (`OpCert`, a `core` type from M0) gains the rig's device and driver identity; under V1, a Vulkan counterpart of QUAL-E6-T16 (derived certificates) implements the runtime rule, the label and the fallback. Under V3: the PLC task of edit 8 adds `device` and `driver` back to `Vulkan`. In each case COMP-E8-T10 and QUAL-E4-T11 (Vulkan conformance) depend on the task that implements the rule. Under V1, as chosen: QUAL-E6-T04 gains the identity, QUAL-E6-T23 is the Vulkan counterpart of QUAL-E6-T16, and COMP-E8-T10 and QUAL-E4-T11 depend on QUAL-E6-T23.
 
 ## Interim behaviour for COMP-E1-T01
 
 COMP-E1-T01 is being implemented now (issue #98). It follows its current row: `syntropy-kernels` defines `kernels::DeviceClass` (and `CpuIsa`, `AppleFamily`) per RFC-0040 §2.2, and re-exports `DeviceFeatures` from `core`. Until this ADR is decided, that leaves option E's state: two types named `DeviceClass`, one in `core` and one in `kernels`. Nothing yet stores either in a pack or certificate, so the two do not meet.
 
-The maintainers may instead rule that COMP-E1-T01 re-exports `core`'s `DeviceClass` now, whatever variants it has. That holds under options A, B and C, and avoids the second type. The PR for this ADR asks for that ruling.
+The maintainers may instead rule that COMP-E1-T01 re-exports `core`'s `DeviceClass` now, whatever variants it has. That holds under options A, B and C, and avoids the second type. The PR for this ADR asks for that ruling. *Since 2026-10-22:* COMP-E1-T01 merged first, with its own `kernels::DeviceClass` and `kernels::CpuIsa`. It used `core`'s `AppleGpuFamily` for the Metal family, so no `kernels::AppleFamily` exists. COMP-E1-T16 makes the change below.
 
 **On acceptance**, `kernels::DeviceClass`, `kernels::CpuIsa` and `kernels::AppleFamily` are deleted and replaced by `pub use` of the `core` types from decision 3. `ProviderDevice`'s shape does not change. Code that matches on the variants keeps compiling except for the `AppleFamily` → `AppleGpuFamily` rename.
 
@@ -149,7 +149,7 @@ The maintainers may instead rule that COMP-E1-T01 re-exports `core`'s `DeviceCla
 
 ## Edits that follow acceptance
 
-None of these is made by this ADR. They follow in one change after a maintainer accepts it.
+None of these was made while this ADR was Proposed. The change that accepted it on 2026-10-22 made them. COMP-E1-T01 was done by then, and #1520 had merged, so items 7–9 took the forms its Revisions entry describes.
 
 1. **RFC-0001 §5.13:** add a row: `DeviceClass`, `CpuIsa`, `DeviceFeatures` | core | 0040 | 0010 (`Npu`, decision 4's fields, the provider-record merge).
 2. **RFC-0001 §5.2:** on `DeviceInfo::class`, cite "defined in RFC-0040 §2.2; ADR-0405".
@@ -179,3 +179,8 @@ None of these is made by this ADR. They follow in one change after a maintainer 
 - **Proposed 2026-10-21** for issue #1499 item 1. It replaces the open-question row that item asked for: the question is this ADR's decision.
 - **Revised 2026-10-21** after two independent reviews of the draft: `CpuIsa` moves to `core`; the fate of `IsaLevel`, `CpuArch` and `VkDriverId` is stated; the dropped fields get homes; `Vulkan::subgroup` gets a rule; the Vulkan exactness choice is recorded for the maintainers; the pack directory name is fixed as stable; the interim for COMP-E1-T01 and the full edit list are added.
 - **Revised 2026-10-21** after the delta review: the class is decided at `enumerate`, with the AMX permission rule and a fixed subgroup tie-break; the interim Vulkan rule becomes "no exact-mode Vulkan ops"; the V1/V2/V3 choice is tracked as OQ-KB-21 with the task rows it needs; V1 gains a stand-in for RFC-0060 §6.4 condition 2; `api_ids` becomes the named `ApiIds`, with `PciInfo` taking precedence.
+- **Accepted 2026-10-22** by the maintainers: option A, and V1 for exactness on Vulkan. They did not rule on Metal, which is OQ-KB-22, with V1 applied across OS releases as the recommended default. In the accepting change:
+  - COMP-E1-T01 was done, so its row was left as built. The re-export of item 7 and "On acceptance" became COMP-E1-T16, which depends on the new PLC task, PLC-E1-T16.
+  - #1520 had merged, so PLC-E1-T16 changes `crates/probe` itself.
+  - The Apple GPU row of item 4 is in RFC-0010 §2.2, not §2.1.
+  - Decision 4's fields gain owning criteria: PLC-E1-T04 fills `gpu_cores`, PLC-E1-T07 applies the class and `PciInfo` precedence rules at the merge, and PLC-E1-T12 fills `api_ids` and `vk_driver`. The `DeviceProblem` for an ID disagreement is named `ApiIdsMismatch`.

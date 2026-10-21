@@ -5,7 +5,7 @@
 - Depends on: RFC-0001; ADR-0002, ADR-0003, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0017, ADR-0019, ADR-0020; ADR-0600, ADR-0601, ADR-0602, ADR-0603
 - Expanded by: RFC-0042 (tolerance tables), RFC-0043 (per-family fixtures and boundaries), RFC-0033 (recovery expectations for chaos scenarios), RFC-0062 (where and when each suite runs)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9)
+- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
 
 ## Summary
 
@@ -757,7 +757,11 @@ pub struct ConformanceManifest {
 pub struct FamilyCert { pub family: ArchFamily, pub code: Blake3, pub quants: SmallVec<[QuantClass; 8]>,
                         pub splits: bool, pub tp: bool, pub tiers: TierShapes }
 pub struct OpCert     { pub provider: ProviderId, pub class: DeviceClass, pub op: OpKey,
-                        pub kernel: Blake3, pub source_key: Blake3 /* ADR-0623 SourceKey */, pub shapes: ShapeClassSet }
+                        pub kernel: Blake3, pub source_key: Blake3 /* ADR-0623 SourceKey */, pub shapes: ShapeClassSet,
+                        pub rig: Option<RigDevice> /* ADR-0405: the device and driver the op was certified on */ }
+/// The rig device's identity: `PciInfo`'s vendor and device IDs, else `DeviceInfoExt::api_ids`
+/// (RFC-0010 §1.2), and its driver. `OpCert::rig` is None only for an op certified on a CPU device.
+pub struct RigDevice  { pub ids: ApiIds, pub vk_driver: Option<VkDriverId>, pub driver: String }
 pub struct WireCert   { pub family: ArchFamily, pub phase: Phase /* Prefill | Decode */, pub dtype: WireDType, pub numerics: Blake3 }
 pub struct PathCert   { pub family: ArchFamily, pub quant: QuantClass, pub path: ExecPathClass, pub numerics: Blake3, pub report: Blake3 }
 pub struct KnobCost   { pub knob: ApproxKnobs, pub family: ArchFamily, pub quant: QuantClass, pub numerics: Blake3,
@@ -777,6 +781,12 @@ pub struct KnobCost   { pub knob: ApproxKnobs, pub family: ArchFamily, pub quant
   3. on first load, the warm-up canary (§5.8), run with the derived op selected, matches the reference digest.
 
   Output served this way is labelled `exact (derived certification)` in API metadata and the dashboard (RFC-0050, RFC-0051). If the canary fails, the op drops to the next provider that holds a full certificate for X, normally ggml. If none does, the path is classified approximate (§6.3) and is never used for exact requests. ADR-0610 adds R-TURING for `sm_75`, so `sm_75` certificates become full ones from M1, and an H100- and B200-class canary on on-demand cloud instances on every RC from the first M1 RC (ADR-0610 decision 8); `sm_90` and `sm_100` stay derived between RCs.
+- **Derived certificates on Vulkan** (ADR-0405, V1; added 2026-10-22). On a Vulkan-domain provider (the native Vulkan provider or ggml's Vulkan backend), each driver compiles the SPIR-V into its own machine code at pipeline creation. A different GPU model or driver build can therefore change floating-point contraction or accumulation order inside one `DeviceClass`. An `OpCert` for such a provider is a full certificate only on the device and driver its `rig` records. On any other device or driver of the same class, or one whose identity is unknown, the op may be selected in exact mode only when all three conditions hold:
+  1. the `OpCert` matches in provider, class, `OpKey` and shape class, as above;
+  2. in place of condition 2 above, which has no Vulkan analogue, the device loads identical SPIR-V: the same `source_key` and the same `kernel` (the hash of the SPIR-V module), from the same shader-variant set as the rig;
+  3. the first-load canary matches the reference digest, as above.
+
+  The label, the fallback and the approximate classification are those of NVIDIA's derived certificates. An `OpCert` whose `rig` is `None` never certifies a Vulkan-domain op. QUAL-E6-T04 records `rig` and QUAL-E6-T23 implements the rule. Whether the same rule covers Metal across OS releases, which finish compiling the library at pipeline creation, is open (OQ-KB-22).
 - **Consumers.**
   - `graph`'s family registry refuses a family whose `FamilyCert` is missing or whose `code` hash differs. This is ADR-0003's fail-closed rule.
   - RFC-0040's op selection uses `OpCert`s (§4.2).
