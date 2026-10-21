@@ -788,7 +788,7 @@ Validation runs in six phases. Phases 1–5 run on every load and reload; phase 
 error[config/0003]: unknown key `resource.ram_headroon`
   --> /home/u/.config/syntropy/config.toml:14:1
    |
-14 | ram_headroon = "16GiB"
+14 | ram_headroon = [redacted]
    | ^^^^^^^^^^^^ did you mean `ram_headroom`?
 ```
 
@@ -802,7 +802,7 @@ error[config/0003]: unknown key `resource.ram_headroon`
 - **Every phase.** A phase 1 syntax error has no parsed value, as with an unquoted `api_key = sk-…`, so withholding keys off the key path in the schema, not off a parsed value. Where the renderer cannot tell which key a line sets, it withholds the line whenever a secret-typed value could sit there.
 - **Never the library's text.** The renderer never prints the TOML library's rendered error, which appends the source line in every phase. It renders from the error's span and message.
 - **Drop-ins.** Lines are attributed one file at a time, since a table header never carries over from one file to the next.
-- **Tests.** PROD-E1-T03's golden tests plant a marker token in every secret-typed value and check that no rendered output, for any error code, contains it.
+- **Tests.** PROD-E1-T03's golden tests plant a marker token in every secret-typed value, and in the value of every unknown key and unknown `SYNTROPY_*` variable, and check that no rendered output, for any error code, contains it. The `config/0003` example above shows the unknown key's value withheld.
 
 **Startup.** `syntropy serve` refuses to start on any phase 1–4 error and prints every error, not only the first. `syntropy config check [--file <path>] [--strict]` runs phases 1–5 without a daemon; `--strict` turns phase 5 warnings and empty override matches into errors for CI use.
 
