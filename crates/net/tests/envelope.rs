@@ -469,6 +469,23 @@ fn declared_lengths_are_checked_before_the_body_is_parsed() {
 }
 
 #[test]
+fn a_body_holds_exactly_one_item() {
+    // Two CBOR items, 1 and 2: the second must not be silently dropped.
+    let two = [0x01, 0x02];
+    let trailing = || DecodeError::TrailingBytes { extra: 1 };
+    assert_eq!(envelope::from_cbor::<u8>(&two), Err(trailing()));
+    assert_eq!(
+        envelope::decode::<u8>(&frame_of(Encoding::Cbor, &two), BodyLimit::MAX),
+        Err(trailing())
+    );
+    let compressed = zstd::bulk::compress(&two, 3).unwrap();
+    assert_eq!(
+        envelope::decode::<u8>(&frame_of(Encoding::ZstdCbor, &compressed), BodyLimit::MAX),
+        Err(trailing())
+    );
+}
+
+#[test]
 fn frames_are_checked_against_their_len_field() {
     let frame = envelope::encode(&Inner {
         term: 1,
