@@ -22,7 +22,11 @@ use crate::units::Bytes;
 ///
 /// The encoding is a record with one field, `per_tier`, a list of `(tier, bytes)` pairs. A
 /// list with a tier twice is refused on decode, because the ledger check could not tell which
-/// figure holds. Unknown fields are ignored, so a later build can add fields.
+/// figure holds. A self-describing format such as JSON ignores unknown fields. The IPC channel's
+/// encoding, `postcard`, is positional (RFC-0001 §3.5), so there a new field is an `ipc_protocol`
+/// change, and adopting a runner of another build needs an equal `ipc_protocol`. The grant names
+/// tiers of the runner's own node; nothing here checks that, and the daemon builds it from its
+/// ledger.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "Wire", into = "Wire")]
 pub struct LedgerGrant {
