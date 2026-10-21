@@ -525,6 +525,10 @@ name = "syntropy-solver"
 version = "0.0.0"
 
 [[package]]
+name = "syntropy-spsc"
+version = "0.0.0"
+
+[[package]]
 name = "syntropy-store"
 version = "0.0.0"
 

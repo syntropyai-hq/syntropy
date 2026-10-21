@@ -50,7 +50,7 @@ pub fn check(graph: &Graph) -> Vec<Finding> {
                     Rule::Numbered(8),
                     format!(
                         "`{name}` does not set `#![forbid(unsafe_code)]` in {shown} ({kind} target \
-                         `{}`); only `kernels-*`, `io`, `tier`, `net` and `ipc` may use `unsafe`",
+                         `{}`); only `kernels-*`, `io`, `tier`, `net`, `ipc` and `spsc` may use `unsafe`",
                         target.name
                     ),
                 )),

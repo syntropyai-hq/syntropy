@@ -15,9 +15,11 @@
 # on `core`, which depends on no workspace crate (rule 1). That is how `obs` and `config` depend on
 # `core` inside layer 0, as §4.1's table has them. `config-derive` holds `config`'s derive macro,
 # since Rust requires a proc-macro to be its own crate: `config` may depend on it in the same
-# layer, and no other crate may (RFC-0001 §4.2 rule 2, note of 2026-10-21).
+# layer, and no other crate may (RFC-0001 §4.2 rule 2, note of 2026-10-21). `spsc` holds the
+# lock-free SPSC ring that `io`, `net` and `ipc` share: those three may depend on it inside layer 1,
+# and it depends on no workspace crate (RFC-0001 §4.2 rule 2, note of 2026-10-22).
 0 = ["core", "obs", "config", "config-derive"]
-1 = ["manifest", "kernels", "io", "net", "ipc"]
+1 = ["manifest", "kernels", "io", "net", "ipc", "spsc"]
 2 = [
     "graph",
     "kernels-cuda",
