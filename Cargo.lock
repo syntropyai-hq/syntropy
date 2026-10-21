@@ -563,6 +563,10 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-testkit"
 version = "0.0.0"
+dependencies = [
+ "chacha20",
+ "syntropy-core",
+]
 
 [[package]]
 name = "syntropy-text"
