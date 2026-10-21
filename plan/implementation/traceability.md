@@ -270,7 +270,7 @@ No GAPs.
 | RFC-0022 | §13 | Configuration | 1: TIER-E6-T12 | ok |
 | RFC-0022 | §14 | Failure handling and error codes | 2: TIER-E6-T12, TIER-E6-T17 | ok |
 | RFC-0023 | §1 | Ownership and structure | 1: TIER-E8-T05 | ok |
-| RFC-0023 | §2 | Types | 6: TIER-E8-T01, TIER-E8-T13, TIER-E10-T14, COMP-E1-T06, COMP-E6-T05, COMP-E9-T01 | ok |
+| RFC-0023 | §2 | Types | 5: TIER-E8-T01, TIER-E8-T13, TIER-E10-T14, COMP-E1-T06, COMP-E6-T05 | ok |
 | RFC-0023 | §3 | Cache levels | 4: TIER-E2-T18, TIER-E8-T05, TIER-E8-T08, TIER-E8-T17 | ok |
 | RFC-0023 | §4 | Slot geometry and per-layer budgets | 1: TIER-E8-T03 | ok |
 | RFC-0023 | §5 | Policy, admission and the slot table | 14: TIER-E2-T18, TIER-E6-T03, TIER-E8-T01, TIER-E8-T04–T07, TIER-E8-T12–T14, TIER-E8-T16, TIER-E8-T18, TIER-E9-T02, TIER-E10-T13 | ok |
