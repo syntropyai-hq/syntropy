@@ -24,10 +24,11 @@ Today:
 | `plan/implementation/tools/` | The plan scripts (below) |
 | `plan/open-questions.md`, `plan/glossary.md`, `plan/research/` | Open questions with the task that settles each, the vocabulary, the evidence |
 | `docs/` | Public explanations for readers, such as [HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md), and their diagrams in `docs/media/` |
-| `xtask/` | `cargo xtask ci <job>` and `cargo xtask test <suite>`, the commands CI runs; the alias is in `.cargo/config.toml` |
+| `xtask/` | `cargo xtask ci <job>`, `cargo xtask test <suite>` and `cargo xtask check-deps`, the commands CI runs; the alias is in `.cargo/config.toml` |
+| `ci/` | `layers.toml`, the layer table of RFC-0001 §4.1 that `cargo xtask check-deps` checks every dependency edge against |
 | `.github/actions/` | Composite actions CI jobs share: `setup-rust` installs the pinned toolchain and restores the cargo caches |
 
-The workspace, from [RFC-0001 §4](plan/rfcs/RFC-0001-system-architecture.md#4-crate-layout), exists as empty stubs under `crates/<name>/`: one Cargo workspace, Rust 2024 edition, every crate prefixed `syntropy-`. A crate depends only on lower layers, and a planned `cargo xtask check-deps` job (QUAL-E1-T03) will enforce the rules in §4.2.
+The workspace, from [RFC-0001 §4](plan/rfcs/RFC-0001-system-architecture.md#4-crate-layout), exists as empty stubs under `crates/<name>/`: one Cargo workspace, Rust 2024 edition, every crate prefixed `syntropy-`. A crate depends only on lower layers, and `cargo xtask check-deps` enforces the rules in §4.2 in the `lint` job.
 
 | Layer | Crates |
 |---|---|
@@ -122,7 +123,7 @@ The board's issues mirror the epic files, so change a task in its epic file, nev
 
 `sizing.py` and `schedsim.py` print `[estimate]` figures only. Never copy their output into a document as a fact.
 
-Before pushing, run the same lint job CI runs: `cargo xtask ci lint`. Today it runs `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`, and after its verdict it lists the checks RFC-0062 §2.3 and §12.4 put in `lint` that it doesn't run yet, with the task that adds each: `cargo xtask check-deps` with the `unsafe` placement and release-feature checks (QUAL-E1-T03), `cargo-deny` and the licence manifest (QUAL-E1-T04), DCO and the PR title (QUAL-E1-T05), and the workflow lints (QUAL-E1-T09). Other task rows add more checks to `lint`. `cargo xtask ci --list` and `cargo xtask test --list` name the jobs and test suites, which `xtask/src/registry.rs` defines. CI will run the same commands once QUAL-E1-T06 adds `pr.yml`.
+Before pushing, run the same lint job CI runs: `cargo xtask ci lint`. Today it runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo xtask check-deps` (RFC-0001 §4.2's rules, with the `unsafe` placement and release-feature checks), and after its verdict it lists the checks RFC-0062 §2.3 and §12.4 put in `lint` that it doesn't run yet, with the task that adds each: `cargo-deny` and the licence manifest (QUAL-E1-T04), DCO and the PR title (QUAL-E1-T05), and the workflow lints (QUAL-E1-T09). Other task rows add more checks to `lint`. `cargo xtask ci --list` and `cargo xtask test --list` name the jobs and test suites, which `xtask/src/registry.rs` defines. CI will run the same commands once QUAL-E1-T06 adds `pr.yml`.
 
 ## Writing style
 

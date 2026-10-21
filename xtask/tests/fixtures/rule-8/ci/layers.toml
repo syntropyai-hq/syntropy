@@ -1,0 +1,9 @@
+# The layer table of this fixture, in the form of ci/layers.toml.
+
+[layers]
+0 = ["config"]
+1 = ["manifest", "io"]
+2 = ["graph", "solver", "text", "kernels-metal"]
+
+[outside]
+dev-only = ["bench"]

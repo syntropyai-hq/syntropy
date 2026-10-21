@@ -1,0 +1,10 @@
+# The layer table of this fixture, in the form of ci/layers.toml.
+
+[layers]
+0 = []
+1 = []
+2 = ["kernels-cuda"]
+3 = []
+4 = []
+5 = []
+6 = ["cli"]

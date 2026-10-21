@@ -1,0 +1,14 @@
+# The layer table of this fixture, in the form of ci/layers.toml.
+
+[layers]
+0 = ["core", "obs", "config"]
+1 = ["kernels", "net"]
+2 = ["kernels-cpu", "kernels-cuda", "solver"]
+3 = ["exec"]
+4 = []
+5 = ["daemon"]
+6 = ["cli"]
+
+[outside]
+dev-only = ["testkit"]
+tools = ["xtask"]

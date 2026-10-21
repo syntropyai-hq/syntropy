@@ -1,0 +1,11 @@
+[package]
+name = "syntropy-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+syntropy-core = { path = "../core" }
+syntropy-exec = { path = "../exec" }
+syntropy-obs = { path = "../obs", features = ["fault-injection", "guards"] }

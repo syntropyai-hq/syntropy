@@ -295,7 +295,10 @@ Packaging, installers, backend modules and update channels (RFC-0052) and CI (RF
 These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 
 1. **`core` depends on no workspace crate.** Its external dependencies are limited to `serde`, `thiserror`, `smallvec` and `bitflags`.
+   - *Note 2026-10-21:* "external dependencies" means normal and build dependencies. Dev-dependencies, such as `proptest` for `core`'s own tests, are exempt.
 2. **A crate depends only on crates in lower layers.** `obs` and `config` are the exception: every crate except `core` may use them.
+   - *Note 2026-10-21:* every crate may also depend on `core`, which depends on none (rule 1). That is how `obs` and `config` depend on `core` inside layer 0, as §4.1's table has them.
+   - *Note 2026-10-21:* `xtask`, the CI task runner (RFC-0062 §1), is a workspace member outside the crate graph: no crate depends on it, and it depends on no workspace crate. `ci/layers.toml` lists it as a tool.
 3. **Compute crates never depend on control or network crates.** `graph`, `kernels`, every `kernels-*`, `io`, `tier`, `exec` and `sched` must not depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`. The runner bridges compute and network through SPSC rings (§8.3). This keeps the hot path free of async runtimes (ADR-0012) and lets `exec` and `sched` run under `testkit` with no network at all.
 4. **`daemon` never links or loads a GPU provider.** It may depend on `kernels` for types, but not on any `kernels-*` crate, `kernels-loader` included, and it never opens a backend module. Only runner and probe processes load provider libraries, and the daemon learns about GPUs from a probe-mode process (RFC-0040 §10.5, ADR-0507 rule 4). This is invariant 3 (§2.3) enforced at link time.
 5. **`solver` and `cluster::apply` are pure.** No I/O, no clocks, no threads apart from HiGHS (run single-threaded with a fixed seed). Given the same inputs the solver returns the same plan, so plans are reproducible in tests and on every node. The other protocol cores follow invariant 12.
@@ -303,6 +306,7 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 7. **CPU and Metal providers are built into the core; other GPU providers ship as backend modules** (ADR-0507, RFC-0040 §10.4, RFC-0052 §4). The CPU provider, the Metal provider on macOS, and on iOS and Android every provider the platform uses, are linked statically into the core binary. The CUDA, HIP and Vulkan providers, and the ggml SYCL backend, are provider libraries in separately loaded, signed backend modules: directories beside the core binary of the same version, verified by hash, signature and build ID before loading (ADR-0316), and loaded by absolute path only by runner and probe processes. The boundary is a versioned C ABI generated from the `KernelProvider` trait, with one exported entry symbol and a lockstep build-ID check. The core binary therefore carries no vendor GPU runtime on Linux and Windows, and one core binary runs on hosts with and without each vendor stack (ADR-0014). The `cuda13` module carries Syntropy code only: `setup` fetches NVIDIA's redistributable libraries from NVIDIA and checks each against a hash pinned in the signed module manifest (RFC-0040 §10.3, RFC-0052 §4.4). A build or host without any GPU module runs CPU-only.
 8. **`unsafe` is confined** to `kernels-*` (including `kernels-loader`: the provider-library loader and the census), `io`, `tier` (arenas), `net` (RDMA, shared memory) and `ipc` (shared memory). Every other crate sets `#![forbid(unsafe_code)]`.
 9. **`testkit` is a dev-dependency only.** No production crate depends on it.
+   - *Note 2026-10-21:* the same holds for `bench`, the other crate on §4.1's dev-only row ("—").
 10. **Test-only features never reach a release.** Any crate may declare the cargo features `fault-injection`, `debug-taps` and `guards`. Release artefacts are built without them, and the L0 `check-deps` job enforces it (RFC-0060 §3.6, RFC-0062 §12.1).
 
 ## 5. Core types and interfaces
@@ -2635,6 +2639,7 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | Delete "the pinning loop checks real `MemFree_n` again after committing (§6)": §6 has no free-page test. Done 2026-10-20 | TIER | RFC-0020 §5 (Linux paragraph) |
 | Sustained NVMe run: "during the first `Loading`" becomes "after the first `Loading` completes, or in an idle window, never while `Packing` or `Loading` use the volume", as RFC-0010 S2 and SC-22 say. Done 2026-10-20 | TIER | RFC-0021 §10 step 6 |
 | SC-17's bound is `α_wire + S/β + 2 · t_switch`; Goals item 3 and §5.3 still quote `α_wire + 2 · t_switch`. Done 2026-10-20 | DIST | RFC-0032 Goals, §5.3 |
+| RFC-0062 §12.1: row 1 checks `core`'s normal and build dependencies (rule 1's 2026-10-21 note), and row 7 is named for rule 7 as it now reads (GPU providers ship in backend modules) instead of "backends are cargo features resolved at runtime" | QUAL | RFC-0062 §12.1 |
 
 ### 18.6 Core types for the I/O interface (2026-10-21)
 
@@ -2643,3 +2648,14 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | Change | Sections touched | Reason |
 |---|---|---|
 | `ExtentRef` and `StepLayer` (RFC-0020 §3), and `FileIx` and `HostRegion` (RFC-0021 §2), are `core` types with serde derives; §5.13 gains their ownership row | §5.13; RFC-0020 §3 and RFC-0021 §2 (dated notes) | `io` (layer 1) carries `ExtentRef` and `StepLayer` in its requests, `tier` (layer 2) round-trips `ExtentRef` in `ArenaPlan`, and `io` and `kernels` (both layer 1) register `HostRegion`s; `core` is the only crate all of them can depend on (§4.2 rules 1 and 2) |
+
+### 18.7 Dependency rules as checked (2026-10-21)
+
+`cargo xtask check-deps` (QUAL-E1-T03) checks §4.2's rules over `cargo metadata`. Writing the check showed four places where the rules' text was narrower or wider than the design meant. Each now has a dated note under its rule. The check enforces every note, and none rejects a crate in the workspace.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| rule 1's external dependencies are its normal and build dependencies; dev-dependencies are exempt | §4.2 rule 1 | `core`'s tests use `proptest` and `serde_json`, which the allow-list does not name |
+| every crate may depend on `core` | §4.2 rule 2 | §4.1's table has `obs` and `config` depend on `core` inside layer 0, which "lower layers only" would forbid |
+| `xtask` is a workspace member outside the crate graph, with no workspace edges either way | §4.2 rule 2 | §4.1 does not list it, and `ci/layers.toml` needs a row for every member |
+| rule 9 covers `bench` as well as `testkit` | §4.2 rule 9 | both sit on §4.1's dev-only row |

@@ -1,0 +1,11 @@
+# A stand-in for an external crate called `tokio-shim`, so the check-deps fixtures resolve
+# offline. It is empty: the check reads names and edges, never code.
+[package]
+name = "tokio-shim"
+version = "1.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+tokio = { path = "../tokio" }

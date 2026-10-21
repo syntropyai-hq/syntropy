@@ -14,9 +14,11 @@
 //!   [`crate::run::Context`];
 //! - add a check to a job by appending a [`Step`] to its list, and drop the matching row from its
 //!   `pending` list, if it has one;
-//! - add a kind of step, such as a check that runs inside this binary, as a variant of [`Action`].
+//! - add a kind of step as a variant of [`Action`]; a check that lives in this binary, such as
+//!   `check-deps`, is an [`Action::Xtask`] step.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::Command;
 
 /// A named job or suite: the steps it runs, in order.
@@ -63,6 +65,9 @@ pub enum Action {
     /// `cargo <args>`, with the cargo that started xtask (`$CARGO`), so the toolchain pinned in
     /// `rust-toolchain.toml` runs every step.
     Cargo(&'static [&'static str]),
+    /// `cargo xtask <args>`: this binary again, as a child process, for a check that lives in
+    /// xtask. It inherits the environment, so it checks the same checkout.
+    Xtask(&'static [&'static str]),
 }
 
 /// A check the plan assigns to an entry, with the task that adds it.
@@ -76,39 +81,44 @@ pub struct Pending {
 impl Action {
     /// The process this action starts. The caller sets the working directory.
     pub fn command(&self) -> Command {
-        match self {
-            Action::Cargo(args) => {
-                let mut command = Command::new(cargo());
-                command.args(*args);
-                command
-            }
-        }
+        let (program, args) = match self {
+            Action::Cargo(args) => (cargo(), args),
+            // If the path is unknown, the step fails with "could not start".
+            Action::Xtask(args) => (
+                std::env::current_exe()
+                    .unwrap_or_else(|_| PathBuf::from("xtask"))
+                    .into_os_string(),
+                args,
+            ),
+        };
+        let mut command = Command::new(program);
+        command.args(*args);
+        command
     }
 
     /// The command as a user would type it, for progress lines.
     pub fn display(&self) -> String {
-        match self {
-            Action::Cargo(args) => {
-                let mut line = String::from("cargo");
-                for arg in *args {
-                    line.push(' ');
-                    line.push_str(arg);
-                }
-                line
-            }
+        let (mut line, args) = match self {
+            Action::Cargo(args) => (String::from("cargo"), args),
+            Action::Xtask(args) => (String::from("cargo xtask"), args),
+        };
+        for arg in *args {
+            line.push(' ');
+            line.push_str(arg);
         }
+        line
     }
 }
 
 /// The cargo binary that started xtask. Cargo sets `CARGO` for `cargo run`.
-fn cargo() -> OsString {
+pub fn cargo() -> OsString {
     std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
 /// The CI jobs, called by `cargo xtask ci <job>`. RFC-0062 §2.3 lists the jobs the plan expects.
 pub const JOBS: &[Entry] = &[Entry {
     name: "lint",
-    summary: "the L0 static checks: rustfmt and clippy over the workspace",
+    summary: "the L0 static checks: rustfmt, clippy and the crate dependency rules",
     defined_in: "RFC-0062 §2.3 and §12.4",
     params: &[],
     steps: &[
@@ -128,14 +138,14 @@ pub const JOBS: &[Entry] = &[Entry {
                 "warnings",
             ]),
         },
+        Step {
+            name: "check-deps",
+            action: Action::Xtask(&["check-deps"]),
+        },
     ],
     // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
     // further checks to `lint`, such as the `ci/jobs.toml` goldens (QUAL-E1-T07).
     pending: &[
-        Pending {
-            check: "check-deps: RFC-0001 §4.2 rules, `forbid(unsafe_code)` placement, release features",
-            task: "QUAL-E1-T03",
-        },
         Pending {
             check: "cargo-deny, SPDX headers and the licence manifest",
             task: "QUAL-E1-T04",
@@ -259,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn lint_runs_rustfmt_and_clippy_as_rfc_0062_defines_them() {
+    fn lint_runs_rustfmt_clippy_and_check_deps_as_rfc_0062_defines_them() {
         let lint = find(JOBS, "lint").expect("lint is registered");
         let commands: Vec<String> = lint.steps.iter().map(|s| s.action.display()).collect();
         assert_eq!(
@@ -267,6 +277,7 @@ mod tests {
             [
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
+                "cargo xtask check-deps",
             ]
         );
     }
@@ -275,10 +286,7 @@ mod tests {
     fn lint_lists_the_checks_later_tasks_add() {
         let lint = find(JOBS, "lint").expect("lint is registered");
         let tasks: Vec<&str> = lint.pending.iter().map(|p| p.task).collect();
-        assert_eq!(
-            tasks,
-            ["QUAL-E1-T03", "QUAL-E1-T04", "QUAL-E1-T05", "QUAL-E1-T09"]
-        );
+        assert_eq!(tasks, ["QUAL-E1-T04", "QUAL-E1-T05", "QUAL-E1-T09"]);
     }
 
     #[test]
@@ -311,6 +319,22 @@ mod tests {
         let command = action.command();
         let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
         assert_eq!(args, ["fmt", "--all", "--check"]);
+    }
+
+    #[test]
+    fn xtask_action_runs_this_binary_with_its_arguments() {
+        let action = Action::Xtask(&["check-deps"]);
+        let command = action.command();
+        assert_eq!(
+            Some(command.get_program()),
+            std::env::current_exe()
+                .ok()
+                .as_deref()
+                .map(|p| p.as_os_str())
+        );
+        let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+        assert_eq!(args, ["check-deps"]);
+        assert_eq!(action.display(), "cargo xtask check-deps");
     }
 
     #[test]

@@ -8,3 +8,8 @@ publish.workspace = true
 [[bin]]
 name = "xtask"
 path = "src/main.rs"
+
+[dependencies]
+# `cargo metadata` and `cargo build` JSON for `check-deps` (QUAL-E1-T03).
+serde.workspace = true
+serde_json.workspace = true

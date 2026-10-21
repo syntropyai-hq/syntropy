@@ -1,0 +1,8 @@
+# The layer table of this fixture, in the form of ci/layers.toml.
+
+[layers]
+0 = []
+1 = ["net", "io"]
+2 = ["kernels-cpu"]
+3 = ["exec"]
+4 = ["sched"]
