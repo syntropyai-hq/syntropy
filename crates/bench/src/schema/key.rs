@@ -2,7 +2,7 @@
 
 //! The benchmark key (RFC-0061 §2.1) and the comparability rule.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -242,7 +242,12 @@ pub struct InterconnectId(pub String);
 #[serde(transparent)]
 pub struct RigFingerprint(pub Blake3);
 
-/// What the solver and scheduler optimise (RFC-0001 §11.3).
+/// A duration in nanoseconds (RFC-0001 §5.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Nanos(pub u64);
+
+/// What the solver and scheduler optimise, with the fields of its owner, RFC-0054 §4.1.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Objective {
@@ -252,21 +257,89 @@ pub enum Objective {
     Throughput {
         /// The floor each sequence's own decode rate must meet, in tokens per second.
         per_sequence_floor_tps: f32,
+        /// Sequences the plan is sized for; `null` leaves it to the solver.
+        #[serde(deserialize_with = "super::present")]
+        target_concurrency: Option<u16>,
+        /// Admission rejects a request above this predicted TTFT; `null` sets no ceiling.
+        #[serde(deserialize_with = "super::present")]
+        ttft_ceiling: Option<Nanos>,
     },
 }
 
-/// Exact by default (D3, ADR-0019); `Approximate` lists the knobs in use (RFC-0001 §11.3).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Exact by default (D3, ADR-0019); `Approximate` lists the knobs in use. The fields follow
+/// the type's owner, RFC-0054 §4.2.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExactnessPolicy {
     /// Output matches the reference within ADR-0019's tolerances.
     Exact,
     /// The named knobs may be used.
     Approximate {
-        /// Written in sorted order; a repeated knob fails validation.
+        /// At least one knob, written in bit order (RFC-0054 §4.2). An empty set is not a second spelling of
+        /// `Exact`: RFC-0054 §7 resolves it to `Exact`. A repeated knob fails validation too.
         #[serde(deserialize_with = "unique_knobs")]
         knobs: BTreeSet<ApproxKnob>,
+        /// Each knob's parameters (boxed to keep the enum small; the JSON is unchanged).
+        params: Box<ApproxParams>,
     },
+}
+
+/// Per-knob parameters (RFC-0054 §4.2). `null` means RFC-0042's default for that knob.
+///
+/// RFC-0042 has not defined the parameter types yet, so each value is stored in the form the
+/// knob's `approximate.<knob>` configuration key takes (RFC-0054 §5.4).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApproxParams {
+    /// `EXPERT_SKIP` parameters.
+    #[serde(deserialize_with = "super::present")]
+    pub expert_skip: Option<KnobParams>,
+    /// `EXPERT_DEFER` parameters.
+    #[serde(deserialize_with = "super::present")]
+    pub expert_defer: Option<KnobParams>,
+    /// The quant scheme of the lower-precision expert copies.
+    #[serde(deserialize_with = "super::present")]
+    pub miss_low_precision: Option<KnobParams>,
+    /// `TOPK_REDUCE` parameters, for example `{"experts": 6}`.
+    #[serde(deserialize_with = "super::present")]
+    pub topk_reduce: Option<KnobParams>,
+    /// The KV dtype.
+    #[serde(deserialize_with = "super::present")]
+    pub kv_lossy: Option<KnobParams>,
+    /// The wire dtype.
+    #[serde(deserialize_with = "super::present")]
+    pub wire_compress: Option<KnobParams>,
+    /// `APPROX_ATTENTION` parameters.
+    #[serde(deserialize_with = "super::present")]
+    pub approx_attention: Option<KnobParams>,
+    /// `SPEC_LENIENT` parameters.
+    #[serde(deserialize_with = "super::present")]
+    pub spec_lenient: Option<KnobParams>,
+}
+
+/// A knob's parameters as its `approximate.<knob>` key gives them: a name (a dtype or quant
+/// scheme) or a table of named values.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum KnobParams {
+    /// A dtype or quant scheme, by name.
+    Name(String),
+    /// A parameter table.
+    Table(BTreeMap<String, ParamValue>),
+}
+
+/// One value in a knob's parameter table.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ParamValue {
+    /// A boolean.
+    Bool(bool),
+    /// An integer literal.
+    Integer(i64),
+    /// A number with a fraction or exponent.
+    Number(f64),
+    /// A string.
+    Text(String),
 }
 
 /// An approximation knob of ADR-0019 §6, named as in RFC-0054's `approximate.*` keys.
@@ -291,11 +364,17 @@ pub enum ApproxKnob {
     SpecLenient,
 }
 
-/// Reads a knob list and refuses a repeated knob, which a set would otherwise drop silently.
+/// Reads a knob list. Refuses an empty list, and a repeated knob, which a set would otherwise
+/// drop silently.
 fn unique_knobs<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<BTreeSet<ApproxKnob>, D::Error> {
     let listed = Vec::<ApproxKnob>::deserialize(deserializer)?;
+    if listed.is_empty() {
+        return Err(serde::de::Error::custom(
+            "an approximate policy names at least one knob",
+        ));
+    }
     let mut knobs = BTreeSet::new();
     for knob in listed {
         if !knobs.insert(knob) {

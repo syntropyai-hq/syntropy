@@ -40,6 +40,13 @@
     "u16": {"type": "integer", "minimum": 0, "maximum": 65535},
     "u32": {"type": "integer", "minimum": 0, "maximum": 4294967295},
     "u64": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "f32": {
+      "description": "A number that rounds to a finite f32: magnitude below 2^128 - 2^103.",
+      "type": "number",
+      "exclusiveMinimum": -340282356779733661637539395458142568448,
+      "exclusiveMaximum": 340282356779733661637539395458142568448
+    },
+    "Nanos": {"description": "A duration in nanoseconds (RFC-0001 §5.1).", "$ref": "#/$defs/u64"},
     "Blake3": {
       "description": "A BLAKE3 digest, 64 lowercase hex digits.",
       "type": "string",
@@ -119,8 +126,12 @@
           "properties": {
             "throughput": {
               "type": "object",
-              "properties": {"per_sequence_floor_tps": {"type": "number"}},
-              "required": ["per_sequence_floor_tps"],
+              "properties": {
+                "per_sequence_floor_tps": {"$ref": "#/$defs/f32"},
+                "target_concurrency": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/u16"}]},
+                "ttft_ceiling": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/Nanos"}]}
+              },
+              "required": ["per_sequence_floor_tps", "target_concurrency", "ttft_ceiling"],
               "additionalProperties": false
             }
           },
@@ -141,10 +152,12 @@
                 "knobs": {
                   "type": "array",
                   "items": {"$ref": "#/$defs/ApproxKnob"},
+                  "minItems": 1,
                   "uniqueItems": true
-                }
+                },
+                "params": {"$ref": "#/$defs/ApproxParams"}
               },
-              "required": ["knobs"],
+              "required": ["knobs", "params"],
               "additionalProperties": false
             }
           },
@@ -153,6 +166,39 @@
         }
       ]
     },
+    "ApproxParams": {
+      "description": "Per-knob parameters (RFC-0054 §4.2); null is RFC-0042's default for the knob.",
+      "type": "object",
+      "properties": {
+        "expert_skip": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/KnobParams"}]},
+        "expert_defer": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/KnobParams"}]},
+        "miss_low_precision": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/KnobParams"}]},
+        "topk_reduce": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/KnobParams"}]},
+        "kv_lossy": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/KnobParams"}]},
+        "wire_compress": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/KnobParams"}]},
+        "approx_attention": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/KnobParams"}]},
+        "spec_lenient": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/KnobParams"}]}
+      },
+      "required": [
+        "expert_skip",
+        "expert_defer",
+        "miss_low_precision",
+        "topk_reduce",
+        "kv_lossy",
+        "wire_compress",
+        "approx_attention",
+        "spec_lenient"
+      ],
+      "additionalProperties": false
+    },
+    "KnobParams": {
+      "description": "A knob's parameters in the form its approximate.<knob> key takes (RFC-0054 §5.4): a name or a table.",
+      "anyOf": [
+        {"type": "string"},
+        {"type": "object", "additionalProperties": {"$ref": "#/$defs/ParamValue"}}
+      ]
+    },
+    "ParamValue": {"type": ["boolean", "number", "string"]},
     "ApproxKnob": {
       "description": "An approximation knob of ADR-0019 §6.",
       "enum": [
@@ -254,10 +300,10 @@
       "properties": {
         "ttft_s": {"type": "number"},
         "tpot_s": {"type": "number"},
-        "itl_s": {"type": "array", "items": {"type": "number"}},
+        "itl_s": {"type": "array", "items": {"$ref": "#/$defs/f32"}},
         "prefill_tps": {"type": "number"},
         "aggregate_tps": {"type": ["number", "null"]},
-        "floor_attainment": {"type": ["number", "null"]},
+        "floor_attainment": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/f32"}]},
         "steps": {"$ref": "#/$defs/StepTraceRef"},
         "energy_j_per_token": {"type": ["number", "null"]}
       },
@@ -299,7 +345,7 @@
         "tpot_s": {"$ref": "#/$defs/MedianCi"},
         "prefill_tps": {"$ref": "#/$defs/MedianCi"},
         "aggregate_tps": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/MedianCi"}]},
-        "floor_attainment": {"type": ["number", "null"]},
+        "floor_attainment": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/f32"}]},
         "itl_s": {"$ref": "#/$defs/Percentiles"},
         "itl_event_s": {"$ref": "#/$defs/Percentiles"},
         "cv": {"type": ["number", "null"]}

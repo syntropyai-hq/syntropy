@@ -87,16 +87,26 @@ fn check_at(root: &Value, schema: &Value, instance: &Value, at: &str) -> Result<
                     }
                 }
             }
-            "minimum" | "maximum" => {
+            "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" => {
+                // Compared as f64: exact for every bound the file uses.
                 if let (Some(n), Some(bound)) = (instance.as_f64(), arg.as_f64()) {
-                    let ok = if keyword == "minimum" {
-                        n >= bound
-                    } else {
-                        n <= bound
+                    let ok = match keyword.as_str() {
+                        "minimum" => n >= bound,
+                        "maximum" => n <= bound,
+                        "exclusiveMinimum" => n > bound,
+                        _ => n < bound,
                     };
                     if !ok {
                         return Err(format!("{at}: {instance} is outside {keyword} {arg}"));
                     }
+                }
+            }
+            "minItems" => {
+                let min = arg.as_u64().ok_or("minItems must be a count")?;
+                if let Value::Array(items) = instance
+                    && (items.len() as u64) < min
+                {
+                    return Err(format!("{at}: fewer than {min} items"));
                 }
             }
             "pattern" => {

@@ -81,3 +81,34 @@ fn a_result_of_another_schema_version_is_not_written() {
     result.schema = 2;
     assert!(matches!(result.to_json(), Err(SchemaError::Version(2))));
 }
+
+/// The wire form of the RFC-0054 policy fields, which the golden record (latency, exact) does
+/// not show.
+#[test]
+fn policy_fields_have_the_documented_wire_form() {
+    let key = crate::support::other_key();
+    assert_eq!(
+        serde_json::to_value(key.objective).expect("objective"),
+        serde_json::json!({"throughput": {
+            "per_sequence_floor_tps": 5.0,
+            "target_concurrency": 8,
+            "ttft_ceiling": 2_000_000_000u64,
+        }})
+    );
+    assert_eq!(
+        serde_json::to_value(&key.fidelity).expect("fidelity"),
+        serde_json::json!({"approximate": {
+            "knobs": ["topk_reduce", "kv_lossy"],
+            "params": {
+                "expert_skip": null,
+                "expert_defer": null,
+                "miss_low_precision": null,
+                "topk_reduce": {"experts": 6},
+                "kv_lossy": "q8_0",
+                "wire_compress": null,
+                "approx_attention": null,
+                "spec_lenient": null,
+            },
+        }})
+    );
+}

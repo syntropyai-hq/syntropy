@@ -72,9 +72,19 @@ pub fn other_key() -> BenchKey {
         concurrency: 4,
         objective: Objective::Throughput {
             per_sequence_floor_tps: 5.0,
+            target_concurrency: Some(8),
+            ttft_ceiling: Some(Nanos(2_000_000_000)),
         },
         fidelity: ExactnessPolicy::Approximate {
-            knobs: BTreeSet::from([ApproxKnob::KvLossy]),
+            knobs: BTreeSet::from([ApproxKnob::KvLossy, ApproxKnob::TopkReduce]),
+            params: Box::new(ApproxParams {
+                kv_lossy: Some(KnobParams::Name("q8_0".into())),
+                topk_reduce: Some(KnobParams::Table(BTreeMap::from([(
+                    "experts".into(),
+                    ParamValue::Integer(6),
+                )]))),
+                ..ApproxParams::default()
+            }),
         },
         spec: SpecSetting::Force(SpecConfig {
             source: DraftSource::Mtp,
@@ -339,7 +349,7 @@ fn opt<S: Strategy>(s: S) -> impl Strategy<Value = Option<S::Value>> {
     proptest::option::of(s)
 }
 
-pub fn build_id() -> impl Strategy<Value = BuildId> {
+pub fn build_id() -> BoxedStrategy<BuildId> {
     let profile = prop_oneof![
         Just(BuildProfile::Dev),
         Just(BuildProfile::TestRelease),
@@ -347,15 +357,15 @@ pub fn build_id() -> impl Strategy<Value = BuildId> {
         Just(BuildProfile::Pr),
         Just(BuildProfile::Release),
     ];
-    (text(), any::<[u8; 20]>(), profile, text(), blake3()).prop_map(
-        |(version, commit, profile, target, toolchain)| BuildId {
+    (text(), any::<[u8; 20]>(), profile, text(), blake3())
+        .prop_map(|(version, commit, profile, target, toolchain)| BuildId {
             version,
             commit: GitSha(commit),
             profile,
             target,
             toolchain,
-        },
-    )
+        })
+        .boxed()
 }
 
 fn approx_knob() -> impl Strategy<Value = ApproxKnob> {
@@ -371,16 +381,82 @@ fn approx_knob() -> impl Strategy<Value = ApproxKnob> {
     ]
 }
 
-pub fn bench_key() -> impl Strategy<Value = BenchKey> {
+fn param_value() -> impl Strategy<Value = ParamValue> {
+    prop_oneof![
+        any::<bool>().prop_map(ParamValue::Bool),
+        any::<i64>().prop_map(ParamValue::Integer),
+        finite_f64().prop_map(ParamValue::Number),
+        text().prop_map(ParamValue::Text),
+    ]
+}
+
+fn approx_params() -> BoxedStrategy<ApproxParams> {
+    let knob = || {
+        opt(prop_oneof![
+            text().prop_map(KnobParams::Name),
+            btree_map(text(), param_value(), 0..3).prop_map(KnobParams::Table),
+        ])
+    };
+    (
+        knob(),
+        knob(),
+        knob(),
+        knob(),
+        knob(),
+        knob(),
+        knob(),
+        knob(),
+    )
+        .prop_map(
+            |(
+                expert_skip,
+                expert_defer,
+                miss_low_precision,
+                topk_reduce,
+                kv_lossy,
+                wire_compress,
+                approx_attention,
+                spec_lenient,
+            )| ApproxParams {
+                expert_skip,
+                expert_defer,
+                miss_low_precision,
+                topk_reduce,
+                kv_lossy,
+                wire_compress,
+                approx_attention,
+                spec_lenient,
+            },
+        )
+        .boxed()
+}
+
+pub fn bench_key() -> BoxedStrategy<BenchKey> {
     let objective = prop_oneof![
         Just(Objective::Latency),
-        finite_f32().prop_map(|f| Objective::Throughput {
-            per_sequence_floor_tps: f
-        }),
+        (
+            finite_f32(),
+            opt(any::<u16>()),
+            opt(any::<u64>().prop_map(Nanos))
+        )
+            .prop_map(
+                |(per_sequence_floor_tps, target_concurrency, ttft_ceiling)| {
+                    Objective::Throughput {
+                        per_sequence_floor_tps,
+                        target_concurrency,
+                        ttft_ceiling,
+                    }
+                }
+            ),
     ];
     let fidelity = prop_oneof![
         Just(ExactnessPolicy::Exact),
-        btree_set(approx_knob(), 0..=8).prop_map(|knobs| ExactnessPolicy::Approximate { knobs }),
+        (btree_set(approx_knob(), 1..=8), approx_params()).prop_map(|(knobs, params)| {
+            ExactnessPolicy::Approximate {
+                knobs,
+                params: Box::new(params),
+            }
+        }),
     ];
     let source = prop_oneof![
         Just(DraftSource::Mtp),
@@ -456,6 +532,7 @@ pub fn bench_key() -> impl Strategy<Value = BenchKey> {
                 build,
             },
         )
+        .boxed()
 }
 
 /// Copies `field` from `from` into `into`.
@@ -489,7 +566,7 @@ fn step_trace() -> impl Strategy<Value = StepTraceRef> {
     ]
 }
 
-fn rep_result() -> impl Strategy<Value = RepResult> {
+fn rep_result() -> BoxedStrategy<RepResult> {
     (
         finite_f64(),
         finite_f64(),
@@ -523,6 +600,7 @@ fn rep_result() -> impl Strategy<Value = RepResult> {
                 }
             },
         )
+        .boxed()
 }
 
 fn median_ci() -> impl Strategy<Value = MedianCi> {
@@ -538,7 +616,7 @@ fn percentiles() -> impl Strategy<Value = Percentiles> {
         .prop_map(|(p50, p90, p99, max)| Percentiles { p50, p90, p99, max })
 }
 
-fn summary() -> impl Strategy<Value = Summary> {
+fn summary() -> BoxedStrategy<Summary> {
     (
         median_ci(),
         median_ci(),
@@ -570,6 +648,7 @@ fn summary() -> impl Strategy<Value = Summary> {
                 cv,
             },
         )
+        .boxed()
 }
 
 fn tier_kind() -> impl Strategy<Value = TierKind> {
@@ -623,26 +702,27 @@ fn term_row() -> impl Strategy<Value = TermRow> {
         )
 }
 
-fn terms() -> impl Strategy<Value = TermBreakdown> {
+fn terms() -> BoxedStrategy<TermBreakdown> {
     (vec(term_row(), 0..4), opt(finite_f64()))
         .prop_map(|(rows, remainder_s)| TermBreakdown { rows, remainder_s })
+        .boxed()
 }
 
-fn bounds() -> impl Strategy<Value = Bounds> {
+fn bounds() -> BoxedStrategy<Bounds> {
     let overlap = (finite_f64(), finite_f64()).prop_map(|(t_overlap_s, hit_rate)| OverlapBound {
         t_overlap_s,
         hit_rate,
     });
-    (opt(finite_f64()), opt(finite_f64()), opt(overlap)).prop_map(
-        |(t_model_s, t_peak_s, overlap)| Bounds {
+    (opt(finite_f64()), opt(finite_f64()), opt(overlap))
+        .prop_map(|(t_model_s, t_peak_s, overlap)| Bounds {
             t_model_s,
             t_peak_s,
             overlap,
-        },
-    )
+        })
+        .boxed()
 }
 
-fn plan() -> impl Strategy<Value = PlanDigest> {
+fn plan() -> BoxedStrategy<PlanDigest> {
     let stage = (
         text(),
         any::<u16>(),
@@ -666,22 +746,25 @@ fn plan() -> impl Strategy<Value = PlanDigest> {
             stages,
             predicted_t_tok_s,
         })
+        .boxed()
 }
 
-fn parity() -> impl Strategy<Value = ParityRef> {
+fn parity() -> BoxedStrategy<ParityRef> {
     let verdict = prop_oneof![
         Just(ParityVerdict::Pass),
         Just(ParityVerdict::Fail),
         Just(ParityVerdict::ReferenceDefect)
     ];
-    (blake3(), text(), verdict).prop_map(|(report, path, verdict)| ParityRef {
-        report,
-        path,
-        verdict,
-    })
+    (blake3(), text(), verdict)
+        .prop_map(|(report, path, verdict)| ParityRef {
+            report,
+            path,
+            verdict,
+        })
+        .boxed()
 }
 
-fn env_capture() -> impl Strategy<Value = EnvCapture> {
+fn env_capture() -> BoxedStrategy<EnvCapture> {
     let kind = prop_oneof![
         Just(EnvCheckKind::PowerSource),
         Just(EnvCheckKind::PowerPlan),
@@ -723,9 +806,10 @@ fn env_capture() -> impl Strategy<Value = EnvCapture> {
                 }
             },
         )
+        .boxed()
 }
 
-fn baseline_run() -> impl Strategy<Value = BaselineRun> {
+fn baseline_run() -> BoxedStrategy<BaselineRun> {
     let file = (text(), blake3()).prop_map(|(path, blake3)| FileDigest { path, blake3 });
     let point =
         (btree_map(text(), text(), 0..3), finite_f64()).prop_map(|(options, decode_tps)| {
@@ -785,9 +869,10 @@ fn baseline_run() -> impl Strategy<Value = BaselineRun> {
                 repetitions,
             },
         )
+        .boxed()
 }
 
-fn gate_verdict() -> impl Strategy<Value = GateVerdict> {
+fn gate_verdict() -> BoxedStrategy<GateVerdict> {
     let outcome = || {
         prop_oneof![
             Just(GateOutcome::Pass),
@@ -831,9 +916,10 @@ fn gate_verdict() -> impl Strategy<Value = GateVerdict> {
                 override_reason,
             },
         )
+        .boxed()
 }
 
-pub fn bench_result() -> impl Strategy<Value = BenchResult> {
+pub fn bench_result() -> BoxedStrategy<BenchResult> {
     let trust = prop_oneof![Just(Trust::Trusted), Just(Trust::Untrusted)];
     (
         (
@@ -875,4 +961,5 @@ pub fn bench_result() -> impl Strategy<Value = BenchResult> {
                 trust,
             },
         )
+        .boxed()
 }

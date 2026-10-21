@@ -21,9 +21,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 pub use digest::{Blake3, GitSha, HexError};
 pub use key::{
-    ApproxKnob, BenchKey, BuildId, BuildProfile, CacheStart, DraftSource, ExactnessPolicy,
-    InterconnectId, KeyField, ModelId, Objective, PrefixSetting, QuantClass, RigFingerprint,
-    ScenarioId, SpecConfig, SpecSetting, ThermalProtocol, TopologyId,
+    ApproxKnob, ApproxParams, BenchKey, BuildId, BuildProfile, CacheStart, DraftSource,
+    ExactnessPolicy, InterconnectId, KeyField, KnobParams, ModelId, Nanos, Objective, ParamValue,
+    PrefixSetting, QuantClass, RigFingerprint, ScenarioId, SpecConfig, SpecSetting,
+    ThermalProtocol, TopologyId,
 };
 
 /// The `schema` value this crate writes and the only one it reads.
@@ -144,8 +145,10 @@ impl std::error::Error for SchemaError {
 /// Who wrote a result, which decides what it may be used for (RFC-0061 §10.3, RFC-0062 §3.3).
 ///
 /// The writer of record sets it, never the run itself: the trusted ingestion job writes
-/// `untrusted` on every fork-derived result. An `untrusted` result is shown on its PR and never
-/// gates `main`, becomes a baseline or is published.
+/// `untrusted` on every fork-derived result. Every producer other than the two writers of record
+/// (`lab.yml` jobs on untainted rigs and that ingestion job), such as a user's `syntropy bench`
+/// run, writes `untrusted`. An `untrusted` result is shown on its PR and never gates `main`,
+/// becomes a baseline or is published.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Trust {
