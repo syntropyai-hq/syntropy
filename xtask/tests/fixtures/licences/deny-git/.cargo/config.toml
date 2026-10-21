@@ -1,0 +1,18 @@
+# Serves crates.io from `../registry`, so the fixture resolves offline and cargo reports each
+# stand-in as a crates.io package. Cargo reads this file only when it runs from this directory,
+# which `cargo xtask deny` and `cargo xtask notices` arrange.
+[source.crates-io]
+replace-with = "fixture-registry"
+
+[source.fixture-registry]
+directory = "../registry"
+
+# The git repository deny.toml does not allow, served from `../git`. Cargo needs the lock file,
+# which pins the commit, before it uses a replaced git source.
+[source.fixture-git-origin]
+git = "https://git.example.invalid/git-crate"
+rev = "0123456789abcdef0123456789abcdef01234567"
+replace-with = "fixture-git"
+
+[source.fixture-git]
+directory = "../git"

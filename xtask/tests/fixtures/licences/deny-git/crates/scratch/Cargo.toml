@@ -1,0 +1,9 @@
+[package]
+name = "syntropy-scratch"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+git-crate = { git = "https://git.example.invalid/git-crate", rev = "0123456789abcdef0123456789abcdef01234567" }
