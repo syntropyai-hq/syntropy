@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" width="960" height="470" role="img" aria-labelledby="hero-light-title hero-light-desc">
+  <title id="hero-light-title">Three machines, one model</title>
+  <desc id="hero-light-desc">A gaming PC with 24 GB of VRAM and 64 GB of RAM (88 GB), a laptop with 48 GB of unified memory and a mini PC with 128 GB of unified memory each fall short of a 142 GB model. Together they have 264 GB, which holds the 142 GB of weights with 122 GB left for the KV cache and everything else.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif; fill: #1f2328; }
+    .h { font-size: 21px; font-weight: 650; letter-spacing: -0.2px; }
+    .s { font-size: 15px; fill: #59636e; }
+    .n { font-size: 16px; font-weight: 600; }
+    .s2 { font-size: 13px; fill: #59636e; }
+    .v { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .p { font-size: 12.5px; font-weight: 600; }
+  </style>
+  <rect x="0.75" y="0.75" width="958.5" height="468.5" rx="18" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1.5"/>
+  <text x="36" y="52" class="h">No machine here can hold the model alone. Together they can.</text>
+  <text x="36" y="80" class="s">Qwen3-235B-A22B at Q4_K_M is 142 GB. Each bar is drawn to the same scale.</text>
+  <text x="36" y="148" class="n">Gaming PC</text>
+  <text x="36" y="167" class="s2">24 GB GPU and 64 GB RAM</text>
+  <rect x="262" y="130.0" width="660.0" height="28" rx="7" fill="#d1d9e0" fill-opacity="0.35"/>
+  <rect x="262" y="130.0" width="58.0" height="28" rx="7" fill="#3f6fd1"/>
+  <rect x="322.0" y="130.0" width="158.0" height="28" rx="7" fill="#2f9a5a"/>
+  <text x="470.0" y="153" class="v" text-anchor="end" style="fill:#ffffff">88 GB</text>
+  <text x="36" y="210" class="n">Laptop</text>
+  <text x="36" y="229" class="s2">MacBook Pro, 48 GB unified</text>
+  <rect x="262" y="192.0" width="660.0" height="28" rx="7" fill="#d1d9e0" fill-opacity="0.35"/>
+  <rect x="262" y="192.0" width="118.0" height="28" rx="7" fill="#7b5fd0"/>
+  <text x="370.0" y="215" class="v" text-anchor="end" style="fill:#ffffff">48 GB</text>
+  <text x="36" y="272" class="n">Mini PC</text>
+  <text x="36" y="291" class="s2">Strix Halo, 128 GB unified</text>
+  <rect x="262" y="254.0" width="660.0" height="28" rx="7" fill="#d1d9e0" fill-opacity="0.35"/>
+  <rect x="262" y="254.0" width="318.0" height="28" rx="7" fill="#7b5fd0"/>
+  <text x="570.0" y="277" class="v" text-anchor="end" style="fill:#ffffff">128 GB</text>
+  <line x1="36" y1="310" x2="924" y2="310" stroke="#d1d9e0" stroke-width="1.5"/>
+  <text x="36" y="346" class="n">Together</text>
+  <text x="36" y="365" class="s2">one cluster on 2.5 GbE</text>
+  <rect x="262" y="328.0" width="58.0" height="28" rx="7" fill="#3f6fd1"/>
+  <rect x="322.0" y="328.0" width="158.0" height="28" rx="7" fill="#2f9a5a"/>
+  <rect x="482.0" y="328.0" width="118.0" height="28" rx="7" fill="#7b5fd0"/>
+  <rect x="602.0" y="328.0" width="318.0" height="28" rx="7" fill="#7b5fd0"/>
+  <text x="912.0" y="351" class="v" text-anchor="end" style="fill:#ffffff">264 GB</text>
+  <path d="M263,370 v8 H614.0 v-8" fill="none" stroke="#59636e" stroke-width="1.5"/>
+  <path d="M620.0,370 v8 H919.0 v-8" fill="none" stroke="#818b98" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="439.5" y="400" class="s2" text-anchor="middle">142 GB of weights</text>
+  <text x="769.5" y="400" class="s2" text-anchor="middle">122 GB for the KV cache and everything else</text>
+  <line x1="617.0" y1="122" x2="617.0" y2="358" stroke="#1f2328" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <rect x="563.0" y="102" width="108" height="24" rx="12" fill="#ffffff" stroke="#1f2328" stroke-width="1.2"/>
+  <text x="617.0" y="118.5" class="p" text-anchor="middle">model: 142 GB</text>
+  <rect x="36" y="429" width="14" height="14" rx="4" fill="#3f6fd1"/>
+  <text x="58" y="441" class="s2">VRAM</text>
+  <rect x="118.4" y="429" width="14" height="14" rx="4" fill="#2f9a5a"/>
+  <text x="140.4" y="441" class="s2">RAM</text>
+  <rect x="193.2" y="429" width="14" height="14" rx="4" fill="#7b5fd0"/>
+  <text x="215.2" y="441" class="s2">unified memory</text>
+  <text x="924" y="441" class="s2" text-anchor="end">Scenario S2 in the plan. Designed, not yet built.</text>
+</svg>
