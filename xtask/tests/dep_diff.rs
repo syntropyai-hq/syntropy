@@ -11,14 +11,14 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dep-diff")
 }
 
-/// The PR data options for the `reviews` file in `pr/`.
-fn pr(reviews: &str) -> Vec<String> {
+/// The PR data options for the `comments` file in `pr/`.
+fn pr(comments: &str) -> Vec<String> {
     let at = |file: &str| fixtures().join("pr").join(file).display().to_string();
     vec![
         "--event".into(),
         at("event.json"),
-        "--reviews".into(),
-        at(reviews),
+        "--comments".into(),
+        at(comments),
         "--roster".into(),
         at("roster.toml"),
     ]
@@ -62,27 +62,38 @@ fn a_new_dev_dependency_fails_until_a_maintainer_approves() {
         "{log}"
     );
 
-    // PR data with no approval, one on an earlier commit, a contributor's, and a withdrawn one.
-    for reviews in [
-        "reviews-none.json",
-        "reviews-stale.json",
-        "reviews-contributor.json",
-        "reviews-withdrawn.json",
+    // PR data with no approval, and approvals that do not count.
+    for (comments, why) in [
+        (
+            "comments-none.json",
+            "no maintainer has commented `dep-diff approved 1111",
+        ),
+        (
+            "comments-stale.json",
+            "names 0000000000000000000000000000000000000000, not the head commit",
+        ),
+        (
+            "comments-contributor.json",
+            "`carol`, who posted one, is not a maintainer",
+        ),
+        ("comments-agent.json", "is an agent identity"),
+        ("comments-edited.json", "edited theirs"),
+        ("comments-app.json", "through a GitHub App"),
+        ("comments-short.json", "no maintainer has commented"),
+        ("comments-inline.json", "no maintainer has commented"),
     ] {
-        let (code, log) = run("head-dev-dependency", &pr(reviews));
-        assert_eq!(code, Some(1), "{reviews}: {log}");
-        assert!(
-            log.contains("no maintainer has approved them in a review of the head commit"),
-            "{reviews}: {log}"
-        );
+        let (code, log) = run("head-dev-dependency", &pr(comments));
+        assert_eq!(code, Some(1), "{comments}: {log}");
+        assert!(log.contains(why), "{comments}: {log}");
     }
 
-    // A maintainer's approving review on the head commit passes it.
-    let (code, log) = run("head-dev-dependency", &pr("reviews-approved.json"));
+    // A maintainer's unedited comment naming the head commit passes it.
+    let (code, log) = run("head-dev-dependency", &pr("comments-approved.json"));
     assert_eq!(code, Some(0), "{log}");
     assert!(
         log.contains(
-            "dep-diff: approved by `alice`, in a review of 1111111111111111111111111111111111111111"
+            "dep-diff: approved by `alice`, in a comment naming \
+             1111111111111111111111111111111111111111"
         ),
         "{log}"
     );
@@ -113,7 +124,7 @@ fn a_patch_or_a_source_replacement_needs_approval_too() {
         "{log}"
     );
     // Approval covers them as it covers a new crate.
-    let (code, log) = run("head-patch", &pr("reviews-approved.json"));
+    let (code, log) = run("head-patch", &pr("comments-approved.json"));
     assert_eq!(code, Some(0), "{log}");
 }
 
@@ -140,7 +151,7 @@ fn a_new_vendored_component_fails() {
 
 #[test]
 fn a_crate_name_that_does_not_exist_fails_the_registry_check() {
-    let approved = pr("reviews-approved.json");
+    let approved = pr("comments-approved.json");
     let (code, log) = run("head-typo", &approved);
     assert_eq!(code, Some(1), "{log}");
     // Approval does not excuse it: dep-diff passes, and the registry step fails.

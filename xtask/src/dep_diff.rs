@@ -21,11 +21,12 @@
 //! those edges (RFC-0001 §4.2).
 //!
 //! Its two steps:
-//! - **`dep-diff`** lists what is new and fails unless a maintainer has approved it, with an
-//!   approving review on the PR's current head commit. A push after the review needs a new one,
-//!   because GitHub ties a review to the commit it was given on. The PR's data comes from
-//!   `--event`, `--reviews` (`GET /pulls/{n}/reviews`, every page) and `--roster`; without them,
-//!   as in a local run, nothing can approve, and a new dependency fails.
+//! - **`dep-diff`** lists what is new and fails unless a maintainer has approved it: a PR
+//!   comment with the line `dep-diff approved <head SHA>`, naming the PR's current head commit in
+//!   full. It counts only when a maintainer of `--roster` posted it from their own account and
+//!   never edited it, so a push after it, or an edit, needs a new one. The PR's data comes from
+//!   `--event`, `--comments` (`GET /issues/{n}/comments`, every page) and `--roster`; without
+//!   them, as in a local run, nothing can approve, and a new dependency fails.
 //! - **`registry`** looks up each new crates.io dependency and prints its first-publish date, its
 //!   first recorded publisher and its owners, for the maintainer's review. It fails when the name
 //!   does not resolve on crates.io, which catches a typosquatted or invented name, and when the
@@ -449,59 +450,101 @@ fn new_dependencies(context: &Context) -> Result<NewDependencies, String> {
     Ok(new)
 }
 
-/// A review of `GET /pulls/{n}/reviews`, reduced to what approval reads.
+/// The line a maintainer's PR comment holds to approve the new dependencies of one commit:
+/// `dep-diff approved <the head commit's full SHA>`, on a line of its own.
+pub const APPROVAL: &str = "dep-diff approved";
+
+/// A comment of `GET /issues/{n}/comments`, reduced to what approval reads.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Review {
+pub struct Comment {
     pub login: String,
-    /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED` or `PENDING`.
-    pub state: String,
-    /// The commit the review was submitted on.
-    pub commit: String,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Posted through a GitHub App, so no person posted it directly.
+    pub via_app: bool,
 }
 
-/// The reviews in `text`, one or more JSON arrays as `gh api --paginate` prints pages, in the
-/// order GitHub lists them, which is the order they were submitted.
-pub fn parse_reviews(text: &str) -> Result<Vec<Review>, String> {
-    let mut reviews = Vec::new();
+/// The comments in `text`, one or more JSON arrays as `gh api --paginate` prints pages.
+pub fn parse_comments(text: &str) -> Result<Vec<Comment>, String> {
+    let mut comments = Vec::new();
     for page in serde_json::Deserializer::from_str(text).into_iter::<Value>() {
-        let page = page.map_err(|e| format!("reviews: not JSON: {e}"))?;
+        let page = page.map_err(|e| format!("comments: not JSON: {e}"))?;
         let items = page
             .as_array()
-            .ok_or("reviews: a page is not a JSON array")?;
+            .ok_or("comments: a page is not a JSON array")?;
         for (i, item) in items.iter().enumerate() {
             let field = |path: &str| {
                 item.pointer(path)
                     .and_then(Value::as_str)
                     .map(str::to_owned)
-                    .ok_or_else(|| format!("reviews[{i}]: `{path}` is missing"))
+                    .ok_or_else(|| format!("comments[{i}]: `{path}` is missing"))
             };
-            reviews.push(Review {
+            comments.push(Comment {
                 login: field("/user/login")?,
-                state: field("/state")?,
-                // A pending review has no commit yet; it approves nothing.
-                commit: field("/commit_id").unwrap_or_default(),
+                body: field("/body").unwrap_or_default(),
+                created_at: field("/created_at")?,
+                updated_at: field("/updated_at")?,
+                via_app: item
+                    .get("performed_via_github_app")
+                    .is_some_and(|app| !app.is_null()),
             });
         }
     }
-    Ok(reviews)
+    Ok(comments)
 }
 
-/// The maintainer whose approving review stands on `head`, if one does. A reviewer's latest
-/// review that is not a plain comment is their verdict, as GitHub reads it; an approval of an
-/// earlier commit does not cover later pushes.
-pub fn approving_review(reviews: &[Review], head: &str, roster: &Roster) -> Option<String> {
-    let mut verdicts: BTreeMap<&str, &Review> = BTreeMap::new();
-    for review in reviews {
-        if review.state != "COMMENTED" && review.state != "PENDING" {
-            verdicts.insert(review.login.as_str(), review);
+/// The SHAs `body` approves: each line that reads exactly `dep-diff approved <40 hex digits>`.
+pub fn approved_shas(body: &str) -> Vec<&str> {
+    body.lines()
+        .filter_map(|line| line.trim().strip_prefix(APPROVAL))
+        .filter_map(|rest| rest.strip_prefix(' '))
+        .filter(|sha| sha.len() == 40 && sha.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')))
+        .collect()
+}
+
+/// The maintainer whose comment approves `head`, or why no comment does. A comment counts when a
+/// maintainer of `roster` posted it from their own account, never edited it, and it names `head`
+/// itself: one naming an earlier commit is stale, because a push may have added more.
+pub fn approving_comment(
+    comments: &[Comment],
+    head: &str,
+    roster: &Roster,
+) -> Result<String, String> {
+    let mut refused = Vec::new();
+    for comment in comments {
+        let shas = approved_shas(&comment.body);
+        if shas.is_empty() {
+            continue;
+        }
+        let who = &comment.login;
+        if comment.via_app {
+            refused.push(format!("`{who}` posted one through a GitHub App"));
+        } else if roster.is_agent(who) {
+            refused.push(format!("`{who}`, who posted one, is an agent identity"));
+        } else if !roster.is_maintainer(who) {
+            refused.push(format!("`{who}`, who posted one, is not a maintainer"));
+        } else if comment.updated_at != comment.created_at {
+            refused.push(format!(
+                "`{who}` edited theirs, and an edited approval does not count; post a new one"
+            ));
+        } else if !shas.contains(&head) {
+            refused.push(format!(
+                "`{who}`'s names {}, not the head commit; a push after an approval needs a new one",
+                shas.join(", ")
+            ));
+        } else {
+            return Ok(who.clone());
         }
     }
-    verdicts
-        .into_iter()
-        .find(|(login, review)| {
-            review.state == "APPROVED" && review.commit == head && roster.is_maintainer(login)
-        })
-        .map(|(login, _)| login.to_owned())
+    Err(if refused.is_empty() {
+        format!("no maintainer has commented `{APPROVAL} {head}`")
+    } else {
+        format!(
+            "no comment `{APPROVAL} {head}` counts: {}",
+            refused.join("; ")
+        )
+    })
 }
 
 /// The PR's head commit, from its event payload.
@@ -515,7 +558,7 @@ fn head_sha(event: &str) -> Result<String, String> {
 }
 
 /// The PR data that can carry an approval, all or none of it given.
-const PR_DATA: &[&str] = &["--event", "--reviews", "--roster"];
+const PR_DATA: &[&str] = &["--event", "--comments", "--roster"];
 
 /// Who approved the new dependencies, or why nobody has.
 fn approval(context: &Context) -> Result<String, String> {
@@ -526,7 +569,7 @@ fn approval(context: &Context) -> Result<String, String> {
         .collect();
     if given.is_empty() {
         return Err(
-            "no PR data was given (`--event`, `--reviews`, `--roster`), so nothing can approve \
+            "no PR data was given (`--event`, `--comments`, `--roster`), so nothing can approve \
              them"
                 .to_owned(),
         );
@@ -545,13 +588,9 @@ fn approval(context: &Context) -> Result<String, String> {
     let event = read("--event")?;
     let roster = Roster::parse(&read("--roster")?).map_err(|e| format!("roster: {e}"))?;
     let head = head_sha(&event)?;
-    let reviews = parse_reviews(&read("--reviews")?)?;
-    match approving_review(&reviews, &head, &roster) {
-        Some(login) => Ok(format!("approved by `{login}`, in a review of {head}")),
-        None => Err(format!(
-            "no maintainer has approved them in a review of the head commit {head}"
-        )),
-    }
+    let comments = parse_comments(&read("--comments")?)?;
+    approving_comment(&comments, &head, &roster)
+        .map(|login| format!("approved by `{login}`, in a comment naming {head}"))
 }
 
 /// The `dep-diff` step.
@@ -578,8 +617,8 @@ pub fn step(context: &Context) -> Result<(), String> {
             };
             Err(format!(
                 "{count} new direct {what} {needs} a maintainer's approval (RFC-0062 §12.3): \
-                 {reason}. A maintainer approves with an approving review on the head commit, \
-                 and a later push needs a new one"
+                 {reason}. A maintainer approves by commenting `{APPROVAL} <head SHA>` on the \
+                 PR, and a later push needs a new comment"
             ))
         }
     }

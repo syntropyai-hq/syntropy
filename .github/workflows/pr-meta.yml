@@ -2,7 +2,7 @@
 
 # The contribution checks `dco` and `pr-title` (RFC-0062 §12.3), and `dep-diff` for new direct
 # dependencies (§12.3, §11.4), all required checks (§2.5). They judge a PR's commits, title, body,
-# labels, reviews and manifests, so the PR must not be able to change
+# labels, comments and manifests, so the PR must not be able to change
 # how it is judged. Each job checks out the base branch, never the PR, and runs the base branch's
 # `cargo xtask` with the base branch's `governance/maintainers.toml` and `version.txt`. It restores
 # no cache, so nothing the PR ran elsewhere reaches the build.
@@ -20,9 +20,6 @@ name: pr-meta
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
-  # A maintainer's review can approve a new dependency, so `dep-diff` runs again on reviews.
-  pull_request_review:
-    types: [submitted, dismissed]
   merge_group:
     types: [checks_requested]
 
@@ -136,6 +133,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: read
     steps:
       - name: Pass on a merge group
         if: github.event_name == 'merge_group'
@@ -160,13 +158,15 @@ jobs:
         with:
           cache-key: pr-meta
           cache: "off"
-      - name: Fetch the PR's reviews
+      # A maintainer approves a new dependency with a PR comment naming the head commit;
+      # `dep-approval.yml` re-runs this job when such a comment is posted, edited or deleted.
+      - name: Fetch the PR's comments
         if: github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
-        run: gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" > "$RUNNER_TEMP/reviews.json"
+        run: gh api --paginate "repos/$REPO/issues/$NUMBER/comments" > "$RUNNER_TEMP/comments.json"
       # Bootstrap: until the base branch has the `dep-diff` job, which holds only until the PR
       # that adds it merges, that PR is judged by its own. A base that fails to build fails here.
       - name: Find the base branch's dep-diff
@@ -189,5 +189,5 @@ jobs:
             --base "$GITHUB_WORKSPACE" \
             --head "$GITHUB_WORKSPACE/pr" \
             --event "$GITHUB_EVENT_PATH" \
-            --reviews "$RUNNER_TEMP/reviews.json" \
+            --comments "$RUNNER_TEMP/comments.json" \
             --roster "$GITHUB_WORKSPACE/governance/maintainers.toml"

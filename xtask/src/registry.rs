@@ -350,9 +350,9 @@ pub const JOBS: &[Entry] = &[
                 required: false,
             },
             Param {
-                name: "--reviews",
+                name: "--comments",
                 value: "<file>",
-                help: "every review, as GET /repos/{owner}/{repo}/pulls/{n}/reviews returns them",
+                help: "every comment, as GET /repos/{owner}/{repo}/issues/{n}/comments returns them",
                 required: false,
             },
             Param {

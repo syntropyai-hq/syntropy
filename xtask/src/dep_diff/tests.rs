@@ -95,70 +95,100 @@ fn only_a_name_or_source_the_base_lacks_is_new() {
     );
 }
 
-fn review(login: &str, state: &str, commit: &str) -> Review {
-    Review {
+fn comment(login: &str, body: &str, edited: bool) -> Comment {
+    Comment {
         login: login.to_owned(),
-        state: state.to_owned(),
-        commit: commit.to_owned(),
+        body: body.to_owned(),
+        created_at: "2026-10-21T10:00:00Z".to_owned(),
+        updated_at: if edited {
+            "2026-10-21T10:05:00Z"
+        } else {
+            "2026-10-21T10:00:00Z"
+        }
+        .to_owned(),
+        via_app: false,
+    }
+}
+
+const HEAD: &str = "1111111111111111111111111111111111111111";
+const OLD: &str = "0000000000000000000000000000000000000000";
+
+#[test]
+fn a_comment_approves_only_the_commit_it_names_from_a_maintainer_unedited() {
+    let approve = |sha: &str| format!("{APPROVAL} {sha}");
+    let decide = |comments: &[Comment]| approving_comment(comments, HEAD, &roster());
+    assert_eq!(
+        decide(&[comment("alice", &approve(HEAD), false)]),
+        Ok("alice".into())
+    );
+    // Among other text, on its own line.
+    let body = format!("Checked the publisher.\n  {}  \nThanks.", approve(HEAD));
+    assert_eq!(decide(&[comment("bob", &body, false)]), Ok("bob".into()));
+    // Stale, edited, a contributor's, an agent's, through an App.
+    let stale = decide(&[comment("alice", &approve(OLD), false)]).unwrap_err();
+    assert!(stale.contains("not the head commit"), "{stale}");
+    let edited = decide(&[comment("alice", &approve(HEAD), true)]).unwrap_err();
+    assert!(edited.contains("edited theirs"), "{edited}");
+    let carol = decide(&[comment("carol", &approve(HEAD), false)]).unwrap_err();
+    assert!(
+        carol.contains("`carol`, who posted one, is not a maintainer"),
+        "{carol}"
+    );
+    let agent = decide(&[comment("project-review-agent", &approve(HEAD), false)]).unwrap_err();
+    assert!(agent.contains("is an agent identity"), "{agent}");
+    let mut via_app = comment("alice", &approve(HEAD), false);
+    via_app.via_app = true;
+    assert!(
+        decide(&[via_app])
+            .unwrap_err()
+            .contains("through a GitHub App")
+    );
+    // A refused comment does not hide a good one.
+    assert_eq!(
+        decide(&[
+            comment("carol", &approve(HEAD), false),
+            comment("alice", &approve(HEAD), false)
+        ]),
+        Ok("alice".into())
+    );
+    // No approval at all names the form to use.
+    assert_eq!(
+        decide(&[comment("alice", "Looks good.", false)]).unwrap_err(),
+        format!("no maintainer has commented `{APPROVAL} {HEAD}`")
+    );
+}
+
+#[test]
+fn only_the_exact_line_form_names_a_commit() {
+    // Letters too, so an upper-case copy differs.
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    assert_eq!(approved_shas(&format!("{APPROVAL} {sha}")), [sha]);
+    for not_it in [
+        format!("LGTM, {APPROVAL} {sha}"),
+        format!("{APPROVAL} {}", &sha[..7]),
+        format!("{APPROVAL} {}", sha.to_uppercase()),
+        format!("{APPROVAL}  {sha}"),
+        format!("{APPROVAL} {sha} and more"),
+        format!("{APPROVAL}:{sha}"),
+        format!("dep-diff approves {sha}"),
+    ] {
+        assert!(
+            approved_shas(&not_it).is_empty(),
+            "`{not_it}` was read as an approval"
+        );
     }
 }
 
 #[test]
-fn an_approval_counts_from_a_maintainer_on_the_head_commit_only() {
-    let head = "h";
-    let approved = |reviews: &[Review]| approving_review(reviews, head, &roster());
-    assert_eq!(
-        approved(&[review("alice", "APPROVED", "h")]),
-        Some("alice".into())
-    );
-    // On an earlier commit, by a contributor, or by an agent.
-    assert_eq!(approved(&[review("alice", "APPROVED", "old")]), None);
-    assert_eq!(approved(&[review("carol", "APPROVED", "h")]), None);
-    assert_eq!(
-        approved(&[review("project-review-agent", "APPROVED", "h")]),
-        None
-    );
-    // A later comment leaves the approval standing; a later change request or a dismissal ends it.
-    assert_eq!(
-        approved(&[
-            review("alice", "APPROVED", "h"),
-            review("alice", "COMMENTED", "h")
-        ]),
-        Some("alice".into())
-    );
-    assert_eq!(
-        approved(&[
-            review("alice", "APPROVED", "h"),
-            review("alice", "CHANGES_REQUESTED", "h")
-        ]),
-        None
-    );
-    assert_eq!(approved(&[review("alice", "DISMISSED", "h")]), None);
-    // Another maintainer's standing approval still counts.
-    assert_eq!(
-        approved(&[
-            review("alice", "CHANGES_REQUESTED", "h"),
-            review("bob", "APPROVED", "h")
-        ]),
-        Some("bob".into())
-    );
-}
-
-#[test]
-fn reviews_are_read_from_every_page() {
-    let text = r#"[{"user":{"login":"alice"},"state":"COMMENTED","commit_id":"a"}]
-[{"user":{"login":"bob"},"state":"APPROVED","commit_id":"b"},{"user":{"login":"carol"},"state":"PENDING"}]"#;
-    let reviews = parse_reviews(text).unwrap();
-    assert_eq!(
-        reviews,
-        [
-            review("alice", "COMMENTED", "a"),
-            review("bob", "APPROVED", "b"),
-            review("carol", "PENDING", "")
-        ]
-    );
-    assert!(parse_reviews(r#"{"message":"Not Found"}"#).is_err());
-    assert!(parse_reviews(r#"[{"state":"APPROVED"}]"#).is_err());
+fn comments_are_read_from_every_page() {
+    let text = r#"[{"user":{"login":"alice"},"body":"a","created_at":"t","updated_at":"t","performed_via_github_app":null}]
+[{"user":{"login":"bob"},"body":null,"created_at":"t","updated_at":"u","performed_via_github_app":{"slug":"x"}}]"#;
+    let comments = parse_comments(text).unwrap();
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[1].body, "");
+    assert!(comments[1].via_app);
+    assert!(parse_comments(r#"{"message":"Not Found"}"#).is_err());
+    assert!(parse_comments(r#"[{"body":"x"}]"#).is_err());
 }
 
 #[test]
