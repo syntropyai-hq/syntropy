@@ -1288,11 +1288,13 @@ baseline_report = "…"        # ggml-CPU ParityReport (§4.1)
 
 | Data | Content | Used by |
 |---|---|---|
-| Routing traces | expert IDs per layer per token from lab runs of real MoE checkpoints over the corpus; about 1 KB per token for 61 layers × top-8 at 2 bytes per ID | SC-8 and SC-9 policy tests (RFC-0023), simulation workloads |
+| Routing traces | per pass and MoE layer, the pass's token count and its distinct experts with their token counts, from lab runs of real MoE checkpoints over the corpus (revised 2026-10-21, below); about 2 KB per one-token pass for 61 layers × top-8 [estimate: 61 × 8 entries × 4 bytes] | SC-8 and SC-9 policy tests (RFC-0023), simulation workloads |
 | Wire vectors | byte-exact frames for every message type and protocol version | P-net-1, the `frames` fuzz seeds, RFC-0062 compatibility tests |
 | Event-log snapshots | one snapshot plus log tail per release | upgrade and compatibility tests (RFC-0062) |
 | Lab profiles | each rig's measured `CapabilityProfile` | simulation presets (§8.4), solver regression suites (RFC-0061) |
 | Request-arrival traces | per request: arrival time, prompt and generated lengths, prefix and session structure, and concurrency, with no prompt or output text. Recorded from the lab's own workload runs and from opt-in sessions of a maintainer on the lab cluster | `FakeClient` workloads (§8.4), queueing studies such as RFC-0012's prefill-share question, throughput-mode scenario design (RFC-0061) |
+
+**Routing traces** (revised 2026-10-21). A trace holds one record per pass and MoE layer, not per token, because the recorder reads what the router writes: each distinct expert of the pass once, with the number of the pass's tokens that chose it (`RouteSlot`, RFC-0023 §2). The router's per-token choices stay in device memory (RFC-0040 §3.4). A one-token pass, such as a decode step of one sequence, gives that token's expert IDs exactly. A longer pass, such as a prefill chunk, a verify window or several decode rows, gives the union with per-expert counts. That is what the expert cache sees, because a pass reads each expert once (RFC-0023 §5.1, §11). A consumer that indexes routing by (layer, position), such as §8.4's fake devices or RFC-0023's union-curve check, gets exact per-token routing only from one-token passes. The format and its reader live with the recorder in `tier`, because no production crate depends on `testkit` (RFC-0001 §4.2 rule 9).
 
 **Request-arrival traces** (the golden-data class behind QUAL-E7-T13).
 - **Recorded.** Per request: arrival time; prompt and output lengths in tokens; prefix and session structure (which earlier request a prompt extends, and the shared-prefix length); and concurrency, meaning the sequences in flight at arrival.
