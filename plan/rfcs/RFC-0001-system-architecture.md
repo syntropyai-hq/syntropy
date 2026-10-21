@@ -1521,6 +1521,7 @@ pub enum ErrorClass {
 | `BuildId` | core (type); value built in `cli` | 0062 | 0052 |
 | `DeviceId`, `TierId`, `LinkId`, `DeviceKind`, `Measured` | core | 0010 | 0031 (network `LinkKind`s) |
 | `TierKind` | core | 0020 | 0010 |
+| `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
 | `ResourceGraph`, `CapabilityProfile` | core | 0010 | 0011 (what the solver reads), 0021 (`StorageCaps` fields) |
 | `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
 | `DType`, `QuantScheme` | core | 0042 | 0040 |
@@ -2634,3 +2635,11 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | Delete "the pinning loop checks real `MemFree_n` again after committing (§6)": §6 has no free-page test. Done 2026-10-20 | TIER | RFC-0020 §5 (Linux paragraph) |
 | Sustained NVMe run: "during the first `Loading`" becomes "after the first `Loading` completes, or in an idle window, never while `Packing` or `Loading` use the volume", as RFC-0010 S2 and SC-22 say. Done 2026-10-20 | TIER | RFC-0021 §10 step 6 |
 | SC-17's bound is `α_wire + S/β + 2 · t_switch`; Goals item 3 and §5.3 still quote `α_wire + 2 · t_switch`. Done 2026-10-20 | DIST | RFC-0032 Goals, §5.3 |
+
+### 18.6 Core types for the I/O interface (2026-10-21)
+
+`syntropy-io`'s interface (RFC-0021 §2) needs types that other crates share. They are placed in `core`.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ExtentRef` and `StepLayer` (RFC-0020 §3), and `FileIx` and `HostRegion` (RFC-0021 §2), are `core` types with serde derives; §5.13 gains their ownership row | §5.13; RFC-0020 §3 and RFC-0021 §2 (dated notes) | `io` (layer 1) carries `ExtentRef` and `StepLayer` in its requests, `tier` (layer 2) round-trips `ExtentRef` in `ArenaPlan`, and `io` and `kernels` (both layer 1) register `HostRegion`s; `core` is the only crate all of them can depend on (§4.2 rules 1 and 2) |

@@ -273,6 +273,9 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-io"
 version = "0.0.0"
+dependencies = [
+ "syntropy-core",
+]
 
 [[package]]
 name = "syntropy-ipc"
