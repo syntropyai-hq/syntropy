@@ -993,7 +993,7 @@ Per-hop transport choice is not a knob. It comes from the plan. An operator who 
 | 0x0201 | `ProtoMajorMismatch` | `Unsupported` |
 | 0x0202 | `CredentialInvalid` (signature, expiry, wrong node, wrong instance or epoch) | `Auth` |
 | 0x0203 | `NotANeighbour` (credential valid, but the plan does not connect these stages) | `Auth` |
-| 0x0204 | `UnknownFrameType` | `Internal` |
+| 0x0204 | `UnknownFrameType` | `Unsupported` (was `Internal`; see the revision note below) |
 | 0x0205 | `FrameTooLarge` | `Internal` |
 | 0x0206 | `WireDTypeMismatch` | `Internal` |
 | 0x0207 | `CrcStorm` (3 payload CRC failures in 10 s) | `Link` |
@@ -1009,6 +1009,8 @@ Per-hop transport choice is not a knob. It comes from the plan. An operator who 
 | 0x0211 | `EpochNotServed` | `Transient` (retry after `OnNewPlan`) |
 | 0x0212 | `ProtoRangeDisjoint` (no overlap of declared wire-minor or feature-level ranges) | `Unsupported` |
 | 0x0213 | `QpBudgetExhausted` (informational: channel opened on the next transport) | `Link` |
+
+**Revision note, 2026-10-22 (DIST-E8-T01): the class of `UnknownFrameType`.** A receiver that refuses a frame because its `ftype` is not a type of the negotiated minor (§6.2) classes the refusal `Unsupported`, not `Internal`. RFC-0060 §10.2 requires a decoder of untrusted bytes to class every refusal `Integrity`, `InvalidRequest`, `Auth` or `Unsupported`, never `Internal`, and the fuzz targets assert it. The code is unchanged: the receiver still sends `Close { UnknownFrameType }` with 0x0204. The table now gives `Unsupported` for 0x0204, so the two RFCs agree.
 
 ## Performance model and budgets
 

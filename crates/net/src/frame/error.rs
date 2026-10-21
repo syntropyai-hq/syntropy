@@ -67,10 +67,9 @@ impl FrameError {
     /// The RFC-0001 §5.12 class. A refused frame is never `Internal`, as RFC-0060 §10.2 requires
     /// of every decoder of untrusted bytes: damaged or malformed bytes are `Integrity`
     /// (RFC-0031 §7.2 drops the frame and NACKs it), and a frame type this minor does not define
-    /// is `Unsupported`. RFC-0031 §12 classes the `UnknownFrameType` code `Internal`, the peer's
-    /// bug of sending a type it did not negotiate; [`FrameError::code`] still gives that code for
-    /// the `Close`. Only the encoder's own failures, a buffer too small or a length too long for
-    /// its field, are `Internal`.
+    /// is `Unsupported` (RFC-0031 §12, revised 2026-10-22), sent in `Close` as the code
+    /// [`FrameError::code`] gives. Only the encoder's own failures, a buffer too small or a length
+    /// too long for its field, are `Internal`.
     pub fn class(&self) -> ErrorClass {
         match self {
             FrameError::UnknownFrameType(_) => ErrorClass::Unsupported,
