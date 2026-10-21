@@ -2,15 +2,22 @@
 
 The epic files are the source of truth. Each epic becomes an issue of type
 Epic, each task an issue of type Task and a sub-issue of its epic, and each
-task's dependencies become native "blocked by" links; a link between two
-synced issues that the plan no longer has is removed. All of them go on one
-public project board linked to the repository. Running the script again
-updates any issue whose generated title, body, labels or milestone changed,
-and leaves alone everything people set on the board: status, assignees,
-comments and closed state.
+task's dependencies, the edges depcheck.py reads from its "Depends on" cell,
+become native "blocked by" links; a link between two synced issues that the
+plan no longer has is removed. All of them go on one public project board
+linked to the repository. Running the script again overwrites the title,
+body, labels, milestone and type of any issue whose generated content
+changed, and leaves alone everything people set on the board: status,
+assignees, comments and open or closed state.
+
+The script adopts an issue only if its body carries the task marker and the
+account running the script opened it; markers on anyone else's issues are
+counted and ignored, and two adoptable issues with the same ID stop the run
+before any write. Synced issues whose task or epic has left the plan are
+listed as orphans and left open.
 
     python3 gh_sync.py --dry-run                       # what would change
-    python3 gh_sync.py --banned FILE --phase setup     # labels, milestones, issue type, project, views
+    python3 gh_sync.py --banned FILE --phase setup     # labels, milestones, issue type, project, its README, views
     python3 gh_sync.py --banned FILE --phase issues    # epics, then tasks in dependency order
     python3 gh_sync.py --banned FILE --phase deps      # "blocked by" links
     python3 gh_sync.py --banned FILE --phase all
@@ -20,9 +27,11 @@ use the org's "Epic" issue type if one exists, and "Feature" otherwise. Every
 title and body is checked against the D5 banned-terms file (--banned), which
 is kept outside the repository, and the run stops on any match. GitHub allows
 about 500 content-creating requests an hour, so the script waits --interval
-seconds between writes (default 9) and backs off when GitHub asks it to.
-Every run starts by reading what already exists, so an interrupted run can
-simply be started again.
+seconds between writes (default 9) and backs off when a call fails with a
+rate limit. A write that fails with a server or network error may still have
+landed, so the run pauses and re-reads what exists before it resumes. Every
+run starts by reading what already exists, so an interrupted run can simply
+be started again.
 """
 
 import argparse
@@ -36,7 +45,9 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import depcheck  # noqa: E402
 import epics  # noqa: E402
+import roadmap  # noqa: E402
 
 TOOLS_DIR = Path(__file__).resolve().parent
 PLAN_DIR = TOOLS_DIR.parent.parent
@@ -46,7 +57,7 @@ PROJECT_TITLE = "Syntropy"
 MARKER = "syntropy-task"
 MILESTONES = ("M0a", "M0b", "M1a", "M1b", "M2", "M3", "M4")
 
-# Two lanes, split by the crates each area writes to (AGENTS.md, "Lanes").
+# Two lanes, by area (AGENTS.md, "Lanes").
 LANES = {"COMP": "engine", "PLC": "engine", "TIER": "engine",
          "QUAL": "harness-surface", "PROD": "harness-surface",
          "DIST": "harness-surface"}
@@ -57,8 +68,8 @@ AREA_NAMES = {"PLC": "placement and scheduling", "TIER": "tiers, I/O and KV",
 
 LABELS = {
     **{f"area:{a}": ("1d76db", f"Area {a}: {n}") for a, n in AREA_NAMES.items()},
-    "lane:engine": ("5319e7", "Lane: COMP, PLC and TIER crates"),
-    "lane:harness-surface": ("0e8a16", "Lane: QUAL, PROD and DIST crates"),
+    "lane:engine": ("5319e7", "Lane: the COMP, PLC and TIER areas"),
+    "lane:harness-surface": ("0e8a16", "Lane: the QUAL, PROD and DIST areas"),
     **{f"size:{c}": ("c5def5", f"Estimated size class {c} (sizing.py, [estimate])")
        for c in ("S", "M", "L", "XL")},
     "spike": ("fbca04", "Spike: a timeboxed harness that answers a question"),
@@ -81,11 +92,48 @@ PROJECT_README = """Every epic and task in the Syntropy plan, as issues.
 
 The epic files under `plan/implementation/epics/` are the source of truth. The issues are generated from them by `plan/implementation/tools/gh_sync.py`, so change the plan, not an issue's description.
 
-- **Claim a task** by assigning yourself on its issue before you start, and move it to In Progress. Skip tasks someone else is assigned to.
-- **Pick ready work.** A task is ready when nothing in its "blocked by" list is still open. The Engine and Harness lanes split the work by the crates each area writes to (AGENTS.md).
+- **Pick ready work.** A task is ready when every task in its plan "Depends on" cell is done; `python3 plan/implementation/tools/depcheck.py --task <ID>` lists them, and each issue's "blocked by" links mirror that cell. The Engine and Harness lanes split the work by area (AGENTS.md, "Lanes").
+- **Claim a task** before you start. With write access, assign yourself on its issue and move it to In Progress. Without it, say in a comment that you're taking it, and a maintainer assigns you. Skip tasks someone else is assigned to.
 - **Close it** through the pull request that meets its acceptance criteria: put `Closes #<issue>` in the PR description.
 - **Maintainer action** tasks need a person, and **maintainer-approval** tasks touch a change class that needs a maintainer's approval.
 """
+
+
+class Interrupted(RuntimeError):
+    """A rate limit, a network or server failure, or a write whose result is
+    unknown. The phase pauses, re-reads what exists and resumes."""
+
+
+LIMIT_TEXT = re.compile(r"secondary rate limit|rate limit exceeded|"
+                        r"submitted too quickly|abuse detection", re.I)
+NETWORK_TEXT = re.compile(r"HTTP 50[0234]\b|error connecting|connection (?:reset|refused)|"
+                          r"i/o timeout|TLS handshake timeout|unexpected EOF|no such host",
+                          re.I)
+
+
+def error_text(out):
+    """GitHub's own error fields in a failed call's output: the GraphQL
+    `errors[].type` and `message`, or the REST `message`. Never its data."""
+    try:
+        doc = json.loads(out)
+    except ValueError:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    parts = [str(doc.get("message", ""))]
+    for e in doc.get("errors") or []:
+        if isinstance(e, dict):
+            parts += [str(e.get("type", "")), str(e.get("message", ""))]
+    return " ".join(p for p in parts if p)
+
+
+def rate_limited(stderr, out):
+    """Whether a failed call was refused for a rate limit: a GraphQL error of
+    type RATE_LIMITED, HTTP 429, or GitHub's rate-limit wording in gh's error
+    message or the response's error fields."""
+    errors = error_text(out)
+    return ("RATE_LIMITED" in errors.split() or "HTTP 429" in stderr
+            or bool(LIMIT_TEXT.search(stderr + " " + errors)))
 
 
 class GitHub:
@@ -98,28 +146,36 @@ class GitHub:
         self.last_write = 0.0
         self.writes = 0
 
-    def _run(self, args, payload=None):
+    def _run(self, args, payload=None, write=False):
+        # Only a failed call is inspected. A successful read returns issue
+        # bodies, and their text must never decide whether to back off.
         for attempt in range(8):
             proc = subprocess.run(["gh", "api", *args], input=payload,
                                   capture_output=True, text=True)
-            out = proc.stdout.strip()
-            text = out + proc.stderr
-            limited = re.search(r"secondary rate limit|submitted too quickly|"
-                                r"RATE_LIMITED|abuse detection|was submitted too",
-                                text, re.I)
-            if proc.returncode == 0 and not limited:
+            out, err = proc.stdout.strip(), proc.stderr.strip()
+            if proc.returncode == 0:
                 return json.loads(out) if out else {}
-            if limited or "HTTP 502" in text or "HTTP 503" in text:
-                wait = min(60 * 2 ** attempt, 900)
-                print(f"  waiting {wait} s: {text.strip()[:120]}", flush=True)
+            what = f"gh api {' '.join(args[:2])}: {err[:300]}"
+            wait = min(60 * 2 ** attempt, 900)
+            if rate_limited(err, out):
+                # GitHub refused the request, so it is safe to repeat.
+                print(f"  rate limited; waiting {wait} s: {err[:120]}", flush=True)
                 time.sleep(wait)
                 continue
-            raise RuntimeError(f"gh api {' '.join(args[:2])}: {text.strip()[:600]}")
-        raise RuntimeError("gave up after repeated rate limiting")
+            if NETWORK_TEXT.search(err + " " + error_text(out)):
+                if write:
+                    # The write may have landed. Re-read before resuming,
+                    # so a create is never repeated.
+                    raise Interrupted(what)
+                print(f"  network or server error; waiting {wait} s: {err[:120]}", flush=True)
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"{what} {error_text(out)[:300]}".strip())
+        raise Interrupted("gave up after repeated rate limits or network errors")
 
-    def query(self, query, **variables):
+    def query(self, query, write=False, **variables):
         data = self._run(["graphql", "--input", "-"],
-                         json.dumps({"query": query, "variables": variables}))
+                         json.dumps({"query": query, "variables": variables}), write)
         if data.get("errors"):
             raise RuntimeError(json.dumps(data["errors"])[:600])
         return data["data"]
@@ -134,7 +190,7 @@ class GitHub:
             time.sleep(wait)
         self.last_write = time.monotonic()
         self.writes += 1
-        return self.query(query, **variables)
+        return self.query(query, write=True, **variables)
 
     def rest(self, path):
         sep = "&" if "?" in path else "?"
@@ -153,7 +209,7 @@ class GitHub:
         args = ["-X", "POST", path]
         for k, v in fields.items():
             args += ["-f", f"{k}={v}"]
-        return self._run(args)
+        return self._run(args, write=True)
 
 
 # ---------------------------------------------------------------- the plan
@@ -189,15 +245,26 @@ def load_sizes():
     return {r["id"]: r for r in json.loads(proc.stdout)}
 
 
-def task_deps(rec, ids):
-    found = re.findall(r"[A-Z]+-E\d+-T\d+", rec["depends"])
-    return sorted({x for x in found if x in ids and x != rec["id"]}, key=epics.id_key)
+def plan_graph():
+    """The tasks and each task's dependencies, from depcheck.py's edges.
+
+    depcheck expands ranges such as PLC-E2-T01–T05 and skips task IDs inside
+    a note, so the "blocked by" links match the plan's "Depends on" cells
+    exactly. The run stops if depcheck reports any problem."""
+    res = depcheck.analyse()
+    if res["problems"]:
+        raise SystemExit(f"{len(res['problems'])} task-graph problems; "
+                         f"run depcheck.py, which must exit 0")
+    deps = {t: set() for t in res["tasks"]}
+    for e in res["edges"]:
+        deps[e["from"]].add(e["to"])
+    records = sorted(res["tasks"].values(), key=lambda r: epics.id_key(r["id"]))
+    return records, {t: sorted(d, key=epics.id_key) for t, d in deps.items()}
 
 
-def topo_order(tasks):
+def topo_order(tasks, deps):
     """Tasks with their dependencies first, ties broken by task ID."""
     ids = {t["id"] for t in tasks}
-    deps = {t["id"]: task_deps(t, ids) for t in tasks}
     done, order = set(), []
 
     def visit(t, stack=()):
@@ -212,7 +279,7 @@ def topo_order(tasks):
 
     for t in sorted(ids, key=epics.id_key):
         visit(t)
-    return order, deps
+    return order
 
 
 def short_title(task):
@@ -276,6 +343,21 @@ def epic_issue(e, base):
             "labels": labels, "milestone": None, "type": "Epic", "parent": None}
 
 
+SPLIT_PREFIX = re.compile(r"^Windows and macOS part of [A-Z]+-E\d+-T\d+:\s*")
+
+
+def is_spike(task):
+    """roadmap.py's spike kind (KIND_RE), read at the start of the Task cell,
+    after a split row's "Windows and macOS part of <ID>:" prefix, or a leading
+    label that ends in "spike", as in "Platform facts spike: …". A spike that
+    the cell only mentions, such as "the S-04 spike settled", doesn't count."""
+    text = SPLIT_PREFIX.sub("", task)
+    m = roadmap.KIND_RE.match(text)
+    if m:
+        return m["kind"].lower().startswith("spike")
+    return bool(re.match(r"[\w ]*\bspikes?\b(?::|$)", text, re.I))
+
+
 def task_issue(t, epic, size, dep_ids, numbers, base):
     deps = "\n".join(f"- #{numbers[d]} {d}" if d in numbers else f"- {d}"
                      for d in dep_ids) or "None."
@@ -301,7 +383,7 @@ def task_issue(t, epic, size, dep_ids, numbers, base):
             labels.append("maintainer-action")
         if size.get("approval"):
             labels.append("maintainer-approval")
-    if re.match(r"\W*spike\b", t["task"], re.I):
+    if is_spike(t["task"]):
         labels.append("spike")
     return {"id": t["id"], "title": f"[{t['id']}] {short_title(t['task'])}",
             "body": body, "labels": sorted(labels), "milestone": t["phase"],
@@ -330,27 +412,44 @@ def check_banned(items, banned):
 
 ISSUES_Q = """query($o:String!,$n:String!,$after:String){ repository(owner:$o,name:$n){
   issues(first:100, after:$after, states:[OPEN,CLOSED]){ pageInfo{hasNextPage endCursor}
-    nodes{ id number body blockedBy(first:50){ nodes{ id } } } } } }"""
+    nodes{ id number body author{ login } blockedBy(first:50){ nodes{ id } } } } } }"""
 
 
-def existing_issues(gh):
-    found, after = {}, None
+def existing_issues(gh, login):
+    """The synced issues by task or epic ID, and how many markers were ignored.
+
+    Anyone can open an issue on a public repository and copy a marker into
+    it, so only issues opened by the account running the sync are adopted.
+    Two adoptable issues with the same ID stop the run before any write."""
+    found, ignored, clashes, after = {}, 0, [], None
     while True:
         r = gh.query(ISSUES_Q, o=gh.owner, n=gh.name, after=after)["repository"]["issues"]
         for n in r["nodes"]:
             m = re.search(rf"<!-- {MARKER}: (\S+) (\w+) -->", n["body"] or "")
-            if m:
-                found[m[1]] = {"id": n["id"], "number": n["number"], "digest": m[2],
-                               "blocked_by": {b["id"] for b in n["blockedBy"]["nodes"]}}
+            if not m:
+                continue
+            if (n["author"] or {}).get("login") != login:
+                ignored += 1
+                continue
+            if m[1] in found:
+                clashes.append(f"{m[1]} on #{found[m[1]]['number']} and #{n['number']}")
+                continue
+            found[m[1]] = {"id": n["id"], "number": n["number"], "digest": m[2],
+                           "blocked_by": {b["id"] for b in n["blockedBy"]["nodes"]}}
         if not r["pageInfo"]["hasNextPage"]:
-            return found
+            break
         after = r["pageInfo"]["endCursor"]
+    if clashes:
+        raise SystemExit(f"{len(clashes)} ID(s) carried by two issues opened by {login}: "
+                         f"{'; '.join(clashes[:10])}. Stopped before the next write; "
+                         f"close the extra issue or remove its marker, then run again.")
+    return found, ignored
 
 
 def setup(gh, ctx):
     repo = gh.query("""query($o:String!,$n:String!){ repository(owner:$o,name:$n){ id
         owner{ id ... on Organization { issueTypes(first:50){ nodes{ id name } }
-        projectsV2(first:50){ nodes{ id title number url } } } } } }""",
+        projectsV2(first:50){ nodes{ id title number url readme } } } } } }""",
                     o=gh.owner, n=gh.name)["repository"]
     ctx["repo_id"], ctx["owner_id"] = repo["id"], repo["owner"]["id"]
 
@@ -386,6 +485,10 @@ def setup(gh, ctx):
             updateProjectV2(input:{projectId:$p, public:true, shortDescription:$d, readme:$r}){
             projectV2{ id } } }""", p=project["id"],
                   d="Every epic and task in the Syntropy plan", r=PROJECT_README)
+    elif (project.get("readme") or "").strip() != PROJECT_README.strip():
+        gh.mutate("update the project README", """mutation($p:ID!,$r:String!){
+            updateProjectV2(input:{projectId:$p, readme:$r}){ projectV2{ id } } }""",
+                  p=project["id"], r=PROJECT_README)
     ctx["project"] = project
     print(f"project {project.get('url')}")
     if project["id"] != "PROJECT":
@@ -444,7 +547,7 @@ def write_issue(gh, ctx, item, existing):
     if r is not None and not (r.get("createIssue") or {}).get("issue"):
         # GitHub answers an over-limit write with an empty payload; the caller
         # pauses, re-reads what exists and resumes, so nothing is duplicated.
-        raise RuntimeError(f"empty response creating {item['id']}")
+        raise Interrupted(f"empty response creating {item['id']}")
     issue = r["createIssue"]["issue"] if r else {"id": f"NEW-{item['id']}", "number": 0}
     rec = {"id": issue["id"], "number": issue["number"], "digest": digest(item),
            "blocked_by": set()}
@@ -465,15 +568,14 @@ def main():
     if not args.dry_run and not (args.banned and args.banned.is_file()):
         ap.error("--banned FILE is required unless --dry-run")
 
-    records, problems = epics.load()
-    if problems:
-        raise SystemExit(f"{len(problems)} malformed task rows; run epics.py")
+    records, deps = plan_graph()
     epic_map, sizes = load_epics(), load_sizes()
-    order, deps = topo_order(records)
+    order = topo_order(records, deps)
     by_id = {r["id"]: r for r in records}
     base = f"https://github.com/{args.repo}"
 
     gh = GitHub(args.repo, args.interval, args.dry_run)
+    login = gh.query("query{ viewer{ login } }")["viewer"]["login"]
     ctx = {}
     phases = ("setup", "issues", "deps") if args.phase == "all" else (args.phase,)
     if "setup" in phases or args.dry_run:
@@ -481,10 +583,16 @@ def main():
     else:
         setup(GitHub(args.repo, 0, True), ctx)  # read-only: fills in the IDs
     lookup(gh, ctx)
-    existing = existing_issues(gh)
+    existing, ignored = existing_issues(gh, login)
     print(f"{len(records)} tasks, {len(epic_map)} epics, "
           f"{sum(len(d) for d in deps.values())} dependency links; "
-          f"{len(existing)} already on GitHub")
+          f"{len(existing)} already on GitHub, opened by {login}; "
+          f"{ignored} marker(s) on other authors' issues ignored")
+    orphans = sorted((v["number"], k) for k, v in existing.items()
+                     if k not in by_id and k not in epic_map)
+    print(f"{len(orphans)} orphan(s), synced issues whose task or epic is no longer "
+          f"in the plan, left open" + (": " if orphans else "")
+          + ", ".join(f"#{n} {k}" for n, k in orphans))
 
     epic_items = [epic_issue(e, base) for e in epic_map.values()]
     if args.banned:
@@ -493,17 +601,20 @@ def main():
                      sizes.get(t), deps[t], numbers, base) for t in order], args.banned)
 
     def resilient(phase_fn):
-        """Run a phase; on an interruption, pause, re-read GitHub and resume."""
+        """Run a phase; on an interruption (a rate limit, a network or server
+        error, or an empty create response), pause, re-read GitHub and resume.
+        Any other error is a bug or a refusal, and fails at once."""
         nonlocal existing
         for attempt in range(30):
             try:
+                if attempt:
+                    existing, _ = existing_issues(gh, login)
                 return phase_fn()
-            except (RuntimeError, KeyError, TypeError) as err:
+            except Interrupted as err:
                 if gh.dry_run:
                     raise
                 print(f"interrupted ({str(err)[:160]}); resuming in 5 minutes", flush=True)
                 time.sleep(300)
-                existing = existing_issues(gh)
         raise SystemExit("gave up after 30 interruptions")
 
     def issues_phase():
