@@ -84,6 +84,15 @@ jobs:
       - name: Pass on a merge group
         if: github.event_name == 'merge_group'
         run: echo "pr-title is required on each member PR's head (RFC-0062 §12.3)"
+      # A changed base does not re-run `pr.yml`, so its `ci-gate` would still stand for the old
+      # base. Fail until a push re-runs it (RFC-0062 §2.5, note 2026-10-22).
+      - name: Fail when the base branch changed
+        if: >-
+          github.event_name == 'pull_request' && github.event.action == 'edited' &&
+          github.event.changes.base
+        run: |
+          echo "::error::the base branch changed; push to the PR so pr.yml runs ci-gate against the new base"
+          exit 1
       - name: Check out the base branch, not the PR
         if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

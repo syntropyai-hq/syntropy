@@ -12,6 +12,7 @@
 //! | `private-vulnerability-reporting.json` | `/private-vulnerability-reporting` | RFC-0062 §13; ADR-0620 decision 4 |
 //! | `actions-permissions.json` | `/actions/permissions` | full-length SHA pins, ADR-0620 decision 4 |
 //! | `actions-selected-actions.json` | `/actions/permissions/selected-actions` | the actions allowed and blocked, ADR-0620 decision 4 |
+//! | `actions-workflow-permissions.json` | `/actions/permissions/workflow` | a read-only default token that cannot approve PRs, for a workflow with no `permissions:` block, RFC-0062 §12.4 |
 //! | `fork-pr-contributor-approval.json` | `/actions/permissions/fork-pr-contributor-approval` | approval for all outside contributors, RFC-0062 §3.3 item 1 |
 //! | `ruleset-*.json` | `/rules/branches/{branch}` | RFC-0062 §2.5, §12.3 and §12.6; ADR-0621 decision 2 |
 //!
@@ -86,6 +87,11 @@ pub const SETTINGS: &[Setting] = &[
         file: "actions-selected-actions.json",
         endpoint: "/actions/permissions/selected-actions",
         required_by: "ADR-0620 decision 4",
+    },
+    Setting {
+        file: "actions-workflow-permissions.json",
+        endpoint: "/actions/permissions/workflow",
+        required_by: "RFC-0062 §12.4",
     },
     Setting {
         file: "fork-pr-contributor-approval.json",

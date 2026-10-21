@@ -181,27 +181,38 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: printf '%s\n' "$NEEDS" | tee "$RUNNER_TEMP/needs.json"
-      # Bootstrap: while the base branch has no `ci-gate` job, which is true only until the PR
-      # that adds it merges, that PR is judged by its own. A base whose `xtask` fails to build
-      # fails here, and never falls back.
-      - name: Find the base branch's ci-gate
-        id: evaluator
+      # The base branch's evaluator decides. `cargo xtask` exits 2 on a usage error, which an
+      # unknown job is; that exit code, not help text, says the base has no `ci-gate` job.
+      # Bootstrap: only #1577, the PR that adds the job, may then be judged by its own evaluator,
+      # once; every other base without the job fails the gate.
+      - name: cargo xtask ci ci-gate, from the base branch
+        id: gate
+        env:
+          NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          jobs="$(cargo xtask ci --list)"
-          if awk '$1 == "ci-gate" { found = 1 } END { exit !found }' <<<"$jobs"; then
-            echo "source=base" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::the base branch has no ci-gate job yet, so this PR's own evaluator judges it"
-            echo "source=pr" >> "$GITHUB_OUTPUT"
+          status=0
+          cargo xtask ci ci-gate --needs "$RUNNER_TEMP/needs.json" || status=$?
+          if [ "$status" -eq 0 ]; then
+            exit 0
           fi
-      - name: Check out this PR, to bootstrap the evaluator
-        if: steps.evaluator.outputs.source == 'pr'
+          if [ "$status" -eq 2 ] && [ "$NUMBER" = 1577 ]; then
+            echo "::warning::the base branch has no ci-gate job yet; #1577, which adds it, is judged by its own"
+            echo "bootstrap=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$status" -eq 2 ]; then
+            echo "::error::the base branch has no ci-gate job, or rejected its options; rebase onto main"
+          fi
+          exit 1
+      - name: Check out #1577, to bootstrap the evaluator
+        if: steps.gate.outputs.bootstrap == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: pr
           persist-credentials: false
-      - name: cargo xtask ci ci-gate
-        working-directory: ${{ steps.evaluator.outputs.source == 'pr' && 'pr' || '.' }}
+      - name: cargo xtask ci ci-gate, from #1577 (bootstrap only)
+        if: steps.gate.outputs.bootstrap == 'true'
+        working-directory: pr
         run: |
           rustup toolchain install --no-self-update
           cargo xtask ci ci-gate --needs "$RUNNER_TEMP/needs.json"

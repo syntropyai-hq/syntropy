@@ -62,6 +62,7 @@ fn the_declared_state_passes_on_a_repository_in_that_state() {
             "private-vulnerability-reporting.json: matches",
             "actions-permissions.json: matches",
             "actions-selected-actions.json: matches",
+            "actions-workflow-permissions.json: matches",
             "fork-pr-contributor-approval.json: matches",
             "ruleset-main-code-owners.json: its rules are in force",
             "ruleset-main.json: its rules are in force",
@@ -85,6 +86,7 @@ fn a_repository_on_githubs_defaults_fails_on_every_setting() {
     let actions = "`actions-permissions.json` (ADR-0620 decision 4)";
     let selected = "`actions-selected-actions.json` (ADR-0620 decision 4)";
     let fork = "`fork-pr-contributor-approval.json` (RFC-0062 §3.3 item 1; ADR-0620 decision 4)";
+    let workflow = "`actions-workflow-permissions.json` (RFC-0062 §12.4)";
     let rules = "(RFC-0062 §2.5, §12.3, §12.6; ADR-0621 decision 2)";
     let expected = [
         format!("{repo}: `allow_merge_commit` is `true`; want `false`"),
@@ -107,6 +109,8 @@ fn a_repository_on_githubs_defaults_fails_on_every_setting() {
         format!("{actions}: `allowed_actions` is `\"all\"`; want `\"selected\"`"),
         format!("{actions}: `sha_pinning_required` is `false`; want `true`"),
         format!("{selected}: no recorded response `actions-selected-actions.json`"),
+        format!("{workflow}: `can_approve_pull_request_reviews` is `true`; want `false`"),
+        format!("{workflow}: `default_workflow_permissions` is `\"write\"`; want `\"read\"`"),
         format!(
             "{fork}: `approval_policy` is `\"first_time_contributors\"`; \
              want `\"all_external_contributors\"`"

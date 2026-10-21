@@ -94,7 +94,7 @@ flowchart LR
 
 Renovate runs as the hosted Renovate app, so dependency scanning uses no Actions minutes. Its PRs then run `pr.yml` like any other PR.
 
-*Note, 2026-10-22 (QUAL-E1-T06).* `dco` and `pr-title` run in `pr-meta.yml`, a workflow of their own, on `pull_request` (`opened`, `synchronize`, `reopened`, `edited`, `labeled` and `unlabeled`) and `merge_group`, in the concurrency group `pr-meta-<number>`. `pr-title` has to run again on label and edit events (§12.3). In `pr.yml`, such a run would also post a `ci-gate` with every hosted job skipped, and a skipped job passes (§2.5), so a label event could replace a failing gate with a passing one. For the same reason both jobs check in full on every PR event. Both build `xtask` without a cache: code the PR runs in any other job can write a cache entry under the PR's ref, and a restored build could hold an `xtask` built from the PR. `pr.yml` runs on `opened`, `synchronize` and `reopened`.
+*Note, 2026-10-22 (QUAL-E1-T06).* `dco` and `pr-title` run in `pr-meta.yml`, a workflow of their own, on `pull_request` (`opened`, `synchronize`, `reopened`, `edited`, `labeled` and `unlabeled`) and `merge_group`, in the concurrency group `pr-meta-<number>`. `pr-title` has to run again on label and edit events (§12.3). In `pr.yml`, such a run would also post a `ci-gate` with every hosted job skipped, and a skipped job passes (§2.5), so a label event could replace a failing gate with a passing one. For the same reason both jobs check in full on every PR event. Both build `xtask` without a cache: code the PR runs in any other job can write a cache entry under the PR's ref, and a restored build could hold an `xtask` built from the PR. `pr.yml` runs on `opened`, `synchronize` and `reopened`. A changed base does not re-run it, so `pr-title` fails on the `edited` event that changes the base, until a push re-runs `pr.yml` against it. A later event other than a push re-runs `pr-title` and clears that failure while `ci-gate` still stands for the old base. That gap closes with the merge queue (M2), which runs `ci-gate` on each merged result.
 
 #### 2.2 The affected-job set
 
@@ -103,7 +103,7 @@ The first job of `pr.yml`, `changes`, runs `cargo xtask ci changes --base <merge
 *Note, 2026-10-22 (QUAL-E1-T06).* `ci-gate` and `changes` judge a PR from the base branch, as `dco` and `pr-title` do (§12.3). Each checks out the base commit (`pull_request.base.sha`, or `merge_group.base_sha`), builds that `xtask` with no cache, and runs its command there. `pr.yml`'s own jobs still build and test the PR. Otherwise a PR could edit the evaluator to pass whatever its jobs did, or make `changes` list nothing, so that every job skips and the gate passes.
 - `ci-gate` does this from QUAL-E1-T06. `changes` does it from QUAL-E1-T07, which applies the base's `ci/jobs.toml` and rules engine to the PR's diff.
 - A change to either evaluator takes effect when it merges. The PR that makes the change is judged by the base's version.
-- While the base has no `ci-gate` job, which is true only until the PR that adds it merges, that PR's own evaluator judges it.
+- `pr.yml` tells "the base has no `ci-gate` job" from "the gate failed" by the exit code of the base's `cargo xtask`: 2 for a usage error, which an unknown job is. Only the PR that adds the job, #1577, may then be judged by its own evaluator, once. Every other base without the job fails the gate and must rebase.
 - The workflow file itself comes from the PR's merge ref. A PR that edits `pr.yml` can still choose its own evaluator, which is why a change to `.github/` needs a maintainer's approval (§12.3).
 
 ```toml
@@ -718,6 +718,7 @@ ADR-0624 sets the rules; this section places them in the pipeline.
 - secret scanning with push protection, and private vulnerability reporting (§13);
 - the Actions policy: full-length SHA pins, and only actions owned by GitHub or by the organisation, so every other action is blocked until a reviewed change to `actions-selected-actions.json` allows it;
 - workflow approval for all outside contributors (§3.3 item 1);
+- a read-only default token that cannot approve PRs, for a workflow without a `permissions:` block (§12.4);
 - a `main` ruleset with no bypass actor: no deletion, no force-push, changes only through a squash-merged PR, and `ci-gate`, `dco` and `pr-title` required from the GitHub Actions app, so a commit status posted by any other account does not count;
 - a second `main` ruleset requiring a code owner's review, which repository admins can bypass when they merge a PR, because GitHub does not let an author approve their own PR;
 - a `release/*` ruleset with no deletion and no force-push.

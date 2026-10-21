@@ -115,6 +115,8 @@ send PUT "repos/$repo/actions/permissions" "$here/actions-permissions.json"
 if [ "$(jq -r '.allowed_actions' "$here/actions-permissions.json")" = selected ]; then
   send PUT "repos/$repo/actions/permissions/selected-actions" "$here/actions-selected-actions.json"
 fi
+# The default token for a workflow with no `permissions:` block: read-only, unable to approve.
+send PUT "repos/$repo/actions/permissions/workflow" "$here/actions-workflow-permissions.json"
 send PUT "repos/$repo/actions/permissions/fork-pr-contributor-approval" \
   "$here/fork-pr-contributor-approval.json"
 
