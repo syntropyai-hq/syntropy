@@ -38,6 +38,12 @@ pub struct LinuxHost {
     /// The `NodeInfo` facts E1 owns.
     pub node: NodeFacts,
     /// One CPU device per NUMA domain with online CPUs, in ordinal order.
+    ///
+    /// The `id` and `local_tiers` ordinals are provisional. They number a node that has
+    /// only these CPU devices and host tiers. RFC-0001 §5.1 numbers discrete GPUs first, so on
+    /// a GPU host the final ordinals differ. PLC-E1-T09 reassigns them from
+    /// [`LinuxHost::candidates`] plus the E2–E5 devices. Callers must not use these IDs
+    /// directly.
     pub cpus: Vec<DeviceInfo>,
     /// One record per NUMA domain with memory, in domain order: the raw inputs of that
     /// domain's `HostPinned` and `HostPageable` tiers.
@@ -52,7 +58,7 @@ pub struct LinuxHost {
 
 /// The `NodeInfo` fields (RFC-0001 §5.2) whose values E1 reads. The record itself, with
 /// identity, build, protocol, labels, roles and install fields owned by other RFCs, is
-/// assembled by the daemon.
+/// assembled by PLC-E1-T09; its field types have no owner yet (#1524 item 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeFacts {
     /// `NodeInfo::arch`.
@@ -136,8 +142,8 @@ pub fn enumerate(fs: &dyn HostFs, isa: IsaSource, node: NodeId) -> Result<LinuxH
             features: cpu.isa.features,
             local_tiers,
             numa: Some(numa),
-            // Hashing needs BLAKE3, which this crate does not link yet; the profile-key step
-            // computes it. The all-zero default marks it unset.
+            // Hashing needs BLAKE3, which this crate does not link. The all-zero default marks
+            // it unset; no task owns computing it yet (#1524 item 2).
             fingerprint: Blake3::default(),
             ext: DeviceInfoExt {
                 cpu: Some(topo),

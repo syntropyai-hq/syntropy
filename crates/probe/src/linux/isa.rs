@@ -128,6 +128,14 @@ const X86_V4: [Feature; 5] = [
     Feature::Avx512vl,
 ];
 
+/// RFC-0040 §7.3's `X86V4` requirement: what `DeviceFeatures::AVX512` means.
+const AVX512_KERNELS: [Feature; 4] = [
+    Feature::Avx512f,
+    Feature::Avx512bw,
+    Feature::Avx512vl,
+    Feature::Avx512dq,
+];
+
 /// The ISA facts E1 records for a CPU device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Isa {
@@ -177,10 +185,17 @@ impl Detector<'_> {
                     IsaFlags::AVX2,
                     DeviceFeatures::AVX2,
                 );
+                // `IsaFlags` records each AVX-512 extension the CPU has. `DeviceFeatures::AVX512`
+                // is the kernel gate, so it follows RFC-0040 §7.3's `X86V4` requirement
+                // (AVX-512 F, BW, VL and DQ together). VNNI, BF16 and FP16 are "used when
+                // present" on top of `X86V4`, so their feature bits need the gate too.
+                let avx512 = AVX512_KERNELS.iter().all(|f| self.has(*f));
+                let gated = |f: Feature| avx512 && self.has(f);
+                set(avx512, IsaFlags::empty(), DeviceFeatures::AVX512);
                 set(
                     self.has(Feature::Avx512f),
                     IsaFlags::AVX512F,
-                    DeviceFeatures::AVX512,
+                    DeviceFeatures::empty(),
                 );
                 set(
                     self.has(Feature::Avx512bw),
@@ -195,16 +210,31 @@ impl Detector<'_> {
                 set(
                     self.has(Feature::Avx512Vnni),
                     IsaFlags::AVX512VNNI,
+                    DeviceFeatures::empty(),
+                );
+                set(
+                    gated(Feature::Avx512Vnni),
+                    IsaFlags::empty(),
                     DeviceFeatures::AVX512_VNNI,
                 );
                 set(
                     self.has(Feature::Avx512Bf16),
                     IsaFlags::AVX512BF16,
+                    DeviceFeatures::empty(),
+                );
+                set(
+                    gated(Feature::Avx512Bf16),
+                    IsaFlags::empty(),
                     DeviceFeatures::AVX512_BF16,
                 );
                 set(
                     self.has(Feature::Avx512Fp16),
                     IsaFlags::AVX512FP16,
+                    DeviceFeatures::empty(),
+                );
+                set(
+                    gated(Feature::Avx512Fp16),
+                    IsaFlags::empty(),
                     DeviceFeatures::AVX512_FP16,
                 );
                 set(
@@ -391,6 +421,30 @@ mod tests {
             isa(CpuArch::X86_64, &short).unwrap().level,
             IsaLevel::X86_64V2
         );
+    }
+
+    #[test]
+    fn avx512_feature_needs_f_bw_vl_dq() {
+        let ext = "avx512_vnni avx512_bf16 avx512_fp16";
+        let all = format!("{V2} avx512f avx512bw avx512vl avx512dq {ext}");
+        let i = isa(CpuArch::X86_64, &all).unwrap();
+        assert_eq!(
+            i.features,
+            DeviceFeatures::AVX512
+                | DeviceFeatures::AVX512_VNNI
+                | DeviceFeatures::AVX512_BF16
+                | DeviceFeatures::AVX512_FP16
+        );
+        // Each of F, BW, VL and DQ missing in turn: no AVX-512 feature bits at all, while
+        // `IsaFlags` still records what the CPU has.
+        for drop in ["avx512f ", "avx512bw ", "avx512vl ", "avx512dq "] {
+            let i = isa(CpuArch::X86_64, &all.replace(drop, "")).unwrap();
+            assert_eq!(i.features, DeviceFeatures::empty(), "without {drop}");
+            assert!(
+                i.flags
+                    .contains(IsaFlags::AVX512VNNI | IsaFlags::AVX512FP16)
+            );
+        }
     }
 
     #[test]

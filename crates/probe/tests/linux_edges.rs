@@ -303,6 +303,18 @@ fn memoryless_node_gets_a_cpu_device_but_no_host_tiers() {
 }
 
 #[test]
+fn offline_cpu_in_a_node_cpulist_is_not_counted() {
+    // CPU 31 (socket 1, the sibling of CPU 15) is offline but still listed in node1's cpulist.
+    let mut fs = MemFs::fixture("dual-socket");
+    fs.set("sys/devices/system/cpu/online", "0-30");
+    let host = fs.run().unwrap();
+    let t0 = host.cpus[0].ext.cpu.clone().unwrap();
+    let t1 = host.cpus[1].ext.cpu.clone().unwrap();
+    assert_eq!((t0.logical_cpus, t0.physical_cores), (16, 8));
+    assert_eq!((t1.logical_cpus, t1.physical_cores), (15, 8));
+}
+
+#[test]
 fn thread_siblings_list_is_the_fallback() {
     let mut fs = MemFs::fixture("desktop");
     for c in 0..16 {
@@ -415,6 +427,29 @@ fn laptop_on_mains() {
 }
 
 #[test]
+fn two_discharging_batteries_report_the_lower_charge() {
+    let mut fs = MemFs::fixture("desktop");
+    laptop(&mut fs, "0", "Discharging");
+    fs.set("sys/class/power_supply/BAT1/type", "Battery")
+        .set("sys/class/power_supply/BAT1/status", "Discharging")
+        .set("sys/class/power_supply/BAT1/capacity", "41");
+    assert_eq!(
+        fs.run().unwrap().node.power,
+        PowerSource::Battery { percent: 41 }
+    );
+}
+
+#[test]
+fn mains_online_wins_over_a_discharging_battery() {
+    // A charger too weak for the load: the adapter is online while the battery drains.
+    let mut fs = MemFs::fixture("desktop");
+    laptop(&mut fs, "1", "Discharging");
+    let host = fs.run().unwrap();
+    assert_eq!(host.node.power, PowerSource::Mains);
+    assert!(host.node.battery_present);
+}
+
+#[test]
 fn malformed_battery_capacity_is_an_error() {
     let mut fs = MemFs::fixture("desktop");
     laptop(&mut fs, "0", "Discharging");
@@ -485,6 +520,31 @@ fn thp_never_is_no_large_pages() {
 #[cfg(target_os = "linux")]
 #[test]
 fn live_host_enumerates_without_privilege() {
+    // The criterion is about an unprivileged user, so the test refuses to pass as root: a
+    // container job runs as root by default and would give false evidence.
+    let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
+    let field = |k: &str| {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(k))
+            .unwrap_or_else(|| panic!("no {k} line in /proc/self/status"))
+            .trim()
+            .to_owned()
+    };
+    let uid = field("Uid:");
+    // Real, effective, saved, filesystem.
+    let euid: u32 = uid
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("Uid line {uid:?} has no effective UID"));
+    let cap_eff = field("CapEff:");
+    eprintln!("live enumeration as euid {euid}, CapEff {cap_eff}");
+    assert_ne!(
+        euid, 0,
+        "this test must run as an unprivileged user; it is running as root"
+    );
+
     let host = syntropy_probe::linux::enumerate_live(NODE)
         .unwrap_or_else(|e| panic!("live enumeration failed: {e}"));
     assert!(!host.cpus.is_empty());
