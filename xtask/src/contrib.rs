@@ -1,0 +1,450 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! The contribution checks of RFC-0062 §8.3 and §12.3, over recorded GitHub REST payloads.
+//!
+//! - `dco`: every commit carries a `Signed-off-by` that matches its author (ADR-0018 §2). It is
+//!   one rule for every commit: nothing here looks at who or what wrote the commit.
+//! - `pr-title`: the title is `type(scope): subject` or `type: subject`, with an allowed type and,
+//!   when there is one, an allowed scope. The acceptance criteria use `feat!: x`, so the scope is
+//!   optional (as in conventional commits), but a scope that is given must be known. A breaking
+//!   marker, `!` in the title or a `BREAKING CHANGE:` footer in the PR body or a commit message,
+//!   needs the `semver-major-approved` label, and the label counts only when a maintainer applied
+//!   it. An agent identity, an App or any other account applying it does not count.
+//!
+//! Inputs are the payloads the REST API returns, saved to files:
+//! - the PR: the `pull_request` event payload (`$GITHUB_EVENT_PATH`), or `GET /pulls/{n}`;
+//! - its commits: `GET /pulls/{n}/commits`;
+//! - its label history: `GET /issues/{n}/events`.
+//!
+//! A file may hold several JSON arrays one after another, as `gh api --paginate` prints pages,
+//! and their items are read as one list.
+
+use std::path::Path;
+
+use serde_json::Value;
+
+use crate::codeowners::ROSTER;
+use crate::roster::Roster;
+use crate::run::Context;
+
+/// The commit types RFC-0062 §8.3 allows.
+pub const TYPES: &[&str] = &[
+    "feat", "fix", "perf", "refactor", "docs", "test", "build", "ci", "chore", "revert",
+];
+
+/// Area scopes: the domains of the code (AGENTS.md, "Writing style").
+pub const AREAS: &[&str] = &[
+    "placement",
+    "tiers",
+    "distributed",
+    "compute",
+    "product",
+    "quality",
+];
+
+/// Scopes that are neither a crate nor an area: the design documents, dependency updates and
+/// release PRs.
+pub const OTHER_SCOPES: &[&str] = &["plan", "deps", "release"];
+
+/// The label a breaking marker needs (RFC-0062 §8.3).
+pub const BREAKING_LABEL: &str = "semver-major-approved";
+
+/// A commit as `GET /pulls/{n}/commits` returns it, reduced to what `dco` reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Commit {
+    pub sha: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub message: String,
+}
+
+/// A pull request, from an event payload or `GET /pulls/{n}`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PullRequest {
+    pub title: String,
+    pub body: String,
+    pub labels: Vec<String>,
+}
+
+/// A `labeled` or `unlabeled` issue event.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LabelEvent {
+    pub applied: bool,
+    pub label: String,
+    pub actor: String,
+    /// The event was performed through a GitHub App, so no person applied it directly.
+    pub via_app: bool,
+    pub created_at: String,
+}
+
+// ---- dco ----
+
+/// Every commit's DCO problem, one line each. No commits at all is a problem too: a pull request
+/// always has one, so an empty list means the input is wrong.
+pub fn dco(commits: &[Commit]) -> Vec<String> {
+    if commits.is_empty() {
+        return vec!["no commits to check; the commits file is empty".into()];
+    }
+    let mut problems = Vec::new();
+    for commit in commits {
+        let short = &commit.sha[..commit.sha.len().min(12)];
+        let author = format!("{} <{}>", commit.author_name, commit.author_email);
+        let sign_offs = sign_offs(&commit.message);
+        if sign_offs.is_empty() {
+            problems.push(format!(
+                "commit {short} by {author} has no `Signed-off-by:` line"
+            ));
+        } else if !sign_offs.iter().any(|(name, email)| {
+            name.trim().eq_ignore_ascii_case(commit.author_name.trim())
+                && email
+                    .trim()
+                    .eq_ignore_ascii_case(commit.author_email.trim())
+        }) {
+            let found: Vec<String> = sign_offs
+                .iter()
+                .map(|(name, email)| format!("{name} <{email}>"))
+                .collect();
+            problems.push(format!(
+                "commit {short} is signed off by {}, which does not match its author {author}",
+                found.join(", ")
+            ));
+        }
+    }
+    problems
+}
+
+/// The `Signed-off-by: Name <email>` lines of a commit message, as (name, email).
+fn sign_offs(message: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for line in message.lines() {
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("signed-off-by") {
+            continue;
+        }
+        let value = value.trim();
+        if let Some((name, rest)) = value.rsplit_once('<')
+            && let Some(email) = rest.strip_suffix('>')
+            && !name.trim().is_empty()
+            && !email.trim().is_empty()
+        {
+            found.push((name.trim().to_owned(), email.trim().to_owned()));
+        }
+    }
+    found
+}
+
+// ---- pr-title ----
+
+/// The parts of a valid title.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Title<'t> {
+    pub kind: &'t str,
+    pub scope: Option<&'t str>,
+    pub breaking: bool,
+}
+
+/// Parses `type(scope)!: subject`, where `(scope)` and `!` are optional, and checks the type and
+/// the scope.
+pub fn parse_title<'t>(title: &'t str, scopes: &[String]) -> Result<Title<'t>, String> {
+    const FORM: &str = "the PR title must be `type(scope): subject` or `type: subject`";
+    let Some((head, subject)) = title.split_once(": ") else {
+        return Err(format!("{FORM}; `{title}` has no `: ` after the type"));
+    };
+    if subject.trim().is_empty() || subject.starts_with(char::is_whitespace) {
+        return Err(format!(
+            "{FORM}; the subject after `: ` is empty or starts with a space"
+        ));
+    }
+    if subject.ends_with(char::is_whitespace) {
+        return Err(format!("{FORM}; the subject ends with a space"));
+    }
+    let (head, breaking) = match head.strip_suffix('!') {
+        Some(head) => (head, true),
+        None => (head, false),
+    };
+    let (kind, scope) = match head.split_once('(') {
+        None => (head, None),
+        Some((kind, rest)) => match rest.strip_suffix(')') {
+            Some(scope) => (kind, Some(scope)),
+            None => return Err(format!("{FORM}; `{head}` does not close its `(scope)`")),
+        },
+    };
+    if !TYPES.contains(&kind) {
+        return Err(format!(
+            "`{kind}` is not an allowed type; allowed types: {}",
+            TYPES.join(", ")
+        ));
+    }
+    if let Some(scope) = scope
+        && !scopes.iter().any(|s| s == scope)
+    {
+        return Err(format!(
+            "`{scope}` is not an allowed scope; allowed scopes: {}",
+            scopes.join(", ")
+        ));
+    }
+    Ok(Title {
+        kind,
+        scope,
+        breaking,
+    })
+}
+
+/// A `BREAKING CHANGE:` or `BREAKING-CHANGE:` footer line, as conventional commits define them.
+pub fn has_breaking_footer(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.starts_with("BREAKING CHANGE:") || line.starts_with("BREAKING-CHANGE:"))
+}
+
+/// Whether `label` is on the PR because a maintainer applied it. `Ok` names the maintainer;
+/// `Err` says why the label does not count. Events are replayed in time order: the label's state
+/// is set by its last `labeled` or `unlabeled` event.
+pub fn applied_by_maintainer(
+    label: &str,
+    current: &[String],
+    events: &[LabelEvent],
+    roster: &Roster,
+) -> Result<String, String> {
+    if !current.iter().any(|l| l == label) {
+        return Err(format!("the PR does not carry `{label}`"));
+    }
+    let mut ordered: Vec<&LabelEvent> = events.iter().filter(|e| e.label == label).collect();
+    ordered.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    match ordered.last() {
+        None => Err(format!(
+            "the label history has no event applying `{label}`, so who applied it is unknown"
+        )),
+        Some(last) if !last.applied => Err(format!(
+            "the label history ends with `{label}` removed by `{}`",
+            last.actor
+        )),
+        Some(last) if last.via_app => Err(format!(
+            "`{label}` was applied by `{}` through a GitHub App; only a maintainer's own account counts",
+            last.actor
+        )),
+        Some(last) if roster.is_agent(&last.actor) => Err(format!(
+            "`{label}` was applied by `{}`, an agent identity; only a maintainer counts",
+            last.actor
+        )),
+        Some(last) if !roster.is_maintainer(&last.actor) => Err(format!(
+            "`{label}` was applied by `{}`, who is not a maintainer in {ROSTER}",
+            last.actor
+        )),
+        Some(last) => Ok(last.actor.clone()),
+    }
+}
+
+/// Every `pr-title` problem.
+pub fn pr_title(
+    pr: &PullRequest,
+    commits: &[Commit],
+    events: &[LabelEvent],
+    roster: &Roster,
+    scopes: &[String],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let title_breaking = match parse_title(&pr.title, scopes) {
+        Ok(title) => title.breaking,
+        Err(problem) => {
+            problems.push(problem);
+            // Still look for a breaking marker, so a malformed title cannot hide one.
+            pr.title
+                .split_once(':')
+                .is_some_and(|(head, _)| head.ends_with('!'))
+        }
+    };
+    let mut markers = Vec::new();
+    if title_breaking {
+        markers.push("`!` in the title".to_owned());
+    }
+    if has_breaking_footer(&pr.body) {
+        markers.push("a `BREAKING CHANGE:` footer in the PR body".to_owned());
+    }
+    for commit in commits {
+        if has_breaking_footer(&commit.message) {
+            let short = &commit.sha[..commit.sha.len().min(12)];
+            markers.push(format!("a `BREAKING CHANGE:` footer in commit {short}"));
+        }
+    }
+    if !markers.is_empty()
+        && let Err(why) = applied_by_maintainer(BREAKING_LABEL, &pr.labels, events, roster)
+    {
+        problems.push(format!(
+            "the PR is marked breaking ({}), which needs `{BREAKING_LABEL}` applied by a maintainer: {why}",
+            markers.join("; ")
+        ));
+    }
+    problems
+}
+
+/// The allowed scopes: every crate under `crates/` and `xtask`, the areas, and the others.
+pub fn scopes(root: &Path) -> Result<Vec<String>, String> {
+    let crates = root.join("crates");
+    let entries = std::fs::read_dir(&crates).map_err(|e| format!("{}: {e}", crates.display()))?;
+    let mut scopes = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", crates.display()))?;
+        if entry.path().join("Cargo.toml").is_file()
+            && let Some(name) = entry.file_name().to_str()
+        {
+            scopes.push(name.to_owned());
+        }
+    }
+    scopes.sort();
+    scopes.push("xtask".into());
+    scopes.extend(AREAS.iter().chain(OTHER_SCOPES).map(|s| (*s).to_owned()));
+    Ok(scopes)
+}
+
+// ---- reading payloads ----
+
+/// The items of every JSON array in `text`, in order. A file may hold several arrays, one per
+/// page, as `gh api --paginate` prints them.
+fn array_items(text: &str, what: &str) -> Result<Vec<Value>, String> {
+    let mut items = Vec::new();
+    for value in serde_json::Deserializer::from_str(text).into_iter::<Value>() {
+        match value.map_err(|e| format!("{what}: not JSON: {e}"))? {
+            Value::Array(page) => items.extend(page),
+            other => {
+                return Err(format!(
+                    "{what}: expected a JSON array, got {}",
+                    kind_of(&other)
+                ));
+            }
+        }
+    }
+    Ok(items)
+}
+
+fn kind_of(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+/// The string at `path` in `value`, such as `commit.author.name`.
+fn string_at<'v>(value: &'v Value, path: &str, what: &str) -> Result<&'v str, String> {
+    let mut at = value;
+    for key in path.split('.') {
+        at = at
+            .get(key)
+            .ok_or_else(|| format!("{what}: `{path}` is missing"))?;
+    }
+    at.as_str()
+        .ok_or_else(|| format!("{what}: `{path}` is {}, not a string", kind_of(at)))
+}
+
+pub fn parse_commits(text: &str) -> Result<Vec<Commit>, String> {
+    array_items(text, "commits")?
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let what = format!("commits[{i}]");
+            Ok(Commit {
+                sha: string_at(item, "sha", &what)?.to_owned(),
+                author_name: string_at(item, "commit.author.name", &what)?.to_owned(),
+                author_email: string_at(item, "commit.author.email", &what)?.to_owned(),
+                message: string_at(item, "commit.message", &what)?.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// A `pull_request` event payload, or the PR object itself.
+pub fn parse_pull_request(text: &str) -> Result<PullRequest, String> {
+    let value: Value = serde_json::from_str(text).map_err(|e| format!("event: not JSON: {e}"))?;
+    let pr = value.get("pull_request").unwrap_or(&value);
+    let labels = pr
+        .get("labels")
+        .and_then(Value::as_array)
+        .ok_or("event: `labels` is missing or not an array")?
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            string_at(label, "name", &format!("event: labels[{i}]")).map(str::to_owned)
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(PullRequest {
+        title: string_at(pr, "title", "event")?.to_owned(),
+        // GitHub sends `null` for an empty body.
+        body: pr
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+        labels,
+    })
+}
+
+/// The `labeled` and `unlabeled` events of `GET /issues/{n}/events`; other events are skipped.
+pub fn parse_label_events(text: &str) -> Result<Vec<LabelEvent>, String> {
+    let mut events = Vec::new();
+    for (i, item) in array_items(text, "label events")?.iter().enumerate() {
+        let what = format!("label events[{i}]");
+        let applied = match string_at(item, "event", &what)? {
+            "labeled" => true,
+            "unlabeled" => false,
+            _ => continue,
+        };
+        events.push(LabelEvent {
+            applied,
+            label: string_at(item, "label.name", &what)?.to_owned(),
+            actor: string_at(item, "actor.login", &what)?.to_owned(),
+            via_app: item
+                .get("performed_via_github_app")
+                .is_some_and(|app| !app.is_null()),
+            created_at: string_at(item, "created_at", &what)?.to_owned(),
+        });
+    }
+    Ok(events)
+}
+
+// ---- the job steps ----
+
+fn read_arg(context: &Context, option: &str) -> Result<String, String> {
+    let path = context
+        .args
+        .get(option)
+        .ok_or_else(|| format!("`{option}` is required"))?;
+    std::fs::read_to_string(path).map_err(|e| format!("{option} {path}: {e}"))
+}
+
+fn report(problems: Vec<String>) -> Result<(), String> {
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
+/// `cargo xtask ci dco --commits <file>`.
+pub fn dco_step(context: &Context) -> Result<(), String> {
+    let commits = parse_commits(&read_arg(context, "--commits")?)?;
+    report(dco(&commits))
+}
+
+/// `cargo xtask ci pr-title --event <file> --commits <file> --label-events <file>
+/// [--roster <file>]`. The roster defaults to the workspace's; CI can pass the base branch's.
+pub fn pr_title_step(context: &Context) -> Result<(), String> {
+    let pr = parse_pull_request(&read_arg(context, "--event")?)?;
+    let commits = parse_commits(&read_arg(context, "--commits")?)?;
+    let events = parse_label_events(&read_arg(context, "--label-events")?)?;
+    let roster_text = match context.args.get("--roster") {
+        Some(_) => read_arg(context, "--roster")?,
+        None => std::fs::read_to_string(context.root.join(ROSTER))
+            .map_err(|e| format!("{ROSTER}: {e}"))?,
+    };
+    let roster = Roster::parse(&roster_text).map_err(|e| format!("roster: {e}"))?;
+    let scopes = scopes(&context.root)?;
+    report(pr_title(&pr, &commits, &events, &roster, &scopes))
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,42 @@
+{
+  "action": "labeled",
+  "number": 7,
+  "pull_request": {
+    "number": 7,
+    "state": "open",
+    "title": "feat!: x",
+    "body": "What this changes.\n",
+    "user": {
+      "login": "carol",
+      "id": 58886888,
+      "type": "User",
+      "site_admin": false
+    },
+    "labels": [
+      {
+        "id": 1,
+        "name": "semver-major-approved",
+        "color": "b60205",
+        "default": false
+      }
+    ],
+    "head": {
+      "ref": "feature",
+      "sha": "ffffffffffffffffffffffffffffffffffffffff"
+    },
+    "base": {
+      "ref": "main",
+      "sha": "0000000000000000000000000000000000000000"
+    },
+    "draft": false
+  },
+  "repository": {
+    "full_name": "example/project"
+  },
+  "sender": {
+    "login": "carol",
+    "id": 58886888,
+    "type": "User",
+    "site_admin": false
+  }
+}
