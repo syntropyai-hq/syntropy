@@ -4,7 +4,7 @@
 - Area: distributed runtime
 - Depends on: RFC-0001 (§2.3, §3.3, §5.4, §5.8, §5.10, §6, §7, §8), RFC-0010, RFC-0011, RFC-0012, RFC-0022, RFC-0023, RFC-0030, RFC-0031, RFC-0033, RFC-0040, RFC-0042, RFC-0043, RFC-0060, ADR-0600, ADR-0006, ADR-0008, ADR-0009, ADR-0010, ADR-0017, ADR-0019, ADR-0304, ADR-0305, ADR-0306, ADR-0310
 - Date: 2026-10-19
-- Revised: 2026-10-22 (§5.3: the algorithm table's α is the size-independent per-message cost; §5.5: the intra-node cost)
+- Revised: 2026-10-22 (§5.3: the algorithm table's α is the size-independent per-message cost; §5.5: the intra-node cost, for N members through host memory)
 
 ## Summary
 
@@ -422,7 +422,7 @@ Messages per token are at most 2 × (owners touched) per MoE layer. That is 2 pe
 - **P2P is trusted only after a verified test copy in each direction** at `Warming` (ADR-0006 item 5). A pair that fails the test reduces through pinned host memory instead, and its cost is reported as `Drift` if it exceeds the plan.
 - One dispatcher thread per GPU (RFC-0001 §8.2). The stage's primary dispatcher authors step descriptors in process. No network frames are involved.
 - RFC-0012 owns the step-program integration.
-- *Note, 2026-10-22 (DIST-E13-T12), an addition for the maintainers to confirm:* the cost of an intra-node all-reduce uses §5.3's `OneShot` and `Ring` formulas, with the device pair's measured α and β over the provider's `CollectiveOps` on a verified peer-to-peer link. A pair that reduces through pinned host memory copies each partial twice, so S/β becomes `S/β_d2h + S/β_h2d`. `syntropy-solver`'s `collective` module prices both paths, and PLC-E4-T09's `IntraTp` nodes use it.
+- *Note, 2026-10-22 (DIST-E13-T12), an addition for the maintainers to confirm:* the cost of an intra-node all-reduce uses §5.3's `OneShot` and `Ring` formulas, with the device pair's measured α and β over the provider's `CollectiveOps` on a verified peer-to-peer link. Devices that reduce through pinned host memory follow §5.3's synchronisation path, where each member's reduction kernel reads all N slots. Each of N members copies its own partial to the host once, then reads the other N−1 from there over its own host link. So `OneShot` costs `α + S/β_d2h + (N−1)·S/β_h2d`, whatever the fabric, and each `Ring` step's S/N slice costs `S/(N·β_d2h) + S/(N·β_h2d)`. For a pair (N = 2), both reduce to S/β becoming `S/β_d2h + S/β_h2d`. The plan does not say whether a host-side sum is ever meant instead. That would cost `α + S/β_d2h + S/β_h2d` plus the sum's time, so it is left for the maintainers. `syntropy-solver`'s `collective` module prices both paths, and PLC-E4-T09's `IntraTp` nodes use it.
 
 #### 5.6 Bring-up and failure inside an island
 
