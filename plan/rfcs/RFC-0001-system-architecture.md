@@ -1564,6 +1564,7 @@ pub enum ErrorClass {
 | Policy objects (`Objective`, `ExactnessPolicy`, `ResourcePolicy`, `ResourceOverlay`, `InstancePolicy`) | core | 0054 | 0011, 0012, 0042 |
 | `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore`, `Outbox` | core | 0060 | 0030, 0032, 0033 (the protocol cores) |
 | `ConformanceManifest` and its certificates | core | 0060 | 0040 (`OpCert` selection), 0011 (`WireCert`, `PathCert`), 0042 |
+| `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId`, `LogitTap`, `TapRow`, `TapValues` | core | 0060 | 0012 (tail semantics), 0031 (wire layout), 0050 (parity endpoint) |
 | `TelemetryRecord`, `StepRecord`, `LogRecord`, `CostTerm` | obs | 0053 | 0012, 0011, 0061 |
 | `Figure<T>` | api | 0051 | 0050 |
 
@@ -2731,3 +2732,11 @@ COMP-E1-T05 binds `BufferView` in `kernels`' `OpArgs::weights`. RFC-0020 §3 had
 | Change | Sections touched | Reason |
 |---|---|---|
 | rule 8 gains one module-scoped exception: `testkit::guards` holds the single `unsafe impl GlobalAlloc`, which delegates to `std::alloc::System`, and `testkit` moves from `forbid(unsafe_code)` to `deny(unsafe_code)` with one `allow` on that impl | §4.2 rule 8 | a `#[global_allocator]` must implement `GlobalAlloc`, which is an `unsafe` trait, and RFC-0060 §3.5 places `CountingAlloc` in `testkit::guards`. The maintainers chose this over a new allocator crate or a third-party allocator (QUAL-E3-T25, issue #1530) |
+
+### 18.14 Parity tap types in `core` (2026-10-22)
+
+RFC-0060 §5.5 (amendment A4) defines the teacher-forced tap types that §5.8's `SequenceOpen::parity` and `TokenEntry::tap` hold. QUAL-E5-T19 builds them in `core`.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId`, `LogitTap`, `TapRow` and `TapValues` gain an ownership row: `core`, owned by RFC-0060 | §5.13; RFC-0060 §5.5 (dated note) | the tail in `exec`, the parity endpoint in `api` and the driver build against one definition, and rule 3 keeps `exec` off `net`; §5.8's `TokenEntry::tap: Option<LogitTap>` is unchanged, because `LogitTap` is the per-entry block of RFC-0031 §6.5 (a plan correction recorded in RFC-0060 §5.5 and RFC-0050 §13.6) |
