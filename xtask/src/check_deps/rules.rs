@@ -294,7 +294,8 @@ fn rule_5(graph: &Graph) -> Vec<Finding> {
 /// Rule 6: each external system is reached by one workspace crate. A member other than the
 /// system's own crate must not depend on one of its bindings, directly or through other external
 /// packages, nor declare its native library with `links`. Reaching a binding through the
-/// system's own crate is the intended path, so the search does not enter members.
+/// system's own crate is the intended path, so the search does not enter members. A
+/// `direct_only` system checks only each member's own normal and build dependencies.
 fn rule_6(graph: &Graph) -> Vec<Finding> {
     let mut findings = Vec::new();
     for system in policy::SYSTEMS {
@@ -319,6 +320,10 @@ fn rule_6(graph: &Graph) -> Vec<Finding> {
                     ),
                 ));
             }
+            if system.direct_only {
+                findings.extend(direct_bindings(graph, system, start));
+                continue;
+            }
             let hits = graph.search(
                 start,
                 |_: &Edge| true,
@@ -341,6 +346,36 @@ fn rule_6(graph: &Graph) -> Vec<Finding> {
         }
     }
     findings
+}
+
+/// Rule 6 for a `direct_only` system: the member's own normal and build dependencies on one of
+/// its bindings. A dev-dependency builds no artefact, so it is allowed, as rule 1 allows it.
+fn direct_bindings(graph: &Graph, system: &policy::System, start: usize) -> Vec<Finding> {
+    let name = graph.short(start);
+    graph
+        .edges(start)
+        .iter()
+        .filter(|edge| edge.kinds.production())
+        .filter(|edge| {
+            let package = graph.package(edge.to);
+            !package.member && binds(system, &package.name, package.links.as_deref())
+        })
+        .map(|edge| {
+            let mut kinds = edge.kinds;
+            kinds.dev = false; // a dev edge alongside is allowed
+            Finding::new(
+                Rule::Numbered(6),
+                format!(
+                    "`{name}` has a {} dependency on `{}`, a binding of {}; only `{}` depends on \
+                     it directly",
+                    kinds.describe(),
+                    graph.short(edge.to),
+                    system.name,
+                    system.only_in
+                ),
+            )
+        })
+        .collect()
 }
 
 /// Whether a package called `name`, declaring `links`, is a binding of `system`.
@@ -461,6 +496,7 @@ tools = ["xtask"]
             ("kernels", "obs", "normal"),
             ("io", "core", "normal"),
             ("io", "spsc", "normal"),
+            ("io", "getrandom", "normal"),
             ("net", "core", "normal"),
             ("net", "spsc", "normal"),
             ("ipc", "core", "normal"),
@@ -523,6 +559,7 @@ tools = ["xtask"]
             "iroh",
             "highs",
             "serde_json",
+            "getrandom",
         ];
         assert_eq!(run(&externals, &edges), Vec::<String>::new());
     }
@@ -838,6 +875,45 @@ tools = ["xtask"]
                  ggml; only `kernels-ggml` uses ggml",
                 "rule 6: `store` reaches `iroh`, a binding of iroh: store → iroh; only `net` uses \
                  iroh",
+            ]
+        );
+    }
+
+    #[test]
+    fn rule_6_checks_getrandom_on_direct_dependencies_only() {
+        // `io` may name it; others may reach it through external packages or a dev-dependency.
+        let allowed = run(
+            &["getrandom", "rustls", "proptest"],
+            &[
+                ("io", "getrandom", "normal"),
+                ("net", "rustls", "normal"),
+                ("rustls", "getrandom", "normal"),
+                ("core", "proptest", "dev"),
+                ("proptest", "getrandom", "normal"),
+                ("solver", "getrandom", "dev"),
+            ],
+        );
+        assert_eq!(allowed, Vec::<String>::new());
+
+        let found = run(
+            &["getrandom"],
+            &[
+                ("api", "getrandom", "normal"),
+                ("daemon", "getrandom", "build dev"),
+                ("core", "getrandom", "normal"),
+            ],
+        );
+        assert_eq!(
+            found,
+            [
+                "rule 1: `core` has a normal dependency on `getrandom`; its external \
+                 dependencies are limited to `serde`, `thiserror`, `smallvec` and `bitflags`",
+                "rule 6: `api` has a normal dependency on `getrandom`, a binding of the OS \
+                 random source; only `io` depends on it directly",
+                "rule 6: `core` has a normal dependency on `getrandom`, a binding of the OS \
+                 random source; only `io` depends on it directly",
+                "rule 6: `daemon` has a build dependency on `getrandom`, a binding of the OS \
+                 random source; only `io` depends on it directly",
             ]
         );
     }

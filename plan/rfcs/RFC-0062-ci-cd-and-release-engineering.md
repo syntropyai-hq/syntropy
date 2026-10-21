@@ -3,7 +3,7 @@
 - Status: Draft
 - Area: quality, performance assurance and release engineering
 - Depends on: RFC-0001 (§4, §5.6, §5.8, §16), RFC-0060, RFC-0061, RFC-0040, RFC-0052, RFC-0034; ADR-0001, ADR-0002, ADR-0005, ADR-0014, ADR-0018, ADR-0019, ADR-0020, ADR-0021; ADR-0620, ADR-0621, ADR-0622, ADR-0623, ADR-0624
-- Revised: 2026-10-20 (the dispatcher and release Apps, environment rules, fork-run timing, `cargo vet` from M1, build and sign separation, security releases, vulnerability handling, the organisation baseline, agent pipeline security, recurring operations, storage retention); 2026-10-22 (§4.4: the `release` panic strategy from RFC-0040 §10.4, and the first profile named `dev` in RFC-0060 §1.3 too)
+- Revised: 2026-10-20 (the dispatcher and release Apps, environment rules, fork-run timing, `cargo vet` from M1, build and sign separation, security releases, vulnerability handling, the organisation baseline, agent pipeline security, recurring operations, storage retention); 2026-10-22 (§4.4: the `release` panic strategy from RFC-0040 §10.4, and the first profile named `dev` in RFC-0060 §1.3 too; §12.1: `getrandom` in rule 6's allow-list, ADR-0022)
 - Expanded by: RFC-0052 (installers and the update client consume the artefacts and manifests this pipeline produces), RFC-0034 (key hierarchy behind the signing steps)
 - Date: 2026-10-19
 
@@ -642,11 +642,13 @@ A new direct dependency also passes a registry check that reports its first-publ
 | 3. Compute crates never depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio` | reverse search over the normal-dependency graph of `graph`, `kernels`, `kernels-*`, `io`, `tier`, `exec`, `sched` |
 | 4. `daemon` never links a `kernels-*` crate | edge check |
 | 5. `solver` and `cluster::apply` are pure | no `tokio`, `std::net` or filesystem crates in `solver`'s graph; a clippy `disallowed-methods` list for clock and I/O calls in `cluster::apply` and the protocol cores (RFC-0060 §2) |
-| 6. One crate per external system | an allow-list mapping each external crate (iroh, ibverbs bindings, io_uring, HiGHS bindings, the ggml binding, GPU runtime bindings) to its one permitted workspace crate |
+| 6. One crate per external system | an allow-list mapping each external crate (iroh, ibverbs bindings, io_uring, HiGHS bindings, the ggml binding, GPU runtime bindings) to its one permitted workspace crate; `getrandom` → `io`, matched on direct normal and build dependencies only (ADR-0022) |
 | 7. Backends are cargo features resolved at runtime | the core binary built with no GPU features must link no vendor runtime (checked on its dynamic-symbol table) |
 | 8. `unsafe` confined | `#![forbid(unsafe_code)]` present in every crate not on the allow-list (`kernels-*`, `io`, `tier`, `net`, `ipc`) |
 | 9. `testkit` is a dev-dependency only | no normal or build dependency edge to `testkit` |
 | RFC-0060 A6: no test features in `release` | the resolved feature set of the release build excludes `fault-injection`, `debug-taps` and `guards` |
+
+- *Revised 2026-10-22 (ADR-0022):* rule 6's allow-list gains `getrandom` → `io`. The other entries match a binding reached through any chain of external packages. `getrandom` is matched on a member's own normal and build dependencies only, because most crates reach it through the TLS stack and test crates such as `proptest`, and RFC-0001 §4.2 rule 6's note limits the rule to direct dependencies for it.
 
 #### 12.2 Licences and notices
 

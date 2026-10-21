@@ -515,3 +515,16 @@ ADR-0405 (option A, with V1 for exactness on Vulkan) keeps one `DeviceClass` in 
 | Added QUAL-E6-T23 (M2) → QUAL-E6-T04, QUAL-E6-T16, COMP-E2-T11 | QUAL-E6-T23 | R9 | V1's runtime rule, label and fallback for Vulkan-domain providers: the Vulkan counterpart of QUAL-E6-T16, which "Exactness on Vulkan" names |
 | COMP-E8-T10 → QUAL-E6-T23; QUAL-E4-T11 → QUAL-E6-T23 | COMP-E8-T10, QUAL-E4-T11 | R9 | the M2 ggml Vulkan preview's conformance run and the M3 Vulkan conformance issue Vulkan certificates, which V1 makes full only on the rig's device and driver |
 | COMP-E8-T04 gains a criterion for decision 3's `subgroup` rule; no edge | COMP-E8-T04 | R9 | the native Vulkan provider computes the class at `enumerate`. `kernels`' current `Vulkan` variant already has `subgroup`, so the criterion needs no new type |
+
+## ADR-0022 accepted (2026-10-22)
+
+ADR-0022 (option 1a) puts `SystemClock` and `OsEntropy` in `io`, in `syntropy_io::os`, and keeps the traits in `core`. QUAL-E3-T01 had already been split, with QUAL-E3-T24 gated on OQ-PRC-20, in Pass 7, so this pass fills in the split and adds the edges of the tasks that use a production source.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E3-T24's gate on OQ-PRC-20 dropped; its row becomes the sources task of ADR-0022, in `io`, with the stopped-clock reading and the ADR's criteria; QUAL-E3-T24 → QUAL-E1-T06; QUAL-E3-T01's row names `io` and adds `#![forbid(unsafe_code)]` to its criteria | QUAL-E3-T01, QUAL-E3-T24 | R3b, R9 | ADR-0022 settles OQ-PRC-20 (accepted 2026-10-22). QUAL-E3-T24's criteria test each suspend-aware clock on every Tier 1 OS, and QUAL-E1-T06 adds the hosted Windows and macOS jobs. Its `getrandom` criterion is checked by the rule 6 entry this change adds to `cargo xtask check-deps`, so it needs no new edge |
+| DIST-E2-T01 → QUAL-E3-T24 | DIST-E2-T01 | R9 | node key generation needs `OsEntropy`; `SimEntropy` is test-only (RFC-0060 §2.1 rule T2) |
+| QUAL-E3-T17 → QUAL-E3-T24 | QUAL-E3-T17 | R9 | the production `TickSource::now` returns `MonoTime` on the `SystemClock` timeline |
+| PLC-E9-T01 → QUAL-E3-T24 | PLC-E9-T01 | R9 | ingress generates 64 random bits when the client sends no seed (ADR-0107), through an `Entropy` (rule T1), and the standard library has no stable random source |
+| DIST-E1-T04 → QUAL-E3-T24 | DIST-E1-T04 | R9 | the runner's daemon-silence timer (`runner.daemon_silence`) is its lifecycle machine reading time, which goes through a `Clock` (rule T1) |
+| PROD-E10-T13 and PROD-E10-T16 gain a criterion for the Android and iOS suspend-aware clocks | PROD-E10-T13, PROD-E10-T16 | R9 | QUAL-E3-T24 covers the Tier 1 OSes only, and ADR-0022 names these tasks as the homes of `CLOCK_BOOTTIME` on Android and `mach_continuous_time` on iOS. Both already reach QUAL-E3-T24 through their dependencies, so no edge is added |

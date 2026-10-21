@@ -2,7 +2,7 @@
 
 - **Status:** Draft
 - **Date:** 2026-10-19
-- **Builds on:** ADR-0000 (D1–D8), ADR-0001 to ADR-0021
+- **Builds on:** ADR-0000 (D1–D8), ADR-0001 to ADR-0022
 - **Expanded by:** every domain RFC listed in §15
 
 ## 1. Summary
@@ -270,7 +270,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 0 | `config-derive` | the `#[derive(ConfigSection)]` macro of the schema as code (RFC-0054 §10.3), which `config` re-exports; no runtime code (added 2026-10-21, note below) | — | 0054 |
 | 1 | `manifest` | GGUF and safetensors readers, `TensorCensus`, `ModelManifest`, KV formula, pack sidecar format, tokenizer data extraction | `core` | 0041 |
 | 1 | `kernels` | `KernelProvider` trait, `OpKey` registry, per-device op selection (certificates, then microbenchmark, §5.7), buffer, stream and event abstractions, the F32 reference semantics of every op (`kernels::reference`), and the `#[repr(C)]` types and `export!` macro of the provider-library ABI (`kernels::abi`). No `unsafe` | `core` | 0040 |
-| 1 | `io` | I/O engines: io_uring, IoRing, IOCP, `preadv` pool, `F_NOCACHE`, mmap fallback; per-core submission rings; registered buffers | `core` | 0021 |
+| 1 | `io` | I/O engines: io_uring, IoRing, IOCP, `preadv` pool, `F_NOCACHE`, mmap fallback; per-core submission rings; registered buffers; the production `Clock` and `Entropy` sources (`SystemClock`, `OsEntropy`, §5.14; added 2026-10-22, ADR-0022) | `core` | 0021 |
 | 1 | `net` | `Transport` trait and backends (QUIC via iroh, RDMA via ibverbs and Thunderbolt 5, TCP, shared memory), frame codecs, delegated-credential checks | `core` | 0031 |
 | 1 | `ipc` | daemon↔runner protocol, shared-memory layout, SPSC rings | `core` | 0001 |
 | 1 | `spsc` | the lock-free SPSC ring of §8.3 that `io`, `net` and `ipc` share: power-of-two capacity, cache-line-padded indices, preallocated slots, wake handles; no tokio (added 2026-10-22, note below) | — | 0001 |
@@ -312,7 +312,8 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 3. **Compute crates never depend on control or network crates.** `graph`, `kernels`, every `kernels-*`, `io`, `tier`, `exec` and `sched` must not depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`. The runner bridges compute and network through SPSC rings (§8.3). This keeps the hot path free of async runtimes (ADR-0012) and lets `exec` and `sched` run under `testkit` with no network at all.
 4. **`daemon` never links or loads a GPU provider.** It may depend on `kernels` for types, but not on any `kernels-*` crate, `kernels-loader` included, and it never opens a backend module. Only runner and probe processes load provider libraries, and the daemon learns about GPUs from a probe-mode process (RFC-0040 §10.5, ADR-0507 rule 4). This is invariant 3 (§2.3) enforced at link time.
 5. **`solver` and `cluster::apply` are pure.** No I/O, no clocks, no threads apart from HiGHS (run single-threaded with a fixed seed). Given the same inputs the solver returns the same plan, so plans are reproducible in tests and on every node. The other protocol cores follow invariant 12.
-6. **One crate per external system.** iroh only in `net`; ibverbs and the Thunderbolt RDMA API only in `net`; io_uring, IoRing and IOCP only in `io`; HiGHS only in `solver`; ggml only in `kernels-ggml`; vendor GPU runtimes only in their `kernels-*` crate. `kernels-loader` may load vendor driver libraries at runtime (the CUDA driver, NVML, the Vulkan loader, DXGI/DXCore) for read-only device enumeration, never linking them at build time and never creating a GPU context.
+6. **One crate per external system.** iroh only in `net`; ibverbs and the Thunderbolt RDMA API only in `net`; io_uring, IoRing and IOCP only in `io`; HiGHS only in `solver`; ggml only in `kernels-ggml`; `getrandom` only in `io`; vendor GPU runtimes only in their `kernels-*` crate. `kernels-loader` may load vendor driver libraries at runtime (the CUDA driver, NVML, the Vulkan loader, DXGI/DXCore) for read-only device enumeration, never linking them at build time and never creating a GPU context.
+   - *Note 2026-10-22 (amendment, §18.10):* `getrandom` is the OS CSPRNG behind `OsEntropy` (ADR-0022). The rule is on direct dependencies: `io` is the only crate that names `getrandom` as a normal or build dependency. Crates that reach it through other packages, such as the TLS stack under `net`, are not affected.
 7. **CPU and Metal providers are built into the core; other GPU providers ship as backend modules** (ADR-0507, RFC-0040 §10.4, RFC-0052 §4). The CPU provider, the Metal provider on macOS, and on iOS and Android every provider the platform uses, are linked statically into the core binary. The CUDA, HIP and Vulkan providers, and the ggml SYCL backend, are provider libraries in separately loaded, signed backend modules: directories beside the core binary of the same version, verified by hash, signature and build ID before loading (ADR-0316), and loaded by absolute path only by runner and probe processes. The boundary is a versioned C ABI generated from the `KernelProvider` trait, with one exported entry symbol and a lockstep build-ID check. The core binary therefore carries no vendor GPU runtime on Linux and Windows, and one core binary runs on hosts with and without each vendor stack (ADR-0014). The `cuda13` module carries Syntropy code only: `setup` fetches NVIDIA's redistributable libraries from NVIDIA and checks each against a hash pinned in the signed module manifest (RFC-0040 §10.3, RFC-0052 §4.4). A build or host without any GPU module runs CPU-only.
 8. **`unsafe` is confined** to `kernels-*` (including `kernels-loader`: the provider-library loader and the census), `io`, `tier` (arenas), `net` (RDMA, shared memory), `ipc` (shared memory) and `spsc` (the ring's slots, added 2026-10-22). Every other crate sets `#![forbid(unsafe_code)]`.
    - *Note 2026-10-22 (amendment, §18.9):* OS system calls that need `unsafe` go in `io`, behind safe functions that `probe`, `cluster` and `daemon` call (OQ-PRC-26): E1's host enumeration on Windows and macOS, the AMX and io_uring checks, E3's volume queries and the state directory's DACL. E2's management APIs (NVML, DXGI, IOKit) run in the runner's probe mode, in `kernels-loader`, which rules 4 and 6 already let load them, and the daemon merges the records (RFC-0010 §2.1).
@@ -1582,13 +1583,6 @@ pub trait Clock: Send + Sync {
 pub trait Entropy: Send + Sync {
     fn fill(&self, buf: &mut [u8]);
 }
-/// Production sources. SystemClock reads a suspend-aware clock (CLOCK_BOOTTIME,
-/// mach_continuous_time, QueryInterruptTime), never one that stops during sleep.
-/// Key material always comes from OsEntropy; the simulator's seeded substitute exists only
-/// in testkit.
-pub struct SystemClock;
-pub struct OsEntropy;
-
 /// Hot-thread timing in `exec` and `obs`: statically dispatched (a generic parameter),
 /// monomorphised to the TSC or the OS monotonic clock in production at no cost, and to the
 /// simulator's device timelines in tests.
@@ -1608,6 +1602,10 @@ pub trait ProtocolCore {
 }
 pub struct Outbox<O> { items: SmallVec<[O; 8]> }
 ```
+
+The production sources are in `io` (ADR-0022), and the simulator's are in `testkit`.
+
+- *Note 2026-10-22 (amendment, §18.10):* `SystemClock` and `OsEntropy` moved from this block to `syntropy_io::os`. Reading a suspend-aware clock needs an `unsafe` OS call, and the OS CSPRNG needs `getrandom`, which rules 1 and 8 of §4.2 keep out of `core`. Their two rules moved with them: `SystemClock::now` reads a suspend-aware clock (`CLOCK_BOOTTIME`, `mach_continuous_time`, `QueryInterruptTime`), never one that stops during sleep, and key material always comes from `OsEntropy`. The same module also reads the clock that stops during suspend, which RFC-0030 §5.8 compares with `now` to detect a suspend.
 
 ### 5.15 Conformance manifest *(core)*
 
@@ -2697,6 +2695,17 @@ The readiness audit of the next M0 wave raised decisions the maintainers took on
 | `spsc` joins layer 1 with no workspace dependencies; `io`, `net` and `ipc` may depend on it inside the layer; it is on rule 8's `unsafe` list | §4.1 (row and dated note); §4.2 rules 2 and 8 (dated notes) | `io`, `net` and `ipc` all need §8.3's ring and are all in layer 1 (OQ-IO-29); DIST-E1-T12 adds the crate as PROD-E1-T01 added `config-derive` (§18.8) |
 | OS system calls that need `unsafe` go in `io`; E2's management APIs run in the probe-mode runner, in `kernels-loader` | §4.2 rule 8 (dated note); RFC-0010 §2.1 | rule 8 keeps `unsafe` out of `probe`, `cluster` and `daemon`, and rule 4 keeps vendor libraries out of the daemon (OQ-PRC-26) |
 | `LedgerGrant` is plain data in `core` | §3.5 (dated note) | `ipc` carries it and `tier` checks it, and `tier` has no edge to `ipc` (OQ-IO-27) |
+
+### 18.10 The production clock and entropy sources (2026-10-22)
+
+ADR-0022, accepted 2026-10-22 (option 1a), moves the two production sources of §5.14 out of `core`. The traits and plain types stay.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `SystemClock` and `OsEntropy` leave `core` for `syntropy_io::os`, with their two rules (a suspend-aware `now`; key material only from `OsEntropy`); `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore` and `Outbox` stay in `core` | §5.14 (dated note); RFC-0060 §2.1 (dated note) | the suspend-aware clocks need an `unsafe` OS call and the CSPRNG needs `getrandom`, which rules 1 and 8 keep out of `core`; `io` may already use `unsafe` (rule 8, ADR-0001 item 4), and every crate that builds the sources (the daemon, the runner, `probe`) already depends on it |
+| `io`'s Responsibility cell gains the production `Clock` and `Entropy` sources | §4.1 | the crate table names where each type lives |
+| rule 6 gains "`getrandom` only in `io`", checked on direct normal and build dependencies | §4.2 rule 6 (dated note); RFC-0062 §12.1 (dated note) | ADR-0022 decisions 3 and 4: accepting the ADR approves `getrandom` as a direct dependency of `io`; other crates reach `getrandom` through the TLS stack and test crates, which the rule does not forbid |
+| "Builds on" extends to ADR-0022 | header | ADR-0022 is a foundation ADR |
 
 ### 18.11 One device class (2026-10-22)
 

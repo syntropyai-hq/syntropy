@@ -17,7 +17,7 @@ Today:
 | Path | Contents |
 |---|---|
 | `plan/00-vision-and-scope.md` | Problem, scenarios, platform matrix, success criteria SC-1 to SC-32 |
-| `plan/decisions/` | ADRs. 0000–0021 foundation; 01xx placement, 02xx tiers, 03xx distributed, 04xx compute, 05xx product, 06xx quality |
+| `plan/decisions/` | ADRs. 0000–0022 foundation; 01xx placement, 02xx tiers, 03xx distributed, 04xx compute, 05xx product, 06xx quality |
 | `plan/rfcs/` | RFC-0001 (architecture) and the domain RFCs, numbered by area the same way: 001x, 002x, … 006x |
 | `plan/implementation/epics/` | The tasks, one file per area: `PLC.md`, `TIER.md`, `DIST.md`, `COMP.md`, `PROD.md`, `QUAL.md` |
 | `plan/implementation/` | `roadmap.md`, `dependencies.md` and `traceability.md` (partly generated), `risks.md`, `dependency-fixes.md` |

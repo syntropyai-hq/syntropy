@@ -1,6 +1,6 @@
 # ADR-0022: Production clock and entropy sources live in `io`, not `core`
 
-- Status: Proposed
+- Status: Accepted (2026-10-22): option 1a, `getrandom` approved as a direct dependency of `io` only
 - Date: 2026-10-21
 - Deciders: maintainers (drafted by an implementing agent for issue #1484)
 - Related: ADR-0001 (item 4), ADR-0012, ADR-0021 (decisions 5, 9), ADR-0107, ADR-0600 (decisions 1–2); RFC-0001 §4.1, §4.2, §5.14, §18; RFC-0030 §5.8, open question 6; RFC-0034 §3; RFC-0060 §2.1, §2.2, §2.4; RFC-0062 §12.1; QUAL-E3-T01; issue #1526
@@ -42,10 +42,10 @@ Three further facts shape the options:
 
 ## Decision
 
-Proposed: **option 1a.**
+**Option 1a.**
 
 1. **`core` keeps the traits and the plain types:** `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore`, `Outbox` and `DetHashMap`. Its external dependencies stay the four of rule 1, and it stays `#![forbid(unsafe_code)]`.
-2. **`io` holds the production sources**, in one module (`syntropy_io::os` is the proposed path):
+2. **`io` holds the production sources**, in one module, `syntropy_io::os`:
    - `SystemClock`, implementing `Clock`. `now` reads the suspend-aware clock named above for each OS. `unix_ms` reads `std::time::SystemTime`.
    - the clock that stops during suspend, as a second reading on the same type or a sibling type, so RFC-0030 §5.8's shell can compare the two without its own FFI.
    - `OsEntropy`, implementing `Entropy` over the OS CSPRNG through `getrandom`.
@@ -58,7 +58,7 @@ Proposed: **option 1a.**
 
 ### Edits on acceptance
 
-None of these are made while this ADR is Proposed (ADR-0021 decision 9). On acceptance, the change that accepts it makes them:
+None of these were made while this ADR was Proposed (ADR-0021 decision 9). The change that accepted it on 2026-10-22 made them:
 
 1. **RFC-0001 §5.14.** Remove `SystemClock` and `OsEntropy` from the `core` code block, with their doc comment ("Production sources. SystemClock reads a suspend-aware clock …", lines 1567–1570 at drafting). That comment's two rules, a suspend-aware clock and key material only from `OsEntropy`, move with the structs to `io`'s doc comments. Add a sentence below it: the production sources are in `io` (ADR-0022), and the simulator's are in `testkit`.
 2. **RFC-0001 §4.1.** Add "the production `Clock` and `Entropy` sources (`SystemClock`, `OsEntropy`, §5.14)" to `io`'s Responsibility cell.
@@ -118,3 +118,8 @@ QUAL-E3-T24's criteria cover the Tier 1 OSes only. Android's `CLOCK_BOOTTIME` an
 - A crate that doesn't depend on `io` needs to build a concrete clock or entropy source, and taking `io` would break rule 3 or pull the I/O engines into a crate that has no other use for them. Then move the module to its own layer-1 crate (option 1c).
 - The `os` module grows past the clocks and the CSPRNG, for example with sleep notices (RFC-0030 §5.9) or the `TickSource` counter. A module with that scope no longer belongs in the I/O crate, and option 1c applies.
 - A maintained crate appears that reads all three suspend-aware clocks without `unsafe` in its user, with a dependency footprint as small as rule 1's existing four. Option 2 is then cheap enough to compare again.
+
+## Revisions
+
+- **Proposed 2026-10-21** for issue #1484.
+- **Accepted 2026-10-22** by the maintainers: option 1a. Accepting it approves `getrandom` as a direct dependency of `io` only (decision 4). The accepting change made the edits on acceptance. `main` had already split QUAL-E3-T01, with QUAL-E3-T24 gated on OQ-PRC-20, so edit 10 rewrote those two rows to the table above and removed the gate, and OQ-PRC-20 moved to Settled.
