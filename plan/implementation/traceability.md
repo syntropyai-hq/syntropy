@@ -373,12 +373,12 @@ No GAPs.
 | RFC-0042 | §3 | Kernel paths and fallbacks per scheme | 5: COMP-E3-T11, COMP-E5-T03, COMP-E13-T04, COMP-E13-T08, COMP-E13-T12 | ok |
 | RFC-0042 | §4 | Accumulation and activation precision | 13: COMP-E3-T08, COMP-E3-T11, COMP-E5-T12, COMP-E7-T01, COMP-E13-T02–T03, COMP-E13-T05–T06, COMP-E13-T10, COMP-E14-T06, COMP-E16-T06, COMP-E16-T09, COMP-E16-T19 | ok |
 | RFC-0042 | §5 | Implementing the exactness contract: what is measured | 10: COMP-E14-T01–T03, COMP-E14-T11, COMP-E14-T13, COMP-E14-T15, COMP-E14-T21, COMP-E14-T24, QUAL-E5-T02, QUAL-E5-T22 | ok |
-| RFC-0042 | §6 | Tolerances | 10: COMP-E13-T02–T03, COMP-E13-T05, COMP-E13-T10, COMP-E14-T02–T04, COMP-E14-T14, COMP-E14-T22–T23 | ok |
+| RFC-0042 | §6 | Tolerances | 12: COMP-E13-T02–T03, COMP-E13-T05, COMP-E13-T10, COMP-E14-T02–T04, COMP-E14-T07, COMP-E14-T14, COMP-E14-T22–T23, PROD-E4-T03 | ok |
 | RFC-0042 | §7 | The reference executor | 14: COMP-E5-T22, COMP-E11-T07, COMP-E14-T02, COMP-E14-T07–T08, COMP-E14-T15, COMP-E14-T23, COMP-E16-T05–T09, COMP-E16-T13–T14 | ok |
 | RFC-0042 | §8 | Cross-device rounding and activation precision on the wire | 7: COMP-E6-T09, COMP-E8-T09, COMP-E14-T05, COMP-E14-T10, COMP-E14-T13, COMP-E14-T19, COMP-E14-T21 | ok |
 | RFC-0042 | §9 | Requantization tools (optional; M4) | 1: COMP-E14-T11 | ok |
 | RFC-0042 | §10 | Approximate-mode knobs and labelling | 4: COMP-E5-T13, COMP-E14-T09, COMP-E14-T19–T20 | ok |
-| RFC-0042 | §11 | Configuration and error codes | 3: COMP-E14-T02, COMP-E14-T06–T07 | ok |
+| RFC-0042 | §11 | Configuration and error codes | 4: COMP-E14-T02, COMP-E14-T06–T07, PROD-E4-T03 | ok |
 | RFC-0043 | §1 | The `graph` crate | 2: COMP-E15-T01, COMP-E15-T03 | ok |
 | RFC-0043 | §2 | The graph IR | 4: COMP-E10-T12, COMP-E15-T01, COMP-E15-T11–T12 | ok |
 | RFC-0043 | §3 | The block library | 7: COMP-E5-T27, COMP-E15-T02, COMP-E15-T04–T05, COMP-E15-T09, COMP-E15-T12, COMP-E16-T18 | ok |
