@@ -25,9 +25,10 @@ note() {
     printf 'commit-msg: %s\n' "$*"
 }
 
-# The message as git records it: the part below a `git commit -v` scissors line dropped, then
+# The message as git records it: carriage returns removed, since an editor on Windows may save
+# the message with CRLF endings; the part below a `git commit -v` scissors line dropped; then
 # comment lines and surplus blank lines stripped.
-clean=$(sed '/^. -\{24\} >8 -\{24\}$/,$d' "$message" | git stripspace --strip-comments) || exit 2
+clean=$(tr -d '\015' <"$message" | sed '/^. -\{24\} >8 -\{24\}$/,$d' | git stripspace --strip-comments) || exit 2
 if [ -z "$clean" ]; then
     exit 0 # git aborts an empty message itself
 fi

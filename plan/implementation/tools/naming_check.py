@@ -24,6 +24,7 @@ Whole files are checked, not only changed lines, as AGENTS.md asks of every
 changed file. A file containing a NUL byte is treated as binary and skipped.
 In a message file, comment lines are skipped and everything below git's
 scissors line is ignored, so `git commit -v` diffs are not checked twice.
+Lines may end in LF or CRLF, as an editor on Windows saves them.
 
 Exit status: 0 when nothing matches or the check is skipped, 1 when something
 matches, 2 on an error.
@@ -85,8 +86,11 @@ def matching_lines(text, patterns, skip=None):
     `skip(line)` returning "skip" leaves a line out; returning "stop" ends the
     scan there."""
     found = []
-    # Split on "\n" only, so line numbers agree with grep and editors.
+    # Split on "\n" only, so line numbers agree with grep and editors, and drop the "\r" of a
+    # CRLF line ending, so a line reads the same however the file was saved.
     for number, line in enumerate(text.split("\n"), 1):
+        if line.endswith("\r"):
+            line = line[:-1]
         verdict = skip(line) if skip else None
         if verdict == "stop":
             break

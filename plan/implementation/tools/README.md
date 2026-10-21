@@ -15,7 +15,7 @@ Scripts that read the six epic files in `../epics/`, check the task graph and wr
 | `schedsim.py` | `sizing.py`, and the graph from `depcheck.py` or a `depcheck.py --graph` file | nothing; prints `[estimate]` elapsed time to each milestone exit under agent concurrency, serial lab rigs, maintainer latency and gate throughput, and the unconstrained floor |
 | `gh_sync.py` | the epics, `depcheck.py`'s edges, `sizing.py`, the D5 banned-terms list (`--banned`, kept outside the repository); needs the `gh` CLI logged in with the `repo`, `project` and `read:org` scopes (`read:org` so that members' issues read as members) | GitHub, not `plan/`: one issue per epic and task on the project board, sub-issues, labels, milestones and "blocked by" links; re-runs update only what changed |
 | `naming_check.py` | the files staged for commit or changed against a base ref, a commit message, standard input or named files; the D5 banned-terms list (`--banned`, `SYNTROPY_BANNED_TERMS` or `git config syntropy.bannedTerms`), read through `gh_sync.load_banned` | nothing; prints `path:line` for each matching line, never the term |
-| `test_naming_check.py` | – | nothing; the unit tests for `naming_check.py`, each with its own throwaway term list |
+| `test_naming_check.py` | – | nothing; the unit tests for `naming_check.py`, each with its own throwaway term list, and tests of the commit-msg hook on messages saved with CRLF endings (skipped without a POSIX `sh`) |
 
 ## `epics.py`
 

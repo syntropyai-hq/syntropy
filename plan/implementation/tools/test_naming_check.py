@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for naming_check.py.
+"""Tests for naming_check.py, and for the commit-msg hook that runs it.
 
     python3 plan/implementation/tools/test_naming_check.py
 
@@ -9,6 +9,7 @@ that its output never contains a term or a pattern from the list.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ import naming_check  # noqa: E402
 from gh_sync import load_banned  # noqa: E402
 
 SCRIPT = TOOLS / "naming_check.py"
+REPO = TOOLS.parent.parent.parent
 # Throwaway terms that mean nothing; the second is a pattern with a character class.
 TERMS = ["zorblax", "quux[- ]?frob"]
 SECRET_TEXT = ["zorblax", "quux", "frob"]
@@ -87,6 +89,13 @@ class NamingCheckTest(unittest.TestCase):
         text = "fine\nzorblax\x0cstill line two\nfine\nQUUX FROB\n"
         self.assertEqual(naming_check.matching_lines(text, patterns), [2, 4])
 
+    def test_matching_lines_reads_crlf_lines_as_lf_lines(self):
+        anchored = self.dir / "anchored.txt"
+        anchored.write_text("^zorblax$\n", encoding="utf-8")
+        patterns = load_banned(anchored)
+        self.assertEqual(naming_check.matching_lines("fine\r\nzorblax\r\n", patterns), [2])
+        self.assertEqual(naming_check.matching_lines("fine\nzorblax\n", patterns), [2])
+
     # What the script reports
 
     def test_a_match_on_stdin_is_reported_by_label_and_line(self):
@@ -113,16 +122,26 @@ class NamingCheckTest(unittest.TestCase):
         self.assertNotIn("c.bin:", output)
         self.assertIn("1 binary skipped", output)
 
-    def test_a_commit_message_skips_comments_and_stops_at_the_scissors(self):
+    def check_message(self, newline):
+        """A message with a term in its body, in a comment and below the scissors line, saved
+        with `newline` endings: only the body's line is reported."""
         message = self.dir / "COMMIT_EDITMSG"
-        message.write_text(
-            "feat: a thing\n\nquux frob in the body\n# zorblax in a comment\n"
-            "# ------------------------ >8 ------------------------\n"
-            "+zorblax in a diff below the scissors\n", encoding="utf-8")
+        message.write_bytes(newline.join([
+            "feat: a thing", "", "quux frob in the body", "# zorblax in a comment",
+            "# ------------------------ >8 ------------------------",
+            "+zorblax in a diff below the scissors", "",
+        ]).encode("utf-8"))
         code, output = self.run_check("--banned", str(self.banned), "--message", str(message))
         self.assertEqual(code, 1)
-        self.assertEqual(output.count("matches a banned term"), 1)
+        self.assertEqual(output.count("matches a banned term"), 1, output)
         self.assertIn("commit message:3: matches", output)
+
+    def test_a_commit_message_skips_comments_and_stops_at_the_scissors(self):
+        self.check_message("\n")
+
+    def test_a_crlf_commit_message_skips_comments_and_stops_at_the_scissors(self):
+        # An editor on Windows can save the message file with CRLF endings.
+        self.check_message("\r\n")
 
     def test_staged_files_are_read_from_the_index(self):
         repo = self.repo()
@@ -208,6 +227,71 @@ class NamingCheckTest(unittest.TestCase):
         self.assertEqual(code, 2)
         code, _ = self.run_check("--banned", str(self.banned), "--stdin", "a.md")
         self.assertEqual(code, 2)
+
+
+@unittest.skipUnless(shutil.which("sh"), "needs a POSIX sh on PATH")
+class CommitMsgHookTest(unittest.TestCase):
+    """The commit-msg hook in .githooks/, run on a message saved with CRLF endings, as an editor on
+    Windows may save it. The hook runs in this checkout with a throwaway list and author."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        terms = self.dir / "terms.txt"
+        terms.write_text("zorblax\n", encoding="utf-8")
+        empty = self.dir / "empty.gitconfig"
+        empty.write_text("", encoding="utf-8")
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        self.env.update({
+            naming_check.ENV: str(terms),
+            "GIT_CONFIG_GLOBAL": str(empty),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        })
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_hook(self, lines):
+        message = self.dir / "COMMIT_EDITMSG"
+        message.write_bytes("\r\n".join(lines + [""]).encode("utf-8"))
+        done = subprocess.run(
+            ["sh", (REPO / ".githooks" / "commit-msg").as_posix(), message.as_posix()],
+            cwd=REPO, env=self.env, capture_output=True, check=False)
+        output = (done.stdout + done.stderr).decode()
+        self.assertNotIn("zorblax", output.lower(), "the output names a term")
+        return done.returncode, output
+
+    def message(self, *body):
+        return ["docs: a message saved with CRLF endings", "", *body,
+                "# a comment that says zorblax",
+                "# ------------------------ >8 ------------------------",
+                "diff --git a/x b/x", "+zorblax below the scissors"]
+
+    def test_the_scissors_comments_and_sign_off_are_read_through_crlf(self):
+        code, output = self.run_hook(self.message("Signed-off-by: Test <test@example.invalid>"))
+        self.assertEqual(code, 0, output)
+        self.assertIn("commit-msg: subject: ok", output)
+        self.assertIn("commit-msg: sign-off: ok", output)
+        self.assertIn("naming check: PASS", output)
+
+    def test_an_empty_crlf_message_is_left_to_git(self):
+        # Only comments, the scissors line and the diff: the hook must drop all of it, and leave
+        # git to abort the empty message, instead of reading the diff as a subject.
+        code, output = self.run_hook([
+            "# Please enter the commit message for your changes.",
+            "# ------------------------ >8 ------------------------",
+            "diff --git a/x b/x", "+a line",
+        ])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(output, "")
+
+    def test_a_crlf_message_still_needs_a_sign_off_and_a_clean_body(self):
+        code, output = self.run_hook(self.message("The body says zorblax."))
+        self.assertEqual(code, 1, output)
+        self.assertIn("commit-msg: sign-off: FAIL", output)
+        self.assertIn("commit message:3: matches a banned term", output)
 
 
 if __name__ == "__main__":
