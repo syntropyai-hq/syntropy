@@ -5,7 +5,7 @@
 - Depends on: RFC-0001; ADR-0002, ADR-0003, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0017, ADR-0019, ADR-0020; ADR-0600, ADR-0601, ADR-0602, ADR-0603
 - Expanded by: RFC-0042 (tolerance tables), RFC-0043 (per-family fixtures and boundaries), RFC-0033 (recovery expectations for chaos scenarios), RFC-0062 (where and when each suite runs)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers)
+- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2)
 
 ## Summary
 
@@ -255,6 +255,8 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 | P-text-1 | text | incremental detokenisation concatenated equals full detokenisation | random token streams from fixture tokenizers | full decode |
 | P-text-2 | text | a stop string spanning token boundaries is detected at the first token that completes it, and no character after it is emitted | random stop strings and tokenisations | character-level reference matcher |
 | P-config-1 | config | precedence default < file < env < CLI; unknown keys rejected; request keys only narrow instance keys | random layer stacks | the RFC-0001 §11.1 rules |
+| P-bench-1 | bench | a `BenchResult` reads back from its JSON unchanged, and the JSON passes the committed schema file (RFC-0061 §2.2) | arbitrary results: every record type, enum variant and `Option` arm, arbitrary Unicode text and finite floats of every class | equality, and the schema file |
+| P-bench-2 | bench | two results are comparable exactly when their keys differ in no field but `build` (RFC-0061 §2.1) | arbitrary results; one key field replaced with a different value, with or without a different `build` | field-by-field key equality |
 
 Each crate's RFC adds its properties to this table. A property removed from the table needs a reason in the PR description.
 

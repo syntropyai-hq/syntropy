@@ -4,3 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+# `float_roundtrip` parses every float to the nearest value, so a stored measurement reads back
+# bit for bit (RFC-0061 §2.2: results are JSON, and gates recompute from them).
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+[dev-dependencies]
+proptest.workspace = true
