@@ -404,11 +404,16 @@ class HookTest(unittest.TestCase):
         # A clone of this repository, with one generated file deleted and nothing else staged:
         # the staged plan no longer matches what trace.py generates.
         clone = self.trusted_clone()
-        # pre-commit runs the plan tools from the staged tree, so stage the ones under test.
-        subprocess.run(["git", "add", "plan/implementation/tools"], cwd=clone, env=self.env,
-                       check=True, capture_output=True)
-        subprocess.run(["git", "rm", "-q", "plan/implementation/traceability.md"], cwd=clone,
-                       env=self.env, check=True, capture_output=True)
+        # pre-commit runs the plan tools from the staged tree, so the clone needs the tools under
+        # test. Commit them first, so that the deletion is the only staged change: a staged edit
+        # to a tool would count as a change under plan/ and run the tools even if a deletion on
+        # its own did not.
+        self.git_in(clone, "add", "plan/implementation/tools")
+        self.git_in(clone, "commit", "-q", "--no-verify", "--allow-empty", "-m", "tools under test")
+        self.git_in(clone, "rm", "-q", "plan/implementation/traceability.md")
+        staged = self.git_in(clone, "diff", "--cached", "--name-status").decode().split("\n")
+        self.assertEqual([line for line in staged if line],
+                         ["D\tplan/implementation/traceability.md"])
         code, output = self.run_hook([], cwd=clone, hook="pre-commit", hooks=clone / ".githooks")
         self.assertEqual(code, 1, output)
         self.assertNotIn("plan tools: skipped", output)
