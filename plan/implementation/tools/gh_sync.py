@@ -17,17 +17,19 @@ item of the organisation's project number PROJECT_NUMBER, which only accounts
 with write access to that project can add to. Markers on other issues are
 counted and ignored.
 
-The run never creates an issue for an ID that any issue already carries a
-marker for, wherever the marker sits in its body, whoever wrote it and
-whether or not it is on the board. It skips that ID, lists the issues that
-hold it, finishes, and exits 1, so a maintainer can fix or close the holding
-issue. A hold changes nothing else, so an outsider's marker can delay the
-first issue for a new task but can't stop a run. Before the first write of
-any phase, setup
-included, the run stops if two adopted issues carry the same ID, or if it
-adopted nothing although the repository already has marked issues or more
-issues than half the plan: the board exists, and creating it again would
-duplicate it. Synced issues whose task or epic has left the plan are listed
+The run never creates an issue for an ID that another issue already holds.
+An issue holds an ID when its body carries exactly one marker, for that ID,
+anywhere in the body, and the issue is on the board, or its author is an
+owner, member or collaborator, or it is open. Every issue the sync writes
+carries exactly one marker. The run skips a held ID, lists the issues that
+hold it, finishes, and exits 1. A maintainer then fixes the real issue so it
+is adopted, or removes the stray marker; closing an outsider's issue that
+isn't on the board also clears its hold. A hold changes nothing else, so no
+marker can stop a run, and delaying new tasks takes one open issue per ID.
+Before the first write of any phase, setup included, the run stops if two
+adopted issues carry the same ID, or if it adopted nothing although the
+repository already has marked issues or more issues than half the plan: the
+board exists, and creating it again would duplicate it. Synced issues whose task or epic has left the plan are listed
 as orphans and left open.
 
 A run that writes first fetches origin's main branch, and refuses to start
@@ -478,7 +480,7 @@ def check_banned(items, banned):
 ISSUES_Q = """query($o:String!,$n:String!,$after:String){ repository(owner:$o,name:$n){
   issues(first:100, after:$after, states:[OPEN,CLOSED]){ totalCount
     pageInfo{hasNextPage endCursor}
-    nodes{ id number body authorAssociation blockedBy(first:50){ nodes{ id } }
+    nodes{ id number state body authorAssociation blockedBy(first:50){ nodes{ id } }
       projectItems(first:20){ nodes{ project{ number owner{ ... on Organization{ login } } } } }
     } } } }"""
 
@@ -486,8 +488,11 @@ ISSUES_Q = """query($o:String!,$n:String!,$after:String){ repository(owner:$o,na
 def existing_issues(gh):
     """The synced issues by task or epic ID, and a dict with how many
     markers were ignored, how many issues the repository has, and `held`:
-    every ID any issue's body carries a marker for, anywhere in the body,
-    mapped to (number, on the board) for each issue that carries it.
+    each held ID mapped to the numbers of the issues that hold it. An issue
+    holds an ID when its body carries exactly one marker, for that ID,
+    anywhere in the body, and the issue is on the board, or by a trusted
+    author, or open. So one issue can't hold many IDs, and closing an
+    outsider's issue off the board releases its hold.
 
     Anyone can open an issue on a public repository and copy a marker into
     it, and an organisation member may have read access only. So an issue is
@@ -505,12 +510,14 @@ def existing_issues(gh):
             on_board = any(i["project"]["number"] == PROJECT_NUMBER
                            and (i["project"]["owner"] or {}).get("login") == gh.owner
                            for i in n["projectItems"]["nodes"])
-            for tid in set(re.findall(rf"<!-- {MARKER}: (\S+) \w+ -->", body)):
-                held.setdefault(tid, []).append((n["number"], on_board))
+            trusted = n["authorAssociation"] in TRUSTED
+            ids = set(re.findall(rf"<!-- {MARKER}: (\S+) \w+ -->", body))
+            if len(ids) == 1 and (on_board or trusted or n["state"] == "OPEN"):
+                held.setdefault(ids.pop(), []).append(n["number"])
             m = re.search(rf"<!-- {MARKER}: (\S+) (\w+) -->\s*\Z", body)
             if not m:
                 continue
-            if n["authorAssociation"] not in TRUSTED or not on_board:
+            if not trusted or not on_board:
                 ignored += 1
                 continue
             if m[1] in found:
@@ -526,20 +533,6 @@ def existing_issues(gh):
                          f"{'; '.join(clashes[:10])}. Stopped before the next write; "
                          f"close the extra issue or remove its marker, then run again.")
     return found, {"ignored": ignored, "total": total, "held": held}
-
-
-def issue_numbers(existing, held):
-    """The issue number to show for each ID in "Depends on" lists: the
-    adopted issue's, or, for an ID no issue was adopted for, the one issue on
-    the board that holds its marker. A run that can't adopt an issue then
-    leaves its dependents' text alone, and a number never comes from an issue
-    off the board, which anyone could have opened."""
-    nums = {k: v["number"] for k, v in existing.items()}
-    for tid, holders in held.items():
-        on_board = [num for num, board in holders if board]
-        if tid not in nums and len(on_board) == 1:
-            nums[tid] = on_board[0]
-    return nums
 
 
 def check_adoption(existing, ignored, total, planned):
@@ -662,7 +655,7 @@ def write_issue(gh, ctx, item, existing):
     if holders:
         # An issue already carries this ID's marker but wasn't adopted.
         # Creating another would duplicate it; a maintainer resolves it.
-        ctx["skipped"][item["id"]] = sorted(num for num, _ in holders)
+        ctx["skipped"][item["id"]] = sorted(holders)
         return None, False
     parent = existing.get(item["parent"], {}).get("id") if item["parent"] else None
     r = gh.mutate(f"create {item['id']}", CREATE_Q, r=ctx["repo_id"],
@@ -718,7 +711,7 @@ def main():
 
     epic_items = [epic_issue(e, base) for e in epic_map.values()]
     if args.banned:
-        numbers = issue_numbers(existing, info["held"])
+        numbers = {k: v["number"] for k, v in existing.items()}
         check_banned(epic_items + [task_issue(by_id[t], epic_map[by_id[t]["epic"]],
                      sizes.get(t), deps[t], numbers, base) for t in order], args.banned)
 
@@ -753,7 +746,7 @@ def main():
         for item in epic_items:
             changed += write_issue(gh, ctx, item, existing)[1]
         for n, t in enumerate(order, 1):
-            numbers = issue_numbers(existing, ctx["held"])
+            numbers = {k: v["number"] for k, v in existing.items()}
             item = task_issue(by_id[t], epic_map[by_id[t]["epic"]], sizes.get(t),
                               deps[t], numbers, base)
             changed += write_issue(gh, ctx, item, existing)[1]
@@ -761,10 +754,12 @@ def main():
                 print(f"tasks {n}/{len(order)}, {gh.writes} writes so far", flush=True)
         print(f"issues: {changed} created or updated")
         if ctx["skipped"]:
-            print(f"skipped {len(ctx['skipped'])} create(s): an issue already carries the "
+            print(f"skipped {len(ctx['skipped'])} create(s): an issue already holds the "
                   f"ID's marker but wasn't adopted (its author isn't trusted as this token "
                   f"sees it, it isn't on project #{PROJECT_NUMBER}, or text follows the "
-                  f"marker). Fix or close the holding issue, then run again:")
+                  f"marker). Fix the real issue so it is adopted, or remove the stray "
+                  f"marker; closing an outsider's issue that isn't on the board also "
+                  f"clears its hold. Then run again:")
             for tid, nums in sorted(ctx["skipped"].items(), key=lambda kv: epics.id_key(kv[0])):
                 print(f"  {tid}: held by {', '.join(f'#{n}' for n in nums)}")
 
