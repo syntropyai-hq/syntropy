@@ -441,6 +441,33 @@ fn a_reader_can_set_a_lower_limit() {
     );
 }
 
+/// The error `check_lengths` returns. ciborium's own end-of-input error is `Malformed` too, so
+/// the tests below look for this guard's message.
+fn runs_past_the_end(error: &DecodeError) -> bool {
+    matches!(error, DecodeError::Malformed(message) if message.contains("runs past the end"))
+}
+
+#[test]
+fn declared_lengths_are_checked_before_the_body_is_parsed() {
+    // A text string that declares 2^62 bytes and holds 3 (RFC-0060 §10.2).
+    let mut text = vec![0x7b];
+    text.extend_from_slice(&(1u64 << 62).to_be_bytes());
+    text.extend_from_slice(b"abc");
+    let error = envelope::from_cbor::<String>(&text).unwrap_err();
+    assert!(runs_past_the_end(&error), "{error:?}");
+    let error =
+        envelope::decode::<String>(&frame_of(Encoding::Cbor, &text), BodyLimit::MAX).unwrap_err();
+    assert!(runs_past_the_end(&error), "{error:?}");
+    // A map that declares 2^20 pairs and holds none.
+    let map = [0xba, 0x00, 0x10, 0x00, 0x00];
+    let error = envelope::from_cbor::<BTreeMap<String, u64>>(&map).unwrap_err();
+    assert!(runs_past_the_end(&error), "{error:?}");
+    let error =
+        envelope::decode::<BTreeMap<String, u64>>(&frame_of(Encoding::Cbor, &map), BodyLimit::MAX)
+            .unwrap_err();
+    assert!(runs_past_the_end(&error), "{error:?}");
+}
+
 #[test]
 fn frames_are_checked_against_their_len_field() {
     let frame = envelope::encode(&Inner {
