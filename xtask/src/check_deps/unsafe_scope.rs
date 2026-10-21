@@ -14,14 +14,16 @@
 //! - requires the one `#[allow(unsafe_code)]` to sit on `unsafe impl <path ending in the trait>
 //!   for …`, and every `unsafe` in that file to lie within that item;
 //! - refuses every way to compile code it does not read: a `path` in an attribute (`#[path]`,
-//!   also inside `cfg_attr`), an attribute built from a macro metavariable, which could become
-//!   `#[path]`, the identifier `include` anywhere, which covers `include!` under any name or
-//!   path, and a build script, whose output only `include!` could bring in.
+//!   also inside `cfg_attr`), an attribute built from a macro metavariable, the identifier
+//!   `include` anywhere, which covers `include!` under any name or path, a `macro_rules!`
+//!   definition, which could assemble either from tokens taken elsewhere in the crate, and a
+//!   build script, whose output only `include!` could bring in.
 //!
 //! A macro exported by another crate can still emit `#[path]` or `include!` from tokens that
 //! name neither; that is the same limit as `unsafe` from another crate's macro (issue #1527).
 //!
-//! With those refused, the compiler can reach a module only through `mod` declarations, which
+//! With no local macro, every token the compiler sees in the crate is one this check reads as
+//! written. With those refused, the compiler can reach a module only through `mod` declarations, which
 //! resolve to `.rs` files under the directory of the file that declares them, so the files read
 //! are every file the crate's production targets compile. A text check covers every `cfg` at
 //! once, where the compiler's own list of the files it read covers one configuration.
@@ -244,6 +246,14 @@ fn unread_code(code: &str) -> Vec<String> {
             "include" => found(
                 at,
                 "names `include`, the macro that compiles a file this check does not read",
+            ),
+            // A local macro can rebuild `#[path = …]` or `include!` from tokens it takes from
+            // anywhere in the crate, `#` from another attribute and `path` from `std::path`,
+            // so no text rule could follow it. Without one, every token is read as written.
+            "macro_rules" => found(
+                at,
+                "defines a declarative macro, which could build `#[path]` or `include!` from \
+                 tokens this check reads elsewhere",
             ),
             "path"
                 if code[after..].starts_with('=')
@@ -692,16 +702,32 @@ pub fn alloc_count_this_thread() -> u64 {
                 "{source}: {problems:?}"
             );
         }
-        // In a macro body, the `path` and the metavariable are each refused.
+        // In a macro body, the macro, the `path` and the metavariable are each refused.
         let problems = check_other_file(
             "macro_rules! m { ($p:literal) => { #[path = $p] mod x; } }\n",
             None,
         );
-        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert_eq!(problems.len(), 3, "{problems:?}");
         // The allowed file is held to the same rule.
         let problems =
             check_allowed_file(&format!("{ALLOWED}#[path = \"x.rs\"]\nmod x;\n"), &TESTKIT);
         assert_eq!(problems.len(), 1, "{problems:?}");
+    }
+
+    /// Checks that `source` is refused with a finding containing `what`, and that every other
+    /// finding is for the macro the source defines.
+    fn refused_for(source: &str, what: &str) {
+        let problems = check_other_file(source, None);
+        assert!(
+            problems.iter().any(|p| p.contains(what)),
+            "{source}: no `{what}` in {problems:?}"
+        );
+        let expected = |p: &String| {
+            p.contains(what)
+                || p.contains("defines a declarative macro")
+                || p.contains("builds an attribute from a macro metavariable")
+        };
+        assert!(problems.iter().all(expected), "{source}: {problems:?}");
     }
 
     #[test]
@@ -717,12 +743,7 @@ pub fn alloc_count_this_thread() -> u64 {
             "m!(include);\n",
             "let include = true;\n",
         ] {
-            let problems = check_other_file(source, None);
-            assert_eq!(problems.len(), 1, "{source}: {problems:?}");
-            assert!(
-                problems[0].contains("names `include`"),
-                "{source}: {problems:?}"
-            );
+            refused_for(source, "names `include`");
         }
     }
 
@@ -735,13 +756,28 @@ pub fn alloc_count_this_thread() -> u64 {
             "macro_rules! m { ($($a:meta)*) => { $(#[$a])* mod x; } }\n",
             "macro_rules! m { ($t:tt) => { #! $t } }\n",
         ] {
-            let problems = check_other_file(source, None);
-            assert_eq!(problems.len(), 1, "{source}: {problems:?}");
-            assert!(
-                problems[0].contains("builds an attribute from a macro metavariable"),
-                "{source}: {problems:?}"
-            );
+            refused_for(source, "builds an attribute from a macro metavariable");
         }
+    }
+
+    #[test]
+    fn a_local_macro_is_refused_because_it_can_assemble_either() {
+        // `#` taken from another attribute and `path` from `std::path`: no `path =`, no `#[$…]`
+        // and no `include` anywhere in the text, so only the macro itself can be refused.
+        let source = "\
+            macro_rules! at {\n\
+            ($h:tt $d:tt std :: $k:ident $v:literal ; $($rest:tt)*) => { $h [$k = $v] $($rest)* };\n\
+            }\n\
+            at!(#[doc = \"x\"] std::path \"../outside.rs\" ; pub mod probe;);\n";
+        let problems = check_other_file(source, None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].starts_with("1: defines a declarative macro"),
+            "{problems:?}"
+        );
+        // A macro another crate defines may be called; see the module docs for that limit.
+        let calls = "let v = vec![1, 2];\nassert!(v.len() == 2);\n";
+        assert_eq!(check_other_file(calls, None), Vec::<String>::new());
     }
 
     #[test]
@@ -753,7 +789,6 @@ pub fn alloc_count_this_thread() -> u64 {
             pub fn includes(path: &str) -> bool { let n = path.len(); n != 0 }\n\
             pub struct Filter { pub included: bool, pub path: String }\n\
             fn f() { let path = 1; if path == 1 {} }\n\
-            macro_rules! twice { ($e:expr) => { $e + $e } }\n\
             use std::path::Path;\n";
         assert_eq!(check_other_file(source, None), Vec::<String>::new());
     }

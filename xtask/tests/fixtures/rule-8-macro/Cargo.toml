@@ -1,5 +1,5 @@
 # A check-deps fixture: `testkit`'s `unsafe` exception, reached through code the scope check
-# would not read (macro). xtask/tests/check_deps.rs runs `cargo xtask check-deps` on it and names
+# would not read (a local macro). xtask/tests/check_deps.rs runs `cargo xtask check-deps` on it and names
 # the findings it expects.
 [workspace]
 resolver = "3"

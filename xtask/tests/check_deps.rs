@@ -266,11 +266,11 @@ fn rule_8_a_build_script_and_its_generated_code_are_refused() {
 }
 
 #[test]
-fn rule_8_an_attribute_built_from_a_metavariable_is_refused() {
+fn rule_8_a_local_macro_is_refused() {
     fails_with(
         "rule-8-macro",
         8,
-        &["`testkit`: crates/testkit/src/lib.rs:10: builds an attribute from a macro metavariable"],
+        &["`testkit`: crates/testkit/src/lib.rs:9: defines a declarative macro"],
     );
 }
 

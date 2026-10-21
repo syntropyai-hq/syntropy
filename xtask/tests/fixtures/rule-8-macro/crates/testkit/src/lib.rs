@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A `#[path]` built by a macro from a metavariable, so `path =` appears in no text.
+//! `#[path]` assembled by a local macro from `#` in another attribute and `path` in `std::path`.
 
 #![deny(unsafe_code)]
 
 pub mod guards;
 
-macro_rules! module_at {
-    ($key:ident $file:literal) => { #[$key = $file] pub mod outside_probe; };
+macro_rules! at {
+    ($h:tt $d:tt std :: $k:ident $v:literal ; $($rest:tt)*) => { $h [$k = $v] $($rest)* };
 }
 
-module_at!(path "../outside.rs");
+at!(#[doc = "a probe"] std::path "../outside.rs" ; pub mod outside_probe;);
