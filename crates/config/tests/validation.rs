@@ -18,7 +18,7 @@ use serde::Deserialize;
 use syntropy_config::{
     ByteSize, Checked, Code, ConfigFile, ConfigSection, Deprecated, Env, Environment, Findings,
     Flags, HoldsSecret, Layers, NodeSelector, Origin, Os, Phase, Problem, Regex, Registry,
-    ResolvedConfig, Rule, RuleInput, SecretSource, Severity, diagnostic, validate,
+    ResolvedConfig, Rule, RuleInput, Secret, SecretSource, Severity, diagnostic, validate,
 };
 
 /// Top-level node keys, with a secret.
@@ -120,6 +120,15 @@ struct Approximate {
     topk_reduce: bool,
 }
 
+/// A map of plain secrets, which no `SecretSource` names: the map-of-`Secret` canary.
+#[derive(Deserialize, ConfigSection)]
+#[config(section = "vault", scope = Node, owner = "RFC-0054")]
+struct Vault {
+    /// Tokens by name, each a secret.
+    #[config(reload = Hot, default = {})]
+    tokens: BTreeMap<String, Secret<String>>,
+}
+
 static REGISTRY: Registry = Registry::new(&[
     &Top::SCHEMA,
     &T::SCHEMA,
@@ -127,6 +136,7 @@ static REGISTRY: Registry = Registry::new(&[
     &NodeSection::SCHEMA,
     &Policy::SCHEMA,
     &Approximate::SCHEMA,
+    &Vault::SCHEMA,
 ]);
 
 /// A host whose answers the test chooses.
@@ -624,6 +634,29 @@ fn secret_cases(marker: &str) -> Vec<Case> {
         (
             file(format!("[policy.x]\n\"obs.otlp.headers\" = [\"{m}\"]\n")),
             vec![],
+            vec![],
+        ),
+        // A map of `Secret<String>`: an entry of the wrong type, an unquoted entry, the map set
+        // inline, and the map from `--set` and the environment.
+        (
+            file(format!("[vault.tokens]\nprod = [\"{m}\"]\n")),
+            vec![],
+            vec![],
+        ),
+        (
+            file(format!("[vault.tokens]\nprod = {m}\n")),
+            vec![],
+            vec![],
+        ),
+        (
+            file(format!("[vault]\ntokens = {{ prod = \"{m}\", dev = 5 }}\n")),
+            vec![],
+            vec![],
+        ),
+        (vec![], vec![], vec![format!("vault.tokens=[\"{m}\"]")]),
+        (
+            vec![],
+            vec![(String::from("SYNTROPY_VAULT__TOKENS"), m.to_owned())],
             vec![],
         ),
         // `--set` and the environment.
