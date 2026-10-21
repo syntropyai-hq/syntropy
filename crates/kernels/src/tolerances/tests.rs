@@ -313,7 +313,7 @@ fn check_release_lists_every_supported_class_without_a_ceiling() {
     assert_eq!(err.classes(), [DTypeClass::Float16, DTypeClass::Bits4]);
     assert_eq!(
         err.to_string(),
-        "ToleranceMissing: tolerances-v1 has no published end-to-end ceiling for dtype classes \
+        "ToleranceMissing (numerics code 1): tolerances-v1 has no published end-to-end ceiling for dtype classes \
          float16, bits4; a release build does not start a model of such a class"
     );
     assert_eq!(table.check_release(&[DTypeClass::Int8]), Ok(()));

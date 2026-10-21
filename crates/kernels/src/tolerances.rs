@@ -479,8 +479,9 @@ impl fmt::Display for ToleranceMissing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}: tolerances-v{} has no published end-to-end ceiling for dtype class",
+            "{} (numerics code {}): tolerances-v{} has no published end-to-end ceiling for dtype class",
             Self::NAME,
+            Self::CODE,
             self.version
         )?;
         if self.classes.len() > 1 {
