@@ -15,7 +15,15 @@ task marker; its author is an owner, member or collaborator of the
 repository (GitHub's authorAssociation), whoever runs the sync; and it is an
 item of the organisation's project number PROJECT_NUMBER, which only accounts
 with write access to that project can add to. Markers on other issues are
-counted and ignored. Before the first write of any phase, setup
+counted and ignored.
+
+The run never creates an issue for an ID that any issue already carries a
+marker for, wherever the marker sits in its body, whoever wrote it and
+whether or not it is on the board. It skips that ID, lists the issues that
+hold it, finishes, and exits 1, so a maintainer can fix or close the holding
+issue. A hold changes nothing else, so an outsider's marker can delay the
+first issue for a new task but can't stop a run. Before the first write of
+any phase, setup
 included, the run stops if two adopted issues carry the same ID, or if it
 adopted nothing although the repository already has marked issues or more
 issues than half the plan: the board exists, and creating it again would
@@ -24,10 +32,10 @@ as orphans and left open.
 
 A run that writes first fetches origin's main branch, and refuses to start
 if the plan inputs (PLAN_INPUTS: the epic files and the tools that turn them
-into issue text, labels and links) differ from it. A run from an out-of-date
-checkout would otherwise undo newer issue text and links. Only those inputs
-are compared, not HEAD or this script, so a branch that changes only this
-script can still run. --dry-run skips that check.
+into issue text, labels and links) differ from it. This script is compared
+too once it exists on origin/main, so only main's version writes. A run from
+an out-of-date checkout would otherwise undo newer issue text and links.
+HEAD isn't compared. --dry-run skips that check.
 
     python3 gh_sync.py --dry-run                       # what would change
     python3 gh_sync.py --banned FILE --phase setup     # labels, milestones, issue type, project, its README, views
@@ -35,7 +43,11 @@ script can still run. --dry-run skips that check.
     python3 gh_sync.py --banned FILE --phase deps      # "blocked by" links
     python3 gh_sync.py --banned FILE --phase all
 
-It needs the `gh` CLI, logged in with the `repo` and `project` scopes. Epics
+It needs the `gh` CLI, logged in with the `repo`, `project` and `read:org`
+scopes. read:org lets the token see the authors' private organisation
+membership, which their authorAssociation depends on: a viewer that can't
+see it reads a member's issue as CONTRIBUTOR, and the run then skips that
+issue's ID instead of adopting it. Epics
 use the org's "Epic" issue type if one exists, and "Feature" otherwise. Every
 title and body is checked against the D5 banned-terms file (--banned), which
 is kept outside the repository, and the run stops on any match. GitHub allows
@@ -69,12 +81,13 @@ REPO_ROOT = PLAN_DIR.parent
 # them into issue text, labels and links. epics.py parses the rows,
 # depcheck.py the dependency edges, roadmap.py's KIND_RE the spike label, and
 # sizing.py the size and maintainer labels. check_fresh() compares these with
-# origin/main. gh_sync.py itself is left out on purpose, so a branch that
-# changes only this script can still run against the live board. Paths are
-# relative to the repository root.
+# origin/main, and adds SCRIPT once it exists there: before this script is on
+# main, the branch that adds it can still run; after, only main's version can
+# write. Paths are relative to the repository root.
 PLAN_INPUTS = ("plan/implementation/epics",
                *(f"plan/implementation/tools/{f}"
                  for f in ("epics.py", "depcheck.py", "roadmap.py", "sizing.py")))
+SCRIPT = "plan/implementation/tools/gh_sync.py"
 TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
 
 PROJECT_TITLE = "Syntropy"
@@ -277,7 +290,10 @@ def check_fresh(root=REPO_ROOT):
     if fetch.returncode:
         raise SystemExit("could not fetch origin's main branch, so the plan inputs can't "
                          f"be checked; nothing was written: {fetch.stderr.strip()[:300]}")
-    diff = git("diff", "--name-only", "origin/main", "--", *PLAN_INPUTS)
+    inputs = list(PLAN_INPUTS)
+    if git("cat-file", "-e", f"origin/main:{SCRIPT}").returncode == 0:
+        inputs.append(SCRIPT)
+    diff = git("diff", "--name-only", "origin/main", "--", *inputs)
     if diff.returncode:
         raise SystemExit(f"git diff against origin/main failed: {diff.stderr.strip()[:300]}")
     changed = [line for line in diff.stdout.splitlines() if line]
@@ -468,8 +484,10 @@ ISSUES_Q = """query($o:String!,$n:String!,$after:String){ repository(owner:$o,na
 
 
 def existing_issues(gh):
-    """The synced issues by task or epic ID, how many markers were ignored,
-    and how many issues the repository has.
+    """The synced issues by task or epic ID, and a dict with how many
+    markers were ignored, how many issues the repository has, and `held`:
+    every ID any issue's body carries a marker for, anywhere in the body,
+    mapped to (number, on the board) for each issue that carries it.
 
     Anyone can open an issue on a public repository and copy a marker into
     it, and an organisation member may have read access only. So an issue is
@@ -478,17 +496,20 @@ def existing_issues(gh):
     PROJECT_NUMBER, owner checked), which needs write access to the project.
     The sync creates every issue straight into the board. Two adopted issues
     with the same ID stop the run."""
-    found, ignored, clashes, after, total = {}, 0, [], None, 0
+    found, ignored, clashes, after, total, held = {}, 0, [], None, 0, {}
     while True:
         r = gh.query(ISSUES_Q, o=gh.owner, n=gh.name, after=after)["repository"]["issues"]
         total = r["totalCount"]
         for n in r["nodes"]:
-            m = re.search(rf"<!-- {MARKER}: (\S+) (\w+) -->\s*\Z", n["body"] or "")
-            if not m:
-                continue
+            body = n["body"] or ""
             on_board = any(i["project"]["number"] == PROJECT_NUMBER
                            and (i["project"]["owner"] or {}).get("login") == gh.owner
                            for i in n["projectItems"]["nodes"])
+            for tid in set(re.findall(rf"<!-- {MARKER}: (\S+) \w+ -->", body)):
+                held.setdefault(tid, []).append((n["number"], on_board))
+            m = re.search(rf"<!-- {MARKER}: (\S+) (\w+) -->\s*\Z", body)
+            if not m:
+                continue
             if n["authorAssociation"] not in TRUSTED or not on_board:
                 ignored += 1
                 continue
@@ -504,7 +525,21 @@ def existing_issues(gh):
         raise SystemExit(f"{len(clashes)} ID(s) carried by two adopted issues: "
                          f"{'; '.join(clashes[:10])}. Stopped before the next write; "
                          f"close the extra issue or remove its marker, then run again.")
-    return found, ignored, total
+    return found, {"ignored": ignored, "total": total, "held": held}
+
+
+def issue_numbers(existing, held):
+    """The issue number to show for each ID in "Depends on" lists: the
+    adopted issue's, or, for an ID no issue was adopted for, the one issue on
+    the board that holds its marker. A run that can't adopt an issue then
+    leaves its dependents' text alone, and a number never comes from an issue
+    off the board, which anyone could have opened."""
+    nums = {k: v["number"] for k, v in existing.items()}
+    for tid, holders in held.items():
+        on_board = [num for num, board in holders if board]
+        if tid not in nums and len(on_board) == 1:
+            nums[tid] = on_board[0]
+    return nums
 
 
 def check_adoption(existing, ignored, total, planned):
@@ -623,6 +658,12 @@ def write_issue(gh, ctx, item, existing):
     if old:
         gh.mutate(f"update #{old['number']} {item['id']}", UPDATE_Q, i=old["id"], **v)
         return old, True
+    holders = ctx["held"].get(item["id"])
+    if holders:
+        # An issue already carries this ID's marker but wasn't adopted.
+        # Creating another would duplicate it; a maintainer resolves it.
+        ctx["skipped"][item["id"]] = sorted(num for num, _ in holders)
+        return None, False
     parent = existing.get(item["parent"], {}).get("id") if item["parent"] else None
     r = gh.mutate(f"create {item['id']}", CREATE_Q, r=ctx["repo_id"],
                   p=[ctx["project"]["id"]], par=parent, **v)
@@ -662,26 +703,26 @@ def main():
     login = gh.query("query{ viewer{ login } }")["viewer"]["login"]
     # Every stop check runs here, before setup(), whose label, milestone,
     # project and view writes are the first writes of a run.
-    existing, ignored, total = existing_issues(gh)
+    existing, info = existing_issues(gh)
     print(f"run as {login}: {len(records)} tasks, {len(epic_map)} epics, "
           f"{sum(len(d) for d in deps.values())} dependency links; "
           f"{len(existing)} already on GitHub; "
-          f"{ignored} marker(s) ignored (author not trusted, or issue not on "
+          f"{info['ignored']} marker(s) ignored (author not trusted, or issue not on "
           f"project #{PROJECT_NUMBER})")
     orphans = sorted((v["number"], k) for k, v in existing.items()
                      if k not in by_id and k not in epic_map)
     print(f"{len(orphans)} orphan(s), synced issues whose task or epic is no longer "
           f"in the plan, left open" + (": " if orphans else "")
           + ", ".join(f"#{n} {k}" for n, k in orphans))
-    check_adoption(existing, ignored, total, len(records) + len(epic_map))
+    check_adoption(existing, info["ignored"], info["total"], len(records) + len(epic_map))
 
     epic_items = [epic_issue(e, base) for e in epic_map.values()]
     if args.banned:
-        numbers = {k: v["number"] for k, v in existing.items()}
+        numbers = issue_numbers(existing, info["held"])
         check_banned(epic_items + [task_issue(by_id[t], epic_map[by_id[t]["epic"]],
                      sizes.get(t), deps[t], numbers, base) for t in order], args.banned)
 
-    ctx = {}
+    ctx = {"held": info["held"], "skipped": {}}
     phases = ("setup", "issues", "deps") if args.phase == "all" else (args.phase,)
     if "setup" in phases or args.dry_run:
         setup(gh, ctx)
@@ -697,7 +738,8 @@ def main():
         for attempt in range(30):
             try:
                 if attempt:
-                    existing, _, _ = existing_issues(gh)
+                    existing, info = existing_issues(gh)
+                    ctx["held"] = info["held"]
                 return phase_fn()
             except Interrupted as err:
                 if gh.dry_run:
@@ -711,13 +753,20 @@ def main():
         for item in epic_items:
             changed += write_issue(gh, ctx, item, existing)[1]
         for n, t in enumerate(order, 1):
-            numbers = {k: v["number"] for k, v in existing.items()}
+            numbers = issue_numbers(existing, ctx["held"])
             item = task_issue(by_id[t], epic_map[by_id[t]["epic"]], sizes.get(t),
                               deps[t], numbers, base)
             changed += write_issue(gh, ctx, item, existing)[1]
             if n % 50 == 0:
                 print(f"tasks {n}/{len(order)}, {gh.writes} writes so far", flush=True)
         print(f"issues: {changed} created or updated")
+        if ctx["skipped"]:
+            print(f"skipped {len(ctx['skipped'])} create(s): an issue already carries the "
+                  f"ID's marker but wasn't adopted (its author isn't trusted as this token "
+                  f"sees it, it isn't on project #{PROJECT_NUMBER}, or text follows the "
+                  f"marker). Fix or close the holding issue, then run again:")
+            for tid, nums in sorted(ctx["skipped"].items(), key=lambda kv: epics.id_key(kv[0])):
+                print(f"  {tid}: held by {', '.join(f'#{n}' for n in nums)}")
 
     def deps_phase():
         added = removed = 0
@@ -754,6 +803,8 @@ def main():
     if "deps" in phases:
         resilient(deps_phase)
     print(f"done: {gh.writes} writes")
+    if ctx["skipped"]:
+        raise SystemExit(f"{len(ctx['skipped'])} create(s) skipped; see the list above")
 
 
 if __name__ == "__main__":

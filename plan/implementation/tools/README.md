@@ -13,7 +13,7 @@ Scripts that read the six epic files in `../epics/`, check the task graph and wr
 | `gendoc.py` | – | nothing; helpers the three generators share (markers, tables, ID ranges, the open-questions and SC parsers) |
 | `sizing.py` | the epics, or an `epics.py --json` dump | nothing; prints `[estimate]` size classes, effort units per milestone and work pool, and agent runs |
 | `schedsim.py` | `sizing.py`, and the graph from `depcheck.py` or a `depcheck.py --graph` file | nothing; prints `[estimate]` elapsed time to each milestone exit under agent concurrency, serial lab rigs, maintainer latency and gate throughput, and the unconstrained floor |
-| `gh_sync.py` | the epics, `depcheck.py`'s edges, `sizing.py`, the D5 banned-terms list (`--banned`, kept outside the repository); needs the `gh` CLI logged in with the `repo` and `project` scopes | GitHub, not `plan/`: one issue per epic and task on the project board, sub-issues, labels, milestones and "blocked by" links; re-runs update only what changed |
+| `gh_sync.py` | the epics, `depcheck.py`'s edges, `sizing.py`, the D5 banned-terms list (`--banned`, kept outside the repository); needs the `gh` CLI logged in with the `repo`, `project` and `read:org` scopes (`read:org` so that members' issues read as members) | GitHub, not `plan/`: one issue per epic and task on the project board, sub-issues, labels, milestones and "blocked by" links; re-runs update only what changed |
 
 ## `epics.py`
 
