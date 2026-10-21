@@ -27,7 +27,7 @@ use std::path::Path;
 
 use super::expr::Expr;
 use super::toml::{self, Value};
-use super::{Policy, THIRD_PARTY, count, is_vendored, relative};
+use super::{Policy, THIRD_PARTY, count, file_inside, is_vendored, relative};
 
 /// Where the manifest lives, relative to the workspace root.
 pub const PATH: &str = "third_party/licences.toml";
@@ -186,10 +186,12 @@ pub fn check(root: &Path, policy: &Policy) -> (Vec<String>, usize) {
                 entry.path, entry.license
             )),
         }
-        if !entry.notice.is_empty() && !root.join(&entry.notice).is_file() {
+        if !entry.notice.is_empty()
+            && let Some(problem) = notice_problem(root, &entry.notice)
+        {
             problems.push(format!(
-                "{at}: the notice file `{}` of `{}` does not exist",
-                entry.notice, entry.path
+                "{at}: the notice file of `{}`: {problem}",
+                entry.path
             ));
         }
     }
@@ -240,6 +242,21 @@ fn path_problem(root: &Path, path: &str) -> Option<String> {
     }
     if !full.is_file() {
         return Some(format!("`{path}` does not exist"));
+    }
+    None
+}
+
+/// What is wrong with an entry's `notice`, if anything. The notices carry its text, so it must
+/// be a vendored file inside `root`, symlinks followed, and never a path that reaches elsewhere.
+fn notice_problem(root: &Path, notice: &str) -> Option<String> {
+    if let Err(error) = file_inside(root, notice) {
+        return Some(error);
+    }
+    if !is_vendored(notice) || own_file(notice) {
+        return Some(format!(
+            "`{notice}` is not a vendored file: a notice file sits under `third_party/` or a \
+             `crates/kernels-*/vendor/` tree"
+        ));
     }
     None
 }
@@ -302,6 +319,41 @@ mod tests {
             let found = path_problem(root, path).unwrap_or_default();
             assert!(found.contains(expected), "{path}: {found}");
         }
+    }
+
+    #[test]
+    fn a_notice_must_be_a_vendored_file_inside_the_root() {
+        let dir =
+            std::env::temp_dir().join(format!("syntropy-xtask-notice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("root/third_party/a")).unwrap();
+        std::fs::create_dir_all(dir.join("root/crates/core")).unwrap();
+        std::fs::write(dir.join("root/third_party/a/LICENSE"), "MIT\n").unwrap();
+        std::fs::write(dir.join("root/crates/core/lib.rs"), "\n").unwrap();
+        std::fs::write(dir.join("outside.txt"), "secret\n").unwrap();
+        let root = dir.join("root");
+        assert_eq!(notice_problem(&root, "third_party/a/LICENSE"), None);
+        for (notice, expected) in [
+            ("../outside.txt", "is not a plain relative path"),
+            ("/etc/passwd", "is not a plain relative path"),
+            (
+                "third_party/../../outside.txt",
+                "is not a plain relative path",
+            ),
+            ("crates/core/lib.rs", "is not a vendored file"),
+            ("third_party/a/MISSING", "does not exist"),
+        ] {
+            let found = notice_problem(&root, notice).unwrap_or_default();
+            assert!(found.contains(expected), "{notice}: {found}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("outside.txt"), root.join("third_party/a/NOTICE"))
+                .unwrap();
+            let found = notice_problem(&root, "third_party/a/NOTICE").unwrap_or_default();
+            assert!(found.contains("resolves outside"), "{found}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

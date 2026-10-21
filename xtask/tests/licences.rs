@@ -476,7 +476,7 @@ fn an_entry_with_a_denied_licence_or_a_stale_path_fails() {
          does not meet",
         "`third_party/gone.c` does not exist",
         "`third_party/tiny/tiny.c` is listed again; its entry is at line 3",
-        "the notice file `third_party/tiny/NO-LICENSE` of `third_party/tiny/tiny.c` does not exist",
+        "the notice file of `third_party/tiny/tiny.c`: `third_party/tiny/NO-LICENSE` does not exist",
     ] {
         assert!(log.contains(expected), "{expected}: {log}");
     }

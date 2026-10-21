@@ -31,7 +31,7 @@ use serde::Deserialize;
 
 use super::expr::Expr;
 use super::manifest::{self, Entry};
-use super::{Policy, count};
+use super::{Policy, count, file_inside, is_plain_relative};
 use crate::check_deps::policy::{PREFIX, RELEASE_CRATES};
 
 /// The crates.io index, as `cargo metadata` names it in a package's `source`.
@@ -319,6 +319,14 @@ pub fn problems(components: &[Component]) -> Vec<String> {
             }
             (None, Some(_)) => {}
         }
+        if let Some(file) = &component.license_file
+            && !is_plain_relative(file)
+        {
+            problems.push(format!(
+                "`{label}` names the licence file `{file}`, which is not a plain path inside its \
+                 package, so the notices cannot carry it"
+            ));
+        }
         if component.is_mpl() && component.origin == Origin::Path {
             problems.push(format!(
                 "`{label}` is under MPL-2.0 and comes from a local path, so it has no published \
@@ -350,6 +358,7 @@ fn package_files(component: &Component) -> (Vec<Carried>, Vec<Carried>) {
         .unwrap_or_default();
     if let Some(file) = &component.license_file
         && !names.contains(file)
+        && is_plain_relative(file)
     {
         names.push(file.clone());
     }
@@ -366,9 +375,11 @@ fn package_files(component: &Component) -> (Vec<Carried>, Vec<Carried>) {
         if !is_notice && !is_licence {
             continue;
         }
-        let text = match std::fs::read(component.dir.join(&name)) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(error) => format!("(cannot read this file: {error})"),
+        // Only files inside the package, symlinks followed, are carried.
+        let text = match file_inside(&component.dir, &name).map(std::fs::read) {
+            Ok(Ok(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+            Ok(Err(error)) => format!("(cannot read this file: {error})"),
+            Err(error) => format!("(not carried: {error})"),
         };
         let carried = Carried {
             heading: format!("{}: {name}", component.label()),
@@ -499,9 +510,10 @@ pub fn render(release: &Release, entries: &[Entry], root: &Path) -> (String, Cou
             .push(&entry.path);
     }
     for (notice, paths) in by_notice {
-        let text = match std::fs::read(root.join(notice)) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(error) => format!("(cannot read this file: {error})"),
+        let text = match file_inside(root, notice).map(std::fs::read) {
+            Ok(Ok(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+            Ok(Err(error)) => format!("(cannot read this file: {error})"),
+            Err(error) => format!("(not carried: {error})"),
         };
         licences.push(Carried {
             heading: format!("{notice} (for {})", paths.join(", ")),
@@ -731,6 +743,15 @@ mod tests {
             problems(&[component(Some("MIT"), Origin::Path)]),
             Vec::<String>::new()
         );
+        for file in ["../../etc/passwd", "/etc/passwd", "a/../../b"] {
+            let mut escaping = component(None, Origin::CratesIo);
+            escaping.license_file = Some(file.to_owned());
+            let found = problems(&[escaping]);
+            assert!(
+                found.len() == 1 && found[0].contains("not a plain path inside its package"),
+                "{file}: {found:#?}"
+            );
+        }
         assert_eq!(
             problems(&[component(Some("MPL-2.0"), Origin::CratesIo)]),
             Vec::<String>::new()
@@ -744,6 +765,40 @@ mod tests {
         assert!(found[0].contains("declares no licence"));
         assert!(found[1].contains("not an SPDX expression"));
         assert!(found[2].contains("no published source"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_licence_file_that_links_out_of_its_package_is_not_carried() {
+        let dir = std::env::temp_dir().join(format!("syntropy-xtask-carry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("pkg")).unwrap();
+        std::fs::write(dir.join("secret.txt"), "do not carry\n").unwrap();
+        std::fs::write(dir.join("pkg/LICENSE-MIT"), "MIT text\n").unwrap();
+        // A symlinked NOTICE is not listed at all; a `license-file` that is a symlink out of the
+        // package is listed, and its text is not carried.
+        std::os::unix::fs::symlink(dir.join("secret.txt"), dir.join("pkg/NOTICE")).unwrap();
+        std::os::unix::fs::symlink(dir.join("secret.txt"), dir.join("pkg/TERMS")).unwrap();
+        let component = Component {
+            name: "x".to_owned(),
+            version: "1.0.0".to_owned(),
+            license: None,
+            license_file: Some("TERMS".to_owned()),
+            repository: None,
+            origin: Origin::CratesIo,
+            dir: dir.join("pkg"),
+        };
+        let (licences, notices) = package_files(&component);
+        assert!(notices.is_empty());
+        let texts: Vec<&str> = licences.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts.len(), 2, "{texts:#?}");
+        assert_eq!(texts[0], "MIT text\n");
+        assert!(
+            texts[1].starts_with("(not carried: `TERMS` resolves outside"),
+            "{texts:#?}"
+        );
+        assert!(texts.iter().all(|t| !t.contains("do not carry")));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -66,6 +66,43 @@ pub fn count(n: usize, noun: &str) -> String {
     }
 }
 
+/// Whether `rel` is a plain relative path: parts joined by `/`, none of them empty, `.` or `..`,
+/// and no `\\` or leading `/`. Every path the licence files name must be one, so none can reach
+/// outside the tree it is resolved against.
+pub fn is_plain_relative(rel: &str) -> bool {
+    !rel.is_empty()
+        && !rel.contains('\\')
+        && !rel.contains(':')
+        && rel
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// `base` joined with the plain relative path `rel`, if it names a file that, with every symlink
+/// followed, is still inside `base`. The error says which condition failed.
+pub fn file_inside(base: &Path, rel: &str) -> Result<std::path::PathBuf, String> {
+    if !is_plain_relative(rel) {
+        return Err(format!(
+            "`{rel}` is not a plain relative path with `/` separators"
+        ));
+    }
+    let joined = base.join(rel);
+    let (Ok(real_base), Ok(real)) = (std::fs::canonicalize(base), std::fs::canonicalize(&joined))
+    else {
+        return Err(format!("`{rel}` does not exist"));
+    };
+    if !real.starts_with(&real_base) {
+        return Err(format!(
+            "`{rel}` resolves outside {}, through a symlink",
+            base.display()
+        ));
+    }
+    if !real.is_file() {
+        return Err(format!("`{rel}` is not a file"));
+    }
+    Ok(joined)
+}
+
 /// `path` relative to `root`, with `/` between components, as messages and the manifest write
 /// paths on every OS.
 pub fn relative(root: &Path, path: &Path) -> String {
@@ -117,6 +154,52 @@ mod tests {
         ] {
             assert!(!is_vendored(rel), "{rel}");
         }
+    }
+
+    #[test]
+    fn plain_relative_paths_cannot_leave_their_tree() {
+        for rel in ["LICENSE", "third_party/a/LICENSE", "LICENSES/MIT.txt"] {
+            assert!(is_plain_relative(rel), "{rel}");
+        }
+        for rel in [
+            "",
+            "/etc/passwd",
+            "../LICENSE",
+            "a/../../b",
+            "./LICENSE",
+            "a//b",
+            "a\\b",
+            "C:/x",
+        ] {
+            assert!(!is_plain_relative(rel), "{rel}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_tree_is_refused() {
+        let dir =
+            std::env::temp_dir().join(format!("syntropy-xtask-inside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("tree")).unwrap();
+        std::fs::write(dir.join("outside.txt"), "secret\n").unwrap();
+        std::fs::write(dir.join("tree/LICENSE"), "MIT\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("outside.txt"), dir.join("tree/NOTICE")).unwrap();
+        let tree = dir.join("tree");
+        assert!(file_inside(&tree, "LICENSE").is_ok());
+        let error = file_inside(&tree, "NOTICE").unwrap_err();
+        assert!(error.contains("resolves outside"), "{error}");
+        assert!(
+            file_inside(&tree, "../outside.txt")
+                .unwrap_err()
+                .contains("not a plain")
+        );
+        assert!(
+            file_inside(&tree, "MISSING")
+                .unwrap_err()
+                .contains("does not exist")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
