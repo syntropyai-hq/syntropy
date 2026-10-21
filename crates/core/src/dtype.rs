@@ -6,12 +6,14 @@
 //! index and diagnostic types. [`GgmlType`] lists the GGUF block types of RFC-0042 §2.1 that
 //! [`QuantScheme::Ggml`](crate::QuantScheme::Ggml) carries.
 
+use serde::{Deserialize, Serialize};
+
 /// The element type of a tensor, a scale or a kernel argument (RFC-0042 §1.1).
 ///
 /// Variants are declared in the order RFC-0042 §1.1 lists them, and [`DType::ALL`] holds
 /// them in that order.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DType {
     /// IEEE 754 binary32.
     F32,
@@ -95,7 +97,7 @@ impl DType {
 /// them in that order.
 #[non_exhaustive]
 #[allow(non_camel_case_types)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum GgmlType {
     /// Plain F32: 1 weight in 4 bytes (32 bits per weight).
     F32,

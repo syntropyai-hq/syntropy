@@ -10,11 +10,13 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::dtype::{DType, GgmlType};
 
 /// How finely a scheme's scales vary over a weight tensor (RFC-0042 §1.1, §2.3, §2.4).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ScaleGranularity {
     /// One scale for the whole tensor.
     Tensor,
@@ -37,7 +39,7 @@ pub enum ScaleGranularity {
 
 /// A compressed-tensors scheme (RFC-0042 §1.1, §2.4; RFC-0041 §2.2).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum CtScheme {
     /// `pack-quantized` integers: `value = scale_g · (q − z_g)`, in groups of `group`
     /// consecutive elements along K. RFC-0042 §2.4 defines `bits` 4 and 8 only.
@@ -60,7 +62,7 @@ pub enum CtScheme {
 
 /// How a weight tensor's stored elements encode its values (RFC-0042 §1.1, §2).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum QuantScheme {
     /// Elements stored unquantised in the given type and used as they are (RFC-0042 §2.5).
     Plain(DType),
@@ -100,7 +102,7 @@ pub enum QuantScheme {
 ///
 /// [`QuantScheme::dtype_class`] gives each scheme's class.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DTypeClass {
     /// Below 4 bits per weight: the 1- to 3-bit GGUF types.
     Sub4,
