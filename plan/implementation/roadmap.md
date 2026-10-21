@@ -264,7 +264,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | QUAL-E5-T08 | spike | Spike: reference throughput F_ref, and the size of R-LABCPU, on a candidate host before R-LABCPU is sized, because the calibration… | OQ-FID-14 | 2 |
 | QUAL-E7-T06 | spike | Spike and import: real checkpoints for the M0 families, as a desk check (OQ-MF-04) | – | 12 |
 
-**Open questions needed by M0a:** 2 (decision 2). Answered by no task: OQ-PRC-23.
+**Open questions needed by M0a:** 3 (decision 3). Answered by no task: OQ-PRC-21, OQ-PRC-23.
 <!-- END GENERATED -->
 
 ## M0b: parity, certification and the lab
