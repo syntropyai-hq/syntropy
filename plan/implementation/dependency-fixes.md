@@ -477,3 +477,13 @@ Four M0 tasks stopped this week on criteria their own dependencies could not sho
 | QUAL-E5-T19's types are in `core`; RFC-0060 §5.5 gets a dated note | QUAL-E5-T19 | R9 | §5.5 said "core / net", and only `core` lets `exec` build against them (rule 3) |
 | PLC-E7-T11 → DIST-E1-T06 | PLC-E7-T11 | R9 | found in review: the runner exit moved from COMP-E9-T04 is followed by a clean restart, and PLC-E7-T11's existing criteria check the supervisor's action; both are the supervisor's (DIST-E1-T06, RFC-0040 §10.4, RFC-0001 §3.4), which PLC-E7-T11 did not reach |
 | QUAL-E15-T23 marked **Maintainer action** | QUAL-E15-T23 | R9 | found in review: fitting the spare GPU in R-ADA's slot is lab work, which QUAL-E15-T02's marker covered before the split |
+
+## DIST-E8-T01's fuzz criterion (2026-10-22)
+
+DIST-E8-T01 (M2) builds the base header and control frame codecs. Its criterion "fuzz targets are clean for 10 CPU-minutes per PR" needs a fuzz target and a job to run it. The harness and the `fuzz/targets.toml` registry are QUAL-E10-T01's (M0b), which DIST-E8-T01 does not depend on, and the `frames` target is QUAL-E10-T04's (M2), which depends on DIST-E8-T01, so the criterion could take no edge without a cycle. This pass applies R9 and moves it to QUAL-E10-T04. DIST-E8-T01 keeps what it can show itself, as property tests over its own decode entry points.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "fuzz targets are clean for 10 CPU-minutes per PR" moved from DIST-E8-T01 to QUAL-E10-T04, whose `frames` target wraps DIST-E8-T01's decode entry points | DIST-E8-T01, QUAL-E10-T04 | R9 | QUAL-E10-T04 builds the `frames` target and already depends on DIST-E8-T01. No job definition gives 10 CPU-minutes per PR (RFC-0060 §10.3's `fuzz-smoke` runs 60 s per target), so QUAL-E10-T04 reconciles the figure |
+| DIST-E8-T01 gains "decoding arbitrary bytes, and arbitrary corruptions of the golden frames, never panics, refuses with a classified error, reads nothing past the declared lengths, and re-encodes every accepted frame to the same bytes" | DIST-E8-T01 | R9 | the properties RFC-0060 §10.2 asks of every fuzz target that a property test over the codec can show without the fuzz harness |
+

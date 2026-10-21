@@ -1,0 +1,12 @@
+# sealed-ping-phase1: sealed Ping, KEY_PHASE 1, ctl_seq 7 in step
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 10 14 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 10 00 00 00 14 27 ea b0 fe 69 22 17  # 0030 header
+2a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0040 extension
+50 6f 8e ad cc eb 0a 29 48 67 86 a5 c4 e3 02 21  # 0050 extension
+40 5f 7e 9d bc db fa 19 38 57 76 95 b4 d3 f2 11  # 0060 extension
+30 4f 6e 8d ac cb ea 09 28 47 66 85 a4 c3 e2 01  # 0070 extension
+a0 bf de fd 1c 3b 5a 79 98 b7 d6 f5 14 33 52 71  # 0080 payload
