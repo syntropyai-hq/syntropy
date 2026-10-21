@@ -245,7 +245,8 @@ fn rule_9_dev_only_crates_are_only_dev_dependencies() {
 #[test]
 fn rule_10_release_builds_carry_no_test_features() {
     // `testkit` turns on `obs/guards`, but only as a dev-dependency of `cli`, which no release
-    // build includes. Its default feature turning on `obs/guards` is a finding all the same.
+    // build includes. Its default feature turning on `obs/guards` is a finding all the same, and so
+    // is the `obs/fault-injection` it reaches through `obs`'s own `extra` (#1556).
     fails_with(
         "rule-10",
         10,
@@ -253,6 +254,8 @@ fn rule_10_release_builds_carry_no_test_features() {
             "the release build of `cli` enables `obs/fault-injection`",
             "the release build of `kernels-vulkan` enables `obs/debug-taps`",
             "`testkit` turns on `obs/guards` by default (default → helpers → syntropy-obs/guards)",
+            "`testkit` turns on `obs/fault-injection` by default (default → helpers → \
+             syntropy-obs/extra → fault-injection)",
         ],
     );
 }
