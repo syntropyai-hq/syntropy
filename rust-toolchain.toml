@@ -1,4 +1,5 @@
-# One stable release for every build (ADR-0001 item 1, RFC-0062 §4.2). Renovate proposes minor bumps.
+# One stable release for every build (ADR-0001 item 1, RFC-0062 §4.2). Renovate is planned to
+# propose minor bumps (QUAL-E1-T10).
 [toolchain]
 channel = "1.99.1"
 profile = "minimal"
