@@ -403,13 +403,12 @@ class HookTest(unittest.TestCase):
     def test_pre_commit_runs_the_plan_tools_when_plan_files_are_only_deleted(self):
         # A clone of this repository, with one generated file deleted and nothing else staged:
         # the staged plan no longer matches what trace.py generates.
-        clone = self.dir / "clone"
-        subprocess.run(["git", "clone", "-q", str(REPO), str(clone)], env=self.env, check=True,
-                       capture_output=True)
+        clone = self.trusted_clone()
+        # pre-commit runs the plan tools from the staged tree, so stage the ones under test.
+        subprocess.run(["git", "add", "plan/implementation/tools"], cwd=clone, env=self.env,
+                       check=True, capture_output=True)
         subprocess.run(["git", "rm", "-q", "plan/implementation/traceability.md"], cwd=clone,
                        env=self.env, check=True, capture_output=True)
-        # The hooks under test, placed in the clone so they belong to the repository they check.
-        shutil.copytree(REPO / ".githooks", clone / ".githooks", dirs_exist_ok=True)
         code, output = self.run_hook([], cwd=clone, hook="pre-commit", hooks=clone / ".githooks")
         self.assertEqual(code, 1, output)
         self.assertNotIn("plan tools: skipped", output)
@@ -449,12 +448,20 @@ class HookTest(unittest.TestCase):
         self.assertIn("naming check: skipped, this checkout is not the one these hooks are in", output)
         self.assertFalse(marker.exists(), "a hook ran code from the other repository")
 
+    @staticmethod
+    def copy_under_test(checkout):
+        """Copies the hooks and the tools under test, from this working copy, into `checkout`,
+        so a test runs them rather than the versions committed at HEAD."""
+        for part in (Path(".githooks"), Path("plan") / "implementation" / "tools"):
+            shutil.copytree(REPO / part, checkout / part, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+
     def trusted_clone(self):
-        """A clone of this repository holding the hooks under test, as its own .githooks."""
+        """A clone of this repository holding the hooks and tools under test."""
         clone = self.dir / "clone"
         subprocess.run(["git", "clone", "-q", str(REPO), str(clone)], env=self.env, check=True,
                        capture_output=True)
-        shutil.copytree(REPO / ".githooks", clone / ".githooks", dirs_exist_ok=True)
+        self.copy_under_test(clone)
         return clone
 
     def git_in(self, cwd, *args):
@@ -489,7 +496,7 @@ class HookTest(unittest.TestCase):
         clone = self.trusted_clone()
         worktree = self.dir / "linked"
         self.git_in(clone, "worktree", "add", "-q", "--detach", str(worktree))
-        shutil.copytree(REPO / ".githooks", worktree / ".githooks", dirs_exist_ok=True)
+        self.copy_under_test(worktree)
         code, output = self.run_in_worktree(worktree / ".githooks", worktree, "commit-msg")
         self.assertEqual(code, 0, output)
         self.assertIn("naming check: PASS", output)
