@@ -97,8 +97,9 @@ fn rule_1(graph: &Graph) -> Vec<Finding> {
 }
 
 /// Rule 2: every edge between members, dev edges included, goes to a lower layer. Every crate
-/// except `core` may use `obs` and `config`, every crate may use `core`, and a crate may use the
-/// macro crate that holds its own macros (`config` → `config-derive`). Edges into the
+/// except `core` may use `obs` and `config`, and every crate may use `core`. A macro crate
+/// (`config-derive`) takes exactly one edge, from the crate that owns its macros (`config`), and
+/// an edge into it from any other crate fails whatever the two crates' places. Edges into the
 /// dev-only row are rule 9's; `core`'s normal and build edges are rule 1's. Tools have no
 /// workspace edges either way.
 fn rule_2(graph: &Graph, layers: &Layers) -> Vec<Finding> {
@@ -117,6 +118,19 @@ fn rule_2(graph: &Graph, layers: &Layers) -> Vec<Finding> {
                 continue;
             };
             let kinds = edge.kinds.describe();
+            if let Some(owner) = policy::macro_owner(to_name) {
+                if owner != from_name {
+                    findings.push(Finding::new(
+                        Rule::Numbered(2),
+                        format!(
+                            "`{from_name}` has a {kinds} dependency on `{to_name}`, the macro crate \
+                             of `{owner}`; only `{owner}` depends on it, and other crates use its \
+                             macros through `{owner}`"
+                        ),
+                    ));
+                }
+                continue;
+            }
             let message = match (from_place, to_place) {
                 (Place::Tool, _) => format!(
                     "`{from_name}` is a tool outside the crate graph, but has a {kinds} \
@@ -131,8 +145,7 @@ fn rule_2(graph: &Graph, layers: &Layers) -> Vec<Finding> {
                     let rule_1_covers = from_name == policy::CORE && edge.kinds.production();
                     let to_core = to_name == policy::CORE;
                     let shared = policy::SHARED.contains(&to_name) && from_name != policy::CORE;
-                    let own_macros = policy::MACRO_CRATES.contains(&(from_name, to_name));
-                    if rule_1_covers || to_core || shared || own_macros || to_layer < from_layer {
+                    if rule_1_covers || to_core || shared || to_layer < from_layer {
                         continue;
                     }
                     format!(
@@ -542,7 +555,6 @@ tools = ["xtask"]
                 ("core", "obs", "dev"),
                 ("xtask", "core", "normal"),
                 ("cli", "xtask", "build"),
-                ("obs", "config-derive", "normal"),
             ],
         );
         assert_eq!(
@@ -558,10 +570,52 @@ tools = ["xtask"]
                  crate depends only on crates in lower layers",
                 "rule 2: `manifest` (layer 1) has a normal dependency on `solver` (layer 2); a \
                  crate depends only on crates in lower layers",
-                "rule 2: `obs` (layer 0) has a normal dependency on `config-derive` (layer 0); a \
-                 crate depends only on crates in lower layers",
                 "rule 2: `xtask` is a tool outside the crate graph, but has a normal dependency \
                  on `core`; tools depend on no workspace crate",
+            ]
+        );
+    }
+
+    #[test]
+    fn rule_2_lets_only_config_depend_on_config_derive() {
+        // `config` may use its macro crate by any edge kind; every other crate fails, from any
+        // layer, the dev-only row and the tools included.
+        let allowed = run(
+            &[],
+            &[
+                ("config", "config-derive", "normal"),
+                ("config", "config-derive", "dev"),
+            ],
+        );
+        assert_eq!(allowed, Vec::<String>::new());
+
+        let found = run(
+            &[],
+            &[
+                ("obs", "config-derive", "normal"),
+                ("core", "config-derive", "dev"),
+                ("solver", "config-derive", "normal"),
+                ("cli", "config-derive", "build"),
+                ("testkit", "config-derive", "dev"),
+                ("xtask", "config-derive", "normal"),
+            ],
+        );
+        let rejected = |from: &str, kind: &str| {
+            format!(
+                "rule 2: `{from}` has a {kind} dependency on `config-derive`, the macro crate of \
+                 `config`; only `config` depends on it, and other crates use its macros through \
+                 `config`"
+            )
+        };
+        assert_eq!(
+            found,
+            [
+                rejected("cli", "build"),
+                rejected("core", "dev"),
+                rejected("obs", "normal"),
+                rejected("solver", "normal"),
+                rejected("testkit", "dev"),
+                rejected("xtask", "normal"),
             ]
         );
     }
