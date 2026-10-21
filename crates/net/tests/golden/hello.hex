@@ -1,0 +1,22 @@
+# hello: Hello on an Activations channel, F32, with a DataPlaneCredential
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 0a 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 a8 00 00 00 1c f3 70 7d 11 00 fa e3  # 0030 header
+01 01 01 00 00 00 00 00 11 01 00 00 00 00 00 00  # 0040 extension
+88 77 66 55 44 33 22 11 03 00 00 00 00 00 00 00  # 0050 extension
+29 00 00 00 00 00 00 00 00 00 01 00 00 01 00 00  # 0060 extension
+00 00 10 00 40 00 01 00 00 00 00 00 00 00 00 00  # 0070 extension
+01 20 3f 5e 7d 9c bb da f9 18 37 56 75 94 b3 d2  # 0080 payload
+f1 10 2f 4e 6d 8c ab ca e9 08 27 46 65 84 a3 c2  # 0090 payload
+e1 00 1f 3e 5d 7c 9b ba d9 f8 17 36 55 74 93 b2  # 00a0 payload
+d1 f0 0f 2e 4d 6c 8b aa c9 e8 07 26 45 64 83 a2  # 00b0 payload
+c1 e0 ff 1e 3d 5c 7b 9a b9 d8 f7 16 35 54 73 92  # 00c0 payload
+b1 d0 ef 0e 2d 4c 6b 8a a9 c8 e7 06 25 44 63 82  # 00d0 payload
+a1 c0 df fe 1d 3c 5b 7a 99 b8 d7 f6 15 34 53 72  # 00e0 payload
+91 b0 cf ee 0d 2c 4b 6a 89 a8 c7 e6 05 24 43 62  # 00f0 payload
+81 a0 bf de fd 1c 3b 5a 79 98 b7 d6 f5 14 33 52  # 0100 payload
+71 90 af ce ed 0c 2b 4a 69 88 a7 c6 e5 04 23 42  # 0110 payload
+61 80 9f be dd fc 1b 3a                          # 0120 payload

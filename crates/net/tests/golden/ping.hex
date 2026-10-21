@@ -1,0 +1,11 @@
+# ping: Ping request
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 10 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 00 00 00 00 00 00 00 00 f6 7c 8b 4b  # 0030 header
+15 cd 85 3d fe 9c 97 17 00 00 00 00 00 00 00 00  # 0040 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension

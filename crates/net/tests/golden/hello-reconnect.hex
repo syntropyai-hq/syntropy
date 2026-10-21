@@ -1,0 +1,26 @@
+# hello-reconnect: reconnect Hello on a Tokens channel: resume_from 1001 at extension offset 64
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 0a 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0020 header
+80 00 00 00 a8 00 00 00 f5 2c 23 a9 a5 8b 70 a2  # 0030 header
+02 01 01 00 00 00 00 00 11 01 00 00 00 00 00 00  # 0040 extension
+88 77 66 55 44 33 22 11 03 00 00 00 00 00 00 00  # 0050 extension
+29 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00  # 0060 extension
+00 00 10 00 40 00 01 00 01 00 00 00 ef be ad de  # 0070 extension
+e9 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0080 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0090 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00a0 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00b0 extension
+02 21 40 5f 7e 9d bc db fa 19 38 57 76 95 b4 d3  # 00c0 payload
+f2 11 30 4f 6e 8d ac cb ea 09 28 47 66 85 a4 c3  # 00d0 payload
+e2 01 20 3f 5e 7d 9c bb da f9 18 37 56 75 94 b3  # 00e0 payload
+d2 f1 10 2f 4e 6d 8c ab ca e9 08 27 46 65 84 a3  # 00f0 payload
+c2 e1 00 1f 3e 5d 7c 9b ba d9 f8 17 36 55 74 93  # 0100 payload
+b2 d1 f0 0f 2e 4d 6c 8b aa c9 e8 07 26 45 64 83  # 0110 payload
+a2 c1 e0 ff 1e 3d 5c 7b 9a b9 d8 f7 16 35 54 73  # 0120 payload
+92 b1 d0 ef 0e 2d 4c 6b 8a a9 c8 e7 06 25 44 63  # 0130 payload
+82 a1 c0 df fe 1d 3c 5b 7a 99 b8 d7 f6 15 34 53  # 0140 payload
+72 91 b0 cf ee 0d 2c 4b 6a 89 a8 c7 e6 05 24 43  # 0150 payload
+62 81 a0 bf de fd 1c 3b                          # 0160 payload

@@ -1,0 +1,15 @@
+# data-sealed-phase1: sealed Token data frame, KEY_PHASE 1, chan_seq 9; ciphertext and tag
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 02 14 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+00 00 00 00 00 00 00 00 09 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 40 00 00 00 5e dc 41 6d e9 1c 6e a6  # 0030 header
+33 52 71 90 af ce ed 0c 2b 4a 69 88 a7 c6 e5 04  # 0040 extension
+23 42 61 80 9f be dd fc 1b 3a 59 78 97 b6 d5 f4  # 0050 extension
+13 32 51 70 8f ae cd ec 0b 2a 49 68 87 a6 c5 e4  # 0060 extension
+03 22 41 60 7f 9e bd dc fb 1a 39 58 77 96 b5 d4  # 0070 extension
+44 63 82 a1 c0 df fe 1d 3c 5b 7a 99 b8 d7 f6 15  # 0080 payload
+34 53 72 91 b0 cf ee 0d 2c 4b 6a 89 a8 c7 e6 05  # 0090 payload
+24 43 62 81 a0 bf de fd 1c 3b 5a 79 98 b7 d6 f5  # 00a0 payload
+14 33 52 71 90 af ce ed 0c 2b 4a 69 88 a7 c6 e5  # 00b0 payload
