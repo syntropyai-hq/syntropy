@@ -155,6 +155,8 @@ pub struct ExpertCacheDigest {
 }
 ```
 
+**Where the doorbell types live** (revised 2026-10-21). `RouteSlot`, `PredSlot` and `DoorbellLayer` are defined in `syntropy-kernels`, not in `tier`'s `experts` module. Every provider's router op writes the doorbell and `kernels::moe::assign` reads it (RFC-0040 §3.4), and a provider crate depends only on `kernels` (RFC-0001 §4.1, §4.2 rule 2). This section still specifies their layout. `DoorbellLayer` is a fixed header followed by the `route` and `pred` arrays, whose lengths `MAX_UNION` and `MAX_PRED` the `experts` module computes from the plan and which stay fixed for the epoch.
+
 ### 3. Cache levels
 
 | Cache tier | Over home | Exists on | Misses are served by |

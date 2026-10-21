@@ -328,7 +328,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M0b: parity, certification and the lab
 
-125 tasks in the epics (`implementation/roadmap.md`, M0b).
+126 tasks in the epics (`implementation/roadmap.md`, M0b).
 
 - [ ] `qwen_moe` (GQA with softmax top-k MoE, every expert resident in VRAM), its `FamilyCert` gated on golden logits from the publisher's F32 reference as in M0a (RFC-0043, RFC-0042 §7).
 - [ ] The other M0 schemes (Q4_0, BF16, F16) and captured execution on CUDA (RFC-0040, RFC-0012).
@@ -363,7 +363,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M1b: Windows and Apple silicon
 
-89 tasks in the epics (`implementation/roadmap.md`, M1b).
+90 tasks in the epics (`implementation/roadmap.md`, M1b).
 
 - [ ] The Metal native provider and the Metal probes; `Unified` arenas, the wired limit and the macOS I/O engines (`F_NOCACHE` with `preadv`, and mapped reads); the NEON and SME2 CPU paths (RFC-0040, RFC-0020, RFC-0021).
 - [ ] Windows: working-set locking, the IoRing and IOCP engines, and the WDDM and WSL2 specifics (RFC-0020, RFC-0021, RFC-0040).
