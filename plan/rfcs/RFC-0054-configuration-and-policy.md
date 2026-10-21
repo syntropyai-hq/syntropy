@@ -195,6 +195,7 @@ A new cluster starts with the schema defaults plus whatever its first members pr
 - `SYNTROPY_HOME=H` puts the state directory at `H/state` and the default store at `H/store`. That is the layout §1's macOS and Windows defaults use under their `Syntropy` directory, and the Linux service layout under `/var/lib/syntropy`. `SYNTROPY_NODE__STATE_DIR`, when also set, wins for `node.state_dir`.
 - An environment or `--set` value that does not parse as a TOML value is read as a string, so `16GiB` and `0.0.0.0:7433` need no quotes. A key whose type is a string or a path always takes the text as written, unless it is a quoted TOML string.
 - An empty `SYNTROPY_CONFIG` or `SYNTROPY_HOME` counts as unset. When both `--config` and `SYNTROPY_CONFIG` are given, the flag wins, as the CLI layer wins over the environment.
+- Two more `SYNTROPY_*` names draw no unknown-variable warning, because other parts of Syntropy read them and they are not config keys: `SYNTROPY_FAULT_PLAN`, the fault plan a fault-injection build loads at start (RFC-0060 §9.2), and `SYNTROPY_KERNELS`, a build setting of the `kernels-*` crates (COMP-E9-T02). Renaming either out of the `SYNTROPY_` prefix is the alternative, and that is for the maintainers.
 - A drop-in is a `*.toml` file whose name does not start with `.`, compared without case on Windows. "Lexical order" is the byte order of the file name, so `10-a.toml` sorts before `9-b.toml`.
 
 ### 3. Value types and units

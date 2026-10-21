@@ -28,7 +28,7 @@ use serde::de::DeserializeOwned;
 use toml::Value;
 
 use crate::discovery::{HOME_VAR, Mode, Os, Scan, locate};
-use crate::env::{self, Env, FIXED};
+use crate::env::{self, Env, FIXED, OTHER_KNOWN};
 use crate::origin::Origin;
 use crate::registry::Registry;
 use crate::schema::{ConfigSection, DefaultSpec, DefaultValue, KeySchema, Scope};
@@ -716,7 +716,7 @@ impl<'r> Resolution<'r> {
                 ));
                 continue;
             };
-            if FIXED.contains(&name) {
+            if FIXED.contains(&name) || OTHER_KNOWN.contains(&name) {
                 continue;
             }
             let at = Origin::Env {

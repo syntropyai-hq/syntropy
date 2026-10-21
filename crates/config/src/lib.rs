@@ -113,7 +113,7 @@ pub use discovery::{
     CONFIG_FLAG, CONFIG_VAR, Dirs, Explicit, HOME_VAR, Locations, Mode, Os, Runtime, Scan, locate,
     order_dropins,
 };
-pub use env::{API_KEY_VAR, Env, HF_TOKEN_VAR, HOST_VAR, path_for, var_for};
+pub use env::{API_KEY_VAR, Env, HF_TOKEN_VAR, HOST_VAR, OTHER_KNOWN, path_for, var_for};
 pub use origin::Origin;
 pub use registry::{Registry, RegistryError};
 pub use resolve::{

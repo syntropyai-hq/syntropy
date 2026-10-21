@@ -13,7 +13,8 @@
 //! | `SYNTROPY_HOST`, `SYNTROPY_API_KEY` | read only by CLI client commands, to reach a remote daemon (RFC-0051 §1) |
 //!
 //! Any other `SYNTROPY_*` variable that names no key is reported as a warning, because a typo
-//! in a variable is otherwise invisible.
+//! in a variable is otherwise invisible. The variables in [`OTHER_KNOWN`], which other parts of
+//! Syntropy read, are not.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -33,6 +34,14 @@ pub const API_KEY_VAR: &str = "SYNTROPY_API_KEY";
 
 /// The variables outside the `SYNTROPY_A__B` pattern that start with `SYNTROPY_`.
 pub const FIXED: [&str; 4] = [CONFIG_VAR, HOME_VAR, HOST_VAR, API_KEY_VAR];
+
+/// `SYNTROPY_*` variables that other parts of Syntropy read, which are not config keys and so
+/// draw no warning:
+/// - `SYNTROPY_FAULT_PLAN`: the fault plan a fault-injection build loads at process start
+///   (RFC-0060 §9.2);
+/// - `SYNTROPY_KERNELS`: how a `kernels-*` crate's build gets its kernels, `prebuilt`, `build` or
+///   `none` (COMP-E9-T02), which is often exported in a developer's shell.
+pub const OTHER_KNOWN: [&str; 2] = ["SYNTROPY_FAULT_PLAN", "SYNTROPY_KERNELS"];
 
 /// A snapshot of the environment. The daemon takes one at start; the environment layer does
 /// not change while it runs (RFC-0054 §9.2).

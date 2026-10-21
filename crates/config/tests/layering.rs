@@ -505,10 +505,13 @@ fn unknown_syntropy_variables_are_warnings() {
         ("SYNTROPY_NOPE", "1"),
         ("SYNTROPY_lower", "1"),
         ("SYNTROPY_MAX_TOKENS", "3"),
-        // The fixed names, a real key and a variable without the prefix warn about nothing.
+        // The fixed names, the other known names, a real key and a variable without the prefix
+        // warn about nothing.
         ("SYNTROPY_CONFIG", ""),
         ("SYNTROPY_HOST", "http://10.0.0.2:7433"),
         ("SYNTROPY_API_KEY", "k"),
+        ("SYNTROPY_FAULT_PLAN", "/tmp/plan.toml"),
+        ("SYNTROPY_KERNELS", "prebuilt"),
         ("SYNTROPY_T__A", "5"),
         ("HF_TOKEN", "t"),
         ("PATH", "/bin"),
