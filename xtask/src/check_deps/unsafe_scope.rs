@@ -14,8 +14,12 @@
 //! - requires the one `#[allow(unsafe_code)]` to sit on `unsafe impl <path ending in the trait>
 //!   for …`, and every `unsafe` in that file to lie within that item;
 //! - refuses every way to compile code it does not read: a `path` in an attribute (`#[path]`,
-//!   also inside `cfg_attr`), an `include!` call, `include` named in a `use`, which could rename
-//!   the macro, and a build script, whose output only `include!` could bring in.
+//!   also inside `cfg_attr`), an attribute built from a macro metavariable, which could become
+//!   `#[path]`, the identifier `include` anywhere, which covers `include!` under any name or
+//!   path, and a build script, whose output only `include!` could bring in.
+//!
+//! A macro exported by another crate can still emit `#[path]` or `include!` from tokens that
+//! name neither; that is the same limit as `unsafe` from another crate's macro (issue #1527).
 //!
 //! With those refused, the compiler can reach a module only through `mod` declarations, which
 //! resolve to `.rs` files under the directory of the file that declares them, so the files read
@@ -216,37 +220,70 @@ fn check_allowed_file(source: &str, module: &UnsafeModule) -> Vec<String> {
 }
 
 /// Every way `code` could compile a file this check does not read, each as `<line>: <what>`:
-/// a `path` set in an attribute, an `include!` call, and `include` named in a `use`.
+/// a `path` set in an attribute, an attribute built from a macro's metavariable, which could
+/// carry a `path`, and the `include` macro under any name. `include` is refused as an
+/// identifier anywhere, because a macro can call it through a metavariable (`$m!(…)`) with only
+/// the bare name in its input.
 fn unread_code(code: &str) -> Vec<String> {
     let attributes = attribute_spans(code);
-    let uses = use_spans(code);
+    let in_attribute = |at: usize| {
+        attributes
+            .iter()
+            .any(|&(start, end)| (start..end).contains(&at))
+    };
     let mut problems = Vec::new();
-    for (at, ident) in idents(code) {
-        let after = skip_space(code, at + ident.len());
-        let what = match ident {
-            "include" if code[after..].starts_with('!') && !code[after..].starts_with("!=") => {
-                "calls `include!`, which compiles a file this check does not read"
-            }
-            "include" if uses.iter().any(|&(start, end)| (start..end).contains(&at)) => {
-                "names `include` in a `use`, which could call `include!` by another name"
-            }
-            "path"
-                if code[after..].starts_with('=')
-                    && !code[after..].starts_with("==")
-                    && attributes
-                        .iter()
-                        .any(|&(start, end)| (start..end).contains(&at)) =>
-            {
-                "sets a module `path` in an attribute, which can load a file this check does not \
-                 read"
-            }
-            _ => continue,
-        };
+    let mut found = |at: usize, what: &str| {
         problems.push(format!(
             "{}: {what}; `unsafe` is denied, not forbidden, here, so every file must be read",
             line_of(code, at)
         ));
+    };
+    for (at, ident) in idents(code) {
+        let after = skip_space(code, at + ident.len());
+        match ident {
+            "include" => found(
+                at,
+                "names `include`, the macro that compiles a file this check does not read",
+            ),
+            "path"
+                if code[after..].starts_with('=')
+                    && !code[after..].starts_with("==")
+                    && in_attribute(at) =>
+            {
+                found(
+                    at,
+                    "sets a module `path` in an attribute, which can load a file this check does \
+                     not read",
+                );
+            }
+            _ => {}
+        }
     }
+    // An attribute that a metavariable fills in, `#[$m]`, `#[cfg_attr(x, $m)]` or `# $t`, can
+    // become `#[path = …]` without the text above.
+    for (at, _) in code.match_indices('#') {
+        let mut next = skip_space(code, at + 1);
+        if code[next..].starts_with('!') {
+            next = skip_space(code, next + 1);
+        }
+        let built = code[next..].starts_with('$')
+            || attributes
+                .iter()
+                .find(|&&(start, _)| start == at)
+                .is_some_and(|&(start, end)| code[start..end].contains('$'));
+        if built {
+            found(
+                at,
+                "builds an attribute from a macro metavariable, which could set a module `path`",
+            );
+        }
+    }
+    problems.sort_by_key(|problem| {
+        problem
+            .split(':')
+            .next()
+            .and_then(|line| line.parse::<usize>().ok())
+    });
     problems
 }
 
@@ -277,14 +314,6 @@ fn attribute_spans(code: &str) -> Vec<(usize, usize)> {
         }
     }
     spans
-}
-
-/// The span of every `use` declaration in `code`, from `use` to its `;`.
-fn use_spans(code: &str) -> Vec<(usize, usize)> {
-    idents(code)
-        .filter(|(_, ident)| *ident == "use")
-        .filter_map(|(at, _)| code[at..].find(';').map(|end| (at, at + end + 1)))
-        .collect()
 }
 
 /// When the `unsafe_code` at `at` is inside an outer `#[allow(unsafe_code)]` on `unsafe impl
@@ -655,7 +684,6 @@ pub fn alloc_count_this_thread() -> u64 {
             "#[cfg_attr(unix, path = \"unix.rs\")]\nmod probe;\n",
             "#![cfg_attr(all(), path=\"x.rs\")]\n",
             "mod a {\n    # [ path = \"b.rs\" ]\n    mod b;\n}\n",
-            "macro_rules! m { ($p:literal) => { #[path = $p] mod x; } }\n",
         ] {
             let problems = check_other_file(source, None);
             assert_eq!(problems.len(), 1, "{source}: {problems:?}");
@@ -664,6 +692,12 @@ pub fn alloc_count_this_thread() -> u64 {
                 "{source}: {problems:?}"
             );
         }
+        // In a macro body, the `path` and the metavariable are each refused.
+        let problems = check_other_file(
+            "macro_rules! m { ($p:literal) => { #[path = $p] mod x; } }\n",
+            None,
+        );
+        assert_eq!(problems.len(), 2, "{problems:?}");
         // The allowed file is held to the same rule.
         let problems =
             check_allowed_file(&format!("{ALLOWED}#[path = \"x.rs\"]\nmod x;\n"), &TESTKIT);
@@ -679,10 +713,34 @@ pub fn alloc_count_this_thread() -> u64 {
             "macro_rules! m { () => { include!(\"x\") } }\n",
             "use core::include as inc;\n",
             "pub use std::{include, vec};\n",
+            // A macro that calls whatever it is given, given the bare name.
+            "m!(include);\n",
+            "let include = true;\n",
         ] {
             let problems = check_other_file(source, None);
             assert_eq!(problems.len(), 1, "{source}: {problems:?}");
-            assert!(problems[0].contains("include"), "{source}: {problems:?}");
+            assert!(
+                problems[0].contains("names `include`"),
+                "{source}: {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_attribute_built_from_a_metavariable_is_refused() {
+        for source in [
+            "macro_rules! m { ($p:ident $v:literal) => { #[$p = $v] mod x; } }\n",
+            "macro_rules! m { ($a:meta) => { #[cfg_attr(all(), $a)] mod x; } }\n",
+            "macro_rules! m { ($t:tt) => { # $t mod x; } }\n",
+            "macro_rules! m { ($($a:meta)*) => { $(#[$a])* mod x; } }\n",
+            "macro_rules! m { ($t:tt) => { #! $t } }\n",
+        ] {
+            let problems = check_other_file(source, None);
+            assert_eq!(problems.len(), 1, "{source}: {problems:?}");
+            assert!(
+                problems[0].contains("builds an attribute from a macro metavariable"),
+                "{source}: {problems:?}"
+            );
         }
     }
 
@@ -692,9 +750,10 @@ pub fn alloc_count_this_thread() -> u64 {
             #![doc = include_str!(\"../README.md\")]\n\
             const DATA: &[u8] = include_bytes!(\"data.bin\");\n\
             #[doc = \"path = x and include!(y)\"]\n\
-            pub fn include(path: &str) -> bool { let include = path.len(); include != 0 }\n\
-            pub struct Filter { pub include: bool, pub path: String }\n\
+            pub fn includes(path: &str) -> bool { let n = path.len(); n != 0 }\n\
+            pub struct Filter { pub included: bool, pub path: String }\n\
             fn f() { let path = 1; if path == 1 {} }\n\
+            macro_rules! twice { ($e:expr) => { $e + $e } }\n\
             use std::path::Path;\n";
         assert_eq!(check_other_file(source, None), Vec::<String>::new());
     }

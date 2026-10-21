@@ -249,7 +249,7 @@ fn rule_8_include_of_a_file_that_is_not_rs_is_refused() {
     fails_with(
         "rule-8-include",
         8,
-        &["`testkit`: crates/testkit/src/lib.rs:9: calls `include!`"],
+        &["`testkit`: crates/testkit/src/lib.rs:9: names `include`"],
     );
 }
 
@@ -260,8 +260,17 @@ fn rule_8_a_build_script_and_its_generated_code_are_refused() {
         8,
         &[
             "`testkit` has a build script, crates/testkit/build.rs",
-            "`testkit`: crates/testkit/src/lib.rs:9: calls `include!`",
+            "`testkit`: crates/testkit/src/lib.rs:9: names `include`",
         ],
+    );
+}
+
+#[test]
+fn rule_8_an_attribute_built_from_a_metavariable_is_refused() {
+    fails_with(
+        "rule-8-macro",
+        8,
+        &["`testkit`: crates/testkit/src/lib.rs:10: builds an attribute from a macro metavariable"],
     );
 }
 
