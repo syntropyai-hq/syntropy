@@ -125,14 +125,18 @@ fn a_probe_at_40_percent_of_spec_marks_the_run_dirty_misconfigured() {
         ]
     };
     let mut env40 = env();
-    let findings = specs::mark_misconfigured(&mut env40, &peaks, &probe(0.40 * 1008.0));
+    let found = specs::mark_misconfigured(&mut env40, &peaks, &probe(0.40 * 1008.0));
     assert_eq!(env40.dirty.as_deref(), Some("misconfigured"));
     assert_eq!(
-        findings,
+        found.misconfigured,
         ["vram PCIEX16_1: probed 403.20 GB/s, 40% of its spec 1008.00 GB/s, below 50%"]
     );
+    assert!(found.unchecked.is_empty());
     let mut env60 = env();
-    assert!(specs::mark_misconfigured(&mut env60, &peaks, &probe(0.60 * 1008.0)).is_empty());
+    assert_eq!(
+        specs::mark_misconfigured(&mut env60, &peaks, &probe(0.60 * 1008.0)),
+        specs::Sanity::default()
+    );
     assert_eq!(env60.dirty, None);
     // A run already dirty for another reason keeps it.
     let mut inventory = env();
@@ -179,18 +183,46 @@ fn dram_counts_fitted_channels_at_the_slowest_speed_and_a_fabric_limit_caps_it()
 }
 
 #[test]
-fn a_part_without_a_record_or_a_chipset_drive_is_reported() {
-    let db = database();
+fn a_part_without_a_record_is_reported() {
     let mut rig = r_ada();
     rig.gpu[0].model = String::from("Unknown GPU");
-    rig.nvme[0].attachment = rigs::Attachment::Chipset;
-    let problems = specs::peaks(&rig, &db).unwrap_err();
+    let problems = specs::peaks(&rig, &database()).unwrap_err();
     assert!(
         problems
             .iter()
-            .any(|p| p.contains("`Unknown GPU` in PCIEX16_1 has no `gpu` record"))
+            .any(|p| p.contains("`Unknown GPU` in PCIEX16_1 has no `gpu` record")),
+        "{problems:?}"
     );
-    assert!(problems.iter().any(|p| p.contains("chipset-attached")));
+}
+
+/// A chipset-attached drive has no peak until the chipset uplink has a record, and only that
+/// drive: the rig's other paths keep theirs, and a probe of the drive is unchecked, which never
+/// marks the run dirty.
+#[test]
+fn a_chipset_drive_has_no_peak_and_its_probe_is_unchecked() {
+    let mut rig = r_ada();
+    rig.nvme[0].attachment = rigs::Attachment::Chipset;
+    let peaks = specs::peaks(&rig, &database()).expect("the other paths still have peaks");
+    assert_eq!(peaks.len(), 3);
+    assert!(close(peak(&peaks, &DataPath::HostByCpu), 96.0));
+    let drive = DataPath::Nvme(String::from("M2_1"));
+    assert!(peaks.iter().all(|p| p.path != drive));
+    let without = specs::without_peak(&rig);
+    assert_eq!(without.len(), 1);
+    assert_eq!(without[0].0, drive);
+    assert!(without[0].1.contains("chipset-attached"));
+    let mut run = env();
+    let found = specs::mark_misconfigured(
+        &mut run,
+        &peaks,
+        &[Probe {
+            path: drive,
+            gb_per_s: 0.5,
+        }],
+    );
+    assert!(found.misconfigured.is_empty());
+    assert_eq!(found.unchecked.len(), 1);
+    assert_eq!(run.dirty, None);
 }
 
 /// Every rig the real inventory holds resolves its peaks. The inventory is empty until the rigs

@@ -206,6 +206,9 @@ fn specs_peaks(id: &str, file: &Path, dir: &Path) -> u8 {
                     println!("  {:.2} GB/s  {}", element.gb_per_s, element.name);
                 }
             }
+            for (path, why) in specs::without_peak(rig) {
+                println!("{path}: no W_peak: {why}");
+            }
             PASS
         }
         Err(problems) => {

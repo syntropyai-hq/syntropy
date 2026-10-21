@@ -257,6 +257,15 @@ impl Record {
                 positive(name, fact.value, &mut problems);
             }
         }
+        // A zero here would give a zero `W_peak`, which no probe can fall below.
+        for (name, fact) in [
+            ("memory_channels", &raw.memory_channels),
+            ("bytes_per_transfer", &raw.bytes_per_transfer),
+        ] {
+            if fact.as_ref().is_some_and(|f| f.value == 0) {
+                problems.push(format!("`{name}` must be a positive integer"));
+            }
+        }
         if let Some(fact) = &raw.encoding
             && encoding_ratio(&fact.value).is_none()
         {
@@ -347,7 +356,7 @@ fn encoding_ratio(encoding: &str) -> Option<f64> {
 /// A problem with one file of the database.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Problem {
-    /// The file, relative to the repository root.
+    /// The file, as read: under `--dir` when one is given, else under `bench/specs/`.
     pub path: String,
     /// What is wrong.
     pub message: String,
@@ -374,7 +383,7 @@ impl SpecDb {
         let mut problems = Vec::new();
         let Ok(entries) = fs::read_dir(dir) else {
             problems.push(Problem {
-                path: String::from(DIR),
+                path: dir.display().to_string(),
                 message: String::from("the spec database directory cannot be read"),
             });
             return (db, problems);
@@ -387,7 +396,7 @@ impl SpecDb {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let shown = format!("{DIR}/{name}");
+            let shown = format!("{}/{name}", dir.display());
             let mut problem = |message: String| {
                 problems.push(Problem {
                     path: shown.clone(),
@@ -536,7 +545,8 @@ impl Peak {
 }
 
 /// `W_peak` for every path of `rig`, from its inventory record and the database. Returns every
-/// device or configuration the database cannot cover.
+/// device or configuration the database cannot cover. A path the database cannot price yet,
+/// such as a chipset-attached drive, has no peak and is no error: [`without_peak`] lists those.
 pub fn peaks(rig: &Rig, db: &SpecDb) -> Result<Vec<Peak>, Vec<String>> {
     let mut problems = Vec::new();
     let mut peaks = Vec::new();
@@ -618,11 +628,7 @@ pub fn peaks(rig: &Rig, db: &SpecDb) -> Result<Vec<Peak>, Vec<String>> {
             }
         }
         if drive.attachment == Attachment::Chipset {
-            problems.push(format!(
-                "drive `{}` in {} is chipset-attached; its chipset uplink, which every chipset \
-                 device shares, has no record in {DIR} yet",
-                drive.model, drive.slot
-            ));
+            // No peak for this drive only: see [`without_peak`].
             continue;
         }
         peaks.push(Peak {
@@ -635,6 +641,25 @@ pub fn peaks(rig: &Rig, db: &SpecDb) -> Result<Vec<Peak>, Vec<String>> {
     } else {
         Err(problems)
     }
+}
+
+/// The paths of `rig` that have no `W_peak` by design, with the reason: a chipset-attached
+/// drive, whose chipset uplink (shared by every chipset device) has no record yet.
+pub fn without_peak(rig: &Rig) -> Vec<(DataPath, String)> {
+    rig.nvme
+        .iter()
+        .filter(|d| d.attachment == Attachment::Chipset)
+        .map(|d| {
+            (
+                DataPath::Nvme(d.slot.clone()),
+                format!(
+                    "drive `{}` is chipset-attached, and its chipset uplink, which every chipset \
+                     device shares, has no record in {DIR} yet",
+                    d.model
+                ),
+            )
+        })
+        .collect()
 }
 
 /// The CPU's path to DRAM: `channels × bytes_per_transfer × MT/s`, then any fabric limit.
@@ -713,14 +738,23 @@ pub struct Probe {
     pub gb_per_s: f64,
 }
 
-/// Each probe figure below [`SANITY_FRACTION`] of its path's `W_peak`, as a sentence naming
-/// the path, the probe and the spec. A probe on a path with no peak is reported too, since it
-/// cannot be checked.
-pub fn sanity(peaks: &[Peak], probes: &[Probe]) -> Vec<String> {
-    let mut findings = Vec::new();
+/// What [`sanity`] found: probes below half their spec, and probes it could not check.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sanity {
+    /// Each probe figure below [`SANITY_FRACTION`] of its path's `W_peak`, as a sentence naming
+    /// the path, the probe and the spec. Any of these marks the rig misconfigured.
+    pub misconfigured: Vec<String>,
+    /// Each probe on a path the database gives no peak, such as a chipset-attached drive. That
+    /// is a gap in the database, not in the rig, so it never marks the run dirty.
+    pub unchecked: Vec<String>,
+}
+
+/// Compares each probe figure with its path's `W_peak`.
+pub fn sanity(peaks: &[Peak], probes: &[Probe]) -> Sanity {
+    let mut found = Sanity::default();
     for probe in probes {
         let Some(peak) = peaks.iter().find(|p| p.path == probe.path) else {
-            findings.push(format!(
+            found.unchecked.push(format!(
                 "{}: probed {:.2} GB/s, but the spec database gives this path no peak",
                 probe.path, probe.gb_per_s
             ));
@@ -728,7 +762,7 @@ pub fn sanity(peaks: &[Peak], probes: &[Probe]) -> Vec<String> {
         };
         let spec = peak.gb_per_s();
         if probe.gb_per_s < SANITY_FRACTION * spec {
-            findings.push(format!(
+            found.misconfigured.push(format!(
                 "{}: probed {:.2} GB/s, {:.0}% of its spec {:.2} GB/s, below {:.0}%",
                 probe.path,
                 probe.gb_per_s,
@@ -738,18 +772,18 @@ pub fn sanity(peaks: &[Peak], probes: &[Probe]) -> Vec<String> {
             ));
         }
     }
-    findings
+    found
 }
 
 /// Runs [`sanity`] and, when any probe falls below half its spec, marks the run
-/// `dirty: misconfigured` (RFC-0061 §5.3). A run already dirty for another reason keeps that
-/// reason. Returns the findings for the run's log.
-pub fn mark_misconfigured(env: &mut EnvCapture, peaks: &[Peak], probes: &[Probe]) -> Vec<String> {
-    let findings = sanity(peaks, probes);
-    if !findings.is_empty() && env.dirty.is_none() {
+/// `dirty: misconfigured` (RFC-0061 §5.3). An unchecked probe leaves the run as it is. A run
+/// already dirty for another reason keeps that reason. Returns the findings for the run's log.
+pub fn mark_misconfigured(env: &mut EnvCapture, peaks: &[Peak], probes: &[Probe]) -> Sanity {
+    let found = sanity(peaks, probes);
+    if !found.misconfigured.is_empty() && env.dirty.is_none() {
         env.dirty = Some(String::from(MISCONFIGURED));
     }
-    findings
+    found
 }
 
 #[cfg(test)]
@@ -816,6 +850,21 @@ checked = "2026-10-22"
         assert!(problems.contains(&String::from("a `nvme` record has no `memory_gb_per_s`")));
         let problems = Record::parse(&GPU.replace("1000.0", "0.0")).unwrap_err();
         assert!(problems.iter().any(|p| p.contains("positive")));
+        // A zero channel count or width would give a zero peak that no probe falls below.
+        let fact = "source = \"https://e.com\"\nwhere = \"p\"\nchecked = \"2026-10-22\"\n";
+        let cpu = format!(
+            "kind = \"cpu\"\nmodels = [\"C\"]\n[memory_type]\nvalue = \"DDR5\"\n{fact}\
+             [memory_channels]\nvalue = 0\n{fact}"
+        );
+        assert!(Record::parse(&cpu).unwrap_err().contains(&String::from(
+            "`memory_channels` must be a positive integer"
+        )));
+        let dram = format!(
+            "kind = \"dram\"\nmodels = [\"DDR5\"]\n[bytes_per_transfer]\nvalue = 0\n{fact}"
+        );
+        assert!(Record::parse(&dram).unwrap_err().contains(&String::from(
+            "`bytes_per_transfer` must be a positive integer"
+        )));
         let problems = Record::parse(&GPU.replace("[\"Example GPU\"]", "[]")).unwrap_err();
         assert!(problems.iter().any(|p| p.contains("`models`")));
         assert!(Record::parse(&format!("{GPU}\nextra = 1\n")).is_err());
