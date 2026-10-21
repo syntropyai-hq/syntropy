@@ -337,3 +337,8 @@ The kernel and op items of #1487's comments, applied with R9. RFC-0040's M0 row 
 | COMP-E5-T04 → COMP-E4-T02, COMP-E4-T05 | COMP-E5-T04 | R9 | its router writes host-mapped doorbell pages (COMP-E4-T02, which also reaches the CUDA binding and the rigs), and its stage is captured (COMP-E4-T05) |
 | COMP-E16-T05 → COMP-E10-T05 | COMP-E16-T05 | R9 | its MXFP4 experts load through the `quantization_config` mapping |
 | COMP-E3-T03 drops its "from M1" criterion and its edge to QUAL-E15-T18; COMP-E5-T01 drops its "from M1" criterion; COMP-E2-T09 → COMP-E3-T03, COMP-E5-T01; QUAL-E8-T12 → QUAL-E15-T18 | COMP-E3-T03, COMP-E5-T01, COMP-E2-T09, QUAL-E8-T12 | R9, Definition of done | both criteria were `AC-LATER` throughput targets that COMP-E2-T09 (M1a) already carries on the Tier 1 rigs. COMP-E3-T03 depended on R-LABCPU only for its target, and that host is never timed (ADR-0610). QUAL-E8-T12, whose criteria name R-LABCPU, had reached it only through that edge |
+## PLC-E1-T02 split (2026-10-21)
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added PLC-E1-T14 (M0a) → PLC-E1-T02 and `TBD: maintainer decision on where the system-call FFI lives`; PLC-E1-T02 no longer lists the AMX permission request or the `io_uring_setup` check | PLC-E1-T02, PLC-E1-T14 | split (RFC-0001 §4.2 rule 8) | both checks are system calls that need `unsafe` FFI, which rule 8 keeps out of `probe`, or a crate that is not approved. PLC-E1-T02 reads everything else from world-readable files, including `RLIMIT_MEMLOCK` (`/proc/self/limits`) and `CAP_IPC_LOCK` (`/proc/self/status`), and records `amx_permitted = false` and the io_uring sysctl until PLC-E1-T14 lands. No existing edge changes |
