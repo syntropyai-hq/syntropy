@@ -10,6 +10,7 @@ bitflags.workspace = true
 serde.workspace = true
 smallvec.workspace = true
 syntropy-core = { path = "../core" }
+toml.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
