@@ -5,50 +5,17 @@
 //!
 //! One engine instance belongs to one I/O thread, which drives it in the loop of RFC-0021 §3.1.
 //! The trait has no async methods and the crate links no async runtime (ADR-0012 item 6).
+//!
+//! [`EngineKind`], [`DioAlign`], [`FileIx`] and [`HostRegion`] are `syntropy-core` types, because
+//! `core`'s `StorageCaps` and `syntropy-kernels` use them too; `syntropy-io` re-exports them.
 
 use std::path::Path;
 
 use crate::batch::{CompletionBuf, SubmitBatch};
 use crate::error::IoError;
 use crate::request::IoTicket;
-use crate::units::{Bytes, Nanos};
-
-/// Which engine drives a volume (RFC-0021 §4, §5, §7; ADR-0013).
-///
-/// RFC-0021 §10 records the choice per volume in `StorageCaps::engine`, with a serde default,
-/// so the type has a [`Default`]: [`EngineKind::PreadPool`], the fallback that works on every OS
-/// (ADR-0013 item 3).
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum EngineKind {
-    /// io_uring with direct I/O, the Linux default (RFC-0021 §4.1).
-    UringDirect,
-    /// Blocking `pread`/`pwrite` threads, the fallback on every OS (RFC-0021 §4.2).
-    #[default]
-    PreadPool,
-    /// Windows I/O rings (RFC-0021 §7).
-    IoRing,
-    /// Windows I/O completion ports (RFC-0021 §7).
-    Iocp,
-    /// macOS `preadv` threads on `F_NOCACHE` files (RFC-0021 §5).
-    MacNoCache,
-    /// macOS read-only mapping with a copy-out into owned slots (RFC-0021 §5).
-    MacMapped,
-}
-
-/// Direct-I/O alignment for one open file (RFC-0021 §6).
-///
-/// The engine reads it from the OS per open file. Zero means the OS reported nothing; the §6
-/// rules still apply their 4096-byte floor (`A = max(4096, offset)`,
-/// `M = max(4096, mem, OS page size)`). The [`Default`] is zero in both fields, the value a
-/// `StorageCaps` without the field decodes to (RFC-0021 §10).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct DioAlign {
-    /// Required alignment of a memory buffer's address, in bytes.
-    pub mem: u32,
-    /// Required alignment of a file offset and a length, in bytes.
-    pub offset: u32,
-}
+use syntropy_core::resource::{DioAlign, EngineKind};
+use syntropy_core::{Bytes, FileIx, HostRegion, Nanos};
 
 /// What an engine supports on this host and volume (RFC-0021 §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -66,13 +33,11 @@ pub struct EngineCaps {
     pub max_depth: u32,
     /// `true` for direct I/O; `false` for the flagged buffered mode (RFC-0021 §4.2).
     pub direct: bool,
-    /// Alignment every request must meet (RFC-0021 §6).
+    /// Alignment every request must meet (RFC-0021 §6), read from the OS per open file. Zero
+    /// means the OS reported nothing; §6's 4096-byte floor still applies
+    /// (`A = max(4096, offset)`, `M = max(4096, mem, OS page size)`).
     pub dio: DioAlign,
 }
-
-/// A file the engine has opened, as [`IoEngine::open`] returned it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FileIx(pub u16);
 
 /// A registered buffer, as [`IoEngine::register_buffers`] returned it.
 ///
@@ -80,20 +45,6 @@ pub struct FileIx(pub u16);
 /// 32 bits), so every value is valid on every engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufIndex(pub u16);
-
-/// A range of host memory, owned by the tier manager, to register with the engine as a buffer
-/// (RFC-0021 §2, §4.1).
-///
-/// Plain data: naming a range is harmless, and the obligation sits with the caller of the
-/// `unsafe` [`IoEngine::register_buffers`]. RFC-0021 §2 and RFC-0040 §2.1 name this type without
-/// fields; this is the smallest shape registration needs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct HostRegion {
-    /// Address of the first byte, aligned per RFC-0021 §6.
-    pub addr: u64,
-    /// Length of the range.
-    pub len: Bytes,
-}
 
 /// How [`IoEngine::open`] opens a file (RFC-0021 §4.1, §13).
 ///
@@ -200,16 +151,6 @@ pub trait IoEngine: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn engine_kind_default_is_the_universal_fallback() {
-        assert_eq!(EngineKind::default(), EngineKind::PreadPool);
-    }
-
-    #[test]
-    fn dio_align_default_is_unreported() {
-        assert_eq!(DioAlign::default(), DioAlign { mem: 0, offset: 0 });
-    }
 
     #[test]
     fn io_engine_is_object_safe_and_send() {

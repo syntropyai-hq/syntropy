@@ -8,13 +8,14 @@
 //! A request is neither `Copy` nor `Clone`, because its [`IoDest`] is not: once submitted, it
 //! cannot be submitted again.
 //!
-//! [`ExtentRef`] and [`StepLayer`] are the supporting types RFC-0020 §3 defines. They live here
-//! rather than in `syntropy-tier`, because a [`ReadRequest`] carries them and this crate sits a
-//! layer below `tier` (RFC-0001 §4.1, §4.2 rule 2).
+//! A request carries an [`ExtentRef`] and, for a prefetch, a [`StepLayer`]: RFC-0020 §3's
+//! supporting types, defined in `syntropy-core` so that `tier`, a layer above this crate, can use
+//! and serialise them too (RFC-0001 §4.1, §4.2 rule 2).
 
-use crate::engine::{BufIndex, FileIx};
+use syntropy_core::{Bytes, ExtentRef, Nanos, StepLayer};
+
+use crate::engine::BufIndex;
 use crate::error::IoError;
-use crate::units::{Bytes, Nanos};
 
 /// A producer-unique request identifier, echoed in the request's completion (RFC-0021 §2).
 ///
@@ -22,56 +23,6 @@ use crate::units::{Bytes, Nanos};
 /// `HomeState::Loading`) while a read is in flight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IoTicket(pub u64);
-
-/// A byte range of one file on a volume (RFC-0020 §3).
-///
-/// `offset` and `len` are multiples of the volume's [`DioAlign`](crate::DioAlign), as RFC-0021
-/// §6 requires of every request. RFC-0020 §3 writes `file` and `len` as bare integers; here they
-/// are [`FileIx`] and [`Bytes`], because interfaces never take bare integers for sizes (RFC-0001
-/// §5.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ExtentRef {
-    /// The file, as the I/O thread opened it.
-    pub file: FileIx,
-    /// Offset of the first byte in the file.
-    pub offset: u64,
-    /// Length of the range.
-    pub len: Bytes,
-}
-
-/// A point in a device's execution: the step number and the layer within it (RFC-0020 §3).
-///
-/// Consumers publish their progress as one `AtomicU64` per device, `(step << 16) | layer`
-/// ([`StepLayer::encode`]). A `StepLayer` has passed when the published word is greater than
-/// or equal to its encoding ([`StepLayer::has_passed`]). The derived order, step first and then
-/// layer, is the order of the encodings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StepLayer {
-    /// The step number. The encoding keeps its low 48 bits.
-    pub step: u64,
-    /// The layer within the step.
-    pub layer: u16,
-}
-
-impl StepLayer {
-    /// Steps at or above this value do not fit the 48 bits the encoding gives them.
-    pub const STEP_LIMIT: u64 = 1 << 48;
-
-    /// The progress-word encoding, `(step << 16) | layer` (RFC-0020 §3).
-    ///
-    /// `step` must be below [`StepLayer::STEP_LIMIT`]; debug builds assert it.
-    #[must_use]
-    pub const fn encode(self) -> u64 {
-        debug_assert!(self.step < Self::STEP_LIMIT);
-        (self.step << 16) | self.layer as u64
-    }
-
-    /// Whether a consumer whose published progress word is `progress` has reached this point.
-    #[must_use]
-    pub const fn has_passed(self, progress: u64) -> bool {
-        progress >= self.encode()
-    }
-}
 
 /// What an [`IoDest`] names: the two destination kinds of RFC-0021 §2.
 ///
@@ -316,6 +267,8 @@ impl IoOp {
 
 #[cfg(test)]
 mod tests {
+    use syntropy_core::FileIx;
+
     use super::*;
 
     #[test]
@@ -328,49 +281,6 @@ mod tests {
         // The cast gives each class its queue index.
         for (i, p) in IoPriority::ALL.iter().enumerate() {
             assert_eq!(*p as usize, i);
-        }
-    }
-
-    #[test]
-    fn step_layer_encoding() {
-        let at = StepLayer { step: 3, layer: 7 };
-        assert_eq!(at.encode(), (3 << 16) | 7);
-        assert!(!at.has_passed(0));
-        assert!(!at.has_passed(StepLayer { step: 3, layer: 6 }.encode()));
-        assert!(at.has_passed(at.encode()));
-        assert!(at.has_passed(StepLayer { step: 3, layer: 8 }.encode()));
-        assert!(at.has_passed(StepLayer { step: 4, layer: 0 }.encode()));
-
-        let last = StepLayer {
-            step: StepLayer::STEP_LIMIT - 1,
-            layer: u16::MAX,
-        };
-        assert_eq!(last.encode(), u64::MAX);
-    }
-
-    #[test]
-    fn step_layer_order_matches_encoding_order() {
-        let points = [
-            StepLayer { step: 0, layer: 0 },
-            StepLayer {
-                step: 0,
-                layer: u16::MAX,
-            },
-            StepLayer { step: 1, layer: 0 },
-            StepLayer { step: 1, layer: 1 },
-            StepLayer {
-                step: 1 << 40,
-                layer: 2,
-            },
-            StepLayer {
-                step: StepLayer::STEP_LIMIT - 1,
-                layer: 0,
-            },
-        ];
-        for a in points {
-            for b in points {
-                assert_eq!(a.cmp(&b), a.encode().cmp(&b.encode()), "{a:?} vs {b:?}");
-            }
         }
     }
 

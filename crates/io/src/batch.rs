@@ -181,12 +181,12 @@ impl CompletionBuf {
 
 #[cfg(test)]
 mod tests {
+    use syntropy_core::{Bytes, ExtentRef, FileIx, Nanos};
+
     use super::*;
     use crate::engine::BufIndex;
-    use crate::engine::FileIx;
     use crate::error::{IoError, IoErrorCode};
-    use crate::request::{ExtentRef, IoDest, IoPriority, IoTicket, ReadRequest};
-    use crate::units::{Bytes, Nanos};
+    use crate::request::{IoDest, IoPriority, IoTicket, ReadRequest};
 
     fn read(ticket: u64) -> IoOp {
         IoOp::Read(ReadRequest {
