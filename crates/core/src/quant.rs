@@ -94,10 +94,9 @@ pub enum QuantScheme {
 /// A dtype class: the grouping ADR-0019 sets tolerances by (RFC-0042 §1.2).
 ///
 /// Variants are declared from the lowest precision to the highest, and the derived `Ord`
-/// follows that order: `Sub4 < Bits4 < Fp8 < Int8 < Float16`. A comparison such as
-/// `class >= DTypeClass::Bits4` therefore reads "`Bits4` or more precise". `Fp8` sits below
-/// `Int8` because an E4M3 element carries 4 significant bits and an E5M2 element 3, while an
-/// 8-bit integer under its block scale carries 8.
+/// follows that order: `Sub4 < Bits4 < Int8 < Fp8 < Float16`. It is RFC-0042 §1.2's order,
+/// which follows ADR-0019 decision 3's listing. A comparison such as
+/// `class >= DTypeClass::Bits4` therefore reads "`Bits4` or more precise".
 ///
 /// [`QuantScheme::dtype_class`] gives each scheme's class.
 #[non_exhaustive]
@@ -108,10 +107,10 @@ pub enum DTypeClass {
     /// "4-bit integer and FP4 families", extended to 4–6 bits: the 4- to 6-bit GGUF types,
     /// MXFP4, NVFP4 and 4-bit packed integers.
     Bits4,
-    /// FP8 elements.
-    Fp8,
     /// 8-bit integers: `Q8_0` and 8-bit packed integers.
     Int8,
+    /// FP8 elements.
+    Fp8,
     /// Unquantised: F32, F16 and BF16.
     Float16,
 }
@@ -121,8 +120,8 @@ impl DTypeClass {
     pub const ALL: [DTypeClass; 5] = [
         DTypeClass::Sub4,
         DTypeClass::Bits4,
-        DTypeClass::Fp8,
         DTypeClass::Int8,
+        DTypeClass::Fp8,
         DTypeClass::Float16,
     ];
 
@@ -130,7 +129,8 @@ impl DTypeClass {
     /// carries at least 10 % of the model's batch-1 `read_per_token` bytes (RFC-0041 §3.1).
     ///
     /// `read_per_token` yields `(scheme, bytes)` pairs, typically one per tensor group of the
-    /// census. Pairs with the same scheme are summed first: the 10 % threshold applies to
+    /// census. Each distinct `QuantScheme` value is its own scheme, block and group sizes
+    /// included. Pairs with the same scheme are summed first: the 10 % threshold applies to
     /// each scheme's total, not to each pair, and not to each class. The comparison is exact
     /// integer arithmetic, so a scheme carrying exactly 10 % qualifies.
     ///
@@ -140,7 +140,8 @@ impl DTypeClass {
     ///   ([`QuantScheme::dtype_class`] returns `None`), whatever its share.
     /// - [`ModelClassError::NoBytes`] when the pairs carry no bytes in total.
     /// - [`ModelClassError::NoSchemeAtThreshold`] when no scheme reaches 10 %, which needs at
-    ///   least eleven distinct schemes. RFC-0042 §1.2 defines no class for that case.
+    ///   least eleven distinct schemes. RFC-0042 §1.2 defines no class for that case (its
+    ///   open question 8).
     pub fn of_model<I>(read_per_token: I) -> Result<DTypeClass, ModelClassError>
     where
         I: IntoIterator<Item = (QuantScheme, u64)>,
@@ -184,18 +185,21 @@ impl QuantScheme {
     /// | `Sub4` | `Ggml` `Q2_K`, `Q3_K`, `IQ3_XXS`, `IQ3_S`, `IQ2_XXS`, `IQ2_XS`, `IQ2_S`, `IQ1_S`, `IQ1_M`, `TQ1_0`, `TQ2_0`, `Q2_0`, `Q1_0` |
     ///
     /// RFC-0041 §2.2 reads any safetensors tensor without a quantisation config as
-    /// `Plain(dtype)`, so every [`DType`] has a class by its element format: the other
-    /// plain types of 16 bits or more (`F64`, and the index types `I16`, `I32` and `I64`,
-    /// which hold their values exactly) are `Float16`; the 8-bit float types are `Fp8`;
-    /// `I8` and `U8` are `Int8`; `F4E2M1` and the F6 types are `Bits4`.
+    /// `Plain(dtype)`, so §1.2 gives the plain types the table does not list a class by
+    /// element format and width: `F64`, `I16`, `I32` and `I64` are `Float16`; `F8E4M3` and
+    /// `F8E5M2` are `Fp8`; `I8` and `U8` are `Int8`; `F4E2M1`, `F6E2M3` and `F6E3M2` are
+    /// `Bits4`.
     ///
-    /// A field that names the element format must name one RFC-0042 defines, or the value
-    /// has no class: `Fp8 { format }` must be `F8E4M3` or `F8E5M2` (§2.3), and
-    /// `PackedInt { bits }` must be 4 or 8 (§2.4). Block, group and scale-type fields do not
-    /// change the class.
+    /// These values have no class (§1.2):
+    /// - `Plain(F8E8M0)`: E8M0 is a scale format, bound to its weight as an auxiliary
+    ///   extent (RFC-0041 §2.2), so a plain E8M0 tensor is a mis-bound scale.
+    /// - `Fp8 { format }` other than `F8E4M3` or `F8E5M2` (§2.3).
+    /// - `PackedInt { bits }` other than 4 or 8 (§2.4).
+    ///
+    /// Block, group and scale-type fields do not change the class.
     pub const fn dtype_class(&self) -> Option<DTypeClass> {
         match *self {
-            QuantScheme::Plain(dtype) => Some(plain_class(dtype)),
+            QuantScheme::Plain(dtype) => plain_class(dtype),
             QuantScheme::Ggml(ty) => Some(ggml_class(ty)),
             QuantScheme::Mxfp4 { .. } | QuantScheme::Nvfp4 { .. } => Some(DTypeClass::Bits4),
             QuantScheme::Fp8 {
@@ -213,8 +217,8 @@ impl QuantScheme {
     }
 }
 
-/// The class of an unquantised element type.
-const fn plain_class(dtype: DType) -> DTypeClass {
+/// The class of an unquantised element type, by element format and width.
+const fn plain_class(dtype: DType) -> Option<DTypeClass> {
     match dtype {
         DType::F32
         | DType::F16
@@ -222,10 +226,11 @@ const fn plain_class(dtype: DType) -> DTypeClass {
         | DType::F64
         | DType::I16
         | DType::I32
-        | DType::I64 => DTypeClass::Float16,
-        DType::F8E4M3 | DType::F8E5M2 | DType::F8E8M0 => DTypeClass::Fp8,
-        DType::I8 | DType::U8 => DTypeClass::Int8,
-        DType::F4E2M1 | DType::F6E2M3 | DType::F6E3M2 => DTypeClass::Bits4,
+        | DType::I64 => Some(DTypeClass::Float16),
+        DType::F8E4M3 | DType::F8E5M2 => Some(DTypeClass::Fp8),
+        DType::I8 | DType::U8 => Some(DTypeClass::Int8),
+        DType::F4E2M1 | DType::F6E2M3 | DType::F6E3M2 => Some(DTypeClass::Bits4),
+        DType::F8E8M0 => None,
     }
 }
 
@@ -372,7 +377,7 @@ mod tests {
 
     /// The rows that contain `s`, written independently of `dtype_class` as one `matches!`
     /// per row. RFC-0042 §1.2's table (with §2.1's GGUF plain types) comes first, then the
-    /// plain-type extension documented on `dtype_class`.
+    /// plain types §1.2's text classes by element format and width.
     fn rows_containing(s: &QuantScheme) -> Vec<DTypeClass> {
         use CtScheme as C;
         use DType as D;
@@ -441,15 +446,12 @@ mod tests {
                     )
                 ),
             ),
-            // Extension: the remaining plain types, by element format.
+            // §1.2's text: the plain types the table does not list, except E8M0.
             (
                 Float16,
                 matches!(s, Q::Plain(D::F64 | D::I16 | D::I32 | D::I64)),
             ),
-            (
-                Fp8,
-                matches!(s, Q::Plain(D::F8E4M3 | D::F8E5M2 | D::F8E8M0)),
-            ),
+            (Fp8, matches!(s, Q::Plain(D::F8E4M3 | D::F8E5M2))),
             (Int8, matches!(s, Q::Plain(D::I8 | D::U8))),
             (
                 Bits4,
@@ -462,10 +464,11 @@ mod tests {
             .collect()
     }
 
-    /// Values outside RFC-0042's schemes: an `Fp8` format that is not FP8, and a packed
-    /// integer width other than 4 or 8.
+    /// Values RFC-0042 §1.2 gives no class: plain E8M0, an `Fp8` format that is not FP8, and
+    /// a packed integer width other than 4 or 8.
     fn is_undefined(s: &QuantScheme) -> bool {
         match s {
+            QuantScheme::Plain(DType::F8E8M0) => true,
             QuantScheme::Fp8 { format, .. } => !matches!(format, DType::F8E4M3 | DType::F8E5M2),
             QuantScheme::CompressedTensors(CtScheme::PackedInt { bits, .. }) => {
                 !matches!(bits, 4 | 8)
@@ -479,9 +482,11 @@ mod tests {
         let schemes = all_schemes();
         // The enumeration reaches every variant.
         let mut variants: Vec<usize> = schemes.iter().map(scheme_variant).collect();
+        variants.sort_unstable();
         variants.dedup();
         assert_eq!(variants, (0..SCHEME_VARIANTS).collect::<Vec<_>>());
         let mut granularities: Vec<usize> = GRANULARITIES.iter().map(granularity_variant).collect();
+        granularities.sort_unstable();
         granularities.dedup();
         assert_eq!(granularities, (0..GRANULARITY_VARIANTS).collect::<Vec<_>>());
         // 15 plain + 28 GGUF + 4 MXFP4 + 45 NVFP4 + 90 FP8 + 3072 packed-int + 6 CT FP8.
@@ -512,9 +517,9 @@ mod tests {
                 "{class:?} has no scheme"
             );
         }
-        // The undefined values are exactly the 13 non-FP8 formats × 6 granularities and the
-        // 254 packed widths other than 4 and 8 × 12 field combinations.
-        assert_eq!(schemes.len() - classified, 13 * 6 + 254 * 12);
+        // The undefined values are exactly plain E8M0, the 13 non-FP8 formats × 6
+        // granularities, and the 254 packed widths other than 4 and 8 × 12 field combinations.
+        assert_eq!(schemes.len() - classified, 1 + 13 * 6 + 254 * 12);
     }
 
     #[test]
@@ -557,7 +562,10 @@ mod tests {
 
     #[test]
     fn classes_are_ordered_by_precision() {
-        assert!(Sub4 < Bits4 && Bits4 < Fp8 && Fp8 < Int8 && Int8 < Float16);
+        // RFC-0042 §1.2 lists the classes from the highest precision to the lowest.
+        let rfc_listing = [Float16, Fp8, Int8, Bits4, Sub4];
+        assert!(rfc_listing.windows(2).all(|w| w[0] > w[1]));
+        assert!(Sub4 < Bits4 && Bits4 < Int8 && Int8 < Fp8 && Fp8 < Float16);
         let mut sorted = DTypeClass::ALL;
         sorted.sort();
         assert_eq!(sorted, DTypeClass::ALL);
@@ -604,7 +612,9 @@ mod tests {
             },
         };
         let census = [(fp8, 50), (q(GgmlType::Q8_0), 50)];
-        assert_eq!(DTypeClass::of_model(census), Ok(Fp8));
+        assert_eq!(DTypeClass::of_model(census), Ok(Int8));
+        let census = [(fp8, 50), (q(GgmlType::Q4_K), 50)];
+        assert_eq!(DTypeClass::of_model(census), Ok(Bits4));
     }
 
     #[test]
@@ -626,6 +636,12 @@ mod tests {
         assert_eq!(
             DTypeClass::of_model([(q(GgmlType::Q4_K), 1000), (odd, 1)]),
             Err(ModelClassError::Unclassified { scheme: odd })
+        );
+        // A plain E8M0 tensor is a scale that lost its weight.
+        let e8m0 = QuantScheme::Plain(DType::F8E8M0);
+        assert_eq!(
+            DTypeClass::of_model([(q(GgmlType::BF16), 99), (e8m0, 1)]),
+            Err(ModelClassError::Unclassified { scheme: e8m0 })
         );
         // Eleven equal schemes: each carries 1/11 < 10 %.
         let eleven: Vec<_> = GgmlType::ALL[..11].iter().map(|&t| (q(t), 1)).collect();
