@@ -523,7 +523,7 @@ ADR-0022 (option 1a) puts `SystemClock` and `OsEntropy` in `io`, in `syntropy_io
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | QUAL-E3-T24's gate on OQ-PRC-20 dropped; its row becomes the sources task of ADR-0022, in `io`, with the stopped-clock reading and the ADR's criteria; QUAL-E3-T24 → QUAL-E1-T06; QUAL-E3-T01's row names `io` and adds `#![forbid(unsafe_code)]` to its criteria | QUAL-E3-T01, QUAL-E3-T24 | R3b, R9 | ADR-0022 settles OQ-PRC-20 (accepted 2026-10-22). QUAL-E3-T24's criteria test each suspend-aware clock on every Tier 1 OS, and QUAL-E1-T06 adds the hosted Windows and macOS jobs. Its `getrandom` criterion is checked by the rule 6 entry this change adds to `cargo xtask check-deps`, so it needs no new edge |
-| DIST-E2-T01 → QUAL-E3-T24 | DIST-E2-T01 | R9 | node key generation needs `OsEntropy`; `SimEntropy` is test-only (RFC-0060 §2.1 rule T2) |
+| DIST-E2-T01 → QUAL-E3-T24 (already made by #1586, in "Readiness audit of the next M0 wave" above; no edit here) | DIST-E2-T01 | R9 | node key generation needs `OsEntropy`; `SimEntropy` is test-only (RFC-0060 §2.1 rule T2) |
 | QUAL-E3-T17 → QUAL-E3-T24 | QUAL-E3-T17 | R9 | the production `TickSource::now` returns `MonoTime` on the `SystemClock` timeline |
 | PLC-E9-T01 → QUAL-E3-T24 | PLC-E9-T01 | R9 | ingress generates 64 random bits when the client sends no seed (ADR-0107), through an `Entropy` (rule T1), and the standard library has no stable random source |
 | DIST-E1-T04 → QUAL-E3-T24 | DIST-E1-T04 | R9 | the runner's daemon-silence timer (`runner.daemon_silence`) is its lifecycle machine reading time, which goes through a `Clock` (rule T1) |
