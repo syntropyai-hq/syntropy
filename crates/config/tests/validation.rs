@@ -51,6 +51,13 @@ struct Creds {
     token: SecretSource,
 }
 
+/// An `[[…]]` entry that holds a secret beside a plain field.
+#[derive(Debug, Deserialize, HoldsSecret)]
+struct Item {
+    name: String,
+    token: SecretSource,
+}
+
 /// Node keys of each value kind.
 #[derive(Deserialize, ConfigSection)]
 #[config(section = "t", scope = Node, owner = "RFC-0054")]
@@ -73,6 +80,9 @@ struct T {
     /// Listeners.
     #[config(reload = Hot, default = [])]
     bind: Vec<String>,
+    /// Entries, each with a secret.
+    #[config(reload = Hot, default = [])]
+    items: Vec<Item>,
 }
 
 /// Exporter settings, with secret headers beside a plain key.
@@ -657,6 +667,45 @@ fn secret_cases(marker: &str) -> Vec<Case> {
         (
             vec![],
             vec![(String::from("SYNTROPY_VAULT__TOKENS"), m.to_owned())],
+            vec![],
+        ),
+        // An error on another key of the same `[[…]]` entry, as a table and inline.
+        (
+            file(format!("[[t.items]]\nname = 5\ntoken = \"{m}\"\n")),
+            vec![],
+            vec![],
+        ),
+        (
+            file(format!("[[t.items]]\nname = 5 token = \"{m}\"\n")),
+            vec![],
+            vec![],
+        ),
+        (
+            file(format!("[t]\nitems = [{{ name = 5, token = \"{m}\" }}]\n")),
+            vec![],
+            vec![],
+        ),
+        // The value of an unknown key, in a file, a policy table and a flag, and of an unknown
+        // `SYNTROPY_*` variable, whose warning names the variable alone.
+        (file(format!("bogus = \"{m}\"\n")), vec![], vec![]),
+        (file(format!("[t]\nunknown = \"{m}\"\n")), vec![], vec![]),
+        (
+            file(format!("[policy.x]\nnope = \"{m}\"\n")),
+            vec![],
+            vec![],
+        ),
+        (vec![], vec![], vec![format!("nope.key={m}")]),
+        (
+            vec![],
+            vec![(String::from("SYNTROPY_NOPE"), m.to_owned())],
+            vec![],
+        ),
+        (
+            vec![],
+            vec![(
+                String::from("SYNTROPY_OBS__OTLP__HEADER__AUTHORIZATION"),
+                format!("Bearer {m}"),
+            )],
             vec![],
         ),
         // `--set` and the environment.
