@@ -68,8 +68,8 @@ else
     note "sign-off: ok"
 fi
 
-if ! same_repository "$hooks"; then
-    note "naming check: skipped, this repository is not the one these hooks belong to"
+if ! same_checkout "$hooks"; then
+    note "naming check: skipped, this checkout is not the one these hooks are in"
 elif [ ! -f "$naming" ]; then
     note "naming check: skipped, this repository has no plan/implementation/tools/naming_check.py"
 elif python=$(find_python); then

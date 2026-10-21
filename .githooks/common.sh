@@ -15,17 +15,13 @@ find_python() {
     return 1
 }
 
-# True when the repository being committed to shares its git directory with the checkout that
-# holds these hooks, the directory above $1. Only then do the hooks run code from that repository
-# (cargo fmt, the plan tools, naming_check.py), which is then as trusted as the hooks themselves.
-# Hooks that core.hooksPath points at from another repository run no code from it, as git itself
-# never runs a repository's own hooks.
-same_repository() {
-    here=$(git rev-parse --path-format=absolute --git-common-dir) || return 1
-    # git exports GIT_DIR and GIT_INDEX_FILE to hooks; clear them to ask about the hooks' checkout.
-    theirs=$(
-        unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
-        git -C "$1/.." rev-parse --path-format=absolute --git-common-dir 2>/dev/null
-    ) || return 1
+# True when the checkout being committed to is the one that holds these hooks: its physical top
+# level is the directory above $1. Only then do the hooks run code from it (cargo fmt, the plan
+# tools, naming_check.py), which comes from the same checkout as the hooks themselves. Hooks that
+# core.hooksPath points at from anywhere else run no code from there: not another repository, not
+# another worktree of this one, and not a directory whose .git file points at this one.
+same_checkout() {
+    here=$(top=$(git rev-parse --show-toplevel) && cd "$top" && pwd -P) || return 1
+    theirs=$(cd "$1/.." && pwd -P) || return 1
     [ "$here" = "$theirs" ]
 }

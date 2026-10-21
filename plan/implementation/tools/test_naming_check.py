@@ -330,6 +330,8 @@ class HookTest(unittest.TestCase):
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_AUTHOR_NAME": "Test",
             "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
         })
 
     def tearDown(self):
@@ -365,7 +367,7 @@ class HookTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("commit-msg: subject: ok", output)
         self.assertIn("commit-msg: sign-off: ok", output)
-        self.assertIn("naming check: skipped, this repository is not the one these hooks belong to", output)
+        self.assertIn("naming check: skipped, this checkout is not the one these hooks are in", output)
 
     def test_pre_commit_runs_the_plan_tools_when_plan_files_are_only_deleted(self):
         # A clone of this repository, with one generated file deleted and nothing else staged:
@@ -386,7 +388,7 @@ class HookTest(unittest.TestCase):
         code, output = self.run_hook([], cwd=self.other_repo(), hook="pre-commit")
         self.assertEqual(code, 0, output)
         self.assertIn("pre-commit: rustfmt: skipped, no Rust files staged", output)
-        self.assertIn("naming check: skipped, this repository is not the one these hooks belong to", output)
+        self.assertIn("naming check: skipped, this checkout is not the one these hooks are in", output)
 
     def test_hooks_run_no_code_from_another_repository(self):
         # Another repository that ships its own naming_check.py and plan tools, and stages Rust
@@ -406,38 +408,100 @@ class HookTest(unittest.TestCase):
         env = dict(self.env, GIT_DIR=str(repo / ".git"))
         code, output = self.run_hook([], cwd=repo, hook="pre-commit", env=env)
         self.assertEqual(code, 0, output)
-        self.assertIn("pre-commit: rustfmt: skipped, this repository is not the one these hooks belong to", output)
-        self.assertIn("pre-commit: plan tools: skipped, this repository is not the one these hooks belong to", output)
-        self.assertIn("naming check: skipped, this repository is not the one these hooks belong to", output)
+        self.assertIn("pre-commit: rustfmt: skipped, this checkout is not the one these hooks are in", output)
+        self.assertIn("pre-commit: plan tools: skipped, this checkout is not the one these hooks are in", output)
+        self.assertIn("naming check: skipped, this checkout is not the one these hooks are in", output)
         code, output = self.run_hook(
             ["docs: a message", "", "Signed-off-by: Test <test@example.invalid>"], cwd=repo,
             env=env)
         self.assertEqual(code, 0, output)
-        self.assertIn("naming check: skipped, this repository is not the one these hooks belong to", output)
+        self.assertIn("naming check: skipped, this checkout is not the one these hooks are in", output)
         self.assertFalse(marker.exists(), "a hook ran code from the other repository")
 
-    def test_hooks_in_a_linked_worktree_of_their_repository_still_run_its_tools(self):
-        # git exports GIT_DIR to hooks in a linked worktree; the trust check must still see the
-        # worktree and the hooks' checkout as one repository.
+    def trusted_clone(self):
+        """A clone of this repository holding the hooks under test, as its own .githooks."""
         clone = self.dir / "clone"
         subprocess.run(["git", "clone", "-q", str(REPO), str(clone)], env=self.env, check=True,
                        capture_output=True)
         shutil.copytree(REPO / ".githooks", clone / ".githooks", dirs_exist_ok=True)
-        worktree = self.dir / "linked"
-        subprocess.run(["git", "worktree", "add", "-q", "--detach", str(worktree)], cwd=clone,
-                       env=self.env, check=True, capture_output=True)
-        git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=worktree,
-                                 env=self.env, check=True, capture_output=True).stdout.strip()
-        env = dict(self.env, GIT_DIR=git_dir.decode())
+        return clone
+
+    def git_in(self, cwd, *args):
+        return subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=cwd,
+                              env=self.env, check=True, capture_output=True).stdout
+
+    def run_in_worktree(self, hooks, worktree, hook):
+        """Runs `hook` from `hooks` in `worktree` as git does: from its top level, with GIT_DIR
+        exported."""
+        git_dir = self.git_in(worktree, "rev-parse", "--absolute-git-dir").strip().decode()
+        env = dict(self.env, GIT_DIR=git_dir)
         message = self.dir / "COMMIT_EDITMSG"
         message.write_text("docs: a message\n\nSigned-off-by: Test <test@example.invalid>\n",
                            encoding="utf-8")
-        done = subprocess.run(
-            ["sh", (clone / ".githooks" / "commit-msg").as_posix(), message.as_posix()],
-            cwd=worktree, env=env, capture_output=True, check=False)
-        output = (done.stdout + done.stderr).decode()
-        self.assertEqual(done.returncode, 0, output)
+        args = [message.as_posix()] if hook == "commit-msg" else []
+        done = subprocess.run(["sh", (hooks / hook).as_posix(), *args], cwd=worktree, env=env,
+                              capture_output=True, check=False)
+        return done.returncode, (done.stdout + done.stderr).decode()
+
+    def plant(self, checkout):
+        """Replaces the checkout's naming_check.py with one that leaves a marker, and returns
+        the marker's path."""
+        marker = self.dir / "planted-ran"
+        planted = f"open({str(marker)!r}, 'a').write('ran\\n')\n"
+        (checkout / "plan" / "implementation" / "tools" / "naming_check.py").write_text(
+            planted, encoding="utf-8")
+        return marker
+
+    def test_a_linked_worktree_runs_its_own_hooks_and_tools(self):
+        # The documented relative core.hooksPath resolves, in a linked worktree, to that
+        # worktree's own .githooks, so its checks run.
+        clone = self.trusted_clone()
+        worktree = self.dir / "linked"
+        self.git_in(clone, "worktree", "add", "-q", "--detach", str(worktree))
+        shutil.copytree(REPO / ".githooks", worktree / ".githooks", dirs_exist_ok=True)
+        code, output = self.run_in_worktree(worktree / ".githooks", worktree, "commit-msg")
+        self.assertEqual(code, 0, output)
         self.assertIn("naming check: PASS", output)
+
+    def test_the_checkouts_hooks_skip_an_untrusted_linked_worktree(self):
+        # A branch with a planted naming_check.py, checked out in a linked worktree, and the main
+        # checkout's hooks used by absolute path: they must run nothing from the worktree.
+        clone = self.trusted_clone()
+        self.git_in(clone, "switch", "-q", "-c", "untrusted")
+        marker = self.plant(clone)
+        # Commit only the planted script: the hooks under test stay uncommitted in the clone.
+        self.git_in(clone, "add", "plan/implementation/tools/naming_check.py")
+        self.git_in(clone, "commit", "-q", "-m", "plant")
+        self.git_in(clone, "switch", "-q", "-")
+        worktree = self.dir / "linked"
+        self.git_in(clone, "worktree", "add", "-q", str(worktree), "untrusted")
+        (worktree / "new.md").write_text("clean\n", encoding="utf-8")
+        self.git_in(worktree, "add", "new.md")
+        for hook in ("pre-commit", "commit-msg"):
+            code, output = self.run_in_worktree(clone / ".githooks", worktree, hook)
+            self.assertEqual(code, 0, output)
+            self.assertIn("naming check: skipped, this checkout is not the one these hooks are in",
+                          output)
+        self.assertFalse(marker.exists(), "a hook ran code from the untrusted worktree")
+
+    def test_the_checkouts_hooks_skip_a_directory_whose_git_file_points_at_it(self):
+        clone = self.trusted_clone()
+        elsewhere = self.dir / "elsewhere"
+        (elsewhere / "plan" / "implementation" / "tools").mkdir(parents=True)
+        (elsewhere / ".git").write_text(f"gitdir: {(clone / '.git').as_posix()}\n",
+                                        encoding="utf-8")
+        marker = self.plant(elsewhere)
+        (self.dir / "COMMIT_EDITMSG").write_text(
+            "docs: a message\n\nSigned-off-by: Test <test@example.invalid>\n", encoding="utf-8")
+        for hook in ("pre-commit", "commit-msg"):
+            done = subprocess.run(
+                ["sh", (clone / ".githooks" / hook).as_posix(),
+                 *([(self.dir / "COMMIT_EDITMSG").as_posix()] if hook == "commit-msg" else [])],
+                cwd=elsewhere, env=self.env, capture_output=True, check=False)
+            output = (done.stdout + done.stderr).decode()
+            self.assertNotIn("naming check: PASS", output)
+            self.assertIn("this checkout is not the one these hooks are in", output)
+        self.assertFalse(marker.exists(), "a hook ran code from the other directory")
 
     def message(self, *body):
         return ["docs: a message saved with CRLF endings", "", *body,
