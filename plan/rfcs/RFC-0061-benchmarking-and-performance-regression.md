@@ -405,13 +405,13 @@ The records reuse the verified figures in `hardware-and-performance-model.md` §
   - a GPU reading host memory (`HostPinned`): DRAM, then the GPU's negotiated PCIe link;
   - a drive (`Nvme`): the drive, then its link.
 
-  DRAM's channel count is the CPU's, capped by the number of DIMMs fitted, and runs at the slowest DIMM's speed. A chipset-attached drive has no peak until the chipset uplink has a record.
+  DRAM's channel count is the CPU's, capped by the number of DIMMs fitted, and runs at the slowest DIMM's speed, which the inventory records as the speed the module runs at. A chipset-attached drive has no peak until the chipset uplink has a record, and the rig's other paths keep theirs.
 - **Sources.** Where the research note cites a third-party measurement rather than a vendor or standards document, the record cites a vendor or standards document for the same figure instead:
   - the DRAM formula's inputs: the CPU vendor's channel count, and a DDR5 module datasheet's 64-bit data width;
   - PCIe 4.0: PCI-SIG's 16.0 GT/s and 128b/130b encoding.
 
-  R-ADA's figures match the research's: 1008 GB/s, 96.0 GB/s, 31.5 GB/s and 7.45 GB/s.
-- **Sanity.** A probe figure below 50% of its path's `W_peak` sets `EnvCapture.dirty` to `misconfigured`. A run already dirty for another reason keeps that reason.
+  R-ADA's figures match the research's: 1008 GB/s (cited), 96.0 GB/s (derived: 2 channels × 8 B × 6000 MT/s), 31.5 GB/s (derived: 16 GT/s × 16 lanes × 128/130 ÷ 8, per direction) and 7.45 GB/s (cited).
+- **Sanity.** A probe figure below 50% of its path's `W_peak` sets `EnvCapture.dirty` to `misconfigured`. A run already dirty for another reason keeps that reason. A probe of a path with no peak is reported as unchecked, a gap in the database rather than in the rig, and leaves the run as it is.
 
 #### 5.4 Roofline views
 

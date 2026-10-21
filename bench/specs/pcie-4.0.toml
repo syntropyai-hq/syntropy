@@ -17,5 +17,5 @@ checked = "2026-10-22"
 [encoding]
 value = "128b/130b"
 source = "https://pcisig.com/faq?field_category_value%5B%5D=pci_express_3.0"
-where = "PCI Express 3.0 FAQ: PCIe 3.0 \"uses a more efficient 128b/130b encoding scheme\" at 8.0 GT/s; the 4.0 FAQ doubles that bandwidth by doubling the bit rate to 16.0 GT/s, which keeps the encoding"
+where = "PCI Express 3.0 FAQ: PCIe 3.0 \"uses a more efficient 128b/130b encoding scheme\" at 8.0 GT/s. PCIe 4.0 keeps PCIe 3.0's 128b/130b encoding: the 4.0 FAQ says its 16.0 GT/s doubles the bandwidth of PCIe 3.0, which only the same encoding at twice the bit rate gives. The 4.0 FAQ does not name the encoding itself."
 checked = "2026-10-22"
