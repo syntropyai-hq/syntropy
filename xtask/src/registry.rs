@@ -243,6 +243,22 @@ pub const JOBS: &[Entry] = &[
                 name: "notices",
                 action: Action::Xtask(&["notices"]),
             },
+            // Scenario files, the SC map and RFC-0061 §4.2's table (QUAL-E13-T01, RFC-0061 §4).
+            Step {
+                name: "scenarios",
+                action: Action::Cargo(&[
+                    "run",
+                    "--locked",
+                    "--quiet",
+                    "--package",
+                    "syntropy-bench",
+                    "--bin",
+                    "syntropy-bench",
+                    "--",
+                    "scenarios",
+                    "check",
+                ]),
+            },
         ],
         // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
         // further checks to `lint`, such as the `ci/jobs.toml` goldens (QUAL-E1-T07). The row's DCO
@@ -600,6 +616,8 @@ mod tests {
                 "cargo xtask spdx",
                 "cargo xtask third-party",
                 "cargo xtask notices",
+                "cargo run --locked --quiet --package syntropy-bench --bin syntropy-bench -- \
+                 scenarios check",
             ]
         );
     }
