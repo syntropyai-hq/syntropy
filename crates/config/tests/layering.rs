@@ -22,9 +22,9 @@ use std::sync::{Arc, Barrier};
 use proptest::prelude::*;
 use serde::Deserialize;
 use syntropy_config::{
-    ByteSize, ConfigFile, ConfigSection, Dirs, Env, Flags, HoldsSecret, Layers, Locations, Mode,
-    Origin, Os, Registry, ResolvedConfig, SecretSource, SharedConfig, Value, command, load,
-    order_dropins,
+    ByteSize, Checked, Code, ConfigFile, ConfigSection, Dirs, Env, Flags, HoldsSecret, Layers,
+    Locations, Mode, Origin, Os, Registry, ResolvedConfig, SecretSource, SharedConfig, Value,
+    command, load, order_dropins,
 };
 
 /// Keys for the layering tests.
@@ -781,7 +781,11 @@ fn unknown_syntropy_variables_are_warnings() {
         ]
     );
     assert_eq!(int(&resolved, "t.a"), Some(5));
-    let report = command::check(&Ok(resolved));
+    let checked = Checked {
+        files: Vec::new(),
+        outcome: Ok(resolved),
+    };
+    let report = command::check(&checked, &REGISTRY);
     assert_eq!(report.exit, command::EXIT_OK);
     assert!(
         report
@@ -812,7 +816,11 @@ fn layering_errors_name_the_file_line_variable_or_flag() {
             flags: &flags,
         },
     );
-    let report = command::check(&outcome);
+    let checked = Checked {
+        files: files.to_vec(),
+        outcome: outcome.clone(),
+    };
+    let report = command::check(&checked, &REGISTRY);
     assert_eq!(report.exit, command::EXIT_INVALID);
     let errors: Vec<String> = outcome
         .unwrap_err()
@@ -820,7 +828,8 @@ fn layering_errors_name_the_file_line_variable_or_flag() {
         .iter()
         .map(ToString::to_string)
         .collect();
-    assert_eq!(errors.len(), 5, "{errors:#?}");
+    // The layering errors, and the phase-3 type error for the environment's value.
+    assert_eq!(errors.len(), 6, "{errors:#?}");
     assert_eq!(errors[0], "/a.toml:3: unknown key `t.bogus`");
     assert!(
         errors[1].starts_with("/b.toml:3:3: TOML syntax: "),
@@ -832,16 +841,21 @@ fn layering_errors_name_the_file_line_variable_or_flag() {
         "{}",
         errors[2]
     );
-    assert_eq!(errors[3], "flag --set t.missing: unknown key `t.missing`");
     assert!(
-        errors[4].starts_with("flag --set max_tokens: `max_tokens` is a request key"),
+        errors[3].starts_with("env SYNTROPY_T__A: `t.a`: invalid type"),
         "{}",
-        errors[4]
+        errors[3]
+    );
+    assert_eq!(errors[4], "flag --set t.missing: unknown key `t.missing`");
+    assert!(
+        errors[5].starts_with("flag --set max_tokens: `max_tokens` is a request key"),
+        "{}",
+        errors[5]
     );
     assert!(
         report
             .text
-            .ends_with("config check: 5 errors, 0 warnings\n"),
+            .ends_with("config check: 6 errors, 0 warnings\n"),
         "{}",
         report.text
     );
@@ -935,8 +949,10 @@ fn a_section_builds_from_the_resolved_values() {
     assert_eq!(t.size, "4GiB".parse::<ByteSize>().unwrap());
     assert!(t.token.is_none());
 
+    // A value below its key's minimum is rejected at load, by RFC-0054 §8's phase 3, before a
+    // section is built from it.
     let files = [ConfigFile::new("/c.toml", "t.size = \"1KiB\"\n")];
-    let resolved = ResolvedConfig::resolve_with(
+    let rejected = ResolvedConfig::resolve_with(
         &REGISTRY,
         Layers {
             files: &files,
@@ -944,8 +960,10 @@ fn a_section_builds_from_the_resolved_values() {
         },
         |_| Some(Value::Integer(8)),
     )
-    .unwrap();
-    assert!(resolved.section::<TSection>().is_err());
+    .unwrap_err();
+    assert_eq!(rejected.errors.len(), 1, "{rejected:?}");
+    assert_eq!(rejected.errors[0].code, Some(Code::OutOfRange));
+    assert_eq!(rejected.errors[0].key.as_deref(), Some("t.size"));
 }
 
 /// Readers never see a mix of two snapshots while a writer swaps them.
