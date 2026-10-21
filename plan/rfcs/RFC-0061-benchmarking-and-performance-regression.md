@@ -5,7 +5,7 @@
 - Depends on: RFC-0001 (§13, §14, §16), RFC-0060, RFC-0010, RFC-0053; ADR-0004, ADR-0008, ADR-0013, ADR-0017, ADR-0019, ADR-0020; ADR-0610, ADR-0611, ADR-0612
 - Expanded by: RFC-0062 (when and where benchmark jobs run), every domain RFC (its microbenchmarks, §9)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing)
+- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2)
 
 ## Summary
 
@@ -176,6 +176,7 @@ pub struct BenchResult {
     pub config_hash: Blake3,                     // resolved config (RFC-0054), secrets excluded
     pub baseline_engine: Option<BaselineRun>,    // §7, comparison scenarios only
     pub verdict: Option<GateVerdict>,            // §8, set when a gate evaluated this result
+    pub trust: Trust,                            // trusted | untrusted, set by the writer of record (§10.3)
 }
 pub struct RepResult {
     pub ttft_s: f64, pub tpot_s: f64, pub itl_s: Vec<f32>, pub prefill_tps: f64,
@@ -186,6 +187,14 @@ pub struct RepResult {
 ```
 
 Results are JSON. Per-step traces are stored beside them in a columnar file, compressed. Both go to the results store (§10.3).
+
+**The record as built** (revised 2026-10-21, QUAL-E12-T01). `syntropy-bench` implements §2.1 and §2.2 with the differences below. `crates/bench/schema/bench-result.v1.schema.json` gives the full wire form.
+- **`trust`.** `BenchResult` carries `trust: Trust`, `trusted` or `untrusted`. The writer of record sets it, never the run. A `lab.yml` job on an untainted rig and the trusted ingestion job write `trusted`. Every other producer writes `untrusted`, including a fork-derived run and a user's `syntropy bench` run (§10.3).
+- **Every field is written.** A field whose value may be absent is written as `null`, never omitted, so a missing field always fails validation. An unknown field fails too.
+- **Steps not collected.** `StepTraceRef` has a `not_collected` form, for runs made before per-step telemetry exists and for runs that collect none. `TermBreakdown` then has no rows, and the times in `Bounds` stay `null` until computed.
+- **Dense scenarios** record `expert_cache: learned`, the §3.2 default. The field has no effect on them.
+- **Policy types follow their owner.** The key's `Objective` and `ExactnessPolicy` carry the fields RFC-0054 §4.1 and §4.2 add: `target_concurrency`, `ttft_ceiling` and the knob `params`. RFC-0042 has not defined the parameter types yet, so each knob's parameters are stored in the form its `approximate.<knob>` key takes (RFC-0054 §5.4): a name, or a table of values. An approximate policy names at least one knob, because RFC-0054 §7 resolves an empty knob set to `Exact`. The key's identifier and policy types are `syntropy-bench`'s own wire forms of the RFC-0001 §5 types, with the same field names, until `core` defines them.
+- **Versions.** `schema` is 1. A change to the record bumps it. Readers keep reading every earlier version, because release and nightly results are kept indefinitely (§10.3).
 
 ### 3. Measurement protocol
 
