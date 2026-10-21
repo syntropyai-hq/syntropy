@@ -17,7 +17,7 @@ Once code exists, contributions follow the tasks in [plan/implementation/](plan/
 1. Search the open and closed [issues](https://github.com/syntropyai-hq/syntropy/issues) and [pull requests](https://github.com/syntropyai-hq/syntropy/pulls). If one covers your point, add your evidence there.
 2. Read [AGENTS.md](AGENTS.md) and the RFC and ADRs for the part you want to change. [plan/README.md](plan/README.md) maps them.
 3. For anything larger than a focused fix, open an issue first that says what problem it solves, what it changes and what it costs. A change to a decision needs an ADR (below).
-4. For implementation work, pick a task from the [project board](https://github.com/orgs/syntropyai-hq/projects/1). Every task in the plan is an issue there. Take one that is ready (nothing it is blocked by is still open) and unassigned, and say in a comment that you're taking it. If the work you want has no task, propose one in an issue or add it to the right epic in your PR.
+4. For implementation work, pick a task from the [project board](https://github.com/orgs/syntropyai-hq/projects/1). Every task in the plan is an issue there, and the [roadmap](plan/implementation/roadmap.md)'s "Start here" list and zero-slack tasks say which come first. Take one that is unassigned and ready: every task in its "Depends on" cell is done. `python3 plan/implementation/tools/depcheck.py --task <ID>` lists them, and the issue's "blocked by" links mirror the cell. Assigning an issue and moving it on the board need write access, so say in a comment on the issue that you're taking it, and a maintainer assigns it to you. If the work you want has no task, propose one in an issue or add it to the right epic in your PR.
 
 ## Issues
 
