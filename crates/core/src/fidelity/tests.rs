@@ -314,6 +314,132 @@ fn pooled_and_per_category_aggregates() {
     assert_eq!(aggregate(&mixed), Err(MetricError::MixedTail));
 }
 
+#[test]
+fn max_abs_scaled_takes_the_largest_difference_wherever_it_is() {
+    // r = (3, 4, 0), y − r = (5, −1, 2): the largest |difference| is first, not last.
+    let r = [3.0f64, 4.0, 0.0];
+    let y = [8.0f64, 3.0, 2.0];
+    let rms = (25.0f64 / 3.0).sqrt();
+    assert_eq!(max_abs_scaled(&y, &r).unwrap(), 5.0 / (rms + 1e-30));
+    // In the middle.
+    let y = [4.0f64, 9.0, 2.0];
+    assert_eq!(max_abs_scaled(&y, &r).unwrap(), 5.0 / (rms + 1e-30));
+}
+
+#[test]
+fn log_sum_exp_is_stable_for_large_logits() {
+    // exp(±1e4) overflows to +∞ or underflows to 0 in F64, so these values are finite only
+    // when the maximum is subtracted first. Near ±1e4 one F64 ULP is ≈ 1.8e−12, so `z − lse`
+    // carries errors of a few ULPs; `NEAR_1E4` allows for that and nothing more. Test
+    // parameter.
+    const NEAR_1E4: f64 = 1e-9;
+    for base in [1e4f32, -1e4] {
+        let z = [base, base, base - 1.0];
+        let b = f64::from(base);
+        let expect = b + (2.0 + (-1.0f64).exp()).ln();
+        let lse = logsumexp(&z).unwrap();
+        assert!(close(lse, expect, NEAR_1E4), "lse {lse} vs {expect}");
+        let ls = log_softmax(&z).unwrap();
+        assert!(close(ls[0], b - expect, NEAR_1E4), "log_softmax {ls:?}");
+        // KL is shift-invariant: rows near ±1e4 give the KL of the same rows near 0.
+        let r = [base, base - 1.0, base - 3.0];
+        let c = [base - 0.5, base, base - 2.0];
+        let small_r = [0.0f32, -1.0, -3.0];
+        let small_c = [-0.5f32, 0.0, -2.0];
+        let kl = kl_full(&r, &c).unwrap();
+        assert!(
+            close(kl, kl_full(&small_r, &small_c).unwrap(), NEAR_1E4),
+            "{kl}"
+        );
+        // The stored-reference fields use the same log-sum-exp.
+        let sr = StoredRef::from_logits(&r, 1, &[1]).unwrap();
+        let small = StoredRef::from_logits(&small_r, 1, &[1]).unwrap();
+        assert!(close(sr.lse, b + small.lse, NEAR_1E4));
+        assert!(close(sr.log_r, small.log_r, NEAR_1E4));
+        let gc = GatheredCand::from_logits(&c, &sr.view()).unwrap();
+        assert!(gc.lse.is_finite() && gc.log_s.is_finite(), "{gc:?}");
+    }
+}
+
+#[test]
+fn nearest_rank_uses_the_ceiling() {
+    // n = 60: 0.99 · 60 = 59.4, so the rank is ⌈59.4⌉ = 60, not round(59.4) = 59.
+    let v: Vec<f64> = (1..=60).map(f64::from).collect();
+    assert_eq!(p99_nearest_rank(&v).unwrap(), 60.0);
+    // 0.3 · 10 = 3.0 exactly, so the rank is 3 and not 4. Rounding error in the product
+    // would push it above 3 and the ceiling to 4.
+    let v: Vec<f64> = (1..=10).map(f64::from).collect();
+    assert_eq!(percentile_nearest_rank(&v, 30.0).unwrap(), 3.0);
+    // 0.34 · 10 = 3.4: ceiling 4, rounding 3.
+    assert_eq!(percentile_nearest_rank(&v, 34.0).unwrap(), 4.0);
+}
+
+#[test]
+fn gathered_cand_rejects_duplicate_top_k_ids() {
+    let top = [IdLogit { id: 1, logit: 2.0 }, IdLogit { id: 1, logit: 2.0 }];
+    let reference = RefView {
+        top_k: &top,
+        tail_sample: &[],
+        lse: 2.5,
+        log_r: -1.0,
+    };
+    assert_eq!(
+        GatheredCand::from_logits(&[0.0f32, 2.0, 1.0], &reference),
+        Err(MetricError::DuplicateTopKId { id: 1 })
+    );
+}
+
+#[test]
+fn gathered_cand_validates_ids_as_stored_ref_does() {
+    let z = [1.0f32, 3.0, 3.0, 0.5, 2.0];
+    let c = [0.5f32, 2.5, 3.0, 1.0, 2.0];
+    let sr = StoredRef::from_logits(&z, 3, &[0, 3]).unwrap();
+    // A valid block gathers.
+    let gc = GatheredCand::from_logits(&c, &sr.view()).unwrap();
+    assert_eq!(gc.top_k, vec![2.5, 3.0, 2.0]);
+    assert_eq!(gc.tail_sample, vec![0.5, 1.0]);
+    // A tail ID in the top-K: StoredRef refuses to build it, and GatheredCand refuses a block
+    // that holds one.
+    assert_eq!(
+        StoredRef::from_logits(&z, 3, &[0, 4]),
+        Err(MetricError::TailIdInTopK { id: 4 })
+    );
+    let bad_tail = [IdLogit { id: 0, logit: 1.0 }, IdLogit { id: 4, logit: 2.0 }];
+    let reference = RefView {
+        tail_sample: &bad_tail,
+        ..sr.view()
+    };
+    assert_eq!(
+        GatheredCand::from_logits(&c, &reference),
+        Err(MetricError::TailIdInTopK { id: 4 })
+    );
+    // A tail ID outside the vocabulary: both report the same error.
+    assert_eq!(
+        StoredRef::from_logits(&z, 3, &[5]),
+        Err(MetricError::IdOutOfRange { id: 5, vocab: 5 })
+    );
+    let out = [IdLogit { id: 5, logit: 0.0 }];
+    let reference = RefView {
+        tail_sample: &out,
+        ..sr.view()
+    };
+    assert_eq!(
+        GatheredCand::from_logits(&c, &reference),
+        Err(MetricError::IdOutOfRange { id: 5, vocab: 5 })
+    );
+    // A top-K ID outside the vocabulary.
+    let top = [IdLogit { id: 7, logit: 0.0 }];
+    let reference = RefView {
+        top_k: &top,
+        tail_sample: &[],
+        ..sr.view()
+    };
+    assert_eq!(
+        GatheredCand::from_logits(&c, &reference),
+        Err(MetricError::IdOutOfRange { id: 7, vocab: 5 })
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Criterion 2: property test that KL_K ≤ KL
 // ---------------------------------------------------------------------------------------------
