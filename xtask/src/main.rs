@@ -31,6 +31,7 @@ mod cli;
 mod codeowners;
 mod contrib;
 mod dep_diff;
+mod determinism;
 mod instructions;
 mod licences;
 mod registry;

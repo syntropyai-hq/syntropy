@@ -293,6 +293,7 @@ mod tests {
                 "toolchain",
                 "fmt",
                 "clippy",
+                "determinism",
                 "check-deps",
                 "codeowners",
                 "agent-instructions",

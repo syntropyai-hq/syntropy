@@ -416,6 +416,12 @@ mod tests {
     }
 
     #[test]
+    // `MemSnapshot::at` is a `std::time::Instant` (RFC-0020 §3), and `Instant::now` is the only
+    // way to make one. A listed exception to the determinism lints (`xtask/src/determinism.rs`).
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "builds the `Instant` that `MemSnapshot::at` holds"
+    )]
     fn mem_snapshot_carries_the_gate_fields() {
         let s = MemSnapshot {
             total: Bytes(64 * GIB),
