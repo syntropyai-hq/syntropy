@@ -12,6 +12,8 @@ pub mod fidelity;
 pub mod ids;
 pub mod measured;
 pub mod numerics;
+pub mod plan;
+pub mod policy;
 pub mod quant;
 pub mod resource;
 pub mod units;
@@ -19,9 +21,12 @@ pub mod units;
 pub use dtype::{DType, GgmlType};
 pub use error::ErrorClass;
 pub use ids::{
-    Blake3, DeviceId, Endpoint, GraphVersion, LinkId, LinkKind, NetMedium, NodeId, RdmaKind, TierId,
+    Blake3, DeviceId, Endpoint, ExpertIx, GraphVersion, InstanceId, LayerIx, LinkId, LinkKind,
+    ModelId, NetMedium, NodeId, RdmaKind, StageIx, TensorGroupId, TierId,
 };
 pub use measured::{DerivedFrom, MeasureSource, Measured};
 pub use numerics::{AccumKind, ActQuant, Numerics};
+pub use plan::{PlacementPlan, PlanDelta, PlanDigest, PlanEpoch, PlanViolation};
+pub use policy::{ApproxKnobs, ExactnessPolicy, Objective};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
 pub use units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};
