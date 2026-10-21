@@ -477,3 +477,12 @@ Four M0 tasks stopped this week on criteria their own dependencies could not sho
 | QUAL-E5-T19's types are in `core`; RFC-0060 §5.5 gets a dated note | QUAL-E5-T19 | R9 | §5.5 said "core / net", and only `core` lets `exec` build against them (rule 3) |
 | PLC-E7-T11 → DIST-E1-T06 | PLC-E7-T11 | R9 | found in review: the runner exit moved from COMP-E9-T04 is followed by a clean restart, and PLC-E7-T11's existing criteria check the supervisor's action; both are the supervisor's (DIST-E1-T06, RFC-0040 §10.4, RFC-0001 §3.4), which PLC-E7-T11 did not reach |
 | QUAL-E15-T23 marked **Maintainer action** | QUAL-E15-T23 | R9 | found in review: fitting the spare GPU in R-ADA's slot is lab work, which QUAL-E15-T02's marker covered before the split |
+
+## DIST-E5-T14's message golden vectors (2026-10-22)
+
+DIST-E5-T14 (M1a) models the commit-then-reveal pairing exchange. Its exit froze "the `PairRequest`, `PairChallenge` and `PairReveal` messages and their golden vectors". RFC-0030 §6.7 defines those messages as CBOR-enveloped `JoinMsg` variants. They carry `NodeInfo` (RFC-0001 §5, assembled by PLC-E1-T09, with additions in DIST-E4-T14), `AdmissionCert` (DIST-E2-T05) and `ClusterId` (DIST-E2-T06), in the envelope's deterministic CBOR (DIST-E8-T12). All four producers are M2, and none is a dependency of the spike, so its wire goldens would have had to invent their encodings. The exchange itself needs none of them: the commitment and the SAS are BLAKE3 over 32-byte keys and the nonces (RFC-0030 §6.2). This pass applies R9. The spike freezes the pairing fields, their order and the derivations, and the messages' wire goldens move to DIST-E5-T03, which builds the messages.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E5-T14's exit and criterion freeze the pairing fields (`commit` 32 B, `nonce_k` 16 B, `nonce_c` 16 B), their order with the reveal only after the challenge, and golden vectors for the commitment and the SAS; "golden vectors for the three messages" moves to DIST-E5-T03, whose criteria now check the messages' pairing fields and SAS against the spike's vectors | DIST-E5-T14, DIST-E5-T03 | R9 | DIST-E5-T03 builds the three messages and already reaches DIST-E8-T12, DIST-E2-T05, DIST-E4-T14 and PLC-E1-T09. Its Implements cell gains RFC-0030 §6.7, which defines the messages |
+| DIST-E5-T03 → DIST-E2-T06 | DIST-E5-T03 | R9 | `PairChallenge` carries `cluster_id`, and the SAS covers it. DIST-E2-T06 derives `ClusterId`, and DIST-E5-T03 did not reach it. DIST-E2-T06 does not reach DIST-E5-T03, so the edge adds no cycle |
