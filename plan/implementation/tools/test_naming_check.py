@@ -279,6 +279,15 @@ class NamingCheckTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("cannot read the banned-terms list named by --banned", output)
 
+    def test_a_list_with_no_patterns_is_an_error(self):
+        for name, content in (("empty.txt", ""), ("blank.txt", "\n  \n\t\n")):
+            listed = self.dir / name
+            listed.write_text(content, encoding="utf-8")
+            code, output = self.run_check("--banned", str(listed), "--stdin", stdin="zorblax\n")
+            self.assertEqual(code, 2, name)
+            self.assertIn(f"the banned-terms list at {listed} (named by --banned) has no patterns",
+                          output)
+
     def test_an_invalid_pattern_is_an_error_that_does_not_print_it(self):
         bad = self.dir / "bad.txt"
         bad.write_text("zorblax[\n", encoding="utf-8")

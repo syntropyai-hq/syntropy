@@ -20,7 +20,8 @@ findings. A --stdin label that matches is shown as `stdin`.
 The list is the first of these that is set: --banned FILE, the
 SYNTROPY_BANNED_TERMS environment variable, `git config syntropy.bannedTerms`.
 If none is set, the check is skipped with one notice line and exits 0, unless
---require is given. A list that is set but cannot be read is an error. The list
+--require is given. A list that is set but cannot be read, or that holds no
+patterns, is an error: an emptied list must not pass everything. The list
 is read by gh_sync.load_banned, as gh_sync.py --banned reads it: one
 case-insensitive regular expression per non-blank line, matched against each
 line of text.
@@ -251,6 +252,9 @@ def run(argv):
         raise CheckError(f"cannot read the banned-terms list named by {where} ({path}): {error.strerror}") from None
     except re.error:
         raise CheckError(f"the banned-terms list named by {where} has a line that is not a valid regular expression") from None
+    if not patterns:
+        # An emptied or truncated list would otherwise pass everything.
+        raise CheckError(f"the banned-terms list at {path} (named by {where}) has no patterns")
 
     checked = sources(args, patterns)
     if not checked:

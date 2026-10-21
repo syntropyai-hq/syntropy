@@ -227,7 +227,7 @@ python3 naming_check.py PATH...               # files on disk
 python3 test_naming_check.py                  # its unit tests
 ```
 
-The list is the first that is set of `--banned FILE`, `SYNTROPY_BANNED_TERMS` and `git config syntropy.bannedTerms`. With none set, the check prints one notice line and exits 0; `--require` makes that an error. Exit status is 0 when nothing matches, 1 on a match and 2 on an error. Whole files are checked, and a file with a NUL byte is skipped as binary.
+The list is the first that is set of `--banned FILE`, `SYNTROPY_BANNED_TERMS` and `git config syntropy.bannedTerms`. With none set, the check prints one notice line and exits 0; `--require` makes that an error. A list that is set but can't be read, or that holds no patterns, is an error, so an emptied list never passes everything. Exit status is 0 when nothing matches, 1 on a match and 2 on an error. Whole files are checked, and a file with a NUL byte is skipped as binary.
 
 The opt-in git hooks in `.githooks/` run it. `git config core.hooksPath .githooks` turns them on:
 - `pre-commit` runs `cargo fmt --all --check` when Rust files are staged, then `epics.py`, `depcheck.py` and the three generators with `--check` on a copy of the staged `plan/` when files under `plan/` are staged (deletions included), then `naming_check.py --staged`.
