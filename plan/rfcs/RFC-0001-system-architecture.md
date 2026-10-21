@@ -481,7 +481,7 @@ pub struct DeviceInfo {
     pub kind: DeviceKind,
     pub name: String,
     /// Backend plus architecture generation, e.g. CUDA sm_120, Metal Apple9, x86-64-v4 with AMX.
-    /// Part of PackKey (§5.6).
+    /// Part of PackKey (§5.6). Defined in RFC-0040 §2.2; ADR-0405.
     pub class: DeviceClass,
     /// Providers able to drive this device, in preference order (RFC-0040).
     pub backends: SmallVec<[Backend; 4]>,
@@ -1536,6 +1536,7 @@ pub enum ErrorClass {
 | `BuildId` | core (type); value built in `cli` | 0062 | 0052 |
 | `DeviceId`, `TierId`, `LinkId`, `DeviceKind`, `Measured` | core | 0010 | 0031 (network `LinkKind`s) |
 | `TierKind` | core | 0020 | 0010 |
+| `DeviceClass`, `CpuIsa`, `DeviceFeatures` | core | 0040 | 0010 (`Npu`, ADR-0405 decision 4's fields, the provider-record merge) |
 | `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
 | `ResourceGraph`, `CapabilityProfile` | core | 0010 | 0011 (what the solver reads), 0021 (`StorageCaps` fields) |
 | `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
@@ -1625,7 +1626,8 @@ pub struct ConformanceManifest {
     /// logits and hidden-state norms, and the tolerance-table version) and the longest
     /// certified context, `max_ctx` (RFC-0043 §9.4, RFC-0060 §7).
     pub families: Vec<FamilyCert>,
-    pub ops: Vec<OpCert>,                       // provider, device class, OpKey, kernel, source_key, shapes
+    pub ops: Vec<OpCert>,                       // provider, device class, OpKey, kernel, source_key, shapes,
+                                                // the rig's device and driver (ADR-0405)
     pub wire: Vec<WireCert>,                    // family, phase, dtype: BF16 wire in exact mode
     pub paths: Vec<PathCert>,
     pub knobs: Vec<KnobCost>,                   // each approximate knob's measured top-1 and KL cost
@@ -2694,3 +2696,13 @@ The readiness audit of the next M0 wave raised decisions the maintainers took on
 | `spsc` joins layer 1 with no workspace dependencies; `io`, `net` and `ipc` may depend on it inside the layer; it is on rule 8's `unsafe` list | §4.1 (row and dated note); §4.2 rules 2 and 8 (dated notes) | `io`, `net` and `ipc` all need §8.3's ring and are all in layer 1 (OQ-IO-29); DIST-E1-T12 adds the crate as PROD-E1-T01 added `config-derive` (§18.8) |
 | OS system calls that need `unsafe` go in `io`; E2's management APIs run in the probe-mode runner, in `kernels-loader` | §4.2 rule 8 (dated note); RFC-0010 §2.1 | rule 8 keeps `unsafe` out of `probe`, `cluster` and `daemon`, and rule 4 keeps vendor libraries out of the daemon (OQ-PRC-26) |
 | `LedgerGrant` is plain data in `core` | §3.5 (dated note) | `ipc` carries it and `tier` checks it, and `tier` has no edge to `ipc` (OQ-IO-27) |
+
+### 18.11 One device class (2026-10-22)
+
+ADR-0405, accepted 2026-10-22 (option A, with V1 for exactness on Vulkan), defines `DeviceClass` once. RFC-0010 §1.2 and RFC-0040 §2.2 had defined it twice, with different variants. §5.2, §5.6 and §5.15 used the type without defining it.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `DeviceClass`, `CpuIsa` and `DeviceFeatures` gain an ownership row: `core`, owned by RFC-0040, expanded by RFC-0010 (`Npu`, decision 4's fields, the provider-record merge) | §5.13; RFC-0010 §1.2 and RFC-0040 §2.2 (dated notes) | `DeviceInfo` and `ConformanceManifest` are `core` types that hold a `DeviceClass` (rule 1), and `kernels` re-exports it |
+| `DeviceInfo::class` cites its definition in RFC-0040 §2.2 and ADR-0405 | §5.2 | one key for placement, packs (§5.6), certificates (§5.15) and the selection cache |
+| `OpCert` records the rig's device and driver, so a lookup can tell a full certificate from a derived one on Vulkan | §5.15 (comment); RFC-0060 §6.4 and RFC-0040 §6.2 (dated notes) | ADR-0405's V1: a Vulkan certificate covers another device or driver of its class only as a derived certificate, with identical SPIR-V, the first-load canary and the `exact (derived certification)` label |
