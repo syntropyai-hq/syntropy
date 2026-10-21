@@ -216,7 +216,7 @@ python3 milestone_split.py                            # rewrite the epic files
 
 ## `naming_check.py`
 
-The D5 naming check (AGENTS.md, "Naming (D5)") as a script. It matches each line of the text against the banned-terms list, one case-insensitive regular expression per non-blank line, read by the same `load_banned` that `gh_sync.py --banned` uses. A finding names a location only, `path:line` or `commit message:line`, so the output never shows a term or the list.
+The D5 naming check (AGENTS.md, "Naming (D5)") as a script. It matches each line of the text against the banned-terms list, one case-insensitive regular expression per non-blank line, read by the same `load_banned` that `gh_sync.py --banned` uses. A finding names a location only, `path:line` or `commit message:line`, so the output never shows a term or the list. Paths are checked too. A path that matches is never printed: it is reported by its position, such as `staged path #3`, which stands in for it in that file's findings.
 
 ```sh
 python3 naming_check.py --staged              # files staged for commit, as the index holds them

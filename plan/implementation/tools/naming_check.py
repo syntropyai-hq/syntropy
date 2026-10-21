@@ -6,6 +6,11 @@ text must not name. It is kept outside the repository, so this script never
 prints it, and never prints the text a term matched. A finding is only a
 location: `path:line` for a file, `commit message:line` for a message.
 
+Paths are checked too, since a file name can hold a term. A path that matches
+is never printed: it is reported as its position in the list of files checked,
+such as `staged path #3`, and that label stands in for it in the file's other
+findings. A --stdin label that matches is shown as `stdin`.
+
     python3 naming_check.py --staged              # files staged for commit (the pre-commit hook)
     python3 naming_check.py --base origin/main    # files this branch changed, as committed at HEAD
     python3 naming_check.py --message FILE        # a commit message file (the commit-msg hook)
@@ -118,9 +123,6 @@ def blobs(revision, paths):
     """(path, content) for each path at `revision`, where `:` is the index,
     read through one `git cat-file --batch`. Entries that are not blobs, such
     as submodules, are skipped."""
-    for path in paths:
-        if "\n" in path:
-            raise CheckError(f"cannot check a path that contains a newline: {path!r}")
     request = "".join(f"{revision}{path}\n" for path in paths).encode("utf-8", "surrogateescape")
     out = git("cat-file", "--batch", stdin=request)
     at = 0
@@ -137,31 +139,61 @@ def blobs(revision, paths):
             yield path, content
 
 
-def sources(args):
-    """(label, text, skip) for everything to check, and how many were binary."""
-    if args.staged:
-        items = blobs(":", changed_paths("--cached"))
-    elif args.base:
-        items = blobs("HEAD:", changed_paths(f"{args.base}...HEAD"))
-    elif args.message:
-        return [message_source(args.message)], 0
-    elif args.stdin:
-        return [(args.label or "stdin", sys.stdin.buffer.read().decode("utf-8", errors="replace"), None)], 0
+class Source:
+    """One thing to check. `name` is what findings show: a path, `commit message` or a --stdin
+    label. A path that matches the list is shown as `kind #position` instead. `text` is None
+    for a binary file, whose path is still checked."""
+
+    def __init__(self, kind, name, text, skip=None, is_path=False):
+        self.kind, self.name, self.text, self.skip, self.is_path = kind, name, text, skip, is_path
+
+
+# How to list the paths a `kind #N` label counts through, for each kind of path.
+PATH_LISTS = {
+    "staged path": "the Nth line of `git diff --cached --name-only --diff-filter=d`",
+    "changed path": "the Nth line of `git diff --name-only --diff-filter=d <base>...HEAD`",
+    "path argument": "the Nth path given on the command line",
+}
+
+
+def matches(text, patterns):
+    return any(p.search(text) for p in patterns)
+
+
+def shown(kind, position, path, patterns):
+    """`path`, or `kind #position` when the path matches the list."""
+    return f"{kind} #{position}" if matches(path, patterns) else path
+
+
+def sources(args, patterns):
+    """Everything to check, in a fixed order, as Sources."""
+    if args.message:
+        return [message_source(args.message)]
+    if args.stdin:
+        text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        return [Source("stdin", args.label or "stdin", text)]
+    if args.paths:
+        kind, paths = "path argument", list(args.paths)
     else:
-        items = []
-        for path in args.paths:
+        kind = "staged path" if args.staged else "changed path"
+        paths = changed_paths("--cached") if args.staged else changed_paths(f"{args.base}...HEAD")
+    for position, path in enumerate(paths, 1):
+        if "\n" in path:
+            raise CheckError("cannot check a path that contains a newline: "
+                             f"{shown(kind, position, path, patterns)}")
+    if args.paths:
+        contents = {}
+        for position, path in enumerate(paths, 1):
             try:
-                items.append((path, Path(path).read_bytes()))
+                contents[path] = Path(path).read_bytes()
             except OSError as error:
-                raise CheckError(f"cannot read {path}: {error.strerror}") from None
-    texts, binary = [], 0
-    for label, content in items:
-        text = decode(content)
-        if text is None:
-            binary += 1
-        else:
-            texts.append((label, text, None))
-    return texts, binary
+                raise CheckError(f"cannot read {shown(kind, position, path, patterns)}: "
+                                 f"{error.strerror}") from None
+    else:
+        contents = dict(blobs(":" if args.staged else "HEAD:", paths))
+    # Entries that are not blobs, such as submodules, have no content and are left out.
+    return [Source(kind, path, decode(contents[path]), is_path=True)
+            for path in paths if path in contents]
 
 
 def message_source(path):
@@ -184,7 +216,7 @@ def message_source(path):
             return "skip"
         return None
 
-    return "commit message", text, skip
+    return Source("commit message", "commit message", text, skip)
 
 
 def run(argv):
@@ -220,25 +252,43 @@ def run(argv):
     except re.error:
         raise CheckError(f"the banned-terms list named by {where} has a line that is not a valid regular expression") from None
 
-    texts, binary = sources(args)
-    if not texts and not binary:
+    checked = sources(args, patterns)
+    if not checked:
         print(f"{NAME}: skipped, nothing to check")
         return PASS
-    findings = 0
-    files = 0
-    for label, text, skip in texts:
-        lines = matching_lines(text, patterns, skip)
-        if lines:
-            files += 1
-            findings += len(lines)
-            for number in lines:
-                print(f"{label}:{number}: matches a banned term (D5)")
+    lines_found = paths_found = flagged = binary = 0
+    redacted = None
+    for position, source in enumerate(checked, 1):
+        label = source.name
+        path_hit = False
+        if matches(source.name, patterns):
+            if source.is_path:
+                label = f"{source.kind} #{position}"
+                redacted = source.kind
+                path_hit = True
+                print(f"{label}: its path matches a banned term (D5)")
+            else:
+                label = source.kind
+        lines = []
+        if source.text is None:
+            binary += 1
+        else:
+            lines = matching_lines(source.text, patterns, source.skip)
+        for number in lines:
+            print(f"{label}:{number}: matches a banned term (D5)")
+        if lines or path_hit:
+            flagged += 1
+            lines_found += len(lines)
+            paths_found += path_hit
     skipped = f", {binary} binary skipped" if binary else ""
-    if findings:
-        print(f"{NAME}: FAIL: {findings} line(s) in {files} of {len(texts)} checked match the "
-              f"banned-terms list{skipped}; the terms are not printed")
+    if lines_found or paths_found:
+        print(f"{NAME}: FAIL: {lines_found} line(s) and {paths_found} path(s) in {flagged} of "
+              f"{len(checked)} checked match the banned-terms list{skipped}; the terms are not "
+              "printed")
+        if redacted:
+            print(f"{NAME}: `{redacted} #N` is {PATH_LISTS[redacted]}")
         return MATCH
-    print(f"{NAME}: PASS: {len(texts)} checked{skipped}")
+    print(f"{NAME}: PASS: {len(checked)} checked{skipped}")
     return PASS
 
 

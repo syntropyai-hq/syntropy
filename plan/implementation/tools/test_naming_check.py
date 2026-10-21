@@ -166,6 +166,70 @@ class NamingCheckTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("sub/new file.md:1: matches", output)
 
+    # Paths: checked too, and never printed when they match
+
+    def test_a_staged_path_that_matches_is_reported_by_position_not_by_name(self):
+        repo = self.repo()
+        (repo / "a.md").write_text("clean\n", encoding="utf-8")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "zorblax-notes.md").write_text("fine\nquux frob here\n", encoding="utf-8")
+        self.git(repo, "add", ".")
+        code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)
+        self.assertEqual(code, 1)
+        # Staged paths in git's order: a.md, docs/zorblax-notes.md.
+        self.assertIn("staged path #2: its path matches a banned term (D5)", output)
+        self.assertIn("staged path #2:2: matches a banned term (D5)", output)
+        self.assertIn("FAIL: 1 line(s) and 1 path(s) in 1 of 2 checked", output)
+        self.assertIn("`staged path #N` is the Nth line of `git diff --cached --name-only", output)
+        self.assertNotIn("a.md:", output)
+
+    def test_a_clean_file_whose_name_matches_fails(self):
+        repo = self.repo()
+        (repo / "zorblax.md").write_text("nothing wrong inside\n", encoding="utf-8")
+        self.git(repo, "add", ".")
+        code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)
+        self.assertEqual(code, 1)
+        self.assertIn("staged path #1: its path matches a banned term (D5)", output)
+        self.assertIn("FAIL: 0 line(s) and 1 path(s) in 1 of 1 checked", output)
+
+    def test_a_binary_file_whose_name_matches_fails(self):
+        repo = self.repo()
+        (repo / "quux-frob.bin").write_bytes(b"\0\1\2")
+        self.git(repo, "add", ".")
+        code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)
+        self.assertEqual(code, 1)
+        self.assertIn("staged path #1: its path matches a banned term (D5)", output)
+        self.assertIn("1 binary skipped", output)
+
+    def test_a_changed_path_that_matches_is_reported_by_position(self):
+        repo = self.repo()
+        self.git(repo, "switch", "-q", "-c", "topic")
+        (repo / "zorblax.txt").write_text("clean\n", encoding="utf-8")
+        self.git(repo, "add", ".")
+        self.git(repo, "commit", "-q", "-m", "add")
+        code, output = self.run_check("--banned", str(self.banned), "--base", "main", cwd=repo)
+        self.assertEqual(code, 1)
+        self.assertIn("changed path #1: its path matches a banned term (D5)", output)
+
+    def test_a_path_argument_that_matches_is_reported_by_position(self):
+        (self.dir / "ok.md").write_text("fine\n", encoding="utf-8")
+        (self.dir / "zorblax.md").write_text("fine\nquux frob\n", encoding="utf-8")
+        code, output = self.run_check("--banned", str(self.banned), "ok.md", "zorblax.md")
+        self.assertEqual(code, 1)
+        self.assertIn("path argument #2: its path matches a banned term (D5)", output)
+        self.assertIn("path argument #2:2: matches", output)
+
+    def test_an_error_about_a_path_that_matches_does_not_print_it(self):
+        code, output = self.run_check("--banned", str(self.banned), "missing-zorblax.md")
+        self.assertEqual(code, 2)
+        self.assertIn("cannot read path argument #1", output)
+
+    def test_a_stdin_label_that_matches_is_shown_as_stdin(self):
+        code, output = self.run_check("--banned", str(self.banned), "--stdin", "--label",
+                                      "notes-zorblax", stdin="ok\nquux frob\n")
+        self.assertEqual(code, 1)
+        self.assertIn("stdin:2: matches a banned term (D5)", output)
+
     def test_nothing_staged_is_skipped_with_a_notice(self):
         repo = self.repo()
         code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)
