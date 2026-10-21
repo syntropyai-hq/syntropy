@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! What a byte transfer names: a range of a file on a volume ([`ExtentRef`], whose file is a
-//! [`FileIx`]), a range of host memory ([`HostRegion`]), and the point in a device's execution
-//! by which a prefetch stops being useful ([`StepLayer`]).
+//! [`FileIx`]), a range of host memory ([`HostRegion`]), resident bytes in some address space
+//! ([`BufferView`], in a [`ViewKind`]), and the point in a device's execution by which a
+//! prefetch stops being useful ([`StepLayer`]).
 //!
-//! RFC-0020 §3 defines `ExtentRef` and `StepLayer` among the types RFC-0020 to RFC-0023 share,
-//! and RFC-0021 §2 defines `FileIx` and `HostRegion`. They live in `core` because the crates
-//! that use them sit side by side or a layer apart: `syntropy-io`'s requests carry `ExtentRef`
-//! and `StepLayer`, `syntropy-tier` (a layer above `io`) round-trips `ExtentRef` through serde in
-//! its `ArenaPlan`, and both `io` and `syntropy-kernels` (RFC-0040 §2.1) register `HostRegion`s
-//! (RFC-0001 §4.1, §4.2 rules 1 and 2).
+//! RFC-0020 §3 defines `ExtentRef`, `StepLayer` and `BufferView` among the types RFC-0020 to
+//! RFC-0023 share, and RFC-0021 §2 defines `FileIx` and `HostRegion`. They live in `core`
+//! because the crates that use them sit side by side or a layer apart: `syntropy-io`'s requests
+//! carry `ExtentRef` and `StepLayer`, `syntropy-tier` (a layer above `io`) round-trips
+//! `ExtentRef` through serde in its `ArenaPlan`, both `io` and `syntropy-kernels` (RFC-0040
+//! §2.1) register `HostRegion`s, and `syntropy-kernels` (layer 1) binds the `BufferView`s that
+//! `syntropy-tier` (layer 2) hands out as op weights (RFC-0040 §3.5; RFC-0001 §4.1, §4.2 rules
+//! 1 and 2).
 //!
-//! All four are plain data. Naming memory is harmless here; the obligation sits with whoever
+//! All six are plain data. Naming memory is harmless here; the obligation sits with whoever
 //! asks an engine or a provider to touch it, through the `unsafe` calls `syntropy-io` defines
 //! (RFC-0021 §2).
 
 use serde::{Deserialize, Serialize};
 
+use crate::ids::DeviceId;
 use crate::units::Bytes;
 
 /// A file an I/O engine has opened, as its `open` returned it (RFC-0021 §2).
@@ -86,6 +90,30 @@ pub struct HostRegion {
     pub addr: u64,
     /// Length of the range.
     pub len: Bytes,
+}
+
+/// What the hot path and the I/O engine use to address resident bytes (RFC-0020 §3). The tier
+/// manager's `view` returns it, and op launches bind it as weights (RFC-0040 §3.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BufferView {
+    /// Which address space `addr` is in.
+    pub kind: ViewKind,
+    /// The start address.
+    pub addr: u64,
+    /// The length.
+    pub len: Bytes,
+}
+
+/// The address space of a [`BufferView`] (RFC-0020 §3).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ViewKind {
+    /// Host memory.
+    Host,
+    /// One device's memory.
+    Device(DeviceId),
+    /// Unified memory, addressable by host and GPU alike.
+    Unified,
 }
 
 #[cfg(test)]
