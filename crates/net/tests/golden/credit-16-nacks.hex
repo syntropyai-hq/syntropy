@@ -1,0 +1,19 @@
+# credit-16-nacks: Credit with the most NACKs, 16: a 160-byte extension padded to 192
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 04 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0020 header
+c0 00 00 00 00 00 00 00 00 00 00 00 f8 6f e6 da  # 0030 header
+d0 07 00 00 00 00 00 00 10 08 00 00 00 00 00 00  # 0040 extension
+f1 07 00 00 00 00 00 00 84 03 00 00 10 00 01 00  # 0050 extension
+d2 07 00 00 00 00 00 00 d4 07 00 00 00 00 00 00  # 0060 extension
+d6 07 00 00 00 00 00 00 d8 07 00 00 00 00 00 00  # 0070 extension
+da 07 00 00 00 00 00 00 dc 07 00 00 00 00 00 00  # 0080 extension
+de 07 00 00 00 00 00 00 e0 07 00 00 00 00 00 00  # 0090 extension
+e2 07 00 00 00 00 00 00 e4 07 00 00 00 00 00 00  # 00a0 extension
+e6 07 00 00 00 00 00 00 e8 07 00 00 00 00 00 00  # 00b0 extension
+ea 07 00 00 00 00 00 00 ec 07 00 00 00 00 00 00  # 00c0 extension
+ee 07 00 00 00 00 00 00 f0 07 00 00 00 00 00 00  # 00d0 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00e0 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00f0 extension

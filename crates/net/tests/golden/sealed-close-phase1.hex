@@ -1,0 +1,13 @@
+# sealed-close-phase1: sealed Close, KEY_PHASE 1, ctl_seq 8: ciphertext reason, then the tag
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 0c 14 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+08 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 17 00 00 00 8d 61 7a dc 92 d6 9a 63  # 0030 header
+0c 02 00 00 00 00 00 00 00 02 00 00 00 00 00 00  # 0040 extension
+60 7f 9e bd dc fb 1a 39 58 77 96 b5 d4 f3 12 31  # 0050 extension
+50 6f 8e ad cc eb 0a 29 48 67 86 a5 c4 e3 02 21  # 0060 extension
+40 5f 7e 9d bc db fa 19 38 57 76 95 b4 d3 f2 11  # 0070 extension
+b0 cf ee 0d 2c 4b 6a 89 a8 c7 e6 05 24 43 62 81  # 0080 payload
+a0 bf de fd 1c 3b 5a                             # 0090 payload

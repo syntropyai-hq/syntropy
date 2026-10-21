@@ -1,0 +1,12 @@
+# sealed-credit-phase0: sealed Credit, KEY_PHASE 0, ctl_seq 1 in step; the payload is the tag alone
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 04 04 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 10 00 00 00 ea 24 60 e2 c0 bb 51 79  # 0030 header
+e8 03 00 00 00 00 00 00 28 04 00 00 00 00 00 00  # 0040 extension
+40 5f 7e 9d bc db fa 19 38 57 76 95 b4 d3 f2 11  # 0050 extension
+30 4f 6e 8d ac cb ea 09 28 47 66 85 a4 c3 e2 01  # 0060 extension
+20 3f 5e 7d 9c bb da f9 18 37 56 75 94 b3 d2 f1  # 0070 extension
+90 af ce ed 0c 2b 4a 69 88 a7 c6 e5 04 23 42 61  # 0080 payload
