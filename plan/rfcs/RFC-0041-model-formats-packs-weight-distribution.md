@@ -78,7 +78,7 @@ Both readers are safe Rust under `#![forbid(unsafe_code)]`, run on untrusted byt
 pub trait RangeSource {
     fn len(&self) -> u64;
     /// Reads exactly `buf.len()` bytes at `offset`. Hub sources issue an HTTP range request;
-    /// requests are coalesced and bounded by `store.header_read_max`.
+    /// requests are coalesced and bounded by `store.header_max_bytes`.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
 }
 ```

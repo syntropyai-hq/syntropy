@@ -251,7 +251,7 @@ Conventions:
 | ID | Target | Derived from | Illustration |
 |---|---|---|---|
 | SC-1 | Kernel efficiency `η = W_probe / W_peak`: ≥ 0.80 for dense GEMV on `Vram` or `Unified`; ≥ 0.63 for the grouped MoE expert kernel; CPU execute-in-place ≥ 0.75 × min(the probe's all-core DRAM read rate, the scheme's in-cache ALU-bound rate), gated for schemes whose ALU-bound rate exceeds the DRAM rate and reported, not gated, for the others | Dense: the best calibration anchor (0.79, M3 Ultra fit) and example (a)'s 0.8 assumption. MoE: halve the gap between MoE (0.53) and dense (0.73) on the same Mac, giving (0.53 + 0.73)/2. CPU: example (a)'s 70 of 90 GB/s. Some CPU kernels, the i-quants among them, are arithmetic-bound below the DRAM rate on mid-range Tier 1 CPUs, so a DRAM-only bar could not pass for them (RFC-0040 §9) | – |
-| SC-2 | `t_fixed ≤ 0.2 · B_ref / W_probe`, with `B_ref` = 3.79 GB (7B Q4_0). Applies as written on CUDA and HIP, and to dense stages on every backend. **Provisional for MoE stages on Metal and Vulkan:** those backends need one host wait per host-interacting MoE layer, because they cannot capture host waits into one step (RFC-0012 §7.5). Their value is set from the M1 spike PLC-E7-T20 and recorded here with the measurement; until then no number applies | Keeps a 7B token's time outside byte reads under 1/6 | ≈0.95 ms on an RTX 4090 at 800 GB/s; ≈1.2 ms on M3 Ultra at 645 GB/s. One existing Metal engine's fitted value is ≈5 ms. RFC-0012 estimates 0.6–2.9 ms of host-wait cost on a 58-layer Metal MoE stage [estimate], which is why that case waits for measurement |
+| SC-2 | `t_fixed ≤ 0.2 · B_ref / W_probe`, with `B_ref` = 3.79 GB (7B Q4_0). Applies as written on CUDA and HIP, and to dense stages on every backend. **Provisional for MoE stages on Metal and Vulkan:** those backends need one host wait per host-interacting MoE layer, because they cannot capture host waits into one step (RFC-0012 §7.5). Their value is set from the M0b spike PLC-E7-T20 and recorded here with the measurement; until then no number applies | Keeps a 7B token's time outside byte reads under 1/6 | ≈0.95 ms on an RTX 4090 at 800 GB/s; ≈1.2 ms on M3 Ultra at 645 GB/s. One existing Metal engine's fitted value is ≈5 ms. RFC-0012 estimates 0.6–2.9 ms of host-wait cost on a 58-layer Metal MoE stage [estimate], which is why that case waits for measurement |
 | SC-3 | Measured `t_tok ≤ 1.05 · t_model`, where `t_model = Σ B_i / W_i(probe) + n_switch·t_switch + t_fixed`, all probed | Chosen budget: at most 5% of token time that the cost model does not explain | – |
 | SC-4 | Decode ≥ X × the peak bound `1 / (Σ B_i / W_i,peak + t_fixed,SC-2)`. X = 0.76 for one execution tier (all `Vram` or all `Unified`); 0.67 for dense split across `Vram` and CPU DRAM; 0.60 for MoE with every expert in `Vram` or `Unified` | SC-1 ÷ SC-3. For the CPU split, also × 0.94, the measured-to-peak ratio of DDR5 DRAM (90 of 96 GB/s) | (a) 70B on a 4090 + DDR5: bound 3.8 → ≥ 2.5 tok/s (the cost model estimates 2.8). M3 Ultra 70B: bound 18.8 → ≥ 14.3 (an existing engine measured 14.1). M3 Ultra DeepSeek-V3 4-bit: bound 38.1 → ≥ 22.9 (≈21 measured) |
 | SC-5 | MoE over RAM and NVMe: `t_tok ≤ 1.10 · t_overlap(h)` with h measured, where `t_overlap = B_hot/W_hot + max(B_routed/W_ram_exec, ((1 − h)·B_routed + B_waste)/W_nvme)`, and `B_waste` is the measured bytes per token prefetched from NVMe and never used | Cost model §3.3, optimistic form, with two corrections. A missed expert must still be computed once it lands, so the RAM-side term covers all routed bytes; without it the §4b2 table predicts h = 0.95 to be faster than h = 1. Mispredicted prefetches share the drive with demand reads, so their bytes count on the NVMe side; RFC-0023 §10's expected-value gate keeps them small on a busy drive. The 1.10 is a chosen budget. RFC-0023 adds the VRAM-cache term | (b2) DeepSeek-V3 Q4 at h = 0.9: 217 ms → ≥ 4.2 tok/s |
@@ -312,7 +312,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 <!-- BEGIN GENERATED: vision-milestones -->
 ### M0a: walking skeleton
 
-173 tasks in the epics (`implementation/roadmap.md`, M0a).
+174 tasks in the epics (`implementation/roadmap.md`, M0a).
 
 - [ ] The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062).
 - [ ] The merge gates of ADR-0021 decision 5 run from the first commit: build, lint and tests; the DCO, licence and dependency checks; the workflow security lint; the independent review-agent job; and the sandbox in which agent runs read untrusted content. The repository's security baseline, the private vulnerability-reporting channel and the agent trust tiers are in place from the first commit too (RFC-0062 §12.5, §12.6, §13; ADR-0021; ADR-0624).
@@ -328,7 +328,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M0b: parity, certification and the lab
 
-126 tasks in the epics (`implementation/roadmap.md`, M0b).
+127 tasks in the epics (`implementation/roadmap.md`, M0b).
 
 - [ ] `qwen_moe` (GQA with softmax top-k MoE, every expert resident in VRAM), its `FamilyCert` gated on golden logits from the publisher's F32 reference as in M0a (RFC-0043, RFC-0042 §7).
 - [ ] The other M0 schemes (Q4_0, BF16, F16) and captured execution on CUDA (RFC-0040, RFC-0012).
@@ -344,7 +344,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M1a: Linux preview (CUDA and CPU tiering)
 
-474 tasks in the epics (`implementation/roadmap.md`, M1a).
+476 tasks in the epics (`implementation/roadmap.md`, M1a).
 
 - [ ] Tier manager with DMA-registered `HostPinned` and locked `HostPageable` arenas per NUMA domain, the Linux budgets, and progressive locking and registration; packs with 4 KiB alignment; the io_uring and thread-pool I/O engines (RFC-0020, RFC-0021, RFC-0041).
 - [ ] Expert cache with decayed LFU, CPU execute-in-place for misses, next-layer prediction fused into the router op, and prefetch. How much of the NVMe expert tier M1a takes on follows the hit curves from S-01's routing traces. Until those exist, the model class that fits in RAM leads, and DeepSeek-V3 at Q4 is a capacity demonstration (RFC-0023).
@@ -372,7 +372,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 - [ ] The Thunderbolt 5 RDMA raw-path probe on a pair of Macs, which decides whether Mac-pair TP and SC-17 stay in M3 (RFC-0031, RFC-0032).
 - [ ] The pairing protocol's commit-then-reveal exchange, modelled and tested against a grinding relay before `PairRequest` freezes (RFC-0030 §6).
 
-**Exit:** SC-1 to SC-11 and SC-18 to SC-21 on the Windows and Apple single-device rigs, wherever each applies. SC-2 on Metal and Vulkan MoE stages is provisional until the M1 spike sets it (`00-vision-and-scope.md` SC-2). If the Ultra-class Mac in the test matrix has 256 GB, scenario (b1)'s single-node case is measured on a model that fits it (ADR-0610).
+**Exit:** SC-1 to SC-11 and SC-18 to SC-21 on the Windows and Apple single-device rigs, wherever each applies. SC-2 on Metal and Vulkan MoE stages is provisional until the M0b spike PLC-E7-T20 sets it (`00-vision-and-scope.md` SC-2). If the Ultra-class Mac in the test matrix has 256 GB, scenario (b1)'s single-node case is measured on a model that fits it (ADR-0610).
 
 ### M2: multiple devices on a LAN
 

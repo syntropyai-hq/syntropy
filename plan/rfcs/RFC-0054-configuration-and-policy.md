@@ -301,7 +301,7 @@ RFC-0001 §11.3 defines four fields: `memory_yield`, `max_pinned_fraction`, `pow
 /// RFC-0020 (enforcement). Node keys set the node's values; an InstancePolicy's copy may only narrow them.
 pub struct ResourcePolicy {
     pub memory_yield: MemoryYield,       // RFC-0001: Never | UnderPressure (default) | Aggressive
-    pub max_pinned_fraction: f32,        // RFC-0001: cap on HostPinned as a fraction of RAM, per-OS default (RFC-0020)
+    pub max_pinned_fraction: Option<f32>, // RFC-0001: cap on HostPinned as a fraction of RAM, per-OS default (RFC-0020); None = unset, the macOS default
     pub power: PowerPolicy,              // RFC-0001: Performance | Balanced (default) | Battery
     pub network_scope: NetworkScope,     // RFC-0001: Lan | LanAndInvites (default)
     // added by this RFC:

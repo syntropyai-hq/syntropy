@@ -27,7 +27,7 @@ Hardware runners are owned lab machines (ADR-0610). Those machines are bare meta
    - Rigs never compile. They are wiped and inventory-checked between jobs.
    - Nightly and weekly work is a chain of jobs of at most 60 minutes, with one queued chunk per rig, and PR† jobs take at most 20.
 3. **Triggers.**
-   - `cargo xtask ci changes` computes the affected-job set. It uses the crate-graph closure for hosted jobs and direct path rules for hardware jobs, output as `hw_required`. The rules cover every `kernels-*` crate, `graph`, the census and KV modules, the reference and parity modules of `testkit`, and the vendored ggml.
+   - `cargo xtask ci changes` computes the affected-job set. It uses the crate-graph closure for hosted jobs and direct path rules for hardware jobs, output as `hw_required`. The rules cover `kernels` and every `kernels-*` crate, `exec`, `sched`, `tier`, `io`, `net`, `graph`, the census and KV modules, the reference and parity modules of `testkit`, the vendored ggml and `rust-toolchain.toml` (revised 2026-10-22), as RFC-0062 §2.2 lists them.
    - A single required check, `ci-gate`, aggregates the conditional jobs. Skipped hosted jobs pass; failed or cancelled jobs fail. Its hardware clause depends on the event (revised 2026-10-19; RFC-0062 §2.5):
      - on `pull_request`, a job in `hw_required` without a passing `hw/<job>` status on the PR head fails the gate, including for fork PRs;
      - on `merge_group`, the gate evaluates hosted jobs only, plus the statuses of any member a maintainer labelled `hw:queue` (decision 5), so an unlabelled batch never waits for a rig;
@@ -69,4 +69,5 @@ Hardware runners are owned lab machines (ADR-0610). Those machines are bare meta
 - GitHub offers per-workflow runner-group restrictions on the organisation's plan. Then add them, and keep the random per-run label anyway.
 
 ## Revisions
+- Revised 2026-10-22: decision 3's list of direct hardware paths gains `kernels`, `exec`, `sched`, `tier`, `io`, `net` and `rust-toolchain.toml`. The context above already takes the rules from ADR-0019 §9 and ADR-0020, which name them, and RFC-0062 §2.2's `ci/jobs.toml` lists them; the decision's list had left them out.
 - Revised 2026-10-20: decision 4 gains approval for all outside contributors; fork hardware runs from M1b only, each approved by a maintainer, so no fork-derived code reaches a rig before the first public preview has shipped; environments restricted to `main` and `release/*`, because GitHub now evaluates environment branch rules against the PR merge ref, with every lab job dispatched on `main` and PR outputs handled as data; the organisation-owned, least-privilege dispatcher App; the repository settings; and ADR-0624's trust tiers for agent runs. Decision 5 states the list of changes that need a maintainer's approval.
