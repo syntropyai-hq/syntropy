@@ -44,14 +44,28 @@ Rules that will shape most changes: compute crates never depend on `net`, `clust
 
 One task, one branch, one change. The full procedure is [plan/implementation/README.md](plan/implementation/README.md) ("Picking up a task" and "Definition of done").
 
-1. **Claim a ready task.** Start from `plan/implementation/roadmap.md`: its "Start here" list for M0, then the current milestone's zero-slack tasks. A task is ready when every task in its "Depends on" cell is done. `python3 plan/implementation/tools/depcheck.py --task <ID>` lists its dependencies and dependents. Record the claim so no other agent takes it.
+1. **Claim a ready task on the board.** Every epic and task is an issue on the [Syntropy project board](https://github.com/orgs/syntropyai-hq/projects/1), generated from the epic files. Start from the "Start here" list in `plan/implementation/roadmap.md` for M0, then the current milestone's zero-slack tasks, in your lane (below). A task is ready when every task in its "Depends on" cell is done. The cell is the source of truth: `python3 plan/implementation/tools/depcheck.py --task <ID>` lists those tasks and the task's dependents, and the issue's "blocked by" links mirror the cell. With write access, assign yourself (`gh issue edit <number> --add-assignee @me`) and move the issue to In Progress before you change anything. Without it, say in a comment on the issue that you're taking it, and a maintainer assigns you. Never start an issue someone else is assigned to.
 2. **Check its gates.** A `gate:` segment names an open question or decision that must close before the task can finish; `dependencies.md` shows its state. Don't settle a decision the plan reserves for the maintainers. Draft the record with the options and the recommended default from `plan/open-questions.md`, and leave it for them.
 3. **Leave human-only work to humans.** A task marked **Maintainer action** needs a person: hardware and lab work, signing identities and key custody, accounts, legal review. Prepare what they need, such as a checklist or a ceremony script, and leave the task open.
 4. **Read what it cites.** Read every RFC section and ADR in the task's Implements column before changing anything. The acceptance criteria are the test plan.
 5. **Work on its own branch** and keep the change to that task. If the task needs work no task covers, add a task to the right epic with the next free number and re-run the plan tools.
-6. **Open the change** with the task ID in the description, the RFC sections and ADRs it implements, and the evidence for each acceptance criterion: the commands you ran and their real output. Keep passed, failed and not run apart.
+6. **Open the change** with the task ID and `Closes #<issue>` in the description, the RFC sections and ADRs it implements, and the evidence for each acceptance criterion: the commands you ran and their real output. Keep passed, failed and not run apart. Rebase on `main` before you start a task and again before you open the change.
 
 A spike task closes an open question: record the answer in the RFC the question names for it, and move the row in `plan/open-questions.md` to Settled.
+
+### Lanes
+
+Two people, or two groups of agents, can work in parallel by taking one lane each. A task's lane comes from its area, and the `lane:` label on every issue names it. Each lane owns the crates its areas mostly write:
+
+| Lane | Areas | Crates it owns |
+|---|---|---|
+| `lane:engine` | COMP, PLC, TIER | `core`, `kernels`, `kernels-*` (the providers and `kernels-loader`), `graph`, `manifest`, `exec`, `sched`, `solver`, `probe`, `tier`, `io`, `store`, `runner` |
+| `lane:harness-surface` | QUAL, PROD, DIST | `testkit`, `bench`, `xtask`, `obs`, `text`, `config`, `api`, `cli`, `daemon`, `net`, `cluster`, `ipc`, `packaging/`, `.github/` |
+
+- **Shared crates.** Areas don't follow crate lines, so some crates are written from both lanes: `core` and `testkit` above all, then `text` (COMP's tokenizers, PROD's parsers) and `obs`. The owning lane lands a change to a shared crate as its own small PR, before the work that uses it, and the other lane reviews it. A task in the other lane that needs such a change, as QUAL-E3-T01 needs its determinism types in `core`, gets it from the owning lane or makes it as a small PR that the owning lane reviews. RFC-0001 §5 (core types) goes with `core`.
+- **Foundation first.** Six M0a tasks gate most of the plan: the workspace (QUAL-E1-T01), `xtask` (QUAL-E1-T02) and the layer check (QUAL-E1-T03) in the harness-surface lane, and the numeric types in `core` (COMP-E13-T01), the `syntropy-kernels` crate (COMP-E1-T01) and the op registry (COMP-E1-T02) in the engine lane. Each lane does its own in dependency order: COMP-E13-T01 can start once QUAL-E1-T01 has merged, and COMP-E1-T01 once QUAL-E1-T03 has. Until then the engine lane can take its M0 tasks that have no dependencies, which the "Start here" section of `roadmap.md` lists, such as the PLC-E7-T20 spike.
+- **Cross-review.** Each lane's review agent reviews the other lane's changes. That satisfies the independent-review gate, and it keeps each lane current with what the other changed.
+- **Lab rigs are serial.** Until the hardware dispatcher exists, agree who has which rig and when.
 
 ## Gates
 
@@ -100,7 +114,9 @@ python3 plan/implementation/tools/trace.py               # regenerate traceabili
 python3 plan/implementation/tools/roadmap.py             # regenerate roadmap.md
 ```
 
-Each generator rewrites only the text between its `<!-- BEGIN GENERATED: name -->` and `<!-- END GENERATED -->` markers. With `--check` it writes nothing and exits 1 if the file is stale, which is how CI will run it. Also re-run `trace.py` after changing an ADR, an RFC's Design headings or vision §7, and `roadmap.py` after changing RFC-0001 §16 or `plan/open-questions.md`. `depcheck.py --graph` refuses to write anywhere under `plan/`.
+Each generator rewrites only the text between its `<!-- BEGIN GENERATED: name -->` and `<!-- END GENERATED -->` markers. With `--check` it writes nothing and exits 1 if the file is stale, which is how CI will run it. When a rebase conflicts inside a generated section, don't merge it by hand: take either side and re-run the generator.
+
+The board's issues mirror the epic files, so change a task in its epic file, never in its issue. After such a change merges, a maintainer runs `python3 plan/implementation/tools/gh_sync.py --banned <banned-terms list>` from an up-to-date `main`. It refuses to write if the epic files, or the tools that turn them into issues (`epics.py`, `depcheck.py`, `roadmap.py` and `sizing.py`), differ from a freshly fetched `origin/main`. For each issue whose generated content changed, a run overwrites the title, body, labels, milestone and type. It adds and removes "blocked by" links between synced issues to match the plan, so it also removes such a link that a person added by hand. It leaves status, assignees, comments and open or closed state alone, and it lists issues whose task has left the plan without closing them. Also re-run `trace.py` after changing an ADR, an RFC's Design headings or vision §7, and `roadmap.py` after changing RFC-0001 §16 or `plan/open-questions.md`. `depcheck.py --graph` refuses to write anywhere under `plan/`.
 
 `sizing.py` and `schedsim.py` print `[estimate]` figures only. Never copy their output into a document as a fact.
 
