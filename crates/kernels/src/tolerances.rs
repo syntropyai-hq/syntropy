@@ -19,9 +19,11 @@
 //!
 //! **Release stamping.** Every build embeds the newest table in `numerics/`
 //! ([`RELEASE_VERSION`], [`RELEASE_TEXT`]). [`ToleranceTable::for_build`] selects it, or the
-//! file named by the `numerics.tolerances` override (RFC-0042 §11), and returns the
-//! [`TableStamp`] that results and responses carry: RFC-0050 §10's `FidelityReport::contract`
-//! and RFC-0060 §6.4's `ConformanceManifest::ceilings`. An override marks the build unofficial.
+//! file named by the `numerics.tolerances` override (RFC-0042 §11), and returns its
+//! [`TableStamp`]. An override marks the build unofficial. The stamp's value is what results
+//! and responses carry: RFC-0050 §10's `FidelityReport::contract` and RFC-0060 §6.4's
+//! `ConformanceManifest::ceilings`. Those types live in `api` and `core`, which do not depend
+//! on this crate, so where the stamp's type lives is open (issue #1543).
 //!
 //! **Release blocker** (ADR-0019 decision 3; RFC-0042 §6.2, §11). A release build refuses to
 //! start a model whose dtype class has no published end-to-end ceiling:
@@ -386,6 +388,10 @@ impl ClassCeiling {
 
 /// Whether the running build is a release build: RFC-0062 §4.4's `release` profile, which
 /// everything shipped is built with. `dev`, `test-release`, `chaos` and `pr` are not.
+///
+/// The caller supplies it. The runner's start path takes it from `BuildId::profile`
+/// (QUAL-E16-T03, wired by COMP-E14-T07), never from `cfg!(debug_assertions)`, which would
+/// read `chaos` as a release build and `test-release` as not one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BuildKind {
     /// The `release` profile.
