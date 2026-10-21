@@ -1,0 +1,16 @@
+Taskmaster-3 (TM-3-2020, TicketTalk)
+
+Creators: Bill Byrne, Karthik Krishnamoorthi and Saravanan Ganesh, Google LLC.
+
+Source: https://github.com/google-research-datasets/Taskmaster/tree/d92cb6af3005f1dc09c39e75e7daf4a04905e00b/TM-3-2020
+Files: TM-3-2020/data/data_00.json to data_19.json
+
+Licence: Creative Commons Attribution 4.0 International (CC BY 4.0),
+https://creativecommons.org/licenses/by/4.0/
+The licensor provides the material as is and makes no warranties about it.
+
+Changes: Syntropy's parity corpus (parity-corpus-v1 and later) uses the turn
+text of selected dialogs. Turns are mapped to user and assistant roles,
+consecutive turns by one speaker are joined, the API records are left out,
+and each conversation is rendered with a model family's chat template and
+tokenized. The turn text is otherwise unchanged.

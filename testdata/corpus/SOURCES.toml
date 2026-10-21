@@ -31,6 +31,10 @@
 #   provenance         who wrote the text, and when
 #   select             the selection rule QUAL-E5-T02 implements
 #   notes              anything else a reviewer needs
+#
+# A [[metadata]] table is a source of facts about items, not of item text.
+# It has the same fields, with `used_by` (the source ids it serves) in place
+# of `categories`. Its licence is checked against the same list.
 
 schema = 1
 corpus = "parity-corpus-v1"
@@ -52,37 +56,16 @@ excluded = ["CC-BY-SA-*", "CC-BY-NC-*", "outputs of hosted commercial model serv
 # The `tool` category is generated from templates under one of these.
 template_licences = ["CC0-1.0", "MIT"]
 # Code and template repositories are pinned to their last commit before this
-# date, so the pinned text predates public hosted code-generation services
-# and the hosted-output exclusion holds by date rather than by trust.
+# date, so the pinned text predates public large-model code-generation
+# services (the first public preview was in June 2021) and the hosted-output
+# exclusion holds by date rather than by trust.
 repository_cutoff = "2021-06-01"
 
 # ---------------------------------------------------------------- chat
 
 [[source]]
-id = "oasst2"
-categories = { chat = "primary", multi = "secondary" }
-kind = "dataset"
-name = "OpenAssistant Conversations, release 2"
-url = "https://huggingface.co/datasets/OpenAssistant/oasst2"
-revision = "179dd21fc55192153d94adb0e0ce8f69e222bf75"
-revision_date = "2024-01-11"
-files = [
-  { path = "2023-11-05_oasst2_ready.trees.jsonl.gz", sha256 = "7a886a16ccfc1173c4f00a6897523e3c95b2785a86ee44a18a98f4f2807ee29b", bytes = 54370156 },
-]
-licence = "Apache-2.0"
-licence_url = "https://huggingface.co/datasets/OpenAssistant/oasst2/blob/179dd21fc55192153d94adb0e0ce8f69e222bf75/README.md"
-licence_evidence = "dataset card front matter `license: apache-2.0` at the pinned revision"
-licence_files = [
-  { path = "README.md", sha256 = "52bd472cf3cae04a4b21ecd5316f929741c47d991d4763b041c3a94de072dc31" },
-]
-hosted_service_output = false
-provenance = "Crowd-written by volunteers on open-assistant.io, January to November 2023, in both roles. The contributor guidelines forbid pasting text from other sources, hosted chat services included, without editing (https://github.com/LAION-AI/Open-Assistant/blob/f1e6ed9526f5817531f3ab85441a40b3671ddccb/docs/docs/guides/guidelines.md). Some messages were written by the project's own models and carry `synthetic = true`."
-select = "Message trees from the `ready` file. One conversation per tree: the root prompt, then at each level the reply with rank 0. Every message on the path must have synthetic = false, deleted = false and review_result = true, or the path stops before it. `chat` takes lang = en; `multi` takes the other languages, zh, ru, ja, ko, ar and uk first."
-notes = "The guidelines are a rule, not a check: an edited copy of a hosted-service reply could still be present. Taskmaster-1 covers `chat` with text written before such services were public, so dropping this source leaves the category covered."
-
-[[source]]
 id = "taskmaster-1"
-categories = { chat = "secondary" }
+categories = { chat = "primary" }
 kind = "dataset"
 name = "Taskmaster-1 (TM-1-2019)"
 url = "https://github.com/google-research-datasets/Taskmaster"
@@ -102,14 +85,64 @@ attribution_file = "testdata/corpus/attribution/taskmaster-1.txt"
 hosted_service_output = false
 provenance = "13,215 task dialogs from 2019. Written dialogs: one crowd worker wrote both roles. Spoken dialogs: a crowd worker spoke the user turns, which were transcribed, and a trained call-centre operator wrote the assistant turns. Both data files are unchanged since commit 335324ca7afe (2019-10-29)."
 select = "Each dialog is one conversation; speaker USER maps to the user role and ASSISTANT to the assistant role. Consecutive turns by one speaker are joined with a newline."
+notes = "The spoken dialogs' user turns are transcriptions of recorded speech that people then checked and corrected (README, TRANSCRIPTION NOTES). This file reads OQ-FID-17's exclusion as covering generated text, so a transcription of a person's speech is not excluded even if a speech-recognition service made the first draft. Maintainers can overrule that reading; dropping the spoken dialogs would leave the written ones."
+
+[[source]]
+id = "taskmaster-2"
+categories = { chat = "primary" }
+kind = "dataset"
+name = "Taskmaster-2 (TM-2-2020)"
+url = "https://github.com/google-research-datasets/Taskmaster"
+revision = "d92cb6af3005f1dc09c39e75e7daf4a04905e00b"
+revision_date = "2024-03-19"
+files = [
+  # git tree id of the directory: it fixes every file under it.
+  { path = "TM-2-2020/data/", git_tree = "355e9f5d55a86e760b3f3a1f5cb4996c31e411e2", files = 7 },
+]
+licence = "CC-BY-4.0"
+licence_url = "https://github.com/google-research-datasets/Taskmaster/blob/d92cb6af3005f1dc09c39e75e7daf4a04905e00b/TM-2-2020/README.md"
+licence_evidence = "README line 3: made available under the Creative Commons Attribution 4.0 License"
+licence_files = [
+  { path = "TM-2-2020/README.md", sha256 = "0e707d4cc31869e0c0337979f72ecef61fc4fcab2bfe3a4ec1a546b84bc17463" },
+]
+attribution_file = "testdata/corpus/attribution/taskmaster-2.txt"
+hosted_service_output = false
+provenance = "17,289 spoken two-person dialogs in seven domains (restaurants, food ordering, movies, hotels, flights, music, sports), from 2020. A crowd worker spoke the user turns; a trained call-centre operator wrote the assistant turns, which were played to the user by text-to-speech. The data directory is unchanged since commit ef2e4dd5a3a9 (2020-02-21)."
+select = "Each dialog is one conversation, mapped as for taskmaster-1."
+notes = "User turns are transcriptions of recorded speech, checked by people; the reading in taskmaster-1's notes applies. The text-to-speech step only played the operator's written turns, so the text is the operator's."
+
+[[source]]
+id = "taskmaster-3"
+categories = { chat = "primary" }
+kind = "dataset"
+name = "Taskmaster-3 (TM-3-2020, TicketTalk)"
+url = "https://github.com/google-research-datasets/Taskmaster"
+revision = "d92cb6af3005f1dc09c39e75e7daf4a04905e00b"
+revision_date = "2024-03-19"
+files = [
+  # git tree id of the directory: it fixes every file under it.
+  { path = "TM-3-2020/data/", git_tree = "c5bf83831a9e15d78c04d01e327e784e623ef284", files = 20 },
+]
+licence = "CC-BY-4.0"
+licence_url = "https://github.com/google-research-datasets/Taskmaster/blob/d92cb6af3005f1dc09c39e75e7daf4a04905e00b/TM-3-2020/README.md"
+licence_evidence = "README line 3: made available under the Creative Commons Attribution 4.0 License"
+licence_files = [
+  { path = "TM-3-2020/README.md", sha256 = "e80b5ecc4011ef75eea94be5c3beba927e54673db25fd60fc2ca8d5a413ca928" },
+]
+attribution_file = "testdata/corpus/attribution/taskmaster-3.txt"
+hosted_service_output = false
+provenance = "23,789 written movie-ticketing dialogs from 2020. One crowd worker wrote both the customer and the agent turns (self-dialog), following one of over three dozen instruction sets. The data directory is unchanged since commit d8ca021f99f5 (2020-10-22)."
+select = "Each dialog is one conversation; speaker user maps to the user role and assistant to the assistant role. Only the turn text is used; the `apis` records stay out of `chat`."
 
 # ---------------------------------------------------------------- code
 # Ten languages: Rust, C, Go, Python, Java, C++, TypeScript, JavaScript,
 # Ruby, C#. Shared rule for every repository source:
 #   - files under `include`, minus `exclude`, by the language's extensions;
-#   - generated files are skipped (a header such as "Code generated ...
-#     DO NOT EDIT" or "@generated"), as is any file whose header names a
-#     licence other than the source's;
+#   - generated files are skipped: a header line matching, without regard
+#     to case, "code generated", "@generated", "do not edit" or "machine
+#     generated". So is any file whose header names a licence other than
+#     the source's. Unicode-derived tables are also listed in `exclude`,
+#     because the Unicode licence is not on the list;
 #   - diffs are the unified diffs of non-merge commits on the first-parent
 #     history at or before the pin, restricted to the same paths.
 
@@ -145,7 +178,7 @@ url = "https://github.com/sqlite/sqlite"
 revision = "d65b7e36ecf05a3464c7071f92cfd304197ac66a"
 revision_date = "2021-05-29"
 include = ["src/", "ext/", "test/"]
-exclude = ["autoconf/", "configure", "autosetup/"]
+exclude = ["autoconf/", "configure", "autosetup/", "ext/fts3/fts3_unicode2.c", "ext/fts5/fts5_unicode2.c", "ext/fts3/unicode/"]
 licence = "LicenseRef-public-domain"
 licence_url = "https://github.com/sqlite/sqlite/blob/d65b7e36ecf05a3464c7071f92cfd304197ac66a/LICENSE.md"
 licence_evidence = "LICENSE.md at the pin is the public-domain dedication (\"The author disclaims copyright to this source code\"); SPDX names this text `blessing`. The current LICENSE.md names src/, ext/ and test/ as public domain and the build scripts as the only exceptions."
@@ -154,7 +187,7 @@ licence_files = [
 ]
 hosted_service_output = false
 provenance = "Project source before the repository cutoff (GitHub mirror of the project's own repository)."
-notes = "The excluded build scripts carry BSD-style licences and are not public domain."
+notes = "The excluded build scripts carry BSD-style licences and are not public domain. fts3_unicode2.c and fts5_unicode2.c are tables generated from Unicode data (headed \"DO NOT EDIT THIS MACHINE GENERATED FILE.\"), and ext/fts3/unicode/ holds the Unicode data files and their generator scripts."
 
 [[source]]
 id = "code-go"
@@ -321,16 +354,22 @@ provenance = "Project source before the repository cutoff."
 id = "pg19"
 categories = { long = "primary" }
 kind = "snapshot"
-name = "PG-19 language-modelling benchmark, test and validation splits"
+name = "PG-19 language-modelling benchmark"
 url = "https://storage.googleapis.com/deepmind-gutenberg/"
-revision = "GCS object generations of 2019-09-16 under test/ and validation/"
+revision = "GCS object generations of 2019-09-16 under test/, validation/ and train/"
 revision_date = "2019-09-16"
 files = [
   # SHA-256 of the sorted lines "<name> <size> <md5Hash> <generation>\n" from
-  # the GCS JSON API object listing of each prefix. QUAL-E5-T02 recomputes it
-  # before import and fails on a mismatch.
+  # the GCS JSON API object listing of each prefix, where <name> is the full
+  # object name with its prefix (for example "test/10146.txt"); bare file
+  # names give a different hash. QUAL-E5-T02 recomputes it before import and
+  # fails on a mismatch, then checks each object's MD5 and records a SHA-256
+  # over its bytes.
   { path = "test/", objects = 100, bytes = 41289101, listing_sha256 = "ee09996fb15f9071f2c1059c84ba79c45992beeaa4e86b6598f251be3434ab3c" },
   { path = "validation/", objects = 50, bytes = 17733002, listing_sha256 = "ed401ac77a3be3014e2a7ec43d19df726049937b5a36071780b24e0cfb8bf9d1" },
+  # Reserve pool, used only if the death-year rule leaves test/ and
+  # validation/ short of the `calibration` tier's 64 books.
+  { path = "train/", objects = 28602, bytes = 11678184667, listing_sha256 = "3f58ae70b55cd39d5e301e3742ffb2a9613e82abcd85d5320af055e27fee9ef7" },
 ]
 licence = "Apache-2.0"
 licence_url = "https://github.com/google-deepmind/pg19/blob/b0e1f2925359688af19f8784c23c3deeda52d3ea/LICENSE"
@@ -341,8 +380,11 @@ licence_files = [
 underlying_licence = "LicenseRef-public-domain"
 hosted_service_output = false
 provenance = "Books from Project Gutenberg published before 1919, with the Project Gutenberg licence boilerplate removed by the dataset's authors."
-select = "Whole books. Per tokenizer, books of at least 32K tokens fill the 32K slots and books of at least 128K tokens the 128K slots, each cut to the slot length at a token boundary from the start. QUAL-E5-T02 records each book's author and keeps only books whose authors died before 1956, so the text is out of copyright under life-plus-70 terms as well as in the US."
-notes = "By size, 79 test books exceed about 32K tokens and 18 exceed about 128K [estimate: object bytes at about 4 characters per token]; the `calibration` tier needs 62 and 2. The validation split adds 41 and 8."
+select = """
+Whole books. Per tokenizer, books of at least 32K tokens fill the 32K slots and books of at least 128K tokens the 128K slots, each cut to the slot length at a token boundary from the start. Books come from test/ and validation/; train/ is drawn from, in object-name order, only if those two leave a tier short.
+Death-year rule: a book is kept only if every creator its catalogue record names (author, and any translator, editor or other contributor) died before 1956, so the text is out of copyright under life-plus-70 terms as well as in the US. The death year comes from the book's record in gutenberg-catalogue-rdf (the object name's number is the ebook number); where that record has no death date, from wikidata via the creator's Project Gutenberg author ID. A book with any creator undated in both, or dated 1956 or later, is not imported. Each kept item records every creator's death year and the record it came from.
+"""
+notes = "By size, 79 test books exceed about 32K tokens and 18 exceed about 128K [estimate: object bytes at about 4 characters per token]; the `calibration` tier needs 62 and 2. The validation split adds 41 and 8, and train/ 22,167 and 6,475. How many books the death-year rule keeps is not measured: QUAL-E5-T02 reports it."
 
 # ---------------------------------------------------------------- tool
 
@@ -405,6 +447,9 @@ Recipe, implemented by QUAL-E5-T02:
 4. A seeded generator picks frames and inputs. Each item records the generator version, the seed, the frame id and the source items it used.
 5. Items are rendered with each family's chat template and its tool-call syntax at token-stream time, the same way `chat` is.
 """
+item_licence = "MIT"
+item_notices = ["tool-json-schema-test-suite: LICENSE", "tool-public-apis: LICENSE"]
+notes = "Items embed MIT material from both template inputs, so each item's licence record is MIT, carrying both upstream copyright and permission notices, rather than the project expression alone."
 
 # ---------------------------------------------------------------- multi
 
@@ -426,9 +471,9 @@ licence_files = [
   { path = "README.md", sha256 = "3ac54f63eec84100c155571945da01c7c18cd8ec97ea94639e2b94a6860e8573" },
 ]
 hosted_service_output = false
-provenance = "Prompt and completion pairs written by fluent speakers on the Aya annotation platform in 2023, in 65 languages. The card separates original annotations (written from scratch) from re-annotations (human edits of automatically generated text)."
+provenance = "Prompt and completion pairs written by fluent speakers on the Aya annotation platform in 2023, in 65 languages. The card separates original annotations (written from scratch) from re-annotations (human edits of automatically generated text). The annotation guidelines say: \"For original annotations, the prompts and completions should not be generated from other language models\" (Aya Dataset paper, arXiv:2402.06619v1, Appendix B.3, item 4), with no exception for edited text."
 select = "annotation_type = original-annotations only. One item per pair, as one user and assistant exchange. Languages: arb (Arabic script), hin (Devanagari), zho, jpn and kor (CJK), rus and ukr (Cyrillic), tha, ell, heb, ben, and Latin-script languages to fill. At least 8 languages, each script group present."
-notes = "Re-annotations are excluded because they edit automatically generated text whose origin and licence the card does not state. As with oasst2, a contributor could still have pasted a hosted-service reply; MASSIVE, released in April 2022, covers the same scripts."
+notes = "Re-annotations are excluded because they edit automatically generated text whose origin and licence the card does not state. The guideline excludes model-written text, but compliance by every contributor cannot be checked from the data; MASSIVE, released in April 2022, covers the same scripts. Original-annotation rows per language at the pin, from the Hub's dataset query API on 2026-10-21: arb 2,756; hin 773; zho 4,028; jpn 6,149; kor 180; rus 116; ukr 221; tha 266; ben 750."
 
 [[source]]
 id = "massive"
@@ -455,6 +500,7 @@ attribution_file = "testdata/corpus/attribution/massive.txt"
 hosted_service_output = false
 provenance = "English voice-assistant utterances from SLURP (2020), localized into 51 languages by crowd workers with per-utterance judgments, released April 2022 (1.1 adds Catalan, November 2022)."
 select = "The `utt` field of data/<locale>.jsonl for ar-SA, hi-IN, zh-CN, zh-TW, ja-JP, ko-KR, ru-RU, uk-UA, th-TH, el-GR and he-IL. Utterances are short, so one item is 64 consecutive utterances of one locale, joined with newlines."
+notes = "The README and the card do not say whether workers could use machine translation. This file reads OQ-FID-17's exclusion as covering generated text: a person's localization of a person's utterance is not excluded even if a translation service made a first draft. Maintainers can overrule that reading; `multi` would then rest on aya-dataset."
 
 # ---------------------------------------------------------------- stress
 
@@ -478,3 +524,39 @@ Recipe, implemented by QUAL-E5-T02, per tokenizer:
 4. Every special token: once by token ID, where a template span would emit it, and once as its literal string in a content span, where it must tokenize as plain text (RFC-0043 §8.7).
 5. Each item records the tokenizer's content hash, so its token stream is fixed per tokenizer.
 """
+notes = "Items reproduce vocabulary strings from the tokenizer under test. An item built from a gated or lab-only tokenizer takes that fixture's access rule in the fixture store and is not made public by default (ADR-0603 decision 8)."
+
+# ---------------------------------------------------------------- metadata
+
+[[metadata]]
+id = "gutenberg-catalogue-rdf"
+used_by = ["pg19"]
+kind = "snapshot"
+name = "Project Gutenberg catalogue, per-ebook RDF records"
+url = "https://www.gutenberg.org/cache/epub/<ebook>/pg<ebook>.rdf"
+revision = "fetched per book at import; QUAL-E5-T02 records each record's fetch date and SHA-256"
+licence = "CC0-1.0"
+licence_url = "https://www.gutenberg.org/cache/epub/10146/pg10146.rdf"
+licence_evidence = "Each record declares its own licence: `<cc:Work rdf:about=\"\"><cc:license rdf:resource=\"https://creativecommons.org/publicdomain/zero/1.0/\"/>`. Read in the record for PG-19 test book 10146 on 2026-10-21. The `dcterms:license` element in the same record is the ebook's licence, not the record's. The offline-catalogue page (https://www.gutenberg.org/ebooks/offline_catalogs.html) states no licence of its own."
+licence_files = [
+  { path = "pg10146.rdf (sample record)", sha256 = "a8d396e065319f6fa674091b419332747d5170015789f28996a6e151812c4898" },
+]
+hosted_service_output = false
+provenance = "Catalogue records maintained by Project Gutenberg. Records are regenerated daily, so the pin is the per-record fetch date and hash."
+select = "Only `dcterms:creator` and contributor-role (`marcrel:*`) agents, with their `pgterms:deathdate` and the agent URI (2009/agents/<id>, the Project Gutenberg author ID). No free text from the record, such as its summary, is used."
+notes = "Death dates are missing in some records: the sample record's author has a birth year and no death year, which is why wikidata is the fallback."
+
+[[metadata]]
+id = "wikidata"
+used_by = ["pg19"]
+kind = "dataset"
+name = "Wikidata structured data"
+url = "https://www.wikidata.org/"
+revision = "per entity: QUAL-E5-T02 records each entity's revision id (`lastrevid`) at fetch"
+licence = "CC0-1.0"
+licence_url = "https://www.wikidata.org/w/index.php?title=Wikidata:Copyright&oldid=1523614187"
+licence_evidence = "Wikidata:Copyright (revision 1523614187): all structured data from the main, Property, Lexeme and EntitySchema namespaces is available under CC0. Wikidata:Licensing (revision 2548950862, 2026-09-24) says the same. Text in other namespaces is CC BY-SA and is not used."
+hosted_service_output = false
+provenance = "Community-edited structured data."
+select = "Entities with P1938 (Project Gutenberg author ID) equal to the creator's ID from the catalogue record; their P570 (date of death). An ID matching no entity, or more than one, gives no date."
+notes = "Linking by ebook is not enough: on 2026-10-21 only 14 of the 150 PG-19 test and validation ebook numbers had an entity with P2034 (Project Gutenberg ebook ID), and none of those had an author (P50). Linking by author ID through the catalogue record avoids name matching."

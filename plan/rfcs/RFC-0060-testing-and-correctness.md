@@ -490,18 +490,18 @@ Each sequence also has **decode segments**: ranges of scored positions evaluated
 
 A corpus version is frozen once published. A change creates vN+1, and the baseline spread and the RFC-0042 ceilings are recomputed for it (ADR-0601).
 
-The sources are listed in `testdata/corpus/SOURCES.toml` (QUAL-E5-T01, 2026-10-21). Each entry has its pinned revision, file hashes, licence, the licence file read at that revision, and the selection rule QUAL-E5-T02 implements. CC-BY sources have their attribution files in `testdata/corpus/attribution/`. Code and template repositories are pinned to their last commit before 2021-06-01, so their text predates public hosted code-generation services. Every category has a primary source:
+The sources are listed in `testdata/corpus/SOURCES.toml` (QUAL-E5-T01, 2026-10-21). Each entry has its pinned revision, file hashes, licence, the licence file read at that revision, provenance, and the selection rule QUAL-E5-T02 implements. CC-BY sources have their attribution files in `testdata/corpus/attribution/`. Code and template repositories are pinned to their last commit before 2021-06-01, before large-model code-generation services were public. Every category has a primary source:
 
 | Category | Primary | Secondary |
 |---|---|---|
-| `chat` | OpenAssistant Conversations 2 (Apache-2.0), messages not marked synthetic | Taskmaster-1 (CC BY 4.0, 2019) |
+| `chat` | Taskmaster-1, -2 and -3 (CC BY 4.0, 2019–2020) | — |
 | `code` | ten repositories in ten languages: Rust, C (public domain), Go, Python, Java, C++, TypeScript, JavaScript, Ruby, C#; each under MIT, BSD-3-Clause, Apache-2.0 or public domain | — |
-| `long` | PG-19 test and validation books (Apache-2.0; public-domain texts) | — |
+| `long` | PG-19 test and validation books (Apache-2.0; public-domain texts), train books as a reserve; only books whose creators died before 1956, dated from the Project Gutenberg catalogue's RDF records and Wikidata (both CC0) | — |
 | `tool` | project frames over schemas and instances from the JSON Schema Test Suite (MIT) | tool names and descriptions from public-apis (MIT) |
-| `multi` | Aya Dataset original annotations (Apache-2.0) | MASSIVE 1.1 (CC BY 4.0, 2022); OpenAssistant Conversations 2, non-English |
+| `multi` | Aya Dataset original annotations (Apache-2.0) | MASSIVE 1.1 (CC BY 4.0, 2022) |
 | `stress` | generated per tokenizer by the project | — |
 
-The `chat` and `multi` primaries were crowd-written in 2023 and rely on contributor rules against pasting hosted-service output. Each of those categories also has a secondary written before hosted chat services were public (Taskmaster-1 in 2019, MASSIVE released in April 2022), so either primary can be dropped without leaving its category empty.
+A source is excluded when its own collection rules allow hosted-model output, edited or not. That rules out crowd-written assistant conversations collected under a rule against pasting such output *without editing*. Aya's original annotations were collected under a rule that excludes model-generated text outright. Compliance with that rule cannot be checked from the data, so `multi` also has MASSIVE, released in April 2022. Human transcription of speech and human localization are not read as excluded, even where a speech-recognition or translation service may have made a first draft; `SOURCES.toml` records that reading for each source it affects.
 
 #### 5.3 Reference blocks
 
