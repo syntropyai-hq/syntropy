@@ -1,0 +1,25 @@
+{
+  "id": 100000001,
+  "name": "example",
+  "full_name": "example-org/example",
+  "private": false,
+  "visibility": "public",
+  "default_branch": "main",
+  "allow_squash_merge": true,
+  "allow_merge_commit": false,
+  "allow_rebase_merge": false,
+  "allow_auto_merge": false,
+  "delete_branch_on_merge": false,
+  "squash_merge_commit_title": "PR_TITLE",
+  "squash_merge_commit_message": "PR_BODY",
+  "merge_commit_title": "MERGE_MESSAGE",
+  "merge_commit_message": "PR_TITLE",
+  "web_commit_signoff_required": false,
+  "security_and_analysis": {
+    "dependabot_security_updates": { "status": "disabled" },
+    "secret_scanning": { "status": "enabled" },
+    "secret_scanning_non_provider_patterns": { "status": "disabled" },
+    "secret_scanning_push_protection": { "status": "enabled" },
+    "secret_scanning_validity_checks": { "status": "disabled" }
+  }
+}
