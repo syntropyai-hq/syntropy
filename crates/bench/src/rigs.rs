@@ -332,6 +332,12 @@ impl Rig {
                          as a line break",
                         name.escape_debug()
                     ));
+                } else if name.is_empty() || name.trim() != name {
+                    // A padded name is another setting, so a whitespace edit would open an epoch.
+                    problems.push(format!(
+                        "`bios.other` has the setting name `{name}`; a name is non-empty, with \
+                         no surrounding whitespace"
+                    ));
                 }
             }
         }
@@ -902,6 +908,25 @@ other = { c_states = "on" }
             error.contains("the setting name `c\\nstates`, with a control character"),
             "{error}"
         );
+    }
+
+    /// Review N1 on #1568: a setting name follows the value rule.
+    #[test]
+    fn an_empty_or_padded_setting_name_is_refused() {
+        for (name, shown) in [("\"\"", "``"), ("\" c_states \"", "` c_states `")] {
+            let text = RIG.replacen(
+                "other = { c_states = \"on\" }",
+                &format!("other = {{ {name} = \"on\" }}"),
+                1,
+            );
+            let error = Inventory::parse(&text).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!(
+                    "`bios.other` has the setting name {shown}; a name is non-empty"
+                )),
+                "{name}: {error}"
+            );
+        }
     }
 
     #[test]
