@@ -5,7 +5,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use serde::de::{self, MapAccess, Visitor};
+use serde::de::{self, EnumAccess, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroize;
 
@@ -13,6 +13,22 @@ use super::{ValueError, ValueErrorKind};
 
 /// What a secret prints as, everywhere.
 pub const REDACTED: &str = "[redacted]";
+
+/// The error for a value that is not one of a secret's forms. It never includes the value: a
+/// secret written without quotes, such as an all-digit token, parses as a number, and serde's
+/// own message would copy it into the load error and the logs.
+const NOT_A_SECRET: &str = "a secret must be a string, { file = \"…\" } or { env = \"…\" }; the value given is none of \
+     these, and is not shown";
+
+/// The error for a secret that does not deserialize as its type. `T`'s own error is dropped,
+/// since it can quote the value, such as `u8`'s "invalid value: integer …".
+const SECRET_WRONG_FORM: &str =
+    "a secret must be a value of its key's type; the value given is not, and is not shown";
+
+/// The error for a key in a secret table other than `file` and `env`. The key is not shown,
+/// in case the secret was written as one.
+const NOT_A_SECRET_TABLE: &str =
+    "a secret table has one key, `file` or `env`; this one is neither, and is not shown";
 
 /// A secret value: an API key, a Hub token, an exporter header (RFC-0054 §10.1).
 ///
@@ -67,9 +83,12 @@ impl<T: Zeroize> Serialize for Secret<T> {
     }
 }
 
+/// A value that does not fit `T` fails with a fixed message: `T`'s own error can quote it.
 impl<'de, T: Zeroize + Deserialize<'de>> Deserialize<'de> for Secret<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        T::deserialize(deserializer).map(Secret)
+        T::deserialize(deserializer)
+            .map(Secret)
+            .map_err(|_| de::Error::custom(SECRET_WRONG_FORM))
     }
 }
 
@@ -184,14 +203,13 @@ impl<'de> Visitor<'de> for SourceVisitor {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<SecretSource, A::Error> {
-        const FIELDS: &[&str] = &["file", "env"];
         let key: String = map
             .next_key()?
             .ok_or_else(|| de::Error::custom("a secret table needs `file` or `env`"))?;
         let source = match key.as_str() {
             "file" => SecretSource::File(map.next_value()?),
             "env" => SecretSource::Env(map.next_value()?),
-            other => return Err(de::Error::unknown_field(other, FIELDS)),
+            _ => return Err(de::Error::custom(NOT_A_SECRET_TABLE)),
         };
         if map.next_key::<String>()?.is_some() {
             return Err(de::Error::custom(
@@ -199,6 +217,61 @@ impl<'de> Visitor<'de> for SourceVisitor {
             ));
         }
         Ok(source)
+    }
+
+    // Every other form a value can take fails with one fixed message, never serde's default
+    // `invalid_type`, which quotes the value.
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> Result<SecretSource, E> {
+        Err(E::custom(NOT_A_SECRET))
+    }
+
+    fn visit_i64<E: de::Error>(self, _: i64) -> Result<SecretSource, E> {
+        Err(E::custom(NOT_A_SECRET))
+    }
+
+    fn visit_i128<E: de::Error>(self, _: i128) -> Result<SecretSource, E> {
+        Err(E::custom(NOT_A_SECRET))
+    }
+
+    fn visit_u64<E: de::Error>(self, _: u64) -> Result<SecretSource, E> {
+        Err(E::custom(NOT_A_SECRET))
+    }
+
+    fn visit_u128<E: de::Error>(self, _: u128) -> Result<SecretSource, E> {
+        Err(E::custom(NOT_A_SECRET))
+    }
+
+    fn visit_f64<E: de::Error>(self, _: f64) -> Result<SecretSource, E> {
+        Err(E::custom(NOT_A_SECRET))
+    }
+
+    fn visit_bytes<E: de::Error>(self, _: &[u8]) -> Result<SecretSource, E> {
+        Err(E::custom(NOT_A_SECRET))
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<SecretSource, E> {
+        Err(E::custom(NOT_A_SECRET))
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, _: D) -> Result<SecretSource, D::Error> {
+        Err(de::Error::custom(NOT_A_SECRET))
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<SecretSource, E> {
+        Err(E::custom(NOT_A_SECRET))
+    }
+
+    fn visit_newtype_struct<D: Deserializer<'de>>(self, _: D) -> Result<SecretSource, D::Error> {
+        Err(de::Error::custom(NOT_A_SECRET))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> Result<SecretSource, A::Error> {
+        Err(de::Error::custom(NOT_A_SECRET))
+    }
+
+    fn visit_enum<A: EnumAccess<'de>>(self, _: A) -> Result<SecretSource, A::Error> {
+        Err(de::Error::custom(NOT_A_SECRET))
     }
 }
 
@@ -265,6 +338,96 @@ mod tests {
         let source = SecretSource::Env("SYNTROPY_CONFIG_TEST_UNSET_SECRET_VARIABLE".to_owned());
         let err = source.resolve().unwrap_err();
         assert!(err.message().ends_with("it is not set"), "{err}");
+    }
+
+    use serde::de::IntoDeserializer;
+    use serde::de::value::{Error as ValueDeError, MapDeserializer, SeqDeserializer};
+
+    /// What a rejected secret's error says, for `SecretSource` and for `Secret<T>`.
+    fn source_error<'de, D: Deserializer<'de, Error = ValueDeError>>(d: D) -> String {
+        SecretSource::deserialize(d).unwrap_err().to_string()
+    }
+
+    fn secret_error<'de, T, D>(d: D) -> String
+    where
+        T: Zeroize + Deserialize<'de> + fmt::Debug,
+        D: Deserializer<'de, Error = ValueDeError>,
+    {
+        Secret::<T>::deserialize(d).unwrap_err().to_string()
+    }
+
+    /// The error names the accepted forms and none of the value's text.
+    fn assert_hides(message: &str, value: &str) {
+        assert!(
+            !message.contains(value),
+            "the error shows the value: {message}"
+        );
+        assert!(
+            message.contains("a secret must be"),
+            "not the fixed message: {message}"
+        );
+    }
+
+    #[test]
+    fn an_integer_secret_error_hides_the_value() {
+        let digits = |m: &str| m.chars().any(|c| c.is_ascii_digit());
+        for message in [
+            source_error(987_654_321i64.into_deserializer()),
+            source_error(987_654_321u64.into_deserializer()),
+            secret_error::<String, _>(987_654_321i64.into_deserializer()),
+        ] {
+            assert_hides(&message, "987654321");
+            assert!(!digits(&message), "the error holds digits: {message}");
+        }
+    }
+
+    #[test]
+    fn a_float_secret_error_hides_the_value() {
+        for message in [
+            source_error(0.123_456_789f64.into_deserializer()),
+            secret_error::<String, _>(0.123_456_789f64.into_deserializer()),
+        ] {
+            assert_hides(&message, "123456789");
+            assert!(!message.chars().any(|c| c.is_ascii_digit()), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_bool_secret_error_hides_the_value() {
+        for message in [
+            source_error(true.into_deserializer()),
+            secret_error::<String, _>(true.into_deserializer()),
+        ] {
+            assert_hides(&message, "true");
+        }
+    }
+
+    #[test]
+    fn an_array_secret_error_hides_the_value() {
+        let strings = || SeqDeserializer::<_, ValueDeError>::new(["seq-secret-7731"].into_iter());
+        let bytes = || SeqDeserializer::<_, ValueDeError>::new([300u64, 7731].into_iter());
+        for message in [
+            source_error(strings()),
+            secret_error::<String, _>(strings()),
+            // A byte secret whose element is out of range: `u8`'s error would print `300`.
+            secret_error::<Vec<u8>, _>(bytes()),
+        ] {
+            assert_hides(&message, "seq-secret-7731");
+            assert!(
+                !message.contains("300") && !message.contains("7731"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_table_key_is_not_echoed() {
+        let table = MapDeserializer::<_, ValueDeError>::new([("tok-3141-key", "x")].into_iter());
+        let message = source_error(table);
+        assert!(
+            !message.contains("tok-3141-key"),
+            "the error shows the key: {message}"
+        );
     }
 
     #[test]
