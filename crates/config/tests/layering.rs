@@ -762,7 +762,9 @@ fn snapshots_swap_whole() {
     }
     done.store(true, Ordering::Release);
     for reader in readers {
-        reader.join().expect("no reader saw a mixed snapshot");
+        reader
+            .join()
+            .expect("a reader thread panicked: its message above says what it saw");
     }
     assert_eq!(int(&shared.load(), "t.d"), Some(n));
 }
