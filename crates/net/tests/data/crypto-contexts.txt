@@ -1,7 +1,9 @@
 # Golden vectors for every context string of RFC-0034 §3 (DIST-E2-T04).
 # Inputs: Ed25519 seed 000102…1f, BLAKE3 key 202122…3f, message "syntropy golden vector".
 # One line per context, in RFC-0034 §3's order: the context string, then in hex the signature,
-# the hash, the keyed hash and the derived key. The public key of the seed is:
+# the hash, the keyed hash and the derived key. Checked independently: the signatures and the
+# public key with OpenSSL 3.6.4, and the BLAKE3 values with the `blake3` Python binding 1.0.11,
+# itself checked against the official vectors in third_party/blake3/. The public key of the seed is:
 public 03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8
 syntropy-beacon-v1 9fdf2dc7dc0e7bb646ea1249905a4ae759793923ae80734426352c8a8ff2b7024abe41d1967f96df8cdbf0a590a36e71e8fc4d01ee2db5e33329db9204d91e0e 029752929713879c32bea21e229b2790d8cb5b4cb18c1a4f98a761855822e32b acd4a020bd780b89823dd13444042d041819dd610622b8dfa3505089da7a5ab4 d6524ca7ebf380fd66fe3bce87c92779c167748be7fb3c0fbcdfc22eb9b38971
 syntropy-beacon-blind-v1 b5ddb734b64c6d5a4bcacc39c787133d5a8e9d71143adcc344fc2b0e8389ca7c5f7595ed92d023078937015e84cd604f5aa4a695b70beaa916098461d390240f 84f3801d51d09ec290c63c19d259761467c1b7ef26ddf6d6703a4a0ffc5095fe 1db5379ba60c97b851259491baad407d13b12e1bf736d89539eaf42f8e92bf31 7ffc54cdfcfe33599372d97d8e2a6e66107282a55909379830dc495713cc11e8

@@ -15,3 +15,5 @@ subtle.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Reads the official BLAKE3 test vectors (`third_party/blake3/test_vectors.json`).
+serde_json.workspace = true
