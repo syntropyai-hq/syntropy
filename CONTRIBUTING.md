@@ -1,6 +1,6 @@
 # Contributing to Syntropy
 
-**Syntropy is in design.** No code exists yet. The repository is the plan under [`plan/`](plan/README.md), and code arrives task by task from milestone M0a. Contributions to the design are as useful now as code will be later.
+**Syntropy is in design.** The Cargo workspace and a stub for every crate exist, but the crates are still empty. The design is the plan under [`plan/`](plan/README.md), and code arrives task by task from milestone M0a. Contributions to the design are as useful now as code will be later.
 
 These rules apply to issues, pull requests and reports, whoever or whatever wrote them. AI agents build most of Syntropy, and they follow the same rules as everyone else ([AGENTS.md](AGENTS.md)).
 
@@ -10,7 +10,7 @@ These rules apply to issues, pull requests and reports, whoever or whatever wrot
 - **Evidence.** A measurement of real hardware that a design choice depends on, such as sustained NVMe read rates under heat or pinned-memory limits on a given OS, with how you measured it.
 - **Platform knowledge.** What breaks on a platform the plan lists, or a constraint it has missed.
 
-Once code exists, contributions follow the tasks in [plan/implementation/](plan/implementation/README.md), and the sections below apply in full.
+Once the crates hold code, contributions follow the tasks in [plan/implementation/](plan/implementation/README.md), and the sections below apply in full.
 
 ## Before you start
 

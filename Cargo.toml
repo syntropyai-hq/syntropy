@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+# Every crate of RFC-0001 §4.1, bottom-up by layer. §4.2 says what each layer may depend on.
+members = [
+    # Layer 0
+    "crates/core",
+    "crates/obs",
+    "crates/config",
+    # Layer 1
+    "crates/manifest",
+    "crates/kernels",
+    "crates/io",
+    "crates/net",
+    "crates/ipc",
+    # Layer 2
+    "crates/graph",
+    "crates/kernels-cuda",
+    "crates/kernels-hip",
+    "crates/kernels-metal",
+    "crates/kernels-vulkan",
+    "crates/kernels-cpu",
+    "crates/kernels-ggml",
+    "crates/kernels-loader",
+    "crates/tier",
+    "crates/solver",
+    "crates/text",
+    "crates/probe",
+    "crates/store",
+    # Layer 3
+    "crates/exec",
+    "crates/cluster",
+    # Layer 4
+    "crates/sched",
+    "crates/api",
+    # Layer 5
+    "crates/runner",
+    "crates/daemon",
+    # Layer 6
+    "crates/cli",
+    # Dev only
+    "crates/testkit",
+    "crates/bench",
+]
+
+[workspace.package]
+# Crate versions are frozen; the product version lives in version.txt (RFC-0062 §8.1, ADR-0621).
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

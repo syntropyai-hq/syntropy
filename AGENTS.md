@@ -8,7 +8,7 @@ Syntropy runs one large language model across every machine a user owns and acro
 
 The system layer is Rust. Kernels are native per backend (CUDA C++, HIP, Metal Shading Language, Slang to SPIR-V for Vulkan, Rust `std::arch` on the CPU), with ggml as a provider for breadth.
 
-**No code exists yet.** The repository is the design under `plan/`, and agents build Syntropy by executing its tasks, starting at milestone M0a. Read [plan/README.md](plan/README.md) first, then [ADR-0000](plan/decisions/ADR-0000-product-directives.md) (directives D1–D8) and [ADR-0021](plan/decisions/ADR-0021-development-model-ai-agents-open-source.md) (how the project is built).
+**The Cargo workspace and a stub for every crate exist, but the crates are still empty.** The design is under `plan/`, and agents build Syntropy by executing its tasks, starting at milestone M0a. Read [plan/README.md](plan/README.md) first, then [ADR-0000](plan/decisions/ADR-0000-product-directives.md) (directives D1–D8) and [ADR-0021](plan/decisions/ADR-0021-development-model-ai-agents-open-source.md) (how the project is built).
 
 ## Repository map
 
@@ -25,7 +25,7 @@ Today:
 | `plan/open-questions.md`, `plan/glossary.md`, `plan/research/` | Open questions with the task that settles each, the vocabulary, the evidence |
 | `docs/` | Public explanations for readers, such as [HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md), and their diagrams in `docs/media/` |
 
-Planned, from [RFC-0001 §4](plan/rfcs/RFC-0001-system-architecture.md#4-crate-layout) (the first M0 task creates it): one Cargo workspace, Rust 2024 edition, every crate prefixed `syntropy-`. A crate depends only on lower layers, and a `cargo xtask check-deps` job enforces the rules in §4.2.
+The workspace, from [RFC-0001 §4](plan/rfcs/RFC-0001-system-architecture.md#4-crate-layout), exists as empty stubs under `crates/<name>/`: one Cargo workspace, Rust 2024 edition, every crate prefixed `syntropy-`. A crate depends only on lower layers, and a planned `cargo xtask check-deps` job (QUAL-E1-T03) will enforce the rules in §4.2.
 
 | Layer | Crates |
 |---|---|
@@ -120,7 +120,7 @@ The board's issues mirror the epic files, so change a task in its epic file, nev
 
 `sizing.py` and `schedsim.py` print `[estimate]` figures only. Never copy their output into a document as a fact.
 
-Once code exists, run the same lint job CI runs before pushing: `cargo xtask ci lint` (`cargo fmt`, `clippy`, `cargo-deny`, `cargo xtask check-deps`, the `unsafe` placement check, the release-feature check, the licence manifest, DCO and the PR title). The tasks that build it are QUAL-E1-T02 and QUAL-E1-T06.
+Once `cargo xtask` exists (QUAL-E1-T02), run the same lint job CI runs before pushing: `cargo xtask ci lint` (`cargo fmt`, `clippy`, `cargo-deny`, `cargo xtask check-deps`, the `unsafe` placement check, the release-feature check, the licence manifest, DCO and the PR title). The tasks that build it are QUAL-E1-T02 and QUAL-E1-T06.
 
 ## Writing style
 
