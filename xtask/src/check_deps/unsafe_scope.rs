@@ -127,7 +127,7 @@ pub fn check(graph: &Graph, at: usize, module: &UnsafeModule) -> Vec<Finding> {
             let level_end = roots.contains(&file).then(|| leading_attributes(&source).1);
             check_other_file(&source, level_end)
         };
-        if let Some(problem) = shebang(&source) {
+        if let Some(problem) = shebang(&source).or_else(|| frontmatter(&source)) {
             problems.insert(0, problem);
         }
         if file.extension().is_some_and(|extension| extension != "rs") {
@@ -234,6 +234,18 @@ fn shebang(source: &str) -> Option<String> {
     (text.starts_with("#!") && !text.starts_with("#![")).then(|| {
         "1: starts with `#!`, which rustc may strip as a shebang line while this check reads it \
          as code; `testkit` files may not start so"
+            .to_owned()
+    })
+}
+
+/// A problem when `source`, after an optional byte-order mark, starts with `---`: a frontmatter
+/// block, which rustc 1.99.1 refuses but a later release may read as metadata, not code, while
+/// this check reads it as code.
+fn frontmatter(source: &str) -> Option<String> {
+    let text = source.strip_prefix('\u{feff}').unwrap_or(source);
+    text.starts_with("---").then(|| {
+        "1: starts with `---`, a frontmatter block, which this check would read as code; \
+         `testkit` files may not start so"
             .to_owned()
     })
 }
@@ -781,6 +793,9 @@ pub fn alloc_count_this_thread() -> u64 {
         ] {
             assert_eq!(shebang(text), None, "{text:?}");
         }
+        assert!(frontmatter("---\n[package]\n---\n").is_some());
+        assert!(frontmatter("\u{feff}---cargo\n").is_some());
+        assert_eq!(frontmatter("// ---\n"), None);
     }
 
     #[test]

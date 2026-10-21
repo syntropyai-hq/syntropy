@@ -287,6 +287,39 @@ fn rule_8_a_bin_target_outside_src_is_read() {
 }
 
 #[test]
+fn rule_8_a_file_rustc_reads_from_its_second_line_is_refused() {
+    fails_with(
+        "rule-8-shebang",
+        8,
+        &["`testkit`: crates/testkit/src/sneaky.rs:1: starts with `#!`"],
+    );
+}
+
+#[test]
+fn rule_8_a_leading_allow_after_the_deny_is_refused() {
+    fails_with(
+        "rule-8-root-allow",
+        8,
+        &[
+            "`testkit`: crates/testkit/src/lib.rs:6: sets `unsafe_code` in the crate root's leading attributes",
+        ],
+    );
+}
+
+#[test]
+fn rule_8_a_file_whose_extension_is_rs_in_another_case_is_read() {
+    fails_with(
+        "rule-8-upper-ext",
+        8,
+        &[
+            "`testkit`: crates/testkit/src/upper.RS:1: has an extension that is `rs` only in another case",
+            "`testkit`: crates/testkit/src/upper.RS:5: sets a lint level for `unsafe_code`",
+            "`testkit`: crates/testkit/src/upper.RS:8: uses `unsafe` outside the one allowed impl",
+        ],
+    );
+}
+
+#[test]
 fn rule_9_dev_only_crates_are_only_dev_dependencies() {
     fails_with(
         "rule-9",
