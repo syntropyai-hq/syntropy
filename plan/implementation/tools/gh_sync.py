@@ -2,7 +2,8 @@
 
 The epic files are the source of truth. Each epic becomes an issue of type
 Epic, each task an issue of type Task and a sub-issue of its epic, and each
-task's dependencies become native "blocked by" links. All of them go on one
+task's dependencies become native "blocked by" links; a link between two
+synced issues that the plan no longer has is removed. All of them go on one
 public project board linked to the repository. Running the script again
 updates any issue whose generated title, body, labels or milestone changed,
 and leaves alone everything people set on the board: status, assignees,
@@ -519,7 +520,8 @@ def main():
         print(f"issues: {changed} created or updated")
 
     def deps_phase():
-        added = 0
+        added = removed = 0
+        synced = {v["id"]: k for k, v in existing.items()}
         # Earliest milestone first, so the work people start on is linked first;
         # the sort is stable, so each milestone keeps its dependency order.
         for t in sorted(order, key=lambda t: epics.phase_index(by_id[t]["phase"])):
@@ -534,7 +536,18 @@ def main():
                     added += 1
                     if added % 100 == 0:
                         print(f"dependency links {added}", flush=True)
-        print(f"dependency links: {added} added")
+            # A link between two synced issues that the plan no longer has is
+            # stale: an edge was removed or reversed in an epic file. Links to
+            # issues the script doesn't manage are left alone.
+            want = {existing[d]["id"] for d in deps[t] if d in existing}
+            for b in sorted(existing[t]["blocked_by"] - want):
+                if b in synced:
+                    gh.mutate(f"unmark {t} blocked by {synced[b]}", """mutation($i:ID!,$b:ID!){
+                        removeBlockedBy(input:{issueId:$i, blockingIssueId:$b}){ issue{ id } } }""",
+                              i=existing[t]["id"], b=b)
+                    existing[t]["blocked_by"].discard(b)
+                    removed += 1
+        print(f"dependency links: {added} added, {removed} removed")
 
     if "issues" in phases:
         resilient(issues_phase)
