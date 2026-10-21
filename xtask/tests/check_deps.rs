@@ -226,6 +226,8 @@ fn rule_8_crates_outside_the_allow_list_forbid_unsafe_code() {
             "`text` does not set",
             "`config` does not set",
             "crates/bench/src/bin/run.rs (bin target `run`)",
+            // `testkit` may hold `unsafe` only in its one allowed `GlobalAlloc` impl.
+            "`testkit`: crates/testkit/src/other.rs:6: uses `unsafe` outside the one allowed impl",
         ],
     );
 }

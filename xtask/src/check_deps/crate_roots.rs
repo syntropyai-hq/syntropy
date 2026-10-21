@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Rule 8 of RFC-0001 §4.2 (ADR-0001 item 4): every crate outside the `unsafe` allow-list sets
-//! `#![forbid(unsafe_code)]`.
+//! `#![forbid(unsafe_code)]`, except a crate with a module-scoped exception
+//! ([`policy::UNSAFE_MODULES`]), which [`super::unsafe_scope`] checks instead.
 //!
 //! The check reads the crate root of each library and binary target and looks for the attribute
 //! among its leading inner attributes, which is the only place an inner attribute can apply to the
@@ -34,6 +35,10 @@ pub fn check(graph: &Graph) -> Vec<Finding> {
         if policy::allows_unsafe(name) {
             continue;
         }
+        if let Some(module) = policy::unsafe_module(name) {
+            findings.extend(super::unsafe_scope::check(graph, at, module));
+            continue;
+        }
         for target in &graph.package(at).targets {
             if !target
                 .kind
@@ -50,7 +55,8 @@ pub fn check(graph: &Graph) -> Vec<Finding> {
                     Rule::Numbered(8),
                     format!(
                         "`{name}` does not set `#![forbid(unsafe_code)]` in {shown} ({kind} target \
-                         `{}`); only `kernels-*`, `io`, `tier`, `net`, `ipc` and `spsc` may use `unsafe`",
+                         `{}`); only `kernels-*`, `io`, `tier`, `net`, `ipc` and `spsc` may use `unsafe`, \
+                         and `testkit` only in its `GlobalAlloc` impl",
                         target.name
                     ),
                 )),
@@ -66,7 +72,7 @@ pub fn check(graph: &Graph) -> Vec<Finding> {
 
 /// `path` relative to the workspace root, with `/` between components on every OS, so a message
 /// reads the same in every CI log. A path outside the root is shown whole.
-fn shown_path(root: &Path, path: &Path) -> String {
+pub fn shown_path(root: &Path, path: &Path) -> String {
     match path.strip_prefix(root) {
         Ok(relative) => {
             let parts: Vec<_> = relative
@@ -82,6 +88,24 @@ fn shown_path(root: &Path, path: &Path) -> String {
 /// Whether the crate root `source` sets `#![forbid(unsafe_code)]` among its leading inner
 /// attributes.
 pub fn forbids_unsafe_code(source: &str) -> bool {
+    leading_attributes(source)
+        .0
+        .iter()
+        .any(|body| sets_unsafe_code(body, "forbid"))
+}
+
+/// Whether the crate root `source` sets `#![deny(unsafe_code)]` or `#![forbid(unsafe_code)]`
+/// among its leading inner attributes: the level a module-scoped exception needs.
+pub fn denies_unsafe_code(source: &str) -> bool {
+    leading_attributes(source)
+        .0
+        .iter()
+        .any(|body| sets_unsafe_code(body, "deny") || sets_unsafe_code(body, "forbid"))
+}
+
+/// The insides of the leading inner attributes of `source`, and the byte offset where they end.
+/// Reading stops at the first thing that is not one, or at one that does not close.
+pub fn leading_attributes(source: &str) -> (Vec<&str>, usize) {
     let mut rest = source.strip_prefix('\u{feff}').unwrap_or(source);
     // A shebang line may open the file: `#!` not followed by `[`.
     if let Some(after) = rest.strip_prefix("#!")
@@ -89,24 +113,21 @@ pub fn forbids_unsafe_code(source: &str) -> bool {
     {
         rest = after.split_once('\n').map_or("", |(_, next)| next);
     }
-    loop {
-        let Some(next) = skip_trivia(rest) else {
-            return false;
-        };
+    let mut bodies = Vec::new();
+    while let Some(next) = skip_trivia(rest) {
         let Some(after) = next.strip_prefix("#!") else {
-            return false;
+            break;
         };
         let Some(after) = skip_trivia(after).and_then(|after| after.strip_prefix('[')) else {
-            return false;
+            break;
         };
         let Some((body, after)) = split_bracketed(after) else {
-            return false;
+            break;
         };
-        if is_forbid_unsafe_code(body) {
-            return true;
-        }
+        bodies.push(body);
         rest = after;
     }
+    (bodies, source.len() - rest.len())
 }
 
 /// `text` after any whitespace, line comments and (nested) block comments. `None` when a block
@@ -173,9 +194,10 @@ fn split_bracketed(text: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// Whether an attribute's inside is `forbid(..)` with `unsafe_code` among its lints.
-fn is_forbid_unsafe_code(attribute: &str) -> bool {
-    let Some(args) = attribute.trim().strip_prefix("forbid") else {
+/// Whether an attribute's inside is `<level>(..)`, such as `forbid(..)`, with `unsafe_code` among
+/// its lints.
+fn sets_unsafe_code(attribute: &str, level: &str) -> bool {
+    let Some(args) = attribute.trim().strip_prefix(level) else {
         return false;
     };
     let Some(args) = args
@@ -232,6 +254,33 @@ mod tests {
     }
 
     #[test]
+    fn deny_counts_only_for_the_module_scoped_exception() {
+        assert!(denies_unsafe_code("#![deny(unsafe_code)]\n"));
+        assert!(denies_unsafe_code(
+            "//! Docs.\n#![deny(missing_docs, unsafe_code)]\n"
+        ));
+        assert!(denies_unsafe_code("#![forbid(unsafe_code)]\n"));
+        assert!(!forbids_unsafe_code("#![deny(unsafe_code)]\n"));
+        for source in [
+            "",
+            "#![deny(unsafe_op_in_unsafe_fn)]\n",
+            "#![cfg_attr(not(test), deny(unsafe_code))]\n",
+            "// #![deny(unsafe_code)]\n",
+            "mod guards;\n#![deny(unsafe_code)]\n",
+        ] {
+            assert!(!denies_unsafe_code(source), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn leading_attributes_end_after_the_last_one() {
+        let source = "//! Docs.\n\n#![deny(unsafe_code)]\n#![doc = \"x\"]\n\npub mod guards;\n";
+        let (bodies, end) = leading_attributes(source);
+        assert_eq!(bodies, ["deny(unsafe_code)", "doc = \"x\""]);
+        assert!(source[end..].trim_start().starts_with("pub mod guards;"));
+    }
+
+    #[test]
     fn paths_are_shown_relative_with_forward_slashes() {
         let root = Path::new("w");
         let path: std::path::PathBuf = ["w", "crates", "graph", "src", "lib.rs"].iter().collect();
@@ -253,8 +302,11 @@ mod tests {
                     continue;
                 };
                 checked += 1;
+                let exception = policy::unsafe_module(&name).is_some();
                 assert!(
-                    policy::allows_unsafe(&name) || forbids_unsafe_code(&source),
+                    policy::allows_unsafe(&name)
+                        || forbids_unsafe_code(&source)
+                        || (exception && denies_unsafe_code(&source)),
                     "{name}/{file}"
                 );
             }
