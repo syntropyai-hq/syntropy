@@ -8,6 +8,7 @@
 //! test inputs, not measurements.
 
 use proptest::prelude::*;
+use syntropy_core::plan::stage::CollectiveAlgo;
 use syntropy_core::{Bytes, BytesPerSec, Nanos};
 
 use super::*;
@@ -56,15 +57,17 @@ proptest! {
         prop_assert_eq!(t.0, expected(steps * a as f64 + steps / n_f * (s as f64 / b * 1e9)));
     }
 
-    /// The choice rule: `OneShot` exactly when N ≤ 4 and S ≤ `tp.oneshot_max`.
+    /// The choice rule: `OneShot` exactly when N and S are within the limits.
     #[test]
-    fn choose_is_oneshot_exactly_when_n_le_4_and_s_le_max(
+    fn choose_is_oneshot_exactly_within_the_limits(
         n in 0u32..=16,
         s in 0u64..=(4 << 20),
+        members in 0u32..=8,
         max in 0u64..=(4 << 20),
     ) {
-        let want = if n <= 4 && s <= max { Algorithm::OneShot } else { Algorithm::Ring };
-        prop_assert_eq!(choose(n, Bytes(s), Bytes(max)), want);
+        let limits = OneShotLimits { members, partial: Bytes(max) };
+        let want = if n <= members && s <= max { CollectiveAlgo::OneShot } else { CollectiveAlgo::Ring };
+        prop_assert_eq!(choose(n, Bytes(s), limits), want);
     }
 
     /// `all_reduce` runs the algorithm `choose` picks, at that algorithm's time.
@@ -75,27 +78,32 @@ proptest! {
     ) {
         let l = link(a, b);
         let fabric = if shared { Fabric::SharedNic } else { Fabric::FullMesh };
-        let r = all_reduce(n, Bytes(s), &l, fabric, ONESHOT_MAX_DEFAULT);
-        prop_assert_eq!(r.algorithm, choose(n, Bytes(s), ONESHOT_MAX_DEFAULT));
+        let r = all_reduce(n, Bytes(s), &l, fabric, OneShotLimits::default());
+        prop_assert_eq!(r.algorithm, choose(n, Bytes(s), OneShotLimits::default()));
         let time = match r.algorithm {
-            Algorithm::OneShot => one_shot(n, Bytes(s), &l, fabric),
-            Algorithm::Ring => ring(n, Bytes(s), &l),
+            CollectiveAlgo::OneShot => one_shot(n, Bytes(s), &l, fabric),
+            _ => ring(n, Bytes(s), &l),
         };
         prop_assert_eq!(r.time, time);
     }
 
-    /// Host-staged intra-node transfers cost `S/β_d2h + S/β_h2d` (RFC-0032 §5.5, note of
-    /// 2026-10-22), in both algorithms.
+    /// Host-staged intra-node all-reduces (RFC-0032 §5.5, note of 2026-10-22): `OneShot` is one
+    /// copy to the host and N−1 reads back, `α + S/β_d2h + (N−1)·S/β_h2d`, whatever the fabric;
+    /// each `Ring` step copies its slice both ways.
     #[test]
-    fn host_staged_adds_both_copies(
+    fn host_staged_copies_once_out_and_reads_n_minus_one_back(
         (n, s, a, _b) in inputs(),
         d2h in 1e8f64..=1e11,
         h2d in 1e8f64..=1e11,
+        shared in any::<bool>(),
     ) {
         let l = LinkCost::host_staged(Nanos(a), BytesPerSec(d2h), BytesPerSec(h2d)).unwrap();
-        // The module's evaluation order: both copies in seconds, then to nanoseconds.
-        let copy = (s as f64 / d2h + s as f64 / h2d) * 1e9;
-        prop_assert_eq!(one_shot(n, Bytes(s), &l, Fabric::FullMesh).0, expected(a as f64 + copy));
+        let fabric = if shared { Fabric::SharedNic } else { Fabric::FullMesh };
+        let bytes = s as f64;
+        // The module's evaluation order: seconds, then nanoseconds.
+        let one = (bytes / d2h + f64::from(n - 1) * (bytes / h2d)) * 1e9;
+        prop_assert_eq!(one_shot(n, Bytes(s), &l, fabric).0, expected(a as f64 + one));
+        let copy = (bytes / d2h + bytes / h2d) * 1e9;
         let n_f = f64::from(n);
         let steps = 2.0 * (n_f - 1.0);
         prop_assert_eq!(ring(n, Bytes(s), &l).0, expected(steps * a as f64 + steps / n_f * copy));
@@ -153,20 +161,60 @@ proptest! {
 
 #[test]
 fn the_choice_boundary_is_four_members_and_one_mib() {
-    let max = ONESHOT_MAX_DEFAULT;
+    use CollectiveAlgo::{OneShot, Ring};
+    let limits = OneShotLimits::default();
+    let max = limits.partial;
     assert_eq!(max, Bytes(1_048_576), "tp.oneshot_max defaults to 1 MiB");
+    assert_eq!(limits.members, 4);
     // N = 4 → 5 at a decode-sized partial.
-    assert_eq!(choose(4, Bytes(28_672), max), Algorithm::OneShot);
-    assert_eq!(choose(5, Bytes(28_672), max), Algorithm::Ring);
+    assert_eq!(choose(4, Bytes(28_672), limits), OneShot);
+    assert_eq!(choose(5, Bytes(28_672), limits), Ring);
     // S around tp.oneshot_max at N = 4.
-    assert_eq!(choose(4, Bytes(max.0 - 1), max), Algorithm::OneShot);
-    assert_eq!(choose(4, max, max), Algorithm::OneShot);
-    assert_eq!(choose(4, Bytes(max.0 + 1), max), Algorithm::Ring);
+    assert_eq!(choose(4, Bytes(max.0 - 1), limits), OneShot);
+    assert_eq!(choose(4, max, limits), OneShot);
+    assert_eq!(choose(4, Bytes(max.0 + 1), limits), Ring);
     // And at N = 2, the smallest island.
-    assert_eq!(choose(2, max, max), Algorithm::OneShot);
-    assert_eq!(choose(2, Bytes(max.0 + 1), max), Algorithm::Ring);
+    assert_eq!(choose(2, max, limits), OneShot);
+    assert_eq!(choose(2, Bytes(max.0 + 1), limits), Ring);
     // A smaller configured maximum moves the boundary with it.
-    assert_eq!(choose(2, Bytes(4097), Bytes(4096)), Algorithm::Ring);
+    let small = OneShotLimits {
+        partial: Bytes(4096),
+        ..limits
+    };
+    assert_eq!(choose(2, Bytes(4097), small), Ring);
+}
+
+/// RFC-0032 open question 3's interim rule for 3–4 node Mac full meshes: plan on `Ring` for
+/// N ≥ 3 until DIST-E13-T10 measures. A member limit of 2 expresses it.
+#[test]
+fn a_member_limit_of_two_plans_the_ring_from_three_members() {
+    let interim = OneShotLimits {
+        members: 2,
+        ..OneShotLimits::default()
+    };
+    let s0 = Bytes(7168 * 4);
+    assert_eq!(choose(3, s0, interim), CollectiveAlgo::Ring);
+    assert_eq!(choose(4, s0, interim), CollectiveAlgo::Ring);
+    assert_eq!(choose(2, s0, interim), CollectiveAlgo::OneShot);
+    assert_eq!(
+        choose(3, s0, OneShotLimits::default()),
+        CollectiveAlgo::OneShot
+    );
+}
+
+/// The review's worked case for host-staged `OneShot` at N = 4 (illustrative inputs, not
+/// measurements): 512 KiB partials, α = 10 µs and both copies at 25 GB/s. S/β is 20,971.52 ns, so
+/// one copy out and three reads back give 10,000 + 4 × 20,971.52 ≈ 93,886 ns on either fabric.
+#[test]
+fn host_staged_one_shot_at_four_members() {
+    let l = LinkCost::host_staged(Nanos(10_000), BytesPerSec(25e9), BytesPerSec(25e9)).unwrap();
+    let s = Bytes(512 << 10);
+    assert_eq!(one_shot(4, s, &l, Fabric::FullMesh), Nanos(93_886));
+    assert_eq!(one_shot(4, s, &l, Fabric::SharedNic), Nanos(93_886));
+    // N = 2 is one copy each way: 10,000 + 2 × 20,971.52.
+    assert_eq!(one_shot(2, s, &l, Fabric::FullMesh), Nanos(51_943));
+    // The ring's six steps each copy a quarter of S both ways: 6α + 6/4 × 2 × S/β.
+    assert_eq!(ring(4, s, &l), Nanos(122_915));
 }
 
 /// ADR-0310's corrected example, revision of 2026-10-19: DeepSeek-V3 at TP = 2 with
@@ -179,8 +227,8 @@ fn adr_0310s_example_is_reproduced() {
     let s0 = Bytes(7168 * 4);
     let alpha = alpha_from_probe(Nanos(40_000), s0, beta).unwrap();
     let l = LinkCost::network(alpha, beta).unwrap();
-    let per_collective = all_reduce(2, s0, &l, Fabric::FullMesh, ONESHOT_MAX_DEFAULT);
-    assert_eq!(per_collective.algorithm, Algorithm::OneShot);
+    let per_collective = all_reduce(2, s0, &l, Fabric::FullMesh, OneShotLimits::default());
+    assert_eq!(per_collective.algorithm, CollectiveAlgo::OneShot);
     assert_eq!(per_collective.time, Nanos(40_000));
     assert_eq!(122 * per_collective.time.0, 4_880_000);
 }
@@ -202,10 +250,26 @@ fn fewer_than_two_members_cost_nothing() {
 }
 
 #[test]
-fn a_probe_below_its_own_transfer_time_gives_zero_alpha() {
+fn a_probe_below_its_own_transfer_time_is_refused() {
     // 28,672 B at 1 GB/s is 28.672 µs, more than the 10 µs measured.
-    let alpha = alpha_from_probe(Nanos(10_000), Bytes(28_672), BytesPerSec(1e9)).unwrap();
-    assert_eq!(alpha, Nanos(0));
+    let error = alpha_from_probe(Nanos(10_000), Bytes(28_672), BytesPerSec(1e9)).unwrap_err();
+    assert_eq!(
+        error,
+        CostError::ProbeBelowTransfer {
+            alpha_eff: Nanos(10_000),
+            transfer: Nanos(28_672),
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the probe measured 10000 ns, less than its partial's 28672 ns transfer time at this \
+         link's rate; the rate or the probe partial is wrong for the link"
+    );
+    // Exactly the transfer time is α = 0.
+    assert_eq!(
+        alpha_from_probe(Nanos(28_672), Bytes(28_672), BytesPerSec(1e9)),
+        Ok(Nanos(0))
+    );
 }
 
 #[test]
