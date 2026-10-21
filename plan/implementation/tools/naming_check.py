@@ -145,12 +145,14 @@ def blobs(revision, paths):
 class Source:
     """One thing to check. `name` is what findings show: a path, `commit message` or a --stdin
     label. A path that matches the list is shown as `kind #position` instead, where `position`
-    is its line in the list PATH_LISTS names, counting entries that are not checked, such as
-    submodules. `text` is None for a binary file, whose path is still checked."""
+    is its line in the list PATH_LISTS names. `text` is None for a binary file and for an entry
+    with no content here, such as a submodule (`has_content` False); the path is checked either
+    way."""
 
-    def __init__(self, kind, name, text, skip=None, is_path=False, position=None):
+    def __init__(self, kind, name, text, skip=None, is_path=False, position=None,
+                 has_content=True):
         self.kind, self.name, self.text, self.skip = kind, name, text, skip
-        self.is_path, self.position = is_path, position
+        self.is_path, self.position, self.has_content = is_path, position, has_content
 
 
 # How to list the paths a `kind #N` label counts through, for each kind of path.
@@ -196,9 +198,11 @@ def sources(args, patterns):
                                  f"{error.strerror}") from None
     else:
         contents = dict(blobs(":" if args.staged else "HEAD:", paths))
-    # Entries that are not blobs, such as submodules, have no content and are left out.
-    return [Source(kind, path, decode(contents[path]), is_path=True, position=position)
-            for position, path in enumerate(paths, 1) if path in contents]
+    # An entry that is not a blob here, such as a submodule, has no content, but its path is
+    # still checked.
+    return [Source(kind, path, decode(contents[path]) if path in contents else None,
+                   is_path=True, position=position, has_content=path in contents)
+            for position, path in enumerate(paths, 1)]
 
 
 def message_source(path):
@@ -281,7 +285,7 @@ def run(argv):
                 label = source.kind
         lines = []
         if source.text is None:
-            binary += 1
+            binary += source.has_content
         else:
             lines = matching_lines(source.text, patterns, source.skip)
         for number in lines:

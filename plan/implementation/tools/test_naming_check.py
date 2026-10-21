@@ -238,7 +238,17 @@ class NamingCheckTest(unittest.TestCase):
         self.git(repo, "add", "a.md")
         code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)
         self.assertEqual(code, 0, output)
-        self.assertIn("naming check: PASS: 1 checked", output)
+        # Both paths are checked; only a.md has content to read.
+        self.assertIn("naming check: PASS: 2 checked", output)
+        self.assertNotIn("binary", output)
+
+    def test_a_staged_submodule_whose_path_matches_fails(self):
+        repo = self.repo()
+        self.git(repo, "update-index", "--add", "--cacheinfo",
+                 "160000," + "1" * 40 + ",zorblax-sub")
+        code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)
+        self.assertEqual(code, 1, output)
+        self.assertIn("staged path #1: its path matches a banned term (D5)", output)
 
     def test_a_path_number_counts_entries_that_are_not_checked(self):
         # `staged path #N` is the Nth line of the diff listing, so a skipped submodule before the
