@@ -107,9 +107,10 @@ pub fn denies_unsafe_code(source: &str) -> bool {
 /// Reading stops at the first thing that is not one, or at one that does not close.
 pub fn leading_attributes(source: &str) -> (Vec<&str>, usize) {
     let mut rest = source.strip_prefix('\u{feff}').unwrap_or(source);
-    // A shebang line may open the file: `#!` not followed by `[`.
+    // A shebang line may open the file: `#!` whose next token, past whitespace and comments as
+    // rustc skips them, is not `[`.
     if let Some(after) = rest.strip_prefix("#!")
-        && !after.trim_start().starts_with('[')
+        && !skip_trivia(after).is_some_and(|next| next.starts_with('['))
     {
         rest = after.split_once('\n').map_or("", |(_, next)| next);
     }
@@ -213,6 +214,15 @@ fn sets_unsafe_code(attribute: &str, level: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shebang_is_told_from_an_inner_attribute_past_comments() {
+        // rustc skips whitespace and comments after `#!` before deciding.
+        let attribute = "#! /* a note */ [forbid(unsafe_code)]\npub fn f() {}\n";
+        assert_eq!(leading_attributes(attribute).0, ["forbid(unsafe_code)"]);
+        let shebang = "#!/usr/bin/env run\n#![forbid(unsafe_code)]\n";
+        assert_eq!(leading_attributes(shebang).0, ["forbid(unsafe_code)"]);
+    }
 
     #[test]
     fn finds_the_attribute_after_comments_and_other_attributes() {

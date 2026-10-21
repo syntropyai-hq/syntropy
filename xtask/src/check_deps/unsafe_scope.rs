@@ -121,12 +121,23 @@ pub fn check(graph: &Graph, at: usize, module: &UnsafeModule) -> Vec<Finding> {
                 continue;
             }
         };
-        let problems = if file == allowed {
+        let mut problems = if file == allowed {
             check_allowed_file(&source, module)
         } else {
             let level_end = roots.contains(&file).then(|| leading_attributes(&source).1);
             check_other_file(&source, level_end)
         };
+        if let Some(problem) = shebang(&source) {
+            problems.insert(0, problem);
+        }
+        if file.extension().is_some_and(|extension| extension != "rs") {
+            problems.insert(
+                0,
+                "1: has an extension that is `rs` only in another case; a case-insensitive file \
+                 system lets `mod` load it, so `testkit` names its files `.rs`"
+                    .to_owned(),
+            );
+        }
         for problem in problems {
             findings.push(finding(format!("`{name}`: {shown}:{problem}")));
         }
@@ -145,7 +156,11 @@ fn rust_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
         let path = entry?.path();
         if path.is_dir() {
             rust_files(&path, files)?;
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
+        } else if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+        {
             files.push(path);
         }
     }
@@ -170,10 +185,57 @@ fn check_other_file(source: &str, level_end: Option<usize>) -> Vec<String> {
                  may",
                 line_of(&code, at)
             )),
+            // In the root's leading attributes, only a plain `deny` or `forbid` keeps the
+            // compiler refusing what has no `unsafe` token, such as `global_asm!`.
+            "unsafe_code" if !plain_deny_or_forbid(&code, at) => problems.push(format!(
+                "{}: sets `unsafe_code` in the crate root's leading attributes to something other \
+                 than a plain `#![deny(unsafe_code)]` or `#![forbid(unsafe_code)]`",
+                line_of(&code, at)
+            )),
             _ => {}
         }
     }
     problems
+}
+
+/// Whether the `unsafe_code` at `at` sits in an attribute that reads `#![deny(…)]` or
+/// `#![forbid(…)]` over a plain list of lint names, spaces aside: no `cfg_attr`, `allow`, `warn`
+/// or `expect`.
+fn plain_deny_or_forbid(code: &str, at: usize) -> bool {
+    attribute_spans(code)
+        .into_iter()
+        .find(|&(start, end)| (start..end).contains(&at))
+        .is_some_and(|(start, end)| {
+            let body: String = code[start..end].split_whitespace().collect();
+            let Some(inner) = body.strip_prefix("#![").and_then(|b| b.strip_suffix(']')) else {
+                return false;
+            };
+            let Some((level, list)) = inner.split_once('(') else {
+                return false;
+            };
+            let Some(list) = list.strip_suffix(')') else {
+                return false;
+            };
+            (level == "deny" || level == "forbid")
+                && list.split(',').all(|lint| {
+                    !lint.is_empty()
+                        && lint
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+                })
+        })
+}
+
+/// A problem when `source`, after an optional byte-order mark, starts with `#!` not directly
+/// followed by `[`: rustc may strip that line as a shebang, in any source file, while this check
+/// reads it as code, where it could open a comment that hides the lines after it.
+fn shebang(source: &str) -> Option<String> {
+    let text = source.strip_prefix('\u{feff}').unwrap_or(source);
+    (text.starts_with("#!") && !text.starts_with("#![")).then(|| {
+        "1: starts with `#!`, which rustc may strip as a shebang line while this check reads it \
+         as code; `testkit` files may not start so"
+            .to_owned()
+    })
 }
 
 /// The problems in the file that holds the allowed impl.
@@ -672,6 +734,53 @@ pub fn alloc_count_this_thread() -> u64 {
         let late = "#![deny(unsafe_code)]\npub mod guards;\n#[allow(unsafe_code)]\nfn f() {}\n";
         let (_, end) = leading_attributes(late);
         assert_eq!(check_other_file(late, Some(end)).len(), 1);
+        // In the leading attributes too, only a plain deny or forbid may name it.
+        for leading in [
+            "#![deny(unsafe_code)]\n#![allow(unsafe_code)]\npub mod guards;\n",
+            "#![deny(unsafe_code)]\n#![warn(unsafe_code)]\npub mod guards;\n",
+            "#![deny(unsafe_code)]\n#![expect(unsafe_code)]\npub mod guards;\n",
+            "#![deny(unsafe_code)]\n#![cfg_attr(all(), allow(unsafe_code))]\npub mod guards;\n",
+        ] {
+            let (_, end) = leading_attributes(leading);
+            let problems = check_other_file(leading, Some(end));
+            assert_eq!(problems.len(), 1, "{leading}: {problems:?}");
+            assert!(
+                problems[0].contains("to something other than a plain"),
+                "{leading}: {problems:?}"
+            );
+        }
+        for plain in [
+            "#![forbid(unsafe_code)]\npub mod guards;\n",
+            "#![deny(unsafe_code, clippy::undocumented_unsafe_blocks)]\npub mod guards;\n",
+            "#![ deny ( unsafe_code ) ]\npub mod guards;\n",
+        ] {
+            let (_, end) = leading_attributes(plain);
+            assert_eq!(
+                check_other_file(plain, Some(end)),
+                Vec::<String>::new(),
+                "{plain}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_that_rustc_may_read_from_its_second_line_is_refused() {
+        for text in [
+            "#!/*\n#![allow(unsafe_code)]\n// */\n",
+            "\u{feff}#!/usr/bin/env run\nfn f() {}\n",
+            "#! [allow(unsafe_code)]\n",
+            "#!\n",
+        ] {
+            assert!(shebang(text).is_some(), "{text:?} was accepted");
+        }
+        for text in [
+            "#![deny(unsafe_code)]\n",
+            "// #!x\n",
+            "fn f() {}\n#!x\n",
+            "",
+        ] {
+            assert_eq!(shebang(text), None, "{text:?}");
+        }
     }
 
     #[test]
