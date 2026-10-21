@@ -71,6 +71,26 @@ pub struct BufferSlice {
 /// A physical segment backing part of a `reserve_only` allocation (RFC-0040 §2.2). Addresses
 /// inside the reservation never move (RFC-0020 §4.1). Not `Clone`: `unmap_segment` takes it
 /// by value, so each segment is released once.
+///
+/// A segment can be built and moved:
+///
+/// ```
+/// use syntropy_core::Bytes;
+/// use syntropy_kernels::Segment;
+/// let seg = Segment { reservation: 1, offset: Bytes(0), bytes: Bytes(4096), handle: 2 };
+/// let moved = seg;
+/// # let _ = moved;
+/// ```
+///
+/// but not copied:
+///
+/// ```compile_fail
+/// use syntropy_core::Bytes;
+/// use syntropy_kernels::Segment;
+/// let seg = Segment { reservation: 1, offset: Bytes(0), bytes: Bytes(4096), handle: 2 };
+/// let copy = seg.clone();
+/// # let _ = (seg, copy);
+/// ```
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Segment {
     /// The reservation's [`DeviceBuffer::handle`].

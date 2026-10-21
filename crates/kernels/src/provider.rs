@@ -27,7 +27,8 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// §5.7's comment says all but `poll` and `synchronize`; RFC-0040 §2.1, which §5.7 defers
 /// to, also leaves `build` and `domain` without one. Issue #1525, item 1, tracks the fix.)
 ///
-/// A provider that implements every required method compiles:
+/// A provider that implements every required method compiles. The four methods without a
+/// default are the ones it must name itself:
 ///
 /// ```
 /// # use syntropy_core::{Bytes, DeviceId, resource::Backend};
@@ -37,8 +38,6 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// # impl KernelProvider for P {
 /// #     fn id(&self) -> ProviderId { todo!() }
 /// #     fn backend(&self) -> Backend { todo!() }
-/// #     fn build(&self) -> ProviderBuild { todo!() }
-/// #     fn domain(&self) -> MemoryDomain { todo!() }
 /// #     fn enumerate(&self) -> Result<Vec<ProviderDevice>, Error> { todo!() }
 /// #     fn open(&self, _: DeviceId, _: &OpenOptions) -> Result<DeviceCtx, Error> { todo!() }
 /// #     fn ops(&self) -> &OpRegistry { todo!() }
@@ -54,7 +53,6 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// #     fn record(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
 /// #     fn wait(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
 /// #     fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> { todo!() }
-/// #     fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { todo!() }
 /// #     fn copy(&self, _: &DeviceCtx, _: &Stream, _: BufferSlice, _: BufferSlice) -> Result<(), Error> { todo!() }
 /// #     fn prepare(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Result<PreparedOp, Error> { todo!() }
 /// #     fn launch(&self, _: &DeviceCtx, _: &Stream, _: &PreparedOp, _: &OpArgs<'_>) -> Result<(), Error> { todo!() }
@@ -66,11 +64,16 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// # }
 /// # } }
 /// provider! {
+///     fn build(&self) -> ProviderBuild { todo!() }
+///     fn domain(&self) -> MemoryDomain { todo!() }
 ///     fn poll(&self, _: &DeviceCtx, _: &Event) -> Result<bool, Error> { Ok(true) }
+///     fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { Ok(()) }
 /// }
 /// ```
 ///
-/// The same provider without `poll`, which has no default body, does not:
+/// The same provider without any one of those four does not compile:
+///
+/// Without `build`:
 ///
 /// ```compile_fail
 /// # use syntropy_core::{Bytes, DeviceId, resource::Backend};
@@ -80,8 +83,6 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// # impl KernelProvider for P {
 /// #     fn id(&self) -> ProviderId { todo!() }
 /// #     fn backend(&self) -> Backend { todo!() }
-/// #     fn build(&self) -> ProviderBuild { todo!() }
-/// #     fn domain(&self) -> MemoryDomain { todo!() }
 /// #     fn enumerate(&self) -> Result<Vec<ProviderDevice>, Error> { todo!() }
 /// #     fn open(&self, _: DeviceId, _: &OpenOptions) -> Result<DeviceCtx, Error> { todo!() }
 /// #     fn ops(&self) -> &OpRegistry { todo!() }
@@ -97,7 +98,6 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// #     fn record(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
 /// #     fn wait(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
 /// #     fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> { todo!() }
-/// #     fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { todo!() }
 /// #     fn copy(&self, _: &DeviceCtx, _: &Stream, _: BufferSlice, _: BufferSlice) -> Result<(), Error> { todo!() }
 /// #     fn prepare(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Result<PreparedOp, Error> { todo!() }
 /// #     fn launch(&self, _: &DeviceCtx, _: &Stream, _: &PreparedOp, _: &OpArgs<'_>) -> Result<(), Error> { todo!() }
@@ -108,7 +108,137 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// #     $($extra)*
 /// # }
 /// # } }
-/// provider! {}
+/// provider! {
+///     fn domain(&self) -> MemoryDomain { todo!() }
+///     fn poll(&self, _: &DeviceCtx, _: &Event) -> Result<bool, Error> { Ok(true) }
+///     fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { Ok(()) }
+/// }
+/// ```
+///
+/// Without `domain`:
+///
+/// ```compile_fail
+/// # use syntropy_core::{Bytes, DeviceId, resource::Backend};
+/// # use syntropy_kernels::*;
+/// # macro_rules! provider { ($($extra:item)*) => {
+/// # struct P;
+/// # impl KernelProvider for P {
+/// #     fn id(&self) -> ProviderId { todo!() }
+/// #     fn backend(&self) -> Backend { todo!() }
+/// #     fn enumerate(&self) -> Result<Vec<ProviderDevice>, Error> { todo!() }
+/// #     fn open(&self, _: DeviceId, _: &OpenOptions) -> Result<DeviceCtx, Error> { todo!() }
+/// #     fn ops(&self) -> &OpRegistry { todo!() }
+/// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
+/// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
+/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
+/// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
+/// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
+/// #     fn event(&self, _: &DeviceCtx) -> Result<Event, Error> { todo!() }
+/// #     fn record(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn wait(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> { todo!() }
+/// #     fn copy(&self, _: &DeviceCtx, _: &Stream, _: BufferSlice, _: BufferSlice) -> Result<(), Error> { todo!() }
+/// #     fn prepare(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Result<PreparedOp, Error> { todo!() }
+/// #     fn launch(&self, _: &DeviceCtx, _: &Stream, _: &PreparedOp, _: &OpArgs<'_>) -> Result<(), Error> { todo!() }
+/// #     fn begin_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { todo!() }
+/// #     fn end_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<CapturedGraph, Error> { todo!() }
+/// #     fn replay(&self, _: &DeviceCtx, _: &Stream, _: &CapturedGraph) -> Result<(), Error> { todo!() }
+/// #     fn health(&self, _: &DeviceCtx) -> DeviceHealth { todo!() }
+/// #     $($extra)*
+/// # }
+/// # } }
+/// provider! {
+///     fn build(&self) -> ProviderBuild { todo!() }
+///     fn poll(&self, _: &DeviceCtx, _: &Event) -> Result<bool, Error> { Ok(true) }
+///     fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { Ok(()) }
+/// }
+/// ```
+///
+/// Without `poll`:
+///
+/// ```compile_fail
+/// # use syntropy_core::{Bytes, DeviceId, resource::Backend};
+/// # use syntropy_kernels::*;
+/// # macro_rules! provider { ($($extra:item)*) => {
+/// # struct P;
+/// # impl KernelProvider for P {
+/// #     fn id(&self) -> ProviderId { todo!() }
+/// #     fn backend(&self) -> Backend { todo!() }
+/// #     fn enumerate(&self) -> Result<Vec<ProviderDevice>, Error> { todo!() }
+/// #     fn open(&self, _: DeviceId, _: &OpenOptions) -> Result<DeviceCtx, Error> { todo!() }
+/// #     fn ops(&self) -> &OpRegistry { todo!() }
+/// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
+/// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
+/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
+/// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
+/// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
+/// #     fn event(&self, _: &DeviceCtx) -> Result<Event, Error> { todo!() }
+/// #     fn record(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn wait(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> { todo!() }
+/// #     fn copy(&self, _: &DeviceCtx, _: &Stream, _: BufferSlice, _: BufferSlice) -> Result<(), Error> { todo!() }
+/// #     fn prepare(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Result<PreparedOp, Error> { todo!() }
+/// #     fn launch(&self, _: &DeviceCtx, _: &Stream, _: &PreparedOp, _: &OpArgs<'_>) -> Result<(), Error> { todo!() }
+/// #     fn begin_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { todo!() }
+/// #     fn end_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<CapturedGraph, Error> { todo!() }
+/// #     fn replay(&self, _: &DeviceCtx, _: &Stream, _: &CapturedGraph) -> Result<(), Error> { todo!() }
+/// #     fn health(&self, _: &DeviceCtx) -> DeviceHealth { todo!() }
+/// #     $($extra)*
+/// # }
+/// # } }
+/// provider! {
+///     fn build(&self) -> ProviderBuild { todo!() }
+///     fn domain(&self) -> MemoryDomain { todo!() }
+///     fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { Ok(()) }
+/// }
+/// ```
+///
+/// Without `synchronize`:
+///
+/// ```compile_fail
+/// # use syntropy_core::{Bytes, DeviceId, resource::Backend};
+/// # use syntropy_kernels::*;
+/// # macro_rules! provider { ($($extra:item)*) => {
+/// # struct P;
+/// # impl KernelProvider for P {
+/// #     fn id(&self) -> ProviderId { todo!() }
+/// #     fn backend(&self) -> Backend { todo!() }
+/// #     fn enumerate(&self) -> Result<Vec<ProviderDevice>, Error> { todo!() }
+/// #     fn open(&self, _: DeviceId, _: &OpenOptions) -> Result<DeviceCtx, Error> { todo!() }
+/// #     fn ops(&self) -> &OpRegistry { todo!() }
+/// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
+/// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
+/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
+/// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
+/// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
+/// #     fn event(&self, _: &DeviceCtx) -> Result<Event, Error> { todo!() }
+/// #     fn record(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn wait(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> { todo!() }
+/// #     fn copy(&self, _: &DeviceCtx, _: &Stream, _: BufferSlice, _: BufferSlice) -> Result<(), Error> { todo!() }
+/// #     fn prepare(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Result<PreparedOp, Error> { todo!() }
+/// #     fn launch(&self, _: &DeviceCtx, _: &Stream, _: &PreparedOp, _: &OpArgs<'_>) -> Result<(), Error> { todo!() }
+/// #     fn begin_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { todo!() }
+/// #     fn end_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<CapturedGraph, Error> { todo!() }
+/// #     fn replay(&self, _: &DeviceCtx, _: &Stream, _: &CapturedGraph) -> Result<(), Error> { todo!() }
+/// #     fn health(&self, _: &DeviceCtx) -> DeviceHealth { todo!() }
+/// #     $($extra)*
+/// # }
+/// # } }
+/// provider! {
+///     fn build(&self) -> ProviderBuild { todo!() }
+///     fn domain(&self) -> MemoryDomain { todo!() }
+///     fn poll(&self, _: &DeviceCtx, _: &Event) -> Result<bool, Error> { Ok(true) }
+/// }
 /// ```
 ///
 /// **Threading (RFC-0040 §2.4, ADR-0012).** `enumerate`, `ops`, `repack`, `repacked_len`,
