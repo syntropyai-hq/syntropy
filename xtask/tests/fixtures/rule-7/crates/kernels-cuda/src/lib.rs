@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A provider crate that links the (stand-in) CUDA driver library.
+//! A provider crate that links a stand-in for the CUDA driver library.
 
 unsafe extern "C" {
     fn cuInit(flags: u32) -> i32;

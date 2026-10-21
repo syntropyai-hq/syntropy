@@ -133,17 +133,34 @@ pub const SYSTEMS: &[System] = &[
 pub const CORE_BINARY_CRATE: &str = "cli";
 pub const CORE_BINARY: &str = "syntropy";
 
-/// Rule 7: one vendor GPU runtime, as it shows in an ELF dynamic section.
+/// Rule 7: the shared libraries the core binary may need on Linux, by stem: the C library and its
+/// parts, and the unwinder. `libc` matches `libc.so` and `libc.so.6`. Rule 7 rejects every other
+/// `DT_NEEDED` entry except the dynamic loader, so a vendor runtime that [`VENDOR_RUNTIMES`] does
+/// not know still fails. A library added here must be a system library the core binary needs on
+/// every Linux host, never a vendor GPU runtime (ADR-0018 decision 5), and the change needs a
+/// maintainer's review.
+pub const SYSTEM_LIBRARIES: &[&str] = &["libc", "libm", "libpthread", "libdl", "librt", "libgcc_s"];
+
+/// Rule 7: the dynamic loader, named per architecture: `ld-linux-x86-64.so.2`,
+/// `ld-linux-aarch64.so.1`.
+pub const LOADER_PREFIX: &str = "ld-linux";
+
+/// Rule 7: one vendor GPU runtime, as it shows in an ELF dynamic section. The library stems only
+/// name the vendor in a finding; the allow-list above decides which libraries fail. The symbols
+/// are a second check, for a runtime linked in a way that adds no `DT_NEEDED` entry of its own.
 pub struct VendorRuntime {
     pub name: &'static str,
     /// Shared-library stems: `libcuda` matches `libcuda.so` and `libcuda.so.1`.
     pub libraries: &'static [&'static str],
-    /// Symbol prefixes. A prefix matches a symbol when the next character is an ASCII capital or
-    /// `_`, so `cu` matches `cuInit` and not `cupcake`.
-    pub symbol_prefixes: &'static [&'static str],
+    /// Prefixes of the runtime's own entry points, too short to match alone: one matches when
+    /// the next character is an ASCII capital or `_`, so `cu` matches `cuInit` and not `cupcake`.
+    pub entry_prefixes: &'static [&'static str],
+    /// Prefixes of the vendor's library families, such as `cufft`: any symbol that starts with one
+    /// matches.
+    pub families: &'static [&'static str],
 }
 
-/// Rule 7: vendor GPU runtimes, which reach a host only inside backend modules.
+/// Rule 7: vendor GPU runtimes and libraries, which reach a host only inside backend modules.
 pub const VENDOR_RUNTIMES: &[VendorRuntime] = &[
     VendorRuntime {
         name: "CUDA",
@@ -152,11 +169,31 @@ pub const VENDOR_RUNTIMES: &[VendorRuntime] = &[
             "libcudart",
             "libcublas",
             "libcublasLt",
+            "libcufft",
+            "libcurand",
+            "libcusparse",
+            "libcusolver",
+            "libcudnn",
+            "libnccl",
             "libnvrtc",
             "libnvJitLink",
             "libnvidia-ml",
         ],
-        symbol_prefixes: &["cu", "cuda", "__cuda", "cublas", "nvrtc", "nvml"],
+        entry_prefixes: &["cu"],
+        families: &[
+            "cuda",
+            "__cuda",
+            "cublas",
+            "cufft",
+            "curand",
+            "cusparse",
+            "cusolver",
+            "cudnn",
+            "nccl",
+            "nvrtc",
+            "nvJitLink",
+            "nvml",
+        ],
     },
     VendorRuntime {
         name: "HIP",
@@ -166,26 +203,66 @@ pub const VENDOR_RUNTIMES: &[VendorRuntime] = &[
             "librocblas",
             "libhipblas",
             "libhipblaslt",
+            "librocfft",
+            "libhipfft",
+            "librocrand",
+            "libhiprand",
+            "librocsparse",
+            "libhipsparse",
+            "librccl",
+            "libMIOpen",
             "librocm_smi64",
         ],
-        symbol_prefixes: &["hip", "rocblas", "hipblas", "rsmi"],
+        entry_prefixes: &["hip"],
+        families: &[
+            "hipblas",
+            "hipfft",
+            "hiprand",
+            "hipsparse",
+            "hiprtc",
+            "rocblas",
+            "rocfft",
+            "rocrand",
+            "rocsparse",
+            "rccl",
+            "miopen",
+            "rsmi",
+        ],
     },
     VendorRuntime {
         name: "Vulkan",
         libraries: &["libvulkan"],
-        symbol_prefixes: &["vk"],
+        entry_prefixes: &["vk"],
+        families: &[],
     },
     VendorRuntime {
         name: "oneAPI",
         libraries: &["libze_loader", "libsycl"],
-        symbol_prefixes: &["ze"],
+        entry_prefixes: &["ze"],
+        families: &[],
     },
     VendorRuntime {
         name: "OpenCL",
         libraries: &["libOpenCL"],
-        symbol_prefixes: &["cl"],
+        entry_prefixes: &["cl"],
+        families: &[],
     },
 ];
+
+/// Whether the `DT_NEEDED` entry `needed` is the shared library with stem `stem`.
+pub fn is_library(needed: &str, stem: &str) -> bool {
+    needed
+        .strip_prefix(stem)
+        .is_some_and(|rest| rest == ".so" || rest.starts_with(".so."))
+}
+
+/// Rule 7: whether the core binary may need `needed`: a system library or the dynamic loader.
+pub fn is_system_library(needed: &str) -> bool {
+    SYSTEM_LIBRARIES.iter().any(|stem| is_library(needed, stem))
+        || needed
+            .strip_prefix(LOADER_PREFIX)
+            .is_some_and(|rest| rest.starts_with(['-', '.']))
+}
 
 /// Rule 8: crates allowed `unsafe`, besides every `kernels-*` crate.
 pub const UNSAFE_ALLOWED: &[&str] = &["io", "tier", "net", "ipc"];
@@ -248,6 +325,34 @@ mod tests {
             "net", "cluster", "store", "api", "daemon", "solver", "runner", "cli",
         ] {
             assert!(!is_compute(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_system_allow_list_matches_whole_stems_and_the_loader() {
+        for needed in [
+            "libc.so.6",
+            "libm.so.6",
+            "libgcc_s.so.1",
+            "libpthread.so.0",
+            "libdl.so",
+            "ld-linux-x86-64.so.2",
+            "ld-linux-aarch64.so.1",
+            "ld-linux.so.2",
+        ] {
+            assert!(is_system_library(needed), "{needed}");
+        }
+        for needed in [
+            "libcuda.so.1",
+            "libcufft.so",
+            "libnccl.so.2",
+            "libcrypt.so.1",
+            "libmagic.so.1",
+            "libstdc++.so.6",
+            "ld-linuxish.so",
+            "libc",
+        ] {
+            assert!(!is_system_library(needed), "{needed}");
         }
     }
 

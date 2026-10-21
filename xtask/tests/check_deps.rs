@@ -177,17 +177,42 @@ fn rule_7_the_core_binary_links_no_vendor_runtime() {
     );
 }
 
+/// The two libraries the review of the first version of rule 7 linked past its denylist. The
+/// allow-list rejects them however they are named.
+#[cfg(target_os = "linux")]
+#[test]
+fn rule_7_rejects_vendor_libraries_by_allow_list() {
+    fails_with(
+        "rule-7-cufft",
+        7,
+        &[
+            "needs `libcufft.so` from the CUDA runtime",
+            "CUDA runtime symbols in its dynamic symbol table: cufftPlan1d;",
+        ],
+    );
+    fails_with(
+        "rule-7-nccl",
+        7,
+        &[
+            "needs `libnccl.so` from the CUDA runtime",
+            "CUDA runtime symbols in its dynamic symbol table: ncclCommInitRank;",
+        ],
+    );
+}
+
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn rule_7_is_reported_as_not_run_off_linux() {
-    let (code, lines) = check("rule-7");
-    assert_eq!(code, Some(0), "{lines:#?}");
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("rule 7 not run: ")),
-        "{lines:#?}"
-    );
+    for fixture in ["rule-7", "rule-7-cufft", "rule-7-nccl"] {
+        let (code, lines) = check(fixture);
+        assert_eq!(code, Some(0), "{fixture}: {lines:#?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("rule 7 not run: ")),
+            "{fixture}: {lines:#?}"
+        );
+    }
 }
 
 #[test]

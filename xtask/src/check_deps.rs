@@ -20,8 +20,11 @@
 //!   filesystem or thread-pool crate. Normal edges, transitively.
 //! - **Rule 6**: only each external system's own crate reaches its bindings ([`policy::SYSTEMS`]).
 //!   Every edge kind, through external packages.
-//! - **Rule 7**: the core binary, built with no default features, needs no vendor GPU runtime
-//!   library and has no vendor runtime symbol in its dynamic symbol table. Linux only.
+//! - **Rule 7**: the core binary, built with no default features, needs no shared library outside
+//!   an allow-list of system libraries ([`policy::SYSTEM_LIBRARIES`] and the dynamic loader), so
+//!   any vendor GPU library fails, named or not. As a second check, its dynamic symbol table holds
+//!   no vendor runtime symbol. Linux only: QUAL-E1-T28 adds the Windows import table and the
+//!   macOS load commands.
 //! - **Rule 8**: every lib and bin crate root outside the `unsafe` allow-list sets
 //!   `#![forbid(unsafe_code)]`.
 //! - **Rule 9**: no production crate has a normal or build edge to a dev-only crate (`testkit`,

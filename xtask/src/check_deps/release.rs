@@ -115,8 +115,10 @@ fn parse_tree_line(line: &str) -> Option<(&str, Vec<&str>)> {
 }
 
 /// Rule 7: builds the core binary with no default features, so with no GPU feature, and reads
-/// its dynamic section. It must need no vendor GPU runtime library and name no vendor runtime
-/// symbol. The reader handles ELF, so the rule runs on Linux, where `lint` runs.
+/// its dynamic section. Every library it needs must be on the system-library allow-list, which
+/// fails closed on a vendor library no list names, and no symbol may be a vendor runtime's. The
+/// reader handles ELF, so the rule runs on Linux, where `lint` runs; QUAL-E1-T28 adds Windows and
+/// macOS.
 pub fn rule_7(manifest: &Path, graph: &Graph) -> Outcome {
     let crate_name = policy::CORE_BINARY_CRATE;
     let Some(at) = graph.member(crate_name) else {
@@ -124,7 +126,8 @@ pub fn rule_7(manifest: &Path, graph: &Graph) -> Outcome {
     };
     if !cfg!(target_os = "linux") {
         return Outcome::NotRun(format!(
-            "it reads the ELF dynamic section, and this host is {}; `lint` runs it on Linux",
+            "it reads the ELF dynamic section, and this host is {}; `lint` runs it on Linux, \
+             and QUAL-E1-T28 adds Windows and macOS",
             std::env::consts::OS
         ));
     }
@@ -187,28 +190,36 @@ fn build_core_binary(manifest: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "`cargo build` reported no core binary".to_owned())
 }
 
-/// Rule 7's findings for a binary's dynamic section: one per vendor library it needs, and one per
-/// vendor whose symbols it names.
+/// Rule 7's findings for a binary's dynamic section: one per `DT_NEEDED` entry that is not a
+/// system library, and one per vendor whose symbols it names.
 fn vendor_findings(dynamic: &elf::Dynamic) -> Vec<Finding> {
     let mut findings = Vec::new();
-    for vendor in policy::VENDOR_RUNTIMES {
-        for needed in &dynamic.needed {
-            let is_vendor = vendor.libraries.iter().any(|stem| {
-                needed
-                    .strip_prefix(stem)
-                    .is_some_and(|rest| rest == ".so" || rest.starts_with(".so."))
-            });
-            if is_vendor {
-                findings.push(Finding::new(
-                    Rule::Numbered(7),
-                    format!(
-                        "the core binary, built with no default features, needs `{needed}` from the {} \
-                         runtime; vendor GPU runtimes ship only in backend modules",
-                        vendor.name
-                    ),
-                ));
-            }
+    for needed in &dynamic.needed {
+        if policy::is_system_library(needed) {
+            continue;
         }
+        let vendor = policy::VENDOR_RUNTIMES.iter().find(|vendor| {
+            vendor
+                .libraries
+                .iter()
+                .any(|stem| policy::is_library(needed, stem))
+        });
+        let message = match vendor {
+            Some(vendor) => format!(
+                "the core binary, built with no default features, needs `{needed}` from the {} \
+                 runtime; vendor GPU runtimes ship only in backend modules",
+                vendor.name
+            ),
+            None => format!(
+                "the core binary, built with no default features, needs `{needed}`, which is not \
+                 a system library it may need; vendor GPU runtimes ship only in backend modules, \
+                 and a system library that is not one goes in `SYSTEM_LIBRARIES` in \
+                 xtask/src/check_deps/policy.rs, with a maintainer's review"
+            ),
+        };
+        findings.push(Finding::new(Rule::Numbered(7), message));
+    }
+    for vendor in policy::VENDOR_RUNTIMES {
         let symbols: Vec<&str> = dynamic
             .symbols
             .iter()
@@ -223,8 +234,8 @@ fn vendor_findings(dynamic: &elf::Dynamic) -> Vec<Finding> {
             findings.push(Finding::new(
                 Rule::Numbered(7),
                 format!(
-                    "the core binary, built with no default features, has {} runtime symbols in its \
-                     dynamic symbol table: {shown}; vendor GPU runtimes ship only in backend \
+                    "the core binary, built with no default features, has {} runtime symbols in \
+                     its dynamic symbol table: {shown}; vendor GPU runtimes ship only in backend \
                      modules",
                     vendor.name
                 ),
@@ -234,14 +245,19 @@ fn vendor_findings(dynamic: &elf::Dynamic) -> Vec<Finding> {
     findings
 }
 
-/// Whether `symbol` is one of `vendor`'s: a listed prefix followed by an ASCII capital or `_`.
+/// Whether `symbol` is one of `vendor`'s: it starts with one of the vendor's library families, or
+/// with an entry-point prefix followed by an ASCII capital or `_`.
 fn names_vendor_symbol(vendor: &policy::VendorRuntime, symbol: &str) -> bool {
-    vendor.symbol_prefixes.iter().any(|prefix| {
-        symbol
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.chars().next())
-            .is_some_and(|next| next.is_ascii_uppercase() || next == '_')
-    })
+    vendor
+        .families
+        .iter()
+        .any(|family| symbol.starts_with(family))
+        || vendor.entry_prefixes.iter().any(|prefix| {
+            symbol
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|next| next.is_ascii_uppercase() || next == '_')
+        })
 }
 
 #[cfg(test)]
@@ -292,13 +308,69 @@ mod tests {
     }
 
     #[test]
+    fn any_library_outside_the_allow_list_fails() {
+        let dynamic = elf::Dynamic {
+            needed: vec![
+                "libc.so.6".into(),
+                "ld-linux-x86-64.so.2".into(),
+                "libcufft.so".into(),
+                "libnccl.so.2".into(),
+                "libMIOpen.so.1".into(),
+                "libunknown-gpu.so".into(),
+            ],
+            symbols: vec![],
+        };
+        assert_eq!(
+            messages(&dynamic),
+            [
+                "rule 7: the core binary, built with no default features, needs `libcufft.so` from \
+                 the CUDA runtime; vendor GPU runtimes ship only in backend modules",
+                "rule 7: the core binary, built with no default features, needs `libnccl.so.2` from \
+                 the CUDA runtime; vendor GPU runtimes ship only in backend modules",
+                "rule 7: the core binary, built with no default features, needs `libMIOpen.so.1` \
+                 from the HIP runtime; vendor GPU runtimes ship only in backend modules",
+                "rule 7: the core binary, built with no default features, needs \
+                 `libunknown-gpu.so`, which is not a system library it may need; vendor GPU \
+                 runtimes ship only in backend modules, and a system library that is not one goes \
+                 in `SYSTEM_LIBRARIES` in xtask/src/check_deps/policy.rs, with a maintainer's \
+                 review",
+            ]
+        );
+    }
+
+    #[test]
+    fn library_families_match_without_a_capital_after_the_prefix() {
+        let dynamic = elf::Dynamic {
+            needed: vec![],
+            symbols: vec![
+                "cufftPlan1d".into(),
+                "curand_init".into(),
+                "ncclCommInitRank".into(),
+                "hipfftPlan1d".into(),
+                "rcclGetVersion".into(),
+                "miopenCreate".into(),
+            ],
+        };
+        assert_eq!(
+            messages(&dynamic),
+            [
+                "rule 7: the core binary, built with no default features, has CUDA runtime symbols in \
+                 its dynamic symbol table: cufftPlan1d, curand_init, ncclCommInitRank; vendor GPU \
+                 runtimes ship only in backend modules",
+                "rule 7: the core binary, built with no default features, has HIP runtime symbols in \
+                 its dynamic symbol table: hipfftPlan1d, rcclGetVersion, miopenCreate; vendor GPU \
+                 runtimes ship only in backend modules",
+            ]
+        );
+    }
+
+    #[test]
     fn vendor_libraries_and_symbols_are_reported() {
         let dynamic = elf::Dynamic {
             needed: vec![
                 "libc.so.6".into(),
                 "libcuda.so.1".into(),
                 "libvulkan.so".into(),
-                "libcudaxyz.so".into(),
             ],
             symbols: vec![
                 "cuInit".into(),
@@ -316,12 +388,12 @@ mod tests {
             [
                 "rule 7: the core binary, built with no default features, needs `libcuda.so.1` from \
                  the CUDA runtime; vendor GPU runtimes ship only in backend modules",
+                "rule 7: the core binary, built with no default features, needs `libvulkan.so` from \
+                 the Vulkan runtime; vendor GPU runtimes ship only in backend modules",
                 "rule 7: the core binary, built with no default features, has CUDA runtime symbols in \
                  its dynamic symbol table: cuInit, cuMemAlloc_v2, cudaMalloc, \
                  __cudaRegisterFatBinary, cublasCreate_v2 and 1 more; vendor GPU runtimes ship \
                  only in backend modules",
-                "rule 7: the core binary, built with no default features, needs `libvulkan.so` from \
-                 the Vulkan runtime; vendor GPU runtimes ship only in backend modules",
                 "rule 7: the core binary, built with no default features, has Vulkan runtime symbols \
                  in its dynamic symbol table: vkCreateInstance; vendor GPU runtimes ship only in \
                  backend modules",

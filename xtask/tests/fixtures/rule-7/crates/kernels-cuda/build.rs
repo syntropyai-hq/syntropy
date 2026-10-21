@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Builds a stand-in `libcuda.so` that exports `cuInit`, and links this crate against it, so the
-//! core binary of this fixture needs a vendor GPU runtime by name. Only rustc is needed.
+//! Builds a stand-in `libcuda.so` that exports `cuInit`, and links this crate against it, so
+//! the core binary of this fixture needs a vendor GPU library by name. Only rustc is needed.
 
 use std::env;
 use std::path::PathBuf;
