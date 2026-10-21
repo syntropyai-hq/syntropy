@@ -145,7 +145,7 @@ No GAPs.
 <!-- BEGIN GENERATED: trace-sc -->
 | SC | Target (abridged) | First exit (RFC-0001 §16) | Delivered by | Verified by QUAL tasks | Verified in acceptance criteria of | Flag |
 |---|---|---|---|---|---|---|
-| SC-1 | Kernel efficiency `η = W_probe / W_peak`: ≥ 0.80 for dense GEMV on `Vram` or `Unified`; ≥ 0.63 for the… | M1a | 3: COMP-E2-T09, COMP-E2-T22, COMP-E5-T01 | 5: QUAL-E13-T01–T03, QUAL-E13-T20, QUAL-E14-T06 | 3: TIER-E9-T03, COMP-E2-T09, COMP-E2-T22 | ok |
+| SC-1 | Kernel efficiency `η = W_probe / W_peak`: ≥ 0.80 for dense GEMV on `Vram` or `Unified`; ≥ 0.63 for the… | M1a | 3: COMP-E2-T09, COMP-E2-T22, COMP-E5-T01 | 5: QUAL-E13-T01–T03, QUAL-E13-T20, QUAL-E14-T06 | 2: COMP-E2-T09, COMP-E2-T22 | ok |
 | SC-2 | `t_fixed ≤ 0.2 · B_ref / W_probe`, with `B_ref` = 3.79 GB (7B Q4_0) | M1a | 7: PLC-E7-T04, PLC-E7-T20, PLC-E7-T23, PLC-E7-T26, COMP-E2-T10, COMP-E2-T18, COMP-E6-T12 | 4: QUAL-E13-T02–T03, QUAL-E13-T20, QUAL-E14-T06 | 7: PLC-E2-T04, PLC-E7-T04, PLC-E7-T06, PLC-E7-T20, PLC-E7-T23, COMP-E2-T10, COMP-E5-T24 | ok |
 | SC-3 | Measured `t_tok ≤ 1.05 · t_model`, where `t_model = Σ B_i / W_i(probe) + n_switch·t_switch + t_fixed`, all… | M1a | 1: PROD-E8-T08 | 6: QUAL-E12-T09–T10, QUAL-E13-T02–T03, QUAL-E13-T20, QUAL-E14-T06 | 1: PROD-E8-T08 | ok |
 | SC-4 | Decode ≥ X × the peak bound `1 / (Σ B_i / W_i,peak + t_fixed,SC-2)` | M0b | 5: PLC-E7-T23, PLC-E7-T26, COMP-E3-T17, COMP-E5-T24, COMP-E6-T11 | 7: QUAL-E12-T09–T10, QUAL-E13-T02–T03, QUAL-E13-T20, QUAL-E14-T06, QUAL-E15-T05 | 5: PLC-E7-T23, PLC-E8-T20, COMP-E3-T17, COMP-E5-T24, COMP-E6-T11 | ok |
