@@ -4,6 +4,7 @@
 - Area: distributed runtime
 - Depends on: RFC-0001 (§2.3, §3.3, §5.4, §5.8, §5.10, §6, §7, §8), RFC-0010, RFC-0011, RFC-0012, RFC-0022, RFC-0023, RFC-0030, RFC-0031, RFC-0033, RFC-0040, RFC-0042, RFC-0043, RFC-0060, ADR-0600, ADR-0006, ADR-0008, ADR-0009, ADR-0010, ADR-0017, ADR-0019, ADR-0304, ADR-0305, ADR-0306, ADR-0310
 - Date: 2026-10-19
+- Revised: 2026-10-22 (§5.3: the algorithm table's α is the size-independent per-message cost; §5.5: the intra-node cost)
 
 ## Summary
 
@@ -390,6 +391,8 @@ input x (replicated, bitwise identical on all members)
 | `OneShot`: each member sends its partial to every other member, and each sums all N in member order | N ≤ 4 and S ≤ `tp.oneshot_max` (1 MiB): every decode and verify window, and small prefill chunks | `α_eff + S/β` when the island is a full mesh of point-to-point links, so the N−1 sends go out in parallel on separate links; `α_eff + (N−1)·S/β` when they share one NIC |
 | `Ring`: a reduce-scatter then an all-gather, in 2(N−1) steps of S/N | N > 4, or S > 1 MiB (prefill) | `2(N−1)·α_eff + 2(N−1)/N · S/β`. Each slice's final sum is computed once and then gathered, so results are still bitwise identical |
 
+*Note, 2026-10-22 (DIST-E13-T12), a correction for the maintainers to confirm:* in the table above, `α_eff` stands for the size-independent per-message cost α = α_eff,probe − S₀/β. ADR-0310's revision of 2026-10-19 defines `α_eff` as the per-collective cost RFC-0010's L2 probe measures at the `h_model × 4 B` partial S₀, with S/β included, as the budget below also counts it. Read literally, the formulas would count the size term twice, and `Ring` would charge a full S/β per step instead of S/N. With α, they count it once. At S = S₀ on a full mesh, `OneShot` gives back `α_eff,probe`, which keeps ADR-0310's use of `α_eff` alone in the SC-16 gate and in cost tables. `syntropy-solver`'s `collective` module implements the table this way, and derives α from a probe with `alpha_from_probe`.
+
 **The synchronisation path** is what SC-17 budgets, `α_eff ≤ α_wire + S/β + 2 · t_switch`, with S the partial's size:
 
 ```text
@@ -419,6 +422,7 @@ Messages per token are at most 2 × (owners touched) per MoE layer. That is 2 pe
 - **P2P is trusted only after a verified test copy in each direction** at `Warming` (ADR-0006 item 5). A pair that fails the test reduces through pinned host memory instead, and its cost is reported as `Drift` if it exceeds the plan.
 - One dispatcher thread per GPU (RFC-0001 §8.2). The stage's primary dispatcher authors step descriptors in process. No network frames are involved.
 - RFC-0012 owns the step-program integration.
+- *Note, 2026-10-22 (DIST-E13-T12), an addition for the maintainers to confirm:* the cost of an intra-node all-reduce uses §5.3's `OneShot` and `Ring` formulas, with the device pair's measured α and β over the provider's `CollectiveOps` on a verified peer-to-peer link. A pair that reduces through pinned host memory copies each partial twice, so S/β becomes `S/β_d2h + S/β_h2d`. `syntropy-solver`'s `collective` module prices both paths, and PLC-E4-T09's `IntraTp` nodes use it.
 
 #### 5.6 Bring-up and failure inside an island
 

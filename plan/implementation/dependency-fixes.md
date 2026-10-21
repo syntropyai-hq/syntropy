@@ -487,3 +487,11 @@ DIST-E8-T01 (M2) builds the base header and control frame codecs. Its criterion 
 | "fuzz targets are clean for 10 CPU-minutes per PR" moved from DIST-E8-T01 to QUAL-E10-T04, whose `frames` target wraps DIST-E8-T01's decode entry points | DIST-E8-T01, QUAL-E10-T04 | R9 | QUAL-E10-T04 builds the `frames` target and already depends on DIST-E8-T01. No job definition gives 10 CPU-minutes per PR (RFC-0060 §10.3's `fuzz-smoke` runs 60 s per target), so QUAL-E10-T04 reconciles the figure |
 | DIST-E8-T01 gains "decoding arbitrary bytes, and arbitrary corruptions of the golden frames, never panics, refuses with a classified error, reads nothing past the declared lengths, and re-encodes every accepted frame to the same bytes" | DIST-E8-T01 | R9 | the properties RFC-0060 §10.2 asks of every fuzz target that a property test over the codec can show without the fuzz harness |
 
+## DIST-E13-T12's M3 and PLC-E4-T09 criteria (2026-10-22)
+
+DIST-E13-T12 (M2) builds the collective cost model in `syntropy-solver`. Two of its criteria could not be shown in M2: the simulator check at M3, and "PLC-E4-T09 links the module", whose task does not exist yet. `depcheck.py` did not list the first as `AC-LATER`, because the row said "at M3" rather than "from M3".
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The M3 simulator check moved from DIST-E13-T12 to DIST-E13-T03 (one-shot time) and DIST-E13-T04 (ring time); DIST-E13-T03, DIST-E13-T04 → DIST-E13-T12 | DIST-E13-T12, DIST-E13-T03, DIST-E13-T04 | R9, Definition of done (no later-milestone criterion) | the simulated one-shot and ring all-reduces are built in M3 by DIST-E13-T03 and DIST-E13-T04. DIST-E13-T04 already checked ring time against the same formula, so its criterion now names DIST-E13-T12's function. DIST-E13-T03 had no timing criterion and gains one |
+| "PLC-E4-T09 links the module with no network dependency" reworded as the module sitting in `syntropy-solver` and reaching no network or I/O crate (`check-deps` rule 5, `cargo tree`) | DIST-E13-T12 | R9 | the producer it named, PLC-E4-T09, is a dependent of DIST-E13-T12, not a prerequisite. What the criterion checks, that the solver can link the module without the network crates, is shown by where the module lives |
