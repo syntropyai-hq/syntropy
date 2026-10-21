@@ -360,6 +360,15 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-tier"
 version = "0.0.0"
+dependencies = [
+ "bitflags",
+ "proptest",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "syntropy-core",
+ "syntropy-io",
+]
 
 [[package]]
 name = "syntropy-xtask"
