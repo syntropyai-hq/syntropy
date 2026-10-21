@@ -293,7 +293,7 @@ fn scenarios_check(root: &Path, base: Option<&str>) -> u8 {
         Some(body) if body != table => {
             // Name each row whose owners the epics changed, then the fix.
             failures.extend(
-                sc_map::owner_drift(body, &repo.map, &repo.tasks)
+                sc_map::owner_drift(&body, &repo.map, &repo.tasks)
                     .into_iter()
                     .map(|d| format!("{}: {d}", sc_map::RFC_0061)),
             );

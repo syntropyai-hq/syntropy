@@ -488,8 +488,44 @@ fn a_crlf_checkout_checks_and_renders() {
 /// `cargo test` honest too.
 #[test]
 fn the_repository_map_is_complete_and_the_table_current() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let read = |rel: &str| fs::read_to_string(root.join(rel)).expect(rel);
+    assert_repository_current(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
+}
+
+/// The same check on a copy of the repository's inputs with CRLF line endings, as a Windows
+/// checkout with no `.gitattributes` has them.
+#[test]
+fn the_repository_map_is_current_on_a_crlf_checkout() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let copy =
+        std::env::temp_dir().join(format!("syntropy-bench-{}-repo-crlf", std::process::id()));
+    let _ = fs::remove_dir_all(&copy);
+    let crlf = |rel: &Path| {
+        let text = fs::read_to_string(source.join(rel))
+            .expect("read")
+            .replace("\r\n", "\n");
+        let to = copy.join(rel);
+        fs::create_dir_all(to.parent().expect("parent")).expect("mkdir");
+        fs::write(&to, text.replace('\n', "\r\n")).expect("write");
+    };
+    for rel in [sc_map::SC_MAP, sc_map::VISION, sc_map::RFC_0061] {
+        crlf(Path::new(rel));
+    }
+    for dir in [sc_map::EPICS, scenario::SCENARIO_DIR] {
+        let Ok(entries) = fs::read_dir(source.join(dir)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            crlf(&Path::new(dir).join(entry.file_name()));
+        }
+    }
+    let rfc = fs::read_to_string(copy.join(sc_map::RFC_0061)).expect("rfc");
+    assert!(rfc.contains("\r\n"), "the copy has CRLF line endings");
+    assert_repository_current(&copy);
+    let _ = fs::remove_dir_all(&copy);
+}
+
+fn assert_repository_current(root: &Path) {
+    let read = |rel: &str| sc_map::to_lf(&fs::read_to_string(root.join(rel)).expect(rel));
     let map = sc_map::parse(&read(sc_map::SC_MAP)).expect("map parses");
     let vision = sc_map::vision_ids(&read(sc_map::VISION));
     assert_eq!(vision, (1..=32).collect::<Vec<u32>>());
@@ -500,12 +536,12 @@ fn the_repository_map_is_complete_and_the_table_current() {
     for rig in ["R-ADA", "R-BW", "R-ULTRA-A", "R-TB5", "R-PAIR10", "S2"] {
         assert!(rigs.contains(rig), "{rig} missing from {rigs:?}");
     }
-    let (scenarios, problems) = scenario::load(&root, &rigs);
+    let (scenarios, problems) = scenario::load(root, &rigs);
     assert_eq!(problems, Vec::new());
     let ids: Vec<String> = scenarios.iter().map(|s| s.id.0.clone()).collect();
     assert_eq!(
         sc_map::section(&rfc),
-        Some(sc_map::render(&map, &tasks, &ids).as_str()),
+        Some(sc_map::render(&map, &tasks, &ids)),
         "RFC-0061 §4.2 is stale: run `syntropy-bench scenarios render --write`"
     );
 }

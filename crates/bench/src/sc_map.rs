@@ -503,15 +503,20 @@ pub fn owner_drift(table: &str, map: &Map, tasks: &BTreeMap<String, Task>) -> Ve
     drift
 }
 
-/// The body of the generated `sc-table` section in `text`, without its markers.
-pub fn section(text: &str) -> Option<&str> {
+/// The body of the generated `sc-table` section in `text`, without its markers, with LF line
+/// endings. `text` may have LF or CRLF line endings ([`to_lf`]).
+pub fn section(text: &str) -> Option<String> {
+    let text = to_lf(text);
     let start = text.find(BEGIN)? + BEGIN.len();
     let end = start + text[start..].find(END)?;
-    Some(&text[start..end])
+    Some(text[start..end].to_string())
 }
 
-/// `text` with the generated `sc-table` section's body replaced by `body`.
+/// `text` with the generated `sc-table` section's body replaced by `body`, with LF line
+/// endings. `text` may have LF or CRLF line endings; a caller that writes the result back to a
+/// CRLF file converts it again.
 pub fn replace_section(text: &str, body: &str) -> Option<String> {
+    let text = to_lf(text);
     let start = text.find(BEGIN)? + BEGIN.len();
     let end = start + text[start..].find(END)?;
     Some(format!("{}{}{}", &text[..start], body, &text[end..]))
@@ -785,9 +790,13 @@ mod tests {
     fn render_and_replace_round_trip_through_the_section() {
         let table = render(&map(vec![row(1)]), &tasks(), &[]);
         let doc = format!("intro\n{BEGIN}old\n{END}\noutro\n");
-        assert_eq!(section(&doc), Some("old\n"));
+        assert_eq!(section(&doc).as_deref(), Some("old\n"));
         let new = replace_section(&doc, &table).expect("has markers");
-        assert_eq!(section(&new), Some(table.as_str()));
+        assert_eq!(section(&new).as_deref(), Some(table.as_str()));
+        // A CRLF document reads the same, and its replacement comes back with LF.
+        let crlf = doc.replace('\n', "\r\n");
+        assert_eq!(section(&crlf).as_deref(), Some("old\n"));
+        assert_eq!(replace_section(&crlf, &table), Some(new.clone()));
         assert!(new.starts_with("intro\n") && new.ends_with(&format!("{END}\noutro\n")));
         assert_eq!(section("no markers"), None);
     }
