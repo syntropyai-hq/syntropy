@@ -549,7 +549,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | PROD-E8-T09 | spike | Spikes: GPU per-term timing method per backend (timed graph variant or resident event nodes), with PLC and COMP (open question 1)… | OQ-PRD-21, OQ-PRD-22, OQ-PRD-24 | 2 |
 | QUAL-E17-T06 | spike | Patch releases: release-please on `release/vX.Y`; a `backport:vX.Y` label that opens the cherry-pick PR; patch RCs run on their tag with… | OQ-PRC-16 | 0 |
 
-**Open questions needed by M1a:** 50 (benchmark 24, spike 26). Each one names a task that records the answer.
+**Open questions needed by M1a:** 49 (benchmark 24, spike 25). Each one names a task that records the answer.
 <!-- END GENERATED -->
 
 ## M1b: Windows and Apple silicon
