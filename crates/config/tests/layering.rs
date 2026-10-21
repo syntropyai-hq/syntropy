@@ -22,8 +22,9 @@ use std::sync::{Arc, Barrier};
 use proptest::prelude::*;
 use serde::Deserialize;
 use syntropy_config::{
-    ByteSize, ConfigFile, ConfigSection, Dirs, Env, Flags, Layers, Locations, Mode, Origin, Os,
-    Registry, ResolvedConfig, SecretSource, SharedConfig, Value, command, load, order_dropins,
+    ByteSize, ConfigFile, ConfigSection, Dirs, Env, Flags, HoldsSecret, Layers, Locations, Mode,
+    Origin, Os, Registry, ResolvedConfig, SecretSource, SharedConfig, Value, command, load,
+    order_dropins,
 };
 
 /// Keys for the layering tests.
@@ -437,7 +438,34 @@ struct SecretMapSection {
     headers: std::collections::BTreeMap<String, syntropy_config::Secret<String>>,
 }
 
-static SECRET_MAP: Registry = Registry::new(&[&SecretMapSection::SCHEMA]);
+/// An exporter whose token is a secret field of a nested struct.
+#[derive(Debug, Deserialize, HoldsSecret)]
+struct Exporter {
+    url: String,
+    token: syntropy_config::Secret<String>,
+}
+
+/// One header of an array of tables, with a secret value.
+#[derive(Debug, Deserialize, HoldsSecret)]
+struct Header {
+    name: String,
+    value: syntropy_config::Secret<String>,
+}
+
+/// Secrets nested in a struct and in an array of tables.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "q", scope = Node, owner = "RFC-0053")]
+struct NestedSecretSection {
+    /// The exporter.
+    #[config(reload = Hot, default = unset)]
+    exporter: Option<Exporter>,
+    /// Headers, one table each.
+    #[config(reload = Hot, default = [])]
+    headers: Vec<Header>,
+}
+
+static SECRET_MAP: Registry =
+    Registry::new(&[&SecretMapSection::SCHEMA, &NestedSecretSection::SCHEMA]);
 
 /// A key whose type holds a secret prints `[redacted]` whole, whatever its value looks like: an
 /// entry named `env` or `file` in a table of secrets is a secret, not a `SecretSource`
@@ -462,27 +490,91 @@ fn a_table_of_secrets_never_prints() {
         ),
     ];
     for (files, env) in cases {
-        let resolved = ResolvedConfig::resolve(
-            &SECRET_MAP,
-            Layers {
-                os: Os::Linux,
-                files: &files,
-                env: &env,
-                flags: &Flags::new(),
-            },
-        )
-        .expect("resolves");
-        let shown = command::show_resolved(&resolved);
-        assert!(!shown.contains("canary"), "{shown}");
-        assert!(shown.contains("p.headers = [redacted]"), "{shown}");
-        let headers = resolved.get("p.headers").expect("a node key");
-        assert!(headers.is_set());
-        assert_eq!(headers.value(), None);
-        assert!(!format!("{resolved:?}").contains("canary"));
+        check_redacted(&files, &env, &Flags::new(), "p.headers");
+        let resolved = resolve_secrets(&files, &env, &Flags::new());
         // The typed section still holds the secret, inside `Secret`.
         let section = resolved.section::<SecretMapSection>().expect("builds");
         assert_eq!(section.headers.len(), 1);
     }
+    // The same map through `--set`.
+    let mut flags = Flags::new();
+    flags
+        .set("p.headers={ env = \"canary-6\" }")
+        .expect("well-formed");
+    check_redacted(&[], &Env::default(), &flags, "p.headers");
+}
+
+/// A secret nested in a struct, or in an array of tables, is found by the derive's
+/// `holds_secret` flag, not by the key's type name (`Option<Exporter>`, `Vec<Header>`).
+#[test]
+fn a_secret_nested_in_a_struct_or_an_array_of_tables_never_prints() {
+    let file = |text: &str| vec![ConfigFile::new("/c.toml", text)];
+    let exporter = "[q.exporter]\nurl = \"https://otlp\"\ntoken = \"canary-7\"\n";
+    check_redacted(
+        &file(exporter),
+        &Env::default(),
+        &Flags::new(),
+        "q.exporter",
+    );
+    let env_exporter = env(&[(
+        "SYNTROPY_Q__EXPORTER",
+        "{ url = \"https://otlp\", token = \"canary-8\" }",
+    )]);
+    check_redacted(&[], &env_exporter, &Flags::new(), "q.exporter");
+    let headers = "[[q.headers]]\nname = \"a\"\nvalue = \"canary-9\"\n";
+    check_redacted(&file(headers), &Env::default(), &Flags::new(), "q.headers");
+    let mut flags = Flags::new();
+    flags
+        .set("q.headers=[{ name = \"a\", value = \"canary-10\" }]")
+        .expect("well-formed");
+    check_redacted(&[], &Env::default(), &flags, "q.headers");
+    // The typed section still holds the secret, inside `Secret`.
+    let resolved = resolve_secrets(&file(headers), &Env::default(), &Flags::new());
+    let section = resolved.section::<NestedSecretSection>().expect("builds");
+    assert_eq!(section.headers[0].value.expose_for("test"), "canary-9");
+}
+
+/// A malformed `--set` never echoes its value, whatever the separator.
+#[test]
+fn a_malformed_set_never_echoes_its_value() {
+    let mut flags = Flags::new();
+    for arg in [
+        "p.headers:{ env = \"canary-11\" }",
+        "q.exporter canary-12",
+        "canary-13",
+        "p.headers:Bearer canary-14=",
+        "p.headers canary-15 = x",
+    ] {
+        let problem = flags.set(arg).expect_err("malformed");
+        assert!(!problem.to_string().contains("canary"), "{problem}");
+    }
+}
+
+fn resolve_secrets(files: &[ConfigFile], env: &Env, flags: &Flags) -> ResolvedConfig {
+    ResolvedConfig::resolve(
+        &SECRET_MAP,
+        Layers {
+            os: Os::Linux,
+            files,
+            env,
+            flags,
+        },
+    )
+    .expect("resolves")
+}
+
+/// `path` resolves and prints `[redacted]` in `config show`, its flag says it holds a secret,
+/// and its canary appears in neither the output nor `Debug`.
+fn check_redacted(files: &[ConfigFile], env: &Env, flags: &Flags, path: &str) {
+    let resolved = resolve_secrets(files, env, flags);
+    let shown = command::show_resolved(&resolved);
+    assert!(!shown.contains("canary"), "{shown}");
+    assert!(shown.contains(&format!("{path} = [redacted]")), "{shown}");
+    let key = resolved.get(path).expect("a node key");
+    assert!(key.is_set());
+    assert!(key.key.holds_secret);
+    assert_eq!(key.value(), None);
+    assert!(!format!("{resolved:?}").contains("canary"));
 }
 
 #[test]

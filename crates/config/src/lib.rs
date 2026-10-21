@@ -102,6 +102,7 @@ pub mod command;
 mod default;
 mod discovery;
 mod env;
+mod holds_secret;
 mod origin;
 mod registry;
 mod resolve;
@@ -114,6 +115,7 @@ pub use discovery::{
     order_dropins,
 };
 pub use env::{API_KEY_VAR, Env, HF_TOKEN_VAR, HOST_VAR, OTHER_KNOWN, path_for, var_for};
+pub use holds_secret::HoldsSecret;
 pub use origin::Origin;
 pub use registry::{Registry, RegistryError};
 pub use resolve::{
@@ -126,6 +128,8 @@ pub use schema::{
 };
 /// Declares a configuration section. See the [crate documentation](crate) for the attributes.
 pub use syntropy_config_derive::ConfigSection;
+/// Implements [`HoldsSecret`] for a struct or enum used as a config value.
+pub use syntropy_config_derive::HoldsSecret;
 /// A TOML value, as the layers hold it.
 pub use toml::Value;
 pub use value::{

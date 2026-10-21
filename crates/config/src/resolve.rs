@@ -153,7 +153,8 @@ impl Flags {
         let at = Some(Origin::Cli {
             flag: String::from("--set"),
         });
-        // The messages name only the key part: the rest of the argument may be a secret.
+        // The messages never echo the argument: any part of it may be a secret. A well-formed
+        // key is named later, when it resolves.
         let Some((key, value)) = arg.split_once('=') else {
             return Err(Problem::new(
                 at,
@@ -166,12 +167,12 @@ impl Flags {
                 .split('.')
                 .all(|s| !s.is_empty() && crate::schema::is_bare_key(s));
         if !well_formed {
+            // Not echoed either: text before the first `=` that is not a key may be a value
+            // written with the wrong separator (`--set 'k:Bearer …=x'`).
             return Err(Problem::new(
                 at,
-                format!(
-                    "`{key}` is not a key; `--set` takes a dotted path of bare keys, such as \
-                     `resource.ram_headroom`, and cannot set a `policy.*` table"
-                ),
+                "the text before `=` is not a key: `--set` takes a dotted path of bare keys, \
+                 such as `resource.ram_headroom`, and cannot set a `policy.*` table",
             ));
         }
         self.values.push(FlagValue {

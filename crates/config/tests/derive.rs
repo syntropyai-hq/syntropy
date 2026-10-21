@@ -185,6 +185,55 @@ fn records_the_section() {
     const { assert!(ClusterRoot::SCHEMA.shared) };
 }
 
+/// A struct value with a secret field, for `holds_secret`.
+#[derive(Debug, Deserialize, syntropy_config::HoldsSecret)]
+struct Credentials {
+    user: String,
+    password: syntropy_config::Secret<String>,
+}
+
+/// An enum value with a secret in one variant.
+#[derive(Debug, Deserialize, syntropy_config::HoldsSecret)]
+#[serde(untagged)]
+enum Auth {
+    None(bool),
+    Basic(Credentials),
+}
+
+/// Keys whose types hold secrets at different depths.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "secrets", scope = Node, owner = "RFC-0054")]
+struct SecretsSection {
+    /// A plain secret.
+    #[config(reload = Hot, default = unset)]
+    token: Option<syntropy_config::Secret<String>>,
+    /// A secret written as a source.
+    #[config(reload = Hot, default = unset)]
+    source: Option<syntropy_config::SecretSource>,
+    /// A table of secrets.
+    #[config(reload = Hot, default = {})]
+    headers: BTreeMap<String, syntropy_config::Secret<String>>,
+    /// An array of tables with a secret field.
+    #[config(reload = Hot, default = [])]
+    logins: Vec<Credentials>,
+    /// An enum with a secret in one variant.
+    #[config(reload = Hot, default = unset)]
+    auth: Option<Auth>,
+    /// No secret anywhere.
+    #[config(reload = Hot, default = {})]
+    labels: BTreeMap<String, Vec<String>>,
+}
+
+#[test]
+fn holds_secret_is_found_at_any_depth() {
+    let flag = |name: &str| SecretsSection::SCHEMA.key(name).expect(name).holds_secret;
+    for name in ["token", "source", "headers", "logins", "auth"] {
+        assert!(flag(name), "{name}");
+    }
+    assert!(!flag("labels"));
+    assert!(!ExampleSection::SCHEMA.key("size").unwrap().holds_secret);
+}
+
 #[test]
 fn records_each_key() {
     let size = key("example.size");

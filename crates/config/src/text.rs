@@ -66,16 +66,19 @@ impl fmt::Display for Key<'_> {
     }
 }
 
-/// Whether a key holds a secret anywhere in its Rust type as the section writes it:
-/// `Secret<…>`, `SecretSource`, or a type built from them, such as
-/// `BTreeMap<String, Secret<String>>`.
+/// Whether a key's type holds a secret anywhere inside it, as the derive recorded it
+/// ([`KeySchema::holds_secret`]).
 pub(crate) fn is_secret(key: &KeySchema) -> bool {
-    key.ty.contains("Secret")
+    key.holds_secret
 }
 
 /// Whether a key's type is exactly `SecretSource`, optional or not. Its file and variable forms
 /// (`{ file = … }`, `{ env = … }`) name where the secret is, not the secret, so they may print.
+/// Any other spelling, such as an alias, fails this check and is redacted whole.
 fn is_secret_source(key: &KeySchema) -> bool {
+    if !key.holds_secret {
+        return false;
+    }
     let ty: String = key.ty.chars().filter(|c| !c.is_whitespace()).collect();
     let inner = ty
         .strip_prefix("Option<")

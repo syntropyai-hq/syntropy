@@ -312,6 +312,7 @@ mod tests {
             introduced_at: None,
             authority: None,
             env: None,
+            holds_secret: false,
         }
     }
 
