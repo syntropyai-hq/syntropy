@@ -3,7 +3,7 @@
 - Status: Accepted (2026-10-22): option 1a, `getrandom` approved as a direct dependency of `io` only
 - Date: 2026-10-21
 - Deciders: maintainers (drafted by an implementing agent for issue #1484)
-- Related: ADR-0001 (item 4), ADR-0012, ADR-0021 (decisions 5, 9), ADR-0107, ADR-0600 (decisions 1–2); RFC-0001 §4.1, §4.2, §5.14, §18; RFC-0030 §5.8, open question 6; RFC-0034 §3; RFC-0060 §2.1, §2.2, §2.4; RFC-0062 §12.1; QUAL-E3-T01; issue #1526
+- Related: ADR-0001 (item 4), ADR-0012, ADR-0021 (decisions 5, 9), ADR-0107, ADR-0600 (decisions 1–2); RFC-0001 §4.1, §4.2, §5.14, §18; RFC-0030 §5.8, open question 6; RFC-0034 §3; RFC-0060 §2.1, §2.2, §2.4; RFC-0062 §12.1; QUAL-E3-T01, QUAL-E3-T24; OQ-PRC-20; #1511; issue #1526
 
 ## Context
 
@@ -18,7 +18,7 @@ The two production sources can't be written in `core` under RFC-0001 §4.2:
 - **The wall clock** (`Clock::unix_ms`) is not a problem. `std::time::SystemTime` is safe and in the standard library.
 - **The structs themselves must leave `core`, not only their code.** Rust's orphan rule puts `impl Clock for SystemClock` in the crate that defines `Clock` or in the one that defines `SystemClock`. `Clock` and `Entropy` stay in `core` under every option below that keeps the traits there. So the impls can live elsewhere only if the `SystemClock` and `OsEntropy` declarations move with them. A declaration in `core` with its impl in another crate is not possible.
 
-So QUAL-E3-T01 can't meet its acceptance criteria as written. It is M0a, and `roadmap.md` lists 11 direct and 892 transitive dependents behind it (M0a–M4). This finding comes from reading the plan (unconfirmed static analysis); no code was written to test it.
+So the two sources can't stay in `core`, where RFC-0001 §5.14 lists them. #1511 (340de4b) had already split QUAL-E3-T01 to wait for this decision. QUAL-E3-T01 keeps the traits and plain types. QUAL-E3-T24 (M0a) holds the two sources, gated on OQ-PRC-20, which asks this ADR's question. QUAL-E3-T01 is M0a, and at acceptance `roadmap.md` lists 12 direct and 898 transitive dependents behind it (M0a–M4). This finding comes from reading the plan (unconfirmed static analysis); no code was written to test it.
 
 Three further facts shape the options:
 
@@ -33,7 +33,7 @@ Three further facts shape the options:
    - **1b. `ipc`.** `unsafe` is allowed, and the daemon and the runner both depend on it. But its job is the daemon↔runner protocol and shared memory; clocks and randomness fit it less well than `io`.
    - **1c. A new layer-1 crate** (for example `syntropy-os`) holding only the OS clocks and the CSPRNG. It is the smallest `unsafe` surface, and a crate that needs a clock pulls in nothing else. It adds a row to RFC-0001 §4.1, a crate to rule 8's list, a crate to RFC-0062 §12.1's allow-list, and a workspace stub.
 
-   Option 1 amends RFC-0001 §5.14 and RFC-0060 §2.1, and splits QUAL-E3-T01 into a `core` part and a sources part.
+   Option 1 amends RFC-0001 §5.14 and RFC-0060 §2.1, and settles the split of QUAL-E3-T01 into a `core` part and a sources part that #1511 made.
 2. **Widen `core`'s allow-list** in rule 1 to add `getrandom` and a crate that wraps the suspend-aware clocks safely. This keeps all the types together. This drafting found no crate that wraps `mach_continuous_time` and `QueryInterruptTime` without `unsafe` and stays as small as rule 1's existing four. It makes every crate in the workspace depend, through `core`, on OS bindings, and adds new direct dependencies to the lowest layer.
    - **2b. Add only `getrandom` to rule 1, and move only the clocks.** `getrandom`'s API is safe and its footprint is small, so `OsEntropy` could stay in `core`, and only `SystemClock` would move to `io`. Rejected: it still widens the allow-list of the layer every crate depends on, and it splits the two production sources across two crates, so a process that wires them reaches into both. It saves nothing over 1a, because the clock FFI needs a layer-1 home anyway.
 3. **Allow `unsafe` in one `core` module** (`core::os`) for the clock calls, and add `getrandom` to rule 1. This amends rule 8 and rule 1, and makes `core` the first layer-0 crate with `unsafe`. Miri and the sanitizer jobs (QUAL-E3-T10) would then have to cover `core`.
@@ -60,36 +60,39 @@ Three further facts shape the options:
 
 None of these were made while this ADR was Proposed (ADR-0021 decision 9). The change that accepted it on 2026-10-22 made them:
 
-1. **RFC-0001 §5.14.** Remove `SystemClock` and `OsEntropy` from the `core` code block, with their doc comment ("Production sources. SystemClock reads a suspend-aware clock …", lines 1567–1570 at drafting). That comment's two rules, a suspend-aware clock and key material only from `OsEntropy`, move with the structs to `io`'s doc comments. Add a sentence below it: the production sources are in `io` (ADR-0022), and the simulator's are in `testkit`.
+1. **RFC-0001 §5.14.** Remove `SystemClock` and `OsEntropy` from the `core` code block, with their doc comment ("Production sources. SystemClock reads a suspend-aware clock …", lines 1576–1579 on `main` at acceptance). That comment's two rules, a suspend-aware clock and key material only from `OsEntropy`, move with the structs to `io`'s doc comments. Add a sentence below it: the production sources are in `io` (ADR-0022), and the simulator's are in `testkit`.
 2. **RFC-0001 §4.1.** Add "the production `Clock` and `Entropy` sources (`SystemClock`, `OsEntropy`, §5.14)" to `io`'s Responsibility cell.
 3. **RFC-0001 §4.2 rule 6.** Add "`getrandom` only in `io`".
 4. **RFC-0001 header and §18.** Extend "Builds on" to ADR-0022, and add a dated §18 entry for items 1–3 with ADR-0022 as the reason. §18 records changes when they land, so it gets no entry while this ADR is Proposed.
-5. **RFC-0060 §2.1.** In the code block, mark `SystemClock` and `OsEntropy` as `// syntropy-io (ADR-0022)` instead of under the `syntropy-core` comment, and add a dated revision note. Rule T2 is unchanged: key material still comes only from `OsEntropy`.
+5. **RFC-0060 §2.1.** In the code block, mark `SystemClock` and `OsEntropy` as `// syntropy-io (ADR-0022)` instead of under the `syntropy-core` comment, and add a dated revision note. Reword the doc comment's "Clocks that stop during suspend … are not used": `now` never reads them, and `io` reads them only for RFC-0030 §5.8's comparison. Rule T2 is unchanged: key material still comes only from `OsEntropy`.
 6. **RFC-0062 §12.1, rule 6 row.** Add `getrandom` → `io` to the allow-list.
 7. **`plan/README.md:12`.** Change "ADR-0001 to ADR-0021" to "ADR-0001 to ADR-0022", and add a row for this ADR to the foundational table.
 8. **`README.md:97`** (the repository root). Change "ADR-0001 to ADR-0021 the foundation" to "ADR-0001 to ADR-0022 the foundation".
 9. **`AGENTS.md:20`.** Change "0000–0021 foundation" to "0000–0022 foundation". `AGENTS.md` is an agent instruction file, so this edit needs a maintainer's approval of its own (AGENTS.md "Gates"), separate from accepting this ADR.
-10. **`epics/QUAL.md`: split QUAL-E3-T01** into the two rows under "The proposed task split".
+10. **`epics/QUAL.md`: replace the QUAL-E3-T01 and QUAL-E3-T24 rows** with the two rows under "The task rows". Keep `QUAL-E1-T03` in both Depends cells, because both criteria name it (#1511's R9 edges), and remove QUAL-E3-T24's `gate: OQ-PRC-20`.
 11. **DIST-E2-T01's Depends cell.** It reads "QUAL-E3-T01 (\`Entropy\`)" today, and becomes "QUAL-E3-T01 (\`Entropy\`); QUAL-E3-T24 (\`OsEntropy\`)".
 12. **QUAL-E3-T17's Depends cell** gains "QUAL-E3-T24 (\`SystemClock\`)".
 13. **PLC-E9-T01's Depends cell** gains "QUAL-E3-T24 (\`OsEntropy\` for the ingress seed)". The standard library has no stable random source, so ingress's 64 random bits (ADR-0107) need `OsEntropy`.
 14. **DIST-E1-T04's Depends cell** gains "QUAL-E3-T24 (\`SystemClock\` for \`runner.daemon_silence\`)".
 15. **`plan/implementation/dependency-fixes.md`.** Add a dated pass with one row for each change in items 10–14, in that file's Change / Tasks / Rule / Reason table, citing ADR-0022.
 16. **Plan tools.** Re-run `epics.py`, `depcheck.py`, `deps_report.py`, `trace.py` and `roadmap.py`, and commit the regenerated sections.
-17. **The rule-6 table in `xtask/src/check_deps/policy.rs`** (added by #1514; this edit lands in whichever of that PR and the accepting change merges second). Add a `getrandom` → `io` entry to `SYSTEMS`, so QUAL-E3-T24's "`getrandom` only in `io`" criterion is checked rather than vacuous. This is CI configuration, so it needs a maintainer's approval (AGENTS.md "Gates"). In #1514 as drafted, rule 6 follows every edge kind, dev edges included, through external packages. `getrandom` is a common transitive dependency, for example of the TLS and QUIC stack under `net` and likely of `proptest`, which `core` uses as a dev-dependency. A plain entry would then fail the real workspace. The entry therefore needs a direct-dependency-only match: a new field on `System`, or a separate check, that flags a direct normal or build dependency on `getrandom` from any member other than `io`. That matches decision 3. This reading of #1514 is unconfirmed static analysis; the check was not run with such an entry.
+17. **The rule-6 table in `xtask/src/check_deps/policy.rs`** (added by #1514, which merged first). Add a `getrandom` → `io` entry to `SYSTEMS`, so QUAL-E3-T24's "`getrandom` only in `io`" criterion is checked rather than vacuous. This is CI configuration, so it needs a maintainer's approval (AGENTS.md "Gates"). In #1514 as drafted, rule 6 follows every edge kind, dev edges included, through external packages. `getrandom` is a common transitive dependency, for example of the TLS and QUIC stack under `net` and likely of `proptest`, which `core` uses as a dev-dependency. A plain entry would then fail the real workspace. The entry therefore needs a direct-dependency-only match: a new field on `System`, or a separate check, that flags a direct normal or build dependency on `getrandom` from any member other than `io`. That matches decision 3. Confirmed at acceptance: with a plain entry, `cargo xtask check-deps` fails with 5 violations, through `proptest → rand → getrandom` from `core`, `config`, `bench`, `kernels` and `tier`.
 
-Optional, while those files are open: RFC-0030 §5.8 ("RFC-0060's `SystemClock` lists `CLOCK_MONOTONIC`") and open question 6 are already stale, because RFC-0060 §2.1 now names `CLOCK_BOOTTIME`. The accepting change could fix that sentence and move open question 6 to Settled.
+18. **`plan/open-questions.md`: OQ-PRC-20** moves to Settled with its option (c), `io`, citing this ADR. `roadmap.py` re-runs under item 16.
+19. **DIST-E1-T06 and DIST-E4-T05** each built a suspend-aware clock helper in the daemon, which forbids `unsafe`. Both now read `io`'s `SystemClock` and stopped-clock reading. DIST-E1-T06 gains "QUAL-E3-T24 (`SystemClock` and the stopped-clock reading)". DIST-E4-T05's "DIST-E1-T06 (clock helper)" edge becomes "DIST-E1-T06 (suspended-interval detector)" plus the same QUAL-E3-T24 edge.
+20. **PROD-E5-T01** gains "QUAL-E3-T24 (`OsEntropy` for key generation)": API keys are 32 random bytes (RFC-0050 §11.3).
+21. **RFC-0030.** Its open question 6, at line 1068 on `main` at acceptance, still says RFC-0060's `SystemClock` names `CLOCK_MONOTONIC`, with no *Answered* marker, though the register already lists it as Settled. Mark it answered, and add a note under §5.8's two-clock table that both readings come from `syntropy_io::os`.
 
-### The proposed task split
+### The task rows
 
-The task ID QUAL-E3-T24 was the next free number in the QUAL-E3 epic when this was drafted. The accepting change uses whatever number is free then.
+#1511 had already created QUAL-E3-T24 as the sources task, and QUAL-E3-T25 exists too. So these rows replace the existing QUAL-E3-T01 and QUAL-E3-T24 rows, as accepted in `epics/QUAL.md`.
 
 | ID | Task | Milestone | Depends on | Acceptance criteria | Implements |
 |---|---|---|---|---|---|
-| QUAL-E3-T01 | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`, `DetHashMap` (fixed-key hasher) | M0a | QUAL-E1-T01 | unit tests for each; `core` still passes its dependency allow-list (QUAL-E1-T03) and stays `#![forbid(unsafe_code)]` | RFC-0060 §2.1, §2.2, §2.4; ADR-0600 (decisions 1–2); ADR-0022 (decision 1); RFC-0001 amendment A1 |
-| QUAL-E3-T24 | Production clock and entropy sources in `io`: `SystemClock` over the suspend-aware OS clock (`CLOCK_BOOTTIME`, `mach_continuous_time`, `QueryInterruptTime`) with `unix_ms` from `SystemTime`; the stopped-clock reading RFC-0030 §5.8 compares against (`CLOCK_MONOTONIC`, `mach_absolute_time`, `QueryUnbiasedInterruptTime`); `OsEntropy` over `getrandom` | M0a | QUAL-E3-T01 | `SystemClock::now` is monotonic across 10⁶ calls; on each Tier 1 OS a test inside `io` reads the named suspend-aware clock through its own FFI call and shows `now` agrees with it; the stopped-clock reading exists on each Tier 1 OS and is monotonic; over 10⁶ rounds of four reads in the order `now` (n1), stopped (s1), stopped (s2), `now` (n2), `s2 − s1 ≤ n2 − n1` holds, with one tick of the coarser clock as slack; `OsEntropy::fill` fills empty, 1-byte and 1 MiB buffers, and two 32-byte fills differ; every `unsafe` block has a written invariant; QUAL-E1-T03, with edit 17's entry, shows `getrandom` as a direct dependency of `io` only | RFC-0060 §2.1 (rule T2); RFC-0030 §5.8; RFC-0034 §3; ADR-0022 (decisions 2–4) |
+| QUAL-E3-T01 | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`, `DetHashMap` (fixed-key hasher); the production `SystemClock` and `OsEntropy` are QUAL-E3-T24's, in `io` (ADR-0022) | M0a | QUAL-E1-T01; QUAL-E1-T03 (dependency allow-list) | unit tests for each; `core` still passes its dependency allow-list (QUAL-E1-T03) and stays `#![forbid(unsafe_code)]` | RFC-0060 §2.1, §2.2, §2.4; ADR-0600 (decisions 1–2); ADR-0022 (decision 1); RFC-0001 amendment A1 |
+| QUAL-E3-T24 | Production clock and entropy sources in `io`, in `syntropy_io::os` (split from QUAL-E3-T01; ADR-0022): `SystemClock` over the suspend-aware OS clock (`CLOCK_BOOTTIME`, `mach_continuous_time`, `QueryInterruptTime`) with `unix_ms` from `SystemTime`; the stopped-clock reading RFC-0030 §5.8 compares against (`CLOCK_MONOTONIC`, `mach_absolute_time`, `QueryUnbiasedInterruptTime`); `OsEntropy` over `getrandom`. A binding crate the clock calls need that `io` does not already use (such as `libc` or `windows-sys`) is a new direct dependency, which the change names for a maintainer's approval (ADR-0022 decision 4); the module docs of `core`'s `clock` and `entropy` modules point to `syntropy_io::os` for the production sources | M0a | QUAL-E3-T01; QUAL-E1-T03 (dependency rules); QUAL-E1-T06 (hosted Windows and macOS jobs) | `SystemClock::now` is monotonic across 10⁶ calls; on each Tier 1 OS a test inside `io` reads the named suspend-aware clock through its own FFI call and shows `now` agrees with it; the stopped-clock reading exists on each Tier 1 OS and is monotonic; over 10⁶ rounds of four reads in the order `now` (n1), stopped (s1), stopped (s2), `now` (n2), `s2 − s1 ≤ n2 − n1` holds, with one tick of the coarser clock as slack; `OsEntropy::fill` fills empty, 1-byte and 1 MiB buffers, and two 32-byte fills differ; every `unsafe` block has a written invariant; `cargo xtask check-deps`, with rule 6's `getrandom` entry, shows `getrandom` as a direct dependency of `io` only | RFC-0060 §2.1 (rule T2); RFC-0001 §5.14, §4.2 rule 6; RFC-0030 §5.8; RFC-0034 §3; ADR-0022 (decisions 2–4) |
 
-The sources task is M0a, because two M0a tasks need a production source (see Context): PLC-E9-T01 needs `OsEntropy` for the ingress seed, and DIST-E1-T04 needs `SystemClock` for the daemon-silence timer. Neither row depends on QUAL-E3-T01 today, so both edges are new. The task is small, and QUAL-E3-T01 still unblocks its other M0a dependents (QUAL-E3-T02, QUAL-E4-T01, QUAL-E4-T14, QUAL-E5-T19) at once, since those need only the traits and types. Four tasks gain QUAL-E3-T24 in their "Depends on" cell (edits 11–14):
+The sources task is M0a, because two M0a tasks need a production source (see Context): PLC-E9-T01 needs `OsEntropy` for the ingress seed, and DIST-E1-T04 needs `SystemClock` for the daemon-silence timer. Neither row depends on QUAL-E3-T01 today, so both edges are new. The task is small, and QUAL-E3-T01 still unblocks its other M0a dependents (QUAL-E3-T02, QUAL-E4-T01, QUAL-E4-T14, QUAL-E5-T19) at once, since those need only the traits and types. Four tasks gain QUAL-E3-T24 in their "Depends on" cell (edits 11–14), and three more under edits 19 and 20 (DIST-E1-T06, DIST-E4-T05, PROD-E5-T01):
 
 - **PLC-E9-T01** (counter-based RNG and the ingress seed, M0a), which needs `OsEntropy`: the standard library has no stable random source, `SimEntropy` is test-only, and ingress must generate 64 random bits when the client sends no seed (ADR-0107);
 - **DIST-E1-T04** (runner spawn and the daemon-silence exit, M0a), which needs `SystemClock`;
@@ -98,7 +101,7 @@ The sources task is M0a, because two M0a tasks need a production source (see Con
 
 The other dependents of QUAL-E3-T01 keep their edge to the `core` part only.
 
-QUAL-E3-T24's criteria cover the Tier 1 OSes only. Android's `CLOCK_BOOTTIME` and iOS's `mach_continuous_time` have no covering task. Their natural homes are PROD-E10-T13 (Android, M4) and PROD-E10-T16 (iOS, M4), which build the mobile runners. Adding a criterion to each is left to the accepting change.
+QUAL-E3-T24's criteria cover the Tier 1 OSes only. Android's `CLOCK_BOOTTIME` and iOS's `mach_continuous_time` have no covering task. Their natural homes are PROD-E10-T13 (Android, M4) and PROD-E10-T16 (iOS, M4), which build the mobile runners. Adding a criterion to each is left to the accepting change, which added them.
 
 ## Consequences
 
@@ -121,5 +124,24 @@ QUAL-E3-T24's criteria cover the Tier 1 OSes only. Android's `CLOCK_BOOTTIME` an
 
 ## Revisions
 
-- **Proposed 2026-10-21** for issue #1484.
-- **Accepted 2026-10-22** by the maintainers: option 1a. Accepting it approves `getrandom` as a direct dependency of `io` only (decision 4). The accepting change made the edits on acceptance. `main` had already split QUAL-E3-T01, with QUAL-E3-T24 gated on OQ-PRC-20, so edit 10 rewrote those two rows to the table above and removed the gate, and OQ-PRC-20 moved to Settled.
+- **Proposed 2026-10-21** for issue #1484, and merged as the Proposed record (#1522).
+- **Accepted 2026-10-22** by the maintainers: option 1a. Accepting it approves `getrandom` as a direct dependency of `io` only (decision 4). The change that accepted it made the edits on acceptance and the corrections below.
+
+## Corrected on acceptance (2026-10-22)
+
+The draft described `main` before #1511, so the accepting change corrected its text. The independent review of #1522 found most of these. Each change from the draft, and why:
+
+1. **Status** "Proposed" → "Accepted (2026-10-22): option 1a, …", and in Decision "Proposed: option 1a" → "Option 1a": the maintainers accepted option 1a.
+2. **Decision 2:** "(`syntropy_io::os` is the proposed path)" → "`syntropy_io::os`": the path is decided.
+3. **Related** gains QUAL-E3-T24, OQ-PRC-20 and #1511, which hold the same question on `main`.
+4. **Context:** "So QUAL-E3-T01 can't meet its acceptance criteria as written" was false on `main`, because #1511 had split the task, gated on OQ-PRC-20. The paragraph now says so. The dependent counts, "11 direct and 892 transitive", are refreshed to `roadmap.md` on `main` at acceptance: 12 and 898.
+5. **Option 1:** "splits QUAL-E3-T01" → "settles the split … that #1511 made".
+6. **"Edits on acceptance" lead-in:** "None of these are made while this ADR is Proposed. On acceptance, the change that accepts it makes them" → past tense.
+7. **Edit 1:** the line reference "1567–1570 at drafting" → "1576–1579 on `main` at acceptance".
+8. **Edit 5** gains the rewording of RFC-0060 §2.1's "are not used" sentence. Decision 2 adds a stopped-clock reading, so the old sentence contradicted it.
+9. **Edit 10:** "split QUAL-E3-T01 into the two rows" would have added a second QUAL-E3-T24, which `epics.py` reports as a duplicate. It now says to replace the existing rows, keep #1511's `QUAL-E1-T03` edges and drop the `gate:` segment.
+10. **Edit 17:** "lands in whichever of that PR and the accepting change merges second" → #1514 merged first. Its unconfirmed reading of #1514 is now confirmed, with the result.
+11. **The optional RFC-0030 item** pointed at the wrong place. Open question 6 was already Settled in the register; what was stale is RFC-0030 itself. It became edit 21.
+12. **Edits 18–20 are new:** OQ-PRC-20 to Settled, which no edit did; DIST-E1-T06 and DIST-E4-T05, which built the clock FFI in a crate that forbids `unsafe`; and PROD-E5-T01, whose API keys need `OsEntropy`.
+13. **"The proposed task split"** → "The task rows". Its "QUAL-E3-T24 was the next free number" was false: #1511 created T24, and T25 exists. The table now holds the rows as accepted. Those keep the `QUAL-E1-T03` edges, add QUAL-E3-T24 → QUAL-E1-T06 for its "on each Tier 1 OS" criteria, and name the `core` module-doc pointer that the review of #1535 asked for.
+14. **The list of new edges** and the mobile-OS paragraph note edits 19 and 20 and the criteria the accepting change added.
