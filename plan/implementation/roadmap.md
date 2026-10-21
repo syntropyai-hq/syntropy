@@ -803,7 +803,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | QUAL-E8-T14 | spike | Spike: simulator fidelity | OQ-PRC-10 | 0 |
 | QUAL-E12-T14 | spike | Energy per token: NVML power, readable RAPL counters, laptop battery discharge rate; J per generated token, or "not available"; plus a… | OQ-PRC-14 | 0 |
 
-**Open questions needed by M2:** 24 (benchmark 8, decision 3, spike 13). Answered by no task: OQ-PRC-19.
+**Open questions needed by M2:** 25 (benchmark 8, decision 4, spike 13). Answered by no task: OQ-PRC-19.
 <!-- END GENERATED -->
 
 ## M3: feature complete
