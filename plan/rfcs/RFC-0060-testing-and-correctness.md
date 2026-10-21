@@ -231,8 +231,6 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 | ID | Crate | Property | Generator | Oracle |
 |---|---|---|---|---|
 | P-core-1 | core | `PlanEpoch` order is total, and a higher `term` dominates any `seq` | arbitrary pairs | lexicographic definition |
-| P-core-2 | core | resolving a `TensorHandle` whose `generation` is stale fails; it never yields another slot's bytes | slot reuse sequences | reference slot table |
-| P-core-3 | core | exactness resolution (RFC-0001 §11.3) yields `Approximate` only when request, instance and cluster all allow it; the knob set is the intersection | arbitrary policy triples | the rule as a truth table |
 | P-cluster-1 | cluster | `apply` is total and deterministic: the same log gives byte-identical `ClusterState` | random valid command sequences turned into events | state hash equality across two folds |
 | P-cluster-2 | cluster | snapshot at index i plus replay of the tail equals the full replay | random logs, random i | state hash |
 | P-cluster-3 | cluster | a duplicate `CommandId` produces no second event | sequences with injected duplicates | event count |
@@ -246,6 +244,7 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 | P-solver-7 | solver | the DP fallback returns a feasible contiguous plan whenever the brute-force enumerator finds one (SC-31) | small graphs (≤ 3 nodes, ≤ 12 layers) | exhaustive enumeration |
 | P-tier-1 | tier | a slot under a live `ResidencyLease` is never evicted or rewritten | random lease/evict/admit interleavings | model (§3.3) |
 | P-tier-2 | tier | progressive pinning never takes free memory below the RFC-0020 reserve (SC-11) | random pin budgets and simulated MemAvailable traces | fake OS memory model |
+| P-tier-3 | tier | resolving a `TensorHandle` whose `generation` is stale fails; it never yields another slot's bytes | slot reuse sequences | reference slot table |
 | P-kv-1 | tier (KV) | `truncate(to)` followed by `append` gives the same pages as a fresh sequence written to the same positions | random append/truncate/fork sequences | model (§3.3) |
 | P-kv-2 | tier (KV) | the prefix key changes when any setting listed in RFC-0001 §5.9 changes; it never changes otherwise | random setting perturbations | field-by-field definition |
 | P-io-1 | io | every completed read returns exactly the requested extent, including after short reads and `EAGAIN` resubmission | random extents over a file with injected short reads | `pread` of the same range |
@@ -256,8 +255,11 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 | P-text-1 | text | incremental detokenisation concatenated equals full detokenisation | random token streams from fixture tokenizers | full decode |
 | P-text-2 | text | a stop string spanning token boundaries is detected at the first token that completes it, and no character after it is emitted | random stop strings and tokenisations | character-level reference matcher |
 | P-config-1 | config | precedence default < file < env < CLI; unknown keys rejected; request keys only narrow instance keys | random layer stacks | the RFC-0001 §11.1 rules |
+| P-config-2 | config | exactness resolution (RFC-0001 §11.3) yields `Approximate` only when request, instance and cluster all allow it; the knob set is the intersection | arbitrary policy triples | the rule as a truth table |
 | P-bench-1 | bench | a `BenchResult` reads back from its JSON unchanged, and the JSON passes the committed schema file (RFC-0061 §2.2) | arbitrary results: every record type, enum variant and `Option` arm, arbitrary Unicode text and finite floats of every class | equality, and the schema file |
 | P-bench-2 | bench | two results are comparable exactly when their keys differ in no field but `build` (RFC-0061 §2.1) | arbitrary results; one key field replaced with a different value, with or without a different `build` | field-by-field key equality |
+
+*Note 2026-10-22 (OQ-PRC-27):* P-core-2 and P-core-3 became P-tier-3 and P-config-2. `TensorHandle` resolution is `tier`'s (RFC-0001 §5.5, §5.13), and exactness resolution is built in `config` (PROD-E1-T10), so their properties live in those crates' suites. TIER-E1-T03 and PROD-E1-T10 own them, and QUAL-E3-T05 keeps P-core-1.
 
 Each crate's RFC adds its properties to this table. A property removed from the table needs a reason in the PR description.
 

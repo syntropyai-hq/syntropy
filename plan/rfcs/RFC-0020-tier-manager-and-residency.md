@@ -258,7 +258,8 @@ pub struct TierManager { /* façade over TierShard per device and the TierDirect
 
 impl TierManager {
     pub fn plan_arenas(plan: &PlacementPlan, stages: &[StageIx], census: &TensorCensus,
-                       caps: &CapabilityProfile, cfg: &TierConfig) -> Result<ArenaPlan, Error>;
+                       caps: &CapabilityProfile, layouts: &AcceptedLayouts, cfg: &TierConfig)
+                       -> Result<ArenaPlan, Error>;   // `layouts` added 2026-10-22 (note below)
     /// Fetching: reserve host ranges and start progressive pinning (§6).
     pub fn begin_host(&mut self, ap: &ArenaPlan, os: Arc<dyn OsMemory>, grant: &LedgerGrant) -> Result<(), Error>;
     /// Loading, on each dispatcher thread: device arenas, registrations.
@@ -282,6 +283,8 @@ pub enum TierCommand {
     ApplyDelta { delta: Arc<PlanDelta> },
 }
 ```
+
+*Note 2026-10-22 (OQ-IO-27, OQ-IO-28):* `plan_arenas` takes the accepted layouts as an argument, `AcceptedLayouts`: a map from (op key, device) to the `LayoutVersion`s each op accepts, which the runner builds from `KernelProvider::query` before the call. `plan_arenas` stays pure and makes §7.3's check itself. `LedgerGrant` is plain data in `core` (RFC-0001 §3.5), and the ledger check is a separate pure check of an `ArenaPlan` against it in `Fetching` (§12).
 
 Supporting types used across RFC-0020 to RFC-0023:
 
@@ -547,7 +550,7 @@ resolve(h):
 - **Shared (the default):** one stored copy whose layout every consuming kernel accepts.
 - **`per_site_layout`:** the pack holds a second host copy in the GPU's layout beside the home copy in the CPU's layout, and the solver charges its bytes to the tier that holds it. The CPU computes in-place misses from the home copy; **VRAM admissions and copied misses copy from the GPU-layout host copy**, which must be `DmaPinned`. The residency map records the GPU-layout copy as a `CachedCopy` of the group with its own `layout`, and the slot table points GPU kernels only at copies in a layout they accept.
 
-`plan_arenas` checks both kinds: every copy's layout must be in the accepted set of each op that reads it (`KernelProvider::query`); otherwise `Loading` fails with `Unsupported` and the pack is rebuilt with the source layout, which every provider accepts.
+`plan_arenas` checks both kinds: every copy's layout must be in the accepted set of each op that reads it (`KernelProvider::query`, passed to `plan_arenas` as its `AcceptedLayouts` argument; §3, note of 2026-10-22); otherwise `Loading` fails with `Unsupported` and the pack is rebuilt with the source layout, which every provider accepts.
 
 A stale handle on a hot path is a bug (`Internal`, `TIER_STALE_HANDLE`); off the hot path, such as an I/O completion for a cancelled prefetch, it is expected and silently discarded.
 
