@@ -28,9 +28,12 @@ defaults:
 
 jobs:
   rerun-dep-diff:
-    # Only a PR comment that holds the approval line matters; anyone may comment, and `dep-diff`
-    # decides whose approval counts.
-    if: github.event.issue.pull_request && contains(github.event.comment.body, 'dep-diff approved')
+    # A new PR comment matters when it holds the approval line. An edit or a deletion always
+    # does, since it may withdraw an approval whose line is gone. Anyone may comment, and
+    # `dep-diff` decides whose approval counts.
+    if: >-
+      github.event.issue.pull_request &&
+      (github.event.action != 'created' || contains(github.event.comment.body, 'dep-diff approved'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

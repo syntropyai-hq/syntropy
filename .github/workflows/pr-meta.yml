@@ -160,13 +160,20 @@ jobs:
           cache: "off"
       # A maintainer approves a new dependency with a PR comment naming the head commit;
       # `dep-approval.yml` re-runs this job when such a comment is posted, edited or deleted.
-      - name: Fetch the PR's comments
+      # The roster comes from the base branch's current tip, not from the checkout: a re-run
+      # replays the original event, and its base commit could predate a maintainer's removal.
+      - name: Fetch the PR's comments and the base branch's current roster
         if: github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
-        run: gh api --paginate "repos/$REPO/issues/$NUMBER/comments" > "$RUNNER_TEMP/comments.json"
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          gh api --paginate "repos/$REPO/issues/$NUMBER/comments" > "$RUNNER_TEMP/comments.json"
+          gh api --method GET -H "Accept: application/vnd.github.raw" \
+            "repos/$REPO/contents/governance/maintainers.toml" -f ref="$BASE_REF" \
+            > "$RUNNER_TEMP/maintainers.toml"
       # Bootstrap: until the base branch has the `dep-diff` job, which holds only until the PR
       # that adds it merges, that PR is judged by its own. A base that fails to build fails here.
       - name: Find the base branch's dep-diff
@@ -190,4 +197,4 @@ jobs:
             --head "$GITHUB_WORKSPACE/pr" \
             --event "$GITHUB_EVENT_PATH" \
             --comments "$RUNNER_TEMP/comments.json" \
-            --roster "$GITHUB_WORKSPACE/governance/maintainers.toml"
+            --roster "$RUNNER_TEMP/maintainers.toml"
