@@ -16,8 +16,8 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
 
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -273,7 +273,6 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> TempDir {
-        use std::sync::atomic::AtomicU64;
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let path =
@@ -640,8 +639,16 @@ fn a_section_builds_from_the_resolved_values() {
 }
 
 /// Readers never see a mix of two snapshots while a writer swaps them.
+///
+/// The readers start together behind a barrier, so every one is running before the first swap,
+/// and the writer keeps swapping until each reader has done `MIN_READS` reads during the swaps.
+/// The test does not depend on how the OS schedules the threads.
 #[test]
 fn snapshots_swap_whole() {
+    const READERS: usize = 4;
+    const MIN_SWAPS: i64 = 200;
+    const MIN_READS: u64 = 50;
+    const MAX_SWAPS: i64 = 1_000_000;
     fn snapshot(n: i64) -> ResolvedConfig {
         let text = format!("t.a = {n}\nt.b = {n}\nt.c = {n}\nt.d = {n}\n");
         resolve(
@@ -652,33 +659,49 @@ fn snapshots_swap_whole() {
     }
     let shared = Arc::new(SharedConfig::new(snapshot(0)));
     let done = Arc::new(AtomicBool::new(false));
-    let readers: Vec<_> = (0..4)
-        .map(|_| {
-            let shared = Arc::clone(&shared);
-            let done = Arc::clone(&done);
+    let start = Arc::new(Barrier::new(READERS + 1));
+    let reads: Arc<Vec<AtomicU64>> = Arc::new((0..READERS).map(|_| AtomicU64::new(0)).collect());
+    let readers: Vec<_> = (0..READERS)
+        .map(|i| {
+            let (shared, done, start, reads) = (
+                Arc::clone(&shared),
+                Arc::clone(&done),
+                Arc::clone(&start),
+                Arc::clone(&reads),
+            );
             std::thread::spawn(move || {
-                let mut seen = 0u64;
-                while !done.load(Ordering::Relaxed) {
+                start.wait();
+                while !done.load(Ordering::Acquire) {
                     let config = shared.load();
                     let a = int(&config, "t.a");
                     for key in ["t.b", "t.c", "t.d"] {
-                        assert_eq!(int(&config, key), a);
+                        assert_eq!(int(&config, key), a, "a reader saw a mixed snapshot");
                     }
-                    seen += 1;
+                    reads[i].fetch_add(1, Ordering::Relaxed);
                 }
-                seen
             })
         })
         .collect();
-    for n in 1..=200 {
+    start.wait();
+    let mut n = 0;
+    loop {
+        n += 1;
         let old = shared.replace(snapshot(n));
         assert_eq!(int(&old, "t.a"), Some(n - 1));
+        let every_reader_read = reads.iter().all(|r| r.load(Ordering::Relaxed) >= MIN_READS);
+        if n >= MIN_SWAPS && every_reader_read {
+            break;
+        }
+        assert!(
+            n < MAX_SWAPS,
+            "a reader made no progress in {MAX_SWAPS} swaps"
+        );
     }
-    done.store(true, Ordering::Relaxed);
+    done.store(true, Ordering::Release);
     for reader in readers {
-        assert!(reader.join().expect("no reader saw a mixed snapshot") > 0);
+        reader.join().expect("no reader saw a mixed snapshot");
     }
-    assert_eq!(int(&shared.load(), "t.d"), Some(200));
+    assert_eq!(int(&shared.load(), "t.d"), Some(n));
 }
 
 #[test]
