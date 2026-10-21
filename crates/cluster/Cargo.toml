@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+# The pairing commitment and SAS (RFC-0030 §6.2).
+blake3.workspace = true
+syntropy-core = { path = "../core" }

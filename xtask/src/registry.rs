@@ -312,17 +312,44 @@ pub const JOBS: &[Entry] = &[
 ];
 
 /// The test suites, called by `cargo xtask test <suite>`. RFC-0060 §1.1 defines the layers.
-pub const SUITES: &[Entry] = &[Entry {
-    name: "unit",
-    summary: "L1: the crate-local unit tests and doctests of every workspace crate",
-    defined_in: "RFC-0060 §1.1",
-    params: &[],
-    steps: &[Step {
-        name: "test",
-        action: Action::Cargo(&["test", "--workspace", "--locked"]),
-    }],
-    pending: &[],
-}];
+pub const SUITES: &[Entry] = &[
+    Entry {
+        name: "unit",
+        summary: "L1: the crate-local unit tests and doctests of every workspace crate",
+        defined_in: "RFC-0060 §1.1",
+        params: &[],
+        steps: &[Step {
+            name: "test",
+            action: Action::Cargo(&["test", "--workspace", "--locked"]),
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "pairing-grind",
+        summary: "L2: the full grinding-relay runs of the pairing model (DIST-E5-T14), 20 first-draft \
+                  trials and ten million committed attempts, release-optimised",
+        defined_in: "RFC-0034 Testing and validation",
+        params: &[],
+        // The default tests run a seeded prefix of each; the dev profile is too slow for the
+        // full runs. `test-release` is RFC-0060 §1.3's release-optimised test profile.
+        steps: &[Step {
+            name: "test",
+            action: Action::Cargo(&[
+                "test",
+                "--profile",
+                "test-release",
+                "--locked",
+                "--package",
+                "syntropy-cluster",
+                "--test",
+                "pairing",
+                "--",
+                "--ignored",
+            ]),
+        }],
+        pending: &[],
+    },
+];
 
 /// The entry called `name`, if the registry has one.
 pub fn find<'a>(entries: &'a [Entry], name: &str) -> Option<&'a Entry> {
@@ -483,6 +510,17 @@ mod tests {
         assert_eq!(
             unit.steps[0].action.display(),
             "cargo test --workspace --locked"
+        );
+    }
+
+    #[test]
+    fn pairing_grind_runs_the_ignored_pairing_tests_release_optimised() {
+        let suite = find(SUITES, "pairing-grind").expect("pairing-grind is registered");
+        assert_eq!(suite.steps.len(), 1);
+        assert_eq!(
+            suite.steps[0].action.display(),
+            "cargo test --profile test-release --locked --package syntropy-cluster --test pairing \
+             -- --ignored"
         );
     }
 
