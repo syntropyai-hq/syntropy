@@ -1,0 +1,574 @@
+# Parity corpus sources (RFC-0060 §5.2; ADR-0603 decision 8).
+#
+# QUAL-E5-T01 picked these sources and read each licence at the pinned
+# revision on the `verified` date. This file lists sources only. Corpus items,
+# their per-item licence records and the token streams come from QUAL-E5-T02,
+# and the item text lives in the fixture store, not in git (RFC-0060 §1.2).
+#
+# Fields of a [[source]] table:
+#   id                 stable key that item manifests cite
+#   categories         RFC-0060 §5.2 categories this source feeds, each with
+#                      its role there: "primary" is the main supply;
+#                      "secondary" broadens it and keeps the category covered
+#                      if a primary is dropped
+#   kind               dataset (a published dataset, on the Hub or in a git
+#                      repository) | snapshot (fixed objects with checksums) |
+#                      repository (code or templates) | generated (by Syntropy)
+#   url                where the source is fetched from
+#   revision           commit SHA, dataset revision, or snapshot name
+#   revision_date      date of that revision (UTC)
+#   files              fetched files with their content hashes, where fixed
+#   include / exclude  paths taken from a repository, and paths left out
+#   licence            SPDX expression; LicenseRef-public-domain for public domain
+#   licence_url        the licence file or dataset card at the pinned revision
+#   licence_evidence   what that file says
+#   licence_files      licence and notice files, with the SHA-256 of the copy
+#                      read on the verified date; kept beside published items
+#   attribution_file   committed attribution, required for CC-BY sources
+#   hosted_service_output
+#                      false: no item may be text produced by a hosted
+#                      commercial model service (OQ-FID-17)
+#   provenance         who wrote the text, and when
+#   access             how the source may be fetched, where its terms restrict it
+#   user_agent         the User-Agent QUAL-E5-T02 sends, where the source asks for one
+#   select             the selection rule QUAL-E5-T02 implements
+#   notes              anything else a reviewer needs
+#
+# A [[metadata]] table is a source of facts about items, not of item text.
+# It has the same fields, with `used_by` (the source ids it serves) in place
+# of `categories`. Its licence is checked against the same list.
+
+schema = 1
+corpus = "parity-corpus-v1"
+task = "QUAL-E5-T01"
+verified = "2026-10-21"
+
+[policy]
+# OQ-FID-17, ADR-0603 decision 8.
+allowed = [
+  "LicenseRef-public-domain",
+  "CC0-1.0",
+  "CC-BY-4.0",
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+]
+excluded = ["CC-BY-SA-*", "CC-BY-NC-*", "outputs of hosted commercial model services"]
+# The `tool` category is generated from templates under one of these.
+template_licences = ["CC0-1.0", "MIT"]
+# Code and template repositories are pinned to their last commit before this
+# date, so the pinned text predates public large-model code-generation
+# services (the first public preview was in June 2021) and the hosted-output
+# exclusion holds by date rather than by trust.
+repository_cutoff = "2021-06-01"
+
+# ---------------------------------------------------------------- chat
+
+[[source]]
+id = "taskmaster-1"
+categories = { chat = "primary" }
+kind = "dataset"
+name = "Taskmaster-1 (TM-1-2019)"
+url = "https://github.com/google-research-datasets/Taskmaster"
+revision = "d92cb6af3005f1dc09c39e75e7daf4a04905e00b"
+revision_date = "2024-03-19"
+files = [
+  { path = "TM-1-2019/self-dialogs.json", git_blob = "f1a1a3fd4bfb9cbb62d419f7964fb33291e0b2dd", bytes = 65748638 },
+  { path = "TM-1-2019/woz-dialogs.json", git_blob = "c3d5ae919713db351eed531957f8d8893d581a8c", bytes = 37204053 },
+]
+licence = "CC-BY-4.0"
+licence_url = "https://github.com/google-research-datasets/Taskmaster/blob/d92cb6af3005f1dc09c39e75e7daf4a04905e00b/TM-1-2019/README.md"
+licence_evidence = "README line 3: made available under the Creative Commons Attribution 4.0 License"
+licence_files = [
+  { path = "TM-1-2019/README.md", sha256 = "05e1bc05724716ca7905f567a2ec30d99c8d2f5f58e926c2ca7d9da116002446" },
+]
+attribution_file = "testdata/corpus/attribution/taskmaster-1.txt"
+hosted_service_output = false
+provenance = "13,215 task dialogs from 2019. Written dialogs: one crowd worker wrote both roles. Spoken dialogs: a crowd worker spoke the user turns, which were transcribed, and a trained call-centre operator wrote the assistant turns. Both data files are unchanged since commit 335324ca7afe (2019-10-29)."
+select = "Each dialog is one conversation; speaker USER maps to the user role and ASSISTANT to the assistant role. Consecutive turns by one speaker are joined with a newline."
+notes = "The spoken dialogs' user turns are transcriptions of recorded speech that people then checked and corrected (README, TRANSCRIPTION NOTES). This file reads OQ-FID-17's exclusion as covering generated text, so a transcription of a person's speech is not excluded even if a speech-recognition service made the first draft. Maintainers can overrule that reading; dropping the spoken dialogs would leave the written ones."
+
+[[source]]
+id = "taskmaster-2"
+categories = { chat = "primary" }
+kind = "dataset"
+name = "Taskmaster-2 (TM-2-2020)"
+url = "https://github.com/google-research-datasets/Taskmaster"
+revision = "d92cb6af3005f1dc09c39e75e7daf4a04905e00b"
+revision_date = "2024-03-19"
+files = [
+  # git tree id of the directory: it fixes every file under it.
+  { path = "TM-2-2020/data/", git_tree = "355e9f5d55a86e760b3f3a1f5cb4996c31e411e2", files = 7 },
+]
+licence = "CC-BY-4.0"
+licence_url = "https://github.com/google-research-datasets/Taskmaster/blob/d92cb6af3005f1dc09c39e75e7daf4a04905e00b/TM-2-2020/README.md"
+licence_evidence = "README line 3: made available under the Creative Commons Attribution 4.0 License"
+licence_files = [
+  { path = "TM-2-2020/README.md", sha256 = "0e707d4cc31869e0c0337979f72ecef61fc4fcab2bfe3a4ec1a546b84bc17463" },
+]
+attribution_file = "testdata/corpus/attribution/taskmaster-2.txt"
+hosted_service_output = false
+provenance = "17,289 spoken two-person dialogs in seven domains (restaurants, food ordering, movies, hotels, flights, music, sports), from 2020. A crowd worker spoke the user turns; a trained call-centre operator wrote the assistant turns, which were played to the user by text-to-speech. The data directory is unchanged since commit ef2e4dd5a3a9 (2020-02-21)."
+select = "Each dialog is one conversation, mapped as for taskmaster-1."
+notes = "User turns are transcriptions of recorded speech, checked by people; the reading in taskmaster-1's notes applies. The text-to-speech step only played the operator's written turns, so the text is the operator's."
+
+[[source]]
+id = "taskmaster-3"
+categories = { chat = "primary" }
+kind = "dataset"
+name = "Taskmaster-3 (TM-3-2020, TicketTalk)"
+url = "https://github.com/google-research-datasets/Taskmaster"
+revision = "d92cb6af3005f1dc09c39e75e7daf4a04905e00b"
+revision_date = "2024-03-19"
+files = [
+  # git tree id of the directory: it fixes every file under it.
+  { path = "TM-3-2020/data/", git_tree = "c5bf83831a9e15d78c04d01e327e784e623ef284", files = 20 },
+]
+licence = "CC-BY-4.0"
+licence_url = "https://github.com/google-research-datasets/Taskmaster/blob/d92cb6af3005f1dc09c39e75e7daf4a04905e00b/TM-3-2020/README.md"
+licence_evidence = "README line 3: made available under the Creative Commons Attribution 4.0 License"
+licence_files = [
+  { path = "TM-3-2020/README.md", sha256 = "e80b5ecc4011ef75eea94be5c3beba927e54673db25fd60fc2ca8d5a413ca928" },
+]
+attribution_file = "testdata/corpus/attribution/taskmaster-3.txt"
+hosted_service_output = false
+provenance = "23,789 written movie-ticketing dialogs from 2020. One crowd worker wrote both the customer and the agent turns (self-dialog), following one of over three dozen instruction sets. The data directory is unchanged since commit d8ca021f99f5 (2020-10-22)."
+select = "Each dialog is one conversation; speaker user maps to the user role and assistant to the assistant role. Only the turn text is used; the `apis` records stay out of `chat`."
+
+# ---------------------------------------------------------------- code
+# Ten languages: Rust, C, Go, Python, Java, C++, TypeScript, JavaScript,
+# Ruby, C#. Shared rule for every repository source:
+#   - files under `include`, minus `exclude`, by the language's extensions;
+#   - generated files are skipped: a header line matching, without regard
+#     to case, "code generated", "@generated", "do not edit" or "machine
+#     generated". So is any file whose header names a licence other than
+#     the source's. Unicode-derived tables are also listed in `exclude`,
+#     because the Unicode licence is not on the list;
+#   - diffs are the unified diffs of non-merge commits on the first-parent
+#     history at or before the pin, restricted to the same paths.
+
+[[source]]
+id = "code-rust-regex"
+categories = { code = "primary" }
+kind = "repository"
+name = "regex (Rust)"
+language = "Rust"
+url = "https://github.com/rust-lang/regex"
+revision = "6cdb9040f55aba067e2b3eeb5ea3045051681780"
+revision_date = "2021-05-14"
+include = ["src/", "regex-syntax/src/"]
+exclude = ["regex-syntax/src/unicode_tables/"]
+licence = "MIT OR Apache-2.0"
+licence_url = "https://github.com/rust-lang/regex/blob/6cdb9040f55aba067e2b3eeb5ea3045051681780/LICENSE-MIT"
+licence_evidence = "LICENSE-MIT and LICENSE-APACHE at the pin; Cargo.toml `license = \"MIT OR Apache-2.0\"`"
+licence_files = [
+  { path = "LICENSE-MIT", sha256 = "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb" },
+  { path = "LICENSE-APACHE", sha256 = "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff."
+notes = "unicode_tables/ is generated from Unicode data, whose licence is not on the list."
+
+[[source]]
+id = "code-c-sqlite"
+categories = { code = "primary" }
+kind = "repository"
+name = "SQLite (C)"
+language = "C"
+url = "https://github.com/sqlite/sqlite"
+revision = "d65b7e36ecf05a3464c7071f92cfd304197ac66a"
+revision_date = "2021-05-29"
+include = ["src/", "ext/", "test/"]
+exclude = ["autoconf/", "configure", "autosetup/", "ext/fts3/fts3_unicode2.c", "ext/fts5/fts5_unicode2.c", "ext/fts3/unicode/"]
+licence = "LicenseRef-public-domain"
+licence_url = "https://github.com/sqlite/sqlite/blob/d65b7e36ecf05a3464c7071f92cfd304197ac66a/LICENSE.md"
+licence_evidence = "LICENSE.md at the pin is the public-domain dedication (\"The author disclaims copyright to this source code\"); SPDX names this text `blessing`. The current LICENSE.md names src/, ext/ and test/ as public domain and the build scripts as the only exceptions."
+licence_files = [
+  { path = "LICENSE.md", sha256 = "9c6479123f32a1ed50d9a0af203dfe8972e65035b0cdeef436b5f8d0924517fe" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff (GitHub mirror of the project's own repository)."
+notes = "The excluded build scripts carry BSD-style licences and are not public domain. fts3_unicode2.c and fts5_unicode2.c are tables generated from Unicode data (headed \"DO NOT EDIT THIS MACHINE GENERATED FILE.\"), and ext/fts3/unicode/ holds the Unicode data files and their generator scripts."
+
+[[source]]
+id = "code-go"
+categories = { code = "primary" }
+kind = "repository"
+name = "Go standard library and toolchain"
+language = "Go"
+url = "https://github.com/golang/go"
+revision = "f32f4f58d9cd9d15371ee6198c1b222bcf2b56d9"
+revision_date = "2021-05-31"
+include = ["src/"]
+exclude = ["src/vendor/", "src/cmd/vendor/", "**/testdata/", "src/unicode/tables.go"]
+licence = "BSD-3-Clause"
+licence_url = "https://github.com/golang/go/blob/f32f4f58d9cd9d15371ee6198c1b222bcf2b56d9/LICENSE"
+licence_evidence = "LICENSE at the pin is the three-clause BSD text, The Go Authors; PATENTS adds a patent grant"
+licence_files = [
+  { path = "LICENSE", sha256 = "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067" },
+  { path = "PATENTS", sha256 = "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff."
+notes = "Vendored packages have their own licence files; the Unicode tables are generated."
+
+[[source]]
+id = "code-python-flask"
+categories = { code = "primary" }
+kind = "repository"
+name = "Flask (Python)"
+language = "Python"
+url = "https://github.com/pallets/flask"
+revision = "0ce270d1f3615f222226fb316e505a60c1e3baab"
+revision_date = "2021-05-30"
+include = ["src/flask/", "tests/"]
+licence = "BSD-3-Clause"
+licence_url = "https://github.com/pallets/flask/blob/0ce270d1f3615f222226fb316e505a60c1e3baab/LICENSE.rst"
+licence_evidence = "LICENSE.rst at the pin is the three-clause BSD text, Pallets"
+licence_files = [
+  { path = "LICENSE.rst", sha256 = "489a8e1108509ed98a37bb983e11e0f7e1d31f0bd8f99a79c8448e7ff37d07ea" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff."
+
+[[source]]
+id = "code-java-guava"
+categories = { code = "primary" }
+kind = "repository"
+name = "Guava (Java)"
+language = "Java"
+url = "https://github.com/google/guava"
+revision = "aaeeac7b8e0504cb02a8b4336ad0a8969d986158"
+revision_date = "2021-05-27"
+include = ["guava/src/com/google/common/"]
+licence = "Apache-2.0"
+licence_url = "https://github.com/google/guava/blob/aaeeac7b8e0504cb02a8b4336ad0a8969d986158/COPYING"
+licence_evidence = "COPYING at the pin is the Apache License 2.0 text; the repository has no NOTICE file"
+licence_files = [
+  { path = "COPYING", sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff."
+notes = "guava/src/com/google/thirdparty/ (public-suffix data) is outside `include`."
+
+[[source]]
+id = "code-cpp-googletest"
+categories = { code = "primary" }
+kind = "repository"
+name = "GoogleTest (C++)"
+language = "C++"
+url = "https://github.com/google/googletest"
+revision = "a3460d1aeeaa43fdf137a6adefef10ba0b59fe4b"
+revision_date = "2021-05-25"
+include = ["googletest/src/", "googletest/include/", "googlemock/src/", "googlemock/include/"]
+licence = "BSD-3-Clause"
+licence_url = "https://github.com/google/googletest/blob/a3460d1aeeaa43fdf137a6adefef10ba0b59fe4b/LICENSE"
+licence_evidence = "LICENSE at the pin is the three-clause BSD text, Google Inc."
+licence_files = [
+  { path = "LICENSE", sha256 = "9702de7e4117a8e2b20dafab11ffda58c198aede066406496bef670d40a22138" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff."
+
+[[source]]
+id = "code-typescript"
+categories = { code = "primary" }
+kind = "repository"
+name = "TypeScript compiler (TypeScript)"
+language = "TypeScript"
+url = "https://github.com/microsoft/TypeScript"
+revision = "663b19fe4a7c4d4ddaa61aedadd28da06acd27b6"
+revision_date = "2021-05-29"
+include = ["src/compiler/"]
+exclude = ["src/compiler/scanner.ts"]
+licence = "Apache-2.0"
+licence_url = "https://github.com/microsoft/TypeScript/blob/663b19fe4a7c4d4ddaa61aedadd28da06acd27b6/LICENSE.txt"
+licence_evidence = "LICENSE.txt at the pin is the Apache License 2.0 text; ThirdPartyNoticeText.txt lists the third-party material (DefinitelyTyped, Unicode data, web specifications)"
+licence_files = [
+  { path = "LICENSE.txt", sha256 = "a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47" },
+  { path = "ThirdPartyNoticeText.txt", sha256 = "0a64d2681a1e3c7ccd1c2a146a68812d4a23e66ca7cc1dea0e30dbd81e80c369" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff. The current default branch no longer holds this code base, so the pin matters."
+notes = "scanner.ts embeds identifier tables derived from Unicode data, and src/lib/ holds the third-party declaration material; both are left out. Long identifiers are the reason for this pick."
+
+[[source]]
+id = "code-js-express"
+categories = { code = "primary" }
+kind = "repository"
+name = "Express (JavaScript)"
+language = "JavaScript"
+url = "https://github.com/expressjs/express"
+revision = "28db2c2c5cf992c897d1fbbc6b119ee02fe32ab1"
+revision_date = "2021-01-29"
+include = ["lib/", "test/"]
+licence = "MIT"
+licence_url = "https://github.com/expressjs/express/blob/28db2c2c5cf992c897d1fbbc6b119ee02fe32ab1/LICENSE"
+licence_evidence = "LICENSE at the pin is the MIT text"
+licence_files = [
+  { path = "LICENSE", sha256 = "95a5762890e5c1c9808921cef095661fc482c5e1f0bba31446ac85595df6237c" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff."
+
+[[source]]
+id = "code-ruby-sinatra"
+categories = { code = "primary" }
+kind = "repository"
+name = "Sinatra (Ruby)"
+language = "Ruby"
+url = "https://github.com/sinatra/sinatra"
+revision = "5513eb3c7969dc3d15b3c704df63a3ccce9ac9cb"
+revision_date = "2021-05-08"
+include = ["lib/", "test/"]
+licence = "MIT"
+licence_url = "https://github.com/sinatra/sinatra/blob/5513eb3c7969dc3d15b3c704df63a3ccce9ac9cb/LICENSE"
+licence_evidence = "LICENSE at the pin is the MIT text"
+licence_files = [
+  { path = "LICENSE", sha256 = "f2f60556a2d5c8d7ef9d54ec1c62152ff40d626b807aba5bdc5126f669ed500f" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff."
+
+[[source]]
+id = "code-csharp-newtonsoft-json"
+categories = { code = "primary" }
+kind = "repository"
+name = "Json.NET (C#)"
+language = "C#"
+url = "https://github.com/JamesNK/Newtonsoft.Json"
+revision = "e44ab3348fabcbe9ed6b5053b706a9e10b945ba1"
+revision_date = "2021-05-15"
+include = ["Src/Newtonsoft.Json/"]
+licence = "MIT"
+licence_url = "https://github.com/JamesNK/Newtonsoft.Json/blob/e44ab3348fabcbe9ed6b5053b706a9e10b945ba1/LICENSE.md"
+licence_evidence = "LICENSE.md at the pin is the MIT text"
+licence_files = [
+  { path = "LICENSE.md", sha256 = "d7f83bbea3264a8e23d7739e44d9db1a4994b357274df6f00876eb2e623827ad" },
+]
+hosted_service_output = false
+provenance = "Project source before the repository cutoff."
+
+# ---------------------------------------------------------------- long
+
+[[source]]
+id = "pg19"
+categories = { long = "primary" }
+kind = "snapshot"
+name = "PG-19 language-modelling benchmark"
+url = "https://storage.googleapis.com/deepmind-gutenberg/"
+revision = "GCS object generations of 2019-09-16 under test/, validation/ and train/"
+revision_date = "2019-09-16"
+files = [
+  # SHA-256 of the sorted lines "<name> <size> <md5Hash> <generation>\n" from
+  # the GCS JSON API object listing of each prefix, where <name> is the full
+  # object name with its prefix (for example "test/10146.txt"); bare file
+  # names give a different hash. QUAL-E5-T02 recomputes it before import and
+  # fails on a mismatch, then checks each object's MD5 and records a SHA-256
+  # over its bytes.
+  { path = "test/", objects = 100, bytes = 41289101, listing_sha256 = "ee09996fb15f9071f2c1059c84ba79c45992beeaa4e86b6598f251be3434ab3c" },
+  { path = "validation/", objects = 50, bytes = 17733002, listing_sha256 = "ed401ac77a3be3014e2a7ec43d19df726049937b5a36071780b24e0cfb8bf9d1" },
+  # Reserve pool, used only if the death-year rule leaves test/ and
+  # validation/ short of the `calibration` tier's 64 books.
+  { path = "train/", objects = 28602, bytes = 11678184667, listing_sha256 = "3f58ae70b55cd39d5e301e3742ffb2a9613e82abcd85d5320af055e27fee9ef7" },
+]
+licence = "Apache-2.0"
+licence_url = "https://github.com/google-deepmind/pg19/blob/b0e1f2925359688af19f8784c23c3deeda52d3ea/LICENSE"
+licence_evidence = "LICENSE in the dataset's repository is the Apache License 2.0 text (commit b0e1f29, 2020-02-25); the Hub card at revision 4d28bd77e66947ad3835cf78ed7aaeb4dd87ad8b also states Apache 2.0"
+licence_files = [
+  { path = "LICENSE", sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" },
+]
+underlying_licence = "LicenseRef-public-domain"
+hosted_service_output = false
+provenance = "Books from Project Gutenberg published before 1919, with the Project Gutenberg licence boilerplate removed by the dataset's authors."
+select = """
+Whole books. Per tokenizer, books of at least 32K tokens fill the 32K slots and books of at least 128K tokens the 128K slots, each cut to the slot length at a token boundary from the start. Books come from test/ and validation/; train/ is drawn from, in object-name order, only if those two leave a tier short.
+Death-year rule: a book is kept only if every creator its catalogue record names (author, and any translator, editor or other contributor) died before 1956, so the text is out of copyright under life-plus-70 terms as well as in the US. The death year comes from the book's record in gutenberg-catalogue-rdf (the object name's number is the ebook number); where that record has no death date, from wikidata via the creator's Project Gutenberg author ID. A book with any creator undated in both, or dated 1956 or later, is not imported. Each kept item records every creator's death year and the record it came from.
+"""
+notes = "By size, 79 test books exceed about 32K tokens and 18 exceed about 128K [estimate: object bytes at about 4 characters per token]; the `calibration` tier needs 62 and 2. The validation split adds 41 and 8, and train/ 22,167 and 6,475. How many books the death-year rule keeps is not measured: QUAL-E5-T02 reports it."
+
+# ---------------------------------------------------------------- tool
+
+[[source]]
+id = "tool-json-schema-test-suite"
+categories = { tool = "primary" }
+kind = "repository"
+name = "JSON Schema Test Suite"
+url = "https://github.com/json-schema-org/JSON-Schema-Test-Suite"
+revision = "a107d1969e6646c45eda43c94f164ecb4bdb395a"
+revision_date = "2021-05-31"
+include = ["tests/draft2020-12/"]
+exclude = ["tests/draft2020-12/optional/"]
+licence = "MIT"
+licence_url = "https://github.com/json-schema-org/JSON-Schema-Test-Suite/blob/a107d1969e6646c45eda43c94f164ecb4bdb395a/LICENSE"
+licence_evidence = "LICENSE at the pin is the MIT text, Julian Berman"
+licence_files = [
+  { path = "LICENSE", sha256 = "837402bd25fad9b704265801ca3f92566a98157c1f9a7acd6f446299ba1c305a" },
+]
+hosted_service_output = false
+provenance = "Hand-written test schemas and instances, before the repository cutoff."
+select = "Template input: each test group's `schema` that describes an object becomes a tool's `parameters` schema; instances with `valid: true` become call arguments and instances with `valid: false` become rejected calls. See `syntropy-tool-frames`."
+
+[[source]]
+id = "tool-public-apis"
+categories = { tool = "secondary" }
+kind = "repository"
+name = "public-apis"
+url = "https://github.com/public-apis/public-apis"
+revision = "6b4e4ec21c368ac67a1383a1cbb491f2e19e744c"
+revision_date = "2021-05-31"
+include = ["README.md"]
+licence = "MIT"
+licence_url = "https://github.com/public-apis/public-apis/blob/6b4e4ec21c368ac67a1383a1cbb491f2e19e744c/LICENSE"
+licence_evidence = "LICENSE at the pin is the MIT text"
+licence_files = [
+  { path = "LICENSE", sha256 = "c0e9d4463d9fcd7ca4b4a399ac9822d7cc743ceee39862c1ff0204ab41375fbb" },
+]
+hosted_service_output = false
+provenance = "Hand-maintained list of public web APIs, before the repository cutoff."
+select = "Template input: the API name, one-line description and category from each table row give a tool's `name` and `description`. No API is called."
+
+[[source]]
+id = "syntropy-tool-frames"
+categories = { tool = "primary" }
+kind = "generated"
+name = "Syntropy tool-call conversation templates"
+url = "testdata/corpus/"
+revision = "frozen with each corpus version (QUAL-E5-T02 freeze rule)"
+licence = "MIT OR Apache-2.0"
+licence_url = "https://github.com/syntropyai-hq/syntropy/blob/main/LICENSE-MIT"
+licence_evidence = "Syntropy-authored files are MIT OR Apache-2.0 (ADR-0018 decision 1); the MIT option meets the `tool` template rule"
+hosted_service_output = false
+provenance = "Written for this corpus by the project. Every item made from them is marked template-generated (RFC-0060 §5.2)."
+select = """
+Recipe, implemented by QUAL-E5-T02:
+1. A frame is a fixed conversation shape: system turn with a tool list; user request; assistant tool call; tool result; assistant answer. Shapes cover one call, parallel calls, a call with nested object and array arguments, a rejected call followed by a corrected one, and a structured-output turn where the assistant answers with one JSON object that must match a given schema.
+2. Tool definitions: `name` and `description` from tool-public-apis, `parameters` from tool-json-schema-test-suite.
+3. Call arguments and tool results are instances from the same test group; natural-language user turns are filled from frame text with slot values drawn from those instances.
+4. A seeded generator picks frames and inputs. Each item records the generator version, the seed, the frame id and the source items it used.
+5. Items are rendered with each family's chat template and its tool-call syntax at token-stream time, the same way `chat` is.
+"""
+item_licence = "MIT"
+item_notices = ["tool-json-schema-test-suite: LICENSE", "tool-public-apis: LICENSE"]
+notes = "Items embed MIT material from both template inputs, so each item's licence record is MIT, carrying both upstream copyright and permission notices, rather than the project expression alone."
+
+# ---------------------------------------------------------------- multi
+
+[[source]]
+id = "aya-dataset"
+categories = { multi = "primary" }
+kind = "dataset"
+name = "Aya Dataset, original annotations"
+url = "https://huggingface.co/datasets/CohereLabs/aya_dataset"
+revision = "f9ea04583f02a8f86404ff6c58bf75fe637df8a2"
+revision_date = "2025-04-15"
+files = [
+  { path = "data/train-00000-of-00001.parquet", sha256 = "51baa85043b569ba117f41516b32d1b0e4e2647fb203a08933f98a556fb1fb06", bytes = 137195800 },
+]
+licence = "Apache-2.0"
+licence_url = "https://huggingface.co/datasets/CohereLabs/aya_dataset/blob/f9ea04583f02a8f86404ff6c58bf75fe637df8a2/README.md"
+licence_evidence = "dataset card front matter `license: apache-2.0` and its Licensing Information section at the pinned revision"
+licence_files = [
+  { path = "README.md", sha256 = "3ac54f63eec84100c155571945da01c7c18cd8ec97ea94639e2b94a6860e8573" },
+]
+hosted_service_output = false
+provenance = "Prompt and completion pairs written by fluent speakers on the Aya annotation platform in 2023, in 65 languages. The card separates original annotations (written from scratch) from re-annotations (human edits of automatically generated text). The annotation guidelines say: \"For original annotations, the prompts and completions should not be generated from other language models\" (Aya Dataset paper, arXiv:2402.06619v1, Appendix B.3, item 4), with no exception for edited text."
+select = "annotation_type = original-annotations only. One item per pair, as one user and assistant exchange. Languages: arb (Arabic script), hin (Devanagari), zho, jpn and kor (CJK), rus and ukr (Cyrillic), tha, ell, heb, ben, and Latin-script languages to fill. At least 8 languages, each script group present."
+notes = "Re-annotations are excluded because they edit automatically generated text whose origin and licence the card does not state. The guideline excludes model-written text, but compliance by every contributor cannot be checked from the data; MASSIVE, released in April 2022, covers the same scripts. Original-annotation rows per language at the pin, from the Hub's dataset query API on 2026-10-21: arb 2,756; hin 773; zho 4,028; jpn 6,149; kor 180; rus 116; ukr 221; tha 266; ben 750."
+
+[[source]]
+id = "massive"
+categories = { multi = "secondary" }
+kind = "snapshot"
+name = "MASSIVE 1.1"
+url = "https://amazon-massive-nlu-dataset.s3.amazonaws.com/amazon-massive-dataset-1.1.tar.gz"
+revision = "amazon-massive-dataset-1.1"
+revision_date = "2022-11-07"
+files = [
+  # S3 multipart ETag and size read from the object's headers; QUAL-E5-T02
+  # records the archive's SHA-256 at first import.
+  { path = "amazon-massive-dataset-1.1.tar.gz", s3_etag = "51e0da2a3ff7a016f109e1d1b4306e93-3", bytes = 40251390 },
+]
+licence = "CC-BY-4.0"
+licence_url = "https://github.com/alexa/massive/blob/f966f21846043aabef9b0f974fa7970027f43738/NOTICE.md"
+licence_evidence = "NOTICE.md at the pin: the MASSIVE dataset is licensed under CC BY 4.0, and SLURP's text, which it localizes, is CC BY 4.0; the Hub copy's LICENSE (revision ff6bd8e4b27c3543e4f8fe2108f32bb95a6f8740) is the CC BY 4.0 text. SLURP's LICENSE.txt (https://github.com/pswietojanski/slurp/blob/8eb16545762be97ace75334109d73824217311f1/LICENSE.txt) puts the text under CC BY 4.0 and only the audio, which is not used, under CC BY-NC 4.0."
+licence_files = [
+  { path = "NOTICE.md", sha256 = "db1466b051afd1d9ad34b7bd6346a1857f568a0c5f6534168813b4ad3c26013e" },
+  { path = "LICENSE (Hub copy)", sha256 = "c2e6ea015269147de02117ebdd91f30ef09831251f5345fa8365273b1db1d435" },
+  { path = "slurp/LICENSE.txt", sha256 = "97547dd6236684935697b26629fb6e70b3be4ed535c2d85fdc053a6389192849" },
+]
+attribution_file = "testdata/corpus/attribution/massive.txt"
+hosted_service_output = false
+provenance = "English voice-assistant utterances from SLURP (2020), localized into 51 languages by crowd workers with per-utterance judgments, released April 2022 (1.1 adds Catalan, November 2022)."
+select = "The `utt` field of data/<locale>.jsonl for ar-SA, hi-IN, zh-CN, zh-TW, ja-JP, ko-KR, ru-RU, uk-UA, th-TH, el-GR and he-IL. Utterances are short, so one item is 64 consecutive utterances of one locale, joined with newlines."
+notes = "The README and the card do not say whether workers could use machine translation. This file reads OQ-FID-17's exclusion as covering generated text: a person's localization of a person's utterance is not excluded even if a translation service made a first draft. Maintainers can overrule that reading; `multi` would then rest on aya-dataset."
+
+# ---------------------------------------------------------------- stress
+
+[[source]]
+id = "syntropy-stress"
+categories = { stress = "primary" }
+kind = "generated"
+name = "Syntropy tokenizer stress items"
+url = "testdata/corpus/"
+revision = "frozen with each corpus version (QUAL-E5-T02 freeze rule)"
+licence = "MIT OR Apache-2.0"
+licence_url = "https://github.com/syntropyai-hq/syntropy/blob/main/LICENSE-MIT"
+licence_evidence = "Syntropy-authored generator output, MIT OR Apache-2.0 (ADR-0018 decision 1)"
+hosted_service_output = false
+provenance = "Generated per tokenizer by the project. The only input is the tokenizer itself, which comes with a fixture whose source and licence testdata/fixtures.toml records."
+select = """
+Recipe, implemented by QUAL-E5-T02, per tokenizer:
+1. Repeated tokens: runs of one frequent token, one rare token and one single-byte token, at 64, 512 and 4,096 repeats.
+2. Whitespace: runs of spaces, tabs, newlines and CRLF pairs up to 8,192 characters, and the same with U+00A0, U+3000 and U+2028.
+3. The maximal-length token: the vocabulary entry with the most bytes, alone, repeated, and inside ordinary text.
+4. Every special token: once by token ID, where a template span would emit it, and once as its literal string in a content span, where it must tokenize as plain text (RFC-0043 §8.7).
+5. Each item records the tokenizer's content hash, so its token stream is fixed per tokenizer.
+"""
+notes = "Items reproduce vocabulary strings from the tokenizer under test. An item built from a gated or lab-only tokenizer takes that fixture's access rule in the fixture store and is not made public by default (ADR-0603 decision 8)."
+
+# ---------------------------------------------------------------- metadata
+
+[[metadata]]
+id = "gutenberg-catalogue-rdf"
+used_by = ["pg19"]
+kind = "snapshot"
+name = "Project Gutenberg catalogue, offline RDF archive"
+url = "https://www.gutenberg.org/cache/epub/feeds/rdf-files.tar.bz2"
+revision = "one snapshot per corpus version: QUAL-E5-T02 downloads the archive once, records its fetch date, Last-Modified and SHA-256, keeps the copy in the fixture store, and reads every record from that copy"
+revision_date = "2026-10-20"
+files = [
+  # Object headers on 2026-10-21 (no ETag is sent). The archive is rebuilt
+  # often, so these describe the current object, not a pin; the pin is the
+  # copy QUAL-E5-T02 stores.
+  { path = "rdf-files.tar.bz2", bytes = 126801976, last_modified = "2026-10-20T14:35:59Z" },
+]
+licence = "CC0-1.0"
+licence_url = "https://www.gutenberg.org/policy/robot_access.html"
+licence_evidence = "Project Gutenberg's robot-access policy, \"How to Get Catalog Data\": \"The catalog data are granted to the public domain.\" Each record also declares its own licence: `<cc:Work rdf:about=\"\"><cc:license rdf:resource=\"https://creativecommons.org/publicdomain/zero/1.0/\"/>`, read in the record for PG-19 test book 10146 on 2026-10-21. The `dcterms:license` element in a record is the ebook's licence, not the record's. The offline-catalogue page (https://www.gutenberg.org/ebooks/offline_catalogs.html) says the archive holds the same per-ebook records."
+licence_files = [
+  { path = "policy/robot_access.html (as read)", sha256 = "693a2e867094b0612cd9630a5b1b5e840732a1d939671a98779e2660949c3c51" },
+  { path = "pg10146.rdf (sample record)", sha256 = "a8d396e065319f6fa674091b419332747d5170015789f28996a6e151812c4898" },
+]
+hosted_service_output = false
+provenance = "Catalogue records maintained by Project Gutenberg."
+access = "Offline archive only. The same policy says the website is for human users only and that automated access gets an IP block; the catalogue archive and mirrors are its stated exceptions. QUAL-E5-T02 never fetches per-book pages or records from the website."
+select = "Only `dcterms:creator` and contributor-role (`marcrel:*`) agents, with their `pgterms:deathdate` and the agent URI (2009/agents/<id>, the Project Gutenberg author ID). No free text from the record, such as its summary, is used."
+notes = "Death dates are missing in some records: the sample record's author has a birth year and no death year, which is why wikidata is the fallback. Records are looked up in the archive by ebook number, the number in each PG-19 object name."
+
+[[metadata]]
+id = "wikidata"
+used_by = ["pg19"]
+kind = "dataset"
+name = "Wikidata structured data"
+url = "https://www.wikidata.org/"
+revision = "per entity: QUAL-E5-T02 records each entity's revision id (`lastrevid`) at fetch"
+licence = "CC0-1.0"
+licence_url = "https://www.wikidata.org/w/index.php?title=Wikidata:Copyright&oldid=1523614187"
+licence_evidence = "Wikidata:Copyright (revision 1523614187): all structured data from the main, Property, Lexeme and EntitySchema namespaces is available under CC0. Wikidata:Licensing (revision 2548950862, 2026-09-24) says the same. Text in other namespaces is CC BY-SA and is not used."
+hosted_service_output = false
+provenance = "Community-edited structured data."
+select = "Entities with P1938 (Project Gutenberg author ID) equal to the creator's ID from the catalogue record; their P570 (date of death). An ID matching no entity, or more than one, gives no date."
+notes = "Linking by ebook is not enough: on 2026-10-21 only 14 of the 150 PG-19 test and validation ebook numbers had an entity with P2034 (Project Gutenberg ebook ID), and none of those had an author (P50). Linking by author ID through the catalogue record avoids name matching. Queries follow the Wikimedia User-Agent policy (https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy): \"an informative User-Agent string with contact information\". The string is `user_agent`; its contact is the repository URL, never a person's name or email."
+user_agent = "syntropy-corpus-import/<version> (https://github.com/syntropyai-hq/syntropy)"

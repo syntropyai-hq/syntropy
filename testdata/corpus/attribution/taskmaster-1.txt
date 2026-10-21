@@ -1,0 +1,19 @@
+Taskmaster-1 (TM-1-2019)
+
+Creators: Bill Byrne, Karthik Krishnamoorthi, Chinnadhurai Sankar,
+Arvind Neelakantan, Amit Dubey, Kyu-Young Kim and Andy Cedilnik, Google LLC.
+
+Source: https://github.com/google-research-datasets/Taskmaster/tree/d92cb6af3005f1dc09c39e75e7daf4a04905e00b/TM-1-2019
+Files: TM-1-2019/self-dialogs.json, TM-1-2019/woz-dialogs.json
+
+Licence: Creative Commons Attribution 4.0 International (CC BY 4.0),
+https://creativecommons.org/licenses/by/4.0/
+The licensor provides the material as is and makes no warranties about it.
+
+Changes: Syntropy's parity corpus (parity-corpus-v1 and later) uses selected
+dialogs. Their turns are mapped to user and assistant roles, consecutive turns
+by one speaker are joined, and each conversation is rendered with a model
+family's chat template and tokenized. The dialog text is otherwise unchanged.
+
+Paper: Byrne et al., "Taskmaster-1: Toward a Realistic and Diverse Dialog
+Dataset", EMNLP-IJCNLP 2019.
