@@ -449,7 +449,7 @@ No GAPs.
 | RFC-0060 | §9 | Chaos and fault injection | 15: QUAL-E9-T01–T14, QUAL-E11-T11 | ok |
 | RFC-0060 | §10 | Fuzzing | 9: QUAL-E10-T01–T08, QUAL-E17-T13 | ok |
 | RFC-0060 | §11 | Cross-platform test matrix | 15: QUAL-E11-T01–T15 | ok |
-| RFC-0060 | §12 | Test data and model fixtures | 15: TIER-E8-T18, QUAL-E7-T01–T14 | ok |
+| RFC-0060 | §12 | Test data and model fixtures | 16: TIER-E8-T01, TIER-E8-T18, QUAL-E7-T01–T14 | ok |
 | RFC-0060 | §13 | Flakiness, quarantine and failure triage | 2: QUAL-E3-T14–T15 | ok |
 | RFC-0061 | §1 | Metrics and definitions | 5: QUAL-E12-T02, QUAL-E12-T09, QUAL-E12-T14, QUAL-E12-T16, QUAL-E13-T06 | ok |
 | RFC-0061 | §2 | Benchmark identity and result schema | 2: QUAL-E12-T01, QUAL-E15-T01 | ok |
