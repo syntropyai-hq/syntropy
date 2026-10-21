@@ -273,7 +273,7 @@ No GAPs.
 | RFC-0023 | §2 | Types | 5: TIER-E8-T01, TIER-E8-T13, TIER-E10-T14, COMP-E1-T06, COMP-E6-T05 | ok |
 | RFC-0023 | §3 | Cache levels | 4: TIER-E2-T18, TIER-E8-T05, TIER-E8-T08, TIER-E8-T17 | ok |
 | RFC-0023 | §4 | Slot geometry and per-layer budgets | 1: TIER-E8-T03 | ok |
-| RFC-0023 | §5 | Policy, admission and the slot table | 14: TIER-E2-T18, TIER-E6-T03, TIER-E8-T01, TIER-E8-T04–T07, TIER-E8-T12–T14, TIER-E8-T16, TIER-E8-T18, TIER-E9-T02, TIER-E10-T13 | ok |
+| RFC-0023 | §5 | Policy, admission and the slot table | 15: PLC-E7-T10, TIER-E2-T18, TIER-E6-T03, TIER-E8-T01, TIER-E8-T04–T07, TIER-E8-T12–T14, TIER-E8-T16, TIER-E8-T18, TIER-E9-T02, TIER-E10-T13 | ok |
 | RFC-0023 | §6 | The MoE step: hits, copied misses, in-place misses | 4: TIER-E9-T01–T02, TIER-E9-T09, TIER-E9-T11 | ok |
 | RFC-0023 | §7 | CPU execute-in-place with NUMA locality | 1: TIER-E9-T03 | ok |
 | RFC-0023 | §8 | The online three-site balance | 4: TIER-E9-T04, TIER-E9-T08, TIER-E9-T12–T13 | ok |

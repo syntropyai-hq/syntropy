@@ -117,7 +117,7 @@ pub struct PredSlot {
 // most tokens in one pass of the plan, the largest `rows` of its buckets (RFC-0012 §2), prefill
 // buckets included; it is not T_max, which RFC-0012 uses for the verify window. predict_extra is
 // its value at the epoch's start: a hot change below it only lowers how many of the written
-// predictions the prefetcher uses, and a raise waits for the next epoch (§15). (Revised 2026-10-21.)
+// predictions the prefetcher uses, and a raise requests a new epoch (§15). (Revised 2026-10-21.)
 pub enum GuardMode { Lfu, Lru, Freeze }   // §5.3
 
 pub enum CacheCommand {
@@ -564,7 +564,7 @@ Schema in RFC-0054. `instance` scope; most are reloadable because they only tune
 | `experts.guard_window` | 1,024 decode accesses per layer | hot | guard evaluation window; a switch needs two consecutive leading windows |
 | `experts.prefetch_slack` | 0.25 | hot | prefetch bytes per token above the predicted miss bytes (§10) |
 | `experts.prefill_weight` | 0.1 | hot | weight of prefill accesses in the counts |
-| `experts.predict_extra` | ⌈k/2⌉ | hot | extra predicted experts per lookahead layer. The router writes the epoch's value, and `MAX_PRED` is sized from it (§2). A hot change below it lowers how many of those predictions the prefetcher uses; a raise above it takes effect at the next epoch (revised 2026-10-21) |
+| `experts.predict_extra` | ⌈k/2⌉ | hot | extra predicted experts per lookahead layer. The router writes the epoch's value, and `MAX_PRED` is sized from it (§2). A hot change below it lowers how many of those predictions the prefetcher uses. A raise above it requests a new epoch with `ReplanReason::Config { keys }`, as RFC-0001 §7.2 does for a `hot` key the solver reads; that epoch re-sizes `MAX_PRED` and re-captures, so the raise applies once the instance adopts the new plan (revised 2026-10-21) |
 | `experts.vram_prefetch` | `auto` | hot | `auto` / `off`: RAM → VRAM prefetch (§10) |
 | `experts.vram_prefetch_min_score` | 0.5 (normalised router probability mass) | hot | prediction score needed for RAM → VRAM prefetch |
 | `experts.balancer` | `fitted` | hot | `fitted` / `fixed` (§8) |
