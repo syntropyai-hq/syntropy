@@ -1,0 +1,5 @@
+# One stable release for every build (ADR-0001 item 1, RFC-0062 §4.2). Renovate proposes minor bumps.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
