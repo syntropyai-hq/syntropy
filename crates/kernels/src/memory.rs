@@ -69,8 +69,9 @@ pub struct BufferSlice {
 }
 
 /// A physical segment backing part of a `reserve_only` allocation (RFC-0040 §2.2). Addresses
-/// inside the reservation never move (RFC-0020 §4.1).
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// inside the reservation never move (RFC-0020 §4.1). Not `Clone`: `unmap_segment` takes it
+/// by value, so each segment is released once.
+#[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Segment {
     /// The reservation's [`DeviceBuffer::handle`].
     pub reservation: u64,

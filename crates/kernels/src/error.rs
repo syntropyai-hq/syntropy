@@ -5,8 +5,11 @@
 //! RFC-0001 §5.12 defines one `Error` struct in `core` for every fallible interface, with an
 //! `ErrorCode` of `(Domain, u16)`. `core` has [`ErrorClass`] but not that struct yet, so this
 //! module holds the smallest stand-in the trait needs: a class, a code in the `Kernels`
-//! domain, and a message. It gives way to `core`'s `Error` when that type is built. Raising
-//! each code of RFC-0040 §13 is COMP-E1-T08's work.
+//! domain, and a message. It gives way to `core`'s `Error` when that type is built; no task
+//! builds it yet, and issue #1525 (item 2) asks for one. Raising each code of RFC-0040 §13 is
+//! COMP-E1-T08's work.
+
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use syntropy_core::ErrorClass;
@@ -33,6 +36,20 @@ pub struct Error {
     pub message: String,
 }
 
+/// Shows the message, then the class and the code, e.g.
+/// `not supported by this provider (Unsupported, Kernels 1)`.
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} ({:?}, Kernels {})",
+            self.message, self.class, self.code.0
+        )
+    }
+}
+
+impl std::error::Error for Error {}
+
 /// The error a default method body returns when the provider does not implement it:
 /// class `Unsupported`, code `(Kernels, 1)` (RFC-0040 §2.1).
 #[must_use]
@@ -41,5 +58,20 @@ pub fn unsupported() -> Error {
         class: ErrorClass::Unsupported,
         code: ErrorCode::OP_UNSUPPORTED,
         message: String::from("not supported by this provider"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_shows_message_class_and_code() {
+        assert_eq!(
+            unsupported().to_string(),
+            "not supported by this provider (Unsupported, Kernels 1)"
+        );
+        let boxed: Box<dyn std::error::Error> = Box::new(unsupported());
+        assert!(boxed.source().is_none());
     }
 }

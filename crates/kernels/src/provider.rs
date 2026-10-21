@@ -23,7 +23,93 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// RFC-0001 §5.7 fixes the original methods. RFC-0040 §2.1 adds `build`, `domain`,
 /// `memory_info`, `map_segment`, `unmap_segment`, `host_registrar`, `set_resident`,
 /// `wait_host`, `arm_wake`, `poll`, `elapsed`, `synchronize` and `copy_batch`. Every
-/// addition except `build`, `domain`, `poll` and `synchronize` has a default body.
+/// addition except `build`, `domain`, `poll` and `synchronize` has a default body. (RFC-0001
+/// §5.7's comment says all but `poll` and `synchronize`; RFC-0040 §2.1, which §5.7 defers
+/// to, also leaves `build` and `domain` without one. Issue #1525, item 1, tracks the fix.)
+///
+/// A provider that implements every required method compiles:
+///
+/// ```
+/// # use syntropy_core::{Bytes, DeviceId, resource::Backend};
+/// # use syntropy_kernels::*;
+/// # macro_rules! provider { ($($extra:item)*) => {
+/// # struct P;
+/// # impl KernelProvider for P {
+/// #     fn id(&self) -> ProviderId { todo!() }
+/// #     fn backend(&self) -> Backend { todo!() }
+/// #     fn build(&self) -> ProviderBuild { todo!() }
+/// #     fn domain(&self) -> MemoryDomain { todo!() }
+/// #     fn enumerate(&self) -> Result<Vec<ProviderDevice>, Error> { todo!() }
+/// #     fn open(&self, _: DeviceId, _: &OpenOptions) -> Result<DeviceCtx, Error> { todo!() }
+/// #     fn ops(&self) -> &OpRegistry { todo!() }
+/// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
+/// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
+/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
+/// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
+/// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
+/// #     fn event(&self, _: &DeviceCtx) -> Result<Event, Error> { todo!() }
+/// #     fn record(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn wait(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> { todo!() }
+/// #     fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { todo!() }
+/// #     fn copy(&self, _: &DeviceCtx, _: &Stream, _: BufferSlice, _: BufferSlice) -> Result<(), Error> { todo!() }
+/// #     fn prepare(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Result<PreparedOp, Error> { todo!() }
+/// #     fn launch(&self, _: &DeviceCtx, _: &Stream, _: &PreparedOp, _: &OpArgs<'_>) -> Result<(), Error> { todo!() }
+/// #     fn begin_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { todo!() }
+/// #     fn end_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<CapturedGraph, Error> { todo!() }
+/// #     fn replay(&self, _: &DeviceCtx, _: &Stream, _: &CapturedGraph) -> Result<(), Error> { todo!() }
+/// #     fn health(&self, _: &DeviceCtx) -> DeviceHealth { todo!() }
+/// #     $($extra)*
+/// # }
+/// # } }
+/// provider! {
+///     fn poll(&self, _: &DeviceCtx, _: &Event) -> Result<bool, Error> { Ok(true) }
+/// }
+/// ```
+///
+/// The same provider without `poll`, which has no default body, does not:
+///
+/// ```compile_fail
+/// # use syntropy_core::{Bytes, DeviceId, resource::Backend};
+/// # use syntropy_kernels::*;
+/// # macro_rules! provider { ($($extra:item)*) => {
+/// # struct P;
+/// # impl KernelProvider for P {
+/// #     fn id(&self) -> ProviderId { todo!() }
+/// #     fn backend(&self) -> Backend { todo!() }
+/// #     fn build(&self) -> ProviderBuild { todo!() }
+/// #     fn domain(&self) -> MemoryDomain { todo!() }
+/// #     fn enumerate(&self) -> Result<Vec<ProviderDevice>, Error> { todo!() }
+/// #     fn open(&self, _: DeviceId, _: &OpenOptions) -> Result<DeviceCtx, Error> { todo!() }
+/// #     fn ops(&self) -> &OpRegistry { todo!() }
+/// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
+/// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
+/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
+/// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
+/// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
+/// #     fn event(&self, _: &DeviceCtx) -> Result<Event, Error> { todo!() }
+/// #     fn record(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn wait(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> { todo!() }
+/// #     fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> { todo!() }
+/// #     fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { todo!() }
+/// #     fn copy(&self, _: &DeviceCtx, _: &Stream, _: BufferSlice, _: BufferSlice) -> Result<(), Error> { todo!() }
+/// #     fn prepare(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Result<PreparedOp, Error> { todo!() }
+/// #     fn launch(&self, _: &DeviceCtx, _: &Stream, _: &PreparedOp, _: &OpArgs<'_>) -> Result<(), Error> { todo!() }
+/// #     fn begin_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> { todo!() }
+/// #     fn end_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<CapturedGraph, Error> { todo!() }
+/// #     fn replay(&self, _: &DeviceCtx, _: &Stream, _: &CapturedGraph) -> Result<(), Error> { todo!() }
+/// #     fn health(&self, _: &DeviceCtx) -> DeviceHealth { todo!() }
+/// #     $($extra)*
+/// # }
+/// # } }
+/// provider! {}
+/// ```
 ///
 /// **Threading (RFC-0040 §2.4, ADR-0012).** `enumerate`, `ops`, `repack`, `repacked_len`,
 /// `build` and `domain` may run on any thread. Every other method takes `&DeviceCtx`, which
@@ -129,7 +215,8 @@ pub trait KernelProvider: Send + Sync {
     fn wait(&self, ctx: &DeviceCtx, s: &Stream, e: &Event) -> Result<(), Error>;
     /// The device writes `value` to the host-mapped `flag` when `s` reaches this point: the
     /// doorbell the host spins on instead of a synchronising driver call (RFC-0001 §8.2).
-    /// Under RFC-0040 §4.2's handshake the producer only ever writes 1.
+    /// On host-mapped flags, under RFC-0040 §4.2's handshake, the producer only ever writes
+    /// 1. Metal shared events differ: they carry per-step values and are never reset.
     fn signal_host(
         &self,
         ctx: &DeviceCtx,
@@ -239,7 +326,7 @@ mod tests {
     use syntropy_core::ErrorClass;
 
     use super::*;
-    use crate::device::{DeviceClass, PowerHint, StreamPlan};
+    use crate::device::{PowerHint, StreamPlan};
     use crate::error::ErrorCode;
     use crate::memory::MemKind;
 
@@ -446,7 +533,6 @@ mod tests {
         let err = unsupported();
         assert_eq!(err.class, ErrorClass::Unsupported);
         assert_eq!(err.code, ErrorCode(1));
-        let _ = DeviceClass::Cuda { sm: 120 };
     }
 
     /// The default `copy_batch` issues one `copy` per pair, in order, and stops at the first

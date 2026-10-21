@@ -22,7 +22,9 @@ pub use syntropy_core::resource::DeviceFeatures;
 ///
 /// The name is a `&'static str`, as RFC-0040 §2.2 writes it. Decoding therefore borrows from
 /// input that lives for the whole program (`'de: 'static`), and fails when the format had to
-/// escape the name (in JSON, a quote, backslash or control character).
+/// escape the name (in JSON, a quote, backslash or control character). Loading the on-disk
+/// selection cache (RFC-0040 §6.5) would then have to leak its buffer; issue #1525 (item 3)
+/// proposes an owned or `Cow<'static, str>` name instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProviderId(pub &'static str);
@@ -96,10 +98,12 @@ pub struct ProviderDevice {
 /// `DeviceClass` with different fields (Metal by family and core count, Vulkan by vendor,
 /// device and driver, CPU by architecture and ISA level, plus an `Npu` variant), and `core`
 /// implements that one. The two RFCs conflict, and which definition `PackKey` uses is a
-/// maintainer decision (issue #1499, item 1). ADR-0405 (PR #1523, Proposed) would put one
-/// `DeviceClass` in `core`, RFC-0040's variants plus `Npu`, and make this a re-export of it.
-/// Until a decision is accepted, this crate carries RFC-0040's definition as COMP-E1-T01
-/// lists it, and `core`'s type is unchanged.
+/// maintainer decision (issue #1499, item 1).
+///
+/// This type is conditional on ADR-0405 (PR #1523, Proposed). Its decision 1 would move
+/// `DeviceClass` to `core`, with RFC-0040's variants plus `Npu`, and this would become a
+/// re-export of it. Until a decision is accepted, this crate carries RFC-0040's definition
+/// as COMP-E1-T01 lists it, and `core`'s type is unchanged.
 ///
 /// RFC-0040 names the Metal family type `AppleFamily`; this uses `core`'s
 /// [`AppleGpuFamily`], RFC-0010's type for the same Metal GPU family.
