@@ -288,6 +288,14 @@ class NamingCheckTest(unittest.TestCase):
             self.assertIn(f"the banned-terms list at {listed} (named by --banned) has no patterns",
                           output)
 
+    def test_a_list_that_is_not_utf8_is_an_error_not_a_match(self):
+        listed = self.dir / "latin1.txt"
+        listed.write_bytes(b"zorblax\n\xff\xfe\n")
+        code, output = self.run_check("--banned", str(listed), "--stdin", stdin="text\n")
+        self.assertEqual(code, 2)
+        self.assertIn("is not valid UTF-8", output)
+        self.assertNotIn("Traceback", output)
+
     def test_an_invalid_pattern_is_an_error_that_does_not_print_it(self):
         bad = self.dir / "bad.txt"
         bad.write_text("zorblax[\n", encoding="utf-8")

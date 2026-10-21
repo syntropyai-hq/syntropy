@@ -250,6 +250,8 @@ def run(argv):
         patterns = load_banned(path)
     except OSError as error:
         raise CheckError(f"cannot read the banned-terms list named by {where} ({path}): {error.strerror}") from None
+    except UnicodeDecodeError:
+        raise CheckError(f"the banned-terms list at {path} (named by {where}) is not valid UTF-8") from None
     except re.error:
         raise CheckError(f"the banned-terms list named by {where} has a line that is not a valid regular expression") from None
     if not patterns:
