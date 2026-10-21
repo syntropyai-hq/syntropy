@@ -52,11 +52,22 @@ pub const NAME_MAX_LEN: usize = 255;
 /// One caller-supplied path component of the layout: a Hub owner, repository or revision, a
 /// local alias, a quantisation name, a device class, a pack key or a side-record kind.
 ///
-/// A name is 1 to [`NAME_MAX_LEN`] bytes of ASCII letters, digits, `.`, `_` and `-`, and is
-/// neither `.` nor `..`. No name can hold a path separator, so no name can leave the directory
-/// it is joined to, and the set is the same on every file system the store runs on. A value
-/// outside the set, such as a Hub revision containing `/`, must be encoded by its owner before
-/// it becomes a `Name`.
+/// A name is 1 to [`NAME_MAX_LEN`] bytes of ASCII letters, digits, `.`, `_` and `-`, and:
+///
+/// - is neither `.` nor `..`;
+/// - does not end with `.`, because Windows drops trailing periods, so that `a.` names the
+///   same file as `a` and `...` names the directory it sits in;
+/// - has a base name, the part before its first `.`, that is not one of Windows' reserved
+///   device names in any case: `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9` or `LPT1`–`LPT9`.
+///   Windows takes `nul`, `NUL.txt` and `Nul.tar.gz` all for the `NUL` device.
+///
+/// No name can hold a path separator, so no name can leave the directory it is joined to. The
+/// last two rules are Microsoft's naming rules for files ("Naming Files, Paths, and
+/// Namespaces"; the superscript-digit device names it also reserves are outside the character
+/// set), applied on every OS so that a store written on Linux or macOS stays usable on Windows.
+/// The layout's file names append fixed suffixes such as `.side` to a name, which keeps its
+/// base name, so they follow the same rules. A value outside these rules, such as a Hub
+/// revision containing `/`, must be encoded by its owner before it becomes a `Name`.
 ///
 /// Names compare byte for byte, but a case-insensitive file system (the macOS and Windows
 /// defaults) treats `Q4_K_M` and `q4_k_m` as one file. Owners choose encodings that do not
@@ -79,6 +90,12 @@ impl Name {
         }
         if let Some((at, ch)) = name.char_indices().find(|&(_, c)| !is_name_char(c)) {
             return Err(NameError::InvalidChar { ch, at });
+        }
+        if name.ends_with('.') {
+            return Err(NameError::TrailingDot);
+        }
+        if is_reserved_device_name(&name) {
+            return Err(NameError::ReservedDeviceName { name });
         }
         Ok(Name(name))
     }
@@ -126,6 +143,22 @@ fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')
 }
 
+/// Windows' reserved device names, from Microsoft's "Naming Files, Paths, and Namespaces".
+/// Its superscript-digit forms (`COM¹`, `LPT³`, …) are not ASCII, so no [`Name`] can hold them.
+const RESERVED_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Whether Windows takes `name` for a device: its base name, before the first `.`, is a
+/// reserved device name in any case.
+fn is_reserved_device_name(name: &str) -> bool {
+    let base = name.split_once('.').map_or(name, |(base, _)| base);
+    RESERVED_DEVICE_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(base))
+}
+
 /// Why a string is not a [`Name`], or a name is not a side-record kind.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,6 +178,13 @@ pub enum NameError {
         ch: char,
         /// Its byte offset.
         at: usize,
+    },
+    /// The string ends with `.`, which Windows drops.
+    TrailingDot,
+    /// The string's base name, before its first `.`, is a Windows reserved device name.
+    ReservedDeviceName {
+        /// The string.
+        name: String,
     },
     /// A side-record kind contains `.` or is `side`, so its file could be taken for another
     /// pack's sidecar or side record (see [`Layout::side_record`]).
@@ -167,6 +207,14 @@ impl fmt::Display for NameError {
                 f,
                 "character {ch:?} at byte {at} is not allowed in a store path name \
                  (ASCII letters, digits, `.`, `_` and `-` only)"
+            ),
+            NameError::TrailingDot => f.write_str(
+                "a store path name cannot end with `.`, because Windows drops trailing periods",
+            ),
+            NameError::ReservedDeviceName { name } => write!(
+                f,
+                "store path name {name:?} names a Windows device (CON, PRN, AUX, NUL, \
+                 COM1-COM9 or LPT1-LPT9, in any case, with or without an extension)"
             ),
             NameError::ReservedKind { kind } => write!(
                 f,
@@ -554,9 +602,18 @@ mod tests {
             "Q4_K_M",
             "model-7B",
             "v1.2",
-            "...",
+            "a..b",
             ".hidden",
             "x".repeat(255).as_str(),
+            // Near the reserved device names, but not one of them.
+            "CONSOLE",
+            "auxiliary",
+            "nul_alias",
+            "con-1",
+            "COM10",
+            "lpt10",
+            ".nul",
+            "x.con",
         ] {
             assert_eq!(Name::new(ok).unwrap().as_str(), ok);
         }
@@ -579,12 +636,66 @@ mod tests {
             ("a b", ' ', 1),
             ("é", 'é', 0),
             ("refs/pr/1", '/', 4),
+            // Windows drops trailing spaces as well as periods; a space is never allowed.
+            ("a ", ' ', 1),
+            ("a. ", ' ', 2),
+            // The superscript-digit device names are outside the character set.
+            ("COM\u{b9}", '\u{b9}', 3),
+            ("lpt\u{b3}.txt", '\u{b3}', 3),
         ] {
             assert_eq!(
                 Name::new(bad),
                 Err(NameError::InvalidChar { ch, at }),
                 "{bad:?}"
             );
+        }
+    }
+
+    #[test]
+    fn names_reject_a_trailing_period() {
+        for bad in ["a.", "...", "Q4_K_M.", "x..", ".hidden."] {
+            assert_eq!(Name::new(bad), Err(NameError::TrailingDot), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn names_reject_windows_device_names_in_any_case_with_or_without_an_extension() {
+        let mut reserved: Vec<String> = ["CON", "PRN", "AUX", "NUL"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for n in 1..=9 {
+            reserved.push(format!("COM{n}"));
+            reserved.push(format!("LPT{n}"));
+        }
+        assert_eq!(reserved.len(), RESERVED_DEVICE_NAMES.len());
+        for base in &reserved {
+            let lower = base.to_ascii_lowercase();
+            let mixed: String = base
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i % 2 == 1 {
+                        c.to_ascii_lowercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            for spelling in [base.clone(), lower, mixed] {
+                for name in [
+                    spelling.clone(),
+                    format!("{spelling}.txt"),
+                    format!("{spelling}.tar.gz"),
+                    format!("{spelling}.side"),
+                ] {
+                    assert_eq!(
+                        Name::new(name.clone()),
+                        Err(NameError::ReservedDeviceName { name: name.clone() }),
+                        "{name:?}"
+                    );
+                }
+            }
         }
     }
 
