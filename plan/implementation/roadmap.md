@@ -264,7 +264,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | QUAL-E5-T08 | spike | Spike: reference throughput F_ref, and the size of R-LABCPU, on a candidate host before R-LABCPU is sized, because the calibration… | OQ-FID-14 | 2 |
 | QUAL-E7-T06 | spike | Spike and import: real checkpoints for the M0 families, as a desk check (OQ-MF-04) | – | 12 |
 
-**Open questions needed by M0a:** 5 (decision 5). Answered by no task: OQ-PRC-21, OQ-PRC-22, OQ-PRC-23, OQ-PRC-26.
+**Open questions needed by M0a:** 9 (decision 9). Answered by no task: OQ-HW-13, OQ-IO-27, OQ-IO-28, OQ-IO-29, OQ-PRC-21, OQ-PRC-22, OQ-PRC-23, OQ-PRC-26.
 <!-- END GENERATED -->
 
 ## M0b: parity, certification and the lab
@@ -387,7 +387,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | QUAL-E16-T28 | spike | Spike: hosted GPU runner driver check (ADR-0610 decision 8) | – | 1 |
 | QUAL-E17-T22 | spike | Spike: release-please on `release/vX.Y` with frozen crate versions and draft releases, in a scratch repository (OQ-PRC-16) | – | 1 |
 
-**Open questions needed by M0b:** 12 (benchmark 8, spike 4). Each one names a task that records the answer.
+**Open questions needed by M0b:** 15 (benchmark 8, decision 3, spike 4). Answered by no task: OQ-MOE-15, OQ-PRD-27, OQ-PRC-27.
 <!-- END GENERATED -->
 
 ## M1a: Linux preview (CUDA and CPU tiering)

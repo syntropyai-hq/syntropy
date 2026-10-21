@@ -477,3 +477,10 @@ Four M0 tasks stopped this week on criteria their own dependencies could not sho
 | QUAL-E5-T19's types are in `core`; RFC-0060 §5.5 gets a dated note | QUAL-E5-T19 | R9 | §5.5 said "core / net", and only `core` lets `exec` build against them (rule 3) |
 | PLC-E7-T11 → DIST-E1-T06 | PLC-E7-T11 | R9 | found in review: the runner exit moved from COMP-E9-T04 is followed by a clean restart, and PLC-E7-T11's existing criteria check the supervisor's action; both are the supervisor's (DIST-E1-T06, RFC-0040 §10.4, RFC-0001 §3.4), which PLC-E7-T11 did not reach |
 | QUAL-E15-T23 marked **Maintainer action** | QUAL-E15-T23 | R9 | found in review: fitting the spare GPU in R-ADA's slot is lab work, which QUAL-E15-T02's marker covered before the split |
+| PLC-E1-T04 gated on OQ-HW-13 | PLC-E1-T04 | R9 | its Windows half needs a Windows CUDA host; R-WIN is M1b, and the choice between the agent pool's NVIDIA host and a split is the maintainers' |
+| TIER-E1-T02 gated on OQ-IO-27 and OQ-IO-28 | TIER-E1-T02 | R9 | no task defines `LedgerGrant`, and the pure `plan_arenas` has no input for the accepted layouts RFC-0020 §7.3 checks |
+| DIST-E1-T01 and TIER-E5-T02 gated on OQ-IO-29 | DIST-E1-T01, TIER-E5-T02 | R9 | `io`, `net` and `ipc` all need the SPSC ring, and all three are in layer 1 |
+| TIER-E8-T09 gated on OQ-MOE-15 | TIER-E8-T09 | R9 | its criteria record answers RFC-0023 assigns to M1 |
+| PROD-E1-T04 gated on OQ-PRD-27 | PROD-E1-T04 | R9 | its `core` types hold field types that are in `config`, and rule 1 forbids that edge |
+| QUAL-E3-T05 gated on OQ-PRC-27 | QUAL-E3-T05 | R9 | P-core-2 and P-core-3 test code that `tier` and `config` build in tasks it doesn't reach |
+| QUAL-E11-T05 marked **Maintainer action** for the AMX cloud instance | QUAL-E11-T05 | R9 | RFC-0061 §6.2 runs AMX on an on-demand cloud instance, and no task provisioned it |
