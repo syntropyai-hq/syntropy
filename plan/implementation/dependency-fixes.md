@@ -311,3 +311,16 @@ Four M0 tasks run `qwen_moe` on a real backend, and none of them reached every t
 | COMP-E5-T04 → QUAL-E7-T01, QUAL-E7-T06 | COMP-E5-T04 | R9 | "conformance on the `qwen_moe` fixtures" now names them: op conformance takes model-derived shapes from fixture manifests (RFC-0060 §4.2), here the nano fixture and the conformance checkpoint |
 | PLC-E4-T02 → PLC-E4-T17; moved "every plan from the M0 placement rule passes `validate()`" from PLC-E4-T17 to PLC-E4-T02 | PLC-E4-T02, PLC-E4-T17 | R9 | T02 builds its plans from T17's types, and the criterion checks T02's output, so it belongs to T02 and T02 depends on T17 |
 | PLC-E4-T01 → PLC-E4-T17 | PLC-E4-T01 | R9 | `PredictedCost`, `BatchingLimits`, `PlanDelta`, `DeltaItem` and `Assumption` are defined in `core` by T17; T01 re-exports them and adds `PlacementPlanExt` and `StageCost` |
+
+## Pass 8 (2026-10-21): the second readiness scan's op and kernel items
+
+The kernel and op items of #1487's comments, applied with R9. RFC-0040's M0 row puts the CPU provider on both M0 families and lists norms among the CUDA hot ops, and RFC-0001 §16's M0a conformance bullet needs every `llama` op to pass on the CPU provider and on CUDA. So each op on the M0 path with no M0 task gets an owner.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added COMP-E3-T21 (M0a), CPU `MoeRoute` and `MoeCombine`; QUAL-E4-T06, COMP-E3-T15 and QUAL-E6-T22 → COMP-E3-T21 | COMP-E3-T21, QUAL-E4-T06, COMP-E3-T15, QUAL-E6-T06, QUAL-E6-T22 | R9 | QUAL-E4-T06 promises every M0 op on the CPU, and no task built a CPU router or combine; COMP-E3-T15 (M1a) added prediction rows to a router nothing created. QUAL-E6-T06 and QUAL-E6-T22 no longer say the CPU provider's router comes from ggml |
+| Added COMP-E3-T22 (M0a), CPU `Gemm`, `GateUpAct`, `Logits`, `RowGather`, `Add`, `Mul`, `Convert`; QUAL-E4-T06 → COMP-E3-T22 | COMP-E3-T22, QUAL-E4-T06 | R9 | no M0 CPU task named these ops, which `kernels::reference` defines for M0 (COMP-E1-T03) |
+| Added COMP-E5-T26 (M0a), CUDA `RmsNorm`, `Act`, `Add`, `Mul`, `RowGather`, `Convert`; QUAL-E4-T06 → COMP-E5-T26 | COMP-E5-T26, QUAL-E4-T06 | R9 | no M0 CUDA task named these ops |
+| COMP-E5-T04 → COMP-E4-T02, COMP-E4-T05 | COMP-E5-T04 | R9 | its router writes host-mapped doorbell pages (COMP-E4-T02, which also reaches the CUDA binding and the rigs), and its stage is captured (COMP-E4-T05) |
+| COMP-E16-T05 → COMP-E10-T05 | COMP-E16-T05 | R9 | its MXFP4 experts load through the `quantization_config` mapping |
+| COMP-E3-T03 drops its "from M1" criterion and its edge to QUAL-E15-T18; COMP-E5-T01 drops its "from M1" criterion; COMP-E2-T09 → COMP-E3-T03, COMP-E5-T01; QUAL-E8-T12 → QUAL-E15-T18 | COMP-E3-T03, COMP-E5-T01, COMP-E2-T09, QUAL-E8-T12 | R9, Definition of done | both criteria were `AC-LATER` throughput targets that COMP-E2-T09 (M1a) already carries on the Tier 1 rigs. COMP-E3-T03 depended on R-LABCPU only for its target, and that host is never timed (ADR-0610). QUAL-E8-T12, whose criteria name R-LABCPU, had reached it only through that edge |
