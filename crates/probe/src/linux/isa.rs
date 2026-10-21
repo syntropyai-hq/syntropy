@@ -91,6 +91,11 @@ impl Feature {
     }
 }
 
+/// The x86-64 floor below which E1 refuses the CPU (`BelowBaseline`): the psABI x86-64-v2
+/// set, not only RFC-0040 §7.3's "SSE4.2, POPCNT" for `X86V2`. ADR-0014 and ADR-0020 name
+/// x86-64-v2 as the platform floor, and the core's ggml CPU backend is built for that baseline
+/// (RFC-0040 §8.1), so a CPU with SSE4.2 and POPCNT but without CX16, LAHF-SAHF, SSE4.1 or
+/// SSSE3 cannot run it.
 const X86_V2: [Feature; 6] = [
     Feature::Cx16,
     Feature::LahfLm,
@@ -162,10 +167,13 @@ impl Detector<'_> {
                     DeviceFeatures::AVX2,
                 );
                 // `IsaFlags` records each AVX-512 extension the CPU has. `DeviceFeatures::AVX512`
-                // is the kernel gate, so it follows RFC-0040 §7.3's `X86V4` requirement
-                // (AVX-512 F, BW, VL and DQ together). VNNI, BF16 and FP16 are "used when
-                // present" on top of `X86V4`, so their feature bits need the gate too.
-                let avx512 = AVX512_KERNELS.iter().all(|f| self.has(*f));
+                // is the kernel gate, so it is set exactly when the level is `X86V4`: RFC-0040
+                // §7.3's `X86V4` requirement (AVX-512 F, BW, VL and DQ together) on top of
+                // `X86V3`. VNNI, BF16 and FP16 are "used when present" on top of `X86V4`, so
+                // their feature bits need the gate too. A CPU with AVX-512 but not the `X86V3`
+                // set is `X86V2` with no AVX-512 feature bit.
+                let v3 = X86V3.iter().all(|f| self.has(*f));
+                let avx512 = v3 && AVX512_KERNELS.iter().all(|f| self.has(*f));
                 let gated = |f: Feature| avx512 && self.has(f);
                 set(avx512, IsaFlags::empty(), DeviceFeatures::AVX512);
                 set(
@@ -232,8 +240,7 @@ impl Detector<'_> {
                 );
                 // Never `X86V4Amx`: that level needs the tile-data permission granted, which
                 // E1 does not request; the CPU provider requests it at E5 (ADR-0405 decision 3).
-                let v3 = X86V3.iter().all(|f| self.has(*f));
-                if v3 && avx512 {
+                if avx512 {
                     CpuIsa::X86V4
                 } else if v3 {
                     CpuIsa::X86V3
@@ -413,6 +420,27 @@ mod tests {
         }
     }
 
+    /// The AVX-512 feature bits follow the level: AVX-512 without the `X86V3` set is `X86V2`,
+    /// with every AVX-512 extension in `IsaFlags` and none in `DeviceFeatures`.
+    #[test]
+    fn avx512_features_need_the_x86v4_level() {
+        let ext = "avx512_vnni avx512_bf16 avx512_fp16";
+        let i = isa(CpuArch::X86_64, &format!("{V2} {V4} {ext}")).unwrap();
+        assert_eq!(i.level, CpuIsa::X86V2);
+        assert_eq!(i.features, DeviceFeatures::empty());
+        assert!(i.flags.contains(
+            IsaFlags::AVX512F
+                | IsaFlags::AVX512BW
+                | IsaFlags::AVX512VL
+                | IsaFlags::AVX512VNNI
+                | IsaFlags::AVX512BF16
+                | IsaFlags::AVX512FP16
+        ));
+        let v4 = isa(CpuArch::X86_64, &format!("{V2} {V3} {V4} {ext}")).unwrap();
+        assert_eq!(v4.level, CpuIsa::X86V4);
+        assert!(v4.features.contains(DeviceFeatures::AVX512));
+    }
+
     #[test]
     fn amx_hardware_is_never_x86v4amx_at_e1() {
         let f = format!("{V2} {V3} {V4} amx_bf16 amx_int8 amx_tile");
@@ -422,20 +450,21 @@ mod tests {
     #[test]
     fn avx512_feature_needs_f_bw_vl_dq() {
         let ext = "avx512_vnni avx512_bf16 avx512_fp16";
-        let all = format!("{V2} avx512f avx512bw avx512vl avx512dq {ext}");
+        let all = format!("{V2} {V3} avx512f avx512bw avx512vl avx512dq {ext}");
         let i = isa(CpuArch::X86_64, &all).unwrap();
         assert_eq!(
             i.features,
-            DeviceFeatures::AVX512
+            DeviceFeatures::AVX2
+                | DeviceFeatures::AVX512
                 | DeviceFeatures::AVX512_VNNI
                 | DeviceFeatures::AVX512_BF16
                 | DeviceFeatures::AVX512_FP16
         );
-        // Each of F, BW, VL and DQ missing in turn: no AVX-512 feature bits at all, while
-        // `IsaFlags` still records what the CPU has.
+        // Each of F, BW, VL and DQ missing in turn: no AVX-512 feature bits at all (AVX2
+        // stays), while `IsaFlags` still records what the CPU has.
         for drop in ["avx512f ", "avx512bw ", "avx512vl ", "avx512dq "] {
             let i = isa(CpuArch::X86_64, &all.replace(drop, "")).unwrap();
-            assert_eq!(i.features, DeviceFeatures::empty(), "without {drop}");
+            assert_eq!(i.features, DeviceFeatures::AVX2, "without {drop}");
             assert!(
                 i.flags
                     .contains(IsaFlags::AVX512VNNI | IsaFlags::AVX512BF16 | IsaFlags::AVX512FP16),
@@ -483,6 +512,14 @@ mod tests {
         assert_eq!(no_bf16.level, CpuIsa::Arm82Dot);
         let sme2 = isa(CpuArch::Aarch64, "asimddp asimdhp i8mm bf16 sme2").unwrap();
         assert_eq!(sme2.level, CpuIsa::Arm92Sme2);
+        // I8MM and BF16 without the `Arm82Dot` base are not `Arm86I8mm`.
+        for flags in ["fp asimd i8mm bf16", "fp asimd asimddp i8mm bf16"] {
+            assert_eq!(
+                isa(CpuArch::Aarch64, flags).unwrap().level,
+                CpuIsa::Arm80,
+                "{flags}"
+            );
+        }
         // SME2 without the `Arm86I8mm` base is not `Arm92Sme2`.
         let bare_sme2 = isa(CpuArch::Aarch64, "asimddp asimdhp sme2").unwrap();
         assert_eq!(bare_sme2.level, CpuIsa::Arm82Dot);

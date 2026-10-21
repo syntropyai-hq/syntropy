@@ -325,10 +325,11 @@ pub struct DeviceInfoExt {
 /// `deviceID` (RFC-0010 §1.2; ADR-0405 decision 4). [`PciInfo`] holds them only for PCI
 /// devices, and many integrated and mobile Vulkan GPUs have none. They serve diagnostics and
 /// the Vulkan certificate rule (RFC-0060 §6.4); neither is in any pack key.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
-#[serde(default)]
+///
+/// Both fields are required when decoding and there is no `Default`: an absent value is
+/// `DeviceInfoExt::api_ids: None`, never IDs 0 and 0, which a check against `PciInfo` would
+/// read as a mismatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ApiIds {
     /// The vendor ID.
     pub vendor: u32,

@@ -1602,6 +1602,14 @@ fn records_without_adr_0405_fields_decode() {
     assert_eq!(back.api_ids, None);
     assert_eq!(back.gpu_cores, Some(10));
 
+    // An absent `api_ids` is `None`; an `ApiIds` record must carry both IDs, so a partial
+    // one is refused rather than read as 0.
+    let ext: DeviceInfoExt = serde_json::from_str(r#"{ "api_ids": null }"#).unwrap();
+    assert_eq!(ext.api_ids, None);
+    assert!(serde_json::from_str::<DeviceInfoExt>(r#"{ "api_ids": {} }"#).is_err());
+    assert!(serde_json::from_str::<ApiIds>(r#"{ "vendor": 4318 }"#).is_err());
+    assert!(serde_json::from_str::<ApiIds>("{}").is_err());
+
     // A pre-ADR-0405 driver record inside an ext record, as JSON.
     let ext: DeviceInfoExt = serde_json::from_str(
         r#"{ "driver": { "driver": "1.4", "runtime": null, "loader": null } }"#,
