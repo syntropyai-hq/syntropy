@@ -5,9 +5,9 @@
 //! It also holds the tolerance tables of the exactness contract ([`tolerances`], RFC-0042 §6).
 //!
 //! Layer 1 in RFC-0001 §4.1, designed in RFC-0040, with the numerics of RFC-0042. Its only
-//! workspace dependency is `core`. The op registry, per-device op selection and the F32
-//! reference semantics of every op come with later tasks; the op types the trait names are
-//! placeholders until then ([`op`]).
+//! workspace dependency is `core`. It holds the op registry and the op types ([`op`],
+//! RFC-0040 §3.1, §3.2). Per-device op selection, the argument types and the F32 reference
+//! semantics of every op come with later tasks.
 
 #![forbid(unsafe_code)]
 
@@ -28,7 +28,11 @@ pub use memory::{
     AllocRequest, BufferSlice, DeviceBuffer, HostRegFlags, HostRegion, HostRegistrar, MemKind,
     Registration, Segment,
 };
-pub use op::{LayoutVersion, OpArgs, OpCaps, OpKey, OpRegistry, PreparedOp, ShapeSig};
+pub use op::{
+    ActKind, AttnKind, Fusions, GatedAct, IndexKind, LayoutVersion, OpArgs, OpCaps, OpKey, OpKind,
+    OpRegistry, PREFILL_LADDER, PoolKind, PreparedOp, RegistryError, RopeKind, RouteNorm, ScanKind,
+    ShapeClass, ShapeSig, bucket_set,
+};
 pub use provider::{CollectiveOps, KernelProvider};
 pub use stream::{
     CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPriority, WaitCmp, WakeKind,

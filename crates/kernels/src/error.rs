@@ -23,6 +23,9 @@ pub struct ErrorCode(pub u16);
 impl ErrorCode {
     /// `OpUnsupported` (RFC-0040 §13 code 1): what [`unsupported`] carries.
     pub const OP_UNSUPPORTED: Self = Self(1);
+    /// `WorkspaceExceeded` (RFC-0040 §13 code 14): a prepared op asks for more workspace than
+    /// `query` declared ([`PreparedOp::check_workspace`](crate::PreparedOp::check_workspace)).
+    pub const WORKSPACE_EXCEEDED: Self = Self(14);
 }
 
 /// A failure of a provider call (RFC-0001 §5.12; codes in RFC-0040 §13).

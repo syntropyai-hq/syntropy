@@ -1,51 +1,33 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The op types the [`KernelProvider`](crate::KernelProvider) signature names, as
-//! placeholders.
+//! The op registry and the op types the [`KernelProvider`](crate::KernelProvider) signature
+//! names (RFC-0001 §5.7; RFC-0040 §3.1, §3.2, §5.3).
 //!
-//! RFC-0040 §3 defines them, and later tasks build them: the op registry, `OpKey`,
-//! `LayoutVersion`, `ShapeSig` and `OpCaps` are COMP-E1-T02's work, and the argument types
-//! are COMP-E1-T05's. Each is declared here, empty, so that the trait has its final
-//! signature now. None can be built outside this crate, so no code comes to depend on the
-//! placeholder; those tasks give each type its fields.
+//! - [`kind`] holds the closed [`OpKind`] list of RFC-0040 §3.1, each kind's dims signature
+//!   and its profiling class.
+//! - [`key`] holds [`OpKey`], its [`Fusions`] bits and [`LayoutVersion`].
+//! - [`shape`] holds [`ShapeSig`], [`ShapeClass`] and RFC-0012 §2's bucket set.
+//! - [`caps`] holds [`OpCaps`] and [`PreparedOp`], with the workspace check of RFC-0040 §5.3.
+//! - [`registry`] holds [`OpRegistry`].
+//!
+//! The argument types are COMP-E1-T05's; [`OpArgs`] is a placeholder until then, declared
+//! here so that the trait has its final signature.
 
 use std::marker::PhantomData;
 
-/// Every op a provider implements: op kind, accepted quant schemes and dtypes, layouts and
-/// shape constraints (RFC-0001 §5.7, RFC-0040 §3). Placeholder for COMP-E1-T02.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct OpRegistry {}
+pub mod caps;
+pub mod key;
+pub mod kind;
+pub mod registry;
+pub mod shape;
 
-/// An op kind with its quant schemes, weight layout and variant (RFC-0001 §5.7,
-/// RFC-0040 §3.1). Placeholder for COMP-E1-T02.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct OpKey {}
-
-/// The version of a provider's repacked weight layout (RFC-0001 §5.6, RFC-0040 §5.4).
-/// Placeholder for COMP-E1-T02.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct LayoutVersion {}
-
-/// The shape signature an op is queried, prepared and benchmarked at (RFC-0040 §3.2).
-/// Placeholder for COMP-E1-T02.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct ShapeSig {}
-
-/// Whether an op runs on a device at given shapes, its workspace and the provider's cost
-/// estimate (RFC-0001 §5.7, RFC-0040 §3). Placeholder for COMP-E1-T02.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct OpCaps {}
-
-/// An op made ready to launch on one device at one shape (RFC-0001 §5.7). RFC-0001 names
-/// the type without fields. Placeholder for COMP-E1-T02.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct PreparedOp {}
+pub use caps::{OpCaps, PreparedOp};
+pub use key::{Fusions, LayoutVersion, OpKey};
+pub use kind::{
+    ActKind, AttnKind, GatedAct, IndexKind, OpKind, PoolKind, RopeKind, RouteNorm, ScanKind,
+};
+pub use registry::{OpRegistry, RegistryError};
+pub use shape::{PREFILL_LADDER, ShapeClass, ShapeSig, bucket_set};
 
 /// The buffers and constants one launch binds (RFC-0040 §3.5). Placeholder for
 /// COMP-E1-T05.
@@ -54,3 +36,6 @@ pub struct PreparedOp {}
 pub struct OpArgs<'a> {
     _borrows: PhantomData<&'a ()>,
 }
+
+#[cfg(test)]
+mod tests;

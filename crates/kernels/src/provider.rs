@@ -591,7 +591,9 @@ mod tests {
     }
 
     fn setup() -> (Minimal, DeviceCtx, Stream) {
-        let p = Minimal { ops: OpRegistry {} };
+        let p = Minimal {
+            ops: OpRegistry::new(),
+        };
         let opts = OpenOptions {
             streams: StreamPlan {
                 compute: 1,
