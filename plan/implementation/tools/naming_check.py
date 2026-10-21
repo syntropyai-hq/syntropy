@@ -144,11 +144,13 @@ def blobs(revision, paths):
 
 class Source:
     """One thing to check. `name` is what findings show: a path, `commit message` or a --stdin
-    label. A path that matches the list is shown as `kind #position` instead. `text` is None
-    for a binary file, whose path is still checked."""
+    label. A path that matches the list is shown as `kind #position` instead, where `position`
+    is its line in the list PATH_LISTS names, counting entries that are not checked, such as
+    submodules. `text` is None for a binary file, whose path is still checked."""
 
-    def __init__(self, kind, name, text, skip=None, is_path=False):
-        self.kind, self.name, self.text, self.skip, self.is_path = kind, name, text, skip, is_path
+    def __init__(self, kind, name, text, skip=None, is_path=False, position=None):
+        self.kind, self.name, self.text, self.skip = kind, name, text, skip
+        self.is_path, self.position = is_path, position
 
 
 # How to list the paths a `kind #N` label counts through, for each kind of path.
@@ -195,8 +197,8 @@ def sources(args, patterns):
     else:
         contents = dict(blobs(":" if args.staged else "HEAD:", paths))
     # Entries that are not blobs, such as submodules, have no content and are left out.
-    return [Source(kind, path, decode(contents[path]), is_path=True)
-            for path in paths if path in contents]
+    return [Source(kind, path, decode(contents[path]), is_path=True, position=position)
+            for position, path in enumerate(paths, 1) if path in contents]
 
 
 def message_source(path):
@@ -266,12 +268,12 @@ def run(argv):
         return PASS
     lines_found = paths_found = flagged = binary = 0
     redacted = None
-    for position, source in enumerate(checked, 1):
+    for source in checked:
         label = source.name
         path_hit = False
         if matches(source.name, patterns):
             if source.is_path:
-                label = f"{source.kind} #{position}"
+                label = f"{source.kind} #{source.position}"
                 redacted = source.kind
                 path_hit = True
                 print(f"{label}: its path matches a banned term (D5)")

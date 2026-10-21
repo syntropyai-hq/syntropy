@@ -240,6 +240,17 @@ class NamingCheckTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("naming check: PASS: 1 checked", output)
 
+    def test_a_path_number_counts_entries_that_are_not_checked(self):
+        # `staged path #N` is the Nth line of the diff listing, so a skipped submodule before the
+        # matching path still counts.
+        repo = self.repo()
+        self.git(repo, "update-index", "--add", "--cacheinfo", "160000," + "1" * 40 + ",a-sub")
+        (repo / "zorblax.md").write_text("clean\n", encoding="utf-8")
+        self.git(repo, "add", "zorblax.md")
+        code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)
+        self.assertEqual(code, 1, output)
+        self.assertIn("staged path #2: its path matches a banned term (D5)", output)
+
     def test_nothing_staged_is_skipped_with_a_notice(self):
         repo = self.repo()
         code, output = self.run_check("--banned", str(self.banned), "--staged", cwd=repo)
