@@ -97,9 +97,9 @@ Rows are the dependent task's milestone, columns the prerequisite's, in delivery
 | Depends on → | M0a | M0b | M1a | M1b | M2 | M3 | M4 |
 |---|---|---|---|---|---|---|---|
 | M0a | 387 | 0 | 0 | 0 | 0 | 0 | 0 |
-| M0b | 198 | 84 | 0 | 0 | 0 | 0 | 0 |
+| M0b | 199 | 85 | 0 | 0 | 0 | 0 | 0 |
 | M1a | 319 | 163 | 720 | 0 | 0 | 0 | 0 |
-| M1b | 23 | 27 | 85 | 83 | 0 | 0 | 0 |
+| M1b | 22 | 26 | 85 | 83 | 0 | 0 | 0 |
 | M2 | 69 | 26 | 155 | 6 | 501 | 0 | 0 |
 | M3 | 42 | 13 | 112 | 14 | 136 | 234 | 0 |
 | M4 | 7 | 6 | 36 | 0 | 18 | 24 | 22 |
@@ -118,7 +118,7 @@ External gates: `gate:` segments in a Depends cell. They add no edge; the task c
 
 | Task | Milestone | What is needed |
 |---|---|---|
-| PLC-E1-T09 | M0a | tasks that define `NodeInfo`'s field types `OsKind`, `HostFingerprint`, `ProtocolRanges`, `RolePrefs`, `InstallKind` and `SemVer` (#1524) |
+| PLC-E1-T09 | M0a | tasks that define `ResourceGraph`, `CapabilityProfile` and `NodeInfo`'s field types `OsKind`, `HostFingerprint`, `ProtocolRanges`, `RolePrefs`, `InstallKind` and `SemVer` (#1524) |
 | PLC-E1-T14 | M0a | maintainer decision on where the system-call FFI lives (RFC-0001 §4.2 rule 8 keeps `unsafe` out of `probe`) or approval of a safe-wrapper crate |
 
 Plan-rule notes. None of them fails the check; each one is a row for its area to fix under the milestone rules in RFC-0001 §16.
