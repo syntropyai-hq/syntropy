@@ -46,6 +46,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd "$here/../.." && pwd)"
 apply=false
 repo=""
 
@@ -68,7 +69,7 @@ for tool in gh jq; do
   command -v "$tool" >/dev/null || { echo "error: $tool is not installed" >&2; exit 2; }
 done
 if [ -z "$repo" ]; then
-  repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+  repo="$(cd "$root" && gh repo view --json nameWithOwner --jq .nameWithOwner)"
 fi
 if ! [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
   echo "error: '$repo' is not a repository name of the form owner/name" >&2
@@ -134,5 +135,5 @@ done
 
 if [ "$apply" = true ]; then
   echo "Checking the result."
-  cargo xtask ci repo-settings --repo "$repo"
+  (cd "$root" && cargo xtask ci repo-settings --repo "$repo")
 fi

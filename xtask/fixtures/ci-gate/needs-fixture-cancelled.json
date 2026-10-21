@@ -1,0 +1,16 @@
+{
+  "changes": {
+    "result": "success",
+    "outputs": {
+      "jobs": "[\"lint\",\"hosted-test\"]"
+    }
+  },
+  "lint": {
+    "result": "success",
+    "outputs": {}
+  },
+  "hosted-test": {
+    "result": "cancelled",
+    "outputs": {}
+  }
+}
