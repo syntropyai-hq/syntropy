@@ -246,7 +246,6 @@ patterns = []
 rigs = "lab"
 measured = "resume time against the RFC-0033 formula"
 pass = "within the formula; no client-visible error"
-added_owners = ["QUAL-E13-T07"]
 
 [[sc]]
 id = "SC-29"
