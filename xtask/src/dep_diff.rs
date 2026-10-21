@@ -220,27 +220,53 @@ pub fn compare(
 
 /// The tables of a Cargo manifest or configuration file that decide where dependencies come
 /// from: in `Cargo.toml`, `[patch.*]` and `[replace]`; in `.cargo/config.toml`, those and
-/// `[source.*]`, `[registries.*]` and `[registry]`, and the same keys written dotted
+/// `[source.*]`, `[registries.*]`, `[registry]` and `include`, and the same keys written dotted
 /// (`source.crates-io.replace-with = …`). A patch or a source replacement swaps a crate the
 /// workspace already uses for other code without adding a dependency, so it needs the same
 /// approval.
 const MANIFEST_TABLES: &[&str] = &["patch", "replace"];
-const CONFIG_TABLES: &[&str] = &["patch", "replace", "source", "registries", "registry"];
+const CONFIG_TABLES: &[&str] = &[
+    "patch",
+    "replace",
+    "source",
+    "registries",
+    "registry",
+    "include",
+];
+
+/// Whether a TOML key path, a table header's contents or the text before a `=`, starts with one
+/// of `tables`. The answer fails closed: a first segment that is quoted, so it could spell a
+/// table name with escapes, or that is not a plain bare key, counts as one.
+fn names_a_table(path: &str, tables: &[&str]) -> bool {
+    let path = path.trim();
+    if path.starts_with('"') || path.starts_with('\'') {
+        return true;
+    }
+    let first = path
+        .split(|c: char| c == '.' || c.is_whitespace())
+        .next()
+        .unwrap_or("");
+    let bare = !first.is_empty()
+        && first
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    !bare || tables.contains(&first)
+}
 
 /// The setting lines of `text` under `tables`, each as `[<header>] <line>` or `<line>` for a
-/// dotted key at the top, with comments and surrounding space removed.
+/// key at the top, with comments and surrounding space removed. A file with a multi-line string
+/// is read whole instead, as one setting that names its contents' digest, because such a string
+/// could hold a line that looks like a table header and hide the lines after it.
 pub fn source_settings(text: &str, tables: &[&str]) -> BTreeSet<String> {
-    let first_key = |name: &str| {
-        name.trim_matches(|c| c == '[' || c == ']')
-            .split('.')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_matches('"')
-            .to_owned()
-    };
     let mut settings = BTreeSet::new();
-    // `None` before any header, where dotted keys sit; `Some(None)` under another table.
+    if text.contains("\"\"\"") || text.contains("'''") {
+        settings.insert(format!(
+            "the whole file, which holds a multi-line string (digest {:016x})",
+            fnv1a(text)
+        ));
+        return settings;
+    }
+    // `None` before any header, where top-level keys sit; `Some(None)` under another table.
     let mut header: Option<Option<String>> = None;
     for line in text.lines() {
         let line = crate::licences::toml::strip_comment(line).trim();
@@ -253,7 +279,7 @@ pub fn source_settings(text: &str, tables: &[&str]) -> BTreeSet<String> {
                 .trim_end_matches(']')
                 .trim()
                 .to_owned();
-            let matching = tables.contains(&first_key(&name).as_str()).then_some(name);
+            let matching = names_a_table(&name, tables).then_some(name);
             if let Some(name) = &matching {
                 settings.insert(format!("[{name}]"));
             }
@@ -266,13 +292,8 @@ pub fn source_settings(text: &str, tables: &[&str]) -> BTreeSet<String> {
             }
             Some(None) => {}
             None => {
-                let key = line
-                    .split(['=', '.'])
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"');
-                if tables.contains(&key) {
+                let key = line.split('=').next().unwrap_or("");
+                if names_a_table(key, tables) {
                     settings.insert(line.to_owned());
                 }
             }
@@ -281,10 +302,33 @@ pub fn source_settings(text: &str, tables: &[&str]) -> BTreeSet<String> {
     settings
 }
 
+/// FNV-1a, 64 bits: a digest of a file compared whole, so a change shows without printing it.
+fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// What a walk of a tree finds: every cargo configuration file, and every symbolic link to a
+/// directory or named `.cargo`, which cargo follows and the walk does not.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Found {
+    pub configs: Vec<String>,
+    pub links: Vec<String>,
+}
+
 /// Every `.cargo/config.toml` and `.cargo/config` under `root`, root-relative, except under
-/// `skip` (the head checkout, when it lies inside the base), `target/` and `.git/`.
-fn cargo_configs(root: &Path, skip: Option<&Path>) -> Result<Vec<String>, String> {
-    let mut found = Vec::new();
+/// `skip` (the head checkout, when it lies inside the base), `target/`, `.git/` and the root of
+/// another workspace, such as a test fixture's. A configuration file applies to the builds cargo
+/// runs in its directory and below, so one inside another workspace never reaches this one's.
+fn cargo_configs(root: &Path, skip: Option<&Path>) -> Result<Found, String> {
+    let relative = |path: &Path| {
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let mut found = Found::default();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
         let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -292,27 +336,84 @@ fn cargo_configs(root: &Path, skip: Option<&Path>) -> Result<Vec<String>, String
             let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
             let path = entry.path();
             let name = entry.file_name();
+            if skip.is_some_and(|skip| path == skip) || name == "target" || name == ".git" {
+                continue;
+            }
             let kind = entry
                 .file_type()
                 .map_err(|e| format!("{}: {e}", path.display()))?;
-            if !kind.is_dir() || skip.is_some_and(|skip| path == skip) {
+            if kind.is_symlink() {
+                if name == ".cargo" || path.is_dir() {
+                    found.links.push(relative(&path));
+                }
+                continue;
+            }
+            if !kind.is_dir() {
                 continue;
             }
             if name == ".cargo" {
                 for file in ["config.toml", "config"] {
                     if path.join(file).is_file() {
-                        let relative = path.join(file);
-                        let relative = relative.strip_prefix(root).unwrap_or(&relative);
-                        found.push(relative.to_string_lossy().replace('\\', "/"));
+                        found.configs.push(relative(&path.join(file)));
                     }
                 }
-            } else if name != "target" && name != ".git" {
+            } else if !is_workspace_root(&path) {
                 pending.push(path);
             }
         }
     }
-    found.sort();
+    found.configs.sort();
+    found.links.sort();
     Ok(found)
+}
+
+/// Whether `dir` holds the root manifest of a workspace of its own: a `Cargo.toml` with a
+/// `[workspace]` table.
+fn is_workspace_root(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|text| {
+        text.lines()
+            .any(|line| crate::licences::toml::strip_comment(line).trim() == "[workspace]")
+    })
+}
+
+/// The root-relative files an `include` in the configuration file `file` names: each quoted
+/// string ending in `.toml` on an `include` line or in an `[[include]]` table, relative to
+/// `file`'s directory. `None` for one that leaves the tree.
+fn included(file: &str, text: &str) -> Vec<Option<String>> {
+    let dir = Path::new(file).parent().unwrap_or(Path::new(""));
+    let mut in_include = false;
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        let line = crate::licences::toml::strip_comment(line).trim();
+        if line.starts_with('[') {
+            in_include = line.trim_matches(|c| c == '[' || c == ']').trim() == "include";
+            continue;
+        }
+        let key = line.split('=').next().unwrap_or("").trim();
+        if !(in_include || key == "include") {
+            continue;
+        }
+        for (k, quoted) in line.split('"').enumerate() {
+            if k % 2 == 1 && quoted.ends_with(".toml") {
+                let mut parts: Vec<String> = Vec::new();
+                let mut inside = !quoted.starts_with('/');
+                for part in dir
+                    .join(quoted)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .split('/')
+                {
+                    match part {
+                        "" | "." => {}
+                        ".." => inside &= parts.pop().is_some(),
+                        part => parts.push(part.to_owned()),
+                    }
+                }
+                paths.push(inside.then(|| parts.join("/")));
+            }
+        }
+    }
+    paths
 }
 
 /// Each source setting of the tree at `root`, as `<file>: <setting>`.
@@ -324,9 +425,33 @@ fn sources(root: &Path, skip: Option<&Path>) -> Result<BTreeSet<String>, String>
         .into_iter()
         .map(|setting| format!("Cargo.toml: {setting}"))
         .collect();
-    for file in cargo_configs(root, skip)? {
+    let found = cargo_configs(root, skip)?;
+    for link in found.links {
+        all.insert(format!(
+            "{link}: a symbolic link to a directory, which cargo follows and this check does not"
+        ));
+    }
+    for file in found.configs {
+        let text = read(&file)?;
+        for path in included(&file, &text) {
+            match path {
+                Some(path) => match read(&path) {
+                    Ok(included) => all.extend(
+                        source_settings(&included, CONFIG_TABLES)
+                            .into_iter()
+                            .map(|setting| format!("{path} (included by {file}): {setting}")),
+                    ),
+                    Err(_) => {
+                        all.insert(format!("{file}: includes {path}, which cannot be read"));
+                    }
+                },
+                None => {
+                    all.insert(format!("{file}: includes a file outside the tree"));
+                }
+            }
+        }
         all.extend(
-            source_settings(&read(&file)?, CONFIG_TABLES)
+            source_settings(&text, CONFIG_TABLES)
                 .into_iter()
                 .map(|setting| format!("{file}: {setting}")),
         );
