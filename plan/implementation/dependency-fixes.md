@@ -347,7 +347,7 @@ The kernel and op items of #1487's comments, applied with R9. RFC-0040's M0 row 
 
 ## Pass 9 (2026-10-21): the second scan's leftovers
 
-The gaps #1518 collected while #1487 was fixed, settled with R9. Where the epics and RFC-0001 §16 disagree, the ggml provider in M0a follows the RFC, and `qwen_moe` in M0a is drafted for the maintainers as OQ-PRC-21.
+The gaps #1518 collected while #1487 was fixed, settled with R9. Where the epics and RFC-0001 §16 disagree, the ggml provider in M0a follows the RFC, and `qwen_moe` in M0a is drafted for the maintainers as OQ-PRC-23.
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
