@@ -558,6 +558,10 @@ pub struct GatheredCand {
 
 impl GatheredCand {
     /// Gathers the candidate's values at the IDs `reference` names.
+    ///
+    /// The IDs are validated as [`StoredRef::from_logits`] validates them: every ID must be in
+    /// the vocabulary, the top-K must hold no ID twice, and no tail-sample ID may be in the
+    /// top-K, since the tail sample is drawn from V∖T (RFC-0060 §5.3).
     pub fn from_logits(logits: &[f32], reference: &RefView<'_>) -> Result<Self, MetricError> {
         let z = widen_all(logits, "logits")?;
         let vocab = z.len();
@@ -584,7 +588,14 @@ impl GatheredCand {
         let tail_sample = reference
             .tail_sample
             .iter()
-            .map(|e| check(e.id).map(|i| logits[i]))
+            .map(|e| {
+                let i = check(e.id)?;
+                if in_top[i] {
+                    Err(MetricError::TailIdInTopK { id: e.id })
+                } else {
+                    Ok(logits[i])
+                }
+            })
             .collect::<Result<_, _>>()?;
         let lse = lse_where(&z, |_| true);
         let log_s = lse_where(&z, |i| !in_top[i]) - lse;
