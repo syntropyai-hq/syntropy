@@ -16,7 +16,7 @@ use proptest::prelude::*;
 use serde::{Deserialize, Serialize, Serializer};
 use syntropy_core::ErrorClass;
 use syntropy_net::ctl::envelope::{
-    self, COMPRESS_ABOVE, DecodeError, EncodeError, Encoding, LEN_BYTES, MAX_BODY,
+    self, BodyLimit, COMPRESS_ABOVE, DecodeError, EncodeError, Encoding, LEN_BYTES, MAX_BODY,
     ZSTD_WINDOW_LOG_MAX,
 };
 
@@ -123,7 +123,10 @@ fn the_same_state_gives_the_golden_bytes() {
     let frame = envelope::encode(&state()).unwrap();
     assert_eq!(hex(&frame[..LEN_BYTES + 1]), GOLDEN_FRAME_PREFIX);
     assert_eq!(&frame[LEN_BYTES + 1..], body.as_slice());
-    assert_eq!(envelope::decode::<State>(&frame).unwrap(), state());
+    assert_eq!(
+        envelope::decode::<State>(&frame, BodyLimit::MAX).unwrap(),
+        state()
+    );
 }
 
 #[test]
@@ -208,7 +211,7 @@ fn unknown_fields_are_ignored_and_missing_ones_take_their_default() {
     })
     .unwrap();
     assert_eq!(
-        envelope::decode::<Inner>(&newer).unwrap(),
+        envelope::decode::<Inner>(&newer, BodyLimit::MAX).unwrap(),
         Inner {
             term: 3,
             flag: true
@@ -220,7 +223,7 @@ fn unknown_fields_are_ignored_and_missing_ones_take_their_default() {
     })
     .unwrap();
     assert_eq!(
-        envelope::decode::<InnerWithDefault>(&older).unwrap(),
+        envelope::decode::<InnerWithDefault>(&older, BodyLimit::MAX).unwrap(),
         InnerWithDefault {
             term: 3,
             flag: true,
@@ -246,13 +249,19 @@ fn bodies_over_64_kib_are_compressed_and_the_rest_are_not() {
     assert_eq!(envelope::to_cbor(&at_limit).unwrap().len(), COMPRESS_ABOVE);
     let frame = envelope::encode(&at_limit).unwrap();
     assert_eq!(frame[LEN_BYTES], Encoding::Cbor as u8);
-    assert_eq!(envelope::decode::<String>(&frame).unwrap(), at_limit);
+    assert_eq!(
+        envelope::decode::<String>(&frame, BodyLimit::MAX).unwrap(),
+        at_limit
+    );
 
     let over = text_of_body_len(COMPRESS_ABOVE + 1);
     let frame = envelope::encode(&over).unwrap();
     assert_eq!(frame[LEN_BYTES], Encoding::ZstdCbor as u8);
     assert!(frame.len() < 1024, "{} bytes", frame.len());
-    assert_eq!(envelope::decode::<String>(&frame).unwrap(), over);
+    assert_eq!(
+        envelope::decode::<String>(&frame, BodyLimit::MAX).unwrap(),
+        over
+    );
     // Compression is deterministic too, within one zstd version.
     assert_eq!(envelope::encode(&over).unwrap(), frame);
 }
@@ -267,8 +276,11 @@ fn a_body_over_64_mib_is_refused_on_both_sides() {
     // A `len` field that declares more is refused before anything is read or allocated.
     let declared = u32::try_from(MAX_BODY + 2).unwrap().to_le_bytes();
     assert_eq!(
-        envelope::message_len(declared).unwrap_err(),
-        DecodeError::TooLarge { len: MAX_BODY + 1 }
+        envelope::message_len(declared, BodyLimit::MAX).unwrap_err(),
+        DecodeError::TooLarge {
+            len: MAX_BODY + 1,
+            limit: MAX_BODY,
+        }
     );
 }
 
@@ -305,8 +317,15 @@ fn a_compressed_body_that_expands_past_64_mib_is_refused() {
     // first 18 bytes, every zstd frame header and part of a block, are enough.
     let declared = zstd::bulk::compress(&zeros, 3).unwrap();
     for body in [&declared[..], &declared[..18]] {
-        let error = envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, body)).unwrap_err();
-        assert_eq!(error, DecodeError::TooLarge { len: MAX_BODY + 1 });
+        let error = envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, body), BodyLimit::MAX)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            DecodeError::TooLarge {
+                len: MAX_BODY + 1,
+                limit: MAX_BODY,
+            }
+        );
         assert_eq!(error.class(), ErrorClass::InvalidRequest);
     }
     // A frame that declares no size is cut off at the limit's first extra byte.
@@ -317,8 +336,12 @@ fn a_compressed_body_that_expands_past_64_mib_is_refused() {
         unsized_bomb.len()
     );
     assert_eq!(
-        envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &unsized_bomb)).unwrap_err(),
-        DecodeError::TooLarge { len: MAX_BODY + 1 }
+        envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &unsized_bomb), BodyLimit::MAX)
+            .unwrap_err(),
+        DecodeError::TooLarge {
+            len: MAX_BODY + 1,
+            limit: MAX_BODY,
+        }
     );
 }
 
@@ -328,13 +351,94 @@ fn a_zstd_window_over_64_mib_is_refused() {
     let cbor = envelope::to_cbor(&text).unwrap();
     let at_limit = zstd_unsized(&cbor, ZSTD_WINDOW_LOG_MAX);
     assert_eq!(
-        envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &at_limit)).unwrap(),
+        envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &at_limit), BodyLimit::MAX)
+            .unwrap(),
         text
     );
     let over = zstd_unsized(&cbor, ZSTD_WINDOW_LOG_MAX + 1);
-    let error = envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &over)).unwrap_err();
+    let error = envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &over), BodyLimit::MAX)
+        .unwrap_err();
     assert!(matches!(error, DecodeError::Decompress(_)), "{error:?}");
     assert_eq!(error.class(), ErrorClass::Integrity);
+}
+
+#[test]
+fn a_reader_can_set_a_lower_limit() {
+    assert_eq!(BodyLimit::new(MAX_BODY), Some(BodyLimit::MAX));
+    assert_eq!(BodyLimit::new(MAX_BODY + 1), None);
+    assert_eq!(BodyLimit::MAX.window_log(), ZSTD_WINDOW_LOG_MAX);
+    assert_eq!(BodyLimit::new(0).unwrap().window_log(), 10);
+    const MIB: usize = 1 << 20;
+    let small = BodyLimit::new(MIB).unwrap();
+    assert_eq!(small.window_log(), 20);
+    let too_large = DecodeError::TooLarge {
+        len: MIB + 1,
+        limit: MIB,
+    };
+
+    // The declared `len` is checked against the reader's limit, not only the protocol's.
+    let declared = u32::try_from(1 + MIB + 1).unwrap().to_le_bytes();
+    assert_eq!(
+        envelope::message_len(declared, small).unwrap_err(),
+        too_large
+    );
+    assert_eq!(
+        envelope::message_len(declared, BodyLimit::MAX).unwrap(),
+        MIB + 2
+    );
+
+    // A compressed body that decompresses to the limit decodes, with the window the limit
+    // allows; one byte more is refused by the size its frame header declares.
+    let at = text_of_body_len(MIB);
+    let frame = envelope::encode(&at).unwrap();
+    assert_eq!(frame[LEN_BYTES], Encoding::ZstdCbor as u8);
+    assert_eq!(envelope::decode::<String>(&frame, small).unwrap(), at);
+    let over = text_of_body_len(MIB + 1);
+    let frame = envelope::encode(&over).unwrap();
+    let error = envelope::decode::<String>(&frame, small).unwrap_err();
+    assert_eq!(error, too_large);
+    assert_eq!(error.class(), ErrorClass::InvalidRequest);
+    assert_eq!(
+        envelope::decode::<String>(&frame, BodyLimit::MAX).unwrap(),
+        over
+    );
+
+    // Without a declared size, decompression stops at the limit's first extra byte.
+    let unsized_over = zstd_unsized(&envelope::to_cbor(&over).unwrap(), 20);
+    assert_eq!(
+        envelope::decode::<String>(&frame_of(Encoding::ZstdCbor, &unsized_over), small)
+            .unwrap_err(),
+        too_large
+    );
+
+    // A window larger than the limit needs is refused, though the content fits.
+    let wide = frame_of(
+        Encoding::ZstdCbor,
+        &zstd_unsized(&envelope::to_cbor(&at).unwrap(), 21),
+    );
+    let error = envelope::decode::<String>(&wide, small).unwrap_err();
+    assert!(matches!(error, DecodeError::Decompress(_)), "{error:?}");
+    assert_eq!(
+        envelope::decode::<String>(&wide, BodyLimit::MAX).unwrap(),
+        at
+    );
+
+    // An uncompressed body over the limit is refused before it is parsed.
+    let tiny = BodyLimit::new(1024).unwrap();
+    let frame = envelope::encode(&text_of_body_len(1025)).unwrap();
+    assert_eq!(frame[LEN_BYTES], Encoding::Cbor as u8);
+    let tiny_error = DecodeError::TooLarge {
+        len: 1025,
+        limit: 1024,
+    };
+    assert_eq!(
+        envelope::decode::<String>(&frame, tiny).unwrap_err(),
+        tiny_error
+    );
+    assert_eq!(
+        envelope::decode_body::<String>(&frame[LEN_BYTES..], tiny).unwrap_err(),
+        tiny_error
+    );
 }
 
 #[test]
@@ -345,22 +449,22 @@ fn frames_are_checked_against_their_len_field() {
     })
     .unwrap();
     assert!(matches!(
-        envelope::decode::<Inner>(&frame[..frame.len() - 1]),
+        envelope::decode::<Inner>(&frame[..frame.len() - 1], BodyLimit::MAX),
         Err(DecodeError::Truncated { .. })
     ));
     let mut longer = frame.clone();
     longer.push(0);
     assert_eq!(
-        envelope::decode::<Inner>(&longer).unwrap_err(),
+        envelope::decode::<Inner>(&longer, BodyLimit::MAX).unwrap_err(),
         DecodeError::TrailingBytes { extra: 1 }
     );
     let mut unknown = frame.clone();
     unknown[LEN_BYTES] = 7;
-    let error = envelope::decode::<Inner>(&unknown).unwrap_err();
+    let error = envelope::decode::<Inner>(&unknown, BodyLimit::MAX).unwrap_err();
     assert_eq!(error, DecodeError::UnknownEncoding(7));
     assert_eq!(error.class(), ErrorClass::Unsupported);
     assert_eq!(
-        envelope::message_len([0, 0, 0, 0]).unwrap_err(),
+        envelope::message_len([0, 0, 0, 0], BodyLimit::MAX).unwrap_err(),
         DecodeError::Truncated { needed: 1, got: 0 }
     );
 }
@@ -399,13 +503,13 @@ fn datagrams_carry_a_tag_and_respect_the_path_limit() {
 #[test]
 fn a_mismatched_type_is_an_invalid_request_and_damage_is_integrity() {
     let frame = envelope::encode(&"text").unwrap();
-    let error = envelope::decode::<Inner>(&frame).unwrap_err();
+    let error = envelope::decode::<Inner>(&frame, BodyLimit::MAX).unwrap_err();
     assert_eq!(error.class(), ErrorClass::InvalidRequest, "{error}");
     let mut damaged = envelope::encode(&state()).unwrap();
     damaged.truncate(damaged.len() - 3);
     let len = u32::try_from(damaged.len() - LEN_BYTES).unwrap();
     damaged[..LEN_BYTES].copy_from_slice(&len.to_le_bytes());
-    let error = envelope::decode::<State>(&damaged).unwrap_err();
+    let error = envelope::decode::<State>(&damaged, BodyLimit::MAX).unwrap_err();
     assert_eq!(error.class(), ErrorClass::Integrity, "{error}");
 }
 
@@ -454,8 +558,10 @@ proptest! {
     #[test]
     fn decode_is_total_over_arbitrary_bytes(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
         for error in [
-            envelope::decode::<State>(&bytes).err(),
-            envelope::decode_body::<State>(&bytes).err(),
+            envelope::decode::<State>(&bytes, BodyLimit::MAX).err(),
+            envelope::decode_body::<State>(&bytes, BodyLimit::MAX).err(),
+            envelope::decode::<State>(&bytes, BodyLimit::new(64).unwrap()).err(),
+            envelope::decode_body::<State>(&bytes, BodyLimit::new(64).unwrap()).err(),
             envelope::decode_datagram::<State>(&bytes).err(),
             envelope::from_cbor::<State>(&bytes).err(),
             envelope::from_cbor::<BTreeMap<String, Vec<u64>>>(&bytes).err(),
@@ -477,7 +583,7 @@ proptest! {
         let mut frame = u32::try_from(1 + body.len()).unwrap().to_le_bytes().to_vec();
         frame.push(if compressed { Encoding::ZstdCbor as u8 } else { Encoding::Cbor as u8 });
         frame.extend_from_slice(&body);
-        if let Err(error) = envelope::decode::<State>(&frame) {
+        if let Err(error) = envelope::decode::<State>(&frame, BodyLimit::MAX) {
             prop_assert!(classified(&error), "{error}");
         }
     }
@@ -493,7 +599,7 @@ proptest! {
             let i = at.index(frame.len());
             frame[i] ^= byte | 1;
         }
-        if let Err(error) = envelope::decode::<State>(&frame) {
+        if let Err(error) = envelope::decode::<State>(&frame, BodyLimit::MAX) {
             prop_assert!(classified(&error), "{error}");
         }
     }
@@ -503,6 +609,6 @@ proptest! {
     fn states_round_trip_and_encode_deterministically(state in arb_state()) {
         let frame = envelope::encode(&state).unwrap();
         prop_assert_eq!(envelope::encode(&state).unwrap(), frame.clone());
-        prop_assert_eq!(envelope::decode::<State>(&frame).unwrap(), state);
+        prop_assert_eq!(envelope::decode::<State>(&frame, BodyLimit::MAX).unwrap(), state);
     }
 }

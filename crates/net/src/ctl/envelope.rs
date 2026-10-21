@@ -32,9 +32,11 @@
 //! message. Types never use `deny_unknown_fields`.
 //!
 //! **Size.** A CBOR body over 64 KiB is zstd-compressed at level 3. No body, before or after
-//! compression, may exceed 64 MiB; larger state travels on the blob plane by digest. The decoder
-//! also refuses a zstd window over 64 MiB, so decompressing one message takes at most the limit
-//! plus one window.
+//! compression, may exceed 64 MiB; larger state travels on the blob plane by digest. A reader
+//! passes a [`BodyLimit`] to [`decode`], at most 64 MiB: the control plane reads with
+//! [`BodyLimit::MAX`], and the join ALPN, whose peers are not yet admitted, with a smaller one
+//! (DIST-E5-T02). The decoder also refuses a zstd window larger than the limit needs, so
+//! decompressing one message takes at most the limit plus one window of the same size.
 //!
 //! **Decoding is total.** Every function that reads bytes returns a [`DecodeError`] for any input
 //! it cannot accept, never panics, and checks every declared length against the limit and the
@@ -64,6 +66,45 @@ pub const ZSTD_LEVEL: i32 = 3;
 /// zstd's own default allows 2^27.
 pub const ZSTD_WINDOW_LOG_MAX: u32 = 26;
 const _: () = assert!(1 << ZSTD_WINDOW_LOG_MAX == MAX_BODY);
+
+/// The largest body a reader accepts, before and after decompression: at most [`MAX_BODY`].
+/// How much memory a decoded message takes depends on its type as well as its size, so a
+/// reader of messages from peers it has not admitted passes a smaller limit than the control
+/// plane's [`BodyLimit::MAX`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BodyLimit(usize);
+
+impl BodyLimit {
+    /// The protocol's limit, [`MAX_BODY`].
+    pub const MAX: BodyLimit = BodyLimit(MAX_BODY);
+
+    /// A limit of `bytes`, or `None` if that is over [`MAX_BODY`].
+    pub const fn new(bytes: usize) -> Option<BodyLimit> {
+        if bytes > MAX_BODY {
+            None
+        } else {
+            Some(BodyLimit(bytes))
+        }
+    }
+
+    /// The limit in bytes.
+    pub const fn bytes(self) -> usize {
+        self.0
+    }
+
+    /// The largest zstd window this limit needs, as a power of two: the limit rounded up to a
+    /// power of two, between zstd's smallest window, 2^10 bytes, and 2^[`ZSTD_WINDOW_LOG_MAX`].
+    pub const fn window_log(self) -> u32 {
+        let bits = usize::BITS - self.0.saturating_sub(1).leading_zeros();
+        if bits < 10 {
+            10
+        } else if bits > ZSTD_WINDOW_LOG_MAX {
+            ZSTD_WINDOW_LOG_MAX
+        } else {
+            bits
+        }
+    }
+}
 
 /// The bytes of the `len` field.
 pub const LEN_BYTES: usize = 4;
@@ -151,8 +192,8 @@ pub enum DecodeError {
     Truncated { needed: usize, got: usize },
     /// Bytes left over after one complete message.
     TrailingBytes { extra: usize },
-    /// A declared or decompressed body over [`MAX_BODY`].
-    TooLarge { len: usize },
+    /// A declared or decompressed body over the reader's [`BodyLimit`], `limit` bytes.
+    TooLarge { len: usize, limit: usize },
     /// An `enc` byte this build does not know.
     UnknownEncoding(u8),
     /// The compressed body is not valid zstd.
@@ -187,8 +228,8 @@ impl fmt::Display for DecodeError {
             DecodeError::TrailingBytes { extra } => {
                 write!(f, "{extra} bytes after the end of the message")
             }
-            DecodeError::TooLarge { len } => {
-                write!(f, "a {len}-byte body is over the {MAX_BODY}-byte limit")
+            DecodeError::TooLarge { len, limit } => {
+                write!(f, "a {len}-byte body is over the {limit}-byte limit")
             }
             DecodeError::UnknownEncoding(byte) => write!(f, "unknown body encoding {byte}"),
             DecodeError::Decompress(message) => write!(f, "zstd decompression failed: {message}"),
@@ -216,7 +257,10 @@ pub fn to_cbor<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, EncodeError>
 /// Reads one CBOR value of type `T` that fills `body` exactly.
 pub fn from_cbor<T: DeserializeOwned>(body: &[u8]) -> Result<T, DecodeError> {
     if body.len() > MAX_BODY {
-        return Err(DecodeError::TooLarge { len: body.len() });
+        return Err(DecodeError::TooLarge {
+            len: body.len(),
+            limit: MAX_BODY,
+        });
     }
     // Every length the CBOR declares must fit in the bytes present, so the reader never
     // allocates for more than the input holds.
@@ -264,29 +308,33 @@ pub fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, EncodeError> 
     Ok(frame)
 }
 
-/// The number of bytes that follow a message's `len` field, from those four bytes. A stream
-/// reader calls this before it reads or allocates the rest.
-pub fn message_len(prefix: [u8; LEN_BYTES]) -> Result<usize, DecodeError> {
+/// The number of bytes that follow a message's `len` field, from those four bytes, refused if the
+/// body would be over `limit`. A stream reader calls this before it reads or allocates the rest.
+pub fn message_len(prefix: [u8; LEN_BYTES], limit: BodyLimit) -> Result<usize, DecodeError> {
     // `as usize` widens: a u32 always fits in usize on every target RFC-0001 supports.
     let len = u32::from_le_bytes(prefix) as usize;
     if len == 0 {
         return Err(DecodeError::Truncated { needed: 1, got: 0 });
     }
-    if len - 1 > MAX_BODY {
-        return Err(DecodeError::TooLarge { len: len - 1 });
+    if len - 1 > limit.bytes() {
+        return Err(DecodeError::TooLarge {
+            len: len - 1,
+            limit: limit.bytes(),
+        });
     }
     Ok(len)
 }
 
-/// Reads one stream message of type `T` that fills `frame` exactly: `len | enc | body`.
-pub fn decode<T: DeserializeOwned>(frame: &[u8]) -> Result<T, DecodeError> {
+/// Reads one stream message of type `T` that fills `frame` exactly: `len | enc | body`, with no
+/// body, before or after decompression, over `limit`.
+pub fn decode<T: DeserializeOwned>(frame: &[u8], limit: BodyLimit) -> Result<T, DecodeError> {
     let Some((prefix, rest)) = frame.split_first_chunk::<LEN_BYTES>() else {
         return Err(DecodeError::Truncated {
             needed: LEN_BYTES,
             got: frame.len(),
         });
     };
-    let len = message_len(*prefix)?;
+    let len = message_len(*prefix, limit)?;
     match rest.len().cmp(&len) {
         std::cmp::Ordering::Less => Err(DecodeError::Truncated {
             needed: len,
@@ -295,21 +343,28 @@ pub fn decode<T: DeserializeOwned>(frame: &[u8]) -> Result<T, DecodeError> {
         std::cmp::Ordering::Greater => Err(DecodeError::TrailingBytes {
             extra: rest.len() - len,
         }),
-        std::cmp::Ordering::Equal => decode_body(rest),
+        std::cmp::Ordering::Equal => decode_body(rest, limit),
     }
 }
 
-/// Reads one message from the bytes after its `len` field: `enc | body`.
-pub fn decode_body<T: DeserializeOwned>(enc_and_body: &[u8]) -> Result<T, DecodeError> {
+/// Reads one message from the bytes after its `len` field: `enc | body`, with no body, before or
+/// after decompression, over `limit`.
+pub fn decode_body<T: DeserializeOwned>(
+    enc_and_body: &[u8],
+    limit: BodyLimit,
+) -> Result<T, DecodeError> {
     let Some((&enc, body)) = enc_and_body.split_first() else {
         return Err(DecodeError::Truncated { needed: 1, got: 0 });
     };
-    if body.len() > MAX_BODY {
-        return Err(DecodeError::TooLarge { len: body.len() });
+    if body.len() > limit.bytes() {
+        return Err(DecodeError::TooLarge {
+            len: body.len(),
+            limit: limit.bytes(),
+        });
     }
     match Encoding::from_byte(enc) {
         Some(Encoding::Cbor) => from_cbor(body),
-        Some(Encoding::ZstdCbor) => from_cbor(&decompress(body)?),
+        Some(Encoding::ZstdCbor) => from_cbor(&decompress(body, limit)?),
         None => Err(DecodeError::UnknownEncoding(enc)),
     }
 }
@@ -346,33 +401,37 @@ pub fn decode_datagram<T: DeserializeOwned>(datagram: &[u8]) -> Result<(u8, T), 
     Ok((tag, from_cbor(body)?))
 }
 
-/// The decompressed body, refused once it passes [`MAX_BODY`]. A small compressed body cannot
-/// make the reader hold more than the limit and one window:
+/// The decompressed body, refused once it passes `limit`. A small compressed body cannot make the
+/// reader hold more than the limit and one window:
 /// - a frame header that declares content over the limit is refused before decoding starts;
-/// - a frame that asks for a window over 2^[`ZSTD_WINDOW_LOG_MAX`] bytes fails to decode;
-/// - the output grows by doubling from 64 KiB, its capacity never past `MAX_BODY + 1` bytes, and
-///   reading stops at that byte.
-fn decompress(body: &[u8]) -> Result<Vec<u8>, DecodeError> {
+/// - a frame that asks for a window over 2^[`BodyLimit::window_log`] bytes fails to decode: a
+///   frame never needs a window larger than its content;
+/// - the output grows by doubling from 64 KiB, its capacity never past the limit plus one byte,
+///   and reading stops at that byte.
+fn decompress(body: &[u8], limit: BodyLimit) -> Result<Vec<u8>, DecodeError> {
+    let max = limit.bytes();
     let failed = |error: std::io::Error| DecodeError::Decompress(error.to_string());
     if let Ok(Some(declared)) = zstd::zstd_safe::get_frame_content_size(body)
-        && declared > MAX_BODY as u64
+        && declared > max as u64
     {
         return Err(DecodeError::TooLarge {
             len: usize::try_from(declared).unwrap_or(usize::MAX),
+            limit: max,
         });
     }
     let mut decoder = zstd::stream::read::Decoder::with_buffer(body).map_err(failed)?;
-    decoder
-        .window_log_max(ZSTD_WINDOW_LOG_MAX)
-        .map_err(failed)?;
+    decoder.window_log_max(limit.window_log()).map_err(failed)?;
     let mut out = Vec::new();
     let mut filled = 0;
     loop {
         if filled == out.len() {
-            if filled > MAX_BODY {
-                return Err(DecodeError::TooLarge { len: filled });
+            if filled > max {
+                return Err(DecodeError::TooLarge {
+                    len: filled,
+                    limit: max,
+                });
             }
-            let grown = (out.len() * 2).clamp(COMPRESS_ABOVE, MAX_BODY + 1);
+            let grown = (out.len() * 2).clamp(COMPRESS_ABOVE.min(max + 1), max + 1);
             out.reserve_exact(grown - out.len());
             out.resize(grown, 0);
         }
@@ -591,7 +650,7 @@ mod tests {
         for error in [
             DecodeError::Truncated { needed: 1, got: 0 },
             DecodeError::TrailingBytes { extra: 1 },
-            DecodeError::TooLarge { len: 1 },
+            DecodeError::TooLarge { len: 1, limit: 0 },
             DecodeError::UnknownEncoding(9),
             DecodeError::Decompress(String::new()),
             DecodeError::Malformed(String::new()),
