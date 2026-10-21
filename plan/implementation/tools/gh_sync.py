@@ -19,7 +19,7 @@ use the org's "Epic" issue type if one exists, and "Feature" otherwise. Every
 title and body is checked against the D5 banned-terms file (--banned), which
 is kept outside the repository, and the run stops on any match. GitHub allows
 about 500 content-creating requests an hour, so the script waits --interval
-seconds between writes (default 7.5) and backs off when GitHub asks it to.
+seconds between writes (default 9) and backs off when GitHub asks it to.
 Every run starts by reading what already exists, so an interrupted run can
 simply be started again.
 """
