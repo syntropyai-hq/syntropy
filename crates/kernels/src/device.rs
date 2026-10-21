@@ -96,8 +96,10 @@ pub struct ProviderDevice {
 /// `DeviceClass` with different fields (Metal by family and core count, Vulkan by vendor,
 /// device and driver, CPU by architecture and ISA level, plus an `Npu` variant), and `core`
 /// implements that one. The two RFCs conflict, and which definition `PackKey` uses is a
-/// maintainer decision (issue #1499, item 1). Until it is made, this crate carries RFC-0040's
-/// definition as COMP-E1-T01 lists it, and `core`'s type is unchanged.
+/// maintainer decision (issue #1499, item 1). ADR-0405 (PR #1523, Proposed) would put one
+/// `DeviceClass` in `core`, RFC-0040's variants plus `Npu`, and make this a re-export of it.
+/// Until a decision is accepted, this crate carries RFC-0040's definition as COMP-E1-T01
+/// lists it, and `core`'s type is unchanged.
 ///
 /// RFC-0040 names the Metal family type `AppleFamily`; this uses `core`'s
 /// [`AppleGpuFamily`], RFC-0010's type for the same Metal GPU family.
