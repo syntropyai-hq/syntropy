@@ -174,22 +174,37 @@ jobs:
           gh api --method GET -H "Accept: application/vnd.github.raw" \
             "repos/$REPO/contents/governance/maintainers.toml" -f ref="$BASE_REF" \
             > "$RUNNER_TEMP/maintainers.toml"
-      # Bootstrap: until the base branch has the `dep-diff` job, which holds only until the PR
-      # that adds it merges, that PR is judged by its own. A base that fails to build fails here.
-      - name: Find the base branch's dep-diff
-        id: evaluator
+      # The base branch's `dep-diff` decides. `cargo xtask` exits 2 on a usage error, which an
+      # unknown job is: that exit code says the base has no `dep-diff` job. Bootstrap: only #1590,
+      # the PR that adds the job, may then be judged by its own; every other such base fails.
+      - name: cargo xtask ci dep-diff, from the base branch
+        id: gate
         if: github.event_name != 'merge_group'
+        env:
+          NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          jobs="$(cargo xtask ci --list)"
-          if awk '$1 == "dep-diff" { found = 1 } END { exit !found }' <<<"$jobs"; then
-            echo "dir=$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::the base branch has no dep-diff job yet, so this PR's own judges it"
-            echo "dir=$GITHUB_WORKSPACE/pr" >> "$GITHUB_OUTPUT"
+          status=0
+          cargo xtask ci dep-diff \
+            --base "$GITHUB_WORKSPACE" \
+            --head "$GITHUB_WORKSPACE/pr" \
+            --event "$GITHUB_EVENT_PATH" \
+            --comments "$RUNNER_TEMP/comments.json" \
+            --roster "$RUNNER_TEMP/maintainers.toml" || status=$?
+          if [ "$status" -eq 0 ]; then
+            exit 0
           fi
-      - name: cargo xtask ci dep-diff
-        if: github.event_name != 'merge_group'
-        working-directory: ${{ steps.evaluator.outputs.dir }}
+          if [ "$status" -eq 2 ] && [ "$NUMBER" = 1590 ]; then
+            echo "::warning::the base branch has no dep-diff job yet; #1590, which adds it, is judged by its own"
+            echo "bootstrap=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$status" -eq 2 ]; then
+            echo "::error::the base branch has no dep-diff job, or rejected its options; rebase onto main"
+          fi
+          exit 1
+      - name: cargo xtask ci dep-diff, from #1590 (bootstrap only)
+        if: steps.gate.outputs.bootstrap == 'true'
+        working-directory: pr
         run: |
           rustup toolchain install --no-self-update
           cargo xtask ci dep-diff \
