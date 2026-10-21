@@ -14,10 +14,16 @@
 //!   [`crate::run::Context`];
 //! - add a check to a job by appending a [`Step`] to its list, and drop the matching row from its
 //!   `pending` list, if it has one;
-//! - add a kind of step, such as a check that runs inside this binary, as a variant of [`Action`].
+//! - add a kind of step as a variant of [`Action`]. A check that lives in this binary runs in this
+//!   process as an [`Action::Builtin`] step, such as `codeowners`, or as a child process as an
+//!   [`Action::Xtask`] step, such as `check-deps`.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::Command;
+
+use crate::run::Context;
+use crate::{codeowners, contrib};
 
 /// A named job or suite: the steps it runs, in order.
 #[derive(Debug, PartialEq, Eq)]
@@ -47,6 +53,8 @@ pub struct Param {
     pub value: &'static str,
     /// One line for `--list`.
     pub help: &'static str,
+    /// Leaving a required option out is a usage error.
+    pub required: bool,
 }
 
 /// One step of an entry.
@@ -58,12 +66,35 @@ pub struct Step {
 }
 
 /// What a step does.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Action {
     /// `cargo <args>`, with the cargo that started xtask (`$CARGO`), so the toolchain pinned in
     /// `rust-toolchain.toml` runs every step.
     Cargo(&'static [&'static str]),
+    /// `cargo xtask <args>`: this binary again, as a child process, for a check that lives in
+    /// xtask. It inherits the environment, so it checks the same checkout.
+    Xtask(&'static [&'static str]),
+    /// A check that runs inside xtask. `shown` describes it in progress lines; `run` returns
+    /// `Err` with every problem it found.
+    Builtin { shown: &'static str, run: Builtin },
 }
+
+/// A check that runs inside xtask.
+pub type Builtin = fn(&Context) -> Result<(), String>;
+
+/// Builtins compare by what they say they do: function addresses are not stable enough to compare.
+impl PartialEq for Action {
+    fn eq(&self, other: &Action) -> bool {
+        match (self, other) {
+            (Action::Cargo(a), Action::Cargo(b)) => a == b,
+            (Action::Xtask(a), Action::Xtask(b)) => a == b,
+            (Action::Builtin { shown: a, .. }, Action::Builtin { shown: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Action {}
 
 /// A check the plan assigns to an entry, with the task that adds it.
 #[derive(Debug, PartialEq, Eq)]
@@ -74,14 +105,22 @@ pub struct Pending {
 }
 
 impl Action {
-    /// The process this action starts. The caller sets the working directory.
-    pub fn command(&self) -> Command {
+    /// The process this action starts, if it starts one. The caller sets the working directory.
+    pub fn command(&self) -> Option<Command> {
         match self {
             Action::Cargo(args) => {
                 let mut command = Command::new(cargo());
                 command.args(*args);
-                command
+                Some(command)
             }
+            Action::Xtask(args) => {
+                // If the path is unknown, the step fails with "could not start".
+                let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("xtask"));
+                let mut command = Command::new(program);
+                command.args(*args);
+                Some(command)
+            }
+            Action::Builtin { .. } => None,
         }
     }
 
@@ -96,60 +135,181 @@ impl Action {
                 }
                 line
             }
+            Action::Xtask(args) => {
+                let mut line = String::from("cargo xtask");
+                for arg in *args {
+                    line.push(' ');
+                    line.push_str(arg);
+                }
+                line
+            }
+            Action::Builtin { shown, .. } => format!("xtask: {shown}"),
         }
     }
 }
 
 /// The cargo binary that started xtask. Cargo sets `CARGO` for `cargo run`.
-fn cargo() -> OsString {
+pub fn cargo() -> OsString {
     std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
 /// The CI jobs, called by `cargo xtask ci <job>`. RFC-0062 §2.3 lists the jobs the plan expects.
-pub const JOBS: &[Entry] = &[Entry {
-    name: "lint",
-    summary: "the L0 static checks: rustfmt and clippy over the workspace",
-    defined_in: "RFC-0062 §2.3 and §12.4",
-    params: &[],
-    steps: &[
-        Step {
-            name: "fmt",
-            action: Action::Cargo(&["fmt", "--all", "--check"]),
-        },
-        Step {
-            name: "clippy",
-            action: Action::Cargo(&[
-                "clippy",
-                "--workspace",
-                "--all-targets",
-                "--locked",
-                "--",
-                "-D",
-                "warnings",
-            ]),
-        },
-    ],
-    // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
-    // further checks to `lint`, such as the `ci/jobs.toml` goldens (QUAL-E1-T07).
-    pending: &[
-        Pending {
-            check: "check-deps: RFC-0001 §4.2 rules, `forbid(unsafe_code)` placement, release features",
-            task: "QUAL-E1-T03",
-        },
-        Pending {
-            check: "cargo-deny, SPDX headers and the licence manifest",
-            task: "QUAL-E1-T04",
-        },
-        Pending {
-            check: "DCO and the PR title",
-            task: "QUAL-E1-T05",
-        },
-        Pending {
+pub const JOBS: &[Entry] = &[
+    Entry {
+        name: "lint",
+        summary: "the L0 static checks: rustfmt, clippy, the crate dependency rules, CODEOWNERS and \
+                  the licence policy",
+        defined_in: "RFC-0062 §2.3 and §12.4",
+        params: &[],
+        steps: &[
+            Step {
+                name: "fmt",
+                action: Action::Cargo(&["fmt", "--all", "--check"]),
+            },
+            Step {
+                name: "clippy",
+                action: Action::Cargo(&[
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--locked",
+                    "--",
+                    "-D",
+                    "warnings",
+                ]),
+            },
+            Step {
+                name: "check-deps",
+                action: Action::Xtask(&["check-deps"]),
+            },
+            Step {
+                name: "codeowners",
+                action: Action::Builtin {
+                    shown: "CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
+                    run: codeowners::step,
+                },
+            },
+            // The rig inventory of RFC-0061 §6.3 (QUAL-E15-T01).
+            Step {
+                name: "rigs",
+                action: Action::Cargo(&[
+                    "run",
+                    "--quiet",
+                    "--locked",
+                    "--package",
+                    "syntropy-bench",
+                    "--bin",
+                    "syntropy-bench",
+                    "--",
+                    "rigs",
+                    "check",
+                ]),
+            },
+            // The licence policy of ADR-0018 (RFC-0062 §11.2, §12.2; QUAL-E1-T04). `advisories` is
+            // the only step that needs the network, and it fails closed without it.
+            Step {
+                name: "deny",
+                action: Action::Xtask(&["deny"]),
+            },
+            Step {
+                name: "advisories",
+                action: Action::Xtask(&["deny", "--advisories"]),
+            },
+            Step {
+                name: "spdx",
+                action: Action::Xtask(&["spdx"]),
+            },
+            Step {
+                name: "third-party",
+                action: Action::Xtask(&["third-party"]),
+            },
+            Step {
+                name: "notices",
+                action: Action::Xtask(&["notices"]),
+            },
+        ],
+        // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
+        // further checks to `lint`, such as the `ci/jobs.toml` goldens (QUAL-E1-T07). The row's DCO
+        // and PR-title checks need a PR's data, so they are the `dco` and `pr-title` jobs, which are
+        // separate required checks (RFC-0062 §2.5).
+        pending: &[Pending {
             check: "actionlint and the workflow security lint",
             task: "QUAL-E1-T09",
-        },
-    ],
-}];
+        }],
+    },
+    Entry {
+        name: "dco",
+        summary: "every commit carries a Signed-off-by that matches its author",
+        defined_in: "RFC-0062 §8.3 and §12.3",
+        params: &[
+            Param {
+                name: "--event",
+                value: "<file>",
+                help: "the pull_request event payload, or GET /repos/{owner}/{repo}/pulls/{n}",
+                required: true,
+            },
+            Param {
+                name: "--commits",
+                value: "<file>",
+                help: "every commit, as GET /repos/{owner}/{repo}/pulls/{n}/commits returns them",
+                required: true,
+            },
+        ],
+        steps: &[Step {
+            name: "dco",
+            action: Action::Builtin {
+                shown: "every commit is signed off by its author",
+                run: contrib::dco_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "pr-title",
+        summary: "the PR title is a conventional commit, and a breaking change has a maintainer's label",
+        defined_in: "RFC-0062 §8.3",
+        params: &[
+            Param {
+                name: "--event",
+                value: "<file>",
+                help: "the pull_request event payload, or GET /repos/{owner}/{repo}/pulls/{n}",
+                required: true,
+            },
+            Param {
+                name: "--commits",
+                value: "<file>",
+                help: "the PR's commits, as GET /repos/{owner}/{repo}/pulls/{n}/commits returns them",
+                required: true,
+            },
+            Param {
+                name: "--label-events",
+                value: "<file>",
+                help: "the label history, as GET /repos/{owner}/{repo}/issues/{n}/events returns it",
+                required: true,
+            },
+            Param {
+                name: "--roster",
+                value: "<file>",
+                help: "the maintainer roster to trust, such as the base branch's governance/maintainers.toml",
+                required: true,
+            },
+            Param {
+                name: "--version-file",
+                value: "<file>",
+                help: "the product version to compare Release-As with: the base branch's version.txt",
+                required: true,
+            },
+        ],
+        steps: &[Step {
+            name: "pr-title",
+            action: Action::Builtin {
+                shown: "the title, and who applied semver-major-approved",
+                run: contrib::pr_title_step,
+            },
+        }],
+        pending: &[],
+    },
+];
 
 /// The test suites, called by `cargo xtask test <suite>`. RFC-0060 §1.1 defines the layers.
 pub const SUITES: &[Entry] = &[Entry {
@@ -259,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn lint_runs_rustfmt_and_clippy_as_rfc_0062_defines_them() {
+    fn lint_runs_the_checks_rfc_0062_defines_for_it() {
         let lint = find(JOBS, "lint").expect("lint is registered");
         let commands: Vec<String> = lint.steps.iter().map(|s| s.action.display()).collect();
         assert_eq!(
@@ -267,6 +427,44 @@ mod tests {
             [
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
+                "cargo xtask check-deps",
+                "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
+                "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- rigs \
+                 check",
+                "cargo xtask deny",
+                "cargo xtask deny --advisories",
+                "cargo xtask spdx",
+                "cargo xtask third-party",
+                "cargo xtask notices",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_contribution_checks_are_jobs_with_required_inputs() {
+        let dco = find(JOBS, "dco").expect("dco is registered");
+        let required: Vec<&str> = dco
+            .params
+            .iter()
+            .filter(|p| p.required)
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(required, ["--event", "--commits"]);
+        let title = find(JOBS, "pr-title").expect("pr-title is registered");
+        let required: Vec<&str> = title
+            .params
+            .iter()
+            .filter(|p| p.required)
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(
+            required,
+            [
+                "--event",
+                "--commits",
+                "--label-events",
+                "--roster",
+                "--version-file"
             ]
         );
     }
@@ -275,10 +473,7 @@ mod tests {
     fn lint_lists_the_checks_later_tasks_add() {
         let lint = find(JOBS, "lint").expect("lint is registered");
         let tasks: Vec<&str> = lint.pending.iter().map(|p| p.task).collect();
-        assert_eq!(
-            tasks,
-            ["QUAL-E1-T03", "QUAL-E1-T04", "QUAL-E1-T05", "QUAL-E1-T09"]
-        );
+        assert_eq!(tasks, ["QUAL-E1-T09"]);
     }
 
     #[test]
@@ -308,9 +503,25 @@ mod tests {
     #[test]
     fn cargo_action_passes_its_arguments_through() {
         let action = Action::Cargo(&["fmt", "--all", "--check"]);
-        let command = action.command();
+        let command = action.command().unwrap();
         let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
         assert_eq!(args, ["fmt", "--all", "--check"]);
+    }
+
+    #[test]
+    fn xtask_action_runs_this_binary_with_its_arguments() {
+        let action = Action::Xtask(&["check-deps"]);
+        let command = action.command().unwrap();
+        assert_eq!(
+            Some(command.get_program()),
+            std::env::current_exe()
+                .ok()
+                .as_deref()
+                .map(|p| p.as_os_str())
+        );
+        let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+        assert_eq!(args, ["check-deps"]);
+        assert_eq!(action.display(), "cargo xtask check-deps");
     }
 
     #[test]

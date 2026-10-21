@@ -1,0 +1,6 @@
+HTTP/2.0 200 OK
+Content-Type: application/json; charset=utf-8
+Link: <https://api.github.com/repositories/1/issues/7/events?per_page=1&page=2>; rel="next", <https://api.github.com/repositories/1/issues/7/events?per_page=1&page=3>; rel="last"
+X-Github-Media-Type: github.v3; format=json
+
+[{"id": 1005, "node_id": "LE_5", "event": "labeled", "actor": {"login": "alice", "id": 64682573, "type": "User", "site_admin": false}, "label": {"name": "semver-major-approved", "color": "b60205"}, "created_at": "2026-10-21T09:00:00Z", "commit_id": null, "performed_via_github_app": null}]

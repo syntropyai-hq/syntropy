@@ -1,0 +1,20 @@
+Name:	syntropy
+Umask:	0022
+State:	R (running)
+Tgid:	4242
+Pid:	4242
+PPid:	4200
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+Groups:	4 24 27 1000 
+VmLck:	       0 kB
+VmPin:	       0 kB
+Threads:	1
+CapInh:	0000000000000000
+CapPrm:	0000000000004000
+CapEff:	0000000000004000
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0

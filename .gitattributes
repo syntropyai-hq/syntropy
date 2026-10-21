@@ -1,0 +1,2 @@
+# Hooks are shell scripts, which a CRLF checkout would break in Git for Windows.
+/.githooks/** text eol=lf

@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The dependency policy of ADR-0018 §3, checked by cargo-deny (RFC-0062 §11.2). The `lint` job
+# runs it through `cargo xtask deny`, which pins the cargo-deny version and runs the advisories
+# check as a separate step, because only that check needs the network (QUAL-E1-T04).
+#
+# A change to this file needs a maintainer's approval: it is CI configuration (AGENTS.md, "Gates").
+
+[graph]
+# Resolve with every feature on and for every platform, so an optional or platform-specific
+# dependency is checked too, as `cargo xtask check-deps` does.
+all-features = true
+
+[advisories]
+# RustSec, fetched into `$CARGO_HOME/advisory-dbs`. Without network access the fetch fails and the
+# `advisories` step fails with it: the check fails closed.
+#
+# Each ignored advisory sits on its own line, with a comment on that line or just above it that
+# gives its issue link and an expiry date, `expires YYYY-MM-DD` (RFC-0062 §11.2). `cargo xtask
+# deny` fails an entry without both, and one whose date has passed:
+#
+#   ignore = [
+#       # https://github.com/syntropyai-hq/syntropy/issues/<n>, expires 2027-01-31
+#       { id = "RUSTSEC-0000-0000", reason = "why the advisory does not apply" },
+#   ]
+ignore = []
+# An unmaintained crate anywhere in the graph fails (cargo-deny's default, stated so a change to
+# it shows in review), and so does a yanked version.
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+# ADR-0018 §3: the licences allowed for anything linked into `syntropy` or into a backend module.
+# `third_party/licences.toml` entries are held to the same list by `cargo xtask third-party`,
+# which reads it from here.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Unicode-3.0",
+    # The root-certificate data of `webpki-roots`, which iroh's relay client uses (ADR-0018 §3,
+    # revised 2026-10-20).
+    "CDLA-Permissive-2.0",
+]
+# Every licence outside `allow` is denied: GPL-*, LGPL-*, AGPL-*, SSPL, BUSL and any licence with
+# field-of-use or non-commercial terms (ADR-0018 §3) never reach the list.
+confidence-threshold = 0.93
+# MPL-2.0 is allowed for unmodified dependencies only (ADR-0018 §3), so it is never in `allow`.
+# Each MPL-2.0 crate gets its own entry here, pinned to the versions reviewed, such as
+# `{ allow = ["MPL-2.0"], crate = "uniffi@0.31.0" }`. "Unmodified" means the crate comes from
+# crates.io as published: `[sources]` below rejects git and unknown registries, and
+# `cargo xtask notices` fails on an MPL-2.0 package from any other source.
+exceptions = []
+# The allow list is the policy, not an inventory, so a licence no dependency uses yet is fine.
+unused-allowed-license = "allow"
+
+[licenses.private]
+# Workspace crates are checked too, against the same allow list. That check would pass a crate
+# with `license = "MIT"`, so it does not prove ADR-0018 §1's exact `MIT OR Apache-2.0`: every
+# crate inherits that from `[workspace.package]` with `license.workspace = true`.
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# A path dependency without a version is not a wildcard: every crate is `publish = false`.
+allow-wildcard-paths = true
+deny = [
+    # TLS is rustls. A native TLS stack would add a C dependency with its own licence and patch
+    # cadence (RFC-0062 §11.2).
+    { crate = "openssl-sys", reason = "TLS is rustls; no native TLS stack (RFC-0062 §11.2)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Every git dependency is listed here, and pins a revision with `rev` (RFC-0062 §11.2): a branch
+# or a tag fails. There are none.
+allow-git = []
+required-git-spec = "rev"

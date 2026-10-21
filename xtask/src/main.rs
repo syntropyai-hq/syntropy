@@ -12,13 +12,25 @@
 //! built at. One binary can serve several checkouts through a shared `CARGO_TARGET_DIR` or a
 //! copied `target/`, and it must check the one it was asked to.
 //!
+//! `cargo xtask check-deps` checks the crate dependency rules of RFC-0001 §4.2 ([`check_deps`]).
+//! `cargo xtask build --profile <p>` builds in a test build profile and checks the result
+//! ([`build`]).
+//! `cargo xtask deny`, `spdx`, `third-party` and `notices` apply the licence policy of ADR-0018
+//! ([`licences`]).
+//!
 //! The tool sits outside the crate graph of RFC-0001 §4.1: no crate depends on it, and it depends
-//! on none.
+//! on none. `ci/layers.toml` lists it as a tool, and `check-deps` holds it to that.
 
 #![forbid(unsafe_code)]
 
+mod build;
+mod check_deps;
 mod cli;
+mod codeowners;
+mod contrib;
+mod licences;
 mod registry;
+mod roster;
 mod run;
 
 use std::ffi::OsString;
@@ -90,7 +102,92 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
             let verdict = run::run(kind, entry, &context, &mut run::System, &mut io::stderr())?;
             Ok(exit_code(&verdict))
         }
+        Command::CheckDeps { manifest_path } => {
+            let manifest = match manifest_path {
+                Some(path) => PathBuf::from(path),
+                None => match workspace_root(std::env::var_os("CARGO_MANIFEST_DIR")) {
+                    Ok(root) => root.join("Cargo.toml"),
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        return Ok(EXIT_USAGE);
+                    }
+                },
+            };
+            let pass = check_deps::run(&manifest, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Build {
+            profile,
+            manifest_path,
+        } => {
+            let manifest = match manifest_path {
+                Some(path) => PathBuf::from(path),
+                None => match workspace_root(std::env::var_os("CARGO_MANIFEST_DIR")) {
+                    Ok(root) => root.join("Cargo.toml"),
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        return Ok(EXIT_USAGE);
+                    }
+                },
+            };
+            let pass = build::run(&manifest, profile, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Deny {
+            manifest_path,
+            advisories,
+        } => {
+            let checkout = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            let manifest = manifest_path.map_or_else(|| checkout.join("Cargo.toml"), PathBuf::from);
+            let checks = if advisories {
+                licences::deny::Checks::Advisories
+            } else {
+                licences::deny::Checks::Policy
+            };
+            let pass = licences::deny::run(&checkout, &manifest, checks, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Spdx { root } => {
+            let checkout = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            let root = root.map_or(checkout, PathBuf::from);
+            let pass = licences::headers::run(&root, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::ThirdParty { root } => {
+            let checkout = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            let root = root.map_or_else(|| checkout.clone(), PathBuf::from);
+            let pass = licences::manifest::run(&checkout, &root, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Notices { manifest_path, out } => {
+            let checkout = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            let manifest = manifest_path.map_or_else(|| checkout.join("Cargo.toml"), PathBuf::from);
+            let out = out.map(PathBuf::from);
+            let pass =
+                licences::notices::run(&checkout, &manifest, out.as_deref(), &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
     }
+}
+
+/// The root of the checkout xtask runs in, or the exit code for a usage error after printing it.
+fn checkout() -> Result<PathBuf, u8> {
+    workspace_root(std::env::var_os("CARGO_MANIFEST_DIR")).map_err(|error| {
+        eprintln!("error: {error}");
+        EXIT_USAGE
+    })
 }
 
 fn exit_code(verdict: &Verdict) -> u8 {

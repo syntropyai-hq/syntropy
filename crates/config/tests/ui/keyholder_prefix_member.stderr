@@ -1,0 +1,29 @@
+error: `security.require_signatures` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves cluster keys under `security.*` for keyholders
+  --> tests/ui/keyholder_prefix_member.rs:12:75
+   |
+12 |     #[config(reload = Hot, default = true, introduced_at = 1, authority = Member)]
+   |                                                                           ^^^^^^
+
+error: `invite.ttl` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves cluster keys under `invite.*` for keyholders
+  --> tests/ui/keyholder_prefix_member.rs:21:76
+   |
+21 |     #[config(reload = Hot, default = "24h", introduced_at = 1, authority = Member)]
+   |                                                                            ^^^^^^
+
+error: `coordinator.lease` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves cluster keys under `coordinator.*` for keyholders
+  --> tests/ui/keyholder_prefix_member.rs:30:76
+   |
+30 |     #[config(reload = Hot, default = "10s", introduced_at = 1, authority = Member)]
+   |                                                                            ^^^^^^
+
+error: `swim.period` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves cluster keys under `swim.*` for keyholders
+  --> tests/ui/keyholder_prefix_member.rs:39:75
+   |
+39 |     #[config(reload = Hot, default = "1s", introduced_at = 1, authority = Member)]
+   |                                                                           ^^^^^^
+
+error: `cluster.lan_admission` must have `authority = Keyholder`: RFC-0054 §2.3 step 10 reserves the cluster key `cluster.lan_admission` for keyholders
+  --> tests/ui/keyholder_prefix_member.rs:48:80
+   |
+48 |     #[config(reload = Hot, default = "confirm", introduced_at = 1, authority = Member)]
+   |                                                                                ^^^^^^

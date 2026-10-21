@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The lab inventory (RFC-0061 §6.3): one `[[rig]]` record per rig of RFC-0061 §6.2.
+#
+# - Each record's `RigFingerprint` (RFC-0061 §2.1) is BLAKE3 over a canonical encoding of the
+#   whole record. Any change to a field starts a new baseline epoch for that rig, and no gate
+#   compares results across epochs. Reordering a list or reformatting this file does not.
+# - A change lands only through a PR to this file. The lab agent compares the live rig with its
+#   record on `main` before every block, and a rig that differs, such as a driver that updated
+#   itself or memory running slower after a BIOS reset, is refused as `dirty: inventory`
+#   (QUAL-E12-T04).
+# - `lint` validates this file with `syntropy-bench rigs check`. `syntropy-bench rigs
+#   fingerprint` prints each rig's fingerprint, and `syntropy-bench rigs epochs <old> <new>`
+#   lists the epoch changes between two revisions for the nightly report.
+#
+# Every key below is required unless marked optional, and no other key is allowed. Values are
+# non-empty strings on one line, with no surrounding whitespace and no control character, unless
+# shown otherwise; a multi-line string would carry the checkout's line endings into the
+# fingerprint. Each list element is identified by its `slot`, unique within its list.
+#
+#   [[rig]]
+#   id = "R-ADA"                     # RFC-0061 §6.2's name: `R-` and upper-case words
+#   os_image = "<image ID>"          # the pinned OS image (RFC-0061 §6.4)
+#   kernel = "<kernel version>"
+#   power_plan = "performance"       # the power plan or CPU governor
+#   room_sensor = "<sensor ID>"      # where the rig's ambient temperature is read
+#
+#   [rig.cpu]
+#   model = "<CPU model>"
+#   microcode = "<revision>"         # optional: absent where the CPU has none to load
+#
+#   [[rig.memory]]                   # one per module, or one `unified` entry on a system-on-chip
+#   slot = "DIMM_A2"
+#   size_gib = 64                    # a positive integer
+#   speed_mts = 6000                 # the speed it runs at, a positive integer
+#   part = "<part number>"
+#
+#   [[rig.gpu]]                      # optional list
+#   slot = "PCIEX16_1"               # or `integrated`
+#   model = "<GPU model>"
+#   vbios = "<VBIOS version>"        # optional: absent on an integrated GPU
+#   driver = "<driver version>"
+#   pcie = "gen4x16"                 # optional: the negotiated link, `gen<1-7>x<1|2|4|8|16>`
+#
+#   [[rig.nvme]]                     # optional list
+#   slot = "M2_1"
+#   model = "<drive model>"
+#   firmware = "<firmware version>"
+#   attachment = "cpu"               # `cpu` or `chipset`
+#   pcie = "gen4x4"                  # optional
+#
+#   [[rig.nic]]                      # optional list
+#   slot = "PCIEX4_1"                # or a port label such as `onboard`
+#   model = "<NIC model>"
+#   firmware = "<firmware version>"
+#   pcie = "gen3x4"                  # optional
+#
+#   [rig.bios]                       # optional: absent where the firmware has no user settings
+#   version = "<firmware version>"
+#   memory_profile = "XMP-6000"
+#   power_limits = "PL1=125W,PL2=250W"
+#   smt = true                       # true or false
+#   resizable_bar = true             # true or false
+#   other = { c_states = "enabled" } # optional: any other setting that moves performance
+#
+# No rig is installed yet. Each rig's task adds its record when the rig comes online
+# (QUAL-E15-T02, QUAL-E15-T17 and later).
+
+version = 1

@@ -1,0 +1,125 @@
+[
+  {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "node_id": "C_aaaaaaaaaa",
+    "commit": {
+      "author": {
+        "name": "Carol Contributor",
+        "email": "carol@example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "committer": {
+        "name": "Carol Contributor",
+        "email": "carol@example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "message": "feat(core): add the widget\n\nA contributor's commit.\n\nSigned-off-by: Carol Contributor <carol@example.org>\n",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null
+      }
+    },
+    "author": {
+      "login": "carol",
+      "id": 58886888,
+      "type": "User",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "carol",
+      "id": 58886888,
+      "type": "User",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0000000000000000000000000000000000000000"
+      }
+    ]
+  },
+  {
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "node_id": "C_bbbbbbbbbb",
+    "commit": {
+      "author": {
+        "name": "project-agent[bot]",
+        "email": "1234+project-agent[bot]@users.noreply.github.com",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "committer": {
+        "name": "project-agent[bot]",
+        "email": "1234+project-agent[bot]@users.noreply.github.com",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "message": "test(core): cover the widget\n\nAn agent-authored commit, signed off like any other.\n\nSigned-off-by: project-agent[bot] <1234+project-agent[bot]@users.noreply.github.com>\n",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null
+      }
+    },
+    "author": {
+      "login": "project-agent[bot]",
+      "id": 54748019,
+      "type": "Bot",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "project-agent[bot]",
+      "id": 54748019,
+      "type": "Bot",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0000000000000000000000000000000000000000"
+      }
+    ]
+  },
+  {
+    "sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "node_id": "C_cccccccccc",
+    "commit": {
+      "author": {
+        "name": "ALICE MAINTAINER",
+        "email": "Alice@Example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "committer": {
+        "name": "ALICE MAINTAINER",
+        "email": "Alice@Example.org",
+        "date": "2026-10-21T08:00:00Z"
+      },
+      "message": "docs(core): describe the widget\n\nSigned-off-by: Alice Maintainer <alice@example.org>\n",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null
+      }
+    },
+    "author": {
+      "login": "alice",
+      "id": 64682573,
+      "type": "User",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "alice",
+      "id": 64682573,
+      "type": "User",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0000000000000000000000000000000000000000"
+      }
+    ]
+  }
+]

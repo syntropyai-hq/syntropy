@@ -159,6 +159,8 @@ pub struct BenchKey {
 
 A change to any of these starts a new **baseline epoch** for that rig. Results across epochs are shown, but never compared by a gate.
 
+*Revised 2026-10-22 (QUAL-E15-T01):* the fingerprint covers the whole §6.3 record, not only the list above. The rig's NICs and their firmware, the negotiated PCIe link of each device and the room-temperature sensor ID count too, as do the rig's ID and the record's schema version, so a change to any field of the record starts a new epoch. The hash is BLAKE3 over a canonical encoding of the parsed record: keys sorted, each list sorted, and no file path, line ending or map iteration order in it. A value is one line of text with no control character, so no line ending can reach the encoding through a multi-line string. The same record therefore gives the same fingerprint on every operating system, and reordering a list or reformatting the file does not start an epoch. `syntropy-bench` defines the record and the encoding, and `syntropy-bench rigs check` validates `bench/lab/rigs.toml` in `lint`.
+
 #### 2.2 The result record
 
 ```rust

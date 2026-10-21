@@ -265,6 +265,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 0 | `core` | IDs, units, dtypes and quant schemes, `Error`, `ResourceGraph`, `CapabilityProfile`, `PlacementPlan` and its parts, policy objects and the pure functions over them (such as `budget::host_usable`, which `probe`, `solver` and `tier` all call), `RunnerState`, session and sequence IDs, `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore` and `Outbox` (§5.14), the `ConformanceManifest` types, and the `BuildId` type (its value is built in `cli`, so a commit change does not invalidate every crate's build cache). Plain data, pure functions and invariant checks only | — | 0001 (per-type owners in §5) |
 | 0 | `obs` | span and metric naming, counters and histograms usable from hot threads, telemetry ring codec, `fault_point!` (compiled only under the `fault-injection` feature, rule 10), exporters | `core` | 0053 |
 | 0 | `config` | layered loading, schema, policy resolution, per-request override validation | `core` | 0054 |
+| 0 | `config-derive` | the `#[derive(ConfigSection)]` macro of the schema as code (RFC-0054 §10.3), which `config` re-exports; no runtime code (added 2026-10-21, note below) | — | 0054 |
 | 1 | `manifest` | GGUF and safetensors readers, `TensorCensus`, `ModelManifest`, KV formula, pack sidecar format, tokenizer data extraction | `core` | 0041 |
 | 1 | `kernels` | `KernelProvider` trait, `OpKey` registry, per-device op selection (certificates, then microbenchmark, §5.7), buffer, stream and event abstractions, the F32 reference semantics of every op (`kernels::reference`), and the `#[repr(C)]` types and `export!` macro of the provider-library ABI (`kernels::abi`). No `unsafe` | `core` | 0040 |
 | 1 | `io` | I/O engines: io_uring, IoRing, IOCP, `preadv` pool, `F_NOCACHE`, mmap fallback; per-core submission rings; registered buffers | `core` | 0021 |
@@ -288,6 +289,8 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | — | `testkit` | simulated fabric (virtual nodes; links with α, β, p99 and loss; fake devices), the deterministic simulator that drives the protocol cores (`SimClock`, `SimEntropy`), fake `KernelProvider`, `RefExecutor` and the parity harness, golden traces | any (dev-dependency only) | 0060 |
 | — | `bench` | benchmark scenarios, result schema, regression gates | `cli` (as a client), `testkit` | 0061 |
 
+*Note 2026-10-21 (amendment, §18.8):* `config-derive` joins layer 0. RFC-0054 §10.3 puts the schema derive in `config`, but Rust requires a proc-macro to be its own crate, and a proc-macro crate can export nothing but macros. `config-derive` therefore holds the derive, with no runtime code and no workspace dependencies, and `config` re-exports it, so other crates name only `config`.
+
 Packaging, installers, backend modules and update channels (RFC-0052) and CI (RFC-0062) live outside the crate graph, in `packaging/` and `.github/`. A backend module is a directory beside the core binary of the same version holding one provider library and its vendor redistributables (ADR-0507, RFC-0052 §4.3).
 
 ### 4.2 Dependency rules
@@ -295,7 +298,11 @@ Packaging, installers, backend modules and update channels (RFC-0052) and CI (RF
 These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 
 1. **`core` depends on no workspace crate.** Its external dependencies are limited to `serde`, `thiserror`, `smallvec` and `bitflags`.
+   - *Note 2026-10-21:* "external dependencies" means normal and build dependencies. Dev-dependencies, such as `proptest` for `core`'s own tests, are exempt.
 2. **A crate depends only on crates in lower layers.** `obs` and `config` are the exception: every crate except `core` may use them.
+   - *Note 2026-10-21:* every crate may also depend on `core`, which depends on none (rule 1). That is how `obs` and `config` depend on `core` inside layer 0, as §4.1's table has them.
+   - *Note 2026-10-21:* `xtask`, the CI task runner (RFC-0062 §1), is a workspace member outside the crate graph: no crate depends on it, and it depends on no workspace crate. `ci/layers.toml` lists it as a tool.
+   - *Note 2026-10-21 (amendment, §18.8):* `config` may depend on `config-derive`, its own proc-macro crate, inside layer 0, because Rust requires a proc-macro to be its own crate. That is the only edge into `config-derive`: every other crate, whatever its layer, uses the macro through `config`, whose path the generated code names.
 3. **Compute crates never depend on control or network crates.** `graph`, `kernels`, every `kernels-*`, `io`, `tier`, `exec` and `sched` must not depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`. The runner bridges compute and network through SPSC rings (§8.3). This keeps the hot path free of async runtimes (ADR-0012) and lets `exec` and `sched` run under `testkit` with no network at all.
 4. **`daemon` never links or loads a GPU provider.** It may depend on `kernels` for types, but not on any `kernels-*` crate, `kernels-loader` included, and it never opens a backend module. Only runner and probe processes load provider libraries, and the daemon learns about GPUs from a probe-mode process (RFC-0040 §10.5, ADR-0507 rule 4). This is invariant 3 (§2.3) enforced at link time.
 5. **`solver` and `cluster::apply` are pure.** No I/O, no clocks, no threads apart from HiGHS (run single-threaded with a fixed seed). Given the same inputs the solver returns the same plan, so plans are reproducible in tests and on every node. The other protocol cores follow invariant 12.
@@ -303,6 +310,7 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 7. **CPU and Metal providers are built into the core; other GPU providers ship as backend modules** (ADR-0507, RFC-0040 §10.4, RFC-0052 §4). The CPU provider, the Metal provider on macOS, and on iOS and Android every provider the platform uses, are linked statically into the core binary. The CUDA, HIP and Vulkan providers, and the ggml SYCL backend, are provider libraries in separately loaded, signed backend modules: directories beside the core binary of the same version, verified by hash, signature and build ID before loading (ADR-0316), and loaded by absolute path only by runner and probe processes. The boundary is a versioned C ABI generated from the `KernelProvider` trait, with one exported entry symbol and a lockstep build-ID check. The core binary therefore carries no vendor GPU runtime on Linux and Windows, and one core binary runs on hosts with and without each vendor stack (ADR-0014). The `cuda13` module carries Syntropy code only: `setup` fetches NVIDIA's redistributable libraries from NVIDIA and checks each against a hash pinned in the signed module manifest (RFC-0040 §10.3, RFC-0052 §4.4). A build or host without any GPU module runs CPU-only.
 8. **`unsafe` is confined** to `kernels-*` (including `kernels-loader`: the provider-library loader and the census), `io`, `tier` (arenas), `net` (RDMA, shared memory) and `ipc` (shared memory). Every other crate sets `#![forbid(unsafe_code)]`.
 9. **`testkit` is a dev-dependency only.** No production crate depends on it.
+   - *Note 2026-10-21:* the same holds for `bench`, the other crate on §4.1's dev-only row ("—").
 10. **Test-only features never reach a release.** Any crate may declare the cargo features `fault-injection`, `debug-taps` and `guards`. Release artefacts are built without them, and the L0 `check-deps` job enforces it (RFC-0060 §3.6, RFC-0062 §12.1).
 
 ## 5. Core types and interfaces
@@ -1521,6 +1529,7 @@ pub enum ErrorClass {
 | `BuildId` | core (type); value built in `cli` | 0062 | 0052 |
 | `DeviceId`, `TierId`, `LinkId`, `DeviceKind`, `Measured` | core | 0010 | 0031 (network `LinkKind`s) |
 | `TierKind` | core | 0020 | 0010 |
+| `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
 | `ResourceGraph`, `CapabilityProfile` | core | 0010 | 0011 (what the solver reads), 0021 (`StorageCaps` fields) |
 | `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
 | `DType`, `QuantScheme` | core | 0042 | 0040 |
@@ -2337,7 +2346,7 @@ The full register is `plan/open-questions.md`.
 
 ## 18. Amendment log
 
-The change history of this RFC since its first draft: what changed, the sections touched and the technical reason, grouped by the date the change landed. A domain RFC's requested amendment is listed when this RFC took it. Changes these passes need in other documents are in §18.5.
+The change history of this RFC since its first draft: what changed, the sections touched and the technical reason, grouped by the date the change landed. A domain RFC's requested amendment is listed when this RFC took it. Changes these passes need in other documents are in §18.6.
 
 ### 18.1 Amendment pass (2026-10-19)
 
@@ -2537,7 +2546,7 @@ Each earlier change was re-checked against the text as it reads. These were miss
 | the Linux pinning gate follows RFC-0020 §6: no free-page test anywhere; each step gated on MemAvailable minus the reserve, cgroup headroom and the per-NUMA available estimate; the commit forces reclaim and registration pins only resident pages; distress from PSI `some avg10`, or the `allocstall_*` counters without PSI, plus step latency; give-up only after sustained pressure | §9.2 (Linux row); ADR-0007 item 3, Context, Revisions | the 2026-10-19 text gated registration on MemFree after committing, which can deadlock |
 | SC-22 states the ≈11 s critical path, the ≤ 5 s model probe, `probe.model_wait` at 7 s, and the sustained NVMe run after the first load or in an idle window, never during `Packing` or `Loading` | vision SC-22 | it said the sustained run happens during model load, which RFC-0010 S2 no longer does. RFC-0021 §10 still says so (§18.1) |
 | "within 2× the spread" means "not shown to exceed" it under RFC-0060 §5.4's one-sided test at the report's α, with that section's power target | ADR-0019 decision 3 note, Revisions | the reading matches ADR-0601 and ADR-0422, which already used it; the note also records their 3× per-category multiple |
-| the b2 prefill figure's NVMe-resident pool bytes stream at `W_nvme`, once per chunk or per layer-major group | `research/hardware-and-performance-model.md` §4 b2 (dated note); vision SC-18 pointer | closes the §18.5 request; the ≈281 GB and ≈47 s are RFC-0012 §4.4's estimate |
+| the b2 prefill figure's NVMe-resident pool bytes stream at `W_nvme`, once per chunk or per layer-major group | `research/hardware-and-performance-model.md` §4 b2 (dated note); vision SC-18 pointer | closes the §18.6 request; the ≈281 GB and ≈47 s are RFC-0012 §4.4's estimate |
 | SC-17's bound is `α_eff ≤ α_wire + S/β + 2 · t_switch`, 31.5–76.5 µs for a 28 KiB partial at 2.5 GB/s | vision SC-17 | the row above was marked applied, but only SC-16 and the cross-reference had changed; SC-17's 20 µs low end was below the wire time alone. RFC-0032 still quotes the old bound (§18.1) |
 | the frame extension is bounded by the plan's maximum rows times per-row metadata, not 4 KiB, per RFC-0031 amendment 1 | §5.8 (`ActivationFrame` comment) | not in the log before this pass |
 | `TokenEntry::rng_counter` is u64, as in `ResumePoint` and on the wire | §5.8 | the sampler key rule had landed, but not its u64 counter width |
@@ -2614,7 +2623,13 @@ M0 and M1 are split, every milestone follows the same rules, three foundation AD
 | §9.1 gains the ggml-only device row: the M2 Vulkan preview's buffers are allocated through ggml at `Loading`, recorded in the arena directory, and fixed per epoch | §9.1 | a device whose only provider is ggml has no elastic arenas, yet the tier manager still accounts for every byte (ADR-0007) |
 | `prefix_scope`'s comment: `None` is the local principal, and pages wholly inside the shared span are keyed with the empty salt | §5.8 | matches RFC-0022 §7.1 and RFC-0050 §9.5 |
 
-### 18.5 Changes requested in other documents
+### 18.5 Decision revisions (2026-10-21)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| ADR-0621 decision 3: the PR title's scope may be left out, and a scope that is given is a crate, an area, `plan`, `deps` or `release`; release-please's PR title is fixed to `chore(release): release…` (RFC-0062 §8.2), and RFC-0062 §8.3 counts a breaking marker in any commit's subject | ADR-0621 decision 3; RFC-0062 §8.2, §8.3, §12.3 | QUAL-E1-T05's criteria require `feat!: x`, which has no scope, to pass once labelled; `plan` scopes the design documents' titles; `deps` is Renovate's scope; release-please's default title puts the branch name in the scope; and a single-commit PR lands under its commit's subject |
+
+### 18.6 Changes requested in other documents
 
 Changes these passes need in documents this RFC does not edit. The Area column names the domain whose documents change.
 
@@ -2634,3 +2649,31 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | Delete "the pinning loop checks real `MemFree_n` again after committing (§6)": §6 has no free-page test. Done 2026-10-20 | TIER | RFC-0020 §5 (Linux paragraph) |
 | Sustained NVMe run: "during the first `Loading`" becomes "after the first `Loading` completes, or in an idle window, never while `Packing` or `Loading` use the volume", as RFC-0010 S2 and SC-22 say. Done 2026-10-20 | TIER | RFC-0021 §10 step 6 |
 | SC-17's bound is `α_wire + S/β + 2 · t_switch`; Goals item 3 and §5.3 still quote `α_wire + 2 · t_switch`. Done 2026-10-20 | DIST | RFC-0032 Goals, §5.3 |
+| RFC-0062 §12.1: row 1 checks `core`'s normal and build dependencies (rule 1's 2026-10-21 note), and row 7 is named for rule 7 as it now reads (GPU providers ship in backend modules) instead of "backends are cargo features resolved at runtime" | QUAL | RFC-0062 §12.1 |
+
+### 18.6 Core types for the I/O interface (2026-10-21)
+
+`syntropy-io`'s interface (RFC-0021 §2) needs types that other crates share. They are placed in `core`.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ExtentRef` and `StepLayer` (RFC-0020 §3), and `FileIx` and `HostRegion` (RFC-0021 §2), are `core` types with serde derives; §5.13 gains their ownership row | §5.13; RFC-0020 §3 and RFC-0021 §2 (dated notes) | `io` (layer 1) carries `ExtentRef` and `StepLayer` in its requests, `tier` (layer 2) round-trips `ExtentRef` in `ArenaPlan`, and `io` and `kernels` (both layer 1) register `HostRegion`s; `core` is the only crate all of them can depend on (§4.2 rules 1 and 2) |
+
+### 18.7 Dependency rules as checked (2026-10-21)
+
+`cargo xtask check-deps` (QUAL-E1-T03) checks §4.2's rules over `cargo metadata`. Writing the check showed four places where the rules' text was narrower or wider than the design meant. Each now has a dated note under its rule. The check enforces every note, and none rejects a crate in the workspace.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| rule 1's external dependencies are its normal and build dependencies; dev-dependencies are exempt | §4.2 rule 1 | `core`'s tests use `proptest` and `serde_json`, which the allow-list does not name |
+| every crate may depend on `core` | §4.2 rule 2 | §4.1's table has `obs` and `config` depend on `core` inside layer 0, which "lower layers only" would forbid |
+| `xtask` is a workspace member outside the crate graph, with no workspace edges either way | §4.2 rule 2 | §4.1 does not list it, and `ci/layers.toml` needs a row for every member |
+| rule 9 covers `bench` as well as `testkit` | §4.2 rule 9 | both sit on §4.1's dev-only row |
+
+### 18.8 The config derive crate (2026-10-21)
+
+RFC-0054 §10.3 puts the schema in `syntropy-config` as a derive macro. Rust requires a proc-macro to be its own crate, and §4.1 listed none.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `config-derive` joins layer 0, with no workspace dependencies; `config` depends on it and re-exports `#[derive(ConfigSection)]`, and no other crate depends on it | §4.1 (row and dated note); §4.2 rule 2 (dated note) | Rust requires a proc-macro to be its own crate, and PROD-E1-T01 builds the derive; `ci/layers.toml` needs a row for every member, and "lower layers only" would forbid `config`'s edge to a crate in its own layer |

@@ -1,0 +1,5 @@
+error: cluster key `replan.min_gain` needs `introduced_at = <feature level>`, the cluster feature level that introduced it (RFC-0054 §2.3 step 9)
+  --> tests/ui/cluster_without_introduced_at.rs:12:5
+   |
+12 |     min_gain: f64,
+   |     ^^^^^^^^

@@ -467,8 +467,16 @@ def with_marker(item):
     return f"{item['body']}\n\n<!-- {MARKER}: {item['id']} {digest(item)} -->"
 
 
+def load_banned(path):
+    """The D5 banned-terms list at `path`: one case-insensitive regular
+    expression per non-blank line. naming_check.py reads the list through
+    this function too, so both read it the same way."""
+    text = Path(path).read_text(encoding="utf-8")
+    return [re.compile(p, re.I) for p in text.splitlines() if p.strip()]
+
+
 def check_banned(items, banned):
-    pats = [re.compile(p, re.I) for p in banned.read_text().splitlines() if p.strip()]
+    pats = load_banned(banned)
     bad = [(i["id"], p.pattern) for i in items for p in pats
            if p.search(i["title"]) or p.search(i["body"])]
     if bad:

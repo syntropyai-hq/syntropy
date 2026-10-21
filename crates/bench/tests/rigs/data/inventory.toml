@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Fixture data for crates/bench/tests/rigs: two made-up rigs, not real lab hardware.
+# `R-FIXTURE-A` sets every field, optional ones included, with two elements in each list.
+# `R-FIXTURE-SOC` is a system-on-chip with the optional fields left out.
+
+version = 1
+
+[[rig]]
+id = "R-FIXTURE-A"
+os_image = "lab-linux-fixture-1"
+kernel = "6.8.0-fixture"
+power_plan = "performance"
+room_sensor = "fixture-room-1"
+
+[rig.cpu]
+model = "Fixture Desktop CPU 24-core"
+microcode = "0x114"
+
+[[rig.memory]]
+slot = "DIMM_A2"
+size_gib = 64
+speed_mts = 6000
+part = "FIXTURE-64G-6000-A"
+
+[[rig.memory]]
+slot = "DIMM_B2"
+size_gib = 64
+speed_mts = 6000
+part = "FIXTURE-64G-6000-B"
+
+[[rig.gpu]]
+slot = "PCIEX16_1"
+model = "Fixture GPU 24 GB"
+vbios = "95.02.18.80.5F"
+driver = "580.65.06"
+pcie = "gen4x16"
+
+[[rig.gpu]]
+slot = "PCIEX16_2"
+model = "Fixture GPU 24 GB"
+vbios = "95.02.18.80.5F"
+driver = "580.65.06"
+pcie = "gen4x8"
+
+[[rig.nvme]]
+slot = "M2_1"
+model = "Fixture NVMe 2 TB"
+firmware = "4B2QJXD7"
+attachment = "cpu"
+pcie = "gen4x4"
+
+[[rig.nvme]]
+slot = "M2_3"
+model = "Fixture NVMe 2 TB"
+firmware = "4B2QJXD7"
+attachment = "chipset"
+pcie = "gen4x4"
+
+[[rig.nic]]
+slot = "PCIEX4_1"
+model = "Fixture 10GbE NIC"
+firmware = "9.20"
+pcie = "gen3x4"
+
+[[rig.nic]]
+slot = "onboard"
+model = "Fixture 2.5GbE NIC"
+firmware = "2.17"
+pcie = "gen3x1"
+
+[rig.bios]
+version = "1.2.3"
+memory_profile = "XMP-6000"
+power_limits = "PL1=125W,PL2=250W"
+smt = true
+resizable_bar = true
+
+[rig.bios.other]
+c_states = "enabled"
+pcie_aspm = "disabled"
+
+[[rig]]
+id = "R-FIXTURE-SOC"
+os_image = "lab-macos-fixture-1"
+kernel = "25.0.0"
+power_plan = "high-power"
+room_sensor = "fixture-room-1"
+
+[rig.cpu]
+model = "Fixture SoC 12-core"
+
+[[rig.memory]]
+slot = "unified"
+size_gib = 16
+speed_mts = 6400
+part = "FIXTURE-SOC-16G"
+
+[[rig.gpu]]
+slot = "integrated"
+model = "Fixture SoC GPU"
+driver = "25.0.0"
+
+[[rig.nvme]]
+slot = "internal"
+model = "Fixture SoC SSD"
+firmware = "1.0"
+attachment = "cpu"
+
+[[rig.nic]]
+slot = "onboard"
+model = "Fixture 1GbE NIC"
+firmware = "1.0"

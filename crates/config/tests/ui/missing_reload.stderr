@@ -1,0 +1,5 @@
+error: config key `probe.model_wait` needs `reload = Hot | Instance | Node` (RFC-0054 §9.1)
+  --> tests/ui/missing_reload.rs:12:5
+   |
+12 |     model_wait: syntropy_config::Duration,
+   |     ^^^^^^^^^^

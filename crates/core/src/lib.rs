@@ -16,6 +16,7 @@ pub mod plan;
 pub mod policy;
 pub mod quant;
 pub mod resource;
+pub mod transfer;
 pub mod units;
 
 pub use dtype::{DType, GgmlType};
@@ -29,4 +30,5 @@ pub use numerics::{AccumKind, ActQuant, Numerics};
 pub use plan::{PlacementPlan, PlanDelta, PlanDigest, PlanEpoch, PlanViolation};
 pub use policy::{ApproxKnobs, ExactnessPolicy, Objective};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
+pub use transfer::{ExtentRef, FileIx, HostRegion, StepLayer};
 pub use units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};

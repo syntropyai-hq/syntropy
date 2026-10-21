@@ -8,3 +8,9 @@ publish.workspace = true
 [[bin]]
 name = "xtask"
 path = "src/main.rs"
+
+[dependencies]
+# `cargo metadata` and `cargo build` JSON for `check-deps` (QUAL-E1-T03), and the GitHub REST
+# payloads the contribution checks read (QUAL-E1-T05, RFC-0062 §12.3).
+serde.workspace = true
+serde_json.workspace = true

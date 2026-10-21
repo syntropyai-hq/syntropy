@@ -1,0 +1,8 @@
+# A licence fixture: a scratch crate depends on an MPL-2.0 crate that has no per-crate exception in
+# deny.toml, which ADR-0018 §3 requires for MPL-2.0.
+# xtask/tests/licences.rs runs the licence checks on it and names the result it expects.
+[workspace]
+resolver = "3"
+members = [
+    "crates/scratch",
+]

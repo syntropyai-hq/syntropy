@@ -1,0 +1,36 @@
+{
+  "action": "synchronize",
+  "number": 7,
+  "pull_request": {
+    "number": 7,
+    "state": "open",
+    "title": "feat!: x",
+    "body": "What this changes.\n",
+    "user": {
+      "login": "carol",
+      "id": 58886888,
+      "type": "User",
+      "site_admin": false
+    },
+    "labels": [],
+    "head": {
+      "ref": "feature",
+      "sha": "ffffffffffffffffffffffffffffffffffffffff"
+    },
+    "base": {
+      "ref": "main",
+      "sha": "0000000000000000000000000000000000000000"
+    },
+    "draft": false,
+    "commits": 3
+  },
+  "repository": {
+    "full_name": "example/project"
+  },
+  "sender": {
+    "login": "carol",
+    "id": 58886888,
+    "type": "User",
+    "site_admin": false
+  }
+}
