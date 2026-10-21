@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# The contribution checks `dco` and `pr-title` (RFC-0062 §12.3), two of the three required checks
+# (§2.5). They judge a PR's commits, title, body and labels, so the PR must not be able to change
+# how it is judged. Each job checks out the base branch, never the PR, and runs the base branch's
+# `cargo xtask` with the base branch's `governance/maintainers.toml` and `version.txt`. It restores
+# no cache, so nothing the PR ran elsewhere reaches the build.
+#
+# They are a workflow of their own because they run again when a label is added or removed and
+# when the title or body is edited. Run in `pr.yml`, such an event would also post a `ci-gate` with
+# its hosted jobs skipped, and a skipped job passes. For the same reason both jobs check in full
+# on every PR event: a job skipped on a label event would post a passing check over a failing one.
+#
+# The same rules as `pr.yml` hold: read-only permissions, actions pinned by SHA, hosted runners
+# only.
+
+name: pr-meta
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-meta-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  dco:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # A merge group has no PR payload, and `dco` already passed on each member PR's head.
+      - name: Pass on a merge group
+        if: github.event_name == 'merge_group'
+        run: echo "dco is required on each member PR's head (RFC-0062 §12.3)"
+      - name: Check out the base branch, not the PR
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      # No cache: code the PR runs in any other job can write a cache entry under this PR's ref,
+      # and a restored `target/` could hold an `xtask` built from the PR. Built from scratch, the
+      # check is the base branch's.
+      - if: github.event_name == 'pull_request'
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: pr-meta
+          cache: "off"
+      - name: Fetch every commit of the PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" > "$RUNNER_TEMP/commits.json"
+      - name: cargo xtask ci dco
+        if: github.event_name == 'pull_request'
+        run: >-
+          cargo xtask ci dco
+          --event "$GITHUB_EVENT_PATH"
+          --commits "$RUNNER_TEMP/commits.json"
+
+  pr-title:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Pass on a merge group
+        if: github.event_name == 'merge_group'
+        run: echo "pr-title is required on each member PR's head (RFC-0062 §12.3)"
+      - name: Check out the base branch, not the PR
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      # No cache, as in `dco`.
+      - if: github.event_name == 'pull_request'
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: pr-meta
+          cache: "off"
+      # The label history is fetched with its headers, which show that the last page was read.
+      - name: Fetch every commit and the label history of the PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" > "$RUNNER_TEMP/commits.json"
+          gh api --include --paginate "repos/$REPO/issues/$NUMBER/events" \
+            > "$RUNNER_TEMP/label-events.http"
+      - name: cargo xtask ci pr-title
+        if: github.event_name == 'pull_request'
+        run: >-
+          cargo xtask ci pr-title
+          --event "$GITHUB_EVENT_PATH"
+          --commits "$RUNNER_TEMP/commits.json"
+          --label-events "$RUNNER_TEMP/label-events.http"
+          --roster "$GITHUB_WORKSPACE/governance/maintainers.toml"
+          --version-file "$GITHUB_WORKSPACE/version.txt"

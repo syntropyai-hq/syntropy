@@ -25,11 +25,13 @@
 
 mod build;
 mod check_deps;
+mod ci_gate;
 mod cli;
 mod codeowners;
 mod contrib;
 mod licences;
 mod registry;
+mod repo_settings;
 mod roster;
 mod run;
 
