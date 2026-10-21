@@ -10,18 +10,21 @@
 //! # The writer lock
 //!
 //! The lock is an exclusive OS advisory lock (`flock` on Linux and macOS, `LockFileEx` on
-//! Windows, through [`File::try_lock`]) on `<root>/v1/locks/writer.lock`. The OS releases it
-//! when the holder closes the file, which happens when its [`WritableRoot`] is dropped or when
-//! the process exits or is killed, so a crashed daemon never leaves a root locked. The file is
-//! opened close-on-exec (the standard library's default), so a child the holder spawns does not
-//! inherit the lock. A process that finds the lock held fails at once with
-//! [`StoreError::WriterLocked`]; it never waits.
+//! Windows, through [`File::try_lock`]) on `<root>/v1/locks/writer.lock`. Dropping the
+//! [`WritableRoot`] unlocks it. When the process exits or is killed, the OS releases it, so a
+//! crashed daemon never leaves a root locked; on Windows that release can lag the exit
+//! slightly. The file is opened close-on-exec (the standard library's default), so a child the
+//! holder spawns does not inherit the lock. A process that finds the lock held fails at once
+//! with [`StoreError::WriterLocked`]; it never waits.
 //!
-//! The holder writes its process ID into the lock file, and a refused process reports it. On
-//! Windows the lock also blocks reading the file, so the ID is not reported there.
+//! The lock file stays empty. On Windows the lock is a mandatory byte-range lock, so no other
+//! handle could read it. The holder writes its process ID to `locks/writer.pid` instead, which
+//! is never locked, and a refused process reports that ID. The ID is only a diagnostic: writing
+//! or reading it never decides whether a root opens. It can name a previous holder in the
+//! moment between a new holder taking the lock and writing the file.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::error::StoreError;
@@ -35,8 +38,17 @@ use crate::layout::Layout;
 #[derive(Debug)]
 pub struct WritableRoot {
     layout: Layout,
-    /// Holds the advisory lock; closing it releases the lock.
-    _lock: File,
+    /// Holds the advisory lock, which [`Drop`] releases.
+    lock: File,
+}
+
+impl Drop for WritableRoot {
+    fn drop(&mut self) {
+        // Closing the file would release the lock too, but Windows documents that a lock left
+        // on a closed handle is freed only when the system gets to it. Unlock explicitly. A
+        // failure leaves the release to the close that follows.
+        let _ = self.lock.unlock();
+    }
 }
 
 impl WritableRoot {
@@ -48,7 +60,7 @@ impl WritableRoot {
     /// - [`StoreError::NotADirectory`] when `path`, or a directory of its layout, exists and is
     ///   not a directory.
     /// - [`StoreError::Io`] when a directory cannot be created, or the lock file cannot be
-    ///   opened, locked or written.
+    ///   opened or locked.
     pub fn open(path: impl AsRef<Path>) -> Result<WritableRoot, StoreError> {
         let root = prepare_writable(path.as_ref())?;
         WritableRoot::open_resolved(root)
@@ -67,7 +79,7 @@ impl WritableRoot {
             .read(true)
             .write(true)
             .create(true)
-            // The holder's ID must survive a refused open of the same file.
+            // Nothing is ever written to the lock file; a refused open must not touch it.
             .truncate(false)
             .open(&lock_path)
             .map_err(|e| StoreError::io("open", &lock_path, e))?;
@@ -76,20 +88,19 @@ impl WritableRoot {
             Err(TryLockError::WouldBlock) => {
                 return Err(StoreError::WriterLocked {
                     root: layout.root().to_owned(),
-                    holder_pid: read_holder_pid(&lock_path),
+                    holder_pid: read_holder_pid(&layout.writer_pid()),
                 });
             }
             Err(TryLockError::Error(e)) => return Err(StoreError::io("lock", &lock_path, e)),
         }
-        record_holder(&lock).map_err(|e| StoreError::io("write", &lock_path, e))?;
+        // From here on, `root` releases the lock on every return.
+        let root = WritableRoot { layout, lock };
+        record_holder(&root.layout.writer_pid());
 
-        for dir in layout.fixed_dirs() {
+        for dir in root.layout.fixed_dirs() {
             ensure_dir(&dir)?;
         }
-        Ok(WritableRoot {
-            layout,
-            _lock: lock,
-        })
+        Ok(root)
     }
 
     /// The root's layout. Its root path is the resolved form of the path it was opened with.
@@ -256,18 +267,16 @@ fn ensure_dir(path: &Path) -> Result<(), StoreError> {
     }
 }
 
-/// Replaces the lock file's contents with this process's ID. Called only by the lock holder.
-fn record_holder(mut lock: &File) -> io::Result<()> {
-    lock.set_len(0)?;
-    writeln!(lock, "{}", std::process::id())
+/// Records this process's ID in `writer.pid`. Called only by the lock holder. Best effort: the
+/// ID is a diagnostic, so a failed write leaves the root open and the ID unreported.
+fn record_holder(pid_path: &Path) {
+    let _ = fs::write(pid_path, format!("{}\n", std::process::id()));
 }
 
-/// The process ID the lock's holder recorded, if the file can be read and holds one. The
-/// holder may not have written it yet, and on Windows its lock blocks the read.
-fn read_holder_pid(lock_path: &Path) -> Option<u32> {
-    let mut text = String::new();
-    File::open(lock_path).ok()?.read_to_string(&mut text).ok()?;
-    text.trim().parse().ok()
+/// The process ID the lock's holder recorded in `writer.pid`, if the file can be read and holds
+/// one. `None` when it is missing, unreadable or malformed, or the holder has not written it yet.
+fn read_holder_pid(pid_path: &Path) -> Option<u32> {
+    fs::read_to_string(pid_path).ok()?.trim().parse().ok()
 }
 
 #[cfg(test)]
@@ -308,12 +317,42 @@ mod tests {
         for dir in root.layout().fixed_dirs() {
             assert!(dir.is_dir(), "{} missing", dir.display());
         }
-        let pid = fs::read_to_string(root.layout().writer_lock()).unwrap();
+        // The ID goes to the unlocked `writer.pid`; the locked file stays empty, so nothing
+        // ever has to read it (on Windows no other handle could).
+        let pid = fs::read_to_string(root.layout().writer_pid()).unwrap();
         assert_eq!(pid, format!("{}\n", std::process::id()));
         assert_eq!(
-            read_holder_pid(&root.layout().writer_lock()),
+            read_holder_pid(&root.layout().writer_pid()),
             Some(std::process::id())
         );
+        assert_eq!(fs::metadata(root.layout().writer_lock()).unwrap().len(), 0);
+    }
+
+    /// A second handle in the same process conflicts with the first on every OS (`flock` locks
+    /// belong to the open file, `LockFileEx` locks to the handle), which lets this test reach
+    /// the refusal path without a child process. The two-process criterion is tested in
+    /// `tests/writer_lock.rs`.
+    #[test]
+    fn the_holder_id_is_best_effort() {
+        let tmp = TempDir::new();
+        let path = tmp.join("models");
+        let held = WritableRoot::open(&path).unwrap();
+        let pid_path = held.layout().writer_pid();
+        let holder_pid = |path: &Path| match WritableRoot::open(path) {
+            Err(StoreError::WriterLocked { holder_pid, .. }) => holder_pid,
+            other => panic!("expected WriterLocked, got {other:?}"),
+        };
+        assert_eq!(holder_pid(&path), Some(std::process::id()));
+        fs::write(&pid_path, b"not a pid\n").unwrap();
+        assert_eq!(holder_pid(&path), None);
+        fs::remove_file(&pid_path).unwrap();
+        assert_eq!(holder_pid(&path), None);
+        // A missing or unwritable `writer.pid` never stops a root from opening.
+        drop(held);
+        fs::create_dir(&pid_path).unwrap();
+        let reopened = WritableRoot::open(&path).unwrap();
+        assert!(pid_path.is_dir());
+        drop(reopened);
     }
 
     #[test]

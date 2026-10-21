@@ -24,7 +24,9 @@
 //!   packs/<device-class>/build/<pack-key>.intent   Layout::build_intent
 //!   staging/<sha256>/<chunk>.part       Layout::staging_part
 //!   sessions/                           Layout::sessions_dir
-//!   locks/                              Layout::locks_dir; the writer lock is locks/writer.lock
+//!   locks/                              Layout::locks_dir
+//!   locks/writer.lock                   Layout::writer_lock; the writer lock (not named by §4.1)
+//!   locks/writer.pid                    Layout::writer_pid; the lock holder's process ID
 //! ```
 //!
 //! `<sha256>` (a file's `FileDigest`) and `<model-id>` (a `ModelId`, BLAKE3) are 32-byte
@@ -40,6 +42,9 @@ pub const LAYOUT_DIR: &str = "v1";
 
 /// File name of a root's writer lock, inside `locks/`.
 pub const WRITER_LOCK_FILE: &str = "writer.lock";
+
+/// File name of the record of the writer lock holder's process ID, inside `locks/`.
+pub const WRITER_PID_FILE: &str = "writer.pid";
 
 /// Longest [`Name`], in bytes. Common file systems limit a path component to 255 bytes.
 pub const NAME_MAX_LEN: usize = 255;
@@ -407,6 +412,13 @@ impl Layout {
     pub fn writer_lock(&self) -> PathBuf {
         self.locks_dir().join(WRITER_LOCK_FILE)
     }
+
+    /// `locks/writer.pid`: the process ID of the writer lock's holder, as a diagnostic. It is
+    /// a separate file because the lock file itself cannot be read on Windows while it is
+    /// locked.
+    pub fn writer_pid(&self) -> PathBuf {
+        self.locks_dir().join(WRITER_PID_FILE)
+    }
 }
 
 /// Lowercase hex of a 32-byte digest.
@@ -499,6 +511,7 @@ mod tests {
             (l.sessions_dir(), "v1/sessions".into()),
             (l.locks_dir(), "v1/locks".into()),
             (l.writer_lock(), "v1/locks/writer.lock".into()),
+            (l.writer_pid(), "v1/locks/writer.pid".into()),
         ];
         for (path, want) in cases {
             assert_eq!(rel(&l, &path), want);

@@ -14,6 +14,8 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use common::TempDir;
 use syntropy_store::{StoreError, WritableRoot};
@@ -73,6 +75,21 @@ fn run_contender(root: &Path) -> String {
     report
 }
 
+/// Runs contenders until one opens `root` or `limit` has passed, and returns the last report.
+/// Used only after a holder is killed: Windows documents that it frees a dead process's file
+/// locks when the system gets to it, not at once. Every earlier attempt must be a refusal.
+fn run_contender_until_opened(root: &Path, limit: Duration) -> String {
+    let start = Instant::now();
+    loop {
+        let report = run_contender(root);
+        if report == "opened" || start.elapsed() > limit {
+            return report;
+        }
+        assert!(report.starts_with("refused: "), "{report}");
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn a_second_writer_process_is_refused_while_the_first_holds_the_root() {
     let tmp = TempDir::new("lock");
@@ -80,22 +97,18 @@ fn a_second_writer_process_is_refused_while_the_first_holds_the_root() {
     let (mut holder, mut holder_out) = spawn_holder(&root);
 
     let resolved = fs::canonicalize(&root).unwrap();
-    // On Windows the holder's lock also blocks reading its recorded process ID.
-    let pid = if cfg!(windows) {
-        String::new()
-    } else {
-        format!(" (pid {})", holder.id())
-    };
     assert_eq!(
         run_contender(&root),
         format!(
-            "refused: store root {} is already open for writing by another process{pid}; \
+            "refused: store root {} is already open for writing by another process (pid {}); \
              a store root has one writer process at a time",
-            resolved.display()
+            resolved.display(),
+            holder.id()
         )
     );
 
-    // Closing the holder's stdin makes it drop the root and exit; then a new writer gets in.
+    // Closing the holder's stdin makes it drop the root, which unlocks it, and exit. The next
+    // writer must get in on its first attempt.
     drop(holder.stdin.take());
     io::copy(&mut holder_out, &mut io::sink()).unwrap();
     assert!(holder.wait().unwrap().success());
@@ -113,7 +126,10 @@ fn a_killed_writer_leaves_the_root_unlocked() {
     // OS can release its lock.
     holder.kill().unwrap();
     holder.wait().unwrap();
-    assert_eq!(run_contender(&root), "opened");
+    assert_eq!(
+        run_contender_until_opened(&root, Duration::from_secs(10)),
+        "opened"
+    );
 }
 
 fn report(msg: &str) {
