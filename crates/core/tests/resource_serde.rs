@@ -1426,3 +1426,131 @@ fn rfc0001_device_info_decodes() {
     );
     assert_eq!(info.ext, DeviceInfoExt::default());
 }
+
+// ---- Field defaults ---------------------------------------------------------------------
+
+/// Encodes `value`, removes `key` from the top-level JSON object, and decodes the rest.
+fn decode_without<T: Serialize + DeserializeOwned>(value: &T, key: &str) -> T {
+    let mut json = serde_json::to_value(value).expect("serialize");
+    let removed = json.as_object_mut().expect("a record").remove(key);
+    assert!(removed.is_some(), "the record has no field {key}");
+    serde_json::from_value(json).unwrap_or_else(|e| panic!("decode without {key} failed: {e}"))
+}
+
+fn sample_tier_id(ordinal: u16) -> TierId {
+    TierId {
+        node: NodeId([3; 32]),
+        ordinal,
+    }
+}
+
+fn sample_link_id() -> LinkId {
+    let device = DeviceId {
+        node: NodeId([3; 32]),
+        ordinal: 0,
+    };
+    LinkId {
+        src: Endpoint::Tier(sample_tier_id(1)),
+        dst: Endpoint::Device(device),
+        kind: LinkKind::Pcie,
+        path: 0,
+    }
+}
+
+/// A `TierInfo` with only RFC-0001's fields decodes, with an empty `ext`.
+#[test]
+fn rfc0001_tier_info_decodes() {
+    let tier = TierInfo {
+        id: sample_tier_id(2),
+        kind: TierKind::HostPinned,
+        capacity: Bytes(64 << 30),
+        usable: Bytes(32 << 30),
+        affinity: SmallVec::new(),
+        pin_limit: Some(Bytes(32 << 30)),
+        volume: None,
+        ext: TierInfoExt {
+            numa: Some(1),
+            budget_source: BudgetSource::HostRules,
+            host: None,
+            context_reserve: None,
+        },
+    };
+    let back = decode_without(&tier, "ext");
+    assert_eq!(back.ext, TierInfoExt::default());
+    assert_eq!(back.id, tier.id);
+}
+
+/// `HostMemInfo` and `VolumeInfo` decode from an empty object, every field defaulted.
+#[test]
+fn host_mem_info_and_volume_info_decode_from_nothing() {
+    let host: HostMemInfo = serde_json::from_str("{}").unwrap();
+    assert_eq!(host, HostMemInfo::default());
+    let volume: VolumeInfo = serde_json::from_str("{}").unwrap();
+    assert_eq!(volume, VolumeInfo::default());
+}
+
+/// `HostPoolInfo` decodes without `usable`, which defaults to zero.
+#[test]
+fn host_pool_info_usable_defaults() {
+    let pool = HostPoolInfo {
+        numa: 1,
+        tiers: [sample_tier_id(2), sample_tier_id(3)],
+        usable: Bytes(48 << 30),
+        pin_limit: Bytes(16 << 30),
+    };
+    let back = decode_without(&pool, "usable");
+    assert_eq!(back.usable, Bytes(0));
+    assert_eq!(back.pin_limit, pool.pin_limit);
+}
+
+/// `QuantBw` decodes without `contended`, as from a device that is not `Unified`.
+#[test]
+fn quant_bw_contended_defaults() {
+    let bw = QuantBw {
+        tier: sample_tier_id(0),
+        class: KernelClass::DenseGemv,
+        scheme: QuantScheme::Ggml(GgmlType::Q4_K),
+        curve: SmallVec::new(),
+        extent: Bytes(1 << 30),
+        contended: Some(Measured::default()),
+    };
+    let back = decode_without(&bw, "contended");
+    assert_eq!(back.contended, None);
+    assert_eq!(back.extent, bw.extent);
+}
+
+/// `HostLinkCaps` decodes without `p2p`, which defaults to no verified peers.
+#[test]
+fn host_link_caps_p2p_defaults() {
+    let caps = HostLinkCaps {
+        link: sample_link_id(),
+        h2d_pinned: Measured::default(),
+        d2h_pinned: Measured::default(),
+        h2d_pageable: Measured::default(),
+        h2d_small: Measured::default(),
+        bidirectional: None,
+        p2p: vec![(
+            DeviceId {
+                node: NodeId([3; 32]),
+                ordinal: 1,
+            },
+            Measured::default(),
+        )],
+    };
+    let back = decode_without(&caps, "p2p");
+    assert!(back.p2p.is_empty());
+    assert_eq!(back.link, caps.link);
+}
+
+/// `LinkInfo` decodes without `metered`, which defaults to false.
+#[test]
+fn link_info_metered_defaults() {
+    let link = LinkInfo {
+        id: sample_link_id(),
+        transports: SmallVec::new(),
+        metered: true,
+    };
+    let back = decode_without(&link, "metered");
+    assert!(!back.metered);
+    assert_eq!(back.id, link.id);
+}

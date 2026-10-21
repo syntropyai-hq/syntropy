@@ -65,16 +65,17 @@ fn desktop() -> Enumerated {
     }
 }
 
-/// A dual-socket server: four discrete GPUs over two domains, two CPU devices, an NPU.
+/// A dual-socket server: four discrete GPUs over two domains, two CPU devices, an NPU. The
+/// CPU devices' names sort opposite to their NUMA domains, so only the NUMA rule orders them.
 fn dual_socket() -> Enumerated {
     Enumerated {
         devices: vec![
             device(DeviceKind::Npu, pci(0x90), Some(1), "npu"),
             device(DeviceKind::DiscreteGpu, pci(0x81), Some(1), "gpu-2"),
-            device(DeviceKind::Cpu, None, Some(1), "cpu-1"),
+            device(DeviceKind::Cpu, None, Some(1), "cpu-a"),
             device(DeviceKind::DiscreteGpu, pci(0x02), Some(0), "gpu-1"),
             device(DeviceKind::DiscreteGpu, pci(0xc1), Some(1), "gpu-3"),
-            device(DeviceKind::Cpu, None, Some(0), "cpu-0"),
+            device(DeviceKind::Cpu, None, Some(0), "cpu-z"),
             device(DeviceKind::DiscreteGpu, pci(0x01), Some(0), "gpu-0"),
         ],
         domains: vec![domain(1), domain(0)],
@@ -189,7 +190,7 @@ fn dual_socket_ordinals_follow_rfc_0010() {
     let names: Vec<_> = o.devices.iter().map(|(_, d)| d.name.as_str()).collect();
     assert_eq!(
         names,
-        ["gpu-0", "gpu-1", "gpu-2", "gpu-3", "cpu-0", "cpu-1", "npu"]
+        ["gpu-0", "gpu-1", "gpu-2", "gpu-3", "cpu-z", "cpu-a", "npu"]
     );
     let slots: Vec<_> = o.tiers.iter().map(|(_, s)| s.clone()).collect();
     assert_eq!(
