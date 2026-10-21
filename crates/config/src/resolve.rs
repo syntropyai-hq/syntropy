@@ -153,8 +153,12 @@ impl Flags {
         let at = Some(Origin::Cli {
             flag: String::from("--set"),
         });
+        // The messages name only the key part: the rest of the argument may be a secret.
         let Some((key, value)) = arg.split_once('=') else {
-            return Err(Problem::new(at, format!("`{arg}` is not `key=value`")));
+            return Err(Problem::new(
+                at,
+                "an argument has no `=`: `--set` takes `key=value`",
+            ));
         };
         let key = key.trim();
         let well_formed = !key.is_empty()
@@ -218,13 +222,30 @@ pub struct Resolved {
     /// The key.
     pub key: &'static KeySchema,
     /// The value. `None` for an `Option` key left unset, or a computed default the caller did
-    /// not supply.
-    pub value: Option<Value>,
+    /// not supply. Private, because a secret-typed key's value is a secret outside `Secret`:
+    /// see [`Resolved::value`].
+    value: Option<Value>,
     /// The layer that set it.
     pub origin: Origin,
 }
 
 impl Resolved {
+    /// The value, for a key whose type holds no secret. A secret-typed key gives `None` here:
+    /// its value leaves only inside `Secret`, through [`ResolvedConfig::section`], or redacted,
+    /// through [`Resolved::shown`] (RFC-0054 §10.1).
+    pub fn value(&self) -> Option<&Value> {
+        if text::is_secret(self.key) {
+            None
+        } else {
+            self.value.as_ref()
+        }
+    }
+
+    /// Whether a layer or the default gave the key a value.
+    pub fn is_set(&self) -> bool {
+        self.value.is_some()
+    }
+
     /// The value as `config show` prints it: inline TOML, with secrets redacted.
     pub fn shown(&self) -> Option<String> {
         self.value.as_ref().map(|v| text::shown(self.key, v))
@@ -257,13 +278,21 @@ pub struct Proposal {
     pub path: String,
     /// The cluster key, or `None` for a `policy.*` table.
     pub key: Option<&'static KeySchema>,
-    /// The proposed value.
-    pub value: Value,
+    /// The proposed value. Private for the same reason as [`Resolved`]'s.
+    value: Value,
     /// The layer that set it.
     pub origin: Origin,
 }
 
 impl Proposal {
+    /// The proposed value, unless the key's type holds a secret (see [`Resolved::value`]).
+    pub fn value(&self) -> Option<&Value> {
+        match self.key {
+            Some(key) if text::is_secret(key) => None,
+            _ => Some(&self.value),
+        }
+    }
+
     /// The value as `config show` prints it, with secrets redacted.
     pub fn shown(&self) -> String {
         match self.key {
@@ -923,5 +952,8 @@ mod tests {
         ] {
             assert!(flags.set(bad).is_err(), "{bad}");
         }
+        // A value written with the wrong separator is never echoed.
+        let problem = flags.set("api.token:hunter2-canary").unwrap_err();
+        assert!(!problem.to_string().contains("hunter2"), "{problem}");
     }
 }

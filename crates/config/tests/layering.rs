@@ -122,7 +122,7 @@ fn resolve(files: &[ConfigFile], env: &Env, flags: &Flags) -> ResolvedConfig {
 fn int(config: &ResolvedConfig, path: &str) -> Option<i64> {
     config
         .get(path)
-        .and_then(|r| r.value.as_ref())
+        .and_then(|r| r.value())
         .and_then(Value::as_integer)
 }
 
@@ -212,7 +212,7 @@ proptest! {
             } else {
                 (i as i64 + 1, Origin::Default { computed: None })
             };
-            prop_assert_eq!(got.value.as_ref().and_then(Value::as_integer), Some(value), "{}", path);
+            prop_assert_eq!(got.value().and_then(Value::as_integer), Some(value), "{}", path);
             prop_assert_eq!(&got.origin, &origin, "{}", path);
         }
     }
@@ -428,6 +428,63 @@ warning: env SYNTROPY_T__TYPO: unknown variable: `SYNTROPY_T__TYPO` names no con
     assert!(!format!("{resolved:?}").contains("hunter2"));
 }
 
+/// A table of secrets, the shape RFC-0054 §5.2 gives `obs.otlp.headers`.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "p", scope = Node, owner = "RFC-0053")]
+struct SecretMapSection {
+    /// Headers sent with every export.
+    #[config(reload = Hot, default = {})]
+    headers: std::collections::BTreeMap<String, syntropy_config::Secret<String>>,
+}
+
+static SECRET_MAP: Registry = Registry::new(&[&SecretMapSection::SCHEMA]);
+
+/// A key whose type holds a secret prints `[redacted]` whole, whatever its value looks like: an
+/// entry named `env` or `file` in a table of secrets is a secret, not a `SecretSource`
+/// (RFC-0054 §10.1, G7).
+#[test]
+fn a_table_of_secrets_never_prints() {
+    let file = |text: &str| vec![ConfigFile::new("/c.toml", text)];
+    let cases = [
+        (
+            file("p.headers = { authorization = \"Bearer canary-1\" }\n"),
+            Env::default(),
+        ),
+        (file("p.headers = { env = \"canary-2\" }\n"), Env::default()),
+        (
+            file("p.headers = { file = \"canary-3\" }\n"),
+            Env::default(),
+        ),
+        (file("[p.headers]\nenv = \"canary-4\"\n"), Env::default()),
+        (
+            Vec::new(),
+            env(&[("SYNTROPY_P__HEADERS", "{ env = \"canary-5\" }")]),
+        ),
+    ];
+    for (files, env) in cases {
+        let resolved = ResolvedConfig::resolve(
+            &SECRET_MAP,
+            Layers {
+                os: Os::Linux,
+                files: &files,
+                env: &env,
+                flags: &Flags::new(),
+            },
+        )
+        .expect("resolves");
+        let shown = command::show_resolved(&resolved);
+        assert!(!shown.contains("canary"), "{shown}");
+        assert!(shown.contains("p.headers = [redacted]"), "{shown}");
+        let headers = resolved.get("p.headers").expect("a node key");
+        assert!(headers.is_set());
+        assert_eq!(headers.value(), None);
+        assert!(!format!("{resolved:?}").contains("canary"));
+        // The typed section still holds the secret, inside `Secret`.
+        let section = resolved.section::<SecretMapSection>().expect("builds");
+        assert_eq!(section.headers.len(), 1);
+    }
+}
+
 #[test]
 fn a_secret_in_its_file_form_prints_as_written() {
     let files = [ConfigFile::new(
@@ -546,16 +603,16 @@ fn string_typed_keys_take_bare_text() {
     flags.set("t.name='quoted'").unwrap();
     let resolved = resolve(&[], &env(&[("SYNTROPY_T__SIZE", "16GiB")]), &flags);
     assert_eq!(
-        resolved.get("t.name").unwrap().value,
+        resolved.get("t.name").unwrap().value().cloned(),
         Some(Value::String(String::from("quoted")))
     );
     assert_eq!(
-        resolved.get("t.size").unwrap().value,
+        resolved.get("t.size").unwrap().value().cloned(),
         Some(Value::String(String::from("16GiB")))
     );
     let resolved = resolve(&[], &env(&[("SYNTROPY_T__NAME", "true")]), &Flags::new());
     assert_eq!(
-        resolved.get("t.name").unwrap().value,
+        resolved.get("t.name").unwrap().value().cloned(),
         Some(Value::String(String::from("true")))
     );
 }
@@ -565,7 +622,7 @@ fn syntropy_home_sets_the_state_dir_unless_its_own_variable_does() {
     let resolved = resolve(&[], &env(&[("SYNTROPY_HOME", "/srv/s")]), &Flags::new());
     let state = resolved.get("node.state_dir").unwrap();
     assert_eq!(
-        state.value,
+        state.value().cloned(),
         Some(Value::String(String::from("/srv/s/state")))
     );
     assert_eq!(
@@ -583,7 +640,10 @@ fn syntropy_home_sets_the_state_dir_unless_its_own_variable_does() {
         .get("node.state_dir")
         .cloned()
         .unwrap();
-    assert_eq!(state.value, Some(Value::String(String::from("/x"))));
+    assert_eq!(
+        state.value().cloned(),
+        Some(Value::String(String::from("/x")))
+    );
     assert_eq!(
         state.origin,
         Origin::Env {

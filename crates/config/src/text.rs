@@ -66,20 +66,39 @@ impl fmt::Display for Key<'_> {
     }
 }
 
-/// Whether a key holds a secret, by its Rust type: `Secret<…>` or `SecretSource`, optional or
-/// not.
+/// Whether a key holds a secret anywhere in its Rust type as the section writes it:
+/// `Secret<…>`, `SecretSource`, or a type built from them, such as
+/// `BTreeMap<String, Secret<String>>`.
 pub(crate) fn is_secret(key: &KeySchema) -> bool {
     key.ty.contains("Secret")
 }
 
-/// A key's value as `config show` prints it. A secret prints its file or variable form as
-/// written, and an inline secret prints as `[redacted]`.
+/// Whether a key's type is exactly `SecretSource`, optional or not. Its file and variable forms
+/// (`{ file = … }`, `{ env = … }`) name where the secret is, not the secret, so they may print.
+fn is_secret_source(key: &KeySchema) -> bool {
+    let ty: String = key.ty.chars().filter(|c| !c.is_whitespace()).collect();
+    let inner = ty
+        .strip_prefix("Option<")
+        .and_then(|t| t.strip_suffix('>'))
+        .unwrap_or(&ty);
+    inner.rsplit("::").next() == Some("SecretSource")
+}
+
+/// A key's value as `config show` prints it (RFC-0054 §10.1, G7).
+/// - A `SecretSource` key prints its file or variable form as written, and an inline value as
+///   `[redacted]`.
+/// - Any other key whose type holds a secret prints as `[redacted]` whole, whatever its value's
+///   shape: in a table of secrets, an entry named `env` or `file` is a secret, not a source.
+/// - Everything else prints as inline TOML.
 pub(crate) fn shown(key: &KeySchema, value: &Value) -> String {
-    if is_secret(key) {
+    if is_secret_source(key) {
         return match value.clone().try_into::<SecretSource>() {
             Ok(source) => source.to_string(),
             Err(_) => String::from(REDACTED),
         };
+    }
+    if is_secret(key) {
+        return String::from(REDACTED);
     }
     Inline(value).to_string()
 }
