@@ -1,0 +1,25 @@
+error[E0080]: evaluation panicked: config sections `ProbeSection` and `OtherProbeSection` both claim the prefix `probe.*`; every prefix has one owner (RFC-0054 §5.1)
+  --> tests/ui/duplicate_prefix.rs:23:29
+   |
+23 | static REGISTRY: Registry = Registry::new(&[&ProbeSection::SCHEMA, &OtherProbeSection::SCHEMA]);
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `REGISTRY` failed inside this call
+   |
+note: inside `Registry::new`
+  --> src/registry.rs
+   |
+   |                 check_pair(sections[i], sections[j]);
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `syntropy_config::registry::check_pair`
+  --> src/registry.rs
+   |
+   |         msg.panic();
+   |         ^^^^^^^^^^^
+note: inside `syntropy_config::registry::Msg::panic`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: src/registry.rs
+   |
+   |             Ok(text) => panic!("{}", text),
+   |                         ------------------ in this macro invocation
