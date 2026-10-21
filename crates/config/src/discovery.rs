@@ -156,9 +156,9 @@ pub const CONFIG_FLAG: &str = "--config";
 /// - `%ProgramData%` defaults to `C:\ProgramData`; with no `HOME` (or `%LOCALAPPDATA%`) there is
 ///   no user file and no default state or store;
 /// - a Windows system service keeps its state and store in `%ProgramData%\Syntropy`, the
-///   per-machine layout of RFC-0052 §5.1 (RFC-0054 §1's dated correction), and a macOS one in
-///   `/Library/Application Support/Syntropy`, OQ-PRD-26's recommended default while that
-///   question is open;
+///   per-machine layout of RFC-0052 §5.1 (RFC-0054 §1's dated correction), and a macOS
+///   LaunchDaemon in `/Library/Application Support/Syntropy` (RFC-0054 §1; OQ-PRD-26, settled
+///   2026-10-22);
 /// - `SYNTROPY_HOME=H` puts the state in `H/state` and the store in `H/store`, the layout the
 ///   macOS and Windows defaults use under their `Syntropy` directory;
 /// - an empty `SYNTROPY_CONFIG` or `SYNTROPY_HOME` counts as unset.
@@ -262,8 +262,8 @@ fn dirs(os: Os, mode: Mode, env: &Env, system_dir: &Path, user_dir: Option<&Path
         }
         // A per-machine Windows service keeps state and store beside its config, in
         // `%ProgramData%\Syntropy` (RFC-0052 §5.1, where the updater reads requests, §7.1).
-        // A macOS LaunchDaemon does the same in `/Library/Application Support/Syntropy`: that
-        // is OQ-PRD-26's recommended default, pending the open question.
+        // A macOS LaunchDaemon does the same in `/Library/Application Support/Syntropy`
+        // (RFC-0054 §1; OQ-PRD-26, settled 2026-10-22).
         (Os::MacOs | Os::Windows, Mode::Service) => (
             Some(os.join(system_dir.as_os_str(), &["state"])),
             Some(os.join(system_dir.as_os_str(), &["store"])),
@@ -517,7 +517,7 @@ mod tests {
         );
         let service = locate(Os::MacOs, Mode::Service, &e, None);
         assert_eq!(service.user_file, None);
-        // OQ-PRD-26's recommended default for a LaunchDaemon, pending the open question.
+        // A LaunchDaemon's state and store, as OQ-PRD-26 settled them.
         assert_eq!(
             service.dirs.state.as_deref().map(s).as_deref(),
             Some("/Library/Application Support/Syntropy/state")
