@@ -45,48 +45,61 @@ pub enum IoDestKind {
     },
 }
 
-/// Where a read puts its bytes, or where a write takes them from (RFC-0021 §2).
+/// Where a read puts its bytes, or where a write takes them from (RFC-0021 §2), and how many
+/// bytes that memory holds.
 ///
 /// An engine reads and writes the memory an `IoDest` names, so whoever names it must vouch for
-/// that memory. The field is private and the constructors, [`IoDest::fixed`] and
+/// that memory. The fields are private and the constructors, [`IoDest::fixed`] and
 /// [`IoDest::raw`], are `unsafe`. The obligation therefore sits with the tier manager, which owns
 /// every destination buffer (RFC-0021 §1) and may use `unsafe` (RFC-0001 §4.2 rule 8; ADR-0001
 /// item 4). Other crates, including those under `forbid(unsafe_code)`, only forward the values
-/// it hands them. An `IoDest` is neither `Copy` nor `Clone`, so a request that has been
-/// submitted cannot be submitted again from a stale copy.
+/// it hands them.
+///
+/// The length is part of the destination, so the caller vouches for a range it chose. A request
+/// can name a longer extent, but [`SubmitBatch::push`](crate::SubmitBatch::push), the only way
+/// to reach an engine, refuses an operation whose extent is longer than its destination. An
+/// `IoDest` is neither `Copy` nor `Clone`, so a request that has been submitted cannot be
+/// submitted again from a stale copy.
 ///
 /// Code without `unsafe` cannot make one:
 ///
 /// ```compile_fail,E0133
-/// let dest = syntropy_io::IoDest::raw(0x1000);
+/// use syntropy_io::{Bytes, IoDest};
+/// let dest = IoDest::raw(0x1000, Bytes(4096));
 /// ```
 ///
 /// ```compile_fail,E0451
-/// use syntropy_io::{IoDest, IoDestKind};
-/// let dest = IoDest { kind: IoDestKind::Raw { addr: 0x1000 } };
+/// use syntropy_io::{Bytes, IoDest, IoDestKind};
+/// let dest = IoDest { kind: IoDestKind::Raw { addr: 0x1000 }, len: Bytes(4096) };
 /// ```
 ///
-/// ```compile_fail,E0599
-/// fn twice(dest: &syntropy_io::IoDest) -> syntropy_io::IoDest {
-///     dest.clone()
+/// ```compile_fail,E0277
+/// use syntropy_io::IoDest;
+/// fn twice(dest: &IoDest) -> IoDest {
+///     IoDest::clone(dest)
 /// }
 /// ```
 ///
 /// With `unsafe`, and a contract the caller keeps, it compiles:
 ///
 /// ```
-/// use syntropy_io::{IoDest, IoDestKind};
-/// // SAFETY: this destination is never put in a request, so no engine accesses the address.
-/// let dest = unsafe { IoDest::raw(0x1000) };
-/// assert_eq!(dest.kind(), IoDestKind::Raw { addr: 0x1000 });
+/// use syntropy_io::{Bytes, IoDest, IoDestKind};
+/// let mut page = vec![0u8; 4096];
+/// let addr = page.as_mut_ptr() as u64;
+/// // SAFETY: `page` is one allocation of 4096 bytes that this code owns. It outlives `dest`,
+/// // which is never submitted, and nothing reads or writes it while `dest` exists.
+/// let dest = unsafe { IoDest::raw(addr, Bytes(4096)) };
+/// assert_eq!(dest.kind(), IoDestKind::Raw { addr });
+/// assert_eq!(dest.len(), Bytes(4096));
 /// ```
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct IoDest {
     kind: IoDestKind,
+    len: Bytes,
 }
 
 impl IoDest {
-    /// A slot in a registered buffer: `offset` bytes into buffer `buf`.
+    /// `len` bytes of a registered buffer, starting `offset` bytes into buffer `buf`.
     ///
     /// The offset should also be a multiple of the volume's
     /// [`DioAlign::mem`](crate::DioAlign::mem); the I/O thread rejects a misaligned request
@@ -95,20 +108,28 @@ impl IoDest {
     ///
     /// # Safety
     ///
-    /// From the submission of the request that carries this destination until its completion
-    /// has been reaped, where `len` is that request's extent length:
-    /// - `buf` was returned by [`IoEngine::register_buffers`](crate::IoEngine::register_buffers)
-    ///   on the engine the request is submitted to, and `offset .. offset + len` lies inside
-    ///   that buffer;
-    /// - nothing else reads or writes that range: no other request, thread or device.
+    /// From this call until the value is dropped without being submitted, or, once an engine
+    /// accepts a request that carries it, until that request's completion has been reaped:
+    /// - on every engine in this process that has a buffer registered at index `buf`,
+    ///   `offset .. offset + len` lies inside that buffer. Code without `unsafe` chooses which
+    ///   engine a request reaches, so this has to hold on each of them; an engine never
+    ///   touches memory for a `buf` it has not registered (see [`IoEngine::submit`](crate::IoEngine::submit));
+    /// - nothing else reads or writes the memory that range names on those engines: no other
+    ///   destination, thread or device.
+    ///
+    /// The caller cannot see when a forwarding crate submits or drops the value, so in practice
+    /// it keeps the range reserved until the request's completion reaches it. A range whose
+    /// destination never comes back stays reserved: leaking a slot is safe, reusing it early is
+    /// not.
     #[must_use]
-    pub const unsafe fn fixed(buf: BufIndex, offset: u64) -> Self {
+    pub const unsafe fn fixed(buf: BufIndex, offset: u64, len: Bytes) -> Self {
         Self {
             kind: IoDestKind::Fixed { buf, offset },
+            len,
         }
     }
 
-    /// Any memory the tier manager owns, starting at `addr`.
+    /// `len` bytes of memory the tier manager owns, starting at `addr`.
     ///
     /// The address should also be aligned to the volume's
     /// [`DioAlign::mem`](crate::DioAlign::mem), and to at least 4096 bytes; the I/O thread rejects
@@ -117,15 +138,20 @@ impl IoDest {
     ///
     /// # Safety
     ///
-    /// From the submission of the request that carries this destination until its completion
-    /// has been reaped, where `len` is that request's extent length:
-    /// - `addr .. addr + len` is one allocation the caller owns, valid for writes when the request
-    ///   is a read and for reads when it is a write;
-    /// - nothing else reads or writes that range: no other request, thread or device.
+    /// From this call until the value is dropped without being submitted, or, once an engine
+    /// accepts a request that carries it, until that request's completion has been reaped:
+    /// - `addr .. addr + len` lies inside one allocation the caller owns, valid for reads and
+    ///   writes;
+    /// - nothing else reads or writes that range: no other destination, thread or device.
+    ///
+    /// As for [`IoDest::fixed`], the caller in practice keeps the range reserved until the
+    /// request's completion reaches it, and a range whose destination never comes back stays
+    /// reserved.
     #[must_use]
-    pub const unsafe fn raw(addr: u64) -> Self {
+    pub const unsafe fn raw(addr: u64, len: Bytes) -> Self {
         Self {
             kind: IoDestKind::Raw { addr },
+            len,
         }
     }
 
@@ -133,6 +159,12 @@ impl IoDest {
     #[must_use]
     pub const fn kind(&self) -> IoDestKind {
         self.kind
+    }
+
+    /// How many bytes this destination holds: the most a request carrying it may transfer.
+    #[must_use]
+    pub const fn len(&self) -> Bytes {
+        self.len
     }
 }
 
@@ -263,6 +295,15 @@ impl IoOp {
             IoOp::Write(w) => w.priority,
         }
     }
+
+    /// The memory the operation touches: a read's destination or a write's source.
+    #[must_use]
+    pub const fn dest(&self) -> &IoDest {
+        match self {
+            IoOp::Read(r) => &r.dest,
+            IoOp::Write(w) => &w.src,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -291,9 +332,17 @@ mod tests {
             offset: 4096,
             len: Bytes(8192),
         };
-        // SAFETY: neither request is submitted to an engine, so no memory is accessed through
-        // these destinations.
-        let (fixed, raw) = unsafe { (IoDest::fixed(BufIndex(1), 0), IoDest::raw(0x1000)) };
+        let mut page = [0u8; 8192];
+        let addr = page.as_mut_ptr() as u64;
+        // SAFETY: no engine in this test process registers buffers, so the `fixed` destination
+        // names no memory. `page` is one 8192-byte allocation this test owns; it outlives `raw`,
+        // which is never submitted, and nothing reads or writes it while `raw` exists.
+        let (fixed, raw) = unsafe {
+            (
+                IoDest::fixed(BufIndex(1), 0, Bytes(8192)),
+                IoDest::raw(addr, Bytes(8192)),
+            )
+        };
         assert_eq!(
             fixed.kind(),
             IoDestKind::Fixed {
@@ -301,7 +350,8 @@ mod tests {
                 offset: 0
             }
         );
-        assert_eq!(raw.kind(), IoDestKind::Raw { addr: 0x1000 });
+        assert_eq!(raw.kind(), IoDestKind::Raw { addr });
+        assert_eq!(fixed.len(), Bytes(8192));
         let read = IoOp::Read(ReadRequest {
             ticket: IoTicket(11),
             extent,
@@ -322,5 +372,13 @@ mod tests {
         assert_eq!(write.extent(), extent);
         assert_eq!(read.priority(), IoPriority::PrefetchNear);
         assert_eq!(write.priority(), IoPriority::Background);
+        assert_eq!(
+            read.dest().kind(),
+            IoDestKind::Fixed {
+                buf: BufIndex(1),
+                offset: 0
+            }
+        );
+        assert_eq!(write.dest().kind(), IoDestKind::Raw { addr });
     }
 }

@@ -15,7 +15,7 @@ use std::path::Path;
 use syntropy_io::{
     BufIndex, Bytes, CancelOutcome, CompletionBuf, DioAlign, EngineCaps, EngineKind, ExtentRef,
     FileIx, HostRegion, IoDest, IoEngine, IoError, IoErrorCode, IoOp, IoPriority, IoTicket, Nanos,
-    OpenMode, ReadCompletion, ReadRequest, SubmitBatch, SyncMode, Wait, WriteRequest,
+    OpenMode, PushError, ReadCompletion, ReadRequest, SubmitBatch, SyncMode, Wait, WriteRequest,
 };
 
 struct CountingAlloc;
@@ -74,8 +74,9 @@ const PAGE: u64 = 4096;
 
 /// Memory the tests own, handed out one page per slot, as the tier manager hands out slots.
 ///
-/// Each test keeps at most one submitted request per slot until its completion is reaped, and
-/// keeps the pool alive until every engine it registered with is dropped.
+/// Each test makes at most one destination per page at a time: a page's earlier destination has
+/// been dropped unsubmitted, or its request's completion reaped, before the next is made. Each
+/// test keeps the pool alive until every destination and engine using it is gone.
 struct Pool {
     pages: Vec<Page>,
 }
@@ -94,10 +95,10 @@ impl Pool {
     fn slot(&mut self, slot: usize) -> IoDest {
         assert!(slot < self.pages.len());
         let addr = self.base() + slot as u64 * PAGE;
-        // SAFETY: the page belongs to this pool, which outlives every request in these tests;
-        // each test has at most one submitted request per slot until it reaps that request's
-        // completion; and each request's extent is one page long.
-        unsafe { IoDest::raw(addr) }
+        // SAFETY: the page lies in this pool's allocation, which outlives every destination and
+        // engine that uses it; each test makes at most one destination per page at a time (see
+        // `Pool`); and nothing else reads or writes the pages.
+        unsafe { IoDest::raw(addr, Bytes(PAGE)) }
     }
 
     fn region(&mut self) -> HostRegion {
@@ -304,9 +305,10 @@ fn an_engine_moves_onto_its_thread_as_a_trait_object() {
     );
     assert_eq!(engine.kind(), EngineKind::PreadPool);
 
-    // SAFETY: buffer 0 was registered with this engine just above and covers two pages; the
-    // write reads page 1, one page long, and is the only request on it.
-    let src = unsafe { IoDest::fixed(BufIndex(0), PAGE) };
+    // SAFETY: of the engines in this test process, only `engine` registers buffers, and its
+    // buffer 0 is the pool's two pages, so page 1 lies inside it. The pool outlives the engine,
+    // and nothing else uses page 1 while `src` or its request exists.
+    let src = unsafe { IoDest::fixed(BufIndex(0), PAGE, Bytes(PAGE)) };
     let handle = std::thread::spawn(move || {
         let mut batch = SubmitBatch::with_capacity(1);
         batch.push(write(1, src)).unwrap();
@@ -321,13 +323,50 @@ fn an_engine_moves_onto_its_thread_as_a_trait_object() {
     assert_eq!(c.result, Ok(Bytes(PAGE)));
 }
 
+/// The review's case: code without `unsafe` takes a 4 KiB slot the tier manager made and names a
+/// 1 GiB extent for it. The push refuses it, so the engine never sees it.
+#[test]
+fn a_destination_bounds_the_transfer() {
+    let mut pool = Pool::new(1);
+    let mut engine = ImmediateEngine::new(4);
+    let mut batch = SubmitBatch::with_capacity(4);
+    let slot = pool.slot(0);
+    let overrun = IoOp::Read(ReadRequest {
+        ticket: IoTicket(1),
+        extent: ExtentRef {
+            file: FileIx(0),
+            offset: 0,
+            len: Bytes(1 << 30),
+        },
+        dest: slot,
+        priority: IoPriority::Demand,
+        useful_until: None,
+    });
+    let refused = batch.push(overrun).unwrap_err();
+    assert!(matches!(refused, PushError::ExceedsDest(_)));
+    assert!(batch.is_empty());
+    assert_eq!(engine.submit(&mut batch), Ok(0));
+    assert_eq!(engine.in_flight(), (0, Bytes(0)));
+
+    // The same slot, taken back from the refused request, carries a one-page read.
+    let IoOp::Read(request) = refused.into_op() else {
+        unreachable!("a read was pushed")
+    };
+    batch
+        .push(read(2, IoPriority::Demand, request.dest))
+        .unwrap();
+    assert_eq!(engine.submit(&mut batch), Ok(1));
+    assert_eq!(engine.in_flight(), (1, Bytes(PAGE)));
+}
+
 /// The I/O loop's steady state: push chunks, submit, reap, drain, including pushes into a full
 /// batch and reaps into a full buffer. After the buffers, the engine and the memory are set up at
 /// `Warming`, none of it allocates.
 #[test]
 fn steady_state_submit_and_reap_allocate_nothing() {
     const BATCH: usize = 32;
-    let mut pool = Pool::new(BATCH);
+    const PUSHES: usize = 40;
+    let mut pool = Pool::new(PUSHES);
     let mut engine = ImmediateEngine::new(16);
     let mut batch = SubmitBatch::with_capacity(BATCH);
     let mut out = CompletionBuf::with_capacity(8);
@@ -336,11 +375,11 @@ fn steady_state_submit_and_reap_allocate_nothing() {
 
     let before = allocations_on_this_thread();
     for round in 0..1_000u64 {
-        // Every round drains before the next, and at most `BATCH` pushes per round are
-        // accepted, so slot `i` has one request at a time.
-        for i in 0..40usize {
+        // One page per push in a round, and every round drains before the next, so each page has
+        // one destination at a time.
+        for i in 0..PUSHES {
             let t = round * 40 + i as u64;
-            let dest = pool.slot(i % BATCH);
+            let dest = pool.slot(i);
             let op = if i % 10 == 9 {
                 write(t, dest)
             } else {

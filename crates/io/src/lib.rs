@@ -24,7 +24,7 @@ pub mod engine;
 pub mod error;
 pub mod request;
 
-pub use batch::{CompletionBuf, Full, SubmitBatch};
+pub use batch::{CompletionBuf, Full, PushError, SubmitBatch};
 pub use engine::{BufIndex, CancelOutcome, EngineCaps, IoEngine, OpenMode, Wait};
 pub use error::{IoError, IoErrorCode};
 pub use request::{

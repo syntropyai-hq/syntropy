@@ -123,8 +123,8 @@ pub trait IoEngine: Send {
     ///
     /// Each region is memory the caller owns, valid for reads and writes over its whole length,
     /// and stays so (not freed, unmapped or given to anything else) until the engine is dropped.
-    /// Once registered, the engine and the device may read or write it at any time through
-    /// [`IoDest::fixed`](crate::IoDest::fixed) destinations.
+    /// The engine touches a registered region only through [`IoDest::fixed`](crate::IoDest::fixed)
+    /// destinations, whose own contracts reserve each range it touches.
     unsafe fn register_buffers(&mut self, regions: &[HostRegion])
     -> Result<Vec<BufIndex>, IoError>;
 
@@ -133,6 +133,12 @@ pub trait IoEngine: Send {
     /// The engine accepts operations from the front of the batch, in order, and removes each
     /// one it accepts with [`SubmitBatch::consume`]. Whatever remains in the batch afterwards,
     /// on `Ok` or `Err`, was not submitted.
+    ///
+    /// An engine transfers at most an operation's extent length, which
+    /// [`SubmitBatch::push`] has checked against the destination's
+    /// [`len`](crate::IoDest::len). For a [`Fixed`](crate::IoDestKind::Fixed) destination it
+    /// also checks that it registered `buf` and that the range lies inside that buffer; an
+    /// operation that fails the check completes with an error, and its memory is never touched.
     fn submit(&mut self, batch: &mut SubmitBatch) -> Result<u32, IoError>;
 
     /// Non-blocking unless `wait` allows it; appends completions.
