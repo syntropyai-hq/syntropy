@@ -3,7 +3,8 @@
 //! Argument parsing for `cargo xtask`, with no dependencies beyond `std`.
 //!
 //! A new top-level command, such as `check-deps` (QUAL-E1-T03), is a variant of [`Command`], a
-//! branch in [`parse`] and a line in [`USAGE`].
+//! branch in [`parse`] and a line in [`USAGE`]. A job's or suite's own options are declared in
+//! its registry entry (`Entry::params`), and [`parse`] accepts exactly those.
 
 use std::fmt;
 
@@ -13,24 +14,31 @@ pub const USAGE: &str = "\
 Usage: cargo xtask <command>
 
 Commands:
-  ci <job>        run a CI job: the same command CI runs (RFC-0062 §1)
-  ci --list       list the CI jobs
-  test <suite>    run a test suite (RFC-0060 §1.2)
-  test --list     list the test suites
-  help            print this message
+  ci <job> [options]      run a CI job: the same command CI runs (RFC-0062 §1)
+  ci --list               list the CI jobs and their options
+  test <suite> [options]  run a test suite (RFC-0060 §1.2)
+  test --list             list the test suites and their options
+  help                    print this message
 
-Exit status: 0 when every step passes, 1 when a step fails, 2 on a usage error.";
+An option is `--name <value>` or `--name=<value>`, given at most once.
+
+Exit status: 0 when every step passes, 1 when a step fails, 2 on a usage error or when xtask
+was not started by `cargo xtask`.";
 
 /// The top-level commands, in the order `USAGE` lists them.
 const COMMANDS: &[&str] = &["ci", "test", "help"];
 
-/// What the command line asks for. Names are resolved against the registry while parsing, so
-/// every [`Command::Run`] names an entry that exists.
+/// What the command line asks for. Names and options are resolved against the registry while
+/// parsing, so every [`Command::Run`] names an entry that exists, with options it accepts.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command<'r> {
     Help,
     List(Kind),
-    Run { kind: Kind, entry: &'r Entry },
+    Run {
+        kind: Kind,
+        entry: &'r Entry,
+        args: Args,
+    },
 }
 
 /// Which registry a name belongs to.
@@ -58,6 +66,21 @@ impl Kind {
     }
 }
 
+/// The option values given to an entry, in command-line order. Each name is one of the entry's
+/// `params`, and appears at most once.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Args(Vec<(&'static str, String)>);
+
+impl fmt::Display for Args {
+    /// ` --name value` for each option, so a label reads like the command line.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (name, value) in &self.0 {
+            write!(f, " {name} {value}")?;
+        }
+        Ok(())
+    }
+}
+
 /// A command line `parse` rejects. `main` prints it and exits with status 2.
 #[derive(Debug, PartialEq, Eq)]
 pub enum UsageError {
@@ -72,7 +95,17 @@ pub enum UsageError {
         name: String,
         valid: Vec<&'static str>,
     },
+    /// An option before the job or suite name, or after `xtask`, that nothing accepts.
     UnknownOption(String),
+    /// An option the entry does not declare.
+    UnknownParam {
+        kind: Kind,
+        entry: &'static str,
+        option: String,
+        valid: Vec<&'static str>,
+    },
+    MissingValue(&'static str),
+    RepeatedOption(&'static str),
     UnexpectedArgument(String),
 }
 
@@ -105,6 +138,31 @@ impl fmt::Display for UsageError {
                 valid.join(", ")
             ),
             UsageError::UnknownOption(option) => write!(f, "unknown option `{option}`"),
+            UsageError::UnknownParam {
+                kind,
+                entry,
+                option,
+                valid,
+            } if valid.is_empty() => write!(
+                f,
+                "{} `{entry}` takes no options, but got `{option}`",
+                kind.noun()
+            ),
+            UsageError::UnknownParam {
+                kind,
+                entry,
+                option,
+                valid,
+            } => write!(
+                f,
+                "unknown option `{option}` for {} `{entry}`; valid options: {}",
+                kind.noun(),
+                valid.join(", ")
+            ),
+            UsageError::MissingValue(option) => write!(f, "option `{option}` needs a value"),
+            UsageError::RepeatedOption(option) => {
+                write!(f, "option `{option}` is given more than once")
+            }
             UsageError::UnexpectedArgument(arg) => write!(f, "unexpected argument `{arg}`"),
         }
     }
@@ -134,7 +192,7 @@ pub fn parse<'r>(
     }
 }
 
-/// `ci <job>`, `ci --list`, `test <suite>` and `test --list`.
+/// `ci <job> [options]`, `ci --list`, `test <suite> [options]` and `test --list`.
 fn parse_run<'r>(
     kind: Kind,
     args: &[String],
@@ -162,10 +220,51 @@ fn parse_run<'r>(
                 name: name.to_owned(),
                 valid: registry::names(entries),
             })?;
-            no_more(rest)?;
-            Ok(Command::Run { kind, entry })
+            let args = parse_params(kind, entry, rest)?;
+            Ok(Command::Run { kind, entry, args })
         }
     }
+}
+
+/// The options after an entry's name, checked against the entry's `params`.
+fn parse_params(kind: Kind, entry: &Entry, args: &[String]) -> Result<Args, UsageError> {
+    let mut values: Vec<(&'static str, String)> = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if !arg.starts_with('-') {
+            return Err(UsageError::UnexpectedArgument(arg.clone()));
+        }
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        let param = entry
+            .params
+            .iter()
+            .find(|param| param.name == name)
+            .ok_or_else(|| UsageError::UnknownParam {
+                kind,
+                entry: entry.name,
+                option: name.to_owned(),
+                valid: entry.params.iter().map(|param| param.name).collect(),
+            })?;
+        let value = match inline {
+            Some(value) => value,
+            // A following option is not taken as a value: `--base --other` is a missing value.
+            None => match rest.next() {
+                Some(value) if !value.starts_with('-') => value.as_str(),
+                _ => "",
+            },
+        };
+        if value.is_empty() {
+            return Err(UsageError::MissingValue(param.name));
+        }
+        if values.iter().any(|(seen, _)| *seen == param.name) {
+            return Err(UsageError::RepeatedOption(param.name));
+        }
+        values.push((param.name, value.to_owned()));
+    }
+    Ok(Args(values))
 }
 
 fn no_more(rest: &[String]) -> Result<(), UsageError> {
@@ -178,24 +277,40 @@ fn no_more(rest: &[String]) -> Result<(), UsageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{Action, JOBS, SUITES, Step};
+    use crate::registry::{Action, JOBS, Param, SUITES, Step};
 
     const STEP: &[Step] = &[Step {
         name: "noop",
         action: Action::Cargo(&["--version"]),
     }];
 
-    /// A registry with more than one name, so error messages can be checked for the full list.
+    /// A registry with more than one name, so error messages can be checked for the full list,
+    /// and with an entry that takes options.
     const FIXTURE_JOBS: &[Entry] = &[
         Entry {
             name: "alpha",
             summary: "first",
+            defined_in: "RFC-0062 §2.3",
+            params: &[],
             steps: STEP,
             pending: &[],
         },
         Entry {
             name: "beta-two",
-            summary: "second",
+            summary: "second, with options",
+            defined_in: "RFC-0062 §2.2",
+            params: &[
+                Param {
+                    name: "--base",
+                    value: "<ref>",
+                    help: "the merge base",
+                },
+                Param {
+                    name: "--head",
+                    value: "<ref>",
+                    help: "the head",
+                },
+            ],
             steps: STEP,
             pending: &[],
         },
@@ -213,6 +328,14 @@ mod tests {
         parse(&args(line), FIXTURE_JOBS, &[])
     }
 
+    /// The option values of a fixture command line that parses.
+    fn fixture_args(line: &str) -> Vec<(&'static str, String)> {
+        match parse_fixture(line) {
+            Ok(Command::Run { args, .. }) => args.0,
+            other => panic!("`{line}` gave {other:?}"),
+        }
+    }
+
     #[test]
     fn ci_lint_resolves_to_the_lint_job() {
         let lint = registry::find(JOBS, "lint").unwrap();
@@ -220,7 +343,8 @@ mod tests {
             parse_real("ci lint"),
             Ok(Command::Run {
                 kind: Kind::Job,
-                entry: lint
+                entry: lint,
+                args: Args::default(),
             })
         );
     }
@@ -232,7 +356,8 @@ mod tests {
             parse_real("test unit"),
             Ok(Command::Run {
                 kind: Kind::Suite,
-                entry: unit
+                entry: unit,
+                args: Args::default(),
             })
         );
     }
@@ -350,10 +475,91 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_takes_its_own_options_in_either_form() {
+        assert_eq!(
+            fixture_args("ci beta-two --base main"),
+            [("--base", "main".to_owned())]
+        );
+        assert_eq!(
+            fixture_args("ci beta-two --base=main"),
+            [("--base", "main".to_owned())]
+        );
+        assert_eq!(
+            fixture_args("ci beta-two --head abc123 --base=main"),
+            [
+                ("--head", "abc123".to_owned()),
+                ("--base", "main".to_owned())
+            ]
+        );
+        assert_eq!(fixture_args("ci beta-two"), []);
+    }
+
+    #[test]
+    fn options_print_as_typed() {
+        let Ok(Command::Run { args, .. }) = parse_fixture("ci beta-two --base=main --head x")
+        else {
+            panic!("did not parse");
+        };
+        assert_eq!(args.to_string(), " --base main --head x");
+        assert_eq!(Args::default().to_string(), "");
+    }
+
+    #[test]
+    fn an_option_another_entry_declares_is_rejected() {
+        assert_eq!(
+            parse_fixture("ci alpha --base main")
+                .unwrap_err()
+                .to_string(),
+            "job `alpha` takes no options, but got `--base`"
+        );
+        assert_eq!(
+            parse_fixture("ci beta-two --tip main")
+                .unwrap_err()
+                .to_string(),
+            "unknown option `--tip` for job `beta-two`; valid options: --base, --head"
+        );
+        assert_eq!(
+            parse_fixture("ci beta-two --tip=main"),
+            Err(UsageError::UnknownParam {
+                kind: Kind::Job,
+                entry: "beta-two",
+                option: "--tip".into(),
+                valid: vec!["--base", "--head"],
+            })
+        );
+    }
+
+    #[test]
+    fn an_option_needs_a_value() {
+        for line in [
+            "ci beta-two --base",
+            "ci beta-two --base=",
+            "ci beta-two --base --head x",
+        ] {
+            assert_eq!(
+                parse_fixture(line),
+                Err(UsageError::MissingValue("--base")),
+                "`{line}`"
+            );
+        }
+        assert_eq!(
+            UsageError::MissingValue("--base").to_string(),
+            "option `--base` needs a value"
+        );
+    }
+
+    #[test]
+    fn an_option_is_given_at_most_once() {
+        assert_eq!(
+            parse_fixture("ci beta-two --base a --base=b"),
+            Err(UsageError::RepeatedOption("--base"))
+        );
+    }
+
+    #[test]
     fn extra_arguments_are_rejected() {
         for (line, extra) in [
             ("ci lint extra", "extra"),
-            ("ci lint --fix", "--fix"),
             ("ci --list lint", "lint"),
             ("test unit unit", "unit"),
             ("help ci", "ci"),
@@ -364,6 +570,18 @@ mod tests {
                 "`{line}`"
             );
         }
+        assert_eq!(
+            parse_fixture("ci beta-two --base main extra"),
+            Err(UsageError::UnexpectedArgument("extra".into()))
+        );
+    }
+
+    #[test]
+    fn lint_takes_no_options() {
+        assert!(matches!(
+            parse_real("ci lint --fix"),
+            Err(UsageError::UnknownParam { entry: "lint", .. })
+        ));
     }
 
     #[test]

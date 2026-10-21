@@ -3,13 +3,17 @@
 //! The registry of CI jobs and test suites.
 //!
 //! A job is what `cargo xtask ci <job>` runs and a suite is what `cargo xtask test <suite>` runs.
-//! Each is an [`Entry`]: a name and an ordered list of steps. CI calls these names and nothing
-//! else, so a job gives the same verdict locally and in CI on the same commit (RFC-0062 §1).
+//! Each is an [`Entry`]: a name, the options it takes and an ordered list of steps. CI calls these
+//! names and nothing else, so a job gives the same verdict locally and in CI on the same commit
+//! (RFC-0062 §1).
 //!
 //! To extend the registry:
 //! - add a job to [`JOBS`] or a suite to [`SUITES`];
+//! - give an entry options, such as `--base <ref>` for `ci changes` (RFC-0062 §2.2), by listing
+//!   them in its `params`; the parser accepts exactly those, and the steps see the values in
+//!   [`crate::run::Context`];
 //! - add a check to a job by appending a [`Step`] to its list, and drop the matching row from its
-//!   `pending` list;
+//!   `pending` list, if it has one;
 //! - add a kind of step, such as a check that runs inside this binary, as a variant of [`Action`].
 
 use std::ffi::OsString;
@@ -22,11 +26,27 @@ pub struct Entry {
     pub name: &'static str,
     /// One line for `--list`.
     pub summary: &'static str,
+    /// The plan section that defines this entry, such as `RFC-0062 §2.3`.
+    pub defined_in: &'static str,
+    /// The options the entry takes after its name. Anything else is a usage error.
+    pub params: &'static [Param],
     /// Run in order. Every step runs, even after one fails, so one run reports every failure.
     pub steps: &'static [Step],
-    /// Checks the plan puts in this entry that no merged task has added yet. Printed after the
-    /// verdict, so a pass never claims more than the steps that ran.
+    /// Checks that `defined_in` puts in this entry and that no merged task has added yet, each
+    /// with the task that adds it. Printed after the verdict, so a pass never claims more than the
+    /// steps that ran. The list covers `defined_in` only: other task rows can add further checks.
     pub pending: &'static [Pending],
+}
+
+/// An option an entry takes: `--name <value>` or `--name=<value>`, at most once.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Param {
+    /// The option as typed, such as `--base`.
+    pub name: &'static str,
+    /// A placeholder for its value in `--list`, such as `<ref>`.
+    pub value: &'static str,
+    /// One line for `--list`.
+    pub help: &'static str,
 }
 
 /// One step of an entry.
@@ -88,7 +108,9 @@ fn cargo() -> OsString {
 /// The CI jobs, called by `cargo xtask ci <job>`. RFC-0062 §2.3 lists the jobs the plan expects.
 pub const JOBS: &[Entry] = &[Entry {
     name: "lint",
-    summary: "the L0 static checks: rustfmt and clippy over the workspace (RFC-0062 §2.3)",
+    summary: "the L0 static checks: rustfmt and clippy over the workspace",
+    defined_in: "RFC-0062 §2.3 and §12.4",
+    params: &[],
     steps: &[
         Step {
             name: "fmt",
@@ -107,7 +129,8 @@ pub const JOBS: &[Entry] = &[Entry {
             ]),
         },
     ],
-    // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks.
+    // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
+    // further checks to `lint`, such as the `ci/jobs.toml` goldens (QUAL-E1-T07).
     pending: &[
         Pending {
             check: "check-deps: RFC-0001 §4.2 rules, `forbid(unsafe_code)` placement, release features",
@@ -131,7 +154,9 @@ pub const JOBS: &[Entry] = &[Entry {
 /// The test suites, called by `cargo xtask test <suite>`. RFC-0060 §1.1 defines the layers.
 pub const SUITES: &[Entry] = &[Entry {
     name: "unit",
-    summary: "L1: the crate-local unit tests and doctests of every workspace crate (RFC-0060 §1.1)",
+    summary: "L1: the crate-local unit tests and doctests of every workspace crate",
+    defined_in: "RFC-0060 §1.1",
+    params: &[],
     steps: &[Step {
         name: "test",
         action: Action::Cargo(&["test", "--workspace", "--locked"]),
@@ -184,6 +209,23 @@ mod tests {
             assert!(is_kebab_case(entry.name), "bad name `{}`", entry.name);
             assert!(seen.insert(entry.name), "duplicate name `{}`", entry.name);
             assert!(!entry.summary.is_empty(), "`{}` has no summary", entry.name);
+            assert!(
+                entry.defined_in.starts_with("RFC-") || entry.defined_in.starts_with("ADR-"),
+                "`{}` does not cite its definition",
+                entry.name
+            );
+            let mut params = HashSet::new();
+            for param in entry.params {
+                let bare = param.name.strip_prefix("--").unwrap_or("");
+                assert!(is_kebab_case(bare), "bad option `{}`", param.name);
+                assert!(
+                    params.insert(param.name),
+                    "`{}` has two options called `{}`",
+                    entry.name,
+                    param.name
+                );
+                assert!(!param.value.is_empty() && !param.help.is_empty());
+            }
             assert!(!entry.steps.is_empty(), "`{}` has no steps", entry.name);
             let mut steps = HashSet::new();
             for step in entry.steps {

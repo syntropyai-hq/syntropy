@@ -3,25 +3,34 @@
 //! Running a job or suite and reaching its verdict.
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
-use crate::cli::Kind;
+use crate::cli::{Args, Kind};
 use crate::registry::{Entry, Step};
+
+/// What every step of one run sees.
+#[derive(Debug)]
+pub struct Context {
+    /// The workspace root of the checkout xtask was started from. Every step runs there.
+    pub root: PathBuf,
+    /// The entry's option values from the command line.
+    pub args: Args,
+}
 
 /// Runs one step. The real implementation is [`System`]; tests substitute a fake.
 pub trait Exec {
-    /// Runs `step` with `root` as the working directory. `Err` carries why it did not pass.
-    fn exec(&mut self, step: &Step, root: &Path) -> Result<(), String>;
+    /// Runs `step` in `context`. `Err` carries why it did not pass.
+    fn exec(&mut self, step: &Step, context: &Context) -> Result<(), String>;
 }
 
-/// Runs each step as a child process that inherits stdout and stderr.
+/// Runs each step as a child process from the workspace root, inheriting stdout and stderr.
 pub struct System;
 
 impl Exec for System {
-    fn exec(&mut self, step: &Step, root: &Path) -> Result<(), String> {
+    fn exec(&mut self, step: &Step, context: &Context) -> Result<(), String> {
         let mut command = step.action.command();
-        command.current_dir(root);
+        command.current_dir(&context.root);
         outcome(&mut command, &step.action.display())
     }
 }
@@ -44,16 +53,16 @@ pub enum Verdict {
     Fail(Vec<&'static str>),
 }
 
-/// Runs every step of `entry` from `root` and returns the verdict. A failed step does not stop
+/// Runs every step of `entry` in `context` and returns the verdict. A failed step does not stop
 /// the steps after it. Progress lines and the verdict go to `log`.
 pub fn run(
     kind: Kind,
     entry: &Entry,
-    root: &Path,
+    context: &Context,
     exec: &mut dyn Exec,
     log: &mut dyn Write,
 ) -> io::Result<Verdict> {
-    let label = format!("xtask {} {}", kind.command(), entry.name);
+    let label = format!("xtask {} {}{}", kind.command(), entry.name, context.args);
     let total = entry.steps.len();
     let mut failed = Vec::new();
     for (index, step) in entry.steps.iter().enumerate() {
@@ -66,7 +75,7 @@ pub fn run(
         )?;
         // Flush before the child writes, so the lines appear in order.
         log.flush()?;
-        match exec.exec(step, root) {
+        match exec.exec(step, context) {
             Ok(()) => writeln!(log, "{label}: {} passed", step.name)?,
             Err(reason) => {
                 writeln!(log, "{label}: {} failed: {reason}", step.name)?;
@@ -85,8 +94,14 @@ pub fn run(
             failed.join(", ")
         )?;
     }
+    // `pending` covers what `defined_in` names, not every check later tasks add.
     if !entry.pending.is_empty() {
-        writeln!(log, "{label}: not in this {} yet:", kind.noun())?;
+        writeln!(
+            log,
+            "{label}: {} checks not in this {} yet (other task rows add more):",
+            entry.defined_in,
+            kind.noun()
+        )?;
         for pending in entry.pending {
             writeln!(log, "  {} ({})", pending.check, pending.task)?;
         }
@@ -99,11 +114,22 @@ pub fn run(
     })
 }
 
-/// Writes one line per entry, its name and summary, for `--list`.
+/// Writes each entry's name, summary and definition for `--list`, then a line per option.
 pub fn list(entries: &[Entry], out: &mut dyn Write) -> io::Result<()> {
     let width = entries.iter().map(|e| e.name.len()).max().unwrap_or(0);
     for entry in entries {
-        writeln!(out, "{:width$}  {}", entry.name, entry.summary)?;
+        writeln!(
+            out,
+            "{:width$}  {} ({})",
+            entry.name, entry.summary, entry.defined_in
+        )?;
+        for param in entry.params {
+            writeln!(
+                out,
+                "{:width$}    {} {}  {}",
+                "", param.name, param.value, param.help
+            )?;
+        }
     }
     out.flush()
 }
@@ -111,7 +137,8 @@ pub fn list(entries: &[Entry], out: &mut dyn Write) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{Action, JOBS, Pending, find};
+    use crate::cli::{self, Command as Cli};
+    use crate::registry::{Action, JOBS, Param, Pending, find};
 
     /// Records each step it is asked to run, and fails the steps named in `fail`.
     struct Fake {
@@ -120,7 +147,7 @@ mod tests {
     }
 
     impl Exec for Fake {
-        fn exec(&mut self, step: &Step, _root: &Path) -> Result<(), String> {
+        fn exec(&mut self, step: &Step, _context: &Context) -> Result<(), String> {
             self.ran.push(step.name);
             if self.fail.contains(&step.name) {
                 Err("exit status: 1".into())
@@ -133,6 +160,8 @@ mod tests {
     const THREE: Entry = Entry {
         name: "three",
         summary: "three steps",
+        defined_in: "RFC-0062 §2.3",
+        params: &[],
         steps: &[
             Step {
                 name: "one",
@@ -162,8 +191,16 @@ mod tests {
             ran: Vec::new(),
         };
         let mut log = Vec::new();
-        let verdict = run(Kind::Job, entry, Path::new("."), &mut fake, &mut log).unwrap();
+        let verdict = run(Kind::Job, entry, &here(), &mut fake, &mut log).unwrap();
         (verdict, fake.ran, String::from_utf8(log).unwrap())
+    }
+
+    /// A context rooted at this crate's directory, with no options.
+    fn here() -> Context {
+        Context {
+            root: PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()),
+            args: Args::default(),
+        }
     }
 
     #[test]
@@ -207,7 +244,9 @@ mod tests {
     fn pending_checks_follow_the_verdict() {
         let (_, _, log) = run_fake(&THREE, &[]);
         let verdict_at = log.find("PASS").unwrap();
-        let pending_at = log.find("not in this job yet:").unwrap();
+        let pending_at = log
+            .find("xtask ci three: RFC-0062 §2.3 checks not in this job yet (other task rows add more):\n")
+            .unwrap();
         assert!(verdict_at < pending_at, "{log}");
         assert!(log.contains("  a later check (QUAL-E1-T99)\n"), "{log}");
     }
@@ -227,17 +266,82 @@ mod tests {
     fn list_aligns_names_and_summaries() {
         let mut out = Vec::new();
         list(&[THREE], &mut out).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "three  three steps\n");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "three  three steps (RFC-0062 §2.3)\n"
+        );
+    }
+
+    #[test]
+    fn list_shows_each_option() {
+        const WITH_OPTION: Entry = Entry {
+            name: "changes",
+            summary: "the affected-job set",
+            defined_in: "RFC-0062 §2.2",
+            params: &[Param {
+                name: "--base",
+                value: "<ref>",
+                help: "the merge base",
+            }],
+            steps: &[],
+            pending: &[],
+        };
+        let mut out = Vec::new();
+        list(&[THREE, WITH_OPTION], &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "three    three steps (RFC-0062 §2.3)\n\
+             changes  the affected-job set (RFC-0062 §2.2)\n\
+             \x20          --base <ref>  the merge base\n"
+        );
+    }
+
+    #[test]
+    fn the_label_carries_the_options() {
+        const WITH_OPTION: &[Entry] = &[Entry {
+            name: "one",
+            summary: "one step",
+            defined_in: "RFC-0062 §2.2",
+            params: &[Param {
+                name: "--base",
+                value: "<ref>",
+                help: "the merge base",
+            }],
+            steps: &[Step {
+                name: "only",
+                action: Action::Cargo(&["only"]),
+            }],
+            pending: &[],
+        }];
+        let line: Vec<String> = ["ci", "one", "--base=main"].map(String::from).into();
+        let Ok(Cli::Run { kind, entry, args }) = cli::parse(&line, WITH_OPTION, &[]) else {
+            panic!("did not parse");
+        };
+        let context = Context { args, ..here() };
+        let mut fake = Fake {
+            fail: &[],
+            ran: Vec::new(),
+        };
+        let mut log = Vec::new();
+        run(kind, entry, &context, &mut fake, &mut log).unwrap();
+        let log = String::from_utf8(log).unwrap();
+        assert!(
+            log.starts_with("xtask ci one --base main: [1/1] only: cargo only\n"),
+            "{log}"
+        );
+        assert!(
+            log.contains("xtask ci one --base main: PASS (only)\n"),
+            "{log}"
+        );
     }
 
     #[test]
     fn system_passes_a_step_that_exits_zero() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let version = Step {
             name: "version",
             action: Action::Cargo(&["--version"]),
         };
-        assert_eq!(System.exec(&version, root), Ok(()));
+        assert_eq!(System.exec(&version, &here()), Ok(()));
     }
 
     #[test]

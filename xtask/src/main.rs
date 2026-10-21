@@ -7,6 +7,11 @@
 //! `.cargo/config.toml` builds and runs this binary with `--locked`. Jobs and suites live in
 //! [`registry`], which says how to add one.
 //!
+//! Steps run in the checkout xtask was started from: the workspace root comes from the
+//! `CARGO_MANIFEST_DIR` that `cargo run` sets at run time, never from the path the binary was
+//! built at. One binary can serve several checkouts through a shared `CARGO_TARGET_DIR` or a
+//! copied `target/`, and it must check the one it was asked to.
+//!
 //! The tool sits outside the crate graph of RFC-0001 §4.1: no crate depends on it, and it depends
 //! on none.
 
@@ -16,8 +21,9 @@ mod cli;
 mod registry;
 mod run;
 
+use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cli::{Command, Kind, USAGE};
@@ -27,7 +33,7 @@ use run::Verdict;
 const EXIT_PASS: u8 = 0;
 /// A step failed, or xtask could not write its log.
 const EXIT_FAIL: u8 = 1;
-/// The command line was not understood.
+/// The command line was not understood, or xtask was not started by `cargo xtask`.
 const EXIT_USAGE: u8 = 2;
 
 fn main() -> ExitCode {
@@ -72,14 +78,16 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
             run::list(entries, &mut io::stdout().lock())?;
             Ok(EXIT_PASS)
         }
-        Command::Run { kind, entry } => {
-            let verdict = run::run(
-                kind,
-                entry,
-                &workspace_root(),
-                &mut run::System,
-                &mut io::stderr(),
-            )?;
+        Command::Run { kind, entry, args } => {
+            let root = match workspace_root(std::env::var_os("CARGO_MANIFEST_DIR")) {
+                Ok(root) => root,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return Ok(EXIT_USAGE);
+                }
+            };
+            let context = run::Context { root, args };
+            let verdict = run::run(kind, entry, &context, &mut run::System, &mut io::stderr())?;
             Ok(exit_code(&verdict))
         }
     }
@@ -92,10 +100,37 @@ fn exit_code(verdict: &Verdict) -> u8 {
     }
 }
 
-/// The workspace root: the parent of this crate's directory. Every step runs from there.
-fn workspace_root() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.parent().unwrap_or(manifest_dir).to_path_buf()
+/// The workspace root, from `manifest_dir`: the run-time value of `CARGO_MANIFEST_DIR`, which
+/// `cargo run` sets to this crate's directory in the checkout it runs in. The root is its parent,
+/// and must hold a `Cargo.toml`. There is no fallback: without the variable xtask cannot know
+/// which checkout to check, so it refuses to run.
+fn workspace_root(manifest_dir: Option<OsString>) -> Result<PathBuf, String> {
+    let Some(manifest_dir) = manifest_dir.filter(|dir| !dir.is_empty()) else {
+        return Err(
+            "CARGO_MANIFEST_DIR is not set, so the workspace root is unknown; \
+                    run xtask as `cargo xtask`, which sets it"
+                .to_owned(),
+        );
+    };
+    let manifest_dir = PathBuf::from(manifest_dir);
+    let root = match manifest_dir.parent() {
+        Some(root) if manifest_dir.is_absolute() => root,
+        _ => {
+            return Err(format!(
+                "CARGO_MANIFEST_DIR `{}` is not an absolute path inside a workspace",
+                manifest_dir.display()
+            ));
+        }
+    };
+    let manifest = root.join("Cargo.toml");
+    if !manifest.is_file() {
+        return Err(format!(
+            "no workspace manifest at `{}` (from CARGO_MANIFEST_DIR `{}`)",
+            manifest.display(),
+            manifest_dir.display()
+        ));
+    }
+    Ok(root.to_path_buf())
 }
 
 #[cfg(test)]
@@ -108,10 +143,70 @@ mod tests {
         assert_eq!(exit_code(&Verdict::Fail(vec!["fmt"])), 1);
     }
 
+    /// A directory under the system temp directory, removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let dir =
+                std::env::temp_dir().join(format!("syntropy-xtask-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
-    fn the_workspace_root_holds_the_workspace_manifest() {
-        let manifest = std::fs::read_to_string(workspace_root().join("Cargo.toml")).unwrap();
+    fn under_cargo_the_root_is_this_workspace() {
+        // `cargo test` sets CARGO_MANIFEST_DIR at run time, as `cargo run` does.
+        let root = workspace_root(std::env::var_os("CARGO_MANIFEST_DIR")).unwrap();
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
         assert!(manifest.contains("[workspace]"));
         assert!(manifest.contains("\"xtask\""));
+    }
+
+    #[test]
+    fn the_root_follows_the_run_time_value_not_the_build_path() {
+        // Another checkout's layout: <scratch>/Cargo.toml and <scratch>/xtask.
+        let other = Scratch::new("other-checkout");
+        std::fs::write(other.0.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::create_dir(other.0.join("xtask")).unwrap();
+        let root = workspace_root(Some(other.0.join("xtask").into_os_string())).unwrap();
+        assert_eq!(root, other.0);
+        let built_at = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        assert_ne!(Some(root.as_path()), built_at.parent());
+    }
+
+    #[test]
+    fn without_cargo_manifest_dir_xtask_refuses_to_run() {
+        for unset in [None, Some(OsString::new())] {
+            let error = workspace_root(unset).unwrap_err();
+            assert!(
+                error.starts_with("CARGO_MANIFEST_DIR is not set"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relative_or_rootless_manifest_dir_is_refused() {
+        for dir in ["xtask", "/"] {
+            let error = workspace_root(Some(dir.into())).unwrap_err();
+            assert!(error.contains("not an absolute path"), "`{dir}`: {error}");
+        }
+    }
+
+    #[test]
+    fn a_root_without_a_manifest_is_refused() {
+        let empty = Scratch::new("no-manifest");
+        std::fs::create_dir(empty.0.join("xtask")).unwrap();
+        let error = workspace_root(Some(empty.0.join("xtask").into_os_string())).unwrap_err();
+        assert!(error.starts_with("no workspace manifest at"), "{error}");
     }
 }
