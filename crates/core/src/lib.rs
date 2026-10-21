@@ -16,6 +16,7 @@ pub mod ids;
 pub mod ledger;
 pub mod measured;
 pub mod numerics;
+pub mod parity;
 pub mod plan;
 pub mod policy;
 pub mod protocol;
@@ -36,6 +37,7 @@ pub use ids::{
 };
 pub use measured::{DerivedFrom, MeasureSource, Measured};
 pub use numerics::{AccumKind, ActQuant, Numerics};
+pub use parity::{ForceMode, LogitTap, ParityTapSpec, TapMode, TapRow, TapValues, TeacherStreamId};
 pub use plan::{PlacementPlan, PlanDelta, PlanDigest, PlanEpoch, PlanViolation};
 pub use policy::{ApproxKnobs, ExactnessPolicy, Objective};
 pub use protocol::{Outbox, ProtocolCore};
