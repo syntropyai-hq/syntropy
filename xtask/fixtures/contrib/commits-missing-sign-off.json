@@ -1,46 +1,5 @@
 [
   {
-    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "node_id": "C_aaaaaaaaaa",
-    "commit": {
-      "author": {
-        "name": "Carol Contributor",
-        "email": "carol@example.org",
-        "date": "2026-10-21T08:00:00Z"
-      },
-      "committer": {
-        "name": "Carol Contributor",
-        "email": "carol@example.org",
-        "date": "2026-10-21T08:00:00Z"
-      },
-      "message": "feat(core): add the widget\n\nSigned-off-by: Carol Contributor <carol@example.org>\n",
-      "comment_count": 0,
-      "verification": {
-        "verified": false,
-        "reason": "unsigned",
-        "signature": null,
-        "payload": null
-      }
-    },
-    "author": {
-      "login": "carol",
-      "id": 58886888,
-      "type": "User",
-      "site_admin": false
-    },
-    "committer": {
-      "login": "carol",
-      "id": 58886888,
-      "type": "User",
-      "site_admin": false
-    },
-    "parents": [
-      {
-        "sha": "0000000000000000000000000000000000000000"
-      }
-    ]
-  },
-  {
     "sha": "dddddddddddddddddddddddddddddddddddddddd",
     "node_id": "C_dddddddddd",
     "commit": {

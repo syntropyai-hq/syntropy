@@ -15,7 +15,7 @@
 
 use std::path::Path;
 
-use crate::roster::Roster;
+use crate::roster::{Roster, is_login};
 use crate::run::Context;
 
 /// Where the file lives, relative to the workspace root.
@@ -153,7 +153,7 @@ pub fn parse(text: &str) -> Result<Vec<Rule>, Vec<String>> {
     let mut problems = Vec::new();
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
-        let content = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
+        let content = strip_comment(raw).trim();
         if content.is_empty() {
             continue;
         }
@@ -173,6 +173,19 @@ pub fn parse(text: &str) -> Result<Vec<Rule>, Vec<String>> {
     } else {
         Err(problems)
     }
+}
+
+/// The line before its comment. As on GitHub, `#` starts a comment only at the start of the line
+/// or after whitespace; a `#` inside a token stays part of it, and the owner check refuses it.
+fn strip_comment(line: &str) -> &str {
+    let mut previous = None;
+    for (at, c) in line.char_indices() {
+        if c == '#' && previous.is_none_or(char::is_whitespace) {
+            return &line[..at];
+        }
+        previous = Some(c);
+    }
+    line
 }
 
 fn parse_pattern(text: &str) -> Result<Pattern, String> {
@@ -284,6 +297,8 @@ pub fn check(
                 problems.push(format!(
                     "{at} is a team; name maintainers individually, so the check can verify them"
                 ));
+            } else if !is_login(login) {
+                problems.push(format!("{at} is not a well-formed GitHub login"));
             } else if roster.is_agent(login) {
                 problems.push(format!(
                     "{at} is an agent identity; agents are never code owners (RFC-0062 §12.3)"
@@ -514,6 +529,25 @@ mod tests {
             let parsed = parse_pattern(pattern).unwrap();
             assert_eq!(parsed.matches(path), *wanted, "`{pattern}` on `{path}`");
         }
+    }
+
+    #[test]
+    fn a_hash_inside_a_token_is_not_a_comment() {
+        // GitHub reads `@alice#x` as one, invalid, owner; so does the check.
+        let rules = rules("/ci/ @alice#x\n/.github/ @alice # a comment\n#whole line\n");
+        assert_eq!(rules[0].owners, ["@alice#x"]);
+        assert_eq!(rules[1].owners, ["@alice"]);
+        let problems = check(&rules, &roster(), ONE_CLASS, &[]);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("`@alice#x` is not a well-formed GitHub login")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("names no maintainer")),
+            "{problems:?}"
+        );
     }
 
     #[test]

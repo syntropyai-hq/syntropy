@@ -208,12 +208,20 @@ pub const JOBS: &[Entry] = &[
         name: "dco",
         summary: "every commit carries a Signed-off-by that matches its author",
         defined_in: "RFC-0062 §8.3 and §12.3",
-        params: &[Param {
-            name: "--commits",
-            value: "<file>",
-            help: "the PR's commits, as GET /repos/{owner}/{repo}/pulls/{n}/commits returns them",
-            required: true,
-        }],
+        params: &[
+            Param {
+                name: "--event",
+                value: "<file>",
+                help: "the pull_request event payload, or GET /repos/{owner}/{repo}/pulls/{n}",
+                required: true,
+            },
+            Param {
+                name: "--commits",
+                value: "<file>",
+                help: "every commit, as GET /repos/{owner}/{repo}/pulls/{n}/commits returns them",
+                required: true,
+            },
+        ],
         steps: &[Step {
             name: "dco",
             action: Action::Builtin {
@@ -249,8 +257,8 @@ pub const JOBS: &[Entry] = &[
             Param {
                 name: "--roster",
                 value: "<file>",
-                help: "the maintainer roster to trust; defaults to governance/maintainers.toml",
-                required: false,
+                help: "the maintainer roster to trust, such as the base branch's governance/maintainers.toml",
+                required: true,
             },
         ],
         steps: &[Step {
@@ -395,7 +403,7 @@ mod tests {
             .filter(|p| p.required)
             .map(|p| p.name)
             .collect();
-        assert_eq!(required, ["--commits"]);
+        assert_eq!(required, ["--event", "--commits"]);
         let title = find(JOBS, "pr-title").expect("pr-title is registered");
         let required: Vec<&str> = title
             .params
@@ -403,7 +411,10 @@ mod tests {
             .filter(|p| p.required)
             .map(|p| p.name)
             .collect();
-        assert_eq!(required, ["--event", "--commits", "--label-events"]);
+        assert_eq!(
+            required,
+            ["--event", "--commits", "--label-events", "--roster"]
+        );
     }
 
     #[test]

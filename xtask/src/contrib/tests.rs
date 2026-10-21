@@ -69,15 +69,15 @@ fn a_missing_or_mismatched_sign_off_fails_dco() {
 #[test]
 fn an_agent_authored_commit_goes_through_the_same_check() {
     // The signed-off fixture's second commit is agent-authored and passes; the missing-sign-off
-    // fixture's third is agent-authored and fails with the same message a person's commit gets.
+    // fixture's second is agent-authored and fails with the same message a person's commit gets.
     let signed = commits(fixture!("commits-signed-off.json"));
     let agent = &signed[1];
     assert_eq!(agent.author_name, "project-agent[bot]");
     assert_eq!(dco(std::slice::from_ref(agent)), Vec::<String>::new());
 
     let unsigned = commits(fixture!("commits-missing-sign-off.json"));
-    let person = dco(std::slice::from_ref(&unsigned[1]));
-    let machine = dco(std::slice::from_ref(&unsigned[2]));
+    let person = dco(std::slice::from_ref(&unsigned[0]));
+    let machine = dco(std::slice::from_ref(&unsigned[1]));
     assert_eq!(person.len(), 1);
     assert_eq!(machine.len(), 1);
     assert!(person[0].ends_with("has no `Signed-off-by:` line"));
@@ -132,6 +132,37 @@ fn paginated_commits_are_read_as_one_list() {
     let one = fixture!("commits-signed-off.json");
     let two_pages = format!("{one}\n{one}");
     assert_eq!(commits(&two_pages).len(), 6);
+}
+
+#[test]
+fn the_commits_file_must_hold_every_commit_of_the_pr() {
+    let pr = parse_pull_request(fixture!("event-plain.json")).unwrap();
+    assert_eq!(pr.commits, 3);
+    let all = commits(fixture!("commits-signed-off.json"));
+    assert_eq!(check_commit_count(&pr, &all), Ok(()));
+    // One page short, as an unpaginated fetch of a longer PR would be.
+    let error = check_commit_count(&pr, &all[..2]).unwrap_err();
+    assert!(
+        error.contains("holds 2 commits, but the PR has 3"),
+        "{error}"
+    );
+    // The API never lists more than 250, so a PR that size cannot be shown complete.
+    let big = PullRequest {
+        commits: API_COMMIT_LIMIT,
+        ..pr
+    };
+    let error = check_commit_count(&big, &all).unwrap_err();
+    assert!(error.contains("lists at most 250"), "{error}");
+}
+
+#[test]
+fn an_event_without_a_commit_count_is_refused() {
+    let error =
+        parse_pull_request(r#"{"title": "docs: x", "body": null, "labels": []}"#).unwrap_err();
+    assert!(
+        error.contains("`commits`, the PR's commit count, is missing"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -353,7 +384,8 @@ fn a_breaking_footer_needs_the_label_too() {
 
 #[test]
 fn a_malformed_breaking_title_still_needs_the_label() {
-    let event = r#"{"pull_request": {"title": "wip!: x", "body": null, "labels": []}}"#;
+    let event =
+        r#"{"pull_request": {"title": "wip!: x", "body": null, "labels": [], "commits": 3}}"#;
     let problems = title_problems(
         event,
         fixture!("commits-signed-off.json"),
@@ -399,13 +431,15 @@ fn other_labels_and_events_do_not_count() {
 
 #[test]
 fn a_pull_request_object_reads_like_an_event() {
-    let object = r#"{"title": "docs(plan): x", "body": "b", "labels": [{"name": "l"}]}"#;
+    let object =
+        r#"{"title": "docs(plan): x", "body": "b", "labels": [{"name": "l"}], "commits": 1}"#;
     assert_eq!(
         parse_pull_request(object).unwrap(),
         PullRequest {
             title: "docs(plan): x".into(),
             body: "b".into(),
             labels: vec!["l".into()],
+            commits: 1,
         }
     );
     let event = fixture!("event-breaking-labelled.json");

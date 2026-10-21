@@ -64,6 +64,32 @@ pub struct PullRequest {
     pub title: String,
     pub body: String,
     pub labels: Vec<String>,
+    /// How many commits GitHub says the PR has. The commits file must hold exactly this many.
+    pub commits: u64,
+}
+
+/// `GET /pulls/{n}/commits` lists at most this many commits, however it is paginated.
+pub const API_COMMIT_LIMIT: u64 = 250;
+
+/// The commits file must hold every commit of the PR, or a check would pass on a partial list:
+/// a missing `--paginate` gives 30, and the API never gives more than 250.
+pub fn check_commit_count(pr: &PullRequest, commits: &[Commit]) -> Result<(), String> {
+    if pr.commits >= API_COMMIT_LIMIT {
+        return Err(format!(
+            "the PR has {} commits; GET /pulls/{{n}}/commits lists at most {API_COMMIT_LIMIT}, \
+             so the list cannot be checked complete",
+            pr.commits
+        ));
+    }
+    if commits.len() as u64 != pr.commits {
+        return Err(format!(
+            "the commits file holds {} commits, but the PR has {}; fetch every page \
+             (`gh api --paginate`)",
+            commits.len(),
+            pr.commits
+        ));
+    }
+    Ok(())
 }
 
 /// A `labeled` or `unlabeled` issue event.
@@ -380,6 +406,10 @@ pub fn parse_pull_request(text: &str) -> Result<PullRequest, String> {
             .unwrap_or("")
             .to_owned(),
         labels,
+        commits: pr
+            .get("commits")
+            .and_then(Value::as_u64)
+            .ok_or("event: `commits`, the PR's commit count, is missing or not a number")?,
     })
 }
 
@@ -424,24 +454,24 @@ fn report(problems: Vec<String>) -> Result<(), String> {
     }
 }
 
-/// `cargo xtask ci dco --commits <file>`.
+/// `cargo xtask ci dco --event <file> --commits <file>`.
 pub fn dco_step(context: &Context) -> Result<(), String> {
+    let pr = parse_pull_request(&read_arg(context, "--event")?)?;
     let commits = parse_commits(&read_arg(context, "--commits")?)?;
+    check_commit_count(&pr, &commits)?;
     report(dco(&commits))
 }
 
 /// `cargo xtask ci pr-title --event <file> --commits <file> --label-events <file>
-/// [--roster <file>]`. The roster defaults to the workspace's; CI can pass the base branch's.
+/// --roster <file>`. The roster decides whose label counts, so the caller names a trusted copy,
+/// such as the base branch's, never one the PR under check could have changed.
 pub fn pr_title_step(context: &Context) -> Result<(), String> {
     let pr = parse_pull_request(&read_arg(context, "--event")?)?;
     let commits = parse_commits(&read_arg(context, "--commits")?)?;
+    check_commit_count(&pr, &commits)?;
     let events = parse_label_events(&read_arg(context, "--label-events")?)?;
-    let roster_text = match context.args.get("--roster") {
-        Some(_) => read_arg(context, "--roster")?,
-        None => std::fs::read_to_string(context.root.join(ROSTER))
-            .map_err(|e| format!("{ROSTER}: {e}"))?,
-    };
-    let roster = Roster::parse(&roster_text).map_err(|e| format!("roster: {e}"))?;
+    let roster =
+        Roster::parse(&read_arg(context, "--roster")?).map_err(|e| format!("roster: {e}"))?;
     let scopes = scopes(&context.root)?;
     report(pr_title(&pr, &commits, &events, &roster, &scopes))
 }

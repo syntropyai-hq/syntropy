@@ -126,7 +126,7 @@ pub fn is_app_account(login: &str) -> bool {
 }
 
 /// A GitHub login: letters, digits and single hyphens, optionally an App's `[bot]` suffix.
-fn is_login(login: &str) -> bool {
+pub fn is_login(login: &str) -> bool {
     let name = login
         .strip_suffix("[bot]")
         .or_else(|| login.strip_suffix("[BOT]"))

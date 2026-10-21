@@ -28,7 +28,8 @@
       "ref": "main",
       "sha": "0000000000000000000000000000000000000000"
     },
-    "draft": false
+    "draft": false,
+    "commits": 3
   },
   "repository": {
     "full_name": "example/project"

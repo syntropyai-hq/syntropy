@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn the_contribution_jobs_need_their_inputs() {
         assert_eq!(
-            parse_real("ci dco").unwrap_err().to_string(),
+            parse_real("ci dco --event e").unwrap_err().to_string(),
             "job `dco` needs `--commits`"
         );
         assert_eq!(
@@ -685,7 +685,15 @@ mod tests {
                 .to_string(),
             "job `pr-title` needs `--label-events`"
         );
-        assert!(parse_real("ci pr-title --event e --commits c --label-events l").is_ok());
+        assert_eq!(
+            parse_real("ci pr-title --event e --commits c --label-events l")
+                .unwrap_err()
+                .to_string(),
+            "job `pr-title` needs `--roster`"
+        );
+        assert!(
+            parse_real("ci pr-title --event e --commits c --label-events l --roster r").is_ok()
+        );
     }
 
     #[test]
