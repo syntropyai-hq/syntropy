@@ -831,6 +831,16 @@ error[config/0003]: unknown key `resource.ram_headroon`
 - **Drop-ins.** Lines are attributed one file at a time, since a table header never carries over from one file to the next.
 - **Tests.** PROD-E1-T03's golden tests plant a marker token in every secret-typed value, and in the value of every unknown key and unknown `SYNTROPY_*` variable, and check that no rendered output, for any error code, contains it. The `config/0003` example above shows the unknown key's value withheld.
 
+*Note 2026-10-22 (PROD-E1-T03):* how the validation runs, as built.
+- **Phases 1–3 report together.** Phase 3 checks each value as layering assigns it, so a bad value in a file is an error even when a later layer overrides it. Phases 4 and 5 run once phases 1–3 pass, and a load reports every error it finds, not only the first.
+- **Phases 4 and 5 are frameworks.** A rule reads resolved values by path. The task that owns a key adds its rules: PROD-E5-T02 the API bind and TLS rules, PROD-E1-T05 the `debug.*` warning, and PROD-E1-T07 the `ram_headroom` floor. Phase 5 asks an `Environment` about the host: `config` answers paths and file permissions from the standard library, and the daemon adds direct I/O and interface names (PROD-E6-T24).
+- **Warnings without a code.** A warning that §8's table gives no code, such as a deprecated key or a secret-holding file that others can read, prints as `warning: …`.
+- **The deprecation window (open, for the maintainers).** "One minor release before 1.0" can be read two ways:
+  - (a) a key deprecated in 0.3 is accepted throughout 0.3.x and unknown from 0.4.0;
+  - (b) it is accepted through 0.4.x too.
+
+  Recommended default: (a), the literal reading, as built (`Deprecated::closes_in`). The release that closes a window removes the record.
+
 **Startup.** `syntropy serve` refuses to start on any phase 1–4 error and prints every error, not only the first. `syntropy config check [--file <path>] [--strict]` runs phases 1–5 without a daemon; `--strict` turns phase 5 warnings and empty override matches into errors for CI use.
 
 **Error codes** (domain `Config`; never reused):
