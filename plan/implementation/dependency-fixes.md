@@ -515,3 +515,13 @@ ADR-0405 (option A, with V1 for exactness on Vulkan) keeps one `DeviceClass` in 
 | Added QUAL-E6-T23 (M2) → QUAL-E6-T04, QUAL-E6-T16, COMP-E2-T11 | QUAL-E6-T23 | R9 | V1's runtime rule, label and fallback for Vulkan-domain providers: the Vulkan counterpart of QUAL-E6-T16, which "Exactness on Vulkan" names |
 | COMP-E8-T10 → QUAL-E6-T23; QUAL-E4-T11 → QUAL-E6-T23 | COMP-E8-T10, QUAL-E4-T11 | R9 | the M2 ggml Vulkan preview's conformance run and the M3 Vulkan conformance issue Vulkan certificates, which V1 makes full only on the rig's device and driver |
 | COMP-E8-T04 gains a criterion for decision 3's `subgroup` rule; no edge | COMP-E8-T04 | R9 | the native Vulkan provider computes the class at `enumerate`. `kernels`' current `Vulkan` variant already has `subgroup`, so the criterion needs no new type |
+
+## DIST-E8-T12: the control envelope without its message set (2026-10-22)
+
+DIST-E8-T12 could not be built as written. Its criterion "fuzz target registered" needs `fuzz/targets.toml`, which QUAL-E10-T01 builds, and that task and its prerequisite QUAL-E1-T07 had not started. Its `CtlMsg` carries payload types that later DIST tasks define, and one of them, DIST-E9-T01 (`LogEntry`), depends on DIST-E8-T12. These are plan corrections under R9 and R2, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E8-T12's "fuzz target registered" becomes "decode is total over arbitrary bytes" (a property test: arbitrary input never panics and returns a classified error); QUAL-E10-T04's `control_msgs` target wraps the same entry point | DIST-E8-T12, QUAL-E10-T04 | R9 | the fuzz registry is QUAL-E10-T01's, and QUAL-E10-T04 already owns the M2 control-message target and depends on DIST-E8-T12 |
+| Added DIST-E8-T17 (`CtlMsg`) → DIST-E8-T12, DIST-E2-T05, DIST-E2-T06, DIST-E9-T01, DIST-E9-T02, DIST-E10-T01, DIST-E9-T14; DIST-E8-T12 keeps the envelope, generic over the serde types it carries | DIST-E8-T12, DIST-E8-T17 | R2, R9 | of `CtlMsg`'s payload types only `BuildId` existed; the rest come from DIST-E2-T05, DIST-E2-T06, DIST-E9-T01, DIST-E9-T02, DIST-E10-T01 and DIST-E9-T14, and DIST-E9-T01 depends on DIST-E8-T12 |
+| DIST-E8-T13 → DIST-E8-T17 instead of DIST-E8-T12; DIST-E5-T05 → DIST-E8-T17; QUAL-E7-T10 → DIST-E8-T17; QUAL-E10-T04 → DIST-E8-T17 | DIST-E8-T13, DIST-E5-T05, QUAL-E7-T10, QUAL-E10-T04 | R9 | each criterion uses `CtlMsg`: the control `Hello`'s feature level and version ranges (RFC-0031 §10), the `Hello`/`HelloAck` certificate checks, a golden vector per control message, and the `control_msgs` target. DIST-E8-T05 and DIST-E9-T01 use only the envelope and keep their edge to DIST-E8-T12 |
