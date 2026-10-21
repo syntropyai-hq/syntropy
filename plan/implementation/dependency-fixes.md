@@ -478,6 +478,43 @@ Four M0 tasks stopped this week on criteria their own dependencies could not sho
 | PLC-E7-T11 → DIST-E1-T06 | PLC-E7-T11 | R9 | found in review: the runner exit moved from COMP-E9-T04 is followed by a clean restart, and PLC-E7-T11's existing criteria check the supervisor's action; both are the supervisor's (DIST-E1-T06, RFC-0040 §10.4, RFC-0001 §3.4), which PLC-E7-T11 did not reach |
 | QUAL-E15-T23 marked **Maintainer action** | QUAL-E15-T23 | R9 | found in review: fitting the spare GPU in R-ADA's slot is lab work, which QUAL-E15-T02's marker covered before the split |
 
+## DIST-E8-T01's fuzz criterion (2026-10-22)
+
+DIST-E8-T01 (M2) builds the base header and control frame codecs. Its criterion "fuzz targets are clean for 10 CPU-minutes per PR" needs a fuzz target and a job to run it. The harness and the `fuzz/targets.toml` registry are QUAL-E10-T01's (M0b), which DIST-E8-T01 does not depend on, and the `frames` target is QUAL-E10-T04's (M2), which depends on DIST-E8-T01, so the criterion could take no edge without a cycle. This pass applies R9 and moves it to QUAL-E10-T04. DIST-E8-T01 keeps what it can show itself, as property tests over its own decode entry points.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "fuzz targets are clean for 10 CPU-minutes per PR" moved from DIST-E8-T01 to QUAL-E10-T04, whose `frames` target wraps DIST-E8-T01's decode entry points | DIST-E8-T01, QUAL-E10-T04 | R9 | QUAL-E10-T04 builds the `frames` target and already depends on DIST-E8-T01. No job definition gives 10 CPU-minutes per PR (RFC-0060 §10.3's `fuzz-smoke` runs 60 s per target), so QUAL-E10-T04 reconciles the figure |
+| DIST-E8-T01 gains "decoding arbitrary bytes, and arbitrary corruptions of the golden frames, never panics, refuses with a classified error, reads nothing past the declared lengths, and re-encodes every accepted frame to the same bytes" | DIST-E8-T01 | R9 | the properties RFC-0060 §10.2 asks of every fuzz target that a property test over the codec can show without the fuzz harness |
+
+| PLC-E1-T04 gated on OQ-HW-13 | PLC-E1-T04 | R9 | its Windows half needs a Windows CUDA host; R-WIN is M1b, and the choice between the agent pool's NVIDIA host and a split is the maintainers' |
+| TIER-E1-T02 gated on OQ-IO-27 and OQ-IO-28 | TIER-E1-T02 | R9 | no task defines `LedgerGrant`, and the pure `plan_arenas` has no input for the accepted layouts RFC-0020 §7.3 checks |
+| DIST-E1-T01 and TIER-E5-T02 gated on OQ-IO-29 | DIST-E1-T01, TIER-E5-T02 | R9 | `io`, `net` and `ipc` all need the SPSC ring, and all three are in layer 1 |
+| TIER-E8-T09 gated on OQ-MOE-15 | TIER-E8-T09 | R9 | its criteria record answers RFC-0023 assigns to M1 |
+| PROD-E1-T04 gated on OQ-PRD-27 | PROD-E1-T04 | R9 | its `core` types hold field types that are in `config`, and rule 1 forbids that edge |
+| QUAL-E3-T05 gated on OQ-PRC-27 | QUAL-E3-T05 | R9 | P-core-2 and P-core-3 test code that `tier` and `config` build in tasks it doesn't reach |
+| QUAL-E11-T05 marked **Maintainer action** for the AMX cloud instance | QUAL-E11-T05 | R9 | RFC-0061 §6.2 runs AMX on an on-demand cloud instance, and no task provisioned it |
+| The maintainers settled OQ-PRC-26, OQ-HW-13, OQ-IO-27, OQ-IO-28, OQ-IO-29, OQ-MOE-15, OQ-PRD-27 and OQ-PRC-27 on 2026-10-22 with the recommended defaults; every gate on them is dropped | PLC-E1-T03, PLC-E1-T04, PLC-E1-T06, PLC-E1-T14, DIST-E2-T01, TIER-E1-T02, DIST-E1-T01, TIER-E5-T02, TIER-E8-T09, PROD-E1-T04, QUAL-E3-T05 | R9 | each row now names the answer it builds on |
+| PLC-E1-T04 → QUAL-E15-T16 | PLC-E1-T04 | R9 | OQ-HW-13: its Windows check runs on the agent pool's NVIDIA host in M0a |
+| Added TIER-E1-T13 (M0a) → QUAL-E1-T01; TIER-E1-T02, DIST-E1-T03 → TIER-E1-T13 | TIER-E1-T13, TIER-E1-T02, DIST-E1-T03 | R9 | OQ-IO-27: `LedgerGrant` is plain data in `core`; the ledger check and the `Init` message both use it |
+| Added DIST-E1-T12 (M0a) → QUAL-E1-T03; DIST-E1-T01 → DIST-E1-T12; TIER-E5-T02 → DIST-E1-T01 | DIST-E1-T12, DIST-E1-T01, TIER-E5-T02 | R9 | OQ-IO-29: the ring lives in the new layer-1 `spsc` crate, added as `config-derive` was (RFC-0001 §18.8); the I/O thread's rings use it |
+| TIER-E1-T03, PROD-E1-T10 → QUAL-E3-T05 | TIER-E1-T03, PROD-E1-T10, QUAL-E3-T05 | R9 | OQ-PRC-27: they own P-tier-3 and P-config-2, registered in QUAL-E3-T05's property registry |
+
+## ADR-0405 accepted (2026-10-22)
+
+ADR-0405 (option A, with V1 for exactness on Vulkan) keeps one `DeviceClass` in `core`, with RFC-0040's variants plus `Npu`, and `CpuIsa` in place of `IsaLevel`. COMP-E1-T01 (#1533) and PLC-E1-T02 (#1520) had both merged, so the ADR's edits 7–9 take this form. One new task changes `core`, re-exports the types from `kernels` and moves the probe to `CpuIsa`, since COMP-E1-T01 is done and cannot take an edge. The tasks that read the new type or its moved fields depend on it. Decision 7 orders the type change before any pack, certificate or selection key is written.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added PLC-E1-T16 (M0a) → PLC-E1-T01, PLC-E1-T02, COMP-E1-T01 | PLC-E1-T16 | R9 | ADR-0405 edit 8 and "On acceptance". It changes `core`'s `DeviceClass` and adds `CpuIsa`, `ApiIds`, `gpu_cores`, `vk_driver` and `DeviceProblem::ApiIdsMismatch`. It deletes `kernels::DeviceClass` and `kernels::CpuIsa` (COMP-E1-T01's) for `pub use` of the `core` types, and moves the probe's E1 code and goldens (PLC-E1-T02's) from `IsaLevel` to `CpuIsa`. Both of those tasks are done, so neither gains an edge: edit 8's "COMP-E1-T01 depends on the new task" and its branch for an unmerged #1520 no longer apply |
+| COMP-E3-T01 → PLC-E1-T16 | COMP-E3-T01 | R9 | it detects `core`'s `CpuIsa` (edit 7) at `enumerate`, and its new criterion tests `open` against an `X86V4Amx` class |
+| PLC-E1-T07 → PLC-E1-T16 | PLC-E1-T07 | R9 | the E5 merge copies `ProviderDevice::class` into `DeviceInfo::class`, which are one type only after the re-export. Its new criteria test that E5's class replaces E1's provisional one and that `PciInfo` wins over `api_ids` |
+| PLC-E1-T04 → PLC-E1-T16; PLC-E1-T12 → PLC-E1-T16 | PLC-E1-T04, PLC-E1-T12 | R9 | decision 4's fields need a producer: PLC-E1-T04 fills `gpu_cores` from IOKit, and PLC-E1-T12 fills `api_ids` and `vk_driver` from the Vulkan properties and gives NPUs the `Npu` class |
+| QUAL-E6-T04 → PLC-E1-T16 | QUAL-E6-T04 | R9 | `OpCert` is keyed by `core`'s `DeviceClass` and gains `rig`, built on `ApiIds` ("Exactness on Vulkan", task rows under V1) |
+| COMP-E10-T11 → PLC-E1-T16; COMP-E11-T04 → PLC-E1-T16; COMP-E2-T05 → PLC-E1-T16 | COMP-E10-T11, COMP-E11-T04, COMP-E2-T05 | R9 | decision 7: the `core` type changes before any pack, certificate or saved profile is written. `PackKey`, the `packs/<device-class>/` directory name (decision 6, a new COMP-E11-T04 criterion) and `SelectionKey` each hold the class. With these edges, the saved profile (PLC-E3-T01), the pack build (COMP-E11-T05) and the sidecar (COMP-E11-T06) reach PLC-E1-T16 too |
+| Added QUAL-E6-T23 (M2) → QUAL-E6-T04, QUAL-E6-T16, COMP-E2-T11 | QUAL-E6-T23 | R9 | V1's runtime rule, label and fallback for Vulkan-domain providers: the Vulkan counterpart of QUAL-E6-T16, which "Exactness on Vulkan" names |
+| COMP-E8-T10 → QUAL-E6-T23; QUAL-E4-T11 → QUAL-E6-T23 | COMP-E8-T10, QUAL-E4-T11 | R9 | the M2 ggml Vulkan preview's conformance run and the M3 Vulkan conformance issue Vulkan certificates, which V1 makes full only on the rig's device and driver |
+| COMP-E8-T04 gains a criterion for decision 3's `subgroup` rule; no edge | COMP-E8-T04 | R9 | the native Vulkan provider computes the class at `enumerate`. `kernels`' current `Vulkan` variant already has `subgroup`, so the criterion needs no new type |
 ## DIST-E5-T14's message golden vectors (2026-10-22)
 
 DIST-E5-T14 (M1a) models the commit-then-reveal pairing exchange. Its exit froze "the `PairRequest`, `PairChallenge` and `PairReveal` messages and their golden vectors". RFC-0030 §6.7 defines those messages as CBOR-enveloped `JoinMsg` variants. They carry `NodeInfo` (RFC-0001 §5, assembled by PLC-E1-T09, with additions in DIST-E4-T14), `AdmissionCert` (DIST-E2-T05) and `ClusterId` (DIST-E2-T06), in the envelope's deterministic CBOR (DIST-E8-T12). All four producers are M2, and none is a dependency of the spike, so its wire goldens would have had to invent their encodings. The exchange itself needs none of them: the commitment and the SAS are BLAKE3 over 32-byte keys and the nonces (RFC-0030 §6.2). This pass applies R9. The spike freezes the pairing fields, their order and the derivations, and the messages' wire goldens move to DIST-E5-T03, which builds the messages.

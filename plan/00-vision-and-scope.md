@@ -312,7 +312,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 <!-- BEGIN GENERATED: vision-milestones -->
 ### M0a: walking skeleton
 
-174 tasks in the epics (`implementation/roadmap.md`, M0a).
+177 tasks in the epics (`implementation/roadmap.md`, M0a).
 
 - [ ] The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062).
 - [ ] The merge gates of ADR-0021 decision 5 run from the first commit: build, lint and tests; the DCO, licence and dependency checks; the workflow security lint; the independent review-agent job; and the sandbox in which agent runs read untrusted content. The repository's security baseline, the private vulnerability-reporting channel and the agent trust tiers are in place from the first commit too (RFC-0062 §12.5, §12.6, §13; ADR-0021; ADR-0624).
@@ -376,7 +376,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M2: multiple devices on a LAN
 
-284 tasks in the epics (`implementation/roadmap.md`, M2).
+285 tasks in the epics (`implementation/roadmap.md`, M2).
 
 - [ ] Discovery with blinded beacons sent only on networks where a member has been seen, SWIM membership, coordinator lease and event log, with the election and split-heal design model-checked before its code; admission with commit-then-reveal and number matching, and encryption (RFC-0034 core). Coordination is keyholders-only by default, offered with a second-keyholder grant at pairing, with an optional offline recovery code at bootstrap, a guard against removing the last keyholder, and re-founding (RFC-0030, RFC-0032, RFC-0034).
 - [ ] QUIC, TCP and shared-memory transports; RDMA over Thunderbolt 5 on macOS (RFC-0031).

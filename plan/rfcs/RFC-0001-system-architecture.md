@@ -252,6 +252,8 @@ Command-channel messages:
 | R → D | `ProbeResult { profile: CapabilityProfile }` | probe output |
 | R → D | `Pong` | — |
 
+*Note 2026-10-22 (amendment, §18.9):* `LedgerGrant` is plain data in `core`: the per-tier bytes the daemon grants the runner. `ipc` carries it in `Init`, and `tier` checks an `ArenaPlan` against it (RFC-0020 §3, §12; OQ-IO-27).
+
 IPC never carries per-token traffic across the network boundary, and no message on the command channel is sent per token. Local token delivery uses `local_tokens`.
 
 ## 4. Crate layout
@@ -271,6 +273,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 1 | `io` | I/O engines: io_uring, IoRing, IOCP, `preadv` pool, `F_NOCACHE`, mmap fallback; per-core submission rings; registered buffers | `core` | 0021 |
 | 1 | `net` | `Transport` trait and backends (QUIC via iroh, RDMA via ibverbs and Thunderbolt 5, TCP, shared memory), frame codecs, delegated-credential checks | `core` | 0031 |
 | 1 | `ipc` | daemon↔runner protocol, shared-memory layout, SPSC rings | `core` | 0001 |
+| 1 | `spsc` | the lock-free SPSC ring of §8.3 that `io`, `net` and `ipc` share: power-of-two capacity, cache-line-padded indices, preallocated slots, wake handles; no tokio (added 2026-10-22, note below) | — | 0001 |
 | 2 | `graph` | model graph IR, shared blocks, architecture families, census classifiers, and the reference interpreter (`graph::reference`) that defines each family's semantics by interpreting the IR with `kernels::reference`. `testkit`'s `RefExecutor` drives it with exact dequantisation, a fixed reduction order and taps (ADR-0019 decision 1) | `manifest`, `kernels` (the op vocabulary and reference op semantics) | 0043 |
 | 2 | `kernels-cuda`, `kernels-hip`, `kernels-metal`, `kernels-vulkan`, `kernels-cpu`, `kernels-ggml` | `KernelProvider` implementations; the only crates with CUDA C++, HIP, MSL, Slang or ggml. `kernels-cpu` and `kernels-metal` link statically into the core binary. `kernels-cuda`, `kernels-hip` and `kernels-vulkan` are built, each with its ggml GPU backend, as provider libraries inside signed backend modules (rule 7). `kernels-ggml` is linked statically into each artefact that uses it, one private copy per artefact with its symbols hidden (RFC-0040 §8.1) | `kernels` | 0040 (numerics: 0042) |
 | 2 | `kernels-loader` | the core side of the provider-library ABI: loading a backend module's library by absolute path, the ABI and build-ID checks, and the `ModuleProvider` proxy that calls through C function pointers; the driver census, which identifies GPUs, vendors, architectures and driver versions in a probe-mode process through runtime-loaded driver libraries, without loading a module or creating a GPU context (RFC-0040 §10.4, §10.5) | `kernels` | 0040 |
@@ -291,6 +294,8 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 
 *Note 2026-10-21 (amendment, §18.8):* `config-derive` joins layer 0. RFC-0054 §10.3 puts the schema derive in `config`, but Rust requires a proc-macro to be its own crate, and a proc-macro crate can export nothing but macros. `config-derive` therefore holds the derive, with no runtime code and no workspace dependencies, and `config` re-exports it, so other crates name only `config`.
 
+*Note 2026-10-22 (amendment, §18.9):* `spsc` joins layer 1. `io` (its submission rings and RFC-0021 §3.1's rings to the I/O thread), `net` (its rings to the network task, §5.8) and `ipc` all need §8.3's ring, and all three are in layer 1, where rule 2 forbids edges between crates (OQ-IO-29). `spsc` holds the one implementation, with no workspace dependencies, so one set of loom models covers every ring.
+
 Packaging, installers, backend modules and update channels (RFC-0052) and CI (RFC-0062) live outside the crate graph, in `packaging/` and `.github/`. A backend module is a directory beside the core binary of the same version holding one provider library and its vendor redistributables (ADR-0507, RFC-0052 §4.3).
 
 ### 4.2 Dependency rules
@@ -303,12 +308,14 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
    - *Note 2026-10-21:* every crate may also depend on `core`, which depends on none (rule 1). That is how `obs` and `config` depend on `core` inside layer 0, as §4.1's table has them.
    - *Note 2026-10-21:* `xtask`, the CI task runner (RFC-0062 §1), is a workspace member outside the crate graph: no crate depends on it, and it depends on no workspace crate. `ci/layers.toml` lists it as a tool.
    - *Note 2026-10-21 (amendment, §18.8):* `config` may depend on `config-derive`, its own proc-macro crate, inside layer 0, because Rust requires a proc-macro to be its own crate. That is the only edge into `config-derive`: every other crate, whatever its layer, uses the macro through `config`, whose path the generated code names.
+   - *Note 2026-10-22 (amendment, §18.9):* `io`, `net` and `ipc` may depend on `spsc` inside layer 1. That is the second same-layer exception, after `config-derive`'s. No other layer-1 crate depends on `spsc`, and crates in higher layers use it as they use any lower layer.
 3. **Compute crates never depend on control or network crates.** `graph`, `kernels`, every `kernels-*`, `io`, `tier`, `exec` and `sched` must not depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`. The runner bridges compute and network through SPSC rings (§8.3). This keeps the hot path free of async runtimes (ADR-0012) and lets `exec` and `sched` run under `testkit` with no network at all.
 4. **`daemon` never links or loads a GPU provider.** It may depend on `kernels` for types, but not on any `kernels-*` crate, `kernels-loader` included, and it never opens a backend module. Only runner and probe processes load provider libraries, and the daemon learns about GPUs from a probe-mode process (RFC-0040 §10.5, ADR-0507 rule 4). This is invariant 3 (§2.3) enforced at link time.
 5. **`solver` and `cluster::apply` are pure.** No I/O, no clocks, no threads apart from HiGHS (run single-threaded with a fixed seed). Given the same inputs the solver returns the same plan, so plans are reproducible in tests and on every node. The other protocol cores follow invariant 12.
 6. **One crate per external system.** iroh only in `net`; ibverbs and the Thunderbolt RDMA API only in `net`; io_uring, IoRing and IOCP only in `io`; HiGHS only in `solver`; ggml only in `kernels-ggml`; vendor GPU runtimes only in their `kernels-*` crate. `kernels-loader` may load vendor driver libraries at runtime (the CUDA driver, NVML, the Vulkan loader, DXGI/DXCore) for read-only device enumeration, never linking them at build time and never creating a GPU context.
 7. **CPU and Metal providers are built into the core; other GPU providers ship as backend modules** (ADR-0507, RFC-0040 §10.4, RFC-0052 §4). The CPU provider, the Metal provider on macOS, and on iOS and Android every provider the platform uses, are linked statically into the core binary. The CUDA, HIP and Vulkan providers, and the ggml SYCL backend, are provider libraries in separately loaded, signed backend modules: directories beside the core binary of the same version, verified by hash, signature and build ID before loading (ADR-0316), and loaded by absolute path only by runner and probe processes. The boundary is a versioned C ABI generated from the `KernelProvider` trait, with one exported entry symbol and a lockstep build-ID check. The core binary therefore carries no vendor GPU runtime on Linux and Windows, and one core binary runs on hosts with and without each vendor stack (ADR-0014). The `cuda13` module carries Syntropy code only: `setup` fetches NVIDIA's redistributable libraries from NVIDIA and checks each against a hash pinned in the signed module manifest (RFC-0040 §10.3, RFC-0052 §4.4). A build or host without any GPU module runs CPU-only.
-8. **`unsafe` is confined** to `kernels-*` (including `kernels-loader`: the provider-library loader and the census), `io`, `tier` (arenas), `net` (RDMA, shared memory) and `ipc` (shared memory). Every other crate sets `#![forbid(unsafe_code)]`.
+8. **`unsafe` is confined** to `kernels-*` (including `kernels-loader`: the provider-library loader and the census), `io`, `tier` (arenas), `net` (RDMA, shared memory), `ipc` (shared memory) and `spsc` (the ring's slots, added 2026-10-22). Every other crate sets `#![forbid(unsafe_code)]`.
+   - *Note 2026-10-22 (amendment, §18.9):* OS system calls that need `unsafe` go in `io`, behind safe functions that `probe`, `cluster` and `daemon` call (OQ-PRC-26): E1's host enumeration on Windows and macOS, the AMX and io_uring checks, E3's volume queries and the state directory's DACL. E2's management APIs (NVML, DXGI, IOKit) run in the runner's probe mode, in `kernels-loader`, which rules 4 and 6 already let load them, and the daemon merges the records (RFC-0010 §2.1).
 9. **`testkit` is a dev-dependency only.** No production crate depends on it.
    - *Note 2026-10-21:* the same holds for `bench`, the other crate on §4.1's dev-only row ("—").
 10. **Test-only features never reach a release.** Any crate may declare the cargo features `fault-injection`, `debug-taps` and `guards`. Release artefacts are built without them, and the L0 `check-deps` job enforces it (RFC-0060 §3.6, RFC-0062 §12.1).
@@ -474,7 +481,7 @@ pub struct DeviceInfo {
     pub kind: DeviceKind,
     pub name: String,
     /// Backend plus architecture generation, e.g. CUDA sm_120, Metal Apple9, x86-64-v4 with AMX.
-    /// Part of PackKey (§5.6).
+    /// Part of PackKey (§5.6). Defined in RFC-0040 §2.2; ADR-0405.
     pub class: DeviceClass,
     /// Providers able to drive this device, in preference order (RFC-0040).
     pub backends: SmallVec<[Backend; 4]>,
@@ -1529,6 +1536,7 @@ pub enum ErrorClass {
 | `BuildId` | core (type); value built in `cli` | 0062 | 0052 |
 | `DeviceId`, `TierId`, `LinkId`, `DeviceKind`, `Measured` | core | 0010 | 0031 (network `LinkKind`s) |
 | `TierKind` | core | 0020 | 0010 |
+| `DeviceClass`, `CpuIsa`, `DeviceFeatures` | core | 0040 | 0010 (`Npu`, ADR-0405 decision 4's fields, the provider-record merge) |
 | `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
 | `ResourceGraph`, `CapabilityProfile` | core | 0010 | 0011 (what the solver reads), 0021 (`StorageCaps` fields) |
 | `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
@@ -1618,7 +1626,8 @@ pub struct ConformanceManifest {
     /// logits and hidden-state norms, and the tolerance-table version) and the longest
     /// certified context, `max_ctx` (RFC-0043 §9.4, RFC-0060 §7).
     pub families: Vec<FamilyCert>,
-    pub ops: Vec<OpCert>,                       // provider, device class, OpKey, kernel, source_key, shapes
+    pub ops: Vec<OpCert>,                       // provider, device class, OpKey, kernel, source_key, shapes,
+                                                // the rig's device and driver (ADR-0405)
     pub wire: Vec<WireCert>,                    // family, phase, dtype: BF16 wire in exact mode
     pub paths: Vec<PathCert>,
     pub knobs: Vec<KnobCost>,                   // each approximate knob's measured top-1 and KL cost
@@ -2677,3 +2686,23 @@ RFC-0054 §10.3 puts the schema in `syntropy-config` as a derive macro. Rust req
 | Change | Sections touched | Reason |
 |---|---|---|
 | `config-derive` joins layer 0, with no workspace dependencies; `config` depends on it and re-exports `#[derive(ConfigSection)]`, and no other crate depends on it | §4.1 (row and dated note); §4.2 rule 2 (dated note) | Rust requires a proc-macro to be its own crate, and PROD-E1-T01 builds the derive; `ci/layers.toml` needs a row for every member, and "lower layers only" would forbid `config`'s edge to a crate in its own layer |
+
+### 18.9 The SPSC ring crate and other decisions of the readiness audit (2026-10-22)
+
+The readiness audit of the next M0 wave raised decisions the maintainers took on 2026-10-22. Those that change this RFC are below.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `spsc` joins layer 1 with no workspace dependencies; `io`, `net` and `ipc` may depend on it inside the layer; it is on rule 8's `unsafe` list | §4.1 (row and dated note); §4.2 rules 2 and 8 (dated notes) | `io`, `net` and `ipc` all need §8.3's ring and are all in layer 1 (OQ-IO-29); DIST-E1-T12 adds the crate as PROD-E1-T01 added `config-derive` (§18.8) |
+| OS system calls that need `unsafe` go in `io`; E2's management APIs run in the probe-mode runner, in `kernels-loader` | §4.2 rule 8 (dated note); RFC-0010 §2.1 | rule 8 keeps `unsafe` out of `probe`, `cluster` and `daemon`, and rule 4 keeps vendor libraries out of the daemon (OQ-PRC-26) |
+| `LedgerGrant` is plain data in `core` | §3.5 (dated note) | `ipc` carries it and `tier` checks it, and `tier` has no edge to `ipc` (OQ-IO-27) |
+
+### 18.11 One device class (2026-10-22)
+
+ADR-0405, accepted 2026-10-22 (option A, with V1 for exactness on Vulkan), defines `DeviceClass` once. RFC-0010 §1.2 and RFC-0040 §2.2 had defined it twice, with different variants. §5.2, §5.6 and §5.15 used the type without defining it.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `DeviceClass`, `CpuIsa` and `DeviceFeatures` gain an ownership row: `core`, owned by RFC-0040, expanded by RFC-0010 (`Npu`, decision 4's fields, the provider-record merge) | §5.13; RFC-0010 §1.2 and RFC-0040 §2.2 (dated notes) | `DeviceInfo` and `ConformanceManifest` are `core` types that hold a `DeviceClass` (rule 1), and `kernels` re-exports it |
+| `DeviceInfo::class` cites its definition in RFC-0040 §2.2 and ADR-0405 | §5.2 | one key for placement, packs (§5.6), certificates (§5.15) and the selection cache |
+| `OpCert` records the rig's device and driver, so a lookup can tell a full certificate from a derived one on Vulkan | §5.15 (comment); RFC-0060 §6.4 and RFC-0040 §6.2 (dated notes) | ADR-0405's V1: a Vulkan certificate covers another device or driver of its class only as a derived certificate, with identical SPIR-V, the first-load canary and the `exact (derived certification)` label |

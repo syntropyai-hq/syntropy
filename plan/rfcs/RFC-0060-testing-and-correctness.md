@@ -5,7 +5,7 @@
 - Depends on: RFC-0001; ADR-0002, ADR-0003, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0017, ADR-0019, ADR-0020; ADR-0600, ADR-0601, ADR-0602, ADR-0603
 - Expanded by: RFC-0042 (tolerance tables), RFC-0043 (per-family fixtures and boundaries), RFC-0033 (recovery expectations for chaos scenarios), RFC-0062 (where and when each suite runs)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9)
+- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
 
 ## Summary
 
@@ -231,8 +231,6 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 | ID | Crate | Property | Generator | Oracle |
 |---|---|---|---|---|
 | P-core-1 | core | `PlanEpoch` order is total, and a higher `term` dominates any `seq` | arbitrary pairs | lexicographic definition |
-| P-core-2 | core | resolving a `TensorHandle` whose `generation` is stale fails; it never yields another slot's bytes | slot reuse sequences | reference slot table |
-| P-core-3 | core | exactness resolution (RFC-0001 §11.3) yields `Approximate` only when request, instance and cluster all allow it; the knob set is the intersection | arbitrary policy triples | the rule as a truth table |
 | P-cluster-1 | cluster | `apply` is total and deterministic: the same log gives byte-identical `ClusterState` | random valid command sequences turned into events | state hash equality across two folds |
 | P-cluster-2 | cluster | snapshot at index i plus replay of the tail equals the full replay | random logs, random i | state hash |
 | P-cluster-3 | cluster | a duplicate `CommandId` produces no second event | sequences with injected duplicates | event count |
@@ -246,6 +244,7 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 | P-solver-7 | solver | the DP fallback returns a feasible contiguous plan whenever the brute-force enumerator finds one (SC-31) | small graphs (≤ 3 nodes, ≤ 12 layers) | exhaustive enumeration |
 | P-tier-1 | tier | a slot under a live `ResidencyLease` is never evicted or rewritten | random lease/evict/admit interleavings | model (§3.3) |
 | P-tier-2 | tier | progressive pinning never takes free memory below the RFC-0020 reserve (SC-11) | random pin budgets and simulated MemAvailable traces | fake OS memory model |
+| P-tier-3 | tier | resolving a `TensorHandle` whose `generation` is stale fails; it never yields another slot's bytes | slot reuse sequences | reference slot table |
 | P-kv-1 | tier (KV) | `truncate(to)` followed by `append` gives the same pages as a fresh sequence written to the same positions | random append/truncate/fork sequences | model (§3.3) |
 | P-kv-2 | tier (KV) | the prefix key changes when any setting listed in RFC-0001 §5.9 changes; it never changes otherwise | random setting perturbations | field-by-field definition |
 | P-io-1 | io | every completed read returns exactly the requested extent, including after short reads and `EAGAIN` resubmission | random extents over a file with injected short reads | `pread` of the same range |
@@ -256,8 +255,11 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 | P-text-1 | text | incremental detokenisation concatenated equals full detokenisation | random token streams from fixture tokenizers | full decode |
 | P-text-2 | text | a stop string spanning token boundaries is detected at the first token that completes it, and no character after it is emitted | random stop strings and tokenisations | character-level reference matcher |
 | P-config-1 | config | precedence default < file < env < CLI; unknown keys rejected; request keys only narrow instance keys | random layer stacks | the RFC-0001 §11.1 rules |
+| P-config-2 | config | exactness resolution (RFC-0001 §11.3) yields `Approximate` only when request, instance and cluster all allow it; the knob set is the intersection | arbitrary policy triples | the rule as a truth table |
 | P-bench-1 | bench | a `BenchResult` reads back from its JSON unchanged, and the JSON passes the committed schema file (RFC-0061 §2.2) | arbitrary results: every record type, enum variant and `Option` arm, arbitrary Unicode text and finite floats of every class | equality, and the schema file |
 | P-bench-2 | bench | two results are comparable exactly when their keys differ in no field but `build` (RFC-0061 §2.1) | arbitrary results; one key field replaced with a different value, with or without a different `build` | field-by-field key equality |
+
+*Note 2026-10-22 (OQ-PRC-27):* P-core-2 and P-core-3 became P-tier-3 and P-config-2. `TensorHandle` resolution is `tier`'s (RFC-0001 §5.5, §5.13), and exactness resolution is built in `config` (PROD-E1-T10), so their properties live in those crates' suites. TIER-E1-T03 and PROD-E1-T10 own them, and QUAL-E3-T05 keeps P-core-1.
 
 Each crate's RFC adds its properties to this table. A property removed from the table needs a reason in the PR description.
 
@@ -755,7 +757,11 @@ pub struct ConformanceManifest {
 pub struct FamilyCert { pub family: ArchFamily, pub code: Blake3, pub quants: SmallVec<[QuantClass; 8]>,
                         pub splits: bool, pub tp: bool, pub tiers: TierShapes }
 pub struct OpCert     { pub provider: ProviderId, pub class: DeviceClass, pub op: OpKey,
-                        pub kernel: Blake3, pub source_key: Blake3 /* ADR-0623 SourceKey */, pub shapes: ShapeClassSet }
+                        pub kernel: Blake3, pub source_key: Blake3 /* ADR-0623 SourceKey */, pub shapes: ShapeClassSet,
+                        pub rig: Option<RigDevice> /* ADR-0405: the device and driver the op was certified on */ }
+/// The rig device's identity: `PciInfo`'s vendor and device IDs, else `DeviceInfoExt::api_ids`
+/// (RFC-0010 §1.2), and its driver. `OpCert::rig` is required for Vulkan-domain ops, which V1 reads, and set wherever the rig has PCI or API IDs. It is None for a CPU device and for a GPU with neither, such as an Apple GPU, until OQ-KB-22 decides what identifies a Metal rig.
+pub struct RigDevice  { pub ids: ApiIds, pub vk_driver: Option<VkDriverId>, pub driver: String }
 pub struct WireCert   { pub family: ArchFamily, pub phase: Phase /* Prefill | Decode */, pub dtype: WireDType, pub numerics: Blake3 }
 pub struct PathCert   { pub family: ArchFamily, pub quant: QuantClass, pub path: ExecPathClass, pub numerics: Blake3, pub report: Blake3 }
 pub struct KnobCost   { pub knob: ApproxKnobs, pub family: ArchFamily, pub quant: QuantClass, pub numerics: Blake3,
@@ -775,6 +781,12 @@ pub struct KnobCost   { pub knob: ApproxKnobs, pub family: ArchFamily, pub quant
   3. on first load, the warm-up canary (§5.8), run with the derived op selected, matches the reference digest.
 
   Output served this way is labelled `exact (derived certification)` in API metadata and the dashboard (RFC-0050, RFC-0051). If the canary fails, the op drops to the next provider that holds a full certificate for X, normally ggml. If none does, the path is classified approximate (§6.3) and is never used for exact requests. ADR-0610 adds R-TURING for `sm_75`, so `sm_75` certificates become full ones from M1, and an H100- and B200-class canary on on-demand cloud instances on every RC from the first M1 RC (ADR-0610 decision 8); `sm_90` and `sm_100` stay derived between RCs.
+- **Derived certificates on Vulkan** (ADR-0405, V1; added 2026-10-22). On a Vulkan-domain provider (the native Vulkan provider or ggml's Vulkan backend), each driver compiles the SPIR-V into its own machine code at pipeline creation. A different GPU model or driver build can therefore change floating-point contraction or accumulation order inside one `DeviceClass`. An `OpCert` for such a provider is a full certificate only on the device and driver its `rig` records. On any other device or driver of the same class, or one whose identity is unknown, the op may be selected in exact mode only when all three conditions hold:
+  1. the `OpCert` matches in provider, class, `OpKey` and shape class, as above;
+  2. in place of condition 2 above, which has no Vulkan analogue, the device loads identical SPIR-V: the same `source_key` and the same `kernel` (the hash of the SPIR-V module), from the same shader-variant set as the rig;
+  3. the first-load canary matches the reference digest, as above.
+
+  The label, the fallback and the approximate classification are those of NVIDIA's derived certificates. An `OpCert` whose `rig` is `None` never certifies a Vulkan-domain op. QUAL-E6-T04 records `rig` and QUAL-E6-T23 implements the rule. Whether the same rule covers Metal across OS releases, which finish compiling the library at pipeline creation, is open (OQ-KB-22).
 - **Consumers.**
   - `graph`'s family registry refuses a family whose `FamilyCert` is missing or whose `code` hash differs. This is ADR-0003's fail-closed rule.
   - RFC-0040's op selection uses `OpCert`s (§4.2).

@@ -1,0 +1,11 @@
+# credit-sack: Credit with SACK and three NACKs
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 04 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 00 00 00 00 00 00 00 00 7d 0c 34 39  # 0030 header
+de 03 00 00 00 00 00 00 1e 04 00 00 00 00 00 00  # 0040 extension
+e8 03 00 00 00 00 00 00 08 07 00 00 03 00 01 00  # 0050 extension
+df 03 00 00 00 00 00 00 e1 03 00 00 00 00 00 00  # 0060 extension
+e5 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension

@@ -1,0 +1,31 @@
+# data-activation: Activation data frame: chan_seq 1, step 12, FIRST_OF_SEQ and HAS_TRACE, 128 B extension
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 01 09 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+0c 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0020 header
+80 00 00 00 00 01 00 00 b3 41 ef 81 b0 e5 1c 6f  # 0030 header
+11 30 4f 6e 8d ac cb ea 09 28 47 66 85 a4 c3 e2  # 0040 extension
+01 20 3f 5e 7d 9c bb da f9 18 37 56 75 94 b3 d2  # 0050 extension
+f1 10 2f 4e 6d 8c ab ca e9 08 27 46 65 84 a3 c2  # 0060 extension
+e1 00 1f 3e 5d 7c 9b ba d9 f8 17 36 55 74 93 b2  # 0070 extension
+d1 f0 0f 2e 4d 6c 8b aa c9 e8 07 26 45 64 83 a2  # 0080 extension
+c1 e0 ff 1e 3d 5c 7b 9a b9 d8 f7 16 35 54 73 92  # 0090 extension
+b1 d0 ef 0e 2d 4c 6b 8a a9 c8 e7 06 25 44 63 82  # 00a0 extension
+a1 c0 df fe 1d 3c 5b 7a 99 b8 d7 f6 15 34 53 72  # 00b0 extension
+22 41 60 7f 9e bd dc fb 1a 39 58 77 96 b5 d4 f3  # 00c0 payload
+12 31 50 6f 8e ad cc eb 0a 29 48 67 86 a5 c4 e3  # 00d0 payload
+02 21 40 5f 7e 9d bc db fa 19 38 57 76 95 b4 d3  # 00e0 payload
+f2 11 30 4f 6e 8d ac cb ea 09 28 47 66 85 a4 c3  # 00f0 payload
+e2 01 20 3f 5e 7d 9c bb da f9 18 37 56 75 94 b3  # 0100 payload
+d2 f1 10 2f 4e 6d 8c ab ca e9 08 27 46 65 84 a3  # 0110 payload
+c2 e1 00 1f 3e 5d 7c 9b ba d9 f8 17 36 55 74 93  # 0120 payload
+b2 d1 f0 0f 2e 4d 6c 8b aa c9 e8 07 26 45 64 83  # 0130 payload
+a2 c1 e0 ff 1e 3d 5c 7b 9a b9 d8 f7 16 35 54 73  # 0140 payload
+92 b1 d0 ef 0e 2d 4c 6b 8a a9 c8 e7 06 25 44 63  # 0150 payload
+82 a1 c0 df fe 1d 3c 5b 7a 99 b8 d7 f6 15 34 53  # 0160 payload
+72 91 b0 cf ee 0d 2c 4b 6a 89 a8 c7 e6 05 24 43  # 0170 payload
+62 81 a0 bf de fd 1c 3b 5a 79 98 b7 d6 f5 14 33  # 0180 payload
+52 71 90 af ce ed 0c 2b 4a 69 88 a7 c6 e5 04 23  # 0190 payload
+42 61 80 9f be dd fc 1b 3a 59 78 97 b6 d5 f4 13  # 01a0 payload
+32 51 70 8f ae cd ec 0b 2a 49 68 87 a6 c5 e4 03  # 01b0 payload
