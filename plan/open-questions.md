@@ -1,6 +1,6 @@
 # Open questions
 
-This register lists the technical questions the Syntropy plan still leaves open, and the answers to the ones it has settled. It collects RFC-0001 §17, the "Open questions" sections of the 24 domain RFCs, the measurements that ADR revisit clauses still wait on, and the spike and decision tasks in `plan/implementation/epics/`. 142 questions are open. Answered questions are in [Settled](#settled) at the end, each with the ADR or RFC section that holds the answer.
+This register lists the technical questions the Syntropy plan still leaves open, and the answers to the ones it has settled. It collects RFC-0001 §17, the "Open questions" sections of the 24 domain RFCs, the measurements that ADR revisit clauses still wait on, and the spike and decision tasks in `plan/implementation/epics/`. 141 questions are open. Answered questions are in [Settled](#settled) at the end, each with the ADR or RFC section that holds the answer.
 
 How to read it:
 - **RFC** is the RFC that records the answer. Where two are listed, the first one holds it.
