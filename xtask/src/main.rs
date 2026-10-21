@@ -9,8 +9,9 @@
 //!
 //! Steps run in the checkout xtask was started from: the workspace root comes from the
 //! `CARGO_MANIFEST_DIR` that `cargo run` sets at run time, never from the path the binary was
-//! built at. One binary can serve several checkouts through a shared `CARGO_TARGET_DIR` or a
-//! copied `target/`, and it must check the one it was asked to.
+//! built at. One binary can serve several checkouts through a copied `target/`, and it must check
+//! the one it was asked to. The alias builds xtask into `target/xtask/`, apart from the
+//! workspace build its steps run, because Windows will not replace a running binary.
 //!
 //! `cargo xtask check-deps` checks the crate dependency rules of RFC-0001 §4.2 ([`check_deps`]).
 //! `cargo xtask build --profile <p>` builds in a test build profile and checks the result

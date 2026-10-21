@@ -90,6 +90,8 @@ pub fn evaluate(text: &str) -> Evaluation {
         }
     }
 
+    // By name, so the report reads the same whatever order the map keeps.
+    outcomes.sort_by_key(|(job, _)| *job);
     let listed = listed_jobs(&needs, &outcomes, &mut evaluation.problems);
     for (job, outcome) in outcomes {
         if job == CHANGES {
@@ -405,6 +407,49 @@ mod tests {
                 "`build` has the result none, not success, failure, cancelled or skipped",
                 "`lint` has the result `neutral`, not success, failure, cancelled or skipped",
             ]
+        );
+    }
+
+    /// A `needs` context recorded from a real run: of `pr.yml` on PR #1577, or of a fixture
+    /// workflow on the `ci-evidence/qual-e1-t06-gate` branch, on 2026-10-21.
+    macro_rules! recorded {
+        ($name:literal) => {
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/fixtures/ci-gate/needs-",
+                $name,
+                ".json"
+            ))
+        };
+    }
+
+    #[test]
+    fn recorded_runs_get_the_verdicts_they_got_in_ci() {
+        // Fixture runs: a skipped unlisted job passes; a failed or timed-out job fails.
+        assert_eq!(
+            evaluate(recorded!("fixture-skipped")).problems,
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            evaluate(recorded!("fixture-failed")).problems,
+            ["`build` failed"]
+        );
+        assert_eq!(
+            evaluate(recorded!("fixture-cancelled")).problems,
+            ["`hosted-test` was cancelled"]
+        );
+        // `pr.yml` runs: one cancelled by a second push, one with its Windows jobs failing.
+        assert_eq!(
+            evaluate(recorded!("pr-cancelled-run")).problems,
+            [
+                "`build` was cancelled",
+                "`hosted-test` was cancelled",
+                "`lint` was cancelled"
+            ]
+        );
+        assert_eq!(
+            evaluate(recorded!("pr-windows-failed")).problems,
+            ["`build` failed", "`hosted-test` failed"]
         );
     }
 
