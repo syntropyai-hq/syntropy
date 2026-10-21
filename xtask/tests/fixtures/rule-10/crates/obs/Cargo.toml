@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [features]
+# Not a test feature itself, but it turns one on; `testkit`'s default reaches it (#1556).
+extra = ["fault-injection"]
 fault-injection = []
 debug-taps = []
 guards = []

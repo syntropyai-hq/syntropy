@@ -370,8 +370,9 @@ impl Graph {
         graph
     }
 
-    /// Gives the member `name` a `[features]` table, each feature with its entries, and declared
-    /// dependencies as `(key, package)`, the key being the package name unless renamed.
+    /// Gives the package `name` (a member, named without its prefix, or an external package) a
+    /// `[features]` table, each feature with its entries, and declared dependencies as
+    /// `(key, package)`, the key being the package name unless renamed.
     pub fn with_features(
         mut self,
         name: &str,
@@ -380,7 +381,11 @@ impl Graph {
     ) -> Graph {
         let at = self
             .member(name)
-            .unwrap_or_else(|| panic!("no member `{name}`"));
+            .or_else(|| {
+                (0..self.packages.len())
+                    .find(|at| !self.packages[*at].member && self.packages[*at].name == name)
+            })
+            .unwrap_or_else(|| panic!("no package `{name}`"));
         let package = &mut self.packages[at];
         package.features = features
             .iter()
