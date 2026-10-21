@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 39600b74ff7f21a2db68f8fd93a390d47e79ff962d68b4c0b111c69e70acadb4 # shrinks to v = ProviderId("\"")
+cc 6d15382c33f9a039764edc6cd5ad08f125caf7f47257e28e924cafe72f726161 # shrinks to v = ProviderBuild { version: 0, module: None, toolchain: [("\"", "")], driver: None }
