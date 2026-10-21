@@ -643,6 +643,14 @@ sequenceDiagram
 - When N asks to join, it sets `WANTS_PAIR` in its beacons and sends a `WANTS_PAIR` `Query` (§4.8). Keyholders that see it add a passive "wants to join" entry to the dashboard, so the user can start the approval from either side.
 - With zero members to approve on, a cluster cannot admit by pairing. That case is the disposable cluster of §6.1. The new node's own first-run screen offers "create a cluster" or "join *name*".
 
+**Revision note, 2026-10-22 (DIST-E5-T14): the pairing fields and derivations are frozen.** A pure model of the exchange, with a joiner, an attacker relay and a keyholder, ran the first draft and the committed exchange (`crates/cluster/tests/pairing/`). What it froze for DIST-E5-T03:
+- `PairRequest.commit` is 32 bytes, `PairChallenge.nonce_k` 16 bytes and `PairReveal.nonce_c` 16 bytes, in that order. The joiner sends `PairReveal` only after `PairChallenge` has arrived.
+- Each hashed input is the domain string's ASCII bytes followed by the fields, with no length prefix or separator. Every field has a fixed length: the node IDs and `cluster_id` are 32-byte Ed25519 public keys (RFC-0034 §4). The commitment hashes 70 bytes, and the SAS hashes 143.
+- `u32_le` reads the digest's first four bytes as a little-endian integer. The two groups of three digits keep their leading zeros, as in `000 782`.
+- `syntropy-cluster`'s `pairing` module implements both derivations. Five golden vectors are in `crates/cluster/tests/pairing/vectors.txt`, each with the bytes it hashes.
+
+The model's seeds are fixed, so its results are reproducible. Against the first draft, an attacker that pairs with the keyholder before answering the joiner matched the codes in all 20 trials, after at most 3.14 × 10⁶ hashes. Against the committed exchange, it matched 12 times in 10⁷ attempts, within the bound of 25 for a 10⁻⁶ rate. In neither order of its two connections did it hold a nonce whose code it could compute against a fixed target, so it never ground. `cargo xtask test pairing-grind` reruns both.
+
 #### 6.3 Pairing window and open mode
 
 - **Pairing window.** `syntropy cluster open [--for 10m] [--joins 4] [--include-wifi]`, or the dashboard button, records `PairingWindowOpened { window, until_ms, max_joins, wifi, by }`. A window is only ever opened by this explicit command; `setup` never opens one (§6.2).
@@ -785,6 +793,8 @@ Rate limits on `syntropy/join/1`:
 - 5 connection attempts per minute per source IP;
 - 1 pending pairing per node ID;
 - 20 failed token attempts per hour per keyholder in total, after which the keyholder stops accepting token joins for 10 minutes and the dashboard says why.
+
+**Revision note, 2026-10-22 (DIST-E5-T14).** `PairRequest.commit`, `PairChallenge.nonce_k` and `PairReveal.nonce_c` are frozen as §6.2's note of the same date gives them. The messages' other fields, their CBOR encoding and their wire golden vectors are DIST-E5-T03's.
 
 ### 7. Interfaces, edges and Thunderbolt handling
 
