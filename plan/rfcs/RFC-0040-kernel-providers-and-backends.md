@@ -564,7 +564,7 @@ Other host-side rules, owned by RFC-0012 and restated because kernels depend on 
 
 The plan arms wakes only for doorbells whose predicted gap exceeds the threshold, so programs for fast stages contain no host nodes at all. The probe measures each path's wake latency (RFC-0010's H2 wake variant). Metal, whose event values are set per step, keeps step numbers. On Vulkan, a pre-recorded fill is followed by a buffer barrier to the host domain; the probe checks once per driver that the host sees a fill while the submission is still running, and where it does not, `signal_host` ends the segment and signals the timeline semaphore instead, which the host reads with `vkGetSemaphoreCounterValue`.
 
-**Programs without per-layer doorbells.** A stage whose MoE layers cannot miss (every expert of the stage resident in VRAM, or in a `Unified` device's arena) is captured without route flags or waits, and its routing statistics are read from device memory after the step. This removes per-layer host interaction where nothing needs it, which matters most on Metal and Vulkan, where every wait is a host-side command (RFC-0012 §7.3).
+**Programs without per-layer doorbells.** A stage whose MoE layers cannot miss (every expert of the stage resident in VRAM, or in a `Unified` device's arena) is captured without route flags or waits, and its routing statistics are read after the step from the doorbell's route block, which the router writes into host-mapped memory (§3.4), with plain loads and no copy (revised 2026-10-21). This removes per-layer host interaction where nothing needs it, which matters most on Metal and Vulkan, where every wait is a host-side command (RFC-0012 §7.3).
 
 #### 4.3 Events
 

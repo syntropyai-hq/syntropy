@@ -112,8 +112,12 @@ pub struct PredSlot {
     pub expert: u16,
     pub score: f32,                        // router probability mass, summed over the pass's tokens
 }
-// MAX_UNION = min(E, T_max · k); MAX_PRED = d_max · min(E, T_max · (k + predict_extra)),
-// both from the plan's largest pass and lookahead (§9, §11), fixed per epoch.
+// MAX_UNION = min(E, P_max · k); MAX_PRED = d_max · min(E, P_max · (k + predict_extra)),
+// both from the plan's largest pass and lookahead (§9, §11), fixed per epoch. P_max is the
+// most tokens in one pass of the plan, the largest `rows` of its buckets (RFC-0012 §2), prefill
+// buckets included; it is not T_max, which RFC-0012 uses for the verify window. predict_extra is
+// its value at the epoch's start: a hot change below it only lowers how many of the written
+// predictions the prefetcher uses, and a raise waits for the next epoch (§15). (Revised 2026-10-21.)
 pub enum GuardMode { Lfu, Lru, Freeze }   // §5.3
 
 pub enum CacheCommand {
@@ -208,7 +212,7 @@ floor: first give every layer f = min(k_l, ⌊bytes / Σ_l s_l⌋) slots; if byt
 
 #### 5.1 Statistics
 
-After every pass, the dispatcher copies each MoE layer's `RouteSlot` list (expert, tokens) from the doorbell into a lossy statistics ring to the housekeeping thread: a few hundred bytes per layer per step. Housekeeping keeps, per (layer, expert), a decayed count `c[l][e]: f32`, incremented by the number of tokens that selected the expert, and per layer the hit, copied-miss and in-place-miss counts. Prefill passes are counted with weight `experts.prefill_weight` (0.1), so one long prompt does not overwrite decode-time popularity.
+After every pass, the dispatcher copies each MoE layer's `RouteSlot` list (expert, tokens) from the doorbell into a lossy statistics ring to the housekeeping thread: a few hundred bytes per layer per step. It is RFC-0001 §8.3's hot-thread ring of statistics deltas, one per dispatcher, and the step loop's other statistics deltas travel in the same ring as other record kinds (revised 2026-10-21). Housekeeping keeps, per (layer, expert), a decayed count `c[l][e]: f32`, incremented by the number of tokens that selected the expert, and per layer the hit, copied-miss and in-place-miss counts. Prefill passes are counted with weight `experts.prefill_weight` (0.1), so one long prompt does not overwrite decode-time popularity.
 
 #### 5.2 Decayed LFU with hysteresis (default policy)
 
@@ -430,7 +434,7 @@ Rules:
 - a hit is read once from VRAM for all its tokens;
 - the deterministic split (§6) puts the experts with the most tokens first into the copied set, because the GPU amortises a copy over more tokens than the CPU amortises its read;
 - an in-place expert is one small GEMM over its tokens (§7);
-- `MAX_UNION` in the doorbell is sized for the plan's largest pass: `min(E, T_max · k)`.
+- `MAX_UNION` in the doorbell is sized for the plan's largest pass: `min(E, P_max · k)`, with `P_max` that pass's tokens (§2).
 
 This is the MoE limit of speculation (RFC-0001 §6.4): the solver sizes γ knowing that a window of T tokens costs `U(T)` expert reads per layer, and on tiered MoE plans often chooses MTP with γ = 1 (ADR-0017).
 
@@ -560,7 +564,7 @@ Schema in RFC-0054. `instance` scope; most are reloadable because they only tune
 | `experts.guard_window` | 1,024 decode accesses per layer | hot | guard evaluation window; a switch needs two consecutive leading windows |
 | `experts.prefetch_slack` | 0.25 | hot | prefetch bytes per token above the predicted miss bytes (§10) |
 | `experts.prefill_weight` | 0.1 | hot | weight of prefill accesses in the counts |
-| `experts.predict_extra` | ⌈k/2⌉ | hot | extra predicted experts per lookahead layer |
+| `experts.predict_extra` | ⌈k/2⌉ | hot | extra predicted experts per lookahead layer. The router writes the epoch's value, and `MAX_PRED` is sized from it (§2). A hot change below it lowers how many of those predictions the prefetcher uses; a raise above it takes effect at the next epoch (revised 2026-10-21) |
 | `experts.vram_prefetch` | `auto` | hot | `auto` / `off`: RAM → VRAM prefetch (§10) |
 | `experts.vram_prefetch_min_score` | 0.5 (normalised router probability mass) | hot | prediction score needed for RAM → VRAM prefetch |
 | `experts.balancer` | `fitted` | hot | `fitted` / `fixed` (§8) |
