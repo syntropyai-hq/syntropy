@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // A cluster-scope key without `introduced_at`.
 use serde::Deserialize;
 use syntropy_config::ConfigSection;

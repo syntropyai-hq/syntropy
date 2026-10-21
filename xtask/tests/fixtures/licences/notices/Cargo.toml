@@ -1,0 +1,9 @@
+# A licence fixture: the release crate `cli` depends on MPL-2.0, Apache-2.0 (with a NOTICE) and
+# CDLA-Permissive-2.0 crates; a dev-dependency and a crate only `bench` uses stay out of the notices.
+# xtask/tests/licences.rs runs the licence checks on it and names the result it expects.
+[workspace]
+resolver = "3"
+members = [
+    "crates/cli",
+    "crates/bench",
+]

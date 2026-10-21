@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Attributes in the wrong place or form.
 use serde::Deserialize;
 use syntropy_config::ConfigSection;

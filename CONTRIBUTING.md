@@ -73,4 +73,4 @@ Decisions live in ADRs, and the RFCs build on them.
 
 ## Licence
 
-Syntropy is licensed under MIT OR Apache-2.0. Contributions are accepted under the same terms, inbound equals outbound, certified by the DCO sign-off ([ADR-0018](plan/decisions/ADR-0018-licence.md)). New code files start with `SPDX-License-Identifier: MIT OR Apache-2.0`. A new dependency must carry a licence on ADR-0018's allow list, and adding one needs a maintainer's approval.
+Syntropy is licensed under MIT OR Apache-2.0. Contributions are accepted under the same terms, inbound equals outbound, certified by the DCO sign-off ([ADR-0018](plan/decisions/ADR-0018-licence.md)). New code files start with `SPDX-License-Identifier: MIT OR Apache-2.0`. A new dependency must carry a licence on ADR-0018's allow list, and adding one needs a maintainer's approval. Vendored third-party code goes under `third_party/`, with one entry per file in `third_party/licences.toml`. The `lint` job checks all three: `cargo xtask spdx`, `cargo xtask deny` (with [`deny.toml`](deny.toml)) and `cargo xtask third-party`.

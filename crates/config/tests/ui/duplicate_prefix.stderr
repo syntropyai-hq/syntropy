@@ -1,7 +1,7 @@
 error[E0080]: evaluation panicked: config sections `ProbeSection` and `OtherProbeSection` both claim the prefix `probe.*`; every prefix has one owner (RFC-0054 §5.1)
-  --> tests/ui/duplicate_prefix.rs:23:29
+  --> tests/ui/duplicate_prefix.rs:24:29
    |
-23 | static REGISTRY: Registry = Registry::new(&[&ProbeSection::SCHEMA, &OtherProbeSection::SCHEMA]);
+24 | static REGISTRY: Registry = Registry::new(&[&ProbeSection::SCHEMA, &OtherProbeSection::SCHEMA]);
    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `REGISTRY` failed inside this call
    |
 note: inside `Registry::new`

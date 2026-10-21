@@ -3,3 +3,4 @@ __pycache__/
 /target/
 # Build output of a manual `cargo xtask check-deps --manifest-path` run on a fixture.
 /xtask/tests/fixtures/*/target/
+/xtask/tests/fixtures/licences/*/target/

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Keys under `security.*`, `invite.*`, `coordinator.*`, `swim.*` and `cluster.lan_admission`
 // declared `Member` (RFC-0054 §2.3 step 10).
 use serde::Deserialize;

@@ -287,7 +287,20 @@ mod tests {
         let lint = find(JOBS, "lint").unwrap();
         let (verdict, ran, log) = run_fake(lint, &[]);
         assert_eq!(verdict, Verdict::Pass);
-        assert_eq!(ran, ["fmt", "clippy", "check-deps", "codeowners"]);
+        assert_eq!(
+            ran,
+            [
+                "fmt",
+                "clippy",
+                "check-deps",
+                "codeowners",
+                "deny",
+                "advisories",
+                "spdx",
+                "third-party",
+                "notices",
+            ]
+        );
         for pending in lint.pending {
             assert!(log.contains(pending.task), "{log}");
         }

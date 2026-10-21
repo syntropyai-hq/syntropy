@@ -1,11 +1,11 @@
 error: config section `NoSectionDoc` needs a doc comment (RFC-0054 §10.3)
- --> tests/ui/missing_doc.rs:7:8
+ --> tests/ui/missing_doc.rs:8:8
   |
-7 | struct NoSectionDoc {
+8 | struct NoSectionDoc {
   |        ^^^^^^^^^^^^
 
 error: config key `sched.queue` needs a doc comment (RFC-0054 §10.3)
-  --> tests/ui/missing_doc.rs:18:5
+  --> tests/ui/missing_doc.rs:19:5
    |
-18 |     queue: u32,
+19 |     queue: u32,
    |     ^^^^^

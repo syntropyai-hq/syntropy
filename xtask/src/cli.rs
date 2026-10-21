@@ -4,7 +4,8 @@
 //!
 //! A top-level command, such as `check-deps` (QUAL-E1-T03), is a variant of [`Command`], a
 //! branch in [`parse`] and a line in [`USAGE`]. A job's or suite's own options are declared in
-//! its registry entry (`Entry::params`), and [`parse`] accepts exactly those.
+//! its registry entry (`Entry::params`), and [`parse`] accepts exactly those. The licence
+//! commands (QUAL-E1-T04) declare theirs to [`parse_options`].
 
 use std::fmt;
 
@@ -25,6 +26,19 @@ Commands:
   build --profile <p> [--manifest-path <path>]
                           build in profile dev, test-release, chaos or release with its test
                           features, then check the build against the profile (RFC-0062 §4.4)
+  deny [--manifest-path <path>] [--advisories]
+                          run cargo-deny with deny.toml (ADR-0018 §3, RFC-0062 §11.2): the
+                          licence, ban and source checks, or with --advisories the RustSec
+                          advisories, which need network access; `lint` runs both
+  spdx [--root <dir>]     check the SPDX header of every source file (ADR-0018 §1); `lint`
+                          runs it
+  third-party [--root <dir>]
+                          check that third_party/licences.toml lists every vendored file
+                          (ADR-0018 §3, RFC-0062 §12.2); `lint` runs it
+  notices [--manifest-path <path>] [--out <file>]
+                          generate THIRD-PARTY-NOTICES for the release build (ADR-0018 §6) and
+                          write it to <file>; without --out, only check it can be generated,
+                          which is what `lint` runs
   help                    print this message
 
 An option is `--name <value>` or `--name=<value>`, given at most once.
@@ -33,7 +47,17 @@ Exit status: 0 when every step passes, 1 when a step fails, 2 on a usage error o
 was not started by `cargo xtask`.";
 
 /// The top-level commands, in the order `USAGE` lists them.
-const COMMANDS: &[&str] = &["ci", "test", "check-deps", "build", "help"];
+const COMMANDS: &[&str] = &[
+    "ci",
+    "test",
+    "check-deps",
+    "build",
+    "deny",
+    "spdx",
+    "third-party",
+    "notices",
+    "help",
+];
 
 /// What the command line asks for. Names and options are resolved against the registry while
 /// parsing, so every [`Command::Run`] names an entry that exists, with options it accepts.
@@ -55,6 +79,24 @@ pub enum Command<'r> {
     Build {
         profile: &'static Profile,
         manifest_path: Option<String>,
+    },
+    /// `deny`: cargo-deny's licence, ban and source checks, or its advisories.
+    Deny {
+        manifest_path: Option<String>,
+        advisories: bool,
+    },
+    /// `spdx`: the SPDX headers under `root`, else under this checkout.
+    Spdx {
+        root: Option<String>,
+    },
+    /// `third-party`: the vendored-file manifest under `root`, else under this checkout.
+    ThirdParty {
+        root: Option<String>,
+    },
+    /// `notices`: generate `THIRD-PARTY-NOTICES`, writing it to `out` when given.
+    Notices {
+        manifest_path: Option<String>,
+        out: Option<String>,
     },
 }
 
@@ -246,6 +288,28 @@ pub fn parse<'r>(
         "test" => parse_run(Kind::Suite, rest, suites),
         "check-deps" => parse_check_deps(rest),
         "build" => parse_build(rest),
+        "deny" => parse_options(rest, &["--manifest-path"], &["--advisories"]).map(|o| {
+            o.or_help(|o| Command::Deny {
+                manifest_path: o.value("--manifest-path"),
+                advisories: o.flag("--advisories"),
+            })
+        }),
+        "spdx" => parse_options(rest, &["--root"], &[]).map(|o| {
+            o.or_help(|o| Command::Spdx {
+                root: o.value("--root"),
+            })
+        }),
+        "third-party" => parse_options(rest, &["--root"], &[]).map(|o| {
+            o.or_help(|o| Command::ThirdParty {
+                root: o.value("--root"),
+            })
+        }),
+        "notices" => parse_options(rest, &["--manifest-path", "--out"], &[]).map(|o| {
+            o.or_help(|o| Command::Notices {
+                manifest_path: o.value("--manifest-path"),
+                out: o.value("--out"),
+            })
+        }),
         other if other.starts_with('-') => Err(UsageError::UnknownOption(other.to_owned())),
         other => Err(UsageError::UnknownCommand(other.to_owned())),
     }
@@ -428,6 +492,94 @@ fn parse_build(args: &[String]) -> Result<Command<'static>, UsageError> {
         profile,
         manifest_path,
     })
+}
+
+/// The options given to a top-level command: values and flags, each at most once, or `--help`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Options {
+    help: bool,
+    values: Vec<(&'static str, String)>,
+    flags: Vec<&'static str>,
+}
+
+impl Options {
+    fn value(&self, name: &str) -> Option<String> {
+        self.values
+            .iter()
+            .find(|(given, _)| *given == name)
+            .map(|(_, value)| value.clone())
+    }
+
+    fn flag(&self, name: &str) -> bool {
+        self.flags.contains(&name)
+    }
+
+    /// [`Command::Help`] for `--help`, else the command `build` makes from the options.
+    fn or_help(self, build: impl FnOnce(&Options) -> Command<'static>) -> Command<'static> {
+        if self.help {
+            Command::Help
+        } else {
+            build(&self)
+        }
+    }
+}
+
+/// Parses a top-level command's options: each of `values` as `--name <value>` or
+/// `--name=<value>`, each of `flags` as a bare `--name`, each at most once; or a lone `--help`.
+fn parse_options(
+    args: &[String],
+    values: &[&'static str],
+    flags: &[&'static str],
+) -> Result<Options, UsageError> {
+    if let Some((first, rest)) = args.split_first()
+        && matches!(first.as_str(), "-h" | "--help")
+    {
+        no_more(rest)?;
+        return Ok(Options {
+            help: true,
+            ..Options::default()
+        });
+    }
+    let mut options = Options::default();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        if let Some(flag) = flags.iter().find(|flag| **flag == name) {
+            if inline.is_some() {
+                return Err(UsageError::UnexpectedArgument(arg.clone()));
+            }
+            if options.flags.contains(flag) {
+                return Err(UsageError::RepeatedOption(flag));
+            }
+            options.flags.push(flag);
+            continue;
+        }
+        let Some(option) = values.iter().find(|option| **option == name) else {
+            return Err(if arg.starts_with('-') {
+                UsageError::UnknownOption(name.to_owned())
+            } else {
+                UsageError::UnexpectedArgument(arg.clone())
+            });
+        };
+        let value = match inline {
+            Some(value) => value,
+            None => match rest.next() {
+                Some(value) if !value.starts_with('-') => value.as_str(),
+                _ => "",
+            },
+        };
+        if value.is_empty() {
+            return Err(UsageError::MissingValue(option));
+        }
+        if options.values.iter().any(|(seen, _)| seen == option) {
+            return Err(UsageError::RepeatedOption(option));
+        }
+        options.values.push((option, value.to_owned()));
+    }
+    Ok(options)
 }
 
 fn no_more(rest: &[String]) -> Result<(), UsageError> {
@@ -632,7 +784,8 @@ mod tests {
         );
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
-            "unknown command `frob`; valid commands: ci, test, check-deps, build, help"
+            "unknown command `frob`; valid commands: ci, test, check-deps, build, deny, spdx, \
+             third-party, notices, help"
         );
         assert_eq!(
             parse_real("--frob"),
@@ -946,6 +1099,94 @@ mod tests {
                 UsageError::UnknownOption("--fix".into()),
             ),
             ("build dev", UsageError::UnexpectedArgument("dev".into())),
+        ] {
+            assert_eq!(parse_real(line), Err(error), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn the_licence_commands_take_their_options() {
+        for (line, command) in [
+            (
+                "deny",
+                Command::Deny {
+                    manifest_path: None,
+                    advisories: false,
+                },
+            ),
+            (
+                "deny --advisories --manifest-path=a/Cargo.toml",
+                Command::Deny {
+                    manifest_path: Some("a/Cargo.toml".into()),
+                    advisories: true,
+                },
+            ),
+            ("spdx", Command::Spdx { root: None }),
+            (
+                "spdx --root fixtures/x",
+                Command::Spdx {
+                    root: Some("fixtures/x".into()),
+                },
+            ),
+            ("third-party", Command::ThirdParty { root: None }),
+            (
+                "third-party --root=x",
+                Command::ThirdParty {
+                    root: Some("x".into()),
+                },
+            ),
+            (
+                "notices",
+                Command::Notices {
+                    manifest_path: None,
+                    out: None,
+                },
+            ),
+            (
+                "notices --out target/THIRD-PARTY-NOTICES --manifest-path m/Cargo.toml",
+                Command::Notices {
+                    manifest_path: Some("m/Cargo.toml".into()),
+                    out: Some("target/THIRD-PARTY-NOTICES".into()),
+                },
+            ),
+            ("deny --help", Command::Help),
+            ("notices -h", Command::Help),
+        ] {
+            assert_eq!(parse_real(line), Ok(command), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn the_licence_commands_reject_anything_else() {
+        for (line, error) in [
+            ("deny --fix", UsageError::UnknownOption("--fix".into())),
+            (
+                "deny licenses",
+                UsageError::UnexpectedArgument("licenses".into()),
+            ),
+            (
+                "deny --advisories=yes",
+                UsageError::UnexpectedArgument("--advisories=yes".into()),
+            ),
+            (
+                "deny --advisories --advisories",
+                UsageError::RepeatedOption("--advisories"),
+            ),
+            ("spdx --root", UsageError::MissingValue("--root")),
+            (
+                "spdx --manifest-path x",
+                UsageError::UnknownOption("--manifest-path".into()),
+            ),
+            (
+                "third-party --root a --root b",
+                UsageError::RepeatedOption("--root"),
+            ),
+            ("notices --out", UsageError::MissingValue("--out")),
+            ("notices --out --check", UsageError::MissingValue("--out")),
+            (
+                "notices --help x",
+                UsageError::UnexpectedArgument("x".into()),
+            ),
         ] {
             assert_eq!(parse_real(line), Err(error), "`{line}`");
         }

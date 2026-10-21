@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // The keys RFC-0054 §2.3 step 10 names, declared `Member`.
 use serde::Deserialize;
 use syntropy_config::ConfigSection;

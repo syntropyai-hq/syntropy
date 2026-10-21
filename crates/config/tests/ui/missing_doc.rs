@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // A section and a key without doc comments.
 use serde::Deserialize;
 use syntropy_config::ConfigSection;

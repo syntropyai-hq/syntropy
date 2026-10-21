@@ -157,7 +157,8 @@ pub fn cargo() -> OsString {
 pub const JOBS: &[Entry] = &[
     Entry {
         name: "lint",
-        summary: "the L0 static checks: rustfmt, clippy, the crate dependency rules and CODEOWNERS",
+        summary: "the L0 static checks: rustfmt, clippy, the crate dependency rules, CODEOWNERS and \
+                  the licence policy",
         defined_in: "RFC-0062 §2.3 and §12.4",
         params: &[],
         steps: &[
@@ -188,21 +189,37 @@ pub const JOBS: &[Entry] = &[
                     run: codeowners::step,
                 },
             },
+            // The licence policy of ADR-0018 (RFC-0062 §11.2, §12.2; QUAL-E1-T04). `advisories` is
+            // the only step that needs the network, and it fails closed without it.
+            Step {
+                name: "deny",
+                action: Action::Xtask(&["deny"]),
+            },
+            Step {
+                name: "advisories",
+                action: Action::Xtask(&["deny", "--advisories"]),
+            },
+            Step {
+                name: "spdx",
+                action: Action::Xtask(&["spdx"]),
+            },
+            Step {
+                name: "third-party",
+                action: Action::Xtask(&["third-party"]),
+            },
+            Step {
+                name: "notices",
+                action: Action::Xtask(&["notices"]),
+            },
         ],
         // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
         // further checks to `lint`, such as the `ci/jobs.toml` goldens (QUAL-E1-T07). The row's DCO
         // and PR-title checks need a PR's data, so they are the `dco` and `pr-title` jobs, which are
         // separate required checks (RFC-0062 §2.5).
-        pending: &[
-            Pending {
-                check: "cargo-deny, SPDX headers and the licence manifest",
-                task: "QUAL-E1-T04",
-            },
-            Pending {
-                check: "actionlint and the workflow security lint",
-                task: "QUAL-E1-T09",
-            },
-        ],
+        pending: &[Pending {
+            check: "actionlint and the workflow security lint",
+            task: "QUAL-E1-T09",
+        }],
     },
     Entry {
         name: "dco",
@@ -386,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn lint_runs_rustfmt_clippy_check_deps_and_the_codeowners_check() {
+    fn lint_runs_the_checks_rfc_0062_defines_for_it() {
         let lint = find(JOBS, "lint").expect("lint is registered");
         let commands: Vec<String> = lint.steps.iter().map(|s| s.action.display()).collect();
         assert_eq!(
@@ -396,6 +413,11 @@ mod tests {
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
                 "cargo xtask check-deps",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
+                "cargo xtask deny",
+                "cargo xtask deny --advisories",
+                "cargo xtask spdx",
+                "cargo xtask third-party",
+                "cargo xtask notices",
             ]
         );
     }
@@ -433,7 +455,7 @@ mod tests {
     fn lint_lists_the_checks_later_tasks_add() {
         let lint = find(JOBS, "lint").expect("lint is registered");
         let tasks: Vec<&str> = lint.pending.iter().map(|p| p.task).collect();
-        assert_eq!(tasks, ["QUAL-E1-T04", "QUAL-E1-T09"]);
+        assert_eq!(tasks, ["QUAL-E1-T09"]);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 error: config key `probe.model_wait` needs a `default`: a value, `unset` or `computed("rule")` (RFC-0054 §10.3)
-  --> tests/ui/missing_default.rs:11:5
+  --> tests/ui/missing_default.rs:12:5
    |
-11 |     model_wait: syntropy_config::Duration,
+12 |     model_wait: syntropy_config::Duration,
    |     ^^^^^^^^^^

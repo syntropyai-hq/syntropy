@@ -1,0 +1,7 @@
+# A licence fixture: a scratch crate depends on a CDLA-Permissive-2.0 crate, which ADR-0018 allows.
+# xtask/tests/licences.rs runs the licence checks on it and names the result it expects.
+[workspace]
+resolver = "3"
+members = [
+    "crates/scratch",
+]

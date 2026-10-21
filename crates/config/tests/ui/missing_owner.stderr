@@ -1,5 +1,5 @@
 error: config section `ProbeSection` needs `owner = "RFC-NNNN"`: the RFC that owns its keys (RFC-0054 §5)
- --> tests/ui/missing_owner.rs:8:8
+ --> tests/ui/missing_owner.rs:9:8
   |
-8 | struct ProbeSection {
+9 | struct ProbeSection {
   |        ^^^^^^^^^^^^
