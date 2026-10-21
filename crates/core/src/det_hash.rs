@@ -3,17 +3,26 @@
 //! Hash containers with a fixed-key hasher (RFC-0060 §2.4, rule T3). Owner: RFC-0060.
 //!
 //! Crates reachable from a protocol core or the solver use `BTreeMap` and `BTreeSet`, or
-//! [`DetHashMap`] and [`DetHashSet`], never a `HashMap` with `RandomState`. A `DetHashMap` built by
-//! the same sequence of inserts iterates in the same order in every process. Rule T4 still holds:
-//! nothing whose output reaches a plan, a log entry or a wire frame iterates over a hash container
-//! whose order depends on insertion history. Sort at the boundary.
+//! [`DetHashMap`] and [`DetHashSet`], never a `HashMap` with `RandomState`. What this fixes, and
+//! what it does not:
 //!
-//! [`DetHasher`] is SipHash-1-3 with a fixed all-zero key, implemented here instead of taken from
-//! `std`. The standard library does not promise that its default hasher keeps the same algorithm
-//! across releases, and the simulator's committed regression seeds replay forever (ADR-0600
-//! decision 7), so a toolchain update must not change how a `DetHashMap` iterates. Integers hash
-//! as little-endian bytes, and `usize` and `isize` hash as 64-bit values, so a key hashes the same
-//! on every host. With a fixed key, the hasher gives no protection against keys chosen to collide.
+//! - **Hash values are fixed.** [`DetHasher`] is SipHash-1-3 with a fixed all-zero key,
+//!   implemented here instead of taken from `std`, because the standard library does not promise
+//!   that its default hasher keeps the same algorithm across releases. Integers written through
+//!   the `Hasher` methods hash as little-endian bytes, and `usize` and `isize` as 64-bit values.
+//!   `std` hashes a slice or array of integers as one write of its memory in native byte order,
+//!   so a key hashes the same on every little-endian host. Every Tier 1 target is little-endian;
+//!   a big-endian target would need its own pinned values. The pinned-value test also catches a
+//!   change in `std`'s `Hash` implementations, such as the one for `str`.
+//! - **Iteration order is reproducible only within one build for one target.** The same inserts
+//!   iterate in the same order every time that build runs, so two runs of one simulator build
+//!   agree (ADR-0600 decision 8). The order itself comes from `std`'s `HashMap` internals, which
+//!   differ between targets and can change in any Rust release. Code that needs an order that
+//!   holds across builds, targets or toolchains, including anything a committed simulator seed
+//!   replays (ADR-0600 decision 7) or anything that reaches a plan, a log entry or a wire frame,
+//!   uses `BTreeMap` or `BTreeSet`, or sorts at the boundary (rules T3 and T4).
+//!
+//! With a fixed key, the hasher gives no protection against keys chosen to collide.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
@@ -232,8 +241,8 @@ mod tests {
         }
     }
 
-    /// Pinned values. A change here changes how every `DetHashMap` iterates, and so what a
-    /// replayed simulator seed does: it needs a reason in the change that makes it.
+    /// Pinned values. A change here changes every key's hash on every little-endian host: it
+    /// needs a reason in the change that makes it.
     #[test]
     fn the_hash_of_a_key_is_pinned() {
         assert_eq!(DetState.hash_one(0u64), PINNED_ZERO);
@@ -246,7 +255,7 @@ mod tests {
     const PINNED_STR: u64 = 0xc309_b18c_81a0_b3a8;
 
     #[test]
-    fn integers_hash_the_same_on_every_host() {
+    fn integers_hash_as_little_endian_64_bit_values() {
         let as_bytes = |bytes: &[u8]| {
             let mut hasher = DetHasher::default();
             hasher.write(bytes);
@@ -284,8 +293,10 @@ mod tests {
         assert_eq!(first.finish(), second.finish());
     }
 
+    /// Within one build for one target only: the order comes from `std`'s `HashMap`, which can
+    /// differ between targets and Rust releases (see the module doc).
     #[test]
-    fn the_same_inserts_iterate_in_the_same_order() {
+    fn one_build_iterates_the_same_inserts_in_the_same_order() {
         let build = || {
             let mut map: DetHashMap<u64, u64> = DetHashMap::default();
             for n in 0..1_000u64 {
