@@ -1278,7 +1278,7 @@ Codes are `(Domain::Kernels, n)` and never reused (RFC-0001 §10.4).
 | 10 | `RegisterFailed` | `Capacity` | `register_host` fails (pin limit, WDDM limit) | the tier manager shrinks the pinned arena for that device and reports `Drift` |
 | 11 | `DoorbellTimeout` | `Timeout` | a spin kernel or a device-side wait exceeds `kernels.spin_kernel_max_us`, or the host waits on a device flag beyond the stall threshold | the step fails; the supervisor's stall rules apply |
 | 12 | `GgmlImportFailed` | `Unsupported` | the import probe of §8.3 fails | fall back to ggml-allocated buffers recorded by the tier manager |
-| 13 | `AmxDenied` | `Unsupported` | the OS refuses AMX tile permission | use `X86V4` kernels; record in the profile |
+| 13 | `AmxDenied` | `Unsupported` | the OS refuses AMX tile permission | at `enumerate`, report the `X86V4` class; at `open` under an `X86V4Amx` class, fail and re-probe, never falling back to `X86V4` kernels (§7.3; revised 2026-10-22, ADR-0405 decision 3); record in the profile |
 | 14 | `WorkspaceExceeded` | `Internal` | a prepared op asks for more workspace than `query` declared | a provider bug: the runner fails `Internal` with a diagnostic bundle |
 | 15 | `NoCertifiedCandidate` | `Unsupported` | candidates exist for (op, shape) on a device but none holds a certificate (§6.2) | as code 1; the dashboard says the kernel exists but is uncertified on this device class |
 | 16 | `ProviderPanicked` | `Internal` | a provider-library thunk caught a panic (§10.4) | the provider reports `Sticky`; the runner exits and restarts |

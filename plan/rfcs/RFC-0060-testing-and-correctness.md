@@ -760,7 +760,7 @@ pub struct OpCert     { pub provider: ProviderId, pub class: DeviceClass, pub op
                         pub kernel: Blake3, pub source_key: Blake3 /* ADR-0623 SourceKey */, pub shapes: ShapeClassSet,
                         pub rig: Option<RigDevice> /* ADR-0405: the device and driver the op was certified on */ }
 /// The rig device's identity: `PciInfo`'s vendor and device IDs, else `DeviceInfoExt::api_ids`
-/// (RFC-0010 §1.2), and its driver. `OpCert::rig` is None only for an op certified on a CPU device.
+/// (RFC-0010 §1.2), and its driver. `OpCert::rig` is required for Vulkan-domain ops, which V1 reads, and set wherever the rig has PCI or API IDs. It is None for a CPU device and for a GPU with neither, such as an Apple GPU, until OQ-KB-22 decides what identifies a Metal rig.
 pub struct RigDevice  { pub ids: ApiIds, pub vk_driver: Option<VkDriverId>, pub driver: String }
 pub struct WireCert   { pub family: ArchFamily, pub phase: Phase /* Prefill | Decode */, pub dtype: WireDType, pub numerics: Blake3 }
 pub struct PathCert   { pub family: ArchFamily, pub quant: QuantClass, pub path: ExecPathClass, pub numerics: Blake3, pub report: Blake3 }
