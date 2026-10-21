@@ -25,6 +25,21 @@ pub const SHARED: &[&str] = &["obs", "config"];
 /// through the crate that owns them (RFC-0001 §4.2 rule 2, note of 2026-10-21).
 pub const MACRO_CRATES: &[(&str, &str)] = &[("config", "config-derive")];
 
+/// Rule 2: a crate that named crates of its own layer may depend on, as `(crate, users)`.
+/// `spsc` holds the lock-free SPSC ring of RFC-0001 §8.3, which `io`, `net` and `ipc` all need
+/// although all three sit in layer 1 with it (RFC-0001 §4.2 rule 2, note of 2026-10-22). Such a
+/// crate depends on no workspace crate itself, `core` included; a dev edge to a dev-only crate
+/// stays rule 9's, so its tests can use `testkit`.
+pub const ON_SAME_LAYER: &[(&str, &[&str])] = &[("spsc", &["io", "net", "ipc"])];
+
+/// Rule 2: the crates of its own layer that may depend on `name`, if `name` is such a crate.
+pub fn same_layer_users(name: &str) -> Option<&'static [&'static str]> {
+    ON_SAME_LAYER
+        .iter()
+        .find(|&&(shared, _)| shared == name)
+        .map(|&(_, users)| users)
+}
+
 /// Rule 2: the crate that owns `name`'s macros, if `name` is a macro crate.
 pub fn macro_owner(name: &str) -> Option<&'static str> {
     MACRO_CRATES
@@ -36,8 +51,9 @@ pub fn macro_owner(name: &str) -> Option<&'static str> {
 /// Rule 3 and rule 8 apply to every crate whose name starts with this, `kernels-loader` included.
 pub const PROVIDER_PREFIX: &str = "kernels-";
 
-/// Rule 3: the compute crates, besides every `kernels-*` crate.
-pub const COMPUTE: &[&str] = &["graph", "kernels", "io", "tier", "exec", "sched"];
+/// Rule 3: the compute crates, besides every `kernels-*` crate. `spsc` is here because compute
+/// crates use its ring and it has no tokio (RFC-0001 §4.1, note of 2026-10-22).
+pub const COMPUTE: &[&str] = &["graph", "kernels", "io", "tier", "exec", "sched", "spsc"];
 
 /// Rule 3: workspace crates no compute crate may reach through normal dependencies.
 pub const COMPUTE_MUST_NOT_REACH: &[&str] = &["net", "cluster", "store", "api", "daemon"];
@@ -278,8 +294,9 @@ pub fn is_system_library(needed: &str) -> bool {
             .is_some_and(|rest| rest.starts_with(['-', '.']))
 }
 
-/// Rule 8: crates allowed `unsafe`, besides every `kernels-*` crate.
-pub const UNSAFE_ALLOWED: &[&str] = &["io", "tier", "net", "ipc"];
+/// Rule 8: crates allowed `unsafe`, besides every `kernels-*` crate. `spsc` was added on
+/// 2026-10-22 (RFC-0001 §4.2 rule 8).
+pub const UNSAFE_ALLOWED: &[&str] = &["io", "tier", "net", "ipc", "spsc"];
 
 /// Rule 10: the crates release artefacts are built from: the core binary, and the provider
 /// libraries of the backend modules (rule 7). The check resolves each one's features on its own,
@@ -314,6 +331,11 @@ pub fn named_crates() -> Vec<&'static str> {
             .iter()
             .flat_map(|&(owner, macros)| [owner, macros]),
     );
+    names.extend(
+        ON_SAME_LAYER
+            .iter()
+            .flat_map(|&(shared, users)| std::iter::once(shared).chain(users.iter().copied())),
+    );
     names.extend(COMPUTE);
     names.extend(COMPUTE_MUST_NOT_REACH);
     names.extend(ADR_0012_NO_TOKIO);
@@ -336,6 +358,14 @@ mod tests {
         for provider in ["kernels-cuda", "kernels-loader", "kernels-ggml"] {
             assert!(is_provider(provider) && is_compute(provider) && allows_unsafe(provider));
         }
+    }
+
+    #[test]
+    fn spsc_is_shared_inside_layer_1_allows_unsafe_and_is_compute() {
+        assert_eq!(same_layer_users("spsc"), Some(&["io", "net", "ipc"][..]));
+        assert_eq!(same_layer_users("ipc"), None);
+        assert!(allows_unsafe("spsc"));
+        assert!(is_compute("spsc"));
     }
 
     #[test]
