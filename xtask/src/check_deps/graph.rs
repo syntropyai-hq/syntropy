@@ -24,6 +24,28 @@ pub struct Package {
     /// The native library it declares with the `links` key, if any.
     pub links: Option<String>,
     pub targets: Vec<Target>,
+    /// Its `[features]` table: each feature and the entries it enables, as written (`x`,
+    /// `dep:x`, `x/y`, `x?/y`).
+    pub features: BTreeMap<String, Vec<String>>,
+    /// Its declared dependencies, every kind and platform.
+    pub dependencies: Vec<Dependency>,
+}
+
+/// A dependency as the package declares it.
+#[derive(Debug, Deserialize)]
+pub struct Dependency {
+    /// The package it names.
+    pub name: String,
+    /// The key the manifest gives it when that differs from `name`; feature entries such as
+    /// `x/y` use the key.
+    pub rename: Option<String>,
+}
+
+impl Dependency {
+    /// The key feature entries use for this dependency: the rename, else the package name.
+    pub fn key(&self) -> &str {
+        self.rename.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// One build target of a package, from `cargo metadata`.
@@ -95,6 +117,10 @@ struct RawPackage {
     name: String,
     links: Option<String>,
     targets: Vec<Target>,
+    #[serde(default)]
+    features: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    dependencies: Vec<Dependency>,
 }
 
 #[derive(Deserialize)]
@@ -196,6 +222,8 @@ impl Graph {
                 member,
                 links: raw.links,
                 targets: raw.targets,
+                features: raw.features,
+                dependencies: raw.dependencies,
             })
             .collect();
         Ok(Graph {
@@ -300,6 +328,8 @@ impl Graph {
                 member: true,
                 links: None,
                 targets: Vec::new(),
+                features: BTreeMap::new(),
+                dependencies: Vec::new(),
             })
             .collect();
         packages.extend(externals.iter().map(|name| Package {
@@ -307,6 +337,8 @@ impl Graph {
             member: false,
             links: None,
             targets: Vec::new(),
+            features: BTreeMap::new(),
+            dependencies: Vec::new(),
         }));
         let mut graph = Graph {
             root: PathBuf::from("/fixture"),
@@ -336,6 +368,35 @@ impl Graph {
             graph.edges[from].push(Edge { to, kinds: set });
         }
         graph
+    }
+
+    /// Gives the member `name` a `[features]` table, each feature with its entries, and declared
+    /// dependencies as `(key, package)`, the key being the package name unless renamed.
+    pub fn with_features(
+        mut self,
+        name: &str,
+        features: &[(&str, &[&str])],
+        dependencies: &[(&str, &str)],
+    ) -> Graph {
+        let at = self
+            .member(name)
+            .unwrap_or_else(|| panic!("no member `{name}`"));
+        let package = &mut self.packages[at];
+        package.features = features
+            .iter()
+            .map(|(feature, entries)| {
+                let entries = entries.iter().map(|e| (*e).to_owned()).collect();
+                ((*feature).to_owned(), entries)
+            })
+            .collect();
+        package.dependencies = dependencies
+            .iter()
+            .map(|(key, package)| Dependency {
+                name: (*package).to_owned(),
+                rename: (key != package).then(|| (*key).to_owned()),
+            })
+            .collect();
+        self
     }
 
     /// Sets the `links` key of the package `name`.

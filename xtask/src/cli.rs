@@ -8,6 +8,7 @@
 
 use std::fmt;
 
+use crate::build::{self, Profile};
 use crate::registry::{self, Entry};
 
 pub const USAGE: &str = "\
@@ -21,6 +22,9 @@ Commands:
   check-deps [--manifest-path <path>]
                           check the crate dependency rules of RFC-0001 §4.2 (RFC-0062 §12.1)
                           on this workspace, or on the workspace of <path>; `lint` runs it
+  build --profile <p> [--manifest-path <path>]
+                          build in profile dev, test-release, chaos or release with its test
+                          features, then check the build against the profile (RFC-0062 §4.4)
   help                    print this message
 
 An option is `--name <value>` or `--name=<value>`, given at most once.
@@ -29,7 +33,7 @@ Exit status: 0 when every step passes, 1 when a step fails, 2 on a usage error o
 was not started by `cargo xtask`.";
 
 /// The top-level commands, in the order `USAGE` lists them.
-const COMMANDS: &[&str] = &["ci", "test", "check-deps", "help"];
+const COMMANDS: &[&str] = &["ci", "test", "check-deps", "build", "help"];
 
 /// What the command line asks for. Names and options are resolved against the registry while
 /// parsing, so every [`Command::Run`] names an entry that exists, with options it accepts.
@@ -44,6 +48,12 @@ pub enum Command<'r> {
     },
     /// `check-deps`, on the workspace of `manifest_path` when given, else on this checkout.
     CheckDeps {
+        manifest_path: Option<String>,
+    },
+    /// `build`, in `profile`, of the workspace of `manifest_path` when given, else of this
+    /// checkout.
+    Build {
+        profile: &'static Profile,
         manifest_path: Option<String>,
     },
 }
@@ -130,6 +140,15 @@ pub enum UsageError {
         option: &'static str,
     },
     UnexpectedArgument(String),
+    /// `build` without `--profile`.
+    MissingProfile {
+        valid: Vec<&'static str>,
+    },
+    /// `build --profile` with a name no profile has.
+    UnknownProfile {
+        name: String,
+        valid: Vec<&'static str>,
+    },
 }
 
 impl fmt::Display for UsageError {
@@ -192,6 +211,16 @@ impl fmt::Display for UsageError {
                 write!(f, "option `{option}` is given more than once")
             }
             UsageError::UnexpectedArgument(arg) => write!(f, "unexpected argument `{arg}`"),
+            UsageError::MissingProfile { valid } => write!(
+                f,
+                "`build` needs `--profile <p>`; valid profiles: {}",
+                valid.join(", ")
+            ),
+            UsageError::UnknownProfile { name, valid } => write!(
+                f,
+                "unknown profile `{name}`; valid profiles: {}",
+                valid.join(", ")
+            ),
         }
     }
 }
@@ -216,6 +245,7 @@ pub fn parse<'r>(
         "ci" => parse_run(Kind::Job, rest, jobs),
         "test" => parse_run(Kind::Suite, rest, suites),
         "check-deps" => parse_check_deps(rest),
+        "build" => parse_build(rest),
         other if other.starts_with('-') => Err(UsageError::UnknownOption(other.to_owned())),
         other => Err(UsageError::UnknownCommand(other.to_owned())),
     }
@@ -345,6 +375,59 @@ fn parse_check_deps(args: &[String]) -> Result<Command<'static>, UsageError> {
         }
     }
     Ok(Command::CheckDeps { manifest_path })
+}
+
+/// `build --profile <p> [--manifest-path <path>]` and `build --help`.
+fn parse_build(args: &[String]) -> Result<Command<'static>, UsageError> {
+    const PROFILE: &str = "--profile";
+    const MANIFEST_PATH: &str = "--manifest-path";
+    if let Some((first, rest)) = args.split_first()
+        && matches!(first.as_str(), "-h" | "--help")
+    {
+        no_more(rest)?;
+        return Ok(Command::Help);
+    }
+    let mut profile = None;
+    let mut manifest_path = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        let (option, slot) = match name {
+            PROFILE => (PROFILE, &mut profile),
+            MANIFEST_PATH => (MANIFEST_PATH, &mut manifest_path),
+            _ if arg.starts_with('-') => return Err(UsageError::UnknownOption(name.to_owned())),
+            _ => return Err(UsageError::UnexpectedArgument(arg.clone())),
+        };
+        let value = match inline {
+            Some(value) => value,
+            None => match rest.next() {
+                Some(value) if !value.starts_with('-') => value.as_str(),
+                _ => "",
+            },
+        };
+        if value.is_empty() {
+            return Err(UsageError::MissingValue(option));
+        }
+        if slot.replace(value.to_owned()).is_some() {
+            return Err(UsageError::RepeatedOption(option));
+        }
+    }
+    let Some(name) = profile else {
+        return Err(UsageError::MissingProfile {
+            valid: build::names(),
+        });
+    };
+    let profile = build::find(&name).ok_or_else(|| UsageError::UnknownProfile {
+        name,
+        valid: build::names(),
+    })?;
+    Ok(Command::Build {
+        profile,
+        manifest_path,
+    })
 }
 
 fn no_more(rest: &[String]) -> Result<(), UsageError> {
@@ -549,7 +632,7 @@ mod tests {
         );
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
-            "unknown command `frob`; valid commands: ci, test, check-deps, help"
+            "unknown command `frob`; valid commands: ci, test, check-deps, build, help"
         );
         assert_eq!(
             parse_real("--frob"),
@@ -807,6 +890,62 @@ mod tests {
                 "check-deps --help extra",
                 UsageError::UnexpectedArgument("extra".into()),
             ),
+        ] {
+            assert_eq!(parse_real(line), Err(error), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn build_takes_a_profile_and_an_optional_manifest_path() {
+        let test_release = build::find("test-release").unwrap();
+        for line in [
+            "build --profile test-release",
+            "build --profile=test-release",
+        ] {
+            assert_eq!(
+                parse_real(line),
+                Ok(Command::Build {
+                    profile: test_release,
+                    manifest_path: None
+                }),
+                "`{line}`"
+            );
+        }
+        assert_eq!(
+            parse_real("build --manifest-path a/Cargo.toml --profile release"),
+            Ok(Command::Build {
+                profile: build::find("release").unwrap(),
+                manifest_path: Some("a/Cargo.toml".into())
+            })
+        );
+        assert_eq!(parse_real("build --help"), Ok(Command::Help));
+    }
+
+    #[test]
+    fn build_rejects_a_missing_or_unknown_profile_and_anything_else() {
+        assert_eq!(
+            parse_real("build").unwrap_err().to_string(),
+            "`build` needs `--profile <p>`; valid profiles: dev, test-release, chaos, release"
+        );
+        assert_eq!(
+            parse_real("build --profile pr").unwrap_err().to_string(),
+            "unknown profile `pr`; valid profiles: dev, test-release, chaos, release"
+        );
+        for (line, error) in [
+            ("build --profile", UsageError::MissingValue("--profile")),
+            (
+                "build --profile --manifest-path x",
+                UsageError::MissingValue("--profile"),
+            ),
+            (
+                "build --profile dev --profile=chaos",
+                UsageError::RepeatedOption("--profile"),
+            ),
+            (
+                "build --profile dev --fix",
+                UsageError::UnknownOption("--fix".into()),
+            ),
+            ("build dev", UsageError::UnexpectedArgument("dev".into())),
         ] {
             assert_eq!(parse_real(line), Err(error), "`{line}`");
         }

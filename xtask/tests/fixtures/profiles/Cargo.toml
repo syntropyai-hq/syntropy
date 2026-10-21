@@ -1,0 +1,32 @@
+# A `cargo xtask build` fixture: the workspace's own `[profile.*]` sections, which
+# xtask/tests/build_profiles.rs keeps identical to the root Cargo.toml's, over a release crate,
+# crates that declare test-only features, a dev-only crate that turns one on, and a tool.
+[workspace]
+resolver = "3"
+members = [
+    "crates/cli",
+    "crates/exec",
+    "crates/obs",
+    "crates/testkit",
+    "crates/xtask",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+# Release optimisation with debug assertions on, for L4, L5 diagnosis and L7.
+[profile.test-release]
+inherits = "release"
+debug-assertions = true
+
+# Release optimisation with `fault-injection`, for L8 lab chaos. Its own profile, so its
+# artefacts never land in `target/release`.
+[profile.chaos]
+inherits = "release"

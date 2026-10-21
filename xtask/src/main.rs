@@ -13,12 +13,15 @@
 //! copied `target/`, and it must check the one it was asked to.
 //!
 //! `cargo xtask check-deps` checks the crate dependency rules of RFC-0001 §4.2 ([`check_deps`]).
+//! `cargo xtask build --profile <p>` builds in a test build profile and checks the result
+//! ([`build`]).
 //!
 //! The tool sits outside the crate graph of RFC-0001 §4.1: no crate depends on it, and it depends
 //! on none. `ci/layers.toml` lists it as a tool, and `check-deps` holds it to that.
 
 #![forbid(unsafe_code)]
 
+mod build;
 mod check_deps;
 mod cli;
 mod codeowners;
@@ -108,6 +111,23 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
                 },
             };
             let pass = check_deps::run(&manifest, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Build {
+            profile,
+            manifest_path,
+        } => {
+            let manifest = match manifest_path {
+                Some(path) => PathBuf::from(path),
+                None => match workspace_root(std::env::var_os("CARGO_MANIFEST_DIR")) {
+                    Ok(root) => root.join("Cargo.toml"),
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        return Ok(EXIT_USAGE);
+                    }
+                },
+            };
+            let pass = build::run(&manifest, profile, &mut io::stderr())?;
             Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
         }
     }

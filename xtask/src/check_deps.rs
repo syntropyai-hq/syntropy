@@ -30,7 +30,9 @@
 //! - **Rule 9**: no production crate has a normal or build edge to a dev-only crate (`testkit`,
 //!   `bench`).
 //! - **Rule 10**: the features `cargo tree` resolves for each release crate's own build (normal and
-//!   build edges) turn on no `fault-injection`, `debug-taps` or `guards` of a workspace crate.
+//!   build edges) turn on no `fault-injection`, `debug-taps` or `guards` of a workspace crate. And
+//!   no member's `default` feature, expanded through its `[features]` table, turns one on, its own
+//!   or a member dependency's (QUAL-E3-T04).
 //!
 //! The graph is resolved with every feature on and for every platform, so an optional or
 //! platform-specific dependency counts. Every finding starts with its rule's number, so a CI log
@@ -40,8 +42,8 @@
 mod crate_roots;
 mod elf;
 mod graph;
-mod layers;
-mod policy;
+pub(crate) mod layers;
+pub(crate) mod policy;
 mod release;
 mod rules;
 
@@ -118,6 +120,7 @@ pub fn run(manifest: &Path, log: &mut dyn Write) -> io::Result<bool> {
     };
     findings.extend(rules::check(&graph, layers.as_ref()));
     findings.extend(crate_roots::check(&graph));
+    findings.extend(release::default_features(&graph));
     let mut not_run = Vec::new();
     for (number, outcome) in [
         (7, release::rule_7(manifest, &graph)),

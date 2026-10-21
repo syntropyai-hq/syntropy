@@ -7,3 +7,8 @@ publish.workspace = true
 
 [dependencies]
 syntropy-obs = { path = "../obs", features = ["guards"] }
+
+# A default feature that turns on a member's test-only feature: rule 10's defaults check.
+[features]
+default = ["helpers"]
+helpers = ["syntropy-obs/guards"]
