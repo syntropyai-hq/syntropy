@@ -254,7 +254,7 @@ bitflags! { pub struct HostRegFlags: u8 { const DMA = 1; const MAPPED = 2; } }  
 pub struct Segment { pub reservation: u64, pub offset: Bytes, pub bytes: Bytes, pub handle: u64 }
 ```
 
-*Revised 2026-10-22 (ADR-0405):* `DeviceClass`, `CpuIsa` and `DeviceFeatures` live in `syntropy-core`, and `kernels` re-exports them (COMP-E1-T16). RFC-0010 §1.2 had its own `DeviceClass` with other variants, and now points here. `AppleFamily` is renamed `AppleGpuFamily`, the name `core` already uses. `Npu` comes from RFC-0010. `ProviderDevice` is unchanged.
+*Revised 2026-10-22 (ADR-0405):* `DeviceClass`, `CpuIsa` and `DeviceFeatures` live in `syntropy-core`, and `kernels` re-exports them (PLC-E1-T16). RFC-0010 §1.2 had its own `DeviceClass` with other variants, and now points here. `AppleFamily` is renamed `AppleGpuFamily`, the name `core` already uses. `Npu` comes from RFC-0010. `ProviderDevice` is unchanged.
 
 #### 2.3 Memory domains and device ownership
 
