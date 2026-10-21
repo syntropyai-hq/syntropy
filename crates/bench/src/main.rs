@@ -230,11 +230,14 @@ struct Repo {
     map: sc_map::Map,
     vision: Vec<u32>,
     tasks: std::collections::BTreeMap<String, sc_map::Task>,
+    /// RFC-0061's text, with LF line endings.
     rfc: String,
+    /// Whether RFC-0061 has CRLF line endings on disk, which `render --write` keeps.
+    rfc_crlf: bool,
 }
 
 fn read_repo(root: &Path) -> Result<Repo, String> {
-    let read = |rel: &str| {
+    let read_raw = |rel: &str| {
         std::fs::read_to_string(root.join(rel)).map_err(|e| {
             format!(
                 "cannot read {rel} under {}: {e}; run from the repository root or pass --root",
@@ -242,13 +245,16 @@ fn read_repo(root: &Path) -> Result<Repo, String> {
             )
         })
     };
+    let read = |rel: &str| read_raw(rel).map(|text| sc_map::to_lf(&text));
+    let rfc = read_raw(sc_map::RFC_0061)?;
     let map =
         sc_map::parse(&read(sc_map::SC_MAP)?).map_err(|e| format!("{}: {e}", sc_map::SC_MAP))?;
     Ok(Repo {
         map,
         vision: sc_map::vision_ids(&read(sc_map::VISION)?),
         tasks: sc_map::tasks(&root.join(sc_map::EPICS)),
-        rfc: read(sc_map::RFC_0061)?,
+        rfc_crlf: rfc.contains("\r\n"),
+        rfc: sc_map::to_lf(&rfc),
     })
 }
 
@@ -343,6 +349,12 @@ fn scenarios_render(root: &Path, write: bool) -> u8 {
         eprintln!("{}: current", sc_map::RFC_0061);
         return PASS;
     }
+    // Keep the file's line endings, so a Windows checkout's RFC is not flipped to LF.
+    let updated = if repo.rfc_crlf {
+        updated.replace('\n', "\r\n")
+    } else {
+        updated
+    };
     match std::fs::write(root.join(sc_map::RFC_0061), updated) {
         Ok(()) => {
             eprintln!("wrote {}", sc_map::RFC_0061);

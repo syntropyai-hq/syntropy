@@ -596,7 +596,7 @@ pub fn load(root: &Path, known_rigs: &BTreeSet<String>) -> (Vec<Scenario>, Vec<P
             continue;
         }
         let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+            Ok(text) => crate::sc_map::to_lf(&text),
             Err(e) => {
                 problems.push(problem(format!("cannot read: {e}")));
                 continue;
@@ -690,7 +690,8 @@ pub fn check_versions(root: &Path, base: Option<&str>) -> Result<Vec<Problem>, S
             message,
         };
         let now = match fs::read(&path) {
-            Ok(now) => now,
+            // Compared by content: a Windows checkout has CRLF where the blob has LF.
+            Ok(now) => lf_bytes(now),
             Err(e) => {
                 problems.push(problem(format!(
                     "cannot read, so its `scenario_version` cannot be checked: {e}"
@@ -732,6 +733,7 @@ pub fn check_versions(root: &Path, base: Option<&str>) -> Result<Vec<Problem>, S
             }
             (git(root, &["show", &format!("{last}:{rel}")])?, last, true)
         };
+        let then = lf_bytes(then);
         if now == then {
             continue;
         }
@@ -764,6 +766,22 @@ pub fn check_versions(root: &Path, base: Option<&str>) -> Result<Vec<Problem>, S
 fn is_shallow(root: &Path) -> Result<bool, String> {
     let out = git(root, &["rev-parse", "--is-shallow-repository"])?;
     Ok(String::from_utf8_lossy(&out).trim() == "true")
+}
+
+/// `bytes` with every CRLF as LF (see [`crate::sc_map::to_lf`]).
+fn lf_bytes(bytes: Vec<u8>) -> Vec<u8> {
+    if !bytes.windows(2).any(|w| w == b"\r\n") {
+        return bytes;
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut iter = bytes.iter().peekable();
+    while let Some(&b) = iter.next() {
+        if b == b'\r' && iter.peek() == Some(&&b'\n') {
+            continue;
+        }
+        out.push(b);
+    }
+    out
 }
 
 fn version_of(bytes: &[u8]) -> Option<i64> {

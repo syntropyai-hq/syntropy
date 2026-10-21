@@ -92,6 +92,13 @@ pub struct Map {
     pub not_owner: Vec<NotOwner>,
 }
 
+/// `text` with every CRLF line ending as LF. A Windows checkout with no `.gitattributes` has
+/// CRLF in every text file while the committed blobs keep LF, so every file this crate reads
+/// goes through here, and everything it renders is LF.
+pub fn to_lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
 /// Parses the map.
 pub fn parse(text: &str) -> Result<Map, String> {
     toml::from_str::<Map>(text).map_err(|e| e.to_string())
@@ -147,7 +154,11 @@ pub fn tasks(epics_dir: &Path) -> BTreeMap<String, Task> {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        tasks.extend(tasks_in(&text).into_iter().map(|t| (t.id.clone(), t)));
+        tasks.extend(
+            tasks_in(&to_lf(&text))
+                .into_iter()
+                .map(|t| (t.id.clone(), t)),
+        );
     }
     tasks
 }

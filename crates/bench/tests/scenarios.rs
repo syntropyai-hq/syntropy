@@ -437,6 +437,52 @@ fn an_unreadable_scenario_file_is_reported() {
     );
 }
 
+/// A Windows checkout with no `.gitattributes` has CRLF line endings in every text file, while
+/// the committed blobs keep LF. `check` reads through that, the version rule compares the file
+/// with its blob by content, `render` prints LF, and `render --write` keeps the RFC's CRLF.
+#[test]
+fn a_crlf_checkout_checks_and_renders() {
+    let repo = Repo::with_map("crlf", &[1, 2]);
+    repo.write(SCENARIO_PATH, SCENARIO);
+    let _ = repo.run(&["render", "--write"]);
+    repo.commit_as_base();
+    for rel in [
+        "plan/00-vision-and-scope.md",
+        EPICS_PATH,
+        sc_map::SC_MAP,
+        sc_map::RFC_0061,
+        SCENARIO_PATH,
+    ] {
+        let text = fs::read_to_string(repo.root.join(rel)).expect(rel);
+        repo.write(rel, &text.replace('\n', "\r\n"));
+    }
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    // A map edit on the CRLF checkout makes the table stale, and rendering keeps CRLF.
+    let map = fs::read_to_string(repo.root.join(sc_map::SC_MAP)).expect("map");
+    repo.write(sc_map::SC_MAP, &map.replace("≤ 1.05×", "≤ 1.10×"));
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("section is stale"),
+        "{}",
+        stderr(&output)
+    );
+    let render = repo.run(&["render", "--write"]);
+    assert!(render.status.success(), "{}", stderr(&render));
+    let rfc = repo.rfc();
+    assert!(rfc.contains("≤ 1.10×"));
+    assert!(
+        !rfc.replace("\r\n", "").contains('\n'),
+        "render --write left a bare LF in a CRLF file"
+    );
+    let output = repo.run(&["check"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let printed = repo.run(&["render"]);
+    assert!(!String::from_utf8_lossy(&printed.stdout).contains('\r'));
+}
+
 /// The checked-in map covers every success criterion, its owners are real tasks, and
 /// RFC-0061 §4.2's table is current. `lint` checks the same on every change; this keeps
 /// `cargo test` honest too.
