@@ -1115,6 +1115,8 @@ Chunking hides the 4090 stage and the hop behind the Strix's compute, which domi
 | M3 | cross-node TP (one-shot and ring) and EP; intra-node TP with P2P verification; step descriptors and verified local router; in-place `Relink` and `ExtendShard` (with RFC-0033); relayed token-return hops; throughput mode with multiple steps in flight; orphan adoption by re-plan |
 | M4 | validation above 16 members; prefill/decode disaggregation decision (open question 1); the optional quorum mode, only if the model checker or the simulator finds a heal that cannot be repaired |
 
+**Note, 2026-10-22 (DIST-E10-T08).** "Every RT-DIST scenario" in the M2 row means each property in the Testing table's "Election safety and liveness" row, each a named case of the model check. The run on every change to `cluster` is DIST-E10-T09, which needs QUAL-E1-T07's change detection. Until then the default tests run a bounded 3-node configuration, and `cargo xtask test election-model` runs the full check.
+
 ## Open questions
 
 1. **Prefill/decode disaggregation.** In example (c1), staggered prefill takes about 22 s for a 4K prompt, bounded by the Strix iGPU's compute (§Performance).
