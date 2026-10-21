@@ -49,13 +49,27 @@ impl Duration {
     }
 
     /// `n` milliseconds.
+    ///
+    /// # Panics
+    ///
+    /// If the span exceeds 2^64 - 1 nanoseconds. In a `const` item that is a compile error.
     pub const fn from_millis(n: u64) -> Self {
-        Self(Nanos(n * MS))
+        match n.checked_mul(MS) {
+            Some(nanos) => Self(Nanos(nanos)),
+            None => panic!("the duration is longer than 2^64 - 1 nanoseconds"),
+        }
     }
 
     /// `n` seconds.
+    ///
+    /// # Panics
+    ///
+    /// If the span exceeds 2^64 - 1 nanoseconds. In a `const` item that is a compile error.
     pub const fn from_secs(n: u64) -> Self {
-        Self(Nanos(n * S))
+        match n.checked_mul(S) {
+            Some(nanos) => Self(Nanos(nanos)),
+            None => panic!("the duration is longer than 2^64 - 1 nanoseconds"),
+        }
     }
 
     /// The span as the core unit type.
@@ -227,6 +241,16 @@ mod tests {
         assert_eq!(Duration::from_secs(90).to_string(), "1m30s");
         assert_eq!(Duration::ZERO.to_string(), "0s");
         assert_eq!(Duration::from_nanos(86_400 * S + 1).to_string(), "1d1ns");
+    }
+
+    #[test]
+    fn constructors_panic_rather_than_wrap() {
+        assert_eq!(
+            Duration::from_secs(u64::MAX / S).nanos(),
+            Nanos(u64::MAX / S * S)
+        );
+        assert!(std::panic::catch_unwind(|| Duration::from_secs(u64::MAX / S + 1)).is_err());
+        assert!(std::panic::catch_unwind(|| Duration::from_millis(u64::MAX)).is_err());
     }
 
     #[test]
