@@ -14,8 +14,9 @@
 #   lists the epoch changes between two revisions for the nightly report.
 #
 # Every key below is required unless marked optional, and no other key is allowed. Values are
-# non-empty strings with no surrounding whitespace, unless shown otherwise. Each list element is
-# identified by its `slot`, unique within its list.
+# non-empty strings on one line, with no surrounding whitespace and no control character, unless
+# shown otherwise; a multi-line string would carry the checkout's line endings into the
+# fingerprint. Each list element is identified by its `slot`, unique within its list.
 #
 #   [[rig]]
 #   id = "R-ADA"                     # RFC-0061 §6.2's name: `R-` and upper-case words

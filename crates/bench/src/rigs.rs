@@ -263,9 +263,14 @@ impl Inventory {
 
 impl Rig {
     /// What makes the record invalid, if anything: an ID not of the form `R-NAME`, an empty
-    /// string or one with surrounding whitespace, a zero size or speed, no memory, or two
-    /// elements of one list with the same `slot`. A record must be valid before it is
-    /// fingerprinted or compared, because elements are identified by their slot.
+    /// string or one with surrounding whitespace, a control character such as a line break in a
+    /// value or a `bios.other` name, a zero size or speed, no memory, or two elements of one list
+    /// with the same `slot`. A record must be valid before it is fingerprinted or compared,
+    /// because elements are identified by their slot.
+    ///
+    /// The control-character rule keeps the fingerprint independent of line endings: TOML keeps
+    /// the file's own line breaks inside a multi-line string, so a value that spans lines would
+    /// hash differently from an LF and a CRLF checkout of the same file.
     pub fn problems(&self) -> Vec<String> {
         let mut problems = Vec::new();
         if !is_rig_id(&self.id) {
@@ -304,12 +309,30 @@ impl Rig {
             }
         }
         for (field, value) in leaves(&self.node()) {
-            if let Leaf::Str(text) = value
-                && (text.is_empty() || text.trim() != text)
-            {
+            let Leaf::Str(text) = value else {
+                continue;
+            };
+            if text.contains(char::is_control) {
+                problems.push(format!(
+                    "`{field}` is `{}`, with a control character such as a line break; a value \
+                     is one line of text",
+                    text.escape_debug()
+                ));
+            } else if text.is_empty() || text.trim() != text {
                 problems.push(format!(
                     "`{field}` is `{text}`; a value is non-empty, with no surrounding whitespace"
                 ));
+            }
+        }
+        if let Some(bios) = &self.bios {
+            for name in bios.other.keys() {
+                if name.contains(char::is_control) {
+                    problems.push(format!(
+                        "`bios.other` has the setting name `{}`, with a control character such \
+                         as a line break",
+                        name.escape_debug()
+                    ));
+                }
             }
         }
         problems
@@ -844,6 +867,39 @@ other = { c_states = "on" }
         let error = Inventory::parse(&twice).unwrap_err().to_string();
         assert!(
             error.contains("rig `R-TEST`: the ID is used twice"),
+            "{error}"
+        );
+    }
+
+    /// Review B1 on #1568: a multi-line value would take the checkout's line endings into the
+    /// fingerprint, so a control character anywhere in a value or a setting name is refused.
+    #[test]
+    fn a_control_character_in_a_value_or_a_setting_name_is_refused() {
+        for (to, ending) in [
+            ("power_plan = \"\"\"\nbalanced\nprofile\"\"\"", "\n"),
+            ("power_plan = \"\"\"\nbalanced\nprofile\"\"\"", "\r\n"),
+            ("power_plan = '''\nbalanced\nprofile'''", "\n"),
+            ("power_plan = '''\nbalanced\nprofile'''", "\r\n"),
+            ("power_plan = \"balanced\\u0000profile\"", "\n"),
+            ("power_plan = \"balanced\\tprofile\"", "\n"),
+        ] {
+            let text = RIG
+                .replacen("power_plan = \"performance\"", to, 1)
+                .replace('\n', ending);
+            let error = Inventory::parse(&text).unwrap_err().to_string();
+            assert!(
+                error.contains("`power_plan` is `") && error.contains("with a control character"),
+                "{to:?} with {ending:?}: {error}"
+            );
+        }
+        let text = RIG.replacen(
+            "other = { c_states = \"on\" }",
+            "other = { \"c\\nstates\" = \"on\" }",
+            1,
+        );
+        let error = Inventory::parse(&text).unwrap_err().to_string();
+        assert!(
+            error.contains("the setting name `c\\nstates`, with a control character"),
             "{error}"
         );
     }

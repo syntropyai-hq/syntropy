@@ -328,6 +328,47 @@ fn rigs_check_passes_valid_inventories_and_fails_invalid_ones() {
     }
 }
 
+/// Review B1 on #1568, as reproduced: a multi-line `power_plan` in an LF and in a CRLF copy of
+/// the fixture would fingerprint differently, so `rigs check` refuses both. Without such a
+/// value, the CRLF copy keeps every golden fingerprint.
+#[test]
+fn a_multi_line_value_fails_the_check_whatever_the_line_endings() {
+    let text = std::fs::read_to_string(data("inventory.toml")).unwrap();
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rigs-line-endings");
+    std::fs::create_dir_all(&dir).unwrap();
+    let multi_line = text.replacen(
+        "power_plan = \"performance\"",
+        "power_plan = \"\"\"\nbalanced\nprofile\"\"\"",
+        1,
+    );
+    assert_ne!(multi_line, text);
+    for (name, body) in [
+        ("lf.toml", multi_line.clone()),
+        ("crlf.toml", multi_line.replace('\n', "\r\n")),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        let (code, _, err) = bench(&["rigs", "check", "--file", path.to_str().unwrap()]);
+        assert_eq!(code, Some(1), "{name}: {err}");
+        assert!(
+            err.contains("rig `R-FIXTURE-A`: `power_plan` is `"),
+            "{name}: {err}"
+        );
+        assert!(err.contains("with a control character"), "{name}: {err}");
+    }
+    let crlf = Inventory::parse(&text.replace('\n', "\r\n")).unwrap();
+    let found: Vec<(&str, String)> = crlf
+        .rigs
+        .iter()
+        .map(|rig| (rig.id.as_str(), rig.fingerprint().0.to_string()))
+        .collect();
+    let golden: Vec<(&str, String)> = GOLDEN
+        .iter()
+        .map(|(id, hex)| (*id, (*hex).to_owned()))
+        .collect();
+    assert_eq!(found, golden);
+}
+
 #[test]
 fn rigs_fingerprint_prints_one_line_per_rig() {
     let (code, out, err) = bench(&[
