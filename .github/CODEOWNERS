@@ -17,6 +17,8 @@
 /.github/                       @devdaviddr @xunholy
 /ci/                            @devdaviddr @xunholy
 /release-please-config.json     @devdaviddr @xunholy
+/.release-please-manifest.json  @devdaviddr @xunholy
+/version.txt                    @devdaviddr @xunholy
 /deny.toml                      @devdaviddr @xunholy
 /supply-chain/                  @devdaviddr @xunholy
 /governance/                    @devdaviddr @xunholy

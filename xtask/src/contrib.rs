@@ -269,8 +269,8 @@ pub fn has_breaking_footer(text: &str) -> bool {
 /// footer's separator. That covers a subject line, a footer such as `feat!: …` (release-please
 /// splits footers that look like commits into commits of their own) and a nested commit's header.
 /// The type is what the parser takes (`@conventional-commits/parser` v0.4.1, `type()`): any run of
-/// characters up to a paren, its whitespace, a newline, `!` or `:`, so `feat2`, `a-b` and
-/// non-ASCII types count. Leading spaces and list markers are skipped, which errs towards a
+/// characters up to a paren, its whitespace, a newline, `!` or `:`, so `feat2`, `a-b`, `-` and
+/// non-ASCII types count. The line is also read with list markers skipped, which errs towards a
 /// marker; prose such as `Note: …` has no `!` before its colon.
 pub fn is_breaking_header(line: &str) -> bool {
     /// The parser's whitespace: ZWNBSP, tab, vertical tab, form feed, space and no-break space.
@@ -290,22 +290,31 @@ pub fn is_breaking_header(line: &str) -> bool {
                 | '\u{feff}'
         )
     }
-    let line = line.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '-' | '>'));
-    let word = line.find(ends_type).unwrap_or(line.len());
-    if word == 0 {
-        return false;
-    }
-    let mut rest = &line[word..];
-    if let Some(scope) = rest.strip_prefix('(') {
-        let Some(close) = scope.find(')') else {
-            return false;
-        };
-        if scope[..close].contains('(') {
+    /// The grammar on one candidate: a type, an optional `(scope)`, then `!:` or `! #`.
+    fn header(line: &str) -> bool {
+        let word = line.find(ends_type).unwrap_or(line.len());
+        if word == 0 {
             return false;
         }
-        rest = &scope[close + 1..];
+        let mut rest = &line[word..];
+        if let Some(scope) = rest.strip_prefix('(') {
+            let Some(close) = scope.find(')') else {
+                return false;
+            };
+            if scope[..close].contains('(') {
+                return false;
+            }
+            rest = &scope[close + 1..];
+        }
+        rest.starts_with("!:") || rest.starts_with("! #")
     }
-    rest.starts_with("!:") || rest.starts_with("! #")
+    // `*`, `-` and `>` are list markers to a reader but a whole type to the parser (`-!: …` is a
+    // breaking footer), so the line is read both with only its leading whitespace trimmed and
+    // with the markers stripped too, and either match counts.
+    let trimmed = line.trim_start();
+    let stripped =
+        trimmed.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '-' | '>'));
+    header(trimmed) || header(stripped)
 }
 
 /// The messages release-please reads out of one message. `splitMessages()` cuts each

@@ -84,6 +84,8 @@ pub const CLASSES: &[PathClass] = &[
             "supply-chain/audits.toml",
             "governance/delegations.toml",
             "governance/maintainers.toml",
+            "version.txt",
+            ".release-please-manifest.json",
         ],
     },
     PathClass {

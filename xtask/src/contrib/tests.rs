@@ -689,6 +689,10 @@ fn breaking_headers_follow_the_parser_grammar() {
         "fé!: a non-ASCII type",
         "`feat!: x` quoted, which the parser reads as a type with a backtick",
         "feat! #42 as a footer with the hash separator",
+        "-!: a list marker as the whole type",
+        ">!: a quote marker as the whole type",
+        "*!: a star as the whole type",
+        "- feat!: a listed header",
     ] {
         assert!(is_breaking_header(line), "{line}");
     }
@@ -822,4 +826,25 @@ fn text_spliced_around_a_nested_commit_is_read_as_release_please_joins_it() {
         ["a\nBEGIN_NESTED_COMMITb\nEND_NESTED_COMMITc", "a\nc", "b\n"]
     );
     assert_eq!(release_messages("no nested commit"), ["no nested commit"]);
+}
+
+#[test]
+fn a_list_marker_as_the_whole_type_needs_the_label() {
+    // The third review's probes: `-`, `>` and `*` are each a complete type to the parser.
+    for (fixture, sha) in [
+        (fixture!("commits-footer-dash-type.json"), "888888888888"),
+        (fixture!("commits-footer-quote-type.json"), "999999999999"),
+        (fixture!("commits-nested-star-type.json"), "aaaaaaaaaaab"),
+    ] {
+        let problems = title_problems(
+            fixture!("event-plain.json"),
+            fixture,
+            fixture!("label-events-none.http"),
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains(&format!("a `!` header in the body of commit {sha}")),
+            "{problems:?}"
+        );
+    }
 }
