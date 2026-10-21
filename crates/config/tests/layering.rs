@@ -844,7 +844,10 @@ fn snapshots_swap_whole() {
         let old = shared.replace(snapshot(n));
         assert_eq!(int(&old, "t.a"), Some(n - 1));
         let every_reader_read = reads.iter().all(|r| r.load(Ordering::Relaxed) >= MIN_READS);
-        if n >= MIN_SWAPS && every_reader_read {
+        // A reader stops only when `done` is set, or when it panics: stop swapping at once and
+        // let the join below report its panic.
+        let a_reader_died = readers.iter().any(std::thread::JoinHandle::is_finished);
+        if (n >= MIN_SWAPS && every_reader_read) || a_reader_died {
             break;
         }
         assert!(
@@ -859,6 +862,7 @@ fn snapshots_swap_whole() {
             .expect("a reader thread panicked: its message above says what it saw");
     }
     assert_eq!(int(&shared.load(), "t.d"), Some(n));
+    assert!(n >= MIN_SWAPS, "the writer stopped after {n} swaps");
 }
 
 #[test]
