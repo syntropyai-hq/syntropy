@@ -27,6 +27,12 @@
 //! `collect_seq` over a filtered iterator does, and the encoder then returns
 //! [`EncodeError::NotDeterministic`] rather than send it.
 //!
+//! **The decoder is not that strict.** It accepts non-shortest integers, indefinite lengths and
+//! tags in front of a known field, so two different byte strings can decode to the same value.
+//! Anything that hashes, signs or compares a message, such as the event log's `event_bytes`
+//! (RFC-0032 §6.1), must re-encode the decoded value with [`to_cbor`], never reuse the bytes it
+//! received.
+//!
 //! **Evolution within a major** (ADR-0305 item 3): decoders ignore map keys they don't know, so a
 //! field a newer build adds, with `#[serde(default)]`, does not stop an older build reading the
 //! message. Types never use `deny_unknown_fields`.
