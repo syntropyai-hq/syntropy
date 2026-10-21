@@ -3,7 +3,7 @@
 - Status: Draft
 - Area: quality, performance assurance and release engineering
 - Depends on: RFC-0001 (§4, §5.6, §5.8, §16), RFC-0060, RFC-0061, RFC-0040, RFC-0052, RFC-0034; ADR-0001, ADR-0002, ADR-0005, ADR-0014, ADR-0018, ADR-0019, ADR-0020, ADR-0021; ADR-0620, ADR-0621, ADR-0622, ADR-0623, ADR-0624
-- Revised: 2026-10-20 (the dispatcher and release Apps, environment rules, fork-run timing, `cargo vet` from M1, build and sign separation, security releases, vulnerability handling, the organisation baseline, agent pipeline security, recurring operations, storage retention)
+- Revised: 2026-10-20 (the dispatcher and release Apps, environment rules, fork-run timing, `cargo vet` from M1, build and sign separation, security releases, vulnerability handling, the organisation baseline, agent pipeline security, recurring operations, storage retention); 2026-10-22 (§4.4: the `release` panic strategy from RFC-0040 §10.4, and the first profile named `dev` in RFC-0060 §1.3 too)
 - Expanded by: RFC-0052 (installers and the update client consume the artefacts and manifests this pipeline produces), RFC-0034 (key hierarchy behind the signing steps)
 - Date: 2026-10-19
 
@@ -288,11 +288,13 @@ A PR whose `pr`-profile build succeeds but whose code fails to compile for anoth
 | `test-release` | `release` + debug assertions | `fault-injection`, `debug-taps`, `guards` | L4, L5 diagnosis, L7 (RFC-0060 §1.3) |
 | `chaos` | `release` | `fault-injection` | L8 lab chaos |
 | `pr` | `release` optimisation with `lto = "thin"` and `codegen-units = 16`, so links stay cacheable and fast | none | PR builds and PR† jobs: both the head and the merge base are built in this profile, so the gate compares like with like |
-| `release` | `release` with `lto = "fat"` and `codegen-units = 1`; the panic strategy RFC-0052 fixes | none | everything shipped, nightly and RC benchmarks, RC parity |
+| `release` | `release` with `lto = "fat"` and `codegen-units = 1`; `panic = "unwind"`, cargo's default, which RFC-0040 §10.4's `catch_unwind` at the provider boundary needs (corrected 2026-10-22: this cell said "the panic strategy RFC-0052 fixes", and RFC-0052 fixes none) | none | everything shipped, nightly and RC benchmarks, RC parity |
 
 The L0 check fails a `release` artefact whose build metadata lists a test feature. A weekly check runs the planted regressions of RFC-0061 "Testing and validation" item 2 on both `pr` and `release` builds of the same commits. If the gate's verdicts differ, the `pr` profile no longer represents `release` for gating, and that fails the check. Clean and warm build times for every profile are measured at M0 (QUAL-E16-T02), and the `build-*` budgets are set from them.
 
 *Note, 2026-10-21 (QUAL-E3-T04).* `cargo xtask build --profile <p>` builds `dev`, `test-release`, `chaos` and `release` from the cargo profiles in the workspace `Cargo.toml`, and checks that every unit of a workspace crate has the profile's debug assertions and no other test feature. `dev` and `test-release` build the whole workspace. `chaos` leaves out the dev-only crates and tools of `ci/layers.toml`, because `testkit` may turn other test features on in the crates it depends on. `release` builds each release crate on its own, as `check-deps` rule 10 resolves it. A test feature is passed only where a crate declares it, so `guards` has no effect until QUAL-E3-T11 declares it. Two points are left for the maintainers. RFC-0060 §1.3 calls the first profile `test`, while this table calls it `dev`, which is cargo's name. RFC-0052 does not fix the panic strategy yet, so `release` keeps cargo's default, unwind, which RFC-0040 §10's `catch_unwind` at the provider boundary needs.
+
+*Note, 2026-10-22 (#1556).* Both points the note above leaves for the maintainers follow from existing text, so they are corrected rather than decided. The `release` row now names `panic = "unwind"`, which RFC-0040 §10.4's `catch_unwind` needs. RFC-0060 §1.3 now calls the first profile `dev`, as this table does.
 
 #### 4.5 Size report
 

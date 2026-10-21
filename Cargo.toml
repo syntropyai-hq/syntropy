@@ -75,9 +75,8 @@ zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 # `cargo xtask check-deps` rule 10 checks. xtask/tests/build_profiles.rs keeps its fixtures'
 # copy of these sections identical to this one. The `pr` profile is QUAL-E16-T21's.
 
-# Everything shipped. The panic strategy stays cargo's default, unwind: RFC-0062 §4.4 defers it
-# to RFC-0052, which does not fix one yet, and RFC-0040 §10 catches panics at the provider
-# boundary.
+# Everything shipped. The panic strategy is cargo's default, unwind, which RFC-0040 §10.4's
+# `catch_unwind` at the provider boundary needs (RFC-0062 §4.4).
 [profile.release]
 lto = "fat"
 codegen-units = 1
