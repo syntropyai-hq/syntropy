@@ -4,17 +4,24 @@ The epic files are the source of truth. Each epic becomes an issue of type
 Epic, each task an issue of type Task and a sub-issue of its epic, and each
 task's dependencies, the edges depcheck.py reads from its "Depends on" cell,
 become native "blocked by" links; a link between two synced issues that the
-plan no longer has is removed. All of them go on one public project board
-linked to the repository. Running the script again overwrites the title,
-body, labels, milestone and type of any issue whose generated content
-changed, and leaves alone everything people set on the board: status,
-assignees, comments and open or closed state.
+plan doesn't have is removed, including one a person added by hand. All of
+them go on one public project board linked to the repository. Running the
+script again overwrites the title, body, labels, milestone and type of any
+issue whose generated content changed, and leaves alone status, assignees,
+comments and open or closed state.
 
 The script adopts an issue only if its body carries the task marker and the
 account running the script opened it; markers on anyone else's issues are
 counted and ignored, and two adoptable issues with the same ID stop the run
 before any write. Synced issues whose task or epic has left the plan are
 listed as orphans and left open.
+
+A run that writes first fetches origin's main branch, and refuses to start
+if the plan inputs (the epic files, and sizing.py, which turns them into
+labels) differ from it. A run from an out-of-date checkout would otherwise
+undo newer issue text and links. Only those inputs are compared, not HEAD,
+so a branch that changes only the other tools can still run. --dry-run
+skips the check.
 
     python3 gh_sync.py --dry-run                       # what would change
     python3 gh_sync.py --banned FILE --phase setup     # labels, milestones, issue type, project, its README, views
@@ -52,6 +59,10 @@ import roadmap  # noqa: E402
 TOOLS_DIR = Path(__file__).resolve().parent
 PLAN_DIR = TOOLS_DIR.parent.parent
 REPO_ROOT = PLAN_DIR.parent
+# What the script reads from the plan: the epic files (directly and through
+# epics.py, depcheck.py and sizing.py), and sizing.py's rules for size and
+# maintainer labels. Paths are relative to the repository root.
+PLAN_INPUTS = ("plan/implementation/epics", "plan/implementation/tools/sizing.py")
 
 PROJECT_TITLE = "Syntropy"
 MARKER = "syntropy-task"
@@ -237,6 +248,27 @@ def load_epics():
             elif cur and line.startswith("- "):
                 cur["meta"].append(re.sub(r"^\*\*(.+?)[:.]\*\*\s*", r"\1: ", line[2:].strip()))
     return out
+
+
+def check_fresh(root=REPO_ROOT):
+    """Stop unless the plan inputs in this checkout match a freshly fetched
+    origin/main. The working tree is compared, so uncommitted edits count."""
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+
+    fetch = git("fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main")
+    if fetch.returncode:
+        raise SystemExit("could not fetch origin's main branch, so the plan inputs can't "
+                         f"be checked; nothing was written: {fetch.stderr.strip()[:300]}")
+    diff = git("diff", "--name-only", "origin/main", "--", *PLAN_INPUTS)
+    if diff.returncode:
+        raise SystemExit(f"git diff against origin/main failed: {diff.stderr.strip()[:300]}")
+    changed = [line for line in diff.stdout.splitlines() if line]
+    if changed:
+        raise SystemExit(f"{len(changed)} plan input(s) differ from origin/main: "
+                         f"{', '.join(changed)}. Nothing was written. Run from an up-to-date "
+                         f"main, or use --dry-run to see what this checkout would change.")
+    print("plan inputs match origin/main")
 
 
 def load_sizes():
@@ -567,6 +599,8 @@ def main():
     args = ap.parse_args()
     if not args.dry_run and not (args.banned and args.banned.is_file()):
         ap.error("--banned FILE is required unless --dry-run")
+    if not args.dry_run:
+        check_fresh()
 
     records, deps = plan_graph()
     epic_map, sizes = load_epics(), load_sizes()
