@@ -349,7 +349,11 @@ mod tests {
         let mut command = Action::Cargo(&["syntropy-xtask-no-such-subcommand"]).command();
         command.stderr(std::process::Stdio::null());
         let reason = outcome(&mut command, "cargo syntropy-xtask-no-such-subcommand").unwrap_err();
-        assert!(reason.contains("exit status"), "{reason}");
+        // `ExitStatus` prints as "exit status: N" on Unix and "exit code: N" on Windows.
+        assert!(
+            reason.contains("exit status") || reason.contains("exit code"),
+            "{reason}"
+        );
     }
 
     #[test]
