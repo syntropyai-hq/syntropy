@@ -438,7 +438,7 @@ RFC-0034 owns the key hierarchy: which keys exist, their roots, rotation and rev
 | Rule | Check |
 |---|---|
 | Squash merge only; the PR title becomes the commit message | branch protection |
-| The PR title is a conventional commit: `type(scope): subject`, with `type` ∈ {feat, fix, perf, refactor, docs, test, build, ci, chore, revert} and `scope` a crate name or area | `pr-title` required check |
+| The PR title is a conventional commit: `type(scope): subject`, with `type` ∈ {feat, fix, perf, refactor, docs, test, build, ci, chore, revert}. The scope may be left out, as in `feat!: x`; when it is given, it is a crate name, an area, or `plan` (the design documents), `deps` (dependency updates) or `release` (release PRs) (revised 2026-10-21) | `pr-title` required check |
 | A breaking marker (`!` or a `BREAKING CHANGE:` footer) requires the label `semver-major-approved`, applied only by a maintainer | `pr-title` check |
 | Every commit carries a DCO `Signed-off-by` matching its author (ADR-0018 §2). Agent-authored commits are treated like any other, with the same single check and no separate rule | `dco` required check |
 | Tags `v*` are created only by release-please, acting as the release App; creating, updating or deleting a `v*` tag as anyone else is rejected | tag ruleset on `refs/tags/v*` (restrict creations, updates and deletions), whose only bypass actor is the release App |
