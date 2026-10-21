@@ -1,9 +1,12 @@
+<!-- Translated copies: README.zh-CN.md, README.ja.md, README.de.md, README.fr.md, README.es.md and README.pt-BR.md. Update them in the same change. -->
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/media/logo-dark.svg">
     <img src="docs/media/logo-light.svg" alt="Syntropy" width="360">
   </picture>
 </p>
+
+<p align="center"><b>English</b>&emsp;<a href="README.zh-CN.md">简体中文</a>&emsp;<a href="README.ja.md">日本語</a>&emsp;<a href="README.de.md">Deutsch</a>&emsp;<a href="README.fr.md">Français</a>&emsp;<a href="README.es.md">Español</a>&emsp;<a href="README.pt-BR.md">Português</a></p>
 
 <h3 align="center">Run one large model across every GPU, memory tier and machine you own</h3>
 
