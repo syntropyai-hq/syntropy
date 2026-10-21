@@ -304,9 +304,23 @@ fn a_breaking_header_in_a_commit_override_needs_the_label() {
         problems[0].contains("a `!` header in the PR body's commit override"),
         "{problems:?}"
     );
-    // Outside an override section, a `!` line in the body is prose.
+    // Outside an override section the body is still read as a commit message, as the squash
+    // setting `PR_BODY` would make it one, so a breaking header there counts too.
     let event = r#"{"pull_request": {"title": "feat(core): add the widget", "labels": [], "commits": 3,
-        "body": "An example title:\nfeat(core)!: drop the widget\n"}}"#;
+        "body": "What this changes.\n\nfeat(core)!: drop the widget\n"}}"#;
+    let problems = title_problems(
+        event,
+        fixture!("commits-signed-off.json"),
+        fixture!("label-events-none.http"),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("a `!` header in the PR body (a footer or a nested commit)"),
+        "{problems:?}"
+    );
+    // Prose with no `!` before its first colon is not a header.
+    let event = r#"{"pull_request": {"title": "feat(core): add the widget", "labels": [], "commits": 3,
+        "body": "Note: this keeps the API.\nWow, it works!\n"}}"#;
     let problems = title_problems(
         event,
         fixture!("commits-signed-off.json"),

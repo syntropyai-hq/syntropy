@@ -499,6 +499,10 @@ pub fn pr_title(
         has_breaking_header(section) || section.lines().any(|line| has_breaking_bang(line.trim()))
     }) {
         markers.push("a `!` header in the PR body's commit override".to_owned());
+    } else if has_breaking_header(&pr.body) {
+        // The body is read as a commit message too, as the squash setting `PR_BODY` would make
+        // it one, so a breaking header or nested commit anywhere in it is a marker.
+        markers.push("a `!` header in the PR body (a footer or a nested commit)".to_owned());
     }
     for value in release_as_values(&pr.body) {
         if is_major_release(&value, current_major) {
