@@ -4,16 +4,16 @@ State:	R (running)
 Tgid:	4242
 Pid:	4242
 PPid:	4200
-Uid:	1000	1000	1000	1000
-Gid:	1000	1000	1000	1000
-Groups:	4 24 27 1000 
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+Groups:	0 1 2 3 4 6 10 11 20 26 27 
 VmLck:	       0 kB
 VmPin:	       0 kB
 Threads:	1
 CapInh:	0000000000000000
 CapPrm:	00000000a80425fb
 CapEff:	00000000a80425fb
-CapBnd:	000001ffffffffff
+CapBnd:	00000000a80425fb
 CapAmb:	0000000000000000
 NoNewPrivs:	0
 Seccomp:	2

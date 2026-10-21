@@ -1,6 +1,7 @@
 # Fixture: Raspberry Pi 5
 
-These files are hand-written, not captured from a real machine. They follow the formats the
+The values are hand-chosen, not captured from a real machine, and `../generate.py` writes the
+files from them. They follow the formats the
 Linux kernel uses for each file, with values chosen to be realistic for the hardware described,
 from public specifications of the parts named. Only the files E1 reads are present, plus a few
 neighbouring fields so the parsers see real-looking files. The tree mirrors the real paths:

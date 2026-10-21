@@ -1,6 +1,7 @@
 # Fixture: Docker container
 
-These files are hand-written, not captured from a real machine. They follow the formats the
+The values are hand-chosen, not captured from a real machine, and `../generate.py` writes the
+files from them. They follow the formats the
 Linux kernel uses for each file, with values chosen to be realistic for the hardware described,
 from public specifications of the parts named. Only the files E1 reads are present, plus a few
 neighbouring fields so the parsers see real-looking files. The tree mirrors the real paths:
@@ -16,5 +17,7 @@ neighbouring fields so the parsers see real-looking files. The tree mirrors the 
 - Memory: the host's 64 GB in `/proc/meminfo`, and a cgroup v2 limit at the container's
   namespace root: `memory.max` 8 GiB with `memory.current` 1 GiB.
 - `/.dockerenv` exists. Seccomp mode 2 (a filter), as Docker's default profile installs.
-  Docker's default effective capability set, which has no `CAP_IPC_LOCK`. `RLIMIT_MEMLOCK`
-  8 MiB. Kernel 6.8, io_uring sysctl 0, THP `madvise`. No power supplies.
+- The process runs as root inside the container (uid 0), which is Docker's default. Its
+  effective and bounding capability sets are Docker's default set, `a80425fb`, which has no
+  `CAP_IPC_LOCK`. `RLIMIT_MEMLOCK` 8 MiB. Kernel 6.8, io_uring sysctl 0, THP `madvise`. No
+  power supplies.
