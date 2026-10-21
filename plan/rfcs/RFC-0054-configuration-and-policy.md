@@ -70,11 +70,13 @@ Three pressures shape this design.
 
 **State and data directories** (defaults; `node.state_dir` and `store.dirs` override them):
 
-| Purpose | Linux (user) | Linux (system service) | macOS | Windows |
-|---|---|---|---|---|
-| state: identity key, proposal ledger, API key hashes, host-change ledger, logs | `$XDG_STATE_HOME/syntropy` | `/var/lib/syntropy/state` | `~/Library/Application Support/Syntropy/state` | `%LOCALAPPDATA%\Syntropy\state` |
-| model store: chunks, packs, session blobs | `$XDG_DATA_HOME/syntropy/store` | `/var/lib/syntropy/store` | `~/Library/Application Support/Syntropy/store` | `%LOCALAPPDATA%\Syntropy\store` |
-| runtime: local API socket, runner adoption sockets | `$XDG_RUNTIME_DIR/syntropy` | `/run/syntropy` | `$TMPDIR/syntropy` (per user) | named pipes `\\.\pipe\syntropy-<sid>-*` |
+| Purpose | Linux (user) | Linux (system service) | macOS | Windows | Windows (per-machine service) |
+|---|---|---|---|---|---|
+| state: identity key, proposal ledger, API key hashes, host-change ledger, logs | `$XDG_STATE_HOME/syntropy` | `/var/lib/syntropy/state` | `~/Library/Application Support/Syntropy/state` | `%LOCALAPPDATA%\Syntropy\state` | `%ProgramData%\Syntropy\state` |
+| model store: chunks, packs, session blobs | `$XDG_DATA_HOME/syntropy/store` | `/var/lib/syntropy/store` | `~/Library/Application Support/Syntropy/store` | `%LOCALAPPDATA%\Syntropy\store` | `%ProgramData%\Syntropy\store` |
+| runtime: local API socket, runner adoption sockets | `$XDG_RUNTIME_DIR/syntropy` | `/run/syntropy` | `$TMPDIR/syntropy` (per user) | named pipes `\\.\pipe\syntropy-<sid>-*` | named pipes, with the service account's SID |
+
+*Note 2026-10-22 (correction):* the Windows (per-machine service) column was missing. RFC-0052 §5.1 already decided it. A per-machine install runs as the service `NT SERVICE\Syntropy` (RFC-0052 §6) and keeps its state and store beside its config, in `%ProgramData%\Syntropy`, where its update service reads requests (RFC-0052 §7.1). A macOS LaunchDaemon (RFC-0052 §6.2) has no column in either RFC. OQ-PRD-26 holds that question, and until it closes `syntropy-config` uses its recommended default, `/Library/Application Support/Syntropy/{state,store}`.
 
 The store is deliberately not under a cache directory. Packs are safe to delete (ADR-0005), but the store also holds verified source chunks that cost a download to replace, and cache directories often sit on small volumes.
 
