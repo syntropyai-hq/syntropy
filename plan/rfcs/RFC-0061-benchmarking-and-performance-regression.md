@@ -5,7 +5,7 @@
 - Depends on: RFC-0001 (§13, §14, §16), RFC-0060, RFC-0010, RFC-0053; ADR-0004, ADR-0008, ADR-0013, ADR-0017, ADR-0019, ADR-0020; ADR-0610, ADR-0611, ADR-0612
 - Expanded by: RFC-0062 (when and where benchmark jobs run), every domain RFC (its microbenchmarks, §9)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2)
+- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2); 2026-10-22 (§4.3's ADR-0017 row names loaded draft heads, as ADR-0017's revised item 7 does)
 
 ## Summary
 
