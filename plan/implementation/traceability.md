@@ -355,7 +355,7 @@ No GAPs.
 | RFC-0040 | §8 | The ggml provider | 21: TIER-E3-T11, COMP-E1-T04, COMP-E1-T10, COMP-E1-T15, COMP-E7-T01–T07, COMP-E7-T09–T13, COMP-E7-T15–T18, COMP-E8-T10 | ok |
 | RFC-0040 | §9 | Hot-op kernel list and roofline targets | 13: COMP-E2-T09, COMP-E2-T21, COMP-E3-T03, COMP-E3-T17, COMP-E5-T01, COMP-E5-T05–T06, COMP-E5-T09, COMP-E5-T11–T12, COMP-E5-T24, COMP-E6-T05, COMP-E6-T11 | ok |
 | RFC-0040 | §10 | Build system, kernel distribution and the module ABI | 23: COMP-E7-T05, COMP-E7-T13–T15, COMP-E8-T10, COMP-E9-T01–T17, QUAL-E16-T25 | ok |
-| RFC-0040 | §11 | Op coverage policy per model × backend | 11: COMP-E2-T07–T08, COMP-E2-T14, COMP-E3-T13, COMP-E5-T02, COMP-E5-T25, COMP-E6-T07, COMP-E8-T03, COMP-E8-T06, COMP-E8-T08, COMP-E8-T10 | ok |
+| RFC-0040 | §11 | Op coverage policy per model × backend | 13: COMP-E2-T07–T08, COMP-E2-T14, COMP-E3-T13, COMP-E5-T02, COMP-E5-T25, COMP-E6-T05–T07, COMP-E8-T03, COMP-E8-T06, COMP-E8-T08, COMP-E8-T10 | ok |
 | RFC-0040 | §12 | Configuration knobs | 3: COMP-E1-T08, COMP-E1-T14, COMP-E9-T07 | ok |
 | RFC-0040 | §13 | Failure handling and error codes | 2: COMP-E1-T08, COMP-E9-T16 | ok |
 | RFC-0041 | §1 | Identities | 2: COMP-E10-T06, COMP-E10-T11 | ok |
@@ -381,7 +381,7 @@ No GAPs.
 | RFC-0042 | §11 | Configuration and error codes | 4: COMP-E14-T02, COMP-E14-T06–T07, PROD-E4-T03 | ok |
 | RFC-0043 | §1 | The `graph` crate | 2: COMP-E15-T01, COMP-E15-T03 | ok |
 | RFC-0043 | §2 | The graph IR | 4: COMP-E10-T12, COMP-E15-T01, COMP-E15-T11–T12 | ok |
-| RFC-0043 | §3 | The block library | 20: COMP-E1-T04, COMP-E3-T11–T13, COMP-E3-T23–T24, COMP-E5-T03, COMP-E5-T06, COMP-E5-T19, COMP-E5-T27–T30, COMP-E6-T07, COMP-E15-T02, COMP-E15-T04–T05, COMP-E15-T09, COMP-E15-T12, COMP-E16-T18 | ok |
+| RFC-0043 | §3 | The block library | 22: COMP-E1-T04, COMP-E3-T11–T13, COMP-E3-T23–T24, COMP-E5-T03, COMP-E5-T06, COMP-E5-T19, COMP-E5-T27–T30, COMP-E6-T05–T07, COMP-E15-T02, COMP-E15-T04–T05, COMP-E15-T09, COMP-E15-T12, COMP-E16-T18 | ok |
 | RFC-0043 | §4 | Census classification | 2: COMP-E15-T11, COMP-E16-T01 | ok |
 | RFC-0043 | §5 | Family modules | 17: COMP-E1-T15, COMP-E3-T19, COMP-E5-T25, COMP-E5-T29, COMP-E15-T12, COMP-E16-T01, COMP-E16-T03–T10, COMP-E16-T16, COMP-E16-T18–T19 | ok |
 | RFC-0043 | §6 | Stage cut points, segments and tensor-parallel sharding | 4: COMP-E15-T06–T08, COMP-E15-T10 | ok |
