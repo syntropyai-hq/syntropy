@@ -5,9 +5,11 @@
 //!
 //! 1. **SSA**: every value is defined once, before use, and programs are acyclic.
 //! 2. **Types**: every node's values match its kind's [`signature`].
-//! 3. **Weights**: every [`WeightRef`] names a census group of the matching class, every
-//!    census group is read by at least one node, and no group is read by two programs, except
-//!    the epilogue's `Head` group, which MTP modules that share the LM head also read.
+//! 3. **Weights**: every [`WeightRef`] names a census group of the matching class (norms may
+//!    read the group of the block they feed, RFC-0041 §3.1) and, when the group has a layer,
+//!    of the reading program's layer; every census group is read by at least one node; and no
+//!    group is read by two programs, except the epilogue's `Head` group, which MTP modules
+//!    that share the LM head also read.
 //! 4. **Boundaries**: every legal boundary in [`BoundarySet`] satisfies RFC-0043 §6.1: every
 //!    value live across it is a residual stream or declared side data.
 //! 5. **Coverage**: every [`OpKind`] used is in the family's `required_ops` (RFC-0040 §11.1).
@@ -41,6 +43,8 @@ pub type OpSet = BTreeSet<OpKind>;
 ///
 /// The census types live in `manifest` (RFC-0041 §3.1), which is still a stub, so the caller
 /// passes this view of each group; it is built from `TensorCensus::groups` once that exists.
+/// It is the second such view, beside `core`'s `GroupFacts` and `GroupRole` for plan
+/// validation, which carry other facts; both give way to `TensorCensus` together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CensusGroup {
     /// The group.
@@ -251,6 +255,17 @@ pub enum Violation {
         /// The layer it names.
         layer: LayerIx,
     },
+    /// A node reads a group whose census layer is not its program's own layer.
+    GroupOfOtherLayer {
+        /// The program.
+        program: ProgramId,
+        /// The node.
+        node: usize,
+        /// The group.
+        group: TensorGroupId,
+        /// The group's layer.
+        layer: LayerIx,
+    },
     /// No node reads a census group.
     GroupUnread {
         /// The group.
@@ -333,6 +348,7 @@ impl Violation {
             | Self::ClassMismatch { .. }
             | Self::ExpertsOfOtherLayer { .. }
             | Self::NoExpertGroups { .. }
+            | Self::GroupOfOtherLayer { .. }
             | Self::GroupUnread { .. }
             | Self::GroupReadAcrossLayers { .. } => Rule::Weights,
             Self::BoundarySetSize { .. }
@@ -448,6 +464,16 @@ impl fmt::Display for Violation {
                 f,
                 "{program:?} node {node} reads the experts of layer {}, which has none",
                 layer.0
+            ),
+            Self::GroupOfOtherLayer {
+                program,
+                node,
+                group,
+                layer,
+            } => write!(
+                f,
+                "{program:?} node {node} reads group {} of layer {}",
+                group.0, layer.0
             ),
             Self::GroupUnread { group } => write!(f, "no node reads group {}", group.0),
             Self::GroupReadAcrossLayers {
@@ -691,16 +717,23 @@ fn check_types(g: &ModelGraph, programs: &[(ProgramId, &Program)]) -> Result<(),
 }
 
 /// Whether a node of `node` class may read a `GroupSel::Fixed` group of `group` class.
-/// Elementwise and state nodes read the dense group of their block: norm weights, sink
-/// vectors, convolution and scan parameters.
+///
+/// Weight nodes read the class they mirror. Norms and small vectors join the group of the
+/// block they feed (RFC-0041 §3.1), so an elementwise node may also read a dense group (the
+/// pre-attention norm, the pre-FFN norm of a dense FFN, hyper-connection weights), a router
+/// group (the pre-FFN norm of a MoE layer) or the head group (the final norm, which feeds
+/// the LM head). State nodes read the dense group of their mixer: sink vectors, convolution
+/// and scan parameters.
 fn class_matches(node: NodeClass, group: GroupClass) -> bool {
     matches!(
         (node, group),
         (
             NodeClass::Dense | NodeClass::Elementwise | NodeClass::State,
             GroupClass::DenseEveryToken
-        ) | (NodeClass::Router, GroupClass::Router)
-            | (NodeClass::Head, GroupClass::Head)
+        ) | (
+            NodeClass::Router | NodeClass::Elementwise,
+            GroupClass::Router
+        ) | (NodeClass::Head | NodeClass::Elementwise, GroupClass::Head)
             | (NodeClass::Lookup, GroupClass::RowLookup)
             | (NodeClass::Encoder, GroupClass::Encoder)
     )
@@ -743,6 +776,18 @@ fn check_weights(
                                 program,
                                 node,
                                 group: w.group,
+                            });
+                        }
+                        // A group with a layer (`Router { layer }`, a layer's dense and
+                        // lookup groups) belongs to that layer's program.
+                        if let Some(layer) = group.layer
+                            && own != Some(usize::from(layer.0))
+                        {
+                            return Err(Violation::GroupOfOtherLayer {
+                                program,
+                                node,
+                                group: id,
+                                layer,
                             });
                         }
                         let list = readers.entry(id).or_default();

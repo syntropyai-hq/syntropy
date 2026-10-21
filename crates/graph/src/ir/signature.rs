@@ -18,6 +18,12 @@ use syntropy_kernels::OpKind;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Port {
     /// Activations: F32, F16, BF16 or F64.
+    ///
+    /// No FP8, FP6 or FP4 type: those are weight and KV storage types. A checkpoint's
+    /// declared FP8 activation quantisation happens inside the matrix product (RFC-0042 §4.3
+    /// rule a), and KV is not a value (RFC-0043 §2.3), so no IR value between two nodes has
+    /// such a dtype. `Convert`, whose ports are `Any`, may still produce one for data
+    /// movement.
     Float,
     /// Token IDs, expert IDs or other indices: I16, I32 or I64.
     Ids,

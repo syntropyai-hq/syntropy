@@ -66,6 +66,10 @@ struct LayerInfo {
     o: ValueId,
     att: ValueId,
     moe_node: Option<usize>,
+    /// The router group of a MoE layer.
+    router: Option<TensorGroupId>,
+    /// The pre-FFN norm.
+    ffn_norm_node: usize,
     /// The `KvWrite` node.
     kv_node: usize,
     /// The final `Add`, whose output is residual stream 0.
@@ -344,16 +348,20 @@ fn build(p: &Params) -> Fixture {
             a = sum;
         }
         let n2 = b.act(ValueKind::Local);
+        let mut router_group = None;
+        let ffn_norm_node;
         let (ffn_out, moe_node, ffn) = if moe {
-            b.node(
+            // RFC-0041 §3.1: in a MoE layer the pre-FFN norm joins the router group.
+            let router = b.group(GroupClass::Router, Some(ix));
+            router_group = Some(router);
+            ffn_norm_node = b.node(
                 &mut body,
                 OpKind::RmsNorm,
                 &[a],
                 &[n2],
-                &[fixed(mixer, TensorRole::Norm)],
+                &[fixed(router, TensorRole::Norm)],
                 NodeClass::Elementwise,
             );
-            let router = b.group(GroupClass::Router, Some(ix));
             for _ in 0..3 {
                 b.group(GroupClass::Expert, Some(ix));
             }
@@ -402,7 +410,7 @@ fn build(p: &Params) -> Fixture {
             (c, Some(moe_node), Block::Moe)
         } else {
             let dense = b.group(GroupClass::DenseEveryToken, Some(ix));
-            b.node(
+            ffn_norm_node = b.node(
                 &mut body,
                 OpKind::RmsNorm,
                 &[a],
@@ -467,24 +475,36 @@ fn build(p: &Params) -> Fixture {
             o,
             att,
             moe_node,
+            router: router_group,
+            ffn_norm_node,
             kv_node,
             last_node,
             out,
         });
     }
 
-    // Epilogue: LM head, and greedy next-token IDs for the MTP modules.
+    // Epilogue: the final norm, which joins the head group (RFC-0041 §3.1), the LM head,
+    // and greedy next-token IDs for the MTP modules.
     let head = b.group(GroupClass::Head, None);
     let mut epilogue = Program {
         inputs: smallvec![streams[0]],
         ..Program::default()
     };
+    let normed = b.act(ValueKind::Local);
+    b.node(
+        &mut epilogue,
+        OpKind::RmsNorm,
+        &[streams[0]],
+        &[normed],
+        &[fixed(head, TensorRole::Norm)],
+        NodeClass::Elementwise,
+    );
     let logits_ty: SmallVec<[Dim; 4]> = smallvec![Dim::Rows, Dim::Const(VOCAB)];
     let lg = b.value(DType::F32, logits_ty.clone(), ValueKind::Local);
     b.node(
         &mut epilogue,
         OpKind::Logits,
-        &[streams[0]],
+        &[normed],
         &[lg],
         &[fixed(head, TensorRole::Head)],
         NodeClass::Head,
@@ -702,7 +722,18 @@ const MUTATORS: &[(&str, Mutator)] = &[
         let other = f.layers[(l + 1) % n].mixer;
         let node = f.layers[l].qkv_node;
         f.layer(l).nodes[node].weights[0].group = GroupSel::Fixed(other);
-        Some((Rule::Weights, "GroupReadAcrossLayers"))
+        Some((Rule::Weights, "GroupOfOtherLayer"))
+    }),
+    ("move a router group to another layer", |f, l| {
+        let router = f.layers[l].router?;
+        let entry = f.census.iter_mut().find(|c| c.id == router).unwrap();
+        entry.layer = Some(LayerIx(u16::try_from(l).unwrap() + 7));
+        Some((Rule::Weights, "GroupOfOtherLayer"))
+    }),
+    ("read the embedding table from a norm", |f, l| {
+        let (node, embed) = (f.layers[l].ffn_norm_node, f.embed);
+        f.layer(l).nodes[node].weights[0].group = GroupSel::Fixed(embed);
+        Some((Rule::Weights, "ClassMismatch"))
     }),
     ("read another layer's experts", |f, l| {
         let node = f.layers[l].moe_node?;
@@ -906,9 +937,14 @@ fn every_mutator_applies_to_a_full_graph() {
             for &(name, mutate) in MUTATORS {
                 let mut m = f.clone();
                 let Some((rule, expected)) = mutate(&mut m, l) else {
-                    // Only the MoE mutator needs a MoE layer; layer 1 is dense.
+                    // Only the MoE mutators need a MoE layer; layer 1 is dense.
                     assert!(
-                        l == 1 && name == "read another layer's experts",
+                        l == 1
+                            && matches!(
+                                name,
+                                "read another layer's experts"
+                                    | "move a router group to another layer"
+                            ),
                         "{name} at {l}"
                     );
                     continue;
@@ -917,6 +953,95 @@ fn every_mutator_applies_to_a_full_graph() {
             }
         }
     }
+}
+
+/// RFC-0041 §3.1: the pre-FFN norm of a MoE layer joins the router group, and the final
+/// norm joins the head group. Both placements validate.
+#[test]
+fn norms_may_read_the_group_of_the_block_they_feed() {
+    let f = build(&Params {
+        layers: vec![(true, false)],
+        streams: 1,
+        mtp: 0,
+        per_layer: None,
+        legal: 0,
+    });
+    let norm = &f.graph.layers[0].body.nodes[f.layers[0].ffn_norm_node];
+    assert_eq!(norm.op, OpKind::RmsNorm);
+    assert_eq!(
+        norm.weights[0].group,
+        GroupSel::Fixed(f.layers[0].router.unwrap())
+    );
+    let final_norm = &f.graph.epilogue.nodes[0];
+    assert_eq!(final_norm.op, OpKind::RmsNorm);
+    assert_eq!(final_norm.weights[0].group, GroupSel::Fixed(f.head));
+    assert_eq!(f.validate(), Ok(()));
+}
+
+/// A norm reading a group of a block it does not feed still fails rule 3: a lookup table,
+/// an expert group, another layer's router. A state node may not read a router group.
+#[test]
+fn norms_may_not_read_unrelated_groups() {
+    let base = build(&Params {
+        layers: vec![(true, false), (true, false)],
+        streams: 1,
+        mtp: 0,
+        per_layer: None,
+        legal: 0,
+    });
+    let node = base.layers[0].ffn_norm_node;
+    let expert = base
+        .census
+        .iter()
+        .find(|c| c.class == GroupClass::Expert)
+        .unwrap()
+        .id;
+    let cases = [
+        (GroupSel::Fixed(base.embed), "ClassMismatch"),
+        (GroupSel::Fixed(expert), "ClassMismatch"),
+        (
+            GroupSel::Fixed(base.layers[1].router.unwrap()),
+            "GroupOfOtherLayer",
+        ),
+    ];
+    for (group, expected) in cases {
+        let mut f = base.clone();
+        f.graph.layers[0].body.nodes[node].weights[0].group = group;
+        let err = f.validate().unwrap_err();
+        assert_eq!(err.rule(), Rule::Weights, "{group:?}");
+        assert_eq!(err.variant_name(), expected, "{group:?}");
+    }
+    let mut f = base.clone();
+    let kv = f.layers[0].kv_node;
+    let router = f.layers[0].router.unwrap();
+    f.graph.layers[0].body.nodes[kv].weights.push(WeightRef {
+        group: GroupSel::Fixed(router),
+        role: TensorRole::Other(0),
+    });
+    assert_eq!(f.validate().unwrap_err().variant_name(), "ClassMismatch");
+}
+
+/// A router group of layer 7 read only by layer 0 fails rule 3.
+#[test]
+fn a_router_group_of_another_layer_is_rejected() {
+    let mut f = build(&Params {
+        layers: vec![(true, false)],
+        streams: 1,
+        mtp: 0,
+        per_layer: None,
+        legal: 0,
+    });
+    let router = f.layers[0].router.unwrap();
+    f.census.iter_mut().find(|c| c.id == router).unwrap().layer = Some(LayerIx(7));
+    assert!(matches!(
+        f.validate(),
+        Err(Violation::GroupOfOtherLayer {
+            program: ProgramId::Layer(0),
+            group,
+            layer: LayerIx(7),
+            ..
+        }) if group == router
+    ));
 }
 
 #[test]
