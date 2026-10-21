@@ -189,6 +189,12 @@ A new cluster starts with the schema defaults plus whatever its first members pr
 - **CLI.** `syntropy serve --set key=value` is repeatable and accepts any key. A small set of keys also have dedicated flags, listed in RFC-0051 §2.3: `--bind`, `--config`, `--models-dir`, `--offline`, `--log-level`, `--state-dir`.
 - Unknown `SYNTROPY_*` variables are reported as warnings at start (a typo in an environment variable is otherwise invisible). Unknown `--set` keys are errors.
 
+*Note 2026-10-22 (PROD-E1-T02, how the layers read):*
+- `SYNTROPY_HOME=H` puts the state directory at `H/state` and the default store at `H/store`. That is the layout §1's macOS and Windows defaults use under their `Syntropy` directory, and the Linux service layout under `/var/lib/syntropy`. `SYNTROPY_NODE__STATE_DIR`, when also set, wins for `node.state_dir`.
+- An environment or `--set` value that does not parse as a TOML value is read as a string, so `16GiB` and `0.0.0.0:7433` need no quotes. A key whose type is a string or a path always takes the text as written, unless it is a quoted TOML string.
+- An empty `SYNTROPY_CONFIG` or `SYNTROPY_HOME` counts as unset. When both `--config` and `SYNTROPY_CONFIG` are given, the flag wins, as the CLI layer wins over the environment.
+- A drop-in is a `*.toml` file whose name does not start with `.`, compared without case on Windows. "Lexical order" is the byte order of the file name, so `10-a.toml` sorts before `9-b.toml`.
+
 ### 3. Value types and units
 
 Configuration values map onto the RFC-0001 §5.1 unit newtypes. A bare integer is never accepted where a unit is meant, except bytes, where an integer means bytes.

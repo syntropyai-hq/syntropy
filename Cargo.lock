@@ -395,6 +395,7 @@ dependencies = [
  "serde_json",
  "syntropy-config-derive",
  "syntropy-core",
+ "toml",
  "trybuild",
  "zeroize",
 ]

@@ -181,7 +181,7 @@ impl fmt::Display for DefaultValue {
 }
 
 /// Writes a TOML basic string, escaping what TOML requires.
-fn write_toml_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
+pub(crate) fn write_toml_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
     f.write_str("\"")?;
     for c in s.chars() {
         match c {
@@ -198,7 +198,7 @@ fn write_toml_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 }
 
 /// Whether TOML accepts `key` unquoted.
-fn is_bare_key(key: &str) -> bool {
+pub(crate) fn is_bare_key(key: &str) -> bool {
     !key.is_empty()
         && key
             .bytes()
