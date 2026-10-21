@@ -5,7 +5,7 @@
 - Depends on: RFC-0001 (§13, §14, §16), RFC-0060, RFC-0010, RFC-0053; ADR-0004, ADR-0008, ADR-0013, ADR-0017, ADR-0019, ADR-0020; ADR-0610, ADR-0611, ADR-0612
 - Expanded by: RFC-0062 (when and where benchmark jobs run), every domain RFC (its microbenchmarks, §9)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2); 2026-10-22 (§4.3's ADR-0017 row names loaded draft heads, as ADR-0017's revised item 7 does)
+- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2); 2026-10-22 (§4.3's ADR-0017 row names loaded draft heads, as ADR-0017's revised item 7 does; the grid at RC, the two ID forms, model references and the version check, §4.1; the success-criteria table generated from `bench/sc-map.toml`, §4.2)
 
 ## Summary
 
@@ -280,15 +280,15 @@ Scenario IDs are `<class>.<mode>.<model>.<quant>[.<variant>]`, for example `deco
 | Speculative | Off; Auto | both nightly; PR† uses the plan's default |
 | Thermal | `Cold`; `Sustained` for NVMe and tiered MoE | nightly; RC |
 
-At RC the grid runs the nightly points. A `Sustained` scenario runs nightly and at RC only.
+**The grid at RC, ID forms and model references** (revised 2026-10-22). At RC the grid runs the nightly points. A `Sustained` scenario runs nightly and at RC only.
 
-**ID forms and model references** (revised 2026-10-22). §4.2 and §9 also use IDs with no model or quant segment, such as `life.probe`, `cluster.rejoin` and `kern.gemv.dense.<backend>.<quant>`. So an ID takes one of two forms:
+§4.2 and §9 also use IDs with no model or quant segment, such as `life.probe`, `cluster.rejoin` and `kern.gemv.dense.<backend>.<quant>`. So an ID takes one of two forms:
 - A scenario that names a model uses the form above, and its `<quant>` segment equals the file's `quant`.
 - A scenario that runs no model, and a §9 microbenchmark, has 2 to 6 segments.
 
 Every segment is lowercase letters, digits and `_`. The first is one of the classes `syntropy-bench` lists: §4.2's scenario classes, §9's prefixes, and §4.3's `feat` and `compare`.
 
-A scenario names its model by its `fixtures.toml` checkpoint ID (RFC-0060 §12.3), because `BenchKey.model` is a `ModelId` content digest that only the census computes. The runner resolves the ID when it loads the checkpoint. A scenario that runs no model has no value for `BenchKey`'s required `model` and `quant` fields; that gap in QUAL-E12-T01's schema is open.
+A scenario names its model by its `fixtures.toml` checkpoint ID (RFC-0060 §12.3), because `BenchKey.model` is a `ModelId` content digest that only the census computes. The runner resolves the ID when it loads the checkpoint. A scenario that runs no model has no value for `BenchKey`'s required `model` and `quant` fields; that gap in QUAL-E12-T01's schema is open (issue #1559).
 
 `syntropy-bench scenarios check`, which the `lint` job runs, checks each file against these rules and against the rig IDs of §6.2. It also checks the version rule against a base commit: `git merge-base HEAD origin/main`, unless `--base` names another. A file absent at the base that the base's history once held, such as a retired scenario added back, is checked against its last version in that history, so a re-added scenario can't reuse a version with a different definition. The check fails when it can't find the base, or when a shallow clone hides the history a re-added file needs.
 
