@@ -19,10 +19,17 @@
 //! someone checked the value against it. A spec figure never comes from a measurement.
 //!
 //! [`peaks`] turns a rig's inventory record into `W_peak` per path. Each path's peak is its
-//! narrowest element (RFC-0061 §5.3): DRAM is `channels × bytes_per_transfer × MT/s`, with the
-//! channel count capped by the DIMMs fitted and the speed of the slowest DIMM, and then capped
-//! by any fabric limit; a GPU reading host memory is capped by its PCIe link; a drive by its
-//! link. [`sanity`] compares probe figures with those peaks: one below 50% of its peak marks the
+//! narrowest element (RFC-0061 §5.3):
+//! - DRAM is derived, `channels × bytes_per_transfer × MT/s`. The channel count is the CPU's,
+//!   capped by the DIMMs fitted. The MT/s is the slowest DIMM's `speed_mts`, which the inventory
+//!   defines as the speed the module runs at, not its rating, so a board that runs below the
+//!   module's profile, or two DIMMs per channel, gives the speed actually used. A fabric limit
+//!   then caps it.
+//! - A PCIe link is derived, `GT/s × payload/total ÷ 8 × lanes`: 16 GT/s × 16 × 128/130 ÷ 8 =
+//!   31.5 GB/s per direction for a 4.0 x16 link.
+//! - A GPU reading host memory is capped by its PCIe link, and a drive by its link.
+//!
+//! Every other figure is a cited vendor or standards figure, never a measurement. [`sanity`] compares probe figures with those peaks: one below 50% of its peak marks the
 //! run `dirty: misconfigured` (`00-vision-and-scope.md` §9, principle 2).
 
 use std::collections::{BTreeMap, BTreeSet};
