@@ -9,8 +9,9 @@
 # - `patterns`: the scenario IDs the cell names, with `*` for one segment, or one or more as the
 #   last segment. Empty when no scenario file measures the criterion (an RFC-0060 property,
 #   chaos or parity result, or the release gate).
-# - `owner`: the task that delivers the measurement. Until a scenario file matches a pattern, the
-#   table shows the row as pending on its owner.
+# - `owners`: every task that delivers the measurement, in milestone order (one per milestone or
+#   set of rigs). Until a scenario file matches a pattern, the table shows the row as pending on
+#   its owners.
 
 [[sc]]
 id = "SC-1"
@@ -19,7 +20,7 @@ patterns = ["kern.gemv.dense.*", "kern.moe.grouped.*", "kern.cpu.eip.*"]
 rigs = "R-ADA (AVX2 host), R-BW (AVX-512 host), R-WIN, R-MACF, R-ULTRA-A, R-HALO"
 measured = "η = W_ach / W_peak per kernel class; CPU: W_ach / probe all-core read"
 pass = "≥ 0.80 dense on `Vram`/`Unified`; ≥ 0.63 grouped MoE; ≥ 0.75 CPU in place"
-owner = "QUAL-E13-T02"
+owners = ["QUAL-E13-T02", "QUAL-E13-T03", "QUAL-E13-T20"]
 
 [[sc]]
 id = "SC-2"
@@ -28,7 +29,7 @@ patterns = ["decode.single.llama1b.*", "decode.single.llama8b.*", "decode.single
 rigs = "every Tier 1 GPU rig"
 measured = "fitted `t_fixed`; telemetry `t_fixed_ach`"
 pass = "`t_fixed ≤ 0.2 · 3.79 GB / W_probe`"
-owner = "QUAL-E13-T02"
+owners = ["QUAL-E13-T02", "QUAL-E13-T03", "QUAL-E13-T20"]
 
 [[sc]]
 id = "SC-3"
@@ -37,7 +38,7 @@ patterns = ["decode.single.*"]
 rigs = "all"
 measured = "`t_tok` against `t_model` (§5.1)"
 pass = "`t_tok ≤ 1.05 · t_model`"
-owner = "QUAL-E13-T02"
+owners = ["QUAL-E13-T02", "QUAL-E13-T03", "QUAL-E13-T20"]
 
 [[sc]]
 id = "SC-4"
@@ -46,7 +47,7 @@ patterns = ["decode.single.llama70b.q4km.cap64g", "decode.single.llama70b.q4km",
 rigs = "R-ADA, R-ULTRA-A"
 measured = "decode rate against `t_peak` (§5.1)"
 pass = "≥ 0.67 (split across `Vram` and DRAM); ≥ 0.76 (one tier); ≥ 0.60 (MoE in `Vram`/`Unified`)"
-owner = "QUAL-E13-T02"
+owners = ["QUAL-E13-T02", "QUAL-E13-T03", "QUAL-E13-T20"]
 
 [[sc]]
 id = "SC-5"
@@ -55,7 +56,7 @@ patterns = ["tiered.single.dsv3.q4km.sustained"]
 rigs = "R-ADA (128 GB)"
 measured = "`t_tok`, measured h"
 pass = "`t_tok ≤ 1.10 · t_overlap(h)`"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03"]
 
 [[sc]]
 id = "SC-6"
@@ -64,7 +65,7 @@ patterns = ["prefill.nstar.*"]
 rigs = "R-ADA, R-BW"
 measured = "chosen path per n; time of both paths, forced by pins"
 pass = "the chosen path is the faster one at every n, except within ±1 chunk of the measured crossover"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03"]
 
 [[sc]]
 id = "SC-7"
@@ -73,7 +74,7 @@ patterns = ["io.nvme.expert.*"]
 rigs = "R-ADA, R-BW (Gen5)"
 measured = "expert-read GB/s"
 pass = "≥ 0.85 × probe sustained rate at the same size and queue depth"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03"]
 
 [[sc]]
 id = "SC-8"
@@ -82,7 +83,7 @@ patterns = ["tiered.single.dsv3.q4km.sustained"]
 rigs = "R-ADA"
 measured = "share of NVMe misses issued before their layer's router ran"
 pass = "≥ 50%"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03"]
 
 [[sc]]
 id = "SC-9"
@@ -91,7 +92,7 @@ patterns = ["cache.policy.trace.*"]
 rigs = "any CPU host"
 measured = "hit rate per policy and capacity"
 pass = "≥ max(cache fraction, LRU at equal capacity) on every trace"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03"]
 
 [[sc]]
 id = "SC-10"
@@ -100,7 +101,7 @@ patterns = ["prefill.single.llama70b.q4km.cap64g"]
 rigs = "R-ADA, R-BW"
 measured = "H2D GB/s during streamed prefill; micro-batch size"
 pass = "≥ 0.90 × probe pinned rate; micro-batch ≥ `n_hide` where VRAM allows"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03"]
 
 [[sc]]
 id = "SC-11"
@@ -109,7 +110,7 @@ patterns = ["decode.*", "prefill.*", "tiered.*", "pipeline.*", "throughput.*"]
 rigs = "all"
 measured = "predicted against measured peak per tier per node"
 pass = "within 5%; zero OOM kills"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03", "QUAL-E13-T20"]
 
 [[sc]]
 id = "SC-12"
@@ -118,7 +119,7 @@ patterns = ["net.hop.*"]
 rigs = "R-PAIR10, the S2 cluster, R-TB5 pair"
 measured = "added time per hop"
 pass = "≤ `α_probe + S/β_probe + 2 · t_switch(probe)`"
-owner = "QUAL-E13-T06"
+owners = ["QUAL-E13-T06", "QUAL-E13-T10"]
 
 [[sc]]
 id = "SC-13"
@@ -127,7 +128,7 @@ patterns = ["pipeline.single.llama70b.q4km.s2"]
 rigs = "S2 cluster on 2.5 GbE"
 measured = "`t_tok` against `Σ_s t_s + D · t_hop`"
 pass = "≤ 1.05×"
-owner = "QUAL-E13-T06"
+owners = ["QUAL-E13-T06"]
 
 [[sc]]
 id = "SC-14"
@@ -136,7 +137,7 @@ patterns = ["pipeline.vs.single.*"]
 rigs = "sim; S2 cluster"
 measured = "predicted and measured `t_tok`"
 pass = "chosen ≤ best single-node, both predicted and measured"
-owner = "QUAL-E13-T06"
+owners = ["QUAL-E13-T06"]
 
 [[sc]]
 id = "SC-15"
@@ -145,7 +146,7 @@ patterns = ["throughput.pipeline.llama70b.q4km.s2"]
 rigs = "S2 cluster"
 measured = "aggregate rate"
 pass = "≥ 0.85 × `min(M, D) / (Σ_s t_s + D · t_hop)`, capped at `1 / max_s t_s`"
-owner = "QUAL-E13-T16"
+owners = ["QUAL-E13-T16"]
 
 [[sc]]
 id = "SC-16"
@@ -154,7 +155,7 @@ patterns = []
 rigs = "sim; R-TB5 pair, R-PAIR10, R-ROCE"
 measured = "TP/EP chosen only when the gate holds"
 pass = "gate formula holds for every committed plan"
-owner = "QUAL-E13-T07"
+owners = ["QUAL-E13-T07"]
 
 [[sc]]
 id = "SC-17"
@@ -163,7 +164,7 @@ patterns = ["net.collective.allreduce.tb5"]
 rigs = "R-TB5 pair"
 measured = "`α_eff` per collective"
 pass = "≤ `α_wire + 2 · t_switch`"
-owner = "QUAL-E13-T07"
+owners = ["QUAL-E13-T07", "QUAL-E13-T18"]
 
 [[sc]]
 id = "SC-18"
@@ -172,7 +173,7 @@ patterns = ["prefill.single.llama70b.q4km.cap64g"]
 rigs = "R-ADA"
 measured = "TTFT"
 pass = "≤ 1.15 × the formula + queueing"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03"]
 
 [[sc]]
 id = "SC-19"
@@ -181,7 +182,7 @@ patterns = ["agent.session.restore.*"]
 rigs = "R-ADA, R-ULTRA-A"
 measured = "resumed TTFT"
 pass = "≤ `1.25 · KV_bytes / W_read(tier) + t_prefill(new tokens)`"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03", "QUAL-E13-T20"]
 
 [[sc]]
 id = "SC-20"
@@ -190,7 +191,7 @@ patterns = ["agent.prefix.*"]
 rigs = "R-ADA, R-ULTRA-A"
 measured = "tokens prefilled per turn"
 pass = "exactly the tokens after the longest cached-prefix match"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03", "QUAL-E13-T20"]
 
 [[sc]]
 id = "SC-21"
@@ -199,7 +200,7 @@ patterns = ["spec.*"]
 rigs = "R-ADA, R-ULTRA-A"
 measured = "realised speedup against the predicted, with measured `a`"
 pass = "≥ 0.85 × predicted; speculation off whenever predicted < 1"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03", "QUAL-E13-T20", "QUAL-E13-T21"]
 
 [[sc]]
 id = "SC-22"
@@ -208,7 +209,7 @@ patterns = ["life.probe"]
 rigs = "every rig"
 measured = "quick-probe time"
 pass = "≤ 15 s"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03", "QUAL-E13-T20", "QUAL-E13-T06"]
 
 [[sc]]
 id = "SC-23"
@@ -217,7 +218,7 @@ patterns = ["life.packload.llama70b.q4km"]
 rigs = "R-ADA (Gen4), R-BW (Gen5)"
 measured = "`t_pack + t_load`"
 pass = "≤ `1.25 · (2S/W_read + S/W_write)`"
-owner = "QUAL-E13-T03"
+owners = ["QUAL-E13-T03", "QUAL-E13-T20"]
 
 [[sc]]
 id = "SC-24"
@@ -226,7 +227,7 @@ patterns = ["life.install.clean"]
 rigs = "hosted VMs; R-MACF"
 measured = "steps, typed inputs, time to first token"
 pass = "one command, one model choice, no config file, no typed address"
-owner = "QUAL-E13-T04"
+owners = ["QUAL-E13-T04"]
 
 [[sc]]
 id = "SC-25"
@@ -235,7 +236,7 @@ patterns = ["cluster.rejoin", "cluster.newjoin", "cluster.detect"]
 rigs = "S2 cluster; sim"
 measured = "heartbeats to admit (from probe for a rejoin, from approval for a new node) and to detect"
 pass = "≤ 2; ≤ 3"
-owner = "QUAL-E13-T06"
+owners = ["QUAL-E13-T06"]
 
 [[sc]]
 id = "SC-26"
@@ -244,7 +245,7 @@ patterns = ["cluster.invite.offlan"]
 rigs = "lab + an off-site node through a relay"
 measured = "join success, time"
 pass = "joins with one token, no port forwarding"
-owner = "QUAL-E13-T07"
+owners = ["QUAL-E13-T07"]
 
 [[sc]]
 id = "SC-27"
@@ -253,7 +254,7 @@ patterns = []
 rigs = "lab; sim"
 measured = "failed in-flight requests"
 pass = "0"
-owner = "QUAL-E13-T06"
+owners = ["QUAL-E13-T06"]
 
 [[sc]]
 id = "SC-28"
@@ -262,7 +263,7 @@ patterns = []
 rigs = "lab"
 measured = "resume time against the RFC-0033 formula"
 pass = "within the formula; no client-visible error"
-owner = "QUAL-E13-T07"
+owners = ["QUAL-E13-T07"]
 
 [[sc]]
 id = "SC-29"
@@ -271,7 +272,7 @@ patterns = []
 rigs = "Tier 1"
 measured = "parity verdicts"
 pass = "all pass; approximate settings visible in API, CLI and dashboard"
-owner = "QUAL-E5-T10"
+owners = ["QUAL-E5-T10"]
 
 [[sc]]
 id = "SC-30"
@@ -280,7 +281,7 @@ patterns = ["decode.single.*", "pipeline.*", "tiered.*"]
 rigs = "reference rigs"
 measured = "`|t_pred − t_meas| / t_meas`"
 pass = "≤ 0.15"
-owner = "QUAL-E13-T05"
+owners = ["QUAL-E13-T05"]
 
 [[sc]]
 id = "SC-31"
@@ -289,7 +290,7 @@ patterns = ["solver.regress.*"]
 rigs = "any CPU host"
 measured = "slow-solve time (≤ 8 nodes), routing time, DP feasibility"
 pass = "≤ 2 s; ≤ 1 ms; feasible whenever one exists"
-owner = "QUAL-E13-T05"
+owners = ["QUAL-E13-T05", "QUAL-E13-T15"]
 
 [[sc]]
 id = "SC-32"
@@ -298,4 +299,4 @@ patterns = []
 rigs = "Tier 1 rigs"
 measured = "per-scenario deltas against the previous release"
 pass = "no reference benchmark outside its noise band; every published number fully keyed"
-owner = "QUAL-E14-T05"
+owners = ["QUAL-E14-T05"]

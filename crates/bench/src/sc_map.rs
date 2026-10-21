@@ -5,12 +5,12 @@
 //!
 //! The map holds one `[[sc]]` row per criterion of `00-vision-and-scope.md` §7. Each row has the
 //! four cells of RFC-0061 §4.2's table as text, the scenario-ID patterns those cells name, and
-//! the task that delivers the measurement. [`render`] turns the map into the table, and
+//! every task that delivers the measurement. [`render`] turns the map into the table, and
 //! RFC-0061 §4.2 holds that table as a generated section, so the RFC and the map can't drift.
 //!
 //! A row's status column says where its measurement stands, from what exists in
 //! `bench/scenarios/`. A row whose patterns match no scenario file yet is *pending* on its owner
-//! task. The map never claims a measurement that doesn't exist.
+//! tasks. The map never claims a measurement that doesn't exist.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -26,7 +26,7 @@ pub const SC_MAP: &str = "bench/sc-map.toml";
 pub const VISION: &str = "plan/00-vision-and-scope.md";
 /// The RFC whose §4.2 holds the rendered table.
 pub const RFC_0061: &str = "plan/rfcs/RFC-0061-benchmarking-and-performance-regression.md";
-/// The epic files, which name every task an owner may be.
+/// The epic files, which define every task an owner may be.
 pub const EPICS: &str = "plan/implementation/epics";
 /// The generated section's name in RFC-0061.
 pub const SECTION: &str = "sc-table";
@@ -54,8 +54,9 @@ pub struct Row {
     pub measured: String,
     /// The Pass cell: the pass rule, with thresholds from `00-vision-and-scope.md` §7.
     pub pass: String,
-    /// The task that delivers the measurement.
-    pub owner: String,
+    /// Every task that delivers the measurement, such as one per milestone or set of rigs, in
+    /// plan order.
+    pub owners: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -149,11 +150,20 @@ pub fn check(rows: &[Row], vision: &[u32], tasks: &BTreeSet<String>) -> Vec<Stri
                 ));
             }
         }
-        if !tasks.contains(&row.owner) {
-            problems.push(format!(
-                "{}: owner `{}` is not a task in plan/implementation/epics/",
-                row.id, row.owner
-            ));
+        if row.owners.is_empty() {
+            problems.push(format!("{}: `owners` is empty", row.id));
+        }
+        let mut owners = BTreeSet::new();
+        for owner in &row.owners {
+            if !tasks.contains(owner) {
+                problems.push(format!(
+                    "{}: owner `{owner}` is not a task in plan/implementation/epics/",
+                    row.id
+                ));
+            }
+            if !owners.insert(owner) {
+                problems.push(format!("{}: owner `{owner}` is listed twice", row.id));
+            }
         }
         let mut seen = BTreeSet::new();
         for pattern in &row.patterns {
@@ -188,19 +198,21 @@ pub fn check(rows: &[Row], vision: &[u32], tasks: &BTreeSet<String>) -> Vec<Stri
     problems
 }
 
-/// The Status cell of a row, given the IDs of the scenario files that exist.
+/// The Status cell of a row, given the IDs of the scenario files that exist: where the
+/// measurement stands, then every owner task.
 pub fn status(row: &Row, scenario_ids: &[String]) -> String {
+    let owners = row.owners.join(", ");
     if row.patterns.is_empty() {
-        return format!("not a scenario file; {}", row.owner);
+        return format!("not a scenario file; {owners}");
     }
     let found = scenario_ids
         .iter()
         .filter(|id| row.patterns.iter().any(|p| pattern_matches(p, id)))
         .count();
     match found {
-        0 => format!("pending; {}", row.owner),
-        1 => format!("1 scenario; {}", row.owner),
-        n => format!("{n} scenarios; {}", row.owner),
+        0 => format!("pending; {owners}"),
+        1 => format!("1 scenario; {owners}"),
+        n => format!("{n} scenarios; {owners}"),
     }
 }
 
@@ -247,12 +259,12 @@ mod tests {
             rigs: String::from("R-ADA"),
             measured: String::from("`t_tok`"),
             pass: String::from("≤ 1.05×"),
-            owner: String::from("QUAL-E13-T02"),
+            owners: vec![String::from("QUAL-E13-T02")],
         }
     }
 
     fn tasks() -> BTreeSet<String> {
-        BTreeSet::from([String::from("QUAL-E13-T02")])
+        BTreeSet::from([String::from("QUAL-E13-T02"), String::from("QUAL-E13-T20")])
     }
 
     #[test]
@@ -290,7 +302,7 @@ mod tests {
                 .any(|p| p.starts_with("SC-9 has a row"))
         );
         let mut bad = row(1);
-        bad.owner = String::from("QUAL-E99-T01");
+        bad.owners = vec![String::from("QUAL-E99-T01")];
         bad.pass = String::new();
         bad.rigs = String::from("a | b");
         bad.patterns = vec![String::from("Decode.x"), String::from("Decode.x")];
@@ -327,6 +339,25 @@ mod tests {
         let mut outside = row(2);
         outside.patterns.clear();
         assert_eq!(status(&outside, &ids), "not a scenario file; QUAL-E13-T02");
+        let mut two = row(3);
+        two.owners.push(String::from("QUAL-E13-T20"));
+        assert_eq!(status(&two, &[]), "pending; QUAL-E13-T02, QUAL-E13-T20");
+    }
+
+    #[test]
+    fn owners_are_tasks_listed_once() {
+        let mut r = row(1);
+        assert_eq!(check(std::slice::from_ref(&r), &[1], &tasks()), Vec::<String>::new());
+        r.owners = vec![String::from("QUAL-E13-T20"), String::from("QUAL-E13-T20")];
+        assert_eq!(
+            check(std::slice::from_ref(&r), &[1], &tasks()),
+            ["SC-1: owner `QUAL-E13-T20` is listed twice"]
+        );
+        r.owners.clear();
+        assert_eq!(
+            check(&[r], &[1], &tasks()),
+            ["SC-1: `owners` is empty"]
+        );
     }
 
     #[test]
@@ -349,7 +380,7 @@ mod tests {
     #[test]
     fn map_parse_rejects_unknown_fields() {
         let text = "[[sc]]\nid = \"SC-1\"\nscenarios = \"a\"\nrigs = \"b\"\nmeasured = \"c\"\n\
-                    pass = \"d\"\nowner = \"QUAL-E13-T02\"\nnotes = \"x\"\n";
+                    pass = \"d\"\nowners = [\"QUAL-E13-T02\"]\nnotes = \"x\"\n";
         assert!(parse(text).unwrap_err().contains("notes"));
     }
 }

@@ -26,7 +26,7 @@ fn row(n: u32) -> String {
     format!(
         "[[sc]]\nid = \"SC-{n}\"\nscenarios = \"`decode.single.*`\"\n\
          patterns = [\"decode.single.*\"]\nrigs = \"R-ADA\"\nmeasured = \"`t_tok`\"\n\
-         pass = \"≤ 1.05×\"\nowner = \"QUAL-E13-T02\"\n\n"
+         pass = \"≤ 1.05×\"\nowners = [\"QUAL-E13-T02\"]\n\n"
     )
 }
 
