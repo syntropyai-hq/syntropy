@@ -456,7 +456,7 @@ The scopes column lists every scope a section uses. The table is generated from 
 *Note 2026-10-21 (open, for the maintainers): where a duplicate prefix fails.* A derive sees one struct, so it cannot see a prefix that another crate registers. PROD-E1-T01 puts the check in `syntropy_config::Registry::new`, a `const fn` that panics when two sections claim one prefix. In a `static` or `const` item that panic is a compile error; in a `let` it happens at run time.
 
 Options:
-- (a) the binary's registry, which PROD-E1-T02 builds, is a `static`, so a duplicate prefix fails that build;
+- (a) the binary's registry, which PROD-E6-T23 builds (moved from PROD-E1-T02 on 2026-10-22, with the CLI subcommands), is a `static`, so a duplicate prefix fails that build;
 - (b) a link-time check through one exported symbol per prefix, which needs `unsafe` attributes in every crate that declares a section, and RFC-0001 §4.2 rule 8 forbids those;
 - (c) only the CI test of PROD-E1-T16.
 
