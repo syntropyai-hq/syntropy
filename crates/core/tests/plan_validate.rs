@@ -7,7 +7,7 @@
 
 use smallvec::smallvec;
 use syntropy_core::plan::*;
-use syntropy_core::resource::{HostPoolInfo, TransportKind};
+use syntropy_core::resource::{HostPoolInfo, TierKind, TransportKind};
 use syntropy_core::*;
 
 // ---- Fixture ----------------------------------------------------------------------------
@@ -146,7 +146,7 @@ fn pool(node: NodeId, usable: u64, pin_limit: u64) -> HostPoolInfo {
 struct Bounds {
     n_layers: u16,
     groups: Vec<GroupFacts>,
-    usable: Vec<(TierId, Bytes)>,
+    usable: Vec<(TierId, TierKind, Bytes)>,
     scratch_tiers: Vec<(DeviceId, TierId)>,
     host_pools: Vec<HostPoolInfo>,
 }
@@ -156,18 +156,18 @@ impl Bounds {
         Bounds {
             n_layers: 4,
             groups: vec![
-                group(0, GroupRole::RowLookup, 10, Some(3)),
+                group(0, GroupRole::RowLookup, 10, None),
                 group(1, GroupRole::Other, 20, None),
                 group(2, GroupRole::Other, 20, None),
                 group(3, GroupRole::Head, 10, Some(0)),
             ],
             usable: vec![
-                (tier(A, 0), Bytes(100)),
-                (tier(A, 1), Bytes(1000)),
-                (tier(A, 2), Bytes(1000)),
-                (tier(B, 0), Bytes(100)),
-                (tier(B, 1), Bytes(1000)),
-                (tier(B, 2), Bytes(1000)),
+                (tier(A, 0), TierKind::Vram, Bytes(100)),
+                (tier(A, 1), TierKind::HostPinned, Bytes(1000)),
+                (tier(A, 2), TierKind::HostPageable, Bytes(1000)),
+                (tier(B, 0), TierKind::Vram, Bytes(100)),
+                (tier(B, 1), TierKind::HostPinned, Bytes(1000)),
+                (tier(B, 2), TierKind::HostPageable, Bytes(1000)),
             ],
             scratch_tiers: vec![(gpu(A), tier(A, 0)), (gpu(B), tier(B, 0))],
             host_pools: vec![pool(A, 1000, 1000), pool(B, 1000, 1000)],
@@ -185,7 +185,11 @@ impl Bounds {
     }
 
     fn set_usable(&mut self, t: TierId, bytes: u64) {
-        self.usable.iter_mut().find(|(id, _)| *id == t).unwrap().1 = Bytes(bytes);
+        self.usable
+            .iter_mut()
+            .find(|(id, _, _)| *id == t)
+            .unwrap()
+            .2 = Bytes(bytes);
     }
 }
 
@@ -719,20 +723,49 @@ fn rejects_a_host_pool_counted_twice() {
     );
 }
 
-#[test]
-fn accepts_a_host_pool_at_exact_capacity() {
+/// The fixture with 300 bytes in A's HostPinned and 700 in A's HostPageable. The two differ,
+/// so a pool sum that counted one tier twice would give 600 or 1400, not 1000.
+fn asymmetric_host_plan() -> PlacementPlan {
     let mut plan = valid_plan();
-    plan.expert_cache[0].bytes = Bytes(500);
+    plan.expert_cache[0].bytes = Bytes(300);
     plan.kv.push(KvBudget {
         tier: tier(A, 2),
-        bytes: Bytes(500),
+        bytes: Bytes(700),
         ..kv(0, A, 0)
     });
-    assert_eq!(check(&plan), Ok(()));
+    plan
 }
 
 #[test]
-fn rejects_pinned_bytes_over_the_pin_limit() {
+fn accepts_a_host_pool_at_exact_capacity() {
+    let mut bounds = Bounds::new();
+    bounds.host_pools[0] = pool(A, 1000, 1000);
+    assert_eq!(asymmetric_host_plan().validate(&bounds.get()), Ok(()));
+}
+
+#[test]
+fn rejects_a_host_pool_one_byte_over_with_unequal_tiers() {
+    let mut bounds = Bounds::new();
+    bounds.host_pools[0] = pool(A, 999, 1000);
+    assert_eq!(
+        asymmetric_host_plan().validate(&bounds.get()),
+        Err(PlanViolation::HostPoolOverCapacity {
+            tiers: [tier(A, 1), tier(A, 2)],
+            used: Bytes(1000),
+            usable: Bytes(999),
+        })
+    );
+}
+
+#[test]
+fn accepts_pinned_bytes_at_the_pin_limit() {
+    let mut bounds = Bounds::new();
+    bounds.host_pools[0] = pool(A, 1000, 40);
+    assert_eq!(valid_plan().validate(&bounds.get()), Ok(()));
+}
+
+#[test]
+fn rejects_pinned_bytes_one_byte_over_the_pin_limit() {
     let mut bounds = Bounds::new();
     bounds.host_pools[0] = pool(A, 1000, 39);
     assert_eq!(
@@ -753,6 +786,76 @@ fn rejects_replicas_it_cannot_charge() {
         check(&plan),
         Err(PlanViolation::ReplicasUnchecked {
             group: TensorGroupId(2)
+        })
+    );
+}
+
+#[test]
+fn rejects_a_host_tier_with_no_pool() {
+    // A's HostPinned holds the expert cache, but no pool record names A's domain, so the
+    // joint rows could not be checked.
+    let mut bounds = Bounds::new();
+    bounds.host_pools.remove(0);
+    assert_eq!(
+        valid_plan().validate(&bounds.get()),
+        Err(PlanViolation::HostTierWithoutPool { tier: tier(A, 1) })
+    );
+}
+
+#[test]
+fn charges_an_untied_head_in_a_one_stage_plan() {
+    // An untied LM head has its own tensor record, so it is charged even when the tail is
+    // the head. A VRAM holds 20 + 20 + 10 + 30 + 5 = 85.
+    let mut bounds = Bounds::new();
+    bounds.groups[3].shared_with = None;
+    bounds.set_usable(tier(A, 0), 85);
+    assert_eq!(one_stage_plan().validate(&bounds.get()), Ok(()));
+    bounds.set_usable(tier(A, 0), 84);
+    assert_eq!(
+        one_stage_plan().validate(&bounds.get()),
+        Err(PlanViolation::OverCapacity {
+            tier: tier(A, 0),
+            used: Bytes(85),
+            usable: Bytes(84),
+        })
+    );
+}
+
+#[test]
+fn rejects_shared_with_naming_a_group_not_in_the_census() {
+    let mut bounds = Bounds::new();
+    bounds.groups[3].shared_with = Some(TensorGroupId(99));
+    assert_eq!(
+        valid_plan().validate(&bounds.get()),
+        Err(PlanViolation::SharedWithUnknown {
+            group: TensorGroupId(3),
+            twin: TensorGroupId(99),
+        })
+    );
+}
+
+#[test]
+fn rejects_a_head_sharing_rows_with_a_non_lookup_group() {
+    let mut bounds = Bounds::new();
+    bounds.groups[3].shared_with = Some(TensorGroupId(1));
+    assert_eq!(
+        valid_plan().validate(&bounds.get()),
+        Err(PlanViolation::SharedWithNotLookup {
+            group: TensorGroupId(3),
+            twin: TensorGroupId(1),
+        })
+    );
+}
+
+#[test]
+fn rejects_an_mtp_lookup_sharing_rows_with_the_head() {
+    let (plan, mut bounds) = mtp_plan_and_bounds();
+    bounds.groups[4].shared_with = Some(TensorGroupId(3));
+    assert_eq!(
+        plan.validate(&bounds.get()),
+        Err(PlanViolation::SharedWithNotLookup {
+            group: TensorGroupId(4),
+            twin: TensorGroupId(3),
         })
     );
 }

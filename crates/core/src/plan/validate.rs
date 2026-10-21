@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::ids::{DeviceId, LayerIx, NodeId, StageIx, TensorGroupId, TierId};
-use crate::resource::HostPoolInfo;
+use crate::resource::{HostPoolInfo, TierKind};
 use crate::units::Bytes;
 
 use super::stage::StageRole;
@@ -38,7 +38,11 @@ pub struct GroupFacts {
     pub bytes: Bytes,
     /// `TensorGroup::shared_with` (RFC-0001 §5.3, RFC-0041 §3.1): the prologue's `RowLookup`
     /// group whose tensor record this group reads, for a tied LM head's `Head` group and for
-    /// an MTP module's own `RowLookup` group.
+    /// an MTP module's own `RowLookup` group (`TailLookup`).
+    ///
+    /// `validate` checks it: it must name a census group
+    /// ([`PlanViolation::SharedWithUnknown`]), and on a `Head` or `TailLookup` group that
+    /// group must be a prologue `RowLookup` ([`PlanViolation::SharedWithNotLookup`]).
     pub shared_with: Option<TensorGroupId>,
 }
 
@@ -71,12 +75,14 @@ pub struct PlanBounds<'a> {
     pub n_layers: u16,
     /// Every census group, in census order.
     pub groups: &'a [GroupFacts],
-    /// `TierInfo::usable` of every tier the plan may use.
-    pub usable: &'a [(TierId, Bytes)],
+    /// Every tier the plan may use: its kind (`TierInfo::kind`) and its `TierInfo::usable`.
+    pub usable: &'a [(TierId, TierKind, Bytes)],
     /// The tier that holds each device's scratch: its memory tier (`Vram` or `Unified`) for a
     /// GPU, its NUMA domain's host tier for a CPU.
     pub scratch_tiers: &'a [(DeviceId, TierId)],
-    /// One record per NUMA domain the plan may use (RFC-0010 §2.2), for C9's joint host rows.
+    /// One record per NUMA domain (RFC-0010 §2.2), for C9's joint host rows. It must list
+    /// every domain whose `HostPinned` or `HostPageable` tier the plan uses: a host tier the
+    /// plan charges that no pool names fails with [`PlanViolation::HostTierWithoutPool`].
     pub host_pools: &'a [HostPoolInfo],
 }
 
@@ -110,10 +116,26 @@ pub enum PlanViolation {
     },
     /// A `TierAssignment` lists replicas, which `validate` cannot charge yet, so it fails
     /// closed. RFC-0011 §11.2 charges a replica's bytes "to that stage's tier in C9", but the
-    /// plan records only the replica's `NodeId`, not the tier holding it.
+    /// plan records only the replica's `NodeId`, not the tier holding it. Lifting this is
+    /// tracked in issue #1515.
     ReplicasUnchecked {
         /// The group.
         group: TensorGroupId,
+    },
+    /// A group's `shared_with` names a group the census does not have.
+    SharedWithUnknown {
+        /// The group.
+        group: TensorGroupId,
+        /// The group it names.
+        twin: TensorGroupId,
+    },
+    /// A `Head` or `TailLookup` group's `shared_with` names a group that is not a prologue
+    /// `RowLookup` group.
+    SharedWithNotLookup {
+        /// The group.
+        group: TensorGroupId,
+        /// The group it names.
+        twin: TensorGroupId,
     },
     /// The plan has no stages.
     NoStages,
@@ -198,6 +220,12 @@ pub enum PlanViolation {
         /// What it may hold.
         usable: Bytes,
     },
+    /// The plan charges a `HostPinned` or `HostPageable` tier that no `PlanBounds::host_pools`
+    /// record names, so C9's joint host rows cannot be checked for it.
+    HostTierWithoutPool {
+        /// The tier.
+        tier: TierId,
+    },
     /// A NUMA domain's `HostPinned` tier holds more than the domain's `pin_limit` (RFC-0011
     /// C9's first joint host row).
     HostPinOverLimit {
@@ -249,6 +277,16 @@ impl fmt::Display for PlanViolation {
                 f,
                 "tensor group {} lists replicas, whose tiers the plan does not record",
                 group.0
+            ),
+            Self::SharedWithUnknown { group, twin } => write!(
+                f,
+                "tensor group {} shares rows with group {}, not in the census",
+                group.0, twin.0
+            ),
+            Self::SharedWithNotLookup { group, twin } => write!(
+                f,
+                "tensor group {} shares rows with group {}, which is not a prologue row lookup",
+                group.0, twin.0
             ),
             Self::NoStages => f.write_str("the plan has no stages"),
             Self::StageOutOfOrder { position, stage } => write!(
@@ -307,6 +345,11 @@ impl fmt::Display for PlanViolation {
                 "tier {} holds {} bytes, above its usable {}",
                 tier.ordinal, used.0, usable.0
             ),
+            Self::HostTierWithoutPool { tier } => write!(
+                f,
+                "host tier {} is used but no host pool record names it",
+                tier.ordinal
+            ),
             Self::HostPinOverLimit {
                 tier,
                 used,
@@ -346,7 +389,9 @@ impl PlacementPlan {
         self.check_usage(bounds, &assigned)
     }
 
-    /// Invariant 1: one `TierAssignment` per census group, homed on its owner, no replicas.
+    /// Invariant 1: one `TierAssignment` per census group, homed on its owner, no replicas;
+    /// and every `shared_with` names a census group, a prologue `RowLookup` for tail-side
+    /// groups.
     fn check_assignments(
         &self,
         bounds: &PlanBounds<'_>,
@@ -373,6 +418,18 @@ impl PlacementPlan {
         }
         if let Some(g) = bounds.groups.iter().find(|g| !assigned.contains_key(&g.id)) {
             return Err(PlanViolation::GroupUnassigned { group: g.id });
+        }
+        let roles: BTreeMap<TensorGroupId, GroupRole> =
+            bounds.groups.iter().map(|g| (g.id, g.role)).collect();
+        for g in bounds.groups {
+            let Some(twin) = g.shared_with else { continue };
+            let Some(&twin_role) = roles.get(&twin) else {
+                return Err(PlanViolation::SharedWithUnknown { group: g.id, twin });
+            };
+            let tail_side = matches!(g.role, GroupRole::Head | GroupRole::TailLookup);
+            if tail_side && twin_role != GroupRole::RowLookup {
+                return Err(PlanViolation::SharedWithNotLookup { group: g.id, twin });
+            }
         }
         Ok(assigned)
     }
@@ -468,9 +525,14 @@ impl PlacementPlan {
     /// `shared_with` is set and the role is `Head` or `TailLookup`) is C9's duplicated-row
     /// term `E_dup · e_p`. `e_p` is 1 only when the tail is not the head, so "a one-stage
     /// plan counts the shared rows once" (C6): there the group adds nothing, whichever tier it
-    /// is homed on. In a plan with two or more stages it is charged in full. C9 puts those
-    /// rows in the tail's `HostPageable`; `validate` charges them to the group's recorded home
-    /// tier, which is that tier for a plan the solver assembled under C9.
+    /// is homed on. In a plan with two or more stages it is charged in full.
+    ///
+    /// `validate` charges duplicated rows to the tier the plan records as the group's home.
+    /// C9 charges `E_dup` to the tail's `HostPageable` and a head group's `Hd` at its own tier,
+    /// and RFC-0011 does not yet say which applies to a tied head, so this can be stricter
+    /// than C9. The open question is tracked in issue #1515. `e_p` is taken from the stage
+    /// count, not the placement node, so a `MultiStageOnNode` plan (PLC-E4-T15) would be
+    /// charged the rows twice where C9 charges them once, which is conservative.
     fn check_usage(
         &self,
         bounds: &PlanBounds<'_>,
@@ -508,14 +570,18 @@ impl PlacementPlan {
         }
 
         for (&tier, &used) in &used {
-            let usable = bounds
+            let (kind, usable) = bounds
                 .usable
                 .iter()
-                .find(|(t, _)| *t == tier)
-                .map(|&(_, b)| b)
+                .find(|(t, _, _)| *t == tier)
+                .map(|&(_, k, b)| (k, b))
                 .ok_or(PlanViolation::UnknownTier { tier })?;
             if used > usable {
                 return Err(PlanViolation::OverCapacity { tier, used, usable });
+            }
+            let host = matches!(kind, TierKind::HostPinned | TierKind::HostPageable);
+            if host && !bounds.host_pools.iter().any(|p| p.tiers.contains(&tier)) {
+                return Err(PlanViolation::HostTierWithoutPool { tier });
             }
         }
 
