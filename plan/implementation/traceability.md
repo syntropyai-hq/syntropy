@@ -424,7 +424,7 @@ No GAPs.
 | RFC-0052 | §12 | Size budgets | 1: PROD-E10-T15 | ok |
 | RFC-0053 | §1 | Data flow | 1: PROD-E8-T01 | ok |
 | RFC-0053 | §2 | Metrics | 9: PLC-E7-T22, COMP-E11-T18, PROD-E8-T01–T03, PROD-E8-T05–T06, PROD-E8-T12, PROD-E13-T07 | ok |
-| RFC-0053 | §3 | Tracing | 3: DIST-E1-T14, PROD-E8-T07, PROD-E8-T10 | ok |
+| RFC-0053 | §3 | Tracing | 4: DIST-E1-T14, PROD-E8-T07, PROD-E8-T10, PROD-E9-T08 | ok |
 | RFC-0053 | §4 | Logs | 2: PROD-E8-T04, PROD-E8-T11 | ok |
 | RFC-0053 | §5 | `syntropy doctor` | 10: PROD-E4-T16, PROD-E6-T20, PROD-E9-T01–T03, PROD-E9-T07, PROD-E13-T06, PROD-E13-T09, PROD-E13-T14–T15 | ok |
 | RFC-0053 | §6 | Debug state dump | 3: PROD-E9-T04, PROD-E9-T07, PROD-E13-T03 | ok |

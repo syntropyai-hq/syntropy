@@ -24,6 +24,7 @@ pub mod policy;
 pub mod protocol;
 pub mod quant;
 pub mod resource;
+pub mod sequence;
 pub mod session;
 pub mod transfer;
 pub mod units;
@@ -47,6 +48,7 @@ pub use policy::{
 };
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
+pub use sequence::Priority;
 pub use session::{ParseSessionIdError, SequenceId, SessionId};
 pub use transfer::{BufferView, ExtentRef, FileIx, HostRegion, StepLayer, ViewKind};
 pub use units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};

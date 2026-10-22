@@ -308,6 +308,18 @@ pub struct TraceContext {
 
 *Note 2026-10-22 (DIST-E1-T14): one `TraceContext`, 26 bytes.* The block above has 25 bytes because it leaves out W3C traceparent's version byte. RFC-0031 §6.3's `TRACE` item, which owns the layout, carries all 26: version, trace-id (16 bytes), parent span id (8) and flags. The one `TraceContext` is defined in `core` with that shape (RFC-0001 §5.8, note of the same date), and `net` encodes it. Its fields are `version`, `trace_id`, `span_id` and `flags`: `span_id` is the parent span above, the sender's span. Its `flags` keep this section's bits: bit 0 sampled, as W3C's trace-flags, and bit 1 full trace.
 
+*Note 2026-10-22 (#1766): an incoming flags byte keeps only bit 0.* W3C Trace Context Level 2 gives trace-flags bit 1 to `random-trace-id`, which clients following W3C Level 2 may set, while `TraceContext::flags` uses bit 1 for full trace. A client's flags byte copied as it is would switch on full tracing, which costs every stage work and records more per-request detail than the client asked for.
+- **In.** Ingress keeps only bit 0 (`sampled`) of an incoming `traceparent`'s flags. The HTTP rule above then decides whether that bit forces full tracing.
+- **Where it stays.** The kept bit 0 stays at ingress, with the incoming header in the request's `ClientMeta` (RFC-0050 §2.1), as the HTTP rule's input. The `TraceContext` ingress puts in `SequenceOpen` takes its flags from Syntropy's policy alone, so a client's bit 0 never makes the head sample every step. The head still decides per step (§3.3).
+- **Syntropy's own bits**, bit 1 among them, are set only by Syntropy's policy: `syntropy.trace = true`, `Syntropy-Trace: 1`, or a sampled flag honoured under `obs.trace.honor_remote_sampled`.
+- **Out.** Ingress sets a returned `traceparent`'s flags itself and never copies `TraceContext::flags`:
+  - bit 0 is 1, Syntropy's recording decision, since the root spans are always recorded (§3.3);
+  - bit 1 (`random-trace-id`) equals the incoming `traceparent`'s bit 1, since the trace-id was continued, as W3C §3.2.2.5.2 requires and §3.4's mutation list leaves unchanged;
+  - Syntropy's full-trace bit never leaves the node.
+- **Which responses.** W3C §6.3 says to return `traceparent` only to a caller that took part in the trace. So a response carries one only when its request carried a `traceparent`. A trace ingress minted is found by response ID instead (§3.6).
+- **Every W3C trace context the node emits** follows the same rule, exported OTLP spans (§7.2) included. OTLP's `Span.flags` holds the W3C trace-flags in bits 0–7, so an exported span carries bit 1 as its trace's `random-trace-id`, the incoming bit for a continued trace-id and 1 for one ingress minted from random bytes, and never the full-trace bit.
+- **Not chosen:** moving full trace to another bit. W3C reserves the higher bits for later levels, so any of them could collide again.
+
 #### 3.3 Sampling
 
 | Spans | Recorded | Kept in |
