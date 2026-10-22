@@ -872,7 +872,7 @@ Errors become the request shape's own error body:
 | a token ID at or above the model's `vocab_limit` in `tokens`, teacher tokens, `logit_bias` or stop IDs (§2.3) | `InvalidRequest` | 400 | `invalid_request_error` / `token_id_out_of_range` | `invalid_request_error` |
 | gated model without Hub acceptance, or custom licence not accepted on this node (§4.1) | `InvalidRequest` | 400 | `invalid_request_error` / `licence_acceptance_required` | `invalid_request_error` |
 | feature, content type, tool or endpoint not supported | `Unsupported` | 400 (404 for endpoints) | `invalid_request_error` / `unsupported_feature`, `unsupported_content_type`, `unsupported_tool`, `unsupported_endpoint` | `invalid_request_error` (`not_found_error` for endpoints) |
-| exact request whose only instances carry instance-wide approximate knobs | `InvalidRequest` | 400 in vendor shapes (409 in the native API) | `invalid_request_error` / `fidelity_conflict`, naming the knobs | `invalid_request_error` |
+| exact request whose only instances carry instance-wide approximate knobs; approximate request that leaves out a plan's knob (RFC-0054 §7, option (c)) or whose knobs hold a bit this version cannot name (revised 2026-10-23, note below) | `InvalidRequest` | 400 in vendor shapes (409 in the native API) | `invalid_request_error` / `fidelity_conflict`, naming the knobs | `invalid_request_error` |
 | knobs named without `fidelity: "approximate"`; `BenchControls` without `debug.bench_api` | `InvalidRequest` | 400 | `invalid_request_error` / `knobs_need_approximate`, `debug_api_disabled` | `invalid_request_error` |
 | model unknown | `InvalidRequest` | 404 | `invalid_request_error` / `model_not_found` | `not_found_error` |
 | model does not fit anywhere, even after evicting idle instances | `Capacity` | 400 | `invalid_request_error` / `model_does_not_fit` | `invalid_request_error` |
@@ -924,6 +924,8 @@ The Anthropic shape uses 529 for overload, as the published API does, because An
 - **No 409 in vendor shapes.** A client error that a retry cannot fix uses a 4xx status other than 408, 409 or 429 there. `fidelity_conflict` and `session_mismatch` are 400, and `model_does_not_fit` and `placement_infeasible` are already 400. Server-side errors whose retry hint is `Never`, such as `internal_error` (500) and `no_conforming_instance` (503), keep their status, and `x-should-retry: false` (next item) stops the SDK retries. The native API keeps 409 for conflicts, because its clients follow the `retry` hint in the body.
 - **The header on every error, in every shape.** `x-should-retry: false` when `Error::retry` is `Never`. `x-should-retry: true` on `model_loading`, `instance_unavailable`, `admission_queue_full` and `rate_limited`, together with `Retry-After`.
 - **A conformance case** counts the SDK's attempts per error code: one attempt for every non-retryable code, and the SDK's configured maximum for retryable ones.
+
+**`fidelity_conflict`** (note 2026-10-23, from the review of #1771). `resolve_request` (RFC-0054 §7) returns it in three cases, and §12.1's row now names all three: an exact request whose only instances carry instance-wide approximate knobs; an approximate request that leaves out a knob the instance's plan applies to every sequence (RFC-0054 §7's option (c)); and a request on a plan that holds a knob bit this version cannot name, which it treats as instance-wide and names in hex. Each case is `InvalidRequest`, code 7, 400 in vendor shapes and 409 in the native API, and routing tries another candidate on it.
 
 #### 12.2 After the first token
 
