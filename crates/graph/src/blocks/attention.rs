@@ -2,36 +2,67 @@
 
 //! Attention mixers (RFC-0043 §3.1). M0 has `Gqa`, which covers MHA and MQA.
 
-use syntropy_core::TensorGroupId;
+use syntropy_core::{DType, TensorGroupId};
 use syntropy_kernels::{AttnKind, Fusions, OpKind, RopeKind};
 
 use super::{Builder, Form, NodeSpec, add, push, rms_norm, with_matmul};
-use crate::ir::{AttrValue, NodeClass, OpSet, Program, TensorRole, ValueId};
+use crate::ir::{AttrValue, Dim, NodeClass, OpSet, Program, TensorRole, ValueId, ValueKind};
 
 /// How the Q, K and V projections are stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum QkvLayout {
     /// One fused projection (`TensorRole::Qkv`).
     Fused,
-    /// Three projections (`Q`, `K`, `V`), with optional RMS norms on Q and K per head.
+    /// Three projections (`Q`, `K`, `V`), with optional RMS norms on Q and K per head. Each
+    /// projection's output is typed `[Rows, heads, head_dim]`, so a norm over its last dim is
+    /// per head.
     Separate {
         /// Whether Q and K are RMS-normalised per head before RoPE.
         qk_norm: bool,
     },
 }
 
-/// The rotary embedding of a `Gqa` layer (RFC-0043 §3.1: "RoPE variants … are `OpAttrs`").
+/// The rotary embedding of a `Gqa` layer (RFC-0043 §3.1: "RoPE variants … are `OpAttrs`",
+/// computed once into tables at `prepare`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RopeParams {
-    /// The frequency rule.
-    pub kind: RopeKind,
+    /// The frequency rule and its inputs.
+    pub scaling: RopeScaling,
     /// The base, θ.
     pub theta: f32,
     /// Rotated dims per head: `head_dim` for full rotary, fewer for partial rotary, 0 for a
     /// layer without RoPE.
     pub dims: u16,
-    /// The position scaling factor of `Linear`, `Yarn` and `Llama3`; 1 for `Plain`.
-    pub scale: f32,
+}
+
+/// A RoPE frequency rule with every input its table needs.
+///
+/// Only the rules whose inputs the plan defines are here: unscaled frequencies (the base and
+/// the rotated dims) and linear position scaling (one factor). RFC-0043 §3.1 and §5 name
+/// YaRN and Llama-3-style scaling, and RFC-0022 §7.1 hashes "scaling type and factors,
+/// original context length", but no RFC lists their parameters. They come with the family
+/// that needs them (COMP-E16-T03) once the plan names them, so this block never emits a rule
+/// whose inputs are missing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RopeScaling {
+    /// Unscaled frequencies.
+    Plain,
+    /// Positions divided by `factor`.
+    Linear {
+        /// The position scaling factor.
+        factor: f32,
+    },
+}
+
+impl RopeScaling {
+    /// The `kernels` frequency rule this is.
+    #[must_use]
+    pub fn kind(&self) -> RopeKind {
+        match self {
+            Self::Plain => RopeKind::Plain,
+            Self::Linear { .. } => RopeKind::Linear,
+        }
+    }
 }
 
 /// `Gqa`'s parameters (RFC-0043 §3.1).
@@ -79,18 +110,15 @@ impl GqaParams {
     }
 }
 
-/// The attribute code of a RoPE frequency rule. `RopeKind` is `kernels`' type, and an
-/// attribute holds numbers, so each kind has a fixed code; a kind this table does not know is
-/// `u32::MAX`, which no consumer accepts. Whether the kind belongs in the attributes or in the
-/// op key is issue #1610.
+/// The `rope_kind` attribute code of a RoPE frequency rule: an attribute holds numbers, so
+/// each rule has a fixed code. The match is exhaustive, so a rule added to [`RopeScaling`]
+/// needs a code here before it compiles. Folding RoPE into `KvWrite` and attention puts the
+/// rule in attributes instead of an `OpKey`, which is issue #1610's question.
 #[must_use]
-pub fn rope_kind_code(kind: RopeKind) -> u32 {
-    match kind {
-        RopeKind::Plain => 0,
-        RopeKind::Linear => 1,
-        RopeKind::Yarn => 2,
-        RopeKind::Llama3 => 3,
-        _ => u32::MAX,
+pub fn rope_kind_code(scaling: &RopeScaling) -> u32 {
+    match scaling {
+        RopeScaling::Plain => 0,
+        RopeScaling::Linear { .. } => 1,
     }
 }
 
@@ -99,9 +127,11 @@ pub fn rope_kind_code(kind: RopeKind) -> u32 {
 /// `AttnDecode/AttnPrefill(Gqa)` → `Gemv/Gemm` (O) → `Add`.
 ///
 /// Every weight, the norms included, is in `group`, the layer's `DenseEveryToken` mixer group.
-/// RoPE has no node of its own: `KvWrite` applies it to K as it stores K, and the attention op
-/// to Q, both under the `FUSE_ROPE` hint with the RoPE attributes. Returns the post-attention
-/// residual.
+/// RoPE has no node of its own: `KvWrite` applies it to K as it stores K, as RFC-0040 §3.1
+/// allows, and the attention op applies it to Q, which no RFC states yet. Both carry the
+/// `FUSE_ROPE` hint with the RoPE attributes. With separate projections, Q, K and V are typed
+/// `[Rows, heads, head_dim]`, and the Q/K norms normalise over that last dim, so per head.
+/// Returns the post-attention residual.
 pub fn gqa(
     b: &mut Builder,
     p: &mut Program,
@@ -123,8 +153,8 @@ pub fn gqa(
     };
     let n = rms_norm(b, p, group, params.eps, x);
 
-    let project = |b: &mut Builder, p: &mut Program, role, width| {
-        let out = b.rows(width);
+    let project = |b: &mut Builder, p: &mut Program, role, dims: &[Dim]| {
+        let out = b.value(DType::F32, dims, ValueKind::Local);
         push(
             p,
             NodeSpec {
@@ -142,18 +172,17 @@ pub fn gqa(
     // `q` feeds the attention op; `kv` feeds `KvWrite`.
     let (q, kv): (ValueId, Vec<ValueId>) = match params.qkv {
         QkvLayout::Fused => {
-            let qkv = project(
-                b,
-                p,
-                TensorRole::Qkv,
-                params.q_width() + 2 * params.kv_width(),
-            );
+            let width = params.q_width() + 2 * params.kv_width();
+            let qkv = project(b, p, TensorRole::Qkv, &[Dim::Rows, Dim::Const(width)]);
             (qkv, vec![qkv])
         }
         QkvLayout::Separate { qk_norm } => {
-            let mut q = project(b, p, TensorRole::Q, params.q_width());
-            let mut k = project(b, p, TensorRole::K, params.kv_width());
-            let v = project(b, p, TensorRole::V, params.kv_width());
+            let d_head = Dim::Const(u32::from(params.head_dim));
+            let q_dims = [Dim::Rows, Dim::Const(u32::from(params.heads)), d_head];
+            let kv_dims = [Dim::Rows, Dim::Const(u32::from(params.kv_heads)), d_head];
+            let mut q = project(b, p, TensorRole::Q, &q_dims);
+            let mut k = project(b, p, TensorRole::K, &kv_dims);
+            let v = project(b, p, TensorRole::V, &kv_dims);
             if qk_norm {
                 q = rms_norm(b, p, group, params.eps, q);
                 k = rms_norm(b, p, group, params.eps, k);
@@ -167,15 +196,18 @@ pub fn gqa(
         ("n_kv_heads", AttrValue::U32(u32::from(params.kv_heads))),
         ("d_head", AttrValue::U32(u32::from(params.head_dim))),
     ];
-    let rope_attrs = [
+    let mut rope_attrs = vec![
         (
             "rope_kind",
-            AttrValue::U32(rope_kind_code(params.rope.kind)),
+            AttrValue::U32(rope_kind_code(&params.rope.scaling)),
         ),
         ("rope_theta", AttrValue::F32(params.rope.theta)),
         ("rope_dims", AttrValue::U32(u32::from(params.rope.dims))),
-        ("rope_scale", AttrValue::F32(params.rope.scale)),
     ];
+    match params.rope.scaling {
+        RopeScaling::Plain => {}
+        RopeScaling::Linear { factor } => rope_attrs.push(("rope_factor", AttrValue::F32(factor))),
+    }
     let kv_attrs: Vec<_> = heads[1..].iter().chain(&rope_attrs).copied().collect();
     push(
         p,
@@ -215,11 +247,7 @@ pub fn gqa(
     );
 
     let width = super::row_width(b, x);
-    let o = b.value(
-        syntropy_core::DType::F32,
-        &width,
-        crate::ir::ValueKind::Local,
-    );
+    let o = b.value(DType::F32, &width, ValueKind::Local);
     push(
         p,
         NodeSpec {

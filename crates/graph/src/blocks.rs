@@ -31,7 +31,7 @@ mod attention;
 mod embed;
 mod ffn;
 
-pub use attention::{GqaParams, QkvLayout, RopeParams, gqa};
+pub use attention::{GqaParams, QkvLayout, RopeParams, RopeScaling, gqa, rope_kind_code};
 pub use embed::{EmbedParams, LmHeadParams, embed, lm_head};
 pub use ffn::{DenseFfnParams, MoeParams, dense_ffn, moe};
 
@@ -155,7 +155,8 @@ fn push(p: &mut Program, spec: NodeSpec<'_>) {
     });
 }
 
-/// An `RmsNorm` reading the norm weight of `group`.
+/// An `RmsNorm` reading the norm weight of `group`. It normalises over the last dim of `x`:
+/// the hidden size for a residual, `head_dim` for a `[Rows, heads, head_dim]` projection.
 fn rms_norm(
     b: &mut Builder,
     p: &mut Program,

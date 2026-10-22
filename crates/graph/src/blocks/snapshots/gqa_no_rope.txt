@@ -1,14 +1,14 @@
 ## Decode
 RmsNorm [Elementwise] in(v0:F32[Rows,64]) out(v1:F32[Rows,64]) w(Norm@g7) fuse(-) attrs(eps=1e-6)
 Gemv [Dense] in(v1:F32[Rows,64]) out(v2:F32[Rows,128]) w(Qkv@g7) fuse(-) attrs()
-KvWrite(Gqa) [State] in(v2:F32[Rows,128]) out() w() fuse(-) attrs(n_kv_heads=2 d_head=16 rope_kind=0 rope_theta=10000.0 rope_dims=0 rope_scale=1.0)
-AttnDecode(Gqa) [State] in(v2:F32[Rows,128]) out(v3:F32[Rows,64]) w() fuse(-) attrs(n_q_heads=4 n_kv_heads=2 d_head=16 rope_kind=0 rope_theta=10000.0 rope_dims=0 rope_scale=1.0)
+KvWrite(Gqa) [State] in(v2:F32[Rows,128]) out() w() fuse(-) attrs(n_kv_heads=2 d_head=16 rope_kind=0 rope_theta=10000.0 rope_dims=0)
+AttnDecode(Gqa) [State] in(v2:F32[Rows,128]) out(v3:F32[Rows,64]) w() fuse(-) attrs(n_q_heads=4 n_kv_heads=2 d_head=16 rope_kind=0 rope_theta=10000.0 rope_dims=0)
 Gemv [Dense] in(v3:F32[Rows,64]) out(v4:F32[Rows,64]) w(O@g7) fuse(-) attrs()
 Add [Elementwise] in(v0:F32[Rows,64] v4:F32[Rows,64]) out(v5:F32[Rows,64]) w() fuse(-) attrs()
 ## Prefill
 RmsNorm [Elementwise] in(v0:F32[Rows,64]) out(v1:F32[Rows,64]) w(Norm@g7) fuse(-) attrs(eps=1e-6)
 Gemm [Dense] in(v1:F32[Rows,64]) out(v2:F32[Rows,128]) w(Qkv@g7) fuse(-) attrs()
-KvWrite(Gqa) [State] in(v2:F32[Rows,128]) out() w() fuse(-) attrs(n_kv_heads=2 d_head=16 rope_kind=0 rope_theta=10000.0 rope_dims=0 rope_scale=1.0)
-AttnPrefill(Gqa) [State] in(v2:F32[Rows,128]) out(v3:F32[Rows,64]) w() fuse(-) attrs(n_q_heads=4 n_kv_heads=2 d_head=16 rope_kind=0 rope_theta=10000.0 rope_dims=0 rope_scale=1.0)
+KvWrite(Gqa) [State] in(v2:F32[Rows,128]) out() w() fuse(-) attrs(n_kv_heads=2 d_head=16 rope_kind=0 rope_theta=10000.0 rope_dims=0)
+AttnPrefill(Gqa) [State] in(v2:F32[Rows,128]) out(v3:F32[Rows,64]) w() fuse(-) attrs(n_q_heads=4 n_kv_heads=2 d_head=16 rope_kind=0 rope_theta=10000.0 rope_dims=0)
 Gemm [Dense] in(v3:F32[Rows,64]) out(v4:F32[Rows,64]) w(O@g7) fuse(-) attrs()
 Add [Elementwise] in(v0:F32[Rows,64] v4:F32[Rows,64]) out(v5:F32[Rows,64]) w() fuse(-) attrs()

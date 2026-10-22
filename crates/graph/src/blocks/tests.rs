@@ -6,7 +6,7 @@
 //! - **Snapshots.** Each block's full lowering (ops, classes, value types, weights, fusion
 //!   hints and attributes) is compared with checked-in text in `snapshots/`. To regenerate
 //!   after an intended change, run the tests with `SYNTROPY_UPDATE_SNAPSHOTS=1` and review the
-//!   diff against the rows.
+//!   diff against the rows. The variable is refused when `CI` is set.
 //! - **Nano graphs.** `llama` and `qwen_moe` graphs at RFC-0060 §12.1's `Nano` size are
 //!   composed from the blocks. The families themselves, their `FamilySpec` and their
 //!   `required_ops` are COMP-E16-T03 and COMP-E16-T04's, so the composition and the nano
@@ -19,7 +19,6 @@ use smallvec::smallvec;
 use syntropy_core::{DType, LayerIx, TensorGroupId};
 use syntropy_kernels::{AttnKind, Fusions, GatedAct, OpKind, RopeKind, RouteNorm};
 
-use super::attention::rope_kind_code;
 use super::*;
 use crate::ir::{
     Block, BoundarySet, CensusGroup, GroupClass, LayerKind, LayerProgram, ModelGraph, ResidualSpec,
@@ -37,10 +36,9 @@ const EPS: f32 = 1e-6;
 
 fn rope() -> RopeParams {
     RopeParams {
-        kind: RopeKind::Plain,
+        scaling: RopeScaling::Plain,
         theta: 10_000.0,
         dims: 16,
-        scale: 1.0,
     }
 }
 
@@ -112,8 +110,9 @@ fn nano(family: Family, form: Form) -> Nano {
         Family::QwenMoe => gqa_params(QkvLayout::Separate { qk_norm: true }),
     };
     if family == Family::Llama {
-        gqa_p.rope.kind = RopeKind::Llama3;
-        gqa_p.rope.scale = 8.0;
+        // Llama-3-style scaling has no parameters in the plan yet (see `RopeScaling`); the
+        // nano graph exercises linear scaling instead.
+        gqa_p.rope.scaling = RopeScaling::Linear { factor: 8.0 };
     }
     let embed_p = EmbedParams {
         hidden: HIDDEN,
@@ -525,17 +524,80 @@ fn embed_and_lm_head_lower_to_their_rows() {
 }
 
 #[test]
-fn rope_kinds_have_distinct_codes() {
-    let codes: BTreeSet<u32> = [
-        RopeKind::Plain,
-        RopeKind::Linear,
-        RopeKind::Yarn,
-        RopeKind::Llama3,
-    ]
-    .map(rope_kind_code)
-    .into_iter()
-    .collect();
-    assert_eq!(codes, BTreeSet::from([0, 1, 2, 3]));
+fn rope_rules_have_distinct_codes_and_kinds() {
+    let rules = [RopeScaling::Plain, RopeScaling::Linear { factor: 2.0 }];
+    let codes: BTreeSet<u32> = rules.iter().map(rope_kind_code).collect();
+    assert_eq!(codes, BTreeSet::from([0, 1]));
+    assert_eq!(rules.map(|r| r.kind()), [RopeKind::Plain, RopeKind::Linear]);
+}
+
+/// Every input of the RoPE table is an attribute: the rule, the base, the rotated dims and,
+/// for linear scaling, its factor.
+#[test]
+fn rope_attributes_carry_every_table_input() {
+    let mut params = gqa_params(QkvLayout::Fused);
+    params.rope = RopeParams {
+        scaling: RopeScaling::Linear { factor: 4.0 },
+        theta: 500_000.0,
+        dims: 8,
+    };
+    let (_, p) = one_block(|b, p, x| {
+        gqa(b, p, &params, Form::Decode, G, x);
+    });
+    for node in p
+        .nodes
+        .iter()
+        .filter(|n| n.fuse.allowed.contains(Fusions::FUSE_ROPE))
+    {
+        assert_eq!(node.attrs.get("rope_kind"), Some(AttrValue::U32(1)));
+        assert_eq!(
+            node.attrs.get("rope_theta"),
+            Some(AttrValue::F32(500_000.0))
+        );
+        assert_eq!(node.attrs.get("rope_dims"), Some(AttrValue::U32(8)));
+        assert_eq!(node.attrs.get("rope_factor"), Some(AttrValue::F32(4.0)));
+    }
+    params.rope.scaling = RopeScaling::Plain;
+    let (_, p) = one_block(|b, p, x| {
+        gqa(b, p, &params, Form::Decode, G, x);
+    });
+    assert!(p.nodes.iter().all(|n| n.attrs.get("rope_factor").is_none()));
+}
+
+/// The Q/K norms are per head: each normalises a `[Rows, heads, head_dim]` value over its last
+/// dim, `head_dim`, never over all heads at once.
+#[test]
+fn qk_norms_are_per_head() {
+    let params = gqa_params(QkvLayout::Separate { qk_norm: true });
+    let (b, p) = one_block(|b, p, x| {
+        gqa(b, p, &params, Form::Decode, G, x);
+    });
+    let norms: Vec<&crate::ir::Node> = p
+        .nodes
+        .iter()
+        .filter(|n| n.op == OpKind::RmsNorm)
+        .skip(1)
+        .collect();
+    assert_eq!(norms.len(), 2);
+    let dims = |v: ValueId| b.values[v.0 as usize].ty.dims.to_vec();
+    let d = Dim::Const(u32::from(params.head_dim));
+    for (norm, heads) in norms.iter().zip([params.heads, params.kv_heads]) {
+        let expected = vec![Dim::Rows, Dim::Const(u32::from(heads)), d];
+        assert_eq!(dims(norm.inputs[0]), expected);
+        assert_eq!(dims(norm.outputs[0]), expected);
+        // The normalised dim is the last one: one head's width.
+        assert_eq!(dims(norm.inputs[0]).last(), Some(&d));
+    }
+    // V, which is not normalised, has the per-head shape too.
+    let v = p
+        .nodes
+        .iter()
+        .find(|n| n.weights.iter().any(|w| w.role == TensorRole::V))
+        .unwrap();
+    assert_eq!(
+        dims(v.outputs[0]),
+        vec![Dim::Rows, Dim::Const(u32::from(params.kv_heads)), d]
+    );
 }
 
 #[test]
@@ -626,10 +688,9 @@ fn snapshot(name: &str) -> String {
             "gqa_separate" => {
                 let mut params = gqa_params(QkvLayout::Separate { qk_norm: true });
                 params.rope = RopeParams {
-                    kind: RopeKind::Yarn,
+                    scaling: RopeScaling::Linear { factor: 4.0 },
                     theta: 1_000_000.0,
                     dims: 8,
-                    scale: 4.0,
                 };
                 gqa(b, p, &params, form, G, x);
             }
@@ -670,9 +731,41 @@ fn snapshot(name: &str) -> String {
     text
 }
 
+/// Whether this run rewrites the snapshots: only when `SYNTROPY_UPDATE_SNAPSHOTS` is set, and
+/// never under CI, where a set variable would let any lowering change pass.
+///
+/// # Errors
+///
+/// When both `SYNTROPY_UPDATE_SNAPSHOTS` and `CI` are set.
+fn update_snapshots(
+    update: Option<std::ffi::OsString>,
+    ci: Option<std::ffi::OsString>,
+) -> Result<bool, &'static str> {
+    match (update, ci) {
+        (Some(_), Some(_)) => {
+            Err("SYNTROPY_UPDATE_SNAPSHOTS is set under CI; snapshots are only rewritten locally")
+        }
+        (update, _) => Ok(update.is_some()),
+    }
+}
+
+#[test]
+fn snapshot_updates_are_refused_under_ci() {
+    let set = || Some(std::ffi::OsString::from("1"));
+    assert_eq!(update_snapshots(None, None), Ok(false));
+    assert_eq!(update_snapshots(None, set()), Ok(false));
+    assert_eq!(update_snapshots(set(), None), Ok(true));
+    assert!(update_snapshots(set(), set()).is_err());
+}
+
 fn check_snapshot(name: &str, expected: &str) {
     let actual = snapshot(name);
-    if std::env::var_os("SYNTROPY_UPDATE_SNAPSHOTS").is_some() {
+    let update = update_snapshots(
+        std::env::var_os("SYNTROPY_UPDATE_SNAPSHOTS"),
+        std::env::var_os("CI"),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    if update {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/blocks/snapshots")
             .join(format!("{name}.txt"));
