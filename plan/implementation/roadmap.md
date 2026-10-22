@@ -39,21 +39,21 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 | 13 | QUAL-E15-T02 | M0a | R-ADA online (ADR-0610): an Ada-class 24 GB GPU (`sm_89`), an AVX2-only desktop CPU, 2 × 64 GB… | QUAL-E15-T01 | 4 | 22 | 994 |
 | 14 | DIST-E1-T12 | M0a | The `spsc` crate (OQ-IO-29): the layer-1 crate that holds the lock-free SPSC ring `io`, `net` and… | QUAL-E1-T03 | 4 | 1 | 984 |
 | 15 | DIST-E1-T01 | M0a | Lock-free SPSC ring library in `spsc` (OQ-IO-29): power-of-two capacity, cache-line-padded indices… | DIST-E1-T12, QUAL-E1-T01, QUAL-E3-T25 | 5 | 6 | 983 |
-| 16 | QUAL-E15-T17 | M0a | The rest of the M0 rigs (ADR-0610 decision 1): R-BW (RTX 5090, AVX-512 dual-CCD CPU, 128 GB, Gen5… | QUAL-E15-T01–T02 | 5 | 18 | 945 |
-| 17 | PLC-E9-T26 | M0a | `SequenceId` and `SessionId` in `core` (RFC-0001 §5.9): `SequenceId { ingress, boot, n }` from the… | QUAL-E1-T01 | 2 | 5 | 942 |
-| 18 | PROD-E1-T01 | M0a | `syntropy-config` crate | QUAL-E1-T01 | 2 | 19 | 925 |
-| 19 | PLC-E1-T01 | M0a | Core graph types: `DeviceId`/`TierId`/`LinkId` ordinal rules, `Measured<T>` with… | QUAL-E1-T01 | 2 | 10 | 925 |
-| 20 | TIER-E1-T13 | M0a | `LedgerGrant` in `core` (OQ-IO-27): the per-tier granted bytes that RFC-0020 §3 and §12 check an… | QUAL-E1-T01 | 2 | 2 | 924 |
-| 21 | PROD-E1-T04 | M0a | Policy objects in `core`: `Objective` (with `target_concurrency`, `ttft_ceiling`)… | PROD-E1-T01 | 3 | 7 | 906 |
-| 22 | QUAL-E3-T02 | M0a | `testkit` deterministic clock and entropy: `SimClock` (advanced only by its owner), `SimEntropy`… | QUAL-E3-T01 | 5 | 8 | 904 |
-| 23 | QUAL-E5-T19 | M0a | `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId` and `LogitTap` (the per-entry block of… | QUAL-E3-T01 | 5 | 6 | 903 |
-| 24 | DIST-E1-T14 | M0a | Sequence control and token types in `core` (RFC-0001 §5.8; RFC-0032 §3.6), in one module… | PLC-E9-T26, PROD-E1-T04, QUAL-E5-T19 | 6 | 16 | 901 |
-| 25 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01, QUAL-E1-T06 | 5 | 6 | 901 |
-| 26 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 6 | 889 |
-| 27 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and recorded-fixture replay implementations: coalescing, the… | QUAL-E1-T01 | 2 | 3 | 887 |
-| 28 | DIST-E1-T02 | M0a | Shared-memory region: header (magic, build ID, heartbeat, step counter, `RunnerState` discriminant)… | DIST-E1-T01 | 6 | 4 | 884 |
-| 29 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver through `cudarc`, driver ≥ 580 check… | COMP-E1-T01, COMP-E9-T04, QUAL-E15-T02, QUAL-E15-T17 | 6 | 7 | 883 |
-| 30 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request IDs, `Hello`… | TIER-E1-T13, DIST-E1-T02, DIST-E1-T14 | 7 | 22 | 881 |
+| 16 | QUAL-E1-T07 | M0a | Affected-job rules engine `cargo xtask ci changes`, run like `ci-gate` from the base branch's… | QUAL-E1-T06 | 5 | 13 | 972 |
+| 17 | QUAL-E15-T17 | M0a | The rest of the M0 rigs (ADR-0610 decision 1): R-BW (RTX 5090, AVX-512 dual-CCD CPU, 128 GB, Gen5… | QUAL-E15-T01–T02 | 5 | 18 | 945 |
+| 18 | PLC-E9-T26 | M0a | `SequenceId` and `SessionId` in `core` (RFC-0001 §5.9): `SequenceId { ingress, boot, n }` from the… | QUAL-E1-T01 | 2 | 5 | 942 |
+| 19 | PROD-E1-T01 | M0a | `syntropy-config` crate | QUAL-E1-T01 | 2 | 19 | 925 |
+| 20 | PLC-E1-T01 | M0a | Core graph types: `DeviceId`/`TierId`/`LinkId` ordinal rules, `Measured<T>` with… | QUAL-E1-T01 | 2 | 10 | 925 |
+| 21 | TIER-E1-T13 | M0a | `LedgerGrant` in `core` (OQ-IO-27): the per-tier granted bytes that RFC-0020 §3 and §12 check an… | QUAL-E1-T01 | 2 | 2 | 924 |
+| 22 | PROD-E1-T04 | M0a | Policy objects in `core`: `Objective` (with `target_concurrency`, `ttft_ceiling`)… | PROD-E1-T01 | 3 | 7 | 906 |
+| 23 | QUAL-E3-T02 | M0a | `testkit` deterministic clock and entropy: `SimClock` (advanced only by its owner), `SimEntropy`… | QUAL-E3-T01 | 5 | 8 | 904 |
+| 24 | QUAL-E5-T19 | M0a | `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId` and `LogitTap` (the per-entry block of… | QUAL-E3-T01 | 5 | 6 | 903 |
+| 25 | DIST-E1-T14 | M0a | Sequence control and token types in `core` (RFC-0001 §5.8; RFC-0032 §3.6), in one module… | PLC-E9-T26, PROD-E1-T04, QUAL-E5-T19 | 6 | 16 | 901 |
+| 26 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01, QUAL-E1-T06 | 5 | 6 | 901 |
+| 27 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 6 | 889 |
+| 28 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and recorded-fixture replay implementations: coalescing, the… | QUAL-E1-T01 | 2 | 3 | 887 |
+| 29 | DIST-E1-T02 | M0a | Shared-memory region: header (magic, build ID, heartbeat, step counter, `RunnerState` discriminant)… | DIST-E1-T01 | 6 | 4 | 884 |
+| 30 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver through `cudarc`, driver ≥ 580 check… | COMP-E1-T01, COMP-E9-T04, QUAL-E1-T07, QUAL-E15-T02, QUAL-E15-T17 | 6 | 7 | 883 |
 <!-- END GENERATED -->
 
 ## Overview
@@ -61,7 +61,7 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 ### Tasks per milestone and area
 
 <!-- BEGIN GENERATED: roadmap-counts -->
-Generated by `tools/roadmap.py` from 1442 tasks and 3901 dependency edges. Every task sits in exactly one milestone.
+Generated by `tools/roadmap.py` from 1442 tasks and 3902 dependency edges. Every task sits in exactly one milestone.
 
 | Milestone | PLC | TIER | DIST | COMP | PROD | QUAL | Total |
 |---|---|---|---|---|---|---|---|
@@ -224,7 +224,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | COMP-E1 | Kernel provider core | 5 | 4 | 8 | COMP-E13, QUAL-E1 |
 | COMP-E2 | Op selection, certification, coverage and kernel targets | 1 | 7 | 7 | COMP-E1, COMP-E13 |
 | COMP-E3 | CPU provider | 9 | 6 | 11 | PLC-E1, PLC-E7, PLC-E9, COMP-E1, COMP-E7, COMP-E13, QUAL-E3, QUAL-E15 |
-| COMP-E4 | CUDA provider: runtime, memory, doorbells and capture | 5 | 6 | 9 | COMP-E1, COMP-E9, QUAL-E15 |
+| COMP-E4 | CUDA provider: runtime, memory, doorbells and capture | 5 | 6 | 9 | COMP-E1, COMP-E9, QUAL-E1, QUAL-E15 |
 | COMP-E5 | CUDA provider: kernels | 6 | 9 | 14 | PLC-E9, TIER-E8, COMP-E1, COMP-E4, COMP-E13, QUAL-E7, QUAL-E15 |
 | COMP-E7 | ggml provider | 4 | 6 | 12 | TIER-E1, COMP-E1, QUAL-E1, QUAL-E3, QUAL-E15, QUAL-E16 |
 | COMP-E9 | Kernel builds, provider libraries and the module ABI | 1 | 5 | 5 | COMP-E1, QUAL-E1 |

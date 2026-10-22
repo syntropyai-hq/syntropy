@@ -125,7 +125,7 @@ paths = [
     "rust-toolchain.toml",
 ]
 # The CUDA bindings crate, once it exists: a `Cargo.lock` change to it also requires the job.
-# QUAL-E2-T02 names it when it removes the `planned` mark. ggml's bindings are generated inside
-# `kernels-ggml` (RFC-0040 §8.1), whose paths the rule already covers.
+# COMP-E4-T01, which adds it, names it here. ggml's bindings are generated inside `kernels-ggml`
+# (COMP-E7-T01), whose paths the rule already covers, so they need no entry.
 lock_deps = []
 planned = "QUAL-E2-T02"
