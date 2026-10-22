@@ -12,6 +12,7 @@
 
 #![deny(clippy::undocumented_unsafe_blocks)]
 
+pub mod config;
 pub mod crypto;
 pub mod ctl;
 pub mod frame;

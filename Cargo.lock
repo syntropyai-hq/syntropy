@@ -593,7 +593,10 @@ name = "syntropy-cluster"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "serde",
+ "syntropy-config",
  "syntropy-core",
+ "syntropy-net",
 ]
 
 [[package]]
@@ -723,6 +726,7 @@ dependencies = [
  "serde",
  "serde_json",
  "subtle",
+ "syntropy-config",
  "syntropy-core",
  "zstd",
 ]

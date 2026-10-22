@@ -13,6 +13,7 @@ crc32c.workspace = true
 ed25519-dalek.workspace = true
 serde.workspace = true
 subtle.workspace = true
+syntropy-config = { path = "../config" }
 syntropy-core = { path = "../core" }
 zstd.workspace = true
 
