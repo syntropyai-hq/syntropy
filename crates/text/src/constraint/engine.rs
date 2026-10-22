@@ -63,23 +63,41 @@ impl<C> Clone for CompileOutput<C> {
     }
 }
 
-/// A schema keyword that a non-strict compile ignored.
+/// What a non-strict compile did to a schema that `strict` would have refused. Each is named in
+/// the response's `Syntropy-Warning` (RFC-0050 §7.2). `at` is a JSON pointer into the schema, such
+/// as `/properties/when`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ConstraintWarning {
-    /// The keyword, such as `patternProperties`, or `$ref` for a reference outside the document.
-    pub keyword: String,
-    /// Where it was, as a JSON pointer into the schema: `/properties/when`.
-    pub at: String,
+pub enum ConstraintWarning {
+    /// An unsupported keyword, such as `patternProperties`, or `$ref` for a reference outside the
+    /// document, was ignored.
+    Ignored { keyword: String, at: String },
+    /// A `oneOf` whose options may overlap was compiled as `anyOf`: an output may match more than
+    /// one option, which `oneOf` does not allow.
+    OneOfAsAnyOf { at: String },
 }
 
 impl std::fmt::Display for ConstraintWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let at = if self.at.is_empty() { "/" } else { &self.at };
-        write!(
-            f,
-            "unsupported schema keyword `{}` at {at} was ignored",
-            self.keyword
-        )
+        let shown = |at: &str| {
+            if at.is_empty() {
+                "/".to_owned()
+            } else {
+                at.to_owned()
+            }
+        };
+        match self {
+            ConstraintWarning::Ignored { keyword, at } => write!(
+                f,
+                "unsupported schema keyword `{keyword}` at {} was ignored",
+                shown(at)
+            ),
+            ConstraintWarning::OneOfAsAnyOf { at } => write!(
+                f,
+                "`oneOf` at {} was treated as `anyOf`: its options may overlap, so the output may \
+                 match more than one of them",
+                shown(at)
+            ),
+        }
     }
 }
 
@@ -268,13 +286,21 @@ mod tests {
             unsupported.to_string(),
             "schema keyword `not` at /properties/a is not supported under `strict`"
         );
-        let warning = ConstraintWarning {
+        let warning = ConstraintWarning::Ignored {
             keyword: "uniqueItems".into(),
             at: String::new(),
         };
         assert_eq!(
             warning.to_string(),
             "unsupported schema keyword `uniqueItems` at / was ignored"
+        );
+        let coerced = ConstraintWarning::OneOfAsAnyOf {
+            at: "/properties/n".into(),
+        };
+        assert_eq!(
+            coerced.to_string(),
+            "`oneOf` at /properties/n was treated as `anyOf`: its options may overlap, so the \
+             output may match more than one of them"
         );
     }
 }

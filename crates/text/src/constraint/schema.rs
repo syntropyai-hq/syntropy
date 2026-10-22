@@ -13,9 +13,10 @@
 //!
 //! Two keywords are supported only in part. `minimum` and `maximum` are supported for integer
 //! schemas only, and `$ref` only as a document-local reference (`#` or `#/...`); either kind of use
-//! outside that counts as unsupported. `format` is supported for the §7.2 formats only. `oneOf` is
-//! treated as `anyOf`, as §7.2 says, and `definitions`, the draft-07 name for `$defs`, counts as
-//! `$defs`. The engine's own option key, `x-guidance`, is unsupported, so a request cannot change
+//! outside that counts as unsupported. `format` is supported for the §7.2 formats only. A `oneOf`
+//! is supported when the engine can prove its options exclusive; the engine judges that, and this
+//! check records where each `oneOf` is so the engine can name one it cannot. `definitions`, the
+//! draft-07 name for `$defs`, counts as `$defs`. The engine's own option key, `x-guidance`, is unsupported, so a request cannot change
 //! how its schema compiles.
 
 use serde_json::{Map, Value};
@@ -73,6 +74,8 @@ const FORMATS: &[&str] = &["date-time", "date", "time", "uuid", "email", "ipv4",
 pub(crate) struct Checked {
     pub schema: Value,
     pub warnings: Vec<ConstraintWarning>,
+    /// Where each `oneOf` is, as a JSON pointer to the schema that holds it, in document order.
+    pub one_ofs: Vec<String>,
 }
 
 /// Checks `schema` against RFC-0050 §7.2's coverage. Under `strict`, the first unsupported keyword
@@ -84,6 +87,7 @@ pub(crate) fn check(schema: &Value, strict: bool) -> Result<Checked, ConstraintE
             return Ok(Checked {
                 schema: Value::Object(Map::new()),
                 warnings: Vec::new(),
+                one_ofs: Vec::new(),
             });
         }
         Value::Bool(false) => {
@@ -100,17 +104,20 @@ pub(crate) fn check(schema: &Value, strict: bool) -> Result<Checked, ConstraintE
     let mut walk = Walk {
         strict,
         warnings: Vec::new(),
+        one_ofs: Vec::new(),
     };
     let schema = walk.schema(schema, "")?;
     Ok(Checked {
         schema,
         warnings: walk.warnings,
+        one_ofs: walk.one_ofs,
     })
 }
 
 struct Walk {
     strict: bool,
     warnings: Vec<ConstraintWarning>,
+    one_ofs: Vec<String>,
 }
 
 impl Walk {
@@ -155,6 +162,9 @@ impl Walk {
                 let Value::Array(items) = value else {
                     return Err(not_a(key, "an array of schemas", at));
                 };
+                if key == "oneOf" {
+                    self.one_ofs.push(at.to_owned());
+                }
                 let mut out = Vec::with_capacity(items.len());
                 for (index, item) in items.iter().enumerate() {
                     out.push(self.schema(item, &format!("{here}/{index}"))?);
@@ -178,7 +188,7 @@ impl Walk {
                 at: at.to_owned(),
             });
         }
-        self.warnings.push(ConstraintWarning {
+        self.warnings.push(ConstraintWarning::Ignored {
             keyword,
             at: at.to_owned(),
         });
@@ -262,7 +272,10 @@ mod tests {
             .unwrap()
             .warnings
             .into_iter()
-            .map(|w| (w.keyword, w.at))
+            .map(|warning| match warning {
+                ConstraintWarning::Ignored { keyword, at } => (keyword, at),
+                other => panic!("the schema check only ignores keywords: {other:?}"),
+            })
             .collect()
     }
 

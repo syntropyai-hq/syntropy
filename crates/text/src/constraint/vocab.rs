@@ -13,7 +13,8 @@ pub type TokenId = u32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VocabToken {
     /// A token that stands for these bytes of text. A byte-level token may hold part of a UTF-8
-    /// character.
+    /// character. One that starts with byte `0xFF`, which no UTF-8 text holds, is never allowed in
+    /// a constrained output.
     Text(Vec<u8>),
     /// A special token, such as an end-of-turn or tool-call marker, by its name. Text never
     /// matches it; a grammar can only produce it as itself.
@@ -37,9 +38,6 @@ pub enum VocabularyError {
     TooLarge(usize),
     /// The end-of-sequence token is not in the vocabulary.
     EosOutOfRange { eos: TokenId, len: usize },
-    /// A text token of more than one byte starts with `0xFF`. No UTF-8 text holds that byte, and
-    /// the engine's trie marks special tokens with it.
-    MarkerByte(TokenId),
 }
 
 impl std::fmt::Display for VocabularyError {
@@ -53,12 +51,6 @@ impl std::fmt::Display for VocabularyError {
                 write!(
                     f,
                     "the end-of-sequence token {eos} is outside a vocabulary of {len}"
-                )
-            }
-            VocabularyError::MarkerByte(id) => {
-                write!(
-                    f,
-                    "text token {id} starts with byte 0xFF and is longer than one byte"
                 )
             }
         }
@@ -81,15 +73,6 @@ impl Vocabulary {
                 eos,
                 len: tokens.len(),
             });
-        }
-        for (id, token) in tokens.iter().enumerate() {
-            if let VocabToken::Text(bytes) = token
-                && bytes.len() > 1
-                && bytes[0] == 0xFF
-            {
-                // `id` fits a `TokenId`: the length check above passed.
-                return Err(VocabularyError::MarkerByte(id as TokenId));
-            }
         }
         let digest = digest(&tokens, eos);
         Ok(Vocabulary {
@@ -158,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vocabulary_checks_its_end_token_and_marker_bytes() {
+    fn a_vocabulary_checks_its_end_token() {
         assert_eq!(
             Vocabulary::new(vec![], 0).unwrap_err(),
             VocabularyError::Empty
@@ -167,12 +150,13 @@ mod tests {
             Vocabulary::new(vec![text("a")], 1).unwrap_err(),
             VocabularyError::EosOutOfRange { eos: 1, len: 1 }
         );
+        // Text tokens that start with 0xFF, which no UTF-8 text holds, are kept; the engine never
+        // allows one in a constrained output.
         let marker = VocabToken::Text(vec![0xFF, b'x']);
         assert_eq!(
-            Vocabulary::new(vec![text("a"), marker], 0).unwrap_err(),
-            VocabularyError::MarkerByte(1)
+            Vocabulary::new(vec![text("a"), marker], 0).unwrap().len(),
+            2
         );
-        // A single 0xFF byte is a byte-fallback token, not a marker.
         let byte = VocabToken::Text(vec![0xFF]);
         let vocab = Vocabulary::new(vec![byte, VocabToken::Special("end".into())], 1).unwrap();
         assert_eq!(vocab.len(), 2);
