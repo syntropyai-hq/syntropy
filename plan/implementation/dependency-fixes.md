@@ -547,6 +547,14 @@ DIST-E5-T14 (M1a) models the commit-then-reveal pairing exchange. Its exit froze
 | DIST-E5-T14's exit and criterion freeze the pairing fields (`commit` 32 B, `nonce_k` 16 B, `nonce_c` 16 B), their order with the reveal only after the challenge, and golden vectors for the commitment and the SAS; "golden vectors for the three messages" moves to DIST-E5-T03, whose criteria now check the messages' pairing fields and SAS against the spike's vectors | DIST-E5-T14, DIST-E5-T03 | R9 | DIST-E5-T03 builds the three messages and already reaches DIST-E8-T12, DIST-E2-T05, DIST-E4-T14 and PLC-E1-T09. Its Implements cell gains RFC-0030 §6.7, which defines the messages |
 | DIST-E5-T03 → DIST-E2-T06 | DIST-E5-T03 | R9 | `PairChallenge` carries `cluster_id`, and the SAS covers it. DIST-E2-T06 derives `ClusterId`, and DIST-E5-T03 did not reach it. DIST-E2-T06 does not reach DIST-E5-T03, so the edge adds no cycle |
 
+## PROD-E1-T03's layering inputs (2026-10-22)
+
+PROD-E1-T03's redaction criterion names cases that only PROD-E1-T02's layering produces, so the task now depends on it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T03 → PROD-E1-T02 | PROD-E1-T03 | R9 | Three of PROD-E1-T03's cases use PROD-E1-T02's outputs: values from `--set`, values from the `SYNTROPY_A__B` mapping, and the warning for an unknown `SYNTROPY_*` variable. PROD-E1-T02 depends only on PROD-E1-T01, so the edge adds no cycle, and it runs M0b → M0a |
+
 ## DIST-E4-T01: the membership core's dependencies (2026-10-22)
 
 DIST-E4-T01 could not be finished as written. Its criteria need the simulator (QUAL-E8-T01) and the CBOR envelope of RFC-0030 §5.2 (DIST-E8-T12), and the `MembershipInput` and `MembershipOutput` enums of RFC-0030 §5.10 carry types other tasks define. Its only edge was to QUAL-E3-T01. Taking `RankKey` from the election core would have been a cycle, because DIST-E10-T01 depends on DIST-E4-T01. These are plan corrections under R2 and R9, approved by the lead running the task. DIST-E4-T01 is now blocked by the new edges.
