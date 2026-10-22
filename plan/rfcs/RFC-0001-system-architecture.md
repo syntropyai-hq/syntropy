@@ -1116,7 +1116,7 @@ Op selection per device (RFC-0040 §6, ADR-0401). For each op in a stage's step 
 
 ### 5.8 `Transport`, frames and sequence control (`net`)
 
-*Note 2026-10-22 (DIST-E1-T14): these types live in `core`.* `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame` and `TokenEntry` below, and `TraceContext`, are defined in `core`. `net` encodes them on the wire (RFC-0031 §6.3, §6.5, §6.6) without defining them, as RFC-0060 §5.5's note does for `ParityTapSpec`. Rule 3 (§4.2) keeps `exec` and `sched` off `net`, yet the head's and tail's step loops read these types from the M0 rings: PLC-E8-T01, PLC-E9-T02, PLC-E9-T03 and PLC-E9-T16. The `Transport` trait, `Channel` and `ActivationFrame` stay in `net`. §5.13 and §18.22 record the move, for the maintainers to confirm.
+*Note 2026-10-22 (DIST-E1-T14): these types live in `core`.* `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame` and `TokenEntry` below, and `TraceContext`, are defined in `core`. `net` encodes them on the wire (RFC-0031 §6.3, §6.5, §6.6) without defining them, as RFC-0060 §5.5's note does for `ParityTapSpec`. Rule 3 (§4.2) keeps `exec` and `sched` off `net`, yet the head's and tail's step loops read these types from the M0 rings: PLC-E8-T01, PLC-E9-T02, PLC-E9-T03 and PLC-E9-T16. The `Transport` trait, `Channel` and `ActivationFrame` stay in `net`. So do its zero-copy codec views, under names of their own, since §5.13 gives each type one owner. `frame::Token<'a>` is a `Token` frame's view of a `TokenFrame`. `frame::TokenEntryView<'a>`, renamed from the `TokenEntry<'a>` DIST-E8-T03 built, is one entry's view: it converts to the owned `TokenEntry` and is encoded from one. `net`'s `Finish` becomes `core`'s `FinishReason`, whose `Error { domain, code }` is the wire's numeric form of §10's `ErrorCode`. The one `TraceContext` keeps `net`'s field names, `version`, `trace_id`, `span_id` and `flags`, where `span_id` is the sender's span, RFC-0053 §3.2's parent span. §5.13 and §18.22 record the move, for the maintainers to confirm.
 
 ```rust
 /// A data-plane transport backend (ADR-0011). The solver picks one per hop from measured α
@@ -1569,7 +1569,7 @@ pub enum ErrorClass {
 | `KernelProvider`, `OpKey` | kernels | 0040 | 0042 (numerics), 0012 (dispatch), 0020 (segments, registrar) |
 | `Transport`, `Channel` | net | 0031 | 0034 (encryption), 0032 |
 | `ActivationFrame`, `EmbeddingResult` | net | 0031 (layout) | 0032, 0012 (semantics), 0022 and 0043 (side-channel items), 0050 (`EmbeddingResult`) |
-| `TokenFrame`, `TokenEntry` | core (revised 2026-10-22, was net; §5.8's note) | 0031 (layout) | 0032, 0012 (semantics), 0022 (side-channel items) |
+| `TokenFrame`, `TokenEntry`, `FinishReason` | core (revised 2026-10-22, was net; §5.8's note); `net` keeps the borrowed views `Token<'a>` and `TokenEntryView<'a>` | 0031 (layout) | 0032, 0012 (semantics), 0022 (side-channel items) |
 | `SequenceControl`, `SequenceOpen`, `SequenceMeta` | core (revised 2026-10-22, was net; §5.8's note) | 0032 | 0011 (routing fields), 0050 (`SamplingParams`, `SequenceLimits`), 0060 (`parity`) |
 | `TraceContext` | core (added 2026-10-22; §5.8's note) | 0053 (semantics), 0031 (layout) | — |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
@@ -2806,4 +2806,4 @@ DIST-E7-T23 pins iroh 1.4.1 in `net`. The maintainers decided on 2026-10-22 how 
 
 | Change | Sections touched | Reason |
 |---|---|---|
-| `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame`, `TokenEntry` and `TraceContext` live in `core`, not `net`; `net` encodes them without defining them | §5.8 (dated note), §5.13; RFC-0053 §3.2 (dated note) | rule 3 (§4.2) keeps `exec` and `sched` off `net`, and the head's and tail's step loops read these types from the M0 rings (DIST-E1-T14, which defines them). For the maintainers to confirm |
+| `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame`, `TokenEntry`, `FinishReason` and `TraceContext` live in `core`, not `net`; `net` encodes them without defining them, and keeps its zero-copy views under names of their own (`Token<'a>`, `TokenEntryView<'a>`) | §5.8 (dated note), §5.13; RFC-0053 §3.2 (dated note) | rule 3 (§4.2) keeps `exec` and `sched` off `net`, and the head's and tail's step loops read these types from the M0 rings (DIST-E1-T14, which defines them). For the maintainers to confirm |
