@@ -639,3 +639,29 @@ DIST-E2-T07's task text said fingerprints are "shown by `identity show`", but `i
 |---|---|---|---|
 | Added DIST-E2-T09 (`identity show` prints the six-word fingerprints, M3) → DIST-E2-T01, DIST-E2-T07, DIST-E2-T06, PROD-E5-T03, PROD-E6-T08; DIST-E2-T07's task text drops "shown by `identity show`" | DIST-E2-T07, DIST-E2-T09 | R9 | DIST-E2-T07 builds the fingerprint; showing it needs the command (DIST-E2-T01, PROD-E6-T08) and the three keys it shows: the node key (DIST-E2-T01), `ClusterId` (DIST-E2-T06) and the local CA's certificate (PROD-E5-T03) |
 | PROD-E5-T10 → DIST-E2-T09 | PROD-E5-T10 | R9 | its criterion, "the fingerprint matches `syntropy identity show`", needs `identity show` to print the CA's fingerprint |
+
+## Sequence control types and the codec rows around DIST-E8-T05 (2026-10-22)
+
+DIST-E8-T05 (M2) encodes `SequenceControl` bodies, but no task defined the types. That covers RFC-0001 §5.8's `SequenceControl`, `SequenceOpen`, `SamplingParams`, `SequenceLimits`, `Priority`, `PrefixRef`, `CancelReason`, `TokenFrame` and `TokenEntry`, and RFC-0032 §3.6's additions and `SequenceMeta`. Every row that names them uses them, five of them in M0a: the `local_sequences` ring's producer and fake runner, the one-stage lifecycle, the sampler and the stop limits. `SequenceOpen::parity` is used in M0a too. The types are plain data, so one new M0a task defines them in `core`. It sits in DIST because RFC-0032 owns `SequenceControl`, and it writes `core` as PLC-E9-T26 and QUAL-E5-T19 do. `SequenceOpen` holds `ExactnessPolicy`, which PROD-E1-T04 put in `core` (#1663). So PROD-E1-T04, already done, moves to M0a, and the new task's edge to it keeps R6.
+
+The same check over the sibling codec rows found these gaps:
+- DIST-E8-T04 and DIST-E8-T09 encode TIER's `KvHeadroom` and `KvChunkDesc` without an edge to TIER-E6-T02.
+- DIST-E8-T06 encodes QUAL-E5-T19's tap types without an edge.
+- Three criteria need a later task that itself depends on the codec, so under R9 each moves there:
+  - DIST-E8-T05's "end to end and through recovery";
+  - DIST-E8-T06's simulated-pipeline driver check;
+  - DIST-E8-T09's import rejection.
+
+These are plan corrections under R9 and R6, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E1-T13 (M0a) → PLC-E9-T26, PROD-E1-T04, QUAL-E5-T19: the sequence control and token types in `core`, with RFC-0032 §3.6's additions as defaulted fields and RFC-0053 §3.2's `TraceContext` | DIST-E1-T13 | R9 | no task defined RFC-0001 §5.8's sequence types, and M0a tasks use them |
+| PROD-E1-T04 M0b → M0a | PROD-E1-T04 | R6 | DIST-E1-T13's `SequenceOpen` holds `ExactnessPolicy`. PROD-E1-T04 is done (#1663), and its one dependency, PROD-E1-T01, is M0a |
+| PROD-E2-T02, QUAL-E3-T18, PLC-E8-T01, PLC-E9-T02, PLC-E9-T03, PLC-E9-T16 → DIST-E1-T13 | PROD-E2-T02, QUAL-E3-T18, PLC-E8-T01, PLC-E9-T02, PLC-E9-T03, PLC-E9-T16 | R9 | each criterion uses `SequenceOpen`, `SequenceControl`, `TokenFrame`, `SamplingParams`, `SequenceLimits` or `SequenceOpen::parity` |
+| DIST-E8-T05 → DIST-E1-T13, QUAL-E5-T19; its task text names the types it encodes, not ones it adds | DIST-E8-T05 | R9 | the codec encodes the types DIST-E1-T13 defines, `parity` among them |
+| DIST-E8-T05's "a client-seeded `n = 2` request carries `choice_index` 0 and 1 end to end and through recovery" becomes "`choice_index` 0 and 1 survive encoding a `SequenceOpen` and the `SequenceMeta` built from it". The request end to end moves to PROD-E2-T06 (→ DIST-E1-T13), and recovery moves to DIST-E14-T08 (→ DIST-E1-T13) | DIST-E8-T05, PROD-E2-T06, DIST-E14-T08 | R9 | PROD-E2-T06 builds `n > 1` requests and DIST-E14-T08 resumes sequences from the ingress transcript; both reach the codec through their own edges, and the codec reaches neither |
+| DIST-E8-T04 → TIER-E6-T02, PLC-E9-T26 | DIST-E8-T04 | R9 | `KV_HEADROOM` carries `KvHeadroom` and `SESSION_SAVED` a `SessionId`. Page keys and the manifest hash travel as bytes and need no edge |
+| DIST-E8-T06 → QUAL-E5-T19; its criterion "through a 2-stage pipeline in the simulator the parity driver computes `KL_K` and `KL_tail` from the tap, and QUAL-E5-T07's tightness and planted rare-row checks pass when driven through it" moves to QUAL-E5-T15 (→ QUAL-E5-T07, QUAL-E8-T04, QUAL-E8-T06) | DIST-E8-T06, QUAL-E5-T15 | R9 | the tap block holds `TapMode` and `LogitTap`. The check needs `Gather` taps over a `Tap` channel and a multi-stage simulator. QUAL-E5-T15 builds the former, depends on DIST-E8-T06, and can take the simulator edges |
+| DIST-E8-T09 → TIER-E6-T02; its "an import with a mismatched settings hash or chunk hash is rejected (with TIER)" moves to TIER-E7-T11, whose "mismatched settings are rejected" now names both hashes, and DIST-E8-T09 keeps the round trip of both | DIST-E8-T09, TIER-E7-T11 | R9 | `KvChunk` carries `KvChunkDesc`'s fields, and the import is TIER-E7-T11's, which depends on DIST-E8-T09 |
+
