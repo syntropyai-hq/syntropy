@@ -166,6 +166,8 @@ paths = ["docs/**", "plan/**", "*.md"]
 - `ci-gate` runs the base branch's `cargo xtask ci ci-gate` (§2.2 note), which reads each job's result from the `needs` context. Beyond the row above, it fails when `changes` did not succeed, when a job `changes` listed was skipped, and when `changes` lists a job that `ci-gate` does not wait for. It runs even in a cancelled run, because a skipped `ci-gate` would report success. Its summary names the tasks that add the planned jobs' suites.
 - The hosted runners are pinned by label: `ubuntu-24.04`, `macos-26` and `windows-2025`.
 
+*Note, 2026-10-22 (QUAL-E1-T31).* `lint` will also run rustdoc over the workspace with `-D warnings` (`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`), so a broken or ambiguous intra-doc link fails a PR. Until then no gate checks the docs, which is how #1666's links broke unnoticed. QUAL-E1-T31 adds the step after #1666's fix lands, and keeps `lint` within its budget or moves the step to a job of its own.
+
 #### 2.4 Platform promises to jobs
 
 | ADR-0020 row | PR | Nightly | Weekly | RC |

@@ -745,3 +745,11 @@ RFC-0031 §6.5 splits a `Token` step that is larger than the channel's slot into
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E8-T06 gains the `Token` step split: parts at entry boundaries, one entry's tap block across parts, capability bit 15 `TOKEN_PARTS` (RFC-0031 §6.5, §10). It also gains a round-trip criterion across parts and the refusal of malformed parts | DIST-E8-T03, DIST-E8-T06 | R9 | DIST-E8-T03 builds the part fields, and the split needs the tap block's layout, which DIST-E8-T06 owns. DIST-E8-T06 already depends on DIST-E8-T03, so no edge changes |
+
+## QUAL-E1-T31: rustdoc in `lint` (2026-10-22)
+
+#1666 found broken intra-doc links in `core`, `graph` and `manifest` that no gate caught, because no CI job runs rustdoc. No task covered adding it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added QUAL-E1-T31 (M0a) → QUAL-E1-T02, QUAL-E1-T06 | QUAL-E1-T31 | Definition of done | the step is a `lint` addition, so it needs `xtask`'s job framework and `pr.yml`'s `lint` job, both M0a. It is a new row and not part of QUAL-E1-T09, whose scope is workflow security. It must land after #1743, #1666's fix, or it fails on `main` |
