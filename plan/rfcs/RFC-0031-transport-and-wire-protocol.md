@@ -581,7 +581,7 @@ Tokens travel tail → head (ring return, all of the step's sequences) and tail 
 - **Chain or tree.** A tree has one node per drafted token, so `draft_nodes` equals `n_draft` for a tree as for a chain, and the entry cannot say which it holds. The extension's flags bit2 `DRAFT_TREE` says it for the frame:
   - When it is set, every entry with a draft carries its tree. A chain in such a frame is written as a tree whose nodes each have the one before as parent.
   - When it is clear, no entry carries a tree, and each draft is a chain.
-  - A node's `parent` is an earlier node of the same draft, or 0xFFFF for the last accepted token, as in §6.3. A receiver refuses an entry whose `draft_nodes` is not `n_draft`.
+  - A node's `parent` is an earlier node of the same draft, or 0xFFFF for the last accepted token, as in §6.3. Its `depth` is 1 under the last accepted token and its parent's plus one otherwise. A receiver refuses any other `parent` or `depth`, and an entry whose `draft_nodes` is not `n_draft`.
   - Bits 3–15 are reserved.
 - **Copies.** A frame sets exactly one of `RING_RETURN` and `TO_INGRESS`. A receiver refuses a ring-return frame that carries a tap block, and an ingress frame that carries a draft. Of the `Activation` items (types 1–7), only `TRACE` may travel on a `Token` frame, so a receiver refuses the rest.
 - **Trace context.** `TRACE` (§6.3) joins the types a `Token` frame may carry, on both copies, so the return path from the tail to the head and to ingress appears as a hop span (RFC-0053 §3.2, RFC-0001 §13).

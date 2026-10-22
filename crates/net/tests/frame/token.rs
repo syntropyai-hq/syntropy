@@ -750,6 +750,18 @@ fn a_token_frame_breaking_a_rule_is_refused_with_a_classified_error() {
             field("parent", 1),
         ),
         case(
+            "a depth that is not its parent's plus one",
+            tree(),
+            |r| r.entries[0].tree[2].1 = 5,
+            field("depth", 5),
+        ),
+        case(
+            "a node under the last accepted token at depth 0",
+            tree(),
+            |r| r.entries[0].tree[0].1 = 0,
+            field("depth", 0),
+        ),
+        case(
             "a parent after its child",
             tree(),
             |r| r.entries[0].tree[1].0 = 2,
@@ -1111,17 +1123,19 @@ fn generate(
         2 => Some(Finish::Cancelled),
         _ => None,
     };
-    let tree = if trees && n_draft > 0 {
-        (0..n_draft)
-            .map(|i| TreeNode {
-                parent: (i > 0).then(|| (rng % i as u64) as u16),
-                depth: i as u8,
+    let mut tree: Vec<TreeNode> = Vec::new();
+    if trees && n_draft > 0 {
+        for i in 0..n_draft {
+            let parent = (i > 0).then(|| (rng % i as u64) as u16);
+            // 1 under the last accepted token, else one below the parent.
+            let depth = parent.map_or(1, |p| tree[usize::from(p)].depth + 1);
+            tree.push(TreeNode {
+                parent,
+                depth,
                 flags: (i % 2) as u8,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+            });
+        }
+    }
     Owned {
         seq: SequenceId {
             ingress: if on_y { Y } else { X },

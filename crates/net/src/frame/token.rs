@@ -235,6 +235,16 @@ impl TokenEntry<'_> {
                 {
                     return Err(bad("parent", node.parent.unwrap_or(ABSENT)));
                 }
+                // 1 under the last accepted token, else one below the parent (review-net N2).
+                let depth = match node.parent {
+                    None => Some(1),
+                    Some(parent) => tree
+                        .get(usize::from(parent))
+                        .and_then(|p| p.depth.checked_add(1)),
+                };
+                if depth != Some(node.depth) {
+                    return Err(bad("depth", node.depth));
+                }
             }
         }
         Ok(())
@@ -784,7 +794,7 @@ impl<'a> Token<'a> {
     ///   but `TRACE`;
     /// - each entry's logprobs are `n_tokens` strides of the chosen logprob and `logprob_k`
     ///   alternatives, and a draft tree has a node per drafted token, each node's parent before
-    ///   it;
+    ///   it and its depth one below its parent's, or 1 under the last accepted token;
     /// - a frame whose drafts are trees has a tree for every draft;
     /// - side items are `TRACE` or not `Activation` items (types 1–7), and name an entry of the
     ///   frame;
