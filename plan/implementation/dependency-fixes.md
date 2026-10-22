@@ -640,6 +640,34 @@ DIST-E2-T07's task text said fingerprints are "shown by `identity show`", but `i
 | Added DIST-E2-T09 (`identity show` prints the six-word fingerprints, M3) → DIST-E2-T01, DIST-E2-T07, DIST-E2-T06, PROD-E5-T03, PROD-E6-T08; DIST-E2-T07's task text drops "shown by `identity show`" | DIST-E2-T07, DIST-E2-T09 | R9 | DIST-E2-T07 builds the fingerprint; showing it needs the command (DIST-E2-T01, PROD-E6-T08) and the three keys it shows: the node key (DIST-E2-T01), `ClusterId` (DIST-E2-T06) and the local CA's certificate (PROD-E5-T03) |
 | PROD-E5-T10 → DIST-E2-T09 | PROD-E5-T10 | R9 | its criterion, "the fingerprint matches `syntropy identity show`", needs `identity show` to print the CA's fingerprint |
 
+## COMP-E10-T01's HTTP range source split out (2026-10-22)
+
+COMP-E10-T01 could not start: its HTTP range implementation needs an HTTPS client, which no maintainer has approved, and a ruling on which crate links it (issue #216). The trait, the local-file source, coalescing, the header cap and the replay of recorded Hub fixtures need neither, and COMP-E10-T02 and COMP-E10-T04 need only those.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T01 keeps the `RangeSource` trait, the local-file and recorded-fixture replay sources, coalescing and the header cap; its first criterion reads "from a recorded Hub fixture replayed through the replay source" | COMP-E10-T01 | R9 | the criterion compares bytes, which a recorded fixture gives without a live HTTP client |
+| Added COMP-E10-T14 (M0b), the HTTP range source → COMP-E10-T01; gate: OQ-MF-18 | COMP-E10-T14 | R9 | the client crate and its linking crate are a maintainer decision (AGENTS.md: new direct dependencies; RFC-0001 §4.2 rule 6). OQ-MF-18 lists the options and a recommended default, and leaves the choice to the maintainers |
+| COMP-E12-T02 → COMP-E10-T14 in place of COMP-E10-T01 | COMP-E12-T02 | R9 | the Hub client issues HTTP range requests, so it needs the HTTP source, not only the trait. COMP-E10-T02 and COMP-E10-T04 keep COMP-E10-T01: their criteria read recorded fixtures |
+
+## DIST-E10-T08's named cases and CI wiring (2026-10-22)
+
+DIST-E10-T08 (M2) asked for "every RT-DIST scenario as a named case". No list of RT-DIST scenarios exists in the plan: the label appears only in that row, RFC-0032's M2 rollout row and ADR-0304's revision of 2026-10-20, all from the first plan commit. Its criterion "the job gates changes to `cluster`" also needs QUAL-E1-T07's affected-job rules, which DIST-E10-T08 did not depend on. QUAL-E1-T07 is M0a, so it cannot take the wiring without depending on M2 work. This pass names the cases and applies R9 to the wiring.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "Every RT-DIST scenario" becomes each property of RFC-0032 Testing's "Election safety and liveness" row, as a named case; ADR-0304 and RFC-0032's rollout get dated notes saying so | DIST-E10-T08 | Definition of done | the label names no list; that row holds the 13 properties the model must check, the row's own six among them |
+| "The job gates changes to `cluster`" moves to the new DIST-E10-T09 (M2) → DIST-E10-T08, QUAL-E1-T07. DIST-E10-T08 runs a bounded 3-node configuration in the default tests and registers the full 3–4-node run as the `test-release` xtask suite `election-model` | DIST-E10-T08, DIST-E10-T09 | R9 | the rule that runs a suite on changes to `cluster` is a `ci/jobs.toml` entry, which needs QUAL-E1-T07's rules engine; the new task sits in DIST-E10-T08's milestone, so no edge points to a later one |
+
+## OQ-NET-34 and its spike (2026-10-22)
+
+DIST-E10-T08's model check found that a supported older proof can depose a lone survivor's unsupported election at heal and roll back an entry acknowledged `replicated = true` under RFC-0032 §6.3 as revised by OQ-NET-33, when the command's originator was lost with its disk. OQ-NET-34 holds the question and recommends comparing an incoming proof against the strongest supported election in the receiver's own chain. That rule changes §7.5, so it is model-checked before the heal code is written.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
+| DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |
+
 ## QUAL-E9-T01's IPC loading and release-artefact criterion (2026-10-22)
 
 QUAL-E9-T01 (M1a) builds the fault points in `syntropy-obs`. Two parts of its row need work from tasks it does not depend on: pushing a plan over IPC needs DIST-E1-T03's command channel and a message RFC-0001 §3.5 does not define, and a scan of a `release` artefact needs a job that builds one.

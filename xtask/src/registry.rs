@@ -559,6 +559,34 @@ pub const SUITES: &[Entry] = &[
         }],
         pending: &[],
     },
+    Entry {
+        name: "election-model",
+        summary: "L2: the full model check of coordinator election, lease, replication and heal \
+                  (DIST-E10-T08) on 3 and 4 nodes with partitions and message loss, \
+                  release-optimised",
+        defined_in: "RFC-0032 Testing and validation",
+        params: &[],
+        // The default tests check the bounded 3-node configuration; the dev profile is too slow
+        // for the full one. `test-release` is RFC-0060 §1.3's release-optimised test profile.
+        // `--nocapture` prints each scenario's state count against its cap.
+        steps: &[Step {
+            name: "test",
+            action: Action::Cargo(&[
+                "test",
+                "--profile",
+                "test-release",
+                "--locked",
+                "--package",
+                "syntropy-cluster",
+                "--test",
+                "election",
+                "--",
+                "--ignored",
+                "--nocapture",
+            ]),
+        }],
+        pending: &[],
+    },
 ];
 
 /// The entry called `name`, if the registry has one.
@@ -783,6 +811,17 @@ mod tests {
             suite.steps[0].action.display(),
             "cargo test --profile test-release --locked --package syntropy-cluster --test pairing \
              -- --ignored"
+        );
+    }
+
+    #[test]
+    fn election_model_runs_the_ignored_election_tests_release_optimised() {
+        let suite = find(SUITES, "election-model").expect("election-model is registered");
+        assert_eq!(suite.steps.len(), 1);
+        assert_eq!(
+            suite.steps[0].action.display(),
+            "cargo test --profile test-release --locked --package syntropy-cluster --test election \
+             -- --ignored --nocapture"
         );
     }
 
