@@ -28,7 +28,8 @@
 //!
 //! **A figure is read through [`Preset::figure`]**, which refuses one that is `unknown` or
 //! absent, so no fake can take a figure the research leaves open for a zero or a default. A
-//! scenario supplies such a figure itself, labelled.
+//! scenario supplies such a figure itself, labelled, in its node's `set`
+//! ([`NodeSpec::figure`](super::scenario::NodeSpec::figure)).
 //!
 //! Other figures, such as peak rates, may be added beside them. A `w_eff.*` key outside the set
 //! is refused, so a misspelt tier or class cannot pass for a figure. `cargo xtask ci lint`'s
@@ -40,6 +41,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
@@ -466,4 +468,27 @@ pub fn by_name() -> BTreeMap<String, Preset> {
             (preset.name.clone(), preset)
         })
         .collect()
+}
+
+/// The compiled-in preset `name`, loaded once.
+pub fn get(name: &str) -> Option<&'static Preset> {
+    static ALL_PRESETS: OnceLock<BTreeMap<String, Preset>> = OnceLock::new();
+    ALL_PRESETS.get_or_init(by_name).get(name)
+}
+
+/// Every figure key some kind requires: the device and drive keys, the discrete GPU's host link,
+/// and every tier's W_eff for each kernel class.
+pub fn all_keys() -> Vec<String> {
+    let mut keys: Vec<String> = DEVICE_KEYS
+        .iter()
+        .chain(DRIVE_KEYS.iter())
+        .chain([DISCRETE_GPU_KEY].iter())
+        .map(|key| (*key).to_owned())
+        .collect();
+    for tier in ["vram", "unified", "host_pinned", "host_pageable"] {
+        for class in KERNEL_CLASSES {
+            keys.push(w_eff_key(tier, class));
+        }
+    }
+    keys
 }

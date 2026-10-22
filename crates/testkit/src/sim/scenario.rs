@@ -9,12 +9,21 @@
 //! - the seed counts are within the caps of RFC-0060's "Simulator throughput": 64 per PR and
 //!   4,096 nightly;
 //! - node IDs are unique, and every link joins nodes the file declares;
-//! - a workload length range runs low to high, and `resume_within` is a formula or a duration.
+//! - a workload length range runs low to high, and `resume_within` is a formula or a duration;
+//! - every figure a node supplies in its `set` is for one of its devices or its drive, is a key
+//!   of that preset, and is labelled and sourced;
+//! - every figure named in `needs` is known, from its preset or the node's `set`, for every
+//!   device and drive whose kind has it.
+//!
+//! A run reads a device's figures only through [`NodeSpec::figure`]: the node's own, or the
+//! preset's known figure. A figure the research leaves `unknown` is an error there, never a
+//! default, so a scenario that runs on one must supply it, and one that lists it in `needs`
+//! fails at load if it does not.
 //!
 //! What other tasks interpret stays as text here: a fault's `at`, `action` and `target`
 //! (QUAL-E9-T03), the model reference, and a link's preset name, which the fabric's presets
 //! resolve when the cluster model builds the links (QUAL-E8-T02). Device and drive names are
-//! checked against [`presets`](super::presets).
+//! checked against [`presets`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -22,7 +31,7 @@ use std::fmt;
 use serde::Deserialize;
 use syntropy_config::Duration;
 
-use super::presets::{self, PresetKind};
+use super::presets::{self, FigureError, Known, PresetKind};
 
 /// The most seeds a PR run takes per scenario (RFC-0060 "Simulator throughput").
 pub const PR_SEED_CAP: u32 = 64;
@@ -80,6 +89,10 @@ pub struct Scenario {
     pub workload: Workload,
     #[serde(default)]
     pub faults: Vec<FaultSpec>,
+    /// The figure keys the run reads (RFC-0060 §8.4's timing): each must be known, or supplied
+    /// in a node's `set`, for every device and drive whose kind has the key.
+    #[serde(default)]
+    pub needs: Vec<String>,
     pub expect: Expect,
 }
 
@@ -110,8 +123,9 @@ impl Default for Seeds {
     }
 }
 
-/// One simulated node: its devices and its drive, by preset name.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+/// One simulated node: its devices and its drive, by preset name, and the figures the scenario
+/// supplies for them.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeSpec {
     pub id: String,
@@ -120,6 +134,35 @@ pub struct NodeSpec {
     /// The drive preset, such as `gen4-990pro-class`.
     #[serde(default)]
     pub nvme: Option<String>,
+    /// Figures the scenario supplies, by device or drive preset name, then figure key, such as
+    /// `set."gpu:ada-24g".t_fixed = { value = 8, unit = "µs", label = "target", source = "…" }`.
+    /// Each is labelled and sourced like a preset's figure, and takes the place of the preset's
+    /// figure of that key on this node. Devices of one preset on one node share them.
+    #[serde(default)]
+    pub set: BTreeMap<String, BTreeMap<String, Known>>,
+}
+
+impl NodeSpec {
+    /// The figure `key` of the node's device or drive `preset`: the one the node's `set`
+    /// supplies, or else the preset's own. A figure the research leaves `unknown`, or that the
+    /// preset lacks, is an error, never a default.
+    pub fn figure(&self, preset: &str, key: &str) -> Result<&Known, FigureError> {
+        if let Some(known) = self.set.get(preset).and_then(|set| set.get(key)) {
+            return Ok(known);
+        }
+        match presets::get(preset) {
+            Some(found) => found.figure(key),
+            None => Err(FigureError::Absent {
+                preset: preset.to_owned(),
+                key: key.to_owned(),
+            }),
+        }
+    }
+
+    /// The node's device presets, then its drive's.
+    fn presets(&self) -> impl Iterator<Item = &String> {
+        self.devices.iter().chain(self.nvme.iter())
+    }
 }
 
 /// Links between every pair of the named nodes, both ways, from one fabric preset.
@@ -249,6 +292,25 @@ pub enum ScenarioError {
         name: String,
         expected: &'static str,
     },
+    /// A node's `set` names a preset that is none of the node's devices or its drive.
+    SetForAbsentPreset { node: String, preset: String },
+    /// A node's `set` supplies a key the preset does not have.
+    NotAFigure {
+        node: String,
+        preset: String,
+        key: String,
+    },
+    /// A figure a node supplies with no value, range or unit, or no source.
+    BadFigure {
+        node: String,
+        preset: String,
+        key: String,
+    },
+    /// `needs` names a key no preset kind has.
+    UnknownNeed(String),
+    /// A figure the scenario needs that is unknown or absent for a device or drive, and that the
+    /// node does not supply.
+    FigureNeeded { node: String, error: FigureError },
 }
 
 impl fmt::Display for ScenarioError {
@@ -282,6 +344,25 @@ impl fmt::Display for ScenarioError {
             ScenarioError::WrongPresetKind { name, expected } => {
                 write!(f, "`{name}` is a preset, but not {expected}")
             }
+            ScenarioError::SetForAbsentPreset { node, preset } => write!(
+                f,
+                "node `{node}` sets figures of `{preset}`, which is none of its devices or drive"
+            ),
+            ScenarioError::NotAFigure { node, preset, key } => write!(
+                f,
+                "node `{node}` sets `{key}` of `{preset}`, which is not one of that preset's figures"
+            ),
+            ScenarioError::BadFigure { node, preset, key } => write!(
+                f,
+                "node `{node}` sets `{key}` of `{preset}` without a value, a unit or a source"
+            ),
+            ScenarioError::UnknownNeed(key) => {
+                write!(f, "`needs` names `{key}`, which is no preset's figure")
+            }
+            ScenarioError::FigureNeeded { node, error } => write!(
+                f,
+                "node `{node}`: {error}; supply it in the node's `set`, labelled and sourced"
+            ),
         }
     }
 }
@@ -337,6 +418,7 @@ impl Scenario {
                 }
             }
         }
+        self.check_figures()?;
         for link in &self.links {
             if link.between.len() < 2 {
                 return Err(ScenarioError::LinkTooShort);
@@ -361,6 +443,56 @@ impl Scenario {
                 .is_some_and(|name| !name.is_empty());
             if !formula && bound.parse::<Duration>().is_err() {
                 return Err(ScenarioError::BadResumeWithin(bound.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    /// The figures nodes supply, and the ones the scenario needs.
+    fn check_figures(&self) -> Result<(), ScenarioError> {
+        for node in &self.nodes {
+            for (preset_name, figures) in &node.set {
+                let Some(preset) = node
+                    .presets()
+                    .any(|name| name == preset_name)
+                    .then(|| presets::get(preset_name))
+                    .flatten()
+                else {
+                    return Err(ScenarioError::SetForAbsentPreset {
+                        node: node.id.clone(),
+                        preset: preset_name.clone(),
+                    });
+                };
+                let required = preset.required_keys();
+                for (key, known) in figures {
+                    let at = || (node.id.clone(), preset_name.clone(), key.clone());
+                    if !required.contains(key) && !preset.figures.contains_key(key) {
+                        let (node, preset, key) = at();
+                        return Err(ScenarioError::NotAFigure { node, preset, key });
+                    }
+                    if known.problem().is_some() {
+                        let (node, preset, key) = at();
+                        return Err(ScenarioError::BadFigure { node, preset, key });
+                    }
+                }
+            }
+        }
+        let every_key = presets::all_keys();
+        for key in &self.needs {
+            if !every_key.contains(key) {
+                return Err(ScenarioError::UnknownNeed(key.clone()));
+            }
+            for node in &self.nodes {
+                for name in node.presets() {
+                    let has_key = presets::get(name)
+                        .is_some_and(|preset| preset.required_keys().contains(key));
+                    if has_key && let Err(error) = node.figure(name, key) {
+                        return Err(ScenarioError::FigureNeeded {
+                            node: node.id.clone(),
+                            error,
+                        });
+                    }
+                }
             }
         }
         Ok(())

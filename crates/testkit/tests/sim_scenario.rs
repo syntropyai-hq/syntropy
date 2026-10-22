@@ -6,6 +6,7 @@
 //! - An unknown checker name in `[expect]` is rejected at load.
 
 use syntropy_config::Duration;
+use syntropy_testkit::sim::presets::{FigureError, Label};
 use syntropy_testkit::sim::scenario::{
     CHECKERS, LengthDist, Lengths, NumericMode, SAFETY, Scenario, ScenarioError, Seeds,
     WorkloadKind,
@@ -217,4 +218,168 @@ fn a_file_of_the_wrong_shape_is_a_parse_error() {
         "",
     );
     assert_eq!(Scenario::from_toml(&text).unwrap().seeds, Seeds::default());
+}
+
+/// A two-node scenario with `needs`, and each node's own lines, such as a `set`.
+fn with_figures(needs: &str, pc: &str, mac: &str) -> String {
+    format!(
+        r#"
+name = "figures"
+numeric = "digest"
+model = "fixture:nano"
+virtual_duration = "1s"
+needs = {needs}
+workload = {{ kind = "closed_loop", streams = 1, prompt = 16, gen = 16 }}
+
+[[nodes]]
+id = "pc"
+devices = ["gpu:ada-24g", "cpu:ddr5-2ch-128g"]
+nvme = "gen4-990pro-class"
+{pc}
+
+[[nodes]]
+id = "mac"
+devices = ["gpu:apple-max-128g-unified"]
+nvme = "apple-internal"
+{mac}
+
+[expect]
+checkers = ["safety"]
+"#
+    )
+}
+
+/// A supplied figure: a value the scenario chooses, labelled `target`.
+fn supplied(preset: &str, key: &str, value: u32) -> String {
+    format!(
+        "[nodes.set.\"{preset}\".\"{key}\"]\nvalue = {value}\nunit = \"µs\"\nlabel = \"target\"\nsource = \"chosen for this test\"\n"
+    )
+}
+
+/// A scenario that needs a figure the research leaves `unknown` loads only if each node that has
+/// such a device supplies it, labelled; and the figure it reads is the supplied one.
+#[test]
+fn a_needed_unknown_figure_is_supplied_or_the_scenario_does_not_load() {
+    // Not supplied: the load refuses, naming the node, the preset and the key.
+    let error = Scenario::from_toml(&with_figures(r#"["t_fixed"]"#, "", "")).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ScenarioError::FigureNeeded {
+                node,
+                error: FigureError::Unknown { preset, key, .. },
+            } if node == "pc" && preset == "gpu:ada-24g" && key == "t_fixed"
+        ),
+        "{error}"
+    );
+    // Supplied for the pc's GPU only: now the CPU's is missing.
+    let pc_gpu = supplied("gpu:ada-24g", "t_fixed", 8);
+    let error = Scenario::from_toml(&with_figures(r#"["t_fixed"]"#, &pc_gpu, "")).unwrap_err();
+    assert!(error.to_string().contains("cpu:ddr5-2ch-128g"), "{error}");
+    // Supplied for every device that has `t_fixed`: it loads, and the run reads the values.
+    let pc = format!("{pc_gpu}{}", supplied("cpu:ddr5-2ch-128g", "t_fixed", 20));
+    let mac = supplied("gpu:apple-max-128g-unified", "t_fixed", 5_000);
+    let scenario = Scenario::from_toml(&with_figures(r#"["t_fixed"]"#, &pc, &mac))
+        .expect("every needed figure is supplied");
+    let figure = scenario.nodes[0].figure("gpu:ada-24g", "t_fixed").unwrap();
+    assert_eq!((figure.value, figure.label), (Some(8.0), Label::Target));
+    assert_eq!(
+        scenario.nodes[1]
+            .figure("gpu:apple-max-128g-unified", "t_fixed")
+            .unwrap()
+            .value,
+        Some(5_000.0)
+    );
+    // A drive's unknown is needed only of drives: the mac's internal SSD has no sustained rate.
+    let error = Scenario::from_toml(&with_figures(r#"["sustained_read"]"#, "", "")).unwrap_err();
+    assert!(
+        matches!(&error, ScenarioError::FigureNeeded { node, .. } if node == "mac"),
+        "{error}"
+    );
+    // A known figure needs nothing supplied, and only devices with the key are asked for it.
+    assert!(Scenario::from_toml(&with_figures(r#"["w_eff.vram.dense_gemv"]"#, "", "")).is_ok());
+    // A need that is no figure is refused.
+    assert_eq!(
+        Scenario::from_toml(&with_figures(r#"["w_eff.vram.dense_gem"]"#, "", "")).unwrap_err(),
+        ScenarioError::UnknownNeed("w_eff.vram.dense_gem".into())
+    );
+}
+
+/// Without `needs`, nothing is refused at load, and a run still cannot read an unknown figure
+/// silently: `figure` refuses it, and gives a supplied or known one.
+#[test]
+fn a_run_reads_figures_only_through_figure() {
+    let scenario = Scenario::from_toml(EXAMPLE).unwrap();
+    let pc = &scenario.nodes[0];
+    assert!(matches!(
+        pc.figure("gpu:ada-24g", "sigma_dev"),
+        Err(FigureError::Unknown { .. })
+    ));
+    assert!(matches!(
+        pc.figure("gpu:ada-24g", "no_such_figure"),
+        Err(FigureError::Absent { .. })
+    ));
+    assert_eq!(
+        pc.figure("gpu:ada-24g", "w_eff.vram.dense_gemv")
+            .unwrap()
+            .value,
+        Some(800.0)
+    );
+    // A supplied figure takes the place of a known one on its node only.
+    let set = supplied("gpu:ada-24g", "w_eff.vram.dense_gemv", 600);
+    let scenario = Scenario::from_toml(&with_figures("[]", &set, "")).unwrap();
+    assert_eq!(
+        scenario.nodes[0]
+            .figure("gpu:ada-24g", "w_eff.vram.dense_gemv")
+            .unwrap()
+            .value,
+        Some(600.0)
+    );
+}
+
+/// A node supplies figures only for its own presets, only keys they have, and only labelled and
+/// sourced.
+#[test]
+fn a_supplied_figure_is_labelled_sourced_and_one_of_the_nodes_presets() {
+    let cases = [
+        (
+            supplied("gpu:apple-max-128g-unified", "t_fixed", 1),
+            ScenarioError::SetForAbsentPreset {
+                node: "pc".into(),
+                preset: "gpu:apple-max-128g-unified".into(),
+            },
+        ),
+        (
+            supplied("gpu:ada-24g", "w_eff.unified.dense_gemv", 1),
+            ScenarioError::NotAFigure {
+                node: "pc".into(),
+                preset: "gpu:ada-24g".into(),
+                key: "w_eff.unified.dense_gemv".into(),
+            },
+        ),
+        (
+            supplied("gpu:ada-24g", "t_fixed", 1).replace("chosen for this test", " "),
+            ScenarioError::BadFigure {
+                node: "pc".into(),
+                preset: "gpu:ada-24g".into(),
+                key: "t_fixed".into(),
+            },
+        ),
+    ];
+    for (pc, want) in cases {
+        assert_eq!(
+            Scenario::from_toml(&with_figures("[]", &pc, "")).unwrap_err(),
+            want
+        );
+    }
+    // No label, or a label outside the four, is not a figure.
+    for pc in [
+        supplied("gpu:ada-24g", "t_fixed", 1).replace("label = \"target\"\n", ""),
+        supplied("gpu:ada-24g", "t_fixed", 1).replace("\"target\"", "\"guess\""),
+    ] {
+        assert!(matches!(
+            Scenario::from_toml(&with_figures("[]", &pc, "")).unwrap_err(),
+            ScenarioError::Parse(_)
+        ));
+    }
 }
