@@ -5,7 +5,7 @@ Scripts that read the six epic files in `../epics/`, check the task graph and wr
 | Script | Reads | Writes |
 |---|---|---|
 | `epics.py` | `../epics/*.md` | nothing; parses task rows for the other scripts |
-| `depcheck.py` | the epics | nothing in `plan/`; the summary, the problems, and optionally a JSON graph outside `plan/` |
+| `depcheck.py` | the epics, and the open-question count of `plan/open-questions.md` | nothing in `plan/`; the summary, the problems, and optionally a JSON graph outside `plan/` |
 | `deps_report.py` | `depcheck.py`'s result, `plan/open-questions.md` | the generated sections of `../dependencies.md` |
 | `trace.py` | the epics, `plan/decisions/`, `plan/rfcs/`, `plan/00-vision-and-scope.md` §7 | the generated sections of `../traceability.md` |
 | `roadmap.py` | `depcheck.py`'s result, RFC-0001 §16, `plan/open-questions.md`, vision §7 | the generated sections of `../roadmap.md`, and the milestone checklist in vision §8 |
@@ -15,6 +15,7 @@ Scripts that read the six epic files in `../epics/`, check the task graph and wr
 | `schedsim.py` | `sizing.py`, and the graph from `depcheck.py` or a `depcheck.py --graph` file | nothing; prints `[estimate]` elapsed time to each milestone exit under agent concurrency, serial lab rigs, maintainer latency and gate throughput, and the unconstrained floor |
 | `gh_sync.py` | the epics, `depcheck.py`'s edges, `sizing.py`, the D5 banned-terms list (`--banned`, kept outside the repository); needs the `gh` CLI logged in with the `repo`, `project` and `read:org` scopes (`read:org` so that members' issues read as members) | GitHub, not `plan/`: one issue per epic and task on the project board, sub-issues, labels, milestones and "blocked by" links; re-runs update only what changed |
 | `naming_check.py` | the files staged for commit or changed against a base ref, a commit message, standard input or named files; the D5 banned-terms list (`--banned`, `SYNTROPY_BANNED_TERMS` or `git config syntropy.bannedTerms`), read through `gh_sync.load_banned` | nothing; prints `path:line` for each matching line, never the term |
+| `test_depcheck.py` | – | nothing; the unit tests for `depcheck.py`'s `COUNT` problem, on throwaway registers and on the repository's own |
 | `test_naming_check.py` | – | nothing; the unit tests for `naming_check.py`, each with its own throwaway term list, and tests that run the hooks: commit-msg on messages saved with CRLF endings, and both hooks for a repository without the hooks or tools (skipped without a POSIX `sh`) |
 
 ## `epics.py`
@@ -57,6 +58,7 @@ Problems, each making the exit status 1:
 | `M0CLOSURE` | an M0 task (M0a or M0b) reaches a non-M0 task through its dependencies, or an M0a task reaches a task outside M0a. M0 and M0a are each self-contained |
 | `MULTI` | a Milestone cell that is not exactly one of `M0a`, `M0b`, `M1a`, `M1b` or `M0`–`M4`; a task that spans two milestones is split into a core task and an extension task |
 | `MALFORMED`, `DUPLICATE` | rows `epics.py` could not read |
+| `COUNT` | `plan/open-questions.md`'s "N questions are open" differs from the number of rows above `## Settled` whose first cell is an `OQ-…` ID, or an open ID is listed twice or also sits under Settled. The count drifts when two changes each add or settle a question and both edit that line, so the check counts the rows rather than trusting the sentence |
 
 Every task sits in exactly one milestone, and `MULTI` enforces it. `epics.py` still reads a cell that names several milestones, so that the checker can report it: in such a cell the first milestone counts for the `LATER` check, and an edge to a task that starts by the cell's last milestone is listed as `SPLIT` rather than `LATER`. Gated edges are skipped by the milestone checks.
 
@@ -78,6 +80,7 @@ python3 depcheck.py --quiet                # summary only
 python3 depcheck.py --only LATER,CYCLE     # list some kinds; also SPLIT, NOTE-ID, M0-TBD, TBD, GATE,
                                            # AC-LATER, SPIKE-LEAF, SPIKE-NOBOX, RIG-PATH, RIG-LATER
 python3 depcheck.py --task PLC-E4-T17      # one task's edges in both directions
+python3 depcheck.py --register FILE        # check another register's count, e.g. a test fixture
 python3 depcheck.py --graph ../../../target/plan-graph.json   # repository root, outside plan/
 ```
 

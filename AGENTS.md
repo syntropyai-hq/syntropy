@@ -36,7 +36,7 @@ The workspace, from [RFC-0001 §4](plan/rfcs/RFC-0001-system-architecture.md#4-c
 | Layer | Crates |
 |---|---|
 | 0 | `core` (IDs, units, the plan types, policy objects; plain data and pure functions), `obs`, `config` |
-| 1 | `manifest`, `kernels` (the `KernelProvider` trait and F32 reference op semantics), `io`, `net`, `ipc` |
+| 1 | `manifest`, `kernels` (the `KernelProvider` trait and F32 reference op semantics), `io`, `net`, `ipc`, `spsc` (the lock-free SPSC ring `io`, `net` and `ipc` share inside layer 1) |
 | 2 | `graph`, `kernels-cuda`, `kernels-hip`, `kernels-metal`, `kernels-vulkan`, `kernels-cpu`, `kernels-ggml`, `kernels-loader`, `tier`, `solver`, `text`, `probe`, `store` |
 | 3 | `exec`, `cluster` |
 | 4 | `sched`, `api` |
@@ -44,7 +44,7 @@ The workspace, from [RFC-0001 §4](plan/rfcs/RFC-0001-system-architecture.md#4-c
 | 6 | `cli` (the single `syntropy` binary) |
 | dev only | `testkit` (simulator, reference executor, parity harness), `bench` |
 
-Rules that will shape most changes: compute crates never depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`; the daemon never links a GPU provider or opens a GPU context; `unsafe` is confined to `kernels-*`, `io`, `tier`, `net` and `ipc`; each external system (iroh, io_uring, HiGHS, ggml, each vendor GPU runtime) is linked by exactly one crate. Packaging lives in `packaging/` and CI in `.github/`, outside the crate graph.
+Rules that will shape most changes: compute crates never depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`; the daemon never links a GPU provider or opens a GPU context; `unsafe` is confined to `kernels-*`, `io`, `tier`, `net`, `ipc` and `spsc`; each external system (iroh, io_uring, HiGHS, ggml, each vendor GPU runtime) is linked by exactly one crate. Packaging lives in `packaging/` and CI in `.github/`, outside the crate graph.
 
 ## Picking and executing a task
 
@@ -66,9 +66,9 @@ Two people, or two groups of agents, can work in parallel by taking one lane eac
 | Lane | Areas | Crates it owns |
 |---|---|---|
 | `lane:engine` | COMP, PLC, TIER | `core`, `kernels`, `kernels-*` (the providers and `kernels-loader`), `graph`, `manifest`, `exec`, `sched`, `solver`, `probe`, `tier`, `io`, `store`, `runner` |
-| `lane:harness-surface` | QUAL, PROD, DIST | `testkit`, `bench`, `xtask`, `obs`, `text`, `config`, `api`, `cli`, `daemon`, `net`, `cluster`, `ipc`, `packaging/`, `.github/` |
+| `lane:harness-surface` | QUAL, PROD, DIST | `testkit`, `bench`, `xtask`, `obs`, `text`, `config`, `api`, `cli`, `daemon`, `net`, `cluster`, `ipc`, `spsc`, `packaging/`, `.github/` |
 
-- **Shared crates.** Areas don't follow crate lines, so some crates are written from both lanes: `core` and `testkit` above all, then `text` (COMP's tokenizers, PROD's parsers) and `obs`. The owning lane lands a change to a shared crate as its own small PR, before the work that uses it, and the other lane reviews it. A task in the other lane that needs such a change, as QUAL-E3-T01 needs its determinism types in `core`, gets it from the owning lane or makes it as a small PR that the owning lane reviews. RFC-0001 §5 (core types) goes with `core`.
+- **Shared crates.** Areas don't follow crate lines, so some crates are written from both lanes: `core` and `testkit` above all, then `text` (COMP's tokenizers, PROD's parsers), `obs`, and `spsc` (DIST's ring, which the engine lane's `io` uses). The owning lane lands a change to a shared crate as its own small PR, before the work that uses it, and the other lane reviews it. A task in the other lane that needs such a change, as QUAL-E3-T01 needs its determinism types in `core`, gets it from the owning lane or makes it as a small PR that the owning lane reviews. RFC-0001 §5 (core types) goes with `core`.
 - **Foundation first.** Six M0a tasks gate most of the plan: the workspace (QUAL-E1-T01), `xtask` (QUAL-E1-T02) and the layer check (QUAL-E1-T03) in the harness-surface lane, and the numeric types in `core` (COMP-E13-T01), the `syntropy-kernels` crate (COMP-E1-T01) and the op registry (COMP-E1-T02) in the engine lane. Each lane does its own in dependency order: COMP-E13-T01 can start once QUAL-E1-T01 has merged, and COMP-E1-T01 once QUAL-E1-T03 has. Until then the engine lane can take its M0 tasks that have no dependencies, which the "Start here" section of `roadmap.md` lists, such as the PLC-E7-T20 spike.
 - **Cross-review.** Each lane's review agent reviews the other lane's changes. That satisfies the independent-review gate, and it keeps each lane current with what the other changed.
 - **Lab rigs are serial.** Until the hardware dispatcher exists, agree who has which rig and when.
