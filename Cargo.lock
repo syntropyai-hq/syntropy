@@ -947,9 +947,12 @@ dependencies = [
 name = "syntropy-io"
 version = "0.0.0"
 dependencies = [
+ "getrandom 0.4.3",
+ "libc",
  "syntropy-core",
  "syntropy-spsc",
  "syntropy-testkit",
+ "windows-sys",
 ]
 
 [[package]]
