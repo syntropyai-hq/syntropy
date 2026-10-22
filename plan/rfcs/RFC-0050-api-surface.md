@@ -1059,6 +1059,8 @@ These endpoints exist so the quality RFCs can test and benchmark the signed rele
 | `GET /v1/syntropy/debug/telemetry` | `debug.telemetry_api` | `?instance=…&since=<unix ms>&until=<unix ms>&follow=bool&format=ndjson\|binary` | the per-step records of every stage of the instance for the window (RFC-0053 §2.5), gathered from other nodes over the node-query channel. NDJSON by default; `binary` streams the records' postcard encoding with a header naming the schema version |
 | `POST /v1/syntropy/generate` with `bench: { ignore_eos: true, gen_tokens: N }` | `debug.bench_api` | as §13.1 | as §13.1. Exactly `N` tokens are generated: EOS, stop sets and stop strings are ignored. The response carries `bench` in `syntropy.warnings` |
 
+*Note 2026-10-23 (PLC-E7-T01):* `/debug/state` also lists, per runner, each hot thread's `HotThreadReport` (`syntropy_exec::thread`, RFC-0012 §1.1 note): `kind` (`device` or `cpu`), `device`, `core`, `numa_node`, `numa_local`, `priority` (`nice`, `level`, `user_interactive` or `unchanged`), `unpinned` (why, when the thread has no core) and `spin_budget_ns`. The endpoint's task, PROD-E4-T01, serves it.
+
 - **`TapRow`** mirrors one position of RFC-0031's tap block (RFC-0060 §5.4–§5.5):
   ```rust
   pub struct TapRow {

@@ -1,12 +1,39 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The sequence types of RFC-0001 §5.8.
+//! The sequence types of RFC-0001 §5.8 and RFC-0032 §3.6: what ingress sends to open and control
+//! a sequence, and what the tail sends back (DIST-E1-T14).
 //!
-//! So far it holds [`Priority`], which PROD-E1-T10's request resolution needs first. DIST-E1-T14
-//! adds the rest of §5.8 beside it: `SequenceControl`, `SequenceOpen`, `SequenceMeta`,
-//! `SamplingParams`, `SequenceLimits`, `TokenFrame`, `TokenEntry` and the others.
+//! - **Control.** [`SequenceControl`] and [`SequenceOpen`], with the types an open carries:
+//!   [`SamplingParams`], [`SequenceLimits`], [`PrefixRef`], [`PrefixScope`], [`ResumePoint`],
+//!   [`Priority`] and the rest. [`SequenceMeta`] is an open without its prompt tokens, which
+//!   travels downstream on the sequence's first frame.
+//! - **Tokens.** [`TokenFrame`] and [`TokenEntry`], with [`FinishReason`], [`LogprobBlock`] and
+//!   a draft's [`DraftNode`]s.
+//! - **Tracing.** The one [`TraceContext`], 26 bytes on the wire (RFC-0053 §3.2).
+//!
+//! The types live in `core` because the head's and tail's step loops in `exec` and `sched` read
+//! them from the M0 rings, and RFC-0001 §4.2 rule 3 keeps those crates off `net`. `net` encodes
+//! them on the wire (RFC-0031 §6.3, §6.5, §6.6) without defining them, and keeps its zero-copy
+//! views under names of their own (RFC-0001 §5.8 and §5.13, notes of 2026-10-22).
+//!
+//! They are plain data with serde. A field RFC-0032 §3.6 or a later amendment added has a
+//! default, so an encoding written without it still decodes.
 
 use serde::{Deserialize, Serialize};
+
+mod open;
+#[cfg(test)]
+mod serde_tests;
+mod token;
+mod trace;
+
+pub use open::{
+    CancelReason, GrammarRef, PoolingMode, PrefixKey, PrefixRef, PrefixScope, ResumeCause,
+    ResumePoint, SamplingParams, SequenceControl, SequenceLimits, SequenceMeta, SequenceOpen,
+    TailId, TokenSlice,
+};
+pub use token::{DraftNode, FinishReason, LogprobBlock, TokenEntry, TokenFrame};
+pub use trace::TraceContext;
 
 /// A sequence's scheduling priority (RFC-0001 §5.8, `SequenceOpen::priority`; RFC-0012 §6.3).
 /// RFC-0050 maps each API's fields onto it, and RFC-0054 §7 resolves a request's. Default:

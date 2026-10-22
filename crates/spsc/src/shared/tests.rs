@@ -442,3 +442,64 @@ fn a_length_longer_than_a_slot_is_corrupt_whatever_the_buffer() {
         }
     });
 }
+
+/// Every record length from 0 to `slot_bytes` round-trips exactly, through whole words with a
+/// padded last word, and a pop writes only the record's bytes of the caller's buffer. The slot size
+/// is not a multiple of 8, and one slot is reused by every length, long and short in turn. A round
+/// trip cannot tell whole-word copies from byte copies; `a_short_record_zero_pads_its_last_word`
+/// checks the write side. The read side's whole-word loads return the same `len` bytes that byte
+/// loads would, so no test can observe them.
+#[test]
+fn every_length_round_trips_through_whole_words() {
+    model(|| {
+        let ring = SharedLayout::new(1, 21).unwrap();
+        let memory = Memory::new(ring);
+        let mut tx = memory.producer(ring);
+        let mut rx = memory.consumer(ring);
+        for len in (0..=21usize).chain((0..=21).rev()) {
+            let record: Vec<u8> = (0..len)
+                .map(|at| (at as u8).wrapping_mul(37) ^ 0x5a)
+                .collect();
+            tx.push(&record).unwrap();
+            let mut out = [0xee_u8; 40];
+            assert_eq!(rx.pop_into(&mut out), Ok(len));
+            assert_eq!(&out[..len], record.as_slice(), "a {len}-byte record");
+            assert!(
+                out[len..].iter().all(|byte| *byte == 0xee),
+                "past a {len}-byte record"
+            );
+        }
+    });
+}
+
+/// A push writes a short record's last word whole, so the bytes past the record are zero, not
+/// what a longer record left there. Byte stores after the whole words would leave them. The slot
+/// is read only through an `AtomicU64`, as the ring itself reads it.
+#[test]
+fn a_short_record_zero_pads_its_last_word() {
+    model(|| {
+        let ring = SharedLayout::new(1, 21).unwrap();
+        let memory = Memory::new(ring);
+        let mut tx = memory.producer(ring);
+        let mut rx = memory.consumer(ring);
+        tx.push(&[0xff; 21]).unwrap();
+        let mut out = [0u8; 21];
+        assert_eq!(rx.pop_into(&mut out), Ok(21));
+        tx.push(&[0x11; 13]).unwrap();
+        // SAFETY: the slot's second record word, 8-aligned and inside the ring; only this thread
+        // uses the memory, and the slot is only ever accessed as whole u64 words.
+        let word = unsafe {
+            std::sync::atomic::AtomicU64::from_ptr(
+                memory
+                    .base
+                    .add(header_bytes() + LENGTH_BYTES + 8)
+                    .cast::<u64>()
+                    .as_ptr(),
+            )
+        }
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .to_ne_bytes();
+        assert_eq!(word, [0x11, 0x11, 0x11, 0x11, 0x11, 0, 0, 0]);
+        assert_eq!(rx.pop_into(&mut out), Ok(13));
+    });
+}
