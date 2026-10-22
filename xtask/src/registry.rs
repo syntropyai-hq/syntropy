@@ -473,17 +473,47 @@ pub const JOBS: &[Entry] = &[
 ];
 
 /// The test suites, called by `cargo xtask test <suite>`. RFC-0060 §1.1 defines the layers.
-pub const SUITES: &[Entry] = &[Entry {
-    name: "unit",
-    summary: "L1: the crate-local unit tests and doctests of every workspace crate",
-    defined_in: "RFC-0060 §1.1",
-    params: &[],
-    steps: &[Step {
-        name: "test",
-        action: Action::Cargo(&["test", "--workspace", "--locked"]),
-    }],
-    pending: &[],
-}];
+pub const SUITES: &[Entry] = &[
+    Entry {
+        name: "unit",
+        summary: "L1: the crate-local unit tests and doctests of every workspace crate",
+        defined_in: "RFC-0060 §1.1",
+        params: &[],
+        steps: &[Step {
+            name: "test",
+            action: Action::Cargo(&["test", "--workspace", "--locked"]),
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "election-model",
+        summary: "L2: the full model check of coordinator election, lease, replication and heal \
+                  (DIST-E10-T08) on 3 and 4 nodes with partitions and message loss, \
+                  release-optimised",
+        defined_in: "RFC-0032 Testing and validation",
+        params: &[],
+        // The default tests check the bounded 3-node configuration; the dev profile is too slow
+        // for the full one. `test-release` is RFC-0060 §1.3's release-optimised test profile.
+        // `--nocapture` prints each scenario's state count against its cap.
+        steps: &[Step {
+            name: "test",
+            action: Action::Cargo(&[
+                "test",
+                "--profile",
+                "test-release",
+                "--locked",
+                "--package",
+                "syntropy-cluster",
+                "--test",
+                "election",
+                "--",
+                "--ignored",
+                "--nocapture",
+            ]),
+        }],
+        pending: &[],
+    },
+];
 
 /// The entry called `name`, if the registry has one.
 pub fn find<'a>(entries: &'a [Entry], name: &str) -> Option<&'a Entry> {
@@ -685,6 +715,17 @@ mod tests {
         assert_eq!(
             unit.steps[0].action.display(),
             "cargo test --workspace --locked"
+        );
+    }
+
+    #[test]
+    fn election_model_runs_the_ignored_election_tests_release_optimised() {
+        let suite = find(SUITES, "election-model").expect("election-model is registered");
+        assert_eq!(suite.steps.len(), 1);
+        assert_eq!(
+            suite.steps[0].action.display(),
+            "cargo test --profile test-release --locked --package syntropy-cluster --test election \
+             -- --ignored --nocapture"
         );
     }
 
