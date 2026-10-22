@@ -548,6 +548,11 @@ loop:
                    for entry: for r in reactions(&state, &entry): spawn(r)  // e.g. solver task
 ```
 
+**Revision note, 2026-10-22 (OQ-NET-33): which acks count toward `replicated = true`.**
+- **The rule.** The ack the loop awaits must come from a `COORDINATOR`-eligible member other than both the coordinator and the command's originator. A command the coordinator originates itself still needs an ack from any other eligible member.
+- **Why.** The originator's own ack adds no independent copy: its journal already guards the command (§6.10). DIST-E10-T08's model check found an 8-step trace in which that ack alone made a reply `replicated = true`, and the command was then lost with the coordinator's and the originator's disks.
+- **The consequence.** In a two-node cluster, a follower's command is never `replicated = true`. The reply then says, truthfully, that only the coordinator and the originator hold it.
+
 - **Long work stays out of `decide()`.**
   - `EnsureInstance` produces `InstanceRequested`. Its reaction runs the solver (RFC-0011) on a blocking thread over a snapshot of the inputs, then submits an internal `CommitPlan { instance, plan, solved_against: GraphVersion }` command.
   - `decide()` accepts `CommitPlan` only if the graph version is unchanged, or if every change since is one that RFC-0011's `plan_still_valid()` accepts. Otherwise it rejects, and the reaction re-solves.
