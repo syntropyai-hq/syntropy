@@ -579,3 +579,12 @@ DIST-E4-T15 (M1a) is a standalone probe "on the daemon's iroh version", and its 
 | DIST-E7-T03 → DIST-E7-T23 | DIST-E7-T03 | R9 | the QUIC backend builds on the same pin |
 | DIST-E7-T21: its "iroh pinned in the workspace" edge moves from DIST-E7-T03 to DIST-E7-T23 | DIST-E7-T21 | R8 | the desk check reads iroh's configuration API at the pinned version and uses nothing else of DIST-E7-T03's; DIST-E7-T16 still depends on both |
 | `PathKind` moves from DIST-E7-T03 to DIST-E7-T23; DIST-E4-T01's `PathKind` edge moves from DIST-E7-T03 to DIST-E7-T23 | DIST-E7-T03, DIST-E7-T23, DIST-E4-T01 | R8 | amends the assignment in "DIST-E4-T01: the membership core's dependencies" above, which gave `PathKind` to DIST-E7-T03 (M2). DIST-E7-T23 (M1a) reports the path kind, and the M1a probe (DIST-E4-T15) needs it, so one type is defined there and DIST-E7-T03 builds on it. DIST-E4-T01 uses nothing else of DIST-E7-T03's |
+
+## #1663's follow-ups: the policy digest and `config`'s value types (2026-10-22)
+
+The cross-review of #1663 (PROD-E1-T04) found two gaps with no owning task. `core` holds `InstancePolicy::canonical_bytes()` and `digest_with`, but links no hasher (RFC-0001 §4.2 rule 1), and no task supplied BLAKE3. And OQ-PRD-27 (a) has `config` parse into `core`'s value types, but `config` still has its own copies, and no task switched it over.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T08 gains the digest helper and its golden digests | PROD-E1-T08 | Definition of done | PROD-E1-T08's criteria already need identical digests across nodes, and it is the first task to build an `InstancePolicy` in `config`. One helper keeps every caller on the same hash |
+| Added PROD-E1-T23 (M0b) → PROD-E1-T01, PROD-E1-T04; PROD-E1-T08 → PROD-E1-T23 | PROD-E1-T23, PROD-E1-T08 | R9 | PROD-E1-T08 resolves policy tables into `InstancePolicy`, whose fields are `core`'s types, so it needs `config` to parse into them. M0b, after PROD-E1-T04, because each key registered on `config`'s copies adds to the switch. PROD-E1-T07 gets no edge: its criteria do not use the types, and PROD-E1-T23 moves whatever code uses the copies |

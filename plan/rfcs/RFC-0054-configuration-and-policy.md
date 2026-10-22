@@ -237,6 +237,8 @@ RFC-0001 §11.3 defines these types in `syntropy-core`, and §5.13 assigns them 
 
 *Note 2026-10-22 (OQ-PRD-27):* the field types these objects hold that `config` parses (`Reserve`, `Fraction`, the selectors behind `DeviceFilter` and `NodeFilter`, tensor-override patterns, `KeyPath` and `ConfigValue`) have plain-data forms in `core`, so the objects can live there under RFC-0001 §4.2 rule 1. `config` parses text into them and validates it. Patterns are held in `core` as their source text, and `config` keeps the compiled regex.
 
+*Note 2026-10-22 (#1672):* `config` still defines its own `Fraction`, `Reserve`, `NodeSelector`, `DeviceSelector`, `TierSelector` and `LayerRange`, which match `core`'s today. PROD-E1-T23 moves `config` onto `core`'s types and deletes the copies, so the two cannot drift.
+
 #### 4.1 `Objective`
 
 RFC-0001 §11.3 defines the type. This RFC adds two optional fields with serde defaults, under the RFC-0001 §5 rules:
@@ -417,6 +419,8 @@ The instance's `resources` overlay is applied on each stage node to that node's 
 - `InstancePolicy::digest_with(&self, hash: impl FnOnce(&[u8]) -> Blake3) -> Blake3` replaces `digest()`. The digest is still BLAKE3 over the canonical bytes, computed by the crate that links BLAKE3 (`config` or `api`, when it parses policies) and passes the hash in.
 
 `ResourceOverlay`, `ApproxParams` and the optional `Objective` fields skip unset values, so only explicitly set fields enter the bytes, and a field added later as an unset `Option` leaves earlier digests unchanged. RFC-0001 §18.16 records the change.
+
+*Note 2026-10-22 (#1672):* one function in `config` supplies the hash: BLAKE3 over `canonical_bytes()` through `digest_with`. PROD-E1-T08 builds it, with golden digests, and every caller uses it, so no two nodes hash a policy differently. The open question below still stands; if `digest()` moves into `core`, that function calls it.
 
 Open, for the maintainers: should `digest()` live in `core` with its own hasher (a vendored or hand-written BLAKE3, or an amendment to rule 1), so that no caller can pass a different hash?
 
