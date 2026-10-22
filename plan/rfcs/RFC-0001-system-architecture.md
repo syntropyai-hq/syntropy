@@ -3069,6 +3069,12 @@ From issue #1525, the review of COMP-E1-T01.
 | A hardware job whose rig and `lab.yml` job do not exist yet is marked `planned` in `ci/jobs.toml`. `ci-gate` does not hold a same-repository PR for it, but still holds a fork PR. QUAL-E2-T02 ends the interim for `hw-cuda-ada`, and QUAL-E2-T08 adds the other Tier 1 rigs' jobs | ADR-0620 decision 3 (dated revision); RFC-0062 §2.5 (dated note) | QUAL-E1-T07 requires hardware for every PR touching the hardware paths, months before the first rig runs. Without the interim, most engine and networking PRs could not merge. Fork PRs keep ADR-0620 decision 4's rule. Taken under the maintainer's standing instruction, for the maintainers to confirm |
 | The direct hardware paths gain `numerics/`, the tolerance tables `kernels` embeds | ADR-0620 decision 3 (dated revision); RFC-0062 §2.2 (dated note) | the op conformance a hardware job runs checks against those tables, so a change to a ceiling alone changes what the rig judges. From the engine-lane review of #1830 |
 
+### 18.37 Kernel parameter mirrors without bindgen (2026-10-22, proposed)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| **Proposed, not accepted.** For the CUDA provider, `cargo xtask kgen` generates the `#[repr(C)]` mirrors of `csrc/params.h` into a checked-in `src/params.rs`, in place of `bindgen` in `build.rs`. Until a CUDA toolchain gate exists, the layout test compares against the host C and C++ compilers rather than the kernel compiler | RFC-0040 §1 (dated revision, Proposed), §10.2 (dated note) | no `bindgen` dependency and no compiler in the build of a crate that contributors without device toolchains build (RFC-0040 §10.2 rule 4). nvcc lays out structs of 32- and 64-bit integer and `float` members as the host compiler does. The nvcc comparison waits for the toolchain gate (COMP-E9-T02). COMP-E9-T01, #1729. Binds nothing until a maintainer accepts it |
+
 ### 18.38 The API's local socket in `ipc` (2026-10-27)
 
 PROD-E2-T01 builds the HTTP server of RFC-0050 §1.1, with its local socket.
