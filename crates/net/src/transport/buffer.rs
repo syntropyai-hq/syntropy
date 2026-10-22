@@ -4,9 +4,11 @@
 //! holds (RFC-0001 §5.8, RFC-0031 §2, §8). Owner: RFC-0031.
 //!
 //! A [`BufferPool`] divides memory into equal slots, 64-byte aligned. The memory comes from the
-//! tier manager's pinned network sub-arena (RFC-0031 §8), reached through [`PoolMemory`], which
-//! `tier` implements (TIER-E2-T21). [`HeapMemory`] is a plain heap implementation for tests and
-//! for pools that need no pinning.
+//! tier manager's pinned network sub-arena (RFC-0031 §8), reached through [`PoolMemory`]. `tier`
+//! cannot depend on `net` (RFC-0001 §4.2 rule 3), so its `NetPool` hands out owned leases that meet
+//! the contract (TIER-E2-T21), and the runner implements [`PoolMemory`] over a lease and registers
+//! it with the transports (TIER-E2-T25). [`HeapMemory`] is a plain heap implementation for tests
+//! and for pools that need no pinning.
 //!
 //! **Each slot has one state**, kept in an atomic: free, held by one [`SlotWriter`], or held by
 //! one or more [`SlotReader`]s. A writer is the only way to get `&mut` access to a slot's bytes,
@@ -68,9 +70,12 @@ pub struct PoolRegistration {
 ///   value does not move them.
 /// - **No other users.** Nothing but the [`BufferPool`] that owns the value reads or writes the
 ///   bytes, through references or pointers. The pool's slot states are the only access control.
-///   Hardware a transport registers the pool with (an RDMA NIC, a DMA engine) follows the same
-///   states: it writes a slot only while a backend holds that slot's [`SlotWriter`], and reads a
-///   slot only while a [`SlotReader`] of it exists.
+///   Hardware that reaches the bytes follows the same states: an RDMA NIC a transport registered
+///   the pool with, and a GPU's copy engine when the pool is registered for DMA. It writes a slot
+///   only while the slot's [`SlotWriter`] is held, and reads a slot only while a [`SlotReader`] of
+///   it exists, by whoever issued the access: a transport backend, or a dispatcher whose device
+///   copy targets the slot. That holder keeps the writer or reader until the access completes,
+///   not only until it is issued.
 pub unsafe trait PoolMemory: Send + Sync {
     /// The first byte.
     fn base(&self) -> NonNull<u8>;
