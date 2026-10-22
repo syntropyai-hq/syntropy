@@ -1575,6 +1575,7 @@ pub enum ErrorClass {
 | Canonical encoding (`canon::to_bytes`), behind `InstancePolicy::canonical_bytes` and `digest_with` | core | 0054 (§4.5) | |
 | `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore`, `Outbox` | core | 0060 | 0030, 0032, 0033 (the protocol cores) |
 | `ConformanceManifest` and its certificates | core | 0060 | 0040 (`OpCert` selection), 0011 (`WireCert`, `PathCert`), 0042 |
+| `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId`, `LogitTap`, `TapRow`, `TapValues` | core | 0060 | 0012 (tail semantics), 0031 (wire layout), 0050 (parity endpoint) |
 | `TelemetryRecord`, `StepRecord`, `LogRecord`, `CostTerm` | obs | 0053 | 0012, 0011, 0061 |
 | `Figure<T>` | api | 0051 | 0050 |
 
@@ -2797,3 +2798,11 @@ DIST-E7-T23 pins iroh 1.4.1 in `net`. The maintainers decided on 2026-10-22 how 
 | Change | Sections touched | Reason |
 |---|---|---|
 | ADR-0018 §3's policy is checked for the targets of RFC-0062 §4.1, through `deny.toml`'s `[graph] targets`; the first per-crate MPL-2.0 exception is `attohttpc@0.30.1`; RUSTSEC-2024-0436 (`paste`, unmaintained) is ignored until 2027-01-22 (#1700) | ADR-0018 §3 (dated revision); RFC-0062 §11.2 (dated note) | iroh-relay's wasm32-only crates reach no shipped artefact; iroh's port mapping, which brings attohttpc, raises the share of direct paths; `paste` is a build-time proc-macro reached only through iroh's netlink stack, with no known vulnerability |
+
+### 18.22 Parity tap types in `core` (2026-10-22)
+
+RFC-0060 §5.5 (amendment A4) defines the teacher-forced tap types that §5.8's `SequenceOpen::parity` and `TokenEntry::tap` hold. QUAL-E5-T19 builds them in `core`.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId`, `LogitTap`, `TapRow` and `TapValues` gain an ownership row: `core`, owned by RFC-0060 | §5.13; RFC-0060 §5.5 (dated note) | the tail in `exec`, the parity endpoint in `api` and the driver build against one definition, and rule 3 keeps `exec` off `net`; §5.8's `TokenEntry::tap: Option<LogitTap>` is unchanged, because `LogitTap` is the per-entry block of RFC-0031 §6.5 (a plan correction recorded in RFC-0060 §5.5 and RFC-0050 §13.6) |

@@ -5,7 +5,7 @@
 - Depends on: RFC-0001; ADR-0002, ADR-0003, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0017, ADR-0019, ADR-0020; ADR-0600, ADR-0601, ADR-0602, ADR-0603
 - Expanded by: RFC-0042 (tolerance tables), RFC-0043 (per-family fixtures and boundaries), RFC-0033 (recovery expectations for chaos scenarios), RFC-0062 (where and when each suite runs)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; the production clock and entropy sources in `io`, §2.1, ADR-0022; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
+- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; the production clock and entropy sources in `io`, §2.1, ADR-0022; `TeacherStreamId` defined and `LogitTap` made the per-entry block, §5.5; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
 
 ## Summary
 
@@ -628,11 +628,30 @@ pub enum TapMode {
     /// (both computed in F64), its argmax and its top-2 margin.
     Gather { k: u16, tail: u16 },
 }
+/// Names the teacher stream of one parity run. Chosen by the driver's daemon, opaque to the tail;
+/// the tokens arrive in `TapIds` frames for the sequence (RFC-0031 §6.13).
+pub struct TeacherStreamId(pub u64);
+/// `TokenEntry::tap`: one row per tapped position of the entry (RFC-0031 §6.5's tap block).
+pub struct LogitTap { pub k: u16, pub tail: u16, pub rows: Vec<TapRow> }
+pub struct TapRow {
+    pub pos: u32,
+    pub argmax: u32,                     // ties to the lower id
+    pub margin: f32,                     // top-1 minus top-2 logit
+    pub lse: f64,                        // logsumexp over the full vocabulary, in F64
+    pub lse_complement: f64,             // logsumexp over V∖T, in F64; 0 for FullLocal
+    pub values: TapValues,
+}
+pub enum TapValues {
+    Gather { top: Vec<f32>, tail: Vec<f32> },   // logits at T and at S, in the order sent
+    FullLocal { shm_offset: u64 },              // the row's offset in the mapped region
+}
 ```
+
+*Revised 2026-10-22 (QUAL-E5-T19), a plan correction for the maintainers:* this block named `TeacherStreamId` and `LogitTap` without defining them, and the RFCs that use `LogitTap` disagreed on its shape. RFC-0050 §13.6 gave one record per position. RFC-0001 §5.8's `TokenEntry::tap: Option<LogitTap>` and RFC-0031 §6.5's tap block hold one per entry, which covers every position of a verify window or prefill chunk. `LogitTap` is now the per-entry block, matching RFC-0001 and RFC-0031, and `TapRow` is the per-position record that the parity endpoint streams. `TeacherStreamId` is a `u64` the driver's daemon chooses; it needs no wire field, because `TapIds` frames already carry the sequence's ID. In JSON a non-finite tap value is the string `"nan"`, `"inf"` or `"-inf"` (RFC-0050 §13.6), and a binary format keeps its bits (RFC-0031 §6.5).
 
 At the tail, `ForceMode` replaces sampling. The token that goes back around the ring is the teacher token, so every stage sees exactly the decode or verify traffic it would see in service. The tap returns results in `TokenEntry::tap` (amendment A4). The endpoint that accepts a `ParityTapSpec` is `POST /v1/syntropy/parity` on the native API. The node config key `debug.parity_api` enables it; it defaults to `false` and answers on loopback binds only (§1.3).
 
-**Crate** (revised 2026-10-22). The block's "core / net" means `syntropy-core`. `ParityTapSpec`, `ForceMode`, `TapMode` and `LogitTap` live there, because the tail in `exec` and the driver both build against them, and RFC-0001 §4.2 rule 3 keeps compute crates such as `exec` off `net`. `net` carries them on the wire without defining them.
+**Crate** (revised 2026-10-22). The block's "core / net" means `syntropy-core`. `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId`, `LogitTap`, `TapRow` and `TapValues` live there, because the tail in `exec` and the driver both build against them, and RFC-0001 §4.2 rule 3 keeps compute crates such as `exec` off `net`. `net` carries them on the wire without defining them.
 
 #### 5.6 Layer-level error and bisection
 
