@@ -12,7 +12,11 @@
 //!   every covered crate has it. It calls each item the config bans in `src/banned.rs`, one per
 //!   line, and implements a stand-in `TickSource` in `src/tick.rs` that reads the clock under a
 //!   scoped `#[allow]`;
-//! - `io`, a crate the lints do not cover, with no `clippy.toml`.
+//! - `io`, a crate the lints do not cover, with no `clippy.toml`. It also holds stand-ins for the
+//!   production sources, `syntropy_io::os::SystemClock` and `OsEntropy`, in their shape, which
+//!   `exec` depends on it for, and names itself `syntropy_io` so the shared `banned.rs` resolves
+//!   in it too. `exec` builds each source in every way code outside `io` can ([`SOURCES`]), and
+//!   each must be refused.
 //!
 //! Every banned item must be reported on its own line of `exec`, and nothing in `io` or in the
 //! `TickSource` implementation. The fixture depends on `rand` and `getrandom` with their generator
@@ -113,7 +117,53 @@ const USES: &[(&str, &str)] = &[
         "getrandom::u64",
         "pub fn getrandom_u64() -> bool { getrandom::u64().is_ok() }",
     ),
+    (
+        "syntropy_io::os::SystemClock",
+        "pub fn system_clock() { let _clock = syntropy_io::os::SystemClock::new(); }",
+    ),
+    (
+        "syntropy_io::os::OsEntropy",
+        "pub fn os_entropy() { let _entropy = syntropy_io::os::OsEntropy::new(); }",
+    ),
 ];
+
+/// The other ways code outside `io` could build a production source, each of which must be
+/// refused as well: `Default` through the type, `Default` into a binding that names it, and
+/// `new()` after importing it. A bare value, `syntropy_io::os::SystemClock`, does not compile,
+/// because the type is `non_exhaustive` (#1765).
+const SOURCES: &[(&str, &str)] = &[
+    (
+        "syntropy_io::os::SystemClock",
+        "pub fn clock_by_default() { let _c = <syntropy_io::os::SystemClock as Default>::default(); }",
+    ),
+    (
+        "syntropy_io::os::SystemClock",
+        "pub fn clock_by_inference() { let _c: syntropy_io::os::SystemClock = Default::default(); }",
+    ),
+    (
+        "syntropy_io::os::SystemClock",
+        "pub fn clock_by_import() { use syntropy_io::os::SystemClock; let _c = SystemClock::new(); }",
+    ),
+    (
+        "syntropy_io::os::OsEntropy",
+        "pub fn entropy_by_default() { let _e = <syntropy_io::os::OsEntropy as Default>::default(); }",
+    ),
+    (
+        "syntropy_io::os::OsEntropy",
+        "pub fn entropy_by_inference() { let _e: syntropy_io::os::OsEntropy = Default::default(); }",
+    ),
+    (
+        "syntropy_io::os::OsEntropy",
+        "pub fn entropy_by_import() { use syntropy_io::os::OsEntropy; let _e = OsEntropy::new(); }",
+    ),
+];
+
+/// Stand-ins for `syntropy_io::os`'s production sources, in their shape: `non_exhaustive`, so no
+/// other crate writes one as a bare value, `new()`, and `Default`.
+const OS: &str = "#[non_exhaustive]\n#[derive(Default)]\npub struct SystemClock;\n\n\
+                  impl SystemClock {\n    pub const fn new() -> Self {\n        SystemClock\n    }\n}\n\n\
+                  #[non_exhaustive]\n#[derive(Default)]\npub struct OsEntropy;\n\n\
+                  impl OsEntropy {\n    pub const fn new() -> Self {\n        OsEntropy\n    }\n}\n";
 
 /// A stand-in for `syntropy_core::TickSource` (QUAL-E3-T17) and a production implementation of
 /// it, which may read the clock: the one place in `exec` that rule T1 allows to.
@@ -167,17 +217,35 @@ fn fixture() -> PathBuf {
         "[workspace]\nresolver = \"3\"\nmembers = [\"crates/exec\", \"crates/io\"]\n",
     );
     fs::copy(repo.join("Cargo.lock"), root.join("Cargo.lock")).expect("copy the lock");
-    let banned: String = USES.iter().map(|(_, code)| format!("{code}\n")).collect();
+    let banned: String = USES
+        .iter()
+        .chain(SOURCES)
+        .map(|(_, code)| format!("{code}\n"))
+        .collect();
     for name in ["exec", "io"] {
         let dir = root.join("crates").join(name);
+        // `exec` reaches the production sources through `io`; `io` holds them.
+        let (own, lib) = match name {
+            "exec" => (
+                "syntropy-io = { path = \"../io\" }\n",
+                "pub mod banned;\npub mod tick;\n",
+            ),
+            _ => (
+                "",
+                "extern crate self as syntropy_io;\npub mod banned;\npub mod os;\npub mod tick;\n",
+            ),
+        };
         write(
             &dir.join("Cargo.toml"),
             &format!(
                 "[package]\nname = \"syntropy-{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-                 publish = false\n\n{DEPENDENCIES}"
+                 publish = false\n\n{DEPENDENCIES}{own}"
             ),
         );
-        write(&dir.join("src/lib.rs"), "pub mod banned;\npub mod tick;\n");
+        write(&dir.join("src/lib.rs"), lib);
+        if name == "io" {
+            write(&dir.join("src/os.rs"), OS);
+        }
         write(&dir.join("src/banned.rs"), &banned);
         write(&dir.join("src/tick.rs"), TICK);
     }
@@ -240,7 +308,7 @@ fn every_banned_item_fails_clippy_in_a_covered_crate_only() {
         .lines()
         .filter(|line| line.contains("error: use of a disallowed"))
         .collect();
-    for (index, (path, code)) in USES.iter().enumerate() {
+    for (index, (path, code)) in USES.iter().chain(SOURCES).enumerate() {
         let at = format!("crates/exec/src/banned.rs:{}:", index + 1);
         let named = format!("`{path}`");
         assert!(
