@@ -575,7 +575,8 @@ fn the_declared_state_meets_the_plan() {
             ("ci-gate", 15368),
             ("dco", 15368),
             ("pr-title", 15368),
-            ("dep-diff", 15368)
+            ("dep-diff", 15368),
+            ("properties-removal", 15368)
         ]
     );
     let release = read("ruleset-release.json");
