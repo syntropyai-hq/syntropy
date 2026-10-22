@@ -10,7 +10,7 @@
 //! segments, sharding, tokenizers and the reference interpreter come with later tasks.
 //!
 //! `manifest` is still a stub, so nothing from it is used yet: the census facts that
-//! [`ir::validate`] needs are passed as [`ir::CensusGroup`]s.
+//! [`ir::validate()`] needs are passed as [`ir::CensusGroup`]s.
 
 #![forbid(unsafe_code)]
 

@@ -20,7 +20,7 @@
 //! This task supports `F32`, `F16` and `BF16`. The other dtypes of RFC-0041 §2.2 are
 //! COMP-E10-T10; until then a tensor in one of them is `UnsupportedContainer` naming the dtype.
 //! The JSON is parsed by `serde_json` into a strict value that refuses repeated keys
-//! ([`json`]). Everything here is safe Rust (ADR-0001 decision 4).
+//! (the private `json` module). Everything here is safe Rust (ADR-0001 decision 4).
 
 use std::fmt;
 
