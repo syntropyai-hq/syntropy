@@ -179,7 +179,7 @@ fn a_chunks_parts_land_at_consecutive_offsets() {
     let parts: Vec<_> = chunk.parts(max_frame).expect("parts").collect();
     assert_eq!(parts.len(), 4, "{parts:?}");
     let mut input = vec![0u8; payload.len()];
-    let mut landing = Landing::new();
+    let mut landing = Landing::new(u64::from(ROWS));
     for (i, part) in parts.iter().enumerate() {
         let mut out = vec![0; part.frame_len];
         chunk
@@ -199,7 +199,7 @@ fn a_chunks_parts_land_at_consecutive_offsets() {
     assert_eq!(input, payload, "the parts landed back into the chunk");
 
     // Out of order: part 1 first is refused, and the landing starts over at the next part 0.
-    let mut out_of_order = Landing::new();
+    let mut out_of_order = Landing::new(u64::from(ROWS));
     let second = &parts[1];
     let mut bytes = vec![0; second.frame_len];
     chunk
@@ -226,7 +226,7 @@ fn a_chunks_parts_land_at_consecutive_offsets() {
 
 #[test]
 fn a_part_whose_payload_is_not_its_rows_is_refused() {
-    let mut landing = Landing::new();
+    let mut landing = Landing::new(3);
     let header = header(3, 16);
     let stride = header.layout.stride().expect("F32");
     assert!(landing.land(&header, 3 * stride - 1).is_err());
@@ -377,4 +377,22 @@ fn every_frame_within_its_limits_fits_its_header_area_over_1_to_512_spans() {
         spans_tried.push((n_spans, needed, area));
     }
     assert_eq!(spans_tried.len(), 10);
+}
+
+/// Review of #1833, N3: a part that would end past the stage input's rows is refused.
+#[test]
+fn a_part_past_the_inputs_capacity_is_refused() {
+    let mut landing = Landing::new(5);
+    let stride = header(2, 16).layout.stride().expect("F32");
+    let part = |index: u16, rows: u32| ActivationHeader {
+        part_index: index,
+        part_count: 3,
+        ..header(rows, 16)
+    };
+    assert!(landing.land(&part(0, 2), 2 * stride).is_ok());
+    assert!(landing.land(&part(1, 2), 2 * stride).is_ok());
+    let error = landing.land(&part(2, 2), 2 * stride).unwrap_err();
+    assert_eq!(error.class, syntropy_core::ErrorClass::InvalidRequest);
+    // It starts over at the next part 0.
+    assert!(landing.land(&part(0, 2), 2 * stride).is_ok());
 }
