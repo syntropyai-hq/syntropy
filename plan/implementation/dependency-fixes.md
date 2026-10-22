@@ -680,6 +680,8 @@ PROD-E5-T02 could not meet two of its criteria as written: "a LAN bind without a
 
 Open, for the owning tasks (not changed here): PROD-E5-T03's "leaf rotation under 100 open streams drops none" and PROD-E5-T06's "replacing the certificate files switches new connections to the new certificate without restart" need a running HTTP server, and neither task reaches PROD-E2-T01 through its dependencies.
 
+*Update 2026-10-22 (PROD-E5-T03):* both are settled in "PROD-E5-T03: the route, the listener and SEC-006 move out" below. PROD-E5-T03's rotation criterion is now checked at the TLS layer, over in-memory connections, which needs no server. The listener's version moves to PROD-E5-T06, which gains PROD-E5-T06 → PROD-E2-T01, so its file-reload criterion reaches the server too. PROD-E5-T03's wildcard criterion, added above, moves to PROD-E5-T06 with its PROD-E5-T02 edge.
+
 ## QUAL-E17-T15's nested-field case (2026-10-22)
 
 The post-merge reviews of #1658 found that a serde default keeps an added field compatible only in CBOR. Over the postcard IPC, a field added to any type under `PlacementPlan` or `PlanDelta` changes the message layout, and a new enum variant cannot be decoded by an older peer. RFC-0001 §5 gains a dated note that either addition is an `ipc_protocol` change (RFC-0001 §18.20, issues #1675 and #1660).
@@ -717,6 +719,24 @@ DIST-E18-T01 registered three claims that RFC-0054 §5.1 did not list (#1679). �
 |---|---|---|---|
 | PROD-E1-T16 gains "CI fails on a key of a shared section that RFC-0054 §5.1 does not list as that owner's carve-out" | PROD-E1-T16 | Definition of done | without it, a shared section could add a key inside another owner's prefix unchecked, as the carve-out note warns. The row names no carve-outs: the check reads them from §5.1, and code already shares keys in `net.*`, `rdma.*`, `invite.*`, `models.*` and `replan.*`, so a list in the row would drift. PROD-E1-T16 already depends on DIST-E18-T01, which registers them, so no edge changes |
 
+## PROD-E5-T03: the route, the listener and SEC-006 move out (2026-10-22)
+
+PROD-E5-T03 builds the local CA as a library in `syntropy-api` (`syntropy_api::tls`). Three of its row's parts need things the CA does not build: the `GET /v1/syntropy/tls/ca` route and a TLS listener need the HTTP server (PROD-E2-T01), and SEC-006 is a doctor check (PROD-E9-T03). Each moves to the task that owns what it needs. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "SEC-006 reports that clients must re-trust" moves to PROD-E9-T03; PROD-E5-T03 keeps "generates a new CA and records the replacement for SEC-006"; PROD-E9-T03 → PROD-E5-T03, and RFC-0050 §11.1.1 joins PROD-E9-T03's Implements | PROD-E5-T03, PROD-E9-T03 | R9 | PROD-E9-T03 builds the SEC checks and reads the CA's replacement record (`tls/ca-replaced.json`); M1a → M1a, and PROD-E5-T03 does not depend on PROD-E9-T03, so the edge adds no cycle |
+| PROD-E5-T06 becomes the API's TLS listener: rustls on non-loopback binds from a reloadable source (user `{ cert, key }` files or the local CA's leaf) and the `GET /v1/syntropy/tls/ca` route, which leaves PROD-E5-T03's scope; PROD-E5-T06 → PROD-E5-T03 and PROD-E5-T06 → PROD-E2-T01 | PROD-E5-T03, PROD-E5-T06 | R9 | the listener and the route serve what the CA issues, and both need the server; M1a → M1a and M1a → M0a, no cycle |
+| The wildcard criterion "a wildcard bind with `api.tls = "auto"` is served with TLS from a local CA leaf" moves from PROD-E5-T03 to PROD-E5-T06, with its PROD-E5-T02 edge, which PROD-E5-T06 already has; PROD-E5-T03 drops PROD-E5-T03 → PROD-E5-T02 | PROD-E5-T03, PROD-E5-T06, PROD-E5-T02 | R9, R8 | serving a bind is the listener's work; nothing else in PROD-E5-T03's criteria uses the bind plan |
+| PROD-E5-T03's "leaf rotation under 100 open streams drops none" is checked at the TLS layer; PROD-E5-T06 gains "leaf rotation under 100 open streams through the listener drops none" | PROD-E5-T03, PROD-E5-T06 | R9 | the CA's leaf resolver is tested over in-memory TLS connections; streams through the listener need the server |
+
+## DIST-E11-T10's zero-`predicted_p99` criterion (2026-10-22)
+
+A post-merge review of #1658 found that `HopPlan::predicted_p99` decodes as 0 from a plan written without it, so code that read 0 as a real prediction would show constant drift or fail validation on every such plan (issue #1661). The field stays `Nanos`. RFC-0032 §3.3 gains a dated note that 0 means no tail prediction, and DIST-E11-T10, which builds the extensions' validation, gains the criterion.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E11-T10 gains the criterion: a hop with `predicted_p99 = 0` has no tail prediction, so the drift detector makes no tail comparison for it and `validate()` accepts it; a hop whose measured p99 exceeds a nonzero `predicted_p99` by more than `replan.drift_threshold`, sustained past `replan.drift_window`, raises drift; DIST-E11-T10 → PLC-E3-T07 | DIST-E11-T10 | R9 | both drift cases run the hop through PLC-E3-T07's drift detector, which DIST-E11-T10 did not reach. The positive case keeps the zero case from passing on a detector that never compares tails. PLC-E3-T07 is M1a, so the edge points to an earlier milestone |
 
 ## DIST-E8-T03's `Token` parts (2026-10-22)
 

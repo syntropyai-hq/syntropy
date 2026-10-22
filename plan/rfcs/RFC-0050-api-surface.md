@@ -777,6 +777,31 @@ TLS on a LAN is practical only if clients can trust the certificate without a pu
   - **Every client machine** needs this step once per node it talks to, or once per cluster with `trust --cluster` (open question 8, answered).
 - **Plain HTTP on the LAN.** `api.allow_plaintext_lan = true` exists for users who accept the risk, for example on an isolated lab network. Keys are still required. The dashboard shows a permanent "API traffic on this LAN is unencrypted" banner, `doctor` reports SEC-005 as a warning on every run, and the startup log says so on every start.
 
+*Note 2026-10-22 (PROD-E5-T03): how the CA is built.*
+- **Storage.** The CA lives in one file, `tls/ca.json`, in the state directory. It holds the key (PKCS#8), the certificate (DER), the scope and the node-key binding (RFC-0034 §3's `syntropy-tls-ca-v1`, note of the same date), which covers the certificate's exact bytes.
+  - The file is mode 0600, in a 0700 directory. A file or directory whose mode was widened is narrowed again when the CA is loaded.
+  - The `tls` directory and `ca.json` must be a directory and a regular file themselves. A link is refused, not followed, so a link planted in the state directory cannot get another directory narrowed or written into.
+  - It is written to a new file, flushed, renamed over the old one, and then the directory is flushed, so a replacement is one atomic step.
+  - A file the daemon cannot read, or whose parts disagree, is refused and left as it is. No key is overwritten without a reason the user can see.
+  - Agreeing means the binding verifies over the stored certificate, and the certificate is the key's own, self-signed, with exactly the constraints the node mints for the stored scope.
+  - `GET /v1/syntropy/tls/ca` serves one PEM block encoded from those bytes, so it carries nothing the binding does not cover.
+- **Randomness.** The CA and leaf keys come from ring's `SystemRandom`, the OS CSPRNG of RFC-0034 §3. ring's random source is sealed, so it cannot draw from `core`'s `Entropy`.
+- **The CA certificate.** It is valid for 10 years [target, a chosen budget], since it is replaced when its scope changes, not on a schedule.
+  - Its path length is 0. That is advisory: a client that takes the CA as a trust anchor may ignore the anchor's basic constraints, as rustls does, and then accepts a sub-CA it signed. The name constraints are the guarantee every client enforces, and they still apply below such a sub-CA.
+  - Its key usages are certificate and CRL signing.
+  - A certificate's validity starts 1 hour before it is issued [target, a chosen budget], for clients whose clocks run behind.
+- **Names.** A dNSName constraint also permits every name below it (RFC 5280 §4.2.1.10).
+  - So the scope leaves out single-label names. A node named `box` would otherwise get a CA for the whole `.box` top-level domain.
+  - The node is still reachable as `<host>.local` and by its other names of two or more labels.
+  - A leaf carries the scope's names exactly; a name below one of them is refused.
+  - A limit: a name of two labels can still cover a public zone. A node name or `api.server_names` entry that is a public suffix, such as `co.uk`, or a bare registrable domain, such as `example.com`, gives the CA that whole zone. `api.server_names` should hold the node's own host names only.
+- **Addresses.** The scope leaves out public and loopback addresses: a local CA covers only private, shared (RFC 6598), link-local and unique-local ones.
+  - An address family with no served subnet is excluded whole, so the CA can issue for no address of that family.
+  - A node that serves only public addresses gets a CA for its names alone.
+  - The CA covers the whole served /24 or /64, so a leaked key can impersonate any host inside those subnets, a neighbour on the same LAN included, though none outside them.
+- **Replacement.** A new CA replaces the old one when the node's names or served subnets change, and also when the node key changes (`identity reset`), since the old binding names another identity. The replacement is recorded first in `tls/ca-replaced.json`: when, why, and the old and new fingerprints, `BLAKE3("syntropy-fp-v1" ‖ SPKI DER)` (RFC-0034 §6.5). SEC-006 reads that record. A CA that has been replaced issues no more leaves: before each leaf it checks that `tls/ca.json` still holds its certificate.
+- **Rotation.** The listener serves the current leaf through a resolver that swaps leaves. A connection keeps the leaf it was handshaken with, and the next full handshake gets the new one. A client that resumes an earlier TLS session sees no certificate until its session ends.
+
 #### 11.2 Requests from browsers
 
 A loopback listener without authentication is reachable by any web page the user visits, through DNS rebinding or cross-site requests (RFC-0034 R1). So on every listener:
