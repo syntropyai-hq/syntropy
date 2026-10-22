@@ -417,3 +417,65 @@ fn the_transport_is_quic_like_and_sends_only_registered_pools() {
     assert_eq!(two.a.kind(), syntropy_core::resource::TransportKind::Quic);
     assert_eq!(two.a.node(), A);
 }
+
+/// What one run saw: each delivery's virtual time, `chan_seq` and step, the sender's
+/// retransmits, and when the last frame arrived.
+#[derive(Debug, PartialEq, Eq)]
+struct Run {
+    deliveries: Vec<(u64, u64, u64)>,
+    retransmits: u64,
+    end: u64,
+}
+
+/// 60 frames through a four-slot window over a lossy, jittery `wifi6_home` link, from `seed`.
+fn replay(seed: u64) -> Run {
+    let mut model = LinkModel::preset("wifi6_home").expect("a preset");
+    model.loss = 0.05;
+    model.jitter = Dist::Uniform {
+        lo: Nanos(0),
+        hi: Nanos(2_000_000),
+    };
+    let mut two = Two::new(model, seed);
+    let pool = BufferPool::heap(PoolId(1), 1024, 16).expect("a pool");
+    two.a.register(&pool).expect("registered");
+    let (mut sender, mut receiver) = open(&two, key(0), 4, 1024, 10).expect("opened");
+    let mut next = 1;
+    let mut deliveries = Vec::new();
+    let limit = two.clock_now().0 + 60_000_000_000;
+    while deliveries.len() < 60 && two.clock_now().0 < limit {
+        while next <= 60 && sender.credit() > 0 {
+            send_one(&mut sender, &pool, next, 200).expect("credit to send");
+            next += 1;
+        }
+        two.run(Nanos(100_000));
+        let now = two.clock_now().0;
+        while let Some(frame) = receiver.try_recv() {
+            deliveries.push((now, frame.header.spec.chan_seq, frame.header.spec.step));
+        }
+        while sender.completed().is_some() {}
+    }
+    Run {
+        deliveries,
+        retransmits: sender.stats().retransmits,
+        end: two.clock_now().0,
+    }
+}
+
+/// A seed replays one run exactly (RFC-0060 §8): the same seed gives the same deliveries at the
+/// same virtual times and the same retransmits, and another seed gives another run. Each run
+/// delivers all 60 frames once, in order.
+#[test]
+fn a_seed_replays_exactly() {
+    let in_order = |run: &Run| {
+        let order: Vec<(u64, u64)> = run.deliveries.iter().map(|d| (d.1, d.2)).collect();
+        order == (1..=60).map(|seq| (seq, seq)).collect::<Vec<_>>()
+    };
+    let first = replay(7);
+    assert!(in_order(&first), "every frame once, in order: {first:?}");
+    // The run takes the lossy paths: timers fire and frames go again.
+    assert!(first.retransmits > 0, "{first:?}");
+    assert_eq!(replay(7), first);
+    let other = replay(8);
+    assert!(in_order(&other), "{other:?}");
+    assert_ne!(other, first);
+}
