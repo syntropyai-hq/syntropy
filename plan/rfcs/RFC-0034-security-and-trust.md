@@ -440,6 +440,8 @@ On a keyholder node the action is signed directly, after its operator confirms. 
 
 That keyholder's operator approves or rejects the request. The keyholder's signature comes back in the `Approval` reply and is attached to the command, which is then submitted as usual. Until then, the submitting node shows the action as pending. A patch that mixes member-authority and keyholder-authority keys travels this path as a whole.
 
+*Note 2026-10-22 (#1698): when `KeyholderRequired` is raised.* An action on this path fails with `KeyholderRequired` (§15) when no keyholder can take it. The submitting node is not a keyholder, and the `ApprovalRequest` has nowhere to go: no member with a valid, non-revoked KEYHOLDER certificate (§5.4) is `Alive` in its membership view (RFC-0030 §5), or none of those it tries accepts the request. It is not raised while a keyholder has the request and its operator has yet to answer; the action is pending then. RFC-0050 §12.1 maps it to 403, not 503. The condition is about who may authorise the action: this node can't make the signature, and repeating the request changes nothing until a keyholder is online. A 5xx status would invite automatic retries.
+
 **Snapshots carry the same proof**. Every authority-derived field of `ClusterState` keeps the signed record that created it, and a node that loads a snapshot re-verifies all of them before adopting it (RFC-0032 §6.7):
 - members, with their `Approval`s and certificates;
 - the keyholder set, as the chain of signed `KeyholderChanged` records from the bootstrap keyholder;

@@ -1040,6 +1040,9 @@ Error codes, `Domain::Cluster`, range 0x0100–0x01FF:
 | 0x010C | `ClockSkew` | `Auth` |
 | 0x010D | `DiscoverySilent` | `Link` |
 | 0x010E | `RateLimited` | `Transient` |
+| 0x010F | `TokenRevoked` | `Auth` |
+
+*Note 2026-10-22 (#1698):* `TokenRevoked` is the code of `Rejected { reason: JoinReject::Revoked }` (§6.7): a join with an invite token that a keyholder revoked before it was used (`RevokeInvite`, §8.1). It was the one join refusal with no code. Like `TokenExpired` and `TokenExhausted` it is `Auth`, and RFC-0050 §12.1 maps it with them, to 403 on the native route.
 
 ## Performance model and budgets
 
