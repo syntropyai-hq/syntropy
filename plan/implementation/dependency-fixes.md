@@ -877,6 +877,14 @@ Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request 
 | PROD-E1-T10 gains a criterion for that case | PROD-E1-T10 | Definition of done | the rule needs a check that can fail: a P-config-2 case shows that such a request never resolves to a knob set missing a plan knob, and that `fidelity_conflict` names exactly the missing ones |
 | The criterion also covers a knob bit this version cannot name: it counts as instance-wide, and a plan holding one serves no request | PROD-E1-T10 | Definition of done | `ApproxKnobs` keeps a bit it does not name, and RFC-0042 §10 reserves `1 << 8` for a later knob. The review of #1771 found that such a bit counted as neither scope, so an exact request could be served by a plan that applied it, and an approximate label could leave it out |
 
+## PLC-E8-T13's rejection criterion after the section builder (2026-10-23)
+
+#1792 builds `SchedSection` with `config`'s `InstanceSection` (PROD-E1-T24), as RFC-0054 §5.4's note of 2026-10-22 says every domain crate's section is built. It removes `SchedSection::from_policy`, which PLC-E8-T13's criterion named.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E8-T13's criterion names `config`'s `InstanceSection::<SchedSection>::from_policy` in place of `SchedSection::from_policy`, and PLC-E8-T13 → PROD-E1-T24 | PLC-E8-T13 | R9 | the criterion's wording had drifted from the code: the builder now rejects the invalid values, and PROD-E1-T24 produces it. Both tasks are M1a and done (#1656, #1772), so the edge adds no wait |
+
 ## DIST-E1-T03's message set, by owner (2026-10-23)
 
 DIST-E1-T03 (M0a) could not be finished as written. "The full RFC-0001 §3.5 message set plus `PeerRevoked` and `DataPlaneGrant`" needs about 16 field types that do not exist:
