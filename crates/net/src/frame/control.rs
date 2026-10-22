@@ -132,7 +132,8 @@ pub struct Hello {
     /// RDMA and shared memory: from pairing; otherwise 0.
     pub channel_token: u64,
     /// On a reconnect `Hello` (RFC-0031 §7.4): the first data `chan_seq` the sender will resend,
-    /// at extension offset 64.
+    /// at extension offset 64. Data `chan_seq` starts at 1, so a 0 there is a fresh `Hello` whose
+    /// extension carries a later minor's trailing fields (§6.9, §10).
     pub resume_from: Option<u64>,
 }
 
@@ -149,7 +150,9 @@ pub struct HelloAck {
     pub limit_seq: u64,
     pub slot_size: u32,
     pub recv_slots: u16,
-    pub cred_kind: CredKind,
+    /// The kind of the acceptor's credential. A refusal's is not read, since the refusal is its
+    /// status, so it is `None` when the code is not a known kind; it encodes as 0.
+    pub cred_kind: Option<CredKind>,
 }
 
 /// The `Close` extension.
@@ -368,13 +371,28 @@ impl<'a> Control<'a> {
                 wire_dtype_code(hello.wire_dtype)?;
             }
             Control::HelloAck { ack, credential } => {
-                // A refusal may come before the acceptor has a credential to show.
-                let refused_bare = ack.status != code::OK && credential.is_empty();
-                if !refused_bare && credential.len() != ack.cred_kind.credential_len() {
-                    return Err(FrameError::CredentialLength {
-                        kind: ack.cred_kind as u16,
-                        len: credential.len(),
-                    });
+                // An acceptance shows the acceptor's credential. A refusal may come before the
+                // acceptor has one to show.
+                match ack.cred_kind {
+                    None if ack.status == code::OK => {
+                        return Err(bad(ftype, "cred_kind", 0u64));
+                    }
+                    None if !credential.is_empty() => {
+                        return Err(FrameError::CredentialLength {
+                            kind: 0,
+                            len: credential.len(),
+                        });
+                    }
+                    Some(kind)
+                        if credential.len() != kind.credential_len()
+                            && !(ack.status != code::OK && credential.is_empty()) =>
+                    {
+                        return Err(FrameError::CredentialLength {
+                            kind: kind as u16,
+                            len: credential.len(),
+                        });
+                    }
+                    _ => {}
                 }
             }
             Control::Close { reason, .. } => {
@@ -428,7 +446,7 @@ impl<'a> Control<'a> {
                 put64(ext, 16, ack.limit_seq);
                 put32(ext, 24, ack.slot_size);
                 put16(ext, 28, ack.recv_slots);
-                put16(ext, 30, ack.cred_kind as u16);
+                put16(ext, 30, ack.cred_kind.map_or(0, |kind| kind as u16));
                 32
             }
             Control::Close { close, .. } => {
@@ -474,10 +492,11 @@ impl<'a> Control<'a> {
                 let purpose = Purpose::from_code(ext[0]).ok_or(bad(ftype, "purpose", ext[0]))?;
                 let cred = get16(ext, 54);
                 let cred_kind = CredKind::from_code(cred).ok_or(bad(ftype, "cred_kind", cred))?;
-                // A reconnect `Hello` is the one with `resume_from` at offset 64.
+                // A reconnect `Hello` has a non-zero `resume_from` at offset 64. A 0 there, in a
+                // longer extension, is a fresh `Hello` with a later minor's trailing fields.
                 let resume_from = if ext.len() > 64 {
                     need(ftype, ext, 72)?;
-                    Some(get64(ext, 64))
+                    Some(get64(ext, 64)).filter(|&from| from != 0)
                 } else {
                     None
                 };
@@ -507,11 +526,17 @@ impl<'a> Control<'a> {
             }
             FrameType::HelloAck => {
                 need(ftype, ext, 32)?;
+                // The status comes first: a refusal is read whatever its `cred_kind` says.
+                let status = get16(ext, 0);
                 let cred = get16(ext, 30);
-                let cred_kind = CredKind::from_code(cred).ok_or(bad(ftype, "cred_kind", cred))?;
+                let cred_kind = match CredKind::from_code(cred) {
+                    Some(kind) => Some(kind),
+                    None if status != code::OK => None,
+                    None => return Err(bad(ftype, "cred_kind", cred)),
+                };
                 Control::HelloAck {
                     ack: HelloAck {
-                        status: get16(ext, 0),
+                        status,
                         wire_minor: ext[2],
                         capabilities: get64(ext, 8),
                         limit_seq: get64(ext, 16),
@@ -811,7 +836,7 @@ mod tests {
             limit_seq: 0,
             slot_size: 0,
             recv_slots: 0,
-            cred_kind: CredKind::DataPlaneCredential,
+            cred_kind: Some(CredKind::DataPlaneCredential),
         };
         round_trip(Control::HelloAck {
             ack,
@@ -829,6 +854,130 @@ mod tests {
             .validate(),
             Err(FrameError::CredentialLength { len: 0, .. })
         ));
+    }
+
+    #[test]
+    fn a_refusing_hello_ack_is_read_whatever_its_credential_kind() {
+        let mut ext = [0u8; 64];
+        ext[..2].copy_from_slice(&code::PROTO_MAJOR_MISMATCH.to_le_bytes());
+        // `cred_kind` 0: not a kind, but a refusal's is not read.
+        let ack = Control::parse(FrameType::HelloAck, &ext, &[]).unwrap();
+        let Control::HelloAck { ack, .. } = ack else {
+            panic!("not a HelloAck");
+        };
+        assert_eq!(ack.status, code::PROTO_MAJOR_MISMATCH);
+        assert_eq!(ack.cred_kind, None);
+        round_trip(Control::HelloAck {
+            ack,
+            credential: &[],
+        });
+        // An acceptance must name its credential's kind.
+        ext[..2].copy_from_slice(&code::OK.to_le_bytes());
+        assert!(matches!(
+            Control::parse(FrameType::HelloAck, &ext, &[]),
+            Err(FrameError::BadField {
+                field: "cred_kind",
+                ..
+            })
+        ));
+        assert!(matches!(
+            Control::HelloAck {
+                ack: HelloAck {
+                    status: code::OK,
+                    ..ack
+                },
+                credential: &[],
+            }
+            .validate(),
+            Err(FrameError::BadField {
+                field: "cred_kind",
+                ..
+            })
+        ));
+    }
+
+    /// A 64-byte `Hello` extension with a valid `purpose` and `cred_kind`, padded to `len`.
+    fn hello_ext(len: usize, resume_from: u64) -> Vec<u8> {
+        let mut ext = vec![0u8; len];
+        ext[0] = Purpose::Tokens as u8;
+        ext[54..56].copy_from_slice(&(CredKind::DataPlaneCredential as u16).to_le_bytes());
+        if len >= 72 {
+            ext[64..72].copy_from_slice(&resume_from.to_le_bytes());
+        }
+        ext
+    }
+
+    fn resume_from(ext: &[u8]) -> Result<Option<u64>, FrameError> {
+        match Control::parse(FrameType::Hello, ext, &[7; 168])? {
+            Control::Hello { hello, .. } => Ok(hello.resume_from),
+            other => panic!("not a Hello: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hello_extension_too_short_for_resume_from_is_refused() {
+        for len in 65..72 {
+            assert_eq!(
+                resume_from(&hello_ext(len, 0)),
+                Err(FrameError::ExtTooShort {
+                    ftype: FrameType::Hello,
+                    len,
+                    needed: 72,
+                }),
+                "{len}"
+            );
+        }
+        assert_eq!(resume_from(&hello_ext(64, 0)), Ok(None));
+        assert_eq!(resume_from(&hello_ext(72, 9)), Ok(Some(9)));
+    }
+
+    #[test]
+    fn a_zero_resume_from_is_a_fresh_hello_with_trailing_fields() {
+        // A later minor's longer extension (RFC-0031 §10), not a reconnect.
+        let mut ext = hello_ext(128, 0);
+        ext[100] = 0xAB;
+        assert_eq!(resume_from(&ext), Ok(None));
+        // A reconnect, with the same trailing byte skipped.
+        let mut ext = hello_ext(128, 5);
+        ext[100] = 0xAB;
+        assert_eq!(resume_from(&ext), Ok(Some(5)));
+        // The encoder never writes a 0 as a reconnect.
+        let Control::Hello { hello, credential } =
+            Control::parse(FrameType::Hello, &hello_ext(64, 0), &[7; 168]).unwrap()
+        else {
+            panic!("not a Hello");
+        };
+        assert!(matches!(
+            Control::Hello {
+                hello: Hello {
+                    resume_from: Some(0),
+                    ..hello
+                },
+                credential,
+            }
+            .validate(),
+            Err(FrameError::BadField {
+                field: "resume_from",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn wire_dtype_codes_follow_rfc_0031_section_6_4() {
+        let table = [
+            (0, None),
+            (1, Some(WireDType::F32)),
+            (2, Some(WireDType::BF16)),
+            (3, Some(WireDType::F16)),
+            (4, Some(WireDType::Q8B32)),
+            (5, Some(WireDType::F8E4M3B32)),
+        ];
+        for (code, dtype) in table {
+            assert_eq!(wire_dtype_code(dtype), Ok(code), "{dtype:?}");
+            assert_eq!(wire_dtype_from_code(code), Ok(dtype), "{code}");
+        }
+        assert!(wire_dtype_from_code(6).is_err());
     }
 
     #[test]
