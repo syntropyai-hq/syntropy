@@ -7,8 +7,10 @@
 //!   they are lower. `IsIoRingOpSupported` is checked for every operation used.
 //! - Files are registered with `BuildIoRingRegisterFileHandles` and registered regions with
 //!   `BuildIoRingRegisterBuffers`, both while nothing is in flight, so each re-registration of
-//!   the whole table leaves no operation holding an old index. A registration that fails leaves
-//!   operations on raw handles and addresses (`IO_REGISTER_FAILED` continues unregistered).
+//!   the whole table leaves no operation holding an old index. One asked for while operations are
+//!   in flight is made by the first `reap` that finds the ring idle; until then operations use raw
+//!   handles and addresses. A registration that fails leaves them on raw handles and addresses
+//!   for good (`IO_REGISTER_FAILED` continues unregistered).
 //! - Reads are `BuildIoRingReadFile`, submitted with `SubmitIoRing` without waiting and reaped
 //!   with `PopIoRingCompletion`. Where the ring supports it, a completion event set with
 //!   `SetIoRingCompletionEvent` is what `reap` blocks on.
@@ -382,6 +384,10 @@ pub struct IoRingEngine {
     buffers: Vec<IORING_BUFFER_INFO>,
     first_piece: Vec<u32>,
     buffers_registered: bool,
+    /// A registration was skipped because operations were in flight; `reap` retries it once the
+    /// ring is idle.
+    files_pending: bool,
+    buffers_pending: bool,
     slots: Vec<Slot>,
     free: Vec<u32>,
     ready: VecDeque<ReadCompletion>,
@@ -435,6 +441,8 @@ impl IoRingEngine {
             buffers: Vec::new(),
             first_piece: Vec::new(),
             buffers_registered: false,
+            files_pending: false,
+            buffers_pending: false,
             slots: vec![IDLE; depth as usize],
             free: (0..depth).rev().collect(),
             ready: VecDeque::with_capacity(depth as usize),
@@ -488,7 +496,12 @@ impl IoRingEngine {
     /// operations use raw handles.
     fn register_files(&mut self) {
         self.files_registered = false;
-        if !self.ring.support.register_files || self.busy > 0 {
+        self.files_pending = false;
+        if !self.ring.support.register_files {
+            return;
+        }
+        if self.busy > 0 {
+            self.files_pending = true;
             return;
         }
         self.handles = self
@@ -504,10 +517,28 @@ impl IoRingEngine {
         });
     }
 
+    /// Makes a registration that was skipped while operations were in flight, once none is.
+    fn retry_registration(&mut self) {
+        if self.busy > 0 {
+            return;
+        }
+        if self.files_pending {
+            self.register_files();
+        }
+        if self.buffers_pending {
+            self.register_buffers_with_ring();
+        }
+    }
+
     /// Registers every region, in pieces of at most [`PIECE`] bytes, when nothing is in flight.
     fn register_buffers_with_ring(&mut self) {
         self.buffers_registered = false;
-        if !self.ring.support.register_buffers || self.busy > 0 {
+        self.buffers_pending = false;
+        if !self.ring.support.register_buffers {
+            return;
+        }
+        if self.busy > 0 {
+            self.buffers_pending = true;
             return;
         }
         self.buffers.clear();
@@ -838,6 +869,7 @@ impl IoEngine for IoRingEngine {
             self.flush_queue();
         }
         n += self.pop_ring(out, false);
+        self.retry_registration();
         if let Some(writer) = self.writer.as_mut() {
             n += writer.reap(out, Wait::None);
         }
@@ -853,6 +885,7 @@ impl IoEngine for IoRingEngine {
                 // an auto-reset event set since the last pop is still set, so none is missed.
                 unsafe { WaitForSingleObject(event, ms) };
                 n += self.pop_ring(out, false);
+                self.retry_registration();
             }
         } else if let Some(writer) = self.writer.as_mut() {
             n += writer.reap(out, wait);

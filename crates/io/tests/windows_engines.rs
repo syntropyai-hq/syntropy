@@ -345,3 +345,60 @@ fn a_cancelled_read_still_completes_once() {
         );
     });
 }
+
+#[test]
+fn ioring_makes_a_registration_asked_for_in_flight_once_the_ring_is_idle() {
+    let test = "ioring-late-register";
+    let files = Files::new("late-register", 4 * UNIT);
+    let reference = std::fs::read(&files.file).unwrap();
+    // Declared before the engine, so they outlive it.
+    let mut first = Mem::new(1, 0);
+    let mut late = Mem::new(1, 0);
+    let Some(mut engine) = ring(IoRingOptions::default(), test) else {
+        return;
+    };
+    if !engine.support().register_buffers {
+        summary(&format!(
+            "{test}: the ring cannot register buffers; checked nothing"
+        ));
+        return;
+    }
+    let file = engine.open(&files.file, OpenMode::Read).unwrap();
+    // SAFETY: `first` and `late` outlive the engine, which is dropped before them, and only
+    // the engine's operations touch them while it lives.
+    unsafe { engine.register_buffers(&[first.region()]) }.unwrap();
+    assert!(engine.caps().fixed_buffers);
+    // A read in flight, so the next registration has to wait.
+    let mut batch = SubmitBatch::with_capacity(1);
+    batch.push(read(1, file, 0, first.raw(0, 1))).unwrap();
+    engine.submit(&mut batch).unwrap();
+    // SAFETY: as above.
+    let bufs = unsafe { engine.register_buffers(&[late.region()]) }.unwrap();
+    assert!(
+        !engine.caps().fixed_buffers,
+        "the registration waits while the read is in flight"
+    );
+    // The reap that returns the read finds the ring idle, and registers.
+    let mut out = CompletionBuf::with_capacity(4);
+    for _ in 0..10_000 {
+        engine.reap(&mut out, Wait::Until(Nanos(1_000_000)));
+        if !out.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(out.drain().count(), 1);
+    assert!(
+        engine.caps().fixed_buffers,
+        "registered once the ring is idle"
+    );
+    // The late region now serves a fixed read.
+    // SAFETY: `bufs[0]` is `late`, one block, registered on this engine only.
+    let dest = unsafe { IoDest::fixed(bufs[0], 0, Bytes(UNIT)) };
+    let (done, _) = run(&mut engine, vec![read(2, file, UNIT, dest)], None);
+    assert_eq!(done[0].result, Ok(Bytes(UNIT)), "{:?}", done[0]);
+    assert!(late.bytes() == reference[UNIT as usize..2 * UNIT as usize]);
+    drop(engine);
+    summary(&format!(
+        "{test}: a registration asked for in flight was made once idle"
+    ));
+}
