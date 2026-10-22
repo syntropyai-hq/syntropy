@@ -8,7 +8,8 @@
 //! PLC lane registers them (RFC-0054 §5.1, note of 2026-10-22).
 
 use serde::Deserialize;
-use syntropy_config::{ByteSize, ConfigSection, Duration, Fraction, HoldsSecret, Reserve};
+use syntropy_config::{ByteSize, ConfigSection, Duration, HoldsSecret};
+use syntropy_core::policy::{Fraction, Reserve};
 use syntropy_net::config::{Backoff, CountInWindow};
 
 use super::FEATURE_LEVEL_V1;
@@ -59,6 +60,7 @@ pub struct RecoverySection {
     pub history: History,
     /// The RAM recovery history may use per runner: min(2 GiB, 5 % of RAM).
     #[config(reload = Hot, default = { fraction = 0.05, max = "2GiB" })]
+    #[serde(with = "syntropy_config::form")]
     pub history_ram: Reserve,
     /// The disk recovery history may use.
     #[config(reload = Hot, default = "16GiB")]
@@ -81,6 +83,7 @@ pub struct RecoverySection {
     pub p90_len_seed: u32,
     /// Prefer a better steady state within this slack of the fastest resume (RFC-0033 §6.2).
     #[config(reload = Hot, default = 0.2, scope = Cluster, introduced_at = FEATURE_LEVEL_V1)]
+    #[serde(with = "syntropy_config::form")]
     pub strategy_slack: Fraction,
 }
 
@@ -90,6 +93,7 @@ pub struct RecoverySection {
 pub struct ReplanRecoverySection {
     /// The predicted gain a re-plan needs while the instance is degraded (RFC-0033 §7.2).
     #[config(reload = Hot, default = 0.1, introduced_at = FEATURE_LEVEL_V1)]
+    #[serde(with = "syntropy_config::form")]
     pub degraded_min_gain: Fraction,
 }
 

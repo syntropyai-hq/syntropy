@@ -239,6 +239,8 @@ RFC-0001 §11.3 defines these types in `syntropy-core`, and §5.13 assigns them 
 
 *Note 2026-10-22 (#1672):* `config` still defines its own `Fraction`, `Reserve`, `NodeSelector`, `DeviceSelector`, `TierSelector` and `LayerRange`, which match `core`'s today. PROD-E1-T23 moves `config` onto `core`'s types and deletes the copies, so the two cannot drift.
 
+*Note 2026-10-22 (PROD-E1-T23, as built):* `config` no longer has copies of those six types. Its keys hold `core`'s types and read §3's forms through `#[serde(with = "syntropy_config::form")]`, which also serves an `Option` or `Vec` of one. The `ConfigSection` derive rejects a key of one of these types without it, because their own serde form is the record encoding, which reads no text form. `config` keeps the text forms (`syntropy_config::form::Form`), their validation messages and `Config` codes, and the compiled regex. `Reserve::resolve` is only in `core`.
+
 #### 4.1 `Objective`
 
 RFC-0001 §11.3 defines the type. This RFC adds two optional fields with serde defaults, under the RFC-0001 §5 rules:
