@@ -13,8 +13,14 @@
 //!   are those of x86-64 and AArch64, the Linux targets ADR-0020 supports, so it is built for
 //!   those two only; another Linux architecture has no adapter and no `os::linux` module.
 //!
-//! The Windows adapter comes in TIER-E2-T03, WSL2 and macOS in TIER-E2-T04.
+//! - `macos` holds the macOS sysctl reads `syntropy tune`'s tier side needs (TIER-E2-T13):
+//!   `sysctlbyname` with no new value, under a scoped `allow`. Nothing in this crate writes a
+//!   sysctl (RFC-0020 §9.1).
+//!
+//! The Windows adapter comes in TIER-E2-T03, WSL2 and the rest of macOS in TIER-E2-T04.
 
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod procfs;
 
 #[cfg(all(
