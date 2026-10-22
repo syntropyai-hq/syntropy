@@ -23,7 +23,7 @@
 //! A [`Connection`] also carries unreliable datagrams (RFC 9221), the way RFC-0030 §5.2's
 //! heartbeats travel; the field probe times its echoes over them.
 //!
-//! With the `test-relay` feature, [`test_relay`] runs a relay server on this host for tests of the
+//! With the `test-relay` feature, `test_relay` runs a relay server on this host for tests of the
 //! crates above `net`, which rule 6 keeps from naming iroh. It is a test-only feature (RFC-0001
 //! §4.2 rule 10): no release turns it on.
 
