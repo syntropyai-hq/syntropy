@@ -459,7 +459,10 @@ dependencies = [
 name = "syntropy-io"
 version = "0.0.0"
 dependencies = [
+ "getrandom",
+ "libc",
  "syntropy-core",
+ "windows-sys",
 ]
 
 [[package]]

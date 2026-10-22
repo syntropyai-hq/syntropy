@@ -7,3 +7,13 @@ publish.workspace = true
 
 [dependencies]
 syntropy-core = { path = "../core" }
+# The OS CSPRNG behind `os::OsEntropy` (ADR-0022 decisions 3 and 4). RFC-0001 §4.2 rule 6 allows
+# it as a direct dependency of this crate only.
+getrandom = { version = "0.4.3", default-features = false }
+
+# The clocks of `os::SystemClock` (ADR-0022 decision 4: binding crates for the clock calls).
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_WindowsProgramming"] }
