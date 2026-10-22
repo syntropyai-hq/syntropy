@@ -3,9 +3,10 @@
 //! The simulated fabric, the deterministic simulator, the fake `KernelProvider`, `RefExecutor`, the
 //! parity harness and golden traces.
 //!
-//! A dev-only crate in RFC-0001 §4.1, designed in RFC-0060. It holds the hot-path guards of
-//! RFC-0060 §3.5 so far: [`guards::CountingAlloc`] and [`guards::alloc_count_this_thread`]. The
-//! rest is planned.
+//! A dev-only crate in RFC-0001 §4.1, designed in RFC-0060: no production crate depends on it
+//! (§4.2 rule 9). It holds the hot-path guards of RFC-0060 §3.5 so far
+//! ([`guards::CountingAlloc`] and [`guards::alloc_count_this_thread`]), and the stubs of the
+//! reference interpreter's contract ([`refexec`], RFC-0060 §4.1). The rest is planned.
 //!
 //! `unsafe` is denied in this crate, not forbidden, for one reason: a global allocator is an
 //! `unsafe impl GlobalAlloc`. RFC-0001 §4.2 rule 8 (note 2026-10-22) lets [`guards`] hold that one
@@ -16,3 +17,4 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 pub mod guards;
+pub mod refexec;

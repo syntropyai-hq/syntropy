@@ -6,8 +6,9 @@
 //!
 //! Layer 1 in RFC-0001 §4.1, designed in RFC-0040, with the numerics of RFC-0042. Its only
 //! workspace dependency is `core`. It holds the op registry and the op types ([`op`],
-//! RFC-0040 §3.1, §3.2). Per-device op selection, the argument types and the F32 reference
-//! semantics of every op come with later tasks.
+//! RFC-0040 §3.1, §3.2), and the reference numerics' modes ([`reference`], RFC-0060 §4.1).
+//! Per-device op selection, the argument types and the F32 reference semantics of every op come
+//! with later tasks.
 
 #![forbid(unsafe_code)]
 
@@ -16,6 +17,7 @@ pub mod error;
 pub mod memory;
 pub mod op;
 pub mod provider;
+pub mod reference;
 pub mod stream;
 pub mod tolerances;
 
@@ -34,6 +36,7 @@ pub use op::{
     ShapeClass, ShapeSig, bucket_set,
 };
 pub use provider::{CollectiveOps, KernelProvider};
+pub use reference::{RefDevice, RefMode};
 pub use stream::{
     CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPriority, WaitCmp, WakeKind,
 };

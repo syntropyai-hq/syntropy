@@ -697,6 +697,10 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-testkit"
 version = "0.0.0"
+dependencies = [
+ "syntropy-core",
+ "syntropy-graph",
+]
 
 [[package]]
 name = "syntropy-text"
