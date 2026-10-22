@@ -123,19 +123,23 @@ fn problems(job: &str) -> Vec<&'static str> {
     {
         problems.push("does not check that the head's second parent is the PR's head commit");
     }
-    // A merge group has no PR merge commit to pair: the job passes it in its own step, and every
-    // step that checks out, moves or checks the pair is skipped there.
-    let pairing = steps.iter().filter(|step| {
-        step.contains("ref: ${{ github.sha }}")
-            || step.contains("HEAD^1")
-            || step.contains("git -C pr rev-parse")
-    });
-    if pairing
-        .clone()
-        .any(|step| !step.contains("if: github.event_name != 'merge_group'"))
-        || pairing.count() == 0
+    // A merge group has no PR merge commit to pair. The job passes it in one step of its own, and
+    // every other step is skipped there: guarded on the event, or run only when a guarded step's
+    // output is 'true', which is empty on a merge group.
+    let passes = |step: &&String| step.contains("if: github.event_name == 'merge_group'");
+    let skipped_on_a_merge_group = |step: &String| {
+        step.contains("if: github.event_name != 'merge_group'")
+            || step.lines().any(|line| {
+                let line = line.trim();
+                line.starts_with("if: steps.") && line.ends_with("== 'true'")
+            })
+    };
+    if steps.iter().filter(passes).count() != 1
+        || steps
+            .iter()
+            .any(|step| !passes(&step) && !skipped_on_a_merge_group(step))
     {
-        problems.push("runs a step that pairs the base and head on a merge group");
+        problems.push("runs a step other than its merge-group pass on a merge group");
     }
     problems
 }
@@ -219,28 +223,41 @@ fn a_step_between_the_root_checkout_and_the_move_is_caught() {
 }
 
 #[test]
-fn a_pairing_step_without_the_merge_group_guard_is_caught() {
+fn a_step_without_the_merge_group_guard_is_caught() {
+    const CAUGHT: &str = "runs a step other than its merge-group pass on a merge group";
     let steps = dep_diff_steps();
     for text in [
+        "ref: ${{ github.sha }}\n          fetch-depth: 2\n          persist-credentials",
         "run: git checkout --detach --quiet HEAD^1",
         "path: pr",
         r#"test "$(git -C pr rev-parse HEAD^1)""#,
         r#"test "$(git -C pr rev-parse HEAD^2)""#,
+        "uses: ./.github/actions/setup-rust",
+        "id: gate",
     ] {
         let mut mutated = steps.clone();
         let at = step_with(&steps, text);
-        mutated[at] = mutated[at].replace("        if: github.event_name != 'merge_group'\n", "");
+        mutated[at] = mutated[at]
+            .replace(
+                "      - if: github.event_name != 'merge_group'\n        ",
+                "      - ",
+            )
+            .replace("        if: github.event_name != 'merge_group'\n", "");
         assert_ne!(
             mutated[at], steps[at],
             "the step with {text:?} has the guard"
         );
         assert!(
-            problems(&job_of(&mutated))
-                .contains(&"runs a step that pairs the base and head on a merge group"),
+            problems(&job_of(&mutated)).contains(&CAUGHT),
             "guard dropped from the step with {text:?}: {:?}",
             problems(&job_of(&mutated))
         );
     }
+    // A condition on a step's output that holds when the step was skipped.
+    let mut mutated = steps.clone();
+    let at = step_with(&steps, "if: steps.gate.outputs.bootstrap == 'true'");
+    mutated[at] = mutated[at].replace("== 'true'", "!= 'false'");
+    assert!(problems(&job_of(&mutated)).contains(&CAUGHT));
 }
 
 #[test]
