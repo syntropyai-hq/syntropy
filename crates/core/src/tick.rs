@@ -36,7 +36,8 @@ pub trait TickSource: Clone + Send + Sync {
     /// where neither is usable. In the simulator, virtual time (RFC-0060 §8.4).
     fn ticks(&self) -> u64;
 
-    /// A tick delta in nanoseconds, at the tick rate calibrated against `Clock` at startup.
+    /// A tick delta in nanoseconds, at the tick rate the source found at startup: read from the
+    /// hardware, or calibrated against a monotonic clock (RFC-0060 §2.1, note of 2026-10-22).
     fn ticks_to_nanos(&self, ticks: u64) -> Nanos;
 
     /// The current instant on the `Clock` timeline, so step records and protocol events share
