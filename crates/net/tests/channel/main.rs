@@ -1081,6 +1081,46 @@ fn a_stalled_sender_probes_for_a_lost_credit() {
     assert_eq!(send(&mut a, &pool, 4, &[3; 16], at(20_000)), Ok(5));
 }
 
+/// `next_deadline` is when `on_tick` next has work: the oldest frame's ack timeout, then a
+/// stalled sender's probe; nothing after a fault. One nanosecond before it `on_tick` sends
+/// nothing; at it, the timer fires.
+#[test]
+fn next_deadline_is_when_the_next_timer_fires() {
+    let pool = send_pool(8, 1024);
+    let mut a = sender(Shape::SMALL, ALPHA, RFC);
+    assert_eq!(a.next_deadline(), None, "nothing sent, nothing due");
+    send(&mut a, &pool, 0, b"x", at(5)).unwrap();
+    assert_eq!(a.next_deadline(), None, "not yet on the wire");
+    drain(&mut a, at(10));
+    let due = a.next_deadline().expect("the ack timer");
+    assert_eq!(due, MonoTime(at(10).0 + ACK_TIMEOUT_MIN.0));
+    a.on_tick(MonoTime(due.0 - 1));
+    assert!(drain(&mut a, MonoTime(due.0 - 1)).is_empty());
+    a.on_tick(due);
+    assert_eq!(drain(&mut a, due).len(), 1, "the resend at the deadline");
+    // A sender with its whole window acknowledged and no more credit, refused: the probe's
+    // deadline, one ack timeout after the refusal.
+    let mut a = sender(Shape::SMALL, ALPHA, RFC);
+    for step in 0..4 {
+        send(&mut a, &pool, step, b"z", at(100)).unwrap();
+    }
+    drain(&mut a, at(100));
+    deliver(&mut a, &credit(4, 4, &[]), at(101));
+    assert_eq!(a.next_deadline(), None, "all acknowledged, nothing refused");
+    assert_eq!(
+        send(&mut a, &pool, 4, b"z", at(102)),
+        Err(SendError::WouldBlock)
+    );
+    let probe = a.next_deadline().expect("the probe");
+    assert_eq!(probe, MonoTime(at(102).0 + ACK_TIMEOUT_MIN.0));
+    a.on_tick(MonoTime(probe.0 - 1));
+    assert!(drain(&mut a, MonoTime(probe.0 - 1)).is_empty());
+    a.on_tick(probe);
+    assert_eq!(drain(&mut a, probe).len(), 1, "the probe at its deadline");
+    a.fail(syntropy_net::Error::uncoded(ErrorClass::Link, "gone"));
+    assert_eq!(a.next_deadline(), None);
+}
+
 /// RFC-0031 §7.3: three ack timeouts in a row are a link fault, `AckTimeout` (0x0208, `Link`).
 /// The channel sends `Close` with the code and refuses further sends.
 #[test]
