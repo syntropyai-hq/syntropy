@@ -154,7 +154,8 @@ pub enum TapValues {
 
 /// Serde for the tap's floats: in a human-readable format, a non-finite value is the string
 /// `"nan"`, `"inf"` or `"-inf"` (RFC-0050 §13.6); everywhere else, the float as itself.
-mod tap_float {
+/// `sequence::LogprobBlock` uses it too.
+pub(crate) mod tap_float {
     use std::fmt;
     use std::marker::PhantomData;
 
@@ -162,7 +163,7 @@ mod tap_float {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     /// A float type a tap carries.
-    pub(super) trait TapFloat: Copy + Serialize + DeserializeOwned {
+    pub(crate) trait TapFloat: Copy + Serialize + DeserializeOwned {
         fn name(self) -> Option<&'static str>;
         fn from_name(name: &str) -> Option<Self>;
         /// A JSON number, which a self-describing format hands over as an `f64`.
@@ -253,33 +254,33 @@ mod tap_float {
         }
     }
 
-    pub(super) fn serialize<F: TapFloat, S: Serializer>(
+    pub(crate) fn serialize<F: TapFloat, S: Serializer>(
         value: &F,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         Wire(*value).serialize(serializer)
     }
 
-    pub(super) fn deserialize<'de, F: TapFloat, D: Deserializer<'de>>(
+    pub(crate) fn deserialize<'de, F: TapFloat, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<F, D::Error> {
         Wire::deserialize(deserializer).map(|wire| wire.0)
     }
 
     /// The same for a sequence of floats.
-    pub(super) mod seq {
+    pub(crate) mod seq {
         use serde::{Deserialize, Deserializer, Serializer};
 
         use super::{TapFloat, Wire};
 
-        pub(in super::super) fn serialize<F: TapFloat, S: Serializer>(
+        pub(crate) fn serialize<F: TapFloat, S: Serializer>(
             values: &[F],
             serializer: S,
         ) -> Result<S::Ok, S::Error> {
             serializer.collect_seq(values.iter().map(|value| Wire(*value)))
         }
 
-        pub(in super::super) fn deserialize<'de, F: TapFloat, D: Deserializer<'de>>(
+        pub(crate) fn deserialize<'de, F: TapFloat, D: Deserializer<'de>>(
             deserializer: D,
         ) -> Result<Vec<F>, D::Error> {
             let wires = Vec::<Wire<F>>::deserialize(deserializer)?;

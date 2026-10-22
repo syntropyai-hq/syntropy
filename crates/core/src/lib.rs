@@ -48,7 +48,12 @@ pub use policy::{
 };
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
-pub use sequence::Priority;
+pub use sequence::{
+    CancelReason, DraftNode, FinishReason, GrammarRef, LogprobBlock, PoolingMode, PrefixKey,
+    PrefixRef, PrefixScope, Priority, ResumeCause, ResumePoint, SamplingParams, SequenceControl,
+    SequenceLimits, SequenceMeta, SequenceOpen, TailId, TokenEntry, TokenFrame, TokenSlice,
+    TraceContext,
+};
 pub use session::{ParseSessionIdError, SequenceId, SessionId};
 pub use transfer::{BufferView, ExtentRef, FileIx, HostRegion, StepLayer, ViewKind};
 pub use units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};
