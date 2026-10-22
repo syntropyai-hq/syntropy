@@ -315,6 +315,11 @@ This answers RFC-0051 open question 4. Six words is the agreed identity fingerpr
 
 **The word list** (open question 8, answered). The list is the BIP-39 English list, which is MIT-licensed, after a review for offensive words; the requirement is a licence on ADR-0018's allow list, not "public domain". Fingerprints are displayed as `word-word-word-word-word-word`, never as a numbered list. The list is a fixed, versioned asset of the binary. The recovery code (§5.5) uses the same list.
 
+*Note 2026-10-22 (DIST-E2-T08, the offensive-word review):* version 1 of the list is the BIP-39 English list from `trezor/python-mnemonic` at commit `b57a5ad`, vendored in `third_party/bip39/` with its MIT licence. Upstream's file is identical to `bitcoin/bips` `bip-0039/english.txt` (SHA-256 `2f5eed53…dbda`). The vendored copy differs from it in one line: line 259 holds `cairn` in place of a word the naming rule (D5) keeps out of the repository. All 2,048 words were reviewed against one rule: replace a word whose main everyday use is to insult or demean a person (by intelligence, mental health, appearance or character, or by labelling them with a condition), or that is sexual or obscene. Keep a word whose main use is neutral, even when it names something unpleasant, such as a weapon, a crime or an illness, or has a secondary insulting sense.
+- **Replaced**, each by a word that sorts between the same neighbours, so the list stays sorted and keeps BIP-39's unique four-letter prefixes: `addict` → `addition`, `crazy` → `crayon`, `dumb` → `duet`, `insane` → `inscribe`, `liar` → `lexicon`, `ugly` → `ukulele`.
+- **Kept** under the rule, and noted because a reader might ask: `fat`, `lazy`, `rude`, `nasty`, `cruel`, `evil`, `naive`, `silly`, `dwarf`, `peasant`, `inmate`, `orphan`, `abuse`, `assault`, the weapon words, and `satoshi`.
+- The replacements live in `syntropy-net`'s `words` module, not in the vendored file. Changing any word makes a new list version, because fingerprints and recovery codes already shown would read differently.
+
 ### 7. Invite token security
 
 RFC-0030 §6.4 defines the format and flow (ADR-0303). Their security properties:
