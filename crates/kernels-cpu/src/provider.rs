@@ -560,18 +560,11 @@ impl KernelProvider for CpuProvider {
                 src.bytes.0, dst.bytes.0
             )));
         }
-        let from = device.range(src.buffer, src.offset, src.bytes)?;
-        let to = device.range(dst.buffer, dst.offset, dst.bytes)?;
-        let len = usize::try_from(src.bytes.0)
-            .map_err(|_| internal(format!("a copy of {} bytes", src.bytes.0)))?;
-        device.push(
-            s.handle,
-            Item::Copy {
-                src: from,
-                dst: to,
-                len,
-            },
-        )
+        // Checked now, and resolved to addresses when pushed onto the ring: at once here, or at
+        // each replay of a capture, so a buffer freed since the capture is never written.
+        device.range(src.buffer, src.offset, src.bytes)?;
+        device.range(dst.buffer, dst.offset, dst.bytes)?;
+        device.push(s.handle, Item::CopyRef { src, dst })
     }
 
     fn prepare(&self, ctx: &DeviceCtx, op: &OpKey, _shape: &ShapeSig) -> Result<PreparedOp, Error> {

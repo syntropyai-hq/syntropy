@@ -12,6 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use syntropy_core::{Bytes, ErrorClass};
 use syntropy_kernels::{Error, ErrorCode, StreamPriority};
@@ -21,6 +22,10 @@ use crate::dispatch::{DispatchTable, KernelFn};
 use crate::doorbell::Doorbells;
 use crate::stream::{EventState, Health, Item, STREAM_CAPACITY, StreamRunner, StreamShared};
 use crate::wake::CpuWaker;
+
+/// How long a dropped device waits for its taken runners to drain before it leaks their
+/// memory rather than free it under them: 30 s \[target\], a chosen budget.
+const DROP_WAIT: Duration = Duration::from_secs(30);
 
 /// A host buffer the device knows: allocated by it, or imported.
 #[derive(Debug)]
@@ -160,7 +165,8 @@ impl CpuDevice {
             list.push(item);
             return Ok(());
         }
-        match stream.tx.push(item.resolved()) {
+        let item = self.resolve(item)?;
+        match stream.tx.push(item) {
             Ok(()) => {
                 stream.pushed += 1;
                 Ok(())
@@ -169,6 +175,20 @@ impl CpuDevice {
                 "stream {index}'s ring is full: {STREAM_CAPACITY} items"
             ))),
             Err(PushError::Closed(_)) => Err(internal(format!("stream {index}'s runner is gone"))),
+        }
+    }
+
+    /// The item to put on a ring now: a copy's buffers resolved to addresses, which fails for a
+    /// buffer freed since the item was captured, and an event's generation taken.
+    fn resolve(&self, item: Item) -> Result<Item, Error> {
+        match item {
+            Item::CopyRef { src, dst } => Ok(Item::Copy {
+                src: self.range(src.buffer, src.offset, src.bytes)?,
+                dst: self.range(dst.buffer, dst.offset, dst.bytes)?,
+                len: usize::try_from(src.bytes.0)
+                    .map_err(|_| internal(format!("a copy of {} bytes", src.bytes.0)))?,
+            }),
+            other => Ok(other.resolved()),
         }
     }
 
@@ -205,7 +225,13 @@ impl Drop for CpuDevice {
         for stream in self.streams.get_mut().iter_mut() {
             stream.runner = None;
         }
+        // Bounded, as the I/O engines' drop is: a runner that never drains or drops costs the
+        // memory, not a hang.
+        let deadline = Instant::now() + DROP_WAIT;
         while !self.quiet() {
+            if Instant::now() >= deadline {
+                return;
+            }
             std::hint::spin_loop();
         }
         for (addr, layout) in self.deferred.get_mut().drain(..) {

@@ -242,6 +242,43 @@ fn a_buffer_freed_under_a_queued_copy_outlives_the_copy() {
     );
 }
 
+/// A captured copy names its buffers, not their addresses, so a buffer freed after the capture
+/// fails the replay rather than being written (review of #1829).
+#[test]
+fn a_replay_after_its_buffer_is_freed_fails_instead_of_writing() {
+    let provider = CpuProvider::new(KillSwitches::NONE);
+    let ctx = open(&provider);
+    let s = provider.stream(&ctx, StreamPriority::Compute).unwrap();
+    let mut src = vec![0xCDu8; 256];
+    let a = import(&provider, &ctx, &mut src);
+    let request = AllocRequest {
+        bytes: Bytes(256),
+        kind: MemKind::HostMapped,
+        align: Bytes(64),
+        reserve_only: false,
+    };
+    let dst = provider.alloc(&ctx, request).unwrap();
+    provider.begin_capture(&ctx, &s).unwrap();
+    provider
+        .copy(&ctx, &s, slice(a, 0, 256), slice(dst.handle, 0, 256))
+        .unwrap();
+    let graph = provider.end_capture(&ctx, &s).unwrap();
+    provider.free(&ctx, dst);
+    assert_eq!(
+        provider.deferred_frees(&ctx).unwrap(),
+        0,
+        "nothing was queued"
+    );
+    let error = provider.replay(&ctx, &s, &graph).unwrap_err();
+    assert_eq!(error.class, ErrorClass::Internal);
+    assert!(error.message.contains("no buffer"), "{error}");
+    assert_eq!(
+        provider.run(&ctx, &s).unwrap(),
+        Run::Idle,
+        "nothing was queued"
+    );
+}
+
 #[test]
 fn events_are_atomics_that_streams_record_and_wait_on() {
     let provider = CpuProvider::new(KillSwitches::NONE);

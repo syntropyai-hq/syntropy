@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::time::Duration;
 
-use syntropy_kernels::{Error, HostFlag, OpArgs, WaitCmp};
+use syntropy_kernels::{BufferSlice, Error, HostFlag, OpArgs, WaitCmp};
 use syntropy_spsc::{Consumer, PopError};
 
 use crate::dispatch::KernelFn;
@@ -108,6 +108,10 @@ pub(crate) enum Item {
     Launch(KernelFn),
     /// Copies `len` bytes between two host addresses, resolved and bounds-checked at push.
     Copy { src: u64, dst: u64, len: usize },
+    /// A copy named by buffer handles, as a captured op list keeps it. It is resolved to a
+    /// [`Item::Copy`] each time it is pushed, so a buffer freed since the capture fails the
+    /// replay instead of being written. It never reaches a ring.
+    CopyRef { src: BufferSlice, dst: BufferSlice },
     /// Marks the event reached at `generation`. A captured record gets its generation at
     /// each replay.
     Record {
@@ -282,6 +286,11 @@ impl StreamRunner {
                 unsafe {
                     std::ptr::copy(*src as *const u8, *dst as *mut u8, *len);
                 }
+            }
+            Item::CopyRef { .. } => {
+                return Err(crate::device::internal(
+                    "an unresolved copy reached a stream's ring".to_owned(),
+                ));
             }
             Item::Record { event, generation } => {
                 // `fetch_max`, so an event recorded on two streams never moves back.
