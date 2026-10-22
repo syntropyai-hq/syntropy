@@ -83,7 +83,17 @@ fn build(text: &str, pattern: &str) -> Result<regex::Regex, ValueError> {
             regex::Error::CompiledTooBig(limit) => ValueError::bad_regex(format!(
                 "`{pattern}` compiles to more than {limit} bytes; simplify it"
             )),
-            other => ValueError::bad_regex(format!("`{pattern}` does not compile: {other}")),
+            other => {
+                // The parser's message spans lines: the pattern, a caret, then `error: <why>`.
+                // One line keeps an error's header on one line.
+                let text = other.to_string();
+                let why = text
+                    .lines()
+                    .rev()
+                    .find_map(|line| line.strip_prefix("error: "))
+                    .unwrap_or_else(|| text.lines().last().unwrap_or("").trim());
+                ValueError::bad_regex(format!("`{pattern}` does not compile: {why}"))
+            }
         })
 }
 

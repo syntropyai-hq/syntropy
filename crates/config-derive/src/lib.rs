@@ -366,6 +366,54 @@ fn check_serde_names(attrs: &[Attribute], errors: &mut Errors) {
     }
 }
 
+/// How a field deserializes when its serde attribute names a path: `with = "module"` calls
+/// `module::deserialize`, `deserialize_with = "function"` calls the function.
+enum SerdeWith {
+    Module(syn::Path),
+    Function(syn::Path),
+}
+
+impl SerdeWith {
+    /// A closure over one deserializer argument, which the check helpers take as a fn pointer.
+    fn call(&self) -> TokenStream2 {
+        match self {
+            SerdeWith::Module(module) => quote!(|d| #module::deserialize(d)),
+            SerdeWith::Function(function) => quote!(|d| #function(d)),
+        }
+    }
+}
+
+/// The field's `serde(with = …)` or `serde(deserialize_with = …)` path, if it has one, so the
+/// generated checks read a value the way the section does.
+fn serde_with(attrs: &[Attribute], errors: &mut Errors) -> Option<SerdeWith> {
+    let mut found = None;
+    for attr in attrs.iter().filter(|a| a.path().is_ident("serde")) {
+        let Meta::List(list) = &attr.meta else {
+            continue;
+        };
+        let trees: Vec<TokenTree> = list.tokens.clone().into_iter().collect();
+        for window in trees.windows(3) {
+            let (TokenTree::Ident(name), TokenTree::Punct(eq), TokenTree::Literal(lit)) =
+                (&window[0], &window[1], &window[2])
+            else {
+                continue;
+            };
+            let module = name == "with";
+            if eq.as_char() != '=' || !(module || name == "deserialize_with") {
+                continue;
+            }
+            let parsed = syn::parse2::<LitStr>(TokenTree::Literal(lit.clone()).into())
+                .and_then(|text| text.parse::<syn::Path>());
+            match parsed {
+                Ok(path) if module => found = Some(SerdeWith::Module(path)),
+                Ok(path) => found = Some(SerdeWith::Function(path)),
+                Err(e) => errors.push(e),
+            }
+        }
+    }
+    found
+}
+
 /// `a.b.c` with each segment `[a-z][a-z0-9_]*`; empty for the top level.
 fn valid_path(path: &str) -> bool {
     path.is_empty() || path.split('.').all(valid_segment)
@@ -437,6 +485,9 @@ struct SectionAttrs {
     scope: Option<Scope>,
     owner: Option<LitStr>,
     shared: bool,
+    /// `deprecated = CONST`: a `&[Deprecated]` the section declares as Rust data, not as
+    /// attributes, so two records from one release do not repeat an attribute item.
+    deprecated: Option<Expr>,
     /// An attribute failed to parse, so missing attributes are not reported on top.
     failed: bool,
 }
@@ -463,9 +514,15 @@ fn section_attrs(attrs: &[Attribute], errors: &mut Errors) -> SectionAttrs {
                 out.owner = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("shared") {
                 out.shared = true;
+            } else if meta.path.is_ident("deprecated") {
+                if out.deprecated.is_some() {
+                    return Err(duplicate());
+                }
+                out.deprecated = Some(meta.value()?.parse()?);
             } else {
                 return Err(meta.error(
-                    "unknown section attribute; expected `section`, `scope`, `owner` or `shared`",
+                    "unknown section attribute; expected `section`, `scope`, `owner`, `shared` \
+                     or `deprecated`",
                 ));
             }
             Ok(())
@@ -795,6 +852,31 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let holds_secret = quote_spanned! {ty.span()=>
             <#ty as ::syntropy_config::HoldsSecret>::HOLDS_SECRET
         };
+        let with = serde_with(&field.attrs, &mut errors);
+        let ranged = key.min.is_some() || key.max.is_some();
+        let this_key = quote!(&<#name as ::syntropy_config::ConfigSection>::SCHEMA.keys[#index]);
+        let check_body = match (&with, ranged) {
+            (None, false) => quote_spanned! {ty.span()=>
+                ::syntropy_config::__private::check_value::<#ty>(value).map(|_| ())
+            },
+            (None, true) => quote_spanned! {ty.span()=>
+                ::syntropy_config::__private::check_value_in_range::<#ty>(value, #this_key)
+            },
+            (Some(with), false) => {
+                let call = with.call();
+                quote_spanned! {ty.span()=>
+                    ::syntropy_config::__private::check_value_by::<#ty>(value, #call).map(|_| ())
+                }
+            }
+            (Some(with), true) => {
+                let call = with.call();
+                quote_spanned! {ty.span()=>
+                    ::syntropy_config::__private::check_value_by_in_range::<#ty>(
+                        value, #this_key, #call,
+                    )
+                }
+            }
+        };
 
         key_tokens.push(quote! {
             ::syntropy_config::KeySchema {
@@ -812,20 +894,42 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 authority: #authority,
                 env: #env,
                 holds_secret: #holds_secret,
+                check: {
+                    fn check(
+                        value: &::syntropy_config::__private::toml::Value,
+                    ) -> ::core::result::Result<(), ::syntropy_config::ValueError> {
+                        #check_body
+                    }
+                    check
+                },
             }
         });
 
-        let ranged = key.min.is_some() || key.max.is_some();
-        if ranged {
-            default_checks.push(quote_spanned! {ty.span()=>
+        default_checks.push(match (&with, ranged) {
+            (None, false) => quote_spanned! {ty.span()=>
+                ::syntropy_config::__private::check_default::<#ty>(&keys[#index], &mut errors);
+            },
+            (None, true) => quote_spanned! {ty.span()=>
                 ::syntropy_config::__private::check_default_in_range::<#ty>(&keys[#index], &mut errors);
-            });
+            },
+            (Some(with), false) => {
+                let call = with.call();
+                quote_spanned! {ty.span()=>
+                    ::syntropy_config::__private::check_default_by::<#ty>(&keys[#index], &mut errors, #call);
+                }
+            }
+            (Some(with), true) => {
+                let call = with.call();
+                quote_spanned! {ty.span()=>
+                    ::syntropy_config::__private::check_default_by_in_range::<#ty>(
+                        &keys[#index], &mut errors, #call,
+                    );
+                }
+            }
+        });
+        if ranged {
             range_checks.push(quote_spanned! {ty.span()=>
                 ::syntropy_config::__private::check_range(&self.#ident, &keys[#index], &mut errors);
-            });
-        } else {
-            default_checks.push(quote_spanned! {ty.span()=>
-                ::syntropy_config::__private::check_default::<#ty>(&keys[#index], &mut errors);
             });
         }
     }
@@ -833,6 +937,10 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let type_name = name.to_string();
     let scope = section_scope.tokens();
+    let deprecated = match &attrs.deprecated {
+        Some(expr) => quote_spanned!(expr.span()=> #expr),
+        None => quote!(&[]),
+    };
     Ok(quote! {
         impl ::syntropy_config::ConfigSection for #name {
             const SCHEMA: ::syntropy_config::SectionSchema = ::syntropy_config::SectionSchema {
@@ -843,6 +951,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 scope: #scope,
                 doc: #section_doc,
                 keys: &[#(#key_tokens),*],
+                deprecated: #deprecated,
                 check_defaults: {
                     fn check_defaults() -> ::std::vec::Vec<::syntropy_config::KeyError> {
                         let keys = <#name as ::syntropy_config::ConfigSection>::SCHEMA.keys;

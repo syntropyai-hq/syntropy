@@ -35,7 +35,7 @@
 
 use std::fmt;
 
-use crate::schema::{KeyError, KeySchema, SectionSchema};
+use crate::schema::{Deprecated, KeyError, KeySchema, SectionSchema};
 
 /// Every section a binary loads. Construct it with [`Registry::new`] in a `static` or `const`
 /// item.
@@ -79,6 +79,19 @@ impl Registry {
         self.keys().find(|k| k.path == path)
     }
 
+    /// Every deprecated key the sections record.
+    pub fn deprecations(&self) -> impl Iterator<Item = &'static Deprecated> + use<> {
+        self.sections.iter().flat_map(|s| s.deprecated.iter())
+    }
+
+    /// The deprecated key at this full path, if a section records one (RFC-0054 §8).
+    pub fn deprecated(&self, path: &str) -> Option<&'static Deprecated> {
+        self.sections
+            .iter()
+            .flat_map(|s| s.deprecated.iter())
+            .find(|d| d.path == path)
+    }
+
     /// The section a key belongs to.
     pub fn section_of(&self, path: &str) -> Option<&'static SectionSchema> {
         self.sections
@@ -118,6 +131,36 @@ impl Registry {
                 }
             }
         }
+        let deprecations: Vec<&Deprecated> = self
+            .sections
+            .iter()
+            .flat_map(|s| s.deprecated.iter())
+            .collect();
+        for (i, d) in deprecations.iter().enumerate() {
+            let well_formed = valid_path(d.path)
+                && d.replacement.is_none_or(valid_path)
+                && d.closes_in().is_some();
+            if !well_formed {
+                errors.push(RegistryError::DeprecatedMalformed { key: d.path });
+            }
+            if self.key(d.path).is_some() {
+                errors.push(RegistryError::DeprecatedIsLive { key: d.path });
+            }
+            if deprecations[i + 1..]
+                .iter()
+                .any(|other| other.path == d.path)
+            {
+                errors.push(RegistryError::DeprecatedTwice { key: d.path });
+            }
+            if let Some(replacement) = d.replacement
+                && self.key(replacement).is_none()
+            {
+                errors.push(RegistryError::ReplacementUnknown {
+                    deprecated: d.path,
+                    replacement,
+                });
+            }
+        }
         errors
     }
 
@@ -128,6 +171,16 @@ impl Registry {
             .flat_map(|s| (s.check_defaults)())
             .collect()
     }
+}
+
+/// A full key path: dotted segments of `[a-z][a-z0-9_]*`.
+fn valid_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.split('.').all(|segment| {
+            let mut bytes = segment.bytes();
+            bytes.next().is_some_and(|b| b.is_ascii_lowercase())
+                && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        })
 }
 
 /// If one path is a strict prefix of the other, by whole segments, the shorter is a value that
@@ -164,6 +217,29 @@ pub enum RegistryError {
         /// The key or section prefix under it.
         table: &'static str,
     },
+    /// A deprecation record's path or replacement is not a dotted key path, or its `since` is
+    /// not `major.minor`.
+    DeprecatedMalformed {
+        /// The path as recorded.
+        key: &'static str,
+    },
+    /// A deprecated key is also a live key.
+    DeprecatedIsLive {
+        /// The path.
+        key: &'static str,
+    },
+    /// Two records deprecate one path.
+    DeprecatedTwice {
+        /// The path.
+        key: &'static str,
+    },
+    /// A deprecated key names a replacement no section declares.
+    ReplacementUnknown {
+        /// The deprecated path.
+        deprecated: &'static str,
+        /// The replacement it names.
+        replacement: &'static str,
+    },
 }
 
 impl fmt::Display for RegistryError {
@@ -179,6 +255,25 @@ impl fmt::Display for RegistryError {
                 f,
                 "config key `{value}` holds a value, but `{table}` treats it as a table; TOML \
                  cannot hold both"
+            ),
+            RegistryError::DeprecatedMalformed { key } => write!(
+                f,
+                "the deprecation of `{key}` is malformed: paths are dotted keys, and `since` is \
+                 `major.minor`"
+            ),
+            RegistryError::DeprecatedIsLive { key } => {
+                write!(f, "config key `{key}` is both deprecated and declared")
+            }
+            RegistryError::DeprecatedTwice { key } => {
+                write!(f, "config key `{key}` is deprecated by two records")
+            }
+            RegistryError::ReplacementUnknown {
+                deprecated,
+                replacement,
+            } => write!(
+                f,
+                "deprecated key `{deprecated}` names `{replacement}` as its replacement, which no \
+                 section declares"
             ),
         }
     }
@@ -313,6 +408,7 @@ mod tests {
             authority: None,
             env: None,
             holds_secret: false,
+            check: |_| Ok(()),
         }
     }
 
@@ -330,6 +426,7 @@ mod tests {
             scope: Scope::Node,
             doc: "A section.",
             keys,
+            deprecated: &[],
             check_defaults: Vec::new,
         }
     }
