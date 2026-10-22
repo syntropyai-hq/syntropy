@@ -46,10 +46,10 @@ jobs:
           persist-credentials: false
       # Until QUAL-E1-T07's `cargo xtask ci changes --base <merge base>` computes the affected-job
       # set (§2.2), every run lists `lint`, `build` and `hosted-test`. `hosted-l3` is listed when
-      # the change touches a crate, vendored code, the cargo config, the workspace's `Cargo.toml`
-      # or `Cargo.lock`, the toolchain pin, the loom suite's xtask files or this workflow. That
-      # over-triggers, which is safe, and skips plan-only changes; T07 replaces it with §2.3's
-      # closure rule (the closure includes `ipc`, `tier`, `exec`, `io` or `net`).
+      # the change touches a crate, vendored code, the cargo config, `xtask`, the workspace's
+      # `Cargo.toml` or `Cargo.lock`, the toolchain pin, this workflow or the composite actions it
+      # uses. That over-triggers, which is safe, and skips plan-only changes; T07 replaces it with
+      # §2.3's closure rule (the closure includes `ipc`, `tier`, `exec`, `io` or `net`).
       # `hosted-parity-nano` is listed once its suite exists (QUAL-E5-T06). T07 also moves this
       # step onto the base branch's `xtask`, as `ci-gate` is, so a PR cannot list nothing and skip
       # every job.
@@ -61,8 +61,8 @@ jobs:
           jobs='"lint","build","hosted-test"'
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
-          l3='^(crates/|third_party/|\.cargo/|Cargo\.(toml|lock)$|rust-toolchain\.toml$'
-          l3+='|xtask/src/(loom|registry)\.rs$|\.github/workflows/pr\.yml$)'
+          l3='^(crates/|third_party/|\.cargo/|xtask/|Cargo\.(toml|lock)$|rust-toolchain\.toml$'
+          l3+='|\.github/(workflows/pr\.yml$|actions/))'
           if grep -qE "$l3" <<< "$changed"; then
             jobs="$jobs,\"hosted-l3\""
           fi
