@@ -4,8 +4,8 @@
 //!
 //! Decision-making code reads time only through a [`Clock`] it is given (rule T1), so the
 //! simulator can run it on virtual time. The production clock and the simulator's clock implement
-//! the trait elsewhere: the production `SystemClock` lives in the crate that open question
-//! OQ-PRC-20 settles, and the simulator's clock lives in `testkit`. Hot-thread timing in `exec` and
+//! the trait elsewhere: the production `SystemClock` lives in `syntropy_io::os` (ADR-0022), and
+//! the simulator's clock lives in `testkit`. Hot-thread timing in `exec` and
 //! `obs` uses `TickSource` instead (RFC-0060 §2.1).
 
 use serde::{Deserialize, Serialize};

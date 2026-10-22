@@ -4,8 +4,8 @@
 //!
 //! Decision-making code reads randomness only through an [`Entropy`] it is given (rule T1), so a
 //! simulator seed replays one run exactly. Key material always comes from the production
-//! `OsEntropy` (rule T2), which lives in the crate that open question OQ-PRC-20 settles. The
-//! simulator's seeded source lives only in `testkit`, so no production build can use it.
+//! `OsEntropy` (rule T2), which lives in `syntropy_io::os` (ADR-0022). The simulator's seeded
+//! source lives only in `testkit`, so no production build can use it.
 
 /// A source of random bytes, passed to the code that reads it (rule T1).
 pub trait Entropy: Send + Sync {

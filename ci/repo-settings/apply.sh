@@ -17,7 +17,8 @@
 #   The repository defaults to this checkout's. It needs `gh` and `jq`.
 #
 # Apply after `pr.yml` and `pr-meta.yml` are on `main`: the `main` ruleset requires `ci-gate`,
-# `dco` and `pr-title`, which those workflows post. An open PR gets them on its next push.
+# `dco`, `pr-title`, `dep-diff` and `properties-removal`, which those workflows post. An open PR
+# gets them on its next push.
 #
 # After applying, the remaining acceptance checks need a test account: a GitHub account that is
 # not a maintainer and not an organisation owner. Delete what each step creates when it is done.

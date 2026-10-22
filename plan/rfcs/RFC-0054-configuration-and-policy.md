@@ -239,6 +239,8 @@ RFC-0001 §11.3 defines these types in `syntropy-core`, and §5.13 assigns them 
 
 *Note 2026-10-22 (#1672):* `config` still defines its own `Fraction`, `Reserve`, `NodeSelector`, `DeviceSelector`, `TierSelector` and `LayerRange`, which match `core`'s today. PROD-E1-T23 moves `config` onto `core`'s types and deletes the copies, so the two cannot drift.
 
+*Note 2026-10-22 (PROD-E1-T23, as built):* `config` no longer has copies of those six types. Its keys hold `core`'s types and read §3's forms through `#[serde(with = "syntropy_config::form")]`, which also serves an `Option` or `Vec` of one. The `ConfigSection` derive rejects a key of one of these types without it, because their own serde form is the record encoding, which reads no text form. `config` keeps the text forms (`syntropy_config::form::Form`), their validation messages and `Config` codes, and the compiled regex. `Reserve::resolve` is only in `core`.
+
 #### 4.1 `Objective`
 
 RFC-0001 §11.3 defines the type. This RFC adds two optional fields with serde defaults, under the RFC-0001 §5 rules:
@@ -458,11 +460,11 @@ Each crate declares its own config section (RFC-0001 §11.2), and the domain RFC
 | `io.*` | 0021 | node | |
 | `kv.*` | 0022 | instance, node | `kv.prefix_cache`, `kv.autosave`, `kv.session_retention` replace the `sessions.*` names an earlier draft of this RFC used |
 | `experts.*` | 0023 | instance | |
-| `cluster.*`, `discovery.*`, `swim.*`, `membership.*`, `invite.*`, `pairing.*`, `power.*`, `net.relay_mode`, `net.relays`, `net.bulk_on_metered`, `net.listen_port`, `members.*` | 0030 | cluster, node | `cluster.lan_admission` (default `confirm`, ADR-0302) |
+| `cluster.*`, `discovery.*`, `swim.*`, `membership.*`, `invite.*`, `pairing.*`, `power.*`, `net.relay_mode`, `net.relays`, `net.bulk_on_metered`, `net.listen_port`, `members.*` | 0030 | cluster, node | `cluster.lan_admission` (default `confirm`, ADR-0302). `invite.require_confirm` is RFC-0034's, carved out of `invite.*` |
 | `link.*`, `quic.*`, `rdma.*`, `shm.*`, other `net.*` | 0031 | node | |
-| `log.*`, `coordinator.*`, `ring.*`, `tp.*`, `actions.*` | 0032 | cluster; node for `log.group_commit`, `log.follower_queue`; instance for `ring.max_inflight_steps` | |
-| `runner.*`, `recovery.*`, `straggler.*` | 0033 (RFC-0001 §3.4 names the `runner.*` keys) | node; instance for `recovery.history`, `recovery.drain_deadline`; cluster for `recovery.confirm_after` | |
-| `security.*`, `integrity.*`, `rdma.encrypt_untrusted` | 0034 | node, cluster | `security.trusted_fabric` is the interface list ADR-0011 calls `trusted_fabric` |
+| `log.*`, `coordinator.*`, `ring.*`, `tp.*`, `actions.*`, `orphan.*` | 0032 | cluster; node for `log.group_commit`, `log.follower_queue`; instance for `ring.max_inflight_steps` | |
+| `runner.*`, `recovery.*`, `straggler.*`, `standby` | 0033 (RFC-0001 §3.4 names the `runner.*` keys) | node; instance for `recovery.history`, `recovery.drain_deadline` and `standby`; cluster for `recovery.confirm_after` | `standby` is a top-level instance key (RFC-0033 §9.3), listed in §5.4 |
+| `security.*`, `integrity.*`, `rdma.encrypt_untrusted`, `invite.require_confirm` | 0034 | node, cluster | `security.trusted_fabric` is the interface list ADR-0011 calls `trusted_fabric`. `rdma.encrypt_untrusted` and `invite.require_confirm` are carved out of RFC-0031's `rdma.*` and RFC-0030's `invite.*` |
 | `kernels.*`, `features.disable` | 0040 | node | `kernels.module_dir` defaults to the running version's `modules/` directory (RFC-0052 §4.3); `<store>/modules` is a development override |
 | `store.*`, `hub.*`, `p2p.*`, `pack.*`, `offline` | 0041 | node | this RFC adopts RFC-0041's defaults as final: `store.max_bytes` 90% of the volume, `store.pack_max_bytes` 25% of `store.max_bytes`, `store.min_free_bytes` 20 GiB, `store.standby_max_bytes` 10% of the node's writable volumes by total size [target] (the per-node cap on second-copy chunks for repair, RFC-0033 §9.3; 0 turns second copies off; a copy is admitted only if the volume keeps 2 × `store.min_free_bytes` free, RFC-0041 §4.4) |
 | `numerics.*` | 0042 | node, instance | |
@@ -504,6 +506,7 @@ Recommended default: (a). Nothing yet checks a shared section's keys against thi
   - `orphan.*` (RFC-0032 §9's `orphan.adopt_deadline`) has no row. It is registered under RFC-0032.
   - RFC-0034's `invite.require_confirm` is a carve-out inside RFC-0030's `invite.*` that the table does not list, so PROD-E1-T16's carve-out check would flag its shared section.
   - The top-level instance key `standby` (RFC-0033 §9.3, §12) appears nowhere in this RFC, neither here nor in §5.4.
+  - *Resolved 2026-10-22 (#1679):* the table above now lists `orphan.*` under RFC-0032, the `invite.require_confirm` carve-out under RFC-0034 (and in RFC-0030's row), and `standby` under RFC-0033; §5.4 lists `standby`.
 
 #### 5.2 Node keys owned by the product RFCs
 
@@ -606,6 +609,7 @@ These keys build an `InstancePolicy` (§4.5). In addition, every instance-scope 
 | `preload` | bool | `false` | hot | — | 0050 |
 | `nodes.include`, `nodes.exclude` | [NodeSelector] | `["*"]`, `[]` | instance | — | 0011 |
 | `resources.<field>` | any `ResourcePolicy` field (§4.3) | unset: each node's own policy | instance | — | 0020 |
+| `standby` | `"none"` \| `"replica"` \| `{ warm = { nodes = [...] } }`, node names (RFC-0033 §9.3) | `"none"` | instance | — | 0033 |
 | `pin` | array of tables (§6.2) | `[]` | instance | — | 0011 |
 | `tensor_override` | array of tables (§6.3) | `[]` | instance | — | 0011 |
 | `fidelity` | `exact` \| `approximate` | `exact` (D3) | instance | narrows only (§7) | 0042 |
@@ -845,6 +849,11 @@ error[config/0003]: unknown key `resource.ram_headroon`
   - (b) it is accepted through 0.4.x too.
 
   Recommended default: (a), the literal reading, as built (`Deprecated::closes_in`). The release that closes a window removes the record.
+
+*Note 2026-10-22 (PROD-E5-T02): the API listener rules, as built.* They are `syntropy_api::rules::API_RULES`, which a binary that serves the API passes to `load_and_validate`.
+- **`api.tls = "none"`** (phase 4, code 10) is checked against non-loopback binds only. A loopback bind serves plain HTTP whatever `api.tls` says (RFC-0050 §11.1), so `"none"` with loopback-only binds is accepted. On a specific LAN address it needs `api.allow_plaintext_lan = true`. On a wildcard (`0.0.0.0`, `::`), which listens on every interface, and on a public address, it is rejected even with the opt-in, because RFC-0050 §11.1 allows plain HTTP "only on LAN addresses"; RFC-0050 §11.1's note of this date lists which addresses those are.
+- **The `{ cert, key }` pair.** The value's type takes both files or neither, so a table with only one of them is rejected in phase 3 (code 2), and the message names the missing one. Phase 4 has nothing left to check. In phase 5, `api_tls_files_readable` requires both files to exist and be readable files, as an error (code 11). The built-in path check does not cover them: it sees only path-typed keys, accepts a missing file whose directory is writable, and warns rather than rejects.
+- **The API-key check is not a configuration rule.** The phase 4 row above lists it, but keys live in `api-keys.toml` (RFC-0050 §11.3), not in a configuration layer. The daemon checks it at start through `syntropy_api::bind::plan_binds`: a non-loopback bind with no key refuses to start, and the message names `syntropy api-key create --name … --scope inference`.
 
 **Startup.** `syntropy serve` refuses to start on any phase 1–4 error and prints every error, not only the first. `syntropy config check [--file <path>] [--strict]` runs phases 1–5 without a daemon; `--strict` turns phase 5 warnings and empty override matches into errors for CI use.
 
