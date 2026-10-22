@@ -630,3 +630,11 @@ COMP-E13-T05 (M0a) had criteria that no M0a task can meet. The fast-math audit n
 | Added COMP-E13-T14 (M1a) → COMP-E13-T13, COMP-E13-T04, COMP-E13-T10, COMP-E5-T18 | COMP-E13-T14 | R9 | the bit-exact cases for E8M0 scales (e = 0 included), FP8, MXFP4, NVFP4, the remaining GGUF types and KV page moves need kernels first built at M1a, so they cannot close with COMP-E13-T13 at M0b. The wire codecs stay with COMP-E14-T05 and COMP-E14-T19, which already require them bit-exact |
 | COMP-E13-T05's last criteria → COMP-E13-T13; its FP16 criterion reworded | COMP-E13-T05 | R9 | RFC-0042 §4 gives `AccumKind` three variants (`F32`, `I32ThenF32`, `F64`), so FP16 accumulation cannot be declared. The static check rejects weaker declarations, and the detector rejects an FP16-accumulating variant that declares F32. The CI run of the static check over real provider registries moves to COMP-E13-T13, because no provider registers kernels at M0a |
 | QUAL-E4-T13 → COMP-E13-T13 (was COMP-E13-T05) | QUAL-E4-T13 | R8 | its edge was for the per-provider bit-exact list, which is now COMP-E13-T13's |
+
+## DIST-E8-T03's `Token` parts (2026-10-22)
+
+RFC-0031 §6.5 splits a `Token` step that is larger than the channel's slot into parts. A step splits at entry boundaries, and a single entry larger than a slot splits its tap block across parts. DIST-E8-T03's row covers only the part fields, which it reads, writes and checks, and no task built the split. Splitting a tap block needs its layout, which DIST-E8-T06 reads, so the split joins that row instead of a new task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E8-T06 gains the `Token` step split: parts at entry boundaries, one entry's tap block across parts, capability bit 15 `TOKEN_PARTS` (RFC-0031 §6.5, §10). It also gains a round-trip criterion across parts and the refusal of malformed parts | DIST-E8-T03, DIST-E8-T06 | R9 | DIST-E8-T03 builds the part fields, and the split needs the tap block's layout, which DIST-E8-T06 owns. DIST-E8-T06 already depends on DIST-E8-T03, so no edge changes |
