@@ -27,7 +27,8 @@
 //!   crates;
 //! - what the check cannot follow counts on every PR while it stays: a dependency inherited with
 //!   `workspace = true`, whose source is in a manifest this check does not read, and a path
-//!   crate outside the workspace root, which the check does not read at all.
+//!   crate outside the workspace root or reached through a symbolic link, which the check does
+//!   not read at all: a link in a PR's tree can point anywhere on the runner.
 //!
 //! A dependency that applies to one platform only is shown with its `cfg` or target triple.
 //!
@@ -307,23 +308,39 @@ impl Workspace {
     /// crate's `Cargo.toml` with `read` (given its path, absolute).
     pub fn read_path_crates(
         &mut self,
-        mut read: impl FnMut(&Path) -> Result<String, String>,
+        mut read: impl FnMut(&Path) -> Result<Manifest, String>,
     ) -> Result<(), String> {
         while let Some(dir) = self.pending.pop() {
             let shown = relative(&self.root, &dir);
-            let text = read(&dir.join("Cargo.toml")).map_err(|e| {
+            let manifest = read(&dir.join("Cargo.toml")).map_err(|e| {
                 format!("`{shown}/Cargo.toml`, a path dependency that is not a member: {e}")
             })?;
-            self.add_path_crate(&dir, &text)
-                .map_err(|e| format!("`{shown}/Cargo.toml`: {e}"))?;
+            match manifest {
+                Manifest::Text(text) => self
+                    .add_path_crate(&dir, &text)
+                    .map_err(|e| format!("`{shown}/Cargo.toml`: {e}"))?,
+                Manifest::Linked => self.unfollowed.push(format!(
+                    "`{shown}/Cargo.toml`, compared on every PR because a symbolic link is on its \
+                     path, and this check does not read through one"
+                )),
+            }
         }
         Ok(())
     }
 
-    /// Adds what the manifest `text` of the non-member path crate in `dir` declares.
+    /// Adds what the manifest `text` of the non-member path crate in `dir` declares. A parse
+    /// error names only its line and column: the parser's own message quotes the text.
     fn add_path_crate(&mut self, dir: &Path, text: &str) -> Result<(), String> {
-        let manifest: toml::Table =
-            toml::from_str(text).map_err(|e| format!("not a manifest cargo can read: {e}"))?;
+        let manifest: toml::Table = toml::from_str(text).map_err(|e| {
+            let at = match e.span() {
+                Some(span) => {
+                    let (line, column) = line_and_column(text, span.start);
+                    format!(" at line {line}, column {column}")
+                }
+                None => String::new(),
+            };
+            format!("not a manifest cargo can read: a TOML error{at}")
+        })?;
         let package = manifest
             .get("package")
             .and_then(|package| package.get("name"))
@@ -378,6 +395,53 @@ impl Workspace {
         }
         Ok(())
     }
+}
+
+/// The 1-based line and column of byte `offset` in `text`.
+fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
+    let before = &text.as_bytes()[..offset.min(text.len())];
+    let line = before.iter().filter(|b| **b == b'\n').count() + 1;
+    let column = before.iter().rev().take_while(|b| **b != b'\n').count() + 1;
+    (line, column)
+}
+
+/// A non-member path crate's manifest, as [`read_manifest`] finds it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Manifest {
+    Text(String),
+    /// A symbolic link is on the way from the workspace root to it, or it resolves outside the
+    /// root: the check does not read it.
+    Linked,
+}
+
+/// The manifest at `manifest`, under `root`, unless a link is on its way.
+///
+/// Every path component below the root, the manifest itself included, must be a plain directory
+/// or file, checked with `lstat`; and the manifest's canonical path must lie under the root's.
+/// Otherwise the file is not opened, because a link in a PR's tree can point anywhere on the
+/// runner. A file that does not exist is an error that names its path only.
+pub fn read_manifest(root: &Path, manifest: &Path) -> Result<Manifest, String> {
+    let shown = |path: &Path| relative(root, path);
+    let below = manifest
+        .strip_prefix(root)
+        .map_err(|_| format!("`{}` is not under the workspace root", shown(manifest)))?;
+    let mut at = root.to_path_buf();
+    for component in below.components() {
+        at.push(component);
+        let metadata =
+            std::fs::symlink_metadata(&at).map_err(|e| format!("`{}`: {e}", shown(&at)))?;
+        if metadata.file_type().is_symlink() {
+            return Ok(Manifest::Linked);
+        }
+    }
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).map_err(|e| format!("`{}`: {e}", shown(path)));
+    if !canonical(manifest)?.starts_with(canonical(root)?) {
+        return Ok(Manifest::Linked);
+    }
+    std::fs::read_to_string(manifest)
+        .map(Manifest::Text)
+        .map_err(|e| format!("`{}`: {e}", shown(manifest)))
 }
 
 fn as_table<'a>(value: &'a toml::Value, name: &str) -> Result<&'a toml::Table, String> {
@@ -525,9 +589,11 @@ fn relative(root: &Path, path: &Path) -> String {
 /// crate it reaches read from disk.
 fn dependencies(root: &Path, cwd: &Path) -> Result<Workspace, String> {
     let mut workspace = workspace(&metadata(root, cwd)?)?;
-    workspace.read_path_crates(|manifest| {
-        std::fs::read_to_string(manifest).map_err(|e| e.to_string())
-    })?;
+    let tree = workspace.root.clone();
+    // The error can quote names from a PR's files, so it is printable too.
+    workspace
+        .read_path_crates(|manifest| read_manifest(&tree, manifest))
+        .map_err(|e| printable(&e))?;
     Ok(workspace)
 }
 

@@ -236,7 +236,7 @@ v = { path = "../v" }
             read.push(manifest.to_path_buf());
             manifests
                 .get(manifest)
-                .map(|text| text.to_string())
+                .map(|text| Manifest::Text(text.to_string()))
                 .ok_or_else(|| format!("{} is not a fixture", manifest.display()))
         })
         .unwrap();
@@ -264,16 +264,18 @@ v = { path = "../v" }
 
     // So a dependency added inside an already-declared directory is new.
     let mut base = with_path_crate();
-    base.read_path_crates(
-        |_| Ok("[package]\nname = \"v\"\n[dependencies]\nserde = \"1\"\n".into()),
-    )
+    base.read_path_crates(|_| {
+        Ok(Manifest::Text(
+            "[package]\nname = \"v\"\n[dependencies]\nserde = \"1\"\n".into(),
+        ))
+    })
     .unwrap();
     let mut head = with_path_crate();
     head.read_path_crates(|_| {
-        Ok(
+        Ok(Manifest::Text(
             "[package]\nname = \"v\"\n[dependencies]\nserde = \"1.0.200\"\nproptest = \"1\"\n"
                 .into(),
-        )
+        ))
     })
     .unwrap();
     let none = BTreeSet::new();
@@ -308,7 +310,9 @@ fn what_the_check_cannot_follow_counts_on_every_pr() {
     let mut inherited = with_path_crate();
     inherited
         .read_path_crates(|_| {
-            Ok("[package]\nname = \"v\"\n[dependencies]\nserde = { workspace = true }\n".into())
+            Ok(Manifest::Text(
+                "[package]\nname = \"v\"\n[dependencies]\nserde = { workspace = true }\n".into(),
+            ))
         })
         .unwrap();
     assert_eq!(
@@ -344,7 +348,7 @@ fn what_the_check_cannot_follow_counts_on_every_pr() {
         "[package]\nname = \"v\"\n[dependencies]\nx = { git = \"https://e.invalid/x#abc\" }\n",
         "[package]\nname = \"v\"\n[dependencies]\nx = { git = \"https://e.invalid/x\", branch = \"a\", rev = \"b\" }\n",
     ] {
-        let result = with_path_crate().read_path_crates(|_| Ok(bad.into()));
+        let result = with_path_crate().read_path_crates(|_| Ok(Manifest::Text(bad.into())));
         assert!(
             result
                 .as_ref()
@@ -352,6 +356,98 @@ fn what_the_check_cannot_follow_counts_on_every_pr() {
             "{bad:?}: {result:?}"
         );
     }
+}
+
+#[test]
+fn a_manifest_error_names_a_line_and_column_never_the_text() {
+    // As if a link had led the check to a file of secrets: the parser's own message would
+    // quote the line.
+    let error = with_path_crate()
+        .read_path_crates(|_| Ok(Manifest::Text("# x\nSECRET_TOKEN=hunter2-abc123\n".into())))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "`vendor/v/Cargo.toml`: not a manifest cargo can read: a TOML error at line 2, column 14"
+    );
+    assert!(!error.contains("hunter2"), "{error}");
+    assert_eq!(line_and_column("ab\ncd", 4), (2, 2));
+    assert_eq!(line_and_column("ab", 9), (1, 3));
+}
+
+#[test]
+fn a_manifest_behind_a_link_is_not_read_and_counts_on_every_pr() {
+    let mut linked = with_path_crate();
+    linked.read_path_crates(|_| Ok(Manifest::Linked)).unwrap();
+    assert_eq!(
+        linked.unfollowed,
+        [
+            "`vendor/v/Cargo.toml`, compared on every PR because a symbolic link is on its path, \
+             and this check does not read through one"
+        ]
+    );
+}
+
+/// A fresh directory for one test, under the system's temporary directory.
+#[cfg(unix)]
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("syntropy-dep-diff-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(unix)]
+#[test]
+fn read_manifest_refuses_a_link_to_a_file_or_a_directory() {
+    use std::os::unix::fs::symlink;
+    let top = scratch("links");
+    let (root, outside) = (top.join("root"), top.join("outside"));
+    std::fs::create_dir_all(outside.join("crate")).unwrap();
+    std::fs::write(outside.join("secret.toml"), "SECRET_TOKEN=hunter2-abc123\n").unwrap();
+    std::fs::write(
+        outside.join("crate/Cargo.toml"),
+        "[package]\nname = \"smuggled\"\n",
+    )
+    .unwrap();
+    // A plain crate is read.
+    std::fs::create_dir_all(root.join("vendor/plain")).unwrap();
+    std::fs::write(
+        root.join("vendor/plain/Cargo.toml"),
+        "[package]\nname = \"p\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        read_manifest(&root, &root.join("vendor/plain/Cargo.toml")).unwrap(),
+        Manifest::Text("[package]\nname = \"p\"\n".into())
+    );
+    // A manifest that is a link to a file outside the root.
+    std::fs::create_dir_all(root.join("vendor/file")).unwrap();
+    symlink(
+        outside.join("secret.toml"),
+        root.join("vendor/file/Cargo.toml"),
+    )
+    .unwrap();
+    // A crate directory that is a link to one outside the root.
+    symlink(outside.join("crate"), root.join("vendor/dir")).unwrap();
+    // A link further up, and one that stays inside the root.
+    symlink(root.join("vendor"), root.join("also")).unwrap();
+    for manifest in [
+        "vendor/file/Cargo.toml",
+        "vendor/dir/Cargo.toml",
+        "also/plain/Cargo.toml",
+    ] {
+        assert_eq!(
+            read_manifest(&root, &root.join(manifest)).unwrap(),
+            Manifest::Linked,
+            "{manifest}"
+        );
+    }
+    // A missing manifest is an error naming its path only.
+    assert_eq!(
+        read_manifest(&root, &root.join("vendor/none/Cargo.toml")).unwrap_err(),
+        "`vendor/none`: No such file or directory (os error 2)"
+    );
+    std::fs::remove_dir_all(&top).unwrap();
 }
 
 #[test]

@@ -240,6 +240,62 @@ fn a_dependency_added_inside_an_approved_path_crate_is_new() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_path_crate_behind_a_link_is_never_read() {
+    use std::os::unix::fs::symlink;
+    // Built at run time, as a PR's tree could hold them: the vendored manifest as a link to a
+    // file outside the tree, then the vendored directory as a link to a crate outside it.
+    let top = std::env::temp_dir().join(format!("syntropy-dep-diff-links-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&top);
+    let outside = top.join("outside");
+    std::fs::create_dir_all(outside.join("crate")).unwrap();
+    std::fs::write(outside.join("secret"), "SECRET_TOKEN=hunter2-abc123\n").unwrap();
+    std::fs::write(
+        outside.join("crate/Cargo.toml"),
+        "[package]\nname = \"fixture-vendored\"\n\n[dependencies]\nsmuggled = \"1\"\n",
+    )
+    .unwrap();
+    for (case, link) in [
+        ("file", "vendor/fixture-vendored/Cargo.toml"),
+        ("dir", "vendor/fixture-vendored"),
+    ] {
+        let tree = top.join(case);
+        copy(&fixtures().join("head-path-crate-dependency"), &tree);
+        let at = tree.join(link);
+        if case == "file" {
+            std::fs::remove_file(&at).unwrap();
+            symlink(outside.join("secret"), &at).unwrap();
+        } else {
+            std::fs::remove_dir_all(&at).unwrap();
+            symlink(outside.join("crate"), &at).unwrap();
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+            .args(["ci", "dep-diff", "--base"])
+            .arg(fixtures().join("head-path-excluded"))
+            .arg("--head")
+            .arg(&tree)
+            .arg("--registry")
+            .arg(fixtures().join("registry"))
+            .output()
+            .expect("xtask runs");
+        let log = String::from_utf8(output.stderr).expect("UTF-8 output");
+        assert_eq!(output.status.code(), Some(1), "{case}: {log}");
+        assert!(
+            log.contains(
+                "dep-diff: new dependency source setting in `vendor/fixture-vendored/Cargo.toml`, \
+                 compared on every PR because a symbolic link is on its path, and this check does \
+                 not read through one"
+            ),
+            "{case}: {log}"
+        );
+        assert!(!log.contains("hunter2"), "{case}: {log}");
+        assert!(!log.contains("smuggled"), "{case}: {log}");
+        assert!(!log.contains("proptest"), "{case}: {log}");
+    }
+    std::fs::remove_dir_all(&top).unwrap();
+}
+
 #[test]
 fn approval_reads_all_of_the_pr_data_or_none() {
     let at = |file: &str| fixtures().join("pr").join(file).display().to_string();
