@@ -129,6 +129,18 @@ pub(crate) fn serde_error<E: serde::de::Error>(error: ValueError) -> E {
     E::custom(error)
 }
 
+/// The kind of a serde error that carries none of this crate's kinds ([`capture_kind`] saw
+/// none). serde rejects an integer that does not fit the field's integer type, such as `-1` or
+/// `2^32` for a `u32`, as ``invalid value: integer `<n>`, expected <type>``: that is a value
+/// outside the key's range, RFC-0054 §8's `out_of_range`. Any other failure is `wrong_type`.
+pub(crate) fn uncaptured_kind(message: &str) -> ValueErrorKind {
+    if message.starts_with("invalid value: integer `") {
+        ValueErrorKind::OutOfRange
+    } else {
+        ValueErrorKind::WrongType
+    }
+}
+
 /// Runs `f` and returns what it returned, with the kind of the first `ValueError` it turned
 /// into a serde error, if any. Nested calls each see only their own errors.
 pub(crate) fn capture_kind<T>(f: impl FnOnce() -> T) -> (T, Option<ValueErrorKind>) {
@@ -189,4 +201,35 @@ pub(crate) fn split_number(s: &str) -> (&str, &str) {
         .find(|c: char| !(c.is_ascii_digit() || c == '.'))
         .unwrap_or(s.len());
     (&s[..end], s[end..].trim_start())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`uncaptured_kind`] relies on serde's wording for an integer outside the target type;
+    /// this fails first if a serde release changes it.
+    #[test]
+    fn serde_reports_an_integer_outside_its_type_as_an_invalid_value() {
+        let message = |value: toml::Value| match value.try_into::<u32>() {
+            Err(e) => e.message().to_owned(),
+            Ok(n) => panic!("{n} fits a u32"),
+        };
+        for n in [-1, 1 << 32] {
+            let text = message(toml::Value::Integer(n));
+            assert!(
+                text.starts_with(&format!("invalid value: integer `{n}`, expected u32")),
+                "{text}"
+            );
+            assert_eq!(uncaptured_kind(&text), ValueErrorKind::OutOfRange);
+        }
+        for value in [
+            toml::Value::String("x".into()),
+            toml::Value::Float(1.5),
+            toml::Value::Boolean(true),
+        ] {
+            let text = message(value);
+            assert_eq!(uncaptured_kind(&text), ValueErrorKind::WrongType, "{text}");
+        }
+    }
 }
