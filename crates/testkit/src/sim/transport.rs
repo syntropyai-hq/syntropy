@@ -15,8 +15,10 @@
 //! - **Back-pressure.** A sender out of credit gets `WouldBlock`, and the core records the wait
 //!   as `credit_stall`, as in production.
 //! - **Link down.** A frame on a link that goes down is dropped. A channel whose link stays down,
-//!   in either direction, for the transport's failure timeout fails at both ends with a `Link`
-//!   error: sends return `SendError::Link`, and [`SimNet::fault`] gives the cause. The timeout is
+//!   in either direction, for the transport's failure timeout, counted from the moment it went
+//!   down, fails at both ends with a `Link` error: sends return `SendError::Link`, and
+//!   [`SimNet::fault`] gives the cause. [`SimNet::next_deadline`] says when that, or anything
+//!   else, is next due, so a driver can step on events. The timeout is
 //!   RFC-0031 §4's QUIC idle timeout, `link.failover_timeout`: [`FAILOVER_LAN`] or
 //!   [`FAILOVER_WAN`]. A link back up before then loses nothing: the cores send the dropped
 //!   frames again on their ack timeouts.
@@ -178,9 +180,15 @@ impl SimNet {
         }
     }
 
-    /// Runs `change` on the fabric: a split, a heal, a link's model.
+    /// Runs `change` on the fabric: a split, a heal, a link's model. This is the only way the
+    /// fabric changes once the network holds it, so here each channel side notes the clock's time
+    /// if a link of its channel has just gone down, and the failure timeout counts from then,
+    /// however late the next [`step`](Self::step) comes.
     pub fn with_fabric<T>(&self, change: impl FnOnce(&mut SimFabric) -> T) -> T {
-        change(&mut self.lock().fabric)
+        let mut state = self.lock();
+        let out = change(&mut state.fabric);
+        state.stamp_links();
+        out
     }
 
     /// Moves the network to the clock's time: delivers every frame due by then, each at its own
@@ -193,6 +201,26 @@ impl SimNet {
     /// When the next frame in flight arrives, if any.
     pub fn next_arrival(&self) -> Option<MonoTime> {
         self.lock().in_flight.keys().next().map(|(at, _)| *at)
+    }
+
+    /// When the network next has work, for a driver that steps on events: the next frame's
+    /// arrival, a channel's failure timeout on a downed link, or a core's next timer
+    /// (`ChannelCore::next_deadline`), whichever comes first. A time already past means now.
+    /// `None` when nothing is due.
+    pub fn next_deadline(&self) -> Option<MonoTime> {
+        let state = self.lock();
+        let arrival = state.in_flight.keys().next().map(|(at, _)| *at);
+        let sides = state
+            .sides
+            .values()
+            .filter(|side| side.core.fault().is_none());
+        let timers = sides.flat_map(|side| {
+            let failover = side
+                .down_since
+                .map(|since| since.saturating_add(state.failure_timeout));
+            [failover, side.core.next_deadline()]
+        });
+        arrival.into_iter().chain(timers.flatten()).min()
     }
 
     /// Frames in flight.
@@ -213,6 +241,19 @@ impl SimNet {
 impl State {
     fn now(&self) -> MonoTime {
         self.clock.now()
+    }
+
+    /// Notes when a link of each side's channel went down, now, or clears it if both are up.
+    fn stamp_links(&mut self) {
+        let now = self.now();
+        for side in self.sides.values_mut() {
+            let up = self.fabric.is_up(&side.out_link) && self.fabric.is_up(&side.in_link);
+            if up {
+                side.down_since = None;
+            } else {
+                side.down_since.get_or_insert(now);
+            }
+        }
     }
 
     fn step(&mut self) {
@@ -256,34 +297,27 @@ impl State {
         self.flush(frame.to, at);
     }
 
-    /// Fails both sides of a channel whose link has been down for the failure timeout.
+    /// Fails a side whose channel's link has been down for the failure timeout, counted from when
+    /// it went down ([`SimNet::with_fabric`]). Each side watches both directions of its link, so
+    /// both ends fail in the same step.
     fn watch_links(&mut self, id: u64, now: MonoTime) {
-        let Some(side) = self.sides.get(&id) else {
+        let timeout = self.failure_timeout;
+        let Some(side) = self.sides.get_mut(&id) else {
             return;
         };
-        let up = self.fabric.is_up(&side.out_link) && self.fabric.is_up(&side.in_link);
-        let peer = side.peer;
-        let timeout = self.failure_timeout;
-        let side = self.sides.get_mut(&id).expect("looked up above");
-        if up {
-            side.down_since = None;
+        let Some(since) = side.down_since else {
             return;
-        }
-        let since = *side.down_since.get_or_insert(now);
+        };
         if now.saturating_duration_since(since) < timeout || side.core.fault().is_some() {
             return;
         }
-        let error = Error::uncoded(
+        side.core.fail(Error::uncoded(
             ErrorClass::Link,
             format!(
                 "the link was down for the failure timeout, {} ms (RFC-0031 §4, §7.4)",
                 timeout.0 / 1_000_000
             ),
-        );
-        side.core.fail(error.clone());
-        if let Some(peer) = self.sides.get_mut(&peer) {
-            peer.core.fail(error);
-        }
+        ));
     }
 
     /// Puts everything side `id` has to send on its link at `now`.

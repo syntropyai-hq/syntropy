@@ -479,3 +479,92 @@ fn a_seed_replays_exactly() {
     assert!(in_order(&other), "{other:?}");
     assert_ne!(other, first);
 }
+
+/// The failure timeout counts from the moment the link went down, not from the next step: with
+/// the first step a second late, there is no fault 1 ns before down + T, and a `Link` fault at
+/// both ends at down + T exactly.
+#[test]
+fn the_failover_counts_from_the_moment_the_link_went_down() {
+    let (mut two, mut sender, _receiver, pool) = one_channel(4);
+    send_one(&mut sender, &pool, 1, 100).expect("sent");
+    two.run(Nanos(10_000));
+    let down_at = two.clock_now().0;
+    two.net
+        .with_fabric(|fabric| fabric.set_up(&link(A, B), false));
+    // The first step after the split comes a second late.
+    two.clock.advance_to(MonoTime(down_at + 1_000_000_000));
+    two.net.step();
+    two.clock.advance_to(MonoTime(down_at + FAILOVER_LAN.0 - 1));
+    two.net.step();
+    assert_eq!(two_fault(&two.net, A), None, "1 ns before the timeout");
+    assert_eq!(two_fault(&two.net, B), None);
+    two.clock.advance_to(MonoTime(down_at + FAILOVER_LAN.0));
+    two.net.step();
+    for node in [A, B] {
+        let fault = two_fault(&two.net, node).expect("a fault at both ends, at the timeout");
+        assert_eq!(fault.class, ErrorClass::Link);
+    }
+}
+
+/// A driver that steps only at `next_deadline` delivers every frame, and fails a downed link at
+/// down + T exactly; with nothing in flight and no timer running, nothing is due.
+#[test]
+fn a_driver_stepping_on_deadlines_sees_every_event_on_time() {
+    let (mut two, mut sender, mut receiver, pool) = one_channel(4);
+    assert_eq!(
+        two.net.next_deadline(),
+        None,
+        "an idle network has nothing due"
+    );
+    for step in 1..=3 {
+        send_one(&mut sender, &pool, step, 100).expect("sent");
+    }
+    // Step on events until the three frames are in and acknowledged.
+    let mut got = Vec::new();
+    for _ in 0..100 {
+        got.extend(received(&mut receiver));
+        while sender.completed().is_some() {}
+        let Some(due) = two.net.next_deadline() else {
+            break;
+        };
+        let now = two.clock_now();
+        two.clock.advance_to(due.max(now));
+        two.net.step();
+    }
+    got.extend(received(&mut receiver));
+    assert_eq!(got, [(1, 1), (2, 2), (3, 3)]);
+    // A frame on a link that goes down: the next deadlines lead to the failover at down + T.
+    send_one(&mut sender, &pool, 4, 100).expect("sent");
+    let down_at = two.clock_now().0;
+    two.net
+        .with_fabric(|fabric| fabric.set_up(&link(A, B), false));
+    let net = two.net.clone();
+    // The sender's ack timer fires every few hundred µs until then: each is an event.
+    for _ in 0..20_000 {
+        if two_fault(&net, A).is_some() {
+            break;
+        }
+        let due = two.net.next_deadline().expect("the failover is due");
+        let now = two.clock_now();
+        two.clock.advance_to(due.max(now));
+        two.net.step();
+    }
+    assert!(two_fault(&net, A).is_some() && two_fault(&net, B).is_some());
+    assert_eq!(
+        two.clock_now().0,
+        down_at + FAILOVER_LAN.0,
+        "failed at down + T exactly"
+    );
+    // What is left is the `Close` each end sends, on the link still up; then nothing is due,
+    // since a failed channel runs no timers.
+    for _ in 0..10 {
+        let Some(due) = two.net.next_deadline() else {
+            break;
+        };
+        let now = two.clock_now();
+        two.clock.advance_to(due.max(now));
+        two.net.step();
+    }
+    assert_eq!(two.net.next_deadline(), None);
+    assert_eq!(two.net.in_flight(), 0);
+}

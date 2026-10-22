@@ -1049,7 +1049,8 @@ pub enum Dist {
 - **Where.** `testkit::sim::SimTransport` implements `net`'s `Transport`, one per simulated node, over a shared `SimNet` that holds the fabric and every channel. It sits behind `testkit`'s `transport` feature, which `net`'s tests turn on, so crates that use `testkit` for anything else don't build `net`.
 - **Channels.** Each side of a channel is DIST-E7-T02's channel core, so the credit window, `WouldBlock`, `credit_stall`, acknowledgements and retention are production's. Every frame goes through `SimFabric::send_reliable`, one stream per channel side, and is delivered at its own arrival time.
 - **Link down.** The failure timeout is `link.failover_timeout`, RFC-0031 §4's QUIC idle timeout: 2 s on a LAN, 10 s across a WAN, chosen per `SimNet`.
-  - A channel fails at both ends, with an uncoded `Link` error, when either direction of its link has been down for the timeout. That includes a one-way split, since the far end hears nothing.
+  - A channel fails at both ends, with an uncoded `Link` error, when either direction of its link has been down for the timeout. The timeout counts from the moment the link went down, noted when the fabric changes, however late the driver next steps. That includes a one-way split, since the far end hears nothing.
+  - `SimNet::next_deadline` gives the next time anything is due: a frame's arrival, a failover, or a core's timer (`ChannelCore::next_deadline`). So a driver that steps on events sees each one at its time.
   - A link back up sooner loses nothing: the cores send the dropped frames again on their ack timeouts.
   - The cores never escalate ack timeouts to a link fault, since QUIC retransmits lost packets itself (RFC-0031 §7.3).
 - **Not modelled yet.**
