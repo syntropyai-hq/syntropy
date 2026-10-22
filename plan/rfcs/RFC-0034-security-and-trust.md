@@ -127,6 +127,8 @@ A compromised member (A5) or the holder of a used, leaked token (A8) can therefo
 - `syntropy-session-wrap-v1` (§13);
 - `syntropy-admit-v1`, `syntropy-revoke-v1`, `syntropy-authority-v1` (the other authority events of §8.3), `syntropy-apikey-v1`.
 
+*Note 2026-10-22 (DIST-E2-T04, from review):* strict verification also refuses a public key that is not of prime order, where `[ℓ]A ≠ identity`. Refusing small-order keys alone is not enough. A key `A + T`, with `T` a point of small order, verifies a signature made with `A`'s secret whenever `T`'s order divides the challenge `k`, so one secret could sign under up to eight public keys, and a `NodeId` would not name one key. Every honest key is `[a]B` and has prime order, so the check costs honest peers nothing. `net::crypto::verify` applies it after the canonical-encoding and small-order checks.
+
 ### 4. Keys and their storage
 
 | Key | Generated | Held by | Storage | Lifetime |
@@ -757,6 +759,8 @@ Security sits off the per-token critical path everywhere except transport encryp
 | Supply chain | RFC-0052's TUF client tests (expired timestamp, rolled-back snapshot, mix-and-match targets, root rotation) plus this RFC's: a module with the right TUF hash but the wrong build ID is refused at load; a release-key signature from a key revoked in `signing-keys.json` is refused; a nightly-key signature on a stable artefact is refused |
 | Privacy | a full workload in a network namespace with an egress recorder; assert no destinations beyond the §13 table, and none with `--offline`; log and trace scans for prompt canary strings |
 | Security review | an adversarial review of the threat model and implementation by an independent review agent before 1.0 (M4), with findings approved by a maintainer as security-critical changes (ADR-0021); and the external audit below |
+
+**Revision note, 2026-10-22 (DIST-E5-T14): the grinding-relay check.** Until RFC-0060's simulator exists, the check of "The pairing SAS cannot be ground" runs in a pure model of the exchange (`crates/cluster/tests/pairing/`, RFC-0030 §6.2's note of the same date). Its seeds are fixed. It runs 20 first-draft trials, each of which must match within 10⁷ hashes. Against the committed exchange it runs 10⁷ attempts with an honest reveal, of which at most 25 may match (Poisson mean 10, P(X > 25) < 10⁻⁴), and 20 attempts whose attacker grinds a cheating reveal, each of which the commitment check must deny. The default tests run a seeded prefix of each; `cargo xtask test pairing-grind` runs the full counts with release optimisation. The attacker's strategies are a fixed set, not every possible attacker. With an honest reveal it has no grinding target in either order, so its budget of 10⁷ hashes per nonce goes unused. The cheating reveal uses the budget, and only the commitment check stops it. The model bounds one attempt and leaves retries to the rate limits of RFC-0030 §6.2 and §6.7. DIST-E5-T03 repeats the check through the real exchange in the simulator.
 
 **External audit before 1.0.** The scope is:
 1. join, admission and invites: the `syntropy/join/1` ALPN, pairing with its commit-then-reveal and SAS, pairing windows, invite tokens, certificates and the recovery code (RFC-0030 §6, §5 and §7 here);

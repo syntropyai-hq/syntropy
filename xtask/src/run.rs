@@ -295,12 +295,14 @@ mod tests {
                 "clippy",
                 "check-deps",
                 "codeowners",
+                "agent-instructions",
                 "rigs",
                 "deny",
                 "advisories",
                 "spdx",
                 "third-party",
                 "notices",
+                "scenarios",
             ]
         );
         for pending in lint.pending {

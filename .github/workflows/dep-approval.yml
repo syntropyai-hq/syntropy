@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Re-runs a PR's `dep-diff` check when a maintainer approves its new dependencies (RFC-0062
+# §12.3): a PR comment with the line `dep-diff approved <head SHA>` is posted, edited or deleted.
+#
+# An `issue_comment` run posts its own checks on `main`, not on the PR's head commit, so this
+# workflow judges nothing itself. It finds the latest `pr-meta` run for the PR's current head and
+# re-runs that run's `dep-diff` job, which reads the PR's comments again and judges them from the
+# base branch. It runs as defined on `main`, never checks out the PR, and runs none of its code;
+# its token can re-run jobs and nothing else.
+
+name: dep-approval
+
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dep-approval-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rerun-dep-diff:
+    # A new PR comment matters when it holds the approval line. An edit or a deletion always
+    # does, since it may withdraw an approval whose line is gone. Only a comment by a member or
+    # collaborator starts a re-run, so outsiders cannot queue them; `dep-diff` still decides, by
+    # the roster, whose approval counts.
+    if: >-
+      github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+      (github.event.action != 'created' || contains(github.event.comment.body, 'dep-diff approved'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Re-run dep-diff for the PR's head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          head="$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha)"
+          # The latest pr-meta run for that head; wait while it is still running, since a job can
+          # be re-run only once its run has finished.
+          for _ in $(seq 1 50); do
+            run="$(gh api "repos/$REPO/actions/runs?head_sha=$head&event=pull_request&per_page=100" \
+              --jq '[.workflow_runs[] | select(.path == ".github/workflows/pr-meta.yml")]
+                    | sort_by(.created_at) | last | "\(.id) \(.status) \(.conclusion)"')"
+            # A run that waits for a maintainer's approval is never re-run from here: that
+            # would start a fork's workflow without the approval (RFC-0062 §3.3 item 1).
+            case "$run" in
+              *" action_required"*)
+                echo "::notice::pr-meta run ${run%% *} waits for approval; nothing to re-run"
+                exit 0
+                ;;
+            esac
+            run="${run% *}"
+            id="${run% *}"
+            status="${run#* }"
+            if [ -z "$id" ] || [ "$id" = null ]; then
+              echo "::error::no pr-meta run found for $head"
+              exit 1
+            fi
+            [ "$status" = completed ] && break
+            echo "pr-meta run $id is $status; waiting"
+            sleep 30
+          done
+          if [ "$status" != completed ]; then
+            echo "::error::pr-meta run $id did not finish in time"
+            exit 1
+          fi
+          job="$(gh api "repos/$REPO/actions/runs/$id/jobs" --jq '.jobs[] | select(.name == "dep-diff") | .id')"
+          if [ -z "$job" ]; then
+            echo "::error::pr-meta run $id has no dep-diff job"
+            exit 1
+          fi
+          echo "Re-running dep-diff (job $job) of pr-meta run $id for $head"
+          gh api --method POST "repos/$REPO/actions/jobs/$job/rerun" > /dev/null

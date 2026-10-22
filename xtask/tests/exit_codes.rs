@@ -49,3 +49,10 @@ fn ci_gate_exits_0_when_it_passes_and_1_when_it_fails() {
     let (code, log) = xtask(&["ci", "ci-gate", "--needs", "/no/such/file.json"]);
     assert_eq!(code, Some(1), "{log}");
 }
+
+#[test]
+fn dep_diff_without_its_checkouts_is_a_usage_error() {
+    // `pr-meta.yml` reads exit code 2 from the base's `dep-diff` as "the base has no such job".
+    let (code, log) = xtask(&["ci", "dep-diff"]);
+    assert_eq!(code, Some(2), "{log}");
+}

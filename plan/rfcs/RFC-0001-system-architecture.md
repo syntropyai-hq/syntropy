@@ -2,7 +2,7 @@
 
 - **Status:** Draft
 - **Date:** 2026-10-19
-- **Builds on:** ADR-0000 (D1–D8), ADR-0001 to ADR-0021
+- **Builds on:** ADR-0000 (D1–D8), ADR-0001 to ADR-0022
 - **Expanded by:** every domain RFC listed in §15
 
 ## 1. Summary
@@ -270,7 +270,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 0 | `config-derive` | the `#[derive(ConfigSection)]` macro of the schema as code (RFC-0054 §10.3), which `config` re-exports; no runtime code (added 2026-10-21, note below) | — | 0054 |
 | 1 | `manifest` | GGUF and safetensors readers, `TensorCensus`, `ModelManifest`, KV formula, pack sidecar format, tokenizer data extraction | `core` | 0041 |
 | 1 | `kernels` | `KernelProvider` trait, `OpKey` registry, per-device op selection (certificates, then microbenchmark, §5.7), buffer, stream and event abstractions, the F32 reference semantics of every op (`kernels::reference`), and the `#[repr(C)]` types and `export!` macro of the provider-library ABI (`kernels::abi`). No `unsafe` | `core` | 0040 |
-| 1 | `io` | I/O engines: io_uring, IoRing, IOCP, `preadv` pool, `F_NOCACHE`, mmap fallback; per-core submission rings; registered buffers | `core` | 0021 |
+| 1 | `io` | I/O engines: io_uring, IoRing, IOCP, `preadv` pool, `F_NOCACHE`, mmap fallback; per-core submission rings; registered buffers; the production `Clock` and `Entropy` sources (`SystemClock`, `OsEntropy`, §5.14; added 2026-10-22, ADR-0022) | `core` | 0021 |
 | 1 | `net` | `Transport` trait and backends (QUIC via iroh, RDMA via ibverbs and Thunderbolt 5, TCP, shared memory), frame codecs, delegated-credential checks | `core` | 0031 |
 | 1 | `ipc` | daemon↔runner protocol, shared-memory layout, SPSC rings | `core` | 0001 |
 | 1 | `spsc` | the lock-free SPSC ring of §8.3 that `io`, `net` and `ipc` share: power-of-two capacity, cache-line-padded indices, preallocated slots, wake handles; no tokio (added 2026-10-22, note below) | — | 0001 |
@@ -312,10 +312,12 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 3. **Compute crates never depend on control or network crates.** `graph`, `kernels`, every `kernels-*`, `io`, `tier`, `exec` and `sched` must not depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`. The runner bridges compute and network through SPSC rings (§8.3). This keeps the hot path free of async runtimes (ADR-0012) and lets `exec` and `sched` run under `testkit` with no network at all.
 4. **`daemon` never links or loads a GPU provider.** It may depend on `kernels` for types, but not on any `kernels-*` crate, `kernels-loader` included, and it never opens a backend module. Only runner and probe processes load provider libraries, and the daemon learns about GPUs from a probe-mode process (RFC-0040 §10.5, ADR-0507 rule 4). This is invariant 3 (§2.3) enforced at link time.
 5. **`solver` and `cluster::apply` are pure.** No I/O, no clocks, no threads apart from HiGHS (run single-threaded with a fixed seed). Given the same inputs the solver returns the same plan, so plans are reproducible in tests and on every node. The other protocol cores follow invariant 12.
-6. **One crate per external system.** iroh only in `net`; ibverbs and the Thunderbolt RDMA API only in `net`; io_uring, IoRing and IOCP only in `io`; HiGHS only in `solver`; ggml only in `kernels-ggml`; vendor GPU runtimes only in their `kernels-*` crate. `kernels-loader` may load vendor driver libraries at runtime (the CUDA driver, NVML, the Vulkan loader, DXGI/DXCore) for read-only device enumeration, never linking them at build time and never creating a GPU context.
+6. **One crate per external system.** iroh only in `net`; ibverbs and the Thunderbolt RDMA API only in `net`; io_uring, IoRing and IOCP only in `io`; HiGHS only in `solver`; ggml only in `kernels-ggml`; `getrandom` only in `io`; vendor GPU runtimes only in their `kernels-*` crate. `kernels-loader` may load vendor driver libraries at runtime (the CUDA driver, NVML, the Vulkan loader, DXGI/DXCore) for read-only device enumeration, never linking them at build time and never creating a GPU context.
+   - *Note 2026-10-22 (amendment, §18.10):* `getrandom` is the OS CSPRNG behind `OsEntropy` (ADR-0022). The rule is on direct dependencies: `io` is the only crate that names `getrandom` as a normal or build dependency. Crates that reach it through other packages, such as the TLS stack under `net`, are not affected.
 7. **CPU and Metal providers are built into the core; other GPU providers ship as backend modules** (ADR-0507, RFC-0040 §10.4, RFC-0052 §4). The CPU provider, the Metal provider on macOS, and on iOS and Android every provider the platform uses, are linked statically into the core binary. The CUDA, HIP and Vulkan providers, and the ggml SYCL backend, are provider libraries in separately loaded, signed backend modules: directories beside the core binary of the same version, verified by hash, signature and build ID before loading (ADR-0316), and loaded by absolute path only by runner and probe processes. The boundary is a versioned C ABI generated from the `KernelProvider` trait, with one exported entry symbol and a lockstep build-ID check. The core binary therefore carries no vendor GPU runtime on Linux and Windows, and one core binary runs on hosts with and without each vendor stack (ADR-0014). The `cuda13` module carries Syntropy code only: `setup` fetches NVIDIA's redistributable libraries from NVIDIA and checks each against a hash pinned in the signed module manifest (RFC-0040 §10.3, RFC-0052 §4.4). A build or host without any GPU module runs CPU-only.
 8. **`unsafe` is confined** to `kernels-*` (including `kernels-loader`: the provider-library loader and the census), `io`, `tier` (arenas), `net` (RDMA, shared memory), `ipc` (shared memory) and `spsc` (the ring's slots, added 2026-10-22). Every other crate sets `#![forbid(unsafe_code)]`.
    - *Note 2026-10-22 (amendment, §18.9):* OS system calls that need `unsafe` go in `io`, behind safe functions that `probe`, `cluster` and `daemon` call (OQ-PRC-26): E1's host enumeration on Windows and macOS, the AMX and io_uring checks, E3's volume queries and the state directory's DACL. E2's management APIs (NVML, DXGI, IOKit) run in the runner's probe mode, in `kernels-loader`, which rules 4 and 6 already let load them, and the daemon merges the records (RFC-0010 §2.1).
+   - *Note 2026-10-22 (amendment, §18.13):* one module-scoped exception. `testkit`'s `guards` module holds exactly one `unsafe impl GlobalAlloc`, the counting allocator of RFC-0060 §3.5, which delegates to `std::alloc::System`. `testkit` sets `#![deny(unsafe_code)]` instead of `forbid`, with a single `#[allow(unsafe_code)]` on that impl. The `check-deps` placement check refuses any other `unsafe`, and any other lint level for it, anywhere in `testkit`, and still requires `forbid` in every other crate outside the list. Because `deny` can be overridden where `forbid` cannot, the check reads every `.rs` file under the root directory of each of `testkit`'s library and bin targets, and refuses every way to compile a file it does not read: a `path` in an attribute (`#[path]`, also inside `cfg_attr`), an attribute built from a macro metavariable, the identifier `include` anywhere, a `macro_rules!` definition, which could assemble either from tokens taken anywhere in the crate, and a build script. It also refuses a file that opens with a shebang (`#!` not directly followed by `[`) or a frontmatter block (`---`), which rustc reads differently from the check; a file whose extension is `rs` only in another case, which a case-insensitive file system lets `mod` load; and any level but a plain `deny` or `forbid` for `unsafe_code` among the crate root's leading attributes. A macro exported by another crate can still emit either from tokens that name neither, the same limit as `unsafe` from another crate's macro.
 9. **`testkit` is a dev-dependency only.** No production crate depends on it.
    - *Note 2026-10-21:* the same holds for `bench`, the other crate on §4.1's dev-only row ("—").
 10. **Test-only features never reach a release.** Any crate may declare the cargo features `fault-injection`, `debug-taps` and `guards`. Release artefacts are built without them, and the L0 `check-deps` job enforces it (RFC-0060 §3.6, RFC-0062 §12.1).
@@ -1536,6 +1538,7 @@ pub enum ErrorClass {
 | `BuildId` | core (type); value built in `cli` | 0062 | 0052 |
 | `DeviceId`, `TierId`, `LinkId`, `DeviceKind`, `Measured` | core | 0010 | 0031 (network `LinkKind`s) |
 | `TierKind` | core | 0020 | 0010 |
+| The host budget rule (`budget::host_budget`, `HostBudget`, `HostBudgetPolicy`, `HostPoolInfo` construction, `IoFixedLedger`) | core | 0020 (§5) | 0010 (probe inputs), 0011 (the joint host rows) |
 | `DeviceClass`, `CpuIsa`, `DeviceFeatures` | core | 0040 | 0010 (`Npu`, ADR-0405 decision 4's fields, the provider-record merge) |
 | `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
 | `BufferView`, `ViewKind` | core | 0020 | 0040 (`OpArgs::weights`) |
@@ -1582,13 +1585,6 @@ pub trait Clock: Send + Sync {
 pub trait Entropy: Send + Sync {
     fn fill(&self, buf: &mut [u8]);
 }
-/// Production sources. SystemClock reads a suspend-aware clock (CLOCK_BOOTTIME,
-/// mach_continuous_time, QueryInterruptTime), never one that stops during sleep.
-/// Key material always comes from OsEntropy; the simulator's seeded substitute exists only
-/// in testkit.
-pub struct SystemClock;
-pub struct OsEntropy;
-
 /// Hot-thread timing in `exec` and `obs`: statically dispatched (a generic parameter),
 /// monomorphised to the TSC or the OS monotonic clock in production at no cost, and to the
 /// simulator's device timelines in tests.
@@ -1608,6 +1604,10 @@ pub trait ProtocolCore {
 }
 pub struct Outbox<O> { items: SmallVec<[O; 8]> }
 ```
+
+The production sources are in `io` (ADR-0022), and the simulator's are in `testkit`.
+
+- *Note 2026-10-22 (amendment, §18.10):* `SystemClock` and `OsEntropy` moved from this block to `syntropy_io::os`. Reading a suspend-aware clock needs an `unsafe` OS call, and the OS CSPRNG needs `getrandom`, which rules 1 and 8 of §4.2 keep out of `core`. Their two rules moved with them: `SystemClock::now` reads a suspend-aware clock (`CLOCK_BOOTTIME`, `mach_continuous_time`, `QueryInterruptTime`), never one that stops during sleep, and key material always comes from `OsEntropy`. The same module also reads the clock that stops during suspend, which RFC-0030 §5.8 compares with `now` to detect a suspend.
 
 ### 5.15 Conformance manifest *(core)*
 
@@ -2698,6 +2698,17 @@ The readiness audit of the next M0 wave raised decisions the maintainers took on
 | OS system calls that need `unsafe` go in `io`; E2's management APIs run in the probe-mode runner, in `kernels-loader` | §4.2 rule 8 (dated note); RFC-0010 §2.1 | rule 8 keeps `unsafe` out of `probe`, `cluster` and `daemon`, and rule 4 keeps vendor libraries out of the daemon (OQ-PRC-26) |
 | `LedgerGrant` is plain data in `core` | §3.5 (dated note) | `ipc` carries it and `tier` checks it, and `tier` has no edge to `ipc` (OQ-IO-27) |
 
+### 18.10 The production clock and entropy sources (2026-10-22)
+
+ADR-0022, accepted 2026-10-22 (option 1a), moves the two production sources of §5.14 out of `core`. The traits and plain types stay.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `SystemClock` and `OsEntropy` leave `core` for `syntropy_io::os`, with their two rules (a suspend-aware `now`; key material only from `OsEntropy`); `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore` and `Outbox` stay in `core` | §5.14 (dated note); RFC-0060 §2.1 (dated note) | the suspend-aware clocks need an `unsafe` OS call and the CSPRNG needs `getrandom`, which rules 1 and 8 keep out of `core`; `io` may already use `unsafe` (rule 8, ADR-0001 item 4), and every crate that builds the sources (the daemon, the runner, `probe`) already depends on it |
+| `io`'s Responsibility cell gains the production `Clock` and `Entropy` sources | §4.1 | the crate table names where each type lives |
+| rule 6 gains "`getrandom` only in `io`", checked on direct normal and build dependencies | §4.2 rule 6 (dated note); RFC-0062 §12.1 (dated note) | ADR-0022 decisions 3 and 4: accepting the ADR approves `getrandom` as a direct dependency of `io`; other crates reach `getrandom` through the TLS stack and test crates, which the rule does not forbid |
+| "Builds on" extends to ADR-0022 | header | ADR-0022 is a foundation ADR |
+
 ### 18.11 One device class (2026-10-22)
 
 ADR-0405, accepted 2026-10-22 (option A, with V1 for exactness on Vulkan), defines `DeviceClass` once. RFC-0010 §1.2 and RFC-0040 §2.2 had defined it twice, with different variants. §5.2, §5.6 and §5.15 used the type without defining it.
@@ -2715,3 +2726,23 @@ COMP-E1-T05 binds `BufferView` in `kernels`' `OpArgs::weights`. RFC-0020 §3 had
 | Change | Sections touched | Reason |
 |---|---|---|
 | `BufferView` and `ViewKind` are `core` types with serde derives, and `tier` re-exports them; §5.13 gains their ownership row | §5.13; RFC-0020 §3 (dated note) | `kernels` (layer 1) names `BufferView` in `TensorArg` (RFC-0040 §3.5), and rule 2 forbids an edge from `kernels` to `tier` (layer 2) |
+
+### 18.13 The counting allocator's `unsafe` (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| rule 8 gains one module-scoped exception: `testkit::guards` holds the single `unsafe impl GlobalAlloc`, which delegates to `std::alloc::System`, and `testkit` moves from `forbid(unsafe_code)` to `deny(unsafe_code)` with one `allow` on that impl | §4.2 rule 8 | a `#[global_allocator]` must implement `GlobalAlloc`, which is an `unsafe` trait, and RFC-0060 §3.5 places `CountingAlloc` in `testkit::guards`. The maintainers chose this over a new allocator crate or a third-party allocator (QUAL-E3-T25, issue #1530) |
+
+### 18.14 SME2 detection on Linux (2026-10-22)
+
+COMP-E3-T01 found that the detection macro named for SME2 does not compile on the pinned toolchain.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| On Linux and Android the CPU provider detects SME2 from `AT_HWCAP2` (`HWCAP2_SME2`, bit 37) through `getauxval`, not `is_aarch64_feature_detected!("sme2")`; macOS keeps `hw.optional.arm.FEAT_SME2` | RFC-0040 §7.3 and ADR-0402 item 3 (dated notes) | on 1.99.1 the macro's `sme` and `sme2` names are unstable (E0658), and release builds use stable only (ADR-0001 decision 1). `AT_HWCAP2` is what ADR-0014's SME2 row names and what the macro reads, so the result is the same and the provider can switch to the macro once it is stable |
+
+### 18.15 The host budget rule in core (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| RFC-0020 §5's host budget rule is `syntropy_core::budget`: `host_budget(&HostBudgetInputs, &HostBudgetPolicy) -> HostBudget`, `host_pool`, `numa_available` and `IoFixedLedger`, not RFC-0010 A5's `host_usable(&HostMemInfo, &ResourcePolicy)`; WSL2 is `HostOs::Linux` with `HostMemInfo::wsl2`; Linux `lockable` adds back `own_locked`; Windows falls back to `windows_lockable` before H5 | §5.13 | `ResourcePolicy` is not in `core` yet and `HostMemInfo` lacks `own`, the OS kind, the macOS working-set limit and the user's `locked_vm`; `probe`, `solver` and `tier` all call the rule (TIER-E2-T01; RFC-0020 §5, note of 2026-10-22; RFC-0010 A5) |

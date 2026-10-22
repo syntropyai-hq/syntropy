@@ -172,7 +172,7 @@ Byte-identische Ausgabe auf verschiedenen Geräten wird nicht versprochen, weil 
 | Pfad | Inhalt |
 |---|---|
 | [`plan/00-vision-and-scope.md`](plan/00-vision-and-scope.md) | Das Problem, die Szenarien, die Plattformmatrix, Zielmodelle, die Erfolgskriterien SC-1 bis SC-32 (durchweg Zielwerte) und was „funktionskomplett“ bedeutet |
-| [`plan/decisions/`](plan/decisions/) | ADRs. ADR-0000 enthält die Produktdirektiven D1–D8, ADR-0001 bis ADR-0021 das Fundament, die übrigen sind nach Bereich nummeriert |
+| [`plan/decisions/`](plan/decisions/) | ADRs. ADR-0000 enthält die Produktdirektiven D1–D8, ADR-0001 bis ADR-0022 das Fundament, die übrigen sind nach Bereich nummeriert |
 | [`plan/rfcs/`](plan/rfcs/) | RFC-0001, die Systemarchitektur, und 24 Fach-RFCs für Platzierung, Speicherebenen, verteilte Ausführung, Berechnung, Produkt und Qualität |
 | [`plan/implementation/`](plan/implementation/README.md) | Die Aufgaben in sechs Epic-Dateien, die Roadmap, der Abhängigkeitsbericht, die Rückverfolgbarkeit, das Risikoregister und die Skripte, die sie prüfen |
 | [`plan/open-questions.md`](plan/open-questions.md) | Was noch offen ist, jeder Punkt mit der Aufgabe oder Messung, die ihn klärt |

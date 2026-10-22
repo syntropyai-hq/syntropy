@@ -4,7 +4,7 @@
 - Area: compute and models
 - Depends on: RFC-0001 (§2.3, §4, §5.7, §8, §9), RFC-0010, RFC-0012, RFC-0020, RFC-0022, RFC-0023, RFC-0041, RFC-0042, RFC-0043, RFC-0052, RFC-0060, RFC-0062; ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0012, ADR-0014, ADR-0019, ADR-0020, ADR-0201, ADR-0205; ADR-0400 to ADR-0404
 - Date: 2026-10-19
-- Revised: 2026-10-20: OS GPU watchdogs (§4.5); the functional doorbell probe (§4.2); the ggml-only Vulkan preview at M2 (§7.5); NVIDIA's libraries fetched at `setup` rather than shipped (§10.3); encoder and reserved ops (§3.1); the router and penalty rules (§7.1); the GPUDirect Storage port not built (§7.7); upstream patches (§8.4); the M0 spike harnesses (Rollout, Open questions); 2026-10-22: one `DeviceClass` in `core`, decided at `enumerate`, and derived certificates on Vulkan (§2.1, §2.2, §6.2, §7.2, §7.3, §7.5; ADR-0405)
+- Revised: 2026-10-20: OS GPU watchdogs (§4.5); the functional doorbell probe (§4.2); the ggml-only Vulkan preview at M2 (§7.5); NVIDIA's libraries fetched at `setup` rather than shipped (§10.3); encoder and reserved ops (§3.1); the router and penalty rules (§7.1); the GPUDirect Storage port not built (§7.7); upstream patches (§8.4); the M0 spike harnesses (Rollout, Open questions); 2026-10-22: one `DeviceClass` in `core`, decided at `enumerate`, and derived certificates on Vulkan (§2.1, §2.2, §6.2, §7.2, §7.3, §7.5; ADR-0405); 2026-10-22: SME2 detection on Linux through `AT_HWCAP2` (§7.3; ADR-0402)
 
 ## Summary
 
@@ -883,6 +883,8 @@ The CPU provider computes everything that runs on a CPU device: dense layers hom
 | `Arm82Dot` | NEON with SDOT/UDOT, FP16 arithmetic | `is_aarch64_feature_detected!` on Linux and Android; `sysctlbyname("hw.optional.arm.FEAT_DotProd")` and friends on macOS |
 | `Arm86I8mm` | `Arm82Dot` plus I8MM (SMMLA) and BF16 | as above (`FEAT_I8MM`, `FEAT_BF16`) |
 | `Arm92Sme2` | `Arm86I8mm` plus SME2 | `is_aarch64_feature_detected!("sme2")` on Linux; `hw.optional.arm.FEAT_SME2` on macOS. Syntropy reads the macOS sysctls itself because the standard library documents most AArch64 detection as Linux-only |
+
+*Revised 2026-10-22 (SME2 detection on Linux):* on the toolchain `rust-toolchain.toml` pins (1.99.1), `is_aarch64_feature_detected!("sme")` and `("sme2")` do not compile: both names are unstable (E0658, `stdarch_aarch64_feature_detection`). The table above and the SME row below say otherwise. On Linux and Android the provider therefore reads `AT_HWCAP2` through `getauxval` and tests `HWCAP2_SME2` (bit 37), as ADR-0014's SME2 row names. On macOS it reads `hw.optional.arm.FEAT_SME2`, as before. Both read the same kernel-reported fact the macro reads, so switching to the macro once it is stable keeps the same result. Elsewhere (Windows on Arm) SME2 is reported absent. ADR-0402 item 3 carries the same note; RFC-0001 §18.14 records it.
 
 **Stable Rust status of the intrinsic families** (checked 2026-10-19 against the Rust 1.99.1 standard library documentation, the Rust Reference's `target_feature` list, and the rust-lang tracking issues; this answers the follow-up recorded in ADR-0001):
 

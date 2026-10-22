@@ -2,12 +2,21 @@
 
 //! Benchmark scenarios, the result schema and the regression gates (RFC-0061).
 //!
-//! A dev-only crate in RFC-0001 §4.1. So far it holds [`schema`], the benchmark key, the
-//! result record, its JSON form and the comparability rule of RFC-0061 §2; and [`rigs`], the lab
-//! inventory of RFC-0061 §6.3 and the `RigFingerprint` computed from it. The `syntropy-bench`
-//! binary runs the checks on them that `lint` calls.
+//! A dev-only crate in RFC-0001 §4.1. It holds:
+//! - [`schema`]: the benchmark key, the result record, its JSON form and the comparability rule
+//!   of RFC-0061 §2;
+//! - [`rigs`]: the lab inventory of RFC-0061 §6.3 and the `RigFingerprint` computed from it;
+//! - [`scenario`]: the scenario files under `bench/scenarios/`, their ID forms, the standard grid
+//!   and the `scenario_version` rule (RFC-0061 §4.1);
+//! - [`sc_map`]: `bench/sc-map.toml`, which maps every success criterion to its scenarios, and
+//!   renders RFC-0061 §4.2's table (RFC-0061 §4.2).
+//!
+//! The `syntropy-bench` binary runs the checks on them that `lint` calls: `rigs check` and
+//! `scenarios check`.
 
 #![forbid(unsafe_code)]
 
 pub mod rigs;
+pub mod sc_map;
+pub mod scenario;
 pub mod schema;

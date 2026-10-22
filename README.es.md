@@ -172,7 +172,7 @@ No se promete una salida idéntica byte a byte entre dispositivos distintos, por
 | Ruta | Qué contiene |
 |---|---|
 | [`plan/00-vision-and-scope.md`](plan/00-vision-and-scope.md) | El problema, los escenarios, la matriz de plataformas, los modelos objetivo, los criterios de éxito SC-1 a SC-32 (todos son objetivos) y qué significa «funcionalidades completas» |
-| [`plan/decisions/`](plan/decisions/) | Los ADR. ADR-0000 recoge las directivas de producto D1–D8, ADR-0001 a ADR-0021 la base, y el resto se numeran por área |
+| [`plan/decisions/`](plan/decisions/) | Los ADR. ADR-0000 recoge las directivas de producto D1–D8, ADR-0001 a ADR-0022 la base, y el resto se numeran por área |
 | [`plan/rfcs/`](plan/rfcs/) | RFC-0001, la arquitectura del sistema, y 24 RFC de dominio sobre ubicación, niveles, ejecución distribuida, cómputo, producto y calidad |
 | [`plan/implementation/`](plan/implementation/README.md) | Las tareas en seis archivos de épicas, la hoja de ruta, el informe de dependencias, la trazabilidad, el registro de riesgos y los scripts que los comprueban |
 | [`plan/open-questions.md`](plan/open-questions.md) | Lo que aún está sin decidir, cada punto con la tarea o la medición que lo resuelve |

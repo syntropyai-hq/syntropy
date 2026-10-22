@@ -1,0 +1,12 @@
+# A check-deps fixture: `testkit`'s `unsafe` exception, reached through code the scope check
+# would not read (upper-ext). xtask/tests/check_deps.rs runs `cargo xtask check-deps` on it and names
+# the findings it expects.
+[workspace]
+resolver = "3"
+members = ["crates/testkit"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

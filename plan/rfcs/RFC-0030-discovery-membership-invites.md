@@ -493,6 +493,8 @@ Laptops sleep, and VMs pause. Two failures follow from that: a waking node decla
 | macOS, iOS | `mach_absolute_time` | `mach_continuous_time` |
 | Windows | `QueryUnbiasedInterruptTime` | `QueryInterruptTime` |
 
+*Note 2026-10-22 (ADR-0022):* both readings come from `syntropy_io::os`. `SystemClock::now` reads the clock that keeps running, and the same module reads the one that stops, so the daemon's shell makes no OS call of its own.
+
 When the running clock advances at least `swim.resume_detect` (5 s) more than the stopped clock between two ticks, the node was suspended. A tick that is late by more than 5 s on *both* clocks, from a VM pause or a starved process, is handled the same way. `SuspendAwareInstant` timestamps every liveness observation with the running clock.
 
 **Resume procedure.**
@@ -643,6 +645,19 @@ sequenceDiagram
 - When N asks to join, it sets `WANTS_PAIR` in its beacons and sends a `WANTS_PAIR` `Query` (§4.8). Keyholders that see it add a passive "wants to join" entry to the dashboard, so the user can start the approval from either side.
 - With zero members to approve on, a cluster cannot admit by pairing. That case is the disposable cluster of §6.1. The new node's own first-run screen offers "create a cluster" or "join *name*".
 
+**Revision note, 2026-10-22 (DIST-E5-T14): the pairing fields and derivations are frozen.** A pure model of the exchange, with a joiner, an attacker relay and a keyholder, ran the first draft and the committed exchange (`crates/cluster/tests/pairing/`). What it froze for DIST-E5-T03:
+- `PairRequest.commit` is 32 bytes, `PairChallenge.nonce_k` 16 bytes and `PairReveal.nonce_c` 16 bytes, in that order. The joiner sends `PairReveal` only after `PairChallenge` has arrived.
+- Each hashed input is the domain string's ASCII bytes followed by the fields, with no length prefix or separator. Every field has a fixed length: the node IDs and `cluster_id` are 32-byte Ed25519 public keys (RFC-0034 §4). The commitment hashes 70 bytes, and the SAS hashes 143.
+- `u32_le` reads the digest's first four bytes as a little-endian integer. The two groups of three digits keep their leading zeros, as in `000 782`.
+- `syntropy-cluster`'s `pairing` module implements both derivations. Five golden vectors are in `crates/cluster/tests/pairing/vectors.txt`, each with the bytes it hashes.
+
+The model's seeds are fixed, so its results are reproducible. Its attacker plays three strategies, a fixed set rather than every possible attacker:
+- **Keyholder first, honest reveal.** Against the first draft it matched the codes in all 20 trials, after at most 3.14 × 10⁶ hashes.
+- **Either order, honest reveal, against the committed exchange.** Given what each order shows the attacker, no nonce it chooses has a code it can compute while the other code is fixed, so it has nothing to grind. That follows from the order of the messages, not from the run. In 10⁷ such attempts the two codes matched 12 times, within the bound of 25 for a 10⁻⁶ rate.
+- **Cheating reveal.** The attacker answers the joiner first and learns its code. It then commits to the keyholder and, after the challenge, grinds a reveal whose code matches. It found one in all 20 attempts, and the commitment check denied all 20. A keyholder that skips the check, or a request that shows `nonce_c`, lets the attack through, and the tests then fail.
+
+The model bounds one attempt; retries are bounded by the rate limits of this section and §6.7. `cargo xtask test pairing-grind` reruns all three strategies.
+
 #### 6.3 Pairing window and open mode
 
 - **Pairing window.** `syntropy cluster open [--for 10m] [--joins 4] [--include-wifi]`, or the dashboard button, records `PairingWindowOpened { window, until_ms, max_joins, wifi, by }`. A window is only ever opened by this explicit command; `setup` never opens one (§6.2).
@@ -785,6 +800,8 @@ Rate limits on `syntropy/join/1`:
 - 5 connection attempts per minute per source IP;
 - 1 pending pairing per node ID;
 - 20 failed token attempts per hour per keyholder in total, after which the keyholder stops accepting token joins for 10 minutes and the dashboard says why.
+
+**Revision note, 2026-10-22 (DIST-E5-T14).** `PairRequest.commit`, `PairChallenge.nonce_k` and `PairReveal.nonce_c` are frozen as §6.2's note of the same date gives them. The messages' other fields, their CBOR encoding and their wire golden vectors are DIST-E5-T03's.
 
 ### 7. Interfaces, edges and Thunderbolt handling
 
@@ -1094,7 +1111,7 @@ Both are negligible next to a single decode hop's 16 KiB at tens of tokens per s
 3. **macOS Local Network privacy for a per-user launch agent.** Apple's documentation exempts root daemons. Forum reports show prompts and denials for launch agents and for non-Apple tools launched by them. Whether the prompt is attributed to the signed Syntropy binary, so it appears once and persists, needs a spike on macOS 15 and 26. The spike moves to the start of M1, once a Developer-ID-signed build exists, in one session with RFC-0052's headless daemon check (DIST-E3-T09), because a wrongly attributed prompt forces app-bundle work into M1 packaging. If it misbehaves, RFC-0052 needs a small signed app bundle as the responsible process. Discovery retries after a first denial either way.
 4. **Ed25519 beacon verification cost** on Raspberry Pi 5-class CPUs (Tier 2). *Answered (OQ-NET-16).* Keep verifying every open beacon: about 0.1–0.2 % of a Pi 5 core at the 20 per second cap [estimate]. DIST-E3-T10 confirms it in the same R-PI5 session as DIST-E7-T17. Blinded beacons cost one keyed hash each (§4.8).
 5. **Relay operator default.** *Answered (OQ-NET-11 closed against it).* A hosted shared relay service is the built-in set, delivered as the signed `relays.json` target; `custom` and `disabled` stay; weight chunks never use a relayed path; the public relays serve internal and alpha testing only (§6.4).
-6. **Clock for protocol cores** (RFC-0060 §2.1). RFC-0060's `SystemClock` names `CLOCK_MONOTONIC` on Linux, which stops during suspend, while macOS uses `mach_continuous_time`, which does not. Leases, suspicion and grace periods (§5.8, RFC-0032 §7) need a clock that keeps running through suspend on every OS. Proposal to RFC-0060: `SystemClock::now()` uses `CLOCK_BOOTTIME` on Linux and Android and `QueryInterruptTime` on Windows, and the shells use the stopped clocks only to detect suspend.
+6. **Clock for protocol cores** (RFC-0060 §2.1). *Answered (RFC-0060 §2.1; ADR-0022, 2026-10-22).* `SystemClock::now()` reads `CLOCK_BOOTTIME` on Linux and Android, `mach_continuous_time` on macOS and iOS and `QueryInterruptTime` on Windows, so leases, suspicion and grace periods (§5.8, RFC-0032 §7) see a suspend as elapsed time. The shells use the stopped clocks only to detect suspend. Both readings live in `syntropy_io::os`.
 
 ## Proposed amendments to RFC-0001
 

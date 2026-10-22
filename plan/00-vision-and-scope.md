@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (2026-10-20)
 - **Date:** 2026-10-19
-- **Builds on:** [ADR-0000](decisions/ADR-0000-product-directives.md) (product directives D1–D8) and the foundation ADRs 0001–0021
+- **Builds on:** [ADR-0000](decisions/ADR-0000-product-directives.md) (product directives D1–D8) and the foundation ADRs 0001–0022
 - **Evidence:** the four notes in [research/](research/). Section references such as "cost model §3.3" point to [research/hardware-and-performance-model.md](research/hardware-and-performance-model.md).
 - **Companions:** [glossary.md](glossary.md) defines every term used here; [open-questions.md](open-questions.md) tracks what is not yet known.
 

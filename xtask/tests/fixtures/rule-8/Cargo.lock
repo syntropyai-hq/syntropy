@@ -31,5 +31,9 @@ name = "syntropy-solver"
 version = "0.0.0"
 
 [[package]]
+name = "syntropy-testkit"
+version = "0.0.0"
+
+[[package]]
 name = "syntropy-text"
 version = "0.0.0"
