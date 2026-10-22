@@ -858,13 +858,13 @@ Wi-Fi is classified even when the OS calls it Ethernet. Some USB Wi-Fi bridges r
 
 Rules the table leaves open:
 - A loopback interface is listed, as `Loopback`.
-- On Linux, an interface whose `type` is neither `ARPHRD_ETHER` nor loopback is a tunnel (`tun`, `sit`, `gre`, `ipip`), so an overlay.
+- On Linux, an interface whose `type` is neither `ARPHRD_ETHER` nor loopback is a tunnel (`tun`, `sit`, `gre`, `ipip`), so an overlay. The table's `tailscale*`, `wg*` and `tun*` names are such tunnels, so the type rule covers them, and no separate name rule is applied. A name alone never makes an Ethernet-type interface an overlay; a tailnet address does.
 - On macOS, every tunnel interface (`utun*`, `gif*`, `stf*`, `ipsec*`) is an overlay, with or without a tailnet address, and Apple's Wi-Fi peer-to-peer interfaces (`awdl*`, `llw*`) are Wi-Fi.
 - On Windows, `IfType` 53 and 131 are overlays, every other non-Wi-Fi adapter is Ethernet, and `MULTICAST` is set for Ethernet, Wi-Fi and Thunderbolt IP, since `Get-NetAdapter` reports no multicast flag.
 - Flagging an "Ethernet" interface that behaves as Wi-Fi by its measured p99 is DIST-E6-T07's.
 
 How a listing degrades, and its limits:
-- A listing fails only when a source it needs cannot be read at all. A line or interface that does not parse is skipped with a warning, so it costs only itself. On Linux, a point-to-point address (`inet LOCAL peer PEER/len`, as OpenVPN and PPP print it) reads as `LOCAL` with that prefix.
+- A listing fails only when a source it needs cannot be used: it cannot be read or run, or it printed something of which nothing could be read. A source whose every line fails is not a host with no interfaces, so it fails the listing, naming the source. Otherwise a line or interface that does not parse is skipped with a warning, so it costs only itself. On Linux, a point-to-point address (`inet LOCAL peer PEER/len`, as OpenVPN and PPP print it) reads as `LOCAL` with that prefix.
 - **Ordinals.** An interface keeps its ordinal while the node's ordinal table holds its name. No two names held at once share an ordinal, and an ordinal freed by retiring a name is given out again only after every other free one. The table holds 65,536 names at once. When it is full, a new interface is left out of the listing with a warning. On a host that makes a name per container (`veth…`), the daemon retires names it no longer sees; DIST-E6-T03 sets when.
 - **Localised names.** macOS port names come from `networksetup`. They may be localised on a system in another language (`WLAN` for `Wi-Fi`), and such a port would be classified Ethernet. No non-English rig has checked this yet. If they are localised, DIST-E6-T08 reads the interface type (`SCNetworkInterfaceGetInterfaceType`) instead. On Windows the script reads the numeric operational status and writes UTF-8, so neither a localised status nor a non-ASCII adapter name changes the listing.
 
