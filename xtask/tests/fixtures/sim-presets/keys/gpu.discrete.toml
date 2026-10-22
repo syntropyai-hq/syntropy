@@ -1,0 +1,33 @@
+# A discrete GPU missing two of its keys, with two W_eff keys outside its set.
+name = "gpu:discrete"
+kind = "gpu"
+memory_tier = "vram"
+describes = "a test discrete GPU"
+sources = ["research §2.1 [S10]"]
+
+[figures.memory]
+unknown = "research gives none"
+
+[figures.f_eff]
+unknown = "research gives none"
+
+[figures.t_fixed]
+unknown = "research gives none"
+
+[figures.sigma_dev]
+unknown = "research gives none"
+
+[figures."w_eff.vram.dense_gemv"]
+unknown = "research gives none"
+
+[figures."w_eff.vram.expert_gemv"]
+unknown = "research gives none"
+
+[figures."w_eff.host_pinned.dense_gemv"]
+unknown = "research gives none"
+
+[figures.w_eff]
+unknown = "research gives none"
+
+[figures."w_eff.vram.dense_gemm"]
+unknown = "research gives none"

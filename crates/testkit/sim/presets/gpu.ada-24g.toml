@@ -1,0 +1,105 @@
+# The §8.5 example's `gpu:ada-24g`: an NVIDIA GeForce RTX 4090.
+#
+# Every figure is the research note's (plan/research/hardware-and-performance-model.md), with
+# the note's tag as its label: `published` is a primary-source spec ([verified: Sxx]),
+# `measured` a third-party measurement, `estimate` a derivation, `target` a chosen value. A
+# figure the note does not give is `unknown`, with where the note leaves it open (RFC-0060 §8.5).
+name = "gpu:ada-24g"
+kind = "gpu"
+memory_tier = "vram"
+describes = "NVIDIA GeForce RTX 4090: Ada, 24 GB GDDR6X on a 384-bit bus, PCIe 4.0 x16"
+sources = [
+    "research §2.1: RTX 4090 memory and compute [S10]",
+    "research §2.3: PCIe 4.0 x16 raw rate [S28], pinned and pageable H2D [S30]",
+    "research §4 (a): W_eff assumed for dense decode",
+]
+
+[figures.memory]
+value = 24
+unit = "GB"
+label = "published"
+source = "research §2.1 [S10]"
+
+[figures.memory_peak_bw]
+value = 1008
+unit = "GB/s"
+label = "published"
+source = "research §2.1 [S10]"
+
+[figures.fp16_tensor_fp32_accumulate_dense]
+value = 165.2
+unit = "TFLOPS"
+label = "published"
+source = "research §2.1 [S10]"
+
+[figures.fp16_tensor_fp16_accumulate_dense]
+value = 330.3
+unit = "TFLOPS"
+label = "published"
+source = "research §2.1 [S10]"
+
+[figures.fp8_tensor_dense]
+value = 660.6
+unit = "TFLOPS"
+label = "published"
+source = "research §2.1 [S10]"
+
+[figures.int8_tensor_dense]
+value = 660.6
+unit = "TOPS"
+label = "published"
+source = "research §2.1 [S10]"
+
+[figures.fp32_non_tensor]
+value = 82.6
+unit = "TFLOPS"
+label = "published"
+source = "research §2.1 [S10]"
+
+[figures.l2_cache]
+value = 72
+unit = "MB"
+label = "published"
+source = "research §2.1 [S10]"
+
+[figures.host_link_raw]
+value = 31.5
+unit = "GB/s"
+label = "published"
+source = "research §2.3 [S28]: PCIe 4.0 x16, per direction, after 128b/130b"
+
+[figures.host_link_pinned_h2d]
+value = 24
+unit = "GB/s"
+label = "measured"
+source = "research §2.3 [S30]: one forum system, 76 % of raw"
+
+[figures.host_link_pageable_h2d]
+value = 6
+unit = "GB/s"
+label = "measured"
+source = "research §2.3 [S30]: one forum system; about 11 GB/s with E-cores disabled"
+
+[figures."w_eff.vram.dense_gemv"]
+value = 800
+unit = "GB/s"
+label = "estimate"
+source = "research §4 (a): η ≈ 0.8 of 1008 GB/s, in line with §2.2's dense-model anchors"
+
+[figures."w_eff.vram.expert_gemv"]
+unknown = "research §2.2 and §4 give W_eff for dense decode only; none for expert-sized blocks read in random order (RFC-0010's M1 ExpertGemv)"
+
+[figures."w_eff.host_pinned.dense_gemv"]
+unknown = "research §2.3 gives the pinned host-to-device copy rate (host_link_pinned_h2d), not a kernel's read rate from host memory"
+
+[figures."w_eff.host_pinned.expert_gemv"]
+unknown = "research §2.3 gives the pinned host-to-device copy rate (host_link_pinned_h2d), not a kernel's read rate from host memory"
+
+[figures.f_eff]
+unknown = "research §2.1 gives this GPU's peak tensor and FP32 rates only (the figures above); no achieved compute rate"
+
+[figures.t_fixed]
+unknown = "research §2.2 and §3.4 give t_fixed only for ggml Metal on M3 Ultra; none for this GPU"
+
+[figures.sigma_dev]
+unknown = "RFC-0060 §8.4's per-device jitter σ_dev: the research note gives no figure"
