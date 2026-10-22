@@ -302,7 +302,7 @@ No GAPs.
 | RFC-0031 | §3 | Link selection | 4: PLC-E6-T22, DIST-E7-T11, DIST-E7-T16, DIST-E7-T19 | ok |
 | RFC-0031 | §4 | QUIC backend (iroh) | 4: DIST-E7-T03–T04, DIST-E7-T16, DIST-E7-T21 | ok |
 | RFC-0031 | §5 | Other backends: shared memory, RDMA, TCP | 12: PLC-E4-T18, DIST-E6-T02, DIST-E7-T05–T09, DIST-E7-T15, DIST-E7-T18, DIST-E7-T20, DIST-E7-T22, DIST-E18-T04 | ok |
-| RFC-0031 | §6 | Data-plane wire format | 20: PLC-E9-T22, DIST-E1-T14–T15, DIST-E7-T02, DIST-E7-T14, DIST-E8-T01–T11, DIST-E8-T15–T16, DIST-E11-T05, DIST-E14-T17 | ok |
+| RFC-0031 | §6 | Data-plane wire format | 19: PLC-E9-T22, DIST-E1-T14, DIST-E7-T02, DIST-E7-T14, DIST-E8-T01–T11, DIST-E8-T15–T16, DIST-E11-T05, DIST-E14-T17 | ok |
 | RFC-0031 | §7 | Flow control, acknowledgement, retransmission and failover | 4: DIST-E7-T02, DIST-E7-T10, DIST-E7-T13, DIST-E7-T16 | ok |
 | RFC-0031 | §8 | Zero-copy receive and buffer pools | 3: TIER-E2-T25, DIST-E7-T09, DIST-E7-T12 | ok |
 | RFC-0031 | §9 | Control-plane and blob-plane encoding | 2: DIST-E8-T12, DIST-E8-T17 | ok |
@@ -366,7 +366,7 @@ No GAPs.
 | RFC-0041 | §4 | The model store | 12: DIST-E14-T20, COMP-E11-T01–T04, COMP-E11-T09, COMP-E11-T14, COMP-E11-T16, COMP-E11-T18, COMP-E11-T20–T22 | ok |
 | RFC-0041 | §5 | Packs | 12: DIST-E8-T16, COMP-E11-T04–T09, COMP-E11-T11, COMP-E11-T15–T16, COMP-E11-T19–T20 | ok |
 | RFC-0041 | §6 | Chunk tables | 5: COMP-E11-T03, COMP-E11-T17, COMP-E12-T01, COMP-E12-T06, COMP-E12-T09 | ok |
-| RFC-0041 | §7 | Hub integration and fetch planning | 13: COMP-E10-T14, COMP-E11-T18, COMP-E12-T02–T04, COMP-E12-T08–T10, COMP-E12-T12–T16 | ok |
+| RFC-0041 | §7 | Hub integration and fetch planning | 14: DIST-E1-T15, COMP-E10-T14, COMP-E11-T18, COMP-E12-T02–T04, COMP-E12-T08–T10, COMP-E12-T12–T16 | ok |
 | RFC-0041 | §8 | Peer-to-peer chunk distribution | 8: PLC-E6-T17, COMP-E11-T10, COMP-E11-T13, COMP-E12-T05–T07, COMP-E12-T14, COMP-E12-T16 | ok |
 | RFC-0041 | §9 | Configuration knobs | 4: DIST-E14-T20, COMP-E10-T09, COMP-E11-T21–T22 | ok |
 | RFC-0041 | §10 | Failure handling and error codes | 2: COMP-E10-T09, COMP-E12-T16 | ok |
