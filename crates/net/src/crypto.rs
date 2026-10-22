@@ -88,11 +88,14 @@ pub enum Context {
     Authority,
     /// `syntropy-apikey-v1`: cluster-wide API keys (RFC-0034 §3).
     ApiKey,
+    /// `syntropy-tls-ca-v1`: the node key's statement binding the node's local TLS CA
+    /// (RFC-0034 §3, revised 2026-10-22; RFC-0050 §11.1.1).
+    TlsCa,
 }
 
 impl Context {
     /// Every context, in RFC-0034 §3's order.
-    pub const ALL: [Context; 23] = [
+    pub const ALL: [Context; 24] = [
         Context::Beacon,
         Context::BeaconBlind,
         Context::BeaconMac,
@@ -116,6 +119,7 @@ impl Context {
         Context::Revoke,
         Context::Authority,
         Context::ApiKey,
+        Context::TlsCa,
     ];
 
     /// The context string.
@@ -144,6 +148,7 @@ impl Context {
             Context::Revoke => "syntropy-revoke-v1",
             Context::Authority => "syntropy-authority-v1",
             Context::ApiKey => "syntropy-apikey-v1",
+            Context::TlsCa => "syntropy-tls-ca-v1",
         }
     }
 

@@ -1,0 +1,15 @@
+# token-empty-ring-return: an empty ring-return frame answering an idle relay: no entries, one SESSION_SAVED
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 02 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+18 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00  # 0020 header
+80 00 00 00 00 00 00 00 00 00 00 00 c6 4d e5 fa  # 0030 header
+00 00 01 00 40 00 00 00 00 00 01 00 00 00 00 00  # 0040 extension
+0f 00 ff ff 38 00 00 00 c0 df fe 1d 3c 5b 7a 99  # 0050 extension
+b8 d7 f6 15 34 53 72 91 01 00 00 00 00 00 00 00  # 0060 extension
+d0 ef 0e 2d 4c 6b 8a a9 c8 e7 06 25 44 63 82 a1  # 0070 extension
+c0 df fe 1d 3c 5b 7a 99 b8 d7 f6 15 34 53 72 91  # 0080 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0090 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00a0 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00b0 extension

@@ -24,7 +24,7 @@
 //! (COMP-E10-T10), in [`dtype`]. Any other dtype, `F64` included, is `UnsupportedContainer`
 //! naming it.
 //! The JSON is parsed by `serde_json` into a strict value that refuses repeated keys
-//! ([`json`]). Everything here is safe Rust (ADR-0001 decision 4).
+//! (the private `json` module). Everything here is safe Rust (ADR-0001 decision 4).
 
 use std::fmt;
 
