@@ -6,9 +6,17 @@
 # Hooks are shell scripts, which a CRLF checkout would break in Git for Windows.
 /.githooks/** text eol=lf
 
+# Binary formats are named, so no line-ending conversion or text diff touches them, even a
+# file whose first bytes hold no NUL and would pass Git's content check for text: images,
+# model files and raw byte fixtures such as `crates/manifest/tests/data/tiny-header.bin`.
+*.png binary
+*.gguf binary
+*.safetensors binary
+*.bin binary
+
 # A fixture that must keep its exact bytes, such as a CRLF or mixed line-ending sample, is
-# marked `-text` here with a comment saying why. None does today: every tracked file is LF in
-# the index (`git ls-files --eol`, 2026-10-22).
+# marked `-text` here with a comment saying why. None does today: every tracked text file is
+# LF in the index (`git ls-files --eol`, 2026-10-22).
 
 # Golden vectors are compared with what a test renders; a CRLF checkout would change their bytes.
 /crates/cluster/tests/log/vectors.txt text eol=lf
