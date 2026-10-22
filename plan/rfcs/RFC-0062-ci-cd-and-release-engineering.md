@@ -94,9 +94,17 @@ flowchart LR
 
 Renovate runs as the hosted Renovate app, so dependency scanning uses no Actions minutes. Its PRs then run `pr.yml` like any other PR.
 
+*Note, 2026-10-22 (QUAL-E1-T06).* `dco` and `pr-title` run in `pr-meta.yml`, a workflow of their own, on `pull_request` (`opened`, `synchronize`, `reopened`, `edited`, `labeled` and `unlabeled`) and `merge_group`, in the concurrency group `pr-meta-<number>`. `pr-title` has to run again on label and edit events (§12.3). In `pr.yml`, such a run would also post a `ci-gate` with every hosted job skipped, and a skipped job passes (§2.5), so a label event could replace a failing gate with a passing one. For the same reason both jobs check in full on every PR event. Both build `xtask` without a cache: code the PR runs in any other job can write a cache entry under the PR's ref, and a restored build could hold an `xtask` built from the PR. `pr.yml` runs on `opened`, `synchronize` and `reopened`. A changed base does not re-run it, so `pr-title` fails on the `edited` event that changes the base, until a push re-runs `pr.yml` against it. A later event other than a push re-runs `pr-title` and clears that failure while `ci-gate` still stands for the old base. That gap closes with the merge queue (M2), which runs `ci-gate` on each merged result.
+
 #### 2.2 The affected-job set
 
 The first job of `pr.yml`, `changes`, runs `cargo xtask ci changes --base <merge-base>` and outputs the jobs to run as JSON. Downstream jobs read it from `needs.changes.outputs` and skip themselves when not listed. Workflow-level `paths:` filters are not used for required work, because a workflow skipped that way leaves its required checks pending.
+
+*Note, 2026-10-22 (QUAL-E1-T06).* `ci-gate` and `changes` judge a PR from the base branch, as `dco` and `pr-title` do (§12.3). Each checks out the base commit (`pull_request.base.sha`, or `merge_group.base_sha`), builds that `xtask` with no cache, and runs its command there. `pr.yml`'s own jobs still build and test the PR. Otherwise a PR could edit the evaluator to pass whatever its jobs did, or make `changes` list nothing, so that every job skips and the gate passes.
+- `ci-gate` does this from QUAL-E1-T06. `changes` does it from QUAL-E1-T07, which applies the base's `ci/jobs.toml` and rules engine to the PR's diff.
+- A change to either evaluator takes effect when it merges. The PR that makes the change is judged by the base's version.
+- `pr.yml` tells "the base has no `ci-gate` job" from "the gate failed" by the exit code of the base's `cargo xtask`: 2 for a usage error, which an unknown job is. Only the PR that adds the job, #1577, may then be judged by its own evaluator, once. Every other base without the job fails the gate and must rebase.
+- The workflow file itself comes from the PR's merge ref. A PR that edits `pr.yml` can still choose its own evaluator, which is why a change to `.github/` needs a maintainer's approval (§12.3).
 
 ```toml
 # ci/jobs.toml (excerpt): rules evaluated by `cargo xtask ci changes`
@@ -147,6 +155,14 @@ paths = ["docs/**", "plan/**", "*.md"]
 | `cross-build-t2t3` | hosted Linux | closure includes `kernels-*`, `io` or `net` | build-only checks for ROCm, Vulkan, arm64, Android NDK and iOS targets (§4) | ≤ 10 min |
 | `hw-cuda-ada`, `hw-cuda-bw`, `hw-cuda-win`, `hw-metal-floor`, `hw-metal-ultra`, `hw-cpu-avx512` | lab rigs, through `lab.yml` (§3) | listed in `hw_required`, or requested by `/hw run` | op conformance for the rig architecture; parity smoke on the shipping set; `pr-quick` ABBA bench | ≤ 20 min per rig |
 | `ci-gate` | hosted Linux | always, last | on `pull_request`: fails if any listed job failed or was cancelled, or if a job in `hw_required` has no passing `hw/<job>` status on the PR head ("hardware run required"); on `merge_group`: hosted jobs only, plus the `hw:queue` members' statuses (§2.5); skipped hosted jobs pass | < 1 min |
+
+*Note, 2026-10-22 (QUAL-E1-T06).* The first `pr.yml`:
+- `changes` lists `lint`, `build` and `hosted-test` on every run, until QUAL-E1-T07 computes the affected-job set (§2.2).
+- `build-<target>` runs `cargo xtask ci build`, which builds the `dev` profile until QUAL-E16-T21 adds the `pr` profile. On Linux it also runs `cargo xtask ci build-test-release`.
+- `hosted-test-<os>` runs `cargo xtask test unit`.
+- `hosted-l3` and `hosted-parity-nano` are in `ci-gate`'s `needs` but not listed, so they show as skipped, because their suites do not exist yet (planned: QUAL-E3-T09/T10 and QUAL-E5-T06). Each fails if it is listed before then.
+- `ci-gate` runs the base branch's `cargo xtask ci ci-gate` (§2.2 note), which reads each job's result from the `needs` context. Beyond the row above, it fails when `changes` did not succeed, when a job `changes` listed was skipped, and when `changes` lists a job that `ci-gate` does not wait for. It runs even in a cancelled run, because a skipped `ci-gate` would report success. Its summary names the tasks that add the planned jobs' suites.
+- The hosted runners are pinned by label: `ubuntu-24.04`, `macos-26` and `windows-2025`.
 
 #### 2.4 Platform promises to jobs
 
@@ -628,7 +644,7 @@ A new direct dependency also passes a registry check that reports its first-publ
 | 5. `solver` and `cluster::apply` are pure | no `tokio`, `std::net` or filesystem crates in `solver`'s graph; a clippy `disallowed-methods` list for clock and I/O calls in `cluster::apply` and the protocol cores (RFC-0060 §2) |
 | 6. One crate per external system | an allow-list mapping each external crate (iroh, ibverbs bindings, io_uring, HiGHS bindings, the ggml binding, GPU runtime bindings) to its one permitted workspace crate |
 | 7. Backends are cargo features resolved at runtime | the core binary built with no GPU features must link no vendor runtime (checked on its dynamic-symbol table) |
-| 8. `unsafe` confined | `#![forbid(unsafe_code)]` present in every crate not on the allow-list (`kernels-*`, `io`, `tier`, `net`, `ipc`) |
+| 8. `unsafe` confined | `#![forbid(unsafe_code)]` present in every crate not on the allow-list (`kernels-*`, `io`, `tier`, `net`, `ipc`); `testkit` sets `#![deny(unsafe_code)]` instead, and its only `unsafe` is the `GlobalAlloc` impl in `src/guards.rs` under its one `#[allow(unsafe_code)]`, with no `#[path]`, `include!`, local `macro_rules!` or build script that could compile a file the check does not read (RFC-0001 §4.2 rule 8, note 2026-10-22) |
 | 9. `testkit` is a dev-dependency only | no normal or build dependency edge to `testkit` |
 | RFC-0060 A6: no test features in `release` | the resolved feature set of the release build excludes `fault-injection`, `debug-taps` and `guards` |
 
@@ -648,6 +664,7 @@ A new direct dependency also passes a registry check that reports its first-publ
   - the inputs are the `pull_request` event payload, `GET /pulls/{n}/commits` and `GET /issues/{n}/events`, each fetched with `gh api --paginate`, and the events also with `--include`. The checks refuse a commits list that does not match the PR's commit count, a PR of 250 commits or more (the API cannot list it whole), and a label history whose last recorded page links to a next one;
   - `pr-title` runs again on the `labeled`, `unlabeled` and `edited` events as well as `opened`, `synchronize` and `reopened`. On `merge_group`, which has no PR payload, both report success, because they are required on every member PR's head;
   - the repository setting `squash_merge_commit_title` is `PR_TITLE`, and merge commits and rebase merges are off (§8.3). Until it is set, the single-commit rule above covers the gap.
+  - *Note, 2026-10-22 (QUAL-E1-T06):* `ci-gate` and `changes` follow the same rule: they run from the base branch's `xtask`, built with no cache (§2.2 note). `dco` and `pr-title` build with no cache too, because code a PR runs in any other job can write a cache entry under the PR's ref.
 - **Security-critical code by module name** (revised 2026-10-21). Until the tasks that write it place the security-critical code below, `CODEOWNERS` owns it by module name, directly under `crates/<crate>/src/`, as `<name>.rs` or `<name>/`. `keys`, `signing` and `updater` are owned in any crate, and `admission` and `cluster_key` in `net` and `cluster`. Code for these concerns in a module of another name or deeper in the tree has no code owner, so it goes in these modules. The `lint` check's sample paths cover each one (`xtask/src/codeowners.rs`).
 - `CODEOWNERS` names no area owners (ADR-0021 §3) and never names an agent identity. It makes a maintainer a required reviewer, in addition to the review agent, for the changes that need one:
   - security-critical paths: key handling and signing; cluster admission and the cluster-key code inside `net` and `cluster`; the update client; and the hardware dispatcher and lab configuration (`bench/lab/`, `lab/`);
@@ -695,6 +712,18 @@ ADR-0624 sets the rules; this section places them in the pipeline.
 - Changes to `.github/`, `ci/`, `deny.toml`, the release-please configuration and `bench/lab/` need a maintainer's approval plus the review agent's (§12.3). Agent identities are never code owners, cannot push to `main` or `release/*`, cannot create tags and cannot approve their own changes.
 - Access is reviewed every quarter: members, App installations and their permissions, environment reviewers, and delegations against `governance/delegations.toml`.
 - A weekly job reads these settings through the REST API and fails on any drift from this list (QUAL-E1-T23).
+
+*Note, 2026-10-22 (QUAL-E1-T06).* The repository's part of this baseline is declared in `ci/repo-settings/`, as one REST request body per setting and per ruleset. `ci/repo-settings/apply.sh` sends them (**Maintainer action**: only an organisation owner can), and `cargo xtask ci repo-settings` reads the repository through the REST API and fails on any declared setting or rule that is not in force. The declared state:
+- squash merges only, titled by the PR (§8.3);
+- secret scanning with push protection, and private vulnerability reporting (§13);
+- the Actions policy: full-length SHA pins, and only actions owned by GitHub or by the organisation, so every other action is blocked until a reviewed change to `actions-selected-actions.json` allows it;
+- workflow approval for all outside contributors (§3.3 item 1);
+- a read-only default token that cannot approve PRs, for a workflow without a `permissions:` block (§12.4);
+- a `main` ruleset with no bypass actor: no deletion, no force-push, changes only through a squash-merged PR, and `ci-gate`, `dco` and `pr-title` required from the GitHub Actions app, so a commit status posted by any other account does not count;
+- a second `main` ruleset requiring a code owner's review, which repository admins can bypass when they merge a PR, because GitHub does not let an author approve their own PR;
+- a `release/*` ruleset with no deletion and no force-push.
+
+The rules endpoint the check reads does not show bypass actors; the weekly audit checks them (QUAL-E1-T23).
 
 ### 13. Vulnerability handling
 

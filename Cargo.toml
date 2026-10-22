@@ -15,6 +15,9 @@ members = [
     "crates/io",
     "crates/net",
     "crates/ipc",
+    # The lock-free SPSC ring `io`, `net` and `ipc` share inside layer 1 (RFC-0001 §4.2 rule 2); no
+    # workspace dependencies
+    "crates/spsc",
     # Layer 2
     "crates/graph",
     "crates/kernels-cuda",
@@ -55,6 +58,8 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+# The config snapshot swap with lock-free readers (RFC-0054 §9.1).
+arc-swap = "1.9.3"
 bitflags = { version = "2", features = ["serde"] }
 # The `RigFingerprint` of RFC-0061 §2.1 (QUAL-E15-T01). `pure` is the portable Rust code: no C or
 # assembly to build, and the same digest on every target.

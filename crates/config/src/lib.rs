@@ -2,16 +2,48 @@
 
 //! Layered configuration loading, schema, policy resolution and per-request override validation.
 //!
-//! Layer 0 in RFC-0001 §4.1, designed in RFC-0054. This crate holds, so far (PROD-E1-T01):
+//! Layer 0 in RFC-0001 §4.1, designed in RFC-0054. This crate holds, so far:
 //!
 //! - the schema as code (RFC-0054 §10.3): `#[derive(ConfigSection)]`, which each crate uses to
 //!   declare its section, and the [`SectionSchema`] and [`KeySchema`] it records;
 //! - the section [`Registry`], whose construction fails the build when two sections claim one
 //!   prefix (§5.1);
 //! - the value types of §3: [`ByteSize`], [`Duration`], [`Fraction`], [`Reserve`], [`Rate`],
-//!   the node, device, tier, layer and model selectors, [`Regex`] and [`Secret`].
+//!   the node, device, tier, layer and model selectors, [`Regex`] and [`Secret`];
+//! - node-key layering (§1, §2.2 Rule 1, §2.4): the config files per OS ([`locate`],
+//!   [`Locations::scan`]), the environment ([`Env`]) and command-line ([`Flags`]) layers, and
+//!   [`ResolvedConfig`], an immutable snapshot whose every value carries its [`Origin`], held
+//!   for readers by [`SharedConfig`];
+//! - the text of `config show --resolved`, `config check` and `config path`
+//!   ([`command`]).
 //!
-//! Loading the layers, validation and reload come in later tasks.
+//! The validation phases of §8, the cluster and instance scopes, and reload come in later
+//! tasks.
+//!
+//! # Loading a node's configuration
+//!
+//! ```
+//! use std::path::Path;
+//! use syntropy_config::{Env, Flags, Mode, Os, Registry, command, load, locate};
+//!
+//! // A binary registers every section it loads.
+//! static REGISTRY: Registry = Registry::new(&[]);
+//!
+//! let os = Os::current();
+//! let env = Env::from_pairs(os, [("SYNTROPY_TYPO", "1")]);
+//! // `--config`'s value, if given, is the last argument. It replaces the other three files.
+//! let locations = locate(os, Mode::User, &env, Some(Path::new("/no/such/config.toml")));
+//! let problem = locations.scan().unwrap_err();
+//! assert!(problem.to_string().contains("does not exist"));
+//!
+//! # // A doctest must not read this host's own config files, so it scans nothing.
+//! # let scan = syntropy_config::Scan { system_file: None, dropins: vec![], user_file: None, explicit: None };
+//! // let scan = locate(os, Mode::User, &env, None).scan()?;
+//! let outcome = load(&REGISTRY, os, &scan, &env, &Flags::new());
+//! let report = command::check(&outcome);
+//! assert_eq!(report.exit, command::EXIT_OK);
+//! assert!(report.text.contains("warning: env SYNTROPY_TYPO: unknown variable"));
+//! ```
 //!
 //! # Declaring a section
 //!
@@ -66,18 +98,40 @@
 // Lets the derive's `::syntropy_config::…` paths resolve inside this crate's own tests.
 extern crate self as syntropy_config;
 
+pub mod command;
 mod default;
+mod discovery;
+mod env;
+mod holds_secret;
+mod origin;
 mod registry;
+mod resolve;
 mod schema;
+mod text;
 pub mod value;
 
+pub use discovery::{
+    CONFIG_FLAG, CONFIG_VAR, Dirs, Explicit, HOME_VAR, Locations, Mode, Os, Runtime, Scan, locate,
+    order_dropins,
+};
+pub use env::{API_KEY_VAR, Env, HF_TOKEN_VAR, HOST_VAR, OTHER_KNOWN, path_for, var_for};
+pub use holds_secret::HoldsSecret;
+pub use origin::Origin;
 pub use registry::{Registry, RegistryError};
+pub use resolve::{
+    ConfigFile, Flags, Layers, Problem, Proposal, Rejected, Resolved, ResolvedConfig, SectionError,
+    SharedConfig, load,
+};
 pub use schema::{
     Authority, ConfigSection, DefaultSpec, DefaultValue, KeyError, KeySchema, Reload, Scope,
     SectionSchema,
 };
 /// Declares a configuration section. See the [crate documentation](crate) for the attributes.
 pub use syntropy_config_derive::ConfigSection;
+/// Implements [`HoldsSecret`] for a struct or enum used as a config value.
+pub use syntropy_config_derive::HoldsSecret;
+/// A TOML value, as the layers hold it.
+pub use toml::Value;
 pub use value::{
     ByteSize, DeviceApi, DeviceSelector, Duration, Fraction, InRange, LayerRange, ModelSelector,
     NodeSelector, Rate, Regex, Reserve, Secret, SecretSource, TierSelector, ValueError,

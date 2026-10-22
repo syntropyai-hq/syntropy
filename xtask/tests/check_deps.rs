@@ -226,6 +226,95 @@ fn rule_8_crates_outside_the_allow_list_forbid_unsafe_code() {
             "`text` does not set",
             "`config` does not set",
             "crates/bench/src/bin/run.rs (bin target `run`)",
+            // `testkit` may hold `unsafe` only in its one allowed `GlobalAlloc` impl.
+            "`testkit`: crates/testkit/src/other.rs:6: uses `unsafe` outside the one allowed impl",
+        ],
+    );
+}
+
+// `testkit` denies `unsafe` rather than forbidding it, so an `allow` in a file the scope check
+// does not read would turn it back on. Each way to compile such a file is refused.
+
+#[test]
+fn rule_8_a_path_module_outside_src_is_refused() {
+    fails_with(
+        "rule-8-path",
+        8,
+        &["`testkit`: crates/testkit/src/lib.rs:8: sets a module `path` in an attribute"],
+    );
+}
+
+#[test]
+fn rule_8_include_of_a_file_that_is_not_rs_is_refused() {
+    fails_with(
+        "rule-8-include",
+        8,
+        &["`testkit`: crates/testkit/src/lib.rs:9: names `include`"],
+    );
+}
+
+#[test]
+fn rule_8_a_build_script_and_its_generated_code_are_refused() {
+    fails_with(
+        "rule-8-build-script",
+        8,
+        &[
+            "`testkit` has a build script, crates/testkit/build.rs",
+            "`testkit`: crates/testkit/src/lib.rs:9: names `include`",
+        ],
+    );
+}
+
+#[test]
+fn rule_8_a_local_macro_is_refused() {
+    fails_with(
+        "rule-8-macro",
+        8,
+        &["`testkit`: crates/testkit/src/lib.rs:9: defines a declarative macro"],
+    );
+}
+
+#[test]
+fn rule_8_a_bin_target_outside_src_is_read() {
+    fails_with(
+        "rule-8-bin",
+        8,
+        &[
+            "`testkit`: crates/testkit/tools/helper.rs:5: sets a lint level for `unsafe_code`",
+            "`testkit`: crates/testkit/tools/helper.rs:8: uses `unsafe` outside the one allowed impl",
+        ],
+    );
+}
+
+#[test]
+fn rule_8_a_file_rustc_reads_from_its_second_line_is_refused() {
+    fails_with(
+        "rule-8-shebang",
+        8,
+        &["`testkit`: crates/testkit/src/sneaky.rs:1: starts with `#!`"],
+    );
+}
+
+#[test]
+fn rule_8_a_leading_allow_after_the_deny_is_refused() {
+    fails_with(
+        "rule-8-root-allow",
+        8,
+        &[
+            "`testkit`: crates/testkit/src/lib.rs:6: sets `unsafe_code` in the crate root's leading attributes",
+        ],
+    );
+}
+
+#[test]
+fn rule_8_a_file_whose_extension_is_rs_in_another_case_is_read() {
+    fails_with(
+        "rule-8-upper-ext",
+        8,
+        &[
+            "`testkit`: crates/testkit/src/upper.RS:1: has an extension that is `rs` only in another case",
+            "`testkit`: crates/testkit/src/upper.RS:5: sets a lint level for `unsafe_code`",
+            "`testkit`: crates/testkit/src/upper.RS:8: uses `unsafe` outside the one allowed impl",
         ],
     );
 }

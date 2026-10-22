@@ -4,7 +4,7 @@
 - Area: placement and scheduling
 - Depends on: RFC-0001, RFC-0020 (§2, §5, §9), RFC-0021 (§10, §11), RFC-0023 (§13), ADR-0100, ADR-0006, ADR-0007, ADR-0008, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0020
 - Date: 2026-10-19
-- Revised: 2026-10-20: link mean, hop histogram and periodic-stall flag for wireless hops (§6.2); battery presence for the solver's departure margin (§1.3); a read-only direct-path report (§1.3); open questions 4 (FileVault part) and 5 answered; 2026-10-21: Linux E1 sources as built and the system-call split to PLC-E1-T14 (§2.2 revision note)
+- Revised: 2026-10-20: link mean, hop histogram and periodic-stall flag for wireless hops (§6.2); battery presence for the solver's departure margin (§1.3); a read-only direct-path report (§1.3); open questions 4 (FileVault part) and 5 answered; 2026-10-21: Linux E1 sources as built and the system-call split to PLC-E1-T14 (§2.2 revision note); 2026-10-22: one `DeviceClass`, defined in RFC-0040 §2.2, and the fields that leave it (§1.2 revision note, §2.1, §2.2; ADR-0405)
 
 ## Summary
 
@@ -51,16 +51,11 @@ The surveyed systems failed here in specific ways: VRAM never queried and GPU sh
 #### 1.2 Topology records (enumeration output)
 
 ```rust
-/// RFC-0001 declares DeviceClass as a PackKey component. It is the pair that decides which
-/// kernels and pack layouts apply. Two devices with equal DeviceClass share packs.
-pub enum DeviceClass {
-    Cuda { sm: u16 },                          // 75, 86, 89, 90, 100, 120, 121 ...
-    Hip { gfx: u32 },                          // 0x1100, 0x1201, 0x942 ...
-    Metal { family: AppleGpuFamily, cores: u16 },
-    Vulkan { vendor: u32, device: u32, driver: VkDriverId },
-    Cpu { arch: CpuArch, level: IsaLevel },    // x86-64-v2/v3/v4, aarch64-v8.0/v8.2-dotprod/v9-sve2
-    Npu { vendor: u32, model: u32 },
-}
+/// DeviceClass, CpuIsa and DeviceFeatures are syntropy-core types defined in RFC-0040 §2.2
+/// (ADR-0405). A PackKey component (RFC-0001 §5.6): two devices with equal classes run the same
+/// kernels and accept the same packs. This RFC adds the variant `Npu { vendor: u32, model: u32 }`,
+/// so an enumerated NPU with DeviceProblem::NoProvider still has a class; no provider produces it in
+/// v1, so no pack or certificate is keyed by it. CpuArch stays, for NodeInfo::arch.
 
 /// Added to DeviceInfo.
 pub struct DeviceInfoExt {
@@ -71,6 +66,20 @@ pub struct DeviceInfoExt {
     pub cpu: Option<CpuTopology>,               // CPU devices only
     pub power: Option<PowerInfo>,               // power limit, current cap, thermal state
     pub problems: SmallVec<[DeviceProblem; 2]>, // why a present device is unusable or degraded
+    pub gpu_cores: Option<u16>,                 // Apple GPU core count, IOKit `gpu-core-count` (ADR-0405)
+    pub api_ids: Option<ApiIds>,                // IDs as the graphics API reports them (ADR-0405)
+}
+/// The vendor and device IDs as the graphics API reports them (Vulkan `vendorID`, `deviceID`).
+/// `PciInfo` holds them only for PCI devices, and many integrated and mobile Vulkan GPUs have
+/// none. When both are present they must agree, and `PciInfo` wins: a disagreement is recorded
+/// as `DeviceProblem::ApiIdsMismatch`, and `api_ids` is then ignored. `gpu_cores` and `api_ids`
+/// serve diagnostics and the Vulkan certificate rule (RFC-0060 §6.4); neither is in any pack key.
+pub struct ApiIds { pub vendor: u32, pub device: u32 }
+pub struct DriverInfo {
+    pub driver: String,                         // vendor driver version
+    pub runtime: Option<String>,                // runtime version, where separate from the driver
+    pub loader: Option<PathBuf>,                // the library the driver was loaded from
+    pub vk_driver: Option<VkDriverId>,          // VkPhysicalDeviceDriverProperties::driverID (ADR-0405)
 }
 
 pub struct PciInfo {
@@ -104,6 +113,7 @@ pub enum DeviceProblem {
     LinkDegraded { cur: PcieLink, max: PcieLink }, // e.g. x16 card training at x4
     BelowSpec { quantity: SpecQuantity, measured: f64, spec: f64 }, // < 0.5 × spec: misconfiguration flag
     Excluded { by: ExclusionSource },           // user config, or features.disable
+    ApiIdsMismatch { api: ApiIds },             // the graphics API's IDs disagree with PciInfo; api_ids ignored
 }
 
 /// Added to TierInfo.
@@ -168,6 +178,8 @@ pub struct VolumeInfo {
     pub model: String, pub firmware: String,
 }
 ```
+
+**Revision note, 2026-10-22 (ADR-0405): one device class.** This section used to define its own `DeviceClass`, with `Metal { family, cores }`, `Vulkan { vendor, device, driver }` and `Cpu { arch, level: IsaLevel }`. RFC-0040 §2.2 defined another, with different variants. The two gave different pack and certificate keys for the same device. ADR-0405 keeps one type in `core`: RFC-0040's variants plus `Npu`, with `CpuIsa` replacing `IsaLevel`, which is deleted. A field belongs in the class only when a change in it can change the pack layout or the kernel objects the providers load. The fields that fail that test move out of the class. The Apple GPU core count goes to `DeviceInfoExt::gpu_cores`, the Vulkan vendor and device IDs to `DeviceInfoExt::api_ids`, and `VkDriverId` to `DriverInfo::vk_driver`. PLC-E1-T16 changes the `core` types, makes `kernels` re-export them and moves the probe to `CpuIsa`.
 
 #### 1.3 Capability records (measurement output)
 
@@ -337,12 +349,14 @@ pub struct GraphDelta {
 | Step | Process | Needs a driver context | Output |
 |---|---|---|---|
 | E1 Host facts: OS, CPU topology and ISA, RAM, NUMA, cgroups, power source, WSL2 or container detection | daemon | no | `NodeInfo`, CPU `DeviceInfo`, host `TierInfo` |
-| E2 GPU inventory from management APIs: NVML, AMD SMI or amdgpu sysfs, DXGI/DXCore, IOKit | daemon | no | provisional GPU `DeviceInfo` with PCI, UUID/LUID, VRAM total and OS budget |
+| E2 GPU inventory from management APIs: NVML, AMD SMI or amdgpu sysfs, DXGI/DXCore, IOKit | probe runner (revised 2026-10-22) | no | provisional GPU `DeviceInfo` with PCI, UUID/LUID, VRAM total and OS budget |
 | E3 Storage volumes for the store and extra tier paths | daemon | no | `Nvme` `TierInfo` with `VolumeInfo` |
 | E4 Network interfaces and RDMA devices | daemon (`net` crate) | no | NIC endpoints; `LinkInfo` records once peers are known |
 | E5 Provider enumeration: `KernelProvider::enumerate` for every provider in the build, then `open` per device | probe runner | yes | `DeviceClass`, `features`, `backends`, context reserve, confirmed VRAM |
 
-The daemon starts E1–E4 at once and spawns the probe runner (`syntropy __runner --probe`) in parallel. The runner's `ProbeResult` is merged with E2 by UUID, LUID or PCI address. A GPU that E2 lists but no provider opens keeps its `DeviceInfo` with `DeviceProblem::NoProvider` or `DriverTooOld`, so `syntropy doctor` can say why it is idle; the solver filters it out.
+The daemon starts E1–E4 at once and spawns the probe runner (`syntropy __runner --probe`) in parallel. The runner's `ProbeResult` is merged with E2 by UUID, LUID or PCI address. Each device's `DeviceClass` in the inventory is the one its provider reports at E5, computed at `enumerate` (RFC-0040 §2.1, ADR-0405 decision 3). E1 may fill a provisional CPU class from `/proc/cpuinfo` and the platform equivalents, and E5's value replaces it. A GPU that E2 lists but no provider opens keeps its `DeviceInfo` with `DeviceProblem::NoProvider` or `DriverTooOld`, so `syntropy doctor` can say why it is idle; the solver filters it out.
+
+*Note 2026-10-22 (OQ-PRC-26, RFC-0001 §4.2 rule 8):* E2 runs in the probe runner, not the daemon. Its management APIs load vendor libraries and need `unsafe`, which the daemon may not do (RFC-0001 §4.2 rules 4 and 8). The probe runner calls them through `kernels-loader`, which rule 6 lets load them, and returns the records with its `ProbeResult`; the daemon merges them as above. E1's and E3's system calls that need `unsafe` go in `io`.
 
 Vendor libraries are loaded with `dlopen`/`LoadLibraryExW` from the driver install (`libnvidia-ml.so.1`, `nvml.dll`, `libamd_smi.so`, `libcuda.so.1`, `nvcuda.dll`, `libamdhip64`, the Vulkan loader). A missing library means "no such device", never an error (RFC-0001 §4.2 rule 7).
 
@@ -359,7 +373,7 @@ Vendor libraries are loaded with `dlopen`/`LoadLibraryExW` from the driver insta
 | Power | `/sys/class/power_supply/*/online`, `capacity` | `GetSystemPowerStatus`; active power scheme | IOKit `IOPSCopyPowerSourcesInfo` | `BatteryManager`; `UIDevice.batteryState` |
 | NVIDIA GPU | NVML: `nvmlDeviceGetUUID`, `GetPciInfo_v3`, `GetMemoryInfo_v2`, `GetBAR1MemoryInfo`, `GetCurrPcieLinkGeneration/Width`, `GetMaxPcieLinkGeneration/Width`, `GetCudaComputeCapability`, `GetP2PStatus`, `GetNvLinkState`, `GetPowerManagementLimit`, `GetTemperature`; NUMA from sysfs | NVML (same calls); DXGI budget for WDDM devices; LUID match through `cuDeviceGetLuid` in the probe runner | – | – |
 | AMD GPU | AMD SMI (`amdsmi_get_gpu_memory_total`, PCIe info) when the ROCm runtime is present; otherwise amdgpu sysfs `mem_info_vram_total`, `mem_info_vis_vram_total` (Resizable BAR when equal to VRAM), `mem_info_gtt_total`, `current_link_speed`, `current_link_width`, `unique_id`. ROCm SMI is not used; current ROCm removed it in favour of AMD SMI | DXGI and DXCore; HIP SDK runtime when installed | – | – |
-| Apple GPU | – | – | IOKit `IOAccelerator` (`gpu-core-count`, model); Metal facts (`recommendedMaxWorkingSetSize`, `hasUnifiedMemory`, `supportsFamily`, `maxBufferLength`) are read in the probe runner because creating an `MTLDevice` opens the GPU | iOS: same, in the in-process runner |
+| Apple GPU | – | – | IOKit `IOAccelerator` (`gpu-core-count` into `DeviceInfoExt::gpu_cores`, model); Metal facts (`recommendedMaxWorkingSetSize`, `hasUnifiedMemory`, `supportsFamily`, `maxBufferLength`) are read in the probe runner because creating an `MTLDevice` opens the GPU | iOS: same, in the in-process runner |
 | Any GPU through Vulkan | `vkEnumeratePhysicalDevices`; `VkPhysicalDeviceIDProperties` (UUID, LUID) for dedupe; `VK_EXT_pci_bus_info`; `VK_EXT_memory_budget`; `VK_KHR_cooperative_matrix` properties — all in the probe runner | same | MoltenVK is not used | Android: same |
 | NPU | listed as `DeviceKind::Npu` with `NoProvider` in v1 unless a provider claims it | DXCore adapters with `DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML` | not exposed to apps | NNAPI/vendor runtimes: not enumerated in v1 |
 | NVMe volume | `statfs`; `statx(STATX_DIOALIGN)`; `/sys/block/<dev>/queue/{logical_block_size,physical_block_size,nr_requests,rotational}`; controller PCI path from `/sys/class/nvme/<ctrl>/device`; temperature from the nvme hwmon (`temp1_input`) | `GetDiskFreeSpaceExW`; `IOCTL_STORAGE_QUERY_PROPERTY` with `StorageAdapterProperty` (bus type), `StorageAccessAlignmentProperty`, `StorageDeviceSeekPenaltyProperty`, `StorageDeviceTemperatureProperty`; BitLocker status from `FSCTL`/WMI where readable | `statfs`; IOKit `IONVMeController`/`IOBlockStorageDevice` properties; FileVault status from `fdesetup`-equivalent API where readable; no public temperature interface, so throttling is detected from throughput only (RFC-0021 §11) | app-private storage only; no device facts |
@@ -393,6 +407,8 @@ pub struct RdmaPortInfo { pub nic: u16, pub kind: RdmaKind, pub max_qp: u16, pub
 **Unified-memory devices** (ADR-0014 capacity rules): Apple → one `Unified` tier, `usable = min(recommendedMaxWorkingSetSize, RAM − resource.ram_headroom, available + own − resource.ram_headroom)` (RFC-0020 §5: the third term keeps memory other programs are using out of the budget), affinity {GPU, CPU}, and no `HostPinned` tier. GB10-class → `Unified`, `usable = MemAvailable − 6 GiB`, because `cudaMemGetInfo` undercounts. Strix Halo → `Unified` sized by the GPU-visible heap the driver reports (carve-out plus GTT on Linux, the DXGI budget on Windows), affinity {iGPU, CPU}. When detection is uncertain, the device is modelled as discrete with a measured PCIe term, which is correct and conservative.
 
 **Usable capacity.** Discrete VRAM is confirmed by allocation in the probe runner: reserve address space, then map 256 MiB physical segments until mapping fails or `free − resource.vram_headroom` is reached, then release (CUDA VMM `cuMemCreate`/`cuMemMap`, HIP equivalents, Vulkan `vkAllocateMemory` against the budget). On Windows the probe never allocates past the DXGI local budget, because WDDM over-commits by demoting to system memory instead of failing. Host and unified tiers are not allocation-probed at startup: wiring or locking most of RAM would stall the user's machine (`tiered-memory-inference.md` §10.2). Their `usable` comes from the OS budget and RFC-0020's rule, and is corrected from the first `Loading` that falls short (`Capacity` in `Loading`, RFC-0001 §10.1), with the correction stored in the profile cache.
+
+*Note 2026-10-22 (OQ-HW-13):* in M0a the Windows E2 path is checked on the agent pool's NVIDIA host booted into Windows (QUAL-E15-T16), an untimed host, because R-WIN arrives in M1b. R-WIN takes over from M1b.
 
 
 ### 3. Startup microbenchmark suite

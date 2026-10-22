@@ -99,9 +99,11 @@ fn rule_1(graph: &Graph) -> Vec<Finding> {
 /// Rule 2: every edge between members, dev edges included, goes to a lower layer. Every crate
 /// except `core` may use `obs` and `config`, and every crate may use `core`. A macro crate
 /// (`config-derive`) takes exactly one edge, from the crate that owns its macros (`config`), and
-/// an edge into it from any other crate fails whatever the two crates' places. Edges into the
-/// dev-only row are rule 9's; `core`'s normal and build edges are rule 1's. Tools have no
-/// workspace edges either way.
+/// an edge into it from any other crate fails whatever the two crates' places. A crate shared
+/// inside its layer (`spsc`) may take edges from the crates named for it (`io`, `net`, `ipc`) in
+/// that layer, and depends on no workspace crate itself, `core` included (note of 2026-10-22).
+/// Edges into the dev-only row are rule 9's; `core`'s normal and build edges are rule 1's. Tools
+/// have no workspace edges either way.
 fn rule_2(graph: &Graph, layers: &Layers) -> Vec<Finding> {
     let mut findings = Vec::new();
     for from in graph.members() {
@@ -118,6 +120,22 @@ fn rule_2(graph: &Graph, layers: &Layers) -> Vec<Finding> {
                 continue;
             };
             let kinds = edge.kinds.describe();
+            if policy::same_layer_users(from_name).is_some() {
+                if to_place == Place::DevOnly {
+                    continue; // rule 9's
+                }
+                findings.push(Finding::new(
+                    Rule::Numbered(2),
+                    format!(
+                        "`{from_name}` has a {kinds} dependency on `{to_name}`; `{from_name}` \
+                         depends on no workspace crate, `core` included"
+                    ),
+                ));
+                continue;
+            }
+            if policy::same_layer_users(to_name).is_some_and(|users| users.contains(&from_name)) {
+                continue;
+            }
             if let Some(owner) = policy::macro_owner(to_name) {
                 if owner != from_name {
                     findings.push(Finding::new(
@@ -381,7 +399,7 @@ mod tests {
     const TABLE: &str = r#"
 [layers]
 0 = ["core", "obs", "config", "config-derive"]
-1 = ["manifest", "kernels", "io", "net"]
+1 = ["manifest", "kernels", "io", "net", "ipc", "spsc"]
 2 = ["graph", "kernels-cpu", "kernels-loader", "tier", "solver", "store"]
 3 = ["exec", "cluster"]
 4 = ["sched", "api"]
@@ -401,6 +419,8 @@ tools = ["xtask"]
         "kernels",
         "io",
         "net",
+        "ipc",
+        "spsc",
         "graph",
         "kernels-cpu",
         "kernels-loader",
@@ -440,7 +460,12 @@ tools = ["xtask"]
             ("kernels", "core", "normal"),
             ("kernels", "obs", "normal"),
             ("io", "core", "normal"),
+            ("io", "spsc", "normal"),
             ("net", "core", "normal"),
+            ("net", "spsc", "normal"),
+            ("ipc", "core", "normal"),
+            ("ipc", "spsc", "normal"),
+            ("spsc", "testkit", "dev"),
             ("net", "tokio", "normal"),
             ("net", "iroh", "normal"),
             ("graph", "manifest", "normal"),
@@ -577,6 +602,74 @@ tools = ["xtask"]
     }
 
     #[test]
+    fn rule_2_lets_io_net_and_ipc_depend_on_spsc_inside_layer_1() {
+        let allowed = run(
+            &[],
+            &[
+                ("io", "spsc", "normal"),
+                ("net", "spsc", "normal"),
+                ("ipc", "spsc", "normal"),
+                ("ipc", "spsc", "dev"),
+                ("tier", "spsc", "normal"),
+                ("exec", "spsc", "normal"),
+            ],
+        );
+        assert_eq!(allowed, Vec::<String>::new());
+
+        let found = run(
+            &[],
+            &[
+                ("manifest", "spsc", "normal"),
+                ("kernels", "spsc", "dev"),
+                ("obs", "spsc", "normal"),
+            ],
+        );
+        assert_eq!(
+            found,
+            [
+                "rule 2: `kernels` (layer 1) has a dev dependency on `spsc` (layer 1); a crate \
+                 depends only on crates in lower layers",
+                "rule 2: `manifest` (layer 1) has a normal dependency on `spsc` (layer 1); a crate \
+                 depends only on crates in lower layers",
+                "rule 2: `obs` (layer 0) has a normal dependency on `spsc` (layer 1); a crate \
+                 depends only on crates in lower layers",
+            ]
+        );
+    }
+
+    #[test]
+    fn rule_2_lets_spsc_depend_on_no_workspace_crate() {
+        // `core` included, by any edge kind; a dev edge to the dev-only row is rule 9's.
+        let found = run(
+            &[],
+            &[
+                ("spsc", "core", "normal"),
+                ("spsc", "core", "dev"),
+                ("spsc", "obs", "normal"),
+                ("spsc", "io", "normal"),
+                ("spsc", "kernels", "build"),
+                ("spsc", "testkit", "dev"),
+            ],
+        );
+        let rejected = |to: &str, kind: &str| {
+            format!(
+                "rule 2: `spsc` has a {kind} dependency on `{to}`; `spsc` depends on no workspace \
+                 crate, `core` included"
+            )
+        };
+        assert_eq!(
+            found,
+            [
+                rejected("kernels", "build"),
+                rejected("core", "dev"),
+                rejected("core", "normal"),
+                rejected("io", "normal"),
+                rejected("obs", "normal"),
+            ]
+        );
+    }
+
+    #[test]
     fn rule_2_lets_only_config_depend_on_config_derive() {
         // `config` may use its macro crate by any edge kind; every other crate fails, from any
         // layer, the dev-only row and the tools included.
@@ -645,6 +738,19 @@ tools = ["xtask"]
                 "rule 3: compute crate `tier` reaches `tokio` through normal dependencies: tier → \
                  tokio; compute crates never depend on `net`, `cluster`, `store`, `api`, \
                  `daemon` or `tokio`",
+            ]
+        );
+    }
+
+    #[test]
+    fn rule_3_keeps_tokio_out_of_spsc() {
+        let found = run(&["tokio"], &[("spsc", "tokio", "normal")]);
+        assert_eq!(
+            found,
+            [
+                "rule 3: compute crate `spsc` reaches `tokio` through normal dependencies: spsc → \
+              tokio; compute crates never depend on `net`, `cluster`, `store`, `api`, `daemon` \
+              or `tokio`"
             ]
         );
     }

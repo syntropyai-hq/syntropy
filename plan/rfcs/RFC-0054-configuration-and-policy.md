@@ -70,11 +70,13 @@ Three pressures shape this design.
 
 **State and data directories** (defaults; `node.state_dir` and `store.dirs` override them):
 
-| Purpose | Linux (user) | Linux (system service) | macOS | Windows |
-|---|---|---|---|---|
-| state: identity key, proposal ledger, API key hashes, host-change ledger, logs | `$XDG_STATE_HOME/syntropy` | `/var/lib/syntropy/state` | `~/Library/Application Support/Syntropy/state` | `%LOCALAPPDATA%\Syntropy\state` |
-| model store: chunks, packs, session blobs | `$XDG_DATA_HOME/syntropy/store` | `/var/lib/syntropy/store` | `~/Library/Application Support/Syntropy/store` | `%LOCALAPPDATA%\Syntropy\store` |
-| runtime: local API socket, runner adoption sockets | `$XDG_RUNTIME_DIR/syntropy` | `/run/syntropy` | `$TMPDIR/syntropy` (per user) | named pipes `\\.\pipe\syntropy-<sid>-*` |
+| Purpose | Linux (user) | Linux (system service) | macOS | Windows | Windows (per-machine service) |
+|---|---|---|---|---|---|
+| state: identity key, proposal ledger, API key hashes, host-change ledger, logs | `$XDG_STATE_HOME/syntropy` | `/var/lib/syntropy/state` | `~/Library/Application Support/Syntropy/state` | `%LOCALAPPDATA%\Syntropy\state` | `%ProgramData%\Syntropy\state` |
+| model store: chunks, packs, session blobs | `$XDG_DATA_HOME/syntropy/store` | `/var/lib/syntropy/store` | `~/Library/Application Support/Syntropy/store` | `%LOCALAPPDATA%\Syntropy\store` | `%ProgramData%\Syntropy\store` |
+| runtime: local API socket, runner adoption sockets | `$XDG_RUNTIME_DIR/syntropy` | `/run/syntropy` | `$TMPDIR/syntropy` (per user) | named pipes `\\.\pipe\syntropy-<sid>-*` | named pipes, with the service account's SID |
+
+*Note 2026-10-22 (correction):* the Windows (per-machine service) column was missing. RFC-0052 §5.1 already decided it. A per-machine install runs as the service `NT SERVICE\Syntropy` (RFC-0052 §6) and keeps its state and store beside its config, in `%ProgramData%\Syntropy`, where its update service reads requests (RFC-0052 §7.1). A macOS LaunchDaemon (RFC-0052 §6.2) keeps its state and store beside the system config file, in `/Library/Application Support/Syntropy/{state,store}`. The maintainers decided this on 2026-10-22 (OQ-PRD-26, settled).
 
 The store is deliberately not under a cache directory. Packs are safe to delete (ADR-0005), but the store also holds verified source chunks that cost a download to replace, and cache directories often sit on small volumes.
 
@@ -189,6 +191,15 @@ A new cluster starts with the schema defaults plus whatever its first members pr
 - **CLI.** `syntropy serve --set key=value` is repeatable and accepts any key. A small set of keys also have dedicated flags, listed in RFC-0051 §2.3: `--bind`, `--config`, `--models-dir`, `--offline`, `--log-level`, `--state-dir`.
 - Unknown `SYNTROPY_*` variables are reported as warnings at start (a typo in an environment variable is otherwise invisible). Unknown `--set` keys are errors.
 
+*Note 2026-10-22 (PROD-E1-T02, how the layers read):*
+- `SYNTROPY_HOME=H` puts the state directory at `H/state` and the default store at `H/store`. That is the layout §1's macOS and Windows defaults use under their `Syntropy` directory, and the Linux service layout under `/var/lib/syntropy`. `SYNTROPY_NODE__STATE_DIR`, when also set, wins for `node.state_dir`.
+- An environment or `--set` value that does not parse as a TOML value is read as a string, so `16GiB` and `0.0.0.0:7433` need no quotes. A key whose type is a string or a path always takes the text as written, unless it is a quoted TOML string.
+- An empty `SYNTROPY_CONFIG` or `SYNTROPY_HOME` counts as unset. When both `--config` and `SYNTROPY_CONFIG` are given, the flag wins, as the CLI layer wins over the environment.
+- Two more `SYNTROPY_*` names draw no unknown-variable warning, because other parts of Syntropy read them and they are not config keys: `SYNTROPY_FAULT_PLAN`, the fault plan a fault-injection build loads at start (RFC-0060 §9.2), and `SYNTROPY_KERNELS`, a build setting of the `kernels-*` crates (COMP-E9-T02). Renaming either out of the `SYNTROPY_` prefix is the alternative, and that is for the maintainers.
+- A system service that is given `--config` or `SYNTROPY_CONFIG` reads that file and nothing else, as any daemon does. §1's "reads orders 1–2 only" is read as: a service never reads a user file (order 3). It does not exclude order 4.
+- A table-valued node key, such as `node.labels`, `aliases` or `obs.otlp.headers`, is one value. A later layer that sets it replaces it whole, as an array is replaced, and its origin is that layer's line. §1's "later wins, field by field" is read as key by key. Neither §1 nor Rule 1 says whether a table-valued key's entries merge across files. Merging them, as §6.1 merges policy tables, is the alternative, for the maintainers; it would need an origin per entry.
+- A drop-in is a `*.toml` file whose name does not start with `.`, compared without case on Windows. "Lexical order" is the byte order of the file name, so `10-a.toml` sorts before `9-b.toml`.
+
 ### 3. Value types and units
 
 Configuration values map onto the RFC-0001 §5.1 unit newtypes. A bare integer is never accepted where a unit is meant, except bytes, where an integer means bytes.
@@ -223,6 +234,8 @@ Recommended default: (a).
 ### 4. Policy objects
 
 RFC-0001 §11.3 defines these types in `syntropy-core`, and §5.13 assigns them to this RFC. They are plain data with invariant checks and serde defaults, so the event log, IPC and the solver can carry them. This RFC adds fields under the RFC-0001 §5 rules and renames nothing.
+
+*Note 2026-10-22 (OQ-PRD-27):* the field types these objects hold that `config` parses (`Reserve`, `Fraction`, the selectors behind `DeviceFilter` and `NodeFilter`, tensor-override patterns, `KeyPath` and `ConfigValue`) have plain-data forms in `core`, so the objects can live there under RFC-0001 §4.2 rule 1. `config` parses text into them and validates it. Patterns are held in `core` as their source text, and `config` keeps the compiled regex.
 
 #### 4.1 `Objective`
 
@@ -448,7 +461,7 @@ The scopes column lists every scope a section uses. The table is generated from 
 *Note 2026-10-21 (open, for the maintainers): where a duplicate prefix fails.* A derive sees one struct, so it cannot see a prefix that another crate registers. PROD-E1-T01 puts the check in `syntropy_config::Registry::new`, a `const fn` that panics when two sections claim one prefix. In a `static` or `const` item that panic is a compile error; in a `let` it happens at run time.
 
 Options:
-- (a) the binary's registry, which PROD-E1-T02 builds, is a `static`, so a duplicate prefix fails that build;
+- (a) the binary's registry, which PROD-E6-T23 builds (moved from PROD-E1-T02 on 2026-10-22, with the CLI subcommands), is a `static`, so a duplicate prefix fails that build;
 - (b) a link-time check through one exported symbol per prefix, which needs `unsafe` attributes in every crate that declares a section, and RFC-0001 §4.2 rule 8 forbids those;
 - (c) only the CI test of PROD-E1-T16.
 

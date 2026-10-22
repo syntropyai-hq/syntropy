@@ -129,6 +129,7 @@ fn device_class() -> impl Strategy<Value = DeviceClass> {
             }
         }),
         cpu_isa().prop_map(|isa| DeviceClass::Cpu { isa }),
+        (any::<u32>(), any::<u32>()).prop_map(|(vendor, model)| DeviceClass::Npu { vendor, model }),
     ]
 }
 
@@ -446,4 +447,68 @@ fn static_names_with_escapes_do_not_decode() {
     let json = serde_json::to_string(&ProviderId("a\"b")).expect("encodes");
     let json: &'static str = String::leak(json);
     assert!(serde_json::from_str::<ProviderId>(json).is_err());
+}
+
+// ---- One type each (ADR-0405 decision 1) ----------------------------------------------
+
+/// `kernels`' `DeviceClass` and `CpuIsa` are `core`'s: a value of either crate's name passes
+/// where the other's is expected, in both directions. This is a compile-time check; the
+/// assertions only use the values.
+#[test]
+fn device_class_and_cpu_isa_are_core_types() {
+    fn to_core(
+        c: DeviceClass,
+        i: CpuIsa,
+    ) -> (
+        syntropy_core::resource::DeviceClass,
+        syntropy_core::resource::CpuIsa,
+    ) {
+        (c, i)
+    }
+    fn to_kernels(
+        c: syntropy_core::resource::DeviceClass,
+        i: syntropy_core::resource::CpuIsa,
+    ) -> (DeviceClass, CpuIsa) {
+        (c, i)
+    }
+    let core_class = syntropy_core::resource::DeviceClass::Cpu {
+        isa: syntropy_core::resource::CpuIsa::Arm86I8mm,
+    };
+    let (class, isa) = to_kernels(core_class, syntropy_core::resource::CpuIsa::X86V3);
+    assert_eq!(to_core(class, isa), (core_class, CpuIsa::X86V3));
+    assert_eq!(
+        std::any::TypeId::of::<DeviceClass>(),
+        std::any::TypeId::of::<syntropy_core::resource::DeviceClass>()
+    );
+    assert_eq!(
+        std::any::TypeId::of::<CpuIsa>(),
+        std::any::TypeId::of::<syntropy_core::resource::CpuIsa>()
+    );
+}
+
+/// No source file of `kernels` declares an enum named `DeviceClass` or `CpuIsa`.
+#[test]
+fn kernels_defines_neither_enum() {
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("reads src") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    assert!(!files.is_empty());
+    for file in files {
+        let text = std::fs::read_to_string(&file).expect("reads source");
+        for name in ["enum DeviceClass", "enum CpuIsa"] {
+            assert!(!text.contains(name), "{} declares `{name}`", file.display());
+        }
+    }
 }
