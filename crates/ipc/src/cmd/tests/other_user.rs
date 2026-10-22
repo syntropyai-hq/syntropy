@@ -139,9 +139,10 @@ fn run_as(user: &OsStr, exe: &Path, socket: &Path) -> PeerResult {
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
+    // libtest prints the test's name first, on the same line, so the result is found anywhere.
     let line = stdout
         .lines()
-        .find_map(|line| line.strip_prefix("PEER-RESULT "))
+        .find_map(|line| line.split_once("PEER-RESULT ").map(|(_, result)| result))
         .unwrap_or_else(|| panic!("the peer process printed no result:\n{stdout}"));
     let (uid, outcome) = line.split_once(' ').unwrap();
     PeerResult {
@@ -168,5 +169,5 @@ fn connect_as_peer(socket: &Path) {
             }
         }
     };
-    println!("PEER-RESULT uid={uid} {outcome}");
+    println!("\nPEER-RESULT uid={uid} {outcome}");
 }
