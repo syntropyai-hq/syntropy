@@ -13,9 +13,9 @@
 //!   line, and implements a stand-in `TickSource` in `src/tick.rs` that reads the clock under a
 //!   scoped `#[allow]`;
 //! - `io`, a crate the lints do not cover, with no `clippy.toml`. It also holds stand-ins for the
-//!   production sources, `syntropy_io::os::SystemClock` and `OsEntropy`, in their shape, which
-//!   `exec` depends on it for, and names itself `syntropy_io` so the shared `banned.rs` resolves
-//!   in it too. `exec` builds each source in every way code outside `io` can ([`SOURCES`]), and
+//!   production sources, `syntropy_io::os::SystemClock`, `OsEntropy` and `SystemTicks`, in their
+//!   shape, which `exec` depends on it for, and names itself `syntropy_io` so the shared
+//!   `banned.rs` resolves in it too. `exec` builds each source in every way code outside `io` can ([`SOURCES`]), and
 //!   each must be refused.
 //!
 //! Every banned item must be reported on its own line of `exec`, and nothing in `io` or in the
@@ -125,6 +125,10 @@ const USES: &[(&str, &str)] = &[
         "syntropy_io::os::OsEntropy",
         "pub fn os_entropy() { let _entropy = syntropy_io::os::OsEntropy::new(); }",
     ),
+    (
+        "syntropy_io::os::SystemTicks",
+        "pub fn system_ticks() { let _ticks = syntropy_io::os::SystemTicks::new(); }",
+    ),
 ];
 
 /// The other ways code outside `io` could build a production source, each of which must be
@@ -156,6 +160,18 @@ const SOURCES: &[(&str, &str)] = &[
         "syntropy_io::os::OsEntropy",
         "pub fn entropy_by_import() { use syntropy_io::os::OsEntropy; let _e = OsEntropy::new(); }",
     ),
+    (
+        "syntropy_io::os::SystemTicks",
+        "pub fn ticks_by_default() { let _t = <syntropy_io::os::SystemTicks as Default>::default(); }",
+    ),
+    (
+        "syntropy_io::os::SystemTicks",
+        "pub fn ticks_by_inference() { let _t: syntropy_io::os::SystemTicks = Default::default(); }",
+    ),
+    (
+        "syntropy_io::os::SystemTicks",
+        "pub fn ticks_by_import() { use syntropy_io::os::SystemTicks; let _t = SystemTicks::new(); }",
+    ),
 ];
 
 /// Stand-ins for `syntropy_io::os`'s production sources, in their shape: `non_exhaustive`, so no
@@ -163,7 +179,9 @@ const SOURCES: &[(&str, &str)] = &[
 const OS: &str = "#[non_exhaustive]\n#[derive(Default)]\npub struct SystemClock;\n\n\
                   impl SystemClock {\n    pub const fn new() -> Self {\n        SystemClock\n    }\n}\n\n\
                   #[non_exhaustive]\n#[derive(Default)]\npub struct OsEntropy;\n\n\
-                  impl OsEntropy {\n    pub const fn new() -> Self {\n        OsEntropy\n    }\n}\n";
+                  impl OsEntropy {\n    pub const fn new() -> Self {\n        OsEntropy\n    }\n}\n\n\
+                  #[non_exhaustive]\n#[derive(Default)]\npub struct SystemTicks;\n\n\
+                  impl SystemTicks {\n    pub const fn new() -> Self {\n        SystemTicks\n    }\n}\n";
 
 /// A stand-in for `syntropy_core::TickSource` (QUAL-E3-T17) and a production implementation of
 /// it, which may read the clock: the one place in `exec` that rule T1 allows to.
