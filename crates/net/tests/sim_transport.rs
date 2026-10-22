@@ -202,6 +202,13 @@ impl Fabric for Sim {
         &self.send_pool
     }
 
+    fn register(
+        &mut self,
+        pool: &BufferPool,
+    ) -> Option<Result<syntropy_net::transport::PoolRegistration, Error>> {
+        Some(self.two.a.register(pool))
+    }
+
     fn pump(&mut self) {
         // Held delivery stops time on the whole network: nothing in flight moves.
         if !self.hold {
@@ -231,7 +238,7 @@ fn the_conformance_suite_passes_on_sim_transport() {
         let report = conformance::run(&mut sim);
         assert!(report.passed(), "seed {seed}: {report}");
         assert!(report.skipped.is_empty(), "seed {seed}: {report}");
-        assert_eq!(report.to_string(), "12 of 12 rules passed");
+        assert_eq!(report.to_string(), "13 of 13 rules passed");
     }
 }
 

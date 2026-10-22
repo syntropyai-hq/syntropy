@@ -658,7 +658,8 @@ impl ChannelCore {
     /// is in use. Only the core hands out its pool's slots, so it sees each one come back.
     pub fn next_receive_slot(&mut self) -> Option<SlotWriter> {
         self.reap_released();
-        let writer = (0..self.pool.slots()).find_map(|slot| self.pool.claim(slot))?;
+        // Any free slot, taken without a lock (RFC-0031 §8).
+        let writer = self.pool.take()?;
         // A delivered frame dropped on another thread since the scan above: its slot is free,
         // so its credit returns now, before the slot holds another frame.
         if let Some(at) = self

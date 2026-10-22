@@ -16,7 +16,18 @@
 //! and readers give `&` access, so the pool upholds Rust's aliasing rule slot by slot. Slots never
 //! overlap. Freezing a writer turns it into a reader; the slot is free again when the last reader
 //! is dropped. No allocation and no lock is taken per frame: claiming, freezing, cloning a reader
-//! and dropping one are single atomic operations.
+//! and dropping one are single atomic operations, or a compare-and-swap loop on one word.
+//!
+//! **Handing out slots** (RFC-0031 §8). [`BufferPool::take`] claims any free slot without a lock:
+//! each taker starts one slot further round than the last and claims the first free slot it
+//! finds. [`BufferPool::claim`] claims a given slot.
+//!
+//! **A slot's generation** (RFC-0031 §8, note of 2026-10-22). The atomic word holds a generation
+//! beside the state, which advances each time the slot becomes free. A descriptor carries the
+//! generation of the freeze it was made from, and [`BufferPool::retain_payload`] and
+//! [`BufferPool::retain_ext`] lease a slot only at that generation. A descriptor whose slot was
+//! freed and frozen again since is refused, and the channel's `try_send` returns
+//! `SendError::Invalid`, rather than send the new bytes under the old name.
 //!
 //! A frame names its extension and payload with [`ExtBuf`] and [`PayloadSlice`]: `Copy`
 //! descriptors of a range inside a frozen slot, with no pointer. The channel that sends the frame
@@ -25,15 +36,16 @@
 //! `try_send` returns. A received frame holds [`ExtRef`] and [`PayloadRef`]: leases on its
 //! receive slot, which return the slot when the frame is dropped.
 //!
-//! This is DIST-E7-T01's part. DIST-E7-T12 builds the rest of RFC-0031 §8 on it: handing out
-//! slots without a lock, the per-transport registration tables, the header areas sized from the
-//! plan, and the copy-count tests.
+//! DIST-E7-T01 built the types; DIST-E7-T12 added the hand-out and the generation. The rest of
+//! RFC-0031 §8 sits beside this module: the registration tables
+//! ([`registration`](super::registration)), the slot sizes from the plan
+//! ([`sizing`](super::sizing)), and multi-part prefill landing ([`landing`](super::landing)).
 
 use std::alloc::{self, Layout};
 use std::fmt;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use syntropy_core::resource::TransportKind;
 
@@ -203,11 +215,28 @@ const WRITING: u32 = u32::MAX;
 /// The most readers a slot may have; one more aborts, as an `Arc` count overflow does.
 const MAX_READERS: u32 = WRITING - 1;
 
+/// A slot's word: its generation in the high 32 bits, its state in the low 32 (RFC-0031 §8,
+/// note of 2026-10-22). The generation advances each time the slot becomes free, so a descriptor
+/// made from an earlier freeze names an older generation.
+fn word(generation: u32, state: u32) -> u64 {
+    (u64::from(generation) << 32) | u64::from(state)
+}
+
+fn state_of(word: u64) -> u32 {
+    word as u32
+}
+
+fn generation_of(word: u64) -> u32 {
+    (word >> 32) as u32
+}
+
 struct PoolInner {
     id: PoolId,
     memory: Box<dyn PoolMemory>,
     slot_size: usize,
-    states: Box<[AtomicU32]>,
+    states: Box<[AtomicU64]>,
+    /// Where the next [`BufferPool::take`] starts looking, so takers spread over the slots.
+    cursor: AtomicU32,
 }
 
 /// Memory divided into equal, 64-byte-aligned slots, each held by at most one writer or by
@@ -245,13 +274,14 @@ impl BufferPool {
         if !(memory.base().as_ptr() as usize).is_multiple_of(SLOT_ALIGN) {
             return Err(PoolError::BaseUnaligned);
         }
-        let states = (0..slots).map(|_| AtomicU32::new(FREE)).collect();
+        let states = (0..slots).map(|_| AtomicU64::new(word(0, FREE))).collect();
         Ok(BufferPool {
             inner: Arc::new(PoolInner {
                 id,
                 memory,
                 slot_size,
                 states,
+                cursor: AtomicU32::new(0),
             }),
         })
     }
@@ -286,32 +316,74 @@ impl BufferPool {
         self.inner
             .states
             .get(slot as usize)
-            .is_some_and(|state| state.load(Ordering::Acquire) == FREE)
+            .is_some_and(|state| state_of(state.load(Ordering::Acquire)) == FREE)
+    }
+
+    /// Slot `slot`'s generation: how many times it has become free. A descriptor made while the
+    /// slot is frozen carries it; `None` past the last slot.
+    pub fn generation(&self, slot: u32) -> Option<u32> {
+        let state = self.inner.states.get(slot as usize)?;
+        Some(generation_of(state.load(Ordering::Acquire)))
     }
 
     /// Takes slot `slot` for writing, if it is free.
     pub fn claim(&self, slot: u32) -> Option<SlotWriter> {
         let state = self.inner.states.get(slot as usize)?;
-        state
-            .compare_exchange(FREE, WRITING, Ordering::Acquire, Ordering::Relaxed)
-            .ok()?;
-        Some(SlotWriter {
-            pool: self.clone(),
-            slot,
-            frozen: false,
-        })
+        let mut current = state.load(Ordering::Relaxed);
+        loop {
+            if state_of(current) != FREE {
+                return None;
+            }
+            let generation = generation_of(current);
+            match state.compare_exchange_weak(
+                current,
+                word(generation, WRITING),
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(SlotWriter {
+                        pool: self.clone(),
+                        slot,
+                        generation,
+                        frozen: false,
+                    });
+                }
+                Err(seen) => current = seen,
+            }
+        }
+    }
+
+    /// Takes any free slot for writing, without a lock (RFC-0031 §8): each taker starts at the
+    /// next slot after the last taker's start and claims the first free one it finds, with one
+    /// compare-and-swap per slot tried. `None` when every slot is held.
+    pub fn take(&self) -> Option<SlotWriter> {
+        let slots = self.slots();
+        let start = self.inner.cursor.fetch_add(1, Ordering::Relaxed) % slots;
+        (0..slots).find_map(|i| self.claim((start + i) % slots))
     }
 
     /// Another reader of slot `slot`, if it is frozen: held by readers, not free and not being
     /// written.
     pub fn reader(&self, slot: u32) -> Option<SlotReader> {
+        self.reader_where(slot, |_| true)
+    }
+
+    /// [`BufferPool::reader`], only while the slot is still at `generation`: a descriptor's slot
+    /// that was freed and frozen again since gives `None` (RFC-0031 §8, note of 2026-10-22).
+    pub fn reader_at(&self, slot: u32, generation: u32) -> Option<SlotReader> {
+        self.reader_where(slot, |current| current == generation)
+    }
+
+    fn reader_where(&self, slot: u32, generation_ok: impl Fn(u32) -> bool) -> Option<SlotReader> {
         let state = self.inner.states.get(slot as usize)?;
         let mut current = state.load(Ordering::Relaxed);
         loop {
-            if current == FREE || current == WRITING {
+            let readers = state_of(current);
+            if readers == FREE || readers == WRITING || !generation_ok(generation_of(current)) {
                 return None;
             }
-            if current >= MAX_READERS {
+            if readers >= MAX_READERS {
                 std::process::abort();
             }
             match state.compare_exchange_weak(
@@ -324,6 +396,7 @@ impl BufferPool {
                     return Some(SlotReader {
                         pool: self.clone(),
                         slot,
+                        generation: generation_of(current),
                     });
                 }
                 Err(seen) => current = seen,
@@ -332,7 +405,8 @@ impl BufferPool {
     }
 
     /// A lease on the range `slice` names, for a channel to keep until the frame is
-    /// acknowledged; `None` if `slice` names another pool, a slot that is not frozen, or a range
+    /// acknowledged; `None` if `slice` names another pool, a slot that is not frozen, a slot
+    /// freed and frozen again since the descriptor was made (an older generation), or a range
     /// outside the slot. An empty slice gives an empty lease.
     pub fn retain_payload(&self, slice: PayloadSlice) -> Option<PayloadRef> {
         if slice.len == 0 {
@@ -341,7 +415,8 @@ impl BufferPool {
         if slice.pool != self.id() {
             return None;
         }
-        PayloadRef::new(self.reader(slice.slot)?, slice.offset, slice.len)
+        let reader = self.reader_at(slice.slot, slice.generation)?;
+        PayloadRef::new(reader, slice.offset, slice.len)
     }
 
     /// [`retain_payload`](Self::retain_payload) for an extension.
@@ -352,10 +427,14 @@ impl BufferPool {
         if ext.pool != self.id() {
             return None;
         }
-        ExtRef::new(self.reader(ext.slot)?, ext.offset, ext.len)
+        ExtRef::new(
+            self.reader_at(ext.slot, ext.generation)?,
+            ext.offset,
+            ext.len,
+        )
     }
 
-    fn state(&self, slot: u32) -> &AtomicU32 {
+    fn state(&self, slot: u32) -> &AtomicU64 {
         &self.inner.states[slot as usize]
     }
 
@@ -380,6 +459,7 @@ impl BufferPool {
 pub struct SlotWriter {
     pool: BufferPool,
     slot: u32,
+    generation: u32,
     frozen: bool,
 }
 
@@ -405,13 +485,21 @@ impl SlotWriter {
         }
     }
 
+    /// The slot's generation while this writer holds it.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
     /// Ends the writing and makes the slot readable: the returned reader is its first.
     pub fn freeze(mut self) -> SlotReader {
         self.frozen = true;
-        self.pool.state(self.slot).store(1, Ordering::Release);
+        self.pool
+            .state(self.slot)
+            .store(word(self.generation, 1), Ordering::Release);
         SlotReader {
             pool: self.pool.clone(),
             slot: self.slot,
+            generation: self.generation,
         }
     }
 }
@@ -419,7 +507,11 @@ impl SlotWriter {
 impl Drop for SlotWriter {
     fn drop(&mut self) {
         if !self.frozen {
-            self.pool.state(self.slot).store(FREE, Ordering::Release);
+            // Free again, at the next generation.
+            self.pool.state(self.slot).store(
+                word(self.generation.wrapping_add(1), FREE),
+                Ordering::Release,
+            );
         }
     }
 }
@@ -438,6 +530,7 @@ impl fmt::Debug for SlotWriter {
 pub struct SlotReader {
     pool: BufferPool,
     slot: u32,
+    generation: u32,
 }
 
 impl SlotReader {
@@ -447,6 +540,11 @@ impl SlotReader {
 
     pub fn slot(&self) -> u32 {
         self.slot
+    }
+
+    /// The slot's generation, which the descriptors made from this reader carry.
+    pub fn generation(&self) -> u32 {
+        self.generation
     }
 
     /// The slot's bytes.
@@ -464,6 +562,7 @@ impl SlotReader {
         self.in_bounds(offset, len).then_some(PayloadSlice {
             pool: self.pool.id(),
             slot: self.slot,
+            generation: self.generation,
             offset,
             len,
         })
@@ -475,6 +574,7 @@ impl SlotReader {
         self.in_bounds(offset, len).then_some(ExtBuf {
             pool: self.pool.id(),
             slot: self.slot,
+            generation: self.generation,
             offset,
             len,
         })
@@ -487,22 +587,37 @@ impl SlotReader {
 
 impl Clone for SlotReader {
     fn clone(&self) -> SlotReader {
+        // The count is in the low half and stays below `MAX_READERS`, so the add never carries
+        // into the generation.
         let previous = self.pool.state(self.slot).fetch_add(1, Ordering::Relaxed);
-        if previous >= MAX_READERS {
+        if state_of(previous) >= MAX_READERS {
             std::process::abort();
         }
         SlotReader {
             pool: self.pool.clone(),
             slot: self.slot,
+            generation: self.generation,
         }
     }
 }
 
 impl Drop for SlotReader {
     fn drop(&mut self) {
-        // The last reader leaves the state at `FREE`. `Release` orders this reader's reads
-        // before a later claim's `Acquire`.
-        self.pool.state(self.slot).fetch_sub(1, Ordering::Release);
+        // The last reader leaves the slot free at the next generation; any other just counts
+        // down. `Release` orders this reader's reads before a later claim's `Acquire`.
+        let state = self.pool.state(self.slot);
+        let mut current = state.load(Ordering::Relaxed);
+        loop {
+            let next = if state_of(current) == 1 {
+                word(generation_of(current).wrapping_add(1), FREE)
+            } else {
+                current - 1
+            };
+            match state.compare_exchange_weak(current, next, Ordering::Release, Ordering::Relaxed) {
+                Ok(_) => return,
+                Err(seen) => current = seen,
+            }
+        }
     }
 }
 
@@ -522,6 +637,9 @@ impl fmt::Debug for SlotReader {
 pub struct PayloadSlice {
     pub pool: PoolId,
     pub slot: u32,
+    /// The slot's generation when the descriptor was made: a lease through it is refused once
+    /// the slot has been freed since (RFC-0031 §8, note of 2026-10-22).
+    pub generation: u32,
     pub offset: u32,
     pub len: u32,
 }
@@ -531,6 +649,7 @@ impl PayloadSlice {
     pub const EMPTY: PayloadSlice = PayloadSlice {
         pool: PoolId(0),
         slot: 0,
+        generation: 0,
         offset: 0,
         len: 0,
     };
@@ -548,6 +667,8 @@ impl PayloadSlice {
 pub struct ExtBuf {
     pub pool: PoolId,
     pub slot: u32,
+    /// The slot's generation when the descriptor was made, as [`PayloadSlice::generation`].
+    pub generation: u32,
     pub offset: u32,
     pub len: u32,
 }
@@ -557,6 +678,7 @@ impl ExtBuf {
     pub const EMPTY: ExtBuf = ExtBuf {
         pool: PoolId(0),
         slot: 0,
+        generation: 0,
         offset: 0,
         len: 0,
     };
@@ -827,6 +949,7 @@ mod tests {
             PayloadSlice {
                 pool: PoolId(7),
                 slot: 1,
+                generation: 0,
                 offset: 64,
                 len: 4
             }
@@ -841,6 +964,115 @@ mod tests {
         assert!(pool.claim(1).is_none(), "the leases hold the slot");
         drop((lease, ext_lease));
         assert!(pool.claim(1).is_some());
+    }
+
+    #[test]
+    fn a_slots_generation_advances_each_time_it_becomes_free() {
+        let pool = pool(2);
+        assert_eq!(pool.generation(0), Some(0));
+        // A writer dropped unfrozen frees the slot.
+        drop(pool.claim(0).unwrap());
+        assert_eq!(pool.generation(0), Some(1));
+        // Freezing keeps the generation; readers keep it while any is left.
+        let reader = pool.claim(0).unwrap().freeze();
+        assert_eq!(reader.generation(), 1);
+        let second = reader.clone();
+        drop(reader);
+        assert_eq!(pool.generation(0), Some(1), "a reader is left");
+        drop(second);
+        assert_eq!(pool.generation(0), Some(2), "the last reader freed it");
+        assert!(pool.is_free(0));
+        assert_eq!(pool.generation(1), Some(0), "slots count apart");
+        assert_eq!(pool.generation(2), None);
+    }
+
+    /// RFC-0031 §8's note of 2026-10-22: a descriptor whose slot was freed and handed out again
+    /// is refused, never leased.
+    #[test]
+    fn a_descriptor_of_a_freed_and_refrozen_slot_is_refused() {
+        let pool = pool(1);
+        let mut writer = pool.claim(0).unwrap();
+        writer.bytes_mut()[..4].copy_from_slice(b"old!");
+        let reader = writer.freeze();
+        let stale_payload = reader.payload(0, 4).unwrap();
+        let stale_ext = reader.ext(64, 64).unwrap();
+        assert!(
+            pool.retain_payload(stale_payload).is_some(),
+            "fresh: leased"
+        );
+        // The holder drops the slot's last reader; the slot is claimed and frozen again.
+        drop(reader);
+        let mut writer = pool.claim(0).unwrap();
+        writer.bytes_mut()[..4].copy_from_slice(b"new!");
+        let fresh = writer.freeze();
+        assert!(
+            pool.retain_payload(stale_payload).is_none(),
+            "a stale PayloadSlice"
+        );
+        assert!(pool.retain_ext(stale_ext).is_none(), "a stale ExtBuf");
+        // A descriptor of the new freeze leases the new bytes.
+        let lease = pool.retain_payload(fresh.payload(0, 4).unwrap()).unwrap();
+        assert_eq!(lease.bytes(), b"new!");
+    }
+
+    #[test]
+    fn take_hands_out_every_free_slot_once() {
+        let pool = pool(5);
+        let mut held: Vec<SlotWriter> = (0..5).map(|_| pool.take().expect("a free slot")).collect();
+        let mut slots: Vec<u32> = held.iter().map(SlotWriter::slot).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, [0, 1, 2, 3, 4]);
+        assert!(pool.take().is_none(), "every slot is held");
+        let freed = held.remove(2).slot();
+        assert_eq!(pool.take().map(|w| w.slot()), Some(freed));
+    }
+
+    /// Review of #1833, N2: each taker starts one slot further round than the last, so a slot
+    /// freed and taken again on an idle pool is not handed straight back.
+    #[test]
+    fn take_starts_one_slot_further_round_each_time() {
+        let pool = pool(4);
+        let first = pool.take().expect("a free slot").slot();
+        let second = pool.take().expect("a free slot").slot();
+        let third = pool.take().expect("a free slot").slot();
+        assert_ne!(first, second);
+        assert_ne!(second, third);
+        assert_eq!((second + 4 - first) % 4, 1);
+        assert_eq!((third + 4 - second) % 4, 1);
+    }
+
+    /// Takers on several threads never hold one slot at once: each writes its thread's mark into
+    /// the slot, checks it is still there, and frees it.
+    #[test]
+    fn concurrent_takers_never_share_a_slot() {
+        let pool = BufferPool::heap(PoolId(1), 64, 8).unwrap();
+        let threads: Vec<_> = (0u8..6)
+            .map(|mark| {
+                let pool = pool.clone();
+                std::thread::spawn(move || {
+                    let mut taken = 0;
+                    for _ in 0..20_000 {
+                        let Some(mut writer) = pool.take() else {
+                            continue;
+                        };
+                        writer.bytes_mut().fill(mark);
+                        std::hint::spin_loop();
+                        assert!(writer.bytes_mut().iter().all(|b| *b == mark));
+                        taken += 1;
+                        if taken % 2 == 0 {
+                            drop(writer.freeze());
+                        }
+                    }
+                    taken
+                })
+            })
+            .collect();
+        let taken: u32 = threads
+            .into_iter()
+            .map(|t| t.join().expect("no panic"))
+            .sum();
+        assert!(taken > 0);
+        assert!((0..8).all(|slot| pool.is_free(slot)));
     }
 
     #[test]

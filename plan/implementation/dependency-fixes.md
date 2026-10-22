@@ -1039,3 +1039,10 @@ QUAL-E1-T07 puts the affected-job rules in `ci/jobs.toml` (RFC-0062 §2.2). Four
 | QUAL-E3-T10 → QUAL-E1-T07; its criterion widens `hosted-l3`'s rule to any further crate its Miri and sanitizer jobs build | QUAL-E3-T10 | R9 | RFC-0060 §3.4's sanitizer builds cover the `unsafe` crates and the CPU provider. QUAL-E1-T07 lists `spsc` and `kernels-cpu` beside §2.3's five crates; a crate QUAL-E3-T10 adds to its jobs needs the rule too. From the engine-lane review of #1830 |
 
 QUAL-E1-T07 is M0a, and so are QUAL-E2-T01, QUAL-E2-T02 and COMP-E4-T01; QUAL-E3-T10 is M1a. So no edge points later, and QUAL-E1-T07 depends only on QUAL-E1-T06, so there is no cycle.
+## DIST-E7-T12's channel slots and the control receives (2026-10-23)
+
+RFC-0031 §8's pool table counts "recv_slots + retention" slots per channel, and DIST-E7-T12's criterion said the same. But the channel core of DIST-E7-T02 takes a receive pool of `recv_slots + 4`: the four receives for control frames, which credit never counts (§7.1). A side that only receives keeps no retention, so with the table's count its pool would be four slots short.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T12's criterion reads `(recv_slots + 4 + retention) × slot_size`, and RFC-0031 §8 gains a dated note that the four control receives sit beside the data receives; no edge | DIST-E7-T12 | Definition of done | the criterion must hold for the pool the channel core already requires (DIST-E7-T02). Built under the lead's run, for the maintainers to confirm |
