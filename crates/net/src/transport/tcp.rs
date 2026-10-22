@@ -1313,19 +1313,17 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_slot_over_the_linux_cap_is_left_to_autotuning() {
-        // The test's own read of the caps: only a host where `/proc/sys` cannot be read skips.
-        // Anywhere else the backend must read the same values, so a broken reader fails here.
-        let read = |name: &str| -> Option<usize> {
+        // Linux always exposes the caps, on hosted runners too, so this test never skips: the
+        // backend must read the same values as this test, and a reader that returns `None`
+        // fails here.
+        let read = |name: &str| -> usize {
             std::fs::read_to_string(format!("/proc/sys/net/core/{name}"))
-                .ok()?
+                .unwrap_or_else(|error| panic!("net.core.{name}: {error}"))
                 .trim()
                 .parse()
-                .ok()
+                .unwrap_or_else(|error| panic!("net.core.{name}: {error}"))
         };
-        let (Some(send_cap), Some(recv_cap)) = (read("wmem_max"), read("rmem_max")) else {
-            eprintln!("skipped: /proc/sys/net/core cannot be read on this host");
-            return;
-        };
+        let (send_cap, recv_cap) = (read("wmem_max"), read("rmem_max"));
         assert_eq!(buffer_caps(), (Some(send_cap), Some(recv_cap)));
         let large = Bytes(u64::try_from(send_cap.max(recv_cap)).unwrap());
         let (send, recv, autotuned) = buffer_plan(large);
