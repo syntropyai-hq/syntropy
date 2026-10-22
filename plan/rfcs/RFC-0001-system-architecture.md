@@ -2771,3 +2771,11 @@ COMP-E3-T01 found that the detection macro named for SME2 does not compile on th
 |---|---|---|
 | `spsc`'s `unsafe` covers its wake handle's OS calls as well as the ring's slots: an eventfd, a kqueue user event and an event handle. `spsc` links `libc` and `windows-sys` for them | §4.2 rule 8 (dated note) | §4.1 gives `spsc` the wake handles (ADR-0012 item 4), and their OS calls need `unsafe` FFI. `spsc` depends on no workspace crate, so it cannot call `io`'s OS functions, and neither binding crate is one of rule 6's external systems (DIST-E1-T01). Maintainer decision, 2026-10-22 |
 | On Apple platforms, ADR-0012 item 5's park is std's kernel wait on a dispatch semaphore, not an address wait | ADR-0012 (dated revision) | std's thread parker waits on an address on Linux, Android and Windows, but not on Apple platforms, where the address-wait calls are private API. `os_sync_wait_on_address` (macOS 14.4) is a later option. Maintainer decision, 2026-10-22 |
+
+### 18.19 The dependency policy's targets and its first exceptions (2026-10-22)
+
+DIST-E7-T23 pins iroh 1.4.1 in `net`. The maintainers decided on 2026-10-22 how ADR-0018 §3's policy applies to it.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| ADR-0018 §3's policy is checked for the targets of RFC-0062 §4.1, through `deny.toml`'s `[graph] targets`; the first per-crate MPL-2.0 exception is `attohttpc@0.30.1`; RUSTSEC-2024-0436 (`paste`, unmaintained) is ignored until 2027-01-22 (#1700) | ADR-0018 §3 (dated revision); RFC-0062 §11.2 (dated note) | iroh-relay's wasm32-only crates reach no shipped artefact; iroh's port mapping, which brings attohttpc, raises the share of direct paths; `paste` is a build-time proc-macro reached only through iroh's netlink stack, with no known vulnerability |
