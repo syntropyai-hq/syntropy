@@ -10,7 +10,7 @@
 //!    of the reading program's layer; every census group is read by at least one node; and no
 //!    group is read by two programs, except the epilogue's `Head` group, which MTP modules
 //!    that share the LM head also read.
-//! 4. **Boundaries**: every legal boundary in [`BoundarySet`] satisfies RFC-0043 §6.1: every
+//! 4. **Boundaries**: every legal boundary in [`BoundarySet`](super::BoundarySet) satisfies RFC-0043 §6.1: every
 //!    value live across it is a residual stream or declared side data.
 //! 5. **Coverage**: every [`OpKind`] used is in the family's `required_ops` (RFC-0040 §11.1).
 //!
