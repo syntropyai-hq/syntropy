@@ -846,6 +846,11 @@ error[config/0003]: unknown key `resource.ram_headroon`
 
   Recommended default: (a), the literal reading, as built (`Deprecated::closes_in`). The release that closes a window removes the record.
 
+*Note 2026-10-22 (PROD-E5-T02): the API listener rules, as built.* They are `syntropy_api::rules::API_RULES`, which a binary that serves the API passes to `load_and_validate`.
+- **`api.tls = "none"`** (phase 4, code 10) is checked against non-loopback binds only. A loopback bind serves plain HTTP whatever `api.tls` says (RFC-0050 §11.1), so `"none"` with loopback-only binds is accepted. On a LAN bind it needs `api.allow_plaintext_lan = true`. On a public address it is rejected even with the opt-in, because RFC-0050 §11.1 allows plain HTTP "only on LAN addresses"; RFC-0050 §11.1's note of this date lists which addresses those are.
+- **The `{ cert, key }` pair.** The value's type takes both files or neither, so a table with only one of them is rejected in phase 3 (code 2), and the message names the missing one. Phase 4 has nothing left to check. In phase 5, `api_tls_files_readable` requires both files to exist and be readable files, as an error (code 11). The built-in path check does not cover them: it sees only path-typed keys, accepts a missing file whose directory is writable, and warns rather than rejects.
+- **The API-key check is not a configuration rule.** The phase 4 row above lists it, but keys live in `api-keys.toml` (RFC-0050 §11.3), not in a configuration layer. The daemon checks it at start through `syntropy_api::bind::plan_binds`: a non-loopback bind with no key refuses to start, and the message names `syntropy api-key create --name … --scope inference`.
+
 **Startup.** `syntropy serve` refuses to start on any phase 1–4 error and prints every error, not only the first. `syntropy config check [--file <path>] [--strict]` runs phases 1–5 without a daemon; `--strict` turns phase 5 warnings and empty override matches into errors for CI use.
 
 **Error codes** (domain `Config`; never reused):

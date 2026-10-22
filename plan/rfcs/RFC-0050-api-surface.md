@@ -740,6 +740,13 @@ RFC-0001 §12 zone Z3, as updated: any non-loopback bind requires an API key **a
   - `{ cert, key }`: the user's files, for example from their own CA or a certificate issued for a tailnet name. Reloaded on change.
   - `"none"`: valid only for overlay-restricted binds, or LAN binds with `api.allow_plaintext_lan = true`. Configuration validation rejects it anywhere else.
 
+*Note 2026-10-22 (PROD-E5-T02, as built; open, for the maintainers): which addresses are LAN addresses.* The table above allows plain HTTP, with the opt-in, on LAN addresses only, and sets them apart from public ones. `syntropy_api::bind::classify` reads them as:
+- IPv4 `10/8`, `172.16/12`, `192.168/16` and link-local `169.254/16`;
+- IPv6 unique local `fc00::/7` and link-local `fe80::/10`;
+- the wildcards `0.0.0.0` and `::`, as above.
+
+An IPv4-mapped IPv6 address takes its IPv4 address's class. Every other non-loopback address is public: TLS always, with no opt-in. That includes `100.64/10`, the shared range tailnets use, until PROD-E5-T09 classifies binds by RFC-0030's interface classes; until then a tailnet bind needs TLS. Loopback listeners serve plain HTTP whatever `api.tls` says, `"local_ca"` and `{ cert, key }` included.
+
 #### 11.1.1 The local CA
 
 TLS on a LAN is practical only if clients can trust the certificate without a public CA. Each node therefore runs a small certificate authority of its own.
