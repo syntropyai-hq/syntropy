@@ -19,7 +19,8 @@ pub const EXIT_OK: u8 = 0;
 pub const EXIT_INVALID: u8 = 5;
 
 /// `config show --resolved`: every node and cluster key with its effective value and the layer
-/// it came from, then the cluster values this node proposes. One line per key:
+/// it came from, then every instance key with its schema default, then the cluster values this
+/// node proposes. Each block's header names its keys' scope. One line per key:
 ///
 /// ```text
 /// api.bind = ["0.0.0.0:7433"]        # /etc/syntropy/config.toml:4
@@ -31,19 +32,22 @@ pub const EXIT_INVALID: u8 = 5;
 /// A key with no value (an unset `Option` key, or a computed default not yet computed) prints
 /// its path alone. Secrets print redacted.
 pub fn show_resolved(config: &ResolvedConfig) -> String {
-    let mut node = Vec::new();
-    let mut cluster = Vec::new();
-    for resolved in config.iter() {
+    let row = |resolved: &crate::Resolved| {
         let left = match resolved.shown() {
             Some(value) => format!("{} = {value}", resolved.key.path),
             None => resolved.key.path.to_owned(),
         };
-        let row = (left, resolved.origin.to_string());
+        (left, resolved.origin.to_string())
+    };
+    let mut node = Vec::new();
+    let mut cluster = Vec::new();
+    for resolved in config.iter() {
         match resolved.key.scope {
-            Scope::Cluster => cluster.push(row),
-            _ => node.push(row),
+            Scope::Cluster => cluster.push(row(resolved)),
+            _ => node.push(row(resolved)),
         }
     }
+    let instance: Vec<(String, String)> = config.instance_defaults().map(row).collect();
     let proposals: Vec<(String, String)> = config
         .proposals()
         .iter()
@@ -53,6 +57,7 @@ pub fn show_resolved(config: &ResolvedConfig) -> String {
     let width = node
         .iter()
         .chain(&cluster)
+        .chain(&instance)
         .chain(&proposals)
         .map(|(left, _)| left.chars().count())
         .max()
@@ -71,6 +76,12 @@ pub fn show_resolved(config: &ResolvedConfig) -> String {
             "\n# cluster keys: the cluster's value; the default until the cluster sets one\n",
         );
         rows(&mut out, &cluster, width);
+    }
+    if !instance.is_empty() {
+        out.push_str(
+            "\n# instance keys: the default; a model's `[policy.\"<model>\"]` table or its load sets them\n",
+        );
+        rows(&mut out, &instance, width);
     }
     if !proposals.is_empty() {
         out.push_str("\n# proposed to the cluster by this node's file, environment or flags\n");

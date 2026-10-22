@@ -366,6 +366,10 @@ pub struct Rejected {
 pub struct ResolvedConfig {
     /// Every node and cluster key of the registry, by path.
     values: BTreeMap<&'static str, Resolved>,
+    /// Every instance key of the registry with its schema default, by path. A node's layers
+    /// never set one (§2.2 Rule 3), so this is what an instance gets when no policy table and
+    /// no explicit value sets the key.
+    instance: BTreeMap<&'static str, Resolved>,
     proposals: Vec<Proposal>,
     files: Vec<PathBuf>,
     warnings: Vec<Problem>,
@@ -416,7 +420,14 @@ impl ResolvedConfig {
             });
         }
         let mut values = BTreeMap::new();
+        let mut instance = BTreeMap::new();
         for key in registry.keys() {
+            if key.scope == Scope::Instance {
+                // A computed instance default depends on the instance, so it stays unset here
+                // and prints its rule.
+                instance.insert(key.path, default_of(key, &|_| None));
+                continue;
+            }
             if !matches!(key.scope, Scope::Node | Scope::Cluster) {
                 continue;
             }
@@ -432,6 +443,7 @@ impl ResolvedConfig {
         }
         Ok(Self {
             values,
+            instance,
             proposals: r.proposals.into_values().collect(),
             files: layers.files.iter().map(|f| f.path.clone()).collect(),
             warnings: r.warnings,
@@ -446,6 +458,11 @@ impl ResolvedConfig {
     /// Every node and cluster key, in path order.
     pub fn iter(&self) -> impl Iterator<Item = &Resolved> {
         self.values.values()
+    }
+
+    /// Every instance key with its schema default, in path order.
+    pub fn instance_defaults(&self) -> impl Iterator<Item = &Resolved> {
+        self.instance.values()
     }
 
     /// The cluster values this node's layers propose, in path order.
