@@ -551,7 +551,8 @@ fn control_spec(spec: &ChannelSpec) -> ControlSpec {
 
 /// The largest `SO_SNDBUF` and `SO_RCVBUF` an unprivileged process may ask for: Linux's
 /// `net.core.wmem_max` and `net.core.rmem_max`, read once. `None` where the cap is not known,
-/// so the request is made as asked.
+/// so the request is made as asked. The values differ between hosts: hosted CI runners do not
+/// all keep the 212 992-byte default.
 fn buffer_caps() -> (Option<usize>, Option<usize>) {
     #[cfg(target_os = "linux")]
     {
@@ -1312,8 +1313,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_slot_over_the_linux_cap_is_left_to_autotuning() {
-        let (send_cap, recv_cap) = buffer_caps();
-        let (send_cap, recv_cap) = (send_cap.unwrap(), recv_cap.unwrap());
+        // Linux always exposes the caps, on hosted runners too, so this test never skips: the
+        // backend must read the same values as this test, and a reader that returns `None`
+        // fails here.
+        let read = |name: &str| -> usize {
+            std::fs::read_to_string(format!("/proc/sys/net/core/{name}"))
+                .unwrap_or_else(|error| panic!("net.core.{name}: {error}"))
+                .trim()
+                .parse()
+                .unwrap_or_else(|error| panic!("net.core.{name}: {error}"))
+        };
+        let (send_cap, recv_cap) = (read("wmem_max"), read("rmem_max"));
+        assert_eq!(buffer_caps(), (Some(send_cap), Some(recv_cap)));
         let large = Bytes(u64::try_from(send_cap.max(recv_cap)).unwrap());
         let (send, recv, autotuned) = buffer_plan(large);
         assert_eq!((send, recv, autotuned), (None, None, true));

@@ -479,30 +479,77 @@ fn a_connection_that_never_starts_tls_is_let_go() {
     });
 }
 
+/// Writes `line` to the process's stderr, past the test harness's capture, so CI logs show it
+/// for a passing test too: which caps a runner had, and whether it skipped the check.
+#[cfg(target_os = "linux")]
+fn report(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "tcp autotuning test: {line}");
+}
+
 /// A channel whose receiver's slots are too large for the kernel's unprivileged buffer cap opens
 /// on sockets left to autotuning: the acceptor's, sized for its own slot, and the connector's
 /// send buffer, sized for the peer's slot from `HelloAck`. Both ends count it.
+///
+/// The slot is sized from this host's own caps, read from `/proc/sys/net/core`, which differ
+/// between hosts (hosted runners do not all keep Linux's 212 992-byte default), so that twice it
+/// is over both. Each end counts the socket before `connect` or `accept` returns, so the counts
+/// are final once both have. Only a host where `/proc/sys` cannot be read, or whose caps would
+/// need slots over 64 MiB, skips the check, and says so in the log; the unit test in
+/// `transport::tcp` checks the backend reads the same caps.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_slot_over_the_kernel_cap_is_left_to_autotuning_and_counted() {
+    let read = |name: &str| -> Option<usize> {
+        std::fs::read_to_string(format!("/proc/sys/net/core/{name}"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    };
+    let (Some(send_cap), Some(recv_cap)) = (read("wmem_max"), read("rmem_max")) else {
+        report("SKIPPED: /proc/sys/net/core cannot be read on this host");
+        return;
+    };
+    // Twice the slot is over the larger cap, so neither buffer can be asked for.
+    let big = (send_cap.max(recv_cap) / 2 + 64).next_multiple_of(64);
+    if big > 64 << 20 {
+        report(&format!(
+            "SKIPPED: caps of {send_cap} and {recv_cap} bytes need {big}-byte slots"
+        ));
+        return;
+    }
+    report(&format!(
+        "buffer caps: wmem_max {send_cap}, rmem_max {recv_cap}; slot {big}"
+    ));
     let rt = runtime();
     let a = bind(&rt, 17, None);
     let b = bind(&rt, 18, None);
     b.allowed().allow(a.public_key());
     let mut fabric = Tcp::new(&rt, &a, &b, 900);
-    let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
-    // 1 MiB slots: twice that is over Linux's default 212 992-byte cap.
-    let big = 1 << 20;
-    let receiver_pool = fabric.pool(big, 2 + u32::from(CONTROL_RECEIVES));
-    let sending = spec(key(6, 7), &a, &sender_pool, 0);
-    let mut receiving = spec(key(6, 7), &b, &receiver_pool, 2);
-    receiving.slot_size = Bytes(big as u64);
-    let to_b = remote(&b);
-    let (sender, receiver) =
-        rt.block_on(async { tokio::join!(a.connect(&to_b, sending), b.accept(receiving)) });
-    assert!(sender.is_ok() && receiver.is_ok());
-    assert_eq!(a.stats().buffers_autotuned, 1);
-    assert_eq!(b.stats().buffers_autotuned, 1);
+    // Three channels, so a count that lagged its `connect` or `accept` would show.
+    for lane in 0..3u16 {
+        let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+        let receiver_pool = fabric.pool(big, 2 + u32::from(CONTROL_RECEIVES));
+        let sending = spec(key(6, 7 + lane), &a, &sender_pool, 0);
+        let mut receiving = spec(key(6, 7 + lane), &b, &receiver_pool, 2);
+        receiving.slot_size = Bytes(big as u64);
+        let to_b = remote(&b);
+        let (sender, receiver) =
+            rt.block_on(async { tokio::join!(a.connect(&to_b, sending), b.accept(receiving)) });
+        assert!(sender.is_ok() && receiver.is_ok());
+        let opened = u64::from(lane) + 1;
+        assert_eq!(
+            a.stats().buffers_autotuned,
+            opened,
+            "the connector, channel {opened}"
+        );
+        assert_eq!(
+            b.stats().buffers_autotuned,
+            opened,
+            "the acceptor, channel {opened}"
+        );
+    }
 }
 
 /// The listener requires the data ALPN: a client that completes TLS with an allowed key but no
