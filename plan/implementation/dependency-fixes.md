@@ -944,3 +944,11 @@ QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | QUAL-E3-T09's and QUAL-E3-T22's criteria name the `hosted-l3` job in place of `hosted-test-linux`; no edge | QUAL-E3-T09, QUAL-E3-T22 | Definition of done | RFC-0060 §1.1 runs loom in L3, which RFC-0062 §2.3 gives to `hosted-l3`. The unit suite's job is not where loom models run, and T22's models are L3 too |
+
+## COMP-E3-T02's `Numeric`-mode criterion (2026-10-23)
+
+COMP-E3-T02 builds the CPU provider's shell. Its first criterion read "the fake provider's `Numeric` mode runs on these kernels (QUAL-E3-T12)". QUAL-E3-T12 needs COMP-E3-T09's deterministic kernels, which need COMP-E3-T03's GEMV, and none of the three is a dependency of COMP-E3-T02 or was built when the shell was. So the criterion used work no finished task produces (R9). The clause belongs with the fake, which runs on the shell.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T02's first criterion becomes RFC-0040 §2's contract checks over real host buffers with a stand-in op; QUAL-E3-T12 gains "the fake's `Numeric` mode runs on the CPU provider shell's streams, buffers and capture", and QUAL-E3-T12 → COMP-E3-T02 | COMP-E3-T02, QUAL-E3-T12 | R9 | M0a → M0a. COMP-E3-T02 reaches none of QUAL-E3-T12, COMP-E3-T09 or COMP-E3-T03, so the edge adds no cycle, and COMP-E3-T02 stays ready for its M0a dependents |
