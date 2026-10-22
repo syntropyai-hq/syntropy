@@ -31,10 +31,13 @@
 //! [`TcpConfig::early_hold`], half the handshake timeout, then refused with `NotANeighbour`,
 //! within the connector's own wait, as the QUIC backend does (RFC-0031 §4.3): so an acceptor
 //! calls `accept` within `early_hold` of the peer's `Hello`. At most [`MAX_EARLY_PER_PEER`] are
-//! held from one peer. A second connection for a held key replaces the first if it comes from the
-//! same peer, as a reconnect would, and is refused otherwise. `accept` checks the peer's key
-//! against the allowed set again, and the whole `Hello` with its credential, since either may have
-//! stopped passing while the connection waited.
+//! held from one peer, so one peer cannot fill the table for the others. A connection over that,
+//! or over the table's 64, is closed without a `HelloAck`: the connector sees a link failure,
+//! which is retried, since nothing about the plan was wrong. A second connection for a held key
+//! replaces the first if it comes from the same peer, as a reconnect would, and is refused with
+//! `NotANeighbour` otherwise. `accept` checks the peer's key against the allowed set again, and
+//! the whole `Hello` with its credential, since either may have stopped passing while the
+//! connection waited.
 //!
 //! **The listener** takes at most [`MAX_HANDSHAKES`] connections through TLS and `Hello` at once,
 //! and [`MAX_HANDSHAKES_PER_ADDRESS`] from one source; a connection over either is closed at
@@ -237,21 +240,43 @@ struct Routes {
     waiters: HashMap<ChannelKey, Waiter>,
 }
 
+/// What the router does with an early connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Admit {
+    /// Held for its `accept`, in place of the held connection for its key, if any.
+    Hold,
+    /// Another peer holds a connection for its key: refused with `NotANeighbour`.
+    Claimed,
+    /// The table, or its peer's share of it, is full: closed without a `HelloAck`, so the
+    /// connector sees a link failure, which is retried, and not a refusal, which is not
+    /// (RFC-0001 §10).
+    Full,
+}
+
+/// The rule [`Routes::admit`] applies. `holder` is the peer that holds a connection for the key,
+/// if any, `held` the connections held in all and `from_peer` those `peer` holds. A second
+/// connection for a held key replaces the first when it comes from the same peer, as a reconnect
+/// would, and needs no room; from another peer it is refused. Otherwise there must be room under
+/// [`MAX_EARLY`], and under [`MAX_EARLY_PER_PEER`] for its peer.
+fn admit(holder: Option<&[u8; 32]>, peer: &[u8; 32], held: usize, from_peer: usize) -> Admit {
+    match holder {
+        Some(holder) if holder == peer => Admit::Hold,
+        Some(_) => Admit::Claimed,
+        None if held < MAX_EARLY && from_peer < MAX_EARLY_PER_PEER => Admit::Hold,
+        None => Admit::Full,
+    }
+}
+
 impl Routes {
-    /// Whether a connection from `peer` for `key` may be held. A second connection for a held key
-    /// replaces the first when it comes from the same peer, as a reconnect would, and is refused
-    /// when it comes from another. Otherwise it needs room under [`MAX_EARLY`], and under
-    /// [`MAX_EARLY_PER_PEER`] for its peer.
-    fn holds(&self, key: &ChannelKey, peer: &[u8; 32]) -> bool {
-        if let Some((_, held)) = self.early.get(key) {
-            return held.peer == *peer;
-        }
+    /// What to do with a connection from `peer` for `key`, by [`admit`].
+    fn admit(&self, key: &ChannelKey, peer: &[u8; 32]) -> Admit {
+        let holder = self.early.get(key).map(|(_, held)| &held.peer);
         let from_peer = self
             .early
             .values()
             .filter(|(_, held)| held.peer == *peer)
             .count();
-        self.early.len() < MAX_EARLY && from_peer < MAX_EARLY_PER_PEER
+        admit(holder, peer, self.early.len(), from_peer)
     }
 
     /// The `accept` waiting for `key`, if its caller is still there: one that went away is
@@ -574,18 +599,23 @@ impl Inner {
             /// closed once the lock is released.
             Hold(u64, Option<Early>),
             Refuse(Early),
+            /// Closed without a `HelloAck`, once the lock is released.
+            Close(Early),
         }
         let next = {
             let mut routes = lock(&self.routes);
             match routes.waiter(&key) {
                 Some(waiter) => Next::Complete(waiter, early),
-                None if routes.holds(&key, &early.peer) => {
-                    let arrival = routes.arrivals;
-                    routes.arrivals += 1;
-                    let replaced = routes.early.insert(key, (arrival, early));
-                    Next::Hold(arrival, replaced.map(|(_, early)| early))
-                }
-                None => Next::Refuse(early),
+                None => match routes.admit(&key, &early.peer) {
+                    Admit::Hold => {
+                        let arrival = routes.arrivals;
+                        routes.arrivals += 1;
+                        let replaced = routes.early.insert(key, (arrival, early));
+                        Next::Hold(arrival, replaced.map(|(_, early)| early))
+                    }
+                    Admit::Claimed => Next::Refuse(early),
+                    Admit::Full => Next::Close(early),
+                },
             }
         };
         let refuse = match next {
@@ -595,6 +625,10 @@ impl Inner {
                 return;
             }
             Next::Refuse(early) => Some(early),
+            Next::Close(early) => {
+                drop(early);
+                return;
+            }
             Next::Hold(arrival, replaced) => {
                 drop(replaced);
                 // Refuse the early connection if nobody accepts its channel in time: well within
@@ -920,6 +954,26 @@ impl Transport for TcpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A connection is held when there is room for it and its peer, or when it replaces its own
+    /// peer's held connection, which needs no room. It is refused when another peer holds its
+    /// key, and closed for capacity when the table or its peer's share of it is full.
+    #[test]
+    fn an_early_connection_is_held_claimed_or_closed_for_capacity() {
+        let (peer, other) = ([1u8; 32], [2u8; 32]);
+        assert_eq!(admit(None, &peer, 0, 0), Admit::Hold);
+        assert_eq!(
+            admit(None, &peer, MAX_EARLY - 1, MAX_EARLY_PER_PEER - 1),
+            Admit::Hold
+        );
+        assert_eq!(admit(None, &peer, MAX_EARLY, 0), Admit::Full);
+        assert_eq!(admit(None, &peer, 1, MAX_EARLY_PER_PEER), Admit::Full);
+        assert_eq!(
+            admit(Some(&peer), &peer, MAX_EARLY, MAX_EARLY_PER_PEER),
+            Admit::Hold
+        );
+        assert_eq!(admit(Some(&other), &peer, 1, 0), Admit::Claimed);
+    }
 
     /// `SO_SNDBUF` and `SO_RCVBUF` come out at least twice the slot, for a slot whose double is
     /// within the kernel's unprivileged cap (Linux's `net.core.wmem_max` and `rmem_max`, 208 KiB

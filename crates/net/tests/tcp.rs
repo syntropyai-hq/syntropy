@@ -507,10 +507,12 @@ fn on_lane(from: u16, to: u16, lane: u8) -> ChannelKey {
     }
 }
 
-/// One peer holds at most `MAX_EARLY_PER_PEER` early connections: its next is refused at once
-/// with `NotANeighbour`, while another peer's early connection is still held for its `accept`.
-/// The one peer's connections start 20 ms apart, so they stay under the per-source handshake
-/// cap, since every connection here comes from 127.0.0.1.
+/// One peer holds at most `MAX_EARLY_PER_PEER` early connections. Its next is closed at once
+/// without a `HelloAck`, a link failure the connector may retry, not `NotANeighbour`, which
+/// nothing retries (RFC-0001 §10). Another peer's early connection is still held for its
+/// `accept`. Once the acceptor accepts one of the held connections, the same channel retried is
+/// held, and opens. The one peer's connections start 20 ms apart, so they stay under the
+/// per-source handshake cap, since every connection here comes from 127.0.0.1.
 #[test]
 fn one_peer_cannot_take_every_early_slot() {
     let rt = runtime();
@@ -521,53 +523,77 @@ fn one_peer_cannot_take_every_early_slot() {
     b.allowed().allow(c.public_key());
     let mut fabric = Tcp::new(&rt, &a, &b, 1300);
     let a_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let retry_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
     let c_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
-    let receiver_pool = fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8);
+    let [c_at_b, freed_at_b, retried_at_b] =
+        [(); 3].map(|()| fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8));
     let to_b = remote(&b);
     let lanes = u8::try_from(MAX_EARLY_PER_PEER).unwrap();
     let early_hold = config(30, None).early_hold();
-    let (held, (over, took), (sent, received)) = rt.block_on(async {
-        let held = join_all(
-            (0..lanes)
-                .map(|lane| {
-                    let channel = spec(on_lane(12, 13, lane), &a, &a_pool, 0);
-                    let to_b = &to_b;
-                    let a = &a;
-                    async move {
-                        tokio::time::sleep(Duration::from_millis(20) * u32::from(lane)).await;
-                        a.connect(to_b, channel).await
-                    }
+    let (held, (over, took), (sent, received), (freed, retried, retried_received)) =
+        rt.block_on(async {
+            let held = join_all(
+                (0..lanes)
+                    .map(|lane| {
+                        let channel = spec(on_lane(12, 13, lane), &a, &a_pool, 0);
+                        let to_b = &to_b;
+                        let a = &a;
+                        async move {
+                            tokio::time::sleep(Duration::from_millis(20) * u32::from(lane)).await;
+                            a.connect(to_b, channel).await
+                        }
+                    })
+                    .collect(),
+            );
+            let over = async {
+                // Every one of a's connections is held by now.
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                let started = Instant::now();
+                let closed = a
+                    .connect(&to_b, spec(on_lane(12, 13, lanes), &a, &a_pool, 0))
+                    .await;
+                (closed, started.elapsed())
+            };
+            let other = async {
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                tokio::join!(c.connect(&to_b, spec(key(14, 15), &c, &c_pool, 0)), async {
+                    // c's connection is held by now, beside a's.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    b.accept(spec(key(14, 15), &b, &c_at_b, 4)).await
                 })
-                .collect(),
-        );
-        let over = async {
-            // Every one of a's connections is held by now.
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            let started = Instant::now();
-            let refused = a
-                .connect(&to_b, spec(on_lane(12, 13, lanes), &a, &a_pool, 0))
-                .await;
-            (refused, started.elapsed())
-        };
-        let other = async {
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            tokio::join!(c.connect(&to_b, spec(key(14, 15), &c, &c_pool, 0)), async {
-                // c's connection is held by now, beside a's.
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                b.accept(spec(key(14, 15), &b, &receiver_pool, 4)).await
-            })
-        };
-        tokio::join!(held, over, other)
-    });
-    let refused = over.unwrap_err();
-    assert_eq!(refused.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{refused}");
+            };
+            let retry = async {
+                // After the connection over the cap was closed, and well within the others' hold.
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                let freed = b.accept(spec(on_lane(12, 13, 0), &b, &freed_at_b, 4)).await;
+                let (retried, retried_received) = tokio::join!(
+                    a.connect(&to_b, spec(on_lane(12, 13, lanes), &a, &retry_pool, 0)),
+                    async {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        b.accept(spec(on_lane(12, 13, lanes), &b, &retried_at_b, 4))
+                            .await
+                    }
+                );
+                (freed, retried, retried_received)
+            };
+            tokio::join!(held, over, other, retry)
+        });
+    let closed = over.unwrap_err();
+    assert_eq!(closed.class, ErrorClass::Link, "{closed}");
+    assert_eq!(closed.code, None, "{closed}");
     assert!(
         took < early_hold,
         "the connection over the cap was held: {took:?}"
     );
     assert_eq!(*sent.unwrap().key(), key(14, 15));
     assert_eq!(*received.unwrap().key(), key(14, 15));
-    // Nobody accepted a's held connections, so each was refused once its hold ended.
+    // The accept for lane 0 freed a slot, and the retried channel opened in it.
+    assert_eq!(*freed.unwrap().key(), on_lane(12, 13, 0));
+    assert_eq!(*retried.unwrap().key(), on_lane(12, 13, lanes));
+    assert_eq!(*retried_received.unwrap().key(), on_lane(12, 13, lanes));
+    // Lane 0 opened; nobody accepted the others, so each was refused once its hold ended.
+    let mut held = held.into_iter();
+    assert_eq!(*held.next().unwrap().unwrap().key(), on_lane(12, 13, 0));
     for result in held {
         let error = result.unwrap_err();
         assert_eq!(error.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{error}");
