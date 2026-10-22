@@ -20,6 +20,12 @@
 //! drop-ins and completions, kilobytes each. A copy is deleted when its change is reverted,
 //! abandoned or pruned ([`HostChangeLedger::prune_closed`]).
 //!
+//! **Never in place.** [`HostChangeLedger::write_file`] and every restore write a new file beside
+//! the target and rename it over the target (`replace_file`), so a crash leaves the old file or the
+//! new one, and a link at the target is replaced, never written through. A pending change with a
+//! saved copy that the host shows neither as recorded nor as before is left pending with its
+//! copies ([`revert::decide`]). Start-up lines are removed as bytes (`revert::without_line`).
+//!
 //! **Revert markers.** The scripts cannot edit the JSON ledger, so a script that undoes a change
 //! writes `<state>/host-changes/<id>.reverted`, and checks for it first, which makes a second run
 //! skip what the first undid. The binary writes the same marker when it closes a change, and treats
@@ -240,6 +246,12 @@ pub enum LedgerError {
     },
     /// No change has this ID.
     UnknownId(u32),
+    /// A path in a change does not start at a root. The revert scripts would resolve a relative
+    /// path against whatever directory they are run from, so the ledger records only rooted paths.
+    NotRooted {
+        /// The path.
+        path: PathBuf,
+    },
     /// A path the ledger would use could have been written or redirected by someone else: a
     /// state directory, copies directory or ledger that is not private to this user, or a
     /// symbolic link where a file or directory should be. It is refused rather than used.
@@ -267,6 +279,11 @@ impl std::fmt::Display for LedgerError {
                 "the host-change ledger has format version {found}; this build reads {SCHEMA}"
             ),
             LedgerError::UnknownId(id) => write!(f, "no host change has ID {id}"),
+            LedgerError::NotRooted { path } => write!(
+                f,
+                "{} is not an absolute path; the host-change ledger records only absolute paths",
+                path.display()
+            ),
             LedgerError::Insecure { path, why } => {
                 write!(f, "refusing to use {}: {why}", path.display())
             }
@@ -384,6 +401,7 @@ impl HostChangeLedger {
     /// # Errors
     ///
     /// [`LedgerError::Io`] if the ledger cannot be saved; then the change must not be made.
+    /// [`LedgerError::NotRooted`] if a path in `kind` is relative.
     pub fn begin(
         &mut self,
         kind: HostChangeKind,
@@ -392,6 +410,7 @@ impl HostChangeLedger {
         at: u64,
         by_version: &str,
     ) -> Result<u32, LedgerError> {
+        check_rooted(&kind)?;
         let id = self.file.next_id;
         self.file.next_id += 1;
         self.file.changes.push(HostChange {
@@ -449,10 +468,19 @@ impl HostChangeLedger {
     /// are copied to the ledger, the change is recorded as pending, the file is written, and the
     /// change is marked applied. Returns the change's ID.
     ///
+    /// The file is never written in place. The new content goes into a new file beside it,
+    /// owner-only until it has the old file's owner and mode, and that file is synced and renamed
+    /// over the old one. A crash therefore leaves the old file or the new one, never a mix, and a
+    /// link at `path` is replaced, never followed. A new file, where none was, is 0644 on Unix: the
+    /// files Syntropy writes outside its directories are units, plists, drop-ins and completions,
+    /// which other users and the system read.
+    ///
     /// # Errors
     ///
     /// [`LedgerError::Io`] if a copy, the ledger or the file cannot be written. A failure after
     /// the change was recorded leaves it pending, which a revert resolves by checking the host.
+    /// [`LedgerError::Insecure`] if something other than a regular file, such as a link or a
+    /// directory, is at `path`. [`LedgerError::NotRooted`] if `path` is relative.
     pub fn write_file(
         &mut self,
         path: &Path,
@@ -460,38 +488,39 @@ impl HostChangeLedger {
         at: u64,
         by_version: &str,
     ) -> Result<u32, LedgerError> {
+        let kind = HostChangeKind::FileWritten {
+            path: path.to_owned(),
+        };
+        check_rooted(&kind)?;
         let id = self.file.next_id;
-        // Syntropy writes a file, never through a link someone left in its place.
-        if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(LedgerError::Insecure {
-                path: path.to_owned(),
-                why: "it is a symbolic link".into(),
-            });
-        }
+        // Syntropy replaces a regular file, or makes one where nothing is; it never writes through
+        // a link someone left in its place, or over a directory.
+        let old = match read_regular(path).map_err(io_error(path))? {
+            Found::Nothing => None,
+            Found::File { bytes, meta } => Some((bytes, meta)),
+            Found::Other => {
+                return Err(LedgerError::Insecure {
+                    path: path.to_owned(),
+                    why: "it is not a regular file: a link, a directory or a device".into(),
+                });
+            }
+        };
         self.copies_dir()?;
         // A replaced file keeps its mode when it is rewritten, so both copies take it.
-        let mode = file_mode(path);
-        let prior = match fs::read(path) {
-            Ok(old) => {
+        let mode = old.as_ref().and_then(|(_, meta)| unix_mode(meta));
+        let prior = match &old {
+            Some((bytes, _)) => {
                 let saved = self.prior_copy(id);
-                write_copy(&saved, &old, mode)?;
+                write_copy(&saved, bytes, mode)?;
                 Some(PriorState::SavedAt { path: saved })
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-            Err(e) => return Err(io_error(path)(e)),
+            None => None,
         };
         write_copy(&self.written_copy(id), contents, mode)?;
-        let recorded = self.begin(
-            HostChangeKind::FileWritten {
-                path: path.to_owned(),
-            },
-            prior,
-            Some(fingerprint(contents)),
-            at,
-            by_version,
-        )?;
+        let recorded = self.begin(kind, prior, Some(fingerprint(contents)), at, by_version)?;
         debug_assert_eq!(recorded, id);
-        write_synced(path, contents)?;
+        let like = old.as_ref().map(|(_, meta)| meta);
+        replace_file(path, contents, like).map_err(io_error(path))?;
         self.applied(id)?;
         Ok(id)
     }
@@ -585,20 +614,170 @@ impl HostChangeLedger {
     }
 }
 
-/// The permission bits of the file at `path`, if it exists (Unix only).
-fn file_mode(path: &Path) -> Option<u32> {
+/// The permission bits of a file's metadata (Unix only).
+fn unix_mode(meta: &fs::Metadata) -> Option<u32> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::metadata(path)
-            .ok()
-            .map(|m| m.permissions().mode() & 0o777)
+        Some(meta.permissions().mode() & 0o7777)
     }
     #[cfg(not(unix))]
     {
-        let _ = path;
+        let _ = meta;
         None
     }
+}
+
+/// Refuses a change whose paths do not start at a root ([`LedgerError::NotRooted`]). A symbolic
+/// link's target may be relative: it is resolved from the link, not from where a script runs.
+fn check_rooted(kind: &HostChangeKind) -> Result<(), LedgerError> {
+    let path = match kind {
+        HostChangeKind::FileWritten { path } | HostChangeKind::Symlink { path, .. } => path,
+        HostChangeKind::PathEntry {
+            shell_rc: Some(path),
+            ..
+        } => path,
+        _ => return Ok(()),
+    };
+    if path.has_root() {
+        Ok(())
+    } else {
+        Err(LedgerError::NotRooted { path: path.clone() })
+    }
+}
+
+/// What is at a path, read without following a link.
+pub(crate) enum Found {
+    /// Nothing.
+    Nothing,
+    /// Something other than a regular file: a link, a directory, a device. On Unix, also a file
+    /// swapped in between the check and the read.
+    Other,
+    /// A regular file, its bytes, and the metadata of the file the bytes came from.
+    File {
+        /// The content.
+        bytes: Vec<u8>,
+        /// The metadata, from `lstat`.
+        meta: fs::Metadata,
+    },
+}
+
+/// Reads `path` without following a link. On Unix the file opened is checked to be the one
+/// inspected (device and inode), so a swap between the check and the read is seen as [`Found::Other`].
+pub(crate) fn read_regular(path: &Path) -> io::Result<Found> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Found::Nothing),
+        Err(e) => return Err(e),
+    };
+    if !meta.file_type().is_file() {
+        return Ok(Found::Other);
+    }
+    let mut file = File::open(path)?;
+    if !same_file(&meta, &file.metadata()?) {
+        return Ok(Found::Other);
+    }
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut file, &mut bytes)?;
+    Ok(Found::File { bytes, meta })
+}
+
+#[cfg(unix)]
+fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    a.len() == b.len() && b.file_type().is_file()
+}
+
+/// Creates a new, empty file next to `path`, owner-only (0600 on Unix) from the start, and
+/// returns it with its path. It is never an existing path (`create_new`), and its name is unique
+/// to this process and call.
+pub(crate) fn create_beside(path: &Path) -> io::Result<(File, PathBuf)> {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map_or_else(Default::default, |n| n.to_string_lossy());
+    let tmp = dir.join(format!(
+        ".{name}.syntropy-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&tmp)?;
+    Ok((file, tmp))
+}
+
+/// The mode of a file Syntropy creates where none was (Unix only).
+#[cfg(unix)]
+const NEW_FILE_MODE: u32 = 0o644;
+
+/// Replaces whatever is at `path` with a regular file holding `bytes`, never writing in place
+/// and never following a link: a new file is made beside it ([`create_beside`]), given `like`'s
+/// owner (on Unix, when the caller may) and permissions, or [`NEW_FILE_MODE`] when there is no
+/// `like`, written and synced, and renamed over `path`; then the directory is synced. The owner
+/// and mode are set before any byte is written, so nobody the old file kept out can read the new
+/// content through the new file.
+pub(crate) fn replace_file(
+    path: &Path,
+    bytes: &[u8],
+    like: Option<&fs::Metadata>,
+) -> io::Result<()> {
+    let (mut file, tmp) = create_beside(path)?;
+    let result = (|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            match like {
+                Some(meta) => {
+                    // Root gives the file back its owner. Anyone else can only keep their own, and
+                    // a group they are not in is not worth failing over. The owner goes first,
+                    // because a change of owner clears the set-user-ID and set-group-ID bits.
+                    if let Err(e) =
+                        std::os::unix::fs::fchown(&file, Some(meta.uid()), Some(meta.gid()))
+                        && file.metadata()?.uid() != meta.uid()
+                    {
+                        return Err(e);
+                    }
+                    file.set_permissions(meta.permissions())?;
+                }
+                None => file.set_permissions(fs::Permissions::from_mode(NEW_FILE_MODE))?,
+            }
+        }
+        #[cfg(not(unix))]
+        if let Some(meta) = like {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&tmp, path)?;
+        sync_dir(path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Makes a rename in `path`'s directory durable: on Unix the directory is synced.
+fn sync_dir(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// The mode of a copy: owner-only, and no looser than the file it copies (Unix only). A copy can
@@ -642,13 +821,6 @@ pub(crate) fn new_private_file(path: &Path) -> Result<File, LedgerError> {
     options.open(path).map_err(io_error(path))
 }
 
-/// Writes `bytes` to the host file at `path`, in place, and syncs it.
-fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), LedgerError> {
-    let mut file = File::create(path).map_err(io_error(path))?;
-    file.write_all(bytes).map_err(io_error(path))?;
-    file.sync_all().map_err(io_error(path))
-}
-
 /// Replaces `path` with `bytes` so a reader sees the old or the new file, never a mix.
 /// The new file is owner-only (0600 on Unix), as the ledger is; a caller widens it after.
 pub(crate) fn replace_atomically(path: &Path, bytes: &[u8]) -> Result<(), LedgerError> {
@@ -660,14 +832,8 @@ pub(crate) fn replace_atomically(path: &Path, bytes: &[u8]) -> Result<(), Ledger
     file.sync_all().map_err(io_error(&tmp))?;
     drop(file);
     fs::rename(&tmp, path).map_err(io_error(path))?;
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        // The rename is durable once the directory is synced.
-        File::open(dir)
-            .and_then(|d| d.sync_all())
-            .map_err(io_error(dir))?;
-    }
-    Ok(())
+    // The rename is durable once the directory is synced.
+    sync_dir(path).map_err(io_error(path))
 }
 
 #[cfg(test)]
@@ -812,6 +978,112 @@ mod tests {
         assert_eq!(fs::read(&theirs).unwrap(), b"theirs\n");
         assert_eq!(mode(&state.join(LEDGER_FILE)), 0o600);
         assert_eq!(fs::read(&target).unwrap(), b"ours\n");
+    }
+
+    /// `write_file` never writes in place, so a link swapped in after its check is replaced, not
+    /// written through. A thread keeps switching the target between nothing and a link to
+    /// another file while `write_file` runs; that file never changes.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_swapped_in_during_write_file_is_never_written_through() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let state = temp_state();
+        let victim = state.join("victim.txt");
+        fs::write(&victim, b"VICTIM\n").unwrap();
+        let target = state.join("a.conf");
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapper = {
+            let (stop, victim, target) = (stop.clone(), victim.clone(), target.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::os::unix::fs::symlink(&victim, &target);
+                    let _ = fs::remove_file(&target);
+                }
+            })
+        };
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        for _ in 0..50 {
+            // Refused (a link was there when it looked) or written (as a new file): either way,
+            // never through the link.
+            let _ = ledger.write_file(&target, b"WRITTEN\n", 0, "v");
+            assert_eq!(fs::read(&victim).unwrap(), b"VICTIM\n");
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapper.join().unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"VICTIM\n");
+    }
+
+    /// The new file every replacement starts from is 0600 before anything else happens to it, so
+    /// nobody else can open it and read what is written next.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_made_beside_a_target_starts_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = temp_state();
+        let (file, tmp) = create_beside(&state.join("target.conf")).unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(tmp.parent(), Some(state.as_path()));
+        // Never an existing path, and a new name each time.
+        let (_, again) = create_beside(&state.join("target.conf")).unwrap();
+        assert_ne!(tmp, again);
+    }
+
+    /// A new file is 0644, and a replaced one keeps its mode.
+    #[cfg(unix)]
+    #[test]
+    fn written_files_take_the_mode_of_what_they_replace() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let fresh = state.join("fresh.service");
+        ledger.write_file(&fresh, b"[Unit]\n", 0, "v").unwrap();
+        assert_eq!(mode(&fresh), 0o644);
+        let kept = state.join("kept.conf");
+        fs::write(&kept, b"theirs\n").unwrap();
+        fs::set_permissions(&kept, fs::Permissions::from_mode(0o640)).unwrap();
+        ledger.write_file(&kept, b"ours\n", 0, "v").unwrap();
+        assert_eq!(mode(&kept), 0o640);
+        assert_eq!(fs::read(&kept).unwrap(), b"ours\n");
+    }
+
+    /// The scripts would resolve a relative path from wherever they run, so none is recorded.
+    #[test]
+    fn relative_paths_are_refused() {
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let err = ledger
+            .write_file(Path::new("relative.conf"), b"x", 0, "v")
+            .unwrap_err();
+        assert!(matches!(err, LedgerError::NotRooted { .. }), "{err}");
+        for kind in [
+            HostChangeKind::Symlink {
+                path: "bin/syntropy".into(),
+                target: "../share/syntropy".into(),
+            },
+            HostChangeKind::PathEntry {
+                shell_rc: Some("-profile".into()),
+                line: "x".into(),
+            },
+        ] {
+            let err = ledger.begin(kind, None, None, 0, "v").unwrap_err();
+            assert!(matches!(err, LedgerError::NotRooted { .. }), "{err}");
+        }
+        assert!(ledger.changes().is_empty());
+        // A link's target may be relative: it resolves from the link.
+        ledger
+            .begin(
+                HostChangeKind::Symlink {
+                    path: state.join("syntropy"),
+                    target: "../share/syntropy".into(),
+                },
+                None,
+                None,
+                0,
+                "v",
+            )
+            .unwrap();
     }
 
     #[cfg(unix)]

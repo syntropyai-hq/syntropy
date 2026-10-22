@@ -54,6 +54,9 @@ fn run(script: &Path) -> String {
     let output = Command::new("sh")
         .arg(script)
         .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        // A UTF-8 locale, in which a start-up file's Latin-1 bytes are not valid characters: the
+        // script must still rewrite it byte for byte.
+        .env("LC_ALL", "C.UTF-8")
         .output()
         .expect("sh runs");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -107,17 +110,23 @@ fn the_generated_script_reverts_every_entry_without_the_binary() {
             "test",
         )
         .unwrap();
-    // A line added to a shell start-up file: removed, the user's lines kept.
+    // A line added to a shell start-up file: removed, and every other byte kept. The user's
+    // lines are Latin-1, not UTF-8, and the file mixes CRLF and LF line endings.
     let rc = host.join("profile");
     let line = "export PATH=\"$HOME/.local/bin:$PATH\"";
-    fs::write(&rc, "alias ll='ls -l'\n").unwrap();
+    let users: &[u8] = b"# caf\xe9 alias\r\nalias ll='ls -l'\n";
+    let users_after: &[u8] = b"export B=\xe9t\xe9\n";
+    fs::write(&rc, [users, users_after].concat()).unwrap();
     record(
         &mut ledger,
         HostChangeKind::PathEntry {
             shell_rc: Some(rc.clone()),
             line: line.into(),
         },
-        || fs::write(&rc, format!("alias ll='ls -l'\n{line}\n")).unwrap(),
+        || {
+            let with_line = [users, line.as_bytes(), b"\r\n", users_after].concat();
+            fs::write(&rc, with_line).unwrap();
+        },
     );
     // A symbolic link: removed.
     #[cfg(unix)]
@@ -154,9 +163,11 @@ fn the_generated_script_reverts_every_entry_without_the_binary() {
         "the edited file is reported:\n{out}"
     );
     assert!(out.contains("1 change(s) left in place"), "{out}");
-    let rc_now = fs::read_to_string(&rc).unwrap();
-    assert!(rc_now.contains("alias ll='ls -l'"), "{rc_now}");
-    assert!(!rc_now.contains(line), "{rc_now}");
+    assert_eq!(
+        fs::read(&rc).unwrap(),
+        [users, users_after].concat(),
+        "the start-up file is byte for byte the user's\n{out}"
+    );
     #[cfg(unix)]
     assert!(fs::symlink_metadata(&link).is_err(), "{out}");
     #[cfg(windows)]

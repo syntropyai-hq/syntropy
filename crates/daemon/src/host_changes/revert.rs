@@ -18,7 +18,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{
-    ChangeState, HostChange, HostChangeKind, HostChangeLedger, LedgerError, PriorState, fingerprint,
+    ChangeState, Found, HostChange, HostChangeKind, HostChangeLedger, LedgerError, PriorState,
+    fingerprint, read_regular, replace_file,
 };
 
 /// What the host shows for a change.
@@ -30,6 +31,9 @@ pub enum Observed {
     AsRecorded,
     /// Something is there, but not what was recorded: the user has edited it.
     Changed,
+    /// The host shows what was there before the change: the content a written file replaced.
+    /// Only a change with a saved prior copy can show this.
+    AsPrior,
 }
 
 /// What a revert does with one change.
@@ -55,21 +59,38 @@ pub enum Decision {
     AlreadyGone,
     /// A pending change the host does not show: it was never made.
     NeverMade,
+    /// A pending change with a saved prior copy, which the host shows neither as recorded nor as
+    /// before. It may have partly happened, so it stays pending and its copies are kept: the
+    /// prior copy may be the only one left of what was there.
+    LeavePending,
     /// Already reverted or abandoned: nothing to do.
     Done,
 }
 
 /// The revert rules for one change, given what the host shows for it.
+///
+/// A pending change may or may not have happened. Only what matches the record is reverted.
+/// What matches the state before the change was never made. Anything else was never made if
+/// nothing was saved for it, and otherwise is left pending with its copies
+/// ([`Decision::LeavePending`]): deleting the prior copy could lose the only copy of a file a
+/// half-made change destroyed.
 #[must_use]
 pub fn decide(change: &HostChange, observed: Observed) -> Decision {
-    match change.state {
-        ChangeState::Reverted | ChangeState::Abandoned => return Decision::Done,
-        // A pending change may or may not have happened. Only what matches the record is ours.
-        ChangeState::Pending if observed != Observed::AsRecorded => return Decision::NeverMade,
-        ChangeState::Pending | ChangeState::Applied => {}
+    let saved = matches!(change.prior, Some(PriorState::SavedAt { .. }));
+    match (change.state, observed) {
+        (ChangeState::Reverted | ChangeState::Abandoned, _) => return Decision::Done,
+        (ChangeState::Pending, Observed::AsPrior) => return Decision::NeverMade,
+        (ChangeState::Pending, Observed::Absent | Observed::Changed) if saved => {
+            return Decision::LeavePending;
+        }
+        (ChangeState::Pending, Observed::Absent | Observed::Changed) => {
+            return Decision::NeverMade;
+        }
+        (ChangeState::Pending | ChangeState::Applied, _) => {}
     }
     match observed {
-        Observed::Absent => Decision::AlreadyGone,
+        // The host already shows what was there before: nothing left to undo.
+        Observed::Absent | Observed::AsPrior => Decision::AlreadyGone,
         Observed::Changed => Decision::LeaveEdited,
         Observed::AsRecorded => match &change.prior {
             None => Decision::Remove,
@@ -126,6 +147,9 @@ pub enum Outcome {
     AlreadyGone,
     /// A pending change that was never made.
     NeverMade,
+    /// A pending change that may have partly happened: left pending, with its copies, and
+    /// reported with its path.
+    LeftPending,
     /// Already reverted or abandoned before this run.
     Done,
     /// This host cannot revert this kind: the generated revert script does.
@@ -217,6 +241,7 @@ fn act(
     let done = match decision {
         Decision::Done => return Ok(Outcome::Done),
         Decision::LeaveEdited => return Ok(Outcome::LeftEdited),
+        Decision::LeavePending => return Ok(Outcome::LeftPending),
         Decision::NeverMade => {
             close(ledger, change.id, ChangeState::Abandoned)?;
             return Ok(Outcome::NeverMade);
@@ -266,6 +291,14 @@ fn check_private(ledger: &HostChangeLedger) -> Result<(), LedgerError> {
             path: path.to_owned(),
             why: why.to_owned(),
         };
+        // The probe is made only in a real directory, never through a link.
+        let meta = fs::symlink_metadata(state).map_err(|source| LedgerError::Io {
+            path: state.to_owned(),
+            source,
+        })?;
+        if !meta.file_type().is_dir() {
+            return Err(insecure(state, "it is not a directory: a link or a file"));
+        }
         let me = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -323,42 +356,8 @@ fn close(ledger: &mut HostChangeLedger, id: u32, state: ChangeState) -> Result<(
     })
 }
 
-/// Reads `path` without following a link: `None` if nothing is there, `Some(None)` if something
-/// other than a regular file is (a link, a directory), and `Some(Some(bytes))` for a regular file.
-/// On Unix the file read is checked to be the one inspected, so a swap between the check and the
-/// read is seen as a change.
-fn read_regular(path: &Path) -> io::Result<Option<Option<Vec<u8>>>> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    if !meta.file_type().is_file() {
-        return Ok(Some(None));
-    }
-    let mut file = fs::File::open(path)?;
-    if !same_file(&meta, &file.metadata()?) {
-        return Ok(Some(None));
-    }
-    let mut bytes = Vec::new();
-    io::Read::read_to_end(&mut file, &mut bytes)?;
-    Ok(Some(Some(bytes)))
-}
-
-#[cfg(unix)]
-fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    a.dev() == b.dev() && a.ino() == b.ino()
-}
-
-#[cfg(not(unix))]
-fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
-    a.len() == b.len() && b.file_type().is_file()
-}
-
-/// Replaces the regular file at `path` with `bytes`, without following a link: a new file is
-/// created next to it (never through an existing path), given the old file's permissions and,
-/// on Unix, its owner, and renamed over it.
+/// Replaces the regular file at `path` with `bytes`, never in place and never through a link,
+/// keeping its owner (where the caller may) and mode ([`replace_file`]).
 fn replace_in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() {
@@ -367,43 +366,31 @@ fn replace_in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
             path.display()
         )));
     }
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let name = path
-        .file_name()
-        .map_or_else(Default::default, |n| n.to_string_lossy());
-    let tmp = dir.join(format!(".{name}.syntropy-revert-{}", std::process::id()));
-    let result = (|| {
-        // Owner-only until its owner and mode are the old file's, and only then the content, so
-        // nobody else can read restored bytes the old file kept from them.
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+    replace_file(path, bytes, Some(&meta))
+}
+
+/// Whether one line, without its `\n`, is `line`, or `line` and a carriage return.
+fn is_line(segment: &[u8], line: &[u8]) -> bool {
+    let body = segment.strip_suffix(b"\n").unwrap_or(segment);
+    body == line || body.strip_suffix(b"\r") == Some(line)
+}
+
+/// `bytes` without every line that is `line` (with a `\n` or `\r\n` ending, or none at the end of
+/// the file), and whether there was one. Every other byte is kept as it was: lines are compared as
+/// bytes, never decoded, so a start-up file in any encoding, with any line endings, comes back
+/// unchanged but for the removed line.
+pub(crate) fn without_line(bytes: &[u8], line: &str) -> (Vec<u8>, bool) {
+    let line = line.as_bytes();
+    let mut kept = Vec::with_capacity(bytes.len());
+    let mut found = false;
+    for segment in bytes.split_inclusive(|&b| b == b'\n') {
+        if is_line(segment, line) {
+            found = true;
+        } else {
+            kept.extend_from_slice(segment);
         }
-        let mut file = options.open(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            // Root gives the file back its owner. Anyone else can only keep their own, and a group
-            // they are not in is not worth failing the revert over. The owner goes first, because
-            // a change of owner clears the set-user-ID and set-group-ID bits.
-            if let Err(e) = std::os::unix::fs::fchown(&file, Some(meta.uid()), Some(meta.gid()))
-                && file.metadata()?.uid() != meta.uid()
-            {
-                return Err(e);
-            }
-        }
-        file.set_permissions(meta.permissions())?;
-        io::Write::write_all(&mut file, bytes)?;
-        file.sync_all()?;
-        fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
     }
-    result
+    (kept, found)
 }
 
 /// The host as the file system shows it: written files, symbolic links and shell start-up lines.
@@ -425,12 +412,11 @@ impl Host for FsHost {
     fn observe(&self, ledger: &HostChangeLedger, change: &HostChange) -> io::Result<Observed> {
         match &change.kind {
             HostChangeKind::FileWritten { path } => {
-                let Some(found) = read_regular(path)? else {
-                    return Ok(Observed::Absent);
-                };
-                // A link or directory where Syntropy wrote a file is not what it wrote.
-                let Some(bytes) = found else {
-                    return Ok(Observed::Changed);
+                let bytes = match read_regular(path)? {
+                    Found::Nothing => return Ok(Observed::Absent),
+                    // A link or directory where Syntropy wrote a file is not what it wrote.
+                    Found::Other => return Ok(Observed::Changed),
+                    Found::File { bytes, .. } => bytes,
                 };
                 let matches = match change.fingerprint {
                     Some(expected) => fingerprint(&bytes) == expected,
@@ -441,11 +427,20 @@ impl Host for FsHost {
                         Err(e) => return Err(e),
                     },
                 };
-                Ok(if matches {
-                    Observed::AsRecorded
-                } else {
-                    Observed::Changed
-                })
+                if matches {
+                    return Ok(Observed::AsRecorded);
+                }
+                // The content it replaced, from the ledger's own prior copy only.
+                let own = ledger.prior_copy(change.id);
+                if matches!(&change.prior, Some(PriorState::SavedAt { path }) if *path == own) {
+                    match fs::read(&own) {
+                        Ok(prior) if prior == bytes => return Ok(Observed::AsPrior),
+                        Ok(_) => {}
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(Observed::Changed)
             }
             HostChangeKind::Symlink { path, target } => match fs::read_link(path) {
                 Ok(points_to) if &points_to == target => Ok(Observed::AsRecorded),
@@ -460,17 +455,14 @@ impl Host for FsHost {
                     return Ok(Observed::Absent);
                 };
                 match read_regular(rc)? {
-                    None => Ok(Observed::Absent),
+                    Found::Nothing => Ok(Observed::Absent),
                     // A start-up file that is a link is left alone.
-                    Some(None) => Ok(Observed::Changed),
-                    Some(Some(bytes)) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        Ok(if text.lines().any(|l| l == line) {
-                            Observed::AsRecorded
-                        } else {
-                            Observed::Absent
-                        })
-                    }
+                    Found::Other => Ok(Observed::Changed),
+                    Found::File { bytes, .. } => Ok(if without_line(&bytes, line).1 {
+                        Observed::AsRecorded
+                    } else {
+                        Observed::Absent
+                    }),
                 }
             }
             _ => Err(unsupported(change)),
@@ -486,19 +478,14 @@ impl Host for FsHost {
                 shell_rc: Some(rc),
                 line,
             } => {
-                let Some(Some(bytes)) = read_regular(rc)? else {
+                let Found::File { bytes, meta } = read_regular(rc)? else {
                     return Err(io::Error::other(format!(
                         "{} is no longer a regular file",
                         rc.display()
                     )));
                 };
-                let text = String::from_utf8_lossy(&bytes);
-                let kept: Vec<&str> = text.lines().filter(|l| l != line).collect();
-                let mut out = kept.join("\n");
-                if text.ends_with('\n') && !kept.is_empty() {
-                    out.push('\n');
-                }
-                replace_in_place(rc, out.as_bytes())
+                let (kept, _) = without_line(&bytes, line);
+                replace_file(rc, &kept, Some(&meta))
             }
             _ => Err(unsupported(change)),
         }
@@ -983,6 +970,152 @@ mod tests {
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o640
         );
+    }
+
+    /// Sets change `id` back to pending, as a crash after `begin` and before `applied` leaves it.
+    fn crash_before_applied(ledger: &mut HostChangeLedger, id: u32) {
+        let change = ledger.file.changes.iter_mut().find(|c| c.id == id).unwrap();
+        change.state = ChangeState::Pending;
+        ledger.save().unwrap();
+    }
+
+    /// A crash inside `write_file` leaves a pending entry. What the file holds decides what a
+    /// revert does, and the copy of what it replaced is deleted only when nothing can need it.
+    #[test]
+    fn a_crash_inside_write_file_never_loses_the_replaced_content() {
+        let state = temp_state();
+        let path = state.join("a.conf");
+        let original: &[u8] = b"ORIGINAL user content\n";
+
+        // The file holds neither: a half-written file, as an in-place write could leave. It stays
+        // pending, the file is left as it is, and the copy of the original is kept.
+        fs::write(&path, original).unwrap();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let id = ledger
+            .write_file(&path, b"NEW synced content\n", 0, "v")
+            .unwrap();
+        crash_before_applied(&mut ledger, id);
+        fs::write(&path, b"NEW syn").unwrap();
+        let report = revert_all(&mut ledger, &mut FsHost).unwrap();
+        assert_eq!(report[0].outcome, Outcome::LeftPending);
+        assert_eq!(ledger.get(id).unwrap().state, ChangeState::Pending);
+        assert_eq!(fs::read(ledger.prior_copy(id)).unwrap(), original);
+        assert_eq!(fs::read(&path).unwrap(), b"NEW syn");
+        assert!(!ledger.revert_marker(id).exists());
+
+        // The file is gone: still pending, and the copy is still kept.
+        fs::remove_file(&path).unwrap();
+        let report = revert_all(&mut ledger, &mut FsHost).unwrap();
+        assert_eq!(report[0].outcome, Outcome::LeftPending);
+        assert_eq!(fs::read(ledger.prior_copy(id)).unwrap(), original);
+
+        // The old file, as a crash before the rename leaves it: never made, and the copy goes.
+        fs::write(&path, original).unwrap();
+        let report = revert_all(&mut ledger, &mut FsHost).unwrap();
+        assert_eq!(report[0].outcome, Outcome::NeverMade);
+        assert_eq!(ledger.get(id).unwrap().state, ChangeState::Abandoned);
+        assert!(!ledger.prior_copy(id).exists());
+        assert_eq!(fs::read(&path).unwrap(), original);
+
+        // The new file, as a crash after the rename leaves it: reverted to the original.
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let id = ledger
+            .write_file(&path, b"NEW synced content\n", 0, "v")
+            .unwrap();
+        crash_before_applied(&mut ledger, id);
+        let report = revert_all(&mut ledger, &mut FsHost).unwrap();
+        assert_eq!(
+            report.iter().find(|r| r.id == id).unwrap().outcome,
+            Outcome::Reverted
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    /// An applied change whose file is back to what it replaced has nothing left to undo.
+    #[test]
+    fn an_applied_file_already_back_to_its_earlier_content_is_closed() {
+        let state = temp_state();
+        let path = state.join("b.conf");
+        fs::write(&path, b"theirs\n").unwrap();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let id = ledger.write_file(&path, b"ours\n", 0, "v").unwrap();
+        fs::write(&path, b"theirs\n").unwrap();
+        let report = revert_all(&mut ledger, &mut FsHost).unwrap();
+        assert_eq!(report[0].outcome, Outcome::AlreadyGone);
+        assert_eq!(ledger.get(id).unwrap().state, ChangeState::Reverted);
+        assert_eq!(fs::read(&path).unwrap(), b"theirs\n");
+    }
+
+    /// Lines are compared and removed as bytes: every other byte of the start-up file comes
+    /// back unchanged, whatever its encoding and line endings, and the marked line goes with or
+    /// without a carriage return, at the end of the file or not.
+    #[test]
+    fn start_up_lines_are_removed_as_bytes() {
+        let line = "export PATH=\"$HOME/.local/bin:$PATH\"";
+        let cases: [(&[u8], &[u8]); 6] = [
+            (
+                b"# caf\xe9 alias\nexport PATH=\"$HOME/.local/bin:$PATH\"\nexport B=\xe9t\xe9\n",
+                b"# caf\xe9 alias\nexport B=\xe9t\xe9\n",
+            ),
+            (
+                b"a=1\r\nexport PATH=\"$HOME/.local/bin:$PATH\"\r\nb=2\r\n",
+                b"a=1\r\nb=2\r\n",
+            ),
+            (
+                b"a=1\nexport PATH=\"$HOME/.local/bin:$PATH\"\nb\0x\nc=3\n",
+                b"a=1\nb\0x\nc=3\n",
+            ),
+            (
+                b"a=1\nexport PATH=\"$HOME/.local/bin:$PATH\"",
+                b"a=1\n",
+            ),
+            (
+                b"export PATH=\"$HOME/.local/bin:$PATH\"\nx\nexport PATH=\"$HOME/.local/bin:$PATH\"\n",
+                b"x\n",
+            ),
+            (
+                b"  export PATH=\"$HOME/.local/bin:$PATH\"\nno final newline",
+                b"  export PATH=\"$HOME/.local/bin:$PATH\"\nno final newline",
+            ),
+        ];
+        for (i, (before, after)) in cases.iter().enumerate() {
+            let (kept, found) = without_line(before, line);
+            assert_eq!(kept, *after, "case {i}");
+            assert_eq!(found, before != after, "case {i}");
+        }
+
+        // Through the host, on a file.
+        let state = temp_state();
+        let rc = state.join("profile");
+        fs::write(&rc, cases[0].0).unwrap();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let kind = HostChangeKind::PathEntry {
+            shell_rc: Some(rc.clone()),
+            line: line.into(),
+        };
+        let id = ledger.begin(kind, None, None, 0, "v").unwrap();
+        ledger.applied(id).unwrap();
+        let report = revert_all(&mut ledger, &mut FsHost).unwrap();
+        assert_eq!(report[0].outcome, Outcome::Reverted);
+        assert_eq!(fs::read(&rc).unwrap(), cases[0].1);
+    }
+
+    /// The owner probe is made only in a real state directory, never through a link.
+    #[cfg(unix)]
+    #[test]
+    fn a_state_directory_that_is_a_link_is_refused_before_anything_is_made() {
+        let real = temp_state();
+        let link = real.with_extension("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut ledger = HostChangeLedger::open(&link).unwrap();
+        let err = revert_all(&mut ledger, &mut FsHost).unwrap_err();
+        assert!(matches!(err, LedgerError::Insecure { .. }), "{err}");
+        assert_eq!(
+            fs::read_dir(&real).unwrap().count(),
+            0,
+            "nothing made in its target"
+        );
+        fs::remove_file(&link).unwrap();
     }
 
     /// A crash between `begin` and the change: the pending entry is closed as never made.
