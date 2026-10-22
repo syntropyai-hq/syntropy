@@ -264,6 +264,16 @@ ADR-0013 defines two engines and chooses between them per volume by measurement 
 
 Unbuffered I/O on Windows requires sector-aligned offsets, lengths and buffers; §6 provides them.
 
+*Note 2026-10-23 (TIER-E5-T08, as built):* `syntropy_io::windows` holds both engines. Choices this section leaves open:
+- **Loading.** The IoRing functions are resolved at run time from `api-ms-win-core-ioring-l1-1-0.dll`, and `BuildIoRingWriteFile` and `BuildIoRingFlushFile` from `kernel32.dll`. A binary that links the crate therefore starts on a Windows without them, where `IoRingEngine::new` returns `IO_ENGINE_UNAVAILABLE` and `IocpEngine` is used.
+- **Files.** Both engines open files with `FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED` and `FILE_SHARE_READ | FILE_SHARE_WRITE`, so the IOCP engine that takes a ring's writes can open the same file. A file system that refuses unbuffered opens (`ERROR_INVALID_PARAMETER`) gets a buffered handle, and `EngineCaps::direct` is false.
+- **Registration.** Files and `IO_FIXED` regions are registered while nothing is in flight, the whole table each time. `IORING_BUFFER_INFO`'s length is 32 bits, so a larger region is registered in 2 GiB pieces, and an operation that crosses a piece's end uses its raw address. A registration that fails leaves raw handles and addresses (`IO_REGISTER_FAILED` continues unregistered).
+- **Writes.** The ring writes when `IsIoRingOpSupported` reports both write and flush. A write with a sync mode is followed by `BuildIoRingFlushFile` (`FILE_FLUSH_DATA` for `DataSync`) and completes when the flush does. Otherwise writes go to an `IocpEngine` the ring engine owns, which flushes with `FlushFileBuffers` on the I/O thread when the write's completion is reaped.
+- **Depth.** The ring holds half its completion entries in flight, 256, since each operation may also have a cancellation's completion queued. One call moves at most 1 GiB; a longer operation completes short (§16).
+- **Waiting.** `reap` blocks on the ring's completion event or in `GetQueuedCompletionStatusEx` only for whole milliseconds. A shorter wait polls, because a Windows timer wait rounds up to the timer tick.
+- **Cancellation.** Both engines ask the OS (`BuildIoRingCancelRequest`, `CancelIoEx`) and return `CancelOutcome::TooLate`: the operation is in the kernel, and completes normally or with `IO_CANCELLED`.
+- **Helper submitters.** `IocpOptions::helpers` threads issue the calls, taking slots over SPSC rings in turn; a call that fails at once is posted to the port with `PostQueuedCompletionStatus`. The engine takes the count from its caller; deciding that one thread is submission-bound is §10's selection.
+
 ### 8. Pinned staging to GPU: the DMA pipelines
 
 Discrete GPUs cannot read `Nvme` directly in the default path, so bytes travel NVMe → pinned host memory → VRAM. The two halves are owned by different threads: the I/O thread fills host memory, and the GPU's dispatcher issues the copy on its copy stream (`KernelProvider::copy`), because only that thread may touch the device (RFC-0001 §8.2).
