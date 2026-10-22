@@ -3691,6 +3691,14 @@ dependencies = [
 [[package]]
 name = "syntropy-ipc"
 version = "0.0.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "syntropy-core",
+ "syntropy-spsc",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "syntropy-kernels"
@@ -3791,6 +3799,10 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-sched"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "syntropy-config",
+]
 
 [[package]]
 name = "syntropy-solver"
