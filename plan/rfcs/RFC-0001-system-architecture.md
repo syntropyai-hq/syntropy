@@ -1294,6 +1294,16 @@ pub struct SequenceOpen {
 
 The head forwards `SequenceOpen` metadata (`SequenceMeta`: every field except the prompt tokens, plus the prompt length) on the sequence's first `ActivationFrame`, so every stage allocates KV for it and the tail learns its sampler and ingress node without a separate round of messages.
 
+*Note 2026-10-23 (DIST-E1-T14, as built): the types this section leaves open.* `syntropy_core::sequence` defines every type above. The listing leaves some shapes open, and the build fixes them:
+- **`SamplingParams`** holds `seed`, `temperature` (0 is greedy), `top_p`, `top_k` (0 off), `min_p`, `presence_penalty`, `frequency_penalty`, `repetition_penalty` and `logit_bias`, then amendment A3's `constraint`, `grammar_inline` and `reasoning_budget`. Its defaults are RFC-0054 §5's fallbacks. It also carries `logprobs: Option<u8>`, the top-k alternatives the tail returns, since the tail needs it and no other field holds it.
+- **`SequenceLimits`** holds `max_tokens`, `stop_tokens` (the request's stop token IDs, which the tail checks beside the model's end-of-sequence token and end-of-turn set, RFC-0012 §8.4), `deadline` (time from the open to the request's deadline) and amendment A5's `embed`.
+- **`CancelReason`** is `ClientGone`, `ClientRequest`, `StopString`, `Deadline` or `Error { domain, code }`, a sequence-scoped error (§10.4). A sequence whose ingress is lost, or whose detach grace runs out, ends with `finish = Cancelled` and a `Release` instead (RFC-0033 §9.2), so neither is a reason.
+- **`FinishReason::Error`** and `CancelReason::Error` carry §10's `ErrorCode` in the wire's numeric form, a domain and a code, until `core` has the `Domain` type (DIST-E18-T02).
+- **`LogprobBlock`** follows RFC-0031 §6.5's layout: `k` alternatives per token, at least 1, then per token the chosen logprob and `k` (id, logprob) pairs. The wire's `logprob_k = 0` means no logprobs, so it has no form for the chosen tokens' logprobs without alternatives.
+- **`TokenEntry`** also carries `draft` and `draft_tree`, the tail-side drafter's draft for the next window (RFC-0032 §3.5), which RFC-0031 §6.5 carries on the ring-return copy. A tree node is `DraftNode { parent, depth, flags }`, which `net` re-exports as `TreeNode`.
+- **`SequenceMeta`** holds every `SequenceOpen` field but the prompt, `trace` and `prefix_scope` included, which RFC-0032 §3.6's listing leaves out.
+- **Field types.** `TokenSlice` is the prompt's owned token IDs. `PrefixKey` and `TailId` are RFC-0022 §7.1's and §7.2's, as plain newtypes in `core`, since `core` cannot name a `tier` type. `GrammarRef` is the BLAKE3 of a compiled grammar. `PoolingMode` is `LastToken`, `Mean` or `Cls`. `PrefixScope` is amendment A7's.
+
 ### 5.9 Sessions, sequences and KV
 
 ```rust
@@ -1572,6 +1582,8 @@ pub enum ErrorClass {
 | `TokenFrame`, `TokenEntry`, `FinishReason` | core (revised 2026-10-22, was net; §5.8's note); `net` keeps the borrowed views `Token<'a>` and `TokenEntryView<'a>` | 0031 (layout) | 0032, 0012 (semantics), 0022 (side-channel items) |
 | `SequenceControl`, `SequenceOpen`, `SequenceMeta` | core (revised 2026-10-22, was net; §5.8's note) | 0032 | 0011 (routing fields), 0050 (`SamplingParams`, `SequenceLimits`), 0060 (`parity`) |
 | `TraceContext` | core (added 2026-10-22; §5.8's note) | 0053 (semantics), 0031 (layout) | — |
+| `PrefixRef`, `PrefixKey`, `TailId` | core (added 2026-10-23; §5.8's note) | 0022 | 0032 |
+| `GrammarRef` | core (added 2026-10-23; §5.8's note) | 0050 | 0012 (masks) |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
 | `Error`, `ErrorClass` | core | 0001 | every RFC (codes) |
