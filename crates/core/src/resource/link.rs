@@ -180,8 +180,10 @@ pub fn software_path(caps: &LinkCaps) -> Nanos {
 /// is RFC-0011 §5's, not this (RFC-0031 §3, note of 2026-10-23).
 ///
 /// The sum is rounded to the nearest nanosecond once. A tail below the median counts as 0, and
-/// so does a negative or NaN λ. A link whose β is not a positive rate cannot carry the frame:
-/// its cost is `Nanos(u64::MAX)`, as is any sum that would exceed it.
+/// so does a negative or NaN λ. An infinite λ saturates: a link with a tail then costs
+/// `Nanos(u64::MAX)`, and one without (α_p99 = α_p50) adds nothing for it. A link whose β is not
+/// a positive rate cannot carry the frame: its cost is `Nanos(u64::MAX)`, as is any sum that
+/// would exceed it.
 #[must_use]
 pub fn link_cost(
     caps: &LinkCaps,
@@ -194,13 +196,20 @@ pub fn link_cost(
         return Nanos(u64::MAX);
     }
     let lambda = self::p99_weight(caps, objective, p99_weight);
-    let lambda = if lambda > 0.0 { lambda } else { 0.0 };
     let tail = caps.alpha.p99.0.saturating_sub(caps.alpha.p50.0);
+    // Only a positive λ on a positive tail adds anything, so 0 · ∞ never makes a NaN.
+    let tail_term = if lambda > 0.0 && tail > 0 {
+        lambda * tail as f64
+    } else {
+        0.0
+    };
     let total = caps.alpha.p50.0 as f64
         + size.0 as f64 * 1e9 / beta
-        + lambda * tail as f64
+        + tail_term
         + software_path(caps).0 as f64;
-    // A sum at or above 2^64, or an infinite one, saturates to `u64::MAX` in the cast.
+    // Every term is finite and non-negative, or +∞. A sum at or above 2^64, or an infinite one,
+    // saturates to `u64::MAX` in the cast.
+    debug_assert!(total >= 0.0, "cost_t is never NaN or negative: {total}");
     Nanos(total.round() as u64)
 }
 
@@ -377,6 +386,35 @@ mod tests {
         // An `alpha_eff` below α_p50 gives z = 0.
         rdma.alpha_eff = Some(measured(Nanos(90_000), Nanos(95_000)));
         assert_eq!(software_path(&rdma), Nanos(0));
+    }
+
+    /// An infinite configured λ saturates: the cost of a link with a tail is the most, and a link
+    /// without one is not made cheaper than its median, as a NaN sum cast to 0 would make it.
+    #[test]
+    fn an_infinite_weight_saturates_and_never_makes_a_link_free() {
+        let s = Bytes(32_768);
+        let mut flat = caps(NetMedium::Ethernet, TransportKind::Quic);
+        flat.alpha = measured(Nanos(100_000), Nanos(100_000));
+        assert_eq!(
+            link_cost(&flat, s, &Objective::Latency, Some(f64::INFINITY)),
+            Nanos(100_000 + 32_768 + 25_000)
+        );
+        let tailed = caps(NetMedium::Ethernet, TransportKind::Quic);
+        assert_eq!(
+            link_cost(&tailed, s, &Objective::Latency, Some(f64::INFINITY)),
+            Nanos(u64::MAX)
+        );
+        // Ranked, the flat link comes first and the tailed one last.
+        let order: Vec<Nanos> = candidate_order(
+            &[tailed.clone(), flat.clone()],
+            s,
+            &Objective::Latency,
+            Some(f64::INFINITY),
+        )
+        .into_iter()
+        .map(|c| link_cost(c, s, &Objective::Latency, Some(f64::INFINITY)))
+        .collect();
+        assert_eq!(order, [Nanos(157_768), Nanos(u64::MAX)]);
     }
 
     /// S/β is rounded once, with the rest of the sum, to the nearest nanosecond.
