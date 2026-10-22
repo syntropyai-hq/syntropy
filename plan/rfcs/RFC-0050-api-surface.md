@@ -777,6 +777,31 @@ TLS on a LAN is practical only if clients can trust the certificate without a pu
   - **Every client machine** needs this step once per node it talks to, or once per cluster with `trust --cluster` (open question 8, answered).
 - **Plain HTTP on the LAN.** `api.allow_plaintext_lan = true` exists for users who accept the risk, for example on an isolated lab network. Keys are still required. The dashboard shows a permanent "API traffic on this LAN is unencrypted" banner, `doctor` reports SEC-005 as a warning on every run, and the startup log says so on every start.
 
+*Note 2026-10-22 (PROD-E5-T03): how the CA is built.*
+- **Storage.** The CA lives in one file, `tls/ca.json`, in the state directory. It holds the key (PKCS#8), the certificate (DER), the scope and the node-key binding (RFC-0034 §3's `syntropy-tls-ca-v1`, note of the same date), which covers the certificate's exact bytes.
+  - The file is mode 0600, in a 0700 directory. A file or directory whose mode was widened is narrowed again when the CA is loaded.
+  - The `tls` directory and `ca.json` must be a directory and a regular file themselves. A link is refused, not followed, so a link planted in the state directory cannot get another directory narrowed or written into.
+  - It is written to a new file, flushed, renamed over the old one, and then the directory is flushed, so a replacement is one atomic step.
+  - A file the daemon cannot read, or whose parts disagree, is refused and left as it is. No key is overwritten without a reason the user can see.
+  - Agreeing means the binding verifies over the stored certificate, and the certificate is the key's own, self-signed, with exactly the constraints the node mints for the stored scope.
+  - `GET /v1/syntropy/tls/ca` serves one PEM block encoded from those bytes, so it carries nothing the binding does not cover.
+- **Randomness.** The CA and leaf keys come from ring's `SystemRandom`, the OS CSPRNG of RFC-0034 §3. ring's random source is sealed, so it cannot draw from `core`'s `Entropy`.
+- **The CA certificate.** It is valid for 10 years [target, a chosen budget], since it is replaced when its scope changes, not on a schedule.
+  - Its path length is 0. That is advisory: a client that takes the CA as a trust anchor may ignore the anchor's basic constraints, as rustls does, and then accepts a sub-CA it signed. The name constraints are the guarantee every client enforces, and they still apply below such a sub-CA.
+  - Its key usages are certificate and CRL signing.
+  - A certificate's validity starts 1 hour before it is issued [target, a chosen budget], for clients whose clocks run behind.
+- **Names.** A dNSName constraint also permits every name below it (RFC 5280 §4.2.1.10).
+  - So the scope leaves out single-label names. A node named `box` would otherwise get a CA for the whole `.box` top-level domain.
+  - The node is still reachable as `<host>.local` and by its other names of two or more labels.
+  - A leaf carries the scope's names exactly; a name below one of them is refused.
+  - A limit: a name of two labels can still cover a public zone. A node name or `api.server_names` entry that is a public suffix, such as `co.uk`, or a bare registrable domain, such as `example.com`, gives the CA that whole zone. `api.server_names` should hold the node's own host names only.
+- **Addresses.** The scope leaves out public and loopback addresses: a local CA covers only private, shared (RFC 6598), link-local and unique-local ones.
+  - An address family with no served subnet is excluded whole, so the CA can issue for no address of that family.
+  - A node that serves only public addresses gets a CA for its names alone.
+  - The CA covers the whole served /24 or /64, so a leaked key can impersonate any host inside those subnets, a neighbour on the same LAN included, though none outside them.
+- **Replacement.** A new CA replaces the old one when the node's names or served subnets change, and also when the node key changes (`identity reset`), since the old binding names another identity. The replacement is recorded first in `tls/ca-replaced.json`: when, why, and the old and new fingerprints, `BLAKE3("syntropy-fp-v1" ‖ SPKI DER)` (RFC-0034 §6.5). SEC-006 reads that record. A CA that has been replaced issues no more leaves: before each leaf it checks that `tls/ca.json` still holds its certificate.
+- **Rotation.** The listener serves the current leaf through a resolver that swaps leaves. A connection keeps the leaf it was handshaken with, and the next full handshake gets the new one. A client that resumes an earlier TLS session sees no certificate until its session ends.
+
 #### 11.2 Requests from browsers
 
 A loopback listener without authentication is reachable by any web page the user visits, through DNS rebinding or cross-site requests (RFC-0034 R1). So on every listener:
@@ -867,12 +892,15 @@ Errors become the request shape's own error body:
 - **A code that can reach an API client has a row above.** The cluster rows are native routes only (`/v1/syntropy/cluster…`, `/v1/syntropy/nodes…`, `/v1/syntropy/config…`; §1.2), which the OpenAI and Anthropic shapes never serve. Their body is the native error, which names the domain code.
 - **A code that never leaves the cluster is exempt.** These are raised between nodes during peer-to-peer protocol, handshakes and admission, or reported as node diagnostics through `syntropy doctor` and the dashboard, never as the error of a request:
   - `Cluster`: 0x0102 `NodeConflict`, 0x010A `LocalNetworkDenied`, 0x010B `NetworkProfilePublic`;
-  - `Net`: 0x0201 `ProtoMajorMismatch`, 0x0202 `CredentialInvalid`, 0x0203 `NotANeighbour`, 0x0204 `UnknownFrameType`, 0x020D `RdmaNotEnabled`, 0x020E `RdmaOsBuildMismatch`, 0x020F `ShmUserMismatch`, 0x0212 `ProtoRangeDisjoint`;
+  - `Net`: 0x0201 `ProtoMajorMismatch`, 0x0202 `CredentialInvalid`, 0x0203 `NotANeighbour`, 0x0204 `UnknownFrameType`, 0x0206 `WireDTypeMismatch`, 0x020D `RdmaNotEnabled`, 0x020E `RdmaOsBuildMismatch`, 0x020F `ShmUserMismatch`, 0x0212 `ProtoRangeDisjoint`;
   - `Dist`: 0x030E `EntryRejected`;
   - `Recovery`: 0x0407 `HistoryDropped`;
   - `Security`: 0x0501 `CertInvalidSignature`, 0x0502 `CertExpired`, 0x0503 `CertRevoked`, 0x0504 `CertWrongCluster`, 0x0505 `RoleInsufficient`, 0x0506 `CredentialExpired`, 0x0508 `RotationWindowClosed`, 0x0510 `UntrustedFabric`, 0x0511 `AuthorityInvalid`, 0x0512 `RotationChainInvalid`, 0x0513 `NotCoordinatorEligible`.
 
   If an exempt code ever reaches an API response, it renders as the server-side shape, 503 `instance_unavailable`, whatever its class, because from the client's view the cluster could not serve the request. It never takes a client-side shape (400, 401 or 403) and never a new ad-hoc shape.
+- *Note 2026-10-22 (#1669):* `WireDTypeMismatch` (0x0206) joins the `Net` exempt list, beside `UnknownFrameType` (0x0204).
+  - RFC-0031 §12 classes both `Unsupported` (its revision notes of 2026-10-22), and no row above maps that class for them.
+  - Both are a stage refusing a peer stage's frame: one in another dtype than the channel's `ChannelSpec::wire` (RFC-0031 §6.4), the other of a type the negotiated minor lacks. The refusal travels in the channel's `Close` and never becomes a request's error. If it ever reached an API response, it would render as 503 `instance_unavailable`, by the rule above.
 - *Note 2026-10-22 (#1698):* a join with a revoked invite token, `JoinReject::Revoked`, had neither a code nor a row. RFC-0030 §10 now gives it `TokenRevoked` (0x010F, `Auth`), and the join-refusal row above maps it with `TokenExpired` and `TokenExhausted`, to 403 on the native route. `KeyholderRequired`'s row rests on RFC-0034 §8.3's note of this date, which says when it is raised.
 - **`DuplicateCommand` (0x0305) never appears in `Error::code`.** The coordinator answers a command whose `CommandId` it has seen with the original result (RFC-0032 §6.3), so the code names the dedup, not an error a caller receives.
 - Every other code in these domains maps through a whole-class row above (`Link`, `Device`, `Timeout`, `Correctness`, `Internal`), or through the rule just above for `Integrity`, `Drift` and `Transient`. The one `Cancelled` code, `IngressLost` (0x0404), has no response to carry it, because the client's connection is already gone (RFC-0033 §13).

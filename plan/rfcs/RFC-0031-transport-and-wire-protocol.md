@@ -577,6 +577,18 @@ Tokens travel tail → head (ring return, all of the step's sequences) and tail 
 - The draft travels only on the ring-return frame. The ingress copy omits it (`n_draft = 0`).
 - The tap block travels only on the ingress copy, which goes to the parity driver.
 
+**Revision note, 2026-10-22 (DIST-E8-T03): chains and trees, and what each copy carries.**
+- **Chain or tree.** A tree has one node per drafted token, so `draft_nodes` equals `n_draft` for a tree as for a chain, and the entry cannot say which it holds. The extension's flags bit2 `DRAFT_TREE` says it for the frame:
+  - When it is set, every entry with a draft carries its tree. A chain in such a frame is written as a tree whose nodes each have the one before as parent.
+  - When it is clear, no entry carries a tree, and each draft is a chain.
+  - A node's `parent` is an earlier node of the same draft, or 0xFFFF for the last accepted token, as in §6.3. Its `depth` is 1 under the last accepted token and its parent's plus one otherwise. A receiver refuses any other `parent` or `depth`, and an entry whose `draft_nodes` is not `n_draft`.
+  - Bits 3–15 are reserved.
+- **Copies.** A frame sets exactly one of `RING_RETURN` and `TO_INGRESS`. A receiver refuses a ring-return frame that carries a tap block, and an ingress frame that carries a draft. Of the `Activation` items (types 1–7), only `TRACE` may travel on a `Token` frame, so a receiver refuses the rest.
+- **Trace context.** `TRACE` (§6.3) joins the types a `Token` frame may carry, on both copies, so the return path from the tail to the head and to ingress appears as a hop span (RFC-0053 §3.2, RFC-0001 §13).
+  - The tail writes one `TRACE` per sampled entry, with `span` the entry's index in the frame, and sets flags bit0 `HAS_TRACE`. A receiver refuses a `TRACE` that names no entry (`span` 0xFFFF), which would carry one sequence's trace context to every ingress, and a second `TRACE` for the same entry.
+  - An ingress copy carries only its own entries' `TRACE`, indexed among them, and no other item. That amends "only ring-return frames carry TLVs" above.
+  - A receiver refuses a frame whose `HAS_TRACE` does not match its `TRACE` items.
+
 **Tap block** (`LogitTap`, RFC-0060 §5.5 `TapMode::Gather { k, tail }` and RFC-0050 §13.6; RFC-0012 owns its semantics, RFC-0060 §5.3–§5.4 the arithmetic that consumes it):
 
 ```text

@@ -1,0 +1,17 @@
+# token-ingress-part1: part 1 of 2 of step 23's copy to ingress Y: a prefill chunk's tap block, no tokens
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 02 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+17 00 00 00 00 00 00 00 04 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 60 00 00 00 c4 86 61 f4 b7 84 8c 7f  # 0030 header
+01 00 02 00 00 00 00 00 01 00 02 00 00 00 00 00  # 0040 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+44 44 33 33 22 22 11 11 02 00 00 00 05 00 00 00  # 0080 payload
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0090 payload
+00 00 00 00 30 00 00 00 00 00 00 00 00 00 00 00  # 00a0 payload
+a0 bf de fd 1c 3b 5a 79 98 b7 d6 f5 14 33 52 71  # 00b0 payload
+90 af ce ed 0c 2b 4a 69 88 a7 c6 e5 04 23 42 61  # 00c0 payload
+80 9f be dd fc 1b 3a 59 78 97 b6 d5 f4 13 32 51  # 00d0 payload
