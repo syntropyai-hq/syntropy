@@ -927,6 +927,16 @@ Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request 
 | PROD-E1-T10 gains a criterion for that case | PROD-E1-T10 | Definition of done | the rule needs a check that can fail: a P-config-2 case shows that such a request never resolves to a knob set missing a plan knob, and that `fidelity_conflict` names exactly the missing ones |
 | The criterion also covers a knob bit this version cannot name: it counts as instance-wide, and a plan holding one serves no request | PROD-E1-T10 | Definition of done | `ApproxKnobs` keeps a bit it does not name, and RFC-0042 §10 reserves `1 << 8` for a later knob. The review of #1771 found that such a bit counted as neither scope, so an exact request could be served by a plan that applied it, and an approximate label could leave it out |
 
+## `ReplanReason` gets a task (2026-10-23)
+
+RFC-0033 §6.1 defines `ReplanReason`, and ten tasks use it, the first at M1a, but no task built it. Its `DriftTerm` was named and never defined. The review of #1803, which needs a `DriftTerm::Hop` for a demoted hop, found the gap. The answers were taken under the maintainers' standing instruction. RFC-0033 §6.1's note of 2026-10-23 and RFC-0001 §18.33 record them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New DIST-E14-T21 (M1a): `ReplanReason`, `DriftTerm` (one variant per RFC-0010 §6.2 live estimator, `#[non_exhaustive]`) and `WorkloadTerm` in `core`, with serde; → PROD-E1-T04, PLC-E1-T01, PLC-E4-T17 | DIST-E14-T21 | R9 | the solver reads the reason in `SolveInput::reason` and cannot depend on `cluster`. M1a is the earliest user's milestone (PLC-E3-T07, PROD-E1-T11, TIER-E10-T01) |
+| PLC-E3-T07, PROD-E1-T11, TIER-E10-T01, DIST-E10-T06 and DIST-E14-T15 → DIST-E14-T21 | PLC-E3-T07, PROD-E1-T11, TIER-E10-T01, DIST-E10-T06, DIST-E14-T15 | R9 | each names a `ReplanReason` variant: `WorkloadDrift`, `Config` twice, `HealOrphans`, and `RecoveryStarted`'s `cause` |
+| PLC-E6-T04 builds the deferred re-plan for a demoted hop, with `DriftTerm::Hop` naming the planned transport, and a unit-test criterion; PLC-E6-T04 → DIST-E14-T21. DIST-E14-T15 raises it when it applies `EdgeDemoted`, with a test; DIST-E14-T15 → PLC-E6-T04 | PLC-E6-T04, DIST-E14-T15 | R9 | RFC-0001 §7.2 had no trigger for a demotion (RFC-0031 §3, §7.4). The coordinator first sees one through RFC-0033 §11's `EdgeDemoted` event, which DIST-E14-T15 adds at M3, so the wiring is there, and PLC-E6-T04 (M2), which owns deferred re-plans, builds the reason (standin-engine's review of #1811, B2) |
+
 ## PLC-E8-T13's rejection criterion after the section builder (2026-10-23)
 
 #1792 builds `SchedSection` with `config`'s `InstanceSection` (PROD-E1-T24), as RFC-0054 §5.4's note of 2026-10-22 says every domain crate's section is built. It removes `SchedSection::from_policy`, which PLC-E8-T13's criterion named.
@@ -934,6 +944,7 @@ Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | PLC-E8-T13's criterion names `config`'s `InstanceSection::<SchedSection>::from_policy` in place of `SchedSection::from_policy`, and PLC-E8-T13 → PROD-E1-T24 | PLC-E8-T13 | R9 | the criterion's wording had drifted from the code: the builder now rejects the invalid values, and PROD-E1-T24 produces it. Both tasks are M1a and done (#1656, #1772), so the edge adds no wait |
+| PLC-E9-T07, DIST-E14-T01, DIST-E15-T02 and DIST-E14-T13 → DIST-E14-T21; RFC-0011 §12.1 gains the demoted hop's row | PLC-E9-T07, DIST-E14-T01, DIST-E15-T02, DIST-E14-T13 | R9 | each names a variant too: `WorkloadDrift` (the SC-21 check), `RecoveryStarted`'s `cause` with its solve, `EdgeLost`'s repair, and `DegradedExit`. None is reachable from DIST-E14-T21, so the edges add no cycle (review-1474's review of #1811, B1 and N1) |
 
 ## DIST-E1-T03's message set, by owner (2026-10-23)
 
