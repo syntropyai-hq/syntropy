@@ -577,6 +577,15 @@ Tokens travel tail → head (ring return, all of the step's sequences) and tail 
 - The draft travels only on the ring-return frame. The ingress copy omits it (`n_draft = 0`).
 - The tap block travels only on the ingress copy, which goes to the parity driver.
 
+**Revision note, 2026-10-22 (DIST-E8-T03): chains and trees, and what each copy carries.**
+- **Chain or tree.** A tree has one node per drafted token, so `draft_nodes` equals `n_draft` for a tree as for a chain, and the entry cannot say which it holds. The extension's flags bit2 `DRAFT_TREE` says it for the frame:
+  - When it is set, every entry with a draft carries its tree. A chain in such a frame is written as a tree whose nodes each have the one before as parent.
+  - When it is clear, no entry carries a tree, and each draft is a chain.
+  - A node's `parent` is an earlier node of the same draft, or 0xFFFF for the last accepted token, as in §6.3. A receiver refuses an entry whose `draft_nodes` is not `n_draft`.
+  - Bits 3–15 are reserved.
+- **Copies.** A frame sets exactly one of `RING_RETURN` and `TO_INGRESS`. A receiver refuses a ring-return frame that carries a tap block, and an ingress frame that carries a draft or TLVs. The `Activation` items (types 1–7) are not among the types a ring-return frame may carry, so a receiver refuses them.
+- **No trace context.** A `Token` frame never carries `TRACE`, so its flags bit0 `HAS_TRACE` is clear, and a receiver refuses a frame that sets it. RFC-0032 §3.10 routes `TRACE` downstream only, and a `Token` frame's receivers, the head and the ingress node, hold each sequence's trace context from `SequenceOpen`. RFC-0001 §13 now says so (its note of the same date).
+
 **Tap block** (`LogitTap`, RFC-0060 §5.5 `TapMode::Gather { k, tail }` and RFC-0050 §13.6; RFC-0012 owns its semantics, RFC-0060 §5.3–§5.4 the arithmetic that consumes it):
 
 ```text

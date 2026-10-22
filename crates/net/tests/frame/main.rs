@@ -13,6 +13,7 @@
 
 mod activation;
 mod spec;
+mod token;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

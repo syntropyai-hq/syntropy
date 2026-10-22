@@ -42,6 +42,8 @@ pub enum FrameError {
     NotControl(FrameType),
     /// A typed `Activation` was asked of a frame of another type.
     NotActivation(FrameType),
+    /// A typed `Token` was asked of a frame of another type.
+    NotToken(FrameType),
     /// A control frame's extension is shorter than its fields.
     ExtTooShort {
         ftype: FrameType,
@@ -166,6 +168,7 @@ impl fmt::Display for FrameError {
             FrameError::Sealed(ftype) => write!(f, "{ftype:?} is sealed; open it first"),
             FrameError::NotControl(ftype) => write!(f, "{ftype:?} is not a control frame"),
             FrameError::NotActivation(ftype) => write!(f, "{ftype:?} is not an Activation frame"),
+            FrameError::NotToken(ftype) => write!(f, "{ftype:?} is not a Token frame"),
             FrameError::ExtTooShort { ftype, len, needed } => {
                 write!(
                     f,

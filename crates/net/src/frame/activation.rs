@@ -70,7 +70,7 @@ pub mod tlv {
 
 /// `span` of an item for every span, `tree_offset` of a span that is not a tree, and `parent` of
 /// a node whose parent is the root.
-const ABSENT: u16 = 0xFFFF;
+pub(super) const ABSENT: u16 = 0xFFFF;
 
 /// The `TRACE` value: W3C trace context.
 const TRACE_LEN: usize = 26;
@@ -324,15 +324,15 @@ pub struct TraceContext {
     pub flags: u8,
 }
 
-fn get16(b: &[u8], at: usize) -> u16 {
+pub(super) fn get16(b: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([b[at], b[at + 1]])
 }
 
-fn get32(b: &[u8], at: usize) -> u32 {
+pub(super) fn get32(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
 }
 
-fn get64(b: &[u8], at: usize) -> u64 {
+pub(super) fn get64(b: &[u8], at: usize) -> u64 {
     let mut word = [0; 8];
     word.copy_from_slice(&b[at..at + 8]);
     u64::from_le_bytes(word)
@@ -394,8 +394,9 @@ fn read_node(b: &[u8]) -> TreeNode {
     }
 }
 
-/// Reads the TLV at `at` in the side area and returns it with the offset of the next one.
-fn read_tlv(side: &[u8], at: usize) -> Result<(Side<'_>, usize), FrameError> {
+/// Reads the TLV at `at` in the side area and returns it with the offset of the next one. The
+/// `Token` frame's TLV area uses the same encoding (RFC-0031 §6.5).
+pub(super) fn read_tlv(side: &[u8], at: usize) -> Result<(Side<'_>, usize), FrameError> {
     let remaining = side.len().saturating_sub(at);
     if remaining < TLV_HEADER_LEN {
         return Err(inconsistent(
@@ -538,6 +539,11 @@ impl<'a> TreeArea<'a> {
         TreeArea(Repr::Typed(nodes))
     }
 
+    /// Nodes on the wire, 4 bytes each, already checked.
+    pub(super) fn wire(bytes: &'a [u8]) -> TreeArea<'a> {
+        TreeArea(Repr::Wire(bytes))
+    }
+
     pub fn len(&self) -> usize {
         match self.0 {
             Repr::Wire(bytes) => bytes.len() / TREE_NODE_LEN,
@@ -568,6 +574,11 @@ impl<'a> TreeArea<'a> {
 impl<'a> SideItems<'a> {
     pub fn new(items: &'a [Side<'a>]) -> SideItems<'a> {
         SideItems(Repr::Typed(items))
+    }
+
+    /// TLVs on the wire, already walked with `read_tlv`.
+    pub(super) fn wire(bytes: &'a [u8]) -> SideItems<'a> {
+        SideItems(Repr::Wire(bytes))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Side<'a>> + 'a {
