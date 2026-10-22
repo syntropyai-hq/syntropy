@@ -892,3 +892,44 @@ fn a_connection_without_the_data_alpn_opens_no_channel() {
         assert!(dropped, "a connection offering {alpn:?} was kept");
     }
 }
+
+/// The connector requires the data ALPN too: a listener that holds the key the connector pins but
+/// agrees no ALPN completes TLS, and the connector refuses it with `PROTO_MAJOR_MISMATCH` instead
+/// of sending its `Hello`.
+#[test]
+fn a_connector_refuses_a_listener_without_the_data_alpn() {
+    use syntropy_net::transport::tcp::tls;
+    let rt = runtime();
+    let a = bind(&rt, 34, None);
+    let listener_seed = [35u8; 32];
+    let listener_key = bind(&rt, 35, None).public_key();
+    let allowed = tls::AllowedKeys::default();
+    allowed.allow(a.public_key());
+    let mut config = tls::server_config(&listener_seed, allowed).unwrap();
+    config.alpn_protocols.clear();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = rt.spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let session = acceptor.accept(tcp).await;
+        // Keep the session open, so only the connector's own check can end it.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        drop(session);
+    });
+    let pool = BufferPool::heap(PoolId(1500), MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES))
+        .expect("a pool");
+    let to = RemoteEndpoint {
+        node: NodeId(listener_key),
+        key: listener_key,
+        addrs: vec![addr],
+        relay: None,
+    };
+    let error = rt
+        .block_on(a.connect(&to, spec(key(18, 19), &a, &pool, 0)))
+        .unwrap_err();
+    assert_eq!(error.code, Some(ErrorCode::PROTO_MAJOR_MISMATCH), "{error}");
+    served.abort();
+}
