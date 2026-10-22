@@ -135,14 +135,12 @@ const PINNED: &[(Domain, u16, &[&str], Option<ErrorClass>)] = &[
 /// of #1668. A code leaves this list when RFC-0050 gives it a row.
 const UNMAPPED: &[(Domain, u16)] = &[
     (Cluster, 0x0101),
-    (Cluster, 0x0103),
     (Cluster, 0x0104),
     (Cluster, 0x0105),
     (Cluster, 0x0106),
     (Cluster, 0x0107),
     (Cluster, 0x010A),
     (Cluster, 0x010B),
-    (Cluster, 0x010C),
     (Net, 0x0201),
     (Net, 0x0202),
     (Net, 0x0203),
@@ -181,6 +179,24 @@ const PINNED_OVERRIDES: &[(Domain, u16, ApiMapping, &str)] = &[
         0x0102,
         HIDDEN,
         "RFC-0030 §10: both are excluded until one stops; `NodeConflict`; `doctor` explains",
+    ),
+    (
+        Cluster,
+        0x0103,
+        HIDDEN,
+        "RFC-0030 §10: never dial; list it; nearby list: incompatible, with both versions",
+    ),
+    (
+        Cluster,
+        0x0109,
+        HIDDEN,
+        "RFC-0030 §10: the joiner retries with back-off for the token's lifetime; joiner CLI",
+    ),
+    (
+        Cluster,
+        0x010C,
+        HIDDEN,
+        "RFC-0030 §10: `Rejected { ClockSkew }` names both clocks; `doctor` checks NTP",
     ),
     (
         Cluster,
@@ -420,7 +436,7 @@ fn every_code_maps_to_an_api_shape_or_is_on_the_open_list() {
     }
     assert_eq!(api::for_code(ErrorCode::new(Security, 0x0509)), None);
     let mapped = registry().len() - UNMAPPED.len();
-    assert_eq!((mapped, UNMAPPED.len()), (39, 34));
+    assert_eq!((mapped, UNMAPPED.len()), (41, 32));
 }
 
 #[test]

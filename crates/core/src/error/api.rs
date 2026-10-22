@@ -84,6 +84,11 @@ pub enum ApiMapping {
     Error(ApiError),
     /// The shape's in-stream error of RFC-0050 §12.2, carrying the code itself. The code's
     /// RFC row says the client sees a stream error.
+    ///
+    /// Those rows (RFC-0033 §13) describe streams only. What a client sees before the first
+    /// token, or on a non-streaming request, is not stated for these codes; for 0x0401
+    /// `RecoveryInProgress` and 0x0402 `ReplayNoSource` in particular, #1668 asks RFC-0050
+    /// for that shape.
     StreamError {
         /// The row calls it retryable: the body carries `retry_after`, whose value comes from
         /// `Error::retry`.
@@ -107,6 +112,21 @@ const OVERRIDES: &[(ErrorCode, ApiMapping, &str)] = &[
         cluster::NODE_CONFLICT,
         ApiMapping::NotClientVisible,
         "RFC-0030 §10: both are excluded until one stops; `NodeConflict`; `doctor` explains",
+    ),
+    (
+        cluster::PROTO_MISMATCH,
+        ApiMapping::NotClientVisible,
+        "RFC-0030 §10: never dial; list it; nearby list: incompatible, with both versions",
+    ),
+    (
+        cluster::COORDINATOR_UNREACHABLE,
+        ApiMapping::NotClientVisible,
+        "RFC-0030 §10: the joiner retries with back-off for the token's lifetime; joiner CLI",
+    ),
+    (
+        cluster::CLOCK_SKEW,
+        ApiMapping::NotClientVisible,
+        "RFC-0030 §10: `Rejected { ClockSkew }` names both clocks; `doctor` checks NTP",
     ),
     (
         cluster::DISCOVERY_SILENT,
