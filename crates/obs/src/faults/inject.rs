@@ -16,7 +16,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use syntropy_core::{Clock, DeviceId, Entropy, LinkId, MonoTime, NodeId};
+use syntropy_core::{Clock, DeviceId, Entropy, LinkId, MonoTime, NodeId, SequenceId};
 
 use super::{Ctx, FaultEffect};
 
@@ -113,8 +113,7 @@ impl Trigger {
 }
 
 /// Which hits a rule matches, by the [`Ctx`] they were reached in (RFC-0060 §9.2). Each field
-/// that is set must equal the context's, and a context without that field does not match. The
-/// sequence filter arrives with `core`'s `SequenceId` (RFC-0001 §5.13).
+/// that is set must equal the context's, and a context without that field does not match.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CtxFilter {
@@ -127,6 +126,9 @@ pub struct CtxFilter {
     /// The link.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<LinkId>,
+    /// The sequence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<SequenceId>,
 }
 
 impl CtxFilter {
@@ -136,7 +138,10 @@ impl CtxFilter {
         fn field<T: PartialEq>(want: Option<T>, have: Option<T>) -> bool {
             want.is_none_or(|want| have == Some(want))
         }
-        field(self.node, ctx.node) && field(self.device, ctx.device) && field(self.link, ctx.link)
+        field(self.node, ctx.node)
+            && field(self.device, ctx.device)
+            && field(self.link, ctx.link)
+            && field(self.sequence, ctx.sequence)
     }
 }
 
@@ -357,6 +362,7 @@ thread_local! {
             node: None,
             device: None,
             link: None,
+            sequence: None,
         })
     };
 }

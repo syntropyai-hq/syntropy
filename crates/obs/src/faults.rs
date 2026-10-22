@@ -44,7 +44,7 @@
 //! exactly. There is no unseeded source.
 
 use serde::{Deserialize, Serialize};
-use syntropy_core::{DeviceId, ErrorClass, LinkId, Nanos, NodeId};
+use syntropy_core::{DeviceId, ErrorClass, LinkId, Nanos, NodeId, SequenceId};
 
 /// What a fault point does when it fires (RFC-0060 §9.2).
 ///
@@ -73,8 +73,6 @@ pub enum FaultEffect {
 }
 
 /// Where a fault point was reached, for a rule's `CtxFilter` (RFC-0060 §9.2).
-///
-/// `sequence` arrives with `core`'s `SequenceId` (RFC-0001 §5.13).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Ctx {
     /// The node.
@@ -83,6 +81,8 @@ pub struct Ctx {
     pub device: Option<DeviceId>,
     /// The link.
     pub link: Option<LinkId>,
+    /// The sequence being served.
+    pub sequence: Option<SequenceId>,
 }
 
 /// Names a fault point and returns its [`FaultEffect`] (RFC-0060 §9.2). The context is the

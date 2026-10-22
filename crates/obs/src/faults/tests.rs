@@ -60,6 +60,7 @@ mod injected {
 
     use syntropy_core::{
         Clock, DeviceId, Endpoint, Entropy, LinkId, LinkKind, MonoTime, NetMedium, NodeId,
+        SequenceId,
     };
 
     use super::super::inject::{draw, load_from_var};
@@ -421,7 +422,12 @@ mod injected {
             ..CtxFilter::default()
         });
         run(vec![by_device, by_link]);
-        let at = |device, node, link| Ctx { node, device, link };
+        let at = |device, node, link| Ctx {
+            node,
+            device,
+            link,
+            sequence: None,
+        };
         let none = FaultEffect::None;
         // The device filter: only that device matches, and a context without one does not.
         assert_eq!(
@@ -440,6 +446,51 @@ mod injected {
         );
         let both = at(None, Some(node(1)), Some(link));
         assert!(panic::catch_unwind(|| crate::fault_point!("obs.test.filter", both)).is_err());
+    }
+
+    /// A sequence filter matches only the sequence it names, so a plan can fail one request.
+    #[test]
+    fn a_sequence_filter_fails_only_that_sequence() {
+        let _serial = serial();
+        let target = SequenceId::new(&node(1), 3, 7);
+        let mut on_sequence = rule("obs.test.sequence", Trigger::Always, DEVICE);
+        on_sequence.filter = Some(CtxFilter {
+            sequence: Some(target),
+            ..CtxFilter::default()
+        });
+        run(vec![on_sequence]);
+        let serving = |sequence| Ctx {
+            sequence: Some(sequence),
+            ..Ctx::default()
+        };
+        assert_eq!(
+            crate::fault_point!("obs.test.sequence", serving(target)),
+            DEVICE
+        );
+        assert_eq!(
+            crate::fault_point!(
+                "obs.test.sequence",
+                serving(SequenceId::new(&node(1), 3, 8))
+            ),
+            FaultEffect::None
+        );
+        assert_eq!(
+            crate::fault_point!("obs.test.sequence", Ctx::default()),
+            FaultEffect::None
+        );
+        let plan = FaultPlan::from_toml(
+            "[[rules]]\npoint = \"obs.test.sequence\"\nwhen = \"always\"\neffect = \"panic\"\n\
+             [rules.filter.sequence]\ningress = 9\nboot = 3\nn = 7\n",
+        )
+        .unwrap();
+        assert_eq!(
+            plan.rules[0].filter.unwrap().sequence,
+            Some(SequenceId {
+                ingress: 9,
+                boot: 3,
+                n: 7
+            })
+        );
     }
 
     /// The one-argument form reads the context the innermost `Ctx::enter` set.
