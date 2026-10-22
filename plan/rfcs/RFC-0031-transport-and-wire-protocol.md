@@ -241,6 +241,30 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
 | Idle timeout | `link.failover_timeout`: 2 s LAN, 10 s WAN | §7.4 |
 | MTU discovery | on; initial 1,200 bytes | iroh default behaviour |
 
+*Note 2026-10-23 (DIST-E7-T21, OQ-NET-19): what the pinned iroh reaches.* The workspace pins `iroh = "=1.4.1"`. Its QUIC stack is `noq` 1.4.0 (`noq-proto`, `noq-udp`), and its UDP sockets come from `netwatch` 0.19.3. This is a reading of those crates' source, with paths relative to each crate's root.
+- **Where the settings go.** Every row above goes through `iroh::endpoint::QuicTransportConfigBuilder`, set in one of two ways:
+  - endpoint-wide, with `Builder::transport_config` (`iroh src/endpoint.rs:678`);
+  - per connection: on the dial side with `ConnectOptions::with_transport_config` (`src/endpoint.rs:1813`) through `connect_with_opts` (line 1106), and on the accept side with `create_server_config_builder` (line 1772), `ServerConfigBuilder::set_transport_config` (`src/endpoint/quic.rs:625`) and `Incoming::accept_with` (`src/endpoint/connection.rs:165`).
+
+  Left unset, noq-proto's defaults apply (`noq-proto src/config/transport.rs:575–615`): Cubic, a 1,250,000-byte stream receive window, an unlimited connection window, MTU discovery from 1,200 bytes, and segmentation offload on.
+- **Initial congestion window: reachable, but not as a rule on the path's RTT.** `congestion_controller_factory` (`iroh src/endpoint/quic.rs:420`) takes a controller factory. The window itself is set with `noq_proto::congestion::CubicConfig::initial_window` (`noq-proto src/congestion/cubic.rs:293`) or `Bbr3Config::initial_window` (`src/congestion/bbr3/mod.rs:2019`). The default is 12,000 bytes: `14720.clamp(2 × 1200, 10 × 1200)` (`cubic.rs:302`, `congestion.rs:158`). Two things follow.
+  1. iroh re-exports only the `Controller`, `ControllerFactory` and `ControllerMetrics` traits (`iroh src/endpoint/quic.rs:69–73`), not the configs. So `net` names `noq-proto` directly, pinned to the exact version iroh pins.
+  2. Each path of a connection gets its own controller from the connection's one factory, built before the path has an RTT sample (`noq-proto src/connection/paths.rs:298–301`, `congestion.rs:155`). An initial window of 256 KiB set this way would also apply to a relay path that multipath adds.
+
+  "Paths with RTT < 2 ms" is therefore a controller of `net`'s own:
+  - it wraps Cubic, or BBR3 under `quic.congestion = bbr`;
+  - each `on_ack` carries the path's `RttEstimator`, and while the path is in slow start and its first RTT sample is below 2 ms, the wrapper reports a window of at least `quic.lan_initial_window`;
+  - it returns control to the inner controller at the first congestion event.
+- **Stream receive window: reachable, per connection.** `stream_receive_window` (`iroh src/endpoint/quic.rs:225`) sets one value for every stream of a connection when the connection is set up. There is no per-stream setter, so the row's "≥ 2 × `slot_size` of the channel" is met by twice the largest slot of any channel the connection carries. The connection window is `receive_window` (`quic.rs:236`). `Connection::set_receive_window` (`src/endpoint/connection.rs:1139`) changes it on a live connection, as the recompute at each channel open needs.
+- **GSO: reachable on Linux and Windows, absent on macOS.**
+  - `enable_segmentation_offload` (`iroh src/endpoint/quic.rs:438`) is on by default and can be turned off. When on, noq-proto batches up to the socket's `max_gso_segments` (`noq-proto src/connection/mod.rs:1049–1052`). iroh takes that from each IP transport's socket (`iroh src/socket/transports/ip.rs:237`) and uses the minimum over transports (`src/socket/transports.rs:422–425`).
+  - noq-udp probes `UDP_SEGMENT` on Linux (64 segments, `noq-udp src/linux.rs:19–37`) and `UDP_SEND_MSG_SIZE` on Windows (512, `src/windows.rs:708–725`). Every other Unix, macOS included, gets 1 (`src/unix.rs:898–904`).
+  - On Apple, batched sends need `UdpSocketState::set_apple_fast_path` (`unix.rs:388`). iroh's default `fast-apple-datapath` feature compiles it in (`iroh Cargo.toml:70`, `74`), but nothing calls it: not iroh 1.4.1, not noq 1.4.0, and not netwatch 0.19.3, which owns the socket (`netwatch src/udp.rs:736`, `801`). iroh does not expose its sockets, so `net` cannot call it either.
+  - No upstream issue tracks enabling it. Searches of the iroh and noq trackers on 2026-10-23 found noq #204, which exposed the feature, and none that enables it.
+  - iroh #4555 (open) reports that existing connections keep sending GSO batches after noq-udp turns GSO off. That bears on a Linux host whose probe passes but whose driver drops the batches.
+- **Keep-alive and idle timeout** are reachable through `keep_alive_interval` (`quic.rs:366`; iroh's default is 5 s) and `max_idle_timeout` (`quic.rs:212`). iroh clamps a per-path idle timeout to 15 s and ignores a per-path keep-alive above 5 s (`iroh src/socket.rs:109`, `117`). The table's values lie inside those bounds.
+- **Who does what.** `net`'s endpoint (DIST-E7-T23) sets none of these yet. DIST-E7-T03 sets them, and DIST-E7-T16 measures what the initial window and GSO gain, macOS included.
+
 #### 4.4 Hot-path integration
 
 QUIC is asynchronous. The runner's `net` domain is a single-threaded tokio runtime on its own reserved core (RFC-0001 §8.1, ADR-0012). Per channel:
@@ -1152,7 +1176,10 @@ The plan charges these to the `HostPinned` network sub-arena (RFC-0001 §9.1). T
 2. **QUIC versus TCP α on LAN.** ADR-0011 orders QUIC before TCP on the LAN and says to revisit if LAN QUIC's p50 α is more than 50 µs worse than kernel TCP's. Measure on the M2 rigs before freezing the rank order.
 3. **Credit per frame.** A credit after every activation frame doubles packets per hop. If RFC-0061 shows a measurable α cost on Wi-Fi, credit every second frame on single-stream decode, where credit is never short.
 4. **Thunderbolt RDMA memory-region limit.** *Answered (OQ-NET-18): not binding.* TB5 allows 10 UC queue pairs per device and each RDMA runner pair needs several, so queue pairs cap RDMA runners at about 2–3 per Mac long before a limit of about 100 regions would, at fewer than 8 regions per runner. The figure is confirmed in one line of the raw-path session (question 1).
-5. **iroh transport knobs.** Whether the initial congestion window, stream receive windows and GSO are reachable through iroh's configuration API in the version pinned at M2. If they are not, the LAN prefill path loses some first-chunk throughput until upstream support lands. *Now a half-day desk check in M0 against the pinned version (DIST-E7-T21), rather than an M2 spike; DIST-E7-T16 measures what the knobs gain.*
+5. **iroh transport knobs.** Whether the initial congestion window, stream receive windows and GSO are reachable through iroh's configuration API in the version pinned at M2. If they are not, the LAN prefill path loses some first-chunk throughput until upstream support lands. *Now a half-day desk check in M0 against the pinned version (DIST-E7-T21), rather than an M2 spike; DIST-E7-T16 measures what the knobs gain.* *Answered (OQ-NET-19), against iroh 1.4.1 (§4.3 note of 2026-10-23):*
+   - **the initial window** is reachable through a congestion-controller factory, on `noq-proto`'s configs, and "RTT < 2 ms" is a wrapping controller of `net`'s;
+   - **the stream receive window** is reachable per connection, with no per-stream setter;
+   - **GSO** is on by default where noq-udp finds it, on Linux and Windows. On macOS it is absent: iroh never enables Apple's batched-send path, and no upstream issue tracks it.
 6. **CRC and AEAD throughput on Raspberry Pi 5-class CPUs** (Tier 2). *Answered (OQ-NET-20).* Arm uses the hardware CRC32C instructions with 3-way interleaving, as x86 does. The Pi 5's Cortex-A76 has the Armv8 CRC32 extension; its CPU flags are checked in `/proc/cpuinfo` at R-PI5's bring-up. DIST-E7-T17 stays as a measurement of the resulting `Z` share, not a decision.
 
 ## Proposed amendments to RFC-0001
