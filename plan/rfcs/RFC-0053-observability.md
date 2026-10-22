@@ -316,6 +316,7 @@ pub struct TraceContext {
   - bit 0 is 1, Syntropy's recording decision, since the root spans are always recorded (§3.3);
   - bit 1 (`random-trace-id`) equals the incoming `traceparent`'s bit 1 when the trace-id was continued, as W3C §3.2.2.5.2 requires and §3.4's mutation list leaves unchanged, and is 1 when ingress minted the trace-id, which it draws from random bytes;
   - Syntropy's full-trace bit never leaves the node.
+- **Every W3C trace context the node emits** follows the same rule, exported OTLP spans (§7.2) included. OTLP's `Span.flags` holds the W3C trace-flags in bits 0–7, so an exported span carries bit 1 as its trace's `random-trace-id` and never the full-trace bit.
 - **Not chosen:** moving full trace to another bit. W3C reserves the higher bits for later levels, so any of them could collide again.
 
 #### 3.3 Sampling
