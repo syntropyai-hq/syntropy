@@ -1,0 +1,567 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The golden suite of the affected-job rules in `ci/jobs.toml` (RFC-0062 §2.2; QUAL-E1-T07).
+# `lint`'s `jobs` step applies the rules to each golden's paths and fails unless they give exactly
+# its `jobs` (the hosted jobs listed), `hw_required` (the hardware jobs required) and `planned`
+# (the planned jobs whose rule matched). It also fails unless:
+# - every job and pattern in the rules is met by some golden;
+# - each pattern and lock dependency of a direct rule has a golden that it alone of its job's
+#   patterns and lock dependencies meets, so dropping it changes that golden;
+# - each crate of a closure rule's `crates` whose own closure holds no other listed crate has a
+#   golden whose closure holds it alone of them; a crate whose closure holds another is redundant;
+# - some golden has a path no rule knows;
+# - `jobs_toml` is the digest of the `ci/jobs.toml` the goldens were last checked against.
+#
+# Most goldens are commits on `main`, with the paths `git show --no-renames --name-only` lists
+# and, where `Cargo.lock` changed, the packages whose entries changed. The rest are constructed,
+# for paths that no commit has touched yet, and say so. The expected sets were worked out from
+# `cargo metadata`'s graph and the rules, not from `changes` itself.
+#
+# After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
+# and set `jobs_toml` to the digest `lint` prints.
+
+jobs_toml = "fnv1a:fb6411af5533ff8e"
+
+[[golden]]
+name = "plan only"
+source = "e67bf401 on main, \"docs(plan): split COMP-E13-T05's provider checks into a new task (#1691)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "plan/00-vision-and-scope.md",
+    "plan/implementation/dependencies.md",
+    "plan/implementation/dependency-fixes.md",
+    "plan/implementation/epics/COMP.md",
+    "plan/implementation/epics/QUAL.md",
+    "plan/implementation/roadmap.md",
+    "plan/implementation/traceability.md",
+]
+jobs = ["lint"]
+hw_required = []
+
+[[golden]]
+name = "docs and readmes"
+source = "6b696f6d on main, \"docs: redesign the README and add translations in six languages (#1599)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "README.de.md",
+    "README.es.md",
+    "README.fr.md",
+    "README.ja.md",
+    "README.md",
+    "README.pt-BR.md",
+    "README.zh-CN.md",
+    "docs/media/logo-dark.svg",
+    "docs/media/logo-light.svg",
+    "docs/media/memory-pool-dark.svg",
+    "docs/media/memory-pool-light.svg",
+    "docs/media/milestones-dark.svg",
+    "docs/media/milestones-light.svg",
+]
+jobs = ["lint"]
+hw_required = []
+
+[[golden]]
+name = "git hooks"
+source = "db13189e on main, \"fix(quality): let commit-msg accept an amended merge commit (#1677)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [".githooks/commit-msg", "plan/implementation/tools/test_naming_check.py"]
+jobs = ["lint"]
+hw_required = []
+
+[[golden]]
+name = "unclassified path"
+source = "97c34763 on main, \"build(quality): pin text files to LF checkout (#1721)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [".gitattributes"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "core only"
+source = "25f386d0 on main, \"test(core): round-trip the RFC-0032 \u00a75.1 island types and a 4-member weighted split and owner map (#1782)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = ["crates/core/src/plan/stage.rs", "crates/core/tests/plan_serde.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "io"
+source = "6140cccd on main, \"refactor(io): build SystemClock and OsEntropy through new() so a type ban catches every construction (#1765)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = ["crates/io/src/os.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "kernels and numerics"
+source = "65a4a854 on main, \"feat(kernels): add the tolerance tables, loader and release stamping (#1531)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/kernels/Cargo.toml",
+    "crates/kernels/src/lib.rs",
+    "crates/kernels/src/tolerances.rs",
+    "crates/kernels/src/tolerances/tests.rs",
+    "numerics/tolerances-v1.toml",
+    "plan/implementation/dependencies.md",
+    "plan/implementation/dependency-fixes.md",
+    "plan/implementation/epics/COMP.md",
+    "plan/implementation/epics/PROD.md",
+    "plan/implementation/roadmap.md",
+    "plan/implementation/traceability.md",
+    "plan/rfcs/RFC-0042-quantization-and-numerical-fidelity.md",
+]
+lock = ["equivalent", "hashbrown", "indexmap", "serde_spanned", "toml", "toml_datetime", "toml_parser", "toml_writer", "winnow"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "kernels-cpu"
+source = "09a8acde on main, \"feat(kernels-cpu): add ISA detection, kill switches and the per-level dispatch table (#1652)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "Cargo.lock",
+    "crates/kernels-cpu/Cargo.toml",
+    "crates/kernels-cpu/src/dispatch.rs",
+    "crates/kernels-cpu/src/isa.rs",
+    "crates/kernels-cpu/src/isa/host.rs",
+    "crates/kernels-cpu/src/isa/tests.rs",
+    "crates/kernels-cpu/src/lib.rs",
+    "crates/kernels/src/error.rs",
+    "plan/decisions/ADR-0402-cpu-kernel-isa-policy.md",
+    "plan/implementation/traceability.md",
+    "plan/rfcs/RFC-0001-system-architecture.md",
+    "plan/rfcs/RFC-0040-kernel-providers-and-backends.md",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "net and bip39"
+source = "b3dfc4a6 on main, \"feat(net): freeze the fingerprint and recovery-code word list (#1612)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "crates/net/src/lib.rs",
+    "crates/net/src/words.rs",
+    "crates/net/tests/words.rs",
+    "plan/rfcs/RFC-0034-security-and-trust.md",
+    "third_party/bip39/LICENSE",
+    "third_party/bip39/english.txt",
+    "third_party/licences.toml",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "net and blake3"
+source = "b1ce54ab on main, \"feat(net): add the RFC-0034 crypto helpers (#1604)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/net/Cargo.toml",
+    "crates/net/src/crypto.rs",
+    "crates/net/src/lib.rs",
+    "crates/net/tests/blake3_vectors.rs",
+    "crates/net/tests/crypto.rs",
+    "crates/net/tests/data/crypto-contexts.txt",
+    "crates/net/tests/data/rfc8032-ed25519.txt",
+    "plan/rfcs/RFC-0034-security-and-trust.md",
+    "third_party/blake3/LICENSE_A2",
+    "third_party/blake3/LICENSE_A2LLVM",
+    "third_party/blake3/LICENSE_CC0",
+    "third_party/blake3/test_vectors.json",
+    "third_party/licences.toml",
+]
+lock = ["block-buffer", "crypto-common", "curve25519-dalek", "curve25519-dalek-derive", "digest", "ed25519", "ed25519-dalek", "fiat-crypto", "hybrid-array", "sha2", "signature", "subtle", "syn", "typenum"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "exec"
+source = "b0ed5932 on main, \"feat(exec): add the dispatcher threads, pinned NUMA-local, with their rings and idle wait (#1788)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "Cargo.lock",
+    "crates/exec/Cargo.toml",
+    "crates/exec/src/lib.rs",
+    "crates/exec/src/thread.rs",
+    "crates/exec/src/thread/tests.rs",
+    "crates/io/Cargo.toml",
+    "crates/io/src/os.rs",
+    "crates/io/src/os/thread.rs",
+    "plan/decisions/ADR-0012-async-and-threading.md",
+    "plan/implementation/traceability.md",
+    "plan/rfcs/RFC-0001-system-architecture.md",
+    "plan/rfcs/RFC-0012-execution-scheduler.md",
+    "plan/rfcs/RFC-0050-api-surface.md",
+    "xtask/src/check_deps/rules.rs",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "sched"
+source = "bd4c2616 on main, \"refactor(sched): build SchedSection with config's InstanceSection (#1792)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "crates/sched/src/config.rs",
+    "crates/sched/src/config/tests.rs",
+    "crates/sched/src/lib.rs",
+    "plan/implementation/dependencies.md",
+    "plan/implementation/dependency-fixes.md",
+    "plan/implementation/epics/PLC.md",
+    "plan/implementation/roadmap.md",
+]
+jobs = ["build", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "graph"
+source = "43cd9e2c on main, \"feat(graph): compute legal boundaries and side data from value liveness (#1724)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "crates/graph/src/boundary.rs",
+    "crates/graph/src/boundary/tests.rs",
+    "crates/graph/src/ir.rs",
+    "crates/graph/src/ir/tests.rs",
+    "crates/graph/src/ir/validate.rs",
+    "crates/graph/src/lib.rs",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "tier"
+source = "f8ce59c8 on main, \"feat(tier): add the Linux OsMemory adapter and the host memory snapshot (#1657)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "crates/tier/src/lib.rs",
+    "crates/tier/src/os.rs",
+    "crates/tier/src/os/linux.rs",
+    "crates/tier/src/os/procfs.rs",
+    "crates/tier/tests/linux_os_memory.rs",
+    "crates/tier/tests/proc_snapshot.rs",
+    "plan/implementation/traceability.md",
+    "plan/rfcs/RFC-0020-tier-manager-and-residency.md",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "manifest outside census and kv"
+source = "ed4cf9cd on main, \"feat(manifest): read every safetensors dtype of RFC-0041 \u00a72.2 (#1741)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "crates/manifest/src/safetensors.rs",
+    "crates/manifest/src/safetensors/dtype.rs",
+    "crates/manifest/src/safetensors/tests.rs",
+    "crates/manifest/tests/data/safetensors/dtypes.safetensors",
+    "crates/manifest/tests/data/safetensors/dtypes.safetensors.hubrec",
+    "plan/rfcs/RFC-0001-system-architecture.md",
+    "plan/rfcs/RFC-0041-model-formats-packs-weight-distribution.md",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "bench"
+source = "3eb68d8d on main, \"feat(bench): add the scenario format, the SC map and their lint step (#1565)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "bench/sc-map.toml",
+    "crates/bench/Cargo.toml",
+    "crates/bench/src/lib.rs",
+    "crates/bench/src/main.rs",
+    "crates/bench/src/sc_map.rs",
+    "crates/bench/src/scenario.rs",
+    "crates/bench/tests/scenarios.rs",
+    "plan/rfcs/RFC-0061-benchmarking-and-performance-regression.md",
+    "plan/rfcs/RFC-0062-ci-cd-and-release-engineering.md",
+    "xtask/src/registry.rs",
+    "xtask/src/run.rs",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "testdata"
+source = "6a25eca5 on main, \"test(quality): pick the parity corpus sources with verified licences (#1500)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "plan/implementation/epics/QUAL.md",
+    "plan/implementation/risks.md",
+    "plan/open-questions.md",
+    "plan/rfcs/RFC-0060-testing-and-correctness.md",
+    "testdata/corpus/SOURCES.toml",
+    "testdata/corpus/attribution/massive.txt",
+    "testdata/corpus/attribution/taskmaster-1.txt",
+    "testdata/corpus/attribution/taskmaster-2.txt",
+    "testdata/corpus/attribution/taskmaster-3.txt",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "config and ci"
+source = "fa3bfcc0 on main, \"feat(config): add RequestOverrides and resolve_request, the three-way exactness rule of RFC-0054 \u00a77 (#1771)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "ci/properties.toml",
+    "crates/config/src/lib.rs",
+    "crates/config/src/request.rs",
+    "crates/config/tests/request/main.rs",
+    "plan/implementation/dependency-fixes.md",
+    "plan/implementation/epics/PROD.md",
+    "plan/rfcs/RFC-0054-configuration-and-policy.md",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "code owners"
+source = "86f3c495 on main, \"ci(quality): add code owners for xtask and .cargo (#1676)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    ".github/CODEOWNERS",
+    "plan/rfcs/RFC-0001-system-architecture.md",
+    "plan/rfcs/RFC-0062-ci-cd-and-release-engineering.md",
+    "xtask/src/codeowners.rs",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "cargo config"
+source = "dbd1faa2 on main, \"build(quality): add the xtask framework with ci and test job registries (#1480)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    ".cargo/config.toml",
+    ".github/actions/setup-rust/action.yml",
+    "AGENTS.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "xtask/Cargo.toml",
+    "xtask/src/cli.rs",
+    "xtask/src/main.rs",
+    "xtask/src/registry.rs",
+    "xtask/src/run.rs",
+]
+lock = ["syntropy-xtask"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "xtask and pr.yml"
+source = "d3f0c50b on main, \"test(quality): run the M0 loom models of the SPSC and IPC rings in hosted-l3 (#1793)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    ".github/workflows/pr.yml",
+    "Cargo.lock",
+    "crates/ipc/Cargo.toml",
+    "crates/ipc/src/shm.rs",
+    "crates/ipc/src/shm/loom_model.rs",
+    "crates/ipc/tests/cross_process.rs",
+    "crates/spsc/src/lib.rs",
+    "crates/spsc/src/ring.rs",
+    "crates/spsc/src/ring/tests.rs",
+    "crates/spsc/src/shared.rs",
+    "crates/spsc/src/shared/tests.rs",
+    "plan/implementation/dependency-fixes.md",
+    "plan/implementation/epics/QUAL.md",
+    "plan/rfcs/RFC-0060-testing-and-correctness.md",
+    "plan/rfcs/RFC-0062-ci-cd-and-release-engineering.md",
+    "xtask/src/ci_gate.rs",
+    "xtask/src/determinism.rs",
+    "xtask/src/loom.rs",
+    "xtask/src/main.rs",
+    "xtask/src/registry.rs",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "fork kernel change"
+source = "constructed: the diff of a fork PR touching the CUDA provider; the repository has had no fork PR to record, and ci-gate's tests judge it with a fork event"
+paths = ["crates/kernels-cuda/src/lib.rs"]
+jobs = ["build", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "toolchain pin"
+source = "constructed: a toolchain bump alone"
+paths = ["rust-toolchain.toml"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "actions and the root manifest"
+source = "constructed: a composite action and the workspace manifest"
+paths = [".github/actions/setup-rust/action.yml", "Cargo.toml"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "governance, licences and version"
+source = "constructed: the top-level files xtask and bench read"
+paths = [
+    "governance/maintainers.toml",
+    "LICENSE-MIT",
+    "version.txt",
+    "third_party/licences.toml",
+    "deny.toml",
+]
+jobs = ["build", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "tolerance tables only"
+source = "constructed: a change to the release tolerance table alone, which `kernels` embeds and the op conformance checks run against"
+paths = ["numerics/tolerances-v1.toml"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "CPU provider only"
+source = "constructed: a change to the CPU provider alone, which RFC-0060 §3.4 builds with the sanitizers"
+paths = ["crates/kernels-cpu/src/lib.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "kernels only"
+source = "2f4fba40 on main, \"feat(kernels): add the Numerics static check and the accumulation detector (#1696)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "crates/kernels/src/lib.rs",
+    "crates/kernels/src/numerics.rs",
+    "crates/kernels/src/numerics/tests.rs",
+    "crates/kernels/src/op.rs",
+    "crates/kernels/src/op/tests.rs",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "exec only"
+source = "constructed: a change to `exec` alone; no commit has touched only `exec`"
+paths = ["crates/exec/src/lib.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "ipc only"
+source = "constructed: a change to `ipc` alone; no commit has touched only `ipc`"
+paths = ["crates/ipc/src/lib.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "census module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/manifest/src/census.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "census module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/manifest/src/census/scan.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "kv module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/manifest/src/kv.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "kv module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/manifest/src/kv/formula.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "refexec module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/refexec.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "refexec module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/refexec/run.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "parity module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/parity.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "parity module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/parity/report.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "conformance module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/conformance.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "conformance module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/conformance/cases.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "vendored ggml tree"
+source = "constructed: the vendored tree alone; it does not exist yet"
+paths = ["third_party/ggml/src/ggml.c"]
+jobs = ["build", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "ggml lock file"
+source = "constructed: the lock file alone, as a ggml bump's commit record changes; it does not exist yet"
+paths = ["third_party/ggml.lock"]
+jobs = ["build", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "CUDA image"
+source = "constructed: a CUDA toolchain image alone; none exists yet"
+paths = ["ci/images/cuda-12/Dockerfile"]
+jobs = ["build", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]

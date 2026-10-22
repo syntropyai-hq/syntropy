@@ -1026,3 +1026,16 @@ COMP-E3-T02 builds the CPU provider's shell. Its first criterion read "the fake 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | COMP-E3-T02's first criterion becomes RFC-0040 §2's contract checks over real host buffers with a stand-in op; QUAL-E3-T12 gains "the fake's `Numeric` mode runs on the CPU provider shell's streams, buffers and capture", and QUAL-E3-T12 → COMP-E3-T02 | COMP-E3-T02, QUAL-E3-T12 | R9 | M0a → M0a. COMP-E3-T02 reaches none of QUAL-E3-T12, COMP-E3-T09 or COMP-E3-T03, so the edge adds no cycle, and COMP-E3-T02 stays ready for its M0a dependents |
+
+## The follow-ups of QUAL-E1-T07's rules (2026-10-23)
+
+QUAL-E1-T07 puts the affected-job rules in `ci/jobs.toml` (RFC-0062 §2.2). Four later tasks must change that file, and their rows did not say so. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E2-T01 → QUAL-E1-T07; its criterion names the App's bot account in `hardware.status_creators` | QUAL-E2-T01 | R9 | `ci-gate` counts a `hw/<job>` status only from an account that list names, and the list is empty until the App exists (RFC-0062 §2.5, note 2026-10-23) |
+| QUAL-E2-T02's criterion removes `hw-cuda-ada`'s `planned` mark | QUAL-E2-T02 | R9 | the interim of ADR-0620's revision of 2026-10-23 ends for `hw-cuda-ada` when its rig runs it. QUAL-E2-T02 already depends on QUAL-E1-T07 |
+| COMP-E4-T01 → QUAL-E1-T07; its criterion lists `cudarc` in `hw-cuda-ada`'s `lock_deps`, with a golden | COMP-E4-T01 | R9 | COMP-E4-T01 adds the CUDA bindings crate, so a `Cargo.lock` change to it should require the rig from then on. ggml's bindings are generated inside `kernels-ggml` (COMP-E7-T01), whose paths the rule covers, so COMP-E7-T01 needs no such line. From the engine-lane review of #1830 |
+| QUAL-E3-T10 → QUAL-E1-T07; its criterion widens `hosted-l3`'s rule to any further crate its Miri and sanitizer jobs build | QUAL-E3-T10 | R9 | RFC-0060 §3.4's sanitizer builds cover the `unsafe` crates and the CPU provider. QUAL-E1-T07 lists `spsc` and `kernels-cpu` beside §2.3's five crates; a crate QUAL-E3-T10 adds to its jobs needs the rule too. From the engine-lane review of #1830 |
+
+QUAL-E1-T07 is M0a, and so are QUAL-E2-T01, QUAL-E2-T02 and COMP-E4-T01; QUAL-E3-T10 is M1a. So no edge points later, and QUAL-E1-T07 depends only on QUAL-E1-T06, so there is no cycle.
