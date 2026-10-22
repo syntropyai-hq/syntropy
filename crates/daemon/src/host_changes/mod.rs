@@ -24,6 +24,16 @@
 //! writes `<state>/host-changes/<id>.reverted`, and checks for it first, which makes a second run
 //! skip what the first undid. The binary writes the same marker when it closes a change, and treats
 //! an existing marker as reverted.
+//!
+//! **One writer at a time: assumed, not enforced (open).** A [`HostChangeLedger`] reads the
+//! whole file when it is opened and rewrites the whole file on every save, through
+//! `host-changes.json.tmp` and a rename. The writers above are separate processes, and `trust`
+//! records a change on the client too (ADR-0505 item 6). Nothing serialises them yet. Two writers
+//! open at once each hold their own copy. Then the later save drops the entries the earlier one
+//! added, which leaves a change on the host with no entry for uninstall to revert. Or one writer
+//! removes the other's temporary file, and that save fails. An advisory lock on the state
+//! directory, held from open to the last save, would close this. It is not built here, pending
+//! review of PROD-E12-T01.
 
 pub mod revert;
 pub mod script;
