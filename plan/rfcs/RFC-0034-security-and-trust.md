@@ -127,6 +127,8 @@ A compromised member (A5) or the holder of a used, leaked token (A8) can therefo
 - `syntropy-session-wrap-v1` (§13);
 - `syntropy-admit-v1`, `syntropy-revoke-v1`, `syntropy-authority-v1` (the other authority events of §8.3), `syntropy-apikey-v1`.
 
+*Note 2026-10-22 (DIST-E2-T04, from review):* strict verification also refuses a public key that is not of prime order, where `[ℓ]A ≠ identity`. Refusing small-order keys alone is not enough. A key `A + T`, with `T` a point of small order, verifies a signature made with `A`'s secret whenever `T`'s order divides the challenge `k`, so one secret could sign under up to eight public keys, and a `NodeId` would not name one key. Every honest key is `[a]B` and has prime order, so the check costs honest peers nothing. `net::crypto::verify` applies it after the canonical-encoding and small-order checks.
+
 ### 4. Keys and their storage
 
 | Key | Generated | Held by | Storage | Lifetime |

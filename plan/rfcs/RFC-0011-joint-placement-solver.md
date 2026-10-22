@@ -4,7 +4,7 @@
 - Area: placement and scheduling
 - Depends on: RFC-0001, RFC-0010, RFC-0023 (§3, §13), RFC-0060 (§2.4), ADR-0101, ADR-0102, ADR-0103, ADR-0006, ADR-0007, ADR-0008, ADR-0009, ADR-0010, ADR-0017, ADR-0019
 - Date: 2026-10-19
-- Revised: 2026-10-20: the DP with its greedy stage cost is the M1 method and the MILP sits behind a study (§9.5); a TTFT cap (§7.1); wireless hops at the mean with a stall bound (C14); a departure margin (§4); streaming at decode where measured faster (§3.1); an approximate-knob line in the preview (§14.1); open questions 5 and 8 answered
+- Revised: 2026-10-20: the DP with its greedy stage cost is the M1 method and the MILP sits behind a study (§9.5); a TTFT cap (§7.1); wireless hops at the mean with a stall bound (C14); a departure margin (§4); streaming at decode where measured faster (§3.1); an approximate-knob line in the preview (§14.1); open questions 5 and 8 answered; 2026-10-22: a note on §5's `c^coll`, which reads α for `α_eff` and gives the full mesh the one-shot form `α + S/β`
 
 ## Summary
 
@@ -330,6 +330,12 @@ with ties broken by bytes of the model already held locally (fewer bytes to fetc
 `c^hop_{p,q} = α^plan(prim(p) → prim(q)) + S(T)/β(prim(p) → prim(q))` on the cheapest transport the edge can actually get. RDMA counts only if both endpoints have queue pairs left: each RDMA edge of the plan takes QPs for the decode lane, the prefill lane and, on the return edge, tokens, and the solver reserves headroom for one overlapping epoch and two replay lanes against `RdmaPortInfo::max_qp` minus what other instances hold (RFC-0031 QP budget). An edge without QPs is costed on QUIC. Here `S(T) = T · h_model · streams · bytes(wire dtype)` (F32 in exact mode unless the family has passed BF16, ADR-0019 item 5) and `α^plan` is the p50 on wired media and the **measured mean** on `WiFi` and `Overlay` (ADR-0008 item 4, revised 2026-10-20). The mean is what tokens per second depend on; the tail of those links enters through the stall-rate row C14, and p99 is used only by the TP/EP gate (§3.1, RFC-0010 §3.5) and as a tie-breaker between plans whose predicted `t_tok` is equal. Co-located placement nodes on one host use the shared-memory link's α. The ring-return edge (tail → head) carries a `TokenFrame` (token IDs plus any draft), not activations, so its cost is `α^plan + S_token/β` with `S_token` a few hundred bytes; C4's return row uses `c^ret_{p,q}`.
 
 `c^coll_{b,p}` for an island or intra-node TP group of N members: `2 · layers(b) · t_AR(N, S(T))`, with `t_AR = 2(N−1)·α_eff + 2(N−1)/N · S/β` for ring all-reduce or `α_eff + (N−1)·S/β` for one-shot on a full mesh, whichever RFC-0032 selects for that group (cost model §3.8). For EP islands: `2 · moe_layers(b) · (α_eff + k · h_model · 4 B / β)` per pass (dispatch and combine, §3.9).
+
+*Note, 2026-10-22 (DIST-E13-T12), a correction for the maintainers to confirm:* the formulas above follow RFC-0032 §5.3's table, which a note of the same date reads with α, the size-independent per-message cost α = α_eff,probe − S₀/β. ADR-0310's `α_eff` already includes S/β at the probe partial, and RFC-0001 §5.2's `LinkCaps::alpha_eff` is used alone, never with S/β added again. Two changes follow:
+- read α for `α_eff` in `t_AR` and in the EP term. Otherwise the size term is counted twice;
+- one-shot on a full mesh is `α + S/β`, since its N−1 sends go out in parallel on separate links. `α + (N−1)·S/β` is the one-shot form when the sends share one NIC.
+
+`syntropy-solver`'s `collective` module prices `t_AR` this way (`one_shot`, `ring`, `choose`), and derives α from a probe with `alpha_from_probe`. PLC-E5-T09's MILP term should take its `t_AR` from it.
 
 **Variables**
 

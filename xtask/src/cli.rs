@@ -39,6 +39,11 @@ Commands:
                           generate THIRD-PARTY-NOTICES for the release build (ADR-0018 §6) and
                           write it to <file>; without --out, only check it can be generated,
                           which is what `lint` runs
+  instructions --show <path> [--ref <rev>]
+                          print one file ci/agent-instructions.toml lists, and refuse any other
+                          (RFC-0062 §12.3); with --ref, the list and the file come from <rev>
+  instructions --list [--ref <rev>]
+                          print the files agents load as instructions or configuration
   help                    print this message
 
 An option is `--name <value>` or `--name=<value>`, given at most once.
@@ -56,6 +61,7 @@ const COMMANDS: &[&str] = &[
     "spdx",
     "third-party",
     "notices",
+    "instructions",
     "help",
 ];
 
@@ -97,6 +103,12 @@ pub enum Command<'r> {
     Notices {
         manifest_path: Option<String>,
         out: Option<String>,
+    },
+    /// `instructions`: one listed file when `show` is set, else the list, read from `rev` when
+    /// given, else from the working tree.
+    Instructions {
+        show: Option<String>,
+        rev: Option<String>,
     },
 }
 
@@ -191,6 +203,11 @@ pub enum UsageError {
         name: String,
         valid: Vec<&'static str>,
     },
+    /// A command that needs exactly one of its options.
+    OneOf {
+        command: &'static str,
+        options: &'static [&'static str],
+    },
 }
 
 impl fmt::Display for UsageError {
@@ -263,6 +280,11 @@ impl fmt::Display for UsageError {
                 "unknown profile `{name}`; valid profiles: {}",
                 valid.join(", ")
             ),
+            UsageError::OneOf { command, options } => write!(
+                f,
+                "`{command}` needs exactly one of {}",
+                options.join(" or ")
+            ),
         }
     }
 }
@@ -310,6 +332,23 @@ pub fn parse<'r>(
                 out: o.value("--out"),
             })
         }),
+        "instructions" => {
+            let o = parse_options(rest, &["--show", "--ref"], &["--list"])?;
+            if o.help {
+                return Ok(Command::Help);
+            }
+            let show = o.value("--show");
+            if show.is_some() == o.flag("--list") {
+                return Err(UsageError::OneOf {
+                    command: "instructions",
+                    options: &["--show", "--list"],
+                });
+            }
+            Ok(Command::Instructions {
+                show,
+                rev: o.value("--ref"),
+            })
+        }
         other if other.starts_with('-') => Err(UsageError::UnknownOption(other.to_owned())),
         other => Err(UsageError::UnknownCommand(other.to_owned())),
     }
@@ -776,6 +815,35 @@ mod tests {
     }
 
     #[test]
+    fn instructions_takes_show_or_list_and_an_optional_ref() {
+        assert_eq!(
+            parse_real("instructions --show AGENTS.md"),
+            Ok(Command::Instructions {
+                show: Some("AGENTS.md".into()),
+                rev: None
+            })
+        );
+        assert_eq!(
+            parse_real("instructions --list --ref origin/main"),
+            Ok(Command::Instructions {
+                show: None,
+                rev: Some("origin/main".into())
+            })
+        );
+        let one_of = Err(UsageError::OneOf {
+            command: "instructions",
+            options: &["--show", "--list"],
+        });
+        assert_eq!(parse_real("instructions"), one_of);
+        assert_eq!(parse_real("instructions --show a --list"), one_of);
+        assert_eq!(parse_real("instructions --help"), Ok(Command::Help));
+        assert_eq!(
+            parse_real("instructions --show").unwrap_err(),
+            UsageError::MissingValue("--show")
+        );
+    }
+
+    #[test]
     fn no_command_and_unknown_command() {
         assert_eq!(parse_real(""), Err(UsageError::NoCommand));
         assert_eq!(
@@ -785,7 +853,7 @@ mod tests {
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
             "unknown command `frob`; valid commands: ci, test, check-deps, build, deny, spdx, \
-             third-party, notices, help"
+             third-party, notices, instructions, help"
         );
         assert_eq!(
             parse_real("--frob"),

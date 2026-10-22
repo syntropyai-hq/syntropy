@@ -1,0 +1,7 @@
+# A vendored component the base does not list.
+[[file]]
+path = "third_party/fixture/fixture.c"
+upstream = "https://example.invalid/fixture-c"
+version = "1.0.0"
+license = "MIT"
+notice = "third_party/fixture/LICENSE"

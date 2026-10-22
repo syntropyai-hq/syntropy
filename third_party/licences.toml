@@ -21,5 +21,35 @@
 #   version = "<release tag or commit>"
 #   license = "MIT"                          # an SPDX expression
 #   notice = "third_party/ggml/LICENSE"      # the file with its copyright and licence text
-#
-# No third-party code is vendored yet.
+
+# The official BLAKE3 test vectors (`test_vectors/test_vectors.json`) and the project's three
+# licence files, byte-identical to the upstream commit. `syntropy-net`'s tests check the `blake3`
+# crate against them (RFC-0034 §3, DIST-E2-T04). Upstream releases the work under CC0 1.0, or
+# alternatively Apache-2.0 or Apache-2.0 with the LLVM exception.
+[[file]]
+path = "third_party/blake3/test_vectors.json"
+upstream = "https://github.com/BLAKE3-team/BLAKE3"
+version = "f55849f89cd85083c1c9daa2c5de20766f309c00"
+license = "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+notice = "third_party/blake3/LICENSE_CC0"
+
+[[file]]
+path = "third_party/blake3/LICENSE_A2"
+upstream = "https://github.com/BLAKE3-team/BLAKE3"
+version = "f55849f89cd85083c1c9daa2c5de20766f309c00"
+license = "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+notice = "third_party/blake3/LICENSE_CC0"
+
+[[file]]
+path = "third_party/blake3/LICENSE_A2LLVM"
+upstream = "https://github.com/BLAKE3-team/BLAKE3"
+version = "f55849f89cd85083c1c9daa2c5de20766f309c00"
+license = "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+notice = "third_party/blake3/LICENSE_CC0"
+
+[[file]]
+path = "third_party/blake3/LICENSE_CC0"
+upstream = "https://github.com/BLAKE3-team/BLAKE3"
+version = "f55849f89cd85083c1c9daa2c5de20766f309c00"
+license = "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+notice = "third_party/blake3/LICENSE_CC0"

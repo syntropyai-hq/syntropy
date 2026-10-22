@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# The contribution checks `dco` and `pr-title` (RFC-0062 §12.3), two of the three required checks
-# (§2.5). They judge a PR's commits, title, body and labels, so the PR must not be able to change
+# The contribution checks `dco` and `pr-title` (RFC-0062 §12.3), and `dep-diff` for new direct
+# dependencies (§12.3, §11.4), all required checks (§2.5). They judge a PR's commits, title, body,
+# labels, comments and manifests, so the PR must not be able to change
 # how it is judged. Each job checks out the base branch, never the PR, and runs the base branch's
 # `cargo xtask` with the base branch's `governance/maintainers.toml` and `version.txt`. It restores
 # no cache, so nothing the PR ran elsewhere reaches the build.
@@ -27,7 +28,7 @@ permissions:
 
 concurrency:
   group: pr-meta-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 defaults:
   run:
@@ -46,7 +47,7 @@ jobs:
         if: github.event_name == 'merge_group'
         run: echo "dco is required on each member PR's head (RFC-0062 §12.3)"
       - name: Check out the base branch, not the PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -54,20 +55,20 @@ jobs:
       # No cache: code the PR runs in any other job can write a cache entry under this PR's ref,
       # and a restored `target/` could hold an `xtask` built from the PR. Built from scratch, the
       # check is the base branch's.
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name != 'merge_group'
         uses: ./.github/actions/setup-rust
         with:
           cache-key: pr-meta
           cache: "off"
       - name: Fetch every commit of the PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
         run: gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" > "$RUNNER_TEMP/commits.json"
       - name: cargo xtask ci dco
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         run: >-
           cargo xtask ci dco
           --event "$GITHUB_EVENT_PATH"
@@ -94,20 +95,20 @@ jobs:
           echo "::error::the base branch changed; push to the PR so pr.yml runs ci-gate against the new base"
           exit 1
       - name: Check out the base branch, not the PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
       # No cache, as in `dco`.
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name != 'merge_group'
         uses: ./.github/actions/setup-rust
         with:
           cache-key: pr-meta
           cache: "off"
       # The label history is fetched with its headers, which show that the last page was read.
       - name: Fetch every commit and the label history of the PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -117,7 +118,7 @@ jobs:
           gh api --include --paginate "repos/$REPO/issues/$NUMBER/events" \
             > "$RUNNER_TEMP/label-events.http"
       - name: cargo xtask ci pr-title
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'merge_group'
         run: >-
           cargo xtask ci pr-title
           --event "$GITHUB_EVENT_PATH"
@@ -125,3 +126,90 @@ jobs:
           --label-events "$RUNNER_TEMP/label-events.http"
           --roster "$GITHUB_WORKSPACE/governance/maintainers.toml"
           --version-file "$GITHUB_WORKSPACE/version.txt"
+
+  dep-diff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Pass on a merge group
+        if: github.event_name == 'merge_group'
+        run: echo "dep-diff is required on each member PR's head (RFC-0062 §12.3)"
+      - name: Check out the base branch, not the PR
+        if: github.event_name != 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      # The PR merged into its base, read as data: `cargo metadata --no-deps` on its manifests,
+      # and its licence manifest. None of its code runs.
+      - name: Check out the PR's manifests, as data
+        if: github.event_name != 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          persist-credentials: false
+      # No cache, as in `dco`.
+      - if: github.event_name != 'merge_group'
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: pr-meta
+          cache: "off"
+      # A maintainer approves a new dependency with a PR comment naming the head commit;
+      # `dep-approval.yml` re-runs this job when such a comment is posted, edited or deleted.
+      # The roster comes from the base branch's current tip, not from the checkout: a re-run
+      # replays the original event, and its base commit could predate a maintainer's removal.
+      - name: Fetch the PR's comments and the base branch's current roster
+        if: github.event_name != 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          gh api --paginate "repos/$REPO/issues/$NUMBER/comments" > "$RUNNER_TEMP/comments.json"
+          gh api --method GET -H "Accept: application/vnd.github.raw" \
+            "repos/$REPO/contents/governance/maintainers.toml" -f ref="$BASE_REF" \
+            > "$RUNNER_TEMP/maintainers.toml"
+      # The base branch's `dep-diff` decides. `cargo xtask` exits 2 on a usage error, which an
+      # unknown job is: that exit code says the base has no `dep-diff` job. Bootstrap: only #1590,
+      # the PR that adds the job, may then be judged by its own; every other such base fails.
+      - name: cargo xtask ci dep-diff, from the base branch
+        id: gate
+        if: github.event_name != 'merge_group'
+        env:
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          status=0
+          cargo xtask ci dep-diff \
+            --base "$GITHUB_WORKSPACE" \
+            --head "$GITHUB_WORKSPACE/pr" \
+            --event "$GITHUB_EVENT_PATH" \
+            --comments "$RUNNER_TEMP/comments.json" \
+            --roster "$RUNNER_TEMP/maintainers.toml" || status=$?
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$status" -eq 2 ] && [ "$NUMBER" = 1590 ]; then
+            echo "::warning::the base branch has no dep-diff job yet; #1590, which adds it, is judged by its own"
+            echo "bootstrap=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$status" -eq 2 ]; then
+            echo "::error::the base branch has no dep-diff job, or rejected its options; rebase onto main"
+          fi
+          exit 1
+      - name: cargo xtask ci dep-diff, from #1590 (bootstrap only)
+        if: steps.gate.outputs.bootstrap == 'true'
+        working-directory: pr
+        run: |
+          rustup toolchain install --no-self-update
+          cargo xtask ci dep-diff \
+            --base "$GITHUB_WORKSPACE" \
+            --head "$GITHUB_WORKSPACE/pr" \
+            --event "$GITHUB_EVENT_PATH" \
+            --comments "$RUNNER_TEMP/comments.json" \
+            --roster "$RUNNER_TEMP/maintainers.toml"

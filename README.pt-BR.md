@@ -172,7 +172,7 @@ O [`plan/README.md`](plan/README.md) é o índice e sugere uma ordem de leitura.
 | Caminho | O que contém |
 |---|---|
 | [`plan/00-vision-and-scope.md`](plan/00-vision-and-scope.md) | O problema, os cenários, a matriz de plataformas, os modelos-alvo, os critérios de sucesso SC-1 a SC-32 (todos são metas) e o que significa "funcionalidades completas" |
-| [`plan/decisions/`](plan/decisions/) | ADRs. O ADR-0000 traz as diretrizes de produto D1–D8, os ADR-0001 a ADR-0021 formam a base, e os demais são numerados por área |
+| [`plan/decisions/`](plan/decisions/) | ADRs. O ADR-0000 traz as diretrizes de produto D1–D8, os ADR-0001 a ADR-0022 formam a base, e os demais são numerados por área |
 | [`plan/rfcs/`](plan/rfcs/) | A RFC-0001, com a arquitetura do sistema, e 24 RFCs de domínio para posicionamento, níveis, execução distribuída, computação, produto e qualidade |
 | [`plan/implementation/`](plan/implementation/README.md) | As tarefas em seis arquivos de épicos, o roadmap, o relatório de dependências, a rastreabilidade, o registro de riscos e os scripts que verificam tudo isso |
 | [`plan/open-questions.md`](plan/open-questions.md) | O que ainda não foi decidido, cada item com a tarefa ou a medição que vai resolvê-lo |
