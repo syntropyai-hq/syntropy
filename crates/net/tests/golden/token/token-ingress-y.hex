@@ -1,0 +1,14 @@
+# token-ingress-y: step 21's copy to ingress Y: the Error entry alone, its TRACE moved to span 0
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 02 01 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+15 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 30 00 00 00 df fa ff 00 8f f6 1a 51  # 0030 header
+01 00 02 00 28 00 00 00 00 00 01 00 00 00 00 00  # 0040 extension
+05 00 00 00 1a 00 00 00 00 72 91 b0 cf ee 0d 2c  # 0050 extension
+4b 6a 89 a8 c7 e6 05 24 43 82 a1 c0 df fe 1d 3c  # 0060 extension
+5b 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+44 44 33 33 22 22 11 11 02 00 00 00 03 00 00 00  # 0080 payload
+07 00 00 00 00 00 05 00 00 00 00 00 03 00 0c 03  # 0090 payload
+00 00 00 00 00 00 00 00 00 00 00 00 02 00 00 00  # 00a0 payload

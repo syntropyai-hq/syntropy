@@ -78,6 +78,12 @@ fn run_contender(root: &Path) -> String {
 /// Runs contenders until one opens `root` or `limit` has passed, and returns the last report.
 /// Used only after a holder is killed: Windows documents that it frees a dead process's file
 /// locks when the system gets to it, not at once. Every earlier attempt must be a refusal.
+// The wait is on another process and the OS, so it reads real time. A listed exception to the
+// determinism lints (`xtask/src/determinism.rs`).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "waits in real time for the OS to free a dead process's file lock"
+)]
 fn run_contender_until_opened(root: &Path, limit: Duration) -> String {
     let start = Instant::now();
     loop {

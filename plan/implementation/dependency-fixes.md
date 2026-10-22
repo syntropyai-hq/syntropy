@@ -680,6 +680,8 @@ PROD-E5-T02 could not meet two of its criteria as written: "a LAN bind without a
 
 Open, for the owning tasks (not changed here): PROD-E5-T03's "leaf rotation under 100 open streams drops none" and PROD-E5-T06's "replacing the certificate files switches new connections to the new certificate without restart" need a running HTTP server, and neither task reaches PROD-E2-T01 through its dependencies.
 
+*Update 2026-10-22 (PROD-E5-T03):* both are settled in "PROD-E5-T03: the route, the listener and SEC-006 move out" below. PROD-E5-T03's rotation criterion is now checked at the TLS layer, over in-memory connections, which needs no server. The listener's version moves to PROD-E5-T06, which gains PROD-E5-T06 → PROD-E2-T01, so its file-reload criterion reaches the server too. PROD-E5-T03's wildcard criterion, added above, moves to PROD-E5-T06 with its PROD-E5-T02 edge.
+
 ## QUAL-E17-T15's nested-field case (2026-10-22)
 
 The post-merge reviews of #1658 found that a serde default keeps an added field compatible only in CBOR. Over the postcard IPC, a field added to any type under `PlacementPlan` or `PlanDelta` changes the message layout, and a new enum variant cannot be decoded by an older peer. RFC-0001 §5 gains a dated note that either addition is an `ipc_protocol` change (RFC-0001 §18.20, issues #1675 and #1660).
@@ -699,6 +701,67 @@ The review of #1694 found that DIST-E9-T01's base events and entries carry types
 | DIST-E9-T01 holds a `NodeInfo` stand-in with the node ID; DIST-E9-T03 replaces it with RFC-0001 §5.2's type and gains DIST-E9-T03 → PLC-E1-T09 | DIST-E9-T01, DIST-E9-T03 | R9 | `apply` reads only the ID, and an edge to PLC-E1-T09, whose field types are still TBD (#1524), would hold the event log behind it. DIST-E9-T03 wires admission, which reads the rest of `NodeInfo` |
 | `ChunkIdsCommitted` is not one of DIST-E9-T01's events; DIST-E9-T03 already wires it with COMP-E12-T06 | DIST-E9-T01 | R9 | its evidence is a signed record (DIST-E9-T16) whose type COMP-E12-T06 defines, after DIST-E9-T01 |
 | DIST-E9-T12 checks an invite's single use against earlier `InviteConsumed` entries, and a `CoordinatorElected`'s certificate as carried with it and against applied `NodeRevoked` entries | DIST-E9-T12 | R9 | its old text read approvals and certificates kept in `ClusterState`, which DIST-E9-T16 keeps after DIST-E9-T12. The log's own events give the same verdicts |
+
+## QUAL-E9-T01's IPC loading and release-artefact criterion (2026-10-22)
+
+QUAL-E9-T01 (M1a) builds the fault points in `syntropy-obs`. Two parts of its row need work from tasks it does not depend on: pushing a plan over IPC needs DIST-E1-T03's command channel and a message RFC-0001 §3.5 does not define, and a scan of a `release` artefact needs a job that builds one.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "over IPC" moved from QUAL-E9-T01 to DIST-E1-T13 (M1a, added) → DIST-E1-T03, QUAL-E9-T01 | QUAL-E9-T01, DIST-E1-T13 | R9 | RFC-0060 §9.2 pushes plans over IPC in tests, but RFC-0001 §3.5's message set has no fault-plan message and DIST-E1-T03, which builds the channel, is still open. DIST-E1-T13 proposes the message, and its handler calls QUAL-E9-T01's `install` |
+| QUAL-E9-T01's symbol check reads the core binary built in `lint` with the release build's features; the scan of the nightly `release` artefact moved to QUAL-E16-T15; QUAL-E16-T15 → QUAL-E9-T01 | QUAL-E9-T01, QUAL-E16-T15 | R9 | no M1a job builds a `release` artefact: the PR build is `dev` until QUAL-E16-T21's `pr` profile, and the `test-release` build turns `fault-injection` on by design. QUAL-E16-T15 builds and inspects the nightly `release` Linux core binary |
+
+## RFC-0054 §5.1's missing claims (2026-10-22)
+
+DIST-E18-T01 registered three claims that RFC-0054 §5.1 did not list (#1679). §5.1 now lists `orphan.*` (RFC-0032), the `invite.require_confirm` carve-out (RFC-0034 inside RFC-0030's `invite.*`) and the top-level `standby` (RFC-0033), and §5.4 lists `standby`. PROD-E1-T16 is the task that checks section claims against that table. It had no criterion for shared sections, which RFC-0054 §5.1's carve-out note of 2026-10-21 says its check should cover.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T16 gains "CI fails on a key of a shared section that RFC-0054 §5.1 does not list as that owner's carve-out" | PROD-E1-T16 | Definition of done | without it, a shared section could add a key inside another owner's prefix unchecked, as the carve-out note warns. The row names no carve-outs: the check reads them from §5.1, and code already shares keys in `net.*`, `rdma.*`, `invite.*`, `models.*` and `replan.*`, so a list in the row would drift. PROD-E1-T16 already depends on DIST-E18-T01, which registers them, so no edge changes |
+
+## PROD-E5-T03: the route, the listener and SEC-006 move out (2026-10-22)
+
+PROD-E5-T03 builds the local CA as a library in `syntropy-api` (`syntropy_api::tls`). Three of its row's parts need things the CA does not build: the `GET /v1/syntropy/tls/ca` route and a TLS listener need the HTTP server (PROD-E2-T01), and SEC-006 is a doctor check (PROD-E9-T03). Each moves to the task that owns what it needs. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "SEC-006 reports that clients must re-trust" moves to PROD-E9-T03; PROD-E5-T03 keeps "generates a new CA and records the replacement for SEC-006"; PROD-E9-T03 → PROD-E5-T03, and RFC-0050 §11.1.1 joins PROD-E9-T03's Implements | PROD-E5-T03, PROD-E9-T03 | R9 | PROD-E9-T03 builds the SEC checks and reads the CA's replacement record (`tls/ca-replaced.json`); M1a → M1a, and PROD-E5-T03 does not depend on PROD-E9-T03, so the edge adds no cycle |
+| PROD-E5-T06 becomes the API's TLS listener: rustls on non-loopback binds from a reloadable source (user `{ cert, key }` files or the local CA's leaf) and the `GET /v1/syntropy/tls/ca` route, which leaves PROD-E5-T03's scope; PROD-E5-T06 → PROD-E5-T03 and PROD-E5-T06 → PROD-E2-T01 | PROD-E5-T03, PROD-E5-T06 | R9 | the listener and the route serve what the CA issues, and both need the server; M1a → M1a and M1a → M0a, no cycle |
+| The wildcard criterion "a wildcard bind with `api.tls = "auto"` is served with TLS from a local CA leaf" moves from PROD-E5-T03 to PROD-E5-T06, with its PROD-E5-T02 edge, which PROD-E5-T06 already has; PROD-E5-T03 drops PROD-E5-T03 → PROD-E5-T02 | PROD-E5-T03, PROD-E5-T06, PROD-E5-T02 | R9, R8 | serving a bind is the listener's work; nothing else in PROD-E5-T03's criteria uses the bind plan |
+| PROD-E5-T03's "leaf rotation under 100 open streams drops none" is checked at the TLS layer; PROD-E5-T06 gains "leaf rotation under 100 open streams through the listener drops none" | PROD-E5-T03, PROD-E5-T06 | R9 | the CA's leaf resolver is tested over in-memory TLS connections; streams through the listener need the server |
+
+## DIST-E11-T10's zero-`predicted_p99` criterion (2026-10-22)
+
+A post-merge review of #1658 found that `HopPlan::predicted_p99` decodes as 0 from a plan written without it, so code that read 0 as a real prediction would show constant drift or fail validation on every such plan (issue #1661). The field stays `Nanos`. RFC-0032 §3.3 gains a dated note that 0 means no tail prediction, and DIST-E11-T10, which builds the extensions' validation, gains the criterion.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E11-T10 gains the criterion: a hop with `predicted_p99 = 0` has no tail prediction, so the drift detector makes no tail comparison for it and `validate()` accepts it; a hop whose measured p99 exceeds a nonzero `predicted_p99` by more than `replan.drift_threshold`, sustained past `replan.drift_window`, raises drift; DIST-E11-T10 → PLC-E3-T07 | DIST-E11-T10 | R9 | both drift cases run the hop through PLC-E3-T07's drift detector, which DIST-E11-T10 did not reach. The positive case keeps the zero case from passing on a detector that never compares tails. PLC-E3-T07 is M1a, so the edge points to an earlier milestone |
+
+## DIST-E8-T03's `Token` parts (2026-10-22)
+
+RFC-0031 §6.5 splits a `Token` step that is larger than the channel's slot into parts. A step splits at entry boundaries, and a single entry larger than a slot splits its tap block across parts. DIST-E8-T03's row covers only the part fields, which it reads, writes and checks, and no task built the split. Splitting a tap block needs its layout, which DIST-E8-T06 reads, so the split joins that row instead of a new task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E8-T06 gains the `Token` step split: parts at entry boundaries, one entry's tap block across parts, capability bit 15 `TOKEN_PARTS` (RFC-0031 §6.5, §10). It also gains a round-trip criterion across parts and the refusal of malformed parts | DIST-E8-T03, DIST-E8-T06 | R9 | DIST-E8-T03 builds the part fields, and the split needs the tap block's layout, which DIST-E8-T06 owns. DIST-E8-T06 already depends on DIST-E8-T03, so no edge changes |
+
+## QUAL-E1-T31: rustdoc in `lint` (2026-10-22)
+
+#1666 found broken intra-doc links in `core`, `graph` and `manifest` that no gate caught, because no CI job runs rustdoc. No task covered adding it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added QUAL-E1-T31 (M0a) → QUAL-E1-T02, QUAL-E1-T06 | QUAL-E1-T31 | Definition of done | the step is a `lint` addition, so it needs `xtask`'s job framework and `pr.yml`'s `lint` job, both M0a. It is a new row and not part of QUAL-E1-T09, whose scope is workflow security. It must land after #1743, #1666's fix, or it fails on `main` |
+
+## DIST-E7-T02's foreign frames and DIST-E7-T12's stale descriptors (2026-10-22)
+
+The independent review of #1737 (DIST-E7-T01) found two RFC-0031 rules that no task's criteria cover. First, RFC-0031 §2's rule that a frame whose `(instance, epoch)` is not the channel key's is dropped and counted is in no DIST-E7 row. DIST-E11-T02 and PLC-E7-T11 handle epochs a runner no longer serves at the step level, not the channel's drop and count. Second, buffer descriptors carry no generation, so a descriptor kept past its slot's reuse would lease the new bytes.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T02's property test gains foreign `(instance, epoch)` frames: dropped before the `chan_seq` check, never surfaced or NACKed, counted in `stats()`, and the channel's own frames still delivered exactly once; its Implements cell adds RFC-0031 §2 and §6.1; no edge | DIST-E7-T02 | Definition of done | the channel core is sans-I/O and checks the channel key before `chan_seq` continuity (RFC-0031 §6.1), so its property test can feed it such frames directly; the conformance suite needs no new `Fabric` hook |
+| DIST-E7-T12 gains the stale-descriptor refusal: a slot generation that advances when the slot is freed, carried by `PayloadSlice` and `ExtBuf`, and a descriptor of an earlier generation refused with `SendError::Invalid`; RFC-0031 §8 gains a dated note; no edge | DIST-E7-T12 | Definition of done | DIST-E7-T12 builds the lock-free slot handout, where a slot is freed and handed out again. Without a generation the rule "hold a reader until `try_send` returns" is enforced by nothing |
 
 ## PLC-E6-T04's `max_defer` deadline before RFC-0033 lands (2026-10-22)
 

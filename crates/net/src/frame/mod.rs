@@ -15,7 +15,8 @@
 //! so a corrupted byte is always caught (ADR-0307 item 2). [`Control`] reads and writes the
 //! control messages: `Hello`, `HelloAck`, `Close`, `Credit` and `Ping`. [`Activation`] reads and
 //! writes the `Activation` frame (§6.3, §6.4), and splits a chunk larger than `max_frame` into
-//! parts.
+//! parts. [`Token`] reads and writes the `Token` frame (§6.5), and [`StepTokens`] writes a
+//! step's ring-return and ingress copies.
 //!
 //! The frames of a tensor- or expert-parallel island (§6.8, DIST-E8-T08) are read and written
 //! here too: a `StepDescriptor` is an [`Activation`] under its own frame type
@@ -24,7 +25,7 @@
 //! [`EpCombine`] carry an expert owner's rows and their weighted sums, split into parts by a
 //! row limit that counts the extension.
 //!
-//! The typed codecs of the other frame types (`Token`, `SeqControl`, …) are later tasks; at this
+//! The typed codecs of the other frame types (`SeqControl`, `KvChunk`, …) are later tasks; at this
 //! layer their extension and payload are bytes. So are a sealed frame's: the AEAD layer
 //! (ADR-0314) seals and opens them, and this layer carries the result, `ctl_seq` in `step` and
 //! the `KEY_PHASE` flag included.
@@ -37,6 +38,7 @@ mod ep;
 mod error;
 mod header;
 mod route;
+mod token;
 
 pub use activation::{
     ACTIVATION_FIXED_LEN, Activation, ActivationHeader, ActivationKind, ActivationSpec, Part,
@@ -56,9 +58,14 @@ pub use ep::{EP_FIXED_LEN, EpCombine, EpDispatch, EpHeader, EpParts};
 pub use error::FrameError;
 pub use header::{
     AEAD_TAG_LEN, ALIGN, Flags, Frame, FrameSpec, FrameType, HEADER_LEN, Header, MAGIC,
-    SEALED_EXT_PLAINTEXT, WIRE_MINOR, encode, encode_in_place, encode_to_vec, encoded_len,
+    SEALED_EXT_PLAINTEXT, WIRE_MINOR, encode, encode_assembled, encode_in_place, encode_to_vec,
+    encoded_len,
 };
 pub use route::{
     EpRow, EpRows, Experts, MAX_ROUTE_K, ROUTE_HEAD_LEN, RouterRow, RouterRows, Weights,
     route_row_len,
+};
+pub use token::{
+    ENTRY_HEADER_LEN, Entries, Finish, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,
+    TokenEntry, TokenSpec, token_flags,
 };

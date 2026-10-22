@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The rules that need cargo to resolve or build a release crate: rule 7 (the core binary links no
-//! vendor GPU runtime) and rule 10 (test-only features never reach a release). Rule 10's second
-//! half, [`default_features`], reads only `cargo metadata`.
+//! vendor GPU runtime) and rule 10 (test-only features never reach a release). Rule 10 has three
+//! parts: [`rule_10`] resolves each release crate's features, [`default_features`] reads only
+//! `cargo metadata`, and [`fault_point_symbols`] reads the core binary's symbol table.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -236,7 +237,7 @@ pub fn rule_7(manifest: &Path, graph: &Graph) -> Outcome {
             ),
         )]);
     }
-    let binary = match build_core_binary(manifest) {
+    let binary = match build_core_binary(manifest, Features::None) {
         Ok(binary) => binary,
         Err(error) => return Outcome::Ran(vec![Finding::new(Rule::Numbered(7), error)]),
     };
@@ -255,11 +256,103 @@ pub fn rule_7(manifest: &Path, graph: &Graph) -> Outcome {
     Outcome::Ran(vendor_findings(&dynamic))
 }
 
-/// `cargo build` of the core binary with no default features; returns the executable's path.
-fn build_core_binary(manifest: &Path) -> Result<PathBuf, String> {
+/// The path, as both Rust manglings spell it, of `syntropy_obs::faults::inject`: the module that
+/// holds every item only `obs`'s `fault-injection` feature compiles (RFC-0060 §9.2). The legacy
+/// mangling gives `_ZN12syntropy_obs6faults6inject5check17h…E`, and v0 gives
+/// `_RNv…12syntropy_obs6faults6inject5check`.
+pub const FAULT_POINT_PATH: &str = "12syntropy_obs6faults6inject";
+
+/// Rule 10, symbols (QUAL-E9-T01): builds the core binary with the features its release build
+/// resolves, its own defaults with no test feature, and reads its full symbol table (`.symtab`).
+/// No symbol may come from `syntropy_obs::faults::inject`, so the binary holds no fault point.
+///
+/// The build uses cargo's `dev` profile, which keeps every symbol and is fast enough for `lint`.
+/// The features, and so the code compiled in, are the release build's. Scanning the nightly
+/// `release` artefact itself is QUAL-E16-T15's. The reader handles ELF, so this part runs on
+/// Linux, as rule 7 does.
+pub fn fault_point_symbols(manifest: &Path, graph: &Graph) -> Outcome {
+    let crate_name = policy::CORE_BINARY_CRATE;
+    let Some(at) = graph.member(crate_name) else {
+        return Outcome::NotRun(format!("the workspace has no `{PREFIX}{crate_name}` crate"));
+    };
+    if !cfg!(target_os = "linux") {
+        return Outcome::NotRun(format!(
+            "its symbol-table half reads the ELF `.symtab`, and this host is {}; `lint` runs it \
+             on Linux",
+            std::env::consts::OS
+        ));
+    }
+    let has_bin = graph.package(at).targets.iter().any(|target| {
+        target.name == policy::CORE_BINARY && target.kind.iter().any(|kind| kind == "bin")
+    });
+    if !has_bin {
+        // Rule 7 reports the missing core binary.
+        return Outcome::Ran(Vec::new());
+    }
+    let binary = match build_core_binary(manifest, Features::Default) {
+        Ok(binary) => binary,
+        Err(error) => return Outcome::Ran(vec![Finding::new(Rule::Numbered(10), error)]),
+    };
+    match std::fs::read(&binary)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| elf::symtab(&bytes))
+    {
+        Ok(names) => Outcome::Ran(fault_point_findings(&names)),
+        Err(error) => Outcome::Ran(vec![Finding::new(
+            Rule::Numbered(10),
+            format!("cannot read the core binary {}: {error}", binary.display()),
+        )]),
+    }
+}
+
+/// Rule 10's finding for a symbol table that names `syntropy_obs::faults::inject`, if it does.
+fn fault_point_findings(names: &[String]) -> Vec<Finding> {
+    let found: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| name.contains(FAULT_POINT_PATH))
+        .collect();
+    if found.is_empty() {
+        return Vec::new();
+    }
+    let mut shown = found[..found.len().min(3)].join(", ");
+    if found.len() > 3 {
+        shown.push_str(&format!(" and {} more", found.len() - 3));
+    }
+    vec![Finding::new(
+        Rule::Numbered(10),
+        format!(
+            "the core binary, built with its release features, holds {} {} of \
+             `syntropy_obs::faults::inject`, which only `fault-injection` compiles: {shown}; \
+             release artefacts carry no fault point",
+            found.len(),
+            if found.len() == 1 {
+                "symbol"
+            } else {
+                "symbols"
+            }
+        ),
+    )]
+}
+
+/// Which features [`build_core_binary`] builds with.
+#[derive(Clone, Copy)]
+enum Features {
+    /// `--no-default-features`: no GPU feature, for rule 7.
+    None,
+    /// The crate's defaults, as its release build resolves them, for rule 10.
+    Default,
+}
+
+/// `cargo build` of the core binary in the `dev` profile; returns the executable's path.
+fn build_core_binary(manifest: &Path, features: Features) -> Result<PathBuf, String> {
     let package = format!("{PREFIX}{}", policy::CORE_BINARY_CRATE);
-    let output = Command::new(crate::registry::cargo())
-        .args(["build", "--locked", "--quiet", "--no-default-features"])
+    let mut command = Command::new(crate::registry::cargo());
+    command.args(["build", "--locked", "--quiet"]);
+    if let Features::None = features {
+        command.arg("--no-default-features");
+    }
+    let output = command
         .args(["--message-format", "json-render-diagnostics"])
         .arg("--manifest-path")
         .arg(manifest)
@@ -268,8 +361,12 @@ fn build_core_binary(manifest: &Path) -> Result<PathBuf, String> {
         .output()
         .map_err(|error| format!("could not start `cargo build`: {error}"))?;
     if !output.status.success() {
+        let with = match features {
+            Features::None => "no default features",
+            Features::Default => "its default features",
+        };
         return Err(format!(
-            "the core binary did not build with no default features: {}",
+            "the core binary did not build with {with}: {}",
             output.status
         ));
     }
@@ -523,6 +620,48 @@ mod tests {
             )
             .with_features("exec", &[("debug-taps", &["syntropy-obs/guards"])], &[]);
         assert_eq!(defaults(&graph), Vec::<String>::new());
+    }
+
+    #[test]
+    fn fault_point_symbols_are_found_in_either_mangling() {
+        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let clean = names(&[
+            "main",
+            "_ZN12syntropy_obs6faults11FaultEffect3fmt17h0123456789abcdefE",
+            "_ZN12syntropy_obs9cost_term8CostTerm5as_u817h0123456789abcdefE",
+        ]);
+        assert!(fault_point_findings(&clean).is_empty());
+        let messages = |list: &[String]| {
+            fault_point_findings(list)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+        let legacy = names(&[
+            "main",
+            "_ZN12syntropy_obs6faults6inject5check17h0123456789abcdefE",
+        ]);
+        assert_eq!(
+            messages(&legacy),
+            [
+                "rule 10: the core binary, built with its release features, holds 1 symbol of \
+              `syntropy_obs::faults::inject`, which only `fault-injection` compiles: \
+              _ZN12syntropy_obs6faults6inject5check17h0123456789abcdefE; release artefacts carry \
+              no fault point"
+            ]
+        );
+        let v0 = names(&[
+            "_RNvNtNtCs1a2b3c_12syntropy_obs6faults6inject5check",
+            "_RNvNtNtCs1a2b3c_12syntropy_obs6faults6inject7install",
+            "_RNvNtNtCs1a2b3c_12syntropy_obs6faults6inject5clear",
+            "_RNvNtNtCs1a2b3c_12syntropy_obs6faults6inject8counters",
+        ]);
+        let found = messages(&v0);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].contains("holds 4 symbols"), "{found:?}");
+        assert!(
+            found[0].contains("_RNvNtNtCs1a2b3c_12syntropy_obs6faults6inject5clear and 1 more")
+        );
     }
 
     #[test]

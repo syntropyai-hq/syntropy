@@ -2789,3 +2789,11 @@ COMP-E3-T01 found that the detection macro named for SME2 does not compile on th
 | Change | Sections touched | Reason |
 |---|---|---|
 | §5's rule that an owner may add fields with serde defaults keeps compatibility only in self-describing encodings (CBOR). A field added to a type the postcard IPC carries, such as any type under `PlacementPlan` or `PlanDelta`, is an `ipc_protocol` change, and so is an enum variant added to such a type. QUAL-E17-T15's criteria cover a nested field, a new `PlanDelta` variant, and golden vectors of `PlacementPlan`, `StagePlan` and `PlanDelta` | §5 (dated note); QUAL-E17-T15 | postcard carries no field names and writes a variant as its index. An added field changes the layout of every IPC message that holds the type, and an older peer cannot decode a new variant. Adoption across builds needs an equal `ipc_protocol` (§3.5). The post-merge reviews of #1658 found both sides of this. In CBOR, an old four-field `HopPlan` inside a larger message decoded as the new type, with the new fields at their defaults. In postcard, the old `HopPlan` failed to decode, or with trailing bytes misread. Issues #1675 and #1660 |
+
+### 18.21 The dependency policy's targets and its first exceptions (2026-10-22)
+
+DIST-E7-T23 pins iroh 1.4.1 in `net`. The maintainers decided on 2026-10-22 how ADR-0018 §3's policy applies to it.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| ADR-0018 §3's policy is checked for the targets of RFC-0062 §4.1, through `deny.toml`'s `[graph] targets`; the first per-crate MPL-2.0 exception is `attohttpc@0.30.1`; RUSTSEC-2024-0436 (`paste`, unmaintained) is ignored until 2027-01-22 (#1700) | ADR-0018 §3 (dated revision); RFC-0062 §11.2 (dated note) | iroh-relay's wasm32-only crates reach no shipped artefact; iroh's port mapping, which brings attohttpc, raises the share of direct paths; `paste` is a build-time proc-macro reached only through iroh's netlink stack, with no known vulnerability |
