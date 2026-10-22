@@ -34,7 +34,10 @@ targets = [
 #       # https://github.com/syntropyai-hq/syntropy/issues/<n>, expires 2027-01-31
 #       { id = "RUSTSEC-0000-0000", reason = "why the advisory does not apply" },
 #   ]
-ignore = []
+ignore = [
+    # https://github.com/syntropyai-hq/syntropy/issues/1700, expires 2027-01-22
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained: a build-time proc-macro reached only through iroh's netlink stack (netlink-packet-core); no known vulnerability" },
+]
 # An unmaintained crate anywhere in the graph fails (cargo-deny's default, stated so a change to
 # it shows in review), and so does a yanked version.
 unmaintained = "all"
