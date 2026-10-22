@@ -31,6 +31,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use serde::Deserialize;
 
+use crate::code::Code;
 use crate::diagnostic::Problem;
 use crate::resolve::ResolvedConfig;
 // The trait and the derive, which share the name.
@@ -232,8 +233,9 @@ impl DebugSection {
 }
 
 /// Why the manifest loader refuses a `ConformanceManifest` signed by the CI test key: error
-/// `manifest_signer_not_allowed`, code 15 of the `Config` domain (RFC-0054 §8). Its
-/// [`Display`](fmt::Display) form names each condition that failed, for the loader's log.
+/// [`Code::ManifestSignerNotAllowed`], `manifest_signer_not_allowed` (`config/0015`, RFC-0054
+/// §8). Its [`Display`](fmt::Display) form names each condition that failed, for the loader's
+/// log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManifestSignerNotAllowed {
     /// Neither `debug.parity_api` nor `debug.bench_api` is on.
@@ -243,10 +245,8 @@ pub struct ManifestSignerNotAllowed {
 }
 
 impl ManifestSignerNotAllowed {
-    /// The error's name in the `Config` domain (RFC-0054 §8).
-    pub const NAME: &'static str = "manifest_signer_not_allowed";
     /// The error's code in the `Config` domain (RFC-0054 §8).
-    pub const CODE: u16 = 15;
+    pub const CODE: Code = Code::ManifestSignerNotAllowed;
 }
 
 impl fmt::Display for ManifestSignerNotAllowed {
@@ -256,7 +256,7 @@ impl fmt::Display for ManifestSignerNotAllowed {
             "{}: a conformance manifest signed by the CI test key is accepted only while \
              `debug.parity_api` or `debug.bench_api` is on and every `api.bind` listener is \
              loopback",
-            Self::NAME
+            Self::CODE.name()
         )?;
         if self.no_gate {
             f.write_str("; neither `debug.parity_api` nor `debug.bench_api` is on")?;
@@ -290,15 +290,19 @@ pub(crate) fn warnings(config: &ResolvedConfig) -> Vec<Problem> {
         .into_iter()
         .filter_map(|api| {
             let resolved = resolved_on(config, api)?;
-            Some(Problem::uncoded(
-                Some(resolved.origin.clone()),
-                format!(
-                    "`{}` is on: {} answers on loopback listeners and the local socket. It is a \
-                     test-only surface (RFC-0054 §7.1); turn it off when the test is done",
-                    api.key(),
-                    api.enables()
-                ),
-            ))
+            Some(
+                Problem::uncoded(
+                    Some(resolved.origin.clone()),
+                    format!(
+                        "`{}` is on: {} answers on loopback listeners and the local socket. It \
+                         is a test-only surface (RFC-0054 §7.1); turn it off when the test is \
+                         done",
+                        api.key(),
+                        api.enables()
+                    ),
+                )
+                .about(api.key()),
+            )
         })
         .collect()
 }

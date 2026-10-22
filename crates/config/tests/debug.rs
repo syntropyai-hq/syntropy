@@ -15,9 +15,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use syntropy_config::{
-    ConfigFile, ConfigSection, DebugApi, DebugSection, DefaultSpec, DefaultValue, Env, Flags,
-    Layers, ManifestSignerNotAllowed, Origin, Os, Peer, Registry, Rejected, Reload, ResolvedConfig,
-    Scope, Value,
+    Code, ConfigFile, ConfigSection, DebugApi, DebugSection, DefaultSpec, DefaultValue, Env, Flags,
+    HostEnvironment, Layers, ManifestSignerNotAllowed, Origin, Os, Peer, Registry, Rejected,
+    Reload, ResolvedConfig, Scan, Scope, Value, command, load_and_validate,
 };
 
 static REGISTRY: Registry = Registry::new(&[&DebugSection::SCHEMA]);
@@ -255,6 +255,9 @@ fn a_resolved_config_warns_once_for_each_key_that_is_on() {
                 },
             };
             assert_eq!(warning.at.as_ref(), Some(&at), "{api}");
+            // RFC-0054 §8 gives the warning no code; it is about the key.
+            assert_eq!(warning.code, None, "{api}");
+            assert_eq!(warning.key.as_deref(), Some(api.key()), "{api}");
             assert!(
                 warning
                     .message
@@ -374,10 +377,14 @@ fn the_ci_test_key_needs_a_gate_and_loopback_api_listeners() {
         }
     }
     assert_eq!(
-        ManifestSignerNotAllowed::NAME,
+        ManifestSignerNotAllowed::CODE,
+        Code::ManifestSignerNotAllowed
+    );
+    assert_eq!(ManifestSignerNotAllowed::CODE.number(), 15);
+    assert_eq!(
+        ManifestSignerNotAllowed::CODE.name(),
         "manifest_signer_not_allowed"
     );
-    assert_eq!(ManifestSignerNotAllowed::CODE, 15);
 
     // Both conditions failing, in full.
     let refused = DebugSection {
@@ -392,5 +399,41 @@ fn the_ci_test_key_needs_a_gate_and_loopback_api_listeners() {
          accepted only while `debug.parity_api` or `debug.bench_api` is on and every `api.bind` \
          listener is loopback; neither `debug.parity_api` nor `debug.bench_api` is on; these \
          `api.bind` listeners are not loopback: 0.0.0.0:7433"
+    );
+}
+
+#[test]
+fn config_check_prints_the_warning_without_a_code() {
+    let env = Env::from_pairs(Os::Linux, [("SYNTROPY_DEBUG__BENCH_API", "true")]);
+    let scan = Scan {
+        system_file: None,
+        dropins: vec![],
+        user_file: None,
+        explicit: None,
+    };
+    let checked = load_and_validate(
+        &REGISTRY,
+        Os::Linux,
+        &scan,
+        &env,
+        &Flags::new(),
+        |_| None,
+        &[],
+        &HostEnvironment,
+    );
+    let report = command::check(&checked, &REGISTRY);
+    // A warning: the configuration still loads.
+    assert_eq!(report.exit, command::EXIT_OK, "{}", report.text);
+    assert!(
+        report
+            .text
+            .contains("warning: `debug.bench_api` is on: `BenchControls` on"),
+        "{}",
+        report.text
+    );
+    assert!(
+        report.text.contains("  --> env SYNTROPY_DEBUG__BENCH_API"),
+        "{}",
+        report.text
     );
 }
