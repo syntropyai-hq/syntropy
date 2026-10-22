@@ -41,6 +41,39 @@ const OFF: DebugSection = DebugSection::OFF;
 
 // ---- The rule as a truth table ----------------------------------------------------------
 
+/// RFC-0054 §4.2's scope for each knob this version names, at RFC-0001 §11.3's bit, listed
+/// here rather than read from `core`'s constants, so the oracle does not share the code's view.
+/// `true` is per sequence. [`the_oracles_scope_table_matches_core`] checks it against `core`.
+const SCOPES: [(&str, u32, bool); 8] = [
+    ("EXPERT_SKIP", 1 << 0, true),
+    ("EXPERT_DEFER", 1 << 1, true),
+    ("MISS_LOW_PRECISION", 1 << 2, false),
+    ("TOPK_REDUCE", 1 << 3, true),
+    ("KV_LOSSY", 1 << 4, false),
+    ("WIRE_COMPRESS", 1 << 5, false),
+    ("APPROX_ATTENTION", 1 << 6, false),
+    ("SPEC_LENIENT", 1 << 7, true),
+];
+
+/// The bits the oracle can name.
+fn named_bits() -> u32 {
+    SCOPES.iter().fold(0, |bits, (_, bit, _)| bits | bit)
+}
+
+/// The knobs a plan with these allowed knobs applies to every sequence, bit by bit: each one
+/// the table does not list as per sequence, a bit it cannot name included, which fails safe.
+fn plan_of(allowed: ApproxKnobs) -> u32 {
+    (0..32)
+        .map(|i| 1u32 << i)
+        .filter(|bit| allowed.bits() & bit != 0)
+        .filter(|bit| {
+            !SCOPES
+                .iter()
+                .any(|(_, b, per_sequence)| b == bit && *per_sequence)
+        })
+        .fold(0, |plan, bit| plan | bit)
+}
+
 /// What RFC-0054 §7 says a request gets, written out case by case rather than as the code
 /// computes it: `Ok(knobs)` for the knobs in effect (empty for exact), or the error.
 fn expected(
@@ -62,36 +95,48 @@ fn expected(
         ExactnessPolicy::Approximate { knobs, .. } => (true, knobs),
         _ => (false, ApproxKnobs::empty()),
     };
-    let plan = allowed & ApproxKnobs::PER_INSTANCE;
-    let asked = req.knobs.unwrap_or(allowed);
-    let both = asked & allowed;
+    let plan = plan_of(allowed);
+    let asked = req.knobs.unwrap_or(allowed).bits();
+    let both = asked & allowed.bits();
     match (
         asks_approximate,
         instance_opts_in,
         allow_approximate,
-        both.is_empty(),
+        both == 0,
     ) {
         // All three opt in and the sides share a knob: approximate, unless the request left out
-        // a knob the plan applies to every sequence.
+        // a knob the plan applies to every sequence, or holds one no label could list.
         (true, true, true, false) => {
-            if plan.difference(both).is_empty() {
-                Ok(both)
+            let refused = (plan & !both) | (both & !named_bits());
+            if refused == 0 {
+                Ok(ApproxKnobs::from_bits_retain(both))
             } else {
                 Err(RequestError::FidelityConflict {
-                    knobs: plan.difference(both),
+                    knobs: ApproxKnobs::from_bits_retain(refused),
                 })
             }
         }
         // Every other row is exact, which a plan with instance-wide knobs cannot serve.
-        _ if !plan.is_empty() => Err(RequestError::FidelityConflict { knobs: plan }),
+        _ if plan != 0 => Err(RequestError::FidelityConflict {
+            knobs: ApproxKnobs::from_bits_retain(plan),
+        }),
         _ => Ok(ApproxKnobs::empty()),
     }
 }
 
 // ---- Strategies ---------------------------------------------------------------------------
 
+/// Knob sets, unnamed bits included: `ApproxKnobs` keeps a bit it cannot name, such as one a
+/// later version adds (RFC-0042 §10 reserves `1 << 8`). Most draws hold only named knobs, so
+/// the paths that serve a request stay well covered.
 fn knobs() -> impl Strategy<Value = ApproxKnobs> {
-    any::<u32>().prop_map(ApproxKnobs::from_bits_truncate)
+    let named = ApproxKnobs::all().bits();
+    prop_oneof![
+        3 => any::<u32>().prop_map(move |bits| ApproxKnobs::from_bits_retain(bits & named)),
+        1 => (any::<u32>(), 0u32..32)
+            .prop_map(move |(bits, i)| ApproxKnobs::from_bits_retain((bits & named) | 1 << i)),
+        1 => any::<u32>().prop_map(ApproxKnobs::from_bits_retain),
+    ]
 }
 
 fn fidelity() -> impl Strategy<Value = Fidelity> {
@@ -159,8 +204,8 @@ proptest! {
     }
 
     /// The knobs in effect are a subset of both what the instance allows and what the request
-    /// named, and cover every knob the plan applies to every sequence, so the label lists them
-    /// all.
+    /// named, cover every knob the plan applies to every sequence, and are all knobs this
+    /// version names, so the label lists every one in effect.
     #[test]
     fn p_config_2_knobs_are_a_subset_of_both_sides((req, inst, allow, debug) in triple()) {
         if let Ok(policy) = resolve_request(&req, &inst, allow, debug) {
@@ -173,8 +218,9 @@ proptest! {
                 prop_assert!(asked.contains(policy.knobs()));
             }
             if policy.fidelity() == Fidelity::Approximate {
-                prop_assert!(policy.knobs().contains(allowed & ApproxKnobs::PER_INSTANCE));
+                prop_assert!(policy.knobs().contains(ApproxKnobs::from_bits_retain(plan_of(allowed))));
             }
+            prop_assert_eq!(policy.knobs().bits() & !named_bits(), 0);
             prop_assert_eq!(policy.sequence_knobs(), policy.knobs() & ApproxKnobs::PER_SEQUENCE);
         }
     }
@@ -190,9 +236,31 @@ proptest! {
         let allowed = extra | ApproxKnobs::KV_LOSSY;
         let inst = instance(approximate(allowed), default_fidelity);
         let err = resolve_request(&asks(Some(Fidelity::Exact), None), &inst, allow, OFF).unwrap_err();
-        prop_assert_eq!(err, RequestError::FidelityConflict { knobs: allowed & ApproxKnobs::PER_INSTANCE });
+        prop_assert_eq!(err, RequestError::FidelityConflict { knobs: ApproxKnobs::from_bits_retain(plan_of(allowed)) });
         prop_assert_eq!(err.native_status(), 409);
         prop_assert_eq!(err.api_code(), 7);
+    }
+
+    /// A plan that holds a knob bit this version cannot name serves no request: exact service
+    /// would be silently approximate, and an approximate label could not list the knob. Each
+    /// refusal is `fidelity_conflict` and names at least one such bit (review of #1771).
+    #[test]
+    fn p_config_2_a_knob_this_version_cannot_name_is_never_served(
+        (req, inst, allow, _) in triple(),
+        named in knobs(),
+        i in 0u32..32,
+    ) {
+        prop_assume!(named_bits() & 1 << i == 0);
+        let unnamed = ApproxKnobs::from_bits_retain(1 << i);
+        let inst = instance(approximate(named | unnamed), inst.default_fidelity);
+        let req = RequestOverrides { bench: None, ..req };
+        match resolve_request(&req, &inst, allow, OFF) {
+            Err(RequestError::FidelityConflict { knobs }) => {
+                prop_assert_ne!(knobs.bits() & !named_bits(), 0);
+            }
+            Err(RequestError::KnobsNeedApproximate) => prop_assert!(req.knobs.is_some()),
+            other => prop_assert!(false, "served or refused otherwise: {:?}", other),
+        }
     }
 
     /// An approximate request that names its knobs is never given an instance-wide knob it
@@ -209,17 +277,24 @@ proptest! {
     ) {
         let inst = instance(approximate(allowed), default_fidelity);
         let req = asks(Some(Fidelity::Approximate), Some(asked));
-        let plan = allowed & ApproxKnobs::PER_INSTANCE;
+        let plan = plan_of(allowed);
         match resolve_request(&req, &inst, allow, OFF) {
             Ok(policy) => {
-                prop_assert!(asked.contains(plan));
+                prop_assert_eq!(plan & !asked.bits(), 0);
                 prop_assert!(asked.contains(policy.knobs()));
             }
             // Where the cluster forbids approximate, the request takes the exact path, which a
-            // plan with instance-wide knobs cannot serve: the conflict names them all.
+            // plan with instance-wide knobs cannot serve: the conflict names them all. Where it
+            // allows it, the conflict names the plan's knobs the request left out, and any it
+            // named that this version cannot.
             Err(RequestError::FidelityConflict { knobs }) => {
                 prop_assert!(!knobs.is_empty());
-                prop_assert_eq!(knobs, if allow { plan.difference(asked) } else { plan });
+                let refused = if allow {
+                    (plan & !asked.bits()) | (asked.bits() & plan & !named_bits())
+                } else {
+                    plan
+                };
+                prop_assert_eq!(knobs.bits(), refused);
             }
             Err(other) => prop_assert!(false, "unexpected {}", other),
         }
@@ -477,4 +552,78 @@ fn knob_names_are_lowercase() {
         "kv_lossy, wire_compress"
     );
     assert_eq!(knob_names(ApproxKnobs::empty()), "");
+    // A bit this version cannot name is written in hex, one per bit.
+    assert_eq!(
+        knob_names(ApproxKnobs::KV_LOSSY | ApproxKnobs::from_bits_retain(0x300)),
+        "kv_lossy, 0x100, 0x200"
+    );
+    assert_eq!(
+        knob_names(ApproxKnobs::from_bits_retain(1 << 31)),
+        "0x80000000"
+    );
+}
+
+/// The review of #1771 reproduced this. `ApproxKnobs` decodes a bit it cannot name, such as
+/// the `1 << 8` RFC-0042 §10 reserves for a later knob, from a policy a later version wrote. A
+/// plan holding it serves neither an exact request, which would be silently approximate, nor
+/// an approximate one, whose label could not list it.
+#[test]
+fn a_knob_this_version_cannot_name_is_never_served() {
+    let unnamed: ApproxKnobs = serde_json::from_str("\"0x100\"").unwrap();
+    assert_eq!(unnamed.bits(), 1 << 8);
+    let mixed: ApproxKnobs = serde_json::from_str("\"KV_LOSSY | 0x100\"").unwrap();
+    assert_eq!(mixed, ApproxKnobs::KV_LOSSY | unnamed);
+    assert_eq!(knob_names(mixed), "kv_lossy, 0x100");
+
+    let conflict = |knobs| Err(RequestError::FidelityConflict { knobs });
+    for allowed in [unnamed, unnamed | ApproxKnobs::EXPERT_SKIP] {
+        let inst = instance(approximate(allowed), Fidelity::Exact);
+        let exact = asks(Some(Fidelity::Exact), None);
+        assert_eq!(resolve_request(&exact, &inst, true, OFF), conflict(unnamed));
+        let every_knob = asks(Some(Fidelity::Approximate), None);
+        assert_eq!(
+            resolve_request(&every_knob, &inst, true, OFF),
+            conflict(unnamed)
+        );
+        assert_eq!(
+            resolve_request(&every_knob, &inst, false, OFF),
+            conflict(unnamed)
+        );
+    }
+    // Naming only a knob this version knows leaves the unnamed one out.
+    let inst = instance(
+        approximate(unnamed | ApproxKnobs::EXPERT_SKIP),
+        Fidelity::Exact,
+    );
+    let named = asks(Some(Fidelity::Approximate), Some(ApproxKnobs::EXPERT_SKIP));
+    let err = resolve_request(&named, &inst, true, OFF).unwrap_err();
+    assert_eq!(err, RequestError::FidelityConflict { knobs: unnamed });
+    assert_eq!((err.api_code(), err.native_status()), (7, 409));
+    assert!(err.to_string().contains("cannot name 0x100"), "{err}");
+    // A plan of named knobs is unchanged: the message names them without the hex clause.
+    let lossy = instance(approximate(ApproxKnobs::KV_LOSSY), Fidelity::Exact);
+    let err = resolve_request(&asks(None, None), &lossy, true, OFF).unwrap_err();
+    assert!(!err.to_string().contains("cannot name"), "{err}");
+}
+
+/// The oracle's scope table is `core`'s: the same names at the same bits, the same split
+/// between per-sequence and instance-wide, and every knob `core` names. A knob added to `core`
+/// fails this until the table lists its scope.
+#[test]
+fn the_oracles_scope_table_matches_core() {
+    for (name, bit, per_sequence) in SCOPES {
+        let knob = ApproxKnobs::from_name(name).unwrap_or_else(|| panic!("{name} not in core"));
+        assert_eq!(knob.bits(), bit, "{name}");
+        assert_eq!(
+            ApproxKnobs::PER_SEQUENCE.contains(knob),
+            per_sequence,
+            "{name}"
+        );
+        assert_eq!(
+            ApproxKnobs::PER_INSTANCE.contains(knob),
+            !per_sequence,
+            "{name}"
+        );
+    }
+    assert_eq!(named_bits(), ApproxKnobs::all().bits());
 }

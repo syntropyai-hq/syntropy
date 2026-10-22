@@ -13,6 +13,8 @@
 //!   `fidelity_conflict`, so routing tries another instance.
 //! - A request that asks for approximate where it is not available is served exactly, with the
 //!   `approximate_not_available` warning.
+//! - A knob bit this version cannot name, such as one a later version adds, is never served:
+//!   it counts as instance-wide, and no request may run with it, since no label could list it.
 //!
 //! `config` sits below the API crate, so the errors carry their RFC-0050 §12.3 codes for the API
 //! to report, rather than the API's own error type.
@@ -157,12 +159,13 @@ impl fmt::Display for RequestWarning {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestError {
-    /// The candidate's plan applies instance-wide knobs this request did not accept: the
+    /// The candidate's plan applies instance-wide knobs this request cannot be served with: the
     /// request is exact, or it named knobs and left out one the plan applies to every sequence
-    /// (RFC-0054 §7 note of 2026-10-22). It names those knobs. Routing tries another instance
-    /// before reporting it.
+    /// (RFC-0054 §7 note of 2026-10-22), or a knob in effect is one this version cannot name,
+    /// so no label could list it. It names those knobs. Routing tries another instance before
+    /// reporting it.
     FidelityConflict {
-        /// The instance-wide knobs the request did not accept.
+        /// The instance-wide knobs the request cannot be served with.
         knobs: ApproxKnobs,
     },
     /// The request named knobs without an approximate fidelity.
@@ -208,12 +211,26 @@ impl RequestError {
 impl fmt::Display for RequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RequestError::FidelityConflict { knobs } => write!(
-                f,
-                "fidelity_conflict: the instance's plan applies {} to every sequence, which \
-                 this request did not accept",
-                knob_names(*knobs)
-            ),
+            RequestError::FidelityConflict { knobs } => {
+                let unnamed = knobs.difference(ApproxKnobs::all());
+                if unnamed.is_empty() {
+                    write!(
+                        f,
+                        "fidelity_conflict: the instance's plan applies {} to every sequence, \
+                         which this request did not accept",
+                        knob_names(*knobs)
+                    )
+                } else {
+                    write!(
+                        f,
+                        "fidelity_conflict: the instance's plan applies {} to every sequence, \
+                         and this version cannot name {}, so it cannot label a response that \
+                         uses it",
+                        knob_names(*knobs),
+                        knob_names(unnamed)
+                    )
+                }
+            }
             RequestError::KnobsNeedApproximate => f.write_str(
                 "knobs_need_approximate: approximate knobs need `fidelity: \"approximate\"`",
             ),
@@ -226,12 +243,19 @@ impl fmt::Display for RequestError {
 
 impl std::error::Error for RequestError {}
 
-/// The knobs' names, lowercase and comma-separated, as the error and label name them.
+/// The knobs' names, lowercase and comma-separated, as the error and label name them. A bit
+/// this version cannot name is written as its value in hex, such as `0x100`, one per bit.
 pub fn knob_names(knobs: ApproxKnobs) -> String {
-    let names: Vec<String> = knobs
+    let mut names: Vec<String> = knobs
         .iter_names()
         .map(|(name, _)| name.to_ascii_lowercase())
         .collect();
+    let mut unnamed = knobs.difference(ApproxKnobs::all()).bits();
+    while unnamed != 0 {
+        let bit = unnamed.isolate_lowest_one();
+        names.push(format!("{bit:#x}"));
+        unnamed &= !bit;
+    }
     names.join(", ")
 }
 
@@ -249,8 +273,13 @@ pub fn priority_for_service_tier(service_tier: Option<&str>) -> Priority {
 /// RFC-0001 §11.3). `allow_approximate` is the cluster's key, and `debug` this node's debug
 /// gates (RFC-0054 §7.1).
 ///
-/// Routing calls this once per candidate (RFC-0050 §4.2, PROD-E2-T08). The policy the tables
-/// would build for a new instance is never passed here: it is used only for `EnsureInstance`.
+/// Routing calls this once per candidate, against that candidate's own policy (RFC-0050 §2.2
+/// step 7, §4.2; PROD-E2-T08). When none passes, it calls this once more with the policy the
+/// tables would build for a new instance, and fails at once with its error rather than wait on
+/// an `EnsureInstance` that could not serve the request. Either way the rule is the same.
+///
+/// It does not check `req.deterministic` against `inst.deterministic`: routing picks a
+/// deterministic instance for such a request (RFC-0054 §7, PROD-E2-T08).
 ///
 /// The effective fidelity is `req.fidelity.unwrap_or(inst.default_fidelity)`, for both the knob
 /// check and the approximate decision. Then:
@@ -259,10 +288,12 @@ pub fn priority_for_service_tier(service_tier: Option<&str>) -> Priority {
 /// 2. The request is approximate only when its fidelity is approximate, `inst.exactness` is
 ///    `Approximate` and `allow_approximate` holds. Its knobs are `req.knobs` (all the instance
 ///    allows when `None`) intersected with what the instance allows.
-/// 3. The instance-wide knobs the instance allows are in its plan, so they apply to every
-///    sequence on it. An approximate request whose knobs leave one out fails with
-///    `fidelity_conflict` naming it, so it never runs with a knob it did not accept and its
-///    label never misses one (RFC-0054 §7 note of 2026-10-22).
+/// 3. Every knob the instance allows outside `PER_SEQUENCE` is in its plan, so it applies to
+///    every sequence on it: the `PER_INSTANCE` knobs, and any bit this version cannot name,
+///    which fails safe as instance-wide. An approximate request whose knobs leave one out
+///    fails with `fidelity_conflict` naming it, so it never runs with a knob it did not accept
+///    and its label never misses one (RFC-0054 §7 note of 2026-10-22). So does one whose knobs
+///    hold a bit this version cannot name, since no label could list it.
 /// 4. Anything else, an empty intersection included, is exact. A request that asked for
 ///    approximate gets `approximate_not_available`. An exact request on a plan with
 ///    instance-wide knobs fails with `fidelity_conflict` naming them.
@@ -284,16 +315,22 @@ pub fn resolve_request(
         ExactnessPolicy::Approximate { knobs, params } => (true, knobs, params),
         _ => (false, ApproxKnobs::empty(), ApproxParams::default()),
     };
-    // The knobs the instance's plan applies to every sequence on it.
-    let plan_knobs = allowed & ApproxKnobs::PER_INSTANCE;
+    // The knobs the instance's plan applies to every sequence on it: every allowed knob that
+    // is not per-sequence, so a bit this version cannot name counts as instance-wide. Both
+    // `difference` and `&` keep unnamed bits; `!` would drop them.
+    let plan_knobs = allowed.difference(ApproxKnobs::PER_SEQUENCE);
 
     let mut exactness = ExactnessPolicy::Exact;
     if wants_approximate && instance_approximate && allow_approximate {
         let knobs = req.knobs.unwrap_or(allowed) & allowed;
         if !knobs.is_empty() {
-            let left_out = plan_knobs.difference(knobs);
-            if !left_out.is_empty() {
-                return Err(RequestError::FidelityConflict { knobs: left_out });
+            // The plan's knobs the request left out, and the knobs in effect that no label could
+            // list.
+            let refused = plan_knobs
+                .difference(knobs)
+                .union(knobs.difference(ApproxKnobs::all()));
+            if !refused.is_empty() {
+                return Err(RequestError::FidelityConflict { knobs: refused });
             }
             exactness = ExactnessPolicy::Approximate { knobs, params };
         }
