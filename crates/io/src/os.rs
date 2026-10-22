@@ -137,17 +137,16 @@ pub enum TickCounter {
 /// counts suspended time. Mapping ticks onto that timeline through an offset that is re-sampled
 /// after every resume is QUAL-E3-T16's.
 ///
-/// `SystemTicks` has a private field, so [`SystemTicks::new`] is the only way to build one, and
-/// a determinism lint can name that one constructor. Every value shares the process's
+/// `SystemTicks` is `#[non_exhaustive]`, so outside this crate [`SystemTicks::new`] (or
+/// `Default`) is the only way to build one, and a determinism lint can name that constructor. Every value shares the process's
 /// calibration: reading it is one atomic load, with no lock and no allocation after the first
 /// use.
 ///
 /// Two readings on different cores can differ by the cores' counter skew, so a caller taking a
 /// delta across a possible thread migration uses `saturating_sub`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SystemTicks {
-    _private: (),
-}
+#[non_exhaustive]
+pub struct SystemTicks;
 
 /// What the process's first use of [`SystemTicks`] found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,7 +165,7 @@ impl SystemTicks {
     /// calibrates.
     #[must_use]
     pub const fn new() -> SystemTicks {
-        SystemTicks { _private: () }
+        SystemTicks
     }
 
     /// The counter this process reads.

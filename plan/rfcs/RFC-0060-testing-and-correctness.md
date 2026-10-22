@@ -191,7 +191,7 @@ pub struct DeviceClockSync { pub device_ts: u64, pub host_ticks: u64, pub device
     - **Not `CLOCK_MONOTONIC`,** which `adjtimex` slews by up to 10%. The process keeps the calibration window's slew for life: the review of #1762 measured rates up to 8.5% off on a slewing host.
     - **Not `SystemClock`,** whose Windows clock advances only at the timer interrupt, up to 15.625 ms at a time. A 20 ms calibration against it was 5% off on a hosted run.
     - **Suspend-awareness** does not matter over 20 ms.
-  - **When it calibrates.** The first use of `SystemTicks` in a process calibrates, so a binary does it at startup, before a hot thread's first step. `SystemTicks::new` is a `const fn` on a type with a private field, so a determinism lint can name its one constructor (#1763).
+  - **When it calibrates.** The first use of `SystemTicks` in a process calibrates, so a binary does it at startup, before a hot thread's first step. `SystemTicks` is `#[non_exhaustive]` with a `const fn new`, so a determinism lint can name its one constructor (#1763).
   - **`now`** reads `SystemClock`, so it is on the `Clock` timeline exactly and counts suspended time. Deriving it from ticks, through an offset re-sampled after every resume, is QUAL-E3-T16's.
   - **The test source** is `SimTicks` in `testkit`, which counts a `SimClock`'s virtual time at a rate the test chooses. The device timelines of §8.4 are QUAL-E3-T16's.
 
