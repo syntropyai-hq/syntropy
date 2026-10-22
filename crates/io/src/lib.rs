@@ -11,9 +11,14 @@
 //! engine exists yet.
 //!
 //! The crate depends on no async runtime: engines run on dedicated I/O threads (ADR-0012
-//! items 2 and 6). It depends on `syntropy-core` (RFC-0021 §1), which defines the types the
-//! interface shares with other crates, re-exported here, and on `syntropy-spsc` for the rings
-//! between producers and the I/O thread (ADR-0012 item 4; RFC-0001 §4.2 rule 2).
+//! items 2 and 6). Its workspace dependencies are `syntropy-core` (RFC-0021 §1), which defines
+//! the types the interface shares with other crates, re-exported here, and `syntropy-spsc` for
+//! the rings between producers and the I/O thread (ADR-0012 item 4; RFC-0001 §4.2 rule 2).
+//!
+//! The [`os`] module holds the production clock and entropy sources, `SystemClock` and
+//! `OsEntropy` (ADR-0022). They are why this crate depends on `getrandom`, which RFC-0001 §4.2
+//! rule 6 allows here only, and on `libc` (Linux and Android) and `windows-sys` (Windows) for the
+//! clock calls.
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
@@ -25,6 +30,7 @@ pub mod batch;
 pub mod engine;
 pub mod error;
 pub mod io_thread;
+pub mod os;
 pub mod request;
 
 pub use batch::{CompletionBuf, Full, PushError, SubmitBatch};
