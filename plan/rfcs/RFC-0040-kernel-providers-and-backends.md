@@ -1115,6 +1115,13 @@ Structure rules, which RFC-0062 §5.3 and ADR-0623 decision 2 require of the ker
 
 A provider library therefore carries a table of (`OpKey`, shape class, target) → kernel hash, generated at link time.
 
+*Note 2026-10-22 (COMP-E9-T01, as built; open, for the maintainers):* how `kernels-cuda` meets rules 1, 2 and 7 before any kernel or CUDA build exists.
+- **Units.** `src/kgen/units.rs` lists the units, one per (op family, weight-scheme group), such as `gemv/kquant` and `copy/rows`. Each has its source in `csrc/<unit>.cu`, and each marks whether it is bit-exact class. The bit-exact units are `convert/dequant`, `copy/rows`, `copy/kv_pages` and `sample/select` (RFC-0042 §6.4). An op's unit is found by its `OpKind` family and its first scheme's group, and a test checks that no two units claim the same pair.
+- **`support.toml`** lists each supported `OpKey` in its serde form, with the tile parameters its kernels are instantiated at. Tiles are never part of the key (§3.1). The table builds the provider's `OpRegistry`.
+- **`cargo xtask kgen`** writes `csrc/instantiate/<unit>.inc` for every unit, empty lists included. Each line is `SYN_INSTANTIATE(op, weight, activation, output, layout, fusion bits, tile)`, in `OpKey` order, then tile order. `kgen --check` fails on a stale list or on a `.cu` or `.inc` that no unit owns. xtask depends on no workspace crate (RFC-0001 §4.1), so `kgen` runs the `syntropy-kgen` binary of `syntropy-kernels-cuda`.
+- **Parameter mirrors.** §1 says `build.rs` runs `bindgen` for `csrc/params.h`. Instead, `kgen` also writes `src/params.rs` with a small generator that reads a fixed subset of C, the same approach as the step descriptor header's. The file is checked in, with compile-time layout assertions, and the tests compare its layouts with a host C and C++ compiler's. nvcc lays out these plain structs as the host compiler does. This adds no `bindgen` dependency and needs no compiler in the build.
+- **Keys.** `src/kgen/key.rs` computes ADR-0623's `SourceKey` and `ObjectKey` with each field framed by its length. A unit's `nvcc` flags are part of its `SourceKey`. A bit-exact unit's flags add `--fmad=false --ftz=false --prec-div=true --prec-sqrt=true`. The instantiation list is part of the `ObjectKey`. `check_flags` is the contraction and fast-math check L0 runs over the build records. The cache store, the include manifest and `cargo xtask kcache` remain QUAL-E16-T04's, and the build through them remains COMP-E9-T02's.
+
 #### 10.3 Artefacts
 
 | Artefact | Providers inside | Kernel payload | Where it ships |
