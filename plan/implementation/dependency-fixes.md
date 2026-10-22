@@ -711,6 +711,14 @@ QUAL-E9-T01 (M1a) builds the fault points in `syntropy-obs`. Two parts of its ro
 | "over IPC" moved from QUAL-E9-T01 to DIST-E1-T13 (M1a, added) → DIST-E1-T03, QUAL-E9-T01 | QUAL-E9-T01, DIST-E1-T13 | R9 | RFC-0060 §9.2 pushes plans over IPC in tests, but RFC-0001 §3.5's message set has no fault-plan message and DIST-E1-T03, which builds the channel, is still open. DIST-E1-T13 proposes the message, and its handler calls QUAL-E9-T01's `install` |
 | QUAL-E9-T01's symbol check reads the core binary built in `lint` with the release build's features; the scan of the nightly `release` artefact moved to QUAL-E16-T15; QUAL-E16-T15 → QUAL-E9-T01 | QUAL-E9-T01, QUAL-E16-T15 | R9 | no M1a job builds a `release` artefact: the PR build is `dev` until QUAL-E16-T21's `pr` profile, and the `test-release` build turns `fault-injection` on by design. QUAL-E16-T15 builds and inspects the nightly `release` Linux core binary |
 
+## RFC-0054 §5.1's missing claims (2026-10-22)
+
+DIST-E18-T01 registered three claims that RFC-0054 §5.1 did not list (#1679). §5.1 now lists `orphan.*` (RFC-0032), the `invite.require_confirm` carve-out (RFC-0034 inside RFC-0030's `invite.*`) and the top-level `standby` (RFC-0033), and §5.4 lists `standby`. PROD-E1-T16 is the task that checks section claims against that table. It had no criterion for shared sections, which RFC-0054 §5.1's carve-out note of 2026-10-21 says its check should cover.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T16 gains "CI fails on a key of a shared section that RFC-0054 §5.1 does not list as that owner's carve-out" | PROD-E1-T16 | Definition of done | without it, a shared section could add a key inside another owner's prefix unchecked, as the carve-out note warns. The row names no carve-outs: the check reads them from §5.1, and code already shares keys in `net.*`, `rdma.*`, `invite.*`, `models.*` and `replan.*`, so a list in the row would drift. PROD-E1-T16 already depends on DIST-E18-T01, which registers them, so no edge changes |
+
 ## PROD-E5-T03: the route, the listener and SEC-006 move out (2026-10-22)
 
 PROD-E5-T03 builds the local CA as a library in `syntropy-api` (`syntropy_api::tls`). Three of its row's parts need things the CA does not build: the `GET /v1/syntropy/tls/ca` route and a TLS listener need the HTTP server (PROD-E2-T01), and SEC-006 is a doctor check (PROD-E9-T03). Each moves to the task that owns what it needs. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
