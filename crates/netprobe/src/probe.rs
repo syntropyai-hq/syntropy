@@ -480,7 +480,7 @@ pub async fn run(
                         path = path_of(open.path_kind()).unwrap_or(path);
                         local.set_peer(peer_ip(open));
                         let seq = recorder.sent(us(now), path, local.get());
-                        if let Err(EndpointError::Closed) =
+                        if let Err(EndpointError::ConnectionLost(_)) =
                             open.send_datagram(&Message::Request { seq }.encode())
                         {
                             conn = None;

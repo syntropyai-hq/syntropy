@@ -148,6 +148,8 @@ pub enum EndpointError {
     Accept(String),
     /// The endpoint is closed.
     Closed,
+    /// The connection is closed or lost: closed by either side, reset, or timed out.
+    ConnectionLost(String),
     /// A datagram cannot be sent: it is larger than the path takes, or the peer or this endpoint
     /// does not accept datagrams.
     Datagram(String),
@@ -168,6 +170,7 @@ impl fmt::Display for EndpointError {
             Self::Connect(error) => write!(f, "cannot connect: {error}"),
             Self::Accept(error) => write!(f, "cannot accept a connection: {error}"),
             Self::Closed => write!(f, "the endpoint is closed"),
+            Self::ConnectionLost(error) => write!(f, "the connection is lost: {error}"),
             Self::Datagram(error) => write!(f, "cannot send the datagram: {error}"),
         }
     }
@@ -400,19 +403,21 @@ impl Connection {
         self.inner
             .send_datagram(data.to_vec().into())
             .map_err(|error| match error {
-                SendDatagramError::ConnectionLost(_) => EndpointError::Closed,
+                SendDatagramError::ConnectionLost(error) => {
+                    EndpointError::ConnectionLost(error.to_string())
+                }
                 other => EndpointError::Datagram(other.to_string()),
             })
     }
 
-    /// Waits for the next datagram from the peer. Fails with [`EndpointError::Closed`] once the
-    /// connection is closed.
+    /// Waits for the next datagram from the peer. Fails with [`EndpointError::ConnectionLost`]
+    /// once the connection is closed or lost.
     pub async fn read_datagram(&self) -> Result<Vec<u8>, EndpointError> {
         self.inner
             .read_datagram()
             .await
             .map(|data| data.to_vec())
-            .map_err(|_| EndpointError::Closed)
+            .map_err(|error| EndpointError::ConnectionLost(error.to_string()))
     }
 
     /// The largest datagram [`send_datagram`](Self::send_datagram) takes now, or `None` if the peer
@@ -661,7 +666,15 @@ mod tests {
         conn.close();
         client.close().await;
         assert!(echoing.await.unwrap() >= 2);
-        assert_eq!(conn.send_datagram(b"late"), Err(EndpointError::Closed));
+        let late = conn.send_datagram(b"late");
+        assert!(
+            matches!(late, Err(EndpointError::ConnectionLost(_))),
+            "{late:?}"
+        );
+        assert!(matches!(
+            conn.read_datagram().await,
+            Err(EndpointError::ConnectionLost(_))
+        ));
     }
 
     #[tokio::test]
