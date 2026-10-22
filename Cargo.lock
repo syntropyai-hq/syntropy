@@ -3650,6 +3650,7 @@ name = "syntropy-core"
 version = "0.0.0"
 dependencies = [
  "bitflags",
+ "postcard",
  "proptest",
  "serde",
  "serde_json",
