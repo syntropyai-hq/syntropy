@@ -11,11 +11,14 @@ regex.workspace = true
 serde.workspace = true
 syntropy-config-derive = { path = "../config-derive" }
 syntropy-core = { path = "../core" }
-# Reading the config files and the environment and flag values (RFC-0054 §1, §2.4).
+# Reading the config files and the environment and flag values (RFC-0054 §1, §2.4), and
+# checking each value as TOML gives it in phase 3 (§8).
 toml.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# The phase-3 tests read values the way a config file gives them.
+toml.workspace = true
 serde_json.workspace = true
 trybuild.workspace = true

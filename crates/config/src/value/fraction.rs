@@ -8,7 +8,7 @@ use std::str::FromStr;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{ValueError, split_decimal, split_number};
+use super::{ValueError, serde_error, split_decimal, split_number};
 
 /// A share in [0, 1], written as a number (`0.2`) or a percentage (`"20%"`) (RFC-0054 §3).
 ///
@@ -125,20 +125,20 @@ impl Visitor<'_> for FractionVisitor {
 
     fn visit_f64<E: de::Error>(self, x: f64) -> Result<Fraction, E> {
         // The shortest text of `x` read as f32 rounds once, as `from_str` does.
-        x.to_string().parse().map_err(E::custom)
+        x.to_string().parse().map_err(serde_error)
     }
 
     fn visit_f32<E: de::Error>(self, x: f32) -> Result<Fraction, E> {
-        Fraction::new(x).map_err(E::custom)
+        Fraction::new(x).map_err(serde_error)
     }
 
     fn visit_i64<E: de::Error>(self, n: i64) -> Result<Fraction, E> {
         match n {
             0 => Ok(Fraction::ZERO),
             1 => Ok(Fraction::ONE),
-            _ => Err(E::custom(format!(
+            _ => Err(serde_error(ValueError::out_of_range(format!(
                 "{n} is not a fraction: it must lie between 0 and 1, or 0% and 100%"
-            ))),
+            )))),
         }
     }
 
@@ -147,7 +147,7 @@ impl Visitor<'_> for FractionVisitor {
     }
 
     fn visit_str<E: de::Error>(self, s: &str) -> Result<Fraction, E> {
-        s.parse().map_err(E::custom)
+        s.parse().map_err(serde_error)
     }
 }
 
