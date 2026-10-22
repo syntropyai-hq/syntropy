@@ -5,8 +5,8 @@
 //!
 //! This module is the specification every backend builds on: QUIC (DIST-E7-T03), TCP
 //! (DIST-E7-T05), shared memory (DIST-E7-T06), RDMA (DIST-E7-T07, DIST-E7-T08), and the
-//! simulator's `SimTransport` (QUIC-equivalent semantics over `SimFabric`, QUAL-E8-T04). It
-//! holds no backend. [`conformance`] is RFC-0031 §2's binding semantics as a suite every backend
+//! simulator's `SimTransport` (QUIC-equivalent semantics over `SimFabric`, QUAL-E8-T04). The
+//! first backend here is [`tcp`], the TCP fallback. [`conformance`] is RFC-0031 §2's binding semantics as a suite every backend
 //! runs.
 //!
 //! - A [`Transport`] opens channels: [`Transport::connect`] and [`Transport::accept`] are
@@ -25,6 +25,7 @@ pub mod buffer;
 mod channel;
 pub mod conformance;
 pub mod core;
+pub mod tcp;
 
 use std::future::Future;
 use std::net::SocketAddr;

@@ -1052,6 +1052,19 @@ pub enum Dist {
 - **Portable sampling.** Every draw comes from the run's `SimEntropy`. The log-normal's `exp` and the Marsaglia polar method's `ln` are computed in `testkit::sim` from addition, subtraction, multiplication, division and square root only, which IEEE 754 rounds the same everywhere, not from the platform's maths library, whose `exp` and `ln` may differ between Linux, macOS and Windows. So a seed replays one run on any host (§8). A golden test pins the exact bits of seeded draws, so a platform difference fails loudly.
 - **Loss on reliable channels.** Each packet of a frame is lost at most once, independently, with probability `loss`, and each lost packet adds one PTO. A round-trip sample is twice a message's α plus jitter, and the PTO uses the link's estimate before the frame's own sample. Before any sample, a link assumes RFC 9002's initial RTT, 333 ms.
 
+**Note, 2026-10-23 (QUAL-E8-T04): `SimTransport` as built.**
+- **Where.** `testkit::sim::SimTransport` implements `net`'s `Transport`, one per simulated node, over a shared `SimNet` that holds the fabric and every channel. It sits behind `testkit`'s `transport` feature, which `net`'s tests turn on, so crates that use `testkit` for anything else don't build `net`.
+- **Channels.** Each side of a channel is DIST-E7-T02's channel core, so the credit window, `WouldBlock`, `credit_stall`, acknowledgements and retention are production's. Every frame goes through `SimFabric::send_reliable`, one stream per channel side, and is delivered at its own arrival time.
+- **Link down.** The failure timeout is `link.failover_timeout`, RFC-0031 §4's QUIC idle timeout: 2 s on a LAN, 10 s across a WAN, chosen per `SimNet`.
+  - A channel fails at both ends, with an uncoded `Link` error, when either direction of its link has been down for the timeout. The timeout counts from the moment the link went down, noted when the fabric changes, however late the driver next steps. That includes a one-way split, since the far end hears nothing.
+  - `SimNet::next_deadline` gives the next time anything is due: a frame's arrival, a failover, or a core's timer (`ChannelCore::next_deadline`). So a driver that steps on events sees each one at its time.
+  - A link back up sooner loses nothing: the cores send the dropped frames again on their ack timeouts.
+  - The cores never escalate ack timeouts to a link fault, since QUIC retransmits lost packets itself (RFC-0031 §7.3).
+- **Not modelled yet.**
+  - Handshake time: `connect` and `accept` pair as soon as both are called, and a `connect` with no link up fails at once with `ConnectTimeout`.
+  - `reconnect`.
+  - Gossip datagrams use the fabric's `send_datagram` directly, not the transport.
+
 #### 8.4 Fake devices, tiers and drives
 
 `FakeKernelProvider` implements the full `KernelProvider` trait in one of two modes:
