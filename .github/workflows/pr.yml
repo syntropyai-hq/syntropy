@@ -60,7 +60,8 @@ jobs:
         run: |
           jobs='"lint","build","hosted-test"'
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          changed="$(git diff --name-only "$BASE_SHA" HEAD)"
+          # Without renames, so a file moved out of a crate counts by its old path too.
+          changed="$(git diff --no-renames --name-only "$BASE_SHA" HEAD)"
           l3='^(crates/|third_party/|\.cargo/|xtask/|Cargo\.(toml|lock)$|rust-toolchain\.toml$'
           l3+='|\.github/(workflows/pr\.yml$|actions/))'
           if grep -qE "$l3" <<< "$changed"; then
