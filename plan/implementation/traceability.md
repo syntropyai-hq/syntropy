@@ -300,10 +300,10 @@ No GAPs.
 | RFC-0031 | §1 | Planes, ALPNs and connections | 2: DIST-E7-T03–T04 | ok |
 | RFC-0031 | §2 | The `Transport` trait and `Channel` in full | 4: PLC-E6-T18, DIST-E7-T01–T02, DIST-E18-T03 | ok |
 | RFC-0031 | §3 | Link selection | 4: PLC-E6-T22, DIST-E7-T11, DIST-E7-T16, DIST-E7-T19 | ok |
-| RFC-0031 | §4 | QUIC backend (iroh) | 6: DIST-E7-T03–T04, DIST-E7-T16, DIST-E7-T21, DIST-E7-T24, DIST-E7-T27 | ok |
-| RFC-0031 | §5 | Other backends: shared memory, RDMA, TCP | 12: PLC-E4-T18, DIST-E6-T02, DIST-E7-T05–T09, DIST-E7-T15, DIST-E7-T18, DIST-E7-T20, DIST-E7-T22, DIST-E18-T04 | ok |
+| RFC-0031 | §4 | QUIC backend (iroh) | 6: DIST-E7-T03–T04, DIST-E7-T16, DIST-E7-T21, DIST-E7-T24–T25 | ok |
+| RFC-0031 | §5 | Other backends: shared memory, RDMA, TCP | 13: PLC-E4-T18, DIST-E6-T02, DIST-E7-T05–T09, DIST-E7-T15, DIST-E7-T18, DIST-E7-T20, DIST-E7-T22, DIST-E7-T25, DIST-E18-T04 | ok |
 | RFC-0031 | §6 | Data-plane wire format | 20: PLC-E9-T22, DIST-E1-T14, DIST-E7-T02, DIST-E7-T14, DIST-E8-T01–T11, DIST-E8-T15–T16, DIST-E8-T18, DIST-E11-T05, DIST-E14-T17 | ok |
-| RFC-0031 | §7 | Flow control, acknowledgement, retransmission and failover | 5: DIST-E7-T02, DIST-E7-T10, DIST-E7-T13, DIST-E7-T16, DIST-E7-T27 | ok |
+| RFC-0031 | §7 | Flow control, acknowledgement, retransmission and failover | 5: DIST-E7-T02, DIST-E7-T10, DIST-E7-T13, DIST-E7-T16, DIST-E7-T25 | ok |
 | RFC-0031 | §8 | Zero-copy receive and buffer pools | 3: TIER-E2-T25, DIST-E7-T09, DIST-E7-T12 | ok |
 | RFC-0031 | §9 | Control-plane and blob-plane encoding | 2: DIST-E8-T12, DIST-E8-T17 | ok |
 | RFC-0031 | §10 | Versioning and compatibility | 4: DIST-E8-T04, DIST-E8-T06, DIST-E8-T13–T14 | ok |

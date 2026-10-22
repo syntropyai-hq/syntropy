@@ -1009,3 +1009,14 @@ The post-merge review of #1673 found the code right and the row wrong. The row d
 |---|---|---|---|
 | DIST-E18-T01 → PROD-E1-T02, PROD-E1-T03 | DIST-E18-T01 | R9 | its criteria are "`syntropy config show --resolved` lists every key with its default", which is PROD-E1-T02's `ResolvedConfig` and `show_resolved`, and "unknown or mis-scoped keys fail validation", which is PROD-E1-T03's `unknown_key` (3) and `scope_mismatch` (9). Both are earlier milestones than M2 |
 | DIST-E18-T01's task text leaves `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` to PLC-E6-T11 | DIST-E18-T01 | Definition of done | RFC-0054 §5.1 gives `replan.*` to RFC-0011, whose key table declares those three. RFC-0033's shared `replan` section holds only `replan.degraded_min_gain`, as RFC-0054 §5.1's note of 2026-10-22 records. PLC-E6-T11 registers "the cluster-scope `solver.*` and `replan.*` keys" |
+
+## DIST-E7-T25: bulk pacing in the real backends, and the rig check moved there (2026-10-23)
+
+DIST-E7-T13 builds the bulk pacer (`net::transport::pacing`) and paces the simulator's bulk sends. Nothing in it paces a real transport, so its rig criterion could not run even on a rig. Its review also found that no row paces the TCP fallback's bulk channels (review-net's N3, issuecomment-6352911884). These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T25 (M2) → DIST-E7-T13, DIST-E7-T03, DIST-E7-T05 | DIST-E7-T25 | R9 | the pacer in the QUIC backend's bulk connection and the TCP fallback, each with a loopback test; it needs the pacer and both backends |
+| DIST-E7-T13's rig criterion, "a 10 GB blob transfer on the same 2.5 GbE edge as a live ring keeps the hop's p99 within 1.2 × its idle p99", moves to DIST-E7-T25; DIST-E7-T13 keeps simulator criteria | DIST-E7-T13, DIST-E7-T25 | R9 | the rig run needs pacing in a real backend, which DIST-E7-T25 is the first task to build |
+| DIST-E11-T13 → DIST-E7-T25; COMP-E12-T05 → DIST-E7-T25; QUAL-E13-T10 → DIST-E7-T25 | DIST-E11-T13, COMP-E12-T05, QUAL-E13-T10 | R9 | each sends bulk on, or measures the data hop under bulk on, a real transport: KV migration, peer chunk serving, and `net.hop.p99_under_bulk`. QUAL-E13-T10's edge was reached only through COMP-E12-T05; it is now explicit (review-net's N4). M3 → M2 and M2 → M2, so no `LATER` and no cycle |
+
