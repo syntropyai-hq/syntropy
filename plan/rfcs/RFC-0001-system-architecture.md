@@ -1538,6 +1538,7 @@ pub enum ErrorClass {
 | `TierKind` | core | 0020 | 0010 |
 | `DeviceClass`, `CpuIsa`, `DeviceFeatures` | core | 0040 | 0010 (`Npu`, ADR-0405 decision 4's fields, the provider-record merge) |
 | `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
+| `BufferView`, `ViewKind` | core | 0020 | 0040 (`OpArgs::weights`) |
 | `ResourceGraph`, `CapabilityProfile` | core | 0010 | 0011 (what the solver reads), 0021 (`StorageCaps` fields) |
 | `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
 | `DType`, `QuantScheme` | core | 0042 | 0040 |
@@ -2706,3 +2707,11 @@ ADR-0405, accepted 2026-10-22 (option A, with V1 for exactness on Vulkan), defin
 | `DeviceClass`, `CpuIsa` and `DeviceFeatures` gain an ownership row: `core`, owned by RFC-0040, expanded by RFC-0010 (`Npu`, decision 4's fields, the provider-record merge) | §5.13; RFC-0010 §1.2 and RFC-0040 §2.2 (dated notes) | `DeviceInfo` and `ConformanceManifest` are `core` types that hold a `DeviceClass` (rule 1), and `kernels` re-exports it |
 | `DeviceInfo::class` cites its definition in RFC-0040 §2.2 and ADR-0405 | §5.2 | one key for placement, packs (§5.6), certificates (§5.15) and the selection cache |
 | `OpCert` records the rig's device and driver, so a lookup can tell a full certificate from a derived one on Vulkan | §5.15 (comment); RFC-0060 §6.4 and RFC-0040 §6.2 (dated notes) | ADR-0405's V1: a Vulkan certificate covers another device or driver of its class only as a derived certificate, with identical SPIR-V, the first-load canary and the `exact (derived certification)` label |
+
+### 18.12 Buffer views in core (2026-10-22)
+
+COMP-E1-T05 binds `BufferView` in `kernels`' `OpArgs::weights`. RFC-0020 §3 had defined it in `tier`, a layer above `kernels`.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `BufferView` and `ViewKind` are `core` types with serde derives, and `tier` re-exports them; §5.13 gains their ownership row | §5.13; RFC-0020 §3 (dated note) | `kernels` (layer 1) names `BufferView` in `TensorArg` (RFC-0040 §3.5), and rule 2 forbids an edge from `kernels` to `tier` (layer 2) |

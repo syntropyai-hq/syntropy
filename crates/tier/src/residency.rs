@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The residency map, tensor handles, leases and step fences (RFC-0020 §3, §7). This task
-//! defines [`HomeState`], [`StepFence`] and [`BufferView`]; `ResidencyMap` comes in
-//! TIER-E1-T04 and leases in TIER-E1-T05.
+//! defines [`HomeState`] and [`StepFence`]; `ResidencyMap` comes in TIER-E1-T04 and leases in
+//! TIER-E1-T05. RFC-0020 §3's `BufferView` is `syntropy-core`'s, because `syntropy-kernels` a
+//! layer below binds it (RFC-0040 §3.5); the crate root re-exports it.
 
 #![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
-use syntropy_core::{Bytes, DeviceId};
 use syntropy_io::IoTicket;
 
 use crate::arena::PinClass;
@@ -64,27 +64,4 @@ pub struct StepFence {
     pub device: u16,
     /// The step the fence waits for.
     pub step: u64,
-}
-
-/// What the hot path and the I/O engine use to address resident bytes (RFC-0020 §3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct BufferView {
-    /// Which address space `addr` is in.
-    pub kind: ViewKind,
-    /// The start address.
-    pub addr: u64,
-    /// The length.
-    pub len: Bytes,
-}
-
-/// The address space of a [`BufferView`] (RFC-0020 §3).
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ViewKind {
-    /// Host memory.
-    Host,
-    /// One device's memory.
-    Device(DeviceId),
-    /// Unified memory, addressable by host and GPU alike.
-    Unified,
 }
