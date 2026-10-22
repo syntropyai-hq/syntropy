@@ -4,9 +4,15 @@
 //! io_uring not allowed although `kernel.io_uring_disabled` is 0.
 //!
 //! The test re-runs this test binary as a child with [`CHILD`] set. The child installs a seccomp
-//! filter that answers `io_uring_setup` with `EPERM` and allows every other call, then runs the
+//! filter that answers `io_uring_setup` with `EACCES` and allows every other call, then runs the
 //! live check and prints one report line, which the parent reads. A filter cannot be removed
 //! once installed, so it must not be installed in the test runner's own process.
+//!
+//! The filter's errno is `EACCES`, not the `EPERM` of the sysctl and of container runtimes'
+//! default profiles, so the child seeing exactly `EACCES` shows the test's own filter refused
+//! the call. Under CI (the `CI` environment variable set) the test refuses to skip: a host whose
+//! sysctl is not 0, or whose test process is already filtered so the control cannot run, fails
+//! it instead of passing vacuously.
 //!
 //! Linux on x86-64 and AArch64 only: the filter matches the system call number of those two
 //! architectures.
@@ -53,7 +59,8 @@ mod filter {
 
     const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
     const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
-    const EPERM: u32 = 1;
+    /// The filter's errno: `EACCES`, distinct from the sysctl's and runtimes' `EPERM`.
+    pub const EACCES: u32 = 13;
 
     #[repr(C)]
     struct SockFilter {
@@ -77,7 +84,7 @@ mod filter {
         SockFilter { code, jt, jf, k }
     }
 
-    /// Installs, on the calling thread, a filter that answers `io_uring_setup` with `EPERM` and
+    /// Installs, on the calling thread, a filter that answers `io_uring_setup` with `EACCES` and
     /// allows everything else, including every call of a foreign architecture.
     pub fn deny_io_uring_setup() -> std::io::Result<()> {
         let program = [
@@ -85,7 +92,7 @@ mod filter {
             op(BPF_JMP_JEQ_K, 0, 3, AUDIT_ARCH),
             op(BPF_LD_W_ABS, 0, 0, DATA_NR),
             op(BPF_JMP_JEQ_K, 0, 1, NR_IO_URING_SETUP),
-            op(BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO | EPERM),
+            op(BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO | EACCES),
             op(BPF_RET_K, 0, 0, SECCOMP_RET_ALLOW),
         ];
         let fprog = SockFprog {
@@ -135,6 +142,24 @@ fn sysctl_is_zero() -> bool {
     sysctl().is_none_or(|v| v == "0")
 }
 
+/// Under CI a skip is a failure; elsewhere it is a printed notice.
+fn cannot_run(why: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "criterion 2 cannot run on this CI host: {why}"
+    );
+    eprintln!("NOT RUN: {why}");
+}
+
+/// This process has no seccomp filter (`Seccomp: 0`).
+fn unfiltered() -> bool {
+    std::fs::read_to_string("/proc/self/status")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("Seccomp:"))
+        .is_some_and(|v| v.trim() == "0")
+}
+
 /// The child's half. Ignored in a normal run; the parent runs it with `--ignored`.
 #[test]
 #[ignore = "run only as the child of `seccomp_blocked_io_uring_is_not_allowed`"]
@@ -155,10 +180,10 @@ fn seccomp_child() {
 fn seccomp_blocked_io_uring_is_not_allowed() {
     let sysctl = sysctl();
     if !sysctl_is_zero() {
-        eprintln!(
-            "NOT RUN: kernel.io_uring_disabled is {sysctl:?}, so this host cannot show a filter \
-             blocking io_uring while the sysctl is 0"
-        );
+        cannot_run(&format!(
+            "kernel.io_uring_disabled is {sysctl:?}, so this host cannot show a filter blocking \
+             io_uring while the sysctl is 0"
+        ));
         return;
     }
     let exe = std::env::current_exe().expect("current test binary");
@@ -185,21 +210,24 @@ fn seccomp_blocked_io_uring_is_not_allowed() {
         report.trim(),
         format!(
             "sysctl={sysctl:?} setup={:?} allowed=false",
-            SysCheck::Denied { errno: 1 }
+            SysCheck::Denied {
+                errno: filter::EACCES as i32
+            }
         )
     );
 
     // The control: this process has no filter of the test's. Where nothing else filters it
     // either, the same call succeeds, so the child's denial came from its filter.
     let control = checks::io_uring_setup(&LiveSyscalls);
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    let unfiltered = status
-        .lines()
-        .find_map(|l| l.strip_prefix("Seccomp:"))
-        .is_some_and(|v| v.trim() == "0");
+    let unfiltered = unfiltered();
     eprintln!("control: io_uring_setup {control:?}, process unfiltered {unfiltered}");
     if unfiltered {
         assert_eq!(control, SysCheck::Granted);
         assert!(checks::io_uring_allowed(true, control));
+    } else {
+        cannot_run(&format!(
+            "the test process already has a seccomp filter, so the unfiltered control cannot \
+             run (it gave {control:?})"
+        ));
     }
 }
