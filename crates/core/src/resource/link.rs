@@ -77,12 +77,14 @@ pub struct LinkCaps {
 }
 
 impl LinkCaps {
-    /// Whether the transport has a probe result on this link. One without is tried only after
-    /// every measured candidate (RFC-0031 §3). Startup measures α on every transport a pair
-    /// supports and β on the best-ranked one only (RFC-0010 §3), so α decides.
+    /// Whether the transport has a probe result on this link: both its α and its β, which
+    /// [`link_cost`] needs. One without is tried only after every measured candidate, in
+    /// [`unmeasured_rank`] order (RFC-0031 §3). Startup measures α on every transport a pair
+    /// supports but β on the best-ranked one only, and the rest in the background after admission
+    /// (RFC-0010 §3), so until then a transport with α alone ranks as unmeasured.
     #[must_use]
     pub fn is_measured(&self) -> bool {
-        self.alpha.source != MeasureSource::Prior
+        self.alpha.source != MeasureSource::Prior && self.beta.source != MeasureSource::Prior
     }
 }
 
@@ -111,8 +113,9 @@ pub enum DemotionCause {
     RepeatedFaults,
 }
 
-/// λ on Wi-Fi links and on relayed QUIC, in latency mode: the default of `link.p99_weight` there
-/// [target: RFC-0031 §3, "cost Wi-Fi at p99"].
+/// λ on Wi-Fi and overlay links and on relayed QUIC, in latency mode: the default of
+/// `link.p99_weight` there [target: RFC-0031 §3, "cost Wi-Fi at p99"; overlay links join Wi-Fi as
+/// RFC-0011's C14 groups them (RFC-0031 §3, note of 2026-10-23)].
 pub const P99_WEIGHT_TAIL_HEAVY: f64 = 1.0;
 
 /// λ on every other link in latency mode: the default of `link.p99_weight` there [target:
@@ -135,15 +138,18 @@ pub const SOFTWARE_PATH_RDMA: Nanos = Nanos(20_000);
 pub const SOFTWARE_PATH_SHARED_MEMORY: Nanos = Nanos(2_000);
 
 /// λ, the weight of a link's p99 in its cost (RFC-0031 §3). In latency mode it is
-/// `link.p99_weight`, `configured`, and by default [`P99_WEIGHT_TAIL_HEAVY`] on a Wi-Fi link or
-/// relayed QUIC and [`P99_WEIGHT`] otherwise. In throughput mode it is 0, because the tail is
-/// amortised over batches.
+/// `link.p99_weight`, `configured`, one number that replaces both defaults: by default it is
+/// [`P99_WEIGHT_TAIL_HEAVY`] on a Wi-Fi or overlay link or relayed QUIC, and [`P99_WEIGHT`]
+/// otherwise. In throughput mode it is 0, because the tail is amortised over batches.
 #[must_use]
 pub fn p99_weight(caps: &LinkCaps, objective: &Objective, configured: Option<f64>) -> f64 {
     match objective {
         Objective::Latency => configured.unwrap_or_else(|| {
-            let wifi = caps.link.kind == LinkKind::Network(NetMedium::WiFi);
-            if wifi || caps.transport == TransportKind::QuicRelay {
+            let wireless = matches!(
+                caps.link.kind,
+                LinkKind::Network(NetMedium::WiFi | NetMedium::Overlay)
+            );
+            if wireless || caps.transport == TransportKind::QuicRelay {
                 P99_WEIGHT_TAIL_HEAVY
             } else {
                 P99_WEIGHT
@@ -181,9 +187,11 @@ pub fn software_path(caps: &LinkCaps) -> Nanos {
 ///
 /// The sum is rounded to the nearest nanosecond once. A tail below the median counts as 0, and
 /// so does a negative or NaN λ. An infinite λ saturates: a link with a tail then costs
-/// `Nanos(u64::MAX)`, and one without (α_p99 = α_p50) adds nothing for it. A link whose β is not
-/// a positive rate cannot carry the frame: its cost is `Nanos(u64::MAX)`, as is any sum that
-/// would exceed it.
+/// `Nanos(u64::MAX)`, and one without (α_p99 = α_p50) adds nothing for it. A β that is not a
+/// positive finite rate gives no cost: `Nanos(u64::MAX)`, as for any sum that would exceed it. A
+/// probed β is a positive rate, so this arises for a figure no probe filled, and
+/// [`candidate_order`] ranks such a candidate with the unmeasured ones (see
+/// [`LinkCaps::is_measured`]).
 #[must_use]
 pub fn link_cost(
     caps: &LinkCaps,
@@ -325,8 +333,10 @@ mod tests {
         let wifi = caps(NetMedium::WiFi, TransportKind::Quic);
         let relay = caps(NetMedium::Ethernet, TransportKind::QuicRelay);
         let tcp = caps(NetMedium::Ethernet, TransportKind::Tcp);
+        let overlay = caps(NetMedium::Overlay, TransportKind::Quic);
         assert_eq!(p99_weight(&wifi, &Objective::Latency, None), 1.0);
         assert_eq!(p99_weight(&relay, &Objective::Latency, None), 1.0);
+        assert_eq!(p99_weight(&overlay, &Objective::Latency, None), 1.0);
         assert_eq!(p99_weight(&tcp, &Objective::Latency, None), 0.25);
         let full_tail = Nanos(100_000 + 32_768 + 200_000 + 25_000);
         assert_eq!(link_cost(&wifi, s, &Objective::Latency, None), full_tail);
@@ -528,5 +538,51 @@ mod tests {
             let first = candidate_order(&all, Bytes(64), &throughput(), None)[0].transport;
             assert_eq!(first, TransportKind::Quic);
         }
+        // `Tcp` ranks before `QuicRelay`, though `TransportKind`'s derived order puts `QuicRelay`
+        // first, so this tie is decided by the rank alone: measured at one cost, and unmeasured.
+        let relay = caps(NetMedium::Ethernet, TransportKind::QuicRelay);
+        let mut unmeasured = [tcp.clone(), relay.clone()];
+        for c in &mut unmeasured {
+            c.alpha = Measured::default();
+        }
+        for all in [
+            [relay.clone(), tcp.clone()],
+            [unmeasured[1].clone(), unmeasured[0].clone()],
+        ] {
+            let first = candidate_order(&all, Bytes(64), &throughput(), None)[0].transport;
+            assert_eq!(first, TransportKind::Tcp);
+        }
+    }
+
+    /// A transport with a probed α and no probed β has no cost yet, so it ranks with the
+    /// unmeasured candidates, in rank order, after every measured one.
+    #[test]
+    fn a_link_with_alpha_alone_ranks_as_unmeasured() {
+        let quic = caps(NetMedium::Ethernet, TransportKind::Quic);
+        let mut shm = caps(NetMedium::Loopback, TransportKind::SharedMemory);
+        shm.beta = Measured::default();
+        let mut rdma = caps(
+            NetMedium::Rdma(RdmaKind::RoceV2),
+            TransportKind::Rdma(RdmaKind::RoceV2),
+        );
+        rdma.beta = Measured::default();
+        assert!(!shm.is_measured() && !rdma.is_measured() && quic.is_measured());
+        let order: Vec<TransportKind> = candidate_order(
+            &[rdma.clone(), shm.clone(), quic.clone()],
+            Bytes(32_768),
+            &Objective::Latency,
+            None,
+        )
+        .into_iter()
+        .map(|c| c.transport)
+        .collect();
+        assert_eq!(
+            order,
+            [
+                TransportKind::Quic,
+                TransportKind::SharedMemory,
+                TransportKind::Rdma(RdmaKind::RoceV2),
+            ]
+        );
     }
 }
