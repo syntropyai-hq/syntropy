@@ -214,7 +214,7 @@ fn goldens() -> Vec<Golden> {
                 limit_seq: 64,
                 slot_size: 1 << 20,
                 recv_slots: 64,
-                cred_kind: CredKind::DataPlaneCredential,
+                cred_kind: Some(CredKind::DataPlaneCredential),
             },
             credential: leak(cred),
         }),

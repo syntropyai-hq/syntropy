@@ -31,7 +31,8 @@ use std::net::{IpAddr, SocketAddr};
 
 use serde::Deserialize;
 
-use crate::resolve::{Problem, ResolvedConfig};
+use crate::diagnostic::Problem;
+use crate::resolve::ResolvedConfig;
 // The trait and the derive, which share the name.
 use crate::ConfigSection;
 
@@ -289,7 +290,7 @@ pub(crate) fn warnings(config: &ResolvedConfig) -> Vec<Problem> {
         .into_iter()
         .filter_map(|api| {
             let resolved = resolved_on(config, api)?;
-            Some(Problem::new(
+            Some(Problem::uncoded(
                 Some(resolved.origin.clone()),
                 format!(
                     "`{}` is on: {} answers on loopback listeners and the local socket. It is a \

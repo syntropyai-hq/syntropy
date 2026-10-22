@@ -15,24 +15,30 @@
 //! - an instance key outside a `policy.*` table, or any request key, is an error.
 //!
 //! This module reports what layering itself finds: syntax errors with line and column, unknown
-//! keys, keys in the wrong scope, unreadable files and variables. The full validation phases,
-//! their error codes and their rendering are RFC-0054 §8's, in a later task.
+//! keys, keys in the wrong scope, unreadable files and variables, each with its RFC-0054 §8
+//! code. It also runs §8's phase 3 as it goes: each value is checked against its key's type and
+//! range when a layer sets it, so phases 1–3 report in one list. Phases 4 and 5 are in
+//! [`crate::validate`], and the rendering in [`crate::diagnostic`].
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use serde::de::DeserializeOwned;
 use toml::Value;
 
+use crate::code::{Code, suggest};
+use crate::diagnostic::Problem;
 use crate::discovery::{HOME_VAR, Mode, Os, Scan, locate};
 use crate::env::{self, Env, FIXED, OTHER_KNOWN};
 use crate::origin::Origin;
 use crate::registry::Registry;
-use crate::schema::{ConfigSection, DefaultSpec, DefaultValue, KeySchema, Scope};
+use crate::schema::{ConfigSection, DefaultSpec, DefaultValue, Deprecated, KeySchema, Scope};
 use crate::text;
+use crate::validate::config_version_problem;
+use crate::value::ValueError;
 
 /// The key `SYNTROPY_HOME` sets (RFC-0054 §2.4).
 const STATE_DIR_KEY: &str = "node.state_dir";
@@ -40,39 +46,6 @@ const STATE_DIR_KEY: &str = "node.state_dir";
 const CONFIG_VERSION_KEY: &str = "config_version";
 /// The top-level table that holds the model policy tables (RFC-0054 §5.4).
 const POLICY_TABLE: &str = "policy";
-
-/// An error or warning found while layering: where it is, if anywhere, and what is wrong.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Problem {
-    /// The file and line, variable or flag.
-    pub at: Option<Origin>,
-    /// The 1-based column, for a syntax error in a file.
-    pub column: Option<u32>,
-    /// What is wrong. Never a value, which could be a secret.
-    pub message: String,
-}
-
-impl Problem {
-    pub(crate) fn new(at: Option<Origin>, message: impl Into<String>) -> Self {
-        Self {
-            at,
-            column: None,
-            message: message.into(),
-        }
-    }
-}
-
-impl fmt::Display for Problem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (&self.at, self.column) {
-            (Some(Origin::File { path, line }), Some(column)) => {
-                write!(f, "{}:{line}:{column}: {}", path.display(), self.message)
-            }
-            (Some(at), _) => write!(f, "{at}: {}", self.message),
-            (None, _) => f.write_str(&self.message),
-        }
-    }
-}
 
 /// A config file's path and text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,29 +72,90 @@ impl ConfigFile {
     /// Reads every file `scan` found, in merge order. Returns every file that cannot be read
     /// or is not UTF-8.
     pub fn read_all(scan: &Scan) -> Result<Vec<ConfigFile>, Vec<Problem>> {
+        let (files, unreadable) = Self::read_each(scan);
+        if unreadable.is_empty() {
+            Ok(files)
+        } else {
+            Err(unreadable.into_iter().map(|(_, problem)| problem).collect())
+        }
+    }
+
+    /// Reads every file `scan` found, in merge order: the files that could be read, and for
+    /// each one that cannot be read or is not UTF-8, its path and the problem.
+    fn read_each(scan: &Scan) -> (Vec<ConfigFile>, Vec<(PathBuf, Problem)>) {
         let mut files = Vec::new();
-        let mut problems = Vec::new();
+        let mut unreadable = Vec::new();
         for path in scan.files() {
             match std::fs::read(&path) {
                 Ok(bytes) => match String::from_utf8(bytes) {
                     Ok(text) => files.push(ConfigFile::new(path, text)),
-                    Err(_) => problems.push(Problem::new(
-                        None,
-                        format!("{}: the file is not UTF-8", path.display()),
-                    )),
+                    Err(_) => {
+                        let problem = Problem::new(
+                            Code::PathUnusable,
+                            None,
+                            format!("{}: the file is not UTF-8", path.display()),
+                        );
+                        unreadable.push((path, problem));
+                    }
                 },
-                Err(e) => problems.push(Problem::new(
-                    None,
-                    format!("{}: cannot read the file: {e}", path.display()),
-                )),
+                Err(e) => {
+                    let problem = Problem::new(
+                        Code::PathUnusable,
+                        None,
+                        format!("{}: cannot read the file: {e}", path.display()),
+                    );
+                    unreadable.push((path, problem));
+                }
             }
         }
-        if problems.is_empty() {
-            Ok(files)
-        } else {
-            Err(problems)
-        }
+        (files, unreadable)
     }
+}
+
+/// Reads the files `scan` found and resolves the ones that can be read, so a file that cannot
+/// be read is reported beside every other file's errors, not alone (RFC-0054 §8: every error,
+/// not only the first). Returns the files read, for rendering, and the outcome. The errors stay
+/// in merge order: each file's in turn, a file that cannot be read in its place, then the
+/// environment's and the flags'.
+pub(crate) fn read_and_resolve(
+    registry: &Registry,
+    os: Os,
+    scan: &Scan,
+    env: &Env,
+    flags: &Flags,
+    computed: impl Fn(&'static KeySchema) -> Option<Value>,
+) -> (Vec<ConfigFile>, Result<ResolvedConfig, Rejected>) {
+    let (files, unreadable) = ConfigFile::read_each(scan);
+    let layers = Layers {
+        os,
+        files: &files,
+        env,
+        flags,
+    };
+    let outcome = ResolvedConfig::resolve_with(registry, layers, computed);
+    if unreadable.is_empty() {
+        return (files, outcome);
+    }
+    let (errors, warnings) = match outcome {
+        Ok(config) => (Vec::new(), config.warnings().to_vec()),
+        Err(rejected) => (rejected.errors, rejected.warnings),
+    };
+    let order = scan.files();
+    let place = |path: &Path| order.iter().position(|p| p == path).unwrap_or(order.len());
+    let mut errors: Vec<(usize, Problem)> = unreadable
+        .into_iter()
+        .map(|(path, problem)| (place(&path), problem))
+        .chain(errors.into_iter().map(|problem| {
+            let at = match &problem.at {
+                Some(Origin::File { path, .. }) => place(path),
+                _ => order.len(),
+            };
+            (at, problem)
+        }))
+        .collect();
+    errors.sort_by_key(|(at, _)| *at);
+    let errors = errors.into_iter().map(|(_, problem)| problem).collect();
+    (files, Err(Rejected { errors, warnings }))
 }
 
 /// One value set on the command line.
@@ -157,6 +191,7 @@ impl Flags {
         // key is named later, when it resolves.
         let Some((key, value)) = arg.split_once('=') else {
             return Err(Problem::new(
+                Code::Syntax,
                 at,
                 "an argument has no `=`: `--set` takes `key=value`",
             ));
@@ -170,6 +205,7 @@ impl Flags {
             // Not echoed either: text before the first `=` that is not a key may be a value
             // written with the wrong separator (`--set 'k:Bearer …=x'`).
             return Err(Problem::new(
+                Code::Syntax,
                 at,
                 "the text before `=` is not a key: `--set` takes a dotted path of bare keys, \
                  such as `resource.ram_headroom`, and cannot set a `policy.*` table",
@@ -245,6 +281,12 @@ impl Resolved {
     /// Whether a layer or the default gave the key a value.
     pub fn is_set(&self) -> bool {
         self.value.is_some()
+    }
+
+    /// The value, a secret-typed key's included, for the crate's own checks, which never print
+    /// it, such as whether a secret is written inline (RFC-0054 §8 phase 5).
+    pub(crate) fn raw_value(&self) -> Option<&Value> {
+        self.value.as_ref()
     }
 
     /// The value as `config show` prints it: inline TOML, with secrets redacted.
@@ -326,6 +368,12 @@ impl Proposal {
         } else {
             Some(&self.value)
         }
+    }
+
+    /// The proposed value, a secret's included, for the crate's own checks (see
+    /// [`Resolved::raw_value`]).
+    pub(crate) fn raw_value(&self) -> &Value {
+        &self.value
     }
 
     /// The value as `config show` prints it, with secrets redacted.
@@ -461,10 +509,15 @@ impl ResolvedConfig {
         &self.files
     }
 
-    /// The warnings found while layering, such as an unknown `SYNTROPY_*` variable, then one for
+    /// The warnings found while loading, such as an unknown `SYNTROPY_*` variable, then one for
     /// each `debug.*` key that is on ([`crate::DebugSection`]).
     pub fn warnings(&self) -> &[Problem] {
         &self.warnings
+    }
+
+    /// Adds the warnings of the later validation phases.
+    pub(crate) fn push_warnings(&mut self, warnings: Vec<Problem>) {
+        self.warnings.extend(warnings);
     }
 
     /// Builds section `S` from the effective values. A key of another scope in `S` takes its
@@ -649,6 +702,11 @@ impl<'r> Resolution<'r> {
     /// Records `value` for `key` from a layer, by the key's scope. `None` means the scope does
     /// not belong in a node's layers; the caller reports it.
     fn assign(&mut self, key: &'static KeySchema, value: Value, origin: Origin) -> Option<()> {
+        if matches!(key.scope, Scope::Node | Scope::Cluster)
+            && let Err(error) = (key.check)(&value)
+        {
+            self.errors.push(value_problem(key, &error, origin.clone()));
+        }
         match key.scope {
             Scope::Node => {
                 self.set.insert(key.path, (value, origin));
@@ -666,18 +724,26 @@ impl<'r> Resolution<'r> {
     fn file(&mut self, file: &ConfigFile) {
         let lines = LineIndex::new(&file.text);
         let syntax = |e: toml::de::Error, problems: &mut Vec<Problem>| {
-            let (line, column) = e
-                .span()
+            let span = e.span();
+            let (line, column) = span
+                .as_ref()
                 .map(|s| lines.line_column(s.start))
                 .unwrap_or((1, 1));
-            problems.push(Problem {
-                at: Some(Origin::File {
-                    path: file.path.clone(),
-                    line,
-                }),
-                column: Some(column),
-                message: format!("TOML syntax: {}", e.message().trim_end()),
-            });
+            let width = span
+                .and_then(|s| file.text.get(s))
+                .map_or(1, |t| t.chars().take_while(|&c| c != '\n').count() as u32);
+            problems.push(
+                Problem::new(
+                    Code::Syntax,
+                    Some(Origin::File {
+                        path: file.path.clone(),
+                        line,
+                    }),
+                    // Only the message: the library's rendered error quotes the source line.
+                    format!("TOML syntax: {}", e.message().trim_end()),
+                )
+                .spanning(column, width),
+            );
         };
         let spans = match toml::de::DeTable::parse(&file.text) {
             Ok(table) => key_offsets(table.get_ref()),
@@ -707,32 +773,54 @@ impl<'r> Resolution<'r> {
             segments.push(name.clone());
             let top = segments.len() == 1;
             if top && name == CONFIG_VERSION_KEY {
-                // Checked by the validation phases (RFC-0054 §8); not a resolved key.
+                // Not a resolved key; a file newer than this binary is rejected (RFC-0054 §8).
+                if let Some((code, message)) = config_version_problem(Some(value)) {
+                    self.errors.push(
+                        Problem::new(code, Some(at(segments)), message).about(CONFIG_VERSION_KEY),
+                    );
+                }
             } else if top && name == POLICY_TABLE {
                 self.policy(value, segments, at);
             } else if segments.iter().all(|s| crate::schema::is_bare_key(s)) {
                 let path = segments.join(".");
                 if let Some(key) = self.registry.key(&path) {
                     if self.assign(key, value.clone(), at(segments)).is_none() {
-                        self.errors
-                            .push(Problem::new(Some(at(segments)), misplaced(key)));
+                        self.errors.push(
+                            Problem::new(Code::ScopeMismatch, Some(at(segments)), misplaced(key))
+                                .about(&path),
+                        );
                     }
                 } else if value.is_table() && self.is_table(&path) {
                     if let Value::Table(inner) = value {
                         self.walk(inner, segments, at);
                     }
+                } else if let Some(deprecated) = self.registry.deprecated(&path) {
+                    self.deprecated(deprecated, value.clone(), at(segments));
                 } else {
-                    self.errors.push(Problem::new(
-                        Some(at(segments)),
-                        format!("unknown key `{path}`"),
-                    ));
+                    self.errors.push(
+                        Problem::new(
+                            Code::UnknownKey,
+                            Some(at(segments)),
+                            format!("unknown key `{path}`"),
+                        )
+                        .about(&path)
+                        .hint(did_you_mean(self.registry, &path)),
+                    );
                 }
             } else {
-                let written = segments.iter().map(|s| text::Key(s).to_string());
-                self.errors.push(Problem::new(
-                    Some(at(segments)),
-                    format!("unknown key `{}`", written.collect::<Vec<_>>().join(".")),
-                ));
+                let written = segments
+                    .iter()
+                    .map(|s| text::Key(s).to_string())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                self.errors.push(
+                    Problem::new(
+                        Code::UnknownKey,
+                        Some(at(segments)),
+                        format!("unknown key `{written}`"),
+                    )
+                    .about(written),
+                );
             }
             segments.pop();
         }
@@ -747,28 +835,35 @@ impl<'r> Resolution<'r> {
         at: &dyn Fn(&[String]) -> Origin,
     ) {
         let Value::Table(selectors) = value else {
-            self.errors.push(Problem::new(
-                Some(at(segments)),
-                "`policy` must be a table of model policies, such as `[policy.\"qwen3*\"]`",
-            ));
+            self.errors.push(
+                Problem::new(
+                    Code::WrongType,
+                    Some(at(segments)),
+                    "`policy` must be a table of model policies, such as `[policy.\"qwen3*\"]`",
+                )
+                .about(POLICY_TABLE),
+            );
             return;
         };
         for (selector, body) in selectors {
             segments.push(selector.clone());
-            if body.is_table() {
+            if let Value::Table(table) = body {
                 let path = format!("{POLICY_TABLE}.{}", text::Key(selector));
+                self.policy_keys(table, &path, segments, &mut Vec::new(), at);
                 self.proposals.insert(
                     path.clone(),
                     Proposal::policy(path, self.registry, body.clone(), at(segments)),
                 );
             } else {
-                self.errors.push(Problem::new(
-                    Some(at(segments)),
-                    format!(
-                        "`policy.{}` must be a table of instance keys",
-                        text::Key(selector)
-                    ),
-                ));
+                let path = format!("{POLICY_TABLE}.{}", text::Key(selector));
+                self.errors.push(
+                    Problem::new(
+                        Code::WrongType,
+                        Some(at(segments)),
+                        format!("`{path}` must be a table of instance keys"),
+                    )
+                    .about(path),
+                );
             }
             segments.pop();
         }
@@ -778,6 +873,7 @@ impl<'r> Resolution<'r> {
         for (name, value) in env.syntropy_vars() {
             let Some(name) = name.to_str() else {
                 self.warnings.push(Problem::new(
+                    Code::UnknownKey,
                     None,
                     format!(
                         "ignored an environment variable whose name starts with `SYNTROPY_` but \
@@ -793,32 +889,59 @@ impl<'r> Resolution<'r> {
             let at = Origin::Env {
                 var: name.to_owned(),
             };
-            let key = env::path_for(name).and_then(|path| self.registry.key(&path));
+            let path = env::path_for(name);
+            let key = path.as_deref().and_then(|path| self.registry.key(path));
             let Some(key) = key else {
-                self.warnings.push(Problem::new(
+                if let Some(deprecated) = path.as_deref().and_then(|p| self.registry.deprecated(p))
+                {
+                    if let Some(text) = value.to_str() {
+                        let value = text
+                            .parse::<Value>()
+                            .unwrap_or_else(|_| Value::String(text.to_owned()));
+                        self.deprecated(deprecated, value, at);
+                    }
+                    continue;
+                }
+                let hint = path
+                    .as_deref()
+                    .and_then(|p| suggest(self.registry, p))
+                    .map(|p| format!("did you mean `{}`?", env::var_for(p)));
+                let mut problem = Problem::new(
+                    Code::UnknownKey,
                     Some(at),
                     format!(
                         "unknown variable: `{name}` names no config key{}",
-                        env::path_for(name)
+                        path.as_deref()
                             .map(|p| format!(" (`{p}`)"))
                             .unwrap_or_default()
                     ),
-                ));
+                )
+                .hint(hint);
+                if let Some(path) = path {
+                    problem = problem.about(path);
+                }
+                self.warnings.push(problem);
                 continue;
             };
             if matches!(key.scope, Scope::Instance | Scope::Request) {
-                self.warnings.push(Problem::new(
-                    Some(at),
-                    format!(
-                        "ignored: `{}` is a {} key, and environment variables set node keys",
-                        key.path, key.scope
-                    ),
-                ));
+                self.warnings.push(
+                    Problem::new(
+                        Code::ScopeMismatch,
+                        Some(at),
+                        format!(
+                            "ignored: `{}` is a {} key, and environment variables set node keys",
+                            key.path, key.scope
+                        ),
+                    )
+                    .about(key.path),
+                );
                 continue;
             }
             let Some(text) = value.to_str() else {
-                self.errors
-                    .push(Problem::new(Some(at), "the value is not valid UTF-8"));
+                self.errors.push(
+                    Problem::new(Code::WrongType, Some(at), "the value is not valid UTF-8")
+                        .about(key.path),
+                );
                 continue;
             };
             let value = read_text(key, text);
@@ -847,18 +970,145 @@ impl<'r> Resolution<'r> {
                 flag: flag.flag.clone(),
             };
             let Some(key) = self.registry.key(&flag.path) else {
-                self.errors.push(Problem::new(
-                    Some(at),
-                    format!("unknown key `{}`", flag.path),
-                ));
+                if let Some(deprecated) = self.registry.deprecated(&flag.path) {
+                    let value = flag
+                        .text
+                        .parse::<Value>()
+                        .unwrap_or_else(|_| Value::String(flag.text.clone()));
+                    self.deprecated(deprecated, value, at);
+                    continue;
+                }
+                self.errors.push(
+                    Problem::new(
+                        Code::UnknownKey,
+                        Some(at),
+                        format!("unknown key `{}`", flag.path),
+                    )
+                    .about(&flag.path)
+                    .hint(did_you_mean(self.registry, &flag.path)),
+                );
                 continue;
             };
             let value = read_text(key, &flag.text);
             if self.assign(key, value, at.clone()).is_none() {
-                self.errors.push(Problem::new(Some(at), misplaced(key)));
+                self.errors.push(
+                    Problem::new(Code::ScopeMismatch, Some(at), misplaced(key)).about(key.path),
+                );
             }
         }
     }
+}
+
+impl Resolution<'_> {
+    /// RFC-0054 §8's phases 2 and 3 inside one `[policy."<selector>"]` table: every key is a
+    /// known instance key, and its value fits. Each table is checked alone; merging them by Rule 3
+    /// is PROD-E1-T08's.
+    fn policy_keys(
+        &mut self,
+        table: &toml::Table,
+        policy: &str,
+        segments: &mut Vec<String>,
+        relative: &mut Vec<String>,
+        at: &dyn Fn(&[String]) -> Origin,
+    ) {
+        for (name, value) in table {
+            segments.push(name.clone());
+            relative.push(name.clone());
+            let key_path = relative.join(".");
+            let relative_written = relative
+                .iter()
+                .map(|s| text::Key(s).to_string())
+                .collect::<Vec<_>>()
+                .join(".");
+            let written = format!("{policy}.{relative_written}");
+            // As in `walk`: a segment no key could have, such as `"pin.layers"`, is one unknown
+            // key, never the dotted path its text spells.
+            if !relative.iter().all(|s| crate::schema::is_bare_key(s)) {
+                self.errors.push(
+                    Problem::new(
+                        Code::UnknownKey,
+                        Some(at(segments)),
+                        format!("unknown instance key `{relative_written}` in `{policy}`"),
+                    )
+                    .about(&written),
+                );
+                segments.pop();
+                relative.pop();
+                continue;
+            }
+            match self.registry.key(&key_path) {
+                Some(key) if key.scope == Scope::Instance => {
+                    if let Err(error) = (key.check)(value) {
+                        self.errors
+                            .push(value_problem(key, &error, at(segments)).about(&written));
+                    }
+                }
+                Some(key) => self.errors.push(
+                    Problem::new(
+                        Code::ScopeMismatch,
+                        Some(at(segments)),
+                        format!(
+                            "`{key_path}` is a {} key, and a policy table holds instance keys",
+                            key.scope
+                        ),
+                    )
+                    .about(&written),
+                ),
+                None if value.is_table() && self.is_table(&key_path) => {
+                    if let Value::Table(inner) = value {
+                        self.policy_keys(inner, policy, segments, relative, at);
+                    }
+                }
+                None => self.errors.push(
+                    Problem::new(
+                        Code::UnknownKey,
+                        Some(at(segments)),
+                        format!("unknown instance key `{key_path}` in `{policy}`"),
+                    )
+                    .about(&written)
+                    .hint(did_you_mean(self.registry, &key_path)),
+                ),
+            }
+            segments.pop();
+            relative.pop();
+        }
+    }
+
+    /// A deprecated key a layer set: a warning naming the replacement, and the value goes to the
+    /// replacement (RFC-0054 §8). A key removed outright is ignored, with the warning.
+    fn deprecated(&mut self, deprecated: &'static Deprecated, value: Value, origin: Origin) {
+        self.warnings.push(
+            Problem::uncoded(Some(origin.clone()), deprecated.warning()).about(deprecated.path),
+        );
+        if let Some(key) = deprecated
+            .replacement
+            .and_then(|new| self.registry.key(new))
+            && self.assign(key, value, origin.clone()).is_none()
+        {
+            self.errors.push(
+                Problem::new(Code::ScopeMismatch, Some(origin), misplaced(key)).about(key.path),
+            );
+        }
+    }
+}
+
+/// "did you mean `…`?" for an unknown key, when a registered key is close.
+fn did_you_mean(registry: &Registry, path: &str) -> Option<String> {
+    suggest(registry, path).map(|close| format!("did you mean `{close}`?"))
+}
+
+/// A value that failed phase 3. A secret-typed key's message is fixed, since an error about a
+/// value inside it could quote the value.
+fn value_problem(key: &'static KeySchema, error: &ValueError, origin: Origin) -> Problem {
+    let message = if text::is_secret(key) {
+        format!(
+            "`{}` does not fit its type, `{}`; the value is not shown, since the key holds a secret",
+            key.path, key.ty
+        )
+    } else {
+        format!("`{}`: {}", key.path, error.message())
+    };
+    Problem::new(Code::from(error.kind()), Some(origin), message).about(key.path)
 }
 
 /// Why a key of `key.scope` cannot be set from a node's file, environment or flags.
@@ -966,7 +1216,8 @@ impl fmt::Debug for SharedConfig {
 
 /// Reads the files `scan` found and resolves them with the environment and flags: the whole
 /// load a daemon or `config check` performs. A file that cannot be read is an error, like a
-/// syntax error.
+/// syntax error, and the files that can be read are still resolved, so their errors are
+/// reported with it.
 pub fn load(
     registry: &Registry,
     os: Os,
@@ -974,24 +1225,53 @@ pub fn load(
     env: &Env,
     flags: &Flags,
 ) -> Result<ResolvedConfig, Rejected> {
-    let files = ConfigFile::read_all(scan).map_err(|errors| Rejected {
-        errors,
-        warnings: Vec::new(),
-    })?;
-    ResolvedConfig::resolve(
-        registry,
-        Layers {
-            os,
-            files: &files,
-            env,
-            flags,
-        },
-    )
+    read_and_resolve(registry, os, scan, env, flags, |_| None).1
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A map of secrets beside a plain key, for [`withhold_secrets`].
+    #[derive(Debug, serde::Deserialize, crate::ConfigSection)]
+    #[config(section = "p", scope = Node, owner = "RFC-0054")]
+    #[allow(dead_code)]
+    struct Mixed {
+        /// Headers, each a secret.
+        #[config(reload = Hot, default = {})]
+        headers: BTreeMap<String, crate::Secret<String>>,
+        /// A count.
+        #[config(reload = Hot, default = 1)]
+        count: u32,
+    }
+
+    /// `section()` withholds a wrong-shaped secret's value if one reaches it, though phase 3
+    /// rejects such a value at load: it reads the section again with each secret-typed key at
+    /// its default, and names those keys without serde's text. A fault in a plain key keeps
+    /// serde's message.
+    #[test]
+    fn a_wrong_shaped_secret_is_withheld_from_a_section_error() {
+        let table = |text: &str| -> toml::Table { text.parse().expect("a table") };
+        let bad = table("headers = \"canary-u1\"\ncount = 2\n");
+        let serde = deserialize::<Mixed>(Value::Table(bad.clone())).unwrap_err();
+        assert!(
+            serde.contains("canary-u1"),
+            "serde quotes the value: {serde}"
+        );
+        let message = withhold_secrets::<Mixed>(bad, serde);
+        assert!(!message.contains("canary"), "{message}");
+        assert!(message.contains("`p.headers`"), "{message}");
+        assert!(
+            message.contains("withheld because the key holds a secret"),
+            "{message}"
+        );
+
+        let plain = table("headers = {}\ncount = \"many\"\n");
+        let serde = deserialize::<Mixed>(Value::Table(plain.clone())).unwrap_err();
+        let message = withhold_secrets::<Mixed>(plain, serde);
+        assert!(message.contains("invalid type"), "{message}");
+        assert!(!message.contains("withheld"), "{message}");
+    }
 
     #[test]
     fn line_index_counts_lines_and_columns() {

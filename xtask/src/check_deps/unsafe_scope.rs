@@ -2,7 +2,7 @@
 
 //! Rule 8's module-scoped exception (RFC-0001 §4.2 rule 8, note 2026-10-22).
 //!
-//! A crate in [`policy::UNSAFE_MODULES`] may hold exactly one `unsafe impl` of one trait, in one
+//! A crate in [`policy::UNSAFE_MODULES`](super::policy::UNSAFE_MODULES) may hold exactly one `unsafe impl` of one trait, in one
 //! file, under its one `#[allow(unsafe_code)]`. For such a crate the check:
 //!
 //! - requires `#![deny(unsafe_code)]` (or `forbid`) among each production crate root's leading
