@@ -687,3 +687,11 @@ The post-merge reviews of #1658 found that a serde default keeps an added field 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | QUAL-E17-T15's fingerprint criterion gains a nested field (a `HopPlan` field inside `AssignPlan`'s `PlacementPlan`) and a new `PlanDelta` variant, each failing `compat` without an `ipc_protocol` bump; its IPC golden vectors include `PlacementPlan`, `StagePlan` and `PlanDelta`; no edge | QUAL-E17-T15 | Definition of done | only a ring-record change was covered. A fingerprint that missed nested fields or variants, or vectors without the plan types, would let such an addition break adoption across builds |
+
+## QUAL-E1-T31: rustdoc in `lint` (2026-10-22)
+
+#1666 found broken intra-doc links in `core`, `graph` and `manifest` that no gate caught, because no CI job runs rustdoc. No task covered adding it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added QUAL-E1-T31 (M0a) → QUAL-E1-T02, QUAL-E1-T06 | QUAL-E1-T31 | Definition of done | the step is a `lint` addition, so it needs `xtask`'s job framework and `pr.yml`'s `lint` job, both M0a. It is a new row and not part of QUAL-E1-T09, whose scope is workflow security. It must land after #1743, #1666's fix, or it fails on `main` |
