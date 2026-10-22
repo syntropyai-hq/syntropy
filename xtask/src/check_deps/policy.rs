@@ -117,7 +117,7 @@ pub struct System {
 pub const SYSTEMS: &[System] = &[
     System {
         name: "iroh",
-        // iroh 1.x's own crates (its QUIC is `noq`), plus the pre-1.0 names `iroh-net` and
+        // iroh 1.x's own crates (its QUIC is `noq`, with `noq-udp` its socket layer), plus the pre-1.0 names `iroh-net` and
         // `iroh-quinn`, so an older binding is caught too (DIST-E7-T23 pins iroh 1.4.1).
         packages: &[
             "iroh",
@@ -126,6 +126,7 @@ pub const SYSTEMS: &[System] = &[
             "iroh-dns",
             "noq",
             "noq-proto",
+            "noq-udp",
             "iroh-net",
             "iroh-quinn",
         ],

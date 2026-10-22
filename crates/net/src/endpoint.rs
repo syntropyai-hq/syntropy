@@ -63,7 +63,8 @@ impl fmt::Display for RelayUrl {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Relays {
     /// iroh's public relays, with iroh's online address lookup. Internal and alpha builds only,
-    /// until DIST-E7-T22's built-in relay set ships (RFC-0030 §6.4).
+    /// until DIST-E7-T22's built-in relay set ships (RFC-0030 §6.4). Only this documentation limits
+    /// it now; DIST-E7-T22's relay set replaces it, and that task's release check should cover it.
     Public,
     /// One relay, with no online address lookup.
     Url(RelayUrl),
@@ -209,10 +210,36 @@ impl NodeAddr {
     }
 }
 
-/// A bound iroh endpoint.
-#[derive(Debug)]
+/// A bound iroh endpoint. Its `Debug` shows the node ID only: iroh's own carries the host's
+/// addresses, which must stay out of logs and of the field probe's report (DIST-E4-T15).
 pub struct Endpoint {
     inner: iroh::Endpoint,
+}
+
+/// A node ID as lowercase hex, for `Debug`.
+struct NodeIdHex([u8; 32]);
+
+impl fmt::Debug for NodeIdHex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
+    }
+}
+
+impl fmt::Debug for Endpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Endpoint")
+            .field("node_id", &NodeIdHex(self.node_id()))
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for Connection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Connection")
+            .field("remote_node_id", &NodeIdHex(self.remote_node_id()))
+            .field("alpn", &String::from_utf8_lossy(&self.alpn()))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Endpoint {
@@ -303,8 +330,9 @@ impl Endpoint {
     }
 }
 
-/// An open connection to a peer.
-#[derive(Clone, Debug)]
+/// An open connection to a peer. Its `Debug` shows the peer's node ID and the protocol only, for
+/// the same reason as [`Endpoint`]'s.
+#[derive(Clone)]
 pub struct Connection {
     /// The iroh connection, for the transport code in this crate (DIST-E7-T03) to open streams on.
     pub(crate) inner: iroh::endpoint::Connection,
@@ -375,6 +403,27 @@ mod tests {
         }
     }
 
+    fn hex(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// `shown` names none of `addrs`: neither an IP address nor a `:port`, the form a socket
+    /// address takes (a bare number could match digits inside a node ID's hex).
+    fn assert_no_addresses(shown: &str, addrs: &[SocketAddr]) {
+        for addr in addrs {
+            assert!(
+                !shown.contains(&addr.ip().to_string()),
+                "{shown} shows {}",
+                addr.ip()
+            );
+            assert!(
+                !shown.contains(&format!(":{}", addr.port())),
+                "{shown} shows port {}",
+                addr.port()
+            );
+        }
+    }
+
     /// The server's address as a client on this host dials it directly.
     fn direct_addr(server: &Endpoint) -> NodeAddr {
         let mut peer = NodeAddr::new(server.node_id()).unwrap();
@@ -411,6 +460,7 @@ mod tests {
             .await
             .unwrap();
         let peer = direct_addr(&server);
+        let peer_addrs = peer.direct_addrs();
         let server_id = server.node_id();
         let served = serve(server, 1);
 
@@ -422,6 +472,10 @@ mod tests {
         assert_eq!(conn.remote_node_id(), server_id);
         assert_eq!(conn.alpn(), DATA);
         assert_eq!(conn.path_kind(), Some(PathKind::Direct));
+        for shown in [format!("{client:?}"), format!("{conn:?}")] {
+            assert!(shown.contains(&hex(&server_id)) || shown.contains(&hex(&client.node_id())));
+            assert_no_addresses(&shown, &peer_addrs);
+        }
         let samples: Vec<Duration> = (0..3).filter_map(|_| conn.rtt()).collect();
         assert_eq!(samples.len(), 3, "an RTT sample per read");
         assert!(samples.iter().all(|rtt| *rtt > Duration::ZERO));
@@ -536,6 +590,20 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, EndpointError::NoTransport);
+    }
+
+    #[tokio::test]
+    async fn an_endpoints_debug_shows_its_node_id_and_no_address() {
+        let endpoint = Endpoint::bind(key(11), Config::default()).await.unwrap();
+        let bound: Vec<SocketAddr> = endpoint.bound_addrs();
+        assert!(!bound.is_empty());
+        let shown = format!("{endpoint:?}");
+        assert_eq!(
+            shown,
+            format!("Endpoint {{ node_id: {}, .. }}", hex(&endpoint.node_id()))
+        );
+        assert_no_addresses(&shown, &bound);
+        endpoint.close().await;
     }
 
     #[test]
