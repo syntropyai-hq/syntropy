@@ -267,6 +267,42 @@ pub(super) fn plan() -> PlacementPlan {
     }
 }
 
+/// The plan with every optional field it can leave unset left unset, which is where a field
+/// skipped on the way out would show.
+pub(super) fn sparse_plan() -> PlacementPlan {
+    let mut plan = plan();
+    plan.objective = Objective::Throughput {
+        per_sequence_floor_tps: 1.0,
+        target_concurrency: None,
+        ttft_ceiling: None,
+    };
+    plan.exactness = ExactnessPolicy::Approximate {
+        knobs: ApproxKnobs::from_bits_truncate(0b100),
+        params: ApproxParams::default(),
+    };
+    for stage in &mut plan.stages {
+        stage.next_hop.prefill_transport = None;
+        stage.next_hop.relay = None;
+        if let ParallelismMode::CrossNodeTp { split, .. } = &mut stage.mode {
+            split.experts = None;
+        }
+    }
+    for tensor in &mut plan.tensors {
+        tensor.compute.batched = None;
+    }
+    for budget in &mut plan.expert_cache {
+        budget.per_layer = None;
+    }
+    for kv in &mut plan.kv {
+        kv.spill = None;
+    }
+    plan.speculative = None;
+    plan.predicted.ttft_cap = None;
+    plan.predicted.jitter = None;
+    plan.predicted.throughput = None;
+    plan
+}
+
 /// A delta with one change of every kind.
 pub(super) fn delta() -> PlanDelta {
     PlanDelta {

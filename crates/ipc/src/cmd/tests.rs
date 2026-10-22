@@ -7,6 +7,7 @@
 //!   never a panic, and a forged sequence length reserves nothing.
 //! - The handshake refuses an `Init` from another build. (A daemon killing a runner of another
 //!   build is `tests/cmd_cross_process.rs`.)
+//! - No message skips a field on the way out (`skips`): postcard reads fields by position.
 //! - The endpoint is owner-only, and a peer of another user is refused (`other_user`, which needs
 //!   a second OS account).
 
@@ -29,6 +30,7 @@ use crate::shm::{IpcProtocol, RingRole, RingSpec, ShmLayout};
 mod fixtures;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod other_user;
+mod skips;
 
 const BUILD: [u8; 32] = [0x5a; 32];
 
@@ -40,9 +42,9 @@ fn daemon_msgs() -> Vec<DaemonMsg> {
             plan: Arc::new(fixtures::plan()),
             stages: smallvec![StageIx(0)],
         },
-        // Past the inline capacity of 2.
+        // Past the inline capacity of 2, and every optional field of the plan unset.
         DaemonMsg::AssignPlan {
-            plan: Arc::new(fixtures::plan()),
+            plan: Arc::new(fixtures::sparse_plan()),
             stages: smallvec![StageIx(0), StageIx(1), StageIx(2)],
         },
         DaemonMsg::ShardProgress {
