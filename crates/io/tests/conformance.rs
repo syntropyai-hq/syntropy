@@ -11,6 +11,7 @@
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use syntropy_io::conformance::{self, DestKind, Op, Options, Problem};
 use syntropy_io::{
@@ -38,6 +39,20 @@ enum Fault {
     Drop(u64),
     /// Completes the operation with `IO_SHORT_READ`.
     Error(u64),
+    /// Completes the operation and the next one with each other's tickets.
+    Swap(u64),
+    /// Writes one byte (0xEE) to the file just past the write's extent.
+    Spill(u64),
+    /// Changes the byte just before the read's destination.
+    Underrun(u64),
+    /// Never completes the operation, but keeps reporting it in flight.
+    Hold(u64),
+    /// Reports one operation in flight more than it holds.
+    PhantomInFlight,
+    /// Also completes a ticket no operation has, after the operation.
+    ExtraCompletion(u64),
+    /// Blocks in `reap` for good, whatever its `Wait` says.
+    BlockReap,
 }
 
 /// An engine that performs each operation with positional `std::fs` calls when it is submitted
@@ -50,6 +65,7 @@ struct StdEngine {
     dio: DioAlign,
     fault: Fault,
     seen: u64,
+    held: u32,
     log: Option<Arc<Mutex<Vec<Op>>>>,
 }
 
@@ -66,6 +82,7 @@ impl StdEngine {
             },
             fault: Fault::None,
             seen: 0,
+            held: 0,
             log: None,
         }
     }
@@ -101,6 +118,10 @@ impl StdEngine {
             });
         }
         if self.fault == Fault::Drop(nth) {
+            return None;
+        }
+        if self.fault == Fault::Hold(nth) {
+            self.held += 1;
             return None;
         }
         let ticket = match self.fault {
@@ -155,6 +176,13 @@ impl StdEngine {
                 if self.fault == Fault::CorruptRead(nth) {
                     dest[len / 2] ^= 0x01;
                 }
+                if self.fault == Fault::Underrun(nth) {
+                    // SAFETY: not an engine's right in general. The harness documents a guard
+                    // unit it owns before each destination, touched only after the round's
+                    // completions are reaped, so this byte is inside its allocation and nothing
+                    // reads or writes it meanwhile.
+                    unsafe { *(addr as *mut u8).sub(1) ^= 0xFF };
+                }
                 if self.fault == Fault::Overrun(nth) {
                     // SAFETY: not an engine's right in general. The harness documents that each
                     // destination is followed by a guard unit it owns and touches only after the
@@ -173,6 +201,10 @@ impl StdEngine {
                 }
                 write_at(file, &bytes, extent.offset)
                     .map_err(|_| IoError::new(IoErrorCode::NoSpace))?;
+                if self.fault == Fault::Spill(nth) {
+                    write_at(file, &[0xEE], extent.offset + extent.len.0)
+                        .map_err(|_| IoError::new(IoErrorCode::NoSpace))?;
+                }
                 match w.sync {
                     SyncMode::None => Ok(()),
                     SyncMode::DataSync => file.sync_data(),
@@ -231,16 +263,41 @@ impl IoEngine for StdEngine {
 
     fn submit(&mut self, batch: &mut SubmitBatch) -> Result<u32, IoError> {
         let n = batch.len();
+        let first = self.done.len();
+        let mut swap = None;
         for op in batch.pending() {
+            let nth = self.seen;
             if let Some(c) = self.perform(op) {
+                if self.fault == Fault::Swap(nth) {
+                    swap = Some(self.done.len());
+                }
                 self.done.push(c);
+                if self.fault == Fault::ExtraCompletion(nth) {
+                    self.done.push(ReadCompletion {
+                        ticket: IoTicket(u64::MAX),
+                        ..c
+                    });
+                }
             }
+        }
+        if let Some(i) = swap
+            && i + 1 < self.done.len()
+            && i >= first
+        {
+            let ticket = self.done[i].ticket;
+            self.done[i].ticket = self.done[i + 1].ticket;
+            self.done[i + 1].ticket = ticket;
         }
         batch.consume(n);
         Ok(u32::try_from(n).unwrap())
     }
 
     fn reap(&mut self, out: &mut CompletionBuf, _wait: Wait) -> u32 {
+        if self.fault == Fault::BlockReap {
+            loop {
+                std::thread::park();
+            }
+        }
         let n = out.remaining().min(self.done.len());
         for c in self.done.drain(..n) {
             out.push(c).unwrap();
@@ -254,7 +311,11 @@ impl IoEngine for StdEngine {
 
     fn in_flight(&self) -> (u32, Bytes) {
         let bytes = self.done.iter().map(|c| c.result.map_or(0, |b| b.0)).sum();
-        (u32::try_from(self.done.len()).unwrap(), Bytes(bytes))
+        let phantom = u32::from(self.fault == Fault::PhantomInFlight);
+        (
+            u32::try_from(self.done.len()).unwrap() + self.held + phantom,
+            Bytes(bytes),
+        )
     }
 }
 
@@ -345,11 +406,22 @@ fn a_correct_engine_passes_with_fixed_and_raw_destinations_and_writes() {
     let seed = conformance::seed_from_env();
     let (ops, result) = logged_run(StdEngine::new(), &files, seed);
     let report = result.unwrap_or_else(|failure| panic!("{failure}"));
-    // 8 rounds of 32 reads, 32 writes and their 32 read-backs, in 16 KiB units.
+    // 8 random rounds of 32 reads, a round of 32 reads of different lengths, 32 writes and their
+    // 32 read-backs, in 16 KiB units.
     assert_eq!(report.seed, seed);
     assert_eq!(report.unit, 16384);
-    assert_eq!((report.reads, report.writes), (8 * 32 + 32, 32));
-    assert_eq!(ops.len(), 8 * 32 + 2 * 32);
+    assert_eq!((report.reads, report.writes), (9 * 32 + 32, 32));
+    assert_eq!(ops.len(), 9 * 32 + 2 * 32);
+    let mut lengths: Vec<u64> = ops[8 * 32..9 * 32]
+        .iter()
+        .map(|o| o.extent.len.0 / 16384)
+        .collect();
+    lengths.sort_unstable();
+    assert_eq!(
+        lengths,
+        (1..=32).collect::<Vec<_>>(),
+        "the last read round's lengths"
+    );
     for write in [false, true] {
         for dest in [DestKind::Fixed, DestKind::Raw] {
             assert!(
@@ -380,7 +452,7 @@ fn an_engine_without_writes_is_checked_for_reads_only() {
     };
     let (ops, result) = logged_run(engine, &files, 3);
     let report = result.unwrap_or_else(|failure| panic!("{failure}"));
-    assert_eq!((report.reads, report.writes), (8 * 32, 0));
+    assert_eq!((report.reads, report.writes), (9 * 32, 0));
     assert!(ops.iter().all(|op| !op.write));
     assert!(!files.scratch.exists(), "the scratch file is never created");
 }
@@ -420,9 +492,20 @@ fn a_seed_repeats_its_operations() {
 /// Runs the engine with `fault` and returns the problem, the operation the fault hit, and the
 /// failure's text.
 fn failing_run(name: &str, fault: Fault, nth: u64) -> (Problem, Op, String) {
+    failing_run_with(name, fault, nth, Options::new(0xfa17))
+}
+
+fn failing_run_with(name: &str, fault: Fault, nth: u64, opts: Options) -> (Problem, Op, String) {
     let files = Files::new(name, FILE_LEN);
-    let seed = 0xfa17;
-    let (ops, result) = logged_run(StdEngine::with_fault(fault), &files, seed);
+    let seed = opts.seed;
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let result = conformance::check(
+        StdEngine::with_fault(fault).logging(&log),
+        &files.file,
+        &files.scratch,
+        &opts,
+    );
+    let ops = log.lock().unwrap().clone();
     let failure = result.expect_err("the fault is caught");
     assert_eq!(failure.seed, seed);
     let text = failure.to_string();
@@ -471,9 +554,13 @@ fn a_wrong_ticket_fails_naming_the_extent_left_without_a_completion() {
 
 #[test]
 fn a_ticket_of_another_operation_fails_as_a_second_completion() {
-    // Operation 3 completes as operation 4, so whichever comes second is a duplicate: 4 itself.
-    let (problem, _, _) = failing_run("ticket-reused", Fault::WrongTicket(3, 1), 4);
-    assert!(matches!(problem, Problem::Duplicate(_)), "{problem:?}");
+    // Operation 3 completes as operation 4. If their lengths differ, that completion is short for
+    // operation 4; if not, operation 4's own completion is its second.
+    let (problem, hit, _) = failing_run("ticket-reused", Fault::WrongTicket(3, 1), 4);
+    assert!(
+        matches!(problem, Problem::Duplicate(op) | Problem::Short { op, .. } if op == hit),
+        "{problem:?}"
+    );
 }
 
 #[test]
@@ -484,8 +571,8 @@ fn a_write_past_the_destination_fails_naming_the_extent() {
 
 #[test]
 fn a_corrupted_write_fails_naming_the_extent() {
-    // Operations 0..256 are the reads; 256 + 3 is the fourth write.
-    let nth = 8 * 32 + 3;
+    // Operations 0..288 are the reads; 288 + 3 is the fourth write.
+    let nth = 9 * 32 + 3;
     let (problem, hit, _) = failing_run("corrupt-write", Fault::CorruptWrite(nth), nth);
     assert!(hit.write);
     let Problem::Written { op, at, .. } = problem else {
@@ -548,4 +635,103 @@ fn a_generated_file_depends_only_on_its_seed_and_length() {
     for path in &paths {
         let _ = std::fs::remove_file(path);
     }
+}
+
+#[test]
+fn operations_of_different_lengths_that_swap_tickets_fail_as_short() {
+    // Operations 256 and 257 are the first two of the round in which every length differs.
+    let (problem, _, _) = failing_run("swap", Fault::Swap(8 * 32), 8 * 32 + 1);
+    let Problem::Short { op, transferred } = problem else {
+        panic!("{problem:?}");
+    };
+    assert_ne!(transferred, op.extent.len);
+}
+
+#[test]
+fn a_write_that_spills_past_its_extent_fails_naming_it() {
+    let nth = 9 * 32 + 5;
+    let (problem, hit, _) = failing_run("spill", Fault::Spill(nth), nth);
+    assert!(hit.write);
+    assert_eq!(
+        problem,
+        Problem::Spilled {
+            op: hit,
+            at: hit.extent.offset + hit.extent.len.0,
+            found: 0xEE
+        }
+    );
+}
+
+#[test]
+fn a_read_that_changes_memory_before_its_destination_fails_naming_it() {
+    // Operation 0 has the first slot of the fixed buffer; operation 6, the fourth.
+    for nth in [0, 6] {
+        let (problem, hit, _) = failing_run("underrun", Fault::Underrun(nth), nth);
+        assert_eq!(problem, Problem::Underrun { op: hit, before: 1 });
+    }
+}
+
+#[test]
+fn an_operation_held_in_flight_fails_with_a_timeout() {
+    let opts = Options {
+        timeout: Duration::from_millis(200),
+        ..Options::new(0xfa17)
+    };
+    let (problem, hit, _) = failing_run_with("hold", Fault::Hold(11), 11, opts);
+    assert_eq!(
+        problem,
+        Problem::Timeout {
+            op: hit,
+            after: opts.timeout
+        }
+    );
+}
+
+/// Runs the engine with `fault`, which no single operation's failure names, and returns the
+/// problem.
+fn failing_run_unnamed(name: &str, fault: Fault) -> Problem {
+    let files = Files::new(name, FILE_LEN);
+    let opts = Options::new(0xfa17);
+    let result = conformance::check(
+        StdEngine::with_fault(fault),
+        &files.file,
+        &files.scratch,
+        &opts,
+    );
+    let failure = result.expect_err("the fault is caught");
+    assert!(failure.to_string().contains("seed 0xfa17"), "{failure}");
+    failure.problem
+}
+
+#[test]
+fn work_reported_in_flight_after_the_last_completion_fails() {
+    let problem = failing_run_unnamed("phantom", Fault::PhantomInFlight);
+    assert!(
+        matches!(problem, Problem::InFlight { ops: 1, .. }),
+        "{problem:?}"
+    );
+}
+
+#[test]
+fn a_completion_for_no_operation_fails_as_an_unknown_ticket() {
+    let problem = failing_run_unnamed("extra", Fault::ExtraCompletion(5));
+    assert_eq!(problem, Problem::UnknownTicket(IoTicket(u64::MAX)));
+}
+
+#[test]
+fn an_engine_whose_reap_blocks_fails_as_hung() {
+    let opts = Options {
+        timeout: Duration::from_millis(200),
+        ..Options::new(0xfa17)
+    };
+    // The run is waiting for operation 0, the first, when `reap` blocks. The engine's thread is
+    // left parked for the rest of the test process.
+    let (problem, hit, _) = failing_run_with("hung", Fault::BlockReap, 0, opts);
+    assert_eq!(
+        problem,
+        Problem::Hung {
+            op: Some(hit),
+            after: opts.timeout
+        }
+    );
 }

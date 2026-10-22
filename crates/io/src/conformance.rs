@@ -14,12 +14,20 @@
 //!
 //! # What a run checks
 //!
-//! - Each operation completes exactly once, with its own ticket and its whole length.
+//! - Each operation completes exactly once, with its own ticket and its whole length. The last
+//!   read round gives every operation a different length, so two operations that complete with
+//!   each other's tickets fail as [`Problem::Short`] there.
 //! - A read's destination holds the file's bytes, and a write's extent holds the source's bytes,
 //!   read back both ways.
-//! - No operation touches memory past its destination: each destination is followed by a guard
-//!   unit the harness owns, which must keep its fill.
+//! - No operation touches memory outside its destination: each destination has a guard unit the
+//!   harness owns before it and after it, which must keep its fill.
+//! - No write changes the file past its extent: each written extent is followed by a gap, which
+//!   must still read as zeros.
 //! - Nothing is left in flight once every completion has been reaped.
+//! - No engine call takes longer than [`Options::timeout`]. The run drives the engine on a thread
+//!   of its own, so an engine whose `reap` ignores [`Wait::Until`] and blocks fails with
+//!   [`Problem::Hung`] instead of hanging the caller. That thread, and the engine and memory it
+//!   holds, are then left behind.
 //!
 //! Extents and destinations are aligned to a unit of at least [`Options::unit`], raised to the
 //! file's direct-I/O alignment ([`IoEngine::file_dio`], else
@@ -32,11 +40,20 @@
 //! destinations and data. [`check`] prints the seed to standard error when it starts, and every
 //! [`Failure`] names it. [`seed_from_env`] reads a seed from [`SEED_VAR`], or picks a fresh one, so
 //! a failed run can be repeated.
+//!
+//! # Why this is library code
+//!
+//! The harness compiles into the `io` library because no other place reaches every engine's
+//! tests. RFC-0001 §4.2 rule 10 allows no Cargo feature for it. `#[cfg(test)]` code is seen only
+//! by this crate's own unit tests, not by TIER-E5-T04's suite or TIER-E5-T22's device test
+//! binaries. And in `syntropy-testkit`, which would depend on `io`, the tests inside `io` would see
+//! a second copy of `io`, whose types are not theirs.
 
 use std::fmt;
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use syntropy_core::Entropy;
@@ -57,22 +74,24 @@ pub const SEED_VAR: &str = "SYNTROPY_IO_CONFORMANCE_SEED";
 pub struct Options {
     /// Fixes the extents, destinations and data.
     pub seed: u64,
-    /// Rounds of reads. Each round submits [`Options::extents`] reads together.
+    /// Rounds of random reads. Each round submits [`Options::extents`] reads together. One more
+    /// round follows, of reads that each have a different length.
     pub rounds: u32,
     /// Reads per round, and the number of writes.
     pub extents: u32,
-    /// The longest extent, in units.
+    /// The longest extent of the random rounds and of the writes, in units.
     pub max_units: u32,
     /// The smallest unit, in bytes. The run raises it to the file's direct-I/O alignment and
     /// rounds it up to a power of two.
     pub unit: u64,
-    /// How long one round may take before the run fails.
+    /// How long one round may take, and one engine call, before the run fails.
     pub timeout: Duration,
 }
 
 impl Options {
-    /// The defaults for `seed`: 8 rounds of 32 reads, then 32 writes, each 1 to 4 units of at
-    /// least 16 KiB (macOS's alignment, which covers 4 KiB elsewhere), with 60 s a round.
+    /// The defaults for `seed`: 8 rounds of 32 random reads of 1 to 4 units, a round of 32 reads
+    /// of 1 to 32 units, then 32 writes of 1 to 4 units. A unit is at least 16 KiB (macOS's
+    /// alignment, which covers 4 KiB elsewhere). 60 s a round or a call.
     #[must_use]
     pub const fn new(seed: u64) -> Self {
         Options {
@@ -233,12 +252,29 @@ pub enum Problem {
         /// The byte on disk.
         found: u8,
     },
+    /// The gap after a written extent no longer reads as zeros: the write spilled past its
+    /// extent.
+    Spilled {
+        /// The write.
+        op: Op,
+        /// The file offset of the first byte that is not zero.
+        at: u64,
+        /// What it holds.
+        found: u8,
+    },
     /// An operation changed memory past the end of its destination.
     Overrun {
         /// The operation.
         op: Op,
-        /// How far past the end the first changed byte is.
+        /// How far past the end the first changed byte is: 0 for the byte just after it.
         past: u64,
+    },
+    /// An operation changed memory before the start of its destination.
+    Underrun {
+        /// The operation.
+        op: Op,
+        /// How far before the start the changed byte nearest it is: 1 for the byte just before.
+        before: u64,
     },
     /// A completion carried a ticket that names no operation in flight, and this operation never
     /// completed.
@@ -260,6 +296,14 @@ pub enum Problem {
         /// The first operation still waiting.
         op: Op,
         /// The round's time.
+        after: Duration,
+    },
+    /// An engine call did not return within the timeout, as a `reap` that blocks past
+    /// [`Wait::Until`] does.
+    Hung {
+        /// The first operation waiting when the call was made, if any was.
+        op: Option<Op>,
+        /// The timeout.
         after: Duration,
     },
     /// The engine reports operations in flight after every completion was reaped.
@@ -318,9 +362,17 @@ impl fmt::Display for Problem {
                 "{op}: file offset {at} reads back through std::fs as {found:#04x}, not \
                  {expected:#04x}"
             ),
+            Problem::Spilled { op, at, found } => write!(
+                f,
+                "{op}: file offset {at}, past the extent, reads back as {found:#04x}, not zero"
+            ),
             Problem::Overrun { op, past } => write!(
                 f,
                 "{op}: changed memory {past} bytes past the end of its destination"
+            ),
+            Problem::Underrun { op, before } => write!(
+                f,
+                "{op}: changed memory {before} bytes before the start of its destination"
             ),
             Problem::WrongTicket { found, missing } => write!(
                 f,
@@ -341,6 +393,16 @@ impl fmt::Display for Problem {
             Problem::Timeout { op, after } => {
                 write!(f, "{op}: not completed after {} ms", after.as_millis())
             }
+            Problem::Hung { op, after } => {
+                if let Some(op) = op {
+                    write!(f, "{op}: waiting when ")?;
+                }
+                write!(
+                    f,
+                    "an engine call did not return within {} ms",
+                    after.as_millis()
+                )
+            }
             Problem::InFlight { ops, bytes } => write!(
                 f,
                 "the engine reports {ops} operations ({} bytes) in flight after every completion \
@@ -354,15 +416,21 @@ impl fmt::Display for Problem {
 /// Runs the conformance checks on `engine`: reads of `file`, then, when the engine writes, writes
 /// to `scratch`, which it creates, replacing any file there, and removes at the end.
 ///
-/// The engine is dropped before the run returns, so its files are closed and the memory it
-/// registered is still valid while it drops (the contract of [`IoEngine::register_buffers`]).
+/// The engine runs on a thread of its own, which drops it before the run returns, so its files
+/// are closed and the memory it registered is still valid while it drops (the contract of
+/// [`IoEngine::register_buffers`]). If an engine call hangs, the run returns [`Problem::Hung`]
+/// and leaves that thread, the engine and its memory behind, and the scratch file in place.
 ///
 /// Prints the seed to standard error when it starts.
 ///
 /// # Errors
 ///
 /// The first problem found, with the seed and the operation it concerns.
-pub fn check<E: IoEngine>(
+///
+/// # Panics
+///
+/// If the engine panics, or the thread cannot be started.
+pub fn check<E: IoEngine + 'static>(
     engine: E,
     file: &Path,
     scratch: &Path,
@@ -379,12 +447,50 @@ pub fn check<E: IoEngine>(
         problem,
     };
     let writes = engine.caps().writes;
-    let result = run(engine, file, writes.then_some(scratch), opts).map_err(fail);
+    let watch = Arc::new(Mutex::new(Watch::default()));
+    let (done, result) = mpsc::channel();
+    let thread = {
+        let (file, scratch, opts, watch) = (
+            file.to_owned(),
+            writes.then(|| scratch.to_owned()),
+            *opts,
+            Arc::clone(&watch),
+        );
+        std::thread::Builder::new()
+            .name("io-conformance".into())
+            .spawn(move || {
+                let _ = done.send(run(engine, &file, scratch.as_deref(), &opts, &watch));
+            })
+            .expect("the conformance thread starts")
+    };
+    let result = loop {
+        match result.recv_timeout(Duration::from_millis(50)) {
+            Ok(result) => break result,
+            Err(mpsc::RecvTimeoutError::Disconnected) => match thread.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(()) => unreachable!("the thread sends its result before it ends"),
+            },
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let watch = *watch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(since) = watch.since
+                    && since.elapsed() > opts.timeout
+                {
+                    return Err(fail(Problem::Hung {
+                        op: watch.op,
+                        after: opts.timeout,
+                    }));
+                }
+            }
+        }
+    };
+    // The thread has dropped the engine, so its files are closed; Windows removes no open file.
+    let _ = thread.join();
     if writes {
-        // The engine is gone, so the file is closed; Windows removes no open file.
         let _ = std::fs::remove_file(scratch);
     }
-    result.map(|counts| Report {
+    result.map_err(fail).map(|counts| Report {
         seed: opts.seed,
         engine: kind,
         unit: counts.unit,
@@ -393,6 +499,31 @@ pub fn check<E: IoEngine>(
         bytes_read: counts.bytes_read,
         bytes_written: counts.bytes_written,
     })
+}
+
+/// The engine call in progress, for the watchdog in [`check`].
+#[derive(Clone, Copy, Default)]
+struct Watch {
+    /// When the call began; `None` between calls.
+    since: Option<Instant>,
+    /// The first operation waiting when it began.
+    op: Option<Op>,
+}
+
+/// Runs `f`, an engine call, under the watchdog.
+fn watched<T>(watch: &Mutex<Watch>, op: Option<Op>, f: impl FnOnce() -> T) -> T {
+    let set = |w: Watch| {
+        *watch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = w
+    };
+    set(Watch {
+        since: Some(Instant::now()),
+        op,
+    });
+    let value = f();
+    set(Watch::default());
+    value
 }
 
 /// The seed in [`SEED_VAR`], or a fresh one from the OS random source when it is unset.
@@ -454,12 +585,15 @@ struct Counts {
 
 /// The engine and the memory it uses. Fields drop in declaration order, so the engine drops
 /// before the memory it registered.
-struct Rig<E> {
+struct Rig<'w, E> {
     engine: E,
     fixed: Mem,
     raw: Mem,
     buf: BufIndex,
+    unit: u64,
+    /// Each slot: a guard unit, room for the longest operation, and a guard unit.
     stride: u64,
+    watch: &'w Mutex<Watch>,
 }
 
 /// One fill for memory no operation has written. Rounds alternate between two, so a read that
@@ -471,9 +605,10 @@ fn run<E: IoEngine>(
     path: &Path,
     scratch: Option<&Path>,
     opts: &Options,
+    watch: &Mutex<Watch>,
 ) -> Result<Counts, Problem> {
     let open = |engine: &mut E, path: &Path, mode| {
-        engine.open(path, mode).map_err(|error| Problem::Open {
+        watched(watch, None, || engine.open(path, mode)).map_err(|error| Problem::Open {
             path: path.to_owned(),
             error,
         })
@@ -506,23 +641,30 @@ fn run<E: IoEngine>(
         });
     }
     let max_units = u64::from(opts.max_units.max(1)).min(file_units);
-    // Each slot holds the longest extent and is followed by one guard unit. Operation `i` takes
-    // slot `i / 2` of its kind of memory.
-    let stride = (max_units + 1) * unit;
+    // The last read round has one operation of each length from 1 to `distinct` units.
+    let distinct = u64::from(opts.extents).min(file_units);
+    let longest = max_units.max(distinct);
+    let stride = (longest + 2) * unit;
+    // Operation `i` takes slot `i / 2` of its kind of memory.
     let slots = u64::from(opts.extents).div_ceil(2).max(1);
     let mut rig = Rig {
         engine,
         fixed: Mem::new(slots * stride, unit),
         raw: Mem::new(slots * stride, unit),
         buf: BufIndex(0),
+        unit,
         stride,
+        watch,
     };
     let region = rig.fixed.region();
     // SAFETY: `rig.fixed` is memory this function owns, valid for reads and writes over its
     // whole length. It is a field of `rig` declared after `engine`, so it stays allocated until
     // the engine has dropped, and nothing but the engine's fixed destinations touches it while
     // operations are in flight (see `Mem`).
-    let bufs = unsafe { rig.engine.register_buffers(&[region]) }.map_err(Problem::Register)?;
+    let bufs = watched(watch, None, || unsafe {
+        rig.engine.register_buffers(&[region])
+    })
+    .map_err(Problem::Register)?;
     rig.buf = *bufs
         .first()
         .ok_or(Problem::Register(IoError::new(IoErrorCode::RegisterFailed)))?;
@@ -541,10 +683,21 @@ fn run<E: IoEngine>(
     let mut rng = Rng::new(opts.seed, Stream::Reads);
     let per_round = u64::from(opts.extents);
     let mut ticket = 1;
-    for round in 0..opts.rounds {
-        let ops: Vec<Op> = (0..per_round)
-            .map(|i| {
-                let units = 1 + rng.below(max_units);
+    for round in 0..=opts.rounds {
+        let lengths: Vec<u64> = if round < opts.rounds {
+            (0..per_round).map(|_| 1 + rng.below(max_units)).collect()
+        } else {
+            // Every length different, in a shuffled order: any two operations that swap tickets
+            // complete with a length other than their own.
+            let mut lengths: Vec<u64> = (1..=distinct).collect();
+            shuffle(&mut lengths, &mut rng);
+            lengths
+        };
+        let ops: Vec<Op> = lengths
+            .iter()
+            .enumerate()
+            .map(|(i, &units)| {
+                let i = i as u64;
                 let at = match (round, i) {
                     // The file's first unit and its last whole one are always read.
                     (0, 0) => 0,
@@ -563,7 +716,7 @@ fn run<E: IoEngine>(
                 }
             })
             .collect();
-        ticket += per_round;
+        ticket += ops.len() as u64;
         let fill = FILLS[round as usize % 2];
         rig.fill_all(fill);
         rig.drive(&ops, opts.timeout, &[])?;
@@ -581,10 +734,17 @@ fn run<E: IoEngine>(
     Ok(counts)
 }
 
+fn shuffle(items: &mut [u64], rng: &mut Rng) {
+    for i in (1..items.len()).rev() {
+        let j = usize::try_from(rng.below(i as u64 + 1)).unwrap_or(0);
+        items.swap(i, j);
+    }
+}
+
 /// Writes random aligned extents to `out`, then reads them back through `std::fs` and through
-/// the engine.
+/// the engine, and checks that the gap after each extent still reads as zeros.
 fn write_phase<E: IoEngine>(
-    rig: &mut Rig<E>,
+    rig: &mut Rig<'_, E>,
     out: FileIx,
     scratch: &Path,
     opts: &Options,
@@ -595,12 +755,11 @@ fn write_phase<E: IoEngine>(
     let unit = counts.unit;
     let n = u64::from(opts.extents);
     let mut rng = Rng::new(opts.seed, Stream::Writes);
-    // Each write gets its own place in the file, in a shuffled order, with a gap after it.
+    // Each write gets its own place in the file, in a shuffled order, with a gap of at least one
+    // unit after it. The scratch file starts empty, so every gap is a hole that reads as zeros.
+    let region = (max_units + 1) * unit;
     let mut places: Vec<u64> = (0..n).collect();
-    for i in (1..places.len()).rev() {
-        let j = usize::try_from(rng.below(i as u64 + 1)).unwrap_or(0);
-        places.swap(i, j);
-    }
+    shuffle(&mut places, &mut rng);
     let syncs = [SyncMode::None, SyncMode::DataSync, SyncMode::FullSync];
     let ops: Vec<Op> = (0..n)
         .map(|i| Op {
@@ -609,7 +768,7 @@ fn write_phase<E: IoEngine>(
             dest: dest_kind(i),
             extent: ExtentRef {
                 file: out,
-                offset: places[i as usize] * (max_units + 1) * unit,
+                offset: places[i as usize] * region,
                 len: Bytes((1 + rng.below(max_units)) * unit),
             },
         })
@@ -626,16 +785,18 @@ fn write_phase<E: IoEngine>(
     }
     rig.drive(&ops, opts.timeout, &syncs)?;
     for (i, op) in ops.iter().enumerate() {
-        rig.check_guard(i as u64, op, fill)?;
+        rig.check_guards(i as u64, op, fill)?;
         counts.writes += 1;
         counts.bytes_written += op.extent.len.0;
     }
 
-    // Back through std::fs.
-    let mut disk = File::open(scratch).map_err(|e| Problem::Reference {
+    // Back through std::fs: each extent, then the gap after it, up to the end of the file.
+    let reference = |e: std::io::Error| Problem::Reference {
         op: None,
         error: e.to_string(),
-    })?;
+    };
+    let mut disk = File::open(scratch).map_err(reference)?;
+    let disk_len = disk.metadata().map_err(reference)?.len();
     for (op, data) in ops.iter().zip(&sources) {
         let found = read_reference(&mut disk, op)?;
         if let Some(at) = first_difference(&found, data) {
@@ -645,6 +806,24 @@ fn write_phase<E: IoEngine>(
                 expected: data[at],
                 found: found[at],
             });
+        }
+        let gap_start = op.extent.offset + op.extent.len.0;
+        let gap_end = (op.extent.offset + region).min(disk_len);
+        if gap_end > gap_start {
+            let mut gap = vec![0u8; usize::try_from(gap_end - gap_start).unwrap_or(0)];
+            disk.seek(SeekFrom::Start(gap_start))
+                .and_then(|_| disk.read_exact(&mut gap))
+                .map_err(|e| Problem::Reference {
+                    op: Some(*op),
+                    error: e.to_string(),
+                })?;
+            if let Some(at) = gap.iter().position(|&b| b != 0) {
+                return Err(Problem::Spilled {
+                    op: *op,
+                    at: gap_start + at as u64,
+                    found: gap[at],
+                });
+            }
         }
     }
 
@@ -702,11 +881,12 @@ fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
     a.iter().zip(b).position(|(x, y)| x != y)
 }
 
-impl<E: IoEngine> Rig<E> {
-    /// Where operation `i`'s slot starts in its kind of memory: slot `i / 2`. Even and odd
-    /// operations use different kinds, so no two operations of a round share a slot.
-    fn slot_offset(&self, i: u64) -> u64 {
-        (i / 2) * self.stride
+impl<E: IoEngine> Rig<'_, E> {
+    /// Where operation `i`'s destination starts in its kind of memory: after the leading guard of
+    /// slot `i / 2`. Even and odd operations use different kinds, so no two operations of a
+    /// round share a slot.
+    fn data_offset(&self, i: u64) -> u64 {
+        (i / 2) * self.stride + self.unit
     }
 
     fn mem(&self, kind: DestKind) -> &Mem {
@@ -717,7 +897,7 @@ impl<E: IoEngine> Rig<E> {
     }
 
     fn slot_mut(&mut self, i: u64, kind: DestKind, len: usize) -> &mut [u8] {
-        let offset = self.slot_offset(i);
+        let offset = self.data_offset(i);
         let mem = match kind {
             DestKind::Fixed => &mut self.fixed,
             DestKind::Raw => &mut self.raw,
@@ -734,10 +914,11 @@ impl<E: IoEngine> Rig<E> {
 
     /// The destination for operation `i`, `op`'s length long.
     fn dest(&mut self, i: u64, op: &Op) -> IoDest {
-        let offset = self.slot_offset(i);
+        let offset = self.data_offset(i);
         let len = op.extent.len;
         assert!(
-            offset + self.stride <= self.mem(op.dest).len,
+            offset + len.0 + self.unit <= self.mem(op.dest).len
+                && len.0 + 2 * self.unit <= self.stride,
             "slot past the end of the memory"
         );
         match op.dest {
@@ -792,11 +973,16 @@ impl<E: IoEngine> Rig<E> {
         let mut stray = None;
         let mut idle = 0;
         let start = Instant::now();
+        let watch = self.watch;
         while left > 0 {
+            let missing = ops[done.iter().position(|d| !d).unwrap_or(0)];
             if !batch.is_empty() {
-                self.engine.submit(&mut batch).map_err(Problem::Submit)?;
+                watched(watch, Some(missing), || self.engine.submit(&mut batch))
+                    .map_err(Problem::Submit)?;
             }
-            let reaped = self.engine.reap(&mut out, Wait::Until(Nanos(1_000_000)));
+            let reaped = watched(watch, Some(missing), || {
+                self.engine.reap(&mut out, Wait::Until(Nanos(1_000_000)))
+            });
             for c in out.drain() {
                 let index = c
                     .ticket
@@ -825,7 +1011,7 @@ impl<E: IoEngine> Rig<E> {
             if left == 0 {
                 break;
             }
-            let missing = || ops[done.iter().position(|d| !d).unwrap_or(0)];
+            let missing = ops[done.iter().position(|d| !d).unwrap_or(0)];
             // Three quiet polls in a row with nothing in flight: what is left will never come.
             idle = if reaped == 0 && batch.is_empty() && self.engine.in_flight().0 == 0 {
                 idle + 1
@@ -834,16 +1020,13 @@ impl<E: IoEngine> Rig<E> {
             };
             if idle >= 3 {
                 return Err(match stray {
-                    Some(found) => Problem::WrongTicket {
-                        found,
-                        missing: missing(),
-                    },
-                    None => Problem::Lost(missing()),
+                    Some(found) => Problem::WrongTicket { found, missing },
+                    None => Problem::Lost(missing),
                 });
             }
             if start.elapsed() > timeout {
                 return Err(Problem::Timeout {
-                    op: missing(),
+                    op: missing,
                     after: timeout,
                 });
             }
@@ -852,7 +1035,7 @@ impl<E: IoEngine> Rig<E> {
             return Err(Problem::UnknownTicket(ticket));
         }
         // A last poll: a completion past the last one expected is a ticket reused or repeated.
-        self.engine.reap(&mut out, Wait::None);
+        watched(watch, None, || self.engine.reap(&mut out, Wait::None));
         if let Some(c) = out.drain().next() {
             let index = c
                 .ticket
@@ -870,9 +1053,9 @@ impl<E: IoEngine> Rig<E> {
         }
     }
 
-    /// Checks read `op` in slot `i` against `want`, and the slot's guard against `fill`.
+    /// Checks read `op` in slot `i` against `want`, and the slot's guards against `fill`.
     fn compare(&mut self, i: u64, op: &Op, want: &[u8], fill: u8) -> Result<(), Problem> {
-        let offset = self.slot_offset(i);
+        let offset = self.data_offset(i);
         let got = self.mem(op.dest).bytes(offset, want.len() as u64);
         if let Some(at) = first_difference(got, want) {
             return Err(Problem::Bytes {
@@ -882,15 +1065,25 @@ impl<E: IoEngine> Rig<E> {
                 found: got[at],
             });
         }
-        self.check_guard(i, op, fill)
+        self.check_guards(i, op, fill)
     }
 
-    /// Checks that the memory after slot `i`'s operation, up to the next slot, kept its fill.
-    fn check_guard(&self, i: u64, op: &Op, fill: u8) -> Result<(), Problem> {
-        let start = self.slot_offset(i) + op.extent.len.0;
-        let end = self.slot_offset(i) + self.stride;
-        let guard = self.mem(op.dest).bytes(start, end - start);
-        match guard.iter().position(|&b| b != fill) {
+    /// Checks that the memory around slot `i`'s operation, its leading guard unit and everything
+    /// after it up to the next slot, kept its fill.
+    fn check_guards(&self, i: u64, op: &Op, fill: u8) -> Result<(), Problem> {
+        let data = self.data_offset(i);
+        let mem = self.mem(op.dest);
+        let lead = mem.bytes(data - self.unit, self.unit);
+        if let Some(at) = lead.iter().rposition(|&b| b != fill) {
+            return Err(Problem::Underrun {
+                op: *op,
+                before: self.unit - at as u64,
+            });
+        }
+        let start = data + op.extent.len.0;
+        let end = data - self.unit + self.stride;
+        let trail = mem.bytes(start, end - start);
+        match trail.iter().position(|&b| b != fill) {
             Some(past) => Err(Problem::Overrun {
                 op: *op,
                 past: past as u64,
@@ -1057,8 +1250,22 @@ mod tests {
                 missing: op,
             },
             Problem::Overrun { op, past: 0 },
+            Problem::Underrun { op, before: 1 },
+            Problem::Spilled {
+                op,
+                at: 81920,
+                found: 0xEE,
+            },
             Problem::Lost(op),
             Problem::Duplicate(op),
+            Problem::Timeout {
+                op,
+                after: Duration::from_millis(100),
+            },
+            Problem::Hung {
+                op: Some(op),
+                after: Duration::from_millis(100),
+            },
         ] {
             assert!(problem.to_string().contains(named), "{problem}");
         }
