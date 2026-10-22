@@ -554,3 +554,14 @@ PROD-E1-T03's redaction criterion names cases that only PROD-E1-T02's layering p
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | PROD-E1-T03 → PROD-E1-T02 | PROD-E1-T03 | R9 | Three of PROD-E1-T03's cases use PROD-E1-T02's outputs: values from `--set`, values from the `SYNTROPY_A__B` mapping, and the warning for an unknown `SYNTROPY_*` variable. PROD-E1-T02 depends only on PROD-E1-T01, so the edge adds no cycle, and it runs M0b → M0a |
+
+## The iroh pin for the field probe (2026-10-22)
+
+DIST-E4-T15 (M1a) is a standalone probe "on the daemon's iroh version", and its criteria need iroh to tell a direct path from a relayed one. But no task before DIST-E7-T03 (M2) pinned iroh in the workspace, and DIST-E4-T15 depended only on the workspace task. The new DIST-E7-T23 pins iroh in M1a, and gives `net` the minimal endpoint the probe needs.
+
+| Change | Tasks | Rule applied | Reason |
+|---|---|---|---|
+| Added DIST-E7-T23 (M1a) → QUAL-E1-T03, QUAL-E1-T04 | DIST-E7-T23 | R9 | iroh pinned in the workspace and linked only by `net` (RFC-0001 §4.2 rule 6), with a minimal endpoint: bind with a node key, connect by node ID through iroh's public relays (internal and alpha builds, RFC-0030 §6.4) or a given relay URL, and report the path kind and RTT. The new direct dependencies need a maintainer's approval |
+| DIST-E4-T15 → DIST-E7-T23 | DIST-E4-T15 | R9 | the probe runs on the pinned iroh and reports direct or relayed paths through the endpoint |
+| DIST-E7-T03 → DIST-E7-T23 | DIST-E7-T03 | R9 | the QUIC backend builds on the same pin |
+| DIST-E7-T21: its "iroh pinned in the workspace" edge moves from DIST-E7-T03 to DIST-E7-T23 | DIST-E7-T21 | R8 | the desk check reads iroh's configuration API at the pinned version and uses nothing else of DIST-E7-T03's; DIST-E7-T16 still depends on both |
