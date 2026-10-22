@@ -24,10 +24,14 @@
 //! - No write changes the file past its extent: each written extent is followed by a gap, which
 //!   must still read as zeros.
 //! - Nothing is left in flight once every completion has been reaped.
-//! - No engine call takes longer than [`Options::timeout`]. The run drives the engine on a thread
-//!   of its own, so an engine whose `reap` ignores [`Wait::Until`] and blocks fails with
-//!   [`Problem::Hung`] instead of hanging the caller. That thread, and the engine and memory it
-//!   holds, are then left behind.
+//! - No engine call takes longer than [`Options::timeout`], its construction and its drop
+//!   included. The run builds, drives and drops the engine on a thread of its own, so an engine
+//!   whose `reap` ignores [`Wait::Until`] and blocks fails with [`Problem::Hung`] instead of
+//!   hanging the caller. That thread, and the engine and memory it holds, are then left behind.
+//!
+//! [`check`] takes a constructor rather than an engine, so the engine is built on the thread
+//! that drives it. An io_uring set up with `IORING_SETUP_SINGLE_ISSUER` (RFC-0021 §4.1) accepts
+//! submissions only from the thread that created it.
 //!
 //! Extents and destinations are aligned to a unit of at least [`Options::unit`], raised to the
 //! file's direct-I/O alignment ([`IoEngine::file_dio`], else
@@ -92,6 +96,11 @@ impl Options {
     /// The defaults for `seed`: 8 rounds of 32 random reads of 1 to 4 units, a round of 32 reads
     /// of 1 to 32 units, then 32 writes of 1 to 4 units. A unit is at least 16 KiB (macOS's
     /// alignment, which covers 4 KiB elsewhere). 60 s a round or a call.
+    ///
+    /// The registered (fixed) region is `extents / 2` slots of `max(max_units, extents) + 2`
+    /// units: 16 × 34 × 16 KiB = 8.5 MiB with these values. An engine that pins registered memory
+    /// under a small locked-memory limit, as `UringDirect` does under the default `RLIMIT_MEMLOCK`
+    /// (TIER-E5-T06), needs smaller `extents` and `max_units`.
     #[must_use]
     pub const fn new(seed: u64) -> Self {
         Options {
@@ -167,18 +176,22 @@ impl fmt::Display for Op {
 pub struct Failure {
     /// The run's seed.
     pub seed: u64,
-    /// The engine checked.
-    pub engine: EngineKind,
+    /// The engine checked; `None` if its constructor never returned.
+    pub engine: Option<EngineKind>,
     /// What went wrong.
     pub problem: Problem,
 }
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.engine {
+            Some(engine) => write!(f, "{engine:?}")?,
+            None => f.write_str("an engine still being built")?,
+        }
         write!(
             f,
-            "{:?} failed I/O conformance (seed {:#x}; {SEED_VAR}={:#x} repeats the run): {}",
-            self.engine, self.seed, self.seed, self.problem
+            " failed I/O conformance (seed {:#x}; {SEED_VAR}={:#x} repeats the run): {}",
+            self.seed, self.seed, self.problem
         )
     }
 }
@@ -413,15 +426,18 @@ impl fmt::Display for Problem {
     }
 }
 
-/// Runs the conformance checks on `engine`: reads of `file`, then, when the engine writes, writes
-/// to `scratch`, which it creates, replacing any file there, and removes at the end.
+/// Runs the conformance checks on the engine `make` builds: reads of `file`, then, when the engine
+/// writes, writes to `scratch`, which it creates, replacing any file there, and removes at the
+/// end.
 ///
-/// The engine runs on a thread of its own, which drops it before the run returns, so its files
-/// are closed and the memory it registered is still valid while it drops (the contract of
-/// [`IoEngine::register_buffers`]). If an engine call hangs, the run returns [`Problem::Hung`]
-/// and leaves that thread, the engine and its memory behind, and the scratch file in place.
+/// `make` runs on a thread of its own, which also drives and drops the engine, so a ring that
+/// takes submissions only from its creator works (see the module documentation). The engine
+/// drops before the run returns, so its files are closed and the memory it registered is still
+/// valid while it drops (the contract of [`IoEngine::register_buffers`]). If an engine call
+/// hangs, the run returns [`Problem::Hung`] and leaves that thread, the engine and its memory
+/// behind, and the scratch file in place.
 ///
-/// Prints the seed to standard error when it starts.
+/// Prints the seed to standard error when it starts, and the engine's kind once it is built.
 ///
 /// # Errors
 ///
@@ -429,43 +445,50 @@ impl fmt::Display for Problem {
 ///
 /// # Panics
 ///
-/// If the engine panics, or the thread cannot be started.
-pub fn check<E: IoEngine + 'static>(
-    engine: E,
-    file: &Path,
-    scratch: &Path,
-    opts: &Options,
-) -> Result<Report, Failure> {
-    let kind = engine.kind();
+/// If `make` or the engine panics, or the thread cannot be started.
+pub fn check<E, F>(make: F, file: &Path, scratch: &Path, opts: &Options) -> Result<Report, Failure>
+where
+    E: IoEngine + 'static,
+    F: FnOnce() -> E + Send + 'static,
+{
     eprintln!(
-        "I/O conformance: {kind:?}, seed {:#x} ({SEED_VAR}={:#x} repeats this run)",
+        "I/O conformance: seed {:#x} ({SEED_VAR}={:#x} repeats this run)",
         opts.seed, opts.seed
     );
-    let fail = |problem| Failure {
-        seed: opts.seed,
-        engine: kind,
-        problem,
-    };
-    let writes = engine.caps().writes;
     let watch = Arc::new(Mutex::new(Watch::default()));
-    let (done, result) = mpsc::channel();
+    let (events, received) = mpsc::channel();
     let thread = {
         let (file, scratch, opts, watch) = (
             file.to_owned(),
-            writes.then(|| scratch.to_owned()),
+            scratch.to_owned(),
             *opts,
             Arc::clone(&watch),
         );
         std::thread::Builder::new()
             .name("io-conformance".into())
             .spawn(move || {
-                let _ = done.send(run(engine, &file, scratch.as_deref(), &opts, &watch));
+                let engine = watched(&watch, None, make);
+                let (kind, writes) = (engine.kind(), engine.caps().writes);
+                let _ = events.send(Event::Built { kind, writes });
+                let scratch = writes.then_some(scratch.as_path());
+                let result = run(engine, &file, scratch, &opts, &watch);
+                let _ = events.send(Event::Done { kind, result });
             })
             .expect("the conformance thread starts")
     };
-    let result = loop {
-        match result.recv_timeout(Duration::from_millis(50)) {
-            Ok(result) => break result,
+    let mut built: Option<(EngineKind, bool)> = None;
+    let fail = |engine, problem| Failure {
+        seed: opts.seed,
+        engine,
+        problem,
+    };
+    let (kind, result) = loop {
+        match received.recv_timeout(Duration::from_millis(50)) {
+            Ok(Event::Built { kind, writes }) => {
+                eprintln!("I/O conformance: engine {kind:?}");
+                built = Some((kind, writes));
+            }
+            Ok(Event::Done { kind, result }) => break (kind, result),
             Err(mpsc::RecvTimeoutError::Disconnected) => match thread.join() {
                 Err(panic) => std::panic::resume_unwind(panic),
                 Ok(()) => unreachable!("the thread sends its result before it ends"),
@@ -477,28 +500,42 @@ pub fn check<E: IoEngine + 'static>(
                 if let Some(since) = watch.since
                     && since.elapsed() > opts.timeout
                 {
-                    return Err(fail(Problem::Hung {
+                    let problem = Problem::Hung {
                         op: watch.op,
                         after: opts.timeout,
-                    }));
+                    };
+                    return Err(fail(built.map(|(kind, _)| kind), problem));
                 }
             }
         }
     };
     // The thread has dropped the engine, so its files are closed; Windows removes no open file.
     let _ = thread.join();
-    if writes {
+    if built.is_some_and(|(_, writes)| writes) {
         let _ = std::fs::remove_file(scratch);
     }
-    result.map_err(fail).map(|counts| Report {
-        seed: opts.seed,
-        engine: kind,
-        unit: counts.unit,
-        reads: counts.reads,
-        writes: counts.writes,
-        bytes_read: counts.bytes_read,
-        bytes_written: counts.bytes_written,
-    })
+    result
+        .map_err(|problem| fail(Some(kind), problem))
+        .map(|counts| Report {
+            seed: opts.seed,
+            engine: kind,
+            unit: counts.unit,
+            reads: counts.reads,
+            writes: counts.writes,
+            bytes_read: counts.bytes_read,
+            bytes_written: counts.bytes_written,
+        })
+}
+
+/// What the run's thread tells [`check`].
+enum Event {
+    /// The engine is built.
+    Built { kind: EngineKind, writes: bool },
+    /// The run is over, and the engine dropped.
+    Done {
+        kind: EngineKind,
+        result: Result<Counts, Problem>,
+    },
 }
 
 /// The engine call in progress, for the watchdog in [`check`].
@@ -600,6 +637,8 @@ struct Rig<'w, E> {
 /// leaves a destination as the last round left it is caught.
 const FILLS: [u8; 2] = [0xA5, 0x5A];
 
+/// The run on the engine's thread: lay out the run, exercise the engine, and drop it, each drop
+/// under the watchdog.
 fn run<E: IoEngine>(
     mut engine: E,
     path: &Path,
@@ -607,15 +646,59 @@ fn run<E: IoEngine>(
     opts: &Options,
     watch: &Mutex<Watch>,
 ) -> Result<Counts, Problem> {
-    let open = |engine: &mut E, path: &Path, mode| {
+    let layout = match layout(&mut engine, path, scratch, opts, watch) {
+        Ok(layout) => layout,
+        Err(problem) => {
+            watched(watch, None, move || drop(engine));
+            return Err(problem);
+        }
+    };
+    let mut rig = Rig {
+        engine,
+        fixed: Mem::new(layout.slots * layout.stride, layout.unit),
+        raw: Mem::new(layout.slots * layout.stride, layout.unit),
+        buf: BufIndex(0),
+        unit: layout.unit,
+        stride: layout.stride,
+        watch,
+    };
+    let result = exercise(&mut rig, &layout, path, opts);
+    watched(watch, None, move || drop(rig));
+    result
+}
+
+/// The files and sizes of one run.
+struct Layout<'p> {
+    file: FileIx,
+    out: Option<(FileIx, &'p Path)>,
+    unit: u64,
+    file_units: u64,
+    max_units: u64,
+    /// The last read round has one operation of each length from 1 to `distinct` units.
+    distinct: u64,
+    /// Each slot: a guard unit, room for the longest operation, and a guard unit.
+    stride: u64,
+    /// Slots of each kind of memory: operation `i` takes slot `i / 2` of its kind.
+    slots: u64,
+}
+
+/// Opens the files and sizes the run.
+fn layout<'p, E: IoEngine>(
+    engine: &mut E,
+    path: &'p Path,
+    scratch: Option<&'p Path>,
+    opts: &Options,
+    watch: &Mutex<Watch>,
+) -> Result<Layout<'p>, Problem> {
+    let mut open = |path: &Path, mode| {
         watched(watch, None, || engine.open(path, mode)).map_err(|error| Problem::Open {
             path: path.to_owned(),
             error,
         })
     };
-    let file = open(&mut engine, path, OpenMode::Read)?;
+    let file = open(path, OpenMode::Read)?;
     let out = match scratch {
-        Some(scratch) => Some((open(&mut engine, scratch, OpenMode::Create)?, scratch)),
+        Some(scratch) => Some((open(scratch, OpenMode::Create)?, scratch)),
         None => None,
     };
     let unit = [Some(file), out.map(|(f, _)| f)]
@@ -641,25 +724,40 @@ fn run<E: IoEngine>(
         });
     }
     let max_units = u64::from(opts.max_units.max(1)).min(file_units);
-    // The last read round has one operation of each length from 1 to `distinct` units.
     let distinct = u64::from(opts.extents).min(file_units);
-    let longest = max_units.max(distinct);
-    let stride = (longest + 2) * unit;
-    // Operation `i` takes slot `i / 2` of its kind of memory.
-    let slots = u64::from(opts.extents).div_ceil(2).max(1);
-    let mut rig = Rig {
-        engine,
-        fixed: Mem::new(slots * stride, unit),
-        raw: Mem::new(slots * stride, unit),
-        buf: BufIndex(0),
+    Ok(Layout {
+        file,
+        out,
         unit,
-        stride,
-        watch,
-    };
+        file_units,
+        max_units,
+        distinct,
+        stride: (max_units.max(distinct) + 2) * unit,
+        slots: u64::from(opts.extents).div_ceil(2).max(1),
+    })
+}
+
+/// Registers the fixed region, reads every round, and writes.
+fn exercise<E: IoEngine>(
+    rig: &mut Rig<'_, E>,
+    layout: &Layout<'_>,
+    path: &Path,
+    opts: &Options,
+) -> Result<Counts, Problem> {
+    let Layout {
+        file,
+        out,
+        unit,
+        file_units,
+        max_units,
+        distinct,
+        ..
+    } = *layout;
+    let watch = rig.watch;
     let region = rig.fixed.region();
-    // SAFETY: `rig.fixed` is memory this function owns, valid for reads and writes over its
-    // whole length. It is a field of `rig` declared after `engine`, so it stays allocated until
-    // the engine has dropped, and nothing but the engine's fixed destinations touches it while
+    // SAFETY: `rig.fixed` is memory the run owns, valid for reads and writes over its whole
+    // length. It is a field of `rig` declared after `engine`, so it stays allocated until the
+    // engine has dropped, and nothing but the engine's fixed destinations touches it while
     // operations are in flight (see `Mem`).
     let bufs = watched(watch, None, || unsafe {
         rig.engine.register_buffers(&[region])
@@ -729,7 +827,7 @@ fn run<E: IoEngine>(
     }
 
     if let Some((out, scratch)) = out {
-        write_phase(&mut rig, out, scratch, opts, ticket, max_units, &mut counts)?;
+        write_phase(rig, out, scratch, opts, ticket, max_units, &mut counts)?;
     }
     Ok(counts)
 }
@@ -1271,7 +1369,7 @@ mod tests {
         }
         let failure = Failure {
             seed: 0x5eed,
-            engine: EngineKind::PreadPool,
+            engine: Some(EngineKind::PreadPool),
             problem: Problem::Lost(op),
         };
         assert!(failure.to_string().contains("seed 0x5eed"), "{failure}");

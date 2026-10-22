@@ -53,6 +53,8 @@ enum Fault {
     ExtraCompletion(u64),
     /// Blocks in `reap` for good, whatever its `Wait` says.
     BlockReap,
+    /// Blocks for good when dropped.
+    BlockDrop,
 }
 
 /// An engine that performs each operation with positional `std::fs` calls when it is submitted
@@ -67,6 +69,9 @@ struct StdEngine {
     seen: u64,
     held: u32,
     log: Option<Arc<Mutex<Vec<Op>>>>,
+    /// The threads the engine was built and submitted on.
+    threads: Option<Arc<Mutex<Vec<std::thread::ThreadId>>>>,
+    _blocks_on_drop: DropGuard,
 }
 
 impl StdEngine {
@@ -84,12 +89,15 @@ impl StdEngine {
             seen: 0,
             held: 0,
             log: None,
+            threads: None,
+            _blocks_on_drop: DropGuard(false),
         }
     }
 
     fn with_fault(fault: Fault) -> Self {
         StdEngine {
             fault,
+            _blocks_on_drop: DropGuard(fault == Fault::BlockDrop),
             ..StdEngine::new()
         }
     }
@@ -262,6 +270,9 @@ impl IoEngine for StdEngine {
     }
 
     fn submit(&mut self, batch: &mut SubmitBatch) -> Result<u32, IoError> {
+        if let Some(threads) = &self.threads {
+            threads.lock().unwrap().push(std::thread::current().id());
+        }
         let n = batch.len();
         let first = self.done.len();
         let mut swap = None;
@@ -316,6 +327,19 @@ impl IoEngine for StdEngine {
             u32::try_from(self.done.len()).unwrap() + self.held + phantom,
             Bytes(bytes),
         )
+    }
+}
+
+/// Part of a [`StdEngine`] that blocks for good when dropped, for [`Fault::BlockDrop`].
+struct DropGuard(bool);
+
+impl Drop for DropGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            loop {
+                std::thread::park();
+            }
+        }
     }
 }
 
@@ -390,8 +414,9 @@ fn logged_run(
     seed: u64,
 ) -> (Vec<Op>, Result<conformance::Report, conformance::Failure>) {
     let log = Arc::new(Mutex::new(Vec::new()));
+    let engine = engine.logging(&log);
     let result = conformance::check(
-        engine.logging(&log),
+        move || engine,
         &files.file,
         &files.scratch,
         &Options::new(seed),
@@ -499,12 +524,8 @@ fn failing_run_with(name: &str, fault: Fault, nth: u64, opts: Options) -> (Probl
     let files = Files::new(name, FILE_LEN);
     let seed = opts.seed;
     let log = Arc::new(Mutex::new(Vec::new()));
-    let result = conformance::check(
-        StdEngine::with_fault(fault).logging(&log),
-        &files.file,
-        &files.scratch,
-        &opts,
-    );
+    let engine = StdEngine::with_fault(fault).logging(&log);
+    let result = conformance::check(move || engine, &files.file, &files.scratch, &opts);
     let ops = log.lock().unwrap().clone();
     let failure = result.expect_err("the fault is caught");
     assert_eq!(failure.seed, seed);
@@ -604,7 +625,7 @@ fn an_error_completion_fails_naming_the_extent() {
 fn a_file_smaller_than_one_unit_is_refused() {
     let files = Files::new("small", 1000);
     let result = conformance::check(
-        StdEngine::new(),
+        StdEngine::new,
         &files.file,
         &files.scratch,
         &Options::new(1),
@@ -674,7 +695,7 @@ fn a_read_that_changes_memory_before_its_destination_fails_naming_it() {
 #[test]
 fn an_operation_held_in_flight_fails_with_a_timeout() {
     let opts = Options {
-        timeout: Duration::from_millis(200),
+        timeout: Duration::from_secs(1),
         ..Options::new(0xfa17)
     };
     let (problem, hit, _) = failing_run_with("hold", Fault::Hold(11), 11, opts);
@@ -693,7 +714,7 @@ fn failing_run_unnamed(name: &str, fault: Fault) -> Problem {
     let files = Files::new(name, FILE_LEN);
     let opts = Options::new(0xfa17);
     let result = conformance::check(
-        StdEngine::with_fault(fault),
+        move || StdEngine::with_fault(fault),
         &files.file,
         &files.scratch,
         &opts,
@@ -721,7 +742,7 @@ fn a_completion_for_no_operation_fails_as_an_unknown_ticket() {
 #[test]
 fn an_engine_whose_reap_blocks_fails_as_hung() {
     let opts = Options {
-        timeout: Duration::from_millis(200),
+        timeout: Duration::from_secs(1),
         ..Options::new(0xfa17)
     };
     // The run is waiting for operation 0, the first, when `reap` blocks. The engine's thread is
@@ -734,4 +755,57 @@ fn an_engine_whose_reap_blocks_fails_as_hung() {
             after: opts.timeout
         }
     );
+}
+
+#[test]
+fn an_engine_whose_drop_blocks_fails_as_hung() {
+    let files = Files::new("drop-hung", FILE_LEN);
+    // Reads only, with no synced writes, so that no call but the drop comes near the timeout.
+    let opts = Options {
+        timeout: Duration::from_secs(2),
+        ..Options::new(0xfa17)
+    };
+    // Every operation passes; only the drop blocks. Its thread is left parked.
+    let result = conformance::check(
+        || StdEngine {
+            writes: false,
+            ..StdEngine::with_fault(Fault::BlockDrop)
+        },
+        &files.file,
+        &files.scratch,
+        &opts,
+    );
+    let failure = result.expect_err("the blocked drop is caught");
+    assert_eq!(failure.engine, Some(EngineKind::PreadPool));
+    assert_eq!(
+        failure.problem,
+        Problem::Hung {
+            op: None,
+            after: opts.timeout
+        }
+    );
+}
+
+#[test]
+fn the_engine_is_built_and_driven_on_one_thread_not_the_callers() {
+    // A ring that takes submissions only from its creator needs both on one thread.
+    let files = Files::new("one-thread", FILE_LEN);
+    let threads = Arc::new(Mutex::new(Vec::new()));
+    let make = {
+        let threads = Arc::clone(&threads);
+        move || {
+            threads.lock().unwrap().push(std::thread::current().id());
+            StdEngine {
+                threads: Some(threads),
+                ..StdEngine::new()
+            }
+        }
+    };
+    let report = conformance::check(make, &files.file, &files.scratch, &Options::new(5))
+        .unwrap_or_else(|failure| panic!("{failure}"));
+    assert!(report.reads > 0);
+    let threads = threads.lock().unwrap();
+    assert!(threads.len() > 1, "built, then submitted at least once");
+    assert!(threads.iter().all(|t| *t == threads[0]), "{threads:?}");
+    assert_ne!(threads[0], std::thread::current().id());
 }
