@@ -682,6 +682,10 @@ The payload is the credential: 168 bytes for `DataPlaneCredential`, 192 for `Adm
 
 A reconnect `Hello` (§7.4) adds `resume_from: u64` at extension offset 64: the first data `chan_seq` the sender will resend. The matching `HelloAck` carries the receiver's current `ack_seq` in `limit_seq − recv_slots`.
 
+**Revision note, 2026-10-22 (the DIST-E8-T01 codec's review): telling the cases apart.**
+- **`resume_from`.** Data `chan_seq` starts at 1, so a reconnect's `resume_from` is never 0. A `Hello` whose extension is longer than 64 bytes with 0 at offset 64 is a fresh `Hello` carrying a later minor's trailing fields (§10), not a reconnect; one shorter than 72 bytes but longer than 64 is refused. A sender never writes 0 as a reconnect.
+- **A refusing `HelloAck`.** The receiver reads `status` first. A refusal is read whatever its `cred_kind` and payload hold, since it may come before the acceptor has a credential to show; a refusing acceptor may write `cred_kind = 0` with no credential. An acceptance (`status = 0`) must name a known `cred_kind` and carry its credential.
+
 #### 6.10 Blob-plane frames (weight chunks and digests)
 
 Blob streams on `syntropy/blob/1` carry `Hello` (with `cred_kind = AdmissionCert`), then one request, then its response. The chunk store, source selection and resume policy belong to RFC-0041 (ADR-0016). This section fixes the bytes.
