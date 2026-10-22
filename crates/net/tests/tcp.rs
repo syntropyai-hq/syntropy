@@ -504,3 +504,34 @@ fn a_slot_over_the_kernel_cap_is_left_to_autotuning_and_counted() {
     assert_eq!(a.stats().buffers_autotuned, 1);
     assert_eq!(b.stats().buffers_autotuned, 1);
 }
+
+/// The listener requires the data ALPN: a client that completes TLS with an allowed key but no
+/// ALPN is dropped before any `Hello` is read, and one that offers another ALPN does not get
+/// through TLS. Neither opens a channel.
+#[test]
+fn a_connection_without_the_data_alpn_opens_no_channel() {
+    use syntropy_net::transport::tcp::tls;
+    let rt = runtime();
+    let b = bind(&rt, 20, None);
+    let client_seed = [21u8; 32];
+    let client_key = bind(&rt, 21, None).public_key();
+    b.allowed().allow(client_key);
+    let addr = b.local_addr();
+    for alpn in [Vec::new(), vec![b"syntropy/data/2".to_vec()]] {
+        let mut config = tls::client_config(&client_seed, b.public_key()).unwrap();
+        config.alpn_protocols = alpn.clone();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let dropped = rt.block_on(async {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let Ok(mut stream) = connector.connect(tls::server_name(), tcp).await else {
+                return true;
+            };
+            let mut byte = [0u8; 1];
+            matches!(
+                tokio::time::timeout(Duration::from_secs(1), stream.read(&mut byte)).await,
+                Ok(Ok(0) | Err(_))
+            )
+        });
+        assert!(dropped, "a connection offering {alpn:?} was kept");
+    }
+}

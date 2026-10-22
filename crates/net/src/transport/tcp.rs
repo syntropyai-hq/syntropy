@@ -658,6 +658,12 @@ async fn connect_one(
             )
         },
     )?);
+    if !tls::agreed_alpn(stream.get_ref().1) {
+        return Err(Error::new(
+            ErrorCode::PROTO_MAJOR_MISMATCH,
+            format!("{addr} did not agree on the data ALPN"),
+        ));
+    }
     let hello = Hello {
         purpose: spec.key.purpose.into(),
         wire_minor_max: WIRE_MINOR,
@@ -841,6 +847,10 @@ async fn arrive(inner: Arc<Inner>, tcp: TcpStream, acceptor: TlsAcceptor, slot: 
         tcp.set_nodelay(true).ok()?;
         let tls = tokio::time::timeout(TLS_TIMEOUT.min(timeout), acceptor.accept(tcp));
         let mut stream = TlsStream::Server(tls.await.ok()?.ok()?);
+        // A connector that offered no ALPN completes TLS without one; it is not a data channel.
+        if !tls::agreed_alpn(stream.get_ref().1) {
+            return None;
+        }
         let peer = {
             let (_, connection) = stream.get_ref();
             let certs = connection.peer_certificates()?;
