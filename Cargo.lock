@@ -3773,12 +3773,15 @@ dependencies = [
  "ed25519-dalek",
  "iroh",
  "proptest",
+ "rustls",
  "serde",
  "serde_json",
+ "socket2",
  "subtle",
  "syntropy-config",
  "syntropy-core",
  "tokio",
+ "tokio-rustls",
  "zstd",
 ]
 
