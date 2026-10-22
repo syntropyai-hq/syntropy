@@ -119,6 +119,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "arc-swap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -365,6 +371,23 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+
+[[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
 
 [[package]]
 name = "bytes"
@@ -796,6 +819,20 @@ dependencies = [
  "rustc_version",
  "syn 2.0.119",
  "unicode-xid",
+]
+
+[[package]]
+name = "derivre"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a4fbc4bbc70b71fbf8f4d9270006e8b238b91c6179f8aad06b6d25589494347"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "bytemuck_derive",
+ "hashbrown 0.17.1",
+ "regex-syntax",
+ "strum",
 ]
 
 [[package]]
@@ -1835,6 +1872,21 @@ name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
+
+[[package]]
+name = "llguidance"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04ede1356c8ee73a0d29ef573dbeb2123a1667cfc3ebfc7e2c41346a6e92c3c8"
+dependencies = [
+ "anyhow",
+ "derivre",
+ "indexmap",
+ "regex-syntax",
+ "serde",
+ "serde_json",
+ "toktrie",
+]
 
 [[package]]
 name = "lock_api"
@@ -3205,6 +3257,8 @@ version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
+ "foldhash",
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -3772,6 +3826,15 @@ dependencies = [
 [[package]]
 name = "syntropy-text"
 version = "0.0.0"
+dependencies = [
+ "blake3",
+ "llguidance",
+ "proptest",
+ "regex",
+ "serde",
+ "serde_json",
+ "syntropy-core",
+]
 
 [[package]]
 name = "syntropy-tier"
@@ -4053,6 +4116,19 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+]
+
+[[package]]
+name = "toktrie"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bd80f04d68b86f1a4bf03bd4bed87b31341e74c48035697cded09d797cb1c05"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "bytemuck_derive",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
