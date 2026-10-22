@@ -2885,6 +2885,15 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 | The rule covers the types a moved type holds: `RunnerState`'s (`Degradation` among them), `ResidencySummary`'s eleven (`Purpose` among them), `ProbeSuite`'s `ModelShapes`, and `ProviderName` (COMP-E2-T13), each listed under the task that defines it in `core`. `RunnerConfig` is `ResourcePolicy` plus resolved `KeyPath → ConfigValue` values, not the typed sections. A field that holds transport state or a `kernels` type travels in a form `core` holds: `RemoteEndpoint` as `net`-encoded bytes beside its `NodeId`, and `DegradeDetail::Fallback`'s op and provider as owned text | §3.5 (dated note) | a type in `core` can hold only layer-0 types. Listing each type under its owner keeps the RFC-0020, RFC-0022, RFC-0023 and RFC-0033 definitions unchanged; a narrower core-level summary would redesign them. Only these two fields reach past plain data |
 | `Deadline { within: Nanos }` is a duration counted from receipt, and `RunnerState::Draining` carries it for `deadline_ms`. `Drain` loses `successor`, which `DrainReason::Replan` already carries. `StopReason` is defined: `Drained(DrainReason)` or `Fatal(ErrorClass)`. `SequenceOutcome` gets its variants, and `FetchPriority` RFC-0041 §7's, with RFC-0031 §6.10 mapping them to blob-plane classes | §3.5, §5.11; RFC-0031 §6.10 (dated note) | an absolute instant cannot cross machines, and RFC-0011 §13 already passes `Option<Deadline>` between nodes. One source for the successor epoch. §3.3 stops a runner from `Draining` or from `Failed`, and the only `StopReason` in the RFCs was the API's completion reason. RFC-0041 §7 defines what `FetchShard`'s priority does |
 
+### 18.29 The split heal compares standings (2026-10-23)
+
+DIST-E10-T10 model-checked OQ-NET-34's option (a), which was settled under the maintainers' standing instruction of 2026-10-22.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| the split heal compares standings, the strongest supported election in a node's chain and then its coordinator's proof, instead of proofs alone; a node keeps the elections it endorsed on disk with its command journal; a held proof's support only grows; every accepted election is endorsed once; fencing replies carry the sender's strongest supported election | RFC-0032 §6.3, §7.5 (dated notes); ADR-0304 (revision of 2026-10-23, changing items 2–4 of its second 2026-10-19 revision) | a stale supported proof rolled a lone survivor back past a command its own ack had made `replicated = true` (OQ-NET-34). For the maintainers to confirm |
+| RFC-0032 Testing's property "an unsupported self-election never deposes a supported coordinator" ends "unless the deposing side's chain holds a supported election that beats that coordinator's" | RFC-0032 Testing (the row, and a dated note) | OQ-NET-34's 15-step trace shows that any rule which keeps the acknowledged command must depose the stale coordinator there; an isolated node still cannot win a heal by inflating its counter |
+
 ### 18.30 The sequence types' field types in `core` (2026-10-23)
 
 | Change | Sections touched | Reason |

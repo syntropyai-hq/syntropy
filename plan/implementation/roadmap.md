@@ -803,7 +803,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | DIST-E7-T15 | spike | Spike: α_eff through the frame path on TB5 RDMA (GPU buffer → data frame at the collective partial size → GPU buffer, two Macs, doorbell… | OQ-NET-01 | 0 |
 | DIST-E7-T16 | spike | Spike: QUIC versus TCP α on LAN, per-frame credit cost on Wi-Fi, and what the iroh transport knobs that DIST-E7-T21 found reachable gain… | OQ-NET-05, OQ-NET-17 | 0 |
 | DIST-E7-T19 | benchmark | Benchmark: Thunderbolt and USB4 IP networking on Windows 11, for which no data exists | OQ-NET-02 | 0 |
-| DIST-E10-T10 | spike | Spike: model-check the §7.5 chain-support heal rule (OQ-NET-34) | OQ-NET-34 | 1 |
+| DIST-E10-T10 | spike | Spike: model-check the §7.5 chain-support heal rule (OQ-NET-34) | – | 1 |
 | DIST-E11-T19 | spike | Spike, mid M2: pipeline decomposition on the S2 cluster over 2.5 GbE and Wi-Fi, giving SC-12's `Z`, SC-13's hop shares, the tail → head… | – | 0 |
 | COMP-E7-T08 | spike | Spike for RFC-0040 open question 5: upstream acceptance of P1–P4 over the first two pin bumps after M1 | OQ-KB-03 | 0 |
 | COMP-E12-T08 | spike | Spike for RFC-0041 open question 1: the Hub's chunked-storage protocol (reconstruction information, authentication, hash scheme) against… | OQ-MF-05 | 1 |
@@ -814,7 +814,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | QUAL-E8-T14 | spike | Spike: simulator fidelity | OQ-PRC-10 | 0 |
 | QUAL-E12-T14 | spike | Energy per token: NVML power, readable RAPL counters, laptop battery discharge rate; J per generated token, or "not available"; plus a… | OQ-PRC-14 | 0 |
 
-**Open questions needed by M2:** 27 (benchmark 8, decision 7, spike 12). Answered by no task: OQ-PRC-19.
+**Open questions needed by M2:** 26 (benchmark 8, decision 6, spike 12). Answered by no task: OQ-PRC-19.
 <!-- END GENERATED -->
 
 ## M3: feature complete
