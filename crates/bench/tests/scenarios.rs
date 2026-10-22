@@ -528,7 +528,11 @@ fn assert_repository_current(root: &Path) {
     let read = |rel: &str| sc_map::to_lf(&fs::read_to_string(root.join(rel)).expect(rel));
     let map = sc_map::parse(&read(sc_map::SC_MAP)).expect("map parses");
     let vision = sc_map::vision_ids(&read(sc_map::VISION));
-    assert_eq!(vision, (1..=32).collect::<Vec<u32>>());
+    // SC-1 onward with no gap, and at least the 32 the vision has had. Not exactly 32: a plan-only
+    // PR that adds a criterion runs `lint` alone (RFC-0062 §2.2), whose `scenarios` step checks
+    // the map against the vision, so a pin here would first fail on the next code PR.
+    assert!(vision.len() >= 32, "read only {} criteria", vision.len());
+    assert_eq!(vision, (1..=vision.len() as u32).collect::<Vec<u32>>());
     let tasks = sc_map::tasks(&root.join(sc_map::EPICS));
     assert_eq!(sc_map::check(&map, &vision, &tasks), Vec::<String>::new());
     let rfc = read(sc_map::RFC_0061);
