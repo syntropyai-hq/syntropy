@@ -1,0 +1,17 @@
+# A GPU with no memory tier.
+name = "gpu:no-tier"
+kind = "gpu"
+describes = "a test GPU"
+sources = ["research §2.1 [S10]"]
+
+[figures.memory]
+unknown = "research gives none"
+
+[figures.f_eff]
+unknown = "research gives none"
+
+[figures.t_fixed]
+unknown = "research gives none"
+
+[figures.sigma_dev]
+unknown = "research gives none"

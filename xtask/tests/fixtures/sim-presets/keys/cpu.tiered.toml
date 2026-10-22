@@ -1,0 +1,30 @@
+# A CPU with a memory tier, which only a GPU has.
+name = "cpu:tiered"
+kind = "cpu"
+memory_tier = "vram"
+describes = "a test CPU"
+sources = ["research §2.1 [S22]"]
+
+[figures.memory]
+unknown = "research gives none"
+
+[figures.f_eff]
+unknown = "research gives none"
+
+[figures.t_fixed]
+unknown = "research gives none"
+
+[figures.sigma_dev]
+unknown = "research gives none"
+
+[figures."w_eff.host_pinned.dense_gemv"]
+unknown = "research gives none"
+
+[figures."w_eff.host_pinned.expert_gemv"]
+unknown = "research gives none"
+
+[figures."w_eff.host_pageable.dense_gemv"]
+unknown = "research gives none"
+
+[figures."w_eff.host_pageable.expert_gemv"]
+unknown = "research gives none"
