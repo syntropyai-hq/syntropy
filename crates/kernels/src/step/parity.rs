@@ -139,7 +139,33 @@ impl ParityFlags<'_> {
 ///
 /// It holds the flags it was built with. The host consumes a flag with an acquire load that
 /// sees 1, then a release store of 0.
-#[derive(Clone, Debug)]
+///
+/// There is one handshake per set of flags, and it is not `Clone`: a copy would share the
+/// flags but keep its own record, so it could rewrite and resubmit a parity the original has
+/// in flight. It can be built and moved:
+///
+/// ```
+/// use std::sync::atomic::AtomicU32;
+/// use syntropy_kernels::{ParityFlags, ParityHandshake};
+/// let f = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+/// let flags = ParityFlags { dc: [&f[0], &f[1]], o: [&f[2], &f[3]] };
+/// let hs = ParityHandshake::new(flags).unwrap();
+/// let moved = hs;
+/// # let _ = moved;
+/// ```
+///
+/// but not copied:
+///
+/// ```compile_fail
+/// use std::sync::atomic::AtomicU32;
+/// use syntropy_kernels::{ParityFlags, ParityHandshake};
+/// let f = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+/// let flags = ParityFlags { dc: [&f[0], &f[1]], o: [&f[2], &f[3]] };
+/// let hs = ParityHandshake::new(flags).unwrap();
+/// let copy = hs.clone();
+/// # let _ = (hs, copy);
+/// ```
+#[derive(Debug)]
 pub struct ParityHandshake<'a> {
     flags: ParityFlags<'a>,
     slots: [Slot; 2],
