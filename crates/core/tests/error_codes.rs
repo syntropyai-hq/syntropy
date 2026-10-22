@@ -2,11 +2,11 @@
 
 //! The error-code registry (DIST-E18-T02): every published code is pinned to its number, its
 //! names and its class, numbers are unique and inside their domain's range, and every code
-//! has an RFC-0050 §12 API shape or is on the open list.
+//! maps to an RFC-0050 §12.1 shape or is on §12.1's exempt list.
 
 use std::collections::BTreeSet;
 
-use syntropy_core::error::api::{self, ApiError, ApiMapping};
+use syntropy_core::error::api::{self, ApiError, ApiMapping, NativeError, RetryAfter};
 use syntropy_core::error::codes::{self, CodeInfo};
 use syntropy_core::{Domain, ErrorClass, ErrorCode};
 
@@ -131,14 +131,132 @@ const PINNED: &[(Domain, u16, &[&str], Option<ErrorClass>)] = &[
     (Security, 0x0513, &["NotCoordinatorEligible"], Some(Auth)),
 ];
 
-/// The codes that neither their own RFC row nor RFC-0050 §12.1 gives a shape: the open list
-/// of #1668. A code leaves this list when RFC-0050 gives it a row.
-const UNMAPPED: &[(Domain, u16)] = &[
-    (Cluster, 0x0101),
-    (Cluster, 0x0104),
-    (Cluster, 0x0105),
-    (Cluster, 0x0106),
-    (Cluster, 0x0107),
+/// A 503 `instance_unavailable` whose `Retry-After` the row does not fix: RFC-0050 §12.1's
+/// row for unroutable instances and infeasible repair.
+const UNAVAILABLE_CAPACITY: ApiMapping = ApiMapping::Error(ApiError {
+    status: 503,
+    retry_after: RetryAfter::Unfixed,
+    openai_type: "server_error",
+    openai_code: "instance_unavailable",
+    anthropic_type: "overloaded_error",
+    anthropic_status: 529,
+});
+/// 503 `instance_unavailable`, `Retry-After: 1`: the `Link`/`Device` row, the escape rule,
+/// and the shape an exempt code renders as if it escapes.
+const UNAVAILABLE: ApiError = ApiError {
+    status: 503,
+    retry_after: RetryAfter::Seconds(1),
+    openai_type: "server_error",
+    openai_code: "instance_unavailable",
+    anthropic_type: "overloaded_error",
+    anthropic_status: 529,
+};
+const NATIVE_400: ApiMapping = ApiMapping::Native(NativeError {
+    status: 400,
+    api_code: None,
+});
+const NATIVE_403: ApiMapping = ApiMapping::Native(NativeError {
+    status: 403,
+    api_code: None,
+});
+const NATIVE_409: ApiMapping = ApiMapping::Native(NativeError {
+    status: 409,
+    api_code: Some("cluster_proposal_rejected"),
+});
+
+/// The codes RFC-0050 §12.1 (as merged in #1684) names one by one, with words its text uses
+/// for them: twelve table rows, plus `DuplicateCommand` and `IngressLost` from the note below
+/// the table. `pinned_tables_match_the_rfc_text` checks this table against the RFC.
+const PINNED_ROWS: &[(Domain, u16, ApiMapping, &str)] = &[
+    (
+        Cluster,
+        0x0101,
+        NATIVE_403,
+        "a join the keyholder or the joining node refuses",
+    ),
+    (
+        Cluster,
+        0x0103,
+        NATIVE_400,
+        "a join refused because the two nodes' protocol majors differ",
+    ),
+    (
+        Cluster,
+        0x0104,
+        NATIVE_400,
+        "`POST /v1/syntropy/cluster/join` with a malformed invite token",
+    ),
+    (
+        Cluster,
+        0x0105,
+        NATIVE_403,
+        "a join the keyholder or the joining node refuses",
+    ),
+    (
+        Cluster,
+        0x0106,
+        NATIVE_403,
+        "a join the keyholder or the joining node refuses",
+    ),
+    (
+        Cluster,
+        0x0107,
+        NATIVE_403,
+        "a join the keyholder or the joining node refuses",
+    ),
+    (
+        Cluster,
+        0x010C,
+        NATIVE_403,
+        "a join the keyholder or the joining node refuses",
+    ),
+    (
+        Dist,
+        0x0303,
+        NATIVE_409,
+        "a cluster configuration proposal rejected",
+    ),
+    (
+        Dist,
+        0x0305,
+        ApiMapping::NeverSurfaces,
+        "`DuplicateCommand` (0x0305) never appears in `Error::code`",
+    ),
+    (
+        Dist,
+        0x0308,
+        UNAVAILABLE_CAPACITY,
+        "the only instances of the model are unroutable",
+    ),
+    (
+        Dist,
+        0x030F,
+        NATIVE_409,
+        "a cluster configuration proposal rejected",
+    ),
+    (
+        Recovery,
+        0x0404,
+        ApiMapping::NoResponse,
+        "`IngressLost` (0x0404), has no response to carry it",
+    ),
+    (
+        Recovery,
+        0x0405,
+        UNAVAILABLE_CAPACITY,
+        "recovery found no feasible repair",
+    ),
+    (
+        Security,
+        0x0507,
+        NATIVE_403,
+        "an operator action that needs a keyholder signature with no keyholder reachable",
+    ),
+];
+
+/// RFC-0050 §12.1's exempt list: the codes that never leave the cluster.
+const PINNED_EXEMPT: &[(Domain, u16)] = &[
+    (Cluster, 0x0102),
     (Cluster, 0x010A),
     (Cluster, 0x010B),
     (Net, 0x0201),
@@ -149,18 +267,14 @@ const UNMAPPED: &[(Domain, u16)] = &[
     (Net, 0x020E),
     (Net, 0x020F),
     (Net, 0x0212),
-    (Dist, 0x0303),
-    (Dist, 0x0308),
-    (Dist, 0x0309),
     (Dist, 0x030E),
-    (Dist, 0x030F),
+    (Recovery, 0x0407),
     (Security, 0x0501),
     (Security, 0x0502),
     (Security, 0x0503),
     (Security, 0x0504),
     (Security, 0x0505),
     (Security, 0x0506),
-    (Security, 0x0507),
     (Security, 0x0508),
     (Security, 0x0510),
     (Security, 0x0511),
@@ -168,127 +282,33 @@ const UNMAPPED: &[(Domain, u16)] = &[
     (Security, 0x0513),
 ];
 
-const HIDDEN: ApiMapping = ApiMapping::NotClientVisible;
-const RETRYABLE_STREAM: ApiMapping = ApiMapping::StreamError { retryable: true };
+/// The whole-class rows of RFC-0050 §12.1 (and §12.2 for `Cancelled`), transcribed; `None`
+/// where every row of the class names a narrower condition.
+fn class_row(class: ErrorClass) -> Option<ApiMapping> {
+    let server = |status, openai_code, anthropic_type, anthropic_status| {
+        Some(ApiMapping::Error(ApiError {
+            status,
+            retry_after: RetryAfter::Absent,
+            openai_type: "server_error",
+            openai_code,
+            anthropic_type,
+            anthropic_status,
+        }))
+    };
+    match class {
+        Link | Device | Integrity | Drift | Transient => Some(ApiMapping::Error(UNAVAILABLE)),
+        Timeout => server(504, "timeout", "timeout_error", 504),
+        Correctness => server(503, "no_conforming_instance", "api_error", 500),
+        Internal => server(500, "internal_error", "api_error", 500),
+        Cancelled => Some(ApiMapping::NormalFinish),
+        Auth | Capacity | InvalidRequest | Unsupported => None,
+        other => panic!("{other:?} is a class this transcription predates"),
+    }
+}
 
-/// The codes whose own RFC row states what the client sees, with that row's words. They win
-/// over the class rule.
-const PINNED_OVERRIDES: &[(Domain, u16, ApiMapping, &str)] = &[
-    (
-        Cluster,
-        0x0102,
-        HIDDEN,
-        "RFC-0030 §10: both are excluded until one stops; `NodeConflict`; `doctor` explains",
-    ),
-    (
-        Cluster,
-        0x0103,
-        HIDDEN,
-        "RFC-0030 §10: never dial; list it; nearby list: incompatible, with both versions",
-    ),
-    (
-        Cluster,
-        0x0109,
-        HIDDEN,
-        "RFC-0030 §10: the joiner retries with back-off for the token's lifetime; joiner CLI",
-    ),
-    (
-        Cluster,
-        0x010C,
-        HIDDEN,
-        "RFC-0030 §10: `Rejected { ClockSkew }` names both clocks; `doctor` checks NTP",
-    ),
-    (
-        Cluster,
-        0x010D,
-        HIDDEN,
-        "RFC-0030 §10: keep serving locally; `doctor`: `DiscoverySilent`",
-    ),
-    (
-        Net,
-        0x020C,
-        HIDDEN,
-        "RFC-0031 §12: informational; becomes a `Ready { degraded }` reason",
-    ),
-    (
-        Net,
-        0x0213,
-        HIDDEN,
-        "RFC-0031 §12: informational: channel opened on the next transport",
-    ),
-    (
-        Dist,
-        0x0305,
-        HIDDEN,
-        "RFC-0032 §10: reply carries the original result",
-    ),
-    (
-        Dist,
-        0x030B,
-        HIDDEN,
-        "RFC-0032 §10: local routing disabled; not fatal",
-    ),
-    (
-        Recovery,
-        0x0401,
-        RETRYABLE_STREAM,
-        "RFC-0033 §13: keep-alives; on deadline, a retryable timeout",
-    ),
-    (
-        Recovery,
-        0x0402,
-        RETRYABLE_STREAM,
-        "RFC-0033 §13: stream error, retryable",
-    ),
-    (
-        Recovery,
-        0x0403,
-        RETRYABLE_STREAM,
-        "RFC-0033 §13: stream error, `retry: OnNewPlan`",
-    ),
-    (
-        Recovery,
-        0x0404,
-        HIDDEN,
-        "RFC-0033 §13: — (connection gone)",
-    ),
-    (
-        Recovery,
-        0x0405,
-        RETRYABLE_STREAM,
-        "RFC-0033 §13: stream error with `Retry-After`; instance unroutable",
-    ),
-    (
-        Recovery,
-        0x0406,
-        HIDDEN,
-        "RFC-0033 §13: — (handled by re-plan)",
-    ),
-    (
-        Recovery,
-        0x0407,
-        HIDDEN,
-        "RFC-0033 §13: — (informational; recovery cascades)",
-    ),
-    (
-        Recovery,
-        0x0408,
-        HIDDEN,
-        "RFC-0033 §13: falls back to replay or re-prefill; nothing visible",
-    ),
-    (
-        Recovery,
-        0x0409,
-        HIDDEN,
-        "RFC-0033 §13: nothing (the handshake re-runs; §4.2.1)",
-    ),
-    (
-        Security,
-        0x050F,
-        HIDDEN,
-        "RFC-0034 §10.1: refetched from another source; the node is flagged in the dashboard",
-    ),
-];
+fn is_note(mapping: ApiMapping) -> bool {
+    matches!(mapping, ApiMapping::NeverSurfaces | ApiMapping::NoResponse)
+}
 
 const DOMAINS: [Domain; 5] = [Cluster, Net, Dist, Recovery, Security];
 
@@ -394,100 +414,201 @@ fn constants_name_their_codes() {
 }
 
 #[test]
-fn overrides_follow_their_rfc_rows() {
-    let got: Vec<_> = api::overrides().collect();
-    let want: Vec<_> = PINNED_OVERRIDES
+fn per_code_rows_follow_rfc_0050() {
+    let got: Vec<_> = api::per_code().collect();
+    let want: Vec<_> = PINNED_ROWS
         .iter()
-        .map(|&(d, n, mapping, row)| (ErrorCode::new(d, n), mapping, row))
+        .map(|&(d, n, mapping, _)| (ErrorCode::new(d, n), mapping))
         .collect();
-    assert_eq!(got, want);
-    for (code, mapping, row) in got {
+    assert_eq!(
+        got.iter().map(|&(c, m, _)| (c, m)).collect::<Vec<_>>(),
+        want
+    );
+    for ((code, mapping, row), &(.., words)) in got.into_iter().zip(PINNED_ROWS) {
+        assert!(row.contains(words), "{code}: {row:?} quotes {words:?}");
         assert_eq!(api::for_code(code), Some(mapping), "{code}: {row}");
     }
 }
 
 #[test]
-fn every_code_maps_to_an_api_shape_or_is_on_the_open_list() {
-    let unmapped: BTreeSet<_> = UNMAPPED
+fn exempt_list_follows_rfc_0050() {
+    let want: Vec<_> = PINNED_EXEMPT
         .iter()
         .map(|&(d, n)| ErrorCode::new(d, n))
         .collect();
-    for info in registry() {
-        let mapping = api::for_code(info.code).expect("a published code");
-        let overridden = PINNED_OVERRIDES
-            .iter()
-            .find(|&&(d, n, ..)| ErrorCode::new(d, n) == info.code);
-        match overridden {
-            Some(&(.., want, _)) => assert_eq!(mapping, want, "{}", info.code),
-            None => assert_eq!(
-                mapping,
-                api::for_class(info.class.expect("only an override has no class")),
-                "{} follows its class",
-                info.code
-            ),
-        }
-        assert_eq!(
-            mapping == ApiMapping::Unmapped,
-            unmapped.contains(&info.code),
-            "{} ({}) maps to {mapping:?}",
-            info.code,
-            info.names[0]
-        );
-    }
-    assert_eq!(api::for_code(ErrorCode::new(Security, 0x0509)), None);
-    let mapped = registry().len() - UNMAPPED.len();
-    assert_eq!((mapped, UNMAPPED.len()), (41, 32));
-}
-
-#[test]
-fn recoverable_local_events_are_not_server_errors() {
-    use codes::{dist, recovery};
-    // A non-retryable 503 here would tell SDKs not to retry a recoverable event.
-    for code in [dist::ROUTER_MISMATCH, recovery::STATE_POSITION_MISMATCH] {
+    assert_eq!(api::exempt().collect::<Vec<_>>(), want);
+    for code in want {
         assert_eq!(
             api::for_code(code),
-            Some(ApiMapping::NotClientVisible),
+            Some(ApiMapping::Exempt {
+                if_escaped: UNAVAILABLE
+            }),
             "{code}"
         );
     }
 }
 
 #[test]
-fn class_shapes_match_rfc_0050() {
-    let unavailable = ApiMapping::Error(ApiError {
-        status: 503,
-        retry_after: Some(1),
-        openai_type: "server_error",
-        openai_code: "instance_unavailable",
-        anthropic_type: "overloaded_error",
-        anthropic_status: 529,
-    });
-    for class in [Link, Device, Integrity, Drift, Transient] {
-        assert_eq!(api::for_class(class), unavailable, "{class:?}");
+fn every_code_maps_to_an_rfc_0050_shape_or_is_exempt() {
+    let exempt: BTreeSet<_> = PINNED_EXEMPT
+        .iter()
+        .map(|&(d, n)| ErrorCode::new(d, n))
+        .collect();
+    let (mut by_row, mut by_class) = (0, 0);
+    for info in registry() {
+        let row = PINNED_ROWS
+            .iter()
+            .find(|&&(d, n, ..)| ErrorCode::new(d, n) == info.code);
+        let want = match row {
+            Some(&(.., mapping, _)) => {
+                by_row += 1;
+                assert!(!exempt.contains(&info.code), "{} is on both", info.code);
+                Some(mapping)
+            }
+            None if exempt.contains(&info.code) => Some(ApiMapping::Exempt {
+                if_escaped: UNAVAILABLE,
+            }),
+            None => {
+                by_class += 1;
+                let class = info.class.expect("only DuplicateCommand has no class");
+                let shape = class_row(class);
+                assert!(
+                    shape.is_some(),
+                    "{} ({}, {class:?}) has no §12.1 row, no whole-class row and is not exempt",
+                    info.code,
+                    info.names[0]
+                );
+                shape
+            }
+        };
+        assert_eq!(
+            api::for_code(info.code),
+            want,
+            "{} ({})",
+            info.code,
+            info.names[0]
+        );
     }
-    assert_eq!(
-        api::for_class(Internal),
-        ApiMapping::Error(ApiError {
-            status: 500,
-            retry_after: None,
-            openai_type: "server_error",
-            openai_code: "internal_error",
-            anthropic_type: "api_error",
-            anthropic_status: 500,
-        })
-    );
-    assert_eq!(api::for_class(Cancelled), ApiMapping::NormalFinish);
-    // Their RFC-0050 rows name a narrower condition than the class.
+    assert_eq!(api::for_code(ErrorCode::new(Security, 0x0509)), None);
+    // 12 table rows plus `DuplicateCommand` and `IngressLost`; 24 exempt; the rest by class.
+    assert_eq!((by_row, exempt.len(), by_class), (14, 24, 35));
+}
+
+#[test]
+fn class_rows_match_rfc_0050() {
     for class in [
+        Link,
+        Device,
+        Integrity,
+        Drift,
+        Transient,
         Timeout,
         Correctness,
+        Internal,
+        Cancelled,
         Auth,
         Capacity,
         InvalidRequest,
         Unsupported,
     ] {
-        assert_eq!(api::for_class(class), ApiMapping::Unmapped, "{class:?}");
+        assert_eq!(api::for_class(class), class_row(class), "{class:?}");
     }
+}
+
+/// RFC-0050 §12.1, read from the plan.
+fn rfc_0050_section_12_1() -> String {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plan/rfcs/RFC-0050-api-surface.md"
+    );
+    let text = std::fs::read_to_string(path).expect("RFC-0050 is in the repository");
+    let start = text.find("#### 12.1").expect("§12.1");
+    let end = start + text[start..].find("#### 12.2").expect("§12.2");
+    text[start..end].to_owned()
+}
+
+/// The backticked words of `text`.
+fn backticked(text: &str) -> impl Iterator<Item = &str> {
+    text.split('`').skip(1).step_by(2)
+}
+
+fn code_named(name: &str) -> Option<ErrorCode> {
+    registry()
+        .into_iter()
+        .find(|info| info.names.contains(&name))
+        .map(|info| info.code)
+}
+
+/// Reads the codes, statuses and exempt list out of RFC-0050 §12.1's text and checks them
+/// against `PINNED_ROWS` and `PINNED_EXEMPT`, so the pinned tables cannot drift from the RFC.
+#[test]
+fn pinned_tables_match_the_rfc_text() {
+    let section = rfc_0050_section_12_1();
+
+    // Every code a table row names in its condition cell.
+    let mut named = BTreeSet::new();
+    for line in section.lines().filter(|l| l.starts_with("| ")) {
+        let cells: Vec<_> = line.split(" | ").collect();
+        let status: Option<u16> = cells[2]
+            .split(|c: char| !c.is_ascii_digit())
+            .find(|s| !s.is_empty())
+            .and_then(|s| s.parse().ok());
+        let native = cells[3].contains("native route only");
+        let proposal = cells[0].contains("`cluster_proposal_rejected`");
+        for code in backticked(cells[0]).filter_map(code_named) {
+            assert!(named.insert(code), "{code} is in two rows");
+            let &(.., mapping, words) = PINNED_ROWS
+                .iter()
+                .find(|&&(d, n, ..)| ErrorCode::new(d, n) == code)
+                .unwrap_or_else(|| panic!("{code} has a §12.1 row but is not pinned"));
+            assert!(cells[0].contains(words), "{code}: {:?}", cells[0]);
+            match mapping {
+                ApiMapping::Native(e) => {
+                    assert!(native, "{code}");
+                    assert_eq!(Some(e.status), status, "{code}");
+                    assert_eq!(e.api_code.is_some(), proposal, "{code}");
+                }
+                ApiMapping::Error(e) => {
+                    assert!(!native, "{code}");
+                    assert_eq!(Some(e.status), status, "{code}");
+                }
+                other => panic!("{code}: a table row gives {other:?}"),
+            }
+        }
+    }
+    let pinned_rows: BTreeSet<_> = PINNED_ROWS
+        .iter()
+        .filter(|&&(.., m, _)| !is_note(m))
+        .map(|&(d, n, ..)| ErrorCode::new(d, n))
+        .collect();
+    assert_eq!(named, pinned_rows);
+
+    // The notes below the table that name one code each.
+    for &(.., words) in PINNED_ROWS.iter().filter(|&&(.., m, _)| is_note(m)) {
+        assert!(section.contains(words), "{words}");
+    }
+
+    // The exempt list: the bullet lines "  - `Domain`: 0x0NNN `Name`, …".
+    let mut exempt = Vec::new();
+    for line in section
+        .lines()
+        .filter(|l| l.starts_with("  - `") && l.contains(" 0x0"))
+    {
+        let (_, items) = line.split_once(": ").expect("domain: codes");
+        for item in items.split(", ") {
+            let (number, name) = item.split_once(' ').expect("number and name");
+            let number = u16::from_str_radix(number.trim_start_matches("0x"), 16).expect("hex");
+            let name = backticked(name).next().expect("a backticked name");
+            let code = code_named(name).expect("a published name");
+            assert_eq!(code.code, number, "{name}");
+            exempt.push(code);
+        }
+    }
+    let pinned_exempt: Vec<_> = PINNED_EXEMPT
+        .iter()
+        .map(|&(d, n)| ErrorCode::new(d, n))
+        .collect();
+    assert_eq!(exempt, pinned_exempt);
 }
 
 #[test]

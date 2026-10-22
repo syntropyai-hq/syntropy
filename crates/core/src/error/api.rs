@@ -3,47 +3,60 @@
 //! The map from an error code to what an API client sees (RFC-0050 §12), as data. `api`
 //! builds the bodies and headers from it.
 //!
-//! A code's mapping comes from one of two places, in this order:
-//! 1. **The code's own RFC row**, where it states the client outcome. Such a row is an
-//!    override, listed in `OVERRIDES` with the row it comes from. Examples are RFC-0033 §13's
-//!    "Client sees" column and RFC-0031 §12's "informational" codes.
-//! 2. **A class rule of RFC-0050 §12.1**, but only where the rule covers every error of the
-//!    class:
-//!    - `Internal`: the `Internal` row (`internal_error`);
-//!    - `Integrity`, `Drift` and `Transient`: "if one escapes, it maps to 503
-//!      `instance_unavailable`";
-//!    - `Link` and `Device`: the row "stage, link or device failure not recovered before the
-//!      first token, after one re-route" (`instance_unavailable`). Its condition names the
-//!      whole class plus a "when", so it is read as a class rule. #1668 asks the maintainers
-//!      to confirm that reading;
-//!    - `Cancelled`: §12.2's normal finish.
-//!
-//! The `Timeout` row ("request deadline before the first token"), the `Correctness` row ("no
-//! instance passes its canary") and every `Auth`, `Capacity`, `InvalidRequest` and
-//! `Unsupported` row name a narrower condition than their class. A code of those classes
-//! whose own row states no outcome is therefore [`ApiMapping::Unmapped`], and stays so until
-//! RFC-0050 gives it a row (#1668).
+//! RFC-0050 §12.1 ("Distributed error codes", note 2026-10-22) gives every code of the
+//! `Cluster`, `Net`, `Dist`, `Recovery` and `Security` domains one of four outcomes. A code's
+//! mapping is found in this order:
+//! 1. **Its own §12.1 row.** A code that can reach an API client is named in a row of the
+//!    §12.1 table. [`per_code`] lists those codes with the row each comes from. The rows for
+//!    cluster codes are native routes only ([`ApiMapping::Native`]); `InstanceNotRoutable`
+//!    and `NoRepairCapacity` have a row in every shape.
+//! 2. **The exempt list.** A code that never leaves the cluster is on §12.1's exempt list
+//!    ([`exempt`]). If one ever reaches an API response, it renders as 503
+//!    `instance_unavailable`, whatever its class ([`ApiMapping::Exempt`]).
+//! 3. **`DuplicateCommand` (Dist 0x0305)** never appears in `Error::code`
+//!    ([`ApiMapping::NeverSurfaces`]). **`IngressLost` (Recovery 0x0404)**, the one `Cancelled`
+//!    code, has no response to carry it ([`ApiMapping::NoResponse`]). §12.1's note names
+//!    both, so [`per_code`] lists them too, and they never reach step 4.
+//! 4. **A whole-class row** ([`for_class`]): `Link` and `Device` (`instance_unavailable`),
+//!    `Timeout` (`timeout`), `Correctness` (`no_conforming_instance`), `Internal`
+//!    (`internal_error`), and the escape rule for `Integrity`, `Drift` and `Transient` (503
+//!    `instance_unavailable`). `Cancelled` takes §12.2's normal finish. The `Auth`,
+//!    `Capacity`, `InvalidRequest` and `Unsupported` rows each name a narrower condition than
+//!    their class, so they are no class rule: every distributed code of those classes is in
+//!    step 1 or step 2.
 //!
 //! **Retry hints.** The [`ApiError::retry_after`] of a shape is the row's default. The
 //! error's own retry hint (`Error::retry`, RFC-0001 §5.12) overrides it. When the hint is
 //! `Never`, the response carries `x-should-retry: false` and no `Retry-After` (RFC-0050
 //! §12.1, "Retry signalling"). That is the case for an escaped `Integrity` code such as
-//! Security 0x050C–0x050E (a signature that does not verify), even though the shape is
-//! `instance_unavailable`. (0x050F `SourceDistrusted` has an override and never reaches a
-//! client.)
+//! Security 0x050C–0x050F (a signature or source that does not verify), even though the
+//! shape is `instance_unavailable`.
 
 use super::codes::{self, CodeInfo, cluster, dist, net, recovery, security};
 use super::{ErrorClass, ErrorCode};
 
-/// An error body of RFC-0050 §12.1 before the first token. After it, the shape's in-stream
-/// error carries the same type and code (RFC-0050 §12.2).
+/// The `Retry-After` header a row of RFC-0050 §12.1 sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetryAfter {
+    /// The row sends no `Retry-After`.
+    Absent,
+    /// The row fixes the value, in seconds (`Retry-After: 1`).
+    Seconds(u32),
+    /// The row sends `Retry-After` and fixes no value (`503 + Retry-After`); the value comes
+    /// from the error's retry hint.
+    Unfixed,
+}
+
+/// An error body of RFC-0050 §12.1 in the OpenAI, Anthropic and native shapes, before the
+/// first token. After it, the shape's in-stream error carries the same type and code
+/// (RFC-0050 §12.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ApiError {
     /// The HTTP status in the OpenAI and native shapes.
     pub status: u16,
-    /// The `Retry-After` value in seconds, where the row fixes one. `Error::retry` overrides
-    /// it: a `Never` hint sends no `Retry-After` (module docs).
-    pub retry_after: Option<u32>,
+    /// The row's `Retry-After`. `Error::retry` overrides it: a `Never` hint sends no
+    /// `Retry-After` (module docs).
+    pub retry_after: RetryAfter,
     /// The OpenAI `type`.
     pub openai_type: &'static str,
     /// The OpenAI `code`, which is also the `Api` domain code's name (RFC-0050 §12.3).
@@ -55,24 +68,63 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    /// The `Link`/`Device` row, and the escape rule for `Integrity`, `Drift` and `Transient`:
     /// 503 `instance_unavailable`, `Retry-After: 1`; Anthropic `overloaded_error` (529).
     pub const INSTANCE_UNAVAILABLE: Self = Self {
         status: 503,
-        retry_after: Some(1),
+        retry_after: RetryAfter::Seconds(1),
         openai_type: "server_error",
         openai_code: "instance_unavailable",
         anthropic_type: "overloaded_error",
         anthropic_status: 529,
     };
-    /// 500 `internal_error`; Anthropic `api_error`.
+    /// The row for unroutable instances and infeasible repair (`Capacity`): 503
+    /// `instance_unavailable` with a `Retry-After` the row does not fix; Anthropic
+    /// `overloaded_error` (529).
+    pub const INSTANCE_UNAVAILABLE_CAPACITY: Self = Self {
+        retry_after: RetryAfter::Unfixed,
+        ..Self::INSTANCE_UNAVAILABLE
+    };
+    /// The `Timeout` row: 504 `timeout`; Anthropic `timeout_error`.
+    pub const TIMEOUT: Self = Self {
+        status: 504,
+        retry_after: RetryAfter::Absent,
+        openai_type: "server_error",
+        openai_code: "timeout",
+        anthropic_type: "timeout_error",
+        anthropic_status: 504,
+    };
+    /// The `Correctness` row: 503 `no_conforming_instance`; Anthropic `api_error` (500).
+    pub const NO_CONFORMING_INSTANCE: Self = Self {
+        status: 503,
+        retry_after: RetryAfter::Absent,
+        openai_type: "server_error",
+        openai_code: "no_conforming_instance",
+        anthropic_type: "api_error",
+        anthropic_status: 500,
+    };
+    /// The `Internal` row: 500 `internal_error`; Anthropic `api_error`.
     pub const INTERNAL_ERROR: Self = Self {
         status: 500,
-        retry_after: None,
+        retry_after: RetryAfter::Absent,
         openai_type: "server_error",
         openai_code: "internal_error",
         anthropic_type: "api_error",
         anthropic_status: 500,
     };
+}
+
+/// An error of a native route only (`/v1/syntropy/cluster…`, `/v1/syntropy/nodes…`,
+/// `/v1/syntropy/config…`; RFC-0050 §1.2). The OpenAI and Anthropic shapes never serve these
+/// routes, so the row gives them no shape. The body is the native error, which names the
+/// domain code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeError {
+    /// The HTTP status.
+    pub status: u16,
+    /// The `Api` domain code the row reports the error as (RFC-0050 §12.3), where it names
+    /// one: `cluster_proposal_rejected` for a rejected configuration proposal.
+    pub api_code: Option<&'static str>,
 }
 
 /// What a client sees for a code (RFC-0050 §12).
@@ -82,167 +134,196 @@ pub enum ApiMapping {
     /// This error body and status before the first token; the shape's in-stream error with
     /// the same type and code after it.
     Error(ApiError),
-    /// The shape's in-stream error of RFC-0050 §12.2, carrying the code itself. The code's
-    /// RFC row says the client sees a stream error.
-    ///
-    /// Those rows (RFC-0033 §13) describe streams only. What a client sees before the first
-    /// token, or on a non-streaming request, is not stated for these codes; for 0x0401
-    /// `RecoveryInProgress` and 0x0402 `ReplayNoSource` in particular, #1668 asks RFC-0050
-    /// for that shape.
-    StreamError {
-        /// The row calls it retryable: the body carries `retry_after`, whose value comes from
-        /// `Error::retry`.
-        retryable: bool,
-    },
+    /// An error of a native route only; the OpenAI and Anthropic shapes never carry it.
+    Native(NativeError),
     /// Not a failure: the shape's normal finish, with `syntropy.warnings` naming the cause,
     /// unless the client itself disconnected (RFC-0050 §12.2).
     NormalFinish,
-    /// The code's RFC row says no client sees it: it is informational, not fatal, handled
-    /// inside the cluster, or the client is gone. It surfaces in logs, metrics, `doctor` or
-    /// the dashboard, not in an API response.
-    NotClientVisible,
-    /// Neither the code's RFC nor RFC-0050 §12.1 gives it a shape yet (#1668).
-    Unmapped,
+    /// No response carries the code, because the client's connection is already gone
+    /// (`IngressLost`; RFC-0050 §12.1, RFC-0033 §13).
+    NoResponse,
+    /// On RFC-0050 §12.1's exempt list: the code never leaves the cluster. It is raised
+    /// between nodes or reported as a node diagnostic (`syntropy doctor`, the dashboard). If
+    /// it ever reaches an API response, it renders as `if_escaped`, which is always
+    /// [`ApiError::INSTANCE_UNAVAILABLE`], whatever the code's class.
+    Exempt {
+        /// The shape the code renders as if it escapes.
+        if_escaped: ApiError,
+    },
+    /// The code never appears in `Error::code` (`DuplicateCommand`: the coordinator answers
+    /// a repeated command with its original result; RFC-0032 §6.3).
+    NeverSurfaces,
 }
 
-/// The codes whose own RFC row states the client outcome, with that row. They take
-/// precedence over the class rule.
-const OVERRIDES: &[(ErrorCode, ApiMapping, &str)] = &[
+/// [`ApiMapping::Exempt`] with its one fallback shape.
+const EXEMPT_MAPPING: ApiMapping = ApiMapping::Exempt {
+    if_escaped: ApiError::INSTANCE_UNAVAILABLE,
+};
+
+const JOIN_REFUSED: ApiMapping = ApiMapping::Native(NativeError {
+    status: 403,
+    api_code: None,
+});
+const PROPOSAL_REJECTED: ApiMapping = ApiMapping::Native(NativeError {
+    status: 409,
+    api_code: Some("cluster_proposal_rejected"),
+});
+
+/// The codes named by a row of RFC-0050 §12.1, with that row, plus the two codes §12.1's
+/// note names one by one (`DuplicateCommand`, `IngressLost`).
+const PER_CODE: &[(ErrorCode, ApiMapping, &str)] = &[
     (
-        cluster::NODE_CONFLICT,
-        ApiMapping::NotClientVisible,
-        "RFC-0030 §10: both are excluded until one stops; `NodeConflict`; `doctor` explains",
+        cluster::IDENTITY_HOST_MISMATCH,
+        JOIN_REFUSED,
+        "RFC-0050 §12.1: a join the keyholder or the joining node refuses",
     ),
     (
         cluster::PROTO_MISMATCH,
-        ApiMapping::NotClientVisible,
-        "RFC-0030 §10: never dial; list it; nearby list: incompatible, with both versions",
+        ApiMapping::Native(NativeError {
+            status: 400,
+            api_code: None,
+        }),
+        "RFC-0050 §12.1: a join refused because the two nodes' protocol majors differ",
     ),
     (
-        cluster::COORDINATOR_UNREACHABLE,
-        ApiMapping::NotClientVisible,
-        "RFC-0030 §10: the joiner retries with back-off for the token's lifetime; joiner CLI",
+        cluster::TOKEN_MALFORMED,
+        ApiMapping::Native(NativeError {
+            status: 400,
+            api_code: None,
+        }),
+        "RFC-0050 §12.1: `POST /v1/syntropy/cluster/join` with a malformed invite token",
+    ),
+    (
+        cluster::TOKEN_EXPIRED,
+        JOIN_REFUSED,
+        "RFC-0050 §12.1: a join the keyholder or the joining node refuses",
+    ),
+    (
+        cluster::TOKEN_EXHAUSTED,
+        JOIN_REFUSED,
+        "RFC-0050 §12.1: a join the keyholder or the joining node refuses",
+    ),
+    (
+        cluster::PAIR_DENIED,
+        JOIN_REFUSED,
+        "RFC-0050 §12.1: a join the keyholder or the joining node refuses",
     ),
     (
         cluster::CLOCK_SKEW,
-        ApiMapping::NotClientVisible,
-        "RFC-0030 §10: `Rejected { ClockSkew }` names both clocks; `doctor` checks NTP",
+        JOIN_REFUSED,
+        "RFC-0050 §12.1: a join the keyholder or the joining node refuses",
     ),
     (
-        cluster::DISCOVERY_SILENT,
-        ApiMapping::NotClientVisible,
-        "RFC-0030 §10: keep serving locally; `doctor`: `DiscoverySilent`",
-    ),
-    (
-        net::EDGE_DEMOTED,
-        ApiMapping::NotClientVisible,
-        "RFC-0031 §12: informational; becomes a `Ready { degraded }` reason",
-    ),
-    (
-        net::QP_BUDGET_EXHAUSTED,
-        ApiMapping::NotClientVisible,
-        "RFC-0031 §12: informational: channel opened on the next transport",
+        dist::FEATURE_LEVEL_TOO_LOW,
+        PROPOSAL_REJECTED,
+        "RFC-0050 §12.1: a cluster configuration proposal rejected",
     ),
     (
         dist::DUPLICATE_COMMAND,
-        ApiMapping::NotClientVisible,
-        "RFC-0032 §10: reply carries the original result",
+        ApiMapping::NeverSurfaces,
+        "RFC-0050 §12.1: `DuplicateCommand` (0x0305) never appears in `Error::code`",
     ),
     (
-        dist::ROUTER_MISMATCH,
-        ApiMapping::NotClientVisible,
-        "RFC-0032 §10: local routing disabled; not fatal",
+        dist::INSTANCE_NOT_ROUTABLE,
+        ApiMapping::Error(ApiError::INSTANCE_UNAVAILABLE_CAPACITY),
+        "RFC-0050 §12.1: the only instances of the model are unroutable",
     ),
     (
-        recovery::RECOVERY_IN_PROGRESS,
-        ApiMapping::StreamError { retryable: true },
-        "RFC-0033 §13: keep-alives; on deadline, a retryable timeout",
-    ),
-    (
-        recovery::REPLAY_NO_SOURCE,
-        ApiMapping::StreamError { retryable: true },
-        "RFC-0033 §13: stream error, retryable",
-    ),
-    (
-        recovery::EPOCH_RETIRED,
-        ApiMapping::StreamError { retryable: true },
-        "RFC-0033 §13: stream error, `retry: OnNewPlan`",
+        dist::CONFIG_CONFLICT,
+        PROPOSAL_REJECTED,
+        "RFC-0050 §12.1: a cluster configuration proposal rejected",
     ),
     (
         recovery::INGRESS_LOST,
-        ApiMapping::NotClientVisible,
-        "RFC-0033 §13: — (connection gone)",
+        ApiMapping::NoResponse,
+        "RFC-0050 §12.1: `IngressLost` (0x0404), has no response to carry it",
     ),
     (
         recovery::NO_REPAIR_CAPACITY,
-        ApiMapping::StreamError { retryable: true },
-        "RFC-0033 §13: stream error with `Retry-After`; instance unroutable",
+        ApiMapping::Error(ApiError::INSTANCE_UNAVAILABLE_CAPACITY),
+        "RFC-0050 §12.1: recovery found no feasible repair",
     ),
     (
-        recovery::RESTART_BUDGET_SPENT,
-        ApiMapping::NotClientVisible,
-        "RFC-0033 §13: — (handled by re-plan)",
-    ),
-    (
-        recovery::HISTORY_DROPPED,
-        ApiMapping::NotClientVisible,
-        "RFC-0033 §13: — (informational; recovery cascades)",
-    ),
-    (
-        recovery::KV_MIGRATION_FAILED,
-        ApiMapping::NotClientVisible,
-        "RFC-0033 §13: falls back to replay or re-prefill; nothing visible",
-    ),
-    (
-        recovery::STATE_POSITION_MISMATCH,
-        ApiMapping::NotClientVisible,
-        "RFC-0033 §13: nothing (the handshake re-runs; §4.2.1)",
-    ),
-    (
-        security::SOURCE_DISTRUSTED,
-        ApiMapping::NotClientVisible,
-        "RFC-0034 §10.1: refetched from another source; the node is flagged in the dashboard",
+        security::KEYHOLDER_REQUIRED,
+        JOIN_REFUSED,
+        "RFC-0050 §12.1: an operator action that needs a keyholder signature with no keyholder reachable",
     ),
 ];
 
-/// The codes whose own RFC row states the client outcome: the code, its mapping and the row
-/// it comes from.
-pub fn overrides() -> impl Iterator<Item = (ErrorCode, ApiMapping, &'static str)> {
-    OVERRIDES.iter().copied()
+/// RFC-0050 §12.1's exempt list: the codes that never leave the cluster.
+const EXEMPT: &[ErrorCode] = &[
+    cluster::NODE_CONFLICT,
+    cluster::LOCAL_NETWORK_DENIED,
+    cluster::NETWORK_PROFILE_PUBLIC,
+    net::PROTO_MAJOR_MISMATCH,
+    net::CREDENTIAL_INVALID,
+    net::NOT_A_NEIGHBOUR,
+    net::UNKNOWN_FRAME_TYPE,
+    net::RDMA_NOT_ENABLED,
+    net::RDMA_OS_BUILD_MISMATCH,
+    net::SHM_USER_MISMATCH,
+    net::PROTO_RANGE_DISJOINT,
+    dist::ENTRY_REJECTED,
+    recovery::HISTORY_DROPPED,
+    security::CERT_INVALID_SIGNATURE,
+    security::CERT_EXPIRED,
+    security::CERT_REVOKED,
+    security::CERT_WRONG_CLUSTER,
+    security::ROLE_INSUFFICIENT,
+    security::CREDENTIAL_EXPIRED,
+    security::ROTATION_WINDOW_CLOSED,
+    security::UNTRUSTED_FABRIC,
+    security::AUTHORITY_INVALID,
+    security::ROTATION_CHAIN_INVALID,
+    security::NOT_COORDINATOR_ELIGIBLE,
+];
+
+/// The codes RFC-0050 §12.1 names one by one: the code, its mapping and the row it comes
+/// from, in domain and number order.
+pub fn per_code() -> impl Iterator<Item = (ErrorCode, ApiMapping, &'static str)> {
+    PER_CODE.iter().copied()
 }
 
-/// The API shape for an error of class `class`, where an RFC-0050 §12 rule covers the whole
-/// class; [`ApiMapping::Unmapped`] otherwise.
-pub const fn for_class(class: ErrorClass) -> ApiMapping {
+/// RFC-0050 §12.1's exempt list, in domain and number order.
+pub fn exempt() -> impl Iterator<Item = ErrorCode> {
+    EXEMPT.iter().copied()
+}
+
+/// The API shape for an error of class `class`, where a row of RFC-0050 §12 covers the
+/// whole class; `None` for `Auth`, `Capacity`, `InvalidRequest` and `Unsupported`, whose
+/// rows each name a narrower condition.
+pub const fn for_class(class: ErrorClass) -> Option<ApiMapping> {
     match class {
         ErrorClass::Link
         | ErrorClass::Device
         | ErrorClass::Integrity
         | ErrorClass::Drift
-        | ErrorClass::Transient => ApiMapping::Error(ApiError::INSTANCE_UNAVAILABLE),
-        ErrorClass::Internal => ApiMapping::Error(ApiError::INTERNAL_ERROR),
-        ErrorClass::Cancelled => ApiMapping::NormalFinish,
-        ErrorClass::Timeout
-        | ErrorClass::Correctness
-        | ErrorClass::Auth
+        | ErrorClass::Transient => Some(ApiMapping::Error(ApiError::INSTANCE_UNAVAILABLE)),
+        ErrorClass::Timeout => Some(ApiMapping::Error(ApiError::TIMEOUT)),
+        ErrorClass::Correctness => Some(ApiMapping::Error(ApiError::NO_CONFORMING_INSTANCE)),
+        ErrorClass::Internal => Some(ApiMapping::Error(ApiError::INTERNAL_ERROR)),
+        ErrorClass::Cancelled => Some(ApiMapping::NormalFinish),
+        ErrorClass::Auth
         | ErrorClass::Capacity
         | ErrorClass::InvalidRequest
-        | ErrorClass::Unsupported => ApiMapping::Unmapped,
+        | ErrorClass::Unsupported => None,
     }
 }
 
-/// The API shape for a published code; `None` when no table lists the code.
+/// The API shape for a published code; `None` when no table lists the code, or when no rule
+/// of RFC-0050 §12.1 covers it (no published code: `tests/error_codes.rs` checks).
 pub fn for_code(code: ErrorCode) -> Option<ApiMapping> {
-    codes::lookup(code).map(for_info)
+    codes::lookup(code).and_then(for_info)
 }
 
-/// The API shape for a published code: its RFC row's override, else its class rule.
-pub fn for_info(info: &CodeInfo) -> ApiMapping {
-    if let Some(&(_, mapping, _)) = OVERRIDES.iter().find(|(code, ..)| *code == info.code) {
-        return mapping;
+/// The API shape for a published code: its §12.1 row, else the exempt list, else its
+/// whole-class row (module docs).
+pub fn for_info(info: &CodeInfo) -> Option<ApiMapping> {
+    if let Some(&(_, mapping, _)) = PER_CODE.iter().find(|(code, ..)| *code == info.code) {
+        return Some(mapping);
     }
-    match info.class {
-        Some(class) => for_class(class),
-        None => ApiMapping::Unmapped,
+    if EXEMPT.contains(&info.code) {
+        return Some(EXEMPT_MAPPING);
     }
+    info.class.and_then(for_class)
 }
