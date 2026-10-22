@@ -667,3 +667,15 @@ DIST-E10-T08's model check found that a supported older proof can depose a lone 
 |---|---|---|---|
 | Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
 | DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |
+
+## PROD-E5-T02: the bind plan's server-side criteria (2026-10-22)
+
+PROD-E5-T02 could not meet two of its criteria as written: "a LAN bind without a key refuses to start" and "a wildcard bind is served with TLS" need a running server, a key store and a certificate, and PROD-E5-T02 depends only on PROD-E1-T03. The HTTP server is PROD-E2-T01, which is M0a, so it can't depend on this M1a task (R6). PROD-E5-T02 now meets both at the policy level, through the bind plan the daemon runs at start (`syntropy_api::bind::plan_binds`), and the end-to-end checks move to the M1a tasks that own what they need. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E5-T02's refusal and wildcard criteria are checked on the bind plan; PROD-E5-T01 gains "the daemon applies the bind plan at start: with a LAN bind and no key it does not start and prints the plan's message, and once a key exists it starts", and PROD-E5-T01 → PROD-E5-T02 | PROD-E5-T02, PROD-E5-T01 | R9 | PROD-E5-T01 owns the key store and already reaches the server (PROD-E2-T01) through its dependencies; M1a → M1a, and PROD-E5-T02 does not depend on PROD-E5-T01, so the edge adds no cycle |
+| PROD-E5-T03 gains "a wildcard bind with `api.tls = "auto"` is served with TLS from a local CA leaf, as the bind plan gives it", and PROD-E5-T03 → PROD-E5-T02 | PROD-E5-T03, PROD-E5-T02 | R9 | the local CA is what `"auto"` serves on LAN binds (RFC-0050 §11.1); M1a → M1a, no cycle |
+| PROD-E5-T02 declares the `[api]` section's `bind`, `tls` and `allow_plaintext_lan` keys, and PROD-E2-T01 reuses the section for its `api.bind` default | PROD-E5-T02, PROD-E2-T01 | — | RFC-0054 §5.1 gives `api.*` to RFC-0050, and no task registered it; the rules need the real keys to run. PROD-E2-T01's default criterion is unchanged |
+
+Open, for the owning tasks (not changed here): PROD-E5-T03's "leaf rotation under 100 open streams drops none" and PROD-E5-T06's "replacing the certificate files switches new connections to the new certificate without restart" need a running HTTP server, and neither task reaches PROD-E2-T01 through its dependencies.
