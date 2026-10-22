@@ -592,6 +592,383 @@ DIST-E8-T12 could not be built as written. Its criterion "fuzz target registered
 | DIST-E5-T02 → DIST-E8-T12; DIST-E5-T02 decodes join messages with a 1 MiB `BodyLimit` [target] and gains the criterion that a join body over it is refused before deserialisation | DIST-E5-T02 | R9 | DIST-E8-T12's `decode` takes a caller-supplied `BodyLimit` at most 64 MiB, because a decoded message can take far more memory than its body: an empty array or string is one byte of CBOR and at least a 24-byte `Vec` or `String` in memory. The join ALPN's peers are not admitted, so it reads with a small limit. The 270 B per `JoinGrant` member entry [estimate] is the CBOR size, measured with DIST-E8-T12's encoder, of a stand-in entry: a 32-byte node ID, four IPv6 socket addresses and a 42-byte relay URL. Per-type or per-ALPN budgets for the control plane's own messages are left to DIST-E8-T17 |
 | DIST-E8-T17 gains two criteria from DIST-E8-T12's review: no `HashMap` or `HashSet` in a control message type, enforced by `clippy::disallowed_types` in `net::ctl`; and decoding each variant within RFC-0060 §10.2's bounded allocation, through a per-variant `BodyLimit` or decode budget that QUAL-E10-T04's `control_msgs` target uses | DIST-E8-T17 | R9 | the envelope can't see map iteration order or a type's memory per byte, so both belong to the task that defines `CtlMsg`. The control plane reads with `BodyLimit::MAX` until then, and a body of empty arrays decoded as `Vec<Vec<_>>` takes at least 24 bytes of memory per byte of CBOR [estimate]: a 24-byte `Vec` header for each one-byte empty array on a 64-bit target |
 
+## #1663's follow-ups: the policy digest and `config`'s value types (2026-10-22)
+
+The cross-review of #1663 (PROD-E1-T04) found two gaps with no owning task. `core` holds `InstancePolicy::canonical_bytes()` and `digest_with`, but links no hasher (RFC-0001 §4.2 rule 1), and no task supplied BLAKE3. And OQ-PRD-27 (a) has `config` parse into `core`'s value types, but `config` still has its own copies, and no task switched it over.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T08 gains the digest helper and its golden digests | PROD-E1-T08 | Definition of done | PROD-E1-T08's criteria already need identical digests across nodes, and it is the first task to build an `InstancePolicy` in `config`. One helper keeps every caller on the same hash |
+| Added PROD-E1-T23 (M0b) → PROD-E1-T01, PROD-E1-T02, PROD-E1-T03, PROD-E1-T04; PROD-E1-T08 → PROD-E1-T23 | PROD-E1-T23, PROD-E1-T08 | R9 | PROD-E1-T08 resolves policy tables into `InstancePolicy`, whose fields are `core`'s types, so it needs `config` to parse into them. M0b, after PROD-E1-T04, because each key registered on `config`'s copies adds to the switch. PROD-E1-T23's own criteria use PROD-E1-T02's `show_resolved` and PROD-E1-T03's `Config` codes, so it depends on both; its output check is on the library call, not the binary, so it needs no CLI task. PROD-E1-T07 gets no edge: its criteria do not use the types, and PROD-E1-T23 moves whatever code uses the copies |
+
+## DIST-E18-T02's API mapping criterion (2026-10-22)
+
+DIST-E18-T02's criterion "every code maps to an API error shape in RFC-0050's table" could not be met: RFC-0050 §12.1 maps errors by class and condition, and 37 of the distributed codes had neither a whole-class shape nor a row (issue #1668). RFC-0050 §12.1 now gives a row to each code that can reach an API client, lists the codes that never leave the cluster as exempt, and says `DuplicateCommand` never appears in `Error::code`. RFC-0050 §12.3 adds `cluster_proposal_rejected` (code 35). These are plan corrections that take the recommended default, under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E18-T02's criterion becomes "every code maps to an RFC-0050 §12.1 shape or is on §12.1's exempt list", and its row cites RFC-0050 §12.1 | DIST-E18-T02 | R9 | a code raised only between nodes, or reported only as a node diagnostic, never meets an API client, so no shape can be tested for it; the exempt list names each such code, and §12.1 gives the one shape it would take if it ever escaped (503 `instance_unavailable`) |
+
+## DIST-E9-T01: the event log without its signed records (2026-10-22)
+
+DIST-E9-T01 could not be finished as written. Its last criterion needs every authority-derived field of `ClusterState` to hold a signed record that verifies. The tasks that define and verify those records all depend on DIST-E9-T01: DIST-E5-T13 (`Approval`, `KeyholderChanged`), DIST-E5-T07 (`SignedRevocation`), DIST-E5-T15 (the recovery `RotationStatement`) and DIST-E9-T12 (`validate()`). So does DIST-E9-T02, which defines the `decide()` its first criterion names. The cluster identity it hashes at index 0, `ClusterId`, is DIST-E2-T06's, still open behind the OS keystore work (DIST-E2-T02). These are plan corrections under R2 and R9, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E9-T16 (signed records in `ClusterState`) → DIST-E9-T01, DIST-E9-T12, DIST-E5-T07, DIST-E5-T13, DIST-E5-T15, DIST-E17-T14, COMP-E12-T06, DIST-E2-T06; DIST-E9-T01's signed-record invariant, its last criterion and its RFC-0034 §8.3 citation move there | DIST-E9-T01, DIST-E9-T16 | R2, R9 | each listed task produces one kind of record the criterion checks: approvals and certificates, the keyholder chain, invites and keyholder-signed configuration (DIST-E5-T13), revocations (DIST-E5-T07), rotation statements (DIST-E5-T15; the M3 rotation of DIST-E5-T11 adds no new record type), API-key records (DIST-E17-T14) and chunk evidence (COMP-E12-T06), and DIST-E9-T12 verifies them. All are M2, so no criterion moves milestone |
+| DIST-E9-T01's first criterion becomes "`apply` is total over arbitrary sequences of well-formed base events, a superset of every log `decide` can produce" | DIST-E9-T01 | R9 | `decide()` is DIST-E9-T02's, which depends on DIST-E9-T01. A property test over every well-formed event sequence covers every log `decide` can produce, and needs no `decide` |
+| DIST-E9-T01 holds the cluster key's 32-byte public half, which RFC-0034 §4 calls the `ClusterId`, in `ClusterState.cluster` and the chain's index-0 input; DIST-E9-T16 swaps in DIST-E2-T06's `ClusterId` and keeps DIST-E9-T01's golden chain vectors | DIST-E9-T01, DIST-E9-T16 | R9 | the chain needs a cluster identity at index 0, and an edge to DIST-E2-T06 would hold the event log behind the OS keystore work. The chain hashes the same 32 bytes either way, so the swap changes no chain vector. DIST-E9-T16 does change DIST-E9-T01's state-hash vector, because its records join `ClusterState` |
+| DIST-E9-T07 → DIST-E9-T16 | DIST-E9-T07 | R9 | its criterion refuses a crafted snapshot with "a member with no valid signed record", which needs the records in the state. DIST-E9-T01's ten direct dependents use only `LogEntry`, `ClusterState`, `apply` or the base events, and keep their edge |
+
+## COMP-E13-T05 split (2026-10-22)
+
+COMP-E13-T05 (M0a) had criteria that no M0a task can meet. The fast-math audit needs kernel builds, which start with COMP-E9-T02 (M0b). The per-provider bit-exact list needs `kernels::reference` (COMP-E1-T03) and provider kernels, which its "Depends on" didn't name. Those criteria move to a new task. COMP-E13-T05 keeps the static `Numerics` check and the dynamic detector, which COMP-E2-T01 (M0a) needs.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added COMP-E13-T13 (M0b) → COMP-E13-T05, COMP-E1-T03, COMP-E9-T02, COMP-E3-T08, COMP-E3-T22, COMP-E5-T01, COMP-E5-T04, COMP-E5-T09, COMP-E5-T12, COMP-E5-T26, COMP-E7-T02, COMP-E7-T05 | COMP-E13-T13, COMP-E13-T05 | R9 | the CI run of the static check over every provider's registry, the flag audit, the detector run on `kernels::reference` and on provider matrix-product kernels, and the per-provider bit-exact list for the ops built at M0b. COMP-E5-T01, COMP-E5-T04 and COMP-E5-T09 bring CUDA's matrix products, which the detector runs on. The CPU, CUDA and ggml kernels of the M0b bit-exact-class ops (copies, `RowGather`, `Convert` with the M0 dequantisers, `Argmax`, `TopKTopP`) come from the listed tasks. The detector's subnormal cases apply only to F32- and BF16-operand kernels, because F16 weights, F16 block scales and Q8 activation blocks cannot hold 2^-70 or 2^-130. COMP-E9-T02 and COMP-E7-T05 are M0b, so the new task is M0b. The Metal, HIP and Vulkan rows of the table join when those providers build |
+| Added COMP-E13-T14 (M1a) → COMP-E13-T13, COMP-E13-T04, COMP-E13-T10, COMP-E5-T18 | COMP-E13-T14 | R9 | the bit-exact cases for E8M0 scales (e = 0 included), FP8, MXFP4, NVFP4, the remaining GGUF types and KV page moves need kernels first built at M1a, so they cannot close with COMP-E13-T13 at M0b. The wire codecs stay with COMP-E14-T05 and COMP-E14-T19, which already require them bit-exact |
+| COMP-E13-T05's last criteria → COMP-E13-T13; its FP16 criterion reworded | COMP-E13-T05 | R9 | RFC-0042 §4 gives `AccumKind` three variants (`F32`, `I32ThenF32`, `F64`), so FP16 accumulation cannot be declared. The static check rejects weaker declarations, and the detector rejects an FP16-accumulating variant that declares F32. The CI run of the static check over real provider registries moves to COMP-E13-T13, because no provider registers kernels at M0a |
+| QUAL-E4-T13 → COMP-E13-T13 (was COMP-E13-T05) | QUAL-E4-T13 | R8 | its edge was for the per-provider bit-exact list, which is now COMP-E13-T13's |
+
+## DIST-E2-T07: showing fingerprints in `identity show` (2026-10-22)
+
+DIST-E2-T07's task text said fingerprints are "shown by `identity show`", but `identity show` is DIST-E2-T01's library function, still open, with PROD-E6-T08 wiring the CLI. DIST-E2-T01 is M0b, so it cannot depend on DIST-E2-T07 (M3). RFC-0051 §2.1 lists three fingerprints for the command: the node ID, the cluster ID and the API certificate. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E2-T09 (`identity show` prints the six-word fingerprints, M3) → DIST-E2-T01, DIST-E2-T07, DIST-E2-T06, PROD-E5-T03, PROD-E6-T08; DIST-E2-T07's task text drops "shown by `identity show`" | DIST-E2-T07, DIST-E2-T09 | R9 | DIST-E2-T07 builds the fingerprint; showing it needs the command (DIST-E2-T01, PROD-E6-T08) and the three keys it shows: the node key (DIST-E2-T01), `ClusterId` (DIST-E2-T06) and the local CA's certificate (PROD-E5-T03) |
+| PROD-E5-T10 → DIST-E2-T09 | PROD-E5-T10 | R9 | its criterion, "the fingerprint matches `syntropy identity show`", needs `identity show` to print the CA's fingerprint |
+
+## COMP-E10-T01's HTTP range source split out (2026-10-22)
+
+COMP-E10-T01 could not start: its HTTP range implementation needs an HTTPS client, which no maintainer has approved, and a ruling on which crate links it (issue #216). The trait, the local-file source, coalescing, the header cap and the replay of recorded Hub fixtures need neither, and COMP-E10-T02 and COMP-E10-T04 need only those.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T01 keeps the `RangeSource` trait, the local-file and recorded-fixture replay sources, coalescing and the header cap; its first criterion reads "from a recorded Hub fixture replayed through the replay source" | COMP-E10-T01 | R9 | the criterion compares bytes, which a recorded fixture gives without a live HTTP client |
+| Added COMP-E10-T14 (M0b), the HTTP range source → COMP-E10-T01; gate: OQ-MF-18 | COMP-E10-T14 | R9 | the client crate and its linking crate are a maintainer decision (AGENTS.md: new direct dependencies; RFC-0001 §4.2 rule 6). OQ-MF-18 lists the options and a recommended default, and leaves the choice to the maintainers |
+| COMP-E12-T02 → COMP-E10-T14 in place of COMP-E10-T01 | COMP-E12-T02 | R9 | the Hub client issues HTTP range requests, so it needs the HTTP source, not only the trait. COMP-E10-T02 and COMP-E10-T04 keep COMP-E10-T01: their criteria read recorded fixtures |
+
+## DIST-E10-T08's named cases and CI wiring (2026-10-22)
+
+DIST-E10-T08 (M2) asked for "every RT-DIST scenario as a named case". No list of RT-DIST scenarios exists in the plan: the label appears only in that row, RFC-0032's M2 rollout row and ADR-0304's revision of 2026-10-20, all from the first plan commit. Its criterion "the job gates changes to `cluster`" also needs QUAL-E1-T07's affected-job rules, which DIST-E10-T08 did not depend on. QUAL-E1-T07 is M0a, so it cannot take the wiring without depending on M2 work. This pass names the cases and applies R9 to the wiring.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "Every RT-DIST scenario" becomes each property of RFC-0032 Testing's "Election safety and liveness" row, as a named case; ADR-0304 and RFC-0032's rollout get dated notes saying so | DIST-E10-T08 | Definition of done | the label names no list; that row holds the 13 properties the model must check, the row's own six among them |
+| "The job gates changes to `cluster`" moves to the new DIST-E10-T09 (M2) → DIST-E10-T08, QUAL-E1-T07. DIST-E10-T08 runs a bounded 3-node configuration in the default tests and registers the full 3–4-node run as the `test-release` xtask suite `election-model` | DIST-E10-T08, DIST-E10-T09 | R9 | the rule that runs a suite on changes to `cluster` is a `ci/jobs.toml` entry, which needs QUAL-E1-T07's rules engine; the new task sits in DIST-E10-T08's milestone, so no edge points to a later one |
+
+## OQ-NET-34 and its spike (2026-10-22)
+
+DIST-E10-T08's model check found that a supported older proof can depose a lone survivor's unsupported election at heal and roll back an entry acknowledged `replicated = true` under RFC-0032 §6.3 as revised by OQ-NET-33, when the command's originator was lost with its disk. OQ-NET-34 holds the question and recommends comparing an incoming proof against the strongest supported election in the receiver's own chain. That rule changes §7.5, so it is model-checked before the heal code is written.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
+| DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |
+
+## PROD-E5-T02: the bind plan's server-side criteria (2026-10-22)
+
+PROD-E5-T02 could not meet two of its criteria as written: "a LAN bind without a key refuses to start" and "a wildcard bind is served with TLS" need a running server, a key store and a certificate, and PROD-E5-T02 depends only on PROD-E1-T03. The HTTP server is PROD-E2-T01, which is M0a, so it can't depend on this M1a task (R6). PROD-E5-T02 now meets both at the policy level, through the bind plan the daemon runs at start (`syntropy_api::bind::plan_binds`), and the end-to-end checks move to the M1a tasks that own what they need. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E5-T02's refusal and wildcard criteria are checked on the bind plan; PROD-E5-T01 gains "the daemon applies the bind plan at start: with a LAN bind and no key it does not start and prints the plan's message, and once a key exists it starts", and PROD-E5-T01 → PROD-E5-T02 | PROD-E5-T02, PROD-E5-T01 | R9 | PROD-E5-T01 owns the key store and already reaches the server (PROD-E2-T01) through its dependencies; M1a → M1a, and PROD-E5-T02 does not depend on PROD-E5-T01, so the edge adds no cycle |
+| PROD-E5-T03 gains "a wildcard bind with `api.tls = "auto"` is served with TLS from a local CA leaf, as the bind plan gives it", and PROD-E5-T03 → PROD-E5-T02 | PROD-E5-T03, PROD-E5-T02 | R9 | the local CA is what `"auto"` serves on LAN binds (RFC-0050 §11.1); M1a → M1a, no cycle |
+| PROD-E5-T02 declares the `[api]` section's `bind`, `tls` and `allow_plaintext_lan` keys, and PROD-E2-T01 reuses the section for its `api.bind` default | PROD-E5-T02, PROD-E2-T01 | — | RFC-0054 §5.1 gives `api.*` to RFC-0050, and no task registered it; the rules need the real keys to run. PROD-E2-T01's default criterion is unchanged |
+
+Open, for the owning tasks (not changed here): PROD-E5-T03's "leaf rotation under 100 open streams drops none" and PROD-E5-T06's "replacing the certificate files switches new connections to the new certificate without restart" need a running HTTP server, and neither task reaches PROD-E2-T01 through its dependencies.
+
+*Update 2026-10-22 (PROD-E5-T03):* both are settled in "PROD-E5-T03: the route, the listener and SEC-006 move out" below. PROD-E5-T03's rotation criterion is now checked at the TLS layer, over in-memory connections, which needs no server. The listener's version moves to PROD-E5-T06, which gains PROD-E5-T06 → PROD-E2-T01, so its file-reload criterion reaches the server too. PROD-E5-T03's wildcard criterion, added above, moves to PROD-E5-T06 with its PROD-E5-T02 edge.
+
+## QUAL-E17-T15's nested-field case (2026-10-22)
+
+The post-merge reviews of #1658 found that a serde default keeps an added field compatible only in CBOR. Over the postcard IPC, a field added to any type under `PlacementPlan` or `PlanDelta` changes the message layout, and a new enum variant cannot be decoded by an older peer. RFC-0001 §5 gains a dated note that either addition is an `ipc_protocol` change (RFC-0001 §18.20, issues #1675 and #1660).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E17-T15's fingerprint criterion gains a nested field (a `HopPlan` field inside `AssignPlan`'s `PlacementPlan`) and a new `PlanDelta` variant, each failing `compat` without an `ipc_protocol` bump; its IPC golden vectors include `PlacementPlan`, `StagePlan` and `PlanDelta`; no edge | QUAL-E17-T15 | Definition of done | only a ring-record change was covered. A fingerprint that missed nested fields or variants, or vectors without the plan types, would let such an addition break adoption across builds |
+
+## DIST-E9-T01's payload types (2026-10-22)
+
+The review of #1694 found that DIST-E9-T01's base events and entries carry types from tasks it does not reach: `NodeInfo` (PLC-E1-T09), `ChunkEvidence` (COMP-E12-T06, which depends on DIST-E9-T01 through DIST-E9-T15 and DIST-E9-T02), `CommandId` (credited to DIST-E9-T02 by DIST-E8-T17 and DIST-E4-T01), and `WorkloadReport` and `ConfigPatch`, which no task named. It also found DIST-E9-T12's text relying on approvals kept in `ClusterState`, which DIST-E9-T16 now keeps and which comes after it. These are plan corrections under R9, approved by the lead running DIST-E9-T01.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E9-T01 defines `CommandId`, `RunnerStateKind`, `ManifestDigest`, `PlanBody`, `PlanSummary`, `WorkloadReport` and `ConfigPatch` in `cluster`, and keeps `UnroutableReason`, `ChunkSetDigest`, `ProposalOrigin` and `WorkloadReport`'s parts as opaque CBOR values | DIST-E9-T01 | R9 | no task had built them, and its events and entries carry them. An opaque value settles none of the fields its owner RFC has yet to fix, and an owner's type that encodes the same CBOR decodes in its place. `RunnerStateKind` copies RFC-0001 §5.11's enum, which no task has added to `core` |
+| `CommandId` moves from DIST-E9-T02 to DIST-E9-T01 in DIST-E8-T17's and DIST-E4-T01's dependency cells | DIST-E8-T17, DIST-E4-T01 | R9 | `LogEntry.cause` is a `CommandId`. Both tasks already depend on DIST-E9-T01, and DIST-E9-T02 keeps the deduplication |
+| DIST-E9-T01 holds a `NodeInfo` stand-in with the node ID; DIST-E9-T03 replaces it with RFC-0001 §5.2's type and gains DIST-E9-T03 → PLC-E1-T09 | DIST-E9-T01, DIST-E9-T03 | R9 | `apply` reads only the ID, and an edge to PLC-E1-T09, whose field types are still TBD (#1524), would hold the event log behind it. DIST-E9-T03 wires admission, which reads the rest of `NodeInfo` |
+| `ChunkIdsCommitted` is not one of DIST-E9-T01's events; DIST-E9-T03 already wires it with COMP-E12-T06 | DIST-E9-T01 | R9 | its evidence is a signed record (DIST-E9-T16) whose type COMP-E12-T06 defines, after DIST-E9-T01 |
+| DIST-E9-T12 checks an invite's single use against earlier `InviteConsumed` entries, and a `CoordinatorElected`'s certificate as carried with it and against applied `NodeRevoked` entries | DIST-E9-T12 | R9 | its old text read approvals and certificates kept in `ClusterState`, which DIST-E9-T16 keeps after DIST-E9-T12. The log's own events give the same verdicts |
+
+## QUAL-E9-T01's IPC loading and release-artefact criterion (2026-10-22)
+
+QUAL-E9-T01 (M1a) builds the fault points in `syntropy-obs`. Two parts of its row need work from tasks it does not depend on: pushing a plan over IPC needs DIST-E1-T03's command channel and a message RFC-0001 §3.5 does not define, and a scan of a `release` artefact needs a job that builds one.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "over IPC" moved from QUAL-E9-T01 to DIST-E1-T13 (M1a, added) → DIST-E1-T03, QUAL-E9-T01 | QUAL-E9-T01, DIST-E1-T13 | R9 | RFC-0060 §9.2 pushes plans over IPC in tests, but RFC-0001 §3.5's message set has no fault-plan message and DIST-E1-T03, which builds the channel, is still open. DIST-E1-T13 proposes the message, and its handler calls QUAL-E9-T01's `install` |
+| QUAL-E9-T01's symbol check reads the core binary built in `lint` with the release build's features; the scan of the nightly `release` artefact moved to QUAL-E16-T15; QUAL-E16-T15 → QUAL-E9-T01 | QUAL-E9-T01, QUAL-E16-T15 | R9 | no M1a job builds a `release` artefact: the PR build is `dev` until QUAL-E16-T21's `pr` profile, and the `test-release` build turns `fault-injection` on by design. QUAL-E16-T15 builds and inspects the nightly `release` Linux core binary |
+
+## RFC-0054 §5.1's missing claims (2026-10-22)
+
+DIST-E18-T01 registered three claims that RFC-0054 §5.1 did not list (#1679). §5.1 now lists `orphan.*` (RFC-0032), the `invite.require_confirm` carve-out (RFC-0034 inside RFC-0030's `invite.*`) and the top-level `standby` (RFC-0033), and §5.4 lists `standby`. PROD-E1-T16 is the task that checks section claims against that table. It had no criterion for shared sections, which RFC-0054 §5.1's carve-out note of 2026-10-21 says its check should cover.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T16 gains "CI fails on a key of a shared section that RFC-0054 §5.1 does not list as that owner's carve-out" | PROD-E1-T16 | Definition of done | without it, a shared section could add a key inside another owner's prefix unchecked, as the carve-out note warns. The row names no carve-outs: the check reads them from §5.1, and code already shares keys in `net.*`, `rdma.*`, `invite.*`, `models.*` and `replan.*`, so a list in the row would drift. PROD-E1-T16 already depends on DIST-E18-T01, which registers them, so no edge changes |
+
+## PROD-E5-T03: the route, the listener and SEC-006 move out (2026-10-22)
+
+PROD-E5-T03 builds the local CA as a library in `syntropy-api` (`syntropy_api::tls`). Three of its row's parts need things the CA does not build: the `GET /v1/syntropy/tls/ca` route and a TLS listener need the HTTP server (PROD-E2-T01), and SEC-006 is a doctor check (PROD-E9-T03). Each moves to the task that owns what it needs. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "SEC-006 reports that clients must re-trust" moves to PROD-E9-T03; PROD-E5-T03 keeps "generates a new CA and records the replacement for SEC-006"; PROD-E9-T03 → PROD-E5-T03, and RFC-0050 §11.1.1 joins PROD-E9-T03's Implements | PROD-E5-T03, PROD-E9-T03 | R9 | PROD-E9-T03 builds the SEC checks and reads the CA's replacement record (`tls/ca-replaced.json`); M1a → M1a, and PROD-E5-T03 does not depend on PROD-E9-T03, so the edge adds no cycle |
+| PROD-E5-T06 becomes the API's TLS listener: rustls on non-loopback binds from a reloadable source (user `{ cert, key }` files or the local CA's leaf) and the `GET /v1/syntropy/tls/ca` route, which leaves PROD-E5-T03's scope; PROD-E5-T06 → PROD-E5-T03 and PROD-E5-T06 → PROD-E2-T01 | PROD-E5-T03, PROD-E5-T06 | R9 | the listener and the route serve what the CA issues, and both need the server; M1a → M1a and M1a → M0a, no cycle |
+| The wildcard criterion "a wildcard bind with `api.tls = "auto"` is served with TLS from a local CA leaf" moves from PROD-E5-T03 to PROD-E5-T06, with its PROD-E5-T02 edge, which PROD-E5-T06 already has; PROD-E5-T03 drops PROD-E5-T03 → PROD-E5-T02 | PROD-E5-T03, PROD-E5-T06, PROD-E5-T02 | R9, R8 | serving a bind is the listener's work; nothing else in PROD-E5-T03's criteria uses the bind plan |
+| PROD-E5-T03's "leaf rotation under 100 open streams drops none" is checked at the TLS layer; PROD-E5-T06 gains "leaf rotation under 100 open streams through the listener drops none" | PROD-E5-T03, PROD-E5-T06 | R9 | the CA's leaf resolver is tested over in-memory TLS connections; streams through the listener need the server |
+
+## DIST-E11-T10's zero-`predicted_p99` criterion (2026-10-22)
+
+A post-merge review of #1658 found that `HopPlan::predicted_p99` decodes as 0 from a plan written without it, so code that read 0 as a real prediction would show constant drift or fail validation on every such plan (issue #1661). The field stays `Nanos`. RFC-0032 §3.3 gains a dated note that 0 means no tail prediction, and DIST-E11-T10, which builds the extensions' validation, gains the criterion.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E11-T10 gains the criterion: a hop with `predicted_p99 = 0` has no tail prediction, so the drift detector makes no tail comparison for it and `validate()` accepts it; a hop whose measured p99 exceeds a nonzero `predicted_p99` by more than `replan.drift_threshold`, sustained past `replan.drift_window`, raises drift; DIST-E11-T10 → PLC-E3-T07 | DIST-E11-T10 | R9 | both drift cases run the hop through PLC-E3-T07's drift detector, which DIST-E11-T10 did not reach. The positive case keeps the zero case from passing on a detector that never compares tails. PLC-E3-T07 is M1a, so the edge points to an earlier milestone |
+
+## DIST-E8-T03's `Token` parts (2026-10-22)
+
+RFC-0031 §6.5 splits a `Token` step that is larger than the channel's slot into parts. A step splits at entry boundaries, and a single entry larger than a slot splits its tap block across parts. DIST-E8-T03's row covers only the part fields, which it reads, writes and checks, and no task built the split. Splitting a tap block needs its layout, which DIST-E8-T06 reads, so the split joins that row instead of a new task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E8-T06 gains the `Token` step split: parts at entry boundaries, one entry's tap block across parts, capability bit 15 `TOKEN_PARTS` (RFC-0031 §6.5, §10). It also gains a round-trip criterion across parts and the refusal of malformed parts | DIST-E8-T03, DIST-E8-T06 | R9 | DIST-E8-T03 builds the part fields, and the split needs the tap block's layout, which DIST-E8-T06 owns. DIST-E8-T06 already depends on DIST-E8-T03, so no edge changes |
+
+## QUAL-E1-T31: rustdoc in `lint` (2026-10-22)
+
+#1666 found broken intra-doc links in `core`, `graph` and `manifest` that no gate caught, because no CI job runs rustdoc. No task covered adding it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added QUAL-E1-T31 (M0a) → QUAL-E1-T02, QUAL-E1-T06 | QUAL-E1-T31 | Definition of done | the step is a `lint` addition, so it needs `xtask`'s job framework and `pr.yml`'s `lint` job, both M0a. It is a new row and not part of QUAL-E1-T09, whose scope is workflow security. It must land after #1743, #1666's fix, or it fails on `main` |
+
+## DIST-E7-T02's foreign frames and DIST-E7-T12's stale descriptors (2026-10-22)
+
+The independent review of #1737 (DIST-E7-T01) found two RFC-0031 rules that no task's criteria cover. First, RFC-0031 §2's rule that a frame whose `(instance, epoch)` is not the channel key's is dropped and counted is in no DIST-E7 row. DIST-E11-T02 and PLC-E7-T11 handle epochs a runner no longer serves at the step level, not the channel's drop and count. Second, buffer descriptors carry no generation, so a descriptor kept past its slot's reuse would lease the new bytes.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T02's property test gains foreign `(instance, epoch)` frames: dropped before the `chan_seq` check, never surfaced or NACKed, counted in `stats()`, and the channel's own frames still delivered exactly once; its Implements cell adds RFC-0031 §2 and §6.1; no edge | DIST-E7-T02 | Definition of done | the channel core is sans-I/O and checks the channel key before `chan_seq` continuity (RFC-0031 §6.1), so its property test can feed it such frames directly; the conformance suite needs no new `Fabric` hook |
+| DIST-E7-T12 gains the stale-descriptor refusal: a slot generation that advances when the slot is freed, carried by `PayloadSlice` and `ExtBuf`, and a descriptor of an earlier generation refused with `SendError::Invalid`; RFC-0031 §8 gains a dated note; no edge | DIST-E7-T12 | Definition of done | DIST-E7-T12 builds the lock-free slot handout, where a slot is freed and handed out again. Without a generation the rule "hold a reader until `try_send` returns" is enforced by nothing |
+
+## Sequence control types and the codec rows around DIST-E8-T05 (2026-10-22)
+
+DIST-E8-T05 (M2) encodes `SequenceControl` bodies, but no task defined the types. That covers RFC-0001 §5.8's `SequenceControl`, `SequenceOpen`, `SamplingParams`, `SequenceLimits`, `Priority`, `PrefixRef`, `CancelReason`, `TokenFrame` and `TokenEntry`, and RFC-0032 §3.6's additions and `SequenceMeta`. Every row that names them uses them, five of them in M0a: the `local_sequences` ring's producer and fake runner, the one-stage lifecycle, the sampler and the stop limits. `SequenceOpen::parity` is used in M0a too. The types are plain data, so one new M0a task defines them in `core`, in one module, `core::sequence`. `Priority` already lands there first, in #1757 under PROD-E1-T10, whose `RequestOverrides.priority` needs it, and DIST-E1-T14 builds the rest of §5.8 beside it. It sits in DIST because RFC-0032 owns `SequenceControl`, and it writes `core` as PLC-E9-T26 and QUAL-E5-T19 do. `SequenceOpen` holds `ExactnessPolicy`, which PROD-E1-T04 put in `core` (#1663). So PROD-E1-T04, already done, moves to M0a, and the new task's edge to it keeps R6.
+
+The same check over the sibling codec rows found these gaps:
+- DIST-E8-T04 and DIST-E8-T09 encode TIER's `KvHeadroom` and `KvChunkDesc` without an edge to TIER-E6-T02.
+- DIST-E8-T06 encodes QUAL-E5-T19's tap types without an edge.
+- Three criteria need a later task that itself depends on the codec, so under R9 each moves there:
+  - DIST-E8-T05's "end to end and through recovery";
+  - DIST-E8-T06's simulated-pipeline driver check;
+  - DIST-E8-T09's import rejection.
+
+These are plan corrections under R9 and R6, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E1-T14 (M0a) → PLC-E9-T26, PROD-E1-T04, QUAL-E5-T19: the sequence control and token types in `core`, with RFC-0032 §3.6's additions as defaulted fields and RFC-0053 §3.2's `TraceContext` | DIST-E1-T14 | R9 | no task defined RFC-0001 §5.8's sequence types, and M0a tasks use them |
+| `Priority` lands first in `core::sequence`, in #1757 under PROD-E1-T10, and DIST-E1-T14 builds the rest of §5.8 beside it, or adds `Priority` itself if #1757 has not landed; no edge | DIST-E1-T14, PROD-E1-T10 | R6 | PROD-E1-T10 is M1a and DIST-E1-T14 M0a, so an edge would point later. #1757, not the task, lands first |
+| PROD-E1-T04 M0b → M0a | PROD-E1-T04 | R6 | DIST-E1-T14's `SequenceOpen` holds `ExactnessPolicy`. PROD-E1-T04 is done (#1663), and its one dependency, PROD-E1-T01, is M0a |
+| PROD-E2-T02, QUAL-E3-T18, PLC-E8-T01, PLC-E9-T02, PLC-E9-T03, PLC-E9-T16 → DIST-E1-T14 | PROD-E2-T02, QUAL-E3-T18, PLC-E8-T01, PLC-E9-T02, PLC-E9-T03, PLC-E9-T16 | R9 | each criterion uses `SequenceOpen`, `SequenceControl`, `TokenFrame`, `SamplingParams`, `SequenceLimits` or `SequenceOpen::parity` |
+| DIST-E8-T05 → DIST-E1-T14, QUAL-E5-T19; its task text names the types it encodes, not ones it adds | DIST-E8-T05 | R9 | the codec encodes the types DIST-E1-T14 defines, `parity` among them |
+| DIST-E8-T05's "a client-seeded `n = 2` request carries `choice_index` 0 and 1 end to end and through recovery" becomes "`choice_index` 0 and 1 survive encoding a `SequenceOpen` and the `SequenceMeta` built from it". The request end to end moves to PROD-E2-T06 (→ DIST-E1-T14), and recovery moves to DIST-E14-T08 (→ DIST-E1-T14) | DIST-E8-T05, PROD-E2-T06, DIST-E14-T08 | R9 | PROD-E2-T06 builds `n > 1` requests and DIST-E14-T08 resumes sequences from the ingress transcript; both reach the codec through their own edges, and the codec reaches neither |
+| DIST-E8-T04 → TIER-E6-T02, PLC-E9-T26 | DIST-E8-T04 | R9 | `KV_HEADROOM` carries `KvHeadroom` and `SESSION_SAVED` a `SessionId`. Page keys and the manifest hash travel as bytes and need no edge |
+| DIST-E8-T06 → QUAL-E5-T19; its criterion "through a 2-stage pipeline in the simulator the parity driver computes `KL_K` and `KL_tail` from the tap, and QUAL-E5-T07's tightness and planted rare-row checks pass when driven through it" moves to QUAL-E5-T15 (→ QUAL-E5-T07, QUAL-E8-T04, QUAL-E8-T06) | DIST-E8-T06, QUAL-E5-T15 | R9 | the tap block holds `TapMode` and `LogitTap`. The check needs `Gather` taps over a `Tap` channel and a multi-stage simulator. QUAL-E5-T15 builds the former, depends on DIST-E8-T06, and can take the simulator edges |
+| DIST-E8-T09 → TIER-E6-T02; its "an import with a mismatched settings hash or chunk hash is rejected (with TIER)" moves to TIER-E7-T11, whose "mismatched settings are rejected" now names both hashes, and DIST-E8-T09 keeps the round trip of both | DIST-E8-T09, TIER-E7-T11 | R9 | `KvChunk` carries `KvChunkDesc`'s fields, and the import is TIER-E7-T11's, which depends on DIST-E8-T09 |
+| DIST-E14-T08 → DIST-E8-T05, PLC-E9-T01 | DIST-E14-T08 | R9 | its criterion moved from DIST-E8-T05 above, a resumed client-seeded sequence keeping its `choice_index` and its draws, needs the `SeqControl` codec that carries `SequenceOpen { resume }` to the new head and the RNG keyed by (seed, choice index); neither reaches DIST-E14-T08 (review-engine B3) |
+| QUAL-E5-T15 → PLC-E9-T24 | QUAL-E5-T15 | R9 | the simulated-pipeline check moved to it above, and its own `Gather`-against-`FullLocal` criterion, need the tail's `Gather` taps over a `Tap` channel, which PLC-E9-T24 builds; PLC-E9-T24 depends only on DIST-E8-T06 and PLC-E9-T16 (review-engine B4) |
+| DIST-E14-T10 → DIST-E1-T14 | DIST-E14-T10 | R9 | its re-prefill migration uses `ResumePoint`, which DIST-E1-T14 defines, as the other rows that name these types do (review-engine B5) |
+| DIST-E1-T14 also defines `TokenSlice`, `PrefixScope` and `PoolingMode`, the types of `SequenceOpen::prompt`, `SequenceOpen::prefix_scope` and `SequenceLimits::embed`; TIER-E7-T01 → DIST-E1-T14 and COMP-E16-T10 → DIST-E1-T14 | DIST-E1-T14, TIER-E7-T01, COMP-E16-T10 | R9 | no row defined them, and DIST-E1-T14 cannot build `SequenceOpen` without them. TIER-E7-T01 derives its `scope_salt` from `prefix_scope`, and COMP-E16-T10's `EmbeddingSpec` pools as `PoolingMode` says. M1a → M0a and M2 → M0a; DIST-E1-T14's dependencies reach neither, so no cycle |
+| DIST-E1-T14 defines the one `TraceContext`, in the 26-byte shape RFC-0031 §6.3's `TRACE` item carries; `net`'s own, from DIST-E8-T02, moves to `core` and `net` re-exports it | DIST-E1-T14 | R9 | `net` already held a 26-byte `TraceContext` while the row cited RFC-0053 §3.2's 25-byte block, which leaves out the version byte; one type for both frames (review-engine B2; RFC-0053 §3.2 and RFC-0001 §5.8, notes of the same date) |
+
+## PROD-E8-T07: an incoming trace-flags byte (2026-10-22)
+
+W3C Trace Context Level 2 gives trace-flags bit 1 to `random-trace-id`, and RFC-0053 §3.2's `TraceContext::flags` uses bit 1 for full trace. So a `traceparent` from a client following W3C Level 2 could switch on full tracing (#1766). RFC-0053 §3.2 gains a dated note: ingress keeps only bit 0 of an incoming flags byte, and sets a returned `traceparent`'s flags itself, with bit 0 set, bit 1 kept with the trace-id as W3C requires, and never the full-trace bit. Following W3C §6.3, it returns `traceparent` only to a request that carried one. PROD-E8-T07, which builds `traceparent` in and out, gains the criterion, and PROD-E9-T08, which exports spans over OTLP, gains its own. This is #1766's recommended option, taken by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E8-T07's scope keeps only bit 0 of an incoming flags byte and sets a returned one's flags at ingress; its criteria gain "an incoming flags byte of `02` does not enable full tracing, with the key set or not; `03` behaves as `01`; a returned `traceparent` has bit 0 set and carries bit 1 exactly when the incoming one did and never Syntropy's full-trace bit, and a response to a request without `traceparent` carries none"; no edge | PROD-E8-T07 | — | the collision between W3C's `random-trace-id` and RFC-0053's full-trace bit had no task to check it. PROD-E8-T07 already owns `traceparent` in and out and `obs.trace.honor_remote_sampled` |
+| PROD-E9-T08's criteria gain "an exported span's `flags` carry W3C trace-flags only, bit 1 as its trace's `random-trace-id` and never Syntropy's full-trace bit, including for a full-trace request", and it implements RFC-0053 §3.2 too; no edge | PROD-E9-T08 | — | OTLP's `Span.flags` holds the W3C trace-flags in bits 0–7, so the exporter is the other place the full-trace bit could leave a node as `random-trace-id` (review-net N3). PROD-E9-T08 already depends on PROD-E8-T07 |
+
+## PLC-E6-T04's `max_defer` deadline before RFC-0033 lands (2026-10-22)
+
+RFC-0011 §12.2 now applies a deferred plan at the `replan.max_defer` deadline through RFC-0033 §5.1's per-sequence choice, as RFC-0033 §10 does (#1748). DIST-E14-T10 builds that choice in M3, a milestone after PLC-E6-T04's adoption rule, so an M2 build had no defined behaviour at the deadline. Until DIST-E14-T10 lands, PLC-E6-T04 re-prefills live sequences at the deadline. Re-prefill needs the new epoch to hold the sequence's context, which a deferred plan need not (RFC-0011 §11.2), so in M2 and after the plan is applied at the deadline only if its `context_length` holds every live sequence. These were approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E6-T04 re-prefills live sequences at the latency-mode `max_defer` deadline until DIST-E14-T10's per-sequence choice lands, through its M2 re-prefill: the ingress reopens each live sequence on the new epoch from its transcript with `SequenceOpen { resume }`. It gains the criteria "until DIST-E14-T10 lands, an adopted deferred plan on a latency-mode instance whose session never goes idle is applied at `max_defer`, with its live sequences re-prefilled from the ingress transcript" and "a deferred plan whose `context_length` is shorter than a live sequence is not applied at `max_defer`, and is applied once that sequence ends" | PLC-E6-T04 | R9 | an edge to DIST-E14-T10 would point from M2 to M3, which R3 rules out, so the M3 choice stays with DIST-E14-T10 and DIST-E15-T03 |
+| PLC-E6-T04 → DIST-E11-T03 and PLC-E6-T04 → DIST-E8-T05 | PLC-E6-T04 | R9 | the M2 re-prefill reads the ingress transcript (DIST-E11-T03) and sends `SequenceOpen { resume }` (DIST-E8-T05). PLC-E6-T04 reached neither, and its node-loss criterion, which re-prefills the same way, had the same gap (the stand-in engine review of #1749). Both are M2, and neither reaches PLC-E6-T04, so the edges add no cycle and no `LATER` |
+| DIST-E14-T10's property "re-prefill always feasible" becomes "re-prefill feasible whenever the new epoch holds the sequence's context"; DIST-E15-T03 gains "a plan whose `context_length` the session exceeds is not applied until the session ends"; no edge | DIST-E14-T10, DIST-E15-T03 | Definition of done | RFC-0033 §5.1's `t_reprefill` now holds only when e′ holds `ctx(q)`, and §10 applies the plan at the deadline only if it holds every live sequence |
+| PLC-E6-T11 registers the `replan.*` keys except `replan.degraded_min_gain`, which RFC-0033 owns; no edge | PLC-E6-T11 | Definition of done | RFC-0054 §5.1 lists that key as RFC-0033's carve-out (#1742); registering it twice would make the schema registry refuse to build |
+
+## DIST-E1-T02's segment unlink (2026-10-22)
+
+DIST-E1-T02 (M0a) builds the shared-memory region. Its criterion "the daemon unlinks segments on runner exit" needs a daemon that spawns and reaps runners, and that is DIST-E1-T04, which depends on DIST-E1-T02 through DIST-E1-T03. An edge would make a cycle.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T02's criterion becomes the creating side's unlink after the runner process exits, shown by its cross-process test; "the daemon calls `Region::unlink` when a runner exits" moves to DIST-E1-T04 | DIST-E1-T02, DIST-E1-T04 | R9 | DIST-E1-T04 spawns runners and sees them exit. DIST-E1-T02's test plays both processes, so it can show the unlink itself. On Linux a memfd has no name, and on Windows a mapping's name goes with its last handle, so the test checks each OS's own form of "no name left" |
+
+## OQ-NET-34 settled (2026-10-23)
+
+DIST-E10-T10 model-checked OQ-NET-34's option (a) and settled it in RFC-0032 §7.5, §6.3 and Testing, under the maintainers' standing instruction. The check needed two parts more than the open question named: a node's own `Endorse`s count as support, because a `SignedElection`'s `acks` miss support given after the win; and two heal-path rules, that a held proof's support only grows and that every accepted election is endorsed once. DIST-E10-T05 builds the heal, so it takes them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E10-T05's task and criteria take the settled rule: the standing comparison, the endorsement record, support that only grows, endorsing once, and fencing replies with the sender's strongest supported election; its `gate: OQ-NET-34` is removed, and its edge to DIST-E10-T10 stays | DIST-E10-T05 | Definition of done (the spike closed the question) | DIST-E10-T05 builds the heal comparison, the fencing replies and the endorsement the answer changes. Its new criteria replay the election model's two pinned traces in the simulator, DIST-E10-T08's `stale-heal` trace and DIST-E10-T10's `stale-heal-late-support` trace, which DIST-E10-T05's existing simulator criterion already uses |
+
+## DIST-E7-T01's conformance criterion and buffer types (2026-10-22)
+
+DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-conformance suite", could not be met by DIST-E7-T01: `SimTransport` is QUAL-E8-T04, which depends on DIST-E7-T01 and DIST-E7-T02, and no task row built the suite itself, though DIST-E7-T03, T05, T06 and T08 and QUAL-E8-T04 all run it. RFC-0001 §5.8 and RFC-0031 §2 also name six buffer types without defining them (`BufferPool`, `PoolRegistration`, `PayloadSlice`, `PayloadRef`, `ExtBuf`, `ExtRef`), and DIST-E7-T01's signatures need them. These are plan corrections that take the recommended default, under the maintainer's standing instruction; RFC-0031 §2's note of 2026-10-22 records the definitions.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T01's criterion becomes "the shared channel-conformance suite (`net::transport::conformance`) passes on an in-memory test double and fails on a double that breaks each RFC-0031 §2 rule"; "`SimTransport` passes the suite" stays with QUAL-E8-T04, whose criterion already says so | DIST-E7-T01, QUAL-E8-T04 | R9 | the criterion used `SimTransport`, which a dependent task produces; the suite lives in `net`, since a test-only feature is limited to RFC-0001 §4.2 rule 10's three and `testkit` will depend on `net` |
+| DIST-E7-T01 defines the buffer types; DIST-E7-T12's text says it builds on them and keeps the lock-free slot handout, the per-transport registration tables, the header areas sized from the plan and the copy-count tests | DIST-E7-T01, DIST-E7-T12 | R1 | `tier` (layer 2) cannot hand `net` (layer 1) its own type, so `net` defines the memory trait |
+| TIER-E2-T21's text says `NetPool` hands out owned slot-range leases that meet `PoolMemory`'s contract and keeps an old epoch's range until its last lease drops; its RDMA registration through `Transport::register`, and its edge to DIST-E7-T07, move to the new TIER-E2-T25; its edge to DIST-E7-T01 stays, for the contract | TIER-E2-T21 | R8 | RFC-0001 §4.2 rule 3 forbids `tier` → `net`, which `check-deps` enforces, so `tier` can neither implement `net`'s trait nor call `Transport::register` |
+| Added TIER-E2-T25 (M2, `NetPool` registered with the transports, in `runner`) → TIER-E2-T21, DIST-E7-T01 | TIER-E2-T25 | R1 | `runner` (layer 5) may depend on both `tier` and `net`; a `runner` newtype over the `NetPool` lease implements `PoolMemory`, which the orphan rule allows, and the runner calls `Transport::register`. The `unsafe impl` sits in one `runner` module that RFC-0001 §4.2 rule 8's note of 2026-10-23 allows (§18.25), as `testkit`'s `GlobalAlloc` does. `core` cannot hold the trait instead: it forbids `unsafe` code, and an `unsafe trait` trips that lint. It has no edge to DIST-E7-T07: its criteria use fake transports, so neither the RDMA backend nor the two-Mac TB5 rig behind it has to come first, and DIST-E11-T01, which depends on it, does not wait on them |
+| DIST-E7-T12's pools are over any `PoolMemory` (`HeapMemory` in its tests), not "from TIER's pinned network sub-arena"; its edge to TIER-E2-T21 is cut | DIST-E7-T12 | R8 | `net` cannot depend on `tier`, and none of DIST-E7-T12's criteria uses `NetPool`; a runner's `NetPool` reaches `net` through TIER-E2-T25 |
+| DIST-E11-T01 → TIER-E2-T25 | DIST-E11-T01 | R9 | DIST-E11-T01 opens the runner's data-plane channels, and each channel's `ChannelSpec::pool` names a `NetPool` registration that TIER-E2-T25 makes |
+
+## DIST-E6-T01's p99 criterion and the metered gap (2026-10-22)
+
+DIST-E6-T01 enumerates and classifies interfaces. One of its criteria needed measured link probes, and the agreed sources leave metered unread on two systems.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "A USB Wi-Fi bridge reporting Ethernet is flagged by measured p99" moves from DIST-E6-T01 to the new DIST-E6-T07 (M2) → DIST-E6-T01, PLC-E2-T11 | DIST-E6-T01, DIST-E6-T07 | R9 | the criterion uses PLC-E2-T11's L1 probes. DIST-E6-T01 → PLC-E2-T11 would be a cycle, since PLC-E2-T11 depends on PLC-E1-T10, which depends on DIST-E6-T01. A task in this epic takes the criterion, so PLC-E2-T11's row stays as it is |
+| Added DIST-E6-T08 (M2) → DIST-E6-T01 | DIST-E6-T08 | Definition of done | DIST-E6-T01 reads metered on Linux through NetworkManager. macOS's `NWPath` and Windows's `INetworkCostManager` need FFI, so that gap has its own task rather than a note |
+| DIST-E6-T01 gains hosted criteria: the classifier over every row of RFC-0030 §7.2 from synthetic fixtures, and enumeration with stable ordinals on hosted CI | DIST-E6-T01 | Definition of done | only the rig criterion could fail before. Hosted runners have virtual NICs, so these are what CI can show |
+
+## DIST-E1-T14: the field types `core` owns (2026-10-23)
+
+Building DIST-E1-T14 found three field types that no row defined, though its own types hold them: `PrefixRef` holds RFC-0022's `PrefixKey` and `TailId`, and `SamplingParams` holds RFC-0050's `GrammarRef`. `core` cannot name a type of `tier` or `api`, and every lane must be able to name these, so DIST-E1-T14 defines all three as plain newtypes in `core::sequence`, and the rows that use them build on its types. RFC-0001 §5.8 and §5.13 gain a dated note and rows. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T14 also defines `PrefixKey`, `TailId` and `GrammarRef` | DIST-E1-T14 | R9 | `PrefixRef` and `SamplingParams`, which it defines, hold them |
+| TIER-E6-T02's supporting types drop `TailId` and use `core`'s; TIER-E6-T02 → DIST-E1-T14 | TIER-E6-T02 | R9 | its prefix index's tail pool is named by `core`'s `TailId`. M0a → M0a; DIST-E1-T14's dependencies do not reach TIER-E6-T02, so no cycle, and the M0a critical path is unchanged |
+| TIER-E7-T01 computes its page keys as `core`'s `PrefixKey`; its existing edge to DIST-E1-T14 now names `PrefixKey` too | TIER-E7-T01 | R9 | the key is what `PrefixRef::Cached` carries |
+| PROD-E3-T05 uses `core`'s `GrammarRef` and `SamplingParams`; PROD-E3-T05 → DIST-E1-T14 | PROD-E3-T05 | R9 | its criterion ships each grammar hash to a tail once, inside `SamplingParams`. M1a → M0a, no cycle |
+| DIST-E1-T14's view conversion covers every field but the tap block, and refuses a non-empty one either way with a classified error; DIST-E8-T06 gains "`net`'s `TokenEntryView` converts a tap block to and from `core`'s `LogitTap` in both tap modes, with the golden frames unchanged"; no edge | DIST-E1-T14, DIST-E8-T06 | R9 | `core`'s `TokenEntry::tap` is a typed `LogitTap`, while `net` carries the block as bytes until DIST-E8-T06 builds its codec, and the `Token` goldens' tap blocks are fill bytes. DIST-E8-T06 already depends on DIST-E8-T03, whose view it extends. M0's taps travel in-process (PLC-E9-T16) |
+
+## TIER-E5-T08's conformance suite (2026-10-23)
+
+TIER-E5-T08 (M1b) builds `IoRingEngine` and `IocpEngine`, and its criterion is that the conformance suite passes. The suite is TIER-E5-T04, which TIER-E5-T08 does not reach, and TIER-E5-T04 waits on the nano fixture files and the fixture store. The engine-agnostic harness moves to a new task that needs only TIER-E5-T01's interface, and TIER-E5-T04 keeps the run over the fixture files on every engine the CI host has. These are plan corrections under R9, approved by the lead running TIER-E5-T08.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added TIER-E5-T33 (M0b) → TIER-E5-T01: the harness, which takes any `IoEngine` and a file, reads random aligned extents into fixed and raw destinations, compares them with buffered `std::fs` reads, and reads writes back; its own tests run it over a generated file | TIER-E5-T33 | R9 | an engine task can pass the harness without fixture files. The harness uses only TIER-E5-T01's types, and M0b → M0b keeps M0 closure |
+| TIER-E5-T04 becomes TIER-E5-T33's harness over the nano fixture files against every engine on the CI host, and TIER-E5-T04 → TIER-E5-T33 | TIER-E5-T04 | R9 | its criterion is unchanged. M0b → M0b |
+| TIER-E5-T08's criterion reads "TIER-E5-T33's conformance harness passes", and TIER-E5-T08 → TIER-E5-T33 | TIER-E5-T08 | R9 | M1b → M0b. TIER-E5-T33 reaches no TIER-E5 engine task, so the edge adds no cycle |
+| TIER-E5-T03's, TIER-E5-T06's and TIER-E5-T09's criteria read "TIER-E5-T33's conformance harness passes", TIER-E5-T22's "engines pass TIER-E5-T33's conformance harness on the Tier 2/3 CI targets", and each gains an edge to TIER-E5-T33 | TIER-E5-T03, TIER-E5-T06, TIER-E5-T09, TIER-E5-T22 | R9 | each criterion cited the suite, and none reached TIER-E5-T04. #1738, TIER-E5-T03's change, reports that criterion as not run for that reason. M0b, M1a, M1b and M4 → M0b, and TIER-E5-T33 reaches none of them, so the edges add no cycle and no `LATER` |
+
+## PROD-E1-T10: instance-wide knobs a request did not name (2026-10-22)
+
+Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request that names its knobs and leaves out one the candidate's plan applies to every sequence would run with it while its label omitted it. The RFC-0054 §7 note of 2026-10-22 refuses that case with `fidelity_conflict`.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T10 gains a criterion for that case | PROD-E1-T10 | Definition of done | the rule needs a check that can fail: a P-config-2 case shows that such a request never resolves to a knob set missing a plan knob, and that `fidelity_conflict` names exactly the missing ones |
+| The criterion also covers a knob bit this version cannot name: it counts as instance-wide, and a plan holding one serves no request | PROD-E1-T10 | Definition of done | `ApproxKnobs` keeps a bit it does not name, and RFC-0042 §10 reserves `1 << 8` for a later knob. The review of #1771 found that such a bit counted as neither scope, so an exact request could be served by a plan that applied it, and an approximate label could leave it out |
+
+## PLC-E8-T13's rejection criterion after the section builder (2026-10-23)
+
+#1792 builds `SchedSection` with `config`'s `InstanceSection` (PROD-E1-T24), as RFC-0054 §5.4's note of 2026-10-22 says every domain crate's section is built. It removes `SchedSection::from_policy`, which PLC-E8-T13's criterion named.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E8-T13's criterion names `config`'s `InstanceSection::<SchedSection>::from_policy` in place of `SchedSection::from_policy`, and PLC-E8-T13 → PROD-E1-T24 | PLC-E8-T13 | R9 | the criterion's wording had drifted from the code: the builder now rejects the invalid values, and PROD-E1-T24 produces it. Both tasks are M1a and done (#1656, #1772), so the edge adds no wait |
+
+## DIST-E1-T03's message set, by owner (2026-10-23)
+
+DIST-E1-T03 (M0a) could not be finished as written. "The full RFC-0001 §3.5 message set plus `PeerRevoked` and `DataPlaneGrant`" needs about 16 field types that do not exist:
+- **Built later:** `DataPlaneCredential` (DIST-E2-T05, M2), `PackKey` (COMP-E10-T11, M1a), `RunnerConfig` (PROD-E1-T07, M1a) and `ResidencySummary` (TIER-E1-T09, M1a). The last two tasks depend on DIST-E1-T03 themselves.
+- **Owned by no task:** `Deadline`, `DrainReason`, `SequenceOutcome` and `FetchPriority`.
+- **In a crate `ipc` cannot name:** several sit in `manifest`, `kernels`, `tier` or the probe, and `ipc` is layer 1, which rule 2 (RFC-0001 §4.2) limits to layer 0.
+
+Its fuzz criterion also needs QUAL-E10-T01's harness (M0b), which it did not depend on. The maintainers chose to have each owner add its messages, under the standing instruction (RFC-0001 §18.28).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T03 keeps the channel and the messages whose field types exist at M0a (`Hello`, `Ping`, `Pong`, `PeerRevoked`, `ShardProgress`, `AssignPlan`, `ApplyPlanDelta`, `StateChanged`, and `Init` without `config` and `grant`); its fuzz criterion becomes "decode is total over arbitrary bytes", which QUAL-E10-T03's `ipc_msgs` target wraps | DIST-E1-T03 | R9 | the rest of the set needs types from later milestones or from tasks that depend on DIST-E1-T03, and the fuzz registry is QUAL-E10-T01's; the same fix as DIST-E8-T12's fuzz criterion above |
+| Added DIST-E1-T15 (M0a) → DIST-E1-T03: `Deadline`, `DrainReason`, `SequenceOutcome` and `FetchPriority` in `core`, `PressureLevel` moved from `tier` to `core`, and the `Drain`, `Shutdown`, `MemoryPressure` and `SequenceEnded` messages | DIST-E1-T15 | R9 | no task owned these types. TIER-E1-T01, which built `PressureLevel` in `tier`, is done, so it takes no edge; the move is the new task's, with `tier` re-exporting the type |
+| DIST-E1-T04 → DIST-E1-T15; a `TBD` segment for the task that defines `CapabilityProfile` (#1524) | DIST-E1-T04 | R9 | its runner drains and shuts down on `Drain` and `Shutdown`, and its probe-mode criterion returns `ProbeResult`, whose `CapabilityProfile` no task defines yet |
+| PROD-E1-T07 adds `Init`'s `config` and `ConfigChanged`; TIER-E1-T09 adds `ResidencyDigest`, with `ResidencySummary` in `core`; no new edge | PROD-E1-T07, TIER-E1-T09 | R1 | each owns the message's field type and already depends on DIST-E1-T03 |
+| DIST-E7-T04 → DIST-E1-T03, adding `Init`'s `grant` and `DataPlaneGrant`; DIST-E2-T05's `DataPlaneCredential` becomes plain data in `core` | DIST-E7-T04, DIST-E2-T05 | R1, R9 | DIST-E7-T04 builds the runner's data-plane grant, and `ipc` can carry the credential only from layer 0. Signing and verification stay in the crate with the signature scheme |
+| DIST-E1-T03 → DIST-E1-T14, adding `CancelSequence` to DIST-E1-T03's messages | DIST-E1-T03 | R1, R9 | DIST-E1-T14 defines `CancelReason` and is done (#1780), so the message's field types exist at M0a |
+| PLC-E2-T01 → DIST-E1-T03, adding `ProbeRequest` with `ProbeSuite` in `core` | PLC-E2-T01 | R1, R9 | it owns `ProbeSuite`; it already reached DIST-E1-T03 through PLC-E1-T07, and the edge names it |
+| COMP-E10-T11 → DIST-E1-T03, DIST-E1-T15, adding `FetchShard` and `PackCommitted`, with `ShardSpec`, `PackKey`, `ChunkId` and `LayoutVersion` in `core` | COMP-E10-T11 | R1, R9 | it builds `ShardSpec::digest` and `PackKey`; `FetchShard` carries DIST-E1-T15's `FetchPriority` |
+| `ErrorReport` has no owner | — | — | it carries RFC-0001 §5.12's `Error`, which no task row builds; recorded in RFC-0001 §3.5's note for the maintainers |
+| DIST-E1-T15's types made concrete: `Deadline { within: Nanos }`, relative to receipt; `Drain` without `successor`; `SequenceOutcome` with its variants, and `FetchPriority` with RFC-0041 §7's, which RFC-0031 §6.10's dated note maps to blob-plane classes | DIST-E1-T15 | R9 | an absolute instant cannot cross machines (RFC-0011 §13 passes `Option<Deadline>` between nodes); `DrainReason::Replan` already carries the successor; RFC-0041 §7 defines what `FetchShard`'s priority does, and COMP-E12-T04 implements it |
+| DIST-E1-T05 → DIST-E1-T15, putting `RunnerState` and the types it holds (`Degradation` among them) in `core`; `StateChanged` carries it from there, `Draining` carries a `Deadline`, and `Stopped` a `StopReason` (`Drained(DrainReason)` or `Fatal(ErrorClass)`) | DIST-E1-T05 | R1, R9 | `RunnerState` is a `core` type (RFC-0001 §5.11), and `Draining` holds `DrainReason` and `Deadline`; §5.11's `StopReason` was never defined, and §3.3 stops a runner from `Draining` or from `Failed`; DIST-E14-T13 adds `DegradeDetail::Fallback` with the op and provider as text |
+| TIER-E1-T09 → DIST-E1-T15, DIST-E1-T05, with every type `ResidencySummary` holds listed in `core`, `Purpose` among them, moved from `tier` | TIER-E1-T09 | R1, R9 | `ResidencySummary` holds `PressureLevel` and `Degradation`, and eleven more types from RFC-0020, RFC-0022 and RFC-0023, which `core` must hold too (RFC-0001 §18.28); `TierUsage` counts bytes by `Purpose`, today `tier`'s |
+| PLC-E2-T01 puts `ProbeSuite` in `core` with every variant but `DevicePath`, which PLC-E2-T12 adds with the endpoint as `net`-encoded bytes | PLC-E2-T01, PLC-E2-T12 | R9 | `Confirm`'s `ProfileKey` is already in `core`; `RemoteEndpoint` holds transport state that `core` cannot |
+| PROD-E1-T07's `RunnerConfig` and `RunnerConfigPatch` are `ResourcePolicy` plus resolved `KeyPath → ConfigValue` values; PROD-E1-T07 → PROD-E1-T24, generalising `InstanceSection`'s builder over the key scope, and each runner crate builds its node-scope section with it | PROD-E1-T07 | R1, R9 | `InstanceSection` refuses a key whose scope is not `instance` (`scope_mismatch`), and `runner.*`, `tier.*` and `io.*` are node scope (RFC-0054 §5.1); one builder with a scope parameter duplicates less than a second one. The typed sections are their crates', which `ipc` cannot name: `runner.*` is `cluster`'s `RunnerSection` (layer 3), and `tier.*` and `io.*` are `tier`'s and `io`'s |
+| PROD-E1-T11 → PROD-E1-T07, in place of its edge to DIST-E1-T03 | PROD-E1-T11 | R1 | reload sends `ConfigChanged`, which PROD-E1-T07 now adds; PROD-E1-T07 depends on DIST-E1-T03 |
+| TIER-E4-T04 → DIST-E1-T15, in place of its edge to DIST-E1-T03; TIER-E1-T09's edge to DIST-E1-T03 relabelled "the command channel" | TIER-E4-T04, TIER-E1-T09 | R1 | `MemoryPressure` is DIST-E1-T15's; TIER-E1-T09 adds `ResidencyDigest` itself |
+| DIST-E2-T05's `DataPlaneCredential.purposes` stays a `u16` bitmask, with its bit layout as `core` constants | DIST-E2-T05 | R9 | the channel-purpose enum is `net`'s, and `core` needs only the bits |
+| COMP-E11-T05 → COMP-E10-T11 and COMP-E12-T04 → COMP-E10-T11 | COMP-E11-T05, COMP-E12-T04 | R9 | they use `PackCommitted` and `FetchShard`, which COMP-E10-T11 adds; neither reached DIST-E1-T03 on `main` either, so the gap predates this split |
+| COMP-E2-T13 defines `ReaderId` and `ProviderName` in `core`; DIST-E14-T13 → COMP-E2-T13 | COMP-E2-T13, DIST-E14-T13 | R1, R9 | RFC-0001 §5.1 puts both in `core`, and no row defined them; `DegradeDetail::Fallback` carries a `ProviderName` |
+| COMP-E10-T11 moves `LayoutVersion`'s inherent `SOURCE` constant with the type | COMP-E10-T11 | R9 | an inherent impl cannot stay in `kernels` once the type is `core`'s, and `LayoutVersion::SOURCE` must keep resolving through the re-export |
+
+## PLC-E7-T17's watchdog criterion (2026-10-23)
+
+Building PLC-E7-T17 found that its criterion 1, "a watchdog fails any call over its budget", has no check that can fail. `poll_once` is timed on the dispatcher's injected `TickSource`, and under test no pass can move that clock: the simulator's moves only between events, so a pass that parks or spins measures 0 there (the review of #1802). The first `Dispatcher::run` on a real `TickSource` is PLC-E7-T18's hardware run.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E7-T17's criterion 1 reads "a watchdog counts any call over its budget (`PollStats`)"; PLC-E7-T18's hardware criterion gains "and the dispatcher's `PollStats` records no overrun"; no edge | PLC-E7-T17, PLC-E7-T18 | R9 | the check that fails on an overrun moves to the first run where a pass's time is real. PLC-E7-T18 already depends on PLC-E7-T17 |
+
+## QUAL-E3-T09's loom job (2026-10-23)
+
+QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the loom models. RFC-0060 §1.1 and RFC-0062 §2.3 put loom in L3, which runs in `hosted-l3`, and `ci-gate` already listed `hosted-l3` as planned for QUAL-E3-T09/T10. RFC-0062 §2.3 gains a dated note: `hosted-l3` runs `cargo xtask test loom`, behind a coarse path filter until QUAL-E1-T07 computes the closure. RFC-0060 §3.4 gains one on how the three-thread models are built.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E3-T09's and QUAL-E3-T22's criteria name the `hosted-l3` job in place of `hosted-test-linux`; no edge | QUAL-E3-T09, QUAL-E3-T22 | Definition of done | RFC-0060 §1.1 runs loom in L3, which RFC-0062 §2.3 gives to `hosted-l3`. The unit suite's job is not where loom models run, and T22's models are L3 too |
+
+## OQ-NET-35: the chosen-only logprobs form (2026-10-23)
+
+#1780 let `core`'s `LogprobBlock { k: 0 }` hold the chosen tokens' logprobs alone, which OpenAI's `top_logprobs = 0` asks for and the in-process path carries. RFC-0031 §6.5's `logprob_k = 0` means no logprobs, so `net` refuses such a block until the entry has a form for it. review-1493's N1 on #1780 found the question cited but not recorded. It is now OQ-NET-35, with `logprob_k = 0x80` recommended, and a new task settles it. Until then RFC-0050 §3.1's note has ingress ask a remote tail for one alternative and drop it (standin-engine's N3 on #1780). These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec behind capability bit 16, with RFC-0050 §3.1's rewrite kept towards peers without the bit | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
+
+## PLC-E8-T21: resumed sequences at the head and tail (2026-10-23)
+
+#1749 gave PLC-E6-T04 an M2 re-prefill: the ingress reopens each live sequence on the new epoch from its transcript with `SequenceOpen { resume }`. No task before M3's DIST-E14-T08 built the other side, where the head prefills the transcript, the tail emits from token `emitted + 1`, and the tail's state is rebuilt from the transcript (RFC-0033 §5.3, RFC-0012 §8.6). The stand-in engine review of #1749 asked for that as its own PLC-E8 row. These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added PLC-E8-T21 (M2) → PLC-E8-T01, PLC-E9-T01, PLC-E9-T02, PLC-E9-T18, DIST-E8-T05 | PLC-E8-T21 | R9 | the head and tail side of `SequenceOpen { resume }`, which PLC-E6-T04's M2 re-prefill uses |
+| PLC-E6-T04 → PLC-E8-T21; DIST-E14-T08 → PLC-E8-T21; DIST-E14-T10 → PLC-E8-T21 | PLC-E6-T04, DIST-E14-T08, DIST-E14-T10 | R9 | each reopens sequences with `resume`: the M2 re-prefill, head-loss recovery and re-prefill migration. M2 → M2 and M3 → M2, so no `LATER`, and no cycle |
+| PLC-E8-T21's greedy criterion is scoped to the same epoch and devices and judged by RFC-0060 §5.4's parity gate, which is tolerance-based; PLC-E9-T18's grammar-mask check runs once on a v1-size vocabulary; no edge | PLC-E8-T21, PLC-E9-T18 | Definition of done | re-prefill recomputes the emitted tokens' KV with prefill, not decode, so bit-identity can fail at near-ties without a fault; a mask check on a small vocabulary misses the cost and edge cases of a full one (the stand-in engine review of #1781, N1 and N2). Deterministic kernels are not named: they are M3 work (COMP-E5-T14, PLC-E9-T15), which PLC-E8-T21 does not reach (review-1474's B1) |
+| PLC-E8-T21 gains "a sequence constrained by a JSON grammar, cancelled and re-opened with `resume`, samples only grammar-valid tokens after the resume, and its whole output parses under the grammar"; no edge | PLC-E8-T21 | Definition of done | the end-to-end grammar resume had no M2 criterion (review-1474's N2). PLC-E8-T21 reaches the grammar masks (PLC-E9-T04, M1a) and the constraint engine (PROD-E3-T04, M1a) through PLC-E9-T18 |
+| PLC-E9-T18 M3 → M2. Its criterion "killing the tail mid-sequence and resuming elsewhere gives a token distribution matching an uninterrupted run (chi-square over many seeds) and valid grammar masks" moves to DIST-E14-T09. It keeps "fresh and resumed sequences give identical penalised logits" and gains "the state rebuilt from a transcript has the count tables, grammar mask and RNG counter of an uninterrupted run at the same position" | PLC-E9-T18, DIST-E14-T09 | R9 | PLC-E8-T21 needs the tail state in M2: without it, a re-prefilled sequence with penalties or a grammar would not continue as an uninterrupted one (D3). Every dependency of PLC-E9-T18 is M2 or earlier. Killing a tail and resuming elsewhere needs M3's tail-loss recovery, DIST-E14-T09, which depends on PLC-E9-T18, so that criterion moves to DIST-E14-T09 |
+
+## DIST-E7-T03's per-path keep-alive and idle timeout (2026-10-23)
+
+#1773 recorded RFC-0031 §4.3's transport knobs on iroh 1.4.1 (DIST-E7-T21). Its review found that the table's keep-alive (500 ms) and idle timeout (`link.failover_timeout`) also need iroh's per-path setters, whose defaults are 5 s and 15 s, because iroh abandons a path at its own idle timeout (review-plan3's N1, issuecomment-6342144851). RFC-0031 §4.3's note now says so, with the corrected line references.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T03 gains "keep-alive and idle timeout take the table's values per path, through `default_path_keep_alive_interval` and `default_path_max_idle_timeout`, as well as connection-wide through `keep_alive_interval` and `max_idle_timeout`, and a unit test reads all four back from the transport configuration `net` builds"; no edge | DIST-E7-T03 | Definition of done | with only the connection-wide values set, a dead path would be abandoned after iroh's 15 s per-path default, not within `link.failover_timeout` |
+
 ## DIST-E18-T01 after #1673 (2026-10-22)
 
 The post-merge review of #1673 found the code right and the row wrong. The row depended on the schema registry alone, though its criteria use layering and validation, and it claimed every key of RFC-0033 §12, though three of them are RFC-0011's.

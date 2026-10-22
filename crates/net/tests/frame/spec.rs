@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! An encoder written from RFC-0031's tables, independent of `syntropy_net::frame`: every field
-//! is put at the offset §6.1, §6.2, §6.7 and §6.9 give it, and CRC32C is computed bit by bit. The
-//! golden frames are generated with it, so the codec is checked against the tables, not
-//! against itself.
+//! is put at the offset §6.1, §6.2, §6.3, §6.5, §6.7, §6.8 and §6.9 give it, and CRC32C is computed
+//! bit by bit. The golden frames are generated with it, so the codec is checked against the
+//! tables, not against itself.
 
 /// CRC-32C (Castagnoli): reflected polynomial 0x82F63B78, initial value and final XOR all ones.
 pub fn crc32c(data: &[u8]) -> u32 {
@@ -189,6 +189,309 @@ pub fn sealed_ext(plaintext: &[u8], seed: u8) -> Vec<u8> {
     let mut e = plaintext[..16].to_vec();
     e.extend(fill(seed, plaintext.len() - 16));
     e
+}
+
+/// The fixed part of the `Activation` extension (RFC-0031 §6.3), as wire values.
+pub struct ActivationFixed {
+    pub from_stage: u16,
+    pub to_stage: u16,
+    pub kind: u8,
+    pub dtype: u8,
+    pub streams: u8,
+    pub hidden: u32,
+    pub n_rows: u32,
+    pub part_index: u16,
+    pub part_count: u16,
+    pub kind_arg: u32,
+    pub kind_flags: u32,
+}
+
+/// One 32-byte span of RFC-0031 §6.3.
+pub struct SpanFields {
+    pub ingress: u64,
+    pub boot: u32,
+    pub n: u32,
+    pub first_position: u32,
+    pub n_positions: u32,
+    pub row_offset: u32,
+    pub tree_offset: u16,
+    pub tree_nodes: u16,
+}
+
+/// The `Activation` extension: the fixed part, the spans, the tree area (`parent, depth, flags`
+/// per node) and the TLVs (`type, span, value`), each TLV's value padded to 8, then the whole
+/// padded to 64. `n_spans`, `tree_len` and `side_len` are counted from the areas.
+pub fn activation_ext(
+    f: &ActivationFixed,
+    spans: &[SpanFields],
+    tree: &[(u16, u8, u8)],
+    tlvs: &[(u16, u16, Vec<u8>)],
+) -> Vec<u8> {
+    let mut areas = Vec::new();
+    for s in spans {
+        let mut b = vec![0u8; 32];
+        put(&mut b, 0, 8, s.ingress); //              0  seq.ingress
+        put(&mut b, 8, 4, s.boot.into()); //          8  seq.boot
+        put(&mut b, 12, 4, s.n.into()); //           12 seq.n
+        put(&mut b, 16, 4, s.first_position.into()); // 16 first_position
+        put(&mut b, 20, 4, s.n_positions.into()); // 20 n_positions
+        put(&mut b, 24, 4, s.row_offset.into()); //  24 row_offset
+        put(&mut b, 28, 2, s.tree_offset.into()); // 28 tree_offset
+        put(&mut b, 30, 2, s.tree_nodes.into()); //  30 tree_nodes
+        areas.extend(b);
+    }
+    let tree_start = areas.len();
+    for &(parent, depth, flags) in tree {
+        areas.extend(parent.to_le_bytes()); //       0  parent
+        areas.push(depth); //                        2  depth
+        areas.push(flags); //                        3  flags
+    }
+    let tree_len = areas.len() - tree_start;
+    let side = tlv_area(tlvs);
+    let side_len = side.len();
+    areas.extend(side);
+    let mut e = vec![0u8; 64];
+    put(&mut e, 0, 2, f.from_stage.into()); //       0  from_stage
+    put(&mut e, 2, 2, f.to_stage.into()); //         2  to_stage
+    e[4] = f.kind; //                                4  kind
+    e[5] = f.dtype; //                               5  dtype
+    e[6] = f.streams; //                             6  streams; 7 reserved
+    put(&mut e, 8, 4, f.hidden.into()); //           8  hidden
+    put(&mut e, 12, 4, f.n_rows.into()); //         12 n_rows
+    put(&mut e, 16, 2, spans.len() as u64); //     16 n_spans
+    put(&mut e, 18, 2, f.part_index.into()); //     18 part_index
+    put(&mut e, 20, 2, f.part_count.into()); //     20 part_count; 22 reserved
+    put(&mut e, 24, 4, f.kind_arg.into()); //       24 kind_arg
+    put(&mut e, 28, 4, f.kind_flags.into()); //     28 kind_flags
+    put(&mut e, 32, 4, tree_len as u64); //         32 tree_len
+    put(&mut e, 36, 4, side_len as u64); //         36 side_len; 40..64 reserved
+    e.extend(areas);
+    e.resize(e.len().next_multiple_of(64), 0);
+    e
+}
+
+/// A side-channel area of RFC-0031 §6.3: each TLV's `type`, `span` and `len`, then its value
+/// padded to 8.
+pub fn tlv_area(tlvs: &[(u16, u16, Vec<u8>)]) -> Vec<u8> {
+    let mut area = Vec::new();
+    for (ty, span, value) in tlvs {
+        let mut b = vec![0u8; 8];
+        put(&mut b, 0, 2, (*ty).into()); //          0  type
+        put(&mut b, 2, 2, (*span).into()); //        2  span
+        put(&mut b, 4, 4, value.len() as u64); //    4  len
+        b.extend(value); //                          8  value, padded to 8
+        b.resize(8 + value.len().next_multiple_of(8), 0);
+        area.extend(b);
+    }
+    area
+}
+
+/// The `Token` extension of RFC-0031 §6.5: 16 bytes of fields, the TLVs at offset 16, padded to
+/// 64.
+pub fn token_ext(
+    n_entries: u16,
+    flags: u16,
+    part_index: u16,
+    part_count: u16,
+    tlvs: &[(u16, u16, Vec<u8>)],
+) -> Vec<u8> {
+    let side = tlv_area(tlvs);
+    let mut e = vec![0u8; 16];
+    put(&mut e, 0, 2, n_entries.into()); //         0  n_entries
+    put(&mut e, 2, 2, flags.into()); //             2  flags
+    put(&mut e, 4, 4, side.len() as u64); //        4  side_len
+    put(&mut e, 8, 2, part_index.into()); //        8  part_index
+    put(&mut e, 10, 2, part_count.into()); //      10 part_count; 12..16 reserved
+    e.extend(side); //                             16 side-channel area
+    e.resize(e.len().next_multiple_of(64), 0);
+    e
+}
+
+/// One `Token` entry of RFC-0031 §6.5, as wire values.
+pub struct EntryFields {
+    pub ingress: u64,
+    pub boot: u32,
+    pub n: u32,
+    pub first_position: u32,
+    pub tokens: Vec<u32>,
+    pub finish: u8,
+    pub logprob_k: u8,
+    pub approx: u32,
+    pub error_domain: u16,
+    pub error_code: u16,
+    pub draft: Vec<u32>,
+    pub draft_nodes: u16,
+    /// `(parent, depth, flags)` per node; empty for a chain.
+    pub tree: Vec<(u16, u8, u8)>,
+    pub logprobs: Vec<u8>,
+    pub tap: Vec<u8>,
+    pub rng_counter: u64,
+}
+
+/// The entry: its 48-byte header, then tokens, draft, draft tree, logprobs and tap block,
+/// padded to 8.
+pub fn token_entry(f: &EntryFields) -> Vec<u8> {
+    let mut b = vec![0u8; 48];
+    put(&mut b, 0, 8, f.ingress); //                0  seq.ingress
+    put(&mut b, 8, 4, f.boot.into()); //            8  seq.boot
+    put(&mut b, 12, 4, f.n.into()); //             12 seq.n
+    put(&mut b, 16, 4, f.first_position.into()); // 16 first_position
+    put(&mut b, 20, 2, f.tokens.len() as u64); //  20 n_tokens
+    b[22] = f.finish; //                           22 finish
+    b[23] = f.logprob_k; //                        23 logprob_k
+    put(&mut b, 24, 4, f.approx.into()); //        24 approx
+    put(&mut b, 28, 2, f.error_domain.into()); //  28 error_domain
+    put(&mut b, 30, 2, f.error_code.into()); //    30 error_code
+    put(&mut b, 32, 2, f.draft.len() as u64); //   32 n_draft
+    put(&mut b, 34, 2, f.draft_nodes.into()); //   34 draft_nodes
+    put(&mut b, 36, 4, f.tap.len() as u64); //     36 tap_len
+    put(&mut b, 40, 8, f.rng_counter); //          40 rng_counter
+    for token in &f.tokens {
+        b.extend(token.to_le_bytes()); //          48 tokens
+    }
+    for token in &f.draft {
+        b.extend(token.to_le_bytes()); //             draft
+    }
+    for &(parent, depth, flags) in &f.tree {
+        b.extend(parent.to_le_bytes()); //            draft tree
+        b.push(depth);
+        b.push(flags);
+    }
+    b.extend(&f.logprobs); //                         logprobs
+    b.extend(&f.tap); //                              tap block
+    b.resize(b.len().next_multiple_of(8), 0); //      padding to 8
+    b
+}
+
+/// The 32 bytes of fields of RFC-0031 §6.8's `Collective` extension.
+pub struct CollectiveFields {
+    pub step: u64,
+    pub layer: u16,
+    pub phase: u8,
+    pub algo: u8,
+    pub src_member: u16,
+    pub n_members: u16,
+    pub ring_step: u16,
+    pub dtype: u8,
+    pub elems: u32,
+    pub elem_offset: u32,
+    pub rows: u32,
+}
+
+/// The `Collective` extension: the fields, padded to 64.
+pub fn collective_ext(c: &CollectiveFields) -> Vec<u8> {
+    let mut e = vec![0u8; 64];
+    put(&mut e, 0, 8, c.step); //                    0  step
+    put(&mut e, 8, 2, c.layer.into()); //            8  layer
+    e[10] = c.phase; //                              10 phase
+    e[11] = c.algo; //                               11 algo
+    put(&mut e, 12, 2, c.src_member.into()); //     12 src_member
+    put(&mut e, 14, 2, c.n_members.into()); //      14 n_members
+    put(&mut e, 16, 2, c.ring_step.into()); //      16 ring_step
+    e[18] = c.dtype; //                              18 dtype; 19 reserved
+    put(&mut e, 20, 4, c.elems.into()); //          20 elems
+    put(&mut e, 24, 4, c.elem_offset.into()); //    24 elem_offset
+    put(&mut e, 28, 4, c.rows.into()); //           28 rows; 32..64 padding
+    e
+}
+
+/// The weights, then the expert IDs, of one routing row, padded to 4 (RFC-0031 §6.8).
+fn route_tail(weights: &[f32], experts: &[u16]) -> Vec<u8> {
+    assert_eq!(weights.len(), experts.len());
+    let mut b = Vec::new();
+    for w in weights {
+        b.extend(w.to_le_bytes()); //                k × weight f32
+    }
+    for e in experts {
+        b.extend(e.to_le_bytes()); //                k × expert u16
+    }
+    b.resize(b.len().next_multiple_of(4), 0); //     pad to 4
+    b
+}
+
+/// A `ROUTER_BCAST` payload: per row `k: u8, pad[3]`, then `k` weights, then `k` expert IDs,
+/// padded to 4.
+pub fn router_payload(rows: &[(Vec<f32>, Vec<u16>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (weights, experts) in rows {
+        out.push(weights.len() as u8); //            k
+        out.extend([0, 0, 0]); //                    pad[3]
+        out.extend(route_tail(weights, experts));
+    }
+    out
+}
+
+/// The 24 bytes of fields of RFC-0031 §6.8's `EpDispatch` and `EpCombine` extension.
+pub struct EpFields {
+    pub step: u64,
+    pub layer: u16,
+    pub n_rows: u16,
+    pub dtype: u8,
+    pub part_index: u16,
+    pub part_count: u16,
+}
+
+/// The `EpDispatch` or `EpCombine` extension: the fields, then per row (dispatch only) `row u16,
+/// k_local u8, pad u8`, `k_local` weights, `k_local` expert IDs, padded to 4; the whole padded
+/// to 64.
+pub fn ep_ext(f: &EpFields, rows: &[(u16, Vec<f32>, Vec<u16>)]) -> Vec<u8> {
+    let mut e = vec![0u8; 24];
+    put(&mut e, 0, 8, f.step); //                    0  step
+    put(&mut e, 8, 2, f.layer.into()); //            8  layer
+    put(&mut e, 10, 2, f.n_rows.into()); //         10 n_rows
+    e[12] = f.dtype; //                              12 dtype; 13 reserved
+    put(&mut e, 14, 2, f.part_index.into()); //     14 part_index
+    put(&mut e, 16, 2, f.part_count.into()); //     16 part_count; 18..24 reserved
+    for (row, weights, experts) in rows {
+        e.extend(row.to_le_bytes()); //              row u16
+        e.push(weights.len() as u8); //              k_local u8
+        e.push(0); //                                pad u8
+        e.extend(route_tail(weights, experts));
+    }
+    e.resize(e.len().next_multiple_of(64), 0);
+    e
+}
+
+/// `n` packed F32 values, value `i` holding `first + i`.
+pub fn f32_elems(n: usize, first: usize) -> Vec<u8> {
+    (0..n)
+        .flat_map(|i| ((first + i) as f32).to_le_bytes())
+        .collect()
+}
+
+/// The values of [`f32_elems`] as packed BF16 bit patterns, the high 16 bits of each F32.
+pub fn bf16_elems(n: usize, first: usize) -> Vec<u8> {
+    (0..n)
+        .flat_map(|i| (((first + i) as f32).to_bits() >> 16).to_le_bytes()[..2].to_vec())
+        .collect()
+}
+
+/// `rows` rows of `elements` F32 values each, row `r` element `i` holding `r · 1000 + i`, at a
+/// stride of `elements · 4` rounded up to 64 bytes, the padding zero.
+pub fn f32_rows(rows: usize, elements: usize) -> Vec<u8> {
+    let stride = (elements * 4).next_multiple_of(64);
+    let mut out = vec![0u8; rows * stride];
+    for r in 0..rows {
+        for i in 0..elements {
+            let value = (r * 1000 + i) as f32;
+            out[r * stride + 4 * i..][..4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// The values of [`f32_rows`] as BF16 bit patterns, the high 16 bits of each F32, at a stride
+/// of `elements · 2` rounded up to 64 bytes.
+pub fn bf16_rows(rows: usize, elements: usize) -> Vec<u8> {
+    let stride = (elements * 2).next_multiple_of(64);
+    let mut out = vec![0u8; rows * stride];
+    for r in 0..rows {
+        for i in 0..elements {
+            let bits = ((r * 1000 + i) as f32).to_bits() >> 16;
+            out[r * stride + 2 * i..][..2].copy_from_slice(&(bits as u16).to_le_bytes());
+        }
+    }
+    out
 }
 
 /// Writes `bytes` as the golden file text: a header comment, then 16 bytes per line in hex,

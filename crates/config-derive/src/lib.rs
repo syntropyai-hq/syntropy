@@ -366,6 +366,54 @@ fn check_serde_names(attrs: &[Attribute], errors: &mut Errors) {
     }
 }
 
+/// How a field deserializes when its serde attribute names a path: `with = "module"` calls
+/// `module::deserialize`, `deserialize_with = "function"` calls the function.
+enum SerdeWith {
+    Module(syn::Path),
+    Function(syn::Path),
+}
+
+impl SerdeWith {
+    /// A closure over one deserializer argument, which the check helpers take as a fn pointer.
+    fn call(&self) -> TokenStream2 {
+        match self {
+            SerdeWith::Module(module) => quote!(|d| #module::deserialize(d)),
+            SerdeWith::Function(function) => quote!(|d| #function(d)),
+        }
+    }
+}
+
+/// The field's `serde(with = …)` or `serde(deserialize_with = …)` path, if it has one, so the
+/// generated checks read a value the way the section does.
+fn serde_with(attrs: &[Attribute], errors: &mut Errors) -> Option<SerdeWith> {
+    let mut found = None;
+    for attr in attrs.iter().filter(|a| a.path().is_ident("serde")) {
+        let Meta::List(list) = &attr.meta else {
+            continue;
+        };
+        let trees: Vec<TokenTree> = list.tokens.clone().into_iter().collect();
+        for window in trees.windows(3) {
+            let (TokenTree::Ident(name), TokenTree::Punct(eq), TokenTree::Literal(lit)) =
+                (&window[0], &window[1], &window[2])
+            else {
+                continue;
+            };
+            let module = name == "with";
+            if eq.as_char() != '=' || !(module || name == "deserialize_with") {
+                continue;
+            }
+            let parsed = syn::parse2::<LitStr>(TokenTree::Literal(lit.clone()).into())
+                .and_then(|text| text.parse::<syn::Path>());
+            match parsed {
+                Ok(path) if module => found = Some(SerdeWith::Module(path)),
+                Ok(path) => found = Some(SerdeWith::Function(path)),
+                Err(e) => errors.push(e),
+            }
+        }
+    }
+    found
+}
+
 /// `a.b.c` with each segment `[a-z][a-z0-9_]*`; empty for the top level.
 fn valid_path(path: &str) -> bool {
     path.is_empty() || path.split('.').all(valid_segment)
@@ -437,6 +485,9 @@ struct SectionAttrs {
     scope: Option<Scope>,
     owner: Option<LitStr>,
     shared: bool,
+    /// `deprecated = CONST`: a `&[Deprecated]` the section declares as Rust data, not as
+    /// attributes, so two records from one release do not repeat an attribute item.
+    deprecated: Option<Expr>,
     /// An attribute failed to parse, so missing attributes are not reported on top.
     failed: bool,
 }
@@ -463,9 +514,15 @@ fn section_attrs(attrs: &[Attribute], errors: &mut Errors) -> SectionAttrs {
                 out.owner = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("shared") {
                 out.shared = true;
+            } else if meta.path.is_ident("deprecated") {
+                if out.deprecated.is_some() {
+                    return Err(duplicate());
+                }
+                out.deprecated = Some(meta.value()?.parse()?);
             } else {
                 return Err(meta.error(
-                    "unknown section attribute; expected `section`, `scope`, `owner` or `shared`",
+                    "unknown section attribute; expected `section`, `scope`, `owner`, `shared` \
+                     or `deprecated`",
                 ));
             }
             Ok(())
@@ -538,11 +595,53 @@ fn key_attrs(attrs: &[Attribute], errors: &mut Errors) -> KeyAttrs {
     out
 }
 
+/// `syntropy-core`'s policy value types, whose own serde form is the record encoding: a key of
+/// one reads RFC-0054 §3's forms only through `syntropy_config::form` (PROD-E1-T23).
+const CORE_FORM_TYPES: [&str; 6] = [
+    "Fraction",
+    "Reserve",
+    "NodeSelector",
+    "DeviceSelector",
+    "TierSelector",
+    "LayerRange",
+];
+
+/// The name of the core policy value type `ty` holds, bare or in an `Option` or `Vec`, if any.
+/// The match is by the type's last path segment, as written.
+fn core_form_type(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let last = path.path.segments.last()?;
+    let name = last.ident.to_string();
+    if CORE_FORM_TYPES.contains(&name.as_str()) {
+        return Some(name);
+    }
+    if name == "Option" || name == "Vec" {
+        let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+            return None;
+        };
+        if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+            return core_form_type(inner);
+        }
+    }
+    None
+}
+
 /// The type as written, with token spacing tidied: `Option<Duration>`.
+/// The type as one line of text, for `KeySchema::ty` and the messages that quote it. The token
+/// printer can break a long type across lines and keeps a trailing comma, so every whitespace
+/// character goes, a comma before `>` or `)` goes, and each other comma gets one space after it.
 fn type_name(ty: &syn::Type) -> String {
-    ty.to_token_stream()
+    let compact: String = ty
+        .to_token_stream()
         .to_string()
-        .replace(' ', "")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    compact
+        .replace(",>", ">")
+        .replace(",)", ")")
         .replace(',', ", ")
 }
 
@@ -795,6 +894,65 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let holds_secret = quote_spanned! {ty.span()=>
             <#ty as ::syntropy_config::HoldsSecret>::HOLDS_SECRET
         };
+        let with = serde_with(&field.attrs, &mut errors);
+        if with.is_none()
+            && let Some(core_type) = core_form_type(ty)
+        {
+            errors.at(
+                ty.span(),
+                format!(
+                    "a `{core_type}` key reads RFC-0054 §3's forms through \
+                     `#[serde(with = \"syntropy_config::form\")]`; without it, it would read \
+                     `syntropy-core`'s record encoding"
+                ),
+            );
+        }
+        let ranged = key.min.is_some() || key.max.is_some();
+        let this_key = quote!(&<#name as ::syntropy_config::ConfigSection>::SCHEMA.keys[#index]);
+        let check_body = match (&with, ranged) {
+            (None, false) => quote_spanned! {ty.span()=>
+                ::syntropy_config::__private::check_value::<#ty>(value).map(|_| ())
+            },
+            (None, true) => quote_spanned! {ty.span()=>
+                ::syntropy_config::__private::check_value_in_range::<#ty>(value, #this_key)
+            },
+            (Some(with), false) => {
+                let call = with.call();
+                quote_spanned! {ty.span()=>
+                    ::syntropy_config::__private::check_value_by::<#ty>(value, #call).map(|_| ())
+                }
+            }
+            (Some(with), true) => {
+                let call = with.call();
+                quote_spanned! {ty.span()=>
+                    ::syntropy_config::__private::check_value_by_in_range::<#ty>(
+                        value, #this_key, #call,
+                    )
+                }
+            }
+        };
+
+        // `KeySchema::same`, which `InstanceSection::changes` uses to tell a value written
+        // another way (`"30s"`, `"30000ms"`) from a new one. It reads both values through the
+        // deserializer the section uses, then compares them:
+        // - with `==` where the field type implements `PartialEq`;
+        // - as written where it does not, such as `Secret<T>`, which has no `PartialEq` on
+        //   purpose.
+        //
+        // A derive cannot ask whether a type implements a trait, so the choice is made by method
+        // lookup, a pattern known as autoref specialization. `__private::Same<T>` implements
+        // `SameByValue` when `T: PartialEq`, and `&Same<T>` implements `SameAsWritten` for every
+        // `T`. The call `(&probe).same(a, b)` has a receiver of type `&Same<T>`. Lookup tries
+        // that type before it adds a reference, so it takes `SameByValue::same` when its impl
+        // applies and `SameAsWritten::same` otherwise. Both arms are tested in
+        // `tests/derive.rs`, `the_generated_same_compares_by_value_or_as_written`.
+        let same_probe = match &with {
+            None => quote! { ::syntropy_config::__private::Same::<#ty>::deserialized() },
+            Some(with) => {
+                let call = with.call();
+                quote! { ::syntropy_config::__private::Same::<#ty>(#call) }
+            }
+        };
 
         key_tokens.push(quote! {
             ::syntropy_config::KeySchema {
@@ -812,20 +970,55 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 authority: #authority,
                 env: #env,
                 holds_secret: #holds_secret,
+                check: {
+                    fn check(
+                        value: &::syntropy_config::__private::toml::Value,
+                    ) -> ::core::result::Result<(), ::syntropy_config::ValueError> {
+                        #check_body
+                    }
+                    check
+                },
+                same: {
+                    // `PartialEq` where the type has it, else as written: see `Same`.
+                    #[allow(clippy::needless_borrow)]
+                    fn same(
+                        a: &::syntropy_config::__private::toml::Value,
+                        b: &::syntropy_config::__private::toml::Value,
+                    ) -> bool {
+                        #[allow(unused_imports)]
+                        use ::syntropy_config::__private::{SameAsWritten as _, SameByValue as _};
+                        (&#same_probe).same(a, b)
+                    }
+                    same
+                },
             }
         });
 
-        let ranged = key.min.is_some() || key.max.is_some();
-        if ranged {
-            default_checks.push(quote_spanned! {ty.span()=>
+        default_checks.push(match (&with, ranged) {
+            (None, false) => quote_spanned! {ty.span()=>
+                ::syntropy_config::__private::check_default::<#ty>(&keys[#index], &mut errors);
+            },
+            (None, true) => quote_spanned! {ty.span()=>
                 ::syntropy_config::__private::check_default_in_range::<#ty>(&keys[#index], &mut errors);
-            });
+            },
+            (Some(with), false) => {
+                let call = with.call();
+                quote_spanned! {ty.span()=>
+                    ::syntropy_config::__private::check_default_by::<#ty>(&keys[#index], &mut errors, #call);
+                }
+            }
+            (Some(with), true) => {
+                let call = with.call();
+                quote_spanned! {ty.span()=>
+                    ::syntropy_config::__private::check_default_by_in_range::<#ty>(
+                        &keys[#index], &mut errors, #call,
+                    );
+                }
+            }
+        });
+        if ranged {
             range_checks.push(quote_spanned! {ty.span()=>
                 ::syntropy_config::__private::check_range(&self.#ident, &keys[#index], &mut errors);
-            });
-        } else {
-            default_checks.push(quote_spanned! {ty.span()=>
-                ::syntropy_config::__private::check_default::<#ty>(&keys[#index], &mut errors);
             });
         }
     }
@@ -833,6 +1026,10 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let type_name = name.to_string();
     let scope = section_scope.tokens();
+    let deprecated = match &attrs.deprecated {
+        Some(expr) => quote_spanned!(expr.span()=> #expr),
+        None => quote!(&[]),
+    };
     Ok(quote! {
         impl ::syntropy_config::ConfigSection for #name {
             const SCHEMA: ::syntropy_config::SectionSchema = ::syntropy_config::SectionSchema {
@@ -843,6 +1040,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 scope: #scope,
                 doc: #section_doc,
                 keys: &[#(#key_tokens),*],
+                deprecated: #deprecated,
                 check_defaults: {
                     fn check_defaults() -> ::std::vec::Vec<::syntropy_config::KeyError> {
                         let keys = <#name as ::syntropy_config::ConfigSection>::SCHEMA.keys;

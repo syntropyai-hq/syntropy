@@ -31,12 +31,16 @@ mod cli;
 mod codeowners;
 mod contrib;
 mod dep_diff;
+mod determinism;
 mod instructions;
 mod licences;
+mod loom;
+mod properties;
 mod registry;
 mod repo_settings;
 mod roster;
 mod run;
+mod sim_presets;
 mod toolchain;
 
 use std::ffi::OsString;

@@ -784,7 +784,8 @@ pub enum JoinMsg {
     JoinRequest   { token_id: [u8; 16], secret: [u8; 16], info: NodeInfo },
     JoinAccepted  { grant: JoinGrant },
     Rejected      { reason: JoinReject },     // Expired | Exhausted | Revoked | Denied | ProtoMismatch
-                                              // | NamespaceMismatch | RateLimited | CoordinatorUnreachable
+                                              // | NamespaceMismatch | RateLimited | ClockSkew
+                                              // | CoordinatorUnreachable
 }
 pub struct JoinGrant {
     pub cert: AdmissionCert,
@@ -848,6 +849,24 @@ The daemon assembles its interface list at start and on every OS interface-chang
 | Windows | `IfType` = 71 (IEEE 802.11) from `GetAdaptersAddresses` | `IfType` = 6 | adapter description of the Thunderbolt networking driver; `IfType` 6 with a Thunderbolt PnP parent | adapter description "Tailscale" or `IfType` 53 (PROP_VIRTUAL) with a tailnet address | not in v1 (ADR-0011) | `INetworkCostManager` cost ≠ unrestricted |
 
 Wi-Fi is classified even when the OS calls it Ethernet. Some USB Wi-Fi bridges report Ethernet, which is why RFC-0010's measured p99 is what the solver uses. The classification feeds the defaults: Wi-Fi edges are costed at p99 in latency mode (RFC-0011), and a metered edge carries no bulk transfer unless the user allows it (`net.bulk_on_metered = false`).
+
+*Note 2026-10-22 (DIST-E6-T01): the sources, as built.* `syntropy_net::iface` reads the same facts as the table's APIs, from sources that need no FFI and no `unsafe`:
+- **Linux:** sysfs as the table says; `/proc/net/if_inet6` for IPv6 addresses; `ip -o -4 addr show` for IPv4 addresses, which sysfs does not hold; `/proc/net/route` and `/proc/net/ipv6_route` for the default route; `nmcli` for NetworkManager's `Metered`. No netlink socket is opened. DIST-E6-T03's change notifications may add one.
+- **macOS:** `networksetup -listallhardwareports` for the hardware port names that SystemConfiguration holds, `ifconfig -a` for flags, MTU, addresses, link rate and bridge members, and `route -n get` for the default route.
+- **Windows:** one PowerShell run of `Get-NetAdapter` (the `IfType`, description, status, MTU and speed that `GetAdaptersAddresses` reports), `Get-PnpDeviceProperty` for the PnP parent, `Get-NetIPAddress` and `Get-NetRoute`.
+- **Metered** is read on Linux only. On macOS and Windows `METERED` stays unset until DIST-E6-T08 adds Network.framework's `NWPath` and `INetworkCostManager`. Until then a metered link on those systems is not kept from bulk transfer.
+
+Rules the table leaves open:
+- A loopback interface is listed, as `Loopback`.
+- On Linux, an interface whose `type` is neither `ARPHRD_ETHER` nor loopback is a tunnel (`tun`, `sit`, `gre`, `ipip`), so an overlay. The table's `tailscale*`, `wg*` and `tun*` names are such tunnels, so the type rule covers them, and no separate name rule is applied. A name alone never makes an Ethernet-type interface an overlay; a tailnet address does.
+- On macOS, every tunnel interface (`utun*`, `gif*`, `stf*`, `ipsec*`) is an overlay, with or without a tailnet address, and Apple's Wi-Fi peer-to-peer interfaces (`awdl*`, `llw*`) are Wi-Fi.
+- On Windows, `IfType` 53 and 131 are overlays, every other non-Wi-Fi adapter is Ethernet, and `MULTICAST` is set for Ethernet, Wi-Fi and Thunderbolt IP, since `Get-NetAdapter` reports no multicast flag.
+- Flagging an "Ethernet" interface that behaves as Wi-Fi by its measured p99 is DIST-E6-T07's.
+
+How a listing degrades, and its limits:
+- A listing fails only when a source it needs cannot be used: it cannot be read or run, or it printed something of which nothing could be read. A source whose every line fails is not a host with no interfaces, so it fails the listing, naming the source. Otherwise a line or interface that does not parse is skipped with a warning, so it costs only itself. On Linux, a point-to-point address (`inet LOCAL peer PEER/len`, as OpenVPN and PPP print it) reads as `LOCAL` with that prefix.
+- **Ordinals.** An interface keeps its ordinal while the node's ordinal table holds its name. No two names held at once share an ordinal, and an ordinal freed by retiring a name is given out again only after every other free one. The table holds 65,536 names at once. When it is full, a new interface is left out of the listing with a warning. On a host that makes a name per container (`veth…`), the daemon retires names it no longer sees; DIST-E6-T03 sets when.
+- **Localised names.** macOS port names come from `networksetup`. They may be localised on a system in another language (`WLAN` for `Wi-Fi`), and such a port would be classified Ethernet. No non-English rig has checked this yet. If they are localised, DIST-E6-T08 reads the interface type (`SCNetworkInterfaceGetInterfaceType`) instead. On Windows the script reads the numeric operational status and writes UTF-8, so neither a localised status nor a non-ASCII adapter name changes the listing.
 
 #### 7.3 Thunderbolt topology and the bridge
 
@@ -1040,6 +1059,9 @@ Error codes, `Domain::Cluster`, range 0x0100–0x01FF:
 | 0x010C | `ClockSkew` | `Auth` |
 | 0x010D | `DiscoverySilent` | `Link` |
 | 0x010E | `RateLimited` | `Transient` |
+| 0x010F | `TokenRevoked` | `Auth` |
+
+*Note 2026-10-22 (#1698):* `TokenRevoked` is the code of `Rejected { reason: JoinReject::Revoked }` (§6.7): a join with an invite token that a keyholder revoked before it was used (`RevokeInvite`, §8.1). It was one of two join refusals with no code. The other, `NamespaceMismatch`, still has none: that gap is open, and outside #1698. The full list of `JoinReject` reasons is in the comment above, which now includes `ClockSkew` (0x010C). Like `TokenExpired` and `TokenExhausted`, `TokenRevoked` is `Auth`, and RFC-0050 §12.1 maps it with them, to 403 on the native route.
 
 ## Performance model and budgets
 

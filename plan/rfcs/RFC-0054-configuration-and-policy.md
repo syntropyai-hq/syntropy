@@ -237,6 +237,10 @@ RFC-0001 §11.3 defines these types in `syntropy-core`, and §5.13 assigns them 
 
 *Note 2026-10-22 (OQ-PRD-27):* the field types these objects hold that `config` parses (`Reserve`, `Fraction`, the selectors behind `DeviceFilter` and `NodeFilter`, tensor-override patterns, `KeyPath` and `ConfigValue`) have plain-data forms in `core`, so the objects can live there under RFC-0001 §4.2 rule 1. `config` parses text into them and validates it. Patterns are held in `core` as their source text, and `config` keeps the compiled regex.
 
+*Note 2026-10-22 (#1672):* `config` still defines its own `Fraction`, `Reserve`, `NodeSelector`, `DeviceSelector`, `TierSelector` and `LayerRange`, which match `core`'s today. PROD-E1-T23 moves `config` onto `core`'s types and deletes the copies, so the two cannot drift.
+
+*Note 2026-10-22 (PROD-E1-T23, as built):* `config` no longer has copies of those six types. Its keys hold `core`'s types and read §3's forms through `#[serde(with = "syntropy_config::form")]`, which also serves an `Option` or `Vec` of one. The `ConfigSection` derive rejects a key of one of these types without it, because their own serde form is the record encoding, which reads no text form. `config` keeps the text forms (`syntropy_config::form::Form`), their validation messages and `Config` codes, and the compiled regex. `Reserve::resolve` is only in `core`.
+
 #### 4.1 `Objective`
 
 RFC-0001 §11.3 defines the type. This RFC adds two optional fields with serde defaults, under the RFC-0001 §5 rules:
@@ -418,6 +422,10 @@ The instance's `resources` overlay is applied on each stage node to that node's 
 
 `ResourceOverlay`, `ApproxParams` and the optional `Objective` fields skip unset values, so only explicitly set fields enter the bytes, and a field added later as an unset `Option` leaves earlier digests unchanged. RFC-0001 §18.16 records the change.
 
+*Note 2026-10-23: skipping a field in the canonical bytes only.* `Objective::Throughput`'s two optional fields and `ApproxParams`' three skip an unset field with `canon::absent_if_none`, not `Option::is_none`. The predicate is true only while `canonical_bytes()` is encoding, so the canonical bytes, and every digest, are what they were, as the golden vectors show. Every other format writes the field, `null` in JSON. `PlacementPlan` carries both types over the IPC in postcard, which reads fields by position and cannot tell that one was skipped (RFC-0001 §3.5, §18.20). A type the IPC carries uses this predicate for any field it leaves out of the canonical bytes.
+
+*Note 2026-10-22 (#1672):* one function in `config` supplies the hash: BLAKE3 over `canonical_bytes()` through `digest_with`. PROD-E1-T08 builds it, with golden digests, and every caller uses it, so no two nodes hash a policy differently. The open question below still stands; if `digest()` moves into `core`, that function calls it.
+
 Open, for the maintainers: should `digest()` live in `core` with its own hasher (a vendored or hand-written BLAKE3, or an amendment to rule 1), so that no caller can pass a different hash?
 
 **Node independence of the digest**.
@@ -448,21 +456,21 @@ Each crate declares its own config section (RFC-0001 §11.2), and the domain RFC
 | `allow_approximate`, `network_scope` | 0054 (RFC-0001 §11.1 names them) | cluster | §5.3 |
 | `policy.*` (model policy tables) | 0054 (tables); each key's owner as listed in §5.4 | cluster storage for instance keys | §5.4 |
 | `probe.*` | 0010 | node | |
-| `solver.*`, `replan.*` (with 0033) | 0011 | cluster; instance for `solver.context_target` | `replan.drift_threshold`, `replan.drift_window`, `replan.pressure_window`, `replan.min_gain`, `replan.payback_horizon`, `replan.max_defer` are the RFC-0001 §7.2 names |
+| `solver.*`, `replan.*` | 0011 | cluster; instance for `solver.context_target` | `replan.drift_threshold`, `replan.drift_window`, `replan.pressure_window`, `replan.min_gain`, `replan.payback_horizon`, `replan.max_defer` are the RFC-0001 §7.2 names. `replan.degraded_min_gain` is RFC-0033's, carved out of `replan.*` |
 | `sched.*`, `exec.*`, `speculative.*`, `batching.*` | 0012 (`batching.*` with 0032) | instance, node | `speculative.mode`, `.source`, `.draft_model`, `.max_window` appear in policy tables (§5.4) |
 | `tier.*` | 0020 | node | |
 | `io.*` | 0021 | node | |
 | `kv.*` | 0022 | instance, node | `kv.prefix_cache`, `kv.autosave`, `kv.session_retention` replace the `sessions.*` names an earlier draft of this RFC used |
 | `experts.*` | 0023 | instance | |
-| `cluster.*`, `discovery.*`, `swim.*`, `membership.*`, `invite.*`, `pairing.*`, `power.*`, `net.relay_mode`, `net.relays`, `net.bulk_on_metered`, `net.listen_port`, `members.*` | 0030 | cluster, node | `cluster.lan_admission` (default `confirm`, ADR-0302) |
+| `cluster.*`, `discovery.*`, `swim.*`, `membership.*`, `invite.*`, `pairing.*`, `power.*`, `net.relay_mode`, `net.relays`, `net.bulk_on_metered`, `net.listen_port`, `members.*` | 0030 | cluster, node | `cluster.lan_admission` (default `confirm`, ADR-0302). `invite.require_confirm` is RFC-0034's, carved out of `invite.*` |
 | `link.*`, `quic.*`, `rdma.*`, `shm.*`, other `net.*` | 0031 | node | |
-| `log.*`, `coordinator.*`, `ring.*`, `tp.*`, `actions.*` | 0032 | cluster; node for `log.group_commit`, `log.follower_queue`; instance for `ring.max_inflight_steps` | |
-| `runner.*`, `recovery.*`, `straggler.*` | 0033 (RFC-0001 §3.4 names the `runner.*` keys) | node; instance for `recovery.history`, `recovery.drain_deadline`; cluster for `recovery.confirm_after` | |
-| `security.*`, `integrity.*`, `rdma.encrypt_untrusted` | 0034 | node, cluster | `security.trusted_fabric` is the interface list ADR-0011 calls `trusted_fabric` |
+| `log.*`, `coordinator.*`, `ring.*`, `tp.*`, `actions.*`, `orphan.*` | 0032 | cluster; node for `log.group_commit`, `log.follower_queue`; instance for `ring.max_inflight_steps` | |
+| `runner.*`, `recovery.*`, `straggler.*`, `standby`, `replan.degraded_min_gain` | 0033 (RFC-0001 §3.4 names the `runner.*` keys) | node; instance for `recovery.history`, `recovery.drain_deadline` and `standby`; cluster for `recovery.confirm_after` and `replan.degraded_min_gain` | `standby` is a top-level instance key (RFC-0033 §9.3), listed in §5.4. `replan.degraded_min_gain` is carved out of RFC-0011's `replan.*` |
+| `security.*`, `integrity.*`, `rdma.encrypt_untrusted`, `invite.require_confirm`, `models.signatures`, `models.trusted_signers` | 0034 | node, cluster | `security.trusted_fabric` is the interface list ADR-0011 calls `trusted_fabric`. `rdma.encrypt_untrusted`, `invite.require_confirm` and the two `models.*` keys are carved out of RFC-0031's `rdma.*`, RFC-0030's `invite.*` and RFC-0043's `models.*` |
 | `kernels.*`, `features.disable` | 0040 | node | `kernels.module_dir` defaults to the running version's `modules/` directory (RFC-0052 §4.3); `<store>/modules` is a development override |
 | `store.*`, `hub.*`, `p2p.*`, `pack.*`, `offline` | 0041 | node | this RFC adopts RFC-0041's defaults as final: `store.max_bytes` 90% of the volume, `store.pack_max_bytes` 25% of `store.max_bytes`, `store.min_free_bytes` 20 GiB, `store.standby_max_bytes` 10% of the node's writable volumes by total size [target] (the per-node cap on second-copy chunks for repair, RFC-0033 §9.3; 0 turns second copies off; a copy is admitted only if the volume keeps 2 × `store.min_free_bytes` free, RFC-0041 §4.4) |
 | `numerics.*` | 0042 | node, instance | |
-| `models.*` | 0034 (`models.signatures`, `models.trusted_signers`), 0043 (`models.experimental_family`) | node | node settings about models. Per-model policies use `policy.*`, never `models.*` |
+| `models.*` | 0043 | node | node settings about models, such as `models.experimental_family`. Per-model policies use `policy.*`, never `models.*`. `models.signatures` and `models.trusted_signers` are RFC-0034's, carved out |
 
 The scopes column lists every scope a section uses. The table is generated from the domain crates' section declarations; it is not hand-written, and the copy above is a snapshot. The schema derive (§10.3) fails the build if two sections register the same prefix. A CI check fails if a key's declared scope differs from the owning RFC's key table.
 
@@ -495,11 +503,13 @@ Recommended default: (a). Nothing yet checks a shared section's keys against thi
 - **`coordinator.lease_ms` and `coordinator.wan_lease_ms` are `Duration`s** (`"4s"`, `"12s"`). §3 accepts no bare integer where a unit is meant, so `lease_ms = 4000`, which the name and RFC-0032's "4,000" invite, is rejected. Renaming the keys to `lease` and `wan_lease` would remove the mismatch.
 - **Node names, not `NodeId`s.** `coordinator.prefer` and the nodes of `standby = { warm = { nodes = [...] } }` (RFC-0033 §9.3's `Standby::Warm { nodes: SmallVec<[NodeId; 2]> }`) are lists of node names.
 - **Values the RFCs leave open.** `rdma.poller_thread`, `rdma.gpudirect` and `shm.enable` name only `auto`; each also takes `off`, as `rdma.enable` does. `runner.device_reprobe` ("on `Device` class failures") is an enum with the one value `on_device_failure`. `standby` takes `"none"`, `"replica"` or the `warm` table.
-- **`replan.*` is split.** The table above gives `replan.*` to RFC-0011 "with 0033". RFC-0011's key table declares `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer`, so the PLC lane registers them, and RFC-0033's shared `replan` section claims only `replan.degraded_min_gain`. RFC-0011 gives `replan.max_defer` a default of 5 min and RFC-0033 §12 gives 10 min. That conflict is open, and no default is chosen here.
+- **`replan.*` is split.** The table above gave `replan.*` to RFC-0011 "with 0033". RFC-0011's key table declares `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer`, so the PLC lane registers them, and RFC-0033's shared `replan` section claims only `replan.degraded_min_gain`. RFC-0011 gave `replan.max_defer` a default of 5 min and RFC-0033 §12 gave 10 min. *Settled 2026-10-22 (#1678):* RFC-0011 owns the key, so its 5 min holds; the default was settled at 5 min (RFC-0011's value) under the maintainer's standing instruction of 2026-10-22. RFC-0033 §12 now refers to RFC-0011 for the three keys. *Resolved 2026-10-22 (#1678):* the table above lists `replan.degraded_min_gain` as RFC-0033's carve-out, in RFC-0033's row, and RFC-0011's row no longer says "with 0033".
 - **Gaps in the table above** that these keys expose:
   - `orphan.*` (RFC-0032 §9's `orphan.adopt_deadline`) has no row. It is registered under RFC-0032.
   - RFC-0034's `invite.require_confirm` is a carve-out inside RFC-0030's `invite.*` that the table does not list, so PROD-E1-T16's carve-out check would flag its shared section.
   - The top-level instance key `standby` (RFC-0033 §9.3, §12) appears nowhere in this RFC, neither here nor in §5.4.
+  - *Note 2026-10-22 (review of #1740):* every carve-out is now a full key path in its owner's Prefix column, as `models.signatures` and `models.trusted_signers` are under RFC-0034. So PROD-E1-T16 reads one form. RFC-0011's `replan.*` "(with 0033)" is left to #1678.
+  - *Resolved 2026-10-22 (#1679):* the table above now lists `orphan.*` under RFC-0032, the `invite.require_confirm` carve-out under RFC-0034 (and in RFC-0030's row), and `standby` under RFC-0033; §5.4 lists `standby`.
 
 #### 5.2 Node keys owned by the product RFCs
 
@@ -589,6 +599,8 @@ Recommended default: (a). Nothing yet checks a shared section's keys against thi
 
 These keys build an `InstancePolicy` (§4.5). In addition, every instance-scope key that a domain section declares, such as `solver.context_target`, `ring.max_inflight_steps` or `recovery.history`, may appear in a `policy.*` table. It travels in `InstancePolicy::domain`, so it reaches the solver through `EnsureInstance` and is covered by the digest. Each may be set in `[policy.default]` or `[policy."<selector>"]`, which live in the cluster log, or explicitly when a model is loaded. Rule 3 (§2.2) decides which applies. "Req" says what a request may do with the key (§7). "Hot" here means the change applies to new requests, or to idle-unload and preload decisions, without a new plan.
 
+*Note 2026-10-22 (PROD-E1-T24):* a domain crate builds its typed section from an instance's policy through `syntropy_config::InstanceSection`, never by parsing the table itself. `InstanceSection::<S>::from_policy` takes the section's `<prefix>` table, and `from_domain` the matching entries of `InstancePolicy::domain`, with a function that supplies each computed default the crate owns. It applies §8's phases 2 and 3 with each key's own check, so a value gets the same `Config` code here as in a node file's `[policy."…"]` table at load, and every problem is reported. `InstanceSection::changes` lists the keys two builds differ in, each with its §9.1 reload class.
+
 | Key | Type | Default | Reload | Req | Owner |
 |---|---|---|---|---|---|
 | `objective` | `latency` \| `throughput` | `latency` (D2) | instance | — | 0011 |
@@ -602,6 +614,7 @@ These keys build an `InstancePolicy` (§4.5). In addition, every instance-scope 
 | `preload` | bool | `false` | hot | — | 0050 |
 | `nodes.include`, `nodes.exclude` | [NodeSelector] | `["*"]`, `[]` | instance | — | 0011 |
 | `resources.<field>` | any `ResourcePolicy` field (§4.3) | unset: each node's own policy | instance | — | 0020 |
+| `standby` | `"none"` \| `"replica"` \| `{ warm = { nodes = [...] } }`, node names (RFC-0033 §9.3) | `"none"` | instance | — | 0033 |
 | `pin` | array of tables (§6.2) | `[]` | instance | — | 0011 |
 | `tensor_override` | array of tables (§6.3) | `[]` | instance | — | 0011 |
 | `fidelity` | `exact` \| `approximate` | `exact` (D3) | instance | narrows only (§7) | 0042 |
@@ -764,6 +777,14 @@ resolve_request(req, inst: InstancePolicy, cluster) -> Result<EffectiveRequestPo
 - Stock clients that cannot send extension fields still reach approximate service through the header form (RFC-0050 §3.4).
 - **A per-model default** (amendment A6, now in RFC-0001 §11.3; `InstancePolicy::default_fidelity`, §4.5, §5.4). An instance policy may set `default_fidelity = approximate`. A request that states no fidelity is then treated as asking for approximate, still subject to `allow_approximate`. An explicit `fidelity: exact` is served exact or fails. Adopting A6 needs ADR-0019 decision 7 ("the default is `exact`") superseded by a new ADR, and RFC-0050 G4 counts the per-model default as the operator's opt-in. Labels are unchanged: such responses still say "approximate" and name their knobs.
 
+*Note 2026-10-22 (PROD-E1-T10, recorded under the maintainers' standing instruction; for the maintainers to confirm).* Instance-wide knobs and an approximate request that names its knobs:
+- **The gap.** An instance's instance-wide knobs (every allowed knob outside `PER_SEQUENCE`: the `PER_INSTANCE` knobs, such as `KV_LOSSY`, and any bit this version cannot name) are in its plan and apply to every sequence on it. If the request's knobs left one out, the pseudocode above would serve it with that knob while the response's `FidelityReport.enabled` (RFC-0050 §10) omitted it. That goes against ADR-0019 decision 7's honest label and D3: no request gets an approximation it did not name.
+- **The rule.** Every instance-wide knob the candidate allows must be in an approximate request's explicit `knobs`. Otherwise `resolve_request` fails with `fidelity_conflict`, naming the knobs the request left out, and routing tries another instance or `EnsureInstance` with the table-built policy, as for an exact request. A request with `knobs` unset asks for everything the instance allows, so it is unchanged. The rule refuses; it never weakens exactness.
+- **Knobs this version cannot name.** `ApproxKnobs` keeps a bit it does not name, so a node can hold a policy whose plan uses a knob a later version adds (RFC-0042 §10 reserves `ACT_LOWP = 1 << 8`). Such a bit counts as instance-wide, so an exact request on that plan fails with `fidelity_conflict`. An approximate request whose knobs would hold it fails the same way, because its label could not list it. The error writes the bit in hex, such as `0x100`. Both refuse.
+- **Two readings of the pseudocode.**
+  - "if knobs is empty: resolve to Exact" goes on to the exact path, so a candidate whose plan has instance-wide knobs still fails with `fidelity_conflict`. An exact result never comes from an approximate plan.
+  - `BenchControls` without `debug.bench_api` fails with `debug_api_disabled` (§7.1). It is checked with `knobs_need_approximate`, before resolution.
+
 A request may switch speculation off but cannot force it on. `deterministic = true` requires an instance whose `InstancePolicy::deterministic` is set. If none exists, ingress requests one through `EnsureInstance` like any other policy, subject to capacity.
 
 **Priority.** OpenAI's `service_tier = "flex"` maps to `Background`; every other value maps to `Normal`. The native API can request `Interactive` (RFC-0050 §3.4). In latency mode, `Interactive` is the sequence whose decode step goes first (RFC-0001 §6.2). At most one sequence per instance holds `Interactive` at a time; a second `Interactive` request is admitted as `Normal`, and the response says so.
@@ -830,6 +851,22 @@ error[config/0003]: unknown key `resource.ram_headroon`
 - **Never the library's text.** The renderer never prints the TOML library's rendered error, which appends the source line in every phase. It renders from the error's span and message.
 - **Drop-ins.** Lines are attributed one file at a time, since a table header never carries over from one file to the next.
 - **Tests.** PROD-E1-T03's golden tests plant a marker token in every secret-typed value, and in the value of every unknown key and unknown `SYNTROPY_*` variable, and check that no rendered output, for any error code, contains it. The `config/0003` example above shows the unknown key's value withheld.
+
+*Note 2026-10-22 (PROD-E1-T03):* how the validation runs, as built.
+- **Phases 1–3 report together.** Phase 3 checks each value as layering assigns it, so a bad value in a file is an error even when a later layer overrides it. A file that cannot be read, or is not UTF-8, is an error beside the other files' errors, which are still resolved. Phases 4 and 5 run once phases 1–3 pass, and a load reports every error it finds, not only the first.
+- **Phases 4 and 5 are frameworks.** A rule reads resolved values by path. The task that owns a key adds its rules: PROD-E5-T02 the API bind and TLS rules, and PROD-E1-T07 the `ram_headroom` floor. PROD-E1-T05 is M0a, before this framework, so its `ResolvedConfig` emits the `debug.*` warning itself, which the startup log and each reload print. Phase 5 asks an `Environment` about the host: `config` answers paths and file permissions from the standard library, and the daemon adds direct I/O and interface names (PROD-E6-T24).
+- **Directory keys.** A key whose last segment is `dir` or `dirs`, or ends in `_dir` or `_dirs`, such as `node.state_dir`, names a directory. Phase 5 requires a writable directory there, or a missing one whose nearest existing ancestor is writable, so a regular file is unusable. The check writes: it creates an empty `.syntropy-write-check-<pid>` file in the directory and removes it at once, since the standard library has no check that writes nothing. `config check` therefore touches every directory a path key names.
+- **Warnings without a code.** A warning that §8's table gives no code, such as a deprecated key or a secret-holding file that others can read, prints as `warning: …`.
+- **The deprecation window (open, for the maintainers).** "One minor release before 1.0" can be read two ways:
+  - (a) a key deprecated in 0.3 is accepted throughout 0.3.x and unknown from 0.4.0;
+  - (b) it is accepted through 0.4.x too.
+
+  Recommended default: (a), the literal reading, as built (`Deprecated::closes_in`). The release that closes a window removes the record.
+
+*Note 2026-10-22 (PROD-E5-T02): the API listener rules, as built.* They are `syntropy_api::rules::API_RULES`, which a binary that serves the API passes to `load_and_validate`.
+- **`api.tls = "none"`** (phase 4, code 10) is checked against non-loopback binds only. A loopback bind serves plain HTTP whatever `api.tls` says (RFC-0050 §11.1), so `"none"` with loopback-only binds is accepted. On a specific LAN address it needs `api.allow_plaintext_lan = true`. On a wildcard (`0.0.0.0`, `::`), which listens on every interface, and on a public address, it is rejected even with the opt-in, because RFC-0050 §11.1 allows plain HTTP "only on LAN addresses"; RFC-0050 §11.1's note of this date lists which addresses those are.
+- **The `{ cert, key }` pair.** The value's type takes both files or neither, so a table with only one of them is rejected in phase 3 (code 2), and the message names the missing one. Phase 4 has nothing left to check. In phase 5, `api_tls_files_readable` requires both files to exist and be readable files, as an error (code 11). The built-in path check does not cover them: it sees only path-typed keys, accepts a missing file whose directory is writable, and warns rather than rejects.
+- **The API-key check is not a configuration rule.** The phase 4 row above lists it, but keys live in `api-keys.toml` (RFC-0050 §11.3), not in a configuration layer. The daemon checks it at start through `syntropy_api::bind::plan_binds`: a non-loopback bind with no key refuses to start, and the message names `syntropy api-key create --name … --scope inference`.
 
 **Startup.** `syntropy serve` refuses to start on any phase 1–4 error and prints every error, not only the first. `syntropy config check [--file <path>] [--strict]` runs phases 1–5 without a daemon; `--strict` turns phase 5 warnings and empty override matches into errors for CI use.
 

@@ -126,6 +126,7 @@ pub struct DioAlign { pub mem: u32, pub offset: u32 }
 4. `Wait::Until(Nanos)` is a relative timeout: block until a completion arrives or that much time passes.
 5. `BufIndex` is 16 bits, the narrower of the native indexes (io_uring's `buf_index`; I/O rings take 32), so every value is valid on every engine.
 6. `CancelOutcome::Cancelled` still produces a completion, carrying `IO_CANCELLED`. `TooLate` completes normally and the I/O thread discards it as stale.
+7. *(2026-10-22, TIER-E5-T02.)* Two safe methods let the I/O thread chunk and coalesce without new `unsafe`. `IoDest::split_at(at)` gives two disjoint halves of the range. `IoDest::join(next)` joins two `Fixed` ranges of one buffer when `next` starts where the first ends. Each result names only bytes its inputs already vouched for. `Raw` ranges never join, because two adjacent ones may lie in different allocations.
 
 ### 3. Threads, rings, priorities and queue depth
 
@@ -147,6 +148,14 @@ loop:
 ```
 
 Producers signal a parked I/O thread through one doorbell word per ring (ADR-0012 item 5). A dispatcher never waits for the I/O thread: it posts a request and carries on, and finds the completion when it next polls its ring.
+
+*Note 2026-10-22 (TIER-E5-T02, as built):* `syntropy_io::IoLoop` runs this loop, and each producer holds an `IoClient`. The details below are choices this section leaves open:
+- **Doorbells.** Each request ring has a doorbell word of its own, on its own cache line. To park, the loop sets every word, issues a sequentially consistent fence and drains the rings once more. A producer issues the same fence after its push and unparks the loop if its word is set. `syntropy-spsc`'s own wait parks a consumer on one ring, so the many-ring park lives in `io`.
+- **Draining.** Each visit drains one producer's ring in full, starting at a different producer each pass. That keeps the rows a token needs, posted together, adjacent in their queue, so they can coalesce. A producer's requests in the loop, plus its completions it hasn't taken yet, never exceed its completion ring's capacity, so a completion always has a slot. The producer takes completions only through `IoClient`, which counts each one and rings the doorbell, so a loop parked on a full completion ring wakes when the producer frees a slot. A producer that doesn't take its completions is not drained.
+- **Coalescing.** A read joins the read at the back of its queue when the file bytes and the `Fixed` destination bytes both continue that read, and the destination of the read already queued is exactly as long as its extent. A coalesced read holds at most the chunk size and 16 requests. A short transfer credits the requests in extent order.
+- **Writes** are submitted whole, never chunked or coalesced, because their `SyncMode` covers the whole extent.
+- **An extent longer than its destination** completes at intake with `IO_MISALIGNED` and never reaches the engine. §16 gives that producer bug no code of its own (open, for the maintainers).
+- Not in this task: §3.2's depth rules beyond "highest class first", and the `useful_until` drops, are TIER-E5-T07. The one retry of a short transfer is TIER-E5-T15, so a short transfer completes with `IO_SHORT_READ` for now.
 
 #### 3.2 Depth and priority rules
 
@@ -231,6 +240,12 @@ ADR-0013 defines two engines and chooses between them per volume by measurement 
 **Punched source ranges.** Once a SOURCE-layout pack extent is committed, the store may punch the matching source ranges when free space would otherwise fall below its threshold (RFC-0041 §4.5 owns the rule, the range map and `store.min_free_bytes`, with `store.punch_covered_sources = auto | never`). The I/O path keeps two rules so a punched range is never read: (1) read-around and peer-serving reads of a source range resolve through the store's range map first, and a range that a committed extent holds is read from the extent; (2) the store asks the volume's I/O thread to punch, and the thread issues the punch as a `Background` operation only after the range map has switched and every in-flight read of that range has completed (`fallocate(FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE)` on Linux, `FSCTL_SET_ZERO_DATA` on a sparse file on Windows, `F_PUNCHHOLE` on APFS). A read that would still reach a punched range is a bug, rejected before submission with an `Internal` error, like a misaligned request.
 
 **Checks.** Every request is checked against `A` and `M` before submission. A misaligned request is a bug (`IO_MISALIGNED`, `Internal`) and is rejected before it reaches the kernel, never silently bounced.
+
+*Note 2026-10-22 (TIER-E5-T05, as built):* `syntropy_io::align` holds this section. The details below are choices it leaves open:
+- **Query.** `align::query(file, path)` returns `Aligned { dio, source }`, `Unsupported` (`statx` reports zero for both values, so the file goes to buffered mode) or `Unknown` (nothing answered; the 4 KiB floor applies). On Linux `statx` is called through `syscall`, and the fallback reads `/sys/dev/block/<major>:<minor>/queue/logical_block_size`, or the parent device's for a partition. On Windows the fallback opens the file's volume with no access rights for `StorageAccessAlignmentProperty` and uses its physical sector size. Engines record `query(..).dio()` per file at `open` and return it from `IoEngine::file_dio`; the pool engines of TIER-E5-T03 report nothing per file until they call it, so the floor applies to them.
+- **`A` and `M`.** `RequestAlign::from_dio` takes the least common multiple where the table takes the maximum. The two agree for powers of two, which is every value an OS reports; for any other value the multiple keeps a request aligned to every part.
+- **The check** runs in `IoLoop` at intake and again as each chunk joins the batch, so a failing request never reaches the engine; `IoLoop::misaligned()` counts the rejections. It uses the request's own file's alignment, read at each request: `IoEngine::file_dio(file)`, which an engine records at `open`, or else the engine's current `EngineCaps::dio`. A file opened after the loop was built is therefore checked against its volume. A `Fixed` destination is checked by its offset inside the registered buffer; the buffer's start is the tier manager's guarantee. Each request's chunks are `io.chunk` rounded down to a multiple of its file's `A` and `M`, so chunks of an aligned request stay aligned.
+- **The pack rule** is `RequestAlign::pack_extent`, which RFC-0041's pack builder is to call. Rows and read-around use `RequestAlign::window`. `ReadAroundStats` counts each volume's payload and window bytes and writes their ratio into `StorageCapsExt::read_around_efficiency`. Copying the payload out of the `IoStaging` slot, and calling `report` when the profile is built, belong to the read-around consumer (COMP-E11-T08) and the probe (PLC-E2-T08, TIER-E5-T10): the loop holds no pointer to a `Fixed` buffer.
 
 ### 7. Windows engines
 

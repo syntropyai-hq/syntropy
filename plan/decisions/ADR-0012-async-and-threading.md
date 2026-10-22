@@ -1,5 +1,5 @@
 # ADR-0012: Async and threading: tokio off the token path, pinned OS threads on it
-- Status: Accepted
+- Status: Accepted (revised 2026-10-22)
 - Date: 2026-10-19
 - Deciders: maintainers (drafted by the architecture area)
 - Related: ADR-0001, ADR-0006, ADR-0007, ADR-0011, ADR-0013, ADR-0015; RFC-0012, RFC-0020, RFC-0021, RFC-0023, RFC-0031, RFC-0040, RFC-0053
@@ -49,7 +49,7 @@ Decode time is spent in kernels, DMA, I/O submission and the data plane (ADR-000
    - Fan-in is a set of SPSC rings polled by the one consumer. There are no MPMC queues and no mutexes on the token path.
    - Rings into the async domain signal through one eventfd or event handle per ring, so tokio is woken without polling.
 5. **Waiting.**
-   - Hot consumers spin for a bounded budget, then park on the OS address-wait primitive. The default budget is 50 µs, and 10 µs on battery.
+   - Hot consumers spin for a bounded budget, then park on the OS address-wait primitive. The default budget is 50 µs, and 10 µs on battery. *Revised 2026-10-22 (below): on Apple platforms the park is a kernel wait on a dispatch semaphore, not an address wait.*
    - GPU→CPU completion inside a step uses a pinned host doorbell word written by the device, not a driver event wait.
 6. **Invariants, enforced in CI.**
    - `syntropy-exec`, the engine module of `syntropy-io` and every `syntropy-kernels-*` crate have no dependency on tokio. A `cargo tree` check gates merges.
@@ -78,3 +78,8 @@ Decode time is spent in kernels, DMA, I/O submission and the data plane (ADR-000
 - Core reservation costs more than 10% of measured CPU W_eff on 8-core hosts. Merge the I/O and data-plane threads on small hosts.
 - A device runtime gains a host-callback mechanism with lower measured latency than doorbell polling.
 - Resolved (2026-10-19): "one io_uring per core" means shared-nothing I/O threads, each owning its core and ring, sized per NVMe volume, rather than a ring on every core. A ring on every core would take cores from execute-in-place experts with no throughput gain at 1–26 MiB request sizes.
+
+## Revisions
+
+- **Revised 2026-10-22 (DIST-E1-T01).** Item 5 on Apple platforms. The `spsc` ring's hot consumer parks with `std::thread::park`. On Linux and Android std parks on a futex, and on Windows on `WaitOnAddress`: both address waits. On Apple platforms std parks on a dispatch semaphore, because the address-wait calls there (`__ulock_wait`, `__ulock_wake`) are private API. That is std's source at 1.99.1, `library/std/src/sys/sync/thread_parking/`. So on macOS the park is a kernel wait, not an address wait. It keeps the item's aim: a bounded spin, then a sleep in the kernel until the producer wakes the thread. `os_sync_wait_on_address`, public from macOS 14.4, is a later option for a true address wait there, with std's parker as the fallback on older releases. Maintainer decision, 2026-10-22: accept std's parker. RFC-0001 §18.18 records it.
+- **Revised 2026-10-23 (PLC-E7-T01).** Item 2 on Apple platforms. macOS and iOS give a thread no way to be bound to a core: Apple silicon ignores the `THREAD_AFFINITY_POLICY` tags that exist, and there is no other affinity call. There, a hot thread runs unpinned, and the OS places it. It asks for QoS class `USER_INTERACTIVE`, the highest scheduling class a thread can take without elevated privileges, and its `HotThreadReport` gives no core, NUMA node 0 and the reason. Apple silicon has one memory node, so no thread is ever off its device's node. Elsewhere the item stands: on Linux and Android, `sched_setaffinity` pins, and the priority is the lowest nice value `RLIMIT_NICE` allows, usually the starting 0. On Windows, `SetThreadAffinityMask` pins at `THREAD_PRIORITY_TIME_CRITICAL`, within the process's primary group, the processor group of up to 64 logical processors that its threads share by default. Each core's NUMA node is looked up in that group with `GetNumaProcessorNodeEx`. On a host with more than 64 logical processors, hot threads use only that group's cores. Before Windows 11, a process with threads in several groups gets no affinity mask, so the topology call fails with that reason rather than reporting no cores. The calls are `syntropy_io::os`'s (RFC-0001 §4.2 rule 8, note of 2026-10-22).

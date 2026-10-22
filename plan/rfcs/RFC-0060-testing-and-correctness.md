@@ -5,7 +5,7 @@
 - Depends on: RFC-0001; ADR-0002, ADR-0003, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0017, ADR-0019, ADR-0020; ADR-0600, ADR-0601, ADR-0602, ADR-0603
 - Expanded by: RFC-0042 (tolerance tables), RFC-0043 (per-family fixtures and boundaries), RFC-0033 (recovery expectations for chaos scenarios), RFC-0062 (where and when each suite runs)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; the production clock and entropy sources in `io`, §2.1, ADR-0022; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
+- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; the production clock and entropy sources in `io`, §2.1, ADR-0022; `TeacherStreamId` defined and `LogitTap` made the per-entry block, §5.5; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
 
 ## Summary
 
@@ -176,6 +176,24 @@ pub struct DeviceClockSync { pub device_ts: u64, pub host_ticks: u64, pub device
   - **The solver's wall-clock safety limit** is disabled in the simulator, where only its count-based work limits apply (ADR-0101). A firing of the wall-clock limit is a simulator failure.
 - **Rule T2.** Key material (`NodeId` secrets, invite tokens, session IDs in production) always comes from `OsEntropy`. The simulator substitutes a seeded ChaCha20 stream. That substitution is possible only in `test` builds, because `SimEntropy` exists only in `testkit`.
 - *Revised 2026-10-22 (ADR-0022):* `SystemClock` and `OsEntropy` are `syntropy-io` types, in `syntropy_io::os`, not `syntropy-core` ones. The suspend-aware clocks need an `unsafe` OS call and `OsEntropy` needs `getrandom`, which RFC-0001 §4.2 rules 1 and 8 keep out of `core`. The traits, `MonoTime`, `TickSource` and `DeviceClockSync` stay in `core`. Rules T1 and T2 are unchanged: key material still comes only from `OsEntropy`.
+- *Note, 2026-10-22 (QUAL-E3-T17): the `TickSource` parts, as built.*
+  - **`core`** holds `TickSource` and `DeviceClockSync` as above, and `TickRate`: a counter's rate, with a fixed-point tick-to-nanosecond conversion that rounds to the nearest nanosecond and needs no division. `DeviceClockSync::to_ticks` maps a device timestamp onto a tick timeline of any rate, so every source implements `device_to_ticks` the same way.
+  - **No `dyn`.** The trait requires `Clone`, so `dyn TickSource` does not compile in any crate, `exec` and `obs` included. A compile-fail doctest on the trait shows it.
+  - **The production source** is `SystemTicks` in `syntropy_io::os`, beside `SystemClock`, because reading the counter needs `unsafe`. It picks its counter once per process:
+    - the TSC when CPUID reports it invariant and, on Linux and Android, the kernel's current clocksource is `tsc`;
+    - CNTVCT_EL0 on arm64, at the rate CNTFRQ_EL0 reports;
+    - otherwise the OS monotonic counter through `std::time::Instant`, at 1 GHz.
+  - **Calibration.** The TSC's rate is calibrated over 20 ms against a clock that nothing adjusts, with each end bracketed between two reads of it:
+    - `CLOCK_MONOTONIC_RAW` on Linux and Android;
+    - `mach_absolute_time` on macOS and iOS;
+    - `QueryPerformanceCounter`, through `std::time::Instant`, on Windows.
+  - **Why those clocks.**
+    - **Not `CLOCK_MONOTONIC`,** which `adjtimex` slews by up to 10%. The process keeps the calibration window's slew for life: the review of #1762 measured rates up to 8.5% off on a slewing host.
+    - **Not `SystemClock`,** whose Windows clock advances only at the timer interrupt, up to 15.625 ms at a time. A 20 ms calibration against it was 5% off on a hosted run.
+    - **Suspend-awareness** does not matter over 20 ms.
+  - **When it calibrates.** The first use of `SystemTicks` in a process calibrates, so a binary does it at startup, before a hot thread's first step. `SystemTicks` is `#[non_exhaustive]` with a `const fn new`, so a determinism lint can name its one constructor (#1763).
+  - **`now`** reads `SystemClock`, so it is on the `Clock` timeline exactly and counts suspended time. Deriving it from ticks, through an offset re-sampled after every resume, is QUAL-E3-T16's.
+  - **The test source** is `SimTicks` in `testkit`, which counts a `SimClock`'s virtual time at a rate the test chooses. The device timelines of §8.4 are QUAL-E3-T16's.
 
 #### 2.2 Control-plane protocol logic is sans-I/O
 
@@ -211,10 +229,18 @@ pub enum PollOutcome { Progress, Idle { next_wake: Option<MonoTime> }, Fault(Err
 
 The production thread wraps `poll_once` in the spin-then-park loop of ADR-0012. The simulator calls it when the device's virtual timeline says the dispatcher has work. The CPU compute pool gets the same treatment: `ComputePool::run_inline` executes a doorbell's work on the calling thread, which the simulator uses so that one OS thread runs every node. The I/O engine is a trait owned by RFC-0021, and the simulator implements it with `FakeIo` (§8.4).
 
+*Note 2026-10-23 (PLC-E7-T17):* built in `syntropy_exec::dispatch` and `syntropy_exec::pool`, as RFC-0012 §3.1's note of the same date describes. A pass is timed on the dispatcher's `TickSource`, and a pass over its budget counts as an overrun. A unit test moves the injected clock inside a pass and sees the count. In the simulator a pass takes no virtual time, because `SimTicks` moves only between events, so the watchdog cannot fire there. A pass that waited for an event would hang the run's one thread. A bounded wait inside a pass, such as a timed park, a sleep or a counted spin, goes unseen under test. The check that fails on it is PLC-E7-T18's hardware run, the first on a real `TickSource`. `crates/exec/tests/sim_one_stage.rs` drives a one-stage instance through `poll_once` and `run_inline` on one OS thread in a `SimWorld`. Two runs of one seed give identical step records, tokens and trace hashes. A checker fails the run if a pass returns `Idle` with a step in flight.
+
 #### 2.4 Deterministic iteration and hashing
 
 - **Rule T3.** Crates reachable from a protocol core or the solver use `BTreeMap`/`BTreeSet`, or `syntropy_core::DetHashMap`, a `HashMap` with a fixed-key hasher. They never use `std::collections::HashMap` with `RandomState`. A clippy `disallowed-types` configuration on those crates enforces this.
 - **Rule T4.** Nothing whose output reaches a plan, a log entry or a wire frame iterates over a hash container whose order depends on insertion history. Sorting at the boundary is the fix.
+- *Note 2026-10-22 (QUAL-E3-T03):* one clippy config, `ci/clippy-determinism.toml`, carries the rule T3 types and the rule T1 clock and generator calls. Each covered crate holds a copy as its `clippy.toml`, because clippy reads its config from the crate's directory. The covered crates are:
+  - those rule T1 names: `cluster`, `solver`, `sched`, `tier`, `store`, `api` and `runner`;
+  - `exec` and `obs`;
+  - for rule T3, the crates that hold the protocol cores and the solver (`cluster`, `daemon` for the supervisor, `solver`) and the crates their code calls into (`core`, `manifest`). The cores are sans-I/O, so the crates of their shells, such as `net`, are not reached.
+
+  A lint covers a whole crate. A part outside a rule, such as `tier`'s OS-facing module, lifts it with a scoped `#[allow]` in a file that `xtask/src/determinism.rs` lists, and in `exec` and `obs` only the `TickSource` implementation may. The `determinism` step of `cargo xtask ci lint` checks the copies and the list.
 
 #### 2.5 Deterministic kernels in tests
 
@@ -228,6 +254,10 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 - **Hosted budget.** A unit test takes under 1 s on a hosted runner (target). Longer tests carry `#[ignore = "suite:<name>"]` and run in their named suite.
 - No unit test opens a network socket other than loopback, touches a GPU, or writes outside its temporary directory. GPU-touching tests live in L4/L5 suites selected by runner labels (RFC-0062).
 - Each property has a stable ID (`P-<crate>-<n>`). A failing case shrinks, and its seed goes into the crate's `proptest-regressions/` file, which is committed.
+  - *Note 2026-10-22 (QUAL-E3-T05):* `ci/properties.toml` lists every property that has tests, with its crate and owning task. A property's tests are the test functions in its crate whose names start with its ID in snake case (`p_core_1_` for P-core-1).
+    - They run on proptest's default configuration. That is what lets `PROPTEST_CASES` set the case count: unset, it is 256, the PR count, and nightly runs `cargo xtask test properties --cases 16384`.
+    - A property lives under `src/`, where proptest saves seeds to `crates/<crate>/proptest-regressions/`, or in a `tests/<suite>/` directory with a `main.rs`, where it saves them to `tests/proptest-regressions/`.
+    - The `properties` step of `cargo xtask ci lint` checks the registry against this table, the epic files and the tests. The `properties-removal` check in `pr-meta.yml` fails a property removed from the registry unless the PR description has a line `Removes <ID>: <reason>` (§3.2).
 - **Statistical properties** (P-sched-2 and any later test with a false-positive rate) run outside proptest's case loop, in the `stat-props` suite: a fixed seeded case set, a family-wise α, no shrinking, and no entries in `proptest-regressions/`. The suite has its own budget (≤ 5 min nightly [target]), and a failure is re-run once with fresh seeds before it is reported. A chance rejection at α is expected, so only a repeated one counts.
 
 #### 3.2 Named properties
@@ -267,6 +297,8 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 
 Each crate's RFC adds its properties to this table. A property removed from the table needs a reason in the PR description.
 
+*Note 2026-10-22 (QUAL-E3-T05):* the same holds for `ci/properties.toml`, the registry of properties that have tests (§3.1). A property removed from it needs a line `Removes <ID>: <reason>` in the PR description. The `properties-removal` check enforces this in `pr-meta.yml`, not in `lint`, because it reads the description. Like `dco` and `pr-title` (RFC-0062 §12.3), it runs the base branch's `cargo xtask`, so a PR cannot change how its own removal is judged, it runs again when the description is edited, and it passes on a merge group.
+
 #### 3.3 Model-based tests
 
 Each stateful component listed below has a **reference model**: a deliberately simple implementation, often a `Vec` or `BTreeMap` with no performance concerns, written next to the test. A stateful property generates random operation sequences, applies them to both the real component and the model, and compares observable state after every operation.
@@ -293,6 +325,11 @@ Each stateful component listed below has a **reference model**: a deliberately s
   Each primitive's crate keeps its loom model next to it under `#[cfg(loom)]`.
 - **Miri** runs the unit tests of `tier` (arenas), `ipc` (shared-memory layout) and `net` (frame codecs, shared-memory transport) with FFI stubbed. It catches undefined behaviour in the `unsafe` blocks that ADR-0001 confines to these crates.
 - **Sanitizers.** A test-only job builds the `unsafe` crates and the CPU provider with AddressSanitizer and ThreadSanitizer on a pinned nightly toolchain. ADR-0001 forbids nightly compilers only for release builds.
+
+*Note 2026-10-23 (QUAL-E3-T09):* the M0 loom models are in `spsc` (the heap ring and the shared ring) and `ipc` (the `local_tokens` and `local_sequences` rings of one region), and `cargo xtask test loom` runs them in `hosted-l3` (RFC-0062 §2.3). Three findings apply to the M1 models of QUAL-E3-T22:
+- **No spinning between three threads.** In loom 0.7, a thread that yields hands over to another without spending a preemption. When two threads spin on a third, loom can hand control between the two indefinitely, and the run fails at loom's branch limit rather than finishing. A model of three threads therefore gives each thread a fixed number of attempts that never wait. The main thread then finishes the run alone and checks the outcome: every record arrives once and in order. Two-thread models may still spin.
+- **The planted bug is a twin, not a one-off edit.** Each ring has a test-only twin whose publishing store is relaxed, and a test runs the cross-thread model on it in a child process and expects loom's causality violation. A child process, because loom may abort instead of unwinding.
+- **Slot bytes are invisible to loom.** The shared ring's slots are plain memory that loom cannot see, so a loom-only cell per slot records each write and read, and loom checks those are ordered.
 
 #### 3.5 Hot-path guards
 
@@ -394,6 +431,11 @@ pub trait RefSink {
     fn hidden(&mut self, seq: u32, layer: LayerIx, rows: &HiddenBlock);  // only for tapped layers
 }
 ```
+
+*Note 2026-10-22 (QUAL-E4-T14, where the types live):* the code block above shows the types without crate paths.
+- `RefMode` and `RefDevice` live in `kernels::reference` (layer 1). `graph::reference` reads them, and so does the GPU reference in `kernels-cuda` (COMP-E14-T23); those two crates are peers in layer 2, so neither can hold them (RFC-0001 §4.2 rule 2).
+- `RefOptions`, the `WeightSource` and `RefSink` traits, `TapSpec` and `HiddenBlock` live in `graph::reference`, beside the interpreter that uses them. That interpreter is production code (the warm-up canary), and `testkit` is a dev-dependency only (rule 9). A `WeightSource` returns F32 values, dequantised with RFC-0042's reference dequantisers, for a `WeightKey`: a `graph::ir::WeightRef` and, for a routed expert, its index.
+- `RefExecutor`, `RefKv` and `RefStats` live in `testkit::refexec`, with the stub sources and sinks tests use.
 
 Reference semantics that matter for parity:
 - **Routing ties.** MoE top-k selection breaks score ties toward the lower expert index. RFC-0042 requires every provider to use the same rule, so a tie is never an inter-kernel divergence by construction. Near-ties are real numerics, and the metrics capture them.
@@ -611,11 +653,30 @@ pub enum TapMode {
     /// (both computed in F64), its argmax and its top-2 margin.
     Gather { k: u16, tail: u16 },
 }
+/// Names the teacher stream of one parity run. Chosen by the driver's daemon, opaque to the tail;
+/// the tokens arrive in `TapIds` frames for the sequence (RFC-0031 §6.13).
+pub struct TeacherStreamId(pub u64);
+/// `TokenEntry::tap`: one row per tapped position of the entry (RFC-0031 §6.5's tap block).
+pub struct LogitTap { pub k: u16, pub tail: u16, pub rows: Vec<TapRow> }
+pub struct TapRow {
+    pub pos: u32,
+    pub argmax: u32,                     // ties to the lower id
+    pub margin: f32,                     // top-1 minus top-2 logit
+    pub lse: f64,                        // logsumexp over the full vocabulary, in F64
+    pub lse_complement: f64,             // logsumexp over V∖T, in F64; 0 for FullLocal
+    pub values: TapValues,
+}
+pub enum TapValues {
+    Gather { top: Vec<f32>, tail: Vec<f32> },   // logits at T and at S, in the order sent
+    FullLocal { shm_offset: u64 },              // the row's offset in the mapped region
+}
 ```
+
+*Revised 2026-10-22 (QUAL-E5-T19), a plan correction for the maintainers:* this block named `TeacherStreamId` and `LogitTap` without defining them, and the RFCs that use `LogitTap` disagreed on its shape. RFC-0050 §13.6 gave one record per position. RFC-0001 §5.8's `TokenEntry::tap: Option<LogitTap>` and RFC-0031 §6.5's tap block hold one per entry, which covers every position of a verify window or prefill chunk. `LogitTap` is now the per-entry block, matching RFC-0001 and RFC-0031, and `TapRow` is the per-position record that the parity endpoint streams. `TeacherStreamId` is a `u64` the driver's daemon chooses; it needs no wire field, because `TapIds` frames already carry the sequence's ID. In JSON a non-finite tap value is the string `"nan"`, `"inf"` or `"-inf"` (RFC-0050 §13.6), and a binary format keeps its bits (RFC-0031 §6.5).
 
 At the tail, `ForceMode` replaces sampling. The token that goes back around the ring is the teacher token, so every stage sees exactly the decode or verify traffic it would see in service. The tap returns results in `TokenEntry::tap` (amendment A4). The endpoint that accepts a `ParityTapSpec` is `POST /v1/syntropy/parity` on the native API. The node config key `debug.parity_api` enables it; it defaults to `false` and answers on loopback binds only (§1.3).
 
-**Crate** (revised 2026-10-22). The block's "core / net" means `syntropy-core`. `ParityTapSpec`, `ForceMode`, `TapMode` and `LogitTap` live there, because the tail in `exec` and the driver both build against them, and RFC-0001 §4.2 rule 3 keeps compute crates such as `exec` off `net`. `net` carries them on the wire without defining them.
+**Crate** (revised 2026-10-22). The block's "core / net" means `syntropy-core`. `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId`, `LogitTap`, `TapRow` and `TapValues` live there, because the tail in `exec` and the driver both build against them, and RFC-0001 §4.2 rule 3 keeps compute crates such as `exec` off `net`. `net` carries them on the wire without defining them.
 
 #### 5.6 Layer-level error and bisection
 
@@ -926,6 +987,13 @@ impl SimWorld {
 
 The loop pops the earliest event and advances the clock to its time. It hands the event to the node and component it targets, schedules everything the handler emits, and then runs every checker against the new state. Events at the same instant are ordered by `tiebreak`, drawn from the RNG when the event is scheduled. Different seeds therefore explore different interleavings of simultaneous events, which is where most distributed races live, while one seed always replays one interleaving.
 
+**Note, 2026-10-22 (QUAL-E8-T01): the core as built.** `testkit::sim` builds the loop above as `SimWorld<M: Model>`, generic over the state its events act on.
+- **The model.** The cluster is one model. It holds the nodes, the fabric (QUAL-E8-T02) and the `SimEvent` enum. The later simulator tasks build it, so the world core needs none of their types. A model handles one event at a time and schedules what it emits through a `Schedule`, at an instant or after a delay, never in the past.
+- **Time and randomness.** The model's code gets the world's clock as a read-only `SimClockHandle`, and its entropy as the seeded `SimEntropy` (QUAL-E3-T02). That stream is also where the tie-breaks come from, so a seed fixes both the model's random draws and the interleaving.
+- **The trace hash.** `TraceHasher` is BLAKE3, in key-derivation mode with a versioned context. For each processed event it hashes the instant, the length of the event's bytes, and the bytes each event type writes through `TraceEvent`. `trace_hash` returns `core`'s `Blake3`.
+- **Checkers.** `Checker::after_event` is the safety check, run after every event. `Checker::at_milestone` is the liveness check, run at milestones the scenario sets, once every event up to the milestone's instant has run. A scenario sets one at its end.
+- **Violations.** A failed check stops the run with a `Violation`. It carries the checker, the message, the seed, where the check failed (after event *n*, or at a named milestone), the virtual instant, the number of events processed, and the trace prefix: the hash of those events, which a replay with the same seed reaches at the same point. A stopped world returns the same violation from every later `run_until`.
+
 #### 8.3 Simulated fabric
 
 ```rust
@@ -965,11 +1033,24 @@ pub enum Dist {
 |---|---|---|---|---|
 | `lan_2_5g` | LogNormal(median 150 µs, σ 0.3) | 2.35 Gb/s | 0 | none |
 | `lan_10g` | LogNormal(median 100 µs, σ 0.3) | 9.4 Gb/s | 0 | none |
-| `wifi6_home` | Mixture(body LogNormal(median 5 ms, σ 1.0), p_tail 0.02, tail Uniform(200, 300 ms)). This gives p50 ≈ 5 ms, p90 ≈ 18 ms and p99 ≈ 250 ms, matching the §2.5 ranges | 400 Mb/s | 10⁻³ | yes |
+| `wifi6_home` | Mixture(body LogNormal(median 5 ms, σ 0.92), p_tail 0.02, tail Uniform(200, 300 ms)). This gives p50 ≈ 5 ms, p90 ≈ 18 ms and p99 ≈ 250 ms, matching the §2.5 ranges (σ was 1.0; see the note below) | 400 Mb/s | 10⁻³ | yes |
 | `tb5_rdma` | LogNormal(median 15 µs, σ 0.2) | 2.5 GB/s | 0 | none |
 | `tb_ip` | LogNormal(median 250 µs, σ 0.3) | 9 Gb/s | 0 | none |
 | `wan_invite` | LogNormal(median 25 ms, σ 0.5) | 50 Mb/s | 10⁻³ | p_tail 0.01 at 4× median |
 | `shm` | Const(2 µs) | 20 GB/s | 0 | none |
+
+**Note, 2026-10-23 (QUAL-E8-T02): `wifi6_home`'s σ, and how the fabric samples.**
+- **σ 0.92, not 1.0.** The three targets come from §2.5's measured ranges; the body's σ is the free parameter meant to hit them. 18 ms is the *body's* p90, but with 2% of the mass in the tail the mixture's p90 is the body's 91.8th percentile. The mixture's exact quantiles, from its CDF `0.98·Φ(ln(x / 5 ms) / σ) + 0.02·U(x; 200, 300 ms)` solved by bisection [derivation]:
+
+  | σ | p50 | p90 | p99 |
+  |---|---|---|---|
+  | 1.0 | 5.13 ms (+2.6%) | 20.16 ms (+12.0%) | 250.2 ms (+0.1%) |
+  | 0.92 | 5.12 ms (+2.4%) | 18.03 ms (+0.2%) | 250.1 ms (+0.0%) |
+
+  With σ 1.0 the preset missed its own p90 by more than QUAL-E8-T02's 10% bound. A test in `testkit` recomputes these quantiles from the preset's parameters, so the preset cannot drift from the targets unseen. The other presets are unchanged.
+- **Fields the table leaves out.** The presets set them plainly: no jitter, no reorder, no per-packet overhead, an MTU of 1,500 bytes on IP links and 4,096 on RDMA, and one packet per frame on shared memory. `wan_invite`'s tail is `Const(100 ms)`, 4 × its median, at p_tail 0.01.
+- **Portable sampling.** Every draw comes from the run's `SimEntropy`. The log-normal's `exp` and the Marsaglia polar method's `ln` are computed in `testkit::sim` from addition, subtraction, multiplication, division and square root only, which IEEE 754 rounds the same everywhere, not from the platform's maths library, whose `exp` and `ln` may differ between Linux, macOS and Windows. So a seed replays one run on any host (§8). A golden test pins the exact bits of seeded draws, so a platform difference fails loudly.
+- **Loss on reliable channels.** Each packet of a frame is lost at most once, independently, with probability `loss`, and each lost packet adds one PTO. A round-trip sample is twice a message's α plus jitter, and the PTO uses the link's estimate before the frame's own sample. Before any sample, a link assumes RFC 9002's initial RTT, 333 ms.
 
 #### 8.4 Fake devices, tiers and drives
 
@@ -1040,6 +1121,24 @@ resume_within = "formula:sc28"     # t_detect + t_solve + S_delta/β_fetch + t_r
 ```
 
 Device and drive names refer to spec presets in `testkit/sim/presets/*.toml`. Each preset cites the measured or published figures from the research notes that it encodes.
+
+**Note, 2026-10-23 (QUAL-E8-T03): the scenario and preset files as built.** These choices were taken by the task lead under the maintainer's standing instruction, and the extra label is flagged for the maintainers.
+- **Scenarios.** `testkit::sim::scenario` parses the file above into typed fields and refuses a file that cannot run, at load: a checker that is neither one §8.6 names nor the `safety` group (ADR-0600 decision 6's eight safety checkers), seed counts over 64 or 4,096, duplicate node IDs, a link to an undeclared node, an empty length range, a `resume_within` that is neither `formula:<name>` nor a duration, and a device or drive name with no preset, or one of the wrong kind. A fault's `at`, `action` and `target` stay text for the fault actions (QUAL-E9-T03). A link's `preset` is not checked at load; the cluster model resolves it against §8.3's presets when it builds the links.
+- **Presets.** One file per preset, `crates/testkit/sim/presets/<kind>.<name>.toml`, with the name's own `<kind>:` prefix left out (`gpu.ada-24g.toml`, `nvme.gen4-990pro-class.toml`). Each lists its `sources` and its `figures`. A figure is either known, with a `value` or a `range`, a `unit`, a `label` and a `source`, or `unknown`, with where the research leaves it open. A preset never fills in an unknown.
+- **Figure keys.** Each kind has a fixed set of keys, and every preset of the kind has each of them, known or `unknown`, so a figure is never absent by accident.
+  - A device has `memory`, `f_eff`, `t_fixed`, `sigma_dev`, and §8.4's `W_eff(device, tier, kernel class)` as `w_eff.<tier>.<kernel class>`.
+  - The tiers are the ones the device's kernels read, as RFC-0010's M1 probe measures them: a discrete GPU's `vram` and `host_pinned` (`memory_tier = "vram"`), a unified GPU's `unified` (`memory_tier = "unified"`), and a CPU's `host_pinned` and `host_pageable`. The kernel classes are M1's `dense_gemv` and `expert_gemv`.
+  - A discrete GPU also has `host_link_pinned_h2d`.
+  - A drive has `seq_read`, `sustained_read`, `throttled_read`, `heating_time`, `qd1_4k_read_iops`, `qd32_4k_read_iops` and `read_latency`.
+  - Other figures, such as peak rates, may stand beside them. `f_eff` stays one key until the fakes name their op classes (QUAL-E8-T06).
+- **No unknown is used silently.**
+  - A run reads a device's or drive's figure only through `NodeSpec::figure(preset, key)`. It returns the node's own figure, or else the preset's known one. A figure that is `unknown` or absent is an error, never a default, so the fakes (QUAL-E8-T05, T06, T07) cannot take one for zero.
+  - A scenario supplies a figure in its node's `set`, by preset and key, such as `[nodes.set."gpu:ada-24g".t_fixed]`, with a value or range, a unit, a label (usually `target`, a value the scenario chooses) and a source. A supplied figure takes the place of the preset's on that node.
+  - `needs` lists the figure keys the run reads. Loading refuses a scenario in which a needed figure is unknown for any of its devices or drives of a kind that has the key, unless the node supplies it.
+  - Loading also refuses a `set` for a preset the node does not have, a key the preset does not have, or a figure with no value, unit or source.
+- **Labels.** `published` is a primary-source spec, such as a datasheet, which the research note tags `[verified: Sxx]`; it is never Syntropy's own claim, and AGENTS.md's three labels have no place for it. `measured` is a third-party measurement, `estimate` a derivation and `target` a value a scenario chooses, as AGENTS.md uses them.
+- **The example's seven names.** `gpu:ada-24g` is an RTX 4090. `cpu:ddr5-2ch-128g` is dual-channel DDR5-6000, the research note's worked example (a). `gpu:apple-max-128g-unified` is an M4 Max with the 40-core GPU, the one Max with a decode η anchor in the research note. `gpu:strix-halo-128g-unified` is a Ryzen AI Max+ 395. `gen4-990pro-class` is a Samsung 990 PRO. `apple-internal` is a Mac Studio's internal SSD. `gen4-generic` is known only by its PCIe 4.0 x4 link's bound, since the research note has no figures for a generic drive.
+- **`lint`.** The `sim-presets` step of `cargo xtask ci lint` refuses a preset with no source, a figure with no label or no source, an unknown without a pointer, a missing key of its kind, and a `w_eff.*` key outside its kind's set.
 
 #### 8.6 Checkers
 

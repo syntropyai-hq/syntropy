@@ -293,7 +293,9 @@ mod tests {
                 "toolchain",
                 "fmt",
                 "clippy",
+                "determinism",
                 "check-deps",
+                "properties",
                 "codeowners",
                 "agent-instructions",
                 "rigs",
@@ -304,6 +306,7 @@ mod tests {
                 "third-party",
                 "notices",
                 "scenarios",
+                "sim-presets",
             ]
         );
         for pending in lint.pending {

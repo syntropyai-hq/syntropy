@@ -3,7 +3,8 @@
 //! Serde properties of the placement plan types (PLC-E4-T17, RFC-0001 §5.4, RFC-0011 §2).
 //!
 //! Every type round-trips through a serde format unchanged, and every record decodes when it
-//! carries fields this build does not know. JSON stands in for any self-describing format.
+//! carries fields this build does not know. JSON stands in for any self-describing format, and
+//! postcard, which the IPC uses, for the formats that are not.
 
 use std::fmt::Debug;
 
@@ -206,23 +207,22 @@ fn expert_owner_map() -> impl Strategy<Value = ExpertOwnerMap> {
         .prop_map(|layers| ExpertOwnerMap { layers })
 }
 
+fn collective_algo() -> impl Strategy<Value = CollectiveAlgo> {
+    prop_oneof![Just(CollectiveAlgo::OneShot), Just(CollectiveAlgo::Ring)]
+}
+
 fn parallelism_mode() -> impl Strategy<Value = ParallelismMode> {
     prop_oneof![
         Just(ParallelismMode::Local),
         (small(device_id()), tp_split())
             .prop_map(|(devices, split)| ParallelismMode::IntraNodeTp { devices, split }),
-        (
-            small(stage_member()),
-            tp_split(),
-            prop_oneof![Just(CollectiveAlgo::OneShot), Just(CollectiveAlgo::Ring)]
-        )
-            .prop_map(
-                |(members, split, collective)| ParallelismMode::CrossNodeTp {
-                    members,
-                    split,
-                    collective
-                }
-            ),
+        (small(stage_member()), tp_split(), collective_algo()).prop_map(
+            |(members, split, collective)| ParallelismMode::CrossNodeTp {
+                members,
+                split,
+                collective
+            }
+        ),
         (small(stage_member()), expert_owner_map())
             .prop_map(|(members, owners)| ParallelismMode::CrossNodeEp { members, owners }),
     ]
@@ -542,6 +542,11 @@ fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) {
     let json = serde_json::to_string(value).expect("serialize");
     let back: T = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(&back, value, "round trip through {json}");
+    // Postcard too: the IPC carries plans in it (RFC-0001 §3.5), and it reads fields by
+    // position, so a field skipped on the way out breaks it (RFC-0001 §18.20).
+    let bytes = postcard::to_allocvec(value).expect("serialize to postcard");
+    let back: T = postcard::from_bytes(&bytes).expect("deserialize from postcard");
+    assert_eq!(&back, value, "round trip through postcard");
 }
 
 macro_rules! round_trip_tests {
@@ -570,6 +575,9 @@ round_trip_tests! {
     rt_exactness_policy: exactness();
     rt_stage_assignment: stage_assignment();
     rt_parallelism_mode: parallelism_mode();
+    rt_tp_split: tp_split();
+    rt_collective_algo: collective_algo();
+    rt_expert_owner_map: expert_owner_map();
     rt_hop_plan: hop_plan();
     rt_relay_via: relay_via();
     rt_tier_assignment: tier_assignment();
@@ -631,6 +639,16 @@ proptest! {
 
     #[test]
     fn delta_decodes_with_future_fields(value in plan_delta()) {
+        decodes_with_future_fields(&value);
+    }
+
+    #[test]
+    fn tp_split_decodes_with_future_fields(value in tp_split()) {
+        decodes_with_future_fields(&value);
+    }
+
+    #[test]
+    fn expert_owner_map_decodes_with_future_fields(value in expert_owner_map()) {
         decodes_with_future_fields(&value);
     }
 }
@@ -766,4 +784,113 @@ fn plan_epochs_order_by_term_then_seq() {
     assert!(e(1, 9) < e(2, 0));
     assert!(e(2, 0) < e(2, 1));
     assert_eq!(e(3, 3).cmp(&e(3, 3)), std::cmp::Ordering::Equal);
+}
+
+// ---- A 4-member island (RFC-0032 §5.1, DIST-E13-T13) ---------------------------------------
+//
+// The test inputs below are not measurements. Four members have `W_eff` in the ratio 3 : 2 : 2 : 1,
+// and each split gives a member its share at the legal granularity: whole KV-head groups for
+// attention, whole 128-column tiles for FFN and expert columns. Validating a split against a
+// family's granularities is DIST-E13-T01's.
+
+/// Shares of `total` units in the ratio `weights`, as whole units; the test picks totals the
+/// weights divide.
+fn weighted(total: u32, weights: [u32; 4]) -> [u32; 4] {
+    let sum: u32 = weights.iter().sum();
+    assert_eq!(total % sum, 0, "the test's totals divide by the weights");
+    weights.map(|weight| total / sum * weight)
+}
+
+const WEIGHTS: [u32; 4] = [3, 2, 2, 1];
+
+/// 8 KV-head groups, 14,336 FFN columns (112 tiles of 128) and 2,048 columns per expert (16 tiles),
+/// split 3 : 2 : 2 : 1.
+fn uneven_split() -> TpSplit {
+    let attn = weighted(8, WEIGHTS).map(|groups| groups as u16);
+    TpSplit {
+        attn: SmallVec::from_slice(&attn),
+        ffn: SmallVec::from_slice(&weighted(14_336 / 128, WEIGHTS)),
+        experts: Some(SmallVec::from_slice(&weighted(2_048 / 128, WEIGHTS))),
+    }
+}
+
+/// Three MoE layers of 16 experts each, owned 6 : 4 : 4 : 2 by the four members, laid out
+/// differently in each layer.
+fn four_member_owners() -> ExpertOwnerMap {
+    let counts = weighted(16, WEIGHTS);
+    let blocked: Vec<u8> = (0..4u8)
+        .flat_map(|member| std::iter::repeat_n(member, counts[member as usize] as usize))
+        .collect();
+    let mut striped = Vec::with_capacity(16);
+    let mut left = counts;
+    while striped.len() < 16 {
+        for member in 0..4u8 {
+            if left[member as usize] > 0 {
+                left[member as usize] -= 1;
+                striped.push(member);
+            }
+        }
+    }
+    let reversed: Vec<u8> = blocked.iter().rev().copied().collect();
+    ExpertOwnerMap {
+        layers: vec![
+            (LayerIx(1), blocked),
+            (LayerIx(3), striped),
+            (LayerIx(5), reversed),
+        ],
+    }
+}
+
+fn four_members() -> SmallVec<[StageMember; 4]> {
+    (1u8..=4)
+        .map(|node| StageMember {
+            node: NodeId([node; 32]),
+            devices: SmallVec::from_slice(&[DeviceId {
+                node: NodeId([node; 32]),
+                ordinal: 0,
+            }]),
+            link: sample_link(1, node),
+        })
+        .collect()
+}
+
+#[test]
+fn an_uneven_weighted_split_round_trips_unchanged() {
+    let split = uneven_split();
+    assert_eq!(split.attn.as_slice(), [3, 2, 2, 1]);
+    assert_eq!(split.ffn.as_slice(), [42, 28, 28, 14]);
+    assert_eq!(split.experts.as_deref(), Some([6, 4, 4, 2].as_slice()));
+    // Every unit is given to exactly one member.
+    assert_eq!(split.attn.iter().map(|g| u32::from(*g)).sum::<u32>(), 8);
+    assert_eq!(split.ffn.iter().sum::<u32>(), 112);
+    round_trip(&split);
+    round_trip(&ParallelismMode::CrossNodeTp {
+        members: four_members(),
+        split,
+        collective: CollectiveAlgo::OneShot,
+    });
+}
+
+#[test]
+fn an_owner_map_for_a_four_member_island_round_trips_unchanged() {
+    let owners = four_member_owners();
+    for (layer, experts) in &owners.layers {
+        let mut per_member = [0u32; 4];
+        for owner in experts {
+            per_member[*owner as usize] += 1;
+        }
+        assert_eq!(per_member, [6, 4, 4, 2], "layer {layer:?}");
+    }
+    round_trip(&owners);
+    round_trip(&ParallelismMode::CrossNodeEp {
+        members: four_members(),
+        owners,
+    });
+}
+
+#[test]
+fn both_collective_algorithms_round_trip() {
+    for algo in [CollectiveAlgo::OneShot, CollectiveAlgo::Ring] {
+        round_trip(&algo);
+    }
 }

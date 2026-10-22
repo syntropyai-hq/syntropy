@@ -6,7 +6,7 @@
 //!
 //! - This module holds the types of RFC-0043 §2.1, and the `BoundarySet` of §6.1 that
 //!   [`ModelGraph`] carries.
-//! - [`signature`] holds each kind's value signature, which rule 2 checks.
+//! - [`signature`](mod@signature) holds each kind's value signature, which rule 2 checks.
 //! - [`validate`](mod@validate) holds [`validate()`] and rules 1–5 of RFC-0043 §2.2.
 //!
 //! There are no control-flow nodes and no dynamic shapes beyond [`Dim::Rows`], [`Dim::Seqs`]
@@ -426,4 +426,4 @@ pub struct SideData {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

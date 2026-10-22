@@ -240,6 +240,8 @@ The response is the standard `chat.completion` object. Fields with Syntropy-spec
 - The `syntropy` extension object is described in §10.
 - `finish_reason`: `stop` for end of turn and stop strings, `length`, `tool_calls`.
 
+*Note 2026-10-23 (OQ-NET-35): `top_logprobs = 0`.* `logprobs: true` without `top_logprobs` asks for the chosen tokens' logprobs alone: `SamplingParams::logprobs = Some(0)` (RFC-0001 §5.8). So does every surface that maps to `Some(0)`, §3.5's legacy `logprobs: 0` included, and the rule here applies to all of them. An instance whose tail runs in the ingress's process carries it as is. RFC-0031 §6.5's `Token` entry has no form for it yet, so on an instance whose tail is on another node, ingress asks the tail for `Some(1)` and drops the alternative before encoding the response. The chosen token's logprob is the same value either way, so the response stays exact. Once DIST-E8-T18 gives the entry its form behind capability bit 16 (RFC-0031 §10), ingress asks for `Some(0)` only when every peer the entry crosses advertises the bit: the tail's channels to the ingress and, for the ring-return copy, which carries the logprobs too, to the head. Otherwise it keeps the rewrite.
+
 #### 3.2 OpenAI Responses (`POST /v1/responses`)
 
 The front end ships in two halves. **Stateless Responses in M1**: every request is served from its own `input`, and nothing is kept after the stream ends. This is what coding-agent clients that speak only Responses need to connect. **Stored Responses in M3**: `store`, `previous_response_id`, `background` and the retrieval routes, with records on the ingress node only (§9.2).
@@ -519,6 +521,16 @@ The engine is the `llguidance` library (MIT, Rust), behind a `ConstraintEngine` 
 
 **JSON Schema coverage.** Supported: `type` (including unions), `properties`, `required`, `additionalProperties` (false or a schema), `items`, `prefixItems`, `minItems`/`maxItems`, `enum`, `const`, `anyOf`, `oneOf` (treated as `anyOf`), `allOf` (merged where possible), `$ref` and `$defs` (recursion allowed), `pattern`, `format` (`date-time`, `date`, `time`, `uuid`, `email`, `ipv4`, `ipv6`), `minLength`/`maxLength`, `minimum`/`maximum` for integers. Unsupported keywords under `strict: true` fail the request with `constraint_unsupported`, naming the keyword. Without `strict`, they are ignored and named in `Syntropy-Warning`. Property order follows the schema's `properties` order, which is what model training data most often shows.
 
+*Note 2026-10-22 (PROD-E3-T04):* how the coverage above is applied.
+- **`$ref`.** It is supported as a document-local reference, `#` or `#/...`. The engine is built without its remote-reference support (`llguidance`'s `referencing` feature pulls `borrow-or-share`, whose MIT-0 licence is outside ADR-0018's allow list), so any other `$ref` counts as an unsupported keyword. Under `strict` it fails with `constraint_unsupported`, naming `$ref`; otherwise it is ignored and named in `Syntropy-Warning`.
+- **`definitions`.** The draft-07 name for `$defs` counts as `$defs`.
+- **Annotations.** Annotations (`title`, `description`, `default`, `examples`, `$comment`, `$schema`, `$id`, `readOnly`, `writeOnly`, `deprecated`) constrain nothing and are accepted. Vendor extensions (`x-...`) are ignored without a warning, except the engine's own option key, `x-guidance`, which is unsupported, so a request cannot change how its schema compiles.
+- **Format names.** A `format` outside the list above is named in the error or warning as `format: <name>`.
+- **Separators.** Constrained JSON uses `", "` between items and `": "` after keys, with no other whitespace between tokens, so a model cannot loop on whitespace inside a structure.
+- **`oneOf`.** "Treated as `anyOf`" holds only where nothing is lost: when the engine can prove the options exclusive, as when they differ in type or constant, no output matches two of them. Where it cannot, an output may match two options, which `oneOf` forbids. Under `strict` such a `oneOf` fails with `constraint_unsupported`, naming `oneOf` and its location. Without `strict` it compiles as `anyOf` and is named in `Syntropy-Warning`, so the approximation is always labelled (D3).
+- **Tokens that start with byte `0xFF`.** No UTF-8 text holds that byte, so no constrained output contains such a text token, and the engine never allows one. The rest of the vocabulary stays constrained.
+- **Escapes.** Constrained JSON strings use no `\uXXXX` escapes. Each character is written as itself or with its short escape (`\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`), so each string has one spelling. Because of that, an additional property's name, once decoded, can never equal a declared name and leave that property's value unchecked. The cost is that a constrained string cannot hold any other control character.
+
 #### 7.3 Where masks run
 
 - **Compile at ingress**, cached by BLAKE3(constraint, tokenizer). The compiled grammar travels to the tail by reference: `SamplingParams` carries a `GrammarRef` (the hash), and the first `SequenceOpen` for a new hash carries the serialised grammar inline. The tail caches it by hash (proposed amendment A3). Ingress never ships the same grammar twice to one tail runner.
@@ -740,6 +752,13 @@ RFC-0001 §12 zone Z3, as updated: any non-loopback bind requires an API key **a
   - `{ cert, key }`: the user's files, for example from their own CA or a certificate issued for a tailnet name. Reloaded on change.
   - `"none"`: valid only for overlay-restricted binds, or LAN binds with `api.allow_plaintext_lan = true`. Configuration validation rejects it anywhere else.
 
+*Note 2026-10-22 (PROD-E5-T02, as built; open, for the maintainers): which addresses are LAN addresses.* The table above allows plain HTTP, with the opt-in, on LAN addresses only, and sets them apart from public ones. `syntropy_api::bind::classify` reads them as:
+- IPv4 `10/8`, `172.16/12`, `192.168/16` and link-local `169.254/16`;
+- IPv6 unique local `fc00::/7` and link-local `fe80::/10`;
+- the wildcards `0.0.0.0` and `::`, as above. A wildcard counts as a LAN bind for the API key, but it listens on every interface, a public one included, so it is always served with TLS: `api.tls = "none"` on a wildcard is rejected even with the opt-in, and plain HTTP needs a specific LAN address.
+
+An IPv4-mapped IPv6 address takes its IPv4 address's class. Every other non-loopback address is public: TLS always, with no opt-in. That includes `100.64/10`, the shared range tailnets use, until PROD-E5-T09 classifies binds by RFC-0030's interface classes; until then a tailnet bind needs TLS. Loopback listeners serve plain HTTP whatever `api.tls` says, `"local_ca"` and `{ cert, key }` included.
+
 #### 11.1.1 The local CA
 
 TLS on a LAN is practical only if clients can trust the certificate without a public CA. Each node therefore runs a small certificate authority of its own.
@@ -769,6 +788,31 @@ TLS on a LAN is practical only if clients can trust the certificate without a pu
   - **Phones.** iOS needs a configuration profile installed by hand, and then full trust enabled in Settings. Android apps ignore user-installed CAs unless they opt in. For phones the practical routes are an overlay network (no TLS needed, key still required) or a certificate from the user's own CA via `{ cert, key }`.
   - **Every client machine** needs this step once per node it talks to, or once per cluster with `trust --cluster` (open question 8, answered).
 - **Plain HTTP on the LAN.** `api.allow_plaintext_lan = true` exists for users who accept the risk, for example on an isolated lab network. Keys are still required. The dashboard shows a permanent "API traffic on this LAN is unencrypted" banner, `doctor` reports SEC-005 as a warning on every run, and the startup log says so on every start.
+
+*Note 2026-10-22 (PROD-E5-T03): how the CA is built.*
+- **Storage.** The CA lives in one file, `tls/ca.json`, in the state directory. It holds the key (PKCS#8), the certificate (DER), the scope and the node-key binding (RFC-0034 §3's `syntropy-tls-ca-v1`, note of the same date), which covers the certificate's exact bytes.
+  - The file is mode 0600, in a 0700 directory. A file or directory whose mode was widened is narrowed again when the CA is loaded.
+  - The `tls` directory and `ca.json` must be a directory and a regular file themselves. A link is refused, not followed, so a link planted in the state directory cannot get another directory narrowed or written into.
+  - It is written to a new file, flushed, renamed over the old one, and then the directory is flushed, so a replacement is one atomic step.
+  - A file the daemon cannot read, or whose parts disagree, is refused and left as it is. No key is overwritten without a reason the user can see.
+  - Agreeing means the binding verifies over the stored certificate, and the certificate is the key's own, self-signed, with exactly the constraints the node mints for the stored scope.
+  - `GET /v1/syntropy/tls/ca` serves one PEM block encoded from those bytes, so it carries nothing the binding does not cover.
+- **Randomness.** The CA and leaf keys come from ring's `SystemRandom`, the OS CSPRNG of RFC-0034 §3. ring's random source is sealed, so it cannot draw from `core`'s `Entropy`.
+- **The CA certificate.** It is valid for 10 years [target, a chosen budget], since it is replaced when its scope changes, not on a schedule.
+  - Its path length is 0. That is advisory: a client that takes the CA as a trust anchor may ignore the anchor's basic constraints, as rustls does, and then accepts a sub-CA it signed. The name constraints are the guarantee every client enforces, and they still apply below such a sub-CA.
+  - Its key usages are certificate and CRL signing.
+  - A certificate's validity starts 1 hour before it is issued [target, a chosen budget], for clients whose clocks run behind.
+- **Names.** A dNSName constraint also permits every name below it (RFC 5280 §4.2.1.10).
+  - So the scope leaves out single-label names. A node named `box` would otherwise get a CA for the whole `.box` top-level domain.
+  - The node is still reachable as `<host>.local` and by its other names of two or more labels.
+  - A leaf carries the scope's names exactly; a name below one of them is refused.
+  - A limit: a name of two labels can still cover a public zone. A node name or `api.server_names` entry that is a public suffix, such as `co.uk`, or a bare registrable domain, such as `example.com`, gives the CA that whole zone. `api.server_names` should hold the node's own host names only.
+- **Addresses.** The scope leaves out public and loopback addresses: a local CA covers only private, shared (RFC 6598), link-local and unique-local ones.
+  - An address family with no served subnet is excluded whole, so the CA can issue for no address of that family.
+  - A node that serves only public addresses gets a CA for its names alone.
+  - The CA covers the whole served /24 or /64, so a leaked key can impersonate any host inside those subnets, a neighbour on the same LAN included, though none outside them.
+- **Replacement.** A new CA replaces the old one when the node's names or served subnets change, and also when the node key changes (`identity reset`), since the old binding names another identity. The replacement is recorded first in `tls/ca-replaced.json`: when, why, and the old and new fingerprints, `BLAKE3("syntropy-fp-v1" ‖ SPKI DER)` (RFC-0034 §6.5). SEC-006 reads that record. A CA that has been replaced issues no more leaves: before each leaf it checks that `tls/ca.json` still holds its certificate.
+- **Rotation.** The listener serves the current leaf through a resolver that swaps leaves. A connection keeps the leaf it was handshaken with, and the next full handshake gets the new one. A client that resumes an earlier TLS session sees no certificate until its session ends.
 
 #### 11.2 Requests from browsers
 
@@ -846,9 +890,33 @@ Errors become the request shape's own error body:
 | stage, link or device failure not recovered before the first token, after one re-route (§4.2) | `Link`, `Device` | 503 + `Retry-After: 1` | `server_error` / `instance_unavailable` | `overloaded_error` (529) |
 | no instance passes its canary | `Correctness` | 503 | `server_error` / `no_conforming_instance` | `api_error` (500) |
 | constraint compile failure | `InvalidRequest` or `Unsupported` | 400 | `invalid_request_error` / `constraint_invalid`, `constraint_unsupported` | `invalid_request_error` |
+| the only instances of the model are unroutable, or recovery found no feasible repair (`InstanceNotRoutable`, RFC-0032 §10; `NoRepairCapacity`, RFC-0033 §13) | `Capacity` | 503 + `Retry-After` | `server_error` / `instance_unavailable` | `overloaded_error` (529) |
+| `POST /v1/syntropy/cluster/join` with a malformed invite token (`TokenMalformed`, RFC-0030 §10) | `InvalidRequest` | 400 | — (native route only) | — (native route only) |
+| a join the keyholder or the joining node refuses: invite token expired, used up or revoked, pairing denied, clocks more than 10 min apart, or a node key made on other hardware (`TokenExpired`, `TokenExhausted`, `TokenRevoked`, `PairDenied`, `ClockSkew`, `IdentityHostMismatch`; RFC-0030 §6.7, §10) | `Auth` | 403 | — (native route only) | — (native route only) |
+| a join refused because the two nodes' protocol majors differ (`ProtoMismatch`, RFC-0030 §10) | `Unsupported` | 400 | — (native route only) | — (native route only) |
+| an operator action that needs a keyholder signature with no keyholder reachable (`KeyholderRequired`, RFC-0034 §8.3, §15) | `Auth` | 403 | — (native route only) | — (native route only) |
+| a cluster configuration proposal rejected: the key changed since the patch's base, or it sits above the cluster's feature level (`ConfigConflict`, `FeatureLevelTooLow`; RFC-0032 §10, RFC-0054 §2.3), reported as `cluster_proposal_rejected` | `InvalidRequest`, `Unsupported` | 409 | — (native route only) | — (native route only) |
 | `Internal` | `Internal` | 500 | `server_error` / `internal_error` | `api_error` |
 
 `Integrity`, `Drift` and `Transient` never reach clients directly: the store, the coordinator or the retrying layer handles them (RFC-0001 §10.1). If one escapes, it maps to 503 `instance_unavailable`.
+
+**Distributed error codes** (note 2026-10-22, issue #1668). The `Cluster`, `Net`, `Dist`, `Recovery` and `Security` domains (RFC-0030 §10, RFC-0031 §12, RFC-0032 §10, RFC-0033 §13, RFC-0034 §15) follow two rules:
+- **A code that can reach an API client has a row above.** The cluster rows are native routes only (`/v1/syntropy/cluster…`, `/v1/syntropy/nodes…`, `/v1/syntropy/config…`; §1.2), which the OpenAI and Anthropic shapes never serve. Their body is the native error, which names the domain code.
+- **A code that never leaves the cluster is exempt.** These are raised between nodes during peer-to-peer protocol, handshakes and admission, or reported as node diagnostics through `syntropy doctor` and the dashboard, never as the error of a request:
+  - `Cluster`: 0x0102 `NodeConflict`, 0x010A `LocalNetworkDenied`, 0x010B `NetworkProfilePublic`;
+  - `Net`: 0x0201 `ProtoMajorMismatch`, 0x0202 `CredentialInvalid`, 0x0203 `NotANeighbour`, 0x0204 `UnknownFrameType`, 0x0205 `FrameTooLarge`, 0x0206 `WireDTypeMismatch`, 0x020D `RdmaNotEnabled`, 0x020E `RdmaOsBuildMismatch`, 0x020F `ShmUserMismatch`, 0x0212 `ProtoRangeDisjoint`;
+  - `Dist`: 0x030E `EntryRejected`;
+  - `Recovery`: 0x0407 `HistoryDropped`;
+  - `Security`: 0x0501 `CertInvalidSignature`, 0x0502 `CertExpired`, 0x0503 `CertRevoked`, 0x0504 `CertWrongCluster`, 0x0505 `RoleInsufficient`, 0x0506 `CredentialExpired`, 0x0508 `RotationWindowClosed`, 0x0510 `UntrustedFabric`, 0x0511 `AuthorityInvalid`, 0x0512 `RotationChainInvalid`, 0x0513 `NotCoordinatorEligible`.
+
+  If an exempt code ever reaches an API response, it renders as the server-side shape, 503 `instance_unavailable`, whatever its class, because from the client's view the cluster could not serve the request. It never takes a client-side shape (400, 401 or 403) and never a new ad-hoc shape.
+- *Note 2026-10-22 (#1669):* `WireDTypeMismatch` (0x0206) joins the `Net` exempt list, beside `UnknownFrameType` (0x0204).
+  - RFC-0031 §12 classes both `Unsupported` (its revision notes of 2026-10-22), and no row above maps that class for them.
+  - Both are a stage refusing a peer stage's frame: one in another dtype than the channel's `ChannelSpec::wire` (RFC-0031 §6.4), the other of a type the negotiated minor lacks. The refusal travels in the channel's `Close` and never becomes a request's error. If it ever reached an API response, it would render as 503 `instance_unavailable`, by the rule above.
+- *Note 2026-10-23 (DIST-E7-T02):* `FrameTooLarge` (0x0205) joins the `Net` exempt list, beside 0x0204 and 0x0206. RFC-0031 §12 now classes it `InvalidRequest` (its revision note of this date), the class of a 400 row above. It is a stage refusing a peer stage's frame longer than the channel's slot size, and the refusal travels in the channel's `Close`. If it ever reached an API response, it would render as 503 `instance_unavailable` by the rule above, never as 400.
+- *Note 2026-10-22 (#1698):* a join with a revoked invite token, `JoinReject::Revoked`, had neither a code nor a row. RFC-0030 §10 now gives it `TokenRevoked` (0x010F, `Auth`), and the join-refusal row above maps it with `TokenExpired` and `TokenExhausted`, to 403 on the native route. `KeyholderRequired`'s row rests on RFC-0034 §8.3's note of this date, which says when it is raised.
+- **`DuplicateCommand` (0x0305) never appears in `Error::code`.** The coordinator answers a command whose `CommandId` it has seen with the original result (RFC-0032 §6.3), so the code names the dedup, not an error a caller receives.
+- Every other code in these domains maps through a whole-class row above (`Link`, `Device`, `Timeout`, `Correctness`, `Internal`), or through the rule just above for `Integrity`, `Drift` and `Transient`. The one `Cancelled` code, `IngressLost` (0x0404), has no response to carry it, because the client's connection is already gone (RFC-0033 §13).
 
 The Anthropic shape uses 529 for overload, as the published API does, because Anthropic SDKs retry it. The OpenAI shape uses 429 and 503, which OpenAI SDKs retry.
 
@@ -889,6 +957,7 @@ In every shape the in-stream error body carries the error `code` and, for retrya
 | 29 | reserved | 30 | `internal_error` |
 | 31 | `debug_api_disabled` | 32 | `api_tls_or_keys_missing` (startup) |
 | 33 | `token_id_out_of_range` | 34 | `local_auth_required` |
+| 35 | `cluster_proposal_rejected` (the native error for `ConfigConflict` and `FeatureLevelTooLow`; RFC-0054's `Config` code 13 names the same condition) | | |
 
 ### 13. Native API
 
@@ -989,22 +1058,26 @@ These endpoints exist so the quality RFCs can test and benchmark the signed rele
 | Endpoint | Gate | Request | Response |
 |---|---|---|---|
 | `GET /v1/syntropy/debug/state` | `dashboard` scope (RFC-0001 §13 names it); no `debug.*` key | `?instance=` optional | JSON: `ClusterState` rebuilt from the event log; each runner's `ResidencySummary`; each instance's current `PlacementPlan` with RFC-0011's explanation and `PredictedCost` per `CostTerm` (RFC-0053 §2.2); per stage, the plan's per-operation provider selection, as `{ op_class, provider, cert: CertLevel }` entries (`Certified` or `Derived`, RFC-0040 §6.2; RFC-0060 §6.4), from which RFC-0060's driver derives `ExecPath`; the resolved-config hash, BLAKE3 over the canonical `ResolvedConfig` (RFC-0054 §2.2), which RFC-0061 records as `BenchResult::config_hash` |
-| `POST /v1/syntropy/parity` | `debug.parity_api` | NDJSON body, streamed. Line 1: `{ instance? \| model, policy?, teacher: { tokens } \| { corpus_ref }, parity: ParityTapSpec }`, with `ParityTapSpec`, `ForceMode` and `TapMode` as in RFC-0060 §5.5. With `TapMode::Gather`, each later line is `{ pos, top: [u32; K], tail: [u32; M] }`: the reference top-K and tail-sample ids for an upcoming position (RFC-0060 §5.3), which ingress forwards to the tail over the `Tap` channel | NDJSON stream: one `LogitTap` (below) per scored position, then a summary with instance, plan epoch and fidelity. With `TapMode::FullLocal`, the first record instead names a shared-memory region of full F32 logits and gives its size; the driver must run on the tail's host |
+| `POST /v1/syntropy/parity` | `debug.parity_api` | NDJSON body, streamed. Line 1: `{ instance? \| model, policy?, teacher: { tokens } \| { corpus_ref }, parity: ParityTapSpec }`, with `ParityTapSpec`, `ForceMode` and `TapMode` as in RFC-0060 §5.5. With `TapMode::Gather`, each later line is `{ pos, top: [u32; K], tail: [u32; M] }`: the reference top-K and tail-sample ids for an upcoming position (RFC-0060 §5.3), which ingress forwards to the tail over the `Tap` channel | NDJSON stream: one `TapRow` (below) per scored position, then a summary with instance, plan epoch and fidelity. With `TapMode::FullLocal`, the first record instead names a shared-memory region of full F32 logits and gives its size; the driver must run on the tail's host |
 | `GET /v1/syntropy/debug/telemetry` | `debug.telemetry_api` | `?instance=…&since=<unix ms>&until=<unix ms>&follow=bool&format=ndjson\|binary` | the per-step records of every stage of the instance for the window (RFC-0053 §2.5), gathered from other nodes over the node-query channel. NDJSON by default; `binary` streams the records' postcard encoding with a header naming the schema version |
 | `POST /v1/syntropy/generate` with `bench: { ignore_eos: true, gen_tokens: N }` | `debug.bench_api` | as §13.1 | as §13.1. Exactly `N` tokens are generated: EOS, stop sets and stop strings are ignored. The response carries `bench` in `syntropy.warnings` |
 
-- **`LogitTap`** mirrors RFC-0031's `Tap` frame (RFC-0060 §5.4–§5.5):
+*Note 2026-10-23 (PLC-E7-T01):* `/debug/state` also lists, per runner, each hot thread's `HotThreadReport` (`syntropy_exec::thread`, RFC-0012 §1.1 note): `kind` (`device` or `cpu`), `device`, `core`, `numa_node`, `numa_local`, `priority` (`nice`, `level`, `user_interactive` or `unchanged`), `unpinned` (why, when the thread has no core) and `spin_budget_ns`. The endpoint's task, PROD-E4-T01, serves it.
+
+- **`TapRow`** mirrors one position of RFC-0031's tap block (RFC-0060 §5.4–§5.5):
   ```rust
-  pub struct LogitTap {
+  pub struct TapRow {
       pub pos: u32,
-      pub top: Vec<f32>,          // the candidate's F32 logits at the K reference top-K ids, in the order sent
-      pub tail: Vec<f32>,         // the candidate's F32 logits at the M tail-sample ids, in the order sent
-      pub lse: f64,               // logsumexp over the full vocabulary, computed in F64
-      pub lse_complement: f64,    // logsumexp over V∖T, where T is the top-K ids sent, computed in F64
       pub argmax: u32,            // ties to the lower id
       pub margin: f32,            // top-1 minus top-2 logit
+      pub lse: f64,               // logsumexp over the full vocabulary, computed in F64
+      pub lse_complement: f64,    // logsumexp over V∖T, where T is the top-K ids sent, computed in F64
+      pub values: TapValues,      // Gather { top, tail }: the candidate's F32 logits at the K top-K
+                                  // ids and the M tail-sample ids, in the order sent;
+                                  // FullLocal { shm_offset }: the row's offset in the mapped region
   }
   ```
+  *Revised 2026-10-22 (QUAL-E5-T19), a plan correction for the maintainers:* this record was named `LogitTap`, one per position. `LogitTap` is now RFC-0060 §5.5's per-entry block, `{ k, tail, rows: Vec<TapRow> }`, which RFC-0001 §5.8's `TokenEntry::tap` and RFC-0031 §6.5 already describe, so the endpoint streams one `TapRow` per scored position. Under `FullLocal`, a row's `shm_offset` is the row offset RFC-0012 §8.5 mentions.
   F64 values are written with round-trip precision. A non-finite value is written as the string `"nan"`, `"inf"` or `"-inf"` and is never clamped, so the harness can treat it as an error (RFC-0060 §5.4).
 - **The parity endpoint drives a real instance.** It opens a sequence whose `SequenceOpen` carries the `ParityTapSpec` (RFC-0060 amendment A4). The tail replaces sampling with the teacher token, so every stage sees service-shaped traffic. Ingress applies no template, tokenizer or detokenizer: the teacher stream is token IDs.
 - **Cost of the drain.** The drain runs on the daemon's `ctl` runtime and reads records the telemetry ring already carries. RFC-0061's A/A rule requires that decode rate with the drain active stays within 2% of the rate without it.

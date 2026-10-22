@@ -1,97 +1,87 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `Reserve`: memory kept back from a tier, as a floor, a share and an optional cap
-//! (RFC-0054 §3).
+//! `Reserve`'s forms: memory kept back from a tier, as a floor, a share and an optional cap
+//! (RFC-0054 §3). The type, and [`Reserve::resolve`], are `syntropy-core`'s.
+//!
+//! - `"8GiB"` is `{ min = "8GiB", fraction = 0 }`; `"10%"` is `{ min = "0B", fraction = 0.1 }`.
+//! - In a table, each field is optional: `min` and `fraction` default to zero, `max` to none.
+//! - `max` below `min` is rejected.
+//! - Output uses the short forms where they fit and the table form otherwise.
 
 use std::fmt;
-use std::str::FromStr;
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeMap;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serializer};
 use syntropy_core::Bytes;
+use syntropy_core::policy::Reserve;
 
 use super::bytes::ByteSizeVisitor;
-use super::fraction::FractionVisitor;
-use super::{ByteSize, Fraction, ValueError};
+use super::form::Form;
+use super::fraction::{FractionVisitor, fraction, percent_string};
+use super::{ByteSize, ValueError, serde_error};
+use syntropy_core::policy::Fraction;
 
-/// Memory kept back from a tier: `"8GiB"`, `"10%"`, `{ min = "6GiB", fraction = 0.10 }` or
-/// `{ min = "6GiB", fraction = 0.10, max = "32GiB" }` (RFC-0054 §3).
-///
-/// It resolves against the tier's physical capacity as
-/// `clamp(max(min, fraction × capacity), .., max)` ([`Reserve::resolve`]).
-///
-/// - `"8GiB"` is `{ min = "8GiB", fraction = 0 }`; `"10%"` is `{ min = "0B", fraction = 0.1 }`.
-/// - In a table, each field is optional: `min` and `fraction` default to zero, `max` to none.
-/// - `max` below `min` is rejected.
-/// - Output uses the short forms where they fit and the table form otherwise.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Reserve {
-    /// The floor.
-    pub min: Bytes,
-    /// The share of capacity, in [0, 1].
-    pub fraction: f32,
-    /// The cap, if any.
-    pub max: Option<Bytes>,
+/// Checks that a reserve's `fraction` lies in [0, 1] and its `max`, if set, is at least its
+/// `min`, with the message a key reports.
+pub(crate) fn validate(reserve: &Reserve) -> Result<(), ValueError> {
+    fraction(reserve.fraction)?;
+    if let Some(max) = reserve.max
+        && max < reserve.min
+    {
+        return Err(ValueError::out_of_range(format!(
+            "a reserve's max ({}) is below its min ({})",
+            ByteSize(max),
+            ByteSize(reserve.min)
+        )));
+    }
+    Ok(())
 }
 
-impl Reserve {
-    /// A reserve of `min` bytes.
-    pub const fn bytes(min: Bytes) -> Self {
-        Self {
-            min,
-            fraction: 0.0,
-            max: None,
-        }
+impl Form for Reserve {
+    fn deserialize_form<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(ReserveVisitor)
     }
 
-    /// A reserve with every field, checked.
-    pub fn new(min: Bytes, fraction: Fraction, max: Option<Bytes>) -> Result<Self, ValueError> {
-        let reserve = Self {
-            min,
-            fraction: fraction.get(),
-            max,
+    fn serialize_form<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.max.is_none() && (self.fraction == 0.0 || self.min == Bytes(0)) {
+            return serializer.collect_str(&super::form::Shown(self));
+        }
+        let len = if self.max.is_some() { 3 } else { 2 };
+        let mut map = serializer.serialize_map(Some(len))?;
+        map.serialize_entry("min", &ByteSize(self.min))?;
+        fraction(self.fraction).map_err(serde::ser::Error::custom)?;
+        map.serialize_entry("fraction", &self.fraction)?;
+        if let Some(max) = self.max {
+            map.serialize_entry("max", &ByteSize(max))?;
+        }
+        map.end()
+    }
+
+    fn parse_text(s: &str) -> Result<Self, ValueError> {
+        let trimmed = s.trim();
+        let reserve = if trimmed.starts_with('{') {
+            parse_table(trimmed)?
+        } else if trimmed.ends_with('%') {
+            Reserve {
+                min: Bytes(0),
+                fraction: Fraction::parse_text(trimmed)?.get(),
+                max: None,
+            }
+        } else {
+            Reserve::bytes(trimmed.parse::<ByteSize>()?.bytes())
         };
-        reserve.validate()?;
+        validate(&reserve)?;
         Ok(reserve)
     }
 
-    /// Checks that `fraction` lies in [0, 1] and `max`, if set, is at least `min`.
-    pub fn validate(&self) -> Result<(), ValueError> {
-        Fraction::new(self.fraction)?;
-        if let Some(max) = self.max
-            && max < self.min
-        {
-            return Err(ValueError::out_of_range(format!(
-                "a reserve's max ({}) is below its min ({})",
-                ByteSize(max),
-                ByteSize(self.min)
-            )));
-        }
-        Ok(())
-    }
-
-    /// The bytes kept back from a tier of `capacity`: `clamp(max(min, fraction × capacity), ..,
-    /// max)`. The share rounds up to a whole byte, since it is memory kept back.
-    pub fn resolve(&self, capacity: Bytes) -> Bytes {
-        let share = (f64::from(self.fraction) * capacity.0 as f64).ceil();
-        // `as` saturates; a share above u64::MAX cannot exceed any real capacity anyway.
-        let wanted = self.min.max(Bytes(share as u64));
-        match self.max {
-            Some(max) => wanted.min(max),
-            None => wanted,
-        }
-    }
-}
-
-impl fmt::Display for Reserve {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt_text(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // A fraction outside [0, 1] (set through the public field, unchecked) prints as the
-        // table form with its raw value, which `from_str` then rejects.
-        let fraction = Fraction::new(self.fraction).ok();
-        match (self.min, self.fraction, self.max, fraction) {
+        // table form with its raw value, which `parse_text` then rejects.
+        let share = fraction(self.fraction).ok();
+        match (self.min, self.fraction, self.max, share) {
             (min, 0.0, None, _) => write!(f, "{}", ByteSize(min)),
-            (Bytes(0), _, None, Some(fraction)) => f.write_str(&fraction.to_percent_string()),
+            (Bytes(0), _, None, Some(share)) => f.write_str(&percent_string(share)),
             (min, raw, max, _) => {
                 write!(f, "{{ min = \"{}\", fraction = {raw}", ByteSize(min))?;
                 if let Some(max) = max {
@@ -100,27 +90,6 @@ impl fmt::Display for Reserve {
                 f.write_str(" }")
             }
         }
-    }
-}
-
-impl FromStr for Reserve {
-    type Err = ValueError;
-
-    fn from_str(s: &str) -> Result<Self, ValueError> {
-        let trimmed = s.trim();
-        let reserve = if trimmed.starts_with('{') {
-            parse_table(trimmed)?
-        } else if trimmed.ends_with('%') {
-            Reserve {
-                min: Bytes(0),
-                fraction: trimmed.parse::<Fraction>()?.get(),
-                max: None,
-            }
-        } else {
-            Reserve::bytes(trimmed.parse::<ByteSize>()?.bytes())
-        };
-        reserve.validate()?;
-        Ok(reserve)
     }
 }
 
@@ -190,7 +159,7 @@ impl Table {
             "max" if self.max.is_none() => self.max = Some(size(text)?),
             "fraction" if self.fraction.is_none() => {
                 let (Text::Quoted(s) | Text::Bare(s)) = text;
-                self.fraction = Some(s.parse::<Fraction>().map_err(|e| e.to_string())?.get());
+                self.fraction = Some(Fraction::parse_text(s).map_err(|e| e.to_string())?.get());
             }
             "min" | "max" | "fraction" => return Err(duplicate()),
             _ => return Err(format!("`{key}` is not a field")),
@@ -204,29 +173,6 @@ impl Table {
             fraction: self.fraction.unwrap_or(0.0),
             max: self.max,
         }
-    }
-}
-
-impl Serialize for Reserve {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.max.is_none() && (self.fraction == 0.0 || self.min == Bytes(0)) {
-            return serializer.collect_str(self);
-        }
-        let len = if self.max.is_some() { 3 } else { 2 };
-        let mut map = serializer.serialize_map(Some(len))?;
-        map.serialize_entry("min", &ByteSize(self.min))?;
-        let fraction = Fraction::new(self.fraction).map_err(serde::ser::Error::custom)?;
-        map.serialize_entry("fraction", &fraction)?;
-        if let Some(max) = self.max {
-            map.serialize_entry("max", &ByteSize(max))?;
-        }
-        map.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for Reserve {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(ReserveVisitor)
     }
 }
 
@@ -252,7 +198,7 @@ impl<'de> Visitor<'de> for ReserveVisitor {
     }
 
     fn visit_str<E: de::Error>(self, s: &str) -> Result<Reserve, E> {
-        s.parse().map_err(E::custom)
+        Reserve::parse_text(s).map_err(serde_error)
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Reserve, A::Error> {
@@ -270,7 +216,7 @@ impl<'de> Visitor<'de> for ReserveVisitor {
         }
         let mut table = Table::default();
         while let Some(key) = map.next_key::<String>()? {
-            let duplicate = || de::Error::custom(format!("`{key}` is set twice"));
+            let duplicate = || serde_error(ValueError::bad_unit(format!("`{key}` is set twice")));
             match key.as_str() {
                 "min" if table.min.is_none() => {
                     table.min = Some(map.next_value::<Size>()?.0.bytes())
@@ -288,7 +234,7 @@ impl<'de> Visitor<'de> for ReserveVisitor {
             }
         }
         let reserve = table.finish();
-        reserve.validate().map_err(de::Error::custom)?;
+        validate(&reserve).map_err(serde_error)?;
         Ok(reserve)
     }
 }
@@ -298,6 +244,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::value::form::{Shown, parse};
 
     const GIB: u64 = 1 << 30;
 
@@ -309,20 +256,25 @@ mod tests {
         }
     }
 
+    /// Reads JSON the way a key with `serde(with = "syntropy_config::form")` does.
+    fn json(s: &str) -> Option<Reserve> {
+        let mut de = serde_json::Deserializer::from_str(s);
+        Reserve::deserialize_form(&mut de).ok()
+    }
+
     #[test]
     fn parses_the_rfc_forms() {
-        assert_eq!("8GiB".parse(), Ok(reserve(8 * GIB, 0.0, None)));
-        assert_eq!("10%".parse(), Ok(reserve(0, 0.1, None)));
+        assert_eq!(parse("8GiB"), Ok(reserve(8 * GIB, 0.0, None)));
+        assert_eq!(parse("10%"), Ok(reserve(0, 0.1, None)));
         assert_eq!(
-            "{ min = \"6GiB\", fraction = 0.10 }".parse(),
+            parse("{ min = \"6GiB\", fraction = 0.10 }"),
             Ok(reserve(6 * GIB, 0.1, None))
         );
         assert_eq!(
-            "{ min = \"6GiB\", fraction = 0.10, max = \"32GiB\" }".parse(),
+            parse("{ min = \"6GiB\", fraction = 0.10, max = \"32GiB\" }"),
             Ok(reserve(6 * GIB, 0.1, Some(32 * GIB)))
         );
-        assert_eq!("{}".parse(), Ok(reserve(0, 0.0, None)));
-        let json = |s: &str| serde_json::from_str::<Reserve>(s).ok();
+        assert_eq!(parse("{}"), Ok(reserve(0, 0.0, None)));
         assert_eq!(
             json(r#"{"min": "6GiB", "fraction": 0.1, "max": "32GiB"}"#),
             Some(reserve(6 * GIB, 0.1, Some(32 * GIB)))
@@ -343,12 +295,13 @@ mod tests {
             "{ min = \"32GiB\", max = \"6GiB\" }",
             "{ min = \"6GiB\",, fraction = 0.1 }",
         ] {
-            assert!(s.parse::<Reserve>().is_err(), "{s:?} should not parse");
+            assert!(parse::<Reserve>(s).is_err(), "{s:?} should not parse");
         }
-        assert!(serde_json::from_str::<Reserve>(r#"{"min": "1GiB", "extra": 1}"#).is_err());
-        assert!(serde_json::from_str::<Reserve>(r#"{"min": "8GiB", "max": "1GiB"}"#).is_err());
+        assert!(json(r#"{"min": "1GiB", "extra": 1}"#).is_none());
+        assert!(json(r#"{"min": "8GiB", "max": "1GiB"}"#).is_none());
     }
 
+    /// `core`'s `Reserve::resolve`, on reserves read in §3's forms.
     #[test]
     fn resolves_as_the_rfc_formula() {
         let personal = reserve(6 * GIB, 0.1, None);
@@ -362,19 +315,20 @@ mod tests {
 
     #[test]
     fn prints_short_forms_where_they_fit() {
-        assert_eq!(reserve(8 * GIB, 0.0, None).to_string(), "8GiB");
-        assert_eq!(reserve(0, 0.1, None).to_string(), "10%");
+        let shown = |r: Reserve| Shown(&r).to_string();
+        assert_eq!(shown(reserve(8 * GIB, 0.0, None)), "8GiB");
+        assert_eq!(shown(reserve(0, 0.1, None)), "10%");
         assert_eq!(
-            reserve(6 * GIB, 0.1, None).to_string(),
+            shown(reserve(6 * GIB, 0.1, None)),
             "{ min = \"6GiB\", fraction = 0.1 }"
         );
         assert_eq!(
-            reserve(6 * GIB, 0.1, Some(32 * GIB)).to_string(),
+            shown(reserve(6 * GIB, 0.1, Some(32 * GIB))),
             "{ min = \"6GiB\", fraction = 0.1, max = \"32GiB\" }"
         );
         let invalid = reserve(0, 1.5, None);
-        assert_eq!(invalid.to_string(), "{ min = \"0B\", fraction = 1.5 }");
-        assert!(invalid.to_string().parse::<Reserve>().is_err());
+        assert_eq!(shown(invalid), "{ min = \"0B\", fraction = 1.5 }");
+        assert!(parse::<Reserve>(&shown(invalid)).is_err());
     }
 
     fn any_reserve() -> impl Strategy<Value = Reserve> {
@@ -389,12 +343,13 @@ mod tests {
     proptest! {
         #[test]
         fn printed_form_parses_back(r in any_reserve()) {
-            let back = r.to_string().parse::<Reserve>().unwrap();
+            let back = parse::<Reserve>(&Shown(&r).to_string()).unwrap();
             prop_assert_eq!(back.min, r.min);
             prop_assert_eq!(back.fraction.to_bits(), (r.fraction + 0.0).to_bits());
             prop_assert_eq!(back.max, r.max);
-            let json = serde_json::to_string(&r).unwrap();
-            let back = serde_json::from_str::<Reserve>(&json).unwrap();
+            let mut out = Vec::new();
+            r.serialize_form(&mut serde_json::Serializer::new(&mut out)).unwrap();
+            let back = json(std::str::from_utf8(&out).unwrap()).unwrap();
             prop_assert_eq!(back.min, r.min);
             prop_assert_eq!(back.fraction.to_bits(), (r.fraction + 0.0).to_bits());
             prop_assert_eq!(back.max, r.max);

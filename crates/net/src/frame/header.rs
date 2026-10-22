@@ -212,6 +212,35 @@ impl<'a> Frame<'a> {
     /// payload holds at least the AEAD tag. The negotiated minor, the channel key, `chan_seq`
     /// continuity and the slot size are the channel's to check.
     pub fn decode(buf: &'a [u8]) -> Result<Frame<'a>, FrameError> {
+        Frame::decode_checked(buf, true)
+    }
+
+    /// [`Frame::decode`] without the payload CRC, for a channel that must check its key and
+    /// `chan_seq` between the header's checks and the payload's (RFC-0031 §6.1, §7.2): a frame for
+    /// another instance or epoch is dropped and never NACKed, whatever its payload holds. Call
+    /// [`Frame::verify_payload`] before trusting the payload.
+    pub fn decode_header_first(buf: &'a [u8]) -> Result<Frame<'a>, FrameError> {
+        Frame::decode_checked(buf, false)
+    }
+
+    /// Checks `payload_crc` against the payload.
+    pub fn verify_payload(&self) -> Result<(), FrameError> {
+        let computed = if self.payload.is_empty() {
+            0
+        } else {
+            crc32c(self.payload)
+        };
+        if computed == self.header.payload_crc {
+            Ok(())
+        } else {
+            Err(FrameError::PayloadCrc {
+                stated: self.header.payload_crc,
+                computed,
+            })
+        }
+    }
+
+    fn decode_checked(buf: &'a [u8], check_payload: bool) -> Result<Frame<'a>, FrameError> {
         if buf.len() < HEADER_LEN {
             return Err(FrameError::Truncated {
                 needed: HEADER_LEN as u64,
@@ -243,16 +272,18 @@ impl<'a> Frame<'a> {
                 computed,
             });
         }
-        let computed = if payload.is_empty() {
-            0
-        } else {
-            crc32c(payload)
-        };
-        if computed != payload_crc {
-            return Err(FrameError::PayloadCrc {
-                stated: payload_crc,
-                computed,
-            });
+        if check_payload {
+            let computed = if payload.is_empty() {
+                0
+            } else {
+                crc32c(payload)
+            };
+            if computed != payload_crc {
+                return Err(FrameError::PayloadCrc {
+                    stated: payload_crc,
+                    computed,
+                });
+            }
         }
         let ftype = FrameType::from_code(buf[5]).ok_or(FrameError::UnknownFrameType(buf[5]))?;
         if !(ext_len as usize).is_multiple_of(ALIGN) {
@@ -326,26 +357,86 @@ pub fn encode(
     out: &mut [u8],
 ) -> Result<usize, FrameError> {
     let ext_len = ext.len().next_multiple_of(ALIGN);
-    let ext_len32 = u32::try_from(ext_len).map_err(|_| FrameError::TooLong {
+    let total = check_frame(spec, ext_len, ext.len(), payload.len(), out.len())?;
+    out[HEADER_LEN..HEADER_LEN + ext.len()].copy_from_slice(ext);
+    out[HEADER_LEN + ext.len()..HEADER_LEN + ext_len].fill(0);
+    out[HEADER_LEN + ext_len..total].copy_from_slice(payload);
+    finish(spec, ext_len, &mut out[..total]);
+    Ok(total)
+}
+
+/// [`encode`] for a frame whose extension the caller has already written at
+/// `out[64..64 + ext_len]`, padding included, as a typed codec does to build it in place. Writes
+/// the header and the payload and computes both CRCs; the extension bytes are not copied.
+pub fn encode_in_place(
+    spec: &FrameSpec,
+    ext_len: usize,
+    payload: &[u8],
+    out: &mut [u8],
+) -> Result<usize, FrameError> {
+    let total = check_frame(spec, ext_len, ext_len, payload.len(), out.len())?;
+    if !ext_len.is_multiple_of(ALIGN) {
+        return Err(FrameError::ExtLenUnaligned(ext_len as u32));
+    }
+    out[HEADER_LEN + ext_len..total].copy_from_slice(payload);
+    finish(spec, ext_len, &mut out[..total]);
+    Ok(total)
+}
+
+/// [`encode`] for a frame whose extension and payload the caller has both written in place, at
+/// `out[64..64 + ext_len]` (padding included) and the `payload_len` bytes after it, as a typed
+/// codec does when it builds its payload too. Writes the header and computes both CRCs.
+pub fn encode_assembled(
+    spec: &FrameSpec,
+    ext_len: usize,
+    payload_len: usize,
+    out: &mut [u8],
+) -> Result<usize, FrameError> {
+    let total = check_frame(spec, ext_len, ext_len, payload_len, out.len())?;
+    if !ext_len.is_multiple_of(ALIGN) {
+        return Err(FrameError::ExtLenUnaligned(ext_len as u32));
+    }
+    finish(spec, ext_len, &mut out[..total]);
+    Ok(total)
+}
+
+/// The checks [`encode`] makes before writing: the lengths fit their fields, the header fields
+/// keep the decoder's rules, and `out` holds the frame. Returns the frame's length.
+fn check_frame(
+    spec: &FrameSpec,
+    ext_len: usize,
+    ext_given: usize,
+    payload_len: usize,
+    available: usize,
+) -> Result<usize, FrameError> {
+    u32::try_from(ext_len).map_err(|_| FrameError::TooLong {
         what: "extension",
-        len: ext.len(),
+        len: ext_given,
     })?;
-    let payload_len32 = u32::try_from(payload.len()).map_err(|_| FrameError::TooLong {
+    u32::try_from(payload_len).map_err(|_| FrameError::TooLong {
         what: "payload",
-        len: payload.len(),
+        len: payload_len,
     })?;
-    check_spec(spec, payload.len())?;
-    let total = HEADER_LEN + ext_len + payload.len();
-    if out.len() < total {
+    check_spec(spec, payload_len)?;
+    let total = HEADER_LEN + ext_len + payload_len;
+    if available < total {
         return Err(FrameError::BufferTooSmall {
             needed: total,
-            available: out.len(),
+            available,
         });
     }
-    let payload_crc = if payload.is_empty() {
+    Ok(total)
+}
+
+/// Writes the header around an extension and a payload already in `out`, then both CRCs. `out`
+/// is exactly the frame; [`check_frame`] has passed.
+fn finish(spec: &FrameSpec, ext_len: usize, out: &mut [u8]) {
+    let ext_end = HEADER_LEN + ext_len;
+    let payload_len = out.len() - ext_end;
+    let payload_crc = if payload_len == 0 {
         0
     } else {
-        crc32c(payload)
+        crc32c(&out[ext_end..])
     };
     let h = &mut out[..HEADER_LEN];
     h[0..4].copy_from_slice(&MAGIC);
@@ -357,16 +448,47 @@ pub fn encode(
     h[24..32].copy_from_slice(&spec.epoch.seq.to_le_bytes());
     h[32..40].copy_from_slice(&spec.step.to_le_bytes());
     h[40..48].copy_from_slice(&spec.chan_seq.to_le_bytes());
-    h[48..52].copy_from_slice(&ext_len32.to_le_bytes());
-    h[52..56].copy_from_slice(&payload_len32.to_le_bytes());
+    h[48..52].copy_from_slice(&(ext_len as u32).to_le_bytes());
+    h[52..56].copy_from_slice(&(payload_len as u32).to_le_bytes());
     h[56..60].copy_from_slice(&payload_crc.to_le_bytes());
-    let ext_end = HEADER_LEN + ext_len;
-    out[HEADER_LEN..HEADER_LEN + ext.len()].copy_from_slice(ext);
-    out[HEADER_LEN + ext.len()..ext_end].fill(0);
-    out[ext_end..total].copy_from_slice(payload);
     let header_crc = crc32c_append(crc32c(&out[..60]), &out[HEADER_LEN..ext_end]);
     out[60..64].copy_from_slice(&header_crc.to_le_bytes());
-    Ok(total)
+}
+
+/// The base header of a frame whose extension and payload sit elsewhere, as a zero-copy sender
+/// sends them: the header, then `ext`, then `payload`, contiguous on the wire (RFC-0031 §8).
+/// `ext` is the extension with its padding, a multiple of 64. Both CRCs are computed here and the
+/// rules of [`encode`] apply, so the bytes are those [`encode`] would write for the same frame.
+pub fn encode_header(
+    spec: &FrameSpec,
+    ext: &[u8],
+    payload: &[u8],
+) -> Result<[u8; HEADER_LEN], FrameError> {
+    if !ext.len().is_multiple_of(ALIGN) {
+        return Err(FrameError::ExtLenUnaligned(ext.len() as u32));
+    }
+    check_frame(spec, ext.len(), ext.len(), payload.len(), usize::MAX)?;
+    let payload_crc = if payload.is_empty() {
+        0
+    } else {
+        crc32c(payload)
+    };
+    let mut h = [0u8; HEADER_LEN];
+    h[0..4].copy_from_slice(&MAGIC);
+    h[4] = spec.wire_minor;
+    h[5] = spec.ftype.code();
+    h[6..8].copy_from_slice(&spec.flags.0.to_le_bytes());
+    h[8..16].copy_from_slice(&spec.instance.0.to_le_bytes());
+    h[16..24].copy_from_slice(&spec.epoch.term.to_le_bytes());
+    h[24..32].copy_from_slice(&spec.epoch.seq.to_le_bytes());
+    h[32..40].copy_from_slice(&spec.step.to_le_bytes());
+    h[40..48].copy_from_slice(&spec.chan_seq.to_le_bytes());
+    h[48..52].copy_from_slice(&(ext.len() as u32).to_le_bytes());
+    h[52..56].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+    h[56..60].copy_from_slice(&payload_crc.to_le_bytes());
+    let header_crc = crc32c_append(crc32c(&h[..60]), ext);
+    h[60..64].copy_from_slice(&header_crc.to_le_bytes());
+    Ok(h)
 }
 
 /// [`encode`] into a new vector of exactly the frame's length.
@@ -451,6 +573,31 @@ mod tests {
             Frame::decode(&corrupt),
             Err(FrameError::HeaderCrc { .. })
         ));
+    }
+
+    #[test]
+    fn an_unaligned_extension_length_is_refused() {
+        // A data frame with a 60-byte extension and a correct `header_crc`: everything holds but
+        // the alignment, which `encode` would otherwise re-pad to different bytes.
+        let mut bytes = encode_to_vec(&spec(FrameType::Activation), &[1, 2, 3], &[]).unwrap();
+        bytes.truncate(HEADER_LEN + 60);
+        bytes[48..52].copy_from_slice(&60u32.to_le_bytes());
+        let header_crc = crc32c_append(crc32c(&bytes[..60]), &bytes[HEADER_LEN..]);
+        bytes[60..64].copy_from_slice(&header_crc.to_le_bytes());
+        assert_eq!(Frame::decode(&bytes), Err(FrameError::ExtLenUnaligned(60)));
+    }
+
+    #[test]
+    fn only_a_sealed_control_frame_has_a_ctl_seq() {
+        let unsealed = encode_to_vec(&spec(FrameType::Ping), &[0; 16], &[]).unwrap();
+        assert_eq!(Frame::decode(&unsealed).unwrap().header.ctl_seq(), None);
+        let data = encode_to_vec(&spec(FrameType::Activation), &[], &[1]).unwrap();
+        assert_eq!(Frame::decode(&data).unwrap().header.ctl_seq(), None);
+        let mut sealed = spec(FrameType::Ping);
+        sealed.flags = Flags(Flags::ENCRYPTED);
+        sealed.step = 3;
+        let bytes = encode_to_vec(&sealed, &[0; 64], &[0; 16]).unwrap();
+        assert_eq!(Frame::decode(&bytes).unwrap().header.ctl_seq(), Some(3));
     }
 
     #[test]

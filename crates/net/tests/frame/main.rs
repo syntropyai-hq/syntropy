@@ -11,7 +11,10 @@
 //! `SYNTROPY_BLESS_GOLDEN=1` rewrites the files from [`spec`]. A changed golden frame changes the
 //! wire format, which needs a wire-minor bump (ADR-0307 item 1).
 
+mod activation;
+mod collective;
 mod spec;
+mod token;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -21,7 +24,8 @@ use syntropy_core::plan::WireDType;
 use syntropy_core::{ErrorClass, InstanceId, PlanEpoch, StageIx};
 use syntropy_net::frame::{
     Close, Control, ControlSpec, CredKind, Credit, Flags, Frame, FrameError, FrameType, Hello,
-    HelloAck, MAX_CONTROL_EXT, Nacks, Ping, Purpose, WIRE_MINOR, code, crc32c, encode_to_vec,
+    HelloAck, MAX_CONTROL_EXT, Nacks, Ping, Purpose, WIRE_MINOR, code, crc32c, encode_header,
+    encode_to_vec,
 };
 
 const INSTANCE: u64 = 0x1122_3344_5566_7788;
@@ -214,7 +218,7 @@ fn goldens() -> Vec<Golden> {
                 limit_seq: 64,
                 slot_size: 1 << 20,
                 recv_slots: 64,
-                cred_kind: CredKind::DataPlaneCredential,
+                cred_kind: Some(CredKind::DataPlaneCredential),
             },
             credential: leak(cred),
         }),
@@ -532,6 +536,51 @@ fn golden_frames_round_trip() {
             }
         }
     }
+}
+
+/// `encode_header` writes the base header `encode` writes, for a sender whose extension and
+/// payload sit elsewhere; `decode_header_first` checks all but the payload CRC, which
+/// `verify_payload` checks after (DIST-E7-T02, RFC-0031 §6.1, §8).
+#[test]
+fn the_header_alone_matches_the_whole_frame_and_the_payload_is_checked_last() {
+    for golden in goldens() {
+        let bytes = read_golden(golden.name);
+        let frame = Frame::decode(&bytes).unwrap();
+        let header = encode_header(&frame.header.spec, frame.ext, frame.payload).unwrap();
+        assert_eq!(&header[..], &bytes[..64], "{}", golden.name);
+        assert_eq!(
+            Frame::decode_header_first(&bytes),
+            Ok(frame),
+            "{}",
+            golden.name
+        );
+        assert_eq!(frame.verify_payload(), Ok(()), "{}", golden.name);
+        if frame.payload.is_empty() {
+            continue;
+        }
+        let mut corrupt = bytes.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert!(
+            matches!(Frame::decode(&corrupt), Err(FrameError::PayloadCrc { .. })),
+            "{}",
+            golden.name
+        );
+        let early = Frame::decode_header_first(&corrupt).expect("the header is intact");
+        assert_eq!(early.header, frame.header, "{}", golden.name);
+        assert!(
+            matches!(early.verify_payload(), Err(FrameError::PayloadCrc { .. })),
+            "{}",
+            golden.name
+        );
+    }
+    // The extension must already carry its padding.
+    let bytes = read_golden("data-activation");
+    let frame = Frame::decode(&bytes).unwrap();
+    assert_eq!(
+        encode_header(&frame.header.spec, &frame.ext[..100], frame.payload),
+        Err(FrameError::ExtLenUnaligned(100))
+    );
 }
 
 #[test]
