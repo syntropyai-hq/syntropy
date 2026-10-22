@@ -45,6 +45,9 @@ Other facts:
 1. **`std::arch` intrinsics** for AVX2/FMA, AVX-512 (including VNNI, BF16 and FP16), AVX-VNNI and NEON (dotprod, I8MM, BF16, FP16), in `#[target_feature]` functions selected once at `open`.
 2. **AMX** microkernels are single `asm!` blocks that configure tiles, load, multiply, store and release within the block. Tile registers are declared clobbered and never live across a block boundary. Detection is CPUID plus XCR0 plus, on Linux, a successful permission request; refusal falls back to AVX-512.
 3. **SME2** microkernels are complete leaf functions in `kernels-cpu/src/sme2/*.S`, assembled by the platform assembler through the `cc` crate and called through `extern "C"`. Each enters and leaves streaming mode itself and preserves the AAPCS64 callee-saved registers. Detection uses `is_aarch64_feature_detected!("sme2")` on Linux and `hw.optional.arm.FEAT_SME2` on macOS.
+
+   *Revised 2026-10-22:* a clarification of the detection mechanism, not a change to this decision. On the pinned toolchain (1.99.1, `rust-toolchain.toml`) the macro's `sme` and `sme2` names are unstable (E0658), so on Linux and Android the provider reads `AT_HWCAP2` through `getauxval` and tests `HWCAP2_SME2` (bit 37), as ADR-0014's SME2 row names; macOS still reads `hw.optional.arm.FEAT_SME2`. Both give the same answer as the macro, so the provider switches to the macro once it is stable (item 5's re-check). RFC-0040 §7.3 and RFC-0001 §18.14 record it.
+
 4. **No SVE2 kernels in v1.** NEON with I8MM covers the 128-bit SVE targets in the matrix.
 5. Each release re-checks this table. A family whose intrinsics stabilise moves to `std::arch` at the next convenient change.
 

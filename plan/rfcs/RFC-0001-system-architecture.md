@@ -2731,3 +2731,11 @@ COMP-E1-T05 binds `BufferView` in `kernels`' `OpArgs::weights`. RFC-0020 §3 had
 | Change | Sections touched | Reason |
 |---|---|---|
 | rule 8 gains one module-scoped exception: `testkit::guards` holds the single `unsafe impl GlobalAlloc`, which delegates to `std::alloc::System`, and `testkit` moves from `forbid(unsafe_code)` to `deny(unsafe_code)` with one `allow` on that impl | §4.2 rule 8 | a `#[global_allocator]` must implement `GlobalAlloc`, which is an `unsafe` trait, and RFC-0060 §3.5 places `CountingAlloc` in `testkit::guards`. The maintainers chose this over a new allocator crate or a third-party allocator (QUAL-E3-T25, issue #1530) |
+
+### 18.14 SME2 detection on Linux (2026-10-22)
+
+COMP-E3-T01 found that the detection macro named for SME2 does not compile on the pinned toolchain.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| On Linux and Android the CPU provider detects SME2 from `AT_HWCAP2` (`HWCAP2_SME2`, bit 37) through `getauxval`, not `is_aarch64_feature_detected!("sme2")`; macOS keeps `hw.optional.arm.FEAT_SME2` | RFC-0040 §7.3 and ADR-0402 item 3 (dated notes) | on 1.99.1 the macro's `sme` and `sme2` names are unstable (E0658), and release builds use stable only (ADR-0001 decision 1). `AT_HWCAP2` is what ADR-0014's SME2 row names and what the macro reads, so the result is the same and the provider can switch to the macro once it is stable |
