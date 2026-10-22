@@ -3,15 +3,27 @@
 //! The Linux `OsMemory` on the live host (TIER-E2-T02; RFC-0020 §4.2, Linux row). Runs as an
 //! unprivileged user in hosted CI.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 
 use syntropy_core::Bytes;
 use syntropy_tier::os::linux::LinuxMemory;
 use syntropy_tier::os::lock_or_pageable;
 use syntropy_tier::os::procfs::{self, ThpMode};
-use syntropy_tier::{HugePages, LockOutcome, OsMemError, OsMemory, PageableReason, PinClass};
+use syntropy_tier::{
+    HostRange, HugePages, LockOutcome, OsMemError, OsMemory, PageableReason, PinClass,
+};
 
 const MIB: u64 = 1 << 20;
+
+/// Held by every test that locks pages or reads `VmLck`, which is per process.
+static VMLCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn vmlck_guard() -> std::sync::MutexGuard<'static, ()> {
+    VMLCK.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 /// The node the arena asks for. Hosted runners have one node, node 0.
 const NODE: u16 = 0;
@@ -121,6 +133,7 @@ fn default_memlock_leaves_the_arena_pageable_with_a_reason() {
 /// A lock the limit covers succeeds, shows in `VmLck`, and is undone by `unlock`.
 #[test]
 fn a_lock_within_memlock_is_taken_and_released() {
+    let _vmlck = vmlck_guard();
     let os = LinuxMemory::new(Bytes(0));
     let page = os.page_size().0;
     let r = os.reserve(Bytes(page), None, HugePages::Off).unwrap();
@@ -179,7 +192,7 @@ fn ranges_the_adapter_did_not_reserve_are_refused() {
         base: r.base.wrapping_add(4096),
         len: r.len,
         numa: None,
-        os_handle: 0,
+        os_handle: r.os_handle,
     };
     assert_eq!(os.commit(&forged, 0..4096), Err(OsMemError::UnknownRange));
     os.release(forged);
@@ -197,4 +210,131 @@ fn live_snapshot_reads_this_host() {
         s.numa_free
     );
     assert_eq!(s.commit_headroom, None);
+}
+
+/// A copy of a range's identity that can cross threads (`HostRange` holds a raw pointer).
+#[derive(Clone, Copy)]
+struct Handle {
+    base: usize,
+    len: u64,
+    id: u64,
+}
+
+impl Handle {
+    fn of(r: &HostRange) -> Self {
+        Handle {
+            base: r.base as usize,
+            len: r.len.0,
+            id: r.os_handle,
+        }
+    }
+
+    fn range(self) -> HostRange {
+        HostRange {
+            base: self.base as *mut u8,
+            len: Bytes(self.len),
+            numa: None,
+            os_handle: self.id,
+        }
+    }
+}
+
+/// `release` racing `commit`, `lock` and `unlock` on other threads: no call faults, each
+/// one either succeeds or returns `UnknownRange`, and once the release has returned every call
+/// with the old handle is refused, even when a new reservation gets the same address back.
+#[test]
+fn release_racing_commit_and_lock_is_clean() {
+    let _vmlck = vmlck_guard();
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let os = LinuxMemory::new(Bytes(0));
+    let page = os.page_size().0;
+    for _round in 0..20 {
+        let len = 64 * page;
+        let h = Handle::of(&os.reserve(Bytes(len), None, HugePages::Off).unwrap());
+        let released = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            for worker in 0..3 {
+                let (os, released) = (&os, &released);
+                s.spawn(move || {
+                    for i in 0..200u64 {
+                        let r = h.range();
+                        let after = released.load(Ordering::Acquire);
+                        let sub = (i % 64) * page..(i % 64 + 1) * page;
+                        let out = match worker {
+                            0 => os.commit(&r, sub),
+                            1 => os.lock(&r, sub).and_then(|()| os.unlock(&r, 0..len)),
+                            _ => os.commit(&r, 0..len),
+                        };
+                        match out {
+                            Ok(()) => assert!(!after, "a call succeeded after release"),
+                            Err(OsMemError::UnknownRange) => {}
+                            Err(OsMemError::LockRefused(_)) => assert!(!after),
+                            Err(e) => panic!("unexpected {e:?}"),
+                        }
+                    }
+                });
+            }
+            s.spawn(|| {
+                std::thread::yield_now();
+                os.release(h.range());
+                released.store(true, Ordering::Release);
+                // Reserve again, likely at the same address, to give a stale handle a chance
+                // to alias the new mapping.
+                for _ in 0..8 {
+                    let r = os.reserve(Bytes(len), None, HugePages::Off).unwrap();
+                    assert_ne!(r.os_handle, h.id);
+                    os.release(r);
+                }
+            });
+        });
+        assert_eq!(
+            os.commit(&h.range(), 0..page),
+            Err(OsMemError::UnknownRange)
+        );
+    }
+}
+
+/// A stale handle never reaches a new reservation at the same address.
+#[test]
+fn a_stale_handle_does_not_match_a_reused_address() {
+    let os = LinuxMemory::new(Bytes(0));
+    let r = os.reserve(Bytes(MIB), None, HugePages::Off).unwrap();
+    let stale = Handle::of(&r);
+    os.release(r);
+    let mut fresh = Vec::new();
+    for _ in 0..16 {
+        fresh.push(os.reserve(Bytes(MIB), None, HugePages::Off).unwrap());
+    }
+    assert_eq!(
+        os.commit(&stale.range(), 0..MIB),
+        Err(OsMemError::UnknownRange)
+    );
+    assert_eq!(
+        os.unlock(&stale.range(), 0..MIB),
+        Err(OsMemError::UnknownRange)
+    );
+    os.release(stale.range());
+    for r in fresh {
+        // Every fresh range is still live: the stale release did not unmap any of them.
+        assert_eq!(os.commit(&r, 0..MIB), Ok(()));
+        os.release(r);
+    }
+}
+
+/// `unlock` releases only pages wholly inside the sub-range.
+#[test]
+fn unlock_keeps_a_page_a_neighbour_shares() {
+    let _vmlck = vmlck_guard();
+    let os = LinuxMemory::new(Bytes(0));
+    let page = os.page_size().0;
+    let r = os.reserve(Bytes(2 * page), None, HugePages::Off).unwrap();
+    os.commit(&r, 0..2 * page).unwrap();
+    os.lock(&r, 0..2 * page).unwrap();
+    let locked = os.snapshot().own_locked;
+    // Half of each page: no page lies wholly inside, so nothing is unlocked.
+    os.unlock(&r, page / 2..page + page / 2).unwrap();
+    assert_eq!(os.snapshot().own_locked, locked);
+    os.unlock(&r, 0..2 * page).unwrap();
+    os.release(r);
 }

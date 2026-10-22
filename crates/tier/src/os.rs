@@ -7,15 +7,20 @@
 //!
 //! - [`procfs`] reads the Linux text interfaces (`/proc`, `/sys`) from any root directory, so
 //!   the snapshot is tested against fixture trees on every OS. It holds no `unsafe`.
-//! - [`linux`] is the Linux adapter (TIER-E2-T02): anonymous `mmap`, `mbind`, `madvise` and
-//!   `mlock`, declared here because the workspace has no C bindings crate. It is the one
-//!   place in this module with `unsafe`, under a scoped `allow`.
+//! - `linux` is the Linux adapter (TIER-E2-T02): anonymous `mmap`, `mbind`, `madvise` and
+//!   `mlock`, declared there because the workspace has no C bindings crate. It is the one
+//!   place in this module with `unsafe`, under a scoped `allow`. Its constants and signatures
+//!   are those of x86-64 and AArch64, the Linux targets ADR-0020 supports, so it is built for
+//!   those two only; another Linux architecture has no adapter and no `os::linux` module.
 //!
 //! The Windows adapter comes in TIER-E2-T03, WSL2 and macOS in TIER-E2-T04.
 
 pub mod procfs;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub mod linux;
 
 use std::fmt;
@@ -293,12 +298,17 @@ pub trait OsMemory: Send + Sync {
     ) -> Result<HostRange, OsMemError>;
     /// Commits the pages of `sub` (byte offsets into `r`), so that later reads and writes do
     /// not fault (RFC-0020 §6). The bytes already there are kept.
+    ///
+    /// An adapter may fault pages in with atomic no-op read-modify-writes, which never discard
+    /// a store. A caller that writes the range through [`HostRange::base`] must therefore not
+    /// access the same bytes non-atomically while `commit` runs on them.
     fn commit(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError>;
     /// Locks `sub` against paging: `mlock`, `VirtualLock` or wiring. Refused with
     /// [`OsMemError::LockRefused`] when the OS limit does not cover it; the range then stays
     /// [`PinClass::Pageable`] (see [`lock_or_pageable`]).
     fn lock(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError>;
-    /// Undoes [`OsMemory::lock`] on `sub`.
+    /// Undoes [`OsMemory::lock`] on `sub`. An adapter may leave locked a page that `sub`
+    /// shares with a neighbouring locked range.
     fn unlock(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError>;
     /// Returns the range to the OS.
     fn release(&self, r: HostRange);
@@ -530,7 +540,13 @@ impl fmt::Display for OsMemError {
 impl std::error::Error for OsMemError {}
 
 /// Checks that `sub` lies inside a range of `len` bytes and is not empty.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )),
+    allow(dead_code)
+)]
 pub(crate) fn check_sub(len: Bytes, sub: &Range<u64>) -> Result<(), OsMemError> {
     if sub.start < sub.end && sub.end <= len.0 {
         Ok(())

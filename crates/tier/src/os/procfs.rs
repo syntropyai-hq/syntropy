@@ -201,8 +201,15 @@ fn read(root: &Path, rel: &str) -> Option<String> {
 /// This process's cgroup memory controller: v2 when the unified hierarchy has a memory
 /// controller for the process, v1's `memory` controller otherwise. Of the process's cgroup and
 /// its ancestors, the level with the least headroom, `min(max, high) − current`, is reported,
-/// because that level binds first. `None` outside a cgroup with a memory limit.
+/// because that level binds first. `None` outside a cgroup with a memory limit, and when the
+/// cgroup path has a `.` or `..` component (a process outside its cgroup namespace's root
+/// sees such paths), so the walk never leaves the cgroup mount.
 pub fn cgroup_mem(root: &Path) -> Option<CgroupMem> {
+    cgroup_level(root).map(|(_, c)| c)
+}
+
+/// [`cgroup_mem`] with the directory of the level it reports, which keys the event baseline.
+fn cgroup_level(root: &Path) -> Option<(PathBuf, CgroupMem)> {
     let membership = read(root, "proc/self/cgroup")?;
     let mut v1_path = None;
     let mut v2_path = None;
@@ -222,14 +229,17 @@ pub fn cgroup_mem(root: &Path) -> Option<CgroupMem> {
     v2.or_else(|| v1_path.and_then(|p| tightest(root, "sys/fs/cgroup/memory", &p, false)))
 }
 
-fn tightest(root: &Path, mount: &str, path: &str, v2: bool) -> Option<CgroupMem> {
+fn tightest(root: &Path, mount: &str, path: &str, v2: bool) -> Option<(PathBuf, CgroupMem)> {
     let (max_file, cur_file) = if v2 {
         ("memory.max", "memory.current")
     } else {
         ("memory.limit_in_bytes", "memory.usage_in_bytes")
     };
     let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
-    let mut best: Option<(u64, CgroupMem)> = None;
+    if parts.iter().any(|p| *p == ".." || *p == ".") {
+        return None;
+    }
+    let mut best: Option<(u64, PathBuf, CgroupMem)> = None;
     for depth in (0..=parts.len()).rev() {
         let dir: PathBuf = std::iter::once(mount)
             .chain(parts[..depth].iter().copied())
@@ -261,7 +271,7 @@ fn tightest(root: &Path, mount: &str, path: &str, v2: bool) -> Option<CgroupMem>
             (None, None) => continue,
         };
         let headroom = bound.0.saturating_sub(current);
-        if best.as_ref().is_none_or(|(h, _)| headroom < *h) {
+        if best.as_ref().is_none_or(|(h, _, _)| headroom < *h) {
             let (high_events, max_events) = if v2 {
                 std::fs::read_to_string(dir.join("memory.events"))
                     .map(|t| memory_events(&t))
@@ -271,6 +281,7 @@ fn tightest(root: &Path, mount: &str, path: &str, v2: bool) -> Option<CgroupMem>
             };
             best = Some((
                 headroom,
+                dir.clone(),
                 CgroupMem {
                     max,
                     high,
@@ -281,7 +292,7 @@ fn tightest(root: &Path, mount: &str, path: &str, v2: bool) -> Option<CgroupMem>
             ));
         }
     }
-    best.map(|(_, c)| c)
+    best.map(|(_, dir, c)| (dir, c))
 }
 
 /// Per-node readings, sorted by node.
@@ -391,7 +402,9 @@ pub struct ProcReader {
 #[derive(Debug, Default)]
 struct ReaderState {
     stalls: ReclaimStalls,
-    events: Option<(u64, u64)>,
+    /// The raw `high` and `max` counters of the level reported last, keyed by its directory:
+    /// a delta is taken only against the same level.
+    events: Option<(PathBuf, u64, u64)>,
 }
 
 impl ProcReader {
@@ -421,16 +434,24 @@ impl ProcReader {
         let nodes = numa_nodes(root, self.numa_reserve);
         let (own_locked, own_registered) = own_lock(root);
         let vmstat = read(root, "proc/vmstat");
-        let mut cgroup = cgroup_mem(root);
+        let level = cgroup_level(root);
 
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let direct_reclaim_stalls = state.stalls.observe(vmstat.as_deref());
-        if let Some(c) = cgroup.as_mut() {
+        let cgroup = level.map(|(dir, mut c)| {
             let now = (c.high_events, c.max_events);
-            let (h0, m0) = state.events.unwrap_or(now);
-            state.events = Some(now);
+            let (h0, m0) = match &state.events {
+                Some((d, h, m)) if *d == dir => (*h, *m),
+                // A new level, or the first reading: count from here.
+                _ => now,
+            };
+            state.events = Some((dir, now.0, now.1));
             c.high_events = now.0.saturating_sub(h0);
             c.max_events = now.1.saturating_sub(m0);
+            c
+        });
+        if cgroup.is_none() {
+            state.events = None;
         }
         drop(state);
 

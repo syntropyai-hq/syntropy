@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use syntropy_core::Bytes;
-use syntropy_tier::os::procfs::{ProcReader, ThpMode, numa_nodes};
+use syntropy_tier::os::procfs::{ProcReader, ThpMode, cgroup_mem, numa_nodes};
 use syntropy_tier::{CgroupMem, PinLimits, Psi};
 
 const KIB: u64 = 1024;
@@ -251,4 +251,55 @@ fn missing_pressure_signals_are_none() {
     assert_eq!(s.direct_reclaim_stalls, None);
     assert!(s.numa_free.is_empty());
     assert_eq!(numa_nodes(root.path(), Bytes(0)).available.len(), 0);
+}
+
+/// A cgroup path that climbs out of the mount (`..`) is not followed: no cgroup is reported,
+/// and no file above `sys/fs/cgroup` is read.
+#[test]
+fn cgroup_paths_with_dot_dot_are_refused() {
+    let root = bare_metal();
+    root.put("proc/self/cgroup", "0::/../../escape\n")
+        .put("escape/memory.max", "1073741824\n")
+        .put("escape/memory.current", "0\n")
+        .put("sys/escape/memory.max", "1073741824\n")
+        .put("sys/escape/memory.current", "0\n");
+    assert_eq!(cgroup_mem(root.path()), None);
+    root.put("proc/self/cgroup", "4:memory:/a/../b\n0::/\n");
+    assert_eq!(cgroup_mem(root.path()), None);
+    root.put("proc/self/cgroup", "0::/./x\n");
+    assert_eq!(cgroup_mem(root.path()), None);
+}
+
+/// When the binding level changes between two readings, the event deltas restart at the new
+/// level instead of subtracting one cgroup's counters from another's.
+#[test]
+fn event_deltas_restart_when_the_binding_level_changes() {
+    let root = bare_metal();
+    root.put("proc/self/cgroup", "0::/app/worker\n")
+        .put("sys/fs/cgroup/app/worker/memory.max", "17179869184\n")
+        .put("sys/fs/cgroup/app/worker/memory.high", "max\n")
+        .put("sys/fs/cgroup/app/worker/memory.current", "1073741824\n")
+        .put("sys/fs/cgroup/app/worker/memory.events", "high 2\nmax 0\n")
+        .put("sys/fs/cgroup/app/memory.max", "34359738368\n")
+        .put("sys/fs/cgroup/app/memory.high", "max\n")
+        .put("sys/fs/cgroup/app/memory.current", "1073741824\n")
+        .put("sys/fs/cgroup/app/memory.events", "high 50\nmax 9\n");
+    let reader = ProcReader::new(root.path(), Bytes(GIB));
+    // The worker binds (15 GiB of headroom against the parent's 31 GiB).
+    let c = reader.snapshot().cgroup.unwrap();
+    assert_eq!(
+        (c.max, c.high_events, c.max_events),
+        (Some(Bytes(16 * GIB)), 0, 0)
+    );
+
+    // The parent's usage grows until it binds; its counters are far above the worker's.
+    root.put("sys/fs/cgroup/app/memory.current", "32212254720\n");
+    let c = reader.snapshot().cgroup.unwrap();
+    assert_eq!(c.max, Some(Bytes(32 * GIB)));
+    assert_eq!((c.high_events, c.max_events), (0, 0));
+
+    // Later deltas are taken against the parent's own counters.
+    root.put("sys/fs/cgroup/app/memory.events", "high 53\nmax 9\n");
+    let c = reader.snapshot().cgroup.unwrap();
+    assert_eq!((c.high_events, c.max_events), (3, 0));
 }

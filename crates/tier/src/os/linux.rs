@@ -17,17 +17,22 @@
 //! The constants are the generic Linux values, the same on x86-64 and AArch64; only the
 //! `mbind` syscall number differs, and `mbind` has no C library wrapper.
 //!
-//! Every range this adapter hands out is recorded, and `commit`, `lock`, `unlock` and
-//! `release` act only on a range it recorded, with the same base and length. [`HostRange`]'s
-//! fields are public, so this is what keeps those safe methods from touching memory the
-//! adapter does not own.
+//! Every range this adapter hands out is recorded with a reservation id, carried in
+//! [`HostRange::os_handle`]. `commit`, `lock`, `unlock` and `release` act only on a range it
+//! recorded, with the same base, length and id, and hold the registry lock across the system
+//! call: `commit`, `lock` and `unlock` hold it shared, `release` exclusively. A range can
+//! therefore not be unmapped while another call is acting on it, and a stale or forged
+//! `HostRange` whose address was since reused by a new reservation does not match the new id.
+//! [`HostRange`]'s fields are public, so this is what keeps those safe methods from touching
+//! memory the adapter does not own.
 
 #![allow(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::ffi::{c_ulong, c_void};
 use std::ops::Range;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::{RwLock, RwLockReadGuard};
 
 use syntropy_core::Bytes;
 
@@ -57,17 +62,14 @@ mod sys {
     /// `_SC_PAGESIZE` in glibc and musl.
     pub const SC_PAGESIZE: c_int = 30;
 
-    /// `__NR_mbind`.
+    /// `__NR_mbind`. The module is built only for these two architectures.
     #[cfg(target_arch = "x86_64")]
-    pub const SYS_MBIND: Option<c_long> = Some(237);
+    pub const SYS_MBIND: c_long = 237;
     #[cfg(target_arch = "aarch64")]
-    pub const SYS_MBIND: Option<c_long> = Some(235);
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    pub const SYS_MBIND: Option<c_long> = None;
+    pub const SYS_MBIND: c_long = 235;
 
     pub const EINTR: i32 = 4;
     pub const EINVAL: i32 = 22;
-    pub const ENOSYS: i32 = 38;
 
     unsafe extern "C" {
         pub fn mmap(
@@ -96,8 +98,27 @@ fn errno() -> i32 {
 pub struct LinuxMemory {
     reader: ProcReader,
     page: u64,
-    /// Live reservations: base address → length.
-    live: Mutex<BTreeMap<usize, u64>>,
+    /// Live reservations by base address.
+    live: RwLock<BTreeMap<usize, Live>>,
+    /// The next reservation id; 0 is never handed out.
+    next_id: AtomicU64,
+}
+
+/// One live reservation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Live {
+    len: u64,
+    id: u64,
+}
+
+/// How [`LinuxMemory::with_pages`] turns a byte range into whole pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Round {
+    /// Every page the range touches: commit and lock must cover each byte asked for.
+    Outward,
+    /// Only pages wholly inside the range: unlock must not release a page a neighbouring
+    /// locked sub-range shares, because `mlock` is not counted per caller.
+    Inward,
 }
 
 impl LinuxMemory {
@@ -109,7 +130,8 @@ impl LinuxMemory {
         Self {
             reader: ProcReader::new("/", numa_reserve),
             page: u64::try_from(page).ok().filter(|p| *p > 0).unwrap_or(4096),
-            live: Mutex::new(BTreeMap::new()),
+            live: RwLock::new(BTreeMap::new()),
+            next_id: AtomicU64::new(1),
         }
     }
 
@@ -118,32 +140,61 @@ impl LinuxMemory {
         Bytes(self.page)
     }
 
-    /// `sub` widened to whole pages and checked against a live reservation of `r`. Returns the
-    /// page-aligned address and length.
-    fn pages(&self, r: &HostRange, sub: &Range<u64>) -> Result<(*mut u8, usize), OsMemError> {
+    fn read_live(&self) -> RwLockReadGuard<'_, BTreeMap<usize, Live>> {
+        self.live.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn is_live(live: &BTreeMap<usize, Live>, r: &HostRange) -> bool {
+        live.get(&(r.base as usize))
+            == Some(&Live {
+                len: r.len.0,
+                id: r.os_handle,
+            })
+    }
+
+    /// Runs `f` on the page-aligned address and length of `sub`, rounded as `round` says,
+    /// with the registry's shared lock held throughout, so `release` cannot unmap the range
+    /// while `f` runs.
+    fn with_pages<T>(
+        &self,
+        r: &HostRange,
+        sub: &Range<u64>,
+        round: Round,
+        f: impl FnOnce(*mut u8, usize) -> Result<T, OsMemError>,
+    ) -> Result<T, OsMemError> {
         check_sub(r.len, sub)?;
-        let live = self.live.lock().unwrap_or_else(|p| p.into_inner());
-        if live.get(&(r.base as usize)) != Some(&r.len.0) {
+        let live = self.read_live();
+        if !Self::is_live(&live, r) {
             return Err(OsMemError::UnknownRange);
         }
+        let page = self.page;
+        let (start, end) = match round {
+            Round::Outward => (
+                sub.start - sub.start % page,
+                sub.end.div_ceil(page).saturating_mul(page).min(r.len.0),
+            ),
+            Round::Inward => (
+                sub.start.div_ceil(page).saturating_mul(page),
+                sub.end - sub.end % page,
+            ),
+        };
+        let len = end.saturating_sub(start);
+        let addr = if start < r.len.0 {
+            // SAFETY: start < r.len, so the offset stays inside the live mapping that starts
+            // at r.base, checked against the registry above and kept mapped by its lock.
+            unsafe { r.base.add(start as usize) }
+        } else {
+            // Inward rounding past the end: len is 0 and the address is never dereferenced.
+            r.base
+        };
+        let out = f(addr, len as usize);
         drop(live);
-        let start = sub.start - sub.start % self.page;
-        let end = sub
-            .end
-            .div_ceil(self.page)
-            .saturating_mul(self.page)
-            .min(r.len.0);
-        // SAFETY: start < r.len, so the offset stays inside the live mapping that starts at
-        // r.base (checked against the registry above).
-        let addr = unsafe { r.base.add(start as usize) };
-        Ok((addr, (end - start) as usize))
+        out
     }
 
     /// Binds `[addr, addr + len)` to `node` with `MPOL_BIND`. `Err(errno)` on failure.
     fn bind(addr: *mut c_void, len: usize, node: u16) -> Result<(), i32> {
-        let Some(nr) = sys::SYS_MBIND else {
-            return Err(sys::ENOSYS);
-        };
+        let nr = sys::SYS_MBIND;
         let words = usize::from(node) / 64 + 1;
         let mut mask = vec![0 as c_ulong; words];
         mask[usize::from(node) / 64] = 1 << (node % 64);
@@ -167,22 +218,23 @@ impl LinuxMemory {
     }
 }
 
-/// Faults in every page of `[addr, addr + len)` by reading each page's first byte and
-/// writing it back, which keeps the bytes already there.
+/// Faults in every page of `[addr, addr + len)` with an atomic no-op read-modify-write on
+/// each page's first byte (`fetch_or(0)`), which keeps the bytes there and never discards a
+/// store another thread makes.
 ///
 /// # Safety
 ///
-/// `[addr, addr + len)` must be a readable and writable mapping, and no other thread may
-/// write to it during the call.
+/// `[addr, addr + len)` must be a readable and writable mapping that stays mapped for the
+/// call, and no other thread may access those bytes non-atomically during it
+/// ([`OsMemory::commit`] states this to callers).
 unsafe fn touch(addr: *mut u8, len: usize, page: usize) {
     let mut off = 0;
     while off < len {
-        // SAFETY: off < len, so the pointer is inside the mapping the caller vouches for, and
-        // no other thread writes to it meanwhile.
-        unsafe {
-            let p = addr.add(off);
-            p.write_volatile(p.read_volatile());
-        }
+        // SAFETY: off < len, so the pointer is inside the mapping the caller vouches for, which
+        // stays mapped for the call; a u8 is always aligned; and no non-atomic access to the
+        // byte runs concurrently, as the caller guarantees.
+        let byte = unsafe { AtomicU8::from_ptr(addr.add(off)) };
+        byte.fetch_or(0, Ordering::Relaxed);
         off += page;
     }
 }
@@ -248,86 +300,103 @@ impl OsMemory for LinuxMemory {
         let bound = numa.filter(|&node| {
             Self::bind(addr, len, node).is_ok() || Self::bind(addr, len, node).is_ok()
         });
-        self.live
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(addr as usize, len as u64);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.live.write().unwrap_or_else(|p| p.into_inner()).insert(
+            addr as usize,
+            Live {
+                len: len as u64,
+                id,
+            },
+        );
         Ok(HostRange {
             base: addr.cast(),
             len: Bytes(len as u64),
             numa: bound,
-            os_handle: 0,
+            os_handle: id,
         })
     }
 
     fn commit(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError> {
-        let (addr, len) = self.pages(r, &sub)?;
-        loop {
-            // SAFETY: [addr, addr + len) lies inside a live mapping this adapter created; the
-            // advice faults pages in and changes no byte.
-            if unsafe { sys::madvise(addr.cast(), len, sys::MADV_POPULATE_WRITE) } == 0 {
-                return Ok(());
-            }
-            match errno() {
-                sys::EINTR => continue,
-                sys::EINVAL => break,
-                e => {
-                    return Err(OsMemError::HostReserve {
-                        op: "madvise(MADV_POPULATE_WRITE)",
-                        errno: e,
-                    });
+        self.with_pages(r, &sub, Round::Outward, |addr, len| {
+            loop {
+                // SAFETY: [addr, addr + len) lies inside a live mapping this adapter created,
+                // kept mapped by the registry lock `with_pages` holds; the advice faults pages
+                // in and changes no byte.
+                if unsafe { sys::madvise(addr.cast(), len, sys::MADV_POPULATE_WRITE) } == 0 {
+                    return Ok(());
+                }
+                match errno() {
+                    sys::EINTR => continue,
+                    sys::EINVAL => break,
+                    e => {
+                        return Err(OsMemError::HostReserve {
+                            op: "madvise(MADV_POPULATE_WRITE)",
+                            errno: e,
+                        });
+                    }
                 }
             }
-        }
-        // SAFETY: the range is inside a live read-write mapping this adapter created, and
-        // `commit` runs before the arena is handed to readers or writers (RFC-0020 §6: pages
-        // are committed in the pinning loop, before the bytes are loaded).
-        unsafe { touch(addr, len, self.page as usize) };
-        Ok(())
+            // SAFETY: the range is inside a live read-write mapping this adapter created, kept
+            // mapped by the registry lock; concurrent non-atomic access is excluded by
+            // `OsMemory::commit`'s contract.
+            unsafe { touch(addr, len, self.page as usize) };
+            Ok(())
+        })
     }
 
     fn lock(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError> {
-        let (addr, len) = self.pages(r, &sub)?;
-        let (locked, _) = procfs::own_lock(self.reader.root());
-        lock_allowed(&self.limits(), locked, Bytes(len as u64)).map_err(OsMemError::LockRefused)?;
-        // SAFETY: [addr, addr + len) lies inside a live mapping this adapter created; mlock
-        // only changes whether its pages may be paged out.
-        if unsafe { sys::mlock(addr.cast(), len) } == 0 {
-            Ok(())
-        } else {
-            Err(OsMemError::LockRefused(PageableReason::LockFailed {
-                errno: errno(),
-            }))
-        }
+        self.with_pages(r, &sub, Round::Outward, |addr, len| {
+            let (locked, _) = procfs::own_lock(self.reader.root());
+            lock_allowed(&self.limits(), locked, Bytes(len as u64))
+                .map_err(OsMemError::LockRefused)?;
+            // SAFETY: [addr, addr + len) lies inside a live mapping this adapter created, kept
+            // mapped by the registry lock; mlock only changes whether its pages may be paged
+            // out.
+            if unsafe { sys::mlock(addr.cast(), len) } == 0 {
+                Ok(())
+            } else {
+                Err(OsMemError::LockRefused(PageableReason::LockFailed {
+                    errno: errno(),
+                }))
+            }
+        })
     }
 
+    /// Unlocks only the pages wholly inside `sub`: `mlock` is not counted per caller, so a
+    /// page that `sub` shares with a neighbouring locked sub-range stays locked. Pin steps are
+    /// page-aligned (RFC-0020 §6.1), where this is exact.
     fn unlock(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError> {
-        let (addr, len) = self.pages(r, &sub)?;
-        // SAFETY: as for mlock.
-        if unsafe { sys::munlock(addr.cast(), len) } == 0 {
-            Ok(())
-        } else {
-            Err(OsMemError::Unlock { errno: errno() })
-        }
+        self.with_pages(r, &sub, Round::Inward, |addr, len| {
+            if len == 0 {
+                return Ok(());
+            }
+            // SAFETY: as for mlock.
+            if unsafe { sys::munlock(addr.cast(), len) } == 0 {
+                Ok(())
+            } else {
+                Err(OsMemError::Unlock { errno: errno() })
+            }
+        })
     }
 
     fn release(&self, r: HostRange) {
-        let mut live = self.live.lock().unwrap_or_else(|p| p.into_inner());
-        if live.get(&(r.base as usize)) != Some(&r.len.0) {
+        let mut live = self.live.write().unwrap_or_else(|p| p.into_inner());
+        if !Self::is_live(&live, &r) {
             return;
         }
         live.remove(&(r.base as usize));
-        drop(live);
         // SAFETY: the range is a live mapping this adapter created, now removed from the
-        // registry, so no later call can reach it.
+        // registry. The exclusive lock is still held, so no commit, lock or unlock is acting
+        // on it, and none that starts later can find it.
         unsafe { sys::munmap(r.base.cast(), r.len.0 as usize) };
+        drop(live);
     }
 }
 
 impl Drop for LinuxMemory {
     fn drop(&mut self) {
         let live = std::mem::take(self.live.get_mut().unwrap_or_else(|p| p.into_inner()));
-        for (base, len) in live {
+        for (base, Live { len, .. }) in live {
             // SAFETY: each entry is a mapping this adapter created and never released; the
             // adapter is going away, so no call can reach it afterwards.
             unsafe { sys::munmap(base as *mut c_void, len as usize) };
