@@ -823,5 +823,9 @@ impl Region {
     }
 }
 
-#[cfg(test)]
+// The unit tests use real threads and a second process, so they build only without loom; under
+// `--cfg loom` the region's loom model runs instead (QUAL-E3-T09).
+#[cfg(all(test, loom))]
+mod loom_model;
+#[cfg(all(test, not(loom)))]
 mod tests;

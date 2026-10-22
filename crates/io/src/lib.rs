@@ -10,6 +10,10 @@
 //! the I/O thread loop of RFC-0021 §3.1 ([`IoLoop`], with an [`IoClient`] per producer). No
 //! engine exists yet.
 //!
+//! The [`conformance`] module is the harness every engine's tests run (RFC-0021 Testing, "Every
+//! engine returns the right bytes"): it checks any [`IoEngine`] against `std::fs` reads of the
+//! same file.
+//!
 //! The crate depends on no async runtime: engines run on dedicated I/O threads (ADR-0012
 //! items 2 and 6). Its workspace dependencies are `syntropy-core` (RFC-0021 §1), which defines
 //! the types the interface shares with other crates, re-exported here, and `syntropy-spsc` for
@@ -28,6 +32,7 @@
 
 pub mod align;
 pub mod batch;
+pub mod conformance;
 pub mod engine;
 pub mod error;
 pub mod io_thread;

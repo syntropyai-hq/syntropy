@@ -3,8 +3,9 @@
 //! The `sched.*` keys against RFC-0012 §12, `config show --resolved`, and rejection at load.
 
 use syntropy_config::{
-    Checked, ConfigFile, ConfigSection, DefaultSpec, DefaultValue, Env, Flags, Layers, Os,
-    Registry, Reload, ResolvedConfig, Scope, command,
+    Checked, Code, ConfigFile, ConfigSection, DefaultSpec, DefaultValue, Env, Flags,
+    InstanceSection, InstanceSectionError, Layers, Os, Registry, Reload, ResolvedConfig, Scope,
+    Value, command,
 };
 
 use super::*;
@@ -41,12 +42,37 @@ fn sched(text: &str) -> Value {
     parse(&format!("{{ {} }}", entries.join(", ")))
 }
 
+/// The section built from `values`, the `sched` table of a policy, by `config`'s builder. The
+/// computed defaults stay `None`, as the scheduler applies their rules itself.
+fn from_policy(values: &Value) -> Result<SchedSection, InstanceSectionError> {
+    InstanceSection::<SchedSection>::from_policy(values, |_| None)
+        .map(InstanceSection::into_section)
+}
+
+/// Each rejected key with its code, in the order the builder reports them.
+fn rejections_of(values: &Value) -> Vec<(String, u16)> {
+    match from_policy(values) {
+        Err(InstanceSectionError::Rejected(problems)) => problems
+            .into_iter()
+            .map(|p| {
+                let key = p.key.clone().unwrap_or_else(|| panic!("{p} names no key"));
+                let code = p.code.unwrap_or_else(|| panic!("{p} has no code"));
+                (key.into_string(), code.number())
+            })
+            .collect(),
+        other => panic!("expected rejections, got {other:?}"),
+    }
+}
+
 fn rejections(text: &str) -> Vec<(String, u16)> {
-    SchedSection::from_policy(&sched(text))
-        .expect_err(text)
-        .into_iter()
-        .map(|r| (r.key, r.code.number()))
-        .collect()
+    rejections_of(&sched(text))
+}
+
+/// The same rejections in key order: the builder reports a table's keys in path order, which
+/// is not the order #1656's parser used, so the multi-key cases compare as sets.
+fn sorted(mut got: Vec<(String, u16)>) -> Vec<(String, u16)> {
+    got.sort_unstable();
+    got
 }
 
 #[test]
@@ -141,7 +167,7 @@ fn a_node_file_cannot_set_a_sched_key_outside_a_policy_table() {
 
 #[test]
 fn an_empty_policy_gives_the_defaults() {
-    let s = SchedSection::from_policy(&sched("")).unwrap();
+    let s = from_policy(&sched("")).unwrap();
     assert_eq!(
         s,
         SchedSection {
@@ -161,7 +187,7 @@ fn an_empty_policy_gives_the_defaults() {
 
 #[test]
 fn a_policy_sets_every_key() {
-    let s = SchedSection::from_policy(&sched(
+    let s = from_policy(&sched(
         "spin_us = \"20us\"\nprewake_us = \"1ms\"\ndecode_stall_budget = \"25ms\"\n\
          prefill_inflight = 2\nprefill_share = 3\nmax_queued = 0\nlatency_decode_rows = 1\n\
          max_pause = \"2m\"\n",
@@ -181,7 +207,7 @@ fn a_policy_sets_every_key() {
     );
     assert_eq!(s.max_pause, Duration::from_secs(120));
     // The bounds themselves are accepted.
-    let edges = SchedSection::from_policy(&sched(
+    let edges = from_policy(&sched(
         "latency_decode_rows = 4\nprefill_inflight = 1\nprefill_share = 1\n\
          max_queued = 4294967295\nspin_us = \"0s\"\n",
     ))
@@ -236,36 +262,36 @@ fn invalid_values_are_rejected_with_their_code() {
 fn every_invalid_value_in_a_policy_is_reported() {
     let got = rejections("spin_us = 50\nmax_queued = -1\ntypo = 1\nmax_pause = \"30\"\n");
     assert_eq!(
-        got,
-        [
+        sorted(got),
+        sorted(vec![
             ("sched.typo".to_owned(), 3),
             ("sched.spin_us".to_owned(), 2),
             ("sched.max_queued".to_owned(), 4),
             ("sched.max_pause".to_owned(), 5),
-        ]
+        ])
     );
     // A range error is reported beside parse errors in other keys, not instead of them.
     assert_eq!(
-        rejections("prefill_inflight = 0\nmax_queued = \"x\"\n"),
-        [
+        sorted(rejections("prefill_inflight = 0\nmax_queued = \"x\"\n")),
+        sorted(vec![
             ("sched.max_queued".to_owned(), 2),
             ("sched.prefill_inflight".to_owned(), 4),
-        ]
+        ])
     );
     assert_eq!(
-        rejections("latency_decode_rows = 5\nspin_us = \"50\"\nprefill_share = 0\nbogus = 1\n"),
-        [
+        sorted(rejections(
+            "latency_decode_rows = 5\nspin_us = \"50\"\nprefill_share = 0\nbogus = 1\n"
+        )),
+        sorted(vec![
             ("sched.bogus".to_owned(), 3),
             ("sched.spin_us".to_owned(), 5),
             ("sched.prefill_share".to_owned(), 4),
             ("sched.latency_decode_rows".to_owned(), 4),
-        ]
+        ])
     );
-    let not_table = SchedSection::from_policy(&Value::Integer(1)).unwrap_err();
-    assert_eq!(not_table.len(), 1);
     assert_eq!(
-        (not_table[0].key.as_str(), not_table[0].code),
-        ("sched", Code::WrongType)
+        rejections_of(&Value::Integer(1)),
+        [("sched".to_owned(), Code::WrongType.number())]
     );
 }
 
