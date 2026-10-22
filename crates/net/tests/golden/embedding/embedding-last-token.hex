@@ -1,0 +1,12 @@
+# embedding-last-token: a last-token 4-dimension vector, not normalised, for a 1-token prompt
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 12 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+1f 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 10 00 00 00 0a 69 ba 9e 36 77 8d a7  # 0030 header
+08 07 06 05 04 03 02 01 02 00 00 00 04 00 00 00  # 0040 extension
+04 00 00 00 01 01 00 00 01 00 00 00 00 00 01 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+00 00 80 3f 00 00 00 40 00 00 40 40 00 00 80 40  # 0080 payload

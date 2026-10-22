@@ -441,7 +441,7 @@ No GAPs.
 | RFC-0054 | §9 | Hot reload | 2: PROD-E1-T11, PROD-E1-T24 | ok |
 | RFC-0054 | §10 | Secrets, writes and the schema as code | 5: PROD-E1-T01, PROD-E1-T07, PROD-E1-T12–T13, PROD-E13-T07 | ok |
 | RFC-0060 | §1 | Test pyramid and repository layout | 6: QUAL-E1-T02, QUAL-E3-T04, QUAL-E3-T11, QUAL-E3-T18, QUAL-E5-T13, QUAL-E5-T20 | ok |
-| RFC-0060 | §2 | Determinism foundations | 11: PLC-E7-T17, PROD-E8-T01, QUAL-E3-T01–T03, QUAL-E3-T12, QUAL-E3-T16–T17, QUAL-E3-T24, QUAL-E8-T06, QUAL-E8-T08 | ok |
+| RFC-0060 | §2 | Determinism foundations | 14: PLC-E7-T17, DIST-E1-T04, DIST-E1-T06, DIST-E4-T05, PROD-E8-T01, QUAL-E3-T01–T03, QUAL-E3-T12, QUAL-E3-T16–T17, QUAL-E3-T24, QUAL-E8-T06, QUAL-E8-T08 | ok |
 | RFC-0060 | §3 | Unit, property and model-based tests | 18: PLC-E4-T17, QUAL-E3-T05–T11, QUAL-E3-T13, QUAL-E3-T15, QUAL-E3-T19–T23, QUAL-E3-T25, QUAL-E11-T02, QUAL-E11-T13 | ok |
 | RFC-0060 | §4 | Reference executor and kernel conformance | 22: QUAL-E4-T01–T17, QUAL-E5-T08, QUAL-E5-T14, QUAL-E5-T17, QUAL-E5-T21, QUAL-E6-T16 | ok |
 | RFC-0060 | §5 | Parity harness | 26: PLC-E9-T16–T17, PLC-E9-T21, PLC-E9-T24, DIST-E8-T06, QUAL-E4-T10, QUAL-E5-T01–T07, QUAL-E5-T09–T16, QUAL-E5-T18–T22 | ok |
