@@ -1002,6 +1002,14 @@ QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the
 |---|---|---|---|
 | Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec behind capability bit 16, with RFC-0050 §3.1's rewrite kept towards peers without the bit | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
 
+## DIST-E7-T24: a Windows wake for the QUIC `net` domain (2026-10-23)
+
+DIST-E7-T03 builds the QUIC backend's `net` domain, where channel tasks wait on their rings' wake handles. On Windows the runtime cannot wait on a `syntropy-spsc` event handle, so DIST-E7-T03's parked tasks re-check their rings every 1 ms, as the lead approved. Its criteria run on Linux and loopback and do not see that delay. No task covered the bridge.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T24 (M2) → DIST-E7-T03, QUAL-E15-T05 | DIST-E7-T24 | Definition of done | the bridge needs DIST-E7-T03's domain, and its latency criterion needs the R-WIN rig, as DIST-E7-T19's does. It names `windows-sys`, the new direct dependency of `net` it brings, and pins the one lifetime hazard it creates: the callback runs on a pool thread, so the wait is unregistered before the ring's handle drops (review of #1826, N2) |
+
 ## PLC-E8-T21: resumed sequences at the head and tail (2026-10-23)
 
 #1749 gave PLC-E6-T04 an M2 re-prefill: the ingress reopens each live sequence on the new epoch from its transcript with `SequenceOpen { resume }`. No task before M3's DIST-E14-T08 built the other side, where the head prefills the transcript, the tail emits from token `emitted + 1`, and the tail's state is rebuilt from the transcript (RFC-0033 §5.3, RFC-0012 §8.6). The stand-in engine review of #1749 asked for that as its own PLC-E8 row. These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
@@ -1021,6 +1029,49 @@ QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E7-T03 gains "keep-alive and idle timeout take the table's values per path, through `default_path_keep_alive_interval` and `default_path_max_idle_timeout`, as well as connection-wide through `keep_alive_interval` and `max_idle_timeout`, and a unit test reads all four back from the transport configuration `net` builds"; no edge | DIST-E7-T03 | Definition of done | with only the connection-wide values set, a dead path would be abandoned after iroh's 15 s per-path default, not within `link.failover_timeout` |
+
+## DIST-E18-T01 after #1673 (2026-10-22)
+
+The post-merge review of #1673 found the code right and the row wrong. The row depended on the schema registry alone, though its criteria use layering and validation, and it claimed every key of RFC-0033 §12, though three of them are RFC-0011's.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E18-T01 → PROD-E1-T02, PROD-E1-T03 | DIST-E18-T01 | R9 | its criteria are "`syntropy config show --resolved` lists every key with its default", which is PROD-E1-T02's `ResolvedConfig` and `show_resolved`, and "unknown or mis-scoped keys fail validation", which is PROD-E1-T03's `unknown_key` (3) and `scope_mismatch` (9). Both are earlier milestones than M2 |
+| DIST-E18-T01's task text leaves `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` to PLC-E6-T11 | DIST-E18-T01 | Definition of done | RFC-0054 §5.1 gives `replan.*` to RFC-0011, whose key table declares those three. RFC-0033's shared `replan` section holds only `replan.degraded_min_gain`, as RFC-0054 §5.1's note of 2026-10-22 records. PLC-E6-T11 registers "the cluster-scope `solver.*` and `replan.*` keys" |
+
+## QUAL-E1-T06's second-account checks split out (2026-10-23)
+
+QUAL-E1-T06 is the only blocker of QUAL-E1-T07, the affected-job rules engine. Until T07 lands, every plan-only PR runs the full three-OS build and test matrix. T06's agent work has merged (#1577, #1676), and `cargo xtask ci repo-settings` reports `PASS` against the repository (#133's comment of 2026-10-23). Two of its criteria need a second, non-admin GitHub account, which no agent has. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| T06's criteria "a fork contributor's workflows wait for approval on their first and on every later PR" and "a force-push to `main` from a test account is rejected" move to a new **Maintainer action** task, QUAL-E1-T32 (M0a), with QUAL-E1-T32 → QUAL-E1-T06 | QUAL-E1-T06, QUAL-E1-T32 | R9 | both need a second, non-admin account, while the settings they check are in force and checked by T06's settings check (`fork-pr-contributor-approval.json: matches`; `ruleset-main.json`'s rules in force). None of T06's 24 dependents uses either behaviour. QUAL-E1-T07's fork clauses are about `ci-gate`'s hardware statuses on recorded payloads, and the "branch protection test" clauses of QUAL-E1-T16, QUAL-E1-T17 and QUAL-E1-T19 are about required checks and reviews. So QUAL-E1-T32 has no dependents. M0a → M0a, no cycle |
+| T06's "a fixture workflow on a test branch shows `ci-gate` passing with skipped hosted jobs and failing with a failed or cancelled job" may be met by recorded runs of real PRs | QUAL-E1-T06 | — | the recorded runs exercise the real `pr.yml` and `ci-gate`, which a fixture branch would only imitate: #1773 at `e64665f` passes with `hosted-l3` and `hosted-parity-nano` skipped; #1712 at `17263a6` (run 39785121248) fails with every build, test and lint job failed; #1723's run 39786377605, cancelled by a second push, fails. `xtask/src/ci_gate.rs`'s unit tests cover the same three verdicts on demand (`every_listed_job_passing_and_the_rest_skipped_passes`, `a_failed_job_fails_the_gate`, `a_cancelled_job_fails_the_gate`), so the criterion is no weaker |
+
+## COMP-E13-T15: `core::Error`, and DIST-E18-T02 in M0a (2026-10-23)
+
+Issue #1525, from the review of COMP-E1-T01, found that no task builds RFC-0001 §5.12's `Error`. COMP-E1-T01 built a stand-in, `kernels::Error { class, code: u16, message }`, whose bare `u16` cannot hold another domain's code, as in `DeviceHealth::Sticky { code }`. PLC-E7-T17 (#1802) reports a closed ring as Kernels code 7, `CaptureFailed`, because `exec` has no codes. The issue also found that `ProviderId` and `ProviderBuild` decode only from a `'static` buffer, which the selection cache (RFC-0040 §6.5) would leak on every load. These are plan corrections under R9 and R6, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added COMP-E13-T15 (M0a) → DIST-E18-T02, COMP-E1-T01, PLC-E1-T01, PLC-E4-T17, PLC-E9-T26, PLC-E7-T17 | COMP-E13-T15 | R9 | `core::Error` on DIST-E18-T02's `ErrorCode` and `Domain`, with `ErrorScope` and `RetryHint`, whose fields use `SequenceId`, `StageIx`, `NodeId`, `LinkId` and `Nanos`. It folds in COMP-E1-T01's `kernels::Error` and changes its provider names to `Cow<'static, str>`, since COMP-E1-T01 is done. Its criterion moves PLC-E7-T17's closed-ring fault to an exec code |
+| COMP-E1-T08 → COMP-E13-T15; PLC-E7-T03 → COMP-E13-T15 | COMP-E1-T08, PLC-E7-T03 | R9 | COMP-E1-T08 raises the `(Kernels, n)` codes, and PLC-E7-T03, the stand-in's next consumer, handles step faults; both need `core::Error` and its domains |
+| COMP-E2-T05 → COMP-E13-T15 | COMP-E2-T05 | R9 | the selection cache decodes `ProviderId` and `ProviderBuild`, which must be owned to load without a leak |
+| DIST-E18-T02 M2 → M0a | DIST-E18-T02 | R6 | COMP-E13-T15 is M0a, because PLC-E7-T03 is, and it builds on DIST-E18-T02's `ErrorCode` and `Domain`. DIST-E18-T02's one dependency, QUAL-E1-T01, is M0a, and its PR (#1669) is already open |
+
+Not changed here: `Domain::Kernels`'s range, `Domain::Exec`'s range and exec's codes. RFC-0040 §13 numbers its codes but gives no range, and RFC-0012 §13 has no codes. COMP-E13-T15's PR assigns them in dated notes in those two sections: the two ranges, and the exec codes for a closed ring, the stall watchdog and the CPU pool's barrier deadline, with Kernels codes 1–17 unchanged. The engine lane's reviewer checks the assignment as the RFCs' owner. So the task that needs them owns the proposal, and this plan fix chooses none (review-plan3's B1 on #1810).
+## Held review follow-ups (2026-10-23)
+
+Non-blocking notes from the reviews of #1781, #1786, #1783 and #1789, which the lead collected for one plan PR. These are plan corrections under R9 and the Definition of done, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T03 gains "`link.failover_timeout` declares a maximum of 15 s, iroh's per-path idle cap, so a larger value is refused at load with RFC-0054's `out_of_range` rather than clamped"; RFC-0031 §11's key row and §4.3's note say the same; no edge | DIST-E7-T03 | Definition of done | iroh's `default_path_max_idle_timeout` clamps anything above 15 s with only a log warning, so a 30 s setting would give a 15 s per-path idle and an unchanged connection idle (review-1474's N1 on #1781) |
+| PLC-E8-T21 → QUAL-E5-T04 | PLC-E8-T21 | R9 | its greedy criterion passes RFC-0060 §5.4's parity gate, whose evaluator is QUAL-E5-T04 (M0a), which none of its prerequisites reached (#1781's review, N1) |
+| COMP-E5-T07 → COMP-E1-T10 | COMP-E5-T07 | R9 | its conformance check is against COMP-E1-T10's `kernels::reference` for the M3 ops, and it uses the `core` variant COMP-E1-T10 moves; COMP-E6-T07, the Metal side, already depends on it. M3 → M3 (#1786's review, N1) |
+| COMP-E1-T10's `core` change bumps `ipc_protocol`, not only the fingerprint; no edge | COMP-E1-T10 | Definition of done | `AttnKind` reaches the IPC through `KernelClass::Attention` in `QuantBw`, inside the `CapabilityProfile` that `ProbeResult` carries, so a variant gaining a field is an `ipc_protocol` change (RFC-0001 §18.20; #1786's review, N2) |
+| DIST-E1-T05's `StopReason` from `Failed`: `Drained(DrainReason::RestartBudgetSpent)` for a spent restart budget, `Fatal(ErrorClass)` for a fatal error; no edge | DIST-E1-T05 | Definition of done | RFC-0001 §3.3's `Failed → Stopped` edge names both causes, and either variant could carry the first (#1789's review, N3; RFC-0001 §18.34) |
+| DIST-E14-T06's `Reconcile` carries `recent`; no edge | DIST-E14-T06 | Definition of done | RFC-0033 §4.6's `HandshakeInput::Reconcile` left out `recent`, which §4.2 and §11's `SequenceControl::Reconcile` carry (note of 2026-10-23) |
 
 ## DIST-E14-T22: the recovery entries M2 tasks use, and `DriftTerm::Bandwidth`'s scheme (2026-10-23)
 

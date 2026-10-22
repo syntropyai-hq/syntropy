@@ -25,7 +25,8 @@
 //! What this codec leaves to other tasks:
 //! - the tap block's contents, which travel as bytes until DIST-E8-T06 reads them. Until then a
 //!   [`TokenEntryView`] converts to and from `core`'s `TokenEntry` only without a tap, and a
-//!   tap block is refused with [`FrameError::TapNotDecoded`];
+//!   tap block is refused with [`FrameError::TapNotDecoded`], and a `core` tap with
+//!   [`FrameError::TapNotEncoded`];
 //! - the ring-return items (`KV_HEADROOM`, `PREFIX_DROPPED`, …), carried as
 //!   [`SideItem::Other`], and the narrower set of types a ring-return frame may carry, both
 //!   DIST-E8-T04's. Of the `Activation` items, types 1–7, only `TRACE` is accepted;
@@ -306,7 +307,7 @@ fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
 
 /// An owned [`TokenEntry`]'s arrays as wire bytes, so that a [`TokenEntryView`] borrowing them
 /// can be encoded: build one with [`TokenEntryBytes::new`], then encode
-/// [`TokenEntryBytes::view`]. A tap is refused with [`FrameError::TapNotDecoded`] until its
+/// [`TokenEntryBytes::view`]. A tap is refused with [`FrameError::TapNotEncoded`] until its
 /// codec exists (DIST-E8-T06), a [`LogprobBlock`] with `k = 0` with
 /// [`FrameError::ChosenLogprobsOnly`] until RFC-0031 §6.5 has a form for it (OQ-NET-35), and one
 /// whose lengths disagree with its `k` and the entry's tokens as inconsistent.
@@ -327,9 +328,10 @@ pub struct TokenEntryBytes {
 impl TokenEntryBytes {
     /// `entry`'s arrays as little-endian bytes, in RFC-0031 §6.5's layout.
     pub fn new(entry: &TokenEntry) -> Result<TokenEntryBytes, FrameError> {
-        if entry.tap.is_some() {
-            let len = entry.tap.as_ref().map_or(0, |tap| tap.rows.len());
-            return Err(FrameError::TapNotDecoded { len });
+        if let Some(tap) = &entry.tap {
+            return Err(FrameError::TapNotEncoded {
+                rows: tap.rows.len(),
+            });
         }
         let bytes = |values: &[u32]| {
             values
