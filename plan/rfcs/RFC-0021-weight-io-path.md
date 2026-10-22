@@ -241,6 +241,12 @@ ADR-0013 defines two engines and chooses between them per volume by measurement 
 
 **Checks.** Every request is checked against `A` and `M` before submission. A misaligned request is a bug (`IO_MISALIGNED`, `Internal`) and is rejected before it reaches the kernel, never silently bounced.
 
+*Note 2026-10-22 (TIER-E5-T05, as built):* `syntropy_io::align` holds this section. The details below are choices it leaves open:
+- **Query.** `align::query(file, path)` returns `Aligned { dio, source }`, `Unsupported` (`statx` reports zero for both values, so the file goes to buffered mode) or `Unknown` (nothing answered; the 4 KiB floor applies). On Linux `statx` is called through `syscall`, and the fallback reads `/sys/dev/block/<major>:<minor>/queue/logical_block_size`, or the parent device's for a partition. On Windows the fallback opens the file's volume with no access rights for `StorageAccessAlignmentProperty` and uses its physical sector size. Engines put `query(..).dio()` in `EngineCaps::dio`; the pool engines of TIER-E5-T03 report zero until they call it.
+- **`A` and `M`.** `RequestAlign::from_dio` takes the least common multiple where the table takes the maximum. The two agree for powers of two, which is every value an OS reports; for any other value the multiple keeps a request aligned to every part.
+- **The check** runs in `IoLoop` at intake, so a failing request never reaches the engine; `IoLoop::misaligned()` counts them. A `Fixed` destination is checked by its offset inside the registered buffer; the buffer's start is the tier manager's guarantee. The loop rounds `io.chunk` down to a multiple of both `A` and `M`, so chunks of an aligned request stay aligned.
+- **The pack rule** is `RequestAlign::pack_extent`, which RFC-0041's pack builder is to call. Rows and read-around use `RequestAlign::window`. `ReadAroundStats` counts each volume's payload and window bytes and writes their ratio into `StorageCapsExt::read_around_efficiency`. Copying the payload out of the `IoStaging` slot, and calling `report` when the profile is built, belong to the read-around consumer (COMP-E11-T08) and the probe (PLC-E2-T08, TIER-E5-T10): the loop holds no pointer to a `Fixed` buffer.
+
 ### 7. Windows engines
 
 **`IoRingEngine`** (Windows 11, build 22000 and later):

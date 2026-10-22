@@ -26,6 +26,7 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![warn(missing_docs)]
 
+pub mod align;
 pub mod batch;
 pub mod engine;
 pub mod error;
