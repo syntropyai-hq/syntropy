@@ -405,7 +405,7 @@ pub enum RepairStrategy {
 }
 ```
 
-*Note 2026-10-23 (DIST-E14-T21; RFC-0001 §18.33): where `ReplanReason` lives, and its two term types.* No task built `ReplanReason`, though nine tasks use it: PLC-E3-T07 and PLC-E9-T07 (`RequestReplan { WorkloadDrift }`), PROD-E1-T11 and TIER-E10-T01 (`Config`), DIST-E14-T01 and DIST-E14-T15 (`RecoveryStarted { cause }`), DIST-E15-T02 (`EdgeLost`), DIST-E14-T13 (`DegradedExit`) and DIST-E10-T06 (`HealOrphans`). DIST-E14-T21 builds it, and its term types, at M1a.
+*Note 2026-10-23 (DIST-E14-T21; RFC-0001 §18.33): where `ReplanReason` lives, and its two term types.* No task built `ReplanReason`, though ten tasks use it: PLC-E3-T07 and PLC-E9-T07 (`RequestReplan { WorkloadDrift }`), PROD-E1-T11 and TIER-E10-T01 (`Config`), DIST-E14-T01 and DIST-E14-T15 (`RecoveryStarted { cause }`), DIST-E15-T02 (`EdgeLost`), DIST-E14-T13 (`DegradedExit`), DIST-E10-T06 (`HealOrphans`) and PLC-E6-T04 (`Drift { term: DriftTerm::Hop }`, below). DIST-E14-T21 builds it, and its term types, at M1a.
 - **Where it lives.** It is plain data in `core`, with serde. `cluster` carries it in RFC-0001 §5.10's `RequestReplan`, and the solver reads it in `SolveInput::reason` (`SolveReason::Replan`, RFC-0011 §2). `solver` is layer 2 and cannot depend on `cluster` (RFC-0001 §4.2).
 - **`DriftTerm`** names the profile quantity whose drift caused a re-plan. It has one variant per live estimator of RFC-0010 §6.2, the quantities §7.2's rule reports. It is `#[non_exhaustive]`, so a later estimator adds its own term.
   - `Bandwidth { device: DeviceId, tier: TierId, class: KernelClass }`: a device's W_eff from one tier for one kernel class, as when another app takes bandwidth or the power source changes;

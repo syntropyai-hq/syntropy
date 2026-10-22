@@ -879,7 +879,7 @@ Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request 
 
 ## `ReplanReason` gets a task (2026-10-23)
 
-RFC-0033 §6.1 defines `ReplanReason`, and nine tasks use it, the first at M1a, but no task built it. Its `DriftTerm` was named and never defined. The review of #1803, which needs a `DriftTerm::Hop` for a demoted hop, found the gap. The answers were taken under the maintainers' standing instruction. RFC-0033 §6.1's note of 2026-10-23 and RFC-0001 §18.33 record them.
+RFC-0033 §6.1 defines `ReplanReason`, and ten tasks use it, the first at M1a, but no task built it. Its `DriftTerm` was named and never defined. The review of #1803, which needs a `DriftTerm::Hop` for a demoted hop, found the gap. The answers were taken under the maintainers' standing instruction. RFC-0033 §6.1's note of 2026-10-23 and RFC-0001 §18.33 record them.
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
