@@ -22,7 +22,9 @@ use serde::de::{DeserializeOwned, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::smallvec;
 use syntropy_core::ledger::LedgerGrant;
-use syntropy_core::{Blake3, Bytes, InstanceId, PlanEpoch, StageIx, TierId};
+use syntropy_core::{
+    Blake3, Bytes, CancelReason, InstanceId, PlanEpoch, SequenceId, StageIx, TierId,
+};
 
 use super::*;
 use crate::shm::{IpcProtocol, RingRole, RingSpec, ShmLayout};
@@ -56,21 +58,41 @@ fn daemon_msgs() -> Vec<DaemonMsg> {
             epoch: PlanEpoch { term: 7, seq: 3 },
             delta: fixtures::delta(),
         },
+        DaemonMsg::CancelSequence {
+            seq: SequenceId {
+                ingress: 0x5eed,
+                boot: 3,
+                n: 41,
+            },
+            reason: CancelReason::ClientGone,
+        },
+        DaemonMsg::CancelSequence {
+            seq: SequenceId {
+                ingress: u64::MAX,
+                boot: u32::MAX,
+                n: u32::MAX,
+            },
+            reason: CancelReason::Error {
+                domain: 7,
+                code: 1201,
+            },
+        },
         DaemonMsg::PeerRevoked {
             node: fixtures::node(9),
         },
         DaemonMsg::Ping,
     ];
     // No wildcard: a new variant does not compile here until it has a fixture.
-    let mut seen = [false; 6];
+    let mut seen = [false; 7];
     for msg in &all {
         seen[match msg {
             DaemonMsg::Init(_) => 0,
             DaemonMsg::AssignPlan { .. } => 1,
             DaemonMsg::ShardProgress { .. } => 2,
             DaemonMsg::ApplyPlanDelta { .. } => 3,
-            DaemonMsg::PeerRevoked { .. } => 4,
-            DaemonMsg::Ping => 5,
+            DaemonMsg::CancelSequence { .. } => 4,
+            DaemonMsg::PeerRevoked { .. } => 5,
+            DaemonMsg::Ping => 6,
         }] = true;
     }
     assert!(
@@ -257,6 +279,20 @@ fn daemon_msg() -> impl Strategy<Value = DaemonMsg> {
             epoch,
             delta: fixtures::delta(),
         }),
+        (
+            any::<(u64, u32, u32)>(),
+            prop_oneof![
+                Just(CancelReason::ClientGone),
+                Just(CancelReason::ClientRequest),
+                Just(CancelReason::StopString),
+                Just(CancelReason::Deadline),
+                any::<(u16, u16)>().prop_map(|(domain, code)| CancelReason::Error { domain, code }),
+            ]
+        )
+            .prop_map(|((ingress, boot, n), reason)| DaemonMsg::CancelSequence {
+                seq: SequenceId { ingress, boot, n },
+                reason,
+            }),
         any::<[u8; 32]>().prop_map(|node| DaemonMsg::PeerRevoked {
             node: syntropy_core::NodeId(node)
         }),

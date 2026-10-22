@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use syntropy_core::ledger::LedgerGrant;
 use syntropy_core::{
-    Blake3, Bytes, InstanceId, NodeId, PlacementPlan, PlanDelta, PlanEpoch, StageIx,
+    Blake3, Bytes, CancelReason, InstanceId, NodeId, PlacementPlan, PlanDelta, PlanEpoch,
+    SequenceId, StageIx,
 };
 
 use crate::shm::{IpcProtocol, ShmLayout};
@@ -66,6 +67,13 @@ pub enum DaemonMsg {
         epoch: PlanEpoch,
         /// The changes.
         delta: PlanDelta,
+    },
+    /// A local cancel. Remote cancels arrive on the data plane.
+    CancelSequence {
+        /// The sequence.
+        seq: SequenceId,
+        /// Why ingress cancels it (DIST-E1-T14's `CancelReason`).
+        reason: CancelReason,
     },
     /// Close every channel to a revoked node within one heartbeat period (RFC-0034 §6.1).
     PeerRevoked {
