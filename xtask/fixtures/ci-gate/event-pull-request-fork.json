@@ -1,0 +1,30 @@
+{
+  "action": "synchronize",
+  "number": 4242,
+  "pull_request": {
+    "number": 4242,
+    "state": "open",
+    "title": "fix(kernels-cuda): fixture fork PR",
+    "head": {
+      "label": "contributor:kernel-fix",
+      "ref": "kernel-fix",
+      "sha": "4c1d0e5f2a3b4c5d6e7f8091a2b3c4d5e6f70819",
+      "repo": {
+        "full_name": "contributor/syntropy",
+        "fork": true
+      }
+    },
+    "base": {
+      "label": "syntropyai-hq:main",
+      "ref": "main",
+      "sha": "59db6f7c0000000000000000000000000000000a",
+      "repo": {
+        "full_name": "syntropyai-hq/syntropy",
+        "fork": false
+      }
+    }
+  },
+  "repository": {
+    "full_name": "syntropyai-hq/syntropy"
+  }
+}

@@ -15,10 +15,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use syntropy_core::plan::WireDType;
-use syntropy_core::{Bytes, ErrorClass, InstanceId, Nanos, NodeId, PlanEpoch, StageIx};
+use syntropy_core::{Bytes, ErrorClass, InstanceId, Nanos, NodeId, PlanEpoch, SequenceId, StageIx};
 use syntropy_net::Error;
 use syntropy_net::endpoint::{self, Endpoint, NodeAddr};
 use syntropy_net::error::ErrorCode;
+use syntropy_net::frame::{
+    Activation, ActivationHeader, ActivationKind, Flags, FrameType, RowLayout, SideItems, Span,
+    Spans, TreeArea,
+};
 use syntropy_net::frame::{CredKind, Hello, HelloAck};
 use syntropy_net::transport::conformance::{self, Fabric, MAX_FRAME, Rule, SEND_SLOT, SEND_SLOTS};
 use syntropy_net::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
@@ -26,8 +30,8 @@ use syntropy_net::transport::tcp::{
     Credential, CredentialCheck, MAX_HANDSHAKES_PER_ADDRESS, TLS_TIMEOUT, TcpConfig, TcpTransport,
 };
 use syntropy_net::transport::{
-    BufferPool, Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, PoolId,
-    RemoteEndpoint, Transport,
+    BufferPool, Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, OutFrame,
+    PoolId, RemoteEndpoint, SlotReader, Transport,
 };
 use tokio::io::AsyncReadExt;
 
@@ -176,6 +180,13 @@ impl Fabric for Tcp<'_> {
 
     fn send_pool(&self) -> &BufferPool {
         &self.send_pool
+    }
+
+    fn register(
+        &mut self,
+        pool: &BufferPool,
+    ) -> Option<Result<syntropy_net::transport::PoolRegistration, Error>> {
+        Some(self.from.register(pool))
     }
 
     fn pump(&mut self) {
@@ -479,30 +490,77 @@ fn a_connection_that_never_starts_tls_is_let_go() {
     });
 }
 
+/// Writes `line` to the process's stderr, past the test harness's capture, so CI logs show it
+/// for a passing test too: which caps a runner had, and whether it skipped the check.
+#[cfg(target_os = "linux")]
+fn report(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "tcp autotuning test: {line}");
+}
+
 /// A channel whose receiver's slots are too large for the kernel's unprivileged buffer cap opens
 /// on sockets left to autotuning: the acceptor's, sized for its own slot, and the connector's
 /// send buffer, sized for the peer's slot from `HelloAck`. Both ends count it.
+///
+/// The slot is sized from this host's own caps, read from `/proc/sys/net/core`, which differ
+/// between hosts (hosted runners do not all keep Linux's 212 992-byte default), so that twice it
+/// is over both. Each end counts the socket before `connect` or `accept` returns, so the counts
+/// are final once both have. Only a host where `/proc/sys` cannot be read, or whose caps would
+/// need slots over 64 MiB, skips the check, and says so in the log; the unit test in
+/// `transport::tcp` checks the backend reads the same caps.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_slot_over_the_kernel_cap_is_left_to_autotuning_and_counted() {
+    let read = |name: &str| -> Option<usize> {
+        std::fs::read_to_string(format!("/proc/sys/net/core/{name}"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    };
+    let (Some(send_cap), Some(recv_cap)) = (read("wmem_max"), read("rmem_max")) else {
+        report("SKIPPED: /proc/sys/net/core cannot be read on this host");
+        return;
+    };
+    // Twice the slot is over the larger cap, so neither buffer can be asked for.
+    let big = (send_cap.max(recv_cap) / 2 + 64).next_multiple_of(64);
+    if big > 64 << 20 {
+        report(&format!(
+            "SKIPPED: caps of {send_cap} and {recv_cap} bytes need {big}-byte slots"
+        ));
+        return;
+    }
+    report(&format!(
+        "buffer caps: wmem_max {send_cap}, rmem_max {recv_cap}; slot {big}"
+    ));
     let rt = runtime();
     let a = bind(&rt, 17, None);
     let b = bind(&rt, 18, None);
     b.allowed().allow(a.public_key());
     let mut fabric = Tcp::new(&rt, &a, &b, 900);
-    let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
-    // 1 MiB slots: twice that is over Linux's default 212 992-byte cap.
-    let big = 1 << 20;
-    let receiver_pool = fabric.pool(big, 2 + u32::from(CONTROL_RECEIVES));
-    let sending = spec(key(6, 7), &a, &sender_pool, 0);
-    let mut receiving = spec(key(6, 7), &b, &receiver_pool, 2);
-    receiving.slot_size = Bytes(big as u64);
-    let to_b = remote(&b);
-    let (sender, receiver) =
-        rt.block_on(async { tokio::join!(a.connect(&to_b, sending), b.accept(receiving)) });
-    assert!(sender.is_ok() && receiver.is_ok());
-    assert_eq!(a.stats().buffers_autotuned, 1);
-    assert_eq!(b.stats().buffers_autotuned, 1);
+    // Three channels, so a count that lagged its `connect` or `accept` would show.
+    for lane in 0..3u16 {
+        let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+        let receiver_pool = fabric.pool(big, 2 + u32::from(CONTROL_RECEIVES));
+        let sending = spec(key(6, 7 + lane), &a, &sender_pool, 0);
+        let mut receiving = spec(key(6, 7 + lane), &b, &receiver_pool, 2);
+        receiving.slot_size = Bytes(big as u64);
+        let to_b = remote(&b);
+        let (sender, receiver) =
+            rt.block_on(async { tokio::join!(a.connect(&to_b, sending), b.accept(receiving)) });
+        assert!(sender.is_ok() && receiver.is_ok());
+        let opened = u64::from(lane) + 1;
+        assert_eq!(
+            a.stats().buffers_autotuned,
+            opened,
+            "the connector, channel {opened}"
+        );
+        assert_eq!(
+            b.stats().buffers_autotuned,
+            opened,
+            "the acceptor, channel {opened}"
+        );
+    }
 }
 
 /// The listener requires the data ALPN: a client that completes TLS with an allowed key but no
@@ -534,4 +592,111 @@ fn a_connection_without_the_data_alpn_opens_no_channel() {
         });
         assert!(dropped, "a connection offering {alpn:?} was kept");
     }
+}
+
+/// A one-row `Activation` frame in a free slot of `pool`: its extension at offset 0, then its
+/// payload, with the slot's first reader, which the caller holds.
+fn activation_frame(pool: &BufferPool) -> (SlotReader, OutFrame) {
+    let spans = [Span {
+        seq: SequenceId {
+            ingress: 1,
+            boot: 1,
+            n: 1,
+        },
+        first_position: 0,
+        n_positions: 1,
+        row_offset: 0,
+        tree: None,
+    }];
+    let payload = [0xA5u8; 64];
+    let chunk = Activation {
+        header: ActivationHeader {
+            from_stage: StageIx(0),
+            to_stage: StageIx(1),
+            kind: ActivationKind::Decode,
+            layout: RowLayout {
+                dtype: WireDType::F32,
+                streams: 1,
+                hidden: 16,
+            },
+            n_rows: 1,
+            part_index: 0,
+            part_count: 1,
+        },
+        spans: Spans::new(&spans),
+        tree: TreeArea::new(&[]),
+        side: SideItems::new(&[]),
+        payload: &payload,
+    };
+    let mut writer = pool.take().expect("a free send slot");
+    let ext_len = chunk
+        .write_ext(writer.bytes_mut())
+        .expect("the extension fits");
+    writer.bytes_mut()[ext_len..ext_len + payload.len()].copy_from_slice(&payload);
+    let reader = writer.freeze();
+    let frame = OutFrame {
+        ftype: FrameType::Activation,
+        step: 1,
+        flags: Flags(Flags::FIRST_OF_SEQ),
+        ext: reader.ext(0, ext_len as u32).expect("in the slot"),
+        payload: reader
+            .payload(ext_len as u32, payload.len() as u32)
+            .expect("in the slot"),
+    };
+    (reader, frame)
+}
+
+/// RFC-0031 §8's receive-path row for TCP: the frame lands in a slot of the receiver's
+/// registered pool, one host copy from the TLS stream, and the consumer reads it there. The
+/// sender sends from its own registered slot, which it keeps until the frame is acknowledged
+/// (the conformance suite's `Retention` rule); it is free once the ticket is back.
+#[test]
+fn a_frame_lands_in_a_registered_receive_slot_after_one_host_copy() {
+    let rt = runtime();
+    let a = bind(&rt, 1, None);
+    let b = bind(&rt, 2, None);
+    a.allowed().allow(b.public_key());
+    b.allowed().allow(a.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 300);
+    let (mut sender, mut receiver) = fabric.open(key(0, 1), 4).expect("open");
+    // `Tcp::open` makes the sender's pool, then the receiver's.
+    let receive_pool = PoolId(fabric.next_pool - 1);
+    let pool = fabric.send_pool().clone();
+    let (reader, frame) = activation_frame(&pool);
+    let send_slot = reader.slot();
+    let ticket = sender.try_send(frame).expect("sent");
+    drop(reader);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let received = loop {
+        if let Some(frame) = receiver.try_recv() {
+            break frame;
+        }
+        assert!(std::time::Instant::now() < deadline, "the frame never came");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let (pool_id, slot) = received.payload.slot().expect("a payload in a slot");
+    assert_eq!(
+        pool_id, receive_pool,
+        "landed in the receiver's registered pool"
+    );
+    assert_eq!(
+        received.ext.slot(),
+        Some((receive_pool, slot)),
+        "one slot per frame"
+    );
+    assert_eq!(received.payload.bytes(), &[0xA5; 64]);
+    let completed = loop {
+        if let Some(done) = sender.completed() {
+            break done;
+        }
+        assert!(std::time::Instant::now() < deadline, "no ticket");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(completed, ticket);
+    assert!(
+        pool.claim(send_slot).is_some(),
+        "released once acknowledged"
+    );
+    drop(received);
 }

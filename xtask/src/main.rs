@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 mod build;
+mod changes;
 mod check_deps;
 mod ci_gate;
 mod cli;
@@ -35,6 +36,7 @@ mod determinism;
 mod instructions;
 mod licences;
 mod loom;
+mod plan_tools;
 mod properties;
 mod registry;
 mod repo_settings;
