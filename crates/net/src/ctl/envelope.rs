@@ -29,9 +29,14 @@
 //!
 //! **The decoder is not that strict.** It accepts non-shortest integers, indefinite lengths and
 //! tags in front of a known field, so two different byte strings can decode to the same value.
-//! Anything that hashes, signs or compares a message, such as the event log's `event_bytes`
-//! (RFC-0032 §6.1), must re-encode the decoded value with [`to_cbor`], never reuse the bytes it
-//! received.
+//! Three rules follow:
+//! - **Received bytes that enter a hash chain are hashed exactly as received**, never decoded
+//!   and re-encoded. The event log's `event_bytes` are "persisted, relayed and hashed verbatim;
+//!   never re-encoded" (RFC-0032 §6.1): a node of an older minor drops fields it does not know,
+//!   so re-encoding would change the bytes and break the chain.
+//! - **A value a node creates is encoded once, with [`to_cbor`]**, and those bytes are what it
+//!   sends, stores and hashes.
+//! - **Two messages are compared by decoded value, not by bytes.**
 //!
 //! **Evolution within a major** (ADR-0305 item 3): decoders ignore map keys they don't know, so a
 //! field a newer build adds, with `#[serde(default)]`, does not stop an older build reading the
