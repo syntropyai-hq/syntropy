@@ -14,8 +14,10 @@
 //! error, and the landing starts over at the next part 0.
 //!
 //! **Bounded by the input.** The ranges become a device copy's destination, which no Rust bounds
-//! check guards. So a `Landing` knows the stage input's capacity in rows, the plan's prefill
-//! chunk, and refuses a part that would end past it.
+//! check guards. A part's stride comes from the peer's header, so a bound in rows would not bound
+//! the bytes. A `Landing` therefore knows the stage input's capacity in bytes, and refuses a part
+//! whose range would end past it. Every product of rows and stride is checked, so one that would
+//! overflow is refused too.
 
 use std::ops::Range;
 
@@ -38,8 +40,8 @@ pub struct Landed {
 /// The landing of one chunk's parts, part by part. See the [module](self).
 #[derive(Clone, Debug)]
 pub struct Landing {
-    /// The rows the stage's input holds: no part may end past it.
-    capacity_rows: u64,
+    /// The bytes the stage's input holds: no part's range may end past them.
+    capacity_bytes: u64,
     /// The chunk being landed: its part count, layout, the next part expected and the rows the
     /// parts so far carried.
     current: Option<Chunk>,
@@ -58,10 +60,10 @@ fn broken(message: String) -> Error {
 }
 
 impl Landing {
-    /// No chunk under way, into a stage input of `capacity_rows` rows.
-    pub fn new(capacity_rows: u64) -> Landing {
+    /// No chunk under way, into a stage input of `capacity_bytes` bytes.
+    pub fn new(capacity_bytes: u64) -> Landing {
         Landing {
-            capacity_rows,
+            capacity_bytes,
             current: None,
         }
     }
@@ -72,8 +74,8 @@ impl Landing {
     ///
     /// `InvalidRequest` for a part out of order, a part count or row layout that changes inside
     /// the chunk, a dtype the codec does not carry, a payload that is not its rows times the
-    /// stride, or a part that ends past the input's capacity. The landing then starts over at
-    /// the next part 0.
+    /// stride, or a part whose bytes would end past the input's capacity. The landing then starts
+    /// over at the next part 0.
     pub fn land(&mut self, header: &ActivationHeader, payload_len: u64) -> Result<Landed, Error> {
         let landed = self.place(header, payload_len);
         if landed.is_err() {
@@ -90,7 +92,7 @@ impl Landing {
             ))
         })?;
         let rows = u64::from(header.n_rows);
-        if payload_len != rows * stride {
+        if rows.checked_mul(stride) != Some(payload_len) {
             return Err(broken(format!(
                 "a part of {rows} rows at a {stride}-byte stride with a {payload_len}-byte payload"
             )));
@@ -125,21 +127,25 @@ impl Landing {
                 header.part_index, header.part_count, chunk.next, chunk.count
             )));
         }
+        // The earlier parts' range ended within the input, so `first * stride` cannot overflow.
         let first = chunk.rows;
-        let end = first.saturating_add(rows);
-        if end > self.capacity_rows {
-            return Err(broken(format!(
-                "a part ending at row {end} of an input of {} rows",
-                self.capacity_rows
-            )));
-        }
+        let end = first + rows;
+        let end_bytes = end
+            .checked_mul(stride)
+            .filter(|&bytes| bytes <= self.capacity_bytes)
+            .ok_or_else(|| {
+                broken(format!(
+                    "a part ending at row {end} at a {stride}-byte stride, past an input of {} bytes",
+                    self.capacity_bytes
+                ))
+            })?;
         chunk.rows = end;
         chunk.next += 1;
         let last = chunk.next == chunk.count;
         self.current = (!last).then_some(chunk);
         Ok(Landed {
-            bytes: first * stride..chunk.rows * stride,
-            rows: first..chunk.rows,
+            bytes: first * stride..end_bytes,
+            rows: first..end,
             last,
         })
     }

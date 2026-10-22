@@ -179,7 +179,7 @@ fn a_chunks_parts_land_at_consecutive_offsets() {
     let parts: Vec<_> = chunk.parts(max_frame).expect("parts").collect();
     assert_eq!(parts.len(), 4, "{parts:?}");
     let mut input = vec![0u8; payload.len()];
-    let mut landing = Landing::new(u64::from(ROWS));
+    let mut landing = Landing::new(input.len() as u64);
     for (i, part) in parts.iter().enumerate() {
         let mut out = vec![0; part.frame_len];
         chunk
@@ -199,7 +199,7 @@ fn a_chunks_parts_land_at_consecutive_offsets() {
     assert_eq!(input, payload, "the parts landed back into the chunk");
 
     // Out of order: part 1 first is refused, and the landing starts over at the next part 0.
-    let mut out_of_order = Landing::new(u64::from(ROWS));
+    let mut out_of_order = Landing::new(input.len() as u64);
     let second = &parts[1];
     let mut bytes = vec![0; second.frame_len];
     chunk
@@ -226,9 +226,9 @@ fn a_chunks_parts_land_at_consecutive_offsets() {
 
 #[test]
 fn a_part_whose_payload_is_not_its_rows_is_refused() {
-    let mut landing = Landing::new(3);
     let header = header(3, 16);
     let stride = header.layout.stride().expect("F32");
+    let mut landing = Landing::new(3 * stride);
     assert!(landing.land(&header, 3 * stride - 1).is_err());
     assert!(landing.land(&header, 3 * stride).is_ok());
 }
@@ -379,11 +379,11 @@ fn every_frame_within_its_limits_fits_its_header_area_over_1_to_512_spans() {
     assert_eq!(spans_tried.len(), 10);
 }
 
-/// Review of #1833, N3: a part that would end past the stage input's rows is refused.
+/// Review of #1833, N3: a part that would end past the stage input's bytes is refused.
 #[test]
 fn a_part_past_the_inputs_capacity_is_refused() {
-    let mut landing = Landing::new(5);
     let stride = header(2, 16).layout.stride().expect("F32");
+    let mut landing = Landing::new(5 * stride);
     let part = |index: u16, rows: u32| ActivationHeader {
         part_index: index,
         part_count: 3,
@@ -395,4 +395,35 @@ fn a_part_past_the_inputs_capacity_is_refused() {
     assert_eq!(error.class, syntropy_core::ErrorClass::InvalidRequest);
     // It starts over at the next part 0.
     assert!(landing.land(&part(0, 2), 2 * stride).is_ok());
+}
+
+/// A part's stride is the peer's: a part 0 whose rows fit the input but whose wider layout does
+/// not is refused, and so is one whose rows times stride would overflow, without a panic.
+#[test]
+fn a_part_whose_layout_overruns_the_inputs_bytes_is_refused() {
+    let planned = header(4, 16).layout.stride().expect("F32");
+    let mut landing = Landing::new(4 * planned);
+    let wide = header(2, 64);
+    let wide_stride = wide.layout.stride().expect("F32");
+    assert!(2 * wide_stride > 4 * planned);
+    let error = landing.land(&wide, 2 * wide_stride).unwrap_err();
+    assert_eq!(error.class, syntropy_core::ErrorClass::InvalidRequest);
+    let huge = ActivationHeader {
+        layout: RowLayout {
+            streams: u8::MAX,
+            ..header(u32::MAX, u32::MAX).layout
+        },
+        ..header(u32::MAX, u32::MAX)
+    };
+    assert!(
+        u64::from(u32::MAX)
+            .checked_mul(huge.layout.stride().expect("F32"))
+            .is_none()
+    );
+    for payload_len in [0, 64, u64::MAX] {
+        let error = landing.land(&huge, payload_len).unwrap_err();
+        assert_eq!(error.class, syntropy_core::ErrorClass::InvalidRequest);
+    }
+    // The planned layout still lands.
+    assert!(landing.land(&header(4, 16), 4 * planned).is_ok());
 }
