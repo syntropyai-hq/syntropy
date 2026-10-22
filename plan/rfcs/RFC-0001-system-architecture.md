@@ -1110,7 +1110,7 @@ Op selection per device (RFC-0040 §6, ADR-0401). For each op in a stage's step 
 
 ### 5.8 `Transport`, frames and sequence control (`net`)
 
-*Note 2026-10-22 (DIST-E1-T13): these types live in `core`.* `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame` and `TokenEntry` below, and `TraceContext`, are defined in `core`. `net` encodes them on the wire (RFC-0031 §6.3, §6.5, §6.6) without defining them, as RFC-0060 §5.5's note does for `ParityTapSpec`. Rule 3 (§4.2) keeps `exec` and `sched` off `net`, yet the head's and tail's step loops read these types from the M0 rings: PLC-E8-T01, PLC-E9-T02, PLC-E9-T03 and PLC-E9-T16. The `Transport` trait, `Channel` and `ActivationFrame` stay in `net`. §5.13 and §18.19 record the move, for the maintainers to confirm.
+*Note 2026-10-22 (DIST-E1-T13): these types live in `core`.* `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame` and `TokenEntry` below, and `TraceContext`, are defined in `core`. `net` encodes them on the wire (RFC-0031 §6.3, §6.5, §6.6) without defining them, as RFC-0060 §5.5's note does for `ParityTapSpec`. Rule 3 (§4.2) keeps `exec` and `sched` off `net`, yet the head's and tail's step loops read these types from the M0 rings: PLC-E8-T01, PLC-E9-T02, PLC-E9-T03 and PLC-E9-T16. The `Transport` trait, `Channel` and `ActivationFrame` stay in `net`. §5.13 and §18.22 record the move, for the maintainers to confirm.
 
 ```rust
 /// A data-plane transport backend (ADR-0011). The solver picks one per hop from measured α
@@ -2776,7 +2776,7 @@ COMP-E3-T01 found that the detection macro named for SME2 does not compile on th
 | `spsc`'s `unsafe` covers its wake handle's OS calls as well as the ring's slots: an eventfd, a kqueue user event and an event handle. `spsc` links `libc` and `windows-sys` for them | §4.2 rule 8 (dated note) | §4.1 gives `spsc` the wake handles (ADR-0012 item 4), and their OS calls need `unsafe` FFI. `spsc` depends on no workspace crate, so it cannot call `io`'s OS functions, and neither binding crate is one of rule 6's external systems (DIST-E1-T01). Maintainer decision, 2026-10-22 |
 | On Apple platforms, ADR-0012 item 5's park is std's kernel wait on a dispatch semaphore, not an address wait | ADR-0012 (dated revision) | std's thread parker waits on an address on Linux, Android and Windows, but not on Apple platforms, where the address-wait calls are private API. `os_sync_wait_on_address` (macOS 14.4) is a later option. Maintainer decision, 2026-10-22 |
 
-### 18.19 Sequence control and token types in `core` (2026-10-22)
+### 18.22 Sequence control and token types in `core` (2026-10-22)
 
 | Change | Sections touched | Reason |
 |---|---|---|
