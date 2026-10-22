@@ -13,8 +13,10 @@
 //!   string or an added-token object, resolved to an ID through `tokenizer.json`'s
 //!   `added_tokens` and then its vocabulary. The end-of-turn set is EOS together with every ID
 //!   in `generation_config.json`'s `eos_token_id` (an integer or a list). The FIM prefix,
-//!   middle and suffix tokens are the special added tokens spelled as in [`FIM_SPELLINGS`].
-//!   No token is looked up by a family or model name.
+//!   middle and suffix tokens are the added tokens spelled as in [`FIM_SPELLINGS`], whether or
+//!   not `tokenizer.json` marks them special: some checkpoints (the Qwen3-MoE repositories
+//!   among them) ship their FIM tokens as added but not special. No token is looked up by a
+//!   family or model name.
 //! - **`add_bos` / `add_eos`** come from `tokenizer_config.json`'s `add_bos_token` and
 //!   `add_eos_token` where it sets them. Otherwise they are read from `tokenizer.json`'s
 //!   post-processor: a template-processing post-processor whose single-sequence template
@@ -24,7 +26,10 @@
 //!   or the entry named `default` of a list of named templates).
 //! - **[`TokenizerId`]** is BLAKE3 over `model`, the specials, `add_bos`, `add_eos` and the
 //!   template in use ([`TokenizerSpec::template_in_use`]), so it changes when any of them
-//!   does (RFC-0043 §8.5).
+//!   does (RFC-0043 §8.5). Nothing it covers depends on the order something was listed in:
+//!   the specials are single IDs and one sorted, deduplicated set (`end_of_turn`); `model` is
+//!   the shipped file's bytes, hashed as they are, the same bytes `FileDigest` commits to, so
+//!   its added tokens and maps are covered through the file, never re-encoded from a parse.
 //!
 //! The fields are private and read through accessors, so the ID can never fall out of step
 //! with what it covers: the one way to change the template in use,
@@ -58,8 +63,9 @@ pub const CHAT_TEMPLATE_FILE: &str = "chat_template.jinja";
 /// The domain tag that starts the `TokenizerId` preimage.
 const ID_TAG: &[u8] = b"syntropy/tokenizer-id/v1";
 
-/// The special-token spellings read as FIM prefix, middle and suffix. Matched only against
-/// added tokens marked special.
+/// The token spellings read as FIM prefix, middle and suffix. Matched against every added
+/// token, marked special or not; a set is taken only when all three of its spellings are
+/// added tokens.
 pub const FIM_SPELLINGS: [(&str, &str, &str); 3] = [
     ("<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>"),
     ("<fim_prefix>", "<fim_middle>", "<fim_suffix>"),
@@ -88,7 +94,9 @@ pub struct SpecialTokens {
     pub bos: Option<u32>,
     /// End of sequence.
     pub eos: Option<u32>,
-    /// Every end-of-turn token, sorted, each once. Holds `eos` when it is set.
+    /// Every end-of-turn token, sorted, each once: [`TokenizerSpec::new`] sorts and dedupes
+    /// it, so the set, not the order it was listed in, is what `TokenizerId` covers. Holds
+    /// `eos` when the spec was read from its sources and EOS is set.
     pub end_of_turn: Vec<u32>,
     /// Padding.
     pub pad: Option<u32>,
@@ -177,16 +185,19 @@ pub struct TokenizerSpec {
 
 impl TokenizerSpec {
     /// A spec from its parts, with the ID computed. The template in use is the one
-    /// `template_source` names.
+    /// `template_source` names. The end-of-turn list is sorted and deduplicated first, so the
+    /// same set listed in any order gives the same spec and the same ID.
     #[must_use]
     pub fn new(
         model: Vec<u8>,
-        specials: SpecialTokens,
+        mut specials: SpecialTokens,
         add_bos: bool,
         add_eos: bool,
         chat_template: Option<String>,
         template_source: TemplateSource,
     ) -> Self {
+        specials.end_of_turn.sort_unstable();
+        specials.end_of_turn.dedup();
         let mut spec = Self {
             model,
             specials,
@@ -273,11 +284,7 @@ impl TokenizerSpec {
         let (fim_prefix, fim_middle, fim_suffix) = FIM_SPELLINGS
             .iter()
             .find_map(|(p, m, s)| {
-                Some((
-                    vocab.special_id(p)?,
-                    vocab.special_id(m)?,
-                    vocab.special_id(s)?,
-                ))
+                Some((vocab.added_id(p)?, vocab.added_id(m)?, vocab.added_id(s)?))
             })
             .map_or((None, None, None), |(p, m, s)| (Some(p), Some(m), Some(s)));
 
@@ -539,8 +546,8 @@ fn post_processor_adds(pp: Option<&Json>) -> (bool, bool) {
 
 /// The token IDs `tokenizer.json` defines: its added tokens and its model's vocabulary.
 struct Vocab<'a> {
-    /// (content, id, special).
-    added: Vec<(&'a str, u32, bool)>,
+    /// (content, id).
+    added: Vec<(&'a str, u32)>,
     /// The model's vocabulary, when it is a JSON object of string to ID (BPE, WordPiece).
     vocab: Option<&'a Object>,
     /// A Unigram vocabulary: a list of `[piece, score]`, the ID being the position.
@@ -565,8 +572,7 @@ impl<'a> Vocab<'a> {
                     };
                     let id = u32::try_from(*id)
                         .map_err(|_| bad(format!("added token id {id} passes u32")))?;
-                    let special = matches!(get(o, "special"), Some(Json::Bool(true)));
-                    added.push((content.as_str(), id, special));
+                    added.push((content.as_str(), id));
                 }
             }
             Some(other) => return Err(bad(format!("added_tokens is {}", other.kind()))),
@@ -588,8 +594,8 @@ impl<'a> Vocab<'a> {
 
     /// The ID of `content`: an added token first, then the vocabulary.
     fn id(&self, content: &str) -> Option<u32> {
-        if let Some((_, id, _)) = self.added.iter().find(|(c, _, _)| *c == content) {
-            return Some(*id);
+        if let Some(id) = self.added_id(content) {
+            return Some(id);
         }
         if let Some(v) = self.vocab {
             return match get(v, content) {
@@ -604,17 +610,17 @@ impl<'a> Vocab<'a> {
         u32::try_from(pos).ok()
     }
 
-    /// The ID of the added token `content` when it is marked special.
-    fn special_id(&self, content: &str) -> Option<u32> {
+    /// The ID of the added token `content`, marked special or not.
+    fn added_id(&self, content: &str) -> Option<u32> {
         self.added
             .iter()
-            .find(|(c, _, s)| *s && *c == content)
-            .map(|(_, id, _)| *id)
+            .find(|(c, _)| *c == content)
+            .map(|(_, id)| *id)
     }
 
     /// Whether `id` is a token: an added token's ID, or inside the vocabulary.
     fn holds(&self, id: u32) -> bool {
-        if self.added.iter().any(|(_, a, _)| *a == id) {
+        if self.added.iter().any(|(_, a)| *a == id) {
             return true;
         }
         if let Some(v) = self.vocab {

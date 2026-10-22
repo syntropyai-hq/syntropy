@@ -35,8 +35,8 @@
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
-      "normalized": false,
-      "special": true
+      "normalized": true,
+      "special": false
     },
     "13": {
       "id": 13,
@@ -44,8 +44,8 @@
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
-      "normalized": false,
-      "special": true
+      "normalized": true,
+      "special": false
     },
     "14": {
       "id": 14,
@@ -53,8 +53,8 @@
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
-      "normalized": false,
-      "special": true
+      "normalized": true,
+      "special": false
     },
     "15": {
       "id": 15,
@@ -62,8 +62,8 @@
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
-      "normalized": false,
-      "special": true
+      "normalized": true,
+      "special": false
     },
     "16": {
       "id": 16,

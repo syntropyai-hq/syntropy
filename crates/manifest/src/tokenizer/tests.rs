@@ -295,9 +295,8 @@ fn malformed_or_inconsistent_sources_are_integrity_errors() {
 }
 
 #[test]
-fn fim_needs_all_three_special_tokens() {
-    // A tokenizer with only a FIM prefix token, or with FIM tokens not marked special, has no
-    // FIM specials.
+fn fim_needs_all_three_tokens_marked_special_or_not() {
+    // Only a FIM prefix token: no FIM set.
     let only_prefix = br#"{"added_tokens": [{"id": 0, "content": "<|fim_prefix|>", "special": true}], "model": {"vocab": {}}}"#;
     let s = TokenizerSpec::from_sources(TokenizerSources {
         tokenizer_json: only_prefix,
@@ -305,17 +304,107 @@ fn fim_needs_all_three_special_tokens() {
     })
     .unwrap();
     assert_eq!(s.specials().fim_prefix, None);
-    let not_special = br#"{"added_tokens": [{"id": 0, "content": "<PRE>"}, {"id": 1, "content": "<MID>"}, {"id": 2, "content": "<SUF>"}]}"#;
+    // All three, none marked special: the set is found.
+    let not_special = br#"{"added_tokens": [{"id": 0, "content": "<PRE>"}, {"id": 1, "content": "<MID>", "special": false}, {"id": 2, "content": "<SUF>"}]}"#;
     let s = TokenizerSpec::from_sources(TokenizerSources {
         tokenizer_json: not_special,
         ..Default::default()
     })
     .unwrap();
-    assert_eq!(s.specials().fim_middle, None);
+    let sp = s.specials();
+    assert_eq!(
+        (sp.fim_prefix, sp.fim_middle, sp.fim_suffix),
+        (Some(0), Some(1), Some(2))
+    );
+}
+
+/// Regression (review of #1739): the Qwen3-MoE repositories ship their FIM tokens as added
+/// tokens with `"special": false`. The fixture mirrors that, and the FIM IDs are still found.
+#[test]
+fn qwen_fim_tokens_not_marked_special_are_found() {
+    let tok = String::from_utf8(qwen().tokenizer_json.to_vec()).unwrap();
+    for name in ["<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>"] {
+        let at = tok.find(&format!("\"content\": \"{name}\"")).unwrap();
+        let entry = &tok[at..at + tok[at..].find('}').unwrap()];
+        assert!(entry.contains("\"special\": false"), "{entry}");
+    }
+    let sp = TokenizerSpec::from_sources(qwen())
+        .unwrap()
+        .specials()
+        .clone();
+    assert_eq!(
+        (sp.fim_prefix, sp.fim_middle, sp.fim_suffix),
+        (Some(12), Some(13), Some(14))
+    );
+}
+
+/// Review of #1739: the end-of-turn tokens are a set. The same IDs in any order, or with a
+/// repeat, give the same spec and the same `TokenizerId`.
+#[test]
+fn end_of_turn_order_and_repeats_do_not_change_the_id() {
+    let base = TokenizerSpec::from_sources(llama()).unwrap();
+    let with = |eot: Vec<u32>| {
+        let mut sp = base.specials().clone();
+        sp.end_of_turn = eot;
+        TokenizerSpec::new(
+            base.model().to_vec(),
+            sp,
+            base.add_bos(),
+            base.add_eos(),
+            base.chat_template().map(str::to_owned),
+            TemplateSource::Shipped,
+        )
+    };
+    let a = with(vec![10, 15, 16]);
+    let b = with(vec![16, 10, 15]);
+    let c = with(vec![15, 16, 10, 16, 10]);
+    assert_eq!(a.id(), base.id());
+    assert_eq!(b, a);
+    assert_eq!(c, a);
+    assert_eq!(b.specials().end_of_turn, [10, 15, 16]);
+    assert_ne!(with(vec![10, 15]).id(), a.id());
+    // The same set listed differently in generation_config.json gives the same ID.
+    let gen_cfg = br#"{"eos_token_id": [16, 15, 10, 15]}"#;
+    let d = TokenizerSpec::from_sources(TokenizerSources {
+        generation_config: Some(gen_cfg),
+        ..llama()
+    })
+    .unwrap();
+    assert_eq!(d.id(), base.id());
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// Any permutation of the end-of-turn set, with repeats, gives the same `TokenizerId`.
+    #[test]
+    fn end_of_turn_is_hashed_as_a_set(
+        ids in prop::collection::vec(0u32..1000, 0..8),
+        extra in prop::collection::vec(0usize..8, 0..4),
+        seed in any::<u64>(),
+    ) {
+        let base = TokenizerSpec::from_sources(qwen()).unwrap();
+        let spec = |eot: Vec<u32>| {
+            let mut sp = base.specials().clone();
+            sp.end_of_turn = eot;
+            TokenizerSpec::new(base.model().to_vec(), sp, false, false, None, TemplateSource::None)
+        };
+        let mut shuffled = ids.clone();
+        for i in extra {
+            if let Some(&v) = ids.get(i) {
+                shuffled.push(v);
+            }
+        }
+        // A deterministic shuffle from the seed.
+        let mut x = seed | 1;
+        for i in (1..shuffled.len()).rev() {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            shuffled.swap(i, (x % (i as u64 + 1)) as usize);
+        }
+        prop_assert_eq!(spec(ids).id(), spec(shuffled).id());
+    }
 
     /// Arbitrary side-file text never panics; a rejection is an `Integrity` error.
     #[test]
