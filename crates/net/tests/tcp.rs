@@ -22,8 +22,6 @@ use syntropy_net::error::ErrorCode;
 use syntropy_net::frame::{CredKind, Hello, HelloAck};
 use syntropy_net::transport::conformance::{self, Fabric, MAX_FRAME, Rule, SEND_SLOT, SEND_SLOTS};
 use syntropy_net::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
-#[cfg(target_os = "linux")]
-use syntropy_net::transport::tcp::buffer_caps;
 use syntropy_net::transport::tcp::{
     Credential, CredentialCheck, MAX_HANDSHAKES_PER_ADDRESS, TLS_TIMEOUT, TcpConfig, TcpTransport,
 };
@@ -493,16 +491,24 @@ fn report(line: &str) {
 /// on sockets left to autotuning: the acceptor's, sized for its own slot, and the connector's
 /// send buffer, sized for the peer's slot from `HelloAck`. Both ends count it.
 ///
-/// The slot is sized from this host's own caps, which differ between hosts (hosted runners do
-/// not all keep Linux's 212 992-byte default), so that twice it is over both. Each end counts
-/// the socket before `connect` or `accept` returns, so the counts are final once both have. A
-/// host whose caps are unreadable, or too large to allocate such slots, skips the check; the
-/// decision itself is unit-tested in `transport::tcp`.
+/// The slot is sized from this host's own caps, read from `/proc/sys/net/core`, which differ
+/// between hosts (hosted runners do not all keep Linux's 212 992-byte default), so that twice it
+/// is over both. Each end counts the socket before `connect` or `accept` returns, so the counts
+/// are final once both have. Only a host where `/proc/sys` cannot be read, or whose caps would
+/// need slots over 64 MiB, skips the check, and says so in the log; the unit test in
+/// `transport::tcp` checks the backend reads the same caps.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_slot_over_the_kernel_cap_is_left_to_autotuning_and_counted() {
-    let (Some(send_cap), Some(recv_cap)) = buffer_caps() else {
-        report("SKIPPED: this host's buffer caps are unreadable");
+    let read = |name: &str| -> Option<usize> {
+        std::fs::read_to_string(format!("/proc/sys/net/core/{name}"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    };
+    let (Some(send_cap), Some(recv_cap)) = (read("wmem_max"), read("rmem_max")) else {
+        report("SKIPPED: /proc/sys/net/core cannot be read on this host");
         return;
     };
     // Twice the slot is over the larger cap, so neither buffer can be asked for.
