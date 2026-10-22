@@ -667,3 +667,12 @@ DIST-E10-T08's model check found that a supported older proof can depose a lone 
 |---|---|---|---|
 | Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
 | DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |
+
+## DIST-E7-T01's conformance criterion and buffer types (2026-10-22)
+
+DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-conformance suite", could not be met by DIST-E7-T01: `SimTransport` is QUAL-E8-T04, which depends on DIST-E7-T01 and DIST-E7-T02, and no task row built the suite itself, though DIST-E7-T03, T05, T06 and T08 and QUAL-E8-T04 all run it. RFC-0001 §5.8 and RFC-0031 §2 also name six buffer types without defining them (`BufferPool`, `PoolRegistration`, `PayloadSlice`, `PayloadRef`, `ExtBuf`, `ExtRef`), and DIST-E7-T01's signatures need them. These are plan corrections that take the recommended default, under the maintainer's standing instruction; RFC-0031 §2's note of 2026-10-22 records the definitions.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T01's criterion becomes "the shared channel-conformance suite (`net::transport::conformance`) passes on an in-memory test double and fails on a double that breaks each RFC-0031 §2 rule"; "`SimTransport` passes the suite" stays with QUAL-E8-T04, whose criterion already says so | DIST-E7-T01, QUAL-E8-T04 | R9 | the criterion used `SimTransport`, which a dependent task produces; the suite lives in `net`, since a test-only feature is limited to RFC-0001 §4.2 rule 10's three and `testkit` will depend on `net` |
+| DIST-E7-T01 defines the buffer types; DIST-E7-T12's text says it builds on them and keeps the lock-free slot handout, the per-transport registration tables, the header areas sized from the plan and the copy-count tests; TIER-E2-T21's text says `NetPool`'s arena implements `net::transport::PoolMemory` | DIST-E7-T01, DIST-E7-T12, TIER-E2-T21 | R1 | `tier` (layer 2) cannot hand `net` (layer 1) its own type, so `net` defines the memory trait and `tier` implements it; the edge TIER-E2-T21 → DIST-E7-T01 already exists |

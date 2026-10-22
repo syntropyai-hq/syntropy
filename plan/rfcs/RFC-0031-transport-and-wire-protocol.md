@@ -172,6 +172,24 @@ Semantics, all binding on every backend:
 - A frame whose `(instance, epoch)` does not match the channel key is dropped and counted (RFC-0001 invariant 7). So is a frame whose epoch the runner no longer serves.
 - `stats()` returns α samples from ack echoes (§7.1), bytes, retransmits, NACKs and credit-stall time. It feeds the telemetry ring (RFC-0001 §13) and online link refinement (RFC-0010).
 
+**Note, 2026-10-22 (DIST-E7-T01): what the code above leaves open, as `net::transport` defines it.**
+- **Async methods.** `connect`, `accept` and `reconnect` return `impl Future<Output = …> + Send`, and implementations write them as `async fn`. The pinned toolchain does not allow `dyn` on a trait with `async fn`, so `Transport` is used through generics. A boxed wrapper for choosing a transport at run time is DIST-E7-T10's or T11's call. `cost` comes with link selection (DIST-E7-T11), which defines `LinkCaps`.
+- **`Channel` is concrete.** It wraps a `ChannelBackend`, which each backend implements, and so does the simulator's `SimTransport`, at one virtual call per frame. On demotion the channel's backend is replaced and its retained frames are sent again (ADR-0011 item 7).
+- **Buffers.** `BufferPool` divides memory into equal, 64-byte-aligned slots. It reaches the memory through an `unsafe trait PoolMemory`, which `tier` implements for its pinned arena (TIER-E2-T21). Each slot is in one of three states: free, held by one writer, or held by readers.
+  - `PayloadSlice` and `ExtBuf` are `Copy` descriptors: pool, slot, offset and length, into a frozen slot. `ExtBuf`'s length includes padding.
+  - `PayloadRef` and `ExtRef` are leases on a slot; dropping the last one frees it. A sending channel holds such leases on every unacknowledged frame, and has released them by the time `completed` hands the ticket back.
+  - `PoolRegistration` holds the pool, the transport and the backend's handle.
+  - §8's header areas, registration tables and lock-free slot handout are DIST-E7-T12's.
+- **Small types.**
+  - `SendError`: `WouldBlock`, `TooLarge`, `Invalid`, `Closed` or `Link`.
+  - `CloseReason`: an optional §12 code and up to 256 bytes of text.
+  - `ChannelStats` counts, each way, the data frames and bytes `try_send` accepted and `try_recv` handed over. It also counts retransmits, NACKs sent, credit stalls and their time, α samples, CRC failures and stale frames.
+- **Placeholders.**
+  - Until `core` has RFC-0001 §5.12's `Error`, `net::Error` stands in: a class, a message and an optional §12 code. The code is optional because §12 gives some refusals none.
+  - `StageIx::INGRESS` is `net::transport::INGRESS` (0xFFFF) until `core` adds it.
+  - `RemoteEndpoint`'s `relay`, `rdma` and `shm` fields come with the tasks that define their types: DIST-E7-T23, T07 and T06.
+- **Conformance.** `net::transport::conformance` checks the binding semantics above on any backend through a `Fabric`. It is the suite DIST-E7-T03, T05 to T08 and QUAL-E8-T04 run.
+
 ### 3. Link selection
 
 The solver (RFC-0011) picks one transport per hop and records it in `HopPlan::transport`. This section defines the cost function the solver uses, and what the runtime does when the planned transport is unavailable.
