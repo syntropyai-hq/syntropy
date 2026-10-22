@@ -612,6 +612,10 @@ dependencies = [
 [[package]]
 name = "syntropy-kernels-cpu"
 version = "0.0.0"
+dependencies = [
+ "syntropy-core",
+ "syntropy-kernels",
+]
 
 [[package]]
 name = "syntropy-kernels-cuda"
