@@ -1588,7 +1588,7 @@ pub enum ErrorClass {
 | `GrammarRef` | core (added 2026-10-23; §5.8's note) | 0050 | 0012 (masks) |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
-| `ReplanReason`, `DriftTerm`, `WorkloadTerm` | core (added 2026-10-23, §18.32) | 0033 | 0010 (the terms), 0031 (`DriftTerm::Hop`), 0054 (`Config { keys }`) |
+| `ReplanReason`, `DriftTerm`, `WorkloadTerm` | core (added 2026-10-23, §18.33) | 0033 | 0010 (the terms), 0031 (`DriftTerm::Hop`), 0054 (`Config { keys }`) |
 | `Error`, `ErrorClass` | core | 0001 | every RFC (codes) |
 | Policy objects (`Objective`, `ExactnessPolicy`, `ResourcePolicy`, `ResourceOverlay`, `InstancePolicy`), and the plain-data field types `config` parses into (`Fidelity`, `ApproxParams`, `NetworkScope`, `Reserve`, `Fraction`, the selectors, `PlacementPin`, `TensorOverride`, `KeyPath`, `ConfigValue`; OQ-PRD-27) | core | 0054 | 0011, 0012, 0042 |
 | Canonical encoding (`canon::to_bytes`), behind `InstancePolicy::canonical_bytes` and `digest_with` | core | 0054 (§4.5) | |
@@ -2849,7 +2849,7 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 | The OS calls that place hot threads (`cpu_topology`, `pin_current_thread`, `raise_current_thread_priority`, `current_core`) are `syntropy_io::os` functions, and `exec` keeps `forbid(unsafe_code)` | §4.2 rule 8 (its note of 2026-10-22 already places OS calls that need `unsafe` in `io`) | PLC-E7-T01 pins its dispatchers, and pinning, priority and NUMA queries need `unsafe` FFI |
 | `/debug/state` lists each runner's hot-thread placement records | RFC-0050 §13.6 (dated note) | PLC-E7-T01's criterion: dispatchers report their pinned core and NUMA node in the debug state |
 
-### 18.32 `ReplanReason` in `core`, with its term types (2026-10-23)
+### 18.33 `ReplanReason` in `core`, with its term types (2026-10-23)
 
 | Change | Sections touched | Reason |
 |---|---|---|
