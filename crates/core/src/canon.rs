@@ -515,7 +515,15 @@ impl SerializeMap for Entries<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
+    // A `HashMap` with `RandomState`, on purpose: `maps_are_sorted_whatever_their_order` shows
+    // that a map's order, random from run to run, does not reach the encoding. A listed exception
+    // to the determinism lints (`xtask/src/determinism.rs`).
+    #[allow(
+        clippy::disallowed_types,
+        reason = "the test feeds the encoder a randomly ordered map"
+    )]
+    use std::collections::HashMap;
 
     use super::*;
 
@@ -597,6 +605,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_types,
+        reason = "the test feeds the encoder a randomly ordered map"
+    )]
     fn maps_are_sorted_whatever_their_order() {
         let mut hash = HashMap::new();
         let mut tree = BTreeMap::new();

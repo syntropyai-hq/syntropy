@@ -15,7 +15,8 @@ use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
 };
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::time_provider::TimeProvider;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection};
 use syntropy_net::crypto::SigningKey;
 use x509_parser::extensions::GeneralName;
@@ -27,6 +28,17 @@ const NOW: u64 = 1_792_627_200;
 
 fn now() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(NOW)
+}
+
+/// The TLS ends' clock, stopped at [`NOW`]: a handshake checks certificate validity against it,
+/// so the tests read no wall clock (RFC-0060 §2.1 rule T1).
+#[derive(Debug)]
+struct FixedTime;
+
+impl TimeProvider for FixedTime {
+    fn current_time(&self) -> Option<UnixTime> {
+        Some(UnixTime::since_unix_epoch(Duration::from_secs(NOW)))
+    }
 }
 
 fn ip(s: &str) -> IpAddr {
@@ -80,7 +92,7 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
 
 fn server_config(resolver: Arc<LeafResolver>) -> Arc<ServerConfig> {
     Arc::new(
-        ServerConfig::builder_with_provider(provider())
+        ServerConfig::builder_with_details(provider(), Arc::new(FixedTime))
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_no_client_auth()
@@ -92,7 +104,7 @@ fn client_config(ca: &CertificateDer<'static>) -> Arc<ClientConfig> {
     let mut roots = RootCertStore::empty();
     roots.add(ca.clone()).unwrap();
     Arc::new(
-        ClientConfig::builder_with_provider(provider())
+        ClientConfig::builder_with_details(provider(), Arc::new(FixedTime))
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_root_certificates(roots)
@@ -710,11 +722,11 @@ fn a_leaf_outside_the_scope_is_refused_before_anything_is_signed() {
 #[test]
 fn a_client_rejects_a_leaf_the_name_constraints_do_not_allow() {
     let dir = Dir::new("client");
-    // The client checks validity against the real clock.
-    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), SystemTime::now()).unwrap();
+    // The client checks validity against `FixedTime`, the same instant as `now()`.
+    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
     let client = client_config(ca.certificate_der());
     let handshake = |names: &LeafNames, server_name: &str| {
-        let leaf = ca.sign_leaf(names, SystemTime::now()).unwrap();
+        let leaf = ca.sign_leaf(names, now()).unwrap();
         let server = server_config(Arc::new(LeafResolver::new(&leaf)));
         connect(&client, &server, server_name).map(|_| ())
     };
@@ -753,10 +765,10 @@ fn a_ca_with_no_served_subnet_issues_for_no_address() {
     let (scope, left_out) = CaScope::new(["box.local"], &[ip("203.0.113.9")], &[]).unwrap();
     assert!(scope.subnets().is_empty());
     assert_eq!(left_out.addresses, [ip("203.0.113.9")]);
-    let (ca, _) = LocalCa::open(&dir.path(), &scope, &node_key(1), SystemTime::now()).unwrap();
+    let (ca, _) = LocalCa::open(&dir.path(), &scope, &node_key(1), now()).unwrap();
     let client = client_config(ca.certificate_der());
     let handshake = |names: &LeafNames, server_name: &str| {
-        let leaf = ca.sign_leaf(names, SystemTime::now()).unwrap();
+        let leaf = ca.sign_leaf(names, now()).unwrap();
         let server = server_config(Arc::new(LeafResolver::new(&leaf)));
         connect(&client, &server, server_name).map(|_| ())
     };
@@ -779,9 +791,9 @@ fn a_ca_with_no_served_subnet_issues_for_no_address() {
 #[test]
 fn rotating_the_leaf_drops_none_of_100_open_connections() {
     let dir = Dir::new("rotate");
-    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), SystemTime::now()).unwrap();
+    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
     let names = LeafNames::new(["box.local"], []);
-    let first = ca.issue_leaf(&names, SystemTime::now()).unwrap();
+    let first = ca.issue_leaf(&names, now()).unwrap();
     let resolver = Arc::new(LeafResolver::new(&first));
     let server = server_config(Arc::clone(&resolver));
     let client = client_config(ca.certificate_der());
@@ -792,7 +804,7 @@ fn rotating_the_leaf_drops_none_of_100_open_connections() {
         assert_eq!(served_leaf(c), *first.certificate_der());
         exchange(c, s, b"before the rotation");
     }
-    let second = ca.issue_leaf(&names, SystemTime::now()).unwrap();
+    let second = ca.issue_leaf(&names, now()).unwrap();
     assert_ne!(first.certificate_der(), second.certificate_der());
     resolver.rotate(&second);
     for (i, (c, s)) in open.iter_mut().enumerate() {

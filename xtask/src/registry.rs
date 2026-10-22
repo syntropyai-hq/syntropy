@@ -24,7 +24,8 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    ci_gate, codeowners, contrib, dep_diff, instructions, properties, repo_settings, toolchain,
+    ci_gate, codeowners, contrib, dep_diff, determinism, instructions, properties, repo_settings,
+    toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -159,8 +160,8 @@ pub fn cargo() -> OsString {
 pub const JOBS: &[Entry] = &[
     Entry {
         name: "lint",
-        summary: "the L0 static checks: rustfmt, clippy, the crate dependency rules, CODEOWNERS and \
-                  the licence policy",
+        summary: "the L0 static checks: rustfmt, clippy with the determinism lints, the crate \
+                  dependency rules, CODEOWNERS and the licence policy",
         defined_in: "RFC-0062 §2.3 and §12.4",
         params: &[],
         steps: &[
@@ -187,6 +188,16 @@ pub const JOBS: &[Entry] = &[
                     "-D",
                     "warnings",
                 ]),
+            },
+            // What clippy cannot check about the determinism lints of RFC-0060 §2.1 and §2.4,
+            // which the `clippy` step applies (QUAL-E3-T03).
+            Step {
+                name: "determinism",
+                action: Action::Builtin {
+                    shown: "the covered crates keep ci/clippy-determinism.toml and lift it only \
+                            where listed",
+                    run: determinism::step,
+                },
             },
             Step {
                 name: "check-deps",
@@ -757,6 +768,8 @@ mod tests {
                 "xtask: cargo and rustc are the release rust-toolchain.toml pins",
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
+                "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
+                 listed",
                 "cargo xtask check-deps",
                 "xtask: ci/properties.toml matches the property tests, RFC-0060 and the epics",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
