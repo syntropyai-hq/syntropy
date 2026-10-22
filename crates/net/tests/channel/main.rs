@@ -26,6 +26,7 @@ use syntropy_net::frame::{
 };
 use syntropy_net::transport::core::{
     ACK_TIMEOUT_MIN, ACK_TIMEOUTS_TO_FAULT, CONTROL_RECEIVES, CRC_STORM_COUNT, MAX_CONTROL_FRAME,
+    PROBE_BACKOFF_MAX,
 };
 use syntropy_net::transport::{
     BufferPool, ChannelCore, ChannelKey, ChannelPurpose, CloseReason, CoreConfig, CreditCadence,
@@ -983,6 +984,30 @@ fn a_peer_granting_too_much_still_meets_the_retention_window() {
     assert_eq!(a.retained_bytes(), 4 * 1024);
 }
 
+/// A peer that grants more than its `recv_slots` past the ack gets no more than `recv_slots`
+/// of credit, even where the retention window would allow more (RFC-0031 §7.1): with
+/// `retention` 8 above `recv_slots` 4, only the `limit_seq` cap holds the sender at 4.
+#[test]
+fn the_limit_seq_cap_holds_where_retention_would_allow_more() {
+    let shape = Shape {
+        recv_slots: 4,
+        slot_size: 1024,
+        retention: 8,
+        cadence: CreditCadence::EveryFrame,
+    };
+    let pool = send_pool(16, 1024);
+    let mut a = sender(shape, ALPHA, RFC);
+    deliver(&mut a, &credit(0, u64::MAX, &[]), at(0));
+    assert_eq!(a.credit(), 4);
+    for step in 0..4 {
+        send(&mut a, &pool, step, &[1; 16], at(0)).unwrap();
+    }
+    assert_eq!(
+        send(&mut a, &pool, 4, &[1; 16], at(0)),
+        Err(SendError::WouldBlock)
+    );
+}
+
 /// A credit that only grants more is lost while the sender has nothing unacknowledged: the
 /// sender, refused for credit, probes with a `Ping` after an ack timeout, then after 2 and 4 ack
 /// timeouts, and the receiver answers with its current credit. A sender that was never refused
@@ -1019,10 +1044,11 @@ fn a_stalled_sender_probes_for_a_lost_credit() {
     drop(held);
     let lost = credits_in(&drain(&mut b, at(10_001)));
     assert_eq!(lost.iter().map(|c| c.limit_seq).collect::<Vec<_>>(), [8]);
-    // Probes after 1, then 2, then 4 ack timeouts; the first two answers are lost too.
+    // Probes after 1, 2, 4, … ack timeouts, the wait doubling up to its cap of
+    // PROBE_BACKOFF_MAX (64) ack timeouts; the first seven answers are lost too.
     let timeout = ACK_TIMEOUT_MIN.0 / 1_000;
     let mut probes = Vec::new();
-    for us in 10_000..10_000 + 8 * timeout {
+    for us in 10_000..10_000 + 256 * timeout {
         a.on_tick(at(us));
         for bytes in drain(&mut a, at(us)) {
             assert!(matches!(
@@ -1033,14 +1059,24 @@ fn a_stalled_sender_probes_for_a_lost_credit() {
             deliver(&mut b, &bytes, at(us));
             let answer = drain(&mut b, at(us));
             assert_eq!(credits_in(&answer).last().map(|c| c.limit_seq), Some(8));
-            if probes.len() == 3 {
+            if probes.len() == 8 {
                 for bytes in &answer {
                     deliver(&mut a, bytes, at(us));
                 }
             }
         }
     }
-    assert_eq!(probes, [timeout, 3 * timeout, 7 * timeout]);
+    // The gaps are 1, 2, 4, 8, 16, 32, then 64 and 64 again at the cap; no probe after the
+    // credit arrives.
+    let gaps: Vec<u64> = [0]
+        .iter()
+        .chain(&probes)
+        .zip(&probes)
+        .map(|(last, next)| (next - last) / timeout)
+        .collect();
+    assert_eq!(gaps, [1, 2, 4, 8, 16, 32, 64, 64]);
+    assert_eq!(probes.last(), Some(&(191 * timeout)));
+    assert_eq!(PROBE_BACKOFF_MAX, 64);
     assert_eq!(a.credit(), 4);
     assert_eq!(send(&mut a, &pool, 4, &[3; 16], at(20_000)), Ok(5));
 }
