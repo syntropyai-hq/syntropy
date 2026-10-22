@@ -30,10 +30,11 @@
 //! [`Transport::accept`] of its channel key. One that arrives first is held for
 //! [`TcpConfig::early_hold`], half the handshake timeout, then refused with `NotANeighbour`,
 //! within the connector's own wait, as the QUIC backend does (RFC-0031 §4.3): so an acceptor
-//! calls `accept` within `early_hold` of the peer's `Hello`. A second connection for a held key
-//! replaces the first, as a reconnect would. `accept` checks the peer's key against the allowed
-//! set again, and the whole `Hello` with its credential, since either may have stopped passing
-//! while the connection waited.
+//! calls `accept` within `early_hold` of the peer's `Hello`. At most [`MAX_EARLY_PER_PEER`] are
+//! held from one peer. A second connection for a held key replaces the first if it comes from the
+//! same peer, as a reconnect would, and is refused otherwise. `accept` checks the peer's key
+//! against the allowed set again, and the whole `Hello` with its credential, since either may have
+//! stopped passing while the connection waited.
 //!
 //! **The listener** takes at most [`MAX_HANDSHAKES`] connections through TLS and `Hello` at once,
 //! and [`MAX_HANDSHAKES_PER_ADDRESS`] from one source; a connection over either is closed at
@@ -89,6 +90,10 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 
 /// Connections held for a channel nobody accepts yet; more are refused \[target\].
 const MAX_EARLY: usize = 64;
+
+/// Of those, the most from one peer key \[target\]: a quarter of the table, so one allowed peer
+/// cannot fill it and have every other peer's early connections refused.
+pub const MAX_EARLY_PER_PEER: usize = MAX_EARLY / 4;
 
 /// A [`TcpTransport`]'s settings.
 #[derive(Clone)]
@@ -233,6 +238,22 @@ struct Routes {
 }
 
 impl Routes {
+    /// Whether a connection from `peer` for `key` may be held. A second connection for a held key
+    /// replaces the first when it comes from the same peer, as a reconnect would, and is refused
+    /// when it comes from another. Otherwise it needs room under [`MAX_EARLY`], and under
+    /// [`MAX_EARLY_PER_PEER`] for its peer.
+    fn holds(&self, key: &ChannelKey, peer: &[u8; 32]) -> bool {
+        if let Some((_, held)) = self.early.get(key) {
+            return held.peer == *peer;
+        }
+        let from_peer = self
+            .early
+            .values()
+            .filter(|(_, held)| held.peer == *peer)
+            .count();
+        self.early.len() < MAX_EARLY && from_peer < MAX_EARLY_PER_PEER
+    }
+
     /// The `accept` waiting for `key`, if its caller is still there: one that went away is
     /// dropped.
     fn waiter(&mut self, key: &ChannelKey) -> Option<Waiter> {
@@ -558,8 +579,7 @@ impl Inner {
             let mut routes = lock(&self.routes);
             match routes.waiter(&key) {
                 Some(waiter) => Next::Complete(waiter, early),
-                // A second connection for a key replaces the first, as a reconnect would.
-                None if routes.early.len() < MAX_EARLY || routes.early.contains_key(&key) => {
+                None if routes.holds(&key, &early.peer) => {
                     let arrival = routes.arrivals;
                     routes.arrivals += 1;
                     let replaced = routes.early.insert(key, (arrival, early));

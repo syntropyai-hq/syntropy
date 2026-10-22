@@ -13,7 +13,9 @@
 //!   sides when it stops passing before `accept`.
 //! - **Early connections.** A connection nobody accepts is refused with `NotANeighbour` after
 //!   [`TcpConfig::early_hold`], within the connector's own wait. A second connection for a held
-//!   key replaces the first, and an `accept` whose caller stopped waiting can be called again.
+//!   key replaces the first if it comes from the same peer, and is refused otherwise. One peer
+//!   holds at most `MAX_EARLY_PER_PEER` early connections. An `accept` whose caller stopped
+//!   waiting can be called again.
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
@@ -30,7 +32,7 @@ use syntropy_net::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
 use syntropy_net::transport::domain::NetDomain;
 use syntropy_net::transport::stream::ChannelAuth;
 use syntropy_net::transport::tcp::{
-    MAX_HANDSHAKES_PER_ADDRESS, TLS_TIMEOUT, TcpConfig, TcpTransport,
+    MAX_EARLY_PER_PEER, MAX_HANDSHAKES_PER_ADDRESS, TLS_TIMEOUT, TcpConfig, TcpTransport,
 };
 use syntropy_net::transport::{
     BufferPool, Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, PoolId,
@@ -466,6 +468,144 @@ fn a_second_connection_for_a_held_key_replaces_the_first() {
     assert_eq!(error.class, ErrorClass::Link, "{error}");
     assert_eq!(*second.unwrap().key(), key(10, 11));
     assert_eq!(*receiver.unwrap().key(), key(10, 11));
+}
+
+/// Polls every future in `futures` to completion on the calling task, and returns their outputs
+/// in order.
+async fn join_all<F: std::future::Future>(futures: Vec<F>) -> Vec<F::Output> {
+    use std::task::Poll;
+    let mut futures: Vec<_> = futures.into_iter().map(Box::pin).collect();
+    let mut outputs: Vec<Option<F::Output>> = futures.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (future, output) in futures.iter_mut().zip(outputs.iter_mut()) {
+            if output.is_none() {
+                match future.as_mut().poll(cx) {
+                    Poll::Ready(value) => *output = Some(value),
+                    Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
+    outputs
+        .into_iter()
+        .map(|output| output.expect("polled to completion"))
+        .collect()
+}
+
+/// The channel `key(from, to)` on `lane`.
+fn on_lane(from: u16, to: u16, lane: u8) -> ChannelKey {
+    ChannelKey {
+        lane,
+        ..key(from, to)
+    }
+}
+
+/// One peer holds at most `MAX_EARLY_PER_PEER` early connections: its next is refused at once
+/// with `NotANeighbour`, while another peer's early connection is still held for its `accept`.
+/// The one peer's connections start 20 ms apart, so they stay under the per-source handshake
+/// cap, since every connection here comes from 127.0.0.1.
+#[test]
+fn one_peer_cannot_take_every_early_slot() {
+    let rt = runtime();
+    let a = bind(&rt, 28, None);
+    let c = bind(&rt, 29, None);
+    let b = bind(&rt, 30, None);
+    b.allowed().allow(a.public_key());
+    b.allowed().allow(c.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 1300);
+    let a_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let c_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let receiver_pool = fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8);
+    let to_b = remote(&b);
+    let lanes = u8::try_from(MAX_EARLY_PER_PEER).unwrap();
+    let early_hold = config(30, None).early_hold();
+    let (held, (over, took), (sent, received)) = rt.block_on(async {
+        let held = join_all(
+            (0..lanes)
+                .map(|lane| {
+                    let channel = spec(on_lane(12, 13, lane), &a, &a_pool, 0);
+                    let to_b = &to_b;
+                    let a = &a;
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(20) * u32::from(lane)).await;
+                        a.connect(to_b, channel).await
+                    }
+                })
+                .collect(),
+        );
+        let over = async {
+            // Every one of a's connections is held by now.
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let started = Instant::now();
+            let refused = a
+                .connect(&to_b, spec(on_lane(12, 13, lanes), &a, &a_pool, 0))
+                .await;
+            (refused, started.elapsed())
+        };
+        let other = async {
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            tokio::join!(c.connect(&to_b, spec(key(14, 15), &c, &c_pool, 0)), async {
+                // c's connection is held by now, beside a's.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                b.accept(spec(key(14, 15), &b, &receiver_pool, 4)).await
+            })
+        };
+        tokio::join!(held, over, other)
+    });
+    let refused = over.unwrap_err();
+    assert_eq!(refused.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{refused}");
+    assert!(
+        took < early_hold,
+        "the connection over the cap was held: {took:?}"
+    );
+    assert_eq!(*sent.unwrap().key(), key(14, 15));
+    assert_eq!(*received.unwrap().key(), key(14, 15));
+    // Nobody accepted a's held connections, so each was refused once its hold ended.
+    for result in held {
+        let error = result.unwrap_err();
+        assert_eq!(error.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{error}");
+    }
+}
+
+/// A connection for a held key from another peer is refused at once, and leaves the held one in
+/// place: only a reconnect by the same peer replaces it.
+#[test]
+fn a_held_connection_is_replaced_only_by_its_own_peer() {
+    let rt = runtime();
+    let a = bind(&rt, 31, None);
+    let c = bind(&rt, 32, None);
+    let b = bind(&rt, 33, None);
+    b.allowed().allow(a.public_key());
+    b.allowed().allow(c.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 1400);
+    let a_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let c_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let receiver_pool = fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8);
+    let to_b = remote(&b);
+    let (first, other, receiver) = rt.block_on(async {
+        tokio::join!(
+            a.connect(&to_b, spec(key(16, 17), &a, &a_pool, 0)),
+            async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                c.connect(&to_b, spec(key(16, 17), &c, &c_pool, 0)).await
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                b.accept(spec(key(16, 17), &b, &receiver_pool, 4)).await
+            }
+        )
+    });
+    let refused = other.unwrap_err();
+    assert_eq!(refused.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{refused}");
+    assert_eq!(*first.unwrap().key(), key(16, 17));
+    assert_eq!(*receiver.unwrap().key(), key(16, 17));
 }
 
 /// A connector tries each of the endpoint's addresses in turn: a dead first address does not stop
