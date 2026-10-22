@@ -129,6 +129,7 @@ pub fn run(manifest: &Path, log: &mut dyn Write) -> io::Result<bool> {
     for (number, outcome) in [
         (7, release::rule_7(manifest, &graph)),
         (10, release::rule_10(manifest, &graph)),
+        (10, release::fault_point_symbols(manifest, &graph)),
     ] {
         match outcome {
             Outcome::Ran(found) => findings.extend(found),

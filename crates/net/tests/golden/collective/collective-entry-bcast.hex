@@ -1,0 +1,15 @@
+# collective-entry-bcast: the primary's one-shot entry broadcast of 1 row of hidden 16, first of its sequence
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 08 08 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+1e 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 40 00 00 00 48 03 0c 42 e0 b4 43 49  # 0030 header
+1e 00 00 00 00 00 00 00 00 00 02 00 00 00 02 00  # 0040 extension
+00 00 01 00 10 00 00 00 00 00 00 00 01 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+00 00 7a 45 00 10 7a 45 00 20 7a 45 00 30 7a 45  # 0080 payload
+00 40 7a 45 00 50 7a 45 00 60 7a 45 00 70 7a 45  # 0090 payload
+00 80 7a 45 00 90 7a 45 00 a0 7a 45 00 b0 7a 45  # 00a0 payload
+00 c0 7a 45 00 d0 7a 45 00 e0 7a 45 00 f0 7a 45  # 00b0 payload
