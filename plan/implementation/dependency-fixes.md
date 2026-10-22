@@ -845,6 +845,18 @@ DIST-E6-T01 enumerates and classifies interfaces. One of its criteria needed mea
 | Added DIST-E6-T08 (M2) → DIST-E6-T01 | DIST-E6-T08 | Definition of done | DIST-E6-T01 reads metered on Linux through NetworkManager. macOS's `NWPath` and Windows's `INetworkCostManager` need FFI, so that gap has its own task rather than a note |
 | DIST-E6-T01 gains hosted criteria: the classifier over every row of RFC-0030 §7.2 from synthetic fixtures, and enumeration with stable ordinals on hosted CI | DIST-E6-T01 | Definition of done | only the rig criterion could fail before. Hosted runners have virtual NICs, so these are what CI can show |
 
+## DIST-E1-T14: the field types `core` owns (2026-10-23)
+
+Building DIST-E1-T14 found three field types that no row defined, though its own types hold them: `PrefixRef` holds RFC-0022's `PrefixKey` and `TailId`, and `SamplingParams` holds RFC-0050's `GrammarRef`. `core` cannot name a type of `tier` or `api`, and every lane must be able to name these, so DIST-E1-T14 defines all three as plain newtypes in `core::sequence`, and the rows that use them build on its types. RFC-0001 §5.8 and §5.13 gain a dated note and rows. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T14 also defines `PrefixKey`, `TailId` and `GrammarRef` | DIST-E1-T14 | R9 | `PrefixRef` and `SamplingParams`, which it defines, hold them |
+| TIER-E6-T02's supporting types drop `TailId` and use `core`'s; TIER-E6-T02 → DIST-E1-T14 | TIER-E6-T02 | R9 | its prefix index's tail pool is named by `core`'s `TailId`. M0a → M0a; DIST-E1-T14's dependencies do not reach TIER-E6-T02, so no cycle, and the M0a critical path is unchanged |
+| TIER-E7-T01 computes its page keys as `core`'s `PrefixKey`; its existing edge to DIST-E1-T14 now names `PrefixKey` too | TIER-E7-T01 | R9 | the key is what `PrefixRef::Cached` carries |
+| PROD-E3-T05 uses `core`'s `GrammarRef` and `SamplingParams`; PROD-E3-T05 → DIST-E1-T14 | PROD-E3-T05 | R9 | its criterion ships each grammar hash to a tail once, inside `SamplingParams`. M1a → M0a, no cycle |
+| DIST-E1-T14's view conversion covers every field but the tap block, and refuses a non-empty one either way with a classified error; DIST-E8-T06 gains "`net`'s `TokenEntryView` converts a tap block to and from `core`'s `LogitTap` in both tap modes, with the golden frames unchanged"; no edge | DIST-E1-T14, DIST-E8-T06 | R9 | `core`'s `TokenEntry::tap` is a typed `LogitTap`, while `net` carries the block as bytes until DIST-E8-T06 builds its codec, and the `Token` goldens' tap blocks are fill bytes. DIST-E8-T06 already depends on DIST-E8-T03, whose view it extends. M0's taps travel in-process (PLC-E9-T16) |
+
 ## TIER-E5-T08's conformance suite (2026-10-23)
 
 TIER-E5-T08 (M1b) builds `IoRingEngine` and `IocpEngine`, and its criterion is that the conformance suite passes. The suite is TIER-E5-T04, which TIER-E5-T08 does not reach, and TIER-E5-T04 waits on the nano fixture files and the fixture store. The engine-agnostic harness moves to a new task that needs only TIER-E5-T01's interface, and TIER-E5-T04 keeps the run over the fixture files on every engine the CI host has. These are plan corrections under R9, approved by the lead running TIER-E5-T08.
