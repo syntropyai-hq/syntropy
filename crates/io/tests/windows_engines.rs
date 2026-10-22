@@ -66,11 +66,16 @@ impl Drop for Files {
     }
 }
 
-/// The conformance harness over a generated 8 MiB file.
-fn conformance_run<E: IoEngine + 'static>(engine: E, name: &str) -> Report {
+/// The conformance harness over a generated 8 MiB file, on the engine `make` builds on the
+/// harness's thread.
+fn conformance_run<E, F>(make: F, name: &str) -> Report
+where
+    E: IoEngine + 'static,
+    F: FnOnce() -> E + Send + 'static,
+{
     let files = Files::new(name, 8 << 20);
     let seed = conformance::seed_from_env();
-    let report = conformance::check(engine, &files.file, &files.scratch, &Options::new(seed))
+    let report = conformance::check(make, &files.file, &files.scratch, &Options::new(seed))
         .unwrap_or_else(|failure| panic!("{failure}"));
     assert!(report.reads > 0 && report.writes > 0, "{report:?}");
     summary(&format!(
@@ -116,13 +121,13 @@ fn the_host_reports_its_windows_build_and_ioring_support() {
 
 #[test]
 fn iocp_passes_the_conformance_harness() {
-    let report = conformance_run(iocp(0), "iocp");
+    let report = conformance_run(|| iocp(0), "iocp");
     assert_eq!(report.engine, syntropy_io::EngineKind::Iocp);
 }
 
 #[test]
 fn iocp_with_helper_submitters_passes_the_conformance_harness() {
-    conformance_run(iocp(IOCP_THREADS_DEFAULT - 1), "iocp-helpers");
+    conformance_run(|| iocp(IOCP_THREADS_DEFAULT - 1), "iocp-helpers");
 }
 
 #[test]
@@ -137,7 +142,12 @@ fn ioring_passes_the_conformance_harness() {
         "the ring"
     };
     summary(&format!("{test}: writes go through {via}"));
-    let report = conformance_run(engine, test);
+    // The harness builds its own engine on its thread; this one only showed the write path.
+    drop(engine);
+    let report = conformance_run(
+        || IoRingEngine::new(IoRingOptions::default()).unwrap(),
+        test,
+    );
     assert_eq!(report.engine, syntropy_io::EngineKind::IoRing);
 }
 
@@ -153,7 +163,11 @@ fn ioring_with_writes_through_iocp_passes_the_conformance_harness() {
         return;
     };
     assert!(engine.writes_via_iocp());
-    conformance_run(engine, test);
+    drop(engine);
+    let options = IoRingOptions {
+        writes_via_iocp: true,
+    };
+    conformance_run(move || IoRingEngine::new(options).unwrap(), test);
 }
 
 #[test]
