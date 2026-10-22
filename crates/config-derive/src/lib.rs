@@ -595,6 +595,39 @@ fn key_attrs(attrs: &[Attribute], errors: &mut Errors) -> KeyAttrs {
     out
 }
 
+/// `syntropy-core`'s policy value types, whose own serde form is the record encoding: a key of
+/// one reads RFC-0054 §3's forms only through `syntropy_config::form` (PROD-E1-T23).
+const CORE_FORM_TYPES: [&str; 6] = [
+    "Fraction",
+    "Reserve",
+    "NodeSelector",
+    "DeviceSelector",
+    "TierSelector",
+    "LayerRange",
+];
+
+/// The name of the core policy value type `ty` holds, bare or in an `Option` or `Vec`, if any.
+/// The match is by the type's last path segment, as written.
+fn core_form_type(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let last = path.path.segments.last()?;
+    let name = last.ident.to_string();
+    if CORE_FORM_TYPES.contains(&name.as_str()) {
+        return Some(name);
+    }
+    if name == "Option" || name == "Vec" {
+        let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+            return None;
+        };
+        if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+            return core_form_type(inner);
+        }
+    }
+    None
+}
+
 /// The type as written, with token spacing tidied: `Option<Duration>`.
 /// The type as one line of text, for `KeySchema::ty` and the messages that quote it. The token
 /// printer can break a long type across lines and keeps a trailing comma, so every whitespace
@@ -862,6 +895,18 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             <#ty as ::syntropy_config::HoldsSecret>::HOLDS_SECRET
         };
         let with = serde_with(&field.attrs, &mut errors);
+        if with.is_none()
+            && let Some(core_type) = core_form_type(ty)
+        {
+            errors.at(
+                ty.span(),
+                format!(
+                    "a `{core_type}` key reads RFC-0054 §3's forms through \
+                     `#[serde(with = \"syntropy_config::form\")]`; without it, it would read \
+                     `syntropy-core`'s record encoding"
+                ),
+            );
+        }
         let ranged = key.min.is_some() || key.max.is_some();
         let this_key = quote!(&<#name as ::syntropy_config::ConfigSection>::SCHEMA.keys[#index]);
         let check_body = match (&with, ranged) {

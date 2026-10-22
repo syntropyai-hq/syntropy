@@ -37,9 +37,10 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
-use syntropy_core::{Bytes, ExtentRef, Nanos};
+use syntropy_core::{Bytes, ExtentRef, FileIx, Nanos};
 use syntropy_spsc::{CapacityError, Consumer, PopError, Producer, PushError};
 
+use crate::align::{self, RequestAlign};
 use crate::batch::{CompletionBuf, SubmitBatch};
 use crate::engine::{EngineCaps, IoEngine, Wait};
 use crate::error::{IoError, IoErrorCode};
@@ -73,8 +74,12 @@ pub struct LoopConfig {
     pub batch: usize,
     /// Completions the [`CompletionBuf`] takes from one reap.
     pub completions: usize,
-    /// `io.chunk` (RFC-0021 §3.1): the largest read submitted as one operation.
+    /// `io.chunk` (RFC-0021 §3.1): the largest read submitted as one operation. The loop
+    /// rounds it down to a multiple of the volume's `A` and `M` (RFC-0021 §6), and up to that
+    /// multiple if it is smaller, so every chunk of an aligned request is aligned.
     pub chunk: Bytes,
+    /// The OS page size, part of RFC-0021 §6's memory alignment `M`.
+    pub page: Bytes,
     /// `io.spin` (RFC-0021 §3.1): how long an idle loop spins before it parks; 50 µs, or
     /// 10 µs on battery (ADR-0012 item 5).
     pub spin: Duration,
@@ -85,8 +90,8 @@ pub struct LoopConfig {
 
 impl LoopConfig {
     /// The defaults for `producers` producers: rings of 256 slots \[target\], 1024 requests
-    /// \[target\], batches and reaps of 64 \[target\], [`CHUNK_DEFAULT`], the 50 µs spin and
-    /// [`REAP_WAIT_MAX`].
+    /// \[target\], batches and reaps of 64 \[target\], [`CHUNK_DEFAULT`], this host's page
+    /// size, the 50 µs spin and [`REAP_WAIT_MAX`].
     #[must_use]
     pub fn new(producers: usize) -> Self {
         Self {
@@ -97,6 +102,7 @@ impl LoopConfig {
             batch: 64,
             completions: 64,
             chunk: CHUNK_DEFAULT,
+            page: Bytes(align::os_page_size()),
             spin: syntropy_spsc::SPIN_DEFAULT,
             reap_wait: REAP_WAIT_MAX,
         }
@@ -373,7 +379,13 @@ pub struct IoLoop<E> {
     free_ops: Vec<u32>,
     batch: SubmitBatch,
     done: CompletionBuf,
+    /// `io.chunk` as configured. Each request's chunks are this rounded to its file's `A` and
+    /// `M` ([`RequestAlign::chunk`]).
     chunk: u64,
+    /// The OS page size, part of RFC-0021 §6's `M`.
+    page: u64,
+    /// Requests rejected before submission with `IO_MISALIGNED` (RFC-0021 §6, §16).
+    misaligned: u64,
     spin: Duration,
     reap_wait: Nanos,
     /// The port the next drain starts at, so no producer is always drained first.
@@ -457,6 +469,8 @@ impl<E: IoEngine> IoLoop<E> {
             batch: SubmitBatch::with_capacity(config.batch),
             done: CompletionBuf::with_capacity(config.completions),
             chunk: config.chunk.0,
+            page: config.page.0,
+            misaligned: 0,
             spin: config.spin,
             reap_wait: Nanos(config.reap_wait.0.min(REAP_WAIT_MAX.0)),
             next_port: 0,
@@ -473,6 +487,27 @@ impl<E: IoEngine> IoLoop<E> {
     /// The engine, mutably: for `open` and `register_buffers` at `Loading`, and for tests.
     pub fn engine_mut(&mut self) -> &mut E {
         &mut self.engine
+    }
+
+    /// RFC-0021 §6's `A` and `M` that a request on `file` is checked against now: the
+    /// alignment the engine recorded for that file at `open` ([`IoEngine::file_dio`]), or else
+    /// the engine's current [`EngineCaps::dio`], with this host's page size. Read at each
+    /// request, never fixed when the loop is built, because files open after that (§6: "per
+    /// open file").
+    #[must_use]
+    pub fn alignment(&self, file: FileIx) -> RequestAlign {
+        let dio = self
+            .engine
+            .file_dio(file)
+            .unwrap_or_else(|| self.engine.caps().dio);
+        RequestAlign::from_dio(dio, self.page)
+    }
+
+    /// How many requests the loop has rejected with `IO_MISALIGNED` before submission: each one
+    /// a producer bug (RFC-0021 §6, §16).
+    #[must_use]
+    pub fn misaligned(&self) -> u64 {
+        self.misaligned
     }
 
     /// How many times the loop has parked on its doorbells.
@@ -624,10 +659,14 @@ impl<E: IoEngine> IoLoop<E> {
             error: None,
             start: now,
         };
-        if len > op.dest().len().0 {
-            // `SubmitBatch::push` would refuse it: a producer bug (RFC-0021 §2). RFC-0021 §16
-            // gives that no code of its own; `IO_MISALIGNED` is the other request-shape bug of
-            // class `Internal`.
+        let align = self.alignment(op.extent().file);
+        if len > op.dest().len().0 || align.check(&op).is_err() {
+            // A request that breaks RFC-0021 §6's alignment never reaches the engine, so never
+            // the kernel: it is a bug, rejected and counted (`IO_MISALIGNED`, §16). So is an
+            // extent longer than its destination, which `SubmitBatch::push` would refuse
+            // (RFC-0021 §2); §16 gives that no code of its own, and `IO_MISALIGNED` is the other
+            // request-shape bug of class `Internal`.
+            self.misaligned += 1;
             let req = &mut self.reqs[r as usize];
             req.error = Some(IoError::new(IoErrorCode::Misaligned));
             req.parts = 0;
@@ -636,7 +675,9 @@ impl<E: IoEngine> IoLoop<E> {
         }
         let queue = &mut self.queues[op.priority() as usize];
         let op = match (queue.back(), op) {
-            (Some(back), IoOp::Read(next)) if can_coalesce(back, &next, self.chunk) => {
+            (Some(back), IoOp::Read(next))
+                if can_coalesce(back, &next, align.chunk(self.chunk)) =>
+            {
                 let back = queue.pop_back().expect("checked above");
                 let IoOp::Read(prev) = back.op else {
                     unreachable!("can_coalesce takes only reads")
@@ -686,7 +727,16 @@ impl<E: IoEngine> IoLoop<E> {
     /// The next operation to submit, highest priority first: the front of the first non-empty
     /// queue, or its first chunk when it is a read longer than the chunk size.
     fn next_chunk(&mut self) -> Option<(IoOp, Members)> {
-        let chunk = self.chunk;
+        let file = self
+            .queues
+            .iter()
+            .find(|q| !q.is_empty())?
+            .front()?
+            .op
+            .extent()
+            .file;
+        // Chunks at a multiple of the file's `A` and `M` keep an aligned request aligned.
+        let chunk = self.alignment(file).chunk(self.chunk);
         let queue = self.queues.iter_mut().find(|q| !q.is_empty())?;
         let front = queue.pop_front().expect("found non-empty");
         let len = front.op.extent().len.0;
@@ -747,6 +797,14 @@ impl<E: IoEngine> IoLoop<E> {
                 .pop()
                 .expect("has_room checks for a free slot");
             self.ops[slot as usize] = members;
+            // Chunks of an aligned request at a multiple of `A` and `M`, and coalesced aligned
+            // reads, stay aligned. The check runs again here, at the last step before the
+            // engine, in case the file's alignment changed after intake.
+            if self.alignment(op.extent().file).check(&op).is_err() {
+                self.misaligned += 1;
+                self.complete_op(slot, Err(IoError::new(IoErrorCode::Misaligned)));
+                continue;
+            }
             let ticket = IoTicket(u64::from(slot));
             match &mut op {
                 IoOp::Read(r) => r.ticket = ticket,
