@@ -16,7 +16,7 @@
 //!
 //! Every banned item must be reported on its own line of `exec`, and nothing in `io` or in the
 //! `TickSource` implementation. The fixture depends on `rand` and `getrandom` with their generator
-//! features on, so every path in the config resolves there: a path that names no item would leave
+//! features on, and on `tokio` with its `time` feature, so every path in the config resolves there: a path that names no item would leave
 //! its line unreported and fail the test. The `determinism` step's own checks (that the copies stay
 //! identical, and that only listed files, and in `exec` only the `TickSource` implementation, lift
 //! a lint) are unit tests in `src/determinism.rs`.
@@ -62,6 +62,14 @@ const USES: &[(&str, &str)] = &[
     (
         "std::time::SystemTime::elapsed",
         "pub fn system_elapsed(t: std::time::SystemTime) -> bool { t.elapsed().is_ok() }",
+    ),
+    (
+        "tokio::time::Instant::now",
+        "pub fn tokio_instant_now() -> tokio::time::Instant { tokio::time::Instant::now() }",
+    ),
+    (
+        "tokio::time::Instant::elapsed",
+        "pub fn tokio_instant_elapsed(t: tokio::time::Instant) -> std::time::Duration { t.elapsed() }",
     ),
     ("rand::rng", "pub fn rng() { drop(rand::rng()); }"),
     (
@@ -135,6 +143,7 @@ impl TickSource for OsTicks {
 const DEPENDENCIES: &str = r#"[dependencies]
 getrandom = { version = "0.4.3", features = ["sys_rng"] }
 rand = { version = "0.10.3", default-features = false, features = ["std", "std_rng", "sys_rng", "thread_rng"] }
+tokio = { version = "1.54.1", default-features = false, features = ["time"] }
 "#;
 
 fn repo() -> PathBuf {
