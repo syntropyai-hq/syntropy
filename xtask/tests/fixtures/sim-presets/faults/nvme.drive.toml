@@ -1,0 +1,29 @@
+# Each fault the step names, one per figure.
+name = "drive"
+kind = "nvme"
+describes = "a test drive"
+sources = ["research §2.4 [S32]"]
+
+[figures.seq_read]
+value = 7450
+unit = "MB/s"
+label = "verified"
+source = ""
+
+[figures.sustained_read]
+unknown = ""
+
+[figures.throttled_read]
+unknown = "research §2.4: not found"
+label = "estimate"
+
+[figures.iops]
+unit = "IOPS"
+label = "published"
+source = "research §2.4 [S32]"
+
+[figures.latency]
+range = [5, 1]
+unit = "µs"
+label = "measured"
+source = "research §2.4"

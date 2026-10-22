@@ -1,0 +1,47 @@
+# The §8.5 example's `cpu:ddr5-2ch-128g`: a desktop CPU on dual-channel DDR5-6000.
+#
+# The name gives no memory speed; DDR5-6000 is the research note's own worked example §4 (a),
+# chosen by the task lead under the maintainer's standing instruction (QUAL-E8-T03). Labels as in
+# `gpu.ada-24g.toml`.
+name = "cpu:ddr5-2ch-128g"
+kind = "cpu"
+describes = "a desktop CPU with 128 GB of dual-channel DDR5-6000"
+sources = [
+    "research §2.1: DDR5-6000 CL28 dual channel, peak and measured [S22]",
+    "research §4 (a): CPU matvec W_eff assumed for that memory",
+    "RFC-0060 §8.5: the example names 128 GB",
+]
+
+[figures.memory]
+value = 128
+unit = "GB"
+label = "target"
+source = "RFC-0060 §8.5's example names the capacity"
+
+[figures.memory_peak_bw]
+value = 96.0
+unit = "GB/s"
+label = "published"
+source = "research §2.1 [S22]: 2 ch × 8 B × 6000 MT/s"
+
+[figures.memory_achieved_bw]
+value = 90.01
+unit = "GB/s"
+label = "measured"
+source = "research §2.1 [S22]: Core Ultra 7 265K"
+
+[figures.w_eff]
+value = 70
+range = [55, 85]
+unit = "GB/s"
+label = "estimate"
+source = "research §4 (a): CPU matvec; at most 60 on a single-CCD Ryzen (§2.1, AM5 trap)"
+
+[figures.f_eff]
+unknown = "the research note gives no CPU compute rate"
+
+[figures.t_fixed]
+unknown = "the research note gives no fixed per-token overhead for CPU kernels"
+
+[figures.sigma_dev]
+unknown = "RFC-0060 §8.4's per-device jitter σ_dev: the research note gives no figure"

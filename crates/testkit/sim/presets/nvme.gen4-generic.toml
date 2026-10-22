@@ -1,0 +1,32 @@
+# The §8.5 example's `gen4-generic` drive: an unspecified PCIe 4.0 x4 NVMe drive.
+#
+# The research note has no figures for a generic Gen4 drive, so only the link's bound is known;
+# the task lead chose this under the maintainer's standing instruction (QUAL-E8-T03). Labels as in
+# `gpu.ada-24g.toml`.
+name = "gen4-generic"
+kind = "nvme"
+describes = "an unspecified PCIe 4.0 x4 NVMe drive"
+sources = [
+    "research §2.3: PCIe 4.0 x4 raw rate [S28]",
+]
+
+[figures.link_raw]
+value = 7.88
+unit = "GB/s"
+label = "published"
+source = "research §2.3 [S28]: PCIe 4.0 x4, per direction, after 128b/130b; no drive exceeds it"
+
+[figures.seq_read]
+unknown = "research §2.4 gives no figures for a generic Gen4 drive"
+
+[figures.sustained_read]
+unknown = "research §2.4 gives no figures for a generic Gen4 drive"
+
+[figures.heating_time]
+unknown = "research §2.4 gives no figures for a generic Gen4 drive"
+
+[figures.qd1_4k_read_iops]
+unknown = "research §2.4 gives no figures for a generic Gen4 drive"
+
+[figures.read_latency]
+unknown = "research §2.4 gives no figures for a generic Gen4 drive"

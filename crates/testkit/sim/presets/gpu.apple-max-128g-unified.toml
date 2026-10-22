@@ -1,0 +1,51 @@
+# The §8.5 example's `gpu:apple-max-128g-unified`: an Apple M4 Max with the 40-core GPU.
+#
+# The name gives no generation; M4 Max 40c is the only Max with a decode η anchor in the research
+# note (§2.2), chosen by the task lead under the maintainer's standing instruction (QUAL-E8-T03).
+# Labels as in `gpu.ada-24g.toml`.
+name = "gpu:apple-max-128g-unified"
+kind = "gpu"
+describes = "Apple M4 Max, 40-core GPU, 128 GB of LPDDR5X-8533 unified memory"
+sources = [
+    "research §2.1: Apple M4 Max bandwidth and memory [S8]; the GPU wired-memory cap [S76]",
+    "research §2.2: ggml Metal decode on M4 Max 40c [S26]",
+]
+
+[figures.memory]
+value = 128
+unit = "GB"
+label = "published"
+source = "research §2.1 [S8]"
+
+[figures.memory_peak_bw]
+value = 546
+unit = "GB/s"
+label = "published"
+source = "research §2.1 [S8]"
+
+[figures.gpu_wired_fraction]
+range = [0.65, 0.75]
+unit = "fraction of RAM"
+label = "measured"
+source = "research §2.1 [S76]: community reports, not Apple; adjustable with iogpu.wired_limit_mb"
+
+[figures.w_eff]
+value = 315
+unit = "GB/s"
+label = "estimate"
+source = "research §2.2: LLaMA-7B Q4_0 TG128 at 83.06 t/s [S26] × 3.79 GB per token"
+
+[figures.eta]
+value = 0.58
+unit = "fraction of peak"
+label = "estimate"
+source = "research §2.2: 315 of 546 GB/s"
+
+[figures.f_eff]
+unknown = "the research note gives no Apple GPU compute rate"
+
+[figures.t_fixed]
+unknown = "research §2.2 gives t_fixed ≈ 5 ms for M3 Ultra only, not M4 Max"
+
+[figures.sigma_dev]
+unknown = "RFC-0060 §8.4's per-device jitter σ_dev: the research note gives no figure"

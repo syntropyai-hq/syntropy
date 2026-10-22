@@ -1,0 +1,20 @@
+# A figure with no label: the step fails it.
+name = "gpu:test"
+kind = "gpu"
+describes = "a test GPU"
+sources = ["research §2.1 [S10]"]
+
+[figures.memory]
+value = 24
+unit = "GB"
+source = "research §2.1 [S10]"
+
+[figures.w_eff]
+value = 70
+range = [55, 85]
+unit = "GB/s"
+label = "estimate"
+source = "research §4 (a)"
+
+[figures.t_fixed]
+unknown = "research §2.2 gives none for this GPU"

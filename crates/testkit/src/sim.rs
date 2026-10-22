@@ -9,11 +9,14 @@
 //! [`SimTicks`] counts a `SimClock`'s virtual time as a
 //! [`TickSource`](syntropy_core::TickSource), for hot-thread code in `exec` and `obs`
 //! (QUAL-E3-T17). It also holds the world's core (QUAL-E8-T01): [`SimWorld`] and its event loop,
-//! the [`Checker`] trait, and the [`TraceHasher`]. The fabric, the fakes and the cluster model
-//! are planned.
+//! the [`Checker`] trait, and the [`TraceHasher`]. The scenario file and its device and drive
+//! presets are [`scenario`] and [`presets`] (QUAL-E8-T03). The fabric, the fakes and the cluster
+//! model are planned.
 
 mod clock;
 mod entropy;
+pub mod presets;
+pub mod scenario;
 mod ticks;
 mod trace;
 mod world;
