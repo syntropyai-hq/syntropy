@@ -1,4 +1,9 @@
 # `cargo xtask <command>` runs the workspace's own task runner (RFC-0062 §1, RFC-0060 §1.2).
 # `--locked` keeps a local run and a CI run on the same Cargo.lock.
+#
+# xtask builds into a target directory of its own, `target/xtask/`. A step such as
+# `cargo test --workspace` rebuilds the workspace's `xtask` binary in `target/debug/`, and Windows
+# refuses to replace a binary that is running. The path is relative to where cargo is started, so
+# run `cargo xtask` from the workspace root, as CI does.
 [alias]
-xtask = "run --quiet --locked --package syntropy-xtask --"
+xtask = "run --quiet --locked --package syntropy-xtask --target-dir target/xtask --"

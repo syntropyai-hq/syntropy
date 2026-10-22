@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::run::Context;
-use crate::{codeowners, contrib};
+use crate::{ci_gate, codeowners, contrib, dep_diff, instructions, repo_settings, toolchain};
 
 /// A named job or suite: the steps it runs, in order.
 #[derive(Debug, PartialEq, Eq)]
@@ -162,6 +162,14 @@ pub const JOBS: &[Entry] = &[
         defined_in: "RFC-0062 §2.3 and §12.4",
         params: &[],
         steps: &[
+            // First, so a run on a cargo that ignored `rust-toolchain.toml` says so up front.
+            Step {
+                name: "toolchain",
+                action: Action::Builtin {
+                    shown: "cargo and rustc are the release rust-toolchain.toml pins",
+                    run: toolchain::step,
+                },
+            },
             Step {
                 name: "fmt",
                 action: Action::Cargo(&["fmt", "--all", "--check"]),
@@ -187,6 +195,14 @@ pub const JOBS: &[Entry] = &[
                 action: Action::Builtin {
                     shown: "CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
                     run: codeowners::step,
+                },
+            },
+            Step {
+                name: "agent-instructions",
+                action: Action::Builtin {
+                    shown: "ci/agent-instructions.toml is well formed and CODEOWNERS owns every \
+                            file it lists",
+                    run: instructions::step,
                 },
             },
             // The rig inventory of RFC-0061 §6.3 (QUAL-E15-T01).
@@ -226,6 +242,22 @@ pub const JOBS: &[Entry] = &[
             Step {
                 name: "notices",
                 action: Action::Xtask(&["notices"]),
+            },
+            // Scenario files, the SC map and RFC-0061 §4.2's table (QUAL-E13-T01, RFC-0061 §4).
+            Step {
+                name: "scenarios",
+                action: Action::Cargo(&[
+                    "run",
+                    "--locked",
+                    "--quiet",
+                    "--package",
+                    "syntropy-bench",
+                    "--bin",
+                    "syntropy-bench",
+                    "--",
+                    "scenarios",
+                    "check",
+                ]),
             },
         ],
         // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
@@ -309,20 +341,193 @@ pub const JOBS: &[Entry] = &[
         }],
         pending: &[],
     },
+    Entry {
+        name: "dep-diff",
+        summary: "a new direct dependency or vendored component has a maintainer's approval, and \
+                  each new crate resolves on crates.io",
+        defined_in: "RFC-0062 §11.4 and §12.3",
+        params: &[
+            Param {
+                name: "--base",
+                value: "<dir>",
+                help: "a checkout of the PR's base commit",
+                required: true,
+            },
+            Param {
+                name: "--head",
+                value: "<dir>",
+                help: "a checkout of the PR merged into its base",
+                required: true,
+            },
+            Param {
+                name: "--event",
+                value: "<file>",
+                help: "the pull_request event payload, for the head commit",
+                required: false,
+            },
+            Param {
+                name: "--comments",
+                value: "<file>",
+                help: "every comment, as GET /repos/{owner}/{repo}/issues/{n}/comments returns them",
+                required: false,
+            },
+            Param {
+                name: "--roster",
+                value: "<file>",
+                help: "the maintainer roster to trust: the base branch's governance/maintainers.toml",
+                required: false,
+            },
+            Param {
+                name: "--registry",
+                value: "<dir>",
+                help: "recorded crates.io answers to read instead of asking crates.io",
+                required: false,
+            },
+        ],
+        steps: &[
+            Step {
+                name: "dep-diff",
+                action: Action::Builtin {
+                    shown: "every new direct dependency has a maintainer's approval",
+                    run: dep_diff::step,
+                },
+            },
+            Step {
+                name: "registry",
+                action: Action::Builtin {
+                    shown: "every new crate resolves on crates.io, with its publisher printed",
+                    run: dep_diff::registry_step,
+                },
+            },
+        ],
+        pending: &[],
+    },
+    Entry {
+        name: "build",
+        summary: "`build-<os>` in `pr.yml`: the PR build of the workspace on each Tier 1 OS",
+        defined_in: "RFC-0062 §2.3 and §4.4",
+        params: &[],
+        // Until the `pr` profile exists, the PR build is the `dev` profile, which the hosted
+        // tests use too.
+        steps: &[Step {
+            name: "dev",
+            action: Action::Xtask(&["build", "--profile", "dev"]),
+        }],
+        pending: &[Pending {
+            check: "the `pr` profile build, in place of the `dev` build",
+            task: "QUAL-E16-T21",
+        }],
+    },
+    Entry {
+        name: "build-test-release",
+        summary: "the Linux `test-release` build for L4, in `build-linux`",
+        defined_in: "RFC-0062 §2.3 and §4.4",
+        params: &[],
+        steps: &[Step {
+            name: "test-release",
+            action: Action::Xtask(&["build", "--profile", "test-release"]),
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "ci-gate",
+        summary: "the required check over `pr.yml`: every job `changes` listed passed, and no job \
+                  failed or was cancelled",
+        defined_in: "RFC-0062 §2.3 and §2.5",
+        params: &[Param {
+            name: "--needs",
+            value: "<file>",
+            help: "the `needs` context of the `ci-gate` job, as `${{ toJSON(needs) }}` writes it",
+            required: true,
+        }],
+        steps: &[Step {
+            name: "ci-gate",
+            action: Action::Builtin {
+                shown: "every listed job passed, and none failed or was cancelled",
+                run: ci_gate::step,
+            },
+        }],
+        pending: &[Pending {
+            check: "a passing `hw/<job>` status for each job in `hw_required`, by event",
+            task: "QUAL-E1-T07",
+        }],
+    },
+    Entry {
+        name: "repo-settings",
+        summary: "the repository settings and branch rulesets match `ci/repo-settings/`, read \
+                  through the REST API",
+        defined_in: "RFC-0062 §3.3 and §12.6",
+        params: &[
+            Param {
+                name: "--repo",
+                value: "<owner/name>",
+                help: "the repository; else $GITHUB_REPOSITORY, else this checkout's",
+                required: false,
+            },
+            Param {
+                name: "--from",
+                value: "<dir>",
+                help: "read recorded responses from <dir> instead of the API",
+                required: false,
+            },
+            Param {
+                name: "--save",
+                value: "<dir>",
+                help: "also write each API response to <dir>, to record a fixture",
+                required: false,
+            },
+        ],
+        steps: &[Step {
+            name: "repo-settings",
+            action: Action::Builtin {
+                shown: "the settings and rulesets declared in ci/repo-settings/ are in force",
+                run: repo_settings::step,
+            },
+        }],
+        pending: &[],
+    },
 ];
 
 /// The test suites, called by `cargo xtask test <suite>`. RFC-0060 §1.1 defines the layers.
-pub const SUITES: &[Entry] = &[Entry {
-    name: "unit",
-    summary: "L1: the crate-local unit tests and doctests of every workspace crate",
-    defined_in: "RFC-0060 §1.1",
-    params: &[],
-    steps: &[Step {
-        name: "test",
-        action: Action::Cargo(&["test", "--workspace", "--locked"]),
-    }],
-    pending: &[],
-}];
+pub const SUITES: &[Entry] = &[
+    Entry {
+        name: "unit",
+        summary: "L1: the crate-local unit tests and doctests of every workspace crate",
+        defined_in: "RFC-0060 §1.1",
+        params: &[],
+        steps: &[Step {
+            name: "test",
+            action: Action::Cargo(&["test", "--workspace", "--locked"]),
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "pairing-grind",
+        summary: "L2: the full grinding-relay runs of the pairing model (DIST-E5-T14): 20 first-draft \
+                  trials, ten million honest-reveal attempts and 20 cheating reveals, \
+                  release-optimised",
+        defined_in: "RFC-0034 Testing and validation",
+        params: &[],
+        // The default tests run a seeded prefix of each; the dev profile is too slow for the
+        // full runs. `test-release` is RFC-0060 §1.3's release-optimised test profile.
+        steps: &[Step {
+            name: "test",
+            action: Action::Cargo(&[
+                "test",
+                "--profile",
+                "test-release",
+                "--locked",
+                "--package",
+                "syntropy-cluster",
+                "--test",
+                "pairing",
+                "--",
+                "--ignored",
+            ]),
+        }],
+        pending: &[],
+    },
+];
 
 /// The entry called `name`, if the registry has one.
 pub fn find<'a>(entries: &'a [Entry], name: &str) -> Option<&'a Entry> {
@@ -425,10 +630,13 @@ mod tests {
         assert_eq!(
             commands,
             [
+                "xtask: cargo and rustc are the release rust-toolchain.toml pins",
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
                 "cargo xtask check-deps",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
+                "xtask: ci/agent-instructions.toml is well formed and CODEOWNERS owns every file it \
+                 lists",
                 "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- rigs \
                  check",
                 "cargo xtask deny",
@@ -436,6 +644,8 @@ mod tests {
                 "cargo xtask spdx",
                 "cargo xtask third-party",
                 "cargo xtask notices",
+                "cargo run --locked --quiet --package syntropy-bench --bin syntropy-bench -- \
+                 scenarios check",
             ]
         );
     }
@@ -477,12 +687,61 @@ mod tests {
     }
 
     #[test]
+    fn the_build_jobs_build_profiles_that_exist() {
+        for (job, profile) in [("build", "dev"), ("build-test-release", "test-release")] {
+            let entry = find(JOBS, job).expect("the build jobs are registered");
+            let commands: Vec<String> = entry.steps.iter().map(|s| s.action.display()).collect();
+            assert_eq!(
+                commands,
+                [format!("cargo xtask build --profile {profile}")],
+                "{job}"
+            );
+            assert!(
+                crate::build::find(profile).is_some(),
+                "{job}: no profile `{profile}`"
+            );
+        }
+        // `build` names the profile that replaces `dev`.
+        let build = find(JOBS, "build").unwrap();
+        let tasks: Vec<&str> = build.pending.iter().map(|p| p.task).collect();
+        assert_eq!(tasks, ["QUAL-E16-T21"]);
+    }
+
+    #[test]
+    fn ci_gate_needs_the_needs_context_and_repo_settings_needs_nothing() {
+        let gate = find(JOBS, "ci-gate").expect("ci-gate is registered");
+        let params: Vec<(&str, bool)> = gate.params.iter().map(|p| (p.name, p.required)).collect();
+        assert_eq!(params, [("--needs", true)]);
+        let settings = find(JOBS, "repo-settings").expect("repo-settings is registered");
+        let params: Vec<(&str, bool)> = settings
+            .params
+            .iter()
+            .map(|p| (p.name, p.required))
+            .collect();
+        assert_eq!(
+            params,
+            [("--repo", false), ("--from", false), ("--save", false)]
+        );
+    }
+
+    #[test]
     fn unit_suite_tests_the_whole_workspace() {
         let unit = find(SUITES, "unit").expect("unit is registered");
         assert_eq!(unit.steps.len(), 1);
         assert_eq!(
             unit.steps[0].action.display(),
             "cargo test --workspace --locked"
+        );
+    }
+
+    #[test]
+    fn pairing_grind_runs_the_ignored_pairing_tests_release_optimised() {
+        let suite = find(SUITES, "pairing-grind").expect("pairing-grind is registered");
+        assert_eq!(suite.steps.len(), 1);
+        assert_eq!(
+            suite.steps[0].action.display(),
+            "cargo test --profile test-release --locked --package syntropy-cluster --test pairing \
+             -- --ignored"
         );
     }
 

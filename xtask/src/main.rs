@@ -9,8 +9,9 @@
 //!
 //! Steps run in the checkout xtask was started from: the workspace root comes from the
 //! `CARGO_MANIFEST_DIR` that `cargo run` sets at run time, never from the path the binary was
-//! built at. One binary can serve several checkouts through a shared `CARGO_TARGET_DIR` or a
-//! copied `target/`, and it must check the one it was asked to.
+//! built at. One binary can serve several checkouts through a copied `target/`, and it must check
+//! the one it was asked to. The alias builds xtask into `target/xtask/`, apart from the
+//! workspace build its steps run, because Windows will not replace a running binary.
 //!
 //! `cargo xtask check-deps` checks the crate dependency rules of RFC-0001 §4.2 ([`check_deps`]).
 //! `cargo xtask build --profile <p>` builds in a test build profile and checks the result
@@ -25,13 +26,18 @@
 
 mod build;
 mod check_deps;
+mod ci_gate;
 mod cli;
 mod codeowners;
 mod contrib;
+mod dep_diff;
+mod instructions;
 mod licences;
 mod registry;
+mod repo_settings;
 mod roster;
 mod run;
+mod toolchain;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
@@ -149,6 +155,43 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
             };
             let pass = licences::deny::run(&checkout, &manifest, checks, &mut io::stderr())?;
             Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Instructions { show, rev } => {
+            let root = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            let source = match &rev {
+                Some(rev) => instructions::Source::Commit { root: &root, rev },
+                None => instructions::Source::Tree(&root),
+            };
+            let outcome = match &show {
+                Some(path) => instructions::show(&source, path),
+                None => instructions::load(&source).map(|entries| {
+                    entries
+                        .iter()
+                        .map(|entry| {
+                            let planned = entry
+                                .planned
+                                .as_ref()
+                                .map_or(String::new(), |task| format!(" (planned: {task})"));
+                            format!("{}\t{}\t{}{planned}\n", entry.path, entry.kind, entry.about)
+                        })
+                        .collect()
+                }),
+            };
+            match outcome {
+                Ok(text) => {
+                    let mut out = io::stdout().lock();
+                    out.write_all(text.as_bytes())?;
+                    out.flush()?;
+                    Ok(EXIT_PASS)
+                }
+                Err(error) => {
+                    eprintln!("instructions: {error}");
+                    Ok(EXIT_FAIL)
+                }
+            }
         }
         Command::Spdx { root } => {
             let checkout = match checkout() {

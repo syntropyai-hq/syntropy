@@ -1,0 +1,9 @@
+[package]
+name = "fixture-b"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+fixture-a = { path = "../a" }

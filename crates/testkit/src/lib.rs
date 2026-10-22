@@ -3,6 +3,16 @@
 //! The simulated fabric, the deterministic simulator, the fake `KernelProvider`, `RefExecutor`, the
 //! parity harness and golden traces.
 //!
-//! Stub: a dev-only crate in RFC-0001 §4.1, designed in RFC-0060. Nothing is implemented yet.
+//! A dev-only crate in RFC-0001 §4.1, designed in RFC-0060. It holds the hot-path guards of
+//! RFC-0060 §3.5 so far: [`guards::CountingAlloc`] and [`guards::alloc_count_this_thread`]. The
+//! rest is planned.
+//!
+//! `unsafe` is denied in this crate, not forbidden, for one reason: a global allocator is an
+//! `unsafe impl GlobalAlloc`. RFC-0001 §4.2 rule 8 (note 2026-10-22) lets [`guards`] hold that one
+//! impl, which delegates to `std::alloc::System`, under the crate's only lint override. The
+//! `check-deps` placement check refuses any other `unsafe` here.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+#![deny(clippy::undocumented_unsafe_blocks)]
+
+pub mod guards;

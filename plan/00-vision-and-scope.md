@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (2026-10-20)
 - **Date:** 2026-10-19
-- **Builds on:** [ADR-0000](decisions/ADR-0000-product-directives.md) (product directives D1–D8) and the foundation ADRs 0001–0021
+- **Builds on:** [ADR-0000](decisions/ADR-0000-product-directives.md) (product directives D1–D8) and the foundation ADRs 0001–0022
 - **Evidence:** the four notes in [research/](research/). Section references such as "cost model §3.3" point to [research/hardware-and-performance-model.md](research/hardware-and-performance-model.md).
 - **Companions:** [glossary.md](glossary.md) defines every term used here; [open-questions.md](open-questions.md) tracks what is not yet known.
 
@@ -312,7 +312,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 <!-- BEGIN GENERATED: vision-milestones -->
 ### M0a: walking skeleton
 
-178 tasks in the epics (`implementation/roadmap.md`, M0a).
+179 tasks in the epics (`implementation/roadmap.md`, M0a).
 
 - [ ] The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062).
 - [ ] The merge gates of ADR-0021 decision 5 run from the first commit: build, lint and tests; the DCO, licence and dependency checks; the workflow security lint; the independent review-agent job; and the sandbox in which agent runs read untrusted content. The repository's security baseline, the private vulnerability-reporting channel and the agent trust tiers are in place from the first commit too (RFC-0062 §12.5, §12.6, §13; ADR-0021; ADR-0624).

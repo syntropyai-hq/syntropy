@@ -7,7 +7,7 @@
 
 use smallvec::smallvec;
 use syntropy_core::plan::*;
-use syntropy_core::resource::{HostPoolInfo, TierKind, TransportKind};
+use syntropy_core::resource::{HostMemInfo, HostPoolInfo, TierKind, TransportKind};
 use syntropy_core::*;
 
 // ---- Fixture ----------------------------------------------------------------------------
@@ -56,6 +56,9 @@ fn stage(ix: u16, node: NodeId, layers: std::ops::Range<u16>, role: StageRole) -
             transport: TransportKind::Quic,
             wire: WireDType::F32,
             predicted: Nanos(1_000),
+            prefill_transport: None,
+            relay: None,
+            predicted_p99: Nanos(1_000),
         },
         predicted_step: Nanos(10_000),
     }
@@ -856,6 +859,122 @@ fn rejects_an_mtp_lookup_sharing_rows_with_the_head() {
         Err(PlanViolation::SharedWithNotLookup {
             group: TensorGroupId(4),
             twin: TensorGroupId(3),
+        })
+    );
+}
+
+// ---- Host pools from RFC-0020 §5's budget rule (TIER-E2-T01) -----------------------------
+
+/// Bounds whose A domain is the pool `budget::host_pool` builds from a Linux fixture: a 64 GiB
+/// host with 40 GiB available, `CAP_IPC_LOCK` and `max_pinned_fraction`, so each tier's own
+/// `usable` is what the rule publishes for it.
+fn budget_bounds(max_pinned_fraction: Option<f32>) -> (Bounds, HostPoolInfo) {
+    use syntropy_core::budget::*;
+    let mem = HostMemInfo {
+        total: Bytes(64 << 30),
+        available: Bytes(40 << 30),
+        ..HostMemInfo::default()
+    };
+    let inputs = HostBudgetInputs {
+        os: HostOs::Linux,
+        mem: &mem,
+        own: Bytes(0),
+        own_locked: Bytes(0),
+        working_set: None,
+        user_locked_vm: Bytes(0),
+    };
+    let policy = HostBudgetPolicy {
+        max_pinned_fraction,
+        ..HostBudgetPolicy::default()
+    };
+    let budget = host_budget(&inputs, &policy);
+    let pool = host_pool(0, [tier(A, 1), tier(A, 2)], &budget, None, Bytes(0));
+    let mut bounds = Bounds::new();
+    bounds.set_usable(tier(A, 1), pool.pin_limit.0);
+    bounds.set_usable(tier(A, 2), pool.usable.0);
+    bounds.host_pools[0] = pool;
+    (bounds, pool)
+}
+
+/// The fixture with `pinned` bytes in A's HostPinned and `pageable` in A's HostPageable.
+fn host_plan(pinned: Bytes, pageable: Bytes) -> PlacementPlan {
+    let mut plan = valid_plan();
+    plan.expert_cache[0].bytes = pinned;
+    plan.kv.push(KvBudget {
+        tier: tier(A, 2),
+        bytes: pageable,
+        ..kv(0, A, 0)
+    });
+    plan
+}
+
+#[test]
+fn rejects_host_usable_placed_in_each_host_tier() {
+    // A user fraction of 1.0 and unlimited memlock make pin_limit_n = host_usable_n =
+    // 36077725287, so each tier alone fits its own usable and only the joint row sees that
+    // the plan counts the domain's RAM twice.
+    let (bounds, pool) = budget_bounds(Some(1.0));
+    assert_eq!(pool.usable, Bytes(36_077_725_287));
+    assert_eq!(pool.pin_limit, pool.usable);
+    let plan = host_plan(pool.usable, pool.usable);
+    assert_eq!(
+        plan.validate(&bounds.get()),
+        Err(PlanViolation::HostPoolOverCapacity {
+            tiers: [tier(A, 1), tier(A, 2)],
+            used: Bytes(2 * 36_077_725_287),
+            usable: Bytes(36_077_725_287),
+        })
+    );
+}
+
+#[test]
+fn joint_row_with_the_default_fraction() {
+    // With the default 0.85, pin_limit_n = min(36077725287, 58411555225) = host_usable_n here
+    // too. A 0.25 fraction separates them: pin_limit_n = 17179869184.
+    let (bounds, pool) = budget_bounds(Some(0.25));
+    assert_eq!(pool.pin_limit, Bytes(17_179_869_184));
+    let rest = Bytes(pool.usable.0 - pool.pin_limit.0);
+    assert_eq!(
+        host_plan(pool.pin_limit, rest).validate(&bounds.get()),
+        Ok(())
+    );
+    assert_eq!(
+        host_plan(pool.pin_limit, Bytes(rest.0 + 1)).validate(&bounds.get()),
+        Err(PlanViolation::HostPoolOverCapacity {
+            tiers: [tier(A, 1), tier(A, 2)],
+            used: Bytes(pool.usable.0 + 1),
+            usable: pool.usable,
+        })
+    );
+    let (bounds, pool) = budget_bounds(None);
+    assert_eq!(pool.pin_limit, pool.usable);
+    assert_eq!(
+        host_plan(pool.usable, pool.usable).validate(&bounds.get()),
+        Err(PlanViolation::HostPoolOverCapacity {
+            tiers: [tier(A, 1), tier(A, 2)],
+            used: Bytes(2 * pool.usable.0),
+            usable: pool.usable,
+        })
+    );
+}
+
+#[test]
+fn pin_row_over_a_budget_built_pool() {
+    // The 0.25 fixture's pool, with A's HostPinned tier still publishing the whole domain as
+    // its own usable (a TierInfo from before the pin limit was re-evaluated). The per-tier row
+    // passes, so only the pool's pin row stops one byte over pin_limit_n.
+    let (mut bounds, pool) = budget_bounds(Some(0.25));
+    bounds.set_usable(tier(A, 1), pool.usable.0);
+    assert_eq!(
+        host_plan(pool.pin_limit, Bytes(0)).validate(&bounds.get()),
+        Ok(())
+    );
+    assert_eq!(
+        host_plan(Bytes(pool.pin_limit.0 + 1), Bytes(0)).validate(&bounds.get()),
+        Err(PlanViolation::HostPinOverLimit {
+            tier: tier(A, 1),
+            used: Bytes(pool.pin_limit.0 + 1),
+            pin_limit: pool.pin_limit,
         })
     );
 }

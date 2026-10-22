@@ -170,7 +170,7 @@ Byte-identical output across different devices is not promised, because differen
 | Path | What it holds |
 |---|---|
 | [`plan/00-vision-and-scope.md`](plan/00-vision-and-scope.md) | The problem, the scenarios, the platform matrix, target models, success criteria SC-1 to SC-32 (all targets), and what "feature complete" means |
-| [`plan/decisions/`](plan/decisions/) | ADRs. ADR-0000 holds the product directives D1–D8, ADR-0001 to ADR-0021 the foundation, and the rest are numbered by area |
+| [`plan/decisions/`](plan/decisions/) | ADRs. ADR-0000 holds the product directives D1–D8, ADR-0001 to ADR-0022 the foundation, and the rest are numbered by area |
 | [`plan/rfcs/`](plan/rfcs/) | RFC-0001, the system architecture, and 24 domain RFCs for placement, tiers, distributed execution, compute, product and quality |
 | [`plan/implementation/`](plan/implementation/README.md) | The tasks in six epic files, the roadmap, the dependency report, traceability, the risk register and the scripts that check them |
 | [`plan/open-questions.md`](plan/open-questions.md) | What is still undecided, each item with the task or measurement that settles it |

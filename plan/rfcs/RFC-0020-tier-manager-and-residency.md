@@ -345,6 +345,17 @@ Registration with the I/O engine (`IO_FIXED`) and with RDMA (`RDMA_MR`) is done 
 
 Registration failure is not fatal. A `DmaPinned` range whose registration fails stays resident as `Underpinned { have: Locked | Pageable }`, is costed as `HostPageable`, and is never used as a DMA source; the runner reports a `Capacity` drift with the registrable total it actually achieved, and RFC-0001 §7.2 decides whether to re-plan.
 
+*Note 2026-10-22 (TIER-E2-T02, the Linux adapter as built):* `syntropy_tier::os::linux::LinuxMemory` implements the Linux row above. It is built for x86-64 and AArch64 only, the Linux targets ADR-0020 supports, because its constants and C signatures are those of these two; another Linux architecture has no adapter. The parts this section leaves open are settled as follows.
+- **The trait.** `OsMemory` returns `OsMemError`, because `core` has no `Error` type yet. `reserve` and `commit` failures are `TIER_HOST_RESERVE` (4). §3's `pressure()` arrives with the yield ladder (§11).
+- **NUMA binding.** A failed `mbind` is retried once. After the second failure, the range is returned with `HostRange::numa = None`, which is how the caller learns of `TIER_NUMA_BIND` (§15). Docker's default seccomp profile refuses `mbind` without `CAP_SYS_NICE`, so in such a container every arena is unbound.
+- **Commit.** `MADV_POPULATE_WRITE`, retried on `EINTR`. Where the kernel answers `EINVAL`, every page is touched with an atomic no-op read-modify-write on one byte (`fetch_or(0)`), which keeps the bytes already there and never discards a concurrent store. A caller writing the range must not access the same bytes non-atomically while `commit` runs, which `OsMemory::commit` states.
+- **Unlock** releases only the pages wholly inside the sub-range, because `mlock` is not counted per caller; pin steps are page-aligned (§6.1), where this is exact.
+- **Lock.** `lock` checks `VmLck + len ≤ RLIMIT_MEMLOCK` (or `CAP_IPC_LOCK`) before calling `mlock`. A refusal is `OsMemError::LockRefused(PageableReason)`. `lock_or_pageable` turns that into `LockOutcome::Pageable(reason)`, the structured finding `syntropy doctor` renders (PROD-E9-T01).
+- **Snapshot.** `own_locked` is `VmLck`. `own_registered` is `VmPin`. The cgroup record is the level, the process's own cgroup or an ancestor, with the least `min(max, high) − current`. A cgroup path with a `.` or `..` component is not followed. Event counts are deltas from the previous reading of the same level; when the binding level changes, they restart at zero.
+- **`PinLimits::io_fixed_max`** is this process's view, `RLIMIT_MEMLOCK − VmPin`. It is an upper bound on the per-user `io_fixed`, which the daemon divides (§5).
+- **`tier.hugepages`** is not in the config schema yet (TIER-E1-T09), so callers pass `HugePages`.
+- **Range ownership.** The adapter records every range it reserves under a reservation id, carried in `HostRange::os_handle`. `commit`, `lock`, `unlock` and `release` refuse a range whose base, length or id differs, because `HostRange`'s fields are public. The registry lock is held across each system call, shared by `commit`, `lock` and `unlock` and exclusive in `release`, so a range is never unmapped while another call acts on it. A stale handle whose address a new reservation reused does not match the new id.
+
 #### 4.3 `Nvme`
 
 No arena. `plan_arenas` emits an `ExtentRef` per `Nvme`-homed group from the pack sidecar. Expert-cache and row-cache slots in faster tiers are filled from these extents by RFC-0021 reads. Session blobs and KV spill files on `Nvme` belong to the store and RFC-0022.
@@ -411,6 +422,21 @@ bytes(HostPinned_n) + bytes(HostPageable_n)  ≤ host_usable_n
 ```
 
 Groups with no `StreamSite` and no copied-miss share are homed in `HostPageable`; RAM-resident experts are split into a `DmaPinned` copyable share and a pageable in-place share (RFC-0023 §3). The exact rows RFC-0011 needs are listed under this RFC's proposed amendments.
+
+*Note 2026-10-22 (TIER-E2-T01, the rule as built):* the formulas above are `syntropy_core::budget` (RFC-0001 §5.13, §18.15). Probe-time evaluation and the check before each pinning step call the same pure functions:
+- **Signature.** `ResourcePolicy` is not in `core` yet, and `HostMemInfo` does not carry every input. So the rule is `host_budget(&HostBudgetInputs, &HostBudgetPolicy) -> HostBudget { headroom, host_usable, pin_limit, io_fixed }`, with `host_usable`, `pin_limit` and `io_fixed` also callable on their own.
+  - `HostBudgetInputs` holds `os: HostOs`, `mem: &HostMemInfo`, `own`, `own_locked`, `working_set` and `user_locked_vm`.
+  - `HostBudgetPolicy` holds `ram_headroom`, already resolved to bytes, plus `max_pinned_fraction` and `numa_reserve`.
+  - `host_pool` builds each domain's `HostPoolInfo` from `numa_available_n`.
+- **WSL2 is recorded once.** It is `HostOs::Linux` with `HostMemInfo::wsl2` set. The flag selects the 0.75 default, so a caller cannot pick the Linux 0.85 default by mistake.
+- **Linux `lockable` keeps the `own` convention:** `lockable = RLIMIT_MEMLOCK − VmLck + min(own_locked, VmLck)`. `own_locked` is what this node's runners already hold locked that `VmLck` counts. The add-back is clamped to `VmLck`, so `lockable` never exceeds `RLIMIT_MEMLOCK`. The caller passes a live `VmLck` together with its live `own_locked`, never a cached probe-time `VmLck`. Without it, a runner pinning 6 GiB under an 8 GiB limit would see a 2 GiB `pin_limit` and fail its own plan. `user_locked_vm` follows the same rule for `io_fixed`: the user's `locked_vm` less what the `io_fixed` ledger has granted.
+- **An untested registration charge** (`LockAccounting::registration_charged = None`) counts as charged.
+- **Windows before H5.** Until RFC-0010's step H5 measures `lockable_measured`, the static estimate is `HostMemInfo::windows_lockable`, the working-set ceiling obtainable without privilege. With neither value, `pin_limit` is 0: the rule never assumes a lock budget it was not given.
+- **`io_fixed` off Linux.** This section defines `io_fixed` for Linux and WSL2 only. On Windows, macOS and Tier 3 it is 0, so no fixed-buffer budget is granted, and RFC-0021 uses unregistered reads. That loses efficiency, not correctness.
+- **macOS without a working-set figure.** When `recommendedMaxWorkingSetSize` is not available (`working_set = None`), the term is left out. `unified_usable` is then `min(hw.memsize − headroom, available + own − headroom)`. The reserve that ADR-0007 relies on to prevent the compressor panics still holds. A GPU allocation past the real working-set limit fails at `Loading` with `Capacity`, and the profile is corrected from that (RFC-0010 §2.2). Neither path ever exceeds RAM minus the reserve, so the fallback stays within ADR-0007's rule.
+- **macOS with a user-set `max_pinned_fraction`.** The fraction also caps `unified_usable`. `pin_limit` is 0, because there is no `HostPinned` tier.
+- **The cgroup term.** `HostMemInfo::cgroup_limit` carries the cgroup headroom, or on Windows the job object's limit minus usage. The probe does not yet fold `memory.high` into it (issue #1650).
+- **The `io_fixed` ledger** (`IoFixedLedger`) holds a limit fixed when it is built. To re-evaluate `io_fixed`, the daemon builds a new ledger over the new limit and replays the current grants into it.
 
 ### 6. Progressive pinning
 

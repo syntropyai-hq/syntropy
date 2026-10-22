@@ -49,9 +49,12 @@
 /crates/graph/src/families.rs       @devdaviddr @xunholy
 /crates/graph/src/families/mod.rs   @devdaviddr @xunholy
 
-# Agent instruction and configuration files. The list in ci/agent-instructions.toml (QUAL-E1-T19)
-# lives under /ci/ above.
+# Agent instruction and configuration files: every entry of ci/agent-instructions.toml, which the
+# `agent-instructions` step of `lint` checks against these rules (QUAL-E1-T19). The list itself
+# and ci/agent-tooling.lock are under /ci/ above.
 AGENTS.md                       @devdaviddr @xunholy
+/plan/implementation/README.md  @devdaviddr @xunholy
+/.githooks/                     @devdaviddr @xunholy
 
 # A new vendored component in the licence manifest
 /third_party/licences.toml      @devdaviddr @xunholy

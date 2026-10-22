@@ -102,60 +102,82 @@ pub struct System {
     pub links: &'static [&'static str],
     /// The one workspace crate allowed to reach it.
     pub only_in: &'static str,
+    /// Whether only a member's own normal or build dependency on a binding counts. Set for a
+    /// system whose binding most crates reach through other packages, such as `getrandom` under
+    /// the TLS stack and test crates: the rule then names the one crate that depends on it
+    /// directly, and a binding reached through another package is not a finding.
+    pub direct_only: bool,
 }
 
 /// Rule 6: one crate per external system. A system with no binding crate listed is not checked
 /// until the task that adopts one lists it here. IoRing and IOCP are calls through the Windows API
 /// crates that the async ecosystem also uses, so a package name cannot single them out, and the
-/// Thunderbolt RDMA API has no binding crate yet.
+/// Thunderbolt RDMA API has no binding crate yet. `getrandom` is checked on direct dependencies
+/// only (RFC-0001 §4.2 rule 6's 2026-10-22 note).
 pub const SYSTEMS: &[System] = &[
     System {
         name: "iroh",
         packages: &["iroh", "iroh-base", "iroh-net", "iroh-relay", "iroh-quinn"],
         links: &[],
         only_in: "net",
+        direct_only: false,
     },
     System {
         name: "ibverbs",
         packages: &["ibverbs", "ibverbs-sys", "rdma-sys"],
         links: &[],
         only_in: "net",
+        direct_only: false,
     },
     System {
         name: "io_uring",
         packages: &["io-uring", "tokio-uring", "glommio", "monoio"],
         links: &[],
         only_in: "io",
+        direct_only: false,
     },
     System {
         name: "HiGHS",
         packages: &["highs", "highs-sys"],
         links: &[],
         only_in: "solver",
+        direct_only: false,
     },
     System {
         name: "ggml",
         packages: &["ggml"],
         links: &["ggml"],
         only_in: "kernels-ggml",
+        direct_only: false,
     },
     System {
         name: "the CUDA runtime",
         packages: &["cudarc", "cust"],
         links: &["cuda"],
         only_in: "kernels-cuda",
+        direct_only: false,
     },
     System {
         name: "Vulkan",
         packages: &["ash", "vulkano"],
         links: &[],
         only_in: "kernels-vulkan",
+        direct_only: false,
     },
     System {
         name: "Metal",
         packages: &["metal", "objc2-metal"],
         links: &[],
         only_in: "kernels-metal",
+        direct_only: false,
+    },
+    // ADR-0022 decision 3: `OsEntropy` in `io` is the one crate that names the OS CSPRNG.
+    System {
+        name: "the OS random source",
+        packages: &["getrandom"],
+        links: &[],
+        only_in: "io",
+        direct_only: true,
     },
 ];
 
@@ -298,6 +320,31 @@ pub fn is_system_library(needed: &str) -> bool {
 /// 2026-10-22 (RFC-0001 §4.2 rule 8).
 pub const UNSAFE_ALLOWED: &[&str] = &["io", "tier", "net", "ipc", "spsc"];
 
+/// Rule 8's module-scoped exception (RFC-0001 §4.2 rule 8, note 2026-10-22): a crate that sets
+/// `#![deny(unsafe_code)]` at its root instead of `forbid`, and whose only `unsafe` is one
+/// `unsafe impl` of one trait, in one file, under the crate's one `#[allow(unsafe_code)]`.
+pub struct UnsafeModule {
+    /// The crate's short name, such as `testkit`.
+    pub krate: &'static str,
+    /// The file that holds the impl, relative to the crate's directory.
+    pub file: &'static str,
+    /// The trait the impl implements.
+    pub implements: &'static str,
+}
+
+/// The crates that hold a module-scoped `unsafe` exception. `testkit::guards` holds the counting
+/// allocator, a `GlobalAlloc` that delegates to `std::alloc::System` (RFC-0060 §3.5).
+pub const UNSAFE_MODULES: &[UnsafeModule] = &[UnsafeModule {
+    krate: "testkit",
+    file: "src/guards.rs",
+    implements: "GlobalAlloc",
+}];
+
+/// Rule 8: the module-scoped exception `name` holds, if any.
+pub fn unsafe_module(name: &str) -> Option<&'static UnsafeModule> {
+    UNSAFE_MODULES.iter().find(|module| module.krate == name)
+}
+
 /// Rule 10: the crates release artefacts are built from: the core binary, and the provider
 /// libraries of the backend modules (rule 7). The check resolves each one's features on its own,
 /// as its artefact is built.
@@ -342,6 +389,7 @@ pub fn named_crates() -> Vec<&'static str> {
     names.extend(SOLVER_MUST_NOT_REACH);
     names.extend(SYSTEMS.iter().map(|system| system.only_in));
     names.extend(UNSAFE_ALLOWED);
+    names.extend(UNSAFE_MODULES.iter().map(|module| module.krate));
     names.extend(RELEASE_CRATES);
     names
 }
@@ -366,6 +414,20 @@ mod tests {
         assert_eq!(same_layer_users("ipc"), None);
         assert!(allows_unsafe("spsc"));
         assert!(is_compute("spsc"));
+    }
+
+    #[test]
+    fn only_testkit_holds_a_module_scoped_unsafe_exception() {
+        let module = unsafe_module("testkit").expect("testkit has the exception");
+        assert_eq!(
+            (module.file, module.implements),
+            ("src/guards.rs", "GlobalAlloc")
+        );
+        // No other crate has one, and the exception does not put testkit on the allow-list.
+        for name in ["solver", "bench", "core", "cli", "kernels", "runner"] {
+            assert!(unsafe_module(name).is_none(), "{name}");
+        }
+        assert!(!allows_unsafe("testkit"));
     }
 
     #[test]

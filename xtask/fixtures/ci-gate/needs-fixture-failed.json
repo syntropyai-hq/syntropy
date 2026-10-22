@@ -1,0 +1,16 @@
+{
+  "changes": {
+    "result": "success",
+    "outputs": {
+      "jobs": "[\"lint\",\"build\"]"
+    }
+  },
+  "lint": {
+    "result": "success",
+    "outputs": {}
+  },
+  "build": {
+    "result": "failure",
+    "outputs": {}
+  }
+}

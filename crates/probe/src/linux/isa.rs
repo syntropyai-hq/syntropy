@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! CPU ISA flags and microarchitecture level.
+//! CPU ISA flags and the provisional `CpuIsa` level.
 //!
 //! Two sources give the same answers: the `flags` (x86-64) or `Features` (AArch64) line of
 //! `/proc/cpuinfo`, which the kernel derives from CPUID and `AT_HWCAP`/`AT_HWCAP2`, and, on
 //! the live host, the standard library's runtime detection macros, which read CPUID and
 //! `getauxval` themselves. Fixtures use the first; [`IsaSource::Runtime`] prefers the second
 //! for every feature a macro covers.
+//!
+//! The level is E1's provisional value (ADR-0405 decision 3; RFC-0010 §2.1): RFC-0040
+//! §7.3's requirements per [`CpuIsa`] level, checked on these flags. The CPU provider decides
+//! the class at E5, and its value replaces this one.
 
 use std::collections::BTreeSet;
 
-use syntropy_core::resource::{CpuArch, DeviceFeatures, IsaFlags, IsaLevel};
+use syntropy_core::resource::{CpuArch, CpuIsa, DeviceFeatures, IsaFlags};
 
 use crate::error::EnumError;
 
@@ -34,18 +38,11 @@ pub(crate) enum Feature {
     Sse41,
     Sse42,
     Ssse3,
-    Avx,
     Avx2,
-    Bmi1,
-    Bmi2,
     F16c,
     Fma,
-    Lzcnt,
-    Movbe,
-    Xsave,
     Avx512f,
     Avx512bw,
-    Avx512cd,
     Avx512dq,
     Avx512vl,
     Avx512Vnni,
@@ -71,18 +68,11 @@ impl Feature {
             Self::Sse41 => "sse4_1",
             Self::Sse42 => "sse4_2",
             Self::Ssse3 => "ssse3",
-            Self::Avx => "avx",
             Self::Avx2 => "avx2",
-            Self::Bmi1 => "bmi1",
-            Self::Bmi2 => "bmi2",
             Self::F16c => "f16c",
             Self::Fma => "fma",
-            Self::Lzcnt => "abm",
-            Self::Movbe => "movbe",
-            Self::Xsave => "xsave",
             Self::Avx512f => "avx512f",
             Self::Avx512bw => "avx512bw",
-            Self::Avx512cd => "avx512cd",
             Self::Avx512dq => "avx512dq",
             Self::Avx512vl => "avx512vl",
             Self::Avx512Vnni => "avx512_vnni",
@@ -101,6 +91,12 @@ impl Feature {
     }
 }
 
+/// The x86-64 floor below which E1 refuses the CPU (`BelowBaseline`): the psABI x86-64-v2
+/// set, not only RFC-0040 §7.3's "SSE4.2, POPCNT" for `X86V2`. ADR-0014 and ADR-0020 name
+/// x86-64-v2 as the platform floor, and the core's ggml CPU backend is built for that baseline
+/// (RFC-0040 §8.1), so a CPU with SSE4.2 and POPCNT but without CX16, LAHF-SAHF, SSE4.1 or
+/// SSSE3 cannot run it. The psABI set also names SSE3; it is not listed, because every CPU with
+/// SSSE3 has it.
 const X86_V2: [Feature; 6] = [
     Feature::Cx16,
     Feature::LahfLm,
@@ -109,26 +105,11 @@ const X86_V2: [Feature; 6] = [
     Feature::Sse42,
     Feature::Ssse3,
 ];
-const X86_V3: [Feature; 9] = [
-    Feature::Avx,
-    Feature::Avx2,
-    Feature::Bmi1,
-    Feature::Bmi2,
-    Feature::F16c,
-    Feature::Fma,
-    Feature::Lzcnt,
-    Feature::Movbe,
-    Feature::Xsave,
-];
-const X86_V4: [Feature; 5] = [
-    Feature::Avx512f,
-    Feature::Avx512bw,
-    Feature::Avx512cd,
-    Feature::Avx512dq,
-    Feature::Avx512vl,
-];
+/// RFC-0040 §7.3's `X86V3` requirement: AVX2, FMA and F16C.
+const X86V3: [Feature; 3] = [Feature::Avx2, Feature::Fma, Feature::F16c];
 
-/// RFC-0040 §7.3's `X86V4` requirement: what `DeviceFeatures::AVX512` means.
+/// RFC-0040 §7.3's `X86V4` requirement, on top of `X86V3`: what `DeviceFeatures::AVX512`
+/// means.
 const AVX512_KERNELS: [Feature; 4] = [
     Feature::Avx512f,
     Feature::Avx512bw,
@@ -139,7 +120,8 @@ const AVX512_KERNELS: [Feature; 4] = [
 /// The ISA facts E1 records for a CPU device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Isa {
-    pub level: IsaLevel,
+    /// The provisional class level.
+    pub level: CpuIsa,
     pub flags: IsaFlags,
     pub features: DeviceFeatures,
 }
@@ -186,10 +168,13 @@ impl Detector<'_> {
                     DeviceFeatures::AVX2,
                 );
                 // `IsaFlags` records each AVX-512 extension the CPU has. `DeviceFeatures::AVX512`
-                // is the kernel gate, so it follows RFC-0040 §7.3's `X86V4` requirement
-                // (AVX-512 F, BW, VL and DQ together). VNNI, BF16 and FP16 are "used when
-                // present" on top of `X86V4`, so their feature bits need the gate too.
-                let avx512 = AVX512_KERNELS.iter().all(|f| self.has(*f));
+                // is the kernel gate, so it is set exactly when the level is `X86V4`: RFC-0040
+                // §7.3's `X86V4` requirement (AVX-512 F, BW, VL and DQ together) on top of
+                // `X86V3`. VNNI, BF16 and FP16 are "used when present" on top of `X86V4`, so
+                // their feature bits need the gate too. A CPU with AVX-512 but not the `X86V3`
+                // set is `X86V2` with no AVX-512 feature bit.
+                let v3 = X86V3.iter().all(|f| self.has(*f));
+                let avx512 = v3 && AVX512_KERNELS.iter().all(|f| self.has(*f));
                 let gated = |f: Feature| avx512 && self.has(f);
                 set(avx512, IsaFlags::empty(), DeviceFeatures::AVX512);
                 set(
@@ -254,12 +239,14 @@ impl Detector<'_> {
                     IsaFlags::AMX_INT8,
                     DeviceFeatures::empty(),
                 );
-                if X86_V4.iter().all(|f| self.has(*f)) && X86_V3.iter().all(|f| self.has(*f)) {
-                    IsaLevel::X86_64V4
-                } else if X86_V3.iter().all(|f| self.has(*f)) {
-                    IsaLevel::X86_64V3
+                // Never `X86V4Amx`: that level needs the tile-data permission granted, which
+                // E1 does not request; the CPU provider requests it at E5 (ADR-0405 decision 3).
+                if avx512 {
+                    CpuIsa::X86V4
+                } else if v3 {
+                    CpuIsa::X86V3
                 } else {
-                    IsaLevel::X86_64V2
+                    CpuIsa::X86V2
                 }
             }
             CpuArch::Aarch64 => {
@@ -293,12 +280,18 @@ impl Detector<'_> {
                     IsaFlags::empty(),
                     DeviceFeatures::NEON_FP16,
                 );
-                if self.has(Feature::Sve2) {
-                    IsaLevel::Aarch64V9Sve2
-                } else if self.has(Feature::DotProd) {
-                    IsaLevel::Aarch64V8_2Dotprod
+                // Each level adds to the one below (RFC-0040 §7.3). SVE2 is not in any
+                // level's requirement, so SVE2 without SME2 stays at `Arm86I8mm`.
+                let dot = self.has(Feature::DotProd) && self.has(Feature::Fp16);
+                let i8mm = dot && self.has(Feature::I8mm) && self.has(Feature::Bf16);
+                if i8mm && self.has(Feature::Sme2) {
+                    CpuIsa::Arm92Sme2
+                } else if i8mm {
+                    CpuIsa::Arm86I8mm
+                } else if dot {
+                    CpuIsa::Arm82Dot
                 } else {
-                    IsaLevel::Aarch64V8_0
+                    CpuIsa::Arm80
                 }
             }
             // `CpuArch` is non-exhaustive; a new architecture needs its own rules.
@@ -328,18 +321,11 @@ fn runtime(f: Feature) -> Option<bool> {
         Feature::Sse41 => d!("sse4.1"),
         Feature::Sse42 => d!("sse4.2"),
         Feature::Ssse3 => d!("ssse3"),
-        Feature::Avx => d!("avx"),
         Feature::Avx2 => d!("avx2"),
-        Feature::Bmi1 => d!("bmi1"),
-        Feature::Bmi2 => d!("bmi2"),
         Feature::F16c => d!("f16c"),
         Feature::Fma => d!("fma"),
-        Feature::Lzcnt => d!("lzcnt"),
-        Feature::Movbe => d!("movbe"),
-        Feature::Xsave => d!("xsave"),
         Feature::Avx512f => d!("avx512f"),
         Feature::Avx512bw => d!("avx512bw"),
-        Feature::Avx512cd => d!("avx512cd"),
         Feature::Avx512dq => d!("avx512dq"),
         Feature::Avx512vl => d!("avx512vl"),
         Feature::Avx512Vnni => d!("avx512vnni"),
@@ -404,42 +390,82 @@ mod tests {
 
     #[test]
     fn x86_levels() {
-        assert_eq!(isa(CpuArch::X86_64, V2).unwrap().level, IsaLevel::X86_64V2);
+        assert_eq!(isa(CpuArch::X86_64, V2).unwrap().level, CpuIsa::X86V2);
         let v3 = format!("{V2} {V3}");
-        assert_eq!(isa(CpuArch::X86_64, &v3).unwrap().level, IsaLevel::X86_64V3);
+        assert_eq!(isa(CpuArch::X86_64, &v3).unwrap().level, CpuIsa::X86V3);
         let v4 = format!("{V2} {V3} {V4}");
-        assert_eq!(isa(CpuArch::X86_64, &v4).unwrap().level, IsaLevel::X86_64V4);
+        assert_eq!(isa(CpuArch::X86_64, &v4).unwrap().level, CpuIsa::X86V4);
+        // RFC-0040 §7.3's lists: AVX2, FMA and F16C for `X86V3`; F, BW, VL and DQ for `X86V4`.
+        let minimal = format!("{V2} avx2 fma f16c avx512f avx512bw avx512vl avx512dq");
+        assert_eq!(isa(CpuArch::X86_64, &minimal).unwrap().level, CpuIsa::X86V4);
         // AVX-512 without the v3 set is still v2.
         let odd = format!("{V2} {V4}");
-        assert_eq!(
-            isa(CpuArch::X86_64, &odd).unwrap().level,
-            IsaLevel::X86_64V2
-        );
-        // One v3 feature missing drops to v2.
-        let short = format!("{V2} {}", V3.replace("movbe", ""));
-        assert_eq!(
-            isa(CpuArch::X86_64, &short).unwrap().level,
-            IsaLevel::X86_64V2
-        );
+        assert_eq!(isa(CpuArch::X86_64, &odd).unwrap().level, CpuIsa::X86V2);
+        // Each of AVX2, FMA and F16C missing drops to v2.
+        for drop in ["avx2 ", "fma ", "f16c "] {
+            let short = format!("{V2} {} ", V3).replace(drop, "");
+            assert_eq!(
+                isa(CpuArch::X86_64, &short).unwrap().level,
+                CpuIsa::X86V2,
+                "without {drop}"
+            );
+        }
+        // Each of F, BW, VL and DQ missing drops to v3.
+        for drop in ["avx512f ", "avx512bw ", "avx512vl ", "avx512dq "] {
+            let short = format!("{V2} {V3} {V4} ").replace(drop, "");
+            assert_eq!(
+                isa(CpuArch::X86_64, &short).unwrap().level,
+                CpuIsa::X86V3,
+                "without {drop}"
+            );
+        }
+    }
+
+    /// The AVX-512 feature bits follow the level: AVX-512 without the `X86V3` set is `X86V2`,
+    /// with every AVX-512 extension in `IsaFlags` and none in `DeviceFeatures`.
+    #[test]
+    fn avx512_features_need_the_x86v4_level() {
+        let ext = "avx512_vnni avx512_bf16 avx512_fp16";
+        let i = isa(CpuArch::X86_64, &format!("{V2} {V4} {ext}")).unwrap();
+        assert_eq!(i.level, CpuIsa::X86V2);
+        assert_eq!(i.features, DeviceFeatures::empty());
+        assert!(i.flags.contains(
+            IsaFlags::AVX512F
+                | IsaFlags::AVX512BW
+                | IsaFlags::AVX512VL
+                | IsaFlags::AVX512VNNI
+                | IsaFlags::AVX512BF16
+                | IsaFlags::AVX512FP16
+        ));
+        let v4 = isa(CpuArch::X86_64, &format!("{V2} {V3} {V4} {ext}")).unwrap();
+        assert_eq!(v4.level, CpuIsa::X86V4);
+        assert!(v4.features.contains(DeviceFeatures::AVX512));
+    }
+
+    #[test]
+    fn amx_hardware_is_never_x86v4amx_at_e1() {
+        let f = format!("{V2} {V3} {V4} amx_bf16 amx_int8 amx_tile");
+        assert_eq!(isa(CpuArch::X86_64, &f).unwrap().level, CpuIsa::X86V4);
     }
 
     #[test]
     fn avx512_feature_needs_f_bw_vl_dq() {
         let ext = "avx512_vnni avx512_bf16 avx512_fp16";
-        let all = format!("{V2} avx512f avx512bw avx512vl avx512dq {ext}");
+        let all = format!("{V2} {V3} avx512f avx512bw avx512vl avx512dq {ext}");
         let i = isa(CpuArch::X86_64, &all).unwrap();
         assert_eq!(
             i.features,
-            DeviceFeatures::AVX512
+            DeviceFeatures::AVX2
+                | DeviceFeatures::AVX512
                 | DeviceFeatures::AVX512_VNNI
                 | DeviceFeatures::AVX512_BF16
                 | DeviceFeatures::AVX512_FP16
         );
-        // Each of F, BW, VL and DQ missing in turn: no AVX-512 feature bits at all, while
-        // `IsaFlags` still records what the CPU has.
+        // Each of F, BW, VL and DQ missing in turn: no AVX-512 feature bits at all (AVX2
+        // stays), while `IsaFlags` still records what the CPU has.
         for drop in ["avx512f ", "avx512bw ", "avx512vl ", "avx512dq "] {
             let i = isa(CpuArch::X86_64, &all.replace(drop, "")).unwrap();
-            assert_eq!(i.features, DeviceFeatures::empty(), "without {drop}");
+            assert_eq!(i.features, DeviceFeatures::AVX2, "without {drop}");
             assert!(
                 i.flags
                     .contains(IsaFlags::AVX512VNNI | IsaFlags::AVX512BF16 | IsaFlags::AVX512FP16),
@@ -469,19 +495,49 @@ mod tests {
     #[test]
     fn arm_levels() {
         let base = "fp asimd";
-        assert_eq!(
-            isa(CpuArch::Aarch64, base).unwrap().level,
-            IsaLevel::Aarch64V8_0
-        );
+        assert_eq!(isa(CpuArch::Aarch64, base).unwrap().level, CpuIsa::Arm80);
         let dp = isa(CpuArch::Aarch64, "fp asimd asimddp asimdhp").unwrap();
-        assert_eq!(dp.level, IsaLevel::Aarch64V8_2Dotprod);
+        assert_eq!(dp.level, CpuIsa::Arm82Dot);
         assert_eq!(dp.flags, IsaFlags::NEON_DOTPROD);
         assert_eq!(
             dp.features,
             DeviceFeatures::NEON_DOTPROD | DeviceFeatures::NEON_FP16
         );
-        let v9 = isa(CpuArch::Aarch64, "asimddp sve2 i8mm bf16").unwrap();
-        assert_eq!(v9.level, IsaLevel::Aarch64V9Sve2);
+        // Dot product without FP16 arithmetic is not `Arm82Dot`.
+        let no_fp16 = isa(CpuArch::Aarch64, "fp asimd asimddp").unwrap();
+        assert_eq!(no_fp16.level, CpuIsa::Arm80);
+        let i8mm = isa(CpuArch::Aarch64, "asimddp asimdhp i8mm bf16").unwrap();
+        assert_eq!(i8mm.level, CpuIsa::Arm86I8mm);
+        // I8MM without BF16 stays at `Arm82Dot`.
+        let no_bf16 = isa(CpuArch::Aarch64, "asimddp asimdhp i8mm").unwrap();
+        assert_eq!(no_bf16.level, CpuIsa::Arm82Dot);
+        let sme2 = isa(CpuArch::Aarch64, "asimddp asimdhp i8mm bf16 sme2").unwrap();
+        assert_eq!(sme2.level, CpuIsa::Arm92Sme2);
+        // I8MM and BF16 without the `Arm82Dot` base are not `Arm86I8mm`.
+        for flags in ["fp asimd i8mm bf16", "fp asimd asimddp i8mm bf16"] {
+            assert_eq!(
+                isa(CpuArch::Aarch64, flags).unwrap().level,
+                CpuIsa::Arm80,
+                "{flags}"
+            );
+        }
+        // SME2 without the `Arm86I8mm` base is not `Arm92Sme2`.
+        let bare_sme2 = isa(CpuArch::Aarch64, "asimddp asimdhp sme2").unwrap();
+        assert_eq!(bare_sme2.level, CpuIsa::Arm82Dot);
+    }
+
+    /// A CPU with SVE2 but no SME2 never gives `Arm92Sme2`.
+    #[test]
+    fn sve2_without_sme2_is_never_arm92sme2() {
+        for flags in [
+            "asimddp asimdhp i8mm bf16 sve2",
+            "asimddp asimdhp sve sve2",
+            "fp asimd sve2",
+        ] {
+            let i = isa(CpuArch::Aarch64, flags).unwrap();
+            assert_ne!(i.level, CpuIsa::Arm92Sme2, "{flags}");
+            assert!(i.flags.contains(IsaFlags::SVE2), "{flags}");
+        }
     }
 
     #[test]
