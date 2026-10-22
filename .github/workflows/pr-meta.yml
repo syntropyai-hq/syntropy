@@ -249,7 +249,7 @@ jobs:
           cache: "off"
       # The base branch's `properties-removal` decides. `cargo xtask` exits 2 on a usage error,
       # which an unknown job is: that exit code says the base has no such job. Bootstrap: only
-      # #PR_ADDING_PROPERTIES_REMOVAL, the PR that adds the job, may then be judged by its own;
+      # #1667, the PR that adds the job, may then be judged by its own;
       # every other such base fails.
       - name: cargo xtask ci properties-removal, from the base branch
         id: gate
@@ -265,7 +265,7 @@ jobs:
           if [ "$status" -eq 0 ]; then
             exit 0
           fi
-          if [ "$status" -eq 2 ] && [ "$NUMBER" = PR_ADDING_PROPERTIES_REMOVAL ]; then
+          if [ "$status" -eq 2 ] && [ "$NUMBER" = 1667 ]; then
             echo "::warning::the base branch has no properties-removal job yet; #$NUMBER, which adds it, is judged by its own"
             echo "bootstrap=true" >> "$GITHUB_OUTPUT"
             exit 0
