@@ -7,8 +7,10 @@
 //! - **One CA per node, never shared.** An ECDSA P-256 key in the state directory's `tls`
 //!   directory, generated on this node and never sent anywhere: no code here talks to another
 //!   node or to the coordinator.
-//! - **Bound to the node.** A node-key signature over the CA's public key ([`CaBinding`], RFC-0034
-//!   R5) lets a client that knows the node key check that the CA is the node's own.
+//! - **Bound to the node.** A node-key signature over the CA certificate's exact bytes
+//!   ([`CaBinding`], RFC-0034 R5) lets a client that knows the node key check that the
+//!   certificate, name constraints and all, is the one the node minted. The node holds its own
+//!   stored CA to the same check, and to the constraints it mints, when it loads it.
 //! - **Constrained.** Critical X.509 name constraints limit the CA to the node's DNS names and to
 //!   the private subnets it serves ([`CaScope`]), so a leaked key impersonates neither public
 //!   sites nor other private hosts. A changed scope replaces the CA and records it for

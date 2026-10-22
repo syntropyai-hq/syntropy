@@ -81,9 +81,10 @@ proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc
 # The node's local TLS CA and its leaves (RFC-0050 §11.1.1, PROD-E5-T03), `syntropy-api` only. On
 # ring, the one TLS crypto provider (RFC-0034 §3), with no aws-lc build: `ring` implies its
 # `crypto` feature. `x509-parser` reads the stored CA back to sign with it, and `zeroize` clears
-# its key pairs. Pinned exactly: what the CA writes into a certificate, its name constraints above
-# all, is part of the trust model, so a new version is a reviewed change.
-rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "pem", "x509-parser", "zeroize"] }
+# its key pairs. No `pem`: the CA encodes its one PEM block itself, from the bytes its binding
+# covers. Pinned exactly: what the CA writes into a certificate, its name constraints above all,
+# is part of the trust model, so a new version is a reviewed change.
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "x509-parser", "zeroize"] }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }
@@ -106,9 +107,9 @@ time = { version = "0.3.55", default-features = false, features = ["std"] }
 # and the rig inventory `bench/lab/rigs.toml` (RFC-0061 §6.3).
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 trybuild = "1.0.122"
-# Reads a stored CA certificate's public key and extensions (PROD-E5-T03). rcgen links the same
-# version for its `x509-parser` feature.
-x509-parser = { version = "0.18.1", default-features = false }
+# Reads a stored CA certificate's public key and extensions, and checks its self-signature with
+# ring (`verify`) (PROD-E5-T03). rcgen links the same version for its `x509-parser` feature.
+x509-parser = { version = "0.18.1", default-features = false, features = ["verify"] }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 # zstd level 3 for control messages over 64 KiB (RFC-0031 §9.1), `syntropy-net` only. It builds
 # the bundled C library (BSD-3-Clause), so the build needs a C compiler.

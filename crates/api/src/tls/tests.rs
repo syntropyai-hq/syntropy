@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rcgen::{
+    BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
+};
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection};
 use syntropy_net::crypto::SigningKey;
@@ -163,7 +167,7 @@ fn a_ca_is_created_then_loaded_with_its_node_key_binding() {
     let key = node_key(1);
     let (ca, opened) = LocalCa::open(&dir.path(), &scope(), &key, now()).unwrap();
     assert_eq!(opened, CaOpen::Created);
-    ca.binding().verify(ca.spki_der()).unwrap();
+    ca.binding().verify(ca.certificate_der()).unwrap();
     assert_eq!(ca.binding().node_key(), &key.public_key());
     assert!(
         ca.certificate_pem()
@@ -187,33 +191,72 @@ fn a_ca_is_created_then_loaded_with_its_node_key_binding() {
         assert_eq!(mode(&dir.path()), 0o700);
         assert_eq!(mode(&dir.path().join(CA_FILE)), 0o600);
     }
-    // The binding is a node-key signature over 0x01 ‖ the CA's SubjectPublicKeyInfo: it fails
-    // for any other public key, and under any other node key.
-    let mut other = ca.spki_der().to_vec();
+    // The binding is a node-key signature over 0x01 ‖ the CA certificate's DER: it fails for a
+    // certificate that differs in one bit, and under any other node key.
+    let mut other = ca.certificate_der().to_vec();
     *other.last_mut().unwrap() ^= 1;
     assert!(ca.binding().verify(&other).is_err());
-    let foreign = CaBinding::sign(&node_key(2), ca.spki_der());
+    let foreign = CaBinding::sign(&node_key(2), ca.certificate_der());
     assert_ne!(foreign.node_key(), ca.binding().node_key());
-    assert_eq!(CaBinding::statement(b"spki")[0], CaBinding::VERSION);
+    assert_eq!(CaBinding::statement(b"certificate")[0], CaBinding::VERSION);
 }
 
 /// The binding statement's bytes, pinned: a node-key Ed25519 signature in context
-/// `syntropy-tls-ca-v1` over `0x01 ‖ SPKI DER` (RFC-0034 §3, revised 2026-10-22). The expected
-/// signature was computed with OpenSSL 3.6.4 over those bytes with the seed 00 01 … 1f, not with
-/// this code.
+/// `syntropy-tls-ca-v1` over `0x01 ‖ the CA certificate's DER` (RFC-0034 §3, revised
+/// 2026-10-22). The certificate here is a stand-in, a DER SEQUENCE of the 64 bytes 01 … 40: the
+/// statement carries whatever bytes it is given. The expected signature was computed with
+/// OpenSSL 3.6.4 over `"syntropy-tls-ca-v1" ‖ 01 ‖ 30 40 01 … 40` with the seed 00 01 … 1f, not
+/// with this code.
 #[test]
-fn the_binding_signs_the_versioned_spki_in_its_own_context() {
+fn the_binding_signs_the_versioned_certificate_in_its_own_context() {
     let seed: [u8; 32] = std::array::from_fn(|i| i as u8);
     let key = SigningKey::from_seed(&seed);
-    let mut spki = hex_bytes("3059301306072a8648ce3d020106082a8648ce3d03010703420004");
-    spki.extend(1..=64u8);
-    let binding = CaBinding::sign(&key, &spki);
+    let mut certificate = vec![0x30, 0x40];
+    certificate.extend(1..=64u8);
+    assert_eq!(
+        CaBinding::statement(&certificate),
+        [&[0x01][..], &certificate].concat()
+    );
+    let binding = CaBinding::sign(&key, &certificate);
+    assert_eq!(
+        hex(binding.node_key()),
+        "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+    );
     assert_eq!(
         hex(binding.signature()),
-        "59d7c97a9ad147aef834ec981fa695100efc6057b65994c869baddc79367a0b7\
-         404e13f99cfb8100f325c71489744f5f3bb38b1a039345d2d0acd293c7ff410c"
+        "399fc64aec80cc59d17034712ffd5e1104a55a660742f9a5f8273b475f1fea39\
+         4d052a42d7c6de7138a02f63f5af78d4ac9f6bbfff8d11f18f13f06de8d07407"
     );
-    binding.verify(&spki).unwrap();
+    binding.verify(&certificate).unwrap();
+}
+
+/// The served PEM is built from the DER the binding covers: base64 per RFC 4648 §10's vectors,
+/// in one block that decodes back to the same bytes and matches what rcgen would write.
+#[test]
+fn the_served_pem_is_the_bound_certificate_and_nothing_else() {
+    for (bytes, text) in [
+        ("", ""),
+        ("f", "Zg=="),
+        ("fo", "Zm8="),
+        ("foo", "Zm9v"),
+        ("foob", "Zm9vYg=="),
+        ("fooba", "Zm9vYmE="),
+        ("foobar", "Zm9vYmFy"),
+    ] {
+        assert_eq!(ca::base64(bytes.as_bytes()), text);
+    }
+    let dir = Dir::new("pem");
+    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    let pem = ca.certificate_pem();
+    let decoded: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem.as_bytes())
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(decoded, [ca.certificate_der().clone()]);
+    assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"));
+    assert!(pem.ends_with("\n-----END CERTIFICATE-----\n"));
+    assert!(pem.lines().all(|line| line.len() <= 64));
+    let (loaded, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    assert_eq!(loaded.certificate_pem(), pem);
 }
 
 fn hex_bytes(text: &str) -> Vec<u8> {
@@ -221,6 +264,183 @@ fn hex_bytes(text: &str) -> Vec<u8> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
         .collect()
+}
+
+/// `dir`'s CA key, read from its file the way anyone who can read the file could.
+fn stored_key(dir: &Path) -> KeyPair {
+    let key = hex_bytes(read_json(&dir.join(CA_FILE))["key"].as_str().unwrap());
+    KeyPair::from_pkcs8_der_and_sign_algo(
+        &rustls::pki_types::PrivatePkcs8KeyDer::from(&key[..]),
+        &rcgen::PKCS_ECDSA_P256_SHA256,
+    )
+    .unwrap()
+}
+
+/// Puts `certificate` in `dir`'s CA file, and with `rebind` also a binding re-signed over it
+/// by that node key, as a holder of the node key could. Returns the bytes written.
+fn plant(dir: &Path, certificate: &[u8], rebind: Option<&SigningKey>) -> Vec<u8> {
+    let path = dir.join(CA_FILE);
+    let mut file = read_json(&path);
+    file["certificate"] = hex(certificate).into();
+    if let Some(key) = rebind {
+        file["binding"] = hex(CaBinding::sign(key, certificate).signature()).into();
+    }
+    let bytes = serde_json::to_vec(&file).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    bytes
+}
+
+/// Opens `dir`'s CA and expects it refused for `what`, with the file left as `planted`.
+fn assert_refused(dir: &Path, planted: &[u8], what: &str) {
+    match LocalCa::open(dir, &scope(), &node_key(1), now()) {
+        Err(TlsError::Corrupt { what: refused, .. }) => assert_eq!(refused, what),
+        other => panic!("expected `{what}`: {other:?}"),
+    }
+    assert_eq!(fs::read(dir.join(CA_FILE)).unwrap(), planted);
+}
+
+/// A certificate over the CA's key with the CA's names but other constraints.
+fn re_minted(key: &KeyPair, edit: impl FnOnce(&mut CertificateParams)) -> Vec<u8> {
+    let mut params = CertificateParams::default();
+    params.distinguished_name = ca::common_name(&ca::ca_name(&node_key(1).public_key()));
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    params.name_constraints = Some(ca::name_constraints(&scope()));
+    edit(&mut params);
+    params.self_signed(key).unwrap().der().to_vec()
+}
+
+/// Review probe NC3: a CA certificate re-minted over the same key without its name constraints
+/// is refused, under the old binding and under one re-signed over it, and so is one with
+/// another scope's constraints. Nothing is served from such a file.
+#[test]
+fn a_re_minted_certificate_over_the_ca_key_is_refused() {
+    let dir = Dir::new("re-minted");
+    LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    let key = stored_key(&dir.path());
+    let unconstrained = re_minted(&key, |p| {
+        p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        p.name_constraints = None;
+    });
+    let planted = plant(&dir.path(), &unconstrained, None);
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the node-key binding does not verify",
+    );
+    let planted = plant(&dir.path(), &unconstrained, Some(&node_key(1)));
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the certificate's basic constraints are not a leaf-only CA's",
+    );
+    let no_constraints = re_minted(&key, |p| p.name_constraints = None);
+    let planted = plant(&dir.path(), &no_constraints, Some(&node_key(1)));
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the certificate lacks an extension this node mints",
+    );
+    let (public, _) = CaScope::new(["example.com"], &[ip("192.168.1.37")], &[]).unwrap();
+    let elsewhere = re_minted(&key, |p| {
+        p.name_constraints = Some(ca::name_constraints(&public))
+    });
+    let planted = plant(&dir.path(), &elsewhere, Some(&node_key(1)));
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the certificate's name constraints are not its scope's",
+    );
+    let extra = re_minted(&key, |p| {
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    });
+    let planted = plant(&dir.path(), &extra, Some(&node_key(1)));
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the certificate carries an extension this node does not mint",
+    );
+    let usage = re_minted(&key, |p| {
+        p.key_usages.push(KeyUsagePurpose::DigitalSignature)
+    });
+    let planted = plant(&dir.path(), &usage, Some(&node_key(1)));
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the certificate's key usages are not the CA's",
+    );
+    let renamed = re_minted(&key, |p| {
+        p.distinguished_name = ca::common_name("example.com")
+    });
+    let planted = plant(&dir.path(), &renamed, Some(&node_key(1)));
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the certificate is not named for this node's CA",
+    );
+}
+
+/// Review probe: a CA certificate with one byte of its self-signature flipped is refused, under
+/// the old binding and under one re-signed over it.
+#[test]
+fn a_certificate_with_a_broken_self_signature_is_refused() {
+    let dir = Dir::new("self-signature");
+    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    // The certificate ends with the signature's `s`, so its last byte is a signature byte.
+    let mut broken = ca.certificate_der().to_vec();
+    *broken.last_mut().unwrap() ^= 0x01;
+    let planted = plant(&dir.path(), &broken, None);
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the node-key binding does not verify",
+    );
+    let planted = plant(&dir.path(), &broken, Some(&node_key(1)));
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the certificate's self-signature does not verify",
+    );
+}
+
+/// Review probe: another genuine certificate over the same CA key, as this code mints it for
+/// another scope, with its own valid binding, is refused in place of the stored one: the
+/// binding covers the certificate, not the key, and the certificate must carry the stored
+/// scope's constraints.
+#[test]
+fn a_swapped_certificate_over_the_same_key_is_refused() {
+    let dir = Dir::new("swapped");
+    LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    let (other, _) = CaScope::new(["box.local"], &[ip("10.0.0.5")], &[]).unwrap();
+    let swapped = LocalCa::with_key(
+        &dir.path(),
+        &other,
+        &node_key(1),
+        now(),
+        stored_key(&dir.path()),
+    )
+    .unwrap();
+    let path = dir.path().join(CA_FILE);
+    let good = fs::read(&path).unwrap();
+    let planted = plant(&dir.path(), swapped.certificate_der(), None);
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the node-key binding does not verify",
+    );
+    let mut file = read_json(&path);
+    file["binding"] = hex(swapped.binding().signature()).into();
+    let planted = serde_json::to_vec(&file).unwrap();
+    fs::write(&path, &planted).unwrap();
+    assert_refused(
+        &dir.path(),
+        &planted,
+        "the certificate's name constraints are not its scope's",
+    );
+    // The stored CA, put back, still loads.
+    fs::write(&path, &good).unwrap();
+    let (_, opened) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    assert_eq!(opened, CaOpen::Loaded);
 }
 
 #[test]
@@ -314,7 +534,7 @@ fn a_new_node_key_replaces_the_ca() {
     };
     assert_eq!(record.reason, ReplaceReason::NodeKeyChanged);
     assert_eq!(new.binding().node_key(), &node_key(2).public_key());
-    new.binding().verify(new.spki_der()).unwrap();
+    new.binding().verify(new.certificate_der()).unwrap();
 }
 
 #[test]
@@ -347,6 +567,10 @@ fn a_damaged_ca_file_is_refused_and_left_as_it_is() {
             Box::new(|v| v["key"] = foreign["key"].clone()),
         ),
         ("odd hex", Box::new(|v| v["key"] = "abc".into())),
+        (
+            "the certificate as PEM text",
+            Box::new(|v| v["certificate"] = "-----BEGIN CERTIFICATE-----".into()),
+        ),
         ("format 2", Box::new(|v| v["format"] = 2.into())),
         (
             "a public subnet",

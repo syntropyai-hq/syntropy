@@ -776,10 +776,12 @@ TLS on a LAN is practical only if clients can trust the certificate without a pu
   - **Phones.** iOS needs a configuration profile installed by hand, and then full trust enabled in Settings. Android apps ignore user-installed CAs unless they opt in. For phones the practical routes are an overlay network (no TLS needed, key still required) or a certificate from the user's own CA via `{ cert, key }`.
   - **Every client machine** needs this step once per node it talks to, or once per cluster with `trust --cluster` (open question 8, answered).
 *Note 2026-10-22 (PROD-E5-T03): how the CA is built.*
-- **Storage.** The CA lives in one file, `tls/ca.json`, in the state directory. It holds the key (PKCS#8), the certificate, the scope and the node-key binding (RFC-0034 §3's `syntropy-tls-ca-v1`, note of the same date).
+- **Storage.** The CA lives in one file, `tls/ca.json`, in the state directory. It holds the key (PKCS#8), the certificate (DER), the scope and the node-key binding (RFC-0034 §3's `syntropy-tls-ca-v1`, note of the same date), which covers the certificate's exact bytes.
   - The file is mode 0600, in a 0700 directory.
   - It is written to a new file, flushed, renamed over the old one, and then the directory is flushed, so a replacement is one atomic step.
   - A file the daemon cannot read, or whose parts disagree, is refused and left as it is. No key is overwritten without a reason the user can see.
+  - Agreeing means the binding verifies over the stored certificate, and the certificate is the key's own, self-signed, with exactly the constraints the node mints for the stored scope.
+  - `GET /v1/syntropy/tls/ca` serves one PEM block encoded from those bytes, so it carries nothing the binding does not cover.
 - **Randomness.** The CA and leaf keys come from ring's `SystemRandom`, the OS CSPRNG of RFC-0034 §3. ring's random source is sealed, so it cannot draw from `core`'s `Entropy`.
 - **The CA certificate.** It is valid for 10 years [target, a chosen budget], since it is replaced when its scope changes, not on a schedule.
   - Its path length is 0, so it signs leaves only.

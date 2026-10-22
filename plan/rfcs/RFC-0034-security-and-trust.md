@@ -128,10 +128,12 @@ A compromised member (A5) or the holder of a used, leaked token (A8) can therefo
 - `syntropy-admit-v1`, `syntropy-revoke-v1`, `syntropy-authority-v1` (the other authority events of §8.3), `syntropy-apikey-v1`;
 - `syntropy-tls-ca-v1` (R5: the node key's binding of its local TLS CA, RFC-0050 §11.1.1).
 
-*Note 2026-10-22 (PROD-E5-T03): the local CA's binding.* R5 binds each node's local TLS CA to the node identity with a statement signed by the node key. This note fixes its bytes.
-- The node key signs, in context `syntropy-tls-ca-v1`, the bytes `0x01 ‖ the CA certificate's SubjectPublicKeyInfo, DER`. The leading byte is the statement's version.
-- The statement covers the CA's public key, not its certificate. So a CA reissued over the same key keeps its binding, and the binding says only "this key is the node's CA".
-- A client that knows the node key, from the node's admission certificate (§5), checks the binding before it trusts the CA. That is how `syntropy trust --cluster` (RFC-0050 §11.1.1) checks every member's CA.
+*Note 2026-10-22 (PROD-E5-T03, revised from review): the local CA's binding.* R5 binds each node's local TLS CA to the node identity with a statement signed by the node key. This note fixes its bytes.
+- The node key signs, in context `syntropy-tls-ca-v1`, the bytes `0x01 ‖ the CA certificate, DER`. The leading byte is the statement's version.
+- The statement covers the whole certificate, not only its public key. The CA's name constraints are what stop a leaked CA key from impersonating public sites (RFC-0050 §11.1.1), so the binding vouches for them too. A certificate re-minted over the same key without them, or with any other change, fails the check.
+- A CA reissued over the same key would need a new binding. None is: every scope change, and every node-key change, generates a new CA key.
+- A client that knows the node key, from the node's admission certificate (§5), checks the binding over the exact certificate bytes it is about to trust. That is how `syntropy trust --cluster` (RFC-0050 §11.1.1) checks every member's CA.
+- The node holds its own stored CA to the same rule when it loads it. The binding must verify over the stored certificate. The certificate must be the CA key's own, self-signed, and carry exactly the extensions the node mints for its scope: the name constraints, path length 0 and the key usages. Anything else is refused.
 - The context is the 24th in the list above. Like the others, it is no prefix of another context string, and no other context's string is a prefix of it.
 
 *Note 2026-10-22 (DIST-E2-T04, from review):* strict verification also refuses a public key that is not of prime order, where `[ℓ]A ≠ identity`. Refusing small-order keys alone is not enough. A key `A + T`, with `T` a point of small order, verifies a signature made with `A`'s secret whenever `T`'s order divides the challenge `k`, so one secret could sign under up to eight public keys, and a `NodeId` would not name one key. Every honest key is `[a]B` and has prime order, so the check costs honest peers nothing. `net::crypto::verify` applies it after the canonical-encoding and small-order checks.

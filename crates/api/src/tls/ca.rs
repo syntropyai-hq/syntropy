@@ -14,12 +14,12 @@ use rcgen::{
     ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, Issuer, KeyPair, KeyUsagePurpose,
     NameConstraints, PKCS_ECDSA_P256_SHA256, PublicKeyData, SanType,
 };
-use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::sign::CertifiedKey;
 use serde::{Deserialize, Serialize};
 use syntropy_net::crypto::{self, Context, PUBLIC_KEY_LEN, SIGNATURE_LEN, SigningKey};
 use time::OffsetDateTime;
+use x509_parser::extensions::{GeneralName, GeneralSubtree as StoredSubtree, ParsedExtension};
 use zeroize::Zeroize;
 
 use super::files;
@@ -44,6 +44,10 @@ const NOT_BEFORE_SKEW: Duration = Duration::from_secs(3600);
 
 /// The version of [`CA_FILE`]'s layout.
 const FORMAT: u32 = 1;
+
+/// The CA certificate's key usages, keyCertSign and cRLSign: bits 5 and 6 of RFC 5280
+/// §4.2.1.3's list, as x509-parser numbers them.
+const CA_KEY_USAGE: u16 = 1 << 5 | 1 << 6;
 
 /// Why the CA could not be opened or a leaf issued.
 #[derive(Debug)]
@@ -107,9 +111,12 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> TlsError + '_ {
 }
 
 /// The node key's statement binding the CA to the node (RFC-0034 R5, §3 revised 2026-10-22):
-/// a signature in context `syntropy-tls-ca-v1` over `0x01 ‖ the CA's SubjectPublicKeyInfo DER`.
-/// A client that knows the node key, from its admission certificate (RFC-0034 §5), checks that
-/// this CA is the node's own.
+/// a signature in context `syntropy-tls-ca-v1` over `0x01 ‖ the CA certificate, DER`.
+///
+/// It covers the whole certificate, its name constraints above all, not just the CA's public
+/// key. A client that knows the node key, from its admission certificate (RFC-0034 §5), checks
+/// that the certificate it is about to trust is the one the node minted, byte for byte: a
+/// certificate re-minted over the same key, without its constraints, fails the check.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CaBinding {
     node_key: [u8; PUBLIC_KEY_LEN],
@@ -120,28 +127,28 @@ impl CaBinding {
     /// The statement's version byte.
     pub const VERSION: u8 = 1;
 
-    /// The bytes the node key signs for a CA whose public key is `spki_der`.
-    pub fn statement(spki_der: &[u8]) -> Vec<u8> {
-        let mut statement = Vec::with_capacity(1 + spki_der.len());
+    /// The bytes the node key signs for the CA certificate `certificate_der`.
+    pub fn statement(certificate_der: &[u8]) -> Vec<u8> {
+        let mut statement = Vec::with_capacity(1 + certificate_der.len());
         statement.push(CaBinding::VERSION);
-        statement.extend_from_slice(spki_der);
+        statement.extend_from_slice(certificate_der);
         statement
     }
 
-    /// The node key's binding of the CA whose public key is `spki_der`.
-    pub fn sign(node_key: &SigningKey, spki_der: &[u8]) -> CaBinding {
+    /// The node key's binding of the CA certificate `certificate_der`.
+    pub fn sign(node_key: &SigningKey, certificate_der: &[u8]) -> CaBinding {
         CaBinding {
             node_key: node_key.public_key(),
-            signature: node_key.sign(Context::TlsCa, &CaBinding::statement(spki_der)),
+            signature: node_key.sign(Context::TlsCa, &CaBinding::statement(certificate_der)),
         }
     }
 
-    /// Checks the binding against the CA's public key `spki_der`.
-    pub fn verify(&self, spki_der: &[u8]) -> Result<(), crypto::SignatureError> {
+    /// Checks the binding against the CA certificate `certificate_der`, exactly as served.
+    pub fn verify(&self, certificate_der: &[u8]) -> Result<(), crypto::SignatureError> {
         crypto::verify(
             &self.node_key,
             Context::TlsCa,
-            &CaBinding::statement(spki_der),
+            &CaBinding::statement(certificate_der),
             &self.signature,
         )
     }
@@ -207,7 +214,8 @@ struct CaFile {
     node_key: String,
     binding: String,
     scope: CaScope,
-    /// PEM.
+    /// Hex of the certificate's DER: the exact bytes the binding covers, with no PEM text
+    /// around them that the binding would not cover.
     certificate: String,
     key: String,
 }
@@ -280,16 +288,176 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn common_name(name: &str) -> DistinguishedName {
+pub(super) fn common_name(name: &str) -> DistinguishedName {
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, name);
     dn
 }
 
+/// The CA certificate's common name, from the node key it is bound to.
+pub(super) fn ca_name(node_key: &[u8; PUBLIC_KEY_LEN]) -> String {
+    format!("Syntropy local CA {}", hex(&node_key[..8]))
+}
+
+/// `bytes` in base64, with padding (RFC 4648 §4).
+pub(super) fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let group = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |group, (i, b)| group | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            text.push(if i <= chunk.len() {
+                char::from(ALPHABET[(group >> (18 - 6 * i) & 63) as usize])
+            } else {
+                '='
+            });
+        }
+    }
+    text
+}
+
+/// `der` as one PEM `CERTIFICATE` block, in lines of 64 with LF line ends (RFC 7468 §2): built
+/// from the DER, so it carries nothing the binding does not cover.
+pub(super) fn certificate_pem(der: &[u8]) -> String {
+    let body = base64(der);
+    let mut text = String::from("-----BEGIN CERTIFICATE-----\n");
+    for line in body.as_bytes().chunks(64) {
+        text.push_str(std::str::from_utf8(line).expect("base64 is ASCII"));
+        text.push('\n');
+    }
+    text.push_str("-----END CERTIFICATE-----\n");
+    text
+}
+
+/// The parameters of the CA certificate for `scope` and the node key `node_key`, issued at
+/// `now`: what [`LocalCa::with_key`] signs, and what [`check_certificate`] holds a stored
+/// certificate to.
+fn ca_params(
+    scope: &CaScope,
+    node_key: &[u8; PUBLIC_KEY_LEN],
+    now: SystemTime,
+) -> Result<CertificateParams, TlsError> {
+    let mut params = CertificateParams::default();
+    params.not_before = datetime(now.checked_sub(NOT_BEFORE_SKEW))?;
+    params.not_after = datetime(now.checked_add(CA_VALIDITY))?;
+    params.distinguished_name = common_name(&ca_name(node_key));
+    // Path length 0: it signs leaves only. Not every client enforces that for a trust anchor;
+    // every client enforces the name constraints, below any intermediate too.
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    params.name_constraints = Some(name_constraints(scope));
+    Ok(params)
+}
+
+/// Whether a stored certificate's subtrees are the `minted` ones, in the same order.
+fn subtrees_match(minted: &[GeneralSubtree], stored: Option<&[StoredSubtree<'_>]>) -> bool {
+    let stored = stored.unwrap_or_default();
+    minted.len() == stored.len()
+        && minted
+            .iter()
+            .zip(stored)
+            .all(|(minted, stored)| match (minted, &stored.base) {
+                (GeneralSubtree::DnsName(minted), GeneralName::DNSName(stored)) => minted == stored,
+                (
+                    GeneralSubtree::IpAddress(CidrSubnet::V4(addr, mask)),
+                    GeneralName::IPAddress(stored),
+                ) => *stored == [&addr[..], &mask[..]].concat(),
+                (
+                    GeneralSubtree::IpAddress(CidrSubnet::V6(addr, mask)),
+                    GeneralName::IPAddress(stored),
+                ) => *stored == [&addr[..], &mask[..]].concat(),
+                _ => false,
+            })
+}
+
+/// Holds a stored CA certificate to what this node mints for `scope` and `node_key`
+/// ([`ca_params`]): the CA key's own certificate (`spki`), self-signed and named for the node,
+/// with exactly the CA's extensions: a critical path length 0, critical certificate and CRL
+/// signing, and critical name constraints that are the scope's. Anything else is refused. The
+/// binding says the node signed these bytes; this says they are bytes the node would sign.
+fn check_certificate(
+    der: &[u8],
+    spki: &[u8],
+    scope: &CaScope,
+    node_key: &[u8; PUBLIC_KEY_LEN],
+) -> Result<(), &'static str> {
+    let (rest, certificate) =
+        x509_parser::parse_x509_certificate(der).map_err(|_| "the certificate is not X.509")?;
+    if !rest.is_empty() {
+        return Err("the certificate has bytes after it");
+    }
+    if certificate.tbs_certificate.subject_pki.raw != spki {
+        return Err("the certificate is not the key's");
+    }
+    certificate
+        .verify_signature(None)
+        .map_err(|_| "the certificate's self-signature does not verify")?;
+    let subject = certificate.subject();
+    let name = ca_name(node_key);
+    let named = subject.iter_attributes().count() == 1
+        && subject
+            .iter_common_name()
+            .next()
+            .and_then(|cn| cn.as_str().ok())
+            == Some(name.as_str());
+    if !named || certificate.issuer().as_raw() != subject.as_raw() {
+        return Err("the certificate is not named for this node's CA");
+    }
+    let constraints = name_constraints(scope);
+    // Subject key identifier, basic constraints, key usage, name constraints: each once.
+    let mut seen = [false; 4];
+    for extension in certificate.extensions() {
+        let (slot, fits, what) = match extension.parsed_extension() {
+            ParsedExtension::SubjectKeyIdentifier(_) => (
+                0,
+                !extension.critical,
+                "the certificate's key identifier is critical",
+            ),
+            ParsedExtension::BasicConstraints(basic) => (
+                1,
+                extension.critical && basic.ca && basic.path_len_constraint == Some(0),
+                "the certificate's basic constraints are not a leaf-only CA's",
+            ),
+            ParsedExtension::KeyUsage(usage) => (
+                2,
+                extension.critical && usage.flags == CA_KEY_USAGE,
+                "the certificate's key usages are not the CA's",
+            ),
+            ParsedExtension::NameConstraints(stored) => (
+                3,
+                extension.critical
+                    && subtrees_match(
+                        &constraints.permitted_subtrees,
+                        stored.permitted_subtrees.as_deref(),
+                    )
+                    && subtrees_match(
+                        &constraints.excluded_subtrees,
+                        stored.excluded_subtrees.as_deref(),
+                    ),
+                "the certificate's name constraints are not its scope's",
+            ),
+            _ => return Err("the certificate carries an extension this node does not mint"),
+        };
+        if !fits {
+            return Err(what);
+        }
+        if std::mem::replace(&mut seen[slot], true) {
+            return Err("the certificate repeats an extension");
+        }
+    }
+    if seen != [true; 4] {
+        return Err("the certificate lacks an extension this node mints");
+    }
+    Ok(())
+}
+
 /// The CA's critical name constraints (RFC-0050 §11.1.1): the scope's names and subnets
 /// permitted. An address family with no permitted subnet is excluded whole, so the CA can issue
 /// for no address of it.
-fn name_constraints(scope: &CaScope) -> NameConstraints {
+pub(super) fn name_constraints(scope: &CaScope) -> NameConstraints {
     let mut permitted: Vec<GeneralSubtree> = scope
         .dns_names()
         .iter()
@@ -395,29 +563,25 @@ impl LocalCa {
         now: SystemTime,
         key: KeyPair,
     ) -> Result<LocalCa, TlsError> {
-        let mut params = CertificateParams::default();
-        params.not_before = datetime(now.checked_sub(NOT_BEFORE_SKEW))?;
-        params.not_after = datetime(now.checked_add(CA_VALIDITY))?;
-        let id = hex(&node_key.public_key()[..8]);
-        params.distinguished_name = common_name(&format!("Syntropy local CA {id}"));
-        // It signs leaves only, never another CA.
-        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-        params.name_constraints = Some(name_constraints(scope));
-        let certificate = params.self_signed(&key)?;
-        let spki = key.subject_public_key_info();
+        let params = ca_params(scope, &node_key.public_key(), now)?;
+        let certificate = params.self_signed(&key)?.der().clone();
         Ok(LocalCa {
             dir: dir.to_owned(),
-            binding: CaBinding::sign(node_key, &spki),
-            certificate_pem: certificate.pem(),
-            certificate: certificate.der().clone(),
+            // The binding is signed over the finished certificate, so it covers every byte a
+            // client installs.
+            binding: CaBinding::sign(node_key, &certificate),
+            certificate_pem: certificate_pem(&certificate),
+            certificate,
+            spki: key.subject_public_key_info(),
             key,
-            spki,
             scope: scope.clone(),
             created: unix(now),
         })
     }
 
+    /// The CA in a [`CA_FILE`]'s `bytes`, refused unless every part agrees: the binding verifies
+    /// over the certificate's exact bytes, and the certificate is the key's own, self-signed,
+    /// and carries the constraints this node mints for the stored scope.
     fn load(dir: &Path, bytes: &[u8]) -> Result<LocalCa, TlsError> {
         let path = dir.join(CA_FILE);
         let corrupt = |what| TlsError::Corrupt {
@@ -429,21 +593,11 @@ impl LocalCa {
         if file.format != FORMAT {
             return Err(corrupt("a CA file format this build does not read"));
         }
-        let mut der = unhex(&file.key).ok_or_else(|| corrupt("the key is not hex"))?;
-        let key = KeyPair::from_pkcs8_der_and_sign_algo(
-            &PrivatePkcs8KeyDer::from(&der[..]),
-            &PKCS_ECDSA_P256_SHA256,
-        );
-        der.zeroize();
-        let key = key.map_err(|_| corrupt("the key is not a P-256 PKCS#8 key"))?;
-        let certificate = CertificateDer::from_pem_slice(file.certificate.as_bytes())
-            .map_err(|_| corrupt("the certificate is not PEM"))?;
-        let (_, parsed) = x509_parser::parse_x509_certificate(&certificate)
-            .map_err(|_| corrupt("the certificate is not X.509"))?;
-        let spki = key.subject_public_key_info();
-        if parsed.tbs_certificate.subject_pki.raw != spki.as_slice() {
-            return Err(corrupt("the certificate is not the key's"));
-        }
+        let scope = file
+            .scope
+            .clone()
+            .checked()
+            .ok_or_else(|| corrupt("the scope is not one this build writes"))?;
         let node_key: [u8; PUBLIC_KEY_LEN] = unhex(&file.node_key)
             .and_then(|k| k.try_into().ok())
             .ok_or_else(|| corrupt("the node key is not 32 bytes of hex"))?;
@@ -455,19 +609,26 @@ impl LocalCa {
             node_key,
             signature,
         };
+        let certificate =
+            unhex(&file.certificate).ok_or_else(|| corrupt("the certificate is not hex"))?;
+        // Over the exact bytes, so any edit to the certificate fails here.
         binding
-            .verify(&spki)
+            .verify(&certificate)
             .map_err(|_| corrupt("the node-key binding does not verify"))?;
-        let scope = file
-            .scope
-            .clone()
-            .checked()
-            .ok_or_else(|| corrupt("the scope is not one this build writes"))?;
+        let mut der = unhex(&file.key).ok_or_else(|| corrupt("the key is not hex"))?;
+        let key = KeyPair::from_pkcs8_der_and_sign_algo(
+            &PrivatePkcs8KeyDer::from(&der[..]),
+            &PKCS_ECDSA_P256_SHA256,
+        );
+        der.zeroize();
+        let key = key.map_err(|_| corrupt("the key is not a P-256 PKCS#8 key"))?;
+        let spki = key.subject_public_key_info();
+        check_certificate(&certificate, &spki, &scope, &node_key).map_err(corrupt)?;
         Ok(LocalCa {
             dir: dir.to_owned(),
             key,
-            certificate_pem: file.certificate.clone(),
-            certificate,
+            certificate_pem: certificate_pem(&certificate),
+            certificate: CertificateDer::from(certificate),
             spki,
             scope,
             binding,
@@ -483,7 +644,7 @@ impl LocalCa {
             node_key: hex(&self.binding.node_key),
             binding: hex(&self.binding.signature),
             scope: self.scope.clone(),
-            certificate: self.certificate_pem.clone(),
+            certificate: hex(&self.certificate),
             key: hex(&der),
         };
         der.zeroize();
@@ -501,12 +662,13 @@ impl LocalCa {
     }
 
     /// The CA certificate, PEM: what `GET /v1/syntropy/tls/ca` returns and `syntropy trust`
-    /// installs. Public material only.
+    /// installs. Public material only, encoded from [`LocalCa::certificate_der`], the bytes the
+    /// binding covers.
     pub fn certificate_pem(&self) -> &str {
         &self.certificate_pem
     }
 
-    /// The CA's public key, SubjectPublicKeyInfo DER: what the binding covers.
+    /// The CA's public key, SubjectPublicKeyInfo DER: what the fingerprint covers.
     pub fn spki_der(&self) -> &[u8] {
         &self.spki
     }
