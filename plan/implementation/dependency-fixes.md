@@ -579,3 +579,11 @@ DIST-E4-T15 (M1a) is a standalone probe "on the daemon's iroh version", and its 
 | DIST-E7-T03 → DIST-E7-T23 | DIST-E7-T03 | R9 | the QUIC backend builds on the same pin |
 | DIST-E7-T21: its "iroh pinned in the workspace" edge moves from DIST-E7-T03 to DIST-E7-T23 | DIST-E7-T21 | R8 | the desk check reads iroh's configuration API at the pinned version and uses nothing else of DIST-E7-T03's; DIST-E7-T16 still depends on both |
 | `PathKind` moves from DIST-E7-T03 to DIST-E7-T23; DIST-E4-T01's `PathKind` edge moves from DIST-E7-T03 to DIST-E7-T23 | DIST-E7-T03, DIST-E7-T23, DIST-E4-T01 | R8 | amends the assignment in "DIST-E4-T01: the membership core's dependencies" above, which gave `PathKind` to DIST-E7-T03 (M2). DIST-E7-T23 (M1a) reports the path kind, and the M1a probe (DIST-E4-T15) needs it, so one type is defined there and DIST-E7-T03 builds on it. DIST-E4-T01 uses nothing else of DIST-E7-T03's |
+
+## DIST-E18-T02's API mapping criterion (2026-10-22)
+
+DIST-E18-T02's criterion "every code maps to an API error shape in RFC-0050's table" could not be met: RFC-0050 §12.1 maps errors by class and condition, and 37 of the distributed codes had neither a whole-class shape nor a row (issue #1668). RFC-0050 §12.1 now gives a row to each code that can reach an API client, lists the codes that never leave the cluster as exempt, and says `DuplicateCommand` never appears in `Error::code`. RFC-0050 §12.3 adds `cluster_proposal_rejected` (code 35). These are plan corrections that take the recommended default, under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E18-T02's criterion becomes "every code maps to an RFC-0050 §12.1 shape or is on §12.1's exempt list", and its row cites RFC-0050 §12.1 | DIST-E18-T02 | R9 | a code raised only between nodes, or reported only as a node diagnostic, never meets an API client, so no shape can be tested for it; the exempt list names each such code, and §12.1 gives the one shape it would take if it ever escaped (503 `instance_unavailable`) |
