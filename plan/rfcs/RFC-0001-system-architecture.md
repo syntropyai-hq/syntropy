@@ -327,6 +327,11 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 
 Signatures are Rust-like. Derives are omitted: unless stated, data types are `Clone + Debug + Serialize + Deserialize`, enums are `#[non_exhaustive]`, and IDs are `Copy + Eq + Ord + Hash`. Each type's header names its owning RFC. The owner may add fields (with serde defaults), enum variants and trait methods (with default bodies). Renaming, removing or changing the meaning of anything below requires an amendment to this RFC. Types marked *(core)* live in `syntropy-core`; the others live in the crate named.
 
+**Note, 2026-10-22 (§18.19): a serde default keeps an added field compatible only in a self-describing encoding.**
+- **CBOR.** CBOR carries field names, so the rule above holds where a type travels in it: the control plane, the event log's `event_bytes` and snapshots. An older decoder ignores the new field, and a newer one fills it from its default.
+- **The daemon↔runner IPC.** Its command messages are postcard (§3.5), which carries neither field names nor field counts. An added field changes the layout of every IPC message that holds the type, at any depth.
+- **The rule for IPC types.** A field added to a type the IPC carries, such as any type under `PlacementPlan` or `PlanDelta`, is an `ipc_protocol` change (RFC-0062 §10.1), whatever its serde default. The IPC schema fingerprint covers nested types, so `compat` fails such an addition without the version change (QUAL-E17-T15).
+
 ### 5.1 Identifiers and units *(core)*
 
 ```rust
@@ -2771,3 +2776,9 @@ COMP-E3-T01 found that the detection macro named for SME2 does not compile on th
 |---|---|---|
 | `spsc`'s `unsafe` covers its wake handle's OS calls as well as the ring's slots: an eventfd, a kqueue user event and an event handle. `spsc` links `libc` and `windows-sys` for them | §4.2 rule 8 (dated note) | §4.1 gives `spsc` the wake handles (ADR-0012 item 4), and their OS calls need `unsafe` FFI. `spsc` depends on no workspace crate, so it cannot call `io`'s OS functions, and neither binding crate is one of rule 6's external systems (DIST-E1-T01). Maintainer decision, 2026-10-22 |
 | On Apple platforms, ADR-0012 item 5's park is std's kernel wait on a dispatch semaphore, not an address wait | ADR-0012 (dated revision) | std's thread parker waits on an address on Linux, Android and Windows, but not on Apple platforms, where the address-wait calls are private API. `os_sync_wait_on_address` (macOS 14.4) is a later option. Maintainer decision, 2026-10-22 |
+
+### 18.19 Serde defaults and the IPC protocol (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| §5's rule that an owner may add fields with serde defaults keeps compatibility only in self-describing encodings (CBOR). A field added to a type the postcard IPC carries, such as any type under `PlacementPlan` or `PlanDelta`, is an `ipc_protocol` change. QUAL-E17-T15's fingerprint criterion covers such a nested field | §5 (dated note); QUAL-E17-T15 | postcard carries no field names, so an added field changes the layout of every IPC message that holds the type, and adoption across builds needs an equal `ipc_protocol` (§3.5). A post-merge review of #1658 decoded an old four-field `HopPlan` inside a larger CBOR message as the new type, with the new fields at their defaults. Over the IPC, the same addition is not covered by the default (issue #1675) |
