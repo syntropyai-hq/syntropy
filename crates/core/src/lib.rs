@@ -45,6 +45,6 @@ pub use policy::{
 };
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
-pub use session::{ParseSessionIdError, SequenceId, SessionId};
+pub use session::{ParseSessionIdError, Priority, SequenceId, SessionId};
 pub use transfer::{BufferView, ExtentRef, FileIx, HostRegion, StepLayer, ViewKind};
 pub use units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};
