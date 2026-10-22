@@ -855,6 +855,11 @@ dependencies = [
 [[package]]
 name = "syntropy-api"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "syntropy-config",
+ "toml",
+]
 
 [[package]]
 name = "syntropy-bench"
@@ -942,9 +947,12 @@ dependencies = [
 name = "syntropy-io"
 version = "0.0.0"
 dependencies = [
+ "getrandom 0.4.3",
+ "libc",
  "syntropy-core",
  "syntropy-spsc",
  "syntropy-testkit",
+ "windows-sys",
 ]
 
 [[package]]
@@ -1080,6 +1088,10 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-testkit"
 version = "0.0.0"
+dependencies = [
+ "chacha20",
+ "syntropy-core",
+]
 
 [[package]]
 name = "syntropy-text"

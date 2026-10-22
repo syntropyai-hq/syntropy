@@ -2,16 +2,20 @@
 
 //! The value types of RFC-0054 §3: units, selectors, regular expressions and secrets.
 //!
-//! Every type parses the forms §3 accepts, through [`FromStr`](std::str::FromStr) and serde,
-//! and prints one canonical form through [`Display`](std::fmt::Display). The printed form parses
-//! back to the same value, so any value `config show` prints can be pasted back into a file
-//! (§3, last paragraph). Secrets are the exception: they never print.
+//! Every type parses the forms §3 accepts and prints one canonical form. The printed form
+//! parses back to the same value, so any value `config show` prints can be pasted back into a
+//! file (§3, last paragraph). Secrets are the exception: they never print.
+//!
+//! This crate's own types do it through [`FromStr`](std::str::FromStr), serde and
+//! [`Display`](std::fmt::Display). The policy value types are `syntropy-core`'s (OQ-PRD-27 (a)),
+//! and [`form`] reads and prints them.
 
 use std::cell::Cell;
 use std::fmt;
 
 mod bytes;
 mod duration;
+pub mod form;
 mod fraction;
 mod range;
 mod rate;
@@ -22,17 +26,13 @@ mod selector;
 
 pub use self::bytes::ByteSize;
 pub use self::duration::{Duration, never};
-pub use self::fraction::Fraction;
 pub use self::range::InRange;
 pub use self::rate::Rate;
 pub use self::regex::{
     MAX_PATTERN_LEN as REGEX_MAX_PATTERN_LEN, Regex, SIZE_LIMIT as REGEX_SIZE_LIMIT,
 };
-pub use self::reserve::Reserve;
 pub use self::secret::{REDACTED, Secret, SecretSource};
-pub use self::selector::{
-    DeviceApi, DeviceSelector, LayerRange, MIN_ID_PREFIX, ModelSelector, NodeSelector, TierSelector,
-};
+pub use self::selector::{MIN_ID_PREFIX, ModelSelector, check_node_scope};
 
 /// Why a value was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
