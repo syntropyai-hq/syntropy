@@ -282,6 +282,43 @@ fn an_armed_consumer_is_woken_by_the_close() {
     });
 }
 
+/// A thread that waits on two rings, as a dispatcher does between steps: it arms each with
+/// `arm_thread`, parks only if both are empty, then disarms both and pops. Loom's threads really
+/// park here, so a push that fails to wake the parked consumer shows as a deadlock. With `arm`
+/// in place of `arm_thread`, no thread is bound, and loom finds that deadlock.
+#[cfg(loom)]
+#[test]
+fn a_thread_parked_on_two_rings_wakes_for_a_push_to_either() {
+    model(|| {
+        let (mut tx_a, mut rx_a) = ring::<u32>(2).unwrap();
+        let (mut tx_b, mut rx_b) = ring::<u32>(2).unwrap();
+        let producer = thread::spawn(move || {
+            tx_a.push(1).unwrap();
+            tx_b.push(2).unwrap();
+            // Kept open, so only the pushes can wake the consumer.
+            (tx_a, tx_b)
+        });
+        let mut got = Vec::new();
+        while got.len() < 2 {
+            got.extend(rx_a.pop().ok());
+            got.extend(rx_b.pop().ok());
+            if got.len() == 2 {
+                break;
+            }
+            let a = rx_a.arm_thread();
+            let b = rx_b.arm_thread();
+            if a == crate::Arm::Waiting && b == crate::Arm::Waiting {
+                thread::park();
+            }
+            rx_a.disarm();
+            rx_b.disarm();
+        }
+        drop(producer.join().unwrap());
+        got.sort_unstable();
+        assert_eq!(got, [1, 2]);
+    });
+}
+
 /// A value pushed before the producer goes is popped before `Closed`: a consumer that sees the
 /// close and reloads `tail` finds the push. Two things order the close after the push, its
 /// release store and the push's trailing fence, so loom finds the lost value only with both gone

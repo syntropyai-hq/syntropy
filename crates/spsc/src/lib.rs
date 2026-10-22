@@ -25,11 +25,12 @@
 //!
 //! **Waiting** (ADR-0012 item 5). A hot consumer calls [`Consumer::wait`]. It spins for a bounded
 //! budget, [`SPIN_DEFAULT`] (50 µs) or [`SPIN_ON_BATTERY`] (10 µs), and then parks its thread with
-//! `std::thread::park` until the producer pushes or closes. A consumer on an async runtime takes
-//! a ring made with [`ring_with_wake`], and registers its [`WakeHandle`] with the runtime: an
-//! eventfd on Linux and Android, a kqueue user event on Apple platforms, an event handle on
-//! Windows. Either way, a push wakes the consumer only while it is waiting, so a busy ring makes
-//! no system call.
+//! `std::thread::park` until the producer pushes or closes. A thread that waits on several rings,
+//! such as a dispatcher between steps, arms each with [`Consumer::arm_thread`] and parks itself
+//! when all are empty. A consumer on an async runtime takes a ring made with [`ring_with_wake`],
+//! and registers its [`WakeHandle`] with the runtime: an eventfd on Linux and Android, a kqueue
+//! user event on Apple platforms, an event handle on Windows. Either way, a push wakes the
+//! consumer only while it is waiting, so a busy ring makes no system call.
 //!
 //! **Closing.** Dropping either end closes the ring. The producer's pushes then fail with
 //! [`PushError::Closed`], and the consumer pops what is left, then gets [`PopError::Closed`].
@@ -39,8 +40,9 @@
 //! invariant (ADR-0001 item 4).
 //!
 //! Built with `RUSTFLAGS="--cfg loom"`, the ring uses loom's atomics and cells, so its tests run
-//! under loom's model checker, and so does the wait/wake handshake ([`Consumer::arm`] and the
-//! producer's side of it). Parking a thread and the wake handle are left out of that build.
+//! under loom's model checker, and so does the wait/wake handshake ([`Consumer::arm`],
+//! [`Consumer::arm_thread`] and the producer's side of it), with loom's threads parking and
+//! unparking. The spin of [`Consumer::wait`] and the wake handle are left out of that build.
 //! `cargo xtask test loom` runs them with a preemption bound of 3 (RFC-0060 §3.4). They include a
 //! three-thread pipeline through two heap rings, and for each kind of ring a model whose ring has
 //! a relaxed publishing store planted, which loom must reject. The shared ring's three-thread

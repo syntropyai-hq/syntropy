@@ -1031,11 +1031,24 @@ pub enum Dist {
 |---|---|---|---|---|
 | `lan_2_5g` | LogNormal(median 150 µs, σ 0.3) | 2.35 Gb/s | 0 | none |
 | `lan_10g` | LogNormal(median 100 µs, σ 0.3) | 9.4 Gb/s | 0 | none |
-| `wifi6_home` | Mixture(body LogNormal(median 5 ms, σ 1.0), p_tail 0.02, tail Uniform(200, 300 ms)). This gives p50 ≈ 5 ms, p90 ≈ 18 ms and p99 ≈ 250 ms, matching the §2.5 ranges | 400 Mb/s | 10⁻³ | yes |
+| `wifi6_home` | Mixture(body LogNormal(median 5 ms, σ 0.92), p_tail 0.02, tail Uniform(200, 300 ms)). This gives p50 ≈ 5 ms, p90 ≈ 18 ms and p99 ≈ 250 ms, matching the §2.5 ranges (σ was 1.0; see the note below) | 400 Mb/s | 10⁻³ | yes |
 | `tb5_rdma` | LogNormal(median 15 µs, σ 0.2) | 2.5 GB/s | 0 | none |
 | `tb_ip` | LogNormal(median 250 µs, σ 0.3) | 9 Gb/s | 0 | none |
 | `wan_invite` | LogNormal(median 25 ms, σ 0.5) | 50 Mb/s | 10⁻³ | p_tail 0.01 at 4× median |
 | `shm` | Const(2 µs) | 20 GB/s | 0 | none |
+
+**Note, 2026-10-23 (QUAL-E8-T02): `wifi6_home`'s σ, and how the fabric samples.**
+- **σ 0.92, not 1.0.** The three targets come from §2.5's measured ranges; the body's σ is the free parameter meant to hit them. 18 ms is the *body's* p90, but with 2% of the mass in the tail the mixture's p90 is the body's 91.8th percentile. The mixture's exact quantiles, from its CDF `0.98·Φ(ln(x / 5 ms) / σ) + 0.02·U(x; 200, 300 ms)` solved by bisection [derivation]:
+
+  | σ | p50 | p90 | p99 |
+  |---|---|---|---|
+  | 1.0 | 5.13 ms (+2.6%) | 20.16 ms (+12.0%) | 250.2 ms (+0.1%) |
+  | 0.92 | 5.12 ms (+2.4%) | 18.03 ms (+0.2%) | 250.1 ms (+0.0%) |
+
+  With σ 1.0 the preset missed its own p90 by more than QUAL-E8-T02's 10% bound. A test in `testkit` recomputes these quantiles from the preset's parameters, so the preset cannot drift from the targets unseen. The other presets are unchanged.
+- **Fields the table leaves out.** The presets set them plainly: no jitter, no reorder, no per-packet overhead, an MTU of 1,500 bytes on IP links and 4,096 on RDMA, and one packet per frame on shared memory. `wan_invite`'s tail is `Const(100 ms)`, 4 × its median, at p_tail 0.01.
+- **Portable sampling.** Every draw comes from the run's `SimEntropy`. The log-normal's `exp` and the Marsaglia polar method's `ln` are computed in `testkit::sim` from addition, subtraction, multiplication, division and square root only, which IEEE 754 rounds the same everywhere, not from the platform's maths library, whose `exp` and `ln` may differ between Linux, macOS and Windows. So a seed replays one run on any host (§8). A golden test pins the exact bits of seeded draws, so a platform difference fails loudly.
+- **Loss on reliable channels.** Each packet of a frame is lost at most once, independently, with probability `loss`, and each lost packet adds one PTO. A round-trip sample is twice a message's α plus jitter, and the PTO uses the link's estimate before the frame's own sample. Before any sample, a link assumes RFC 9002's initial RTT, 333 ms.
 
 #### 8.4 Fake devices, tiers and drives
 
