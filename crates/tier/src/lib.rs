@@ -28,6 +28,7 @@ pub mod os;
 pub mod pin;
 pub mod pressure;
 pub mod residency;
+pub mod tune;
 
 pub use arena::{
     ArenaPlan, ArenaRef, ArenaSpec, PinClass, Purpose, Registrations, SegmentSpec, SlotClass,
@@ -47,3 +48,7 @@ pub use residency::{HomeState, StepFence};
 pub use syntropy_core::{BufferView, ExtentRef, FileIx, HostRegion, StepLayer, ViewKind};
 /// The I/O ticket [`HomeState::Loading`] records, from `syntropy-io` (RFC-0021 §2).
 pub use syntropy_io::IoTicket;
+pub use tune::{
+    BootJob, HostOp, PrivilegedRunner, Proposal, RecordState, Reprobe, Reverted, Tune, TuneError,
+    TuneRecord, TuneStore, ValueRevert, WiredLimitSource,
+};
