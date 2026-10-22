@@ -631,6 +631,15 @@ COMP-E13-T05 (M0a) had criteria that no M0a task can meet. The fast-math audit n
 | COMP-E13-T05's last criteria → COMP-E13-T13; its FP16 criterion reworded | COMP-E13-T05 | R9 | RFC-0042 §4 gives `AccumKind` three variants (`F32`, `I32ThenF32`, `F64`), so FP16 accumulation cannot be declared. The static check rejects weaker declarations, and the detector rejects an FP16-accumulating variant that declares F32. The CI run of the static check over real provider registries moves to COMP-E13-T13, because no provider registers kernels at M0a |
 | QUAL-E4-T13 → COMP-E13-T13 (was COMP-E13-T05) | QUAL-E4-T13 | R8 | its edge was for the per-provider bit-exact list, which is now COMP-E13-T13's |
 
+## DIST-E2-T07: showing fingerprints in `identity show` (2026-10-22)
+
+DIST-E2-T07's task text said fingerprints are "shown by `identity show`", but `identity show` is DIST-E2-T01's library function, still open, with PROD-E6-T08 wiring the CLI. DIST-E2-T01 is M0b, so it cannot depend on DIST-E2-T07 (M3). RFC-0051 §2.1 lists three fingerprints for the command: the node ID, the cluster ID and the API certificate. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E2-T09 (`identity show` prints the six-word fingerprints, M3) → DIST-E2-T01, DIST-E2-T07, DIST-E2-T06, PROD-E5-T03, PROD-E6-T08; DIST-E2-T07's task text drops "shown by `identity show`" | DIST-E2-T07, DIST-E2-T09 | R9 | DIST-E2-T07 builds the fingerprint; showing it needs the command (DIST-E2-T01, PROD-E6-T08) and the three keys it shows: the node key (DIST-E2-T01), `ClusterId` (DIST-E2-T06) and the local CA's certificate (PROD-E5-T03) |
+| PROD-E5-T10 → DIST-E2-T09 | PROD-E5-T10 | R9 | its criterion, "the fingerprint matches `syntropy identity show`", needs `identity show` to print the CA's fingerprint |
+
 ## DIST-E10-T08's named cases and CI wiring (2026-10-22)
 
 DIST-E10-T08 (M2) asked for "every RT-DIST scenario as a named case". No list of RT-DIST scenarios exists in the plan: the label appears only in that row, RFC-0032's M2 rollout row and ADR-0304's revision of 2026-10-20, all from the first plan commit. Its criterion "the job gates changes to `cluster`" also needs QUAL-E1-T07's affected-job rules, which DIST-E10-T08 did not depend on. QUAL-E1-T07 is M0a, so it cannot take the wiring without depending on M2 work. This pass names the cases and applies R9 to the wiring.

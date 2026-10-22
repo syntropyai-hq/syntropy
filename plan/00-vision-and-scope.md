@@ -393,7 +393,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M3: feature complete
 
-211 tasks in the epics (`implementation/roadmap.md`, M3).
+212 tasks in the epics (`implementation/roadmap.md`, M3).
 
 - [ ] Invite links with relays and hole punching, the built-in relay set read from a signed `relays.json`; Tailscale paths (RFC-0030, RFC-0034).
 - [ ] Fault tolerance: activation-history replay from every sending stage, request migration, in-place relink and shard extension, KV migration on re-placement and recovery, an evictable second copy of each stage's source chunks on the node a repair would absorb it into, a 60 s detach grace that lets a client re-attach to a paused stream, degraded modes, automatic re-placement (RFC-0033, RFC-0022, RFC-0050).

@@ -565,3 +565,36 @@ fn suggests_the_closest_key() {
         "an exact key needs no suggestion"
     );
 }
+
+/// A key whose type is too long for one line of the compiler's token printer. The type is
+/// written out, since an alias would record the alias's short name and test nothing.
+#[allow(clippy::type_complexity)]
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "long_type", scope = Node, owner = "RFC-0054")]
+struct LongTypeSection {
+    /// Nested maps with a long type name.
+    #[config(reload = Hot, default = {})]
+    nested: std::collections::BTreeMap<
+        std::string::String,
+        std::collections::BTreeMap<
+            std::string::String,
+            std::vec::Vec<
+                std::option::Option<std::collections::BTreeMap<std::string::String, u64>>,
+            >,
+        >,
+    >,
+}
+
+/// A key's recorded type is one line however long it is, since messages quote it
+/// (`does not fit its type, …`), and a line break there would split an error's header.
+#[test]
+fn a_long_type_is_recorded_on_one_line() {
+    let key = &LongTypeSection::SCHEMA.keys[0];
+    assert!(!key.ty.contains('\n'), "{:?}", key.ty);
+    assert!(!key.ty.contains("  "), "{:?}", key.ty);
+    assert_eq!(
+        key.ty,
+        "std::collections::BTreeMap<std::string::String, std::collections::BTreeMap<std::string::String, \
+         std::vec::Vec<std::option::Option<std::collections::BTreeMap<std::string::String, u64>>>>>"
+    );
+}
