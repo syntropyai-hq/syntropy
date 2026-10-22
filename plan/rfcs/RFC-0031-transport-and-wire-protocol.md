@@ -1004,10 +1004,11 @@ The limiter is a token bucket in the daemon's `bulk` runtime. It applies to `Blo
   - Without the ceiling: 1.515 × idle over the transfer, with 17 halvings.
   - With a ceiling that re-probes every 8 windows: 1.333 ×, with 4 halvings.
   - With the rule above: 1.046 ×, with 2 halvings, and the rate settles at 90 % of β.
-  - The first climb from the floor always breaks the bound once. Its window drops below 1 % of a transfer's samples only beyond about 100 windows (25 s) [estimate], which a 10 GB transfer on 2.5 GbE reaches.
+  - **Caveat, for the maintainers.** The first climb from the floor always breaks the bound once, in one window. That window drops below 1 % of a transfer's samples only beyond about 100 windows, 25 s [estimate], which a 10 GB transfer on 2.5 GbE reaches. A transfer shorter than that can show a p99 over the transfer above 1.2 × idle, while every window but that one stays within it. A non-probing pacer, held at β less the measured data rate, would avoid the breach but needs that rate measured.
 - **The start at the floor.** A transfer that starts beside a live ring never begins by taking the whole link.
 - **The pacer** is `net::transport::pacing::BulkPacer`, sans I/O. It holds the token bucket, in whole bytes and nanoseconds. Its AIMD takes the nearest-rank p99 of each window's α samples from the edge's other channels; a window with no sample, when no data channel is live, counts as within the bound.
   - In the simulator, `SimNet::pace` gates `Bulk` and `Replay` sends on an edge with it.
+  - In the QUIC backend, DIST-E7-T27 gates the bulk connection's sends with it.
   - ADR-0011 item 8 states only the 1.2 × bound, which this keeps, so it needs no revision.
 
 ### 8. Zero-copy receive and buffer pools
