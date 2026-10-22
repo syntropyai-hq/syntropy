@@ -191,7 +191,7 @@ No GAPs.
 | RFC-0010 | §3 | Startup microbenchmark suite | 29: PLC-E1-T07, PLC-E2-T01–T21, PLC-E2-T23–T26, PLC-E3-T03, DIST-E6-T07, COMP-E4-T17 | ok |
 | RFC-0010 | §4 | Time budgets and probe scheduling | 2: PLC-E2-T01, PLC-E2-T09 | ok |
 | RFC-0010 | §5 | Profile cache across restarts | 3: PLC-E3-T01–T03 | ok |
-| RFC-0010 | §6 | Online refinement from live timings | 8: PLC-E3-T04–T06, PLC-E3-T09, PLC-E3-T11, PLC-E3-T13, PLC-E6-T17, PLC-E6-T25 | ok |
+| RFC-0010 | §6 | Online refinement from live timings | 9: PLC-E3-T04–T06, PLC-E3-T09, PLC-E3-T11, PLC-E3-T13, PLC-E6-T17, PLC-E6-T25, DIST-E14-T21 | ok |
 | RFC-0010 | §7 | Drift detection and re-placement triggers | 6: PLC-E3-T03, PLC-E3-T07–T09, PLC-E3-T12, DIST-E14-T21 | ok |
 | RFC-0010 | §8 | Configuration knobs | 1: PLC-E3-T10 | ok |
 | RFC-0010 | §9 | Failure handling | 5: PLC-E2-T08, PLC-E3-T01, PLC-E3-T05, PLC-E3-T10, PLC-E3-T13 | ok |

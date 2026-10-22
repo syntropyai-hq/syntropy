@@ -407,12 +407,17 @@ pub enum RepairStrategy {
 
 *Note 2026-10-23 (DIST-E14-T21; RFC-0001 §18.33): where `ReplanReason` lives, and its two term types.* No task built `ReplanReason`, though PLC-E3-T07 (`RequestReplan { WorkloadDrift }`), PROD-E1-T11 (`Config`), TIER-E10-T01 (`Config`), DIST-E10-T06 (`HealOrphans`) and DIST-E14-T15 (`RecoveryStarted { cause }`) use it. DIST-E14-T21 builds it, and its term types, at M1a.
 - **Where it lives.** It is plain data in `core`, with serde. `cluster` carries it in RFC-0001 §5.10's `RequestReplan`, and the solver reads it in `SolveInput::reason` (`SolveReason::Replan`, RFC-0011 §2). `solver` is layer 2 and cannot depend on `cluster` (RFC-0001 §4.2).
-- **`DriftTerm`** names the profile quantity whose drift caused a re-plan (RFC-0010 §7.2, §7.3):
-  - `Bandwidth { device: DeviceId, tier: TierId }`: a device's W_eff from one tier, as when another app takes bandwidth or the power source changes;
+- **`DriftTerm`** names the profile quantity whose drift caused a re-plan. It has one variant per live estimator of RFC-0010 §6.2, the quantities §7.2's rule reports. It is `#[non_exhaustive]`, so a later estimator adds its own term.
+  - `Bandwidth { device: DeviceId, tier: TierId, class: KernelClass }`: a device's W_eff from one tier for one kernel class, as when another app takes bandwidth or the power source changes;
+  - `FixedTime { device: DeviceId }`: a device's `t_fixed`;
   - `Storage { tier: TierId }`: a storage tier's sustained read, as under thermal throttling;
-  - `Hop { link: LinkId, transport: TransportKind }`: a hop's α, β, wireless mean or stall rate, or its demotion to another transport (RFC-0031 §3, §7.4).
+  - `HostLink { device: DeviceId }`: the pinned host↔device rate over the device's PCIe link or tunnel, the figure `HostLinkCaps` holds, as when a link trains down;
+  - `Hop { link: LinkId, transport: TransportKind }`: a hop's α, β, wireless mean or stall rate, or its demotion to another transport (RFC-0031 §3, §7.4). For a demotion, `transport` is the planned transport, `Demotion::from`: the figure the plan assumed and lost. The new transport's cost is in the graph the next solve reads (§11).
 - **`WorkloadTerm`** is RFC-0010 §7.1's list: `ExpertMiss`, `ExpertTierShortfall { tier: TierId }` and `SpeculativeAcceptance`.
-- **A demotion is hop drift.** A hop demoted by RFC-0031 §3's connect-time fallback or by §7.4's faults is reported as `EdgeDemoted` and forwarded as `ReportEdgeDemoted` (§11). Its re-plan, if any, is deferred like capability drift (RFC-0001 §7.2), with `ReplanReason::Drift { node, term: DriftTerm::Hop { link, transport } }`. PLC-E6-T04 raises it.
+- **A demotion is hop drift.** A hop is demoted by RFC-0031 §3's connect-time fallback or by its §7.4 faults.
+  - **The report.** The runner reports the demotion to its daemon as RFC-0001 §3.5's `EdgeDemoted` message. The daemon forwards it as `ReportEdgeDemoted`, which the coordinator applies as §11's `EdgeDemoted` event.
+  - **The re-plan.** Applying that event requests a deferred re-plan: it is solved in the background and adopted as for `NodeAdmitted` (RFC-0001 §7.2). One discrete event needs no drift threshold or window. Its reason is `ReplanReason::Drift { node, term: DriftTerm::Hop { link, transport: from } }`.
+  - **Who builds what.** DIST-E14-T15 (M3), which adds the event, raises the re-plan. PLC-E6-T04 builds the deferred re-plan and its reason.
 
 
 #### 6.2 Choosing the strategy
