@@ -307,8 +307,9 @@ fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
 /// An owned [`TokenEntry`]'s arrays as wire bytes, so that a [`TokenEntryView`] borrowing them
 /// can be encoded: build one with [`TokenEntryBytes::new`], then encode
 /// [`TokenEntryBytes::view`]. A tap is refused with [`FrameError::TapNotDecoded`] until its
-/// codec exists (DIST-E8-T06), and a [`LogprobBlock`] whose lengths disagree with its `k` and the
-/// entry's tokens is refused as inconsistent.
+/// codec exists (DIST-E8-T06), a [`LogprobBlock`] with `k = 0` with
+/// [`FrameError::ChosenLogprobsOnly`] until RFC-0031 §6.5 has a form for it (OQ-NET-35), and one
+/// whose lengths disagree with its `k` and the entry's tokens as inconsistent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TokenEntryBytes {
     seq: SequenceId,
@@ -338,6 +339,11 @@ impl TokenEntryBytes {
         };
         let (logprob_k, logprobs) = match &entry.logprobs {
             None => (0, Vec::new()),
+            Some(block) if block.k == 0 => {
+                return Err(FrameError::ChosenLogprobsOnly {
+                    n_tokens: block.chosen.len(),
+                });
+            }
             Some(block) => {
                 let k = usize::from(block.k);
                 let expected = entry.tokens.len() * k;

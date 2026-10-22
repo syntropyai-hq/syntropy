@@ -92,8 +92,9 @@ pub enum FinishReason {
 /// serde, as a parity tap's do.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LogprobBlock {
-    /// Top-k alternatives per token, at least 1: RFC-0031 §6.5's `logprob_k`, where 0 means the
-    /// entry carries no logprobs.
+    /// Top-k alternatives per token; 0 for the chosen tokens' logprobs alone, as OpenAI's
+    /// `top_logprobs = 0` asks. The in-process path carries every `k`. RFC-0031 §6.5's
+    /// `logprob_k` has no form for 0 yet, so `net` refuses a 0 block until OQ-NET-35 settles.
     pub k: u8,
     /// Per accepted token, the chosen token's logprob.
     #[serde(with = "tap_float::seq")]
@@ -107,11 +108,11 @@ pub struct LogprobBlock {
 }
 
 impl LogprobBlock {
-    /// Whether the block can be carried: `k` is at least 1, and `top_ids` and `top_logprobs` hold
-    /// `k` values per chosen token.
+    /// Whether the arrays' lengths agree: `top_ids` and `top_logprobs` hold `k` values per chosen
+    /// token, none when `k` is 0.
     pub fn is_consistent(&self) -> bool {
         let n = self.chosen.len() * usize::from(self.k);
-        self.k > 0 && self.top_ids.len() == n && self.top_logprobs.len() == n
+        self.top_ids.len() == n && self.top_logprobs.len() == n
     }
 }
 

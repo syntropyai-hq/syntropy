@@ -373,14 +373,19 @@ fn a_logprob_block_checks_its_lengths() {
     assert!(block.is_consistent());
     block.top_ids.pop();
     assert!(!block.is_consistent());
-    // The wire's `logprob_k = 0` means no logprobs, so a block needs at least one alternative.
+    // `k = 0` is the chosen tokens' logprobs alone, which the in-process path carries.
     let chosen_only = LogprobBlock {
         k: 0,
         chosen: vec![-0.1],
         top_ids: vec![],
         top_logprobs: vec![],
     };
-    assert!(!chosen_only.is_consistent());
+    assert!(chosen_only.is_consistent());
+    round_trip(&chosen_only);
+    let mut stray = chosen_only.clone();
+    stray.top_ids.push(3);
+    stray.top_logprobs.push(-2.0);
+    assert!(!stray.is_consistent());
 }
 
 #[test]

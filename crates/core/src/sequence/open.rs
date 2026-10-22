@@ -208,9 +208,9 @@ pub struct SamplingParams {
     /// Logit bias per token ID.
     #[serde(default)]
     pub logit_bias: SmallVec<[(u32, f32); 4]>,
-    /// Top-k alternatives per token to return in `TokenEntry::logprobs`, at least 1; `None` returns
-    /// none. RFC-0031 §6.5's `logprob_k` has no form for the chosen tokens' logprobs without
-    /// alternatives.
+    /// Top-k alternatives per token to return in `TokenEntry::logprobs`; `None` returns none, and
+    /// `Some(0)` the chosen tokens' logprobs alone (OpenAI's `top_logprobs = 0`). The wire cannot
+    /// carry `Some(0)` until OQ-NET-35 settles (`LogprobBlock::k`).
     #[serde(default)]
     pub logprobs: Option<u8>,
     /// The output constraint, by reference.

@@ -1498,3 +1498,24 @@ fn token_ingress_x_entries_with_a_tap_block_are_refused_conversion() {
     assert!(refused >= 1, "token-ingress-x carries a tap block");
     assert_eq!(read_golden("token-ingress-x"), bytes);
 }
+
+/// An owned entry with `k = 0` logprobs, the chosen tokens' logprobs alone, is what the
+/// in-process path carries, but RFC-0031 §6.5's `logprob_k = 0` means no logprobs. So encoding
+/// one is refused with `ChosenLogprobsOnly`, an `Unsupported` refusal, until OQ-NET-35 gives it a
+/// form.
+#[test]
+fn a_chosen_only_logprob_block_is_refused_encoding() {
+    let mut entry = token_with_logprobs();
+    entry.logprobs = Some(LogprobBlock {
+        k: 0,
+        chosen: vec![-0.5, -1.0],
+        top_ids: Vec::new(),
+        top_logprobs: Vec::new(),
+    });
+    let error = TokenEntryBytes::new(&entry).unwrap_err();
+    assert_eq!(error, FrameError::ChosenLogprobsOnly { n_tokens: 2 });
+    assert_eq!(error.class(), ErrorClass::Unsupported);
+    // Without logprobs the same entry encodes.
+    entry.logprobs = None;
+    assert!(TokenEntryBytes::new(&entry).is_ok());
+}
