@@ -8,4 +8,7 @@ publish.workspace = true
 [dependencies]
 # The pairing commitment and SAS (RFC-0030 §6.2).
 blake3.workspace = true
+serde.workspace = true
+syntropy-config = { path = "../config" }
 syntropy-core = { path = "../core" }
+syntropy-net = { path = "../net" }
