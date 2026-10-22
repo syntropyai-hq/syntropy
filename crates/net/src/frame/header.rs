@@ -350,6 +350,23 @@ pub fn encode_in_place(
     Ok(total)
 }
 
+/// [`encode_in_place`] for a frame whose payload the caller has also written in place, at
+/// `out[64 + ext_len..][..payload_len]`, as a codec does when it builds the payload from typed
+/// values. Writes the header and computes both CRCs; nothing is copied.
+pub(super) fn encode_written(
+    spec: &FrameSpec,
+    ext_len: usize,
+    payload_len: usize,
+    out: &mut [u8],
+) -> Result<usize, FrameError> {
+    let total = check_frame(spec, ext_len, ext_len, payload_len, out.len())?;
+    if !ext_len.is_multiple_of(ALIGN) {
+        return Err(FrameError::ExtLenUnaligned(ext_len as u32));
+    }
+    finish_written(spec, ext_len, payload_len, &mut out[..total]);
+    Ok(total)
+}
+
 /// The checks [`encode`] makes before writing: the lengths fit their fields, the header fields
 /// keep the decoder's rules, and `out` holds the frame. Returns the frame's length.
 fn check_frame(
@@ -381,10 +398,18 @@ fn check_frame(
 /// Writes the header and the payload around an extension already at `out[64..64 + ext_len]`,
 /// then both CRCs. `out` is exactly the frame; [`check_frame`] has passed.
 fn finish(spec: &FrameSpec, ext_len: usize, payload: &[u8], out: &mut [u8]) {
-    let payload_crc = if payload.is_empty() {
+    out[HEADER_LEN + ext_len..].copy_from_slice(payload);
+    finish_written(spec, ext_len, payload.len(), out);
+}
+
+/// Writes the header around an extension and a payload already in `out`, then both CRCs. `out`
+/// is exactly the frame; [`check_frame`] has passed.
+fn finish_written(spec: &FrameSpec, ext_len: usize, payload_len: usize, out: &mut [u8]) {
+    let ext_end = HEADER_LEN + ext_len;
+    let payload_crc = if payload_len == 0 {
         0
     } else {
-        crc32c(payload)
+        crc32c(&out[ext_end..ext_end + payload_len])
     };
     let h = &mut out[..HEADER_LEN];
     h[0..4].copy_from_slice(&MAGIC);
@@ -397,10 +422,8 @@ fn finish(spec: &FrameSpec, ext_len: usize, payload: &[u8], out: &mut [u8]) {
     h[32..40].copy_from_slice(&spec.step.to_le_bytes());
     h[40..48].copy_from_slice(&spec.chan_seq.to_le_bytes());
     h[48..52].copy_from_slice(&(ext_len as u32).to_le_bytes());
-    h[52..56].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+    h[52..56].copy_from_slice(&(payload_len as u32).to_le_bytes());
     h[56..60].copy_from_slice(&payload_crc.to_le_bytes());
-    let ext_end = HEADER_LEN + ext_len;
-    out[ext_end..].copy_from_slice(payload);
     let header_crc = crc32c_append(crc32c(&out[..60]), &out[HEADER_LEN..ext_end]);
     out[60..64].copy_from_slice(&header_crc.to_le_bytes());
 }
