@@ -82,6 +82,7 @@ const MAX_PING_REPLIES: usize = 4;
 pub const PROBE_BACKOFF_MAX: u64 = 64;
 
 /// One-way α samples the core keeps for its p99 estimate.
+/// 128 \[target\]: a chosen budget, not a measured figure.
 pub const ALPHA_WINDOW: usize = 128;
 
 /// Pings this core sent whose replies it still accepts; an older one's reply gives no sample.
