@@ -103,7 +103,8 @@ impl<'de> Visitor<'de> for JsonVisitor {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
         let mut out: Vec<(String, Json)> = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        // An ordered set (RFC-0060 §2.4 rule T3), though only membership reads it.
+        let mut seen = std::collections::BTreeSet::new();
         while let Some(key) = map.next_key::<String>()? {
             if !seen.insert(key.clone()) {
                 return Err(de::Error::custom(format!("duplicate key {key:?}")));

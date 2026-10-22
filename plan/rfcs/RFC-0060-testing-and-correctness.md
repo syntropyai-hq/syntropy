@@ -215,6 +215,12 @@ The production thread wraps `poll_once` in the spin-then-park loop of ADR-0012. 
 
 - **Rule T3.** Crates reachable from a protocol core or the solver use `BTreeMap`/`BTreeSet`, or `syntropy_core::DetHashMap`, a `HashMap` with a fixed-key hasher. They never use `std::collections::HashMap` with `RandomState`. A clippy `disallowed-types` configuration on those crates enforces this.
 - **Rule T4.** Nothing whose output reaches a plan, a log entry or a wire frame iterates over a hash container whose order depends on insertion history. Sorting at the boundary is the fix.
+- *Note 2026-10-22 (QUAL-E3-T03):* one clippy config, `ci/clippy-determinism.toml`, carries the rule T3 types and the rule T1 clock and generator calls. Each covered crate holds a copy as its `clippy.toml`, because clippy reads its config from the crate's directory. The covered crates are:
+  - those rule T1 names: `cluster`, `solver`, `sched`, `tier`, `store`, `api` and `runner`;
+  - `exec` and `obs`;
+  - for rule T3, the crates that hold the protocol cores and the solver (`cluster`, `daemon` for the supervisor, `solver`) and the crates their code calls into (`core`, `manifest`). The cores are sans-I/O, so the crates of their shells, such as `net`, are not reached.
+
+  A lint covers a whole crate. A part outside a rule, such as `tier`'s OS-facing module, lifts it with a scoped `#[allow]` in a file that `xtask/src/determinism.rs` lists, and in `exec` and `obs` only the `TickSource` implementation may. The `determinism` step of `cargo xtask ci lint` checks the copies and the list.
 
 #### 2.5 Deterministic kernels in tests
 
