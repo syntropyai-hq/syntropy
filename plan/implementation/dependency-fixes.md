@@ -835,6 +835,16 @@ DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-confor
 | DIST-E7-T12's pools are over any `PoolMemory` (`HeapMemory` in its tests), not "from TIER's pinned network sub-arena"; its edge to TIER-E2-T21 is cut | DIST-E7-T12 | R8 | `net` cannot depend on `tier`, and none of DIST-E7-T12's criteria uses `NetPool`; a runner's `NetPool` reaches `net` through TIER-E2-T25 |
 | DIST-E11-T01 → TIER-E2-T25 | DIST-E11-T01 | R9 | DIST-E11-T01 opens the runner's data-plane channels, and each channel's `ChannelSpec::pool` names a `NetPool` registration that TIER-E2-T25 makes |
 
+## DIST-E6-T01's p99 criterion and the metered gap (2026-10-22)
+
+DIST-E6-T01 enumerates and classifies interfaces. One of its criteria needed measured link probes, and the agreed sources leave metered unread on two systems.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "A USB Wi-Fi bridge reporting Ethernet is flagged by measured p99" moves from DIST-E6-T01 to the new DIST-E6-T07 (M2) → DIST-E6-T01, PLC-E2-T11 | DIST-E6-T01, DIST-E6-T07 | R9 | the criterion uses PLC-E2-T11's L1 probes. DIST-E6-T01 → PLC-E2-T11 would be a cycle, since PLC-E2-T11 depends on PLC-E1-T10, which depends on DIST-E6-T01. A task in this epic takes the criterion, so PLC-E2-T11's row stays as it is |
+| Added DIST-E6-T08 (M2) → DIST-E6-T01 | DIST-E6-T08 | Definition of done | DIST-E6-T01 reads metered on Linux through NetworkManager. macOS's `NWPath` and Windows's `INetworkCostManager` need FFI, so that gap has its own task rather than a note |
+| DIST-E6-T01 gains hosted criteria: the classifier over every row of RFC-0030 §7.2 from synthetic fixtures, and enumeration with stable ordinals on hosted CI | DIST-E6-T01 | Definition of done | only the rig criterion could fail before. Hosted runners have virtual NICs, so these are what CI can show |
+
 ## DIST-E1-T14: the field types `core` owns (2026-10-23)
 
 Building DIST-E1-T14 found three field types that no row defined, though its own types hold them: `PrefixRef` holds RFC-0022's `PrefixKey` and `TailId`, and `SamplingParams` holds RFC-0050's `GrammarRef`. `core` cannot name a type of `tier` or `api`, and every lane must be able to name these, so DIST-E1-T14 defines all three as plain newtypes in `core::sequence`, and the rows that use them build on its types. RFC-0001 §5.8 and §5.13 gain a dated note and rows. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
