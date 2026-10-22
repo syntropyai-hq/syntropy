@@ -1018,7 +1018,7 @@ pub enum Dist {
 ```
 
 **Reliable channels** (`Channel` semantics, RFC-0001 §5.8):
-- **Delivery time.** A frame of S bytes sent at t on an up link is delivered at `max(t + α + S/β + ⌈S/mtu⌉·per_packet_overhead + jitter, last_delivery_on_channel)`. FIFO order is preserved.
+- **Delivery time.** A frame of S bytes sent at t on an up link starts going out at `s = max(t, the end of what the link was already sending)`, and is delivered at `max(s + S/β + ⌈S/mtu⌉·per_packet_overhead + α + jitter, last_delivery_on_channel)`. Every stream on the link shares its β, in send order; FIFO order on each channel is preserved (revised 2026-10-23, note below).
 - **Loss.** A packet lost with probability `loss` delays its frame by one QUIC probe timeout, `PTO = srtt + max(4·rttvar, 1 ms) + max_ack_delay` with `max_ack_delay` = 25 ms (the QUIC default), using the link's running α statistics.
 - **Back-pressure.** Credit-based, with the window RFC-0031 specifies. A sender out of credit gets `WouldBlock`, and the time it waits is recorded as `credit_stall`, as in production.
 - **Link down.** Frames in flight are dropped and the channel reports a `Link` error after the transport's failure timeout. That is what production sees when a QUIC connection or RDMA queue pair dies.
@@ -1064,6 +1064,19 @@ pub enum Dist {
   - Handshake time: `connect` and `accept` pair as soon as both are called, and a `connect` with no link up fails at once with `ConnectTimeout`.
   - `reconnect`.
   - Gossip datagrams use the fabric's `send_datagram` directly, not the transport.
+
+**Note, 2026-10-23 (DIST-E7-T13): one serialisation queue per link.**
+- **What changed.** Before, each message on a link got the link's whole β whatever else was on it, so a bulk transfer could not delay a data channel beside it, and RFC-0031 §7.5's pacing had nothing to act on.
+  - Now each directed link has one serialisation queue. A message starts going out when the link has finished what it was given before, by send time; equal times go in the order of the sends, which the run fixes.
+  - Datagrams join the same queue.
+  - A message on an idle link is timed as before.
+- **What moved.** Back-to-back messages on one link now go out one after another. In `SimTransport`'s replay test (`wifi6_home`, loss 0.05, 60 frames), seed 7's last delivery moves from 1,566,418,047 ns to 1,566,503,327 ns, and seed 8's from 1,958,764,363 ns to 1,958,901,483 ns, with the same retransmits [estimate]. No other simulator test's expected figure moved; no trace hash depends on the fabric yet.
+- **Bulk frames in a simulation.** A real QUIC connection interleaves at packet granularity, about 1.5 KB. A scenario that runs bulk beside a data channel sends it in small frames, 4 KiB [target], which take about 14 µs on 2.5 GbE [estimate].
+- **`SimNet` gains pacing** (RFC-0031 §7.5):
+  - `pace(from, to, config)` puts a `BulkPacer` on an edge, and `try_send` on its `Bulk` and `Replay` channels returns `WouldBlock` until the pacer has tokens;
+  - `pacing_ready_at` says when it will;
+  - `watch_alpha` and `alpha_log` record the edge's data-channel α samples;
+  - `next_deadline` includes the pacer's window ends.
 
 #### 8.4 Fake devices, tiers and drives
 
