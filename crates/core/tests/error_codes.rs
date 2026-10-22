@@ -131,11 +131,10 @@ const PINNED: &[(Domain, u16, &[&str], Option<ErrorClass>)] = &[
     (Security, 0x0513, &["NotCoordinatorEligible"], Some(Auth)),
 ];
 
-/// The codes RFC-0050 §12.1 has no row for yet: the open question this task leaves for the
-/// API RFC. A code leaves this list when its class or RFC-0050 gives it a shape.
+/// The codes that neither their own RFC row nor RFC-0050 §12.1 gives a shape: the open list
+/// of #1668. A code leaves this list when RFC-0050 gives it a row.
 const UNMAPPED: &[(Domain, u16)] = &[
     (Cluster, 0x0101),
-    (Cluster, 0x0102),
     (Cluster, 0x0103),
     (Cluster, 0x0104),
     (Cluster, 0x0105),
@@ -153,12 +152,10 @@ const UNMAPPED: &[(Domain, u16)] = &[
     (Net, 0x020F),
     (Net, 0x0212),
     (Dist, 0x0303),
-    (Dist, 0x0305),
     (Dist, 0x0308),
+    (Dist, 0x0309),
     (Dist, 0x030E),
     (Dist, 0x030F),
-    (Recovery, 0x0405),
-    (Recovery, 0x0407),
     (Security, 0x0501),
     (Security, 0x0502),
     (Security, 0x0503),
@@ -171,6 +168,110 @@ const UNMAPPED: &[(Domain, u16)] = &[
     (Security, 0x0511),
     (Security, 0x0512),
     (Security, 0x0513),
+];
+
+const HIDDEN: ApiMapping = ApiMapping::NotClientVisible;
+const RETRYABLE_STREAM: ApiMapping = ApiMapping::StreamError { retryable: true };
+
+/// The codes whose own RFC row states what the client sees, with that row's words. They win
+/// over the class rule.
+const PINNED_OVERRIDES: &[(Domain, u16, ApiMapping, &str)] = &[
+    (
+        Cluster,
+        0x0102,
+        HIDDEN,
+        "RFC-0030 §10: both are excluded until one stops; `NodeConflict`; `doctor` explains",
+    ),
+    (
+        Cluster,
+        0x010D,
+        HIDDEN,
+        "RFC-0030 §10: keep serving locally; `doctor`: `DiscoverySilent`",
+    ),
+    (
+        Net,
+        0x020C,
+        HIDDEN,
+        "RFC-0031 §12: informational; becomes a `Ready { degraded }` reason",
+    ),
+    (
+        Net,
+        0x0213,
+        HIDDEN,
+        "RFC-0031 §12: informational: channel opened on the next transport",
+    ),
+    (
+        Dist,
+        0x0305,
+        HIDDEN,
+        "RFC-0032 §10: reply carries the original result",
+    ),
+    (
+        Dist,
+        0x030B,
+        HIDDEN,
+        "RFC-0032 §10: local routing disabled; not fatal",
+    ),
+    (
+        Recovery,
+        0x0401,
+        RETRYABLE_STREAM,
+        "RFC-0033 §13: keep-alives; on deadline, a retryable timeout",
+    ),
+    (
+        Recovery,
+        0x0402,
+        RETRYABLE_STREAM,
+        "RFC-0033 §13: stream error, retryable",
+    ),
+    (
+        Recovery,
+        0x0403,
+        RETRYABLE_STREAM,
+        "RFC-0033 §13: stream error, `retry: OnNewPlan`",
+    ),
+    (
+        Recovery,
+        0x0404,
+        HIDDEN,
+        "RFC-0033 §13: — (connection gone)",
+    ),
+    (
+        Recovery,
+        0x0405,
+        RETRYABLE_STREAM,
+        "RFC-0033 §13: stream error with `Retry-After`; instance unroutable",
+    ),
+    (
+        Recovery,
+        0x0406,
+        HIDDEN,
+        "RFC-0033 §13: — (handled by re-plan)",
+    ),
+    (
+        Recovery,
+        0x0407,
+        HIDDEN,
+        "RFC-0033 §13: — (informational; recovery cascades)",
+    ),
+    (
+        Recovery,
+        0x0408,
+        HIDDEN,
+        "RFC-0033 §13: falls back to replay or re-prefill; nothing visible",
+    ),
+    (
+        Recovery,
+        0x0409,
+        HIDDEN,
+        "RFC-0033 §13: nothing (the handshake re-runs; §4.2.1)",
+    ),
+    (
+        Security,
+        0x050F,
+        HIDDEN,
+        "RFC-0034 §10.1: refetched from another source; the node is flagged in the dashboard",
+    ),
 ];
 
 const DOMAINS: [Domain; 5] = [Cluster, Net, Dist, Recovery, Security];
@@ -277,6 +378,19 @@ fn constants_name_their_codes() {
 }
 
 #[test]
+fn overrides_follow_their_rfc_rows() {
+    let got: Vec<_> = api::overrides().collect();
+    let want: Vec<_> = PINNED_OVERRIDES
+        .iter()
+        .map(|&(d, n, mapping, row)| (ErrorCode::new(d, n), mapping, row))
+        .collect();
+    assert_eq!(got, want);
+    for (code, mapping, row) in got {
+        assert_eq!(api::for_code(code), Some(mapping), "{code}: {row}");
+    }
+}
+
+#[test]
 fn every_code_maps_to_an_api_shape_or_is_on_the_open_list() {
     let unmapped: BTreeSet<_> = UNMAPPED
         .iter()
@@ -284,6 +398,18 @@ fn every_code_maps_to_an_api_shape_or_is_on_the_open_list() {
         .collect();
     for info in registry() {
         let mapping = api::for_code(info.code).expect("a published code");
+        let overridden = PINNED_OVERRIDES
+            .iter()
+            .find(|&&(d, n, ..)| ErrorCode::new(d, n) == info.code);
+        match overridden {
+            Some(&(.., want, _)) => assert_eq!(mapping, want, "{}", info.code),
+            None => assert_eq!(
+                mapping,
+                api::for_class(info.class.expect("only an override has no class")),
+                "{} follows its class",
+                info.code
+            ),
+        }
         assert_eq!(
             mapping == ApiMapping::Unmapped,
             unmapped.contains(&info.code),
@@ -294,7 +420,20 @@ fn every_code_maps_to_an_api_shape_or_is_on_the_open_list() {
     }
     assert_eq!(api::for_code(ErrorCode::new(Security, 0x0509)), None);
     let mapped = registry().len() - UNMAPPED.len();
-    assert_eq!((mapped, UNMAPPED.len()), (36, 37));
+    assert_eq!((mapped, UNMAPPED.len()), (39, 34));
+}
+
+#[test]
+fn recoverable_local_events_are_not_server_errors() {
+    use codes::{dist, recovery};
+    // A non-retryable 503 here would tell SDKs not to retry a recoverable event.
+    for code in [dist::ROUTER_MISMATCH, recovery::STATE_POSITION_MISMATCH] {
+        assert_eq!(
+            api::for_code(code),
+            Some(ApiMapping::NotClientVisible),
+            "{code}"
+        );
+    }
 }
 
 #[test]
@@ -311,28 +450,6 @@ fn class_shapes_match_rfc_0050() {
         assert_eq!(api::for_class(class), unavailable, "{class:?}");
     }
     assert_eq!(
-        api::for_class(Timeout),
-        ApiMapping::Error(ApiError {
-            status: 504,
-            retry_after: None,
-            openai_type: "server_error",
-            openai_code: "timeout",
-            anthropic_type: "timeout_error",
-            anthropic_status: 504,
-        })
-    );
-    assert_eq!(
-        api::for_class(Correctness),
-        ApiMapping::Error(ApiError {
-            status: 503,
-            retry_after: None,
-            openai_type: "server_error",
-            openai_code: "no_conforming_instance",
-            anthropic_type: "api_error",
-            anthropic_status: 500,
-        })
-    );
-    assert_eq!(
         api::for_class(Internal),
         ApiMapping::Error(ApiError {
             status: 500,
@@ -344,7 +461,15 @@ fn class_shapes_match_rfc_0050() {
         })
     );
     assert_eq!(api::for_class(Cancelled), ApiMapping::NormalFinish);
-    for class in [Auth, Capacity, InvalidRequest, Unsupported] {
+    // Their RFC-0050 rows name a narrower condition than the class.
+    for class in [
+        Timeout,
+        Correctness,
+        Auth,
+        Capacity,
+        InvalidRequest,
+        Unsupported,
+    ] {
         assert_eq!(api::for_class(class), ApiMapping::Unmapped, "{class:?}");
     }
 }
