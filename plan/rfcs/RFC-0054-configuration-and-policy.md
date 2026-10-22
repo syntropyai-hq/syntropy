@@ -464,11 +464,11 @@ Each crate declares its own config section (RFC-0001 §11.2), and the domain RFC
 | `link.*`, `quic.*`, `rdma.*`, `shm.*`, other `net.*` | 0031 | node | |
 | `log.*`, `coordinator.*`, `ring.*`, `tp.*`, `actions.*`, `orphan.*` | 0032 | cluster; node for `log.group_commit`, `log.follower_queue`; instance for `ring.max_inflight_steps` | |
 | `runner.*`, `recovery.*`, `straggler.*`, `standby`, `replan.degraded_min_gain` | 0033 (RFC-0001 §3.4 names the `runner.*` keys) | node; instance for `recovery.history`, `recovery.drain_deadline` and `standby`; cluster for `recovery.confirm_after` and `replan.degraded_min_gain` | `standby` is a top-level instance key (RFC-0033 §9.3), listed in §5.4. `replan.degraded_min_gain` is carved out of RFC-0011's `replan.*` |
-| `security.*`, `integrity.*`, `rdma.encrypt_untrusted`, `invite.require_confirm` | 0034 | node, cluster | `security.trusted_fabric` is the interface list ADR-0011 calls `trusted_fabric`. `rdma.encrypt_untrusted` and `invite.require_confirm` are carved out of RFC-0031's `rdma.*` and RFC-0030's `invite.*` |
+| `security.*`, `integrity.*`, `rdma.encrypt_untrusted`, `invite.require_confirm`, `models.signatures`, `models.trusted_signers` | 0034 | node, cluster | `security.trusted_fabric` is the interface list ADR-0011 calls `trusted_fabric`. `rdma.encrypt_untrusted`, `invite.require_confirm` and the two `models.*` keys are carved out of RFC-0031's `rdma.*`, RFC-0030's `invite.*` and RFC-0043's `models.*` |
 | `kernels.*`, `features.disable` | 0040 | node | `kernels.module_dir` defaults to the running version's `modules/` directory (RFC-0052 §4.3); `<store>/modules` is a development override |
 | `store.*`, `hub.*`, `p2p.*`, `pack.*`, `offline` | 0041 | node | this RFC adopts RFC-0041's defaults as final: `store.max_bytes` 90% of the volume, `store.pack_max_bytes` 25% of `store.max_bytes`, `store.min_free_bytes` 20 GiB, `store.standby_max_bytes` 10% of the node's writable volumes by total size [target] (the per-node cap on second-copy chunks for repair, RFC-0033 §9.3; 0 turns second copies off; a copy is admitted only if the volume keeps 2 × `store.min_free_bytes` free, RFC-0041 §4.4) |
 | `numerics.*` | 0042 | node, instance | |
-| `models.*` | 0034 (`models.signatures`, `models.trusted_signers`), 0043 (`models.experimental_family`) | node | node settings about models. Per-model policies use `policy.*`, never `models.*` |
+| `models.*` | 0043 | node | node settings about models, such as `models.experimental_family`. Per-model policies use `policy.*`, never `models.*`. `models.signatures` and `models.trusted_signers` are RFC-0034's, carved out |
 
 The scopes column lists every scope a section uses. The table is generated from the domain crates' section declarations; it is not hand-written, and the copy above is a snapshot. The schema derive (§10.3) fails the build if two sections register the same prefix. A CI check fails if a key's declared scope differs from the owning RFC's key table.
 
@@ -506,6 +506,7 @@ Recommended default: (a). Nothing yet checks a shared section's keys against thi
   - `orphan.*` (RFC-0032 §9's `orphan.adopt_deadline`) has no row. It is registered under RFC-0032.
   - RFC-0034's `invite.require_confirm` is a carve-out inside RFC-0030's `invite.*` that the table does not list, so PROD-E1-T16's carve-out check would flag its shared section.
   - The top-level instance key `standby` (RFC-0033 §9.3, §12) appears nowhere in this RFC, neither here nor in §5.4.
+  - *Note 2026-10-22 (review of #1740):* every carve-out is now a full key path in its owner's Prefix column, as `models.signatures` and `models.trusted_signers` are under RFC-0034. So PROD-E1-T16 reads one form. RFC-0011's `replan.*` "(with 0033)" is left to #1678.
   - *Resolved 2026-10-22 (#1679):* the table above now lists `orphan.*` under RFC-0032, the `invite.require_confirm` carve-out under RFC-0034 (and in RFC-0030's row), and `standby` under RFC-0033; §5.4 lists `standby`.
 
 #### 5.2 Node keys owned by the product RFCs

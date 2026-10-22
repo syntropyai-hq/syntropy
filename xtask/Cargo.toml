@@ -14,5 +14,9 @@ path = "src/main.rs"
 # payloads the contribution checks read (QUAL-E1-T05, RFC-0062 §12.3).
 serde.workspace = true
 serde_json.workspace = true
-# The manifests of non-member path crates, which `dep-diff` reads itself (#1692).
+# The `determinism` step (QUAL-E3-T03): Rust tokens with their lines, to find lint attributes as
+# the compiler does.
+proc-macro2 = { workspace = true, features = ["span-locations"] }
+# TOML: the repository's cargo config, which the `determinism` step reads, and the manifests of
+# non-member path crates, which `dep-diff` reads itself (#1692).
 toml.workspace = true
