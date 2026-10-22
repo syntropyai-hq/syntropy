@@ -619,3 +619,51 @@ DIST-E9-T01 could not be finished as written. Its last criterion needs every aut
 | DIST-E9-T01's first criterion becomes "`apply` is total over arbitrary sequences of well-formed base events, a superset of every log `decide` can produce" | DIST-E9-T01 | R9 | `decide()` is DIST-E9-T02's, which depends on DIST-E9-T01. A property test over every well-formed event sequence covers every log `decide` can produce, and needs no `decide` |
 | DIST-E9-T01 holds the cluster key's 32-byte public half, which RFC-0034 §4 calls the `ClusterId`, in `ClusterState.cluster` and the chain's index-0 input; DIST-E9-T16 swaps in DIST-E2-T06's `ClusterId` and keeps DIST-E9-T01's golden chain vectors | DIST-E9-T01, DIST-E9-T16 | R9 | the chain needs a cluster identity at index 0, and an edge to DIST-E2-T06 would hold the event log behind the OS keystore work. The chain hashes the same 32 bytes either way, so the swap changes no vector |
 | DIST-E9-T07 → DIST-E9-T16 | DIST-E9-T07 | R9 | its criterion refuses a crafted snapshot with "a member with no valid signed record", which needs the records in the state. DIST-E9-T01's ten direct dependents use only `LogEntry`, `ClusterState`, `apply` or the base events, and keep their edge |
+
+## COMP-E13-T05 split (2026-10-22)
+
+COMP-E13-T05 (M0a) had criteria that no M0a task can meet. The fast-math audit needs kernel builds, which start with COMP-E9-T02 (M0b). The per-provider bit-exact list needs `kernels::reference` (COMP-E1-T03) and provider kernels, which its "Depends on" didn't name. Those criteria move to a new task. COMP-E13-T05 keeps the static `Numerics` check and the dynamic detector, which COMP-E2-T01 (M0a) needs.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added COMP-E13-T13 (M0b) → COMP-E13-T05, COMP-E1-T03, COMP-E9-T02, COMP-E3-T08, COMP-E3-T22, COMP-E5-T01, COMP-E5-T04, COMP-E5-T09, COMP-E5-T12, COMP-E5-T26, COMP-E7-T02, COMP-E7-T05 | COMP-E13-T13, COMP-E13-T05 | R9 | the CI run of the static check over every provider's registry, the flag audit, the detector run on `kernels::reference` and on provider matrix-product kernels, and the per-provider bit-exact list for the ops built at M0b. COMP-E5-T01, COMP-E5-T04 and COMP-E5-T09 bring CUDA's matrix products, which the detector runs on. The CPU, CUDA and ggml kernels of the M0b bit-exact-class ops (copies, `RowGather`, `Convert` with the M0 dequantisers, `Argmax`, `TopKTopP`) come from the listed tasks. The detector's subnormal cases apply only to F32- and BF16-operand kernels, because F16 weights, F16 block scales and Q8 activation blocks cannot hold 2^-70 or 2^-130. COMP-E9-T02 and COMP-E7-T05 are M0b, so the new task is M0b. The Metal, HIP and Vulkan rows of the table join when those providers build |
+| Added COMP-E13-T14 (M1a) → COMP-E13-T13, COMP-E13-T04, COMP-E13-T10, COMP-E5-T18 | COMP-E13-T14 | R9 | the bit-exact cases for E8M0 scales (e = 0 included), FP8, MXFP4, NVFP4, the remaining GGUF types and KV page moves need kernels first built at M1a, so they cannot close with COMP-E13-T13 at M0b. The wire codecs stay with COMP-E14-T05 and COMP-E14-T19, which already require them bit-exact |
+| COMP-E13-T05's last criteria → COMP-E13-T13; its FP16 criterion reworded | COMP-E13-T05 | R9 | RFC-0042 §4 gives `AccumKind` three variants (`F32`, `I32ThenF32`, `F64`), so FP16 accumulation cannot be declared. The static check rejects weaker declarations, and the detector rejects an FP16-accumulating variant that declares F32. The CI run of the static check over real provider registries moves to COMP-E13-T13, because no provider registers kernels at M0a |
+| QUAL-E4-T13 → COMP-E13-T13 (was COMP-E13-T05) | QUAL-E4-T13 | R8 | its edge was for the per-provider bit-exact list, which is now COMP-E13-T13's |
+
+## DIST-E2-T07: showing fingerprints in `identity show` (2026-10-22)
+
+DIST-E2-T07's task text said fingerprints are "shown by `identity show`", but `identity show` is DIST-E2-T01's library function, still open, with PROD-E6-T08 wiring the CLI. DIST-E2-T01 is M0b, so it cannot depend on DIST-E2-T07 (M3). RFC-0051 §2.1 lists three fingerprints for the command: the node ID, the cluster ID and the API certificate. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E2-T09 (`identity show` prints the six-word fingerprints, M3) → DIST-E2-T01, DIST-E2-T07, DIST-E2-T06, PROD-E5-T03, PROD-E6-T08; DIST-E2-T07's task text drops "shown by `identity show`" | DIST-E2-T07, DIST-E2-T09 | R9 | DIST-E2-T07 builds the fingerprint; showing it needs the command (DIST-E2-T01, PROD-E6-T08) and the three keys it shows: the node key (DIST-E2-T01), `ClusterId` (DIST-E2-T06) and the local CA's certificate (PROD-E5-T03) |
+| PROD-E5-T10 → DIST-E2-T09 | PROD-E5-T10 | R9 | its criterion, "the fingerprint matches `syntropy identity show`", needs `identity show` to print the CA's fingerprint |
+
+## COMP-E10-T01's HTTP range source split out (2026-10-22)
+
+COMP-E10-T01 could not start: its HTTP range implementation needs an HTTPS client, which no maintainer has approved, and a ruling on which crate links it (issue #216). The trait, the local-file source, coalescing, the header cap and the replay of recorded Hub fixtures need neither, and COMP-E10-T02 and COMP-E10-T04 need only those.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T01 keeps the `RangeSource` trait, the local-file and recorded-fixture replay sources, coalescing and the header cap; its first criterion reads "from a recorded Hub fixture replayed through the replay source" | COMP-E10-T01 | R9 | the criterion compares bytes, which a recorded fixture gives without a live HTTP client |
+| Added COMP-E10-T14 (M0b), the HTTP range source → COMP-E10-T01; gate: OQ-MF-18 | COMP-E10-T14 | R9 | the client crate and its linking crate are a maintainer decision (AGENTS.md: new direct dependencies; RFC-0001 §4.2 rule 6). OQ-MF-18 lists the options and a recommended default, and leaves the choice to the maintainers |
+| COMP-E12-T02 → COMP-E10-T14 in place of COMP-E10-T01 | COMP-E12-T02 | R9 | the Hub client issues HTTP range requests, so it needs the HTTP source, not only the trait. COMP-E10-T02 and COMP-E10-T04 keep COMP-E10-T01: their criteria read recorded fixtures |
+
+## DIST-E10-T08's named cases and CI wiring (2026-10-22)
+
+DIST-E10-T08 (M2) asked for "every RT-DIST scenario as a named case". No list of RT-DIST scenarios exists in the plan: the label appears only in that row, RFC-0032's M2 rollout row and ADR-0304's revision of 2026-10-20, all from the first plan commit. Its criterion "the job gates changes to `cluster`" also needs QUAL-E1-T07's affected-job rules, which DIST-E10-T08 did not depend on. QUAL-E1-T07 is M0a, so it cannot take the wiring without depending on M2 work. This pass names the cases and applies R9 to the wiring.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "Every RT-DIST scenario" becomes each property of RFC-0032 Testing's "Election safety and liveness" row, as a named case; ADR-0304 and RFC-0032's rollout get dated notes saying so | DIST-E10-T08 | Definition of done | the label names no list; that row holds the 13 properties the model must check, the row's own six among them |
+| "The job gates changes to `cluster`" moves to the new DIST-E10-T09 (M2) → DIST-E10-T08, QUAL-E1-T07. DIST-E10-T08 runs a bounded 3-node configuration in the default tests and registers the full 3–4-node run as the `test-release` xtask suite `election-model` | DIST-E10-T08, DIST-E10-T09 | R9 | the rule that runs a suite on changes to `cluster` is a `ci/jobs.toml` entry, which needs QUAL-E1-T07's rules engine; the new task sits in DIST-E10-T08's milestone, so no edge points to a later one |
+
+## OQ-NET-34 and its spike (2026-10-22)
+
+DIST-E10-T08's model check found that a supported older proof can depose a lone survivor's unsupported election at heal and roll back an entry acknowledged `replicated = true` under RFC-0032 §6.3 as revised by OQ-NET-33, when the command's originator was lost with its disk. OQ-NET-34 holds the question and recommends comparing an incoming proof against the strongest supported election in the receiver's own chain. That rule changes §7.5, so it is model-checked before the heal code is written.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
+| DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |

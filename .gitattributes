@@ -1,2 +1,11 @@
+# Every text file checks out with LF on every OS, so tests, golden files and byte comparisons
+# see the same bytes on Windows as on Linux and macOS. Git detects binary files by content and
+# leaves them alone.
+* text=auto eol=lf
+
 # Hooks are shell scripts, which a CRLF checkout would break in Git for Windows.
 /.githooks/** text eol=lf
+
+# A fixture that must keep its exact bytes, such as a CRLF or mixed line-ending sample, is
+# marked `-text` here with a comment saying why. None does today: every tracked file is LF in
+# the index (`git ls-files --eol`, 2026-10-22).

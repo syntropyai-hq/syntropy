@@ -379,6 +379,128 @@ fn a_system_service_reads_no_user_file() {
     assert_eq!(int(&as_service.unwrap(), "t.a"), Some(10));
 }
 
+/// Instance keys of each kind: a plain default, a computed one and two that hold secrets.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "inst", scope = Instance, owner = "RFC-0054")]
+struct InstanceDefaults {
+    /// A plain default.
+    #[config(reload = Instance, default = 4)]
+    depth: u32,
+    /// A default the instance computes.
+    #[config(reload = Instance, default = computed("from the model's maximum"))]
+    context_target: Option<u32>,
+    /// Tokens by name, each a secret.
+    #[config(reload = Instance, default = {})]
+    tokens: std::collections::BTreeMap<String, syntropy_config::Secret<String>>,
+    /// A secret with no default.
+    #[config(reload = Instance, default = unset)]
+    draft_token: Option<syntropy_config::Secret<String>>,
+}
+
+/// A request key, which `config show --resolved` never lists.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "req", scope = Request, owner = "RFC-0054")]
+struct RequestOnly {
+    /// Per request.
+    #[config(reload = Hot, default = 1)]
+    per_request: u32,
+}
+
+/// A long instance key, to move the shared comment column.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "a_rather_long_instance_section", scope = Instance, owner = "RFC-0054")]
+struct LongInstanceKey {
+    /// A long path.
+    #[config(reload = Instance, default = 1)]
+    with_a_long_key_name: u32,
+}
+
+static WITH_INSTANCE: Registry = Registry::new(&[
+    &TSection::SCHEMA,
+    &ClusterKeys::SCHEMA,
+    &InstanceDefaults::SCHEMA,
+    &RequestOnly::SCHEMA,
+]);
+static WITHOUT_INSTANCE: Registry = Registry::new(&[&TSection::SCHEMA, &ClusterKeys::SCHEMA]);
+static WITH_LONG_INSTANCE: Registry = Registry::new(&[
+    &TSection::SCHEMA,
+    &ClusterKeys::SCHEMA,
+    &LongInstanceKey::SCHEMA,
+]);
+
+fn shown_with(registry: &'static Registry) -> String {
+    let resolved = ResolvedConfig::resolve(
+        registry,
+        Layers {
+            os: Os::Linux,
+            files: &[],
+            env: &Env::default(),
+            flags: &Flags::new(),
+        },
+    )
+    .expect("resolves");
+    command::show_resolved(&resolved)
+}
+
+/// The lines of `shown`'s block whose header starts with `header`, each with its padding
+/// collapsed to one space.
+fn block(shown: &str, header: &str) -> Vec<String> {
+    shown
+        .split("\n\n")
+        .find(|b| b.starts_with(header))
+        .unwrap_or_else(|| panic!("no block {header:?} in\n{shown}"))
+        .lines()
+        .skip(1)
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect()
+}
+
+/// `config show --resolved` lists every instance key with its schema default: a plain value, a
+/// computed default by its rule, and a key that holds a secret redacted or by its path alone.
+/// Request-scope keys are not listed.
+#[test]
+fn show_resolved_lists_instance_defaults() {
+    let shown = shown_with(&WITH_INSTANCE);
+    let instance = block(&shown, "# instance keys:");
+    assert_eq!(
+        instance,
+        [
+            "inst.context_target # default, computed: from the model's maximum",
+            "inst.depth = 4 # default",
+            "inst.draft_token # default",
+            "inst.tokens = [redacted] # default",
+        ],
+        "\n{shown}"
+    );
+    assert!(
+        shown.contains(
+            "\n# instance keys: the schema default; a [policy.\"<selector>\"] table or an \
+             explicit value overrides it per model\n"
+        ),
+        "{shown}"
+    );
+    assert!(!shown.contains("req.per_request"), "{shown}");
+}
+
+/// Instance keys leave the node and cluster rows as they were, apart from alignment: a long
+/// instance key moves the shared comment column, and nothing else.
+#[test]
+fn instance_keys_change_only_the_alignment_of_other_rows() {
+    let without = shown_with(&WITHOUT_INSTANCE);
+    for registry in [&WITH_INSTANCE, &WITH_LONG_INSTANCE] {
+        let with = shown_with(registry);
+        for header in ["# node keys:", "# cluster keys:"] {
+            assert_eq!(block(&with, header), block(&without, header), "\n{with}");
+        }
+    }
+    let long = shown_with(&WITH_LONG_INSTANCE);
+    assert_ne!(
+        long.lines().nth(1),
+        without.lines().nth(1),
+        "the column moves"
+    );
+}
+
 /// `config show --resolved` prints each value with its file and line, variable or flag.
 #[test]
 fn show_resolved_prints_the_origin_of_every_value() {
@@ -417,6 +539,9 @@ t.token = [redacted]                            # /etc/syntropy/config.toml:6
 
 # cluster keys: the cluster's value; the default until the cluster sets one
 allow_approximate = false                       # default
+
+# instance keys: the schema default; a [policy.\"<selector>\"] table or an explicit value overrides it per model
+objective = \"latency\"                           # default
 
 # proposed to the cluster by this node's file, environment or flags
 allow_approximate = true                        # /etc/syntropy/config.toml:2
