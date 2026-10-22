@@ -126,8 +126,10 @@ impl FrameError {
     /// `Activation` in another dtype than its channel's, and a dtype container this build does
     /// not carry are `Unsupported` (RFC-0031 §12, revised 2026-10-22); a resend would carry the
     /// same bytes, so no NACK can repair them. The first two are sent in `Close` as the code
-    /// [`FrameError::code`] gives. Only the encoder's own failures, a buffer too small or a length
-    /// too long for its field, are `Internal`.
+    /// [`FrameError::code`] gives. The encoder's refusal of a frame type whose capability the
+    /// channel did not negotiate ([`FrameError::CapabilityNotNegotiated`]) is `Unsupported` too,
+    /// with no code: the frame is never written, so nothing travels. The encoder's other
+    /// failures, a buffer too small or a length too long for its field, are `Internal`.
     pub fn class(&self) -> ErrorClass {
         match self {
             FrameError::UnknownFrameType(_)
