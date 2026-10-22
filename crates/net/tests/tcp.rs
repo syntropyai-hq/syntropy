@@ -22,6 +22,8 @@ use syntropy_net::error::ErrorCode;
 use syntropy_net::frame::{CredKind, Hello, HelloAck};
 use syntropy_net::transport::conformance::{self, Fabric, MAX_FRAME, Rule, SEND_SLOT, SEND_SLOTS};
 use syntropy_net::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
+#[cfg(target_os = "linux")]
+use syntropy_net::transport::tcp::buffer_caps;
 use syntropy_net::transport::tcp::{
     Credential, CredentialCheck, MAX_HANDSHAKES_PER_ADDRESS, TLS_TIMEOUT, TcpConfig, TcpTransport,
 };
@@ -482,27 +484,54 @@ fn a_connection_that_never_starts_tls_is_let_go() {
 /// A channel whose receiver's slots are too large for the kernel's unprivileged buffer cap opens
 /// on sockets left to autotuning: the acceptor's, sized for its own slot, and the connector's
 /// send buffer, sized for the peer's slot from `HelloAck`. Both ends count it.
+///
+/// The slot is sized from this host's own caps, which differ between hosts (hosted runners do
+/// not all keep Linux's 212 992-byte default), so that twice it is over both. Each end counts
+/// the socket before `connect` or `accept` returns, so the counts are final once both have. A
+/// host whose caps are unreadable, or too large to allocate such slots, skips the check; the
+/// decision itself is unit-tested in `transport::tcp`.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_slot_over_the_kernel_cap_is_left_to_autotuning_and_counted() {
+    let (Some(send_cap), Some(recv_cap)) = buffer_caps() else {
+        eprintln!("skipped: this host's buffer caps are unreadable");
+        return;
+    };
+    // Twice the slot is over the larger cap, so neither buffer can be asked for.
+    let big = (send_cap.max(recv_cap) / 2 + 64).next_multiple_of(64);
+    if big > 64 << 20 {
+        eprintln!("skipped: caps of {send_cap} and {recv_cap} bytes need {big}-byte slots");
+        return;
+    }
+    eprintln!("caps: send {send_cap}, receive {recv_cap}; slot {big}");
     let rt = runtime();
     let a = bind(&rt, 17, None);
     let b = bind(&rt, 18, None);
     b.allowed().allow(a.public_key());
     let mut fabric = Tcp::new(&rt, &a, &b, 900);
-    let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
-    // 1 MiB slots: twice that is over Linux's default 212 992-byte cap.
-    let big = 1 << 20;
-    let receiver_pool = fabric.pool(big, 2 + u32::from(CONTROL_RECEIVES));
-    let sending = spec(key(6, 7), &a, &sender_pool, 0);
-    let mut receiving = spec(key(6, 7), &b, &receiver_pool, 2);
-    receiving.slot_size = Bytes(big as u64);
-    let to_b = remote(&b);
-    let (sender, receiver) =
-        rt.block_on(async { tokio::join!(a.connect(&to_b, sending), b.accept(receiving)) });
-    assert!(sender.is_ok() && receiver.is_ok());
-    assert_eq!(a.stats().buffers_autotuned, 1);
-    assert_eq!(b.stats().buffers_autotuned, 1);
+    // Three channels, so a count that lagged its `connect` or `accept` would show.
+    for lane in 0..3u16 {
+        let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+        let receiver_pool = fabric.pool(big, 2 + u32::from(CONTROL_RECEIVES));
+        let sending = spec(key(6, 7 + lane), &a, &sender_pool, 0);
+        let mut receiving = spec(key(6, 7 + lane), &b, &receiver_pool, 2);
+        receiving.slot_size = Bytes(big as u64);
+        let to_b = remote(&b);
+        let (sender, receiver) =
+            rt.block_on(async { tokio::join!(a.connect(&to_b, sending), b.accept(receiving)) });
+        assert!(sender.is_ok() && receiver.is_ok());
+        let opened = u64::from(lane) + 1;
+        assert_eq!(
+            a.stats().buffers_autotuned,
+            opened,
+            "the connector, channel {opened}"
+        );
+        assert_eq!(
+            b.stats().buffers_autotuned,
+            opened,
+            "the acceptor, channel {opened}"
+        );
+    }
 }
 
 /// The listener requires the data ALPN: a client that completes TLS with an allowed key but no

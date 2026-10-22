@@ -551,8 +551,9 @@ fn control_spec(spec: &ChannelSpec) -> ControlSpec {
 
 /// The largest `SO_SNDBUF` and `SO_RCVBUF` an unprivileged process may ask for: Linux's
 /// `net.core.wmem_max` and `net.core.rmem_max`, read once. `None` where the cap is not known,
-/// so the request is made as asked.
-fn buffer_caps() -> (Option<usize>, Option<usize>) {
+/// such as on another OS or with `/proc/sys` unreadable, so the request is made as asked. The
+/// values differ between hosts: hosted CI runners do not all keep the 212 992-byte default.
+pub fn buffer_caps() -> (Option<usize>, Option<usize>) {
     #[cfg(target_os = "linux")]
     {
         static CAPS: std::sync::OnceLock<(Option<usize>, Option<usize>)> =
@@ -1312,8 +1313,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_slot_over_the_linux_cap_is_left_to_autotuning() {
-        let (send_cap, recv_cap) = buffer_caps();
-        let (send_cap, recv_cap) = (send_cap.unwrap(), recv_cap.unwrap());
+        let (Some(send_cap), Some(recv_cap)) = buffer_caps() else {
+            eprintln!("skipped: this host's buffer caps are unreadable");
+            return;
+        };
         let large = Bytes(u64::try_from(send_cap.max(recv_cap)).unwrap());
         let (send, recv, autotuned) = buffer_plan(large);
         assert_eq!((send, recv, autotuned), (None, None, true));
