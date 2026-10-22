@@ -31,11 +31,17 @@ const IF_TYPE_TUNNEL: u32 = 131;
 
 /// The PowerShell that prints one line per adapter (`A`), address (`I`) and default route
 /// (`R`), with tab-separated fields.
-pub const SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
+///
+/// - It writes UTF-8, since Windows PowerShell otherwise writes redirected output in the OEM
+///   code page, which would garble a non-ASCII adapter name.
+/// - It prints each adapter's numeric `InterfaceOperationalStatus` (`ifOperStatus`: 1 is up)
+///   rather than its `Status` text, which is localised.
+pub const SCRIPT: &str = r#"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$ErrorActionPreference = 'Stop'
 foreach ($a in Get-NetAdapter) {
   $parent = ''
   try { $parent = [string](Get-PnpDeviceProperty -InstanceId $a.PnPDeviceID -KeyName 'DEVPKEY_Device_Parent').Data } catch { }
-  "A`t$($a.InterfaceIndex)`t$($a.Name)`t$($a.InterfaceDescription)`t$($a.InterfaceType)`t$($a.Status)`t$($a.MtuSize)`t$($a.Speed)`t$parent"
+  "A`t$($a.InterfaceIndex)`t$($a.Name)`t$($a.InterfaceDescription)`t$($a.InterfaceType)`t$($a.InterfaceOperationalStatus)`t$($a.MtuSize)`t$($a.Speed)`t$parent"
 }
 foreach ($i in Get-NetIPAddress) { "I`t$($i.InterfaceIndex)`t$($i.IPAddress)`t$($i.PrefixLength)" }
 foreach ($r in Get-NetRoute -DestinationPrefix '0.0.0.0/0','::/0' -ErrorAction SilentlyContinue) { "R`t$($r.InterfaceIndex)" }
@@ -52,7 +58,7 @@ pub struct Adapter {
     pub description: String,
     /// Its IANA `IfType`.
     pub if_type: u32,
-    /// Its status is `Up`.
+    /// Its operational status is up (`ifOperStatus` 1).
     pub up: bool,
     /// Its MTU, or 0 if not reported.
     pub mtu: u32,
@@ -75,65 +81,73 @@ pub struct Parsed {
 }
 
 /// Reads [`SCRIPT`]'s output. A link-local address such as `fe80::1%12` keeps its zone as its
-/// scope.
-pub fn parse(text: &str) -> Result<Parsed, IfaceError> {
+/// scope. A line that does not read is skipped, with a warning.
+pub fn parse(text: &str) -> (Parsed, Vec<IfaceError>) {
     const SOURCE: &str = "PowerShell Get-NetAdapter";
     let mut parsed = Parsed::default();
+    let mut warnings = Vec::new();
     for line in text.lines() {
         let line = line.trim_end_matches('\r');
         if line.trim().is_empty() {
             continue;
         }
-        let bad = || IfaceError::parse(SOURCE, line);
-        let fields: Vec<&str> = line.split('\t').collect();
-        let number = |s: &str| s.trim().parse::<u32>().map_err(|_| bad());
-        match fields[..] {
-            [
-                "A",
-                index,
-                name,
-                description,
-                if_type,
-                status,
-                mtu,
-                speed,
-                parent,
-            ] => {
-                parsed.adapters.push(Adapter {
-                    index: number(index)?,
-                    name: name.to_owned(),
-                    description: description.to_owned(),
-                    if_type: number(if_type)?,
-                    up: status == "Up",
-                    mtu: if mtu.trim().is_empty() {
-                        0
-                    } else {
-                        number(mtu)?
-                    },
-                    speed_bps: speed.trim().parse::<u64>().ok().filter(|&s| s > 0),
-                    parent: parent.to_owned(),
-                });
-            }
-            ["I", index, addr, prefix] => {
-                let (text, zone) = match addr.split_once('%') {
-                    Some((text, zone)) => (text, Some(number(zone)?)),
-                    None => (addr, None),
-                };
-                let addr: IpAddr = text.parse().map_err(|_| bad())?;
-                let prefix: u8 = prefix.trim().parse().map_err(|_| bad())?;
-                let mut net = IpNet::new(addr, prefix).ok_or_else(bad)?;
-                if let Some(zone) = zone {
-                    net = net.with_scope(zone);
-                }
-                parsed.addrs.push((number(index)?, net));
-            }
-            ["R", index] => {
-                parsed.defaults.insert(number(index)?);
-            }
-            _ => return Err(bad()),
+        if read_line(line, &mut parsed).is_none() {
+            warnings.push(IfaceError::parse(SOURCE, line));
         }
     }
-    Ok(parsed)
+    (parsed, warnings)
+}
+
+/// Reads one line of [`SCRIPT`]'s output into `parsed`. `None` if it does not read.
+fn read_line(line: &str, parsed: &mut Parsed) -> Option<()> {
+    let fields: Vec<&str> = line.split('\t').collect();
+    let number = |s: &str| s.trim().parse::<u32>().ok();
+    match fields[..] {
+        [
+            "A",
+            index,
+            name,
+            description,
+            if_type,
+            status,
+            mtu,
+            speed,
+            parent,
+        ] => {
+            parsed.adapters.push(Adapter {
+                index: number(index)?,
+                name: name.to_owned(),
+                description: description.to_owned(),
+                if_type: number(if_type)?,
+                up: number(status) == Some(1),
+                mtu: if mtu.trim().is_empty() {
+                    0
+                } else {
+                    number(mtu)?
+                },
+                speed_bps: speed.trim().parse::<u64>().ok().filter(|&s| s > 0),
+                parent: parent.to_owned(),
+            });
+        }
+        ["I", index, addr, prefix] => {
+            let (text, zone) = match addr.split_once('%') {
+                Some((text, zone)) => (text, Some(number(zone)?)),
+                None => (addr, None),
+            };
+            let addr: IpAddr = text.parse().ok()?;
+            let prefix: u8 = prefix.trim().parse().ok()?;
+            let mut net = IpNet::new(addr, prefix)?;
+            if let Some(zone) = zone {
+                net = net.with_scope(zone);
+            }
+            parsed.addrs.push((number(index)?, net));
+        }
+        ["R", index] => {
+            parsed.defaults.insert(number(index)?);
+        }
+        _ => return None,
+    }
+    Some(())
 }
 
 /// RFC-0030 §7.2's Windows row, in order:
@@ -209,14 +223,33 @@ pub fn observe(parsed: &Parsed) -> Vec<Observed> {
         .collect()
 }
 
-/// Runs [`SCRIPT`] and observes this host's adapters.
+/// Runs [`SCRIPT`] and observes this host's adapters. PowerShell is started by its full path
+/// under `%SystemRoot%`, so no `powershell.exe` elsewhere on the search path runs instead, and
+/// with `CREATE_NO_WINDOW`, so a daemon with no console of its own flashes no window. It
+/// fails only when PowerShell cannot be run.
 #[cfg(target_os = "windows")]
-pub(crate) fn gather() -> Result<Vec<Observed>, IfaceError> {
-    let text = super::run(
-        "powershell.exe",
-        &["-NoProfile", "-NonInteractive", "-Command", SCRIPT],
-    )?;
-    Ok(observe(&parse(&text)?))
+pub(crate) fn gather() -> Result<super::Gathered, IfaceError> {
+    use std::os::windows::process::CommandExt;
+
+    /// `CREATE_NO_WINDOW`, a process creation flag.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let root =
+        std::env::var_os("SystemRoot").unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
+    let program = std::path::Path::new(&root)
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    let shown = format!("`{} -Command <SCRIPT>`", program.display());
+    let mut command = std::process::Command::new(&program);
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .creation_flags(CREATE_NO_WINDOW);
+    let mut warnings = Vec::new();
+    let text = super::output_text(&mut command, &shown, &mut warnings)?;
+    let (parsed, parse_warnings) = parse(&text);
+    warnings.extend(parse_warnings);
+    Ok((observe(&parsed), warnings))
 }
 
 #[cfg(test)]
@@ -227,12 +260,14 @@ mod tests {
     use super::*;
 
     const OUTPUT: &str = "\
-A\t12\tEthernet\tIntel(R) Ethernet Controller I225-V\t6\tUp\t1500\t2500000000\tPCI\\VEN_8086&DEV_15F3\\3&11583659&0&E8\r
-A\t15\tWi-Fi\tIntel(R) Wi-Fi 6E AX211 160MHz\t71\tUp\t1500\t1200000000\tPCI\\VEN_8086&DEV_51F0\\3&11583659&0&A3\r
-A\t21\tEthernet 3\tThunderbolt(TM) Networking\t6\tUp\t1500\t20000000000\t\r
-A\t22\tEthernet 4\tUSB Network Adapter\t6\tDisconnected\t1500\t0\tTHUNDERBOLT\\0000\\1\r
-A\t30\tTailscale\tTailscale Tunnel\t53\tUp\t1280\t100000000000\t\r
-A\t31\tvEthernet (Lab)\tHyper-V Virtual Ethernet Adapter\t6\tUp\t\t10000000000\t\r
+A\t12\tEthernet\tIntel(R) Ethernet Controller I225-V\t6\t1\t1500\t2500000000\tPCI\\VEN_8086&DEV_15F3\\3&11583659&0&E8\r
+A\t15\tWi-Fi\tIntel(R) Wi-Fi 6E AX211 160MHz\t71\t1\t1500\t1200000000\tPCI\\VEN_8086&DEV_51F0\\3&11583659&0&A3\r
+A\t21\tEthernet 3\tThunderbolt(TM) Networking\t6\t1\t1500\t20000000000\t\r
+A\t22\tEthernet 4\tUSB Network Adapter\t6\t2\t1500\t0\tTHUNDERBOLT\\0000\\1\r
+A\t30\tTailscale\tTailscale Tunnel\t53\t1\t1280\t100000000000\t\r
+A\t31\tvEthernet (Lab)\tHyper-V Virtual Ethernet Adapter\t6\t1\t\t10000000000\t\r
+A\t33\tBluetooth-Netzwerkverbindung\tBluetooth-Gerät (PAN)\t6\t2\t1500\t3000000\tBTH\\MS_BTHPAN\\6&2A0B1C3D&0&2\r
+A\t34\tEthernet für Büro\tRealtek USB GbE Family Controller\t6\t1\t1500\t1000000000\t\r
 I\t12\t192.168.1.30\t24\r
 I\t12\tfe80::a1b2:c3d4:e5f6:7788%12\t64\r
 I\t15\t192.168.1.31\t24\r
@@ -245,8 +280,9 @@ R\t15\r
 
     #[test]
     fn parses_the_script_output() {
-        let parsed = parse(OUTPUT).unwrap();
-        assert_eq!(parsed.adapters.len(), 6);
+        let (parsed, warnings) = parse(OUTPUT);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(parsed.adapters.len(), 8);
         let eth = &parsed.adapters[0];
         assert_eq!(
             (eth.index, eth.name.as_str(), eth.if_type, eth.up),
@@ -269,13 +305,22 @@ R\t15\r
             parsed.defaults.iter().copied().collect::<Vec<_>>(),
             [12, 15]
         );
-        assert!(parse("X\t1\n").is_err());
-        assert!(parse("A\tnot-a-number\tEthernet\td\t6\tUp\t1500\t0\t\n").is_err());
+        // Non-ASCII names and descriptions read as written.
+        let pan = &parsed.adapters[6];
+        assert_eq!(pan.description, "Bluetooth-Gerät (PAN)");
+        assert!(!pan.up);
+        assert_eq!(parsed.adapters[7].name, "Ethernet für Büro");
+        assert!(parsed.adapters[7].up);
+        // A line that does not read costs only that line.
+        let (parsed, warnings) = parse(&format!(
+            "X\t1\nA\tnot-a-number\tEthernet\td\t6\t1\t1500\t0\t\n{OUTPUT}"
+        ));
+        assert_eq!((parsed.adapters.len(), warnings.len()), (8, 2));
     }
 
     #[test]
     fn classifies_each_row_of_the_table() {
-        let observed = observe(&parse(OUTPUT).unwrap());
+        let observed = observe(&parse(OUTPUT).0);
         let by = |name: &str| observed.iter().find(|o| o.name == name).unwrap();
         assert_eq!(by("Ethernet").medium, NetMedium::Ethernet);
         assert_eq!(by("Ethernet").speed_mbps, Some(2500));

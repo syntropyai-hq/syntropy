@@ -71,21 +71,39 @@ impl SysfsIface {
 }
 
 /// Reads every interface under `root`, normally `/sys/class/net`. An interface that vanishes
-/// while it is read is left out.
-pub fn read_sysfs(root: &Path) -> Result<Vec<SysfsIface>, IfaceError> {
+/// while it is read is left out. One whose files cannot be read is left out with a warning.
+/// Only an unreadable `root` fails.
+pub fn read_sysfs(root: &Path) -> Result<(Vec<SysfsIface>, Vec<IfaceError>), IfaceError> {
     let shown = root.display().to_string();
     let entries = fs::read_dir(root).map_err(|e| IfaceError::source(&shown, e))?;
     let mut out = Vec::new();
+    let mut warnings = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|e| IfaceError::source(&shown, e))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                warnings.push(IfaceError::source(&shown, e));
+                continue;
+            }
+        };
         let name = entry.file_name().to_string_lossy().into_owned();
         let dir = root.join(&name);
-        let arphrd = match read_number(&dir.join("type"), 10)? {
-            Some(value) => value,
-            None => continue,
+        let numbers = (|| -> Result<Option<(u32, u32, u32)>, IfaceError> {
+            let Some(arphrd) = read_number(&dir.join("type"), 10)? else {
+                return Ok(None);
+            };
+            let iff = read_number(&dir.join("flags"), 16)?.unwrap_or(0);
+            let mtu = read_number(&dir.join("mtu"), 10)?.unwrap_or(0);
+            Ok(Some((arphrd, iff, mtu)))
+        })();
+        let (arphrd, iff, mtu) = match numbers {
+            Ok(Some(numbers)) => numbers,
+            Ok(None) => continue,
+            Err(e) => {
+                warnings.push(e);
+                continue;
+            }
         };
-        let iff = read_number(&dir.join("flags"), 16)?.unwrap_or(0);
-        let mtu = read_number(&dir.join("mtu"), 10)?.unwrap_or(0);
         // `speed` is unreadable (EINVAL) or -1 when the link is down or the driver has none.
         let speed_mbps = fs::read_to_string(dir.join("speed"))
             .ok()
@@ -119,7 +137,7 @@ pub fn read_sysfs(root: &Path) -> Result<Vec<SysfsIface>, IfaceError> {
             is_bridge: dir.join("bridge").exists(),
         });
     }
-    Ok(out)
+    Ok((out, warnings))
 }
 
 /// A number in `path`, in `radix` (16 accepts a `0x` prefix). `None` if the file is gone.
@@ -143,51 +161,74 @@ fn read_number(path: &Path, radix: u32) -> Result<Option<u32>, IfaceError> {
 
 /// The addresses in `/proc/net/if_inet6`: one line per address, as `address ifindex prefix
 /// scope flags name`, all in hex but the name. A link-local address keeps its interface
-/// index as its scope.
-pub fn parse_if_inet6(text: &str) -> Result<Vec<(String, IpNet)>, IfaceError> {
+/// index as its scope. A line that does not read is skipped, with a warning.
+pub fn parse_if_inet6(text: &str) -> (Vec<(String, IpNet)>, Vec<IfaceError>) {
     const SOURCE: &str = "/proc/net/if_inet6";
-    let mut out = Vec::new();
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+    let one = |line: &str| -> Option<(String, IpNet)> {
         let fields: Vec<&str> = line.split_whitespace().collect();
         let [addr, index, prefix, scope, _flags, name] = fields[..] else {
-            return Err(IfaceError::parse(SOURCE, line));
+            return None;
         };
-        let bad = || IfaceError::parse(SOURCE, line);
-        let addr = u128::from_str_radix(addr, 16).map_err(|_| bad())?;
-        let index = u32::from_str_radix(index, 16).map_err(|_| bad())?;
-        let prefix = u8::from_str_radix(prefix, 16).map_err(|_| bad())?;
-        let scope = u32::from_str_radix(scope, 16).map_err(|_| bad())?;
-        let mut net = IpNet::new(IpAddr::V6(Ipv6Addr::from(addr)), prefix).ok_or_else(bad)?;
+        let addr = u128::from_str_radix(addr, 16).ok()?;
+        let index = u32::from_str_radix(index, 16).ok()?;
+        let prefix = u8::from_str_radix(prefix, 16).ok()?;
+        let scope = u32::from_str_radix(scope, 16).ok()?;
+        let mut net = IpNet::new(IpAddr::V6(Ipv6Addr::from(addr)), prefix)?;
         if scope == SCOPE_LINK {
             net = net.with_scope(index);
         }
-        out.push((name.to_owned(), net));
+        Some((name.to_owned(), net))
+    };
+    lines_of(text, SOURCE, one)
+}
+
+/// Each non-blank line of `text` read by `one`, and a warning for each line `one` refuses.
+fn lines_of<T>(
+    text: &str,
+    source: &str,
+    one: impl Fn(&str) -> Option<T>,
+) -> (Vec<T>, Vec<IfaceError>) {
+    let mut out = Vec::new();
+    let mut warnings = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        match one(line) {
+            Some(item) => out.push(item),
+            None => warnings.push(IfaceError::parse(source, line)),
+        }
     }
-    Ok(out)
+    (out, warnings)
 }
 
 /// The IPv4 addresses in `ip -o -4 addr show`'s output: one line per address, as
-/// `index: name inet address/prefix …`. A name such as `eth0.10@eth0` is cut at the `@`.
-pub fn parse_ip_addr_v4(text: &str) -> Result<Vec<(String, IpNet)>, IfaceError> {
+/// `index: name inet address/prefix …`, or for a point-to-point address (OpenVPN's `tun0`,
+/// `ppp0`, `ip addr add A peer B`) `index: name inet LOCAL peer PEER/prefix …`, which is read
+/// as `LOCAL` with that prefix, as the kernel holds it. A name such as `eth0.10@eth0` is cut at
+/// the `@`. A line that does not read is skipped, with a warning.
+pub fn parse_ip_addr_v4(text: &str) -> (Vec<(String, IpNet)>, Vec<IfaceError>) {
     const SOURCE: &str = "`ip -o -4 addr show`";
-    let mut out = Vec::new();
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+    let one = |line: &str| -> Option<(String, IpNet)> {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        let bad = || IfaceError::parse(SOURCE, line);
-        let (Some(name), Some(&"inet"), Some(cidr)) = (fields.get(1), fields.get(2), fields.get(3))
+        let (Some(name), Some(&"inet"), Some(local)) =
+            (fields.get(1), fields.get(2), fields.get(3))
         else {
-            return Err(bad());
+            return None;
         };
         let name = name.split('@').next().unwrap_or(name);
-        let (addr, prefix) = cidr.split_once('/').ok_or_else(bad)?;
-        let addr: Ipv4Addr = addr.parse().map_err(|_| bad())?;
-        let prefix: u8 = prefix.parse().map_err(|_| bad())?;
-        out.push((
-            name.to_owned(),
-            IpNet::new(IpAddr::V4(addr), prefix).ok_or_else(bad)?,
-        ));
-    }
-    Ok(out)
+        let (addr, prefix) = match local.split_once('/') {
+            Some(pair) => pair,
+            None => {
+                // `LOCAL peer PEER/prefix`: the prefix is on the peer.
+                let (Some(&"peer"), Some(peer)) = (fields.get(4), fields.get(5)) else {
+                    return None;
+                };
+                (*local, peer.split_once('/')?.1)
+            }
+        };
+        let addr: Ipv4Addr = addr.parse().ok()?;
+        let prefix: u8 = prefix.parse().ok()?;
+        Some((name.to_owned(), IpNet::new(IpAddr::V4(addr), prefix)?))
+    };
+    lines_of(text, SOURCE, one)
 }
 
 /// The interfaces that carry a default route: an up IPv4 route to 0.0.0.0/0 in
@@ -241,11 +282,15 @@ pub fn parse_nmcli_metered(text: &str) -> BTreeMap<String, bool> {
     out
 }
 
-/// RFC-0030 §7.2's Linux row, in order: loopback; Wi-Fi when the interface has a wireless
-/// marker, whatever its type; Thunderbolt IP when its driver is `thunderbolt-net`; overlay
-/// when its name is `tailscale*`, `wg*` or `tun*` or it holds a tailnet address; Ethernet when
-/// its type is `ARPHRD_ETHER`. Any other type is a tunnel (`tun`, `sit`, `gre`, `ipip`, …),
-/// so an overlay.
+/// RFC-0030 §7.2's Linux row, in order:
+/// - loopback;
+/// - Wi-Fi when the interface has a wireless marker, whatever its type;
+/// - Thunderbolt IP when its driver is `thunderbolt-net`;
+/// - overlay when it holds a tailnet address, or its name is `tailscale*`, `wg*` or `tun*` and
+///   its type is not `ARPHRD_ETHER`. A name alone never overrides an Ethernet type, so an
+///   Ethernet interface that happens to be named `wg…` stays Ethernet;
+/// - Ethernet when its type is `ARPHRD_ETHER`;
+/// - an overlay for any other type, a tunnel (`tun`, `sit`, `gre`, `ipip`, …).
 pub fn classify(iface: &SysfsIface, addrs: &[IpNet]) -> NetMedium {
     let overlay_name = ["tailscale", "wg", "tun"]
         .iter()
@@ -256,7 +301,9 @@ pub fn classify(iface: &SysfsIface, addrs: &[IpNet]) -> NetMedium {
         NetMedium::WiFi
     } else if iface.thunderbolt() {
         NetMedium::ThunderboltIp
-    } else if overlay_name || addrs.iter().any(|a| is_tailnet(a.addr)) {
+    } else if (overlay_name && iface.arphrd != ARPHRD_ETHER)
+        || addrs.iter().any(|a| is_tailnet(a.addr))
+    {
         NetMedium::Overlay
     } else if iface.arphrd == ARPHRD_ETHER {
         NetMedium::Ethernet
@@ -310,9 +357,10 @@ pub fn observe(
         .collect()
 }
 
-/// Reads this host's sources and observes its interfaces.
+/// Reads this host's sources and observes its interfaces. It fails only when sysfs or
+/// `ip` cannot be read at all.
 #[cfg(target_os = "linux")]
-pub(crate) fn gather() -> Result<Vec<Observed>, IfaceError> {
+pub(crate) fn gather() -> Result<super::Gathered, IfaceError> {
     let optional = |path: &str| -> Result<String, IfaceError> {
         match fs::read_to_string(path) {
             Ok(text) => Ok(text),
@@ -321,9 +369,13 @@ pub(crate) fn gather() -> Result<Vec<Observed>, IfaceError> {
             Err(e) => Err(IfaceError::source(path, e)),
         }
     };
-    let sysfs = read_sysfs(Path::new("/sys/class/net"))?;
-    let mut addrs = parse_ip_addr_v4(&super::run("ip", &["-o", "-4", "addr", "show"])?)?;
-    addrs.extend(parse_if_inet6(&optional("/proc/net/if_inet6")?)?);
+    let (sysfs, mut warnings) = read_sysfs(Path::new("/sys/class/net"))?;
+    let v4_text = super::run("ip", &["-o", "-4", "addr", "show"], &mut warnings)?;
+    let (mut addrs, v4_warnings) = parse_ip_addr_v4(&v4_text);
+    warnings.extend(v4_warnings);
+    let (v6, v6_warnings) = parse_if_inet6(&optional("/proc/net/if_inet6")?);
+    addrs.extend(v6);
+    warnings.extend(v6_warnings);
     let defaults = parse_default_routes(
         &optional("/proc/net/route")?,
         &optional("/proc/net/ipv6_route")?,
@@ -343,7 +395,7 @@ pub(crate) fn gather() -> Result<Vec<Observed>, IfaceError> {
         .filter(|output| output.status.success())
         .map(|output| parse_nmcli_metered(&String::from_utf8_lossy(&output.stdout)))
         .unwrap_or_default();
-    Ok(observe(&sysfs, &addrs, &defaults, &metered))
+    Ok((observe(&sysfs, &addrs, &defaults, &metered), warnings))
 }
 
 #[cfg(test)]
@@ -408,6 +460,14 @@ mod tests {
         );
         // Any other tunnel type.
         assert_eq!(classify(&iface("sit0", 776), &[]), NetMedium::Overlay);
+        // A name alone does not make an Ethernet interface an overlay.
+        for name in ["wgx-not-wg", "tunnelbridge0", "tailscale-lab"] {
+            assert_eq!(
+                classify(&iface(name, ARPHRD_ETHER), &[]),
+                NetMedium::Ethernet,
+                "{name}"
+            );
+        }
         assert_eq!(
             classify(&iface("docker0", ARPHRD_ETHER), &[]),
             NetMedium::Ethernet
@@ -421,7 +481,8 @@ fe8000000000000002155dfffed4df5b 02 40 20 80     eth0
 00000000000000000000000000000001 01 80 10 80       lo
 fd7a115ca1e0000000000000000000aa 05 80 00 00 tailscale0
 ";
-        let parsed = parse_if_inet6(text).unwrap();
+        let (parsed, warnings) = parse_if_inet6(text);
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[0].0, "eth0");
         assert_eq!(
@@ -434,7 +495,9 @@ fd7a115ca1e0000000000000000000aa 05 80 00 00 tailscale0
         );
         assert_eq!((parsed[1].1.prefix_len, parsed[1].1.scope_id), (128, None));
         assert!(is_tailnet(parsed[2].1.addr));
-        assert!(parse_if_inet6("not a line").is_err());
+        // A line that does not read costs only that line.
+        let (parsed, warnings) = parse_if_inet6(&format!("not a line\n{text}"));
+        assert_eq!((parsed.len(), warnings.len()), (3, 1));
     }
 
     #[test]
@@ -444,11 +507,41 @@ fd7a115ca1e0000000000000000000aa 05 80 00 00 tailscale0
 2: eth0    inet 172.18.109.241/20 brd 172.18.111.255 scope global eth0\\       valid_lft forever preferred_lft forever
 7: eth0.10@eth0    inet 10.10.0.4/24 brd 10.10.0.255 scope global eth0.10\\       valid_lft forever preferred_lft forever
 ";
-        let parsed = parse_ip_addr_v4(text).unwrap();
+        let (parsed, warnings) = parse_ip_addr_v4(text);
+        assert!(warnings.is_empty(), "{warnings:?}");
         let names: Vec<&str> = parsed.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["lo", "eth0", "eth0.10"]);
         assert_eq!(parsed[1].1, v4("172.18.109.241", 20));
-        assert!(parse_ip_addr_v4("2: eth0 link/ether 00:15:5d:d4:df:5b").is_err());
+        // A line that does not read is skipped with a warning; the others stand.
+        let (parsed, warnings) =
+            parse_ip_addr_v4(&format!("2: eth0 link/ether 00:15:5d:d4:df:5b\n{text}"));
+        assert_eq!((parsed.len(), warnings.len()), (3, 1));
+    }
+
+    /// A point-to-point address prints its prefix on the peer, as OpenVPN's `tun0` and PPP's
+    /// `ppp0` do; it reads as the local address with that prefix.
+    #[test]
+    fn parses_point_to_point_addresses() {
+        let text = "\
+5: tun0    inet 10.8.0.6 peer 10.8.0.5/32 scope global tun0\\       valid_lft forever preferred_lft forever
+9: ppp0    inet 100.65.3.7 peer 10.64.64.64/32 scope global ppp0\\       valid_lft forever preferred_lft forever
+11: gre1    inet 192.0.2.1 peer 192.0.2.2/30 scope global gre1\\       valid_lft forever preferred_lft forever
+";
+        let (parsed, warnings) = parse_ip_addr_v4(text);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            parsed,
+            [
+                (String::from("tun0"), v4("10.8.0.6", 32)),
+                (String::from("ppp0"), v4("100.65.3.7", 32)),
+                (String::from("gre1"), v4("192.0.2.1", 30)),
+            ]
+        );
+        // `peer` with no prefix, or nothing after it, does not read.
+        let (parsed, warnings) = parse_ip_addr_v4(
+            "5: tun0    inet 10.8.0.6 peer 10.8.0.5 scope global tun0\n5: tun0    inet 10.8.0.6 peer\n",
+        );
+        assert_eq!((parsed.len(), warnings.len()), (0, 2));
     }
 
     #[test]
@@ -570,8 +663,11 @@ GENERAL.METERED:unknown
         symlink(net.join("br0"), net.join("thunderbolt0/master")).unwrap();
         // gone0: listed, but its files vanished.
         fs::create_dir_all(net.join("gone0")).unwrap();
+        // bad0: a `type` that does not read; it is left out with a warning.
+        write(&net.join("bad0/type"), "not-a-number\n");
 
-        let mut read = read_sysfs(&net).unwrap();
+        let (mut read, warnings) = read_sysfs(&net).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
         read.sort_by(|a, b| a.name.cmp(&b.name));
         let names: Vec<&str> = read.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["br0", "eth0", "thunderbolt0", "wlan0"]);

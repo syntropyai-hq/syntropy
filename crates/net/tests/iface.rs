@@ -20,7 +20,11 @@ use syntropy_net::iface::{Ordinals, interfaces};
 #[test]
 fn this_host_lists_its_interfaces() {
     let mut ordinals = Ordinals::new();
-    let ifaces = interfaces(&mut ordinals).expect("this host's interfaces");
+    let listing = interfaces(&mut ordinals).expect("this host's interfaces");
+    // A warning means a line this module misread on a real host, so it fails here even though
+    // it would not fail a listing.
+    assert!(listing.warnings.is_empty(), "{:#?}", listing.warnings);
+    let ifaces = listing.ifaces;
     assert!(!ifaces.is_empty(), "no interfaces at all");
     let ordinals_seen: BTreeSet<u16> = ifaces.iter().map(|i| i.ordinal).collect();
     assert_eq!(ordinals_seen.len(), ifaces.len(), "ordinals are unique");
@@ -47,7 +51,7 @@ fn this_host_lists_its_interfaces() {
     assert!(reachable.count() > 0, "{ifaces:#?}");
     // A second listing keeps every ordinal.
     let again = interfaces(&mut ordinals).expect("listed again");
-    for iface in &again {
+    for iface in &again.ifaces {
         if let Some(first) = ifaces.iter().find(|i| i.name == iface.name) {
             assert_eq!(first.ordinal, iface.ordinal, "{}", iface.name);
         }
@@ -72,7 +76,9 @@ fn this_host_lists_its_interfaces() {
 #[ignore = "rig only: set SYNTROPY_RIG_IFACES and run with --ignored"]
 fn rig_interfaces_are_classified() {
     let expected = std::env::var("SYNTROPY_RIG_IFACES").expect("SYNTROPY_RIG_IFACES is set");
-    let ifaces = interfaces(&mut Ordinals::new()).expect("this host's interfaces");
+    let ifaces = interfaces(&mut Ordinals::new())
+        .expect("this host's interfaces")
+        .ifaces;
     for pair in expected.split(',').filter(|p| !p.is_empty()) {
         let (name, medium) = pair.split_once('=').expect("name=Medium");
         let medium = match medium {

@@ -10,6 +10,12 @@
 //! Metered (`NWPath.isExpensive`) needs Network.framework, which this module does not call, so
 //! `METERED` stays unset; DIST-E6-T08 adds it. Every parser takes text, so tests run on any
 //! host.
+//!
+//! Known limit: the port names are the ones `networksetup` prints, which may be localised on a
+//! system in another language (`WLAN` for `Wi-Fi`). Such a port is then classified Ethernet.
+//! No non-English rig has checked this yet; if they are localised, DIST-E6-T08's
+//! Network.framework and SystemConfiguration calls take the interface type instead
+//! (RFC-0030 §7.2 note of 2026-10-22).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -61,94 +67,121 @@ impl IfconfigIface {
 
 /// The interfaces in `ifconfig -a`'s output. Each starts with an unindented
 /// `name: flags=8863<UP,…> mtu 1500` line; its `inet`, `inet6`, `media` and `member` lines
-/// follow, indented. Other indented lines are skipped.
-pub fn parse_ifconfig(text: &str) -> Result<Vec<IfconfigIface>, IfaceError> {
+/// follow, indented. Other indented lines are skipped. A header that does not read skips that
+/// interface, and an `inet`, `inet6` or `member` line that does not read skips that line, each
+/// with a warning.
+pub fn parse_ifconfig(text: &str) -> (Vec<IfconfigIface>, Vec<IfaceError>) {
     const SOURCE: &str = "`ifconfig -a`";
     let mut out: Vec<IfconfigIface> = Vec::new();
+    let mut warnings = Vec::new();
+    // Whether the indented lines belong to the last interface in `out`: not before the first
+    // header, and not after a header that did not read.
+    let mut open = false;
+    let mut seen_header = false;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let bad = || IfaceError::parse(SOURCE, line);
         if !line.starts_with(char::is_whitespace) {
-            let (name, rest) = line.split_once(": ").ok_or_else(bad)?;
-            let flags = rest
-                .split_once('<')
-                .and_then(|(_, after)| after.split_once('>'))
-                .map(|(list, _)| {
-                    list.split(',')
-                        .filter(|f| !f.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
-            let mtu = rest
-                .split_whitespace()
-                .skip_while(|w| *w != "mtu")
-                .nth(1)
-                .map(|m| m.parse().map_err(|_| bad()))
-                .transpose()?
-                .unwrap_or(0);
-            out.push(IfconfigIface {
-                name: name.to_owned(),
-                flags,
-                mtu,
-                ..IfconfigIface::default()
-            });
+            seen_header = true;
+            match ifconfig_header(line) {
+                Some(iface) => {
+                    out.push(iface);
+                    open = true;
+                }
+                None => {
+                    warnings.push(IfaceError::parse(SOURCE, line));
+                    open = false;
+                }
+            }
             continue;
         }
-        let Some(current) = out.last_mut() else {
-            return Err(bad());
-        };
-        let words: Vec<&str> = line.split_whitespace().collect();
-        match words.first().copied() {
-            Some("inet") => {
-                let addr: Ipv4Addr = words.get(1).ok_or_else(bad)?.parse().map_err(|_| bad())?;
-                let mask = words
-                    .iter()
-                    .position(|w| *w == "netmask")
-                    .and_then(|i| words.get(i + 1))
-                    .ok_or_else(bad)?;
-                let mask =
-                    u32::from_str_radix(mask.trim_start_matches("0x"), 16).map_err(|_| bad())?;
-                let prefix = u8::try_from(mask.count_ones()).map_err(|_| bad())?;
-                current
-                    .addrs
-                    .push(IpNet::new(IpAddr::V4(addr), prefix).ok_or_else(bad)?);
-            }
-            Some("inet6") => {
-                let text = words.get(1).ok_or_else(bad)?;
-                let addr: Ipv6Addr = text
-                    .split('%')
-                    .next()
-                    .unwrap_or(text)
-                    .parse()
-                    .map_err(|_| bad())?;
-                let after = |key: &str| {
-                    words
-                        .iter()
-                        .position(|w| *w == key)
-                        .and_then(|i| words.get(i + 1))
-                };
-                let prefix: u8 = after("prefixlen")
-                    .ok_or_else(bad)?
-                    .parse()
-                    .map_err(|_| bad())?;
-                let mut net = IpNet::new(IpAddr::V6(addr), prefix).ok_or_else(bad)?;
-                if let Some(scope) = after("scopeid") {
-                    let scope = u32::from_str_radix(scope.trim_start_matches("0x"), 16)
-                        .map_err(|_| bad())?;
-                    net = net.with_scope(scope);
+        match out.last_mut() {
+            Some(current) if open => {
+                if !ifconfig_detail(current, line) {
+                    warnings.push(IfaceError::parse(SOURCE, line));
                 }
-                current.addrs.push(net);
             }
-            Some("media:") => current.speed_mbps = media_speed(line),
-            Some("member:") => {
-                current
-                    .members
-                    .push((*words.get(1).ok_or_else(bad)?).to_owned());
-            }
+            // A skipped interface's lines go with it; a line before any header is noted.
+            _ if !seen_header => warnings.push(IfaceError::parse(SOURCE, line)),
             _ => {}
         }
     }
-    Ok(out)
+    (out, warnings)
+}
+
+/// An `ifconfig` header line: `name: flags=8863<UP,…> mtu 1500`.
+fn ifconfig_header(line: &str) -> Option<IfconfigIface> {
+    let (name, rest) = line.split_once(": ")?;
+    let flags = rest
+        .split_once('<')
+        .and_then(|(_, after)| after.split_once('>'))
+        .map(|(list, _)| {
+            list.split(',')
+                .filter(|f| !f.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mtu = match rest.split_whitespace().skip_while(|w| *w != "mtu").nth(1) {
+        Some(mtu) => mtu.parse().ok()?,
+        None => 0,
+    };
+    Some(IfconfigIface {
+        name: name.to_owned(),
+        flags,
+        mtu,
+        ..IfconfigIface::default()
+    })
+}
+
+/// Reads one indented `ifconfig` line into `iface`. `false` for an `inet`, `inet6` or
+/// `member` line that does not read.
+fn ifconfig_detail(iface: &mut IfconfigIface, line: &str) -> bool {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let after = |key: &str| {
+        words
+            .iter()
+            .position(|w| *w == key)
+            .and_then(|i| words.get(i + 1))
+            .copied()
+    };
+    let hex = |text: &str| u32::from_str_radix(text.trim_start_matches("0x"), 16).ok();
+    let net = match words.first().copied() {
+        Some("inet") => (|| {
+            let addr: Ipv4Addr = words.get(1)?.parse().ok()?;
+            let prefix = u8::try_from(hex(after("netmask")?)?.count_ones()).ok()?;
+            IpNet::new(IpAddr::V4(addr), prefix)
+        })(),
+        Some("inet6") => (|| {
+            let text = words.get(1)?;
+            let addr: Ipv6Addr = text.split('%').next().unwrap_or(text).parse().ok()?;
+            let prefix: u8 = after("prefixlen")?.parse().ok()?;
+            let net = IpNet::new(IpAddr::V6(addr), prefix)?;
+            match after("scopeid") {
+                Some(scope) => Some(net.with_scope(hex(scope)?)),
+                None => Some(net),
+            }
+        })(),
+        Some("media:") => {
+            iface.speed_mbps = media_speed(line);
+            return true;
+        }
+        Some("member:") => {
+            return match words.get(1) {
+                Some(member) => {
+                    iface.members.push((*member).to_owned());
+                    true
+                }
+                None => false,
+            };
+        }
+        _ => return true,
+    };
+    match net {
+        Some(net) => {
+            iface.addrs.push(net);
+            true
+        }
+        None => false,
+    }
 }
 
 /// The rate in a `media:` line: the first word in its parentheses, or after `media:`, as
@@ -246,23 +279,35 @@ pub fn observe(
         .collect()
 }
 
-/// Runs this host's tools and observes its interfaces.
+/// Runs this host's tools and observes its interfaces. It fails only when `networksetup` or
+/// `ifconfig` cannot be run.
 #[cfg(target_os = "macos")]
-pub(crate) fn gather() -> Result<Vec<Observed>, IfaceError> {
+pub(crate) fn gather() -> Result<super::Gathered, IfaceError> {
     use super::run;
-    let ports = parse_hardware_ports(&run("networksetup", &["-listallhardwareports"])?);
-    let ifaces = parse_ifconfig(&run("ifconfig", &["-a"])?)?;
+    let mut warnings = Vec::new();
+    let ports = parse_hardware_ports(&run(
+        "networksetup",
+        &["-listallhardwareports"],
+        &mut warnings,
+    )?);
+    let (ifaces, ifconfig_warnings) = parse_ifconfig(&run("ifconfig", &["-a"], &mut warnings)?);
+    warnings.extend(ifconfig_warnings);
     // `route` fails when there is no default route of that family; that is no default.
     let mut defaults = BTreeSet::new();
     for args in [
         &["-n", "get", "default"][..],
         &["-n", "get", "-inet6", "default"][..],
     ] {
-        if let Some(name) = run("route", args).ok().as_deref().and_then(parse_route_get) {
+        let mut ignored = Vec::new();
+        if let Some(name) = run("route", args, &mut ignored)
+            .ok()
+            .as_deref()
+            .and_then(parse_route_get)
+        {
             defaults.insert(name);
         }
     }
-    Ok(observe(&ifaces, &ports, &defaults))
+    Ok((observe(&ifaces, &ports, &defaults), warnings))
 }
 
 #[cfg(test)]
@@ -340,7 +385,8 @@ awdl0: flags=8943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1500
 
     #[test]
     fn parses_ifconfig() {
-        let ifaces = parse_ifconfig(IFCONFIG).unwrap();
+        let (ifaces, warnings) = parse_ifconfig(IFCONFIG);
+        assert!(warnings.is_empty(), "{warnings:?}");
         let names: Vec<&str> = ifaces.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(
             names,
@@ -359,7 +405,27 @@ awdl0: flags=8943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1500
         assert_eq!(ifaces[2].speed_mbps, None);
         assert_eq!(ifaces[4].members, ["en2"]);
         assert_eq!(ifaces[5].addrs[0].prefix_len, 32);
-        assert!(parse_ifconfig("\tinet 10.0.0.1 netmask 0xff000000").is_err());
+        let (none, warnings) = parse_ifconfig("\tinet 10.0.0.1 netmask 0xff000000");
+        assert_eq!((none.len(), warnings.len()), (0, 1));
+    }
+
+    /// A line or interface that does not read costs only itself.
+    #[test]
+    fn a_bad_line_costs_only_itself() {
+        let text = format!(
+            "{IFCONFIG}bad0 flags=8863<UP> mtu 1500\n\tinet 10.9.9.9 netmask 0xffffff00\nen7: flags=8863<UP,MULTICAST> mtu 1500\n\tinet 10.0.0.7 netmask nonsense\n\tinet 10.0.0.8 netmask 0xffffff00\n"
+        );
+        let (ifaces, warnings) = parse_ifconfig(&text);
+        // bad0's header has no `: `, so bad0 and its line are skipped; en7 keeps its good
+        // address and loses the bad one.
+        assert!(ifaces.iter().all(|i| i.name != "bad0"));
+        let en7 = ifaces.iter().find(|i| i.name == "en7").unwrap();
+        assert_eq!(
+            en7.addrs,
+            [IpNet::new("10.0.0.8".parse().unwrap(), 24).unwrap()]
+        );
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(ifaces.len(), 8);
     }
 
     #[test]
@@ -389,7 +455,7 @@ awdl0: flags=8943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1500
 
     #[test]
     fn classifies_each_row_of_the_table() {
-        let ifaces = parse_ifconfig(IFCONFIG).unwrap();
+        let (ifaces, _) = parse_ifconfig(IFCONFIG);
         let ports = parse_hardware_ports(PORTS);
         let defaults: BTreeSet<String> = [String::from("en0")].into();
         let observed = observe(&ifaces, &ports, &defaults);
@@ -420,10 +486,9 @@ awdl0: flags=8943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1500
 
     #[test]
     fn a_bridge_without_thunderbolt_members_is_ethernet() {
-        let ifaces = parse_ifconfig(
+        let (ifaces, _) = parse_ifconfig(
             "bridge1: flags=8863<UP,MULTICAST> mtu 1500\n\tmember: en0 flags=3<LEARNING,DISCOVER>\n",
-        )
-        .unwrap();
+        );
         let ports: BTreeMap<String, String> =
             [(String::from("en0"), String::from("Ethernet"))].into();
         let observed = observe(&ifaces, &ports, &BTreeSet::new());
