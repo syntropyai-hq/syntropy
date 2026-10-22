@@ -481,6 +481,14 @@ fn a_connection_that_never_starts_tls_is_let_go() {
     });
 }
 
+/// Writes `line` to the process's stderr, past the test harness's capture, so CI logs show it
+/// for a passing test too: which caps a runner had, and whether it skipped the check.
+#[cfg(target_os = "linux")]
+fn report(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "tcp autotuning test: {line}");
+}
+
 /// A channel whose receiver's slots are too large for the kernel's unprivileged buffer cap opens
 /// on sockets left to autotuning: the acceptor's, sized for its own slot, and the connector's
 /// send buffer, sized for the peer's slot from `HelloAck`. Both ends count it.
@@ -494,16 +502,20 @@ fn a_connection_that_never_starts_tls_is_let_go() {
 #[test]
 fn a_slot_over_the_kernel_cap_is_left_to_autotuning_and_counted() {
     let (Some(send_cap), Some(recv_cap)) = buffer_caps() else {
-        eprintln!("skipped: this host's buffer caps are unreadable");
+        report("SKIPPED: this host's buffer caps are unreadable");
         return;
     };
     // Twice the slot is over the larger cap, so neither buffer can be asked for.
     let big = (send_cap.max(recv_cap) / 2 + 64).next_multiple_of(64);
     if big > 64 << 20 {
-        eprintln!("skipped: caps of {send_cap} and {recv_cap} bytes need {big}-byte slots");
+        report(&format!(
+            "SKIPPED: caps of {send_cap} and {recv_cap} bytes need {big}-byte slots"
+        ));
         return;
     }
-    eprintln!("caps: send {send_cap}, receive {recv_cap}; slot {big}");
+    report(&format!(
+        "buffer caps: wmem_max {send_cap}, rmem_max {recv_cap}; slot {big}"
+    ));
     let rt = runtime();
     let a = bind(&rt, 17, None);
     let b = bind(&rt, 18, None);
