@@ -17,6 +17,7 @@ use std::process::Command;
 use syntropy_daemon::host_changes::script::write_revert_script;
 use syntropy_daemon::host_changes::{ChangeState, HostChangeKind, HostChangeLedger};
 
+/// A new directory, private to this user (0700), as a real state directory is.
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "syntropy-{name}-{}-{}",
@@ -27,6 +28,11 @@ fn temp_dir(name: &str) -> PathBuf {
             .as_nanos()
     ));
     fs::create_dir_all(&dir).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
     dir
 }
 

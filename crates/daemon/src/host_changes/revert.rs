@@ -180,6 +180,7 @@ pub fn revert_all(
     ledger: &mut HostChangeLedger,
     host: &mut impl Host,
 ) -> Result<Vec<Reverted>, LedgerError> {
+    check_private(ledger)?;
     let mut report = Vec::new();
     let ids: Vec<u32> = ledger.changes().iter().rev().map(|c| c.id).collect();
     for id in ids {
@@ -229,7 +230,16 @@ fn act(
             return Ok(Outcome::KeptPrior);
         }
         Decision::Remove => host.remove(change),
-        Decision::RestorePrior { from } => host.restore(change, &from),
+        Decision::RestorePrior { from } => {
+            // A saved copy is only ever the ledger's own; any other path is refused.
+            if from != ledger.prior_copy(change.id) {
+                return Ok(Outcome::Failed(format!(
+                    "the prior copy {} is not the ledger's own copy for this change",
+                    from.display()
+                )));
+            }
+            host.restore(change, &from)
+        }
         Decision::RestoreValue { value } => host.restore_value(change, &value),
     };
     match done {
@@ -240,6 +250,58 @@ fn act(
         Err(e) if e.kind() == io::ErrorKind::Unsupported => Ok(Outcome::Unsupported),
         Err(e) => Ok(Outcome::Failed(e.to_string())),
     }
+}
+
+/// Refuses to revert from state that someone else could have written: on Unix the state
+/// directory, the copies directory and the ledger file must belong to the running user, be no
+/// link, and be writable by no group or other user. A revert may run with more privilege than
+/// whoever could edit these, so the ledger is trusted only when they are private.
+fn check_private(ledger: &HostChangeLedger) -> Result<(), LedgerError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let state = ledger.state_dir();
+        let probe = state.join(format!(".owner-probe-{}", std::process::id()));
+        let insecure = |path: &Path, why: &str| LedgerError::Insecure {
+            path: path.to_owned(),
+            why: why.to_owned(),
+        };
+        let me = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .and_then(|f| f.metadata())
+            .map(|m| m.uid())
+            .map_err(|source| LedgerError::Io {
+                path: probe.clone(),
+                source,
+            });
+        let _ = fs::remove_file(&probe);
+        let me = me?;
+        for path in [
+            state.to_owned(),
+            state.join(super::COPIES_DIR),
+            state.join(super::LEDGER_FILE),
+        ] {
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(LedgerError::Io { path, source }),
+            };
+            if meta.file_type().is_symlink() {
+                return Err(insecure(&path, "it is a symbolic link"));
+            }
+            if meta.uid() != me {
+                return Err(insecure(&path, "it belongs to another user"));
+            }
+            if meta.mode() & 0o022 != 0 {
+                return Err(insecure(&path, "a group or other users can write to it"));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = ledger;
+    Ok(())
 }
 
 /// Records a closed change in the ledger, deletes its copies, and writes its revert marker so that
@@ -263,6 +325,82 @@ fn close(ledger: &mut HostChangeLedger, id: u32, state: ChangeState) -> Result<(
     })
 }
 
+/// Reads `path` without following a link: `None` if nothing is there, `Some(None)` if something
+/// other than a regular file is (a link, a directory), and `Some(Some(bytes))` for a regular file.
+/// On Unix the file read is checked to be the one inspected, so a swap between the check and the
+/// read is seen as a change.
+fn read_regular(path: &Path) -> io::Result<Option<Option<Vec<u8>>>> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if !meta.file_type().is_file() {
+        return Ok(Some(None));
+    }
+    let mut file = fs::File::open(path)?;
+    if !same_file(&meta, &file.metadata()?) {
+        return Ok(Some(None));
+    }
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut file, &mut bytes)?;
+    Ok(Some(Some(bytes)))
+}
+
+#[cfg(unix)]
+fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    a.len() == b.len() && b.file_type().is_file()
+}
+
+/// Replaces the regular file at `path` with `bytes`, without following a link: a new file is
+/// created next to it (never through an existing path), given the old file's permissions and,
+/// on Unix, its owner, and renamed over it.
+fn replace_in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() {
+        return Err(io::Error::other(format!(
+            "{} is no longer a regular file",
+            path.display()
+        )));
+    }
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map_or_else(Default::default, |n| n.to_string_lossy());
+    let tmp = dir.join(format!(".{name}.syntropy-revert-{}", std::process::id()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        io::Write::write_all(&mut file, bytes)?;
+        file.set_permissions(meta.permissions())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // Root gives the file back its owner. Anyone else can only keep their own, and a group
+            // they are not in is not worth failing the revert over.
+            if let Err(e) = std::os::unix::fs::fchown(&file, Some(meta.uid()), Some(meta.gid()))
+                && file.metadata()?.uid() != meta.uid()
+            {
+                return Err(e);
+            }
+        }
+        file.sync_all()?;
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// The host as the file system shows it: written files, symbolic links and shell start-up lines.
 /// Other kinds are [`io::ErrorKind::Unsupported`]; the generated revert script reverts them.
 #[derive(Clone, Copy, Debug, Default)]
@@ -282,10 +420,12 @@ impl Host for FsHost {
     fn observe(&self, ledger: &HostChangeLedger, change: &HostChange) -> io::Result<Observed> {
         match &change.kind {
             HostChangeKind::FileWritten { path } => {
-                let bytes = match fs::read(path) {
-                    Ok(bytes) => bytes,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Observed::Absent),
-                    Err(e) => return Err(e),
+                let Some(found) = read_regular(path)? else {
+                    return Ok(Observed::Absent);
+                };
+                // A link or directory where Syntropy wrote a file is not what it wrote.
+                let Some(bytes) = found else {
+                    return Ok(Observed::Changed);
                 };
                 let matches = match change.fingerprint {
                     Some(expected) => fingerprint(&bytes) == expected,
@@ -314,11 +454,18 @@ impl Host for FsHost {
                 let Some(rc) = shell_rc else {
                     return Ok(Observed::Absent);
                 };
-                match fs::read_to_string(rc) {
-                    Ok(text) if text.lines().any(|l| l == line) => Ok(Observed::AsRecorded),
-                    Ok(_) => Ok(Observed::Absent),
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Observed::Absent),
-                    Err(e) => Err(e),
+                match read_regular(rc)? {
+                    None => Ok(Observed::Absent),
+                    // A start-up file that is a link is left alone.
+                    Some(None) => Ok(Observed::Changed),
+                    Some(Some(bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        Ok(if text.lines().any(|l| l == line) {
+                            Observed::AsRecorded
+                        } else {
+                            Observed::Absent
+                        })
+                    }
                 }
             }
             _ => Err(unsupported(change)),
@@ -334,13 +481,19 @@ impl Host for FsHost {
                 shell_rc: Some(rc),
                 line,
             } => {
-                let text = fs::read_to_string(rc)?;
+                let Some(Some(bytes)) = read_regular(rc)? else {
+                    return Err(io::Error::other(format!(
+                        "{} is no longer a regular file",
+                        rc.display()
+                    )));
+                };
+                let text = String::from_utf8_lossy(&bytes);
                 let kept: Vec<&str> = text.lines().filter(|l| l != line).collect();
                 let mut out = kept.join("\n");
                 if text.ends_with('\n') && !kept.is_empty() {
                     out.push('\n');
                 }
-                fs::write(rc, out)
+                replace_in_place(rc, out.as_bytes())
             }
             _ => Err(unsupported(change)),
         }
@@ -348,7 +501,7 @@ impl Host for FsHost {
 
     fn restore(&mut self, change: &HostChange, from: &Path) -> io::Result<()> {
         match &change.kind {
-            HostChangeKind::FileWritten { path } => fs::copy(from, path).map(|_| ()),
+            HostChangeKind::FileWritten { path } => replace_in_place(path, &fs::read(from)?),
             _ => Err(unsupported(change)),
         }
     }
@@ -529,6 +682,7 @@ mod tests {
         }
     }
 
+    /// A private state directory, as a real one is (0700).
     fn temp_state() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "syntropy-revert-{}-{}",
@@ -539,6 +693,11 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         dir
     }
 
@@ -715,6 +874,104 @@ mod tests {
                 .changes()
                 .iter()
                 .all(|c| c.state == ChangeState::Reverted)
+        );
+    }
+
+    /// A saved copy outside the ledger's copies directory is never restored from: a tampered
+    /// ledger cannot make a revert copy an arbitrary file over another.
+    #[test]
+    fn a_prior_copy_outside_the_ledger_is_refused() {
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let target = state.join("t.conf");
+        let elsewhere = state.join("elsewhere");
+        fs::write(&elsewhere, b"attacker's content").unwrap();
+        let id = ledger
+            .begin(
+                HostChangeKind::FileWritten {
+                    path: target.clone(),
+                },
+                Some(PriorState::SavedAt {
+                    path: elsewhere.clone(),
+                }),
+                Some(fingerprint(b"ours")),
+                0,
+                "v",
+            )
+            .unwrap();
+        fs::write(&target, b"ours").unwrap();
+        ledger.applied(id).unwrap();
+        let report = revert_all(&mut ledger, &mut FsHost).unwrap();
+        assert!(
+            matches!(&report[0].outcome, Outcome::Failed(why) if why.contains("not the ledger's own copy")),
+            "{report:?}"
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"ours");
+    }
+
+    /// State that another user, or a group, could have written is not trusted.
+    #[cfg(unix)]
+    #[test]
+    fn state_others_can_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        ledger
+            .write_file(&state.join("a.conf"), b"x", 0, "v")
+            .unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o777)).unwrap();
+        let err = revert_all(&mut ledger, &mut FsHost).unwrap_err();
+        assert!(matches!(err, LedgerError::Insecure { .. }), "{err}");
+        assert!(state.join("a.conf").exists());
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        let copies = state.join(super::super::COPIES_DIR);
+        fs::set_permissions(&copies, fs::Permissions::from_mode(0o770)).unwrap();
+        let err = revert_all(&mut ledger, &mut FsHost).unwrap_err();
+        assert!(matches!(err, LedgerError::Insecure { .. }), "{err}");
+    }
+
+    /// A link where Syntropy wrote a file is not what it wrote: left in place, and its target is
+    /// never read or written.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_place_of_a_written_file_is_left() {
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let path = state.join("unit.service");
+        let id = ledger.write_file(&path, b"ours", 0, "v").unwrap();
+        let elsewhere = state.join("someone-elses-file");
+        fs::write(&elsewhere, b"ours").unwrap();
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+        let report = revert_all(&mut ledger, &mut FsHost).unwrap();
+        assert_eq!(report[0].id, id);
+        assert_eq!(report[0].outcome, Outcome::LeftEdited);
+        assert_eq!(fs::read(&elsewhere).unwrap(), b"ours");
+        assert!(
+            fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    /// Restoring replaces the file through a rename, keeping its permissions.
+    #[cfg(unix)]
+    #[test]
+    fn a_restored_file_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let path = state.join("app.conf");
+        fs::write(&path, b"theirs").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        ledger.write_file(&path, b"ours", 0, "v").unwrap();
+        let report = revert_all(&mut ledger, &mut FsHost).unwrap();
+        assert_eq!(report[0].outcome, Outcome::Reverted);
+        assert_eq!(fs::read(&path).unwrap(), b"theirs");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
         );
     }
 

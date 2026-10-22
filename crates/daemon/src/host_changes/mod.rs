@@ -230,6 +230,13 @@ pub enum LedgerError {
     },
     /// No change has this ID.
     UnknownId(u32),
+    /// The ledger's state could have been written by someone else, so a revert does not trust it.
+    Insecure {
+        /// The file or directory.
+        path: PathBuf,
+        /// Why it is not private.
+        why: String,
+    },
 }
 
 impl std::fmt::Display for LedgerError {
@@ -248,6 +255,11 @@ impl std::fmt::Display for LedgerError {
                 "the host-change ledger has format version {found}; this build reads {SCHEMA}"
             ),
             LedgerError::UnknownId(id) => write!(f, "no host change has ID {id}"),
+            LedgerError::Insecure { path, why } => write!(
+                f,
+                "refusing to revert from {}: {why}, so the ledger cannot be trusted",
+                path.display()
+            ),
         }
     }
 }
