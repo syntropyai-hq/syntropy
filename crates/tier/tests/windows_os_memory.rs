@@ -13,7 +13,7 @@ use syntropy_core::Bytes;
 use syntropy_core::budget::{HostBudgetInputs, HostBudgetPolicy, HostOs, host_usable};
 use syntropy_core::resource::HostMemInfo;
 use syntropy_tier::arena::{SlotClass, SlotGeometry};
-use syntropy_tier::os::windows::{WindowsMemory, job_memory, process_commit};
+use syntropy_tier::os::windows::{WindowsMemory, job_memory, process_commit, working_set_size};
 use syntropy_tier::os::{commit_if, commit_term, lock_or_pageable};
 use syntropy_tier::{
     CommitOutcome, HostRange, HugePages, LockOutcome, OsMemError, OsMemory, lock_ranges,
@@ -274,6 +274,54 @@ fn unlock_keeps_a_page_a_neighbour_shares() {
     os.unlock(&r, 0..2 * page).unwrap();
     assert_eq!(os.locked(), Bytes(0));
     os.release(r);
+}
+
+/// `QUOTA_LIMITS_HARDWS_MIN_ENABLE`.
+const HARDWS_MIN_ENABLE: u32 = 0x1;
+
+/// The hard working-set minimum covers locked bytes only while they are locked: after an
+/// unlock, and after a release of a locked range, the minimum and flags fall back to what the
+/// process had before.
+#[test]
+fn working_set_minimum_falls_back_after_unlock_and_release() {
+    let _process = locks_guard();
+    let (min0, _, flags0) = working_set_size().unwrap();
+    let os = WindowsMemory::new(Bytes(0));
+    let len = 16 * MIB;
+    let r = os.reserve(Bytes(len), None, HugePages::Off).unwrap();
+    os.commit(&r, 0..len).unwrap();
+
+    os.lock(&r, 0..len).unwrap();
+    let (min, _, flags) = working_set_size().unwrap();
+    assert!(
+        min as u64 >= min0 as u64 + len,
+        "minimum {min} after locking {len}"
+    );
+    assert_ne!(
+        flags & HARDWS_MIN_ENABLE,
+        0,
+        "no hard minimum: flags {flags:#x}"
+    );
+
+    // Half unlocked: the minimum falls by that half and stays hard.
+    os.unlock(&r, 0..len / 2).unwrap();
+    let (half, _, flags) = working_set_size().unwrap();
+    assert!(
+        half < min && half as u64 >= min0 as u64 + len / 2,
+        "minimum {half}"
+    );
+    assert_ne!(flags & HARDWS_MIN_ENABLE, 0);
+
+    os.unlock(&r, len / 2..len).unwrap();
+    let (min, _, flags) = working_set_size().unwrap();
+    assert_eq!((min, flags), (min0, flags0), "not restored after unlock");
+
+    os.lock(&r, 0..len).unwrap();
+    assert!(working_set_size().unwrap().0 > min0);
+    os.release(r);
+    let (min, _, flags) = working_set_size().unwrap();
+    assert_eq!((min, flags), (min0, flags0), "not restored after release");
+    assert_eq!(os.locked(), Bytes(0));
 }
 
 // ---- Job-object limits ---------------------------------------------------------------------

@@ -12,7 +12,8 @@
 //! - `lock`: raises the hard working-set minimum with `SetProcessWorkingSetSizeEx(min, max,
 //!   QUOTA_LIMITS_HARDWS_MIN_ENABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE)` to cover every byte the
 //!   process holds locked (counted across adapters, since the minimum is per process), then
-//!   `VirtualLock`s the range.
+//!   `VirtualLock`s the range. `unlock`, `release` and `Drop` lower the minimum to what stays
+//!   locked, and restore the original minimum, maximum and flags when nothing does.
 //! - `snapshot`: `GlobalMemoryStatusEx` (physical memory, and the commit limit and charge as
 //!   [`MemSnapshot::commit_headroom`]), the per-node available memory, the job object's memory
 //!   limits as [`MemSnapshot::cgroup`], and the low-memory resource notification as
@@ -209,7 +210,8 @@ pub struct JobMemory {
     /// This process's commit charge (`PrivateUsage`), which the process limit counts.
     pub process_usage: Bytes,
     /// `PeakJobMemoryUsed`: never below the job's current commit, so the headroom computed from
-    /// it is conservative.
+    /// it is conservative. The peak never falls, so after a transient spike in the job the
+    /// headroom stays understated for the life of the job.
     pub job_peak: Bytes,
 }
 
@@ -261,7 +263,9 @@ pub fn process_commit() -> Option<Bytes> {
 }
 
 /// The memory limits of this process's job object, `None` when it is in no job or the job
-/// cannot be queried.
+/// cannot be queried. Only the innermost job is read: a tighter limit on an outer job of a
+/// nested set is missed, and the OS then refuses the commit (`TIER_HOST_RESERVE`, the range
+/// stays `Underpinned`).
 pub fn job_memory() -> Option<JobMemory> {
     let mut info = sys::JobExtendedLimit::default();
     // SAFETY: a null job handle queries the job of the calling process; `info` is a writable
@@ -310,16 +314,17 @@ fn memory_status() -> Option<sys::MemoryStatusEx> {
 /// adapter's locked bytes are counted together and one minimum covers them all.
 #[derive(Debug)]
 struct WorkingSet {
-    /// The minimum before the first lock, which keeps the overhead the system needs.
-    base_min: Option<usize>,
+    /// The process's working-set minimum, maximum and flags before this module first changed
+    /// them; `None` while they are untouched. Restored when nothing is locked any more.
+    original: Option<(usize, usize, u32)>,
     /// Bytes locked through any adapter.
     locked: u64,
-    /// Whether the last hard working-set minimum request succeeded.
+    /// Whether the last working-set request succeeded.
     hard_min_ok: bool,
 }
 
 static WORKING_SET: Mutex<WorkingSet> = Mutex::new(WorkingSet {
-    base_min: None,
+    original: None,
     locked: 0,
     hard_min_ok: true,
 });
@@ -330,7 +335,8 @@ fn working_set() -> MutexGuard<'static, WorkingSet> {
     WORKING_SET.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn working_set_size() -> Result<(usize, usize, u32), i32> {
+/// This process's working-set minimum, maximum and flags (`GetProcessWorkingSetSizeEx`).
+pub fn working_set_size() -> Result<(usize, usize, u32), i32> {
     let (mut min, mut max, mut flags) = (0usize, 0usize, 0u32);
     // SAFETY: the pseudo-handle names this process; the three out-pointers are writable
     // locals.
@@ -344,27 +350,49 @@ fn working_set_size() -> Result<(usize, usize, u32), i32> {
     }
 }
 
-/// Raises the hard working-set minimum to cover `locked` bytes, keeping the maximum soft.
-fn cover_working_set(ws: &mut WorkingSet, locked: u64) -> Result<(), i32> {
-    let (min, max, flags) = working_set_size()?;
-    let base = *ws.base_min.get_or_insert(min);
-    let want = base.saturating_add(locked as usize);
-    if want <= min && flags & sys::QUOTA_LIMITS_HARDWS_MIN_ENABLE != 0 {
-        return Ok(());
-    }
-    let new_min = want.max(min);
-    let new_max = max.max(new_min.saturating_add(PAGE as usize * 64));
+fn set_working_set_size(min: usize, max: usize, flags: u32) -> Result<(), i32> {
     // SAFETY: the pseudo-handle names this process; the call takes integers only.
-    let ok = unsafe {
-        sys::SetProcessWorkingSetSizeEx(
-            sys::GetCurrentProcess(),
-            new_min,
-            new_max,
+    let ok = unsafe { sys::SetProcessWorkingSetSizeEx(sys::GetCurrentProcess(), min, max, flags) };
+    if ok != 0 { Ok(()) } else { Err(last_error()) }
+}
+
+/// Fits the working set to `locked` bytes, up or down. With bytes locked, the hard minimum is
+/// the original minimum, which keeps the overhead the system needs, plus `locked`, with the
+/// maximum soft. With nothing locked, the original minimum, maximum and flags come back, so a
+/// process that has given its locked memory back holds no raised minimum.
+fn fit_working_set(ws: &mut WorkingSet, locked: u64) -> Result<(), i32> {
+    let out = if locked == 0 {
+        match ws.original.take() {
+            Some((min, max, flags)) => set_working_set_size(min, max, flags),
+            None => Ok(()),
+        }
+    } else {
+        let (min0, max0, _) = match ws.original {
+            Some(o) => o,
+            None => *ws.original.insert(working_set_size()?),
+        };
+        let min = min0.saturating_add(locked as usize);
+        let max = max0.max(min.saturating_add(PAGE as usize * 64));
+        set_working_set_size(
+            min,
+            max,
             sys::QUOTA_LIMITS_HARDWS_MIN_ENABLE | sys::QUOTA_LIMITS_HARDWS_MAX_DISABLE,
         )
     };
-    ws.hard_min_ok = ok != 0;
-    if ok != 0 { Ok(()) } else { Err(last_error()) }
+    ws.hard_min_ok = out.is_ok();
+    out
+}
+
+/// Lowers the locked count by `freed` and fits the working set to what is left. A failure to
+/// lower is recorded in `hard_min_ok`; the bytes are unlocked either way.
+fn give_back(freed: u64) {
+    if freed == 0 {
+        return;
+    }
+    let mut ws = working_set();
+    ws.locked = ws.locked.saturating_sub(freed);
+    let left = ws.locked;
+    let _ = fit_working_set(&mut ws, left);
 }
 
 /// The Windows host-memory adapter.
@@ -574,7 +602,9 @@ impl OsMemory for WindowsMemory {
                     }))
                 };
                 let want = ws.locked + len as u64;
-                if let Err(errno) = cover_working_set(&mut ws, want) {
+                if let Err(errno) = fit_working_set(&mut ws, want) {
+                    let held = ws.locked;
+                    let _ = fit_working_set(&mut ws, held);
                     return refuse(errno);
                 }
                 // SAFETY: [addr, addr + len) lies inside a live reservation this adapter made,
@@ -585,13 +615,16 @@ impl OsMemory for WindowsMemory {
                     *self.by_range().entry(r.base as usize).or_default() += len as u64;
                     Ok(())
                 } else {
-                    refuse(last_error())
+                    let errno = last_error();
+                    let held = ws.locked;
+                    let _ = fit_working_set(&mut ws, held);
+                    refuse(errno)
                 }
             })
     }
 
     /// Unlocks only the pages wholly inside `sub`, so a page a neighbouring locked range
-    /// shares stays locked. The working-set minimum is not lowered.
+    /// shares stays locked, and lowers the working-set minimum to what stays locked.
     fn unlock(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError> {
         self.live
             .with_pages(r, &sub, PAGE, Round::Inward, |addr, len| {
@@ -605,8 +638,7 @@ impl OsMemory for WindowsMemory {
                     let freed = (*held).min(len as u64);
                     *held -= freed;
                     drop(by_range);
-                    let mut ws = working_set();
-                    ws.locked = ws.locked.saturating_sub(freed);
+                    give_back(freed);
                     Ok(())
                 } else {
                     Err(OsMemError::Unlock {
@@ -618,16 +650,13 @@ impl OsMemory for WindowsMemory {
 
     fn release(&self, r: HostRange) {
         self.live.remove_with(&r, || {
-            // Freeing a reservation unlocks its pages.
             let held = self.by_range().remove(&(r.base as usize));
-            if let Some(held) = held {
-                let mut ws = working_set();
-                ws.locked = ws.locked.saturating_sub(held);
-            }
             // SAFETY: the range is a live reservation this adapter made, just removed from the
             // registry, with the exclusive lock held, so no other call is acting on it.
             // MEM_RELEASE with size 0 frees the whole reservation from its base.
             unsafe { sys::VirtualFree(r.base.cast::<c_void>(), 0, sys::MEM_RELEASE) };
+            // Freeing a reservation unlocked its pages; lower the minimum to what stays locked.
+            give_back(held.unwrap_or(0));
         });
     }
 }
@@ -635,14 +664,12 @@ impl OsMemory for WindowsMemory {
 impl Drop for WindowsMemory {
     fn drop(&mut self) {
         let held: u64 = self.by_range().values().sum();
-        let mut ws = working_set();
-        ws.locked = ws.locked.saturating_sub(held);
-        drop(ws);
         for (base, _) in self.live.drain() {
             // SAFETY: each entry is a reservation this adapter made and never released; the
             // adapter is going away, so no call can reach it afterwards.
             unsafe { sys::VirtualFree(base as *mut c_void, 0, sys::MEM_RELEASE) };
         }
+        give_back(held);
         if self.low_memory != 0 {
             // SAFETY: the notification handle this adapter created, closed once.
             unsafe { sys::CloseHandle(self.low_memory as sys::Handle) };

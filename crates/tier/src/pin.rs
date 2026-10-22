@@ -132,34 +132,54 @@ pub fn slot_layout(geometry: &SlotGeometry, extents: &[(u32, Bytes)]) -> Vec<Uni
     }
 }
 
-/// Cuts a layout into registration units, which on Windows are the lock ranges (RFC-0020
-/// §4.2, §6.1).
+/// Cuts a layout into the Windows lock ranges of RFC-0020 §4.2: one range per run of whole
+/// slots of one group (a layer of weights, a slot class of a cache), at most `pin_step`.
 ///
-/// Units are cut only between slots, so no slot, and so no DMA, spans two of them. A unit
-/// never mixes groups, and holds as many whole slots as fit in `pin_step` (`tier.pin_step`,
-/// passed in until the config schema has the key, TIER-E1-T09). A slot longer than `pin_step`
-/// cannot be split without a DMA crossing a boundary, so it is a unit of its own, the one case
-/// where a unit exceeds `pin_step` (RFC-0020 §6.1, "that extent is its own unit").
+/// Ranges are cut only between slots, so no slot, and so no DMA, spans two of them. Each range
+/// holds as many whole slots as fit in `pin_step` (`tier.pin_step`, passed in until the config
+/// schema has the key, TIER-E1-T09). A slot longer than `pin_step` cannot be split without a
+/// DMA crossing a boundary, so it is a range of its own, the one case where a range exceeds
+/// `pin_step` (RFC-0020 §6.1, "that extent is its own unit"). A zero-length slot holds no
+/// bytes: it joins the range before it, or the first range after it, and a layout with no
+/// bytes gives no ranges, so no range is ever empty.
+///
+/// These are also §6.1's registration units on Windows, where units are the lock ranges. On
+/// other OSes §6.1 merges small groups up to `tier.pin_unit_min` (256 MiB); that floor is not
+/// applied here and belongs to the pinning loop (TIER-E2-T05, TIER-E2-T07).
 pub fn lock_ranges(slots: &[UnitSlot], pin_step: Bytes) -> Vec<LockRange> {
     let mut out: Vec<LockRange> = Vec::new();
+    // The group of each range, from its first slot with bytes.
+    let mut groups: Vec<u32> = Vec::new();
+    // Leading zero-length slots, waiting for the first range.
+    let mut lead: Option<usize> = None;
     let mut offset = 0u64;
     for (i, s) in slots.iter().enumerate() {
         let start = offset;
         offset = offset.saturating_add(s.len.0);
-        let joins = out.last().is_some_and(|last| {
-            last.slots.end == i
-                && slots[last.slots.start].group == s.group
-                && (last.bytes.end - last.bytes.start).saturating_add(s.len.0) <= pin_step.0
+        if s.len.0 == 0 {
+            match out.last_mut() {
+                Some(last) => last.slots.end = i + 1,
+                None => {
+                    lead.get_or_insert(i);
+                }
+            }
+            continue;
+        }
+        let joins = out.last().zip(groups.last()).is_some_and(|(last, &g)| {
+            g == s.group && last.len().0.saturating_add(s.len.0) <= pin_step.0
         });
         match out.last_mut() {
             Some(last) if joins => {
                 last.slots.end = i + 1;
                 last.bytes.end = offset;
             }
-            _ => out.push(LockRange {
-                slots: i..i + 1,
-                bytes: start..offset,
-            }),
+            _ => {
+                out.push(LockRange {
+                    slots: lead.take().unwrap_or(i)..i + 1,
+                    bytes: start..offset,
+                });
+                groups.push(s.group);
+            }
         }
     }
     out

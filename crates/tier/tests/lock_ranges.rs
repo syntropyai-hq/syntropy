@@ -20,24 +20,37 @@ fn check(slots: &[UnitSlot], step: Bytes, ranges: &[LockRange]) -> Result<(), Te
     for r in ranges {
         prop_assert_eq!(r.slots.start, next_slot);
         prop_assert_eq!(r.bytes.start, next_byte);
-        prop_assert!(r.slots.start < r.slots.end, "empty range {:?}", r);
+        prop_assert!(r.slots.start < r.slots.end, "range with no slots {:?}", r);
+        prop_assert!(!r.is_empty(), "range with no bytes {:?}", r);
         next_slot = r.slots.end;
         next_byte = r.bytes.end;
         let sum: u64 = slots[r.slots.clone()].iter().map(|s| s.len.0).sum();
         prop_assert_eq!(sum, r.len().0, "range {:?} is not its slots", r);
         // At most pin_step, unless the range is one slot that alone exceeds it.
+        let with_bytes: Vec<&UnitSlot> = slots[r.slots.clone()]
+            .iter()
+            .filter(|s| s.len.0 > 0)
+            .collect();
         prop_assert!(
-            r.len() <= step || (r.slots.len() == 1 && slots[r.slots.start].len > step),
+            r.len() <= step || (with_bytes.len() == 1 && with_bytes[0].len > step),
             "range {:?} exceeds {:?}",
             r,
             step
         );
-        // One group per range.
-        let g = slots[r.slots.start].group;
-        prop_assert!(slots[r.slots.clone()].iter().all(|s| s.group == g));
+        // One group per range, among the slots that hold bytes.
+        let g = with_bytes[0].group;
+        prop_assert!(with_bytes.iter().all(|s| s.group == g));
     }
-    prop_assert_eq!(next_slot, slots.len());
-    prop_assert_eq!(next_byte, total);
+    if total == 0 {
+        prop_assert!(
+            ranges.is_empty(),
+            "ranges for a layout with no bytes: {:?}",
+            ranges
+        );
+    } else {
+        prop_assert_eq!(next_slot, slots.len());
+        prop_assert_eq!(next_byte, total);
+    }
 
     // No slot spans two ranges: each slot's bytes lie inside the range that holds it.
     let mut offset = 0;
@@ -65,16 +78,22 @@ fn check(slots: &[UnitSlot], step: Bytes, ranges: &[LockRange]) -> Result<(), Te
     }
 
     // Greedy: a range ends only at a group change, at the step, or at the end.
+    let first_with_bytes =
+        |r: &LockRange| *slots[r.slots.clone()].iter().find(|s| s.len.0 > 0).unwrap();
     for w in ranges.windows(2) {
-        let next = &slots[w[1].slots.start];
-        let same_group = slots[w[0].slots.start].group == next.group;
+        let next = first_with_bytes(&w[1]);
+        let same_group = first_with_bytes(&w[0]).group == next.group;
         prop_assert!(!same_group || w[0].len().0 + next.len.0 > step.0);
     }
     Ok(())
 }
 
 fn slots() -> impl Strategy<Value = Vec<UnitSlot>> {
-    proptest::collection::vec((0u32..4, 0u64..96 * MIB), 0..64).prop_map(|mut v| {
+    proptest::collection::vec(
+        (0u32..4, prop_oneof![1 => Just(0u64), 7 => 0u64..96 * MIB]),
+        0..64,
+    )
+    .prop_map(|mut v| {
         // Groups come in runs, as layers and slot classes do.
         v.sort_by_key(|(g, _)| *g);
         v.into_iter()
@@ -184,4 +203,37 @@ fn rings_and_bump_arenas_are_one_unit() {
     assert_eq!(pages.len(), 3);
     assert_eq!(lock_ranges(&[], Bytes(MIB)), []);
     assert!(slot_layout(&SlotGeometry::Classes(smallvec![]), &[]).is_empty());
+}
+
+/// Zero-length slots never make an empty range: they join a neighbouring range, and a layout
+/// with no bytes gives no ranges (review finding 6 of #1659).
+#[test]
+fn zero_length_slots_make_no_empty_range() {
+    let z = |group| UnitSlot {
+        group,
+        len: Bytes(0),
+    };
+    let b = |group, mib| UnitSlot {
+        group,
+        len: Bytes(mib * MIB),
+    };
+    assert_eq!(lock_ranges(&[z(0), z(1)], Bytes(MIB)), []);
+    assert_eq!(
+        lock_ranges(&slot_layout(&SlotGeometry::Bump, &[]), Bytes(MIB)),
+        []
+    );
+    let ranges = lock_ranges(&[z(0), b(0, 1), z(1), b(1, 1), z(1)], Bytes(4 * MIB));
+    assert_eq!(
+        ranges,
+        [
+            LockRange {
+                slots: 0..3,
+                bytes: 0..MIB
+            },
+            LockRange {
+                slots: 3..5,
+                bytes: MIB..2 * MIB
+            },
+        ]
+    );
 }
