@@ -246,25 +246,9 @@ pub struct SpanTree {
     pub nodes: u16,
 }
 
-/// One node of a draft tree (RFC-0031 §6.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TreeNode {
-    /// The parent's index among the span's nodes, or `None` (0xFFFF) when the parent is the
-    /// root, the last accepted token. A parent precedes its children.
-    pub parent: Option<u16>,
-    pub depth: u8,
-    /// bit0 [`TreeNode::PROMPT_LOOKUP`]; the other bits are reserved.
-    pub flags: u8,
-}
-
-impl TreeNode {
-    /// The node comes from the prompt-lookup drafter.
-    pub const PROMPT_LOOKUP: u8 = 1;
-
-    pub fn prompt_lookup(&self) -> bool {
-        self.flags & Self::PROMPT_LOOKUP != 0
-    }
-}
+/// One node of a draft tree (RFC-0031 §6.3): `core`'s `DraftNode`, under the name the codec has
+/// always used. `core` owns it (RFC-0001 §5.13), since a `TokenEntry`'s draft tree holds it.
+pub use syntropy_core::sequence::DraftNode as TreeNode;
 
 /// A side-channel item and the span it applies to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,14 +299,9 @@ pub enum SeqCtrl {
     Reserved(u8),
 }
 
-/// W3C trace context: version, trace-id, span-id and flags, 26 bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TraceContext {
-    pub version: u8,
-    pub trace_id: [u8; 16],
-    pub span_id: [u8; 8],
-    pub flags: u8,
-}
+/// W3C trace context, 26 bytes: `core`'s one `TraceContext` (RFC-0053 §3.2; RFC-0001 §5.8, note
+/// of 2026-10-22), which this codec encodes as the `TRACE` item without defining it.
+pub use syntropy_core::sequence::TraceContext;
 
 pub(super) fn get16(b: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([b[at], b[at + 1]])

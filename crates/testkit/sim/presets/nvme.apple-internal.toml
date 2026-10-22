@@ -1,0 +1,33 @@
+# The §8.5 example's `apple-internal` drive: a Mac's internal SSD.
+#
+# Labels as in `gpu.ada-24g.toml`.
+name = "apple-internal"
+kind = "nvme"
+describes = "Apple internal SSD, 1 TB (M1 Ultra and M4 Max Mac Studio)"
+sources = [
+    "research §2.4: Mac Studio internal SSD read speeds [S42]",
+]
+
+[figures.seq_read]
+range = [5.1, 5.3]
+unit = "GB/s"
+label = "measured"
+source = "research §2.4 [S42]: user reports, Blackmagic; M4 Max ≈ 5.1, M1 Ultra ≈ 5.3"
+
+[figures.sustained_read]
+unknown = "research §2.4: no sustained-read figures were found for Apple internal SSDs (open question)"
+
+[figures.heating_time]
+unknown = "research §2.4: no throttling figures were found for Apple internal SSDs"
+
+[figures.throttled_read]
+unknown = "research §2.4: no throttling figures were found for Apple internal SSDs"
+
+[figures.qd1_4k_read_iops]
+unknown = "the research note gives no small-read figures for Apple internal SSDs"
+
+[figures.qd32_4k_read_iops]
+unknown = "the research note gives no small-read figures for Apple internal SSDs"
+
+[figures.read_latency]
+unknown = "the research note gives no per-request latency distribution for Apple internal SSDs"

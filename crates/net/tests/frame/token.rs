@@ -16,11 +16,13 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use proptest::prelude::*;
-use syntropy_core::{ApproxFlags, InstanceId, SequenceId};
+use syntropy_core::{
+    ApproxFlags, ErrorClass, FinishReason, InstanceId, LogprobBlock, SequenceId, TokenEntry,
+};
 use syntropy_net::frame::{
-    ENTRY_HEADER_LEN, Entries, Finish, Flags, Frame, FrameError, FrameType, Route, Side, SideItem,
-    SideItems, StepTokens, Token, TokenCopy, TokenEntry, TokenSpec, TraceContext, TreeArea,
-    TreeNode, WIRE_MINOR, tlv, token_flags,
+    ENTRY_HEADER_LEN, Entries, Flags, Frame, FrameError, FrameType, Route, Side, SideItem,
+    SideItems, StepTokens, Token, TokenCopy, TokenEntryBytes, TokenEntryView, TokenSpec,
+    TraceContext, TreeArea, TreeNode, WIRE_MINOR, tlv, token_flags,
 };
 
 use super::{INSTANCE, REFUSAL_CLASSES, base, epoch, golden_dir, leak, reseal, spec};
@@ -57,8 +59,8 @@ fn plain(
     first_position: u32,
     tokens: &[u32],
     rng_counter: u64,
-) -> TokenEntry<'static> {
-    TokenEntry {
+) -> TokenEntryView<'static> {
+    TokenEntryView {
         seq,
         first_position,
         tokens: le32s(tokens),
@@ -101,10 +103,10 @@ fn logprobs(per_token: &[(f32, &[(u32, f32)])]) -> &'static [u8] {
 /// Step 21's entries as the tail holds them: a plain decode for X, a verify result for X with
 /// logprobs, a chain draft and a tap block, and an error for Y. Two `rng_counter`s are above
 /// 2³².
-fn step21() -> Vec<TokenEntry<'static>> {
+fn step21() -> Vec<TokenEntryView<'static>> {
     vec![
         plain(seq(X, 77), 1600, &[1001], 7),
-        TokenEntry {
+        TokenEntryView {
             logprob_k: 2,
             logprobs: logprobs(&[
                 (-0.25, &[(6, -1.5), (9, -2.0)]),
@@ -116,8 +118,8 @@ fn step21() -> Vec<TokenEntry<'static>> {
             tap: leak(spec::fill(0x90, 40)),
             ..plain(seq(X, 78), 41, &[5, 6, 7], 0x1_0000_0005)
         },
-        TokenEntry {
-            finish: Some(Finish::Error {
+        TokenEntryView {
+            finish: Some(FinishReason::Error {
                 domain: 3,
                 code: 0x030C,
             }),
@@ -175,9 +177,9 @@ fn step21_side() -> Vec<Side<'static>> {
 
 /// Step 22's ring-return entries: a 4-node tree draft with a prompt-lookup node, a chain draft
 /// written as a tree, and an entry without a draft.
-fn step22() -> Vec<TokenEntry<'static>> {
+fn step22() -> Vec<TokenEntryView<'static>> {
     vec![
-        TokenEntry {
+        TokenEntryView {
             draft: le32s(&[11, 12, 13, 14]),
             draft_tree: Some(tree(&[
                 (None, 1, 0),
@@ -187,7 +189,7 @@ fn step22() -> Vec<TokenEntry<'static>> {
             ])),
             ..plain(seq(X, 77), 1601, &[1002], 8)
         },
-        TokenEntry {
+        TokenEntryView {
             draft: le32s(&[16, 17]),
             draft_tree: Some(tree(&[(None, 1, 0), (Some(0), 2, 0)])),
             ..plain(seq(X, 78), 44, &[15], 0x1_0000_0006)
@@ -197,10 +199,10 @@ fn step22() -> Vec<TokenEntry<'static>> {
 }
 
 /// The entry `copy` carries: no tap on the ring-return copy, no draft on an ingress copy.
-fn as_carried<'a>(entry: &TokenEntry<'a>, route: Route) -> TokenEntry<'a> {
+fn as_carried<'a>(entry: &TokenEntryView<'a>, route: Route) -> TokenEntryView<'a> {
     match route {
-        Route::RingReturn => TokenEntry { tap: &[], ..*entry },
-        Route::ToIngress => TokenEntry {
+        Route::RingReturn => TokenEntryView { tap: &[], ..*entry },
+        Route::ToIngress => TokenEntryView {
             draft: &[],
             draft_tree: None,
             ..*entry
@@ -209,15 +211,15 @@ fn as_carried<'a>(entry: &TokenEntry<'a>, route: Route) -> TokenEntry<'a> {
 }
 
 /// The RFC-0031 §6.5 wire values of `entry`, as `route` carries it.
-fn entry_fields(entry: &TokenEntry<'_>, route: Route) -> spec::EntryFields {
+fn entry_fields(entry: &TokenEntryView<'_>, route: Route) -> spec::EntryFields {
     let entry = as_carried(entry, route);
     let (finish, error_domain, error_code) = match entry.finish {
         None => (0, 0, 0),
-        Some(Finish::Stop) => (1, 0, 0),
-        Some(Finish::Length) => (2, 0, 0),
-        Some(Finish::TokenStop) => (3, 0, 0),
-        Some(Finish::Cancelled) => (4, 0, 0),
-        Some(Finish::Error { domain, code }) => (5, domain, code),
+        Some(FinishReason::Stop) => (1, 0, 0),
+        Some(FinishReason::Length) => (2, 0, 0),
+        Some(FinishReason::TokenStop) => (3, 0, 0),
+        Some(FinishReason::Cancelled) => (4, 0, 0),
+        Some(FinishReason::Error { domain, code }) => (5, domain, code),
     };
     let words = |bytes: &[u8]| -> Vec<u32> {
         bytes
@@ -262,7 +264,7 @@ struct Golden {
     route: Route,
     part: (u16, u16),
     side: Vec<Side<'static>>,
-    entries: Vec<TokenEntry<'static>>,
+    entries: Vec<TokenEntryView<'static>>,
 }
 
 impl Golden {
@@ -287,9 +289,10 @@ fn golden(
     route: Route,
     part: (u16, u16),
     side: Vec<Side<'static>>,
-    entries: Vec<TokenEntry<'static>>,
+    entries: Vec<TokenEntryView<'static>>,
 ) -> Golden {
-    let entries: Vec<TokenEntry<'static>> = entries.iter().map(|e| as_carried(e, route)).collect();
+    let entries: Vec<TokenEntryView<'static>> =
+        entries.iter().map(|e| as_carried(e, route)).collect();
     let mut flags = match route {
         Route::RingReturn => 1,
         Route::ToIngress => 2,
@@ -339,7 +342,7 @@ fn golden(
 }
 
 fn goldens() -> Vec<Golden> {
-    let ingress = |node: u64| -> Vec<TokenEntry<'static>> {
+    let ingress = |node: u64| -> Vec<TokenEntryView<'static>> {
         step21()
             .into_iter()
             .filter(|e| e.seq.ingress == node)
@@ -399,7 +402,7 @@ fn goldens() -> Vec<Golden> {
             Route::ToIngress,
             (1, 2),
             vec![],
-            vec![TokenEntry {
+            vec![TokenEntryView {
                 tap: leak(spec::fill(0xA0, 48)),
                 ..plain(seq(Y, 5), 0, &[], 0)
             }],
@@ -955,7 +958,7 @@ fn the_encoder_refuses_what_the_decoder_would() {
     let logprobs = wrong[1].logprobs;
     wrong[1].logprobs = &logprobs[..56];
     let step =
-        |entries: &'static [TokenEntry<'static>], side: &'static [Side<'static>]| StepTokens {
+        |entries: &'static [TokenEntryView<'static>], side: &'static [Side<'static>]| StepTokens {
             entries: Entries::new(entries),
             side: SideItems::new(side),
             part_index: 0,
@@ -1081,7 +1084,7 @@ fn a_corrupted_token_byte_is_detected() {
 struct Owned {
     seq: SequenceId,
     tokens: Vec<u8>,
-    finish: Option<Finish>,
+    finish: Option<FinishReason>,
     logprob_k: u8,
     logprobs: Vec<u8>,
     draft: Vec<u8>,
@@ -1091,8 +1094,8 @@ struct Owned {
 }
 
 impl Owned {
-    fn entry(&self) -> TokenEntry<'_> {
-        TokenEntry {
+    fn entry(&self) -> TokenEntryView<'_> {
+        TokenEntryView {
             seq: self.seq,
             first_position: self.seq.n * 10,
             tokens: &self.tokens,
@@ -1118,12 +1121,12 @@ fn generate(
     let n_tokens = usize::from(n_tokens);
     let n_draft = usize::from(n_draft);
     let finish = match rng % 7 {
-        0 => Some(Finish::Stop),
-        1 => Some(Finish::Error {
+        0 => Some(FinishReason::Stop),
+        1 => Some(FinishReason::Error {
             domain: 3,
             code: rng as u16,
         }),
-        2 => Some(Finish::Cancelled),
+        2 => Some(FinishReason::Cancelled),
         _ => None,
     };
     let mut tree: Vec<TreeNode> = Vec::new();
@@ -1236,7 +1239,7 @@ proptest! {
             .enumerate()
             .map(|(index, numbers)| generate(index, *numbers, trees))
             .collect();
-        let typed: Vec<TokenEntry<'_>> = owned.iter().map(Owned::entry).collect();
+        let typed: Vec<TokenEntryView<'_>> = owned.iter().map(Owned::entry).collect();
         // Entries whose `rng_counter` has bit 3 set are on a sampled step.
         let side: Vec<Side<'_>> = typed
             .iter()
@@ -1246,7 +1249,7 @@ proptest! {
             .collect();
         // Each copy's TRACE items, by the sequence of the entry they name.
         let traced = |token: &Token<'_>| -> Vec<(SequenceId, SideItem<'static>)> {
-            let entries: Vec<TokenEntry<'_>> = token.entries.iter().collect();
+            let entries: Vec<TokenEntryView<'_>> = token.entries.iter().collect();
             token
                 .side
                 .iter()
@@ -1276,7 +1279,7 @@ proptest! {
         let ring = step.encode_to_vec(TokenCopy::RingReturn, &spec).unwrap();
         let frame = Frame::decode(&ring).unwrap();
         let token = frame.token().unwrap();
-        let carried: Vec<TokenEntry<'_>> = typed.iter().map(|e| as_carried(e, Route::RingReturn)).collect();
+        let carried: Vec<TokenEntryView<'_>> = typed.iter().map(|e| as_carried(e, Route::RingReturn)).collect();
         prop_assert_eq!(token.entries, Entries::new(&carried));
         prop_assert_eq!(traced(&token), expected(None));
         prop_assert_eq!(frame.header.spec.flags.has_trace(), !side.is_empty());
@@ -1285,7 +1288,7 @@ proptest! {
             let bytes = step.encode_to_vec(TokenCopy::Ingress { ingress: node }, &spec).unwrap();
             let frame = Frame::decode(&bytes).unwrap();
             let token = frame.token().unwrap();
-            let carried: Vec<TokenEntry<'_>> = typed
+            let carried: Vec<TokenEntryView<'_>> = typed
                 .iter()
                 .filter(|e| e.seq.ingress == node)
                 .map(|e| as_carried(e, Route::ToIngress))
@@ -1297,4 +1300,222 @@ proptest! {
         seen.sort();
         prop_assert_eq!(seen, (0..typed.len() as u32).collect::<Vec<_>>());
     }
+}
+
+/// DIST-E1-T14's criterion: the `Token` codec decodes each entry as a `TokenEntryView` that
+/// converts to `core`'s owned `TokenEntry`, with `core`'s `FinishReason`, and back, and the frame
+/// rebuilt from the converted entries encodes to the golden's bytes unchanged. A tap block has no
+/// codec before DIST-E8-T06, so an entry that carries one is refused with `TapNotDecoded`, an
+/// `Unsupported` refusal, never `Internal`.
+#[test]
+fn every_golden_entry_converts_to_core_and_back() {
+    let (mut converted, mut rebuilt, mut taps) = (0, 0, 0);
+    for golden in goldens() {
+        let name = golden.name;
+        let bytes = read_golden(name);
+        let frame = Frame::decode(&bytes).unwrap();
+        let token = frame.token().unwrap();
+        let mut held = Vec::new();
+        for view in token.entries.iter() {
+            match view.to_entry() {
+                Ok(entry) => {
+                    assert_eq!(entry.finish, view.finish, "{name}");
+                    assert_eq!(entry.rng_counter, view.rng_counter, "{name}");
+                    let back = TokenEntryBytes::new(&entry).unwrap();
+                    assert_eq!(back.view(), view, "{name}: the view of the owned entry");
+                    held.push(back);
+                    converted += 1;
+                }
+                Err(error) => {
+                    assert_eq!(
+                        error,
+                        FrameError::TapNotDecoded {
+                            len: view.tap.len()
+                        },
+                        "{name}"
+                    );
+                    assert_eq!(error.class(), ErrorClass::Unsupported, "{name}");
+                    taps += 1;
+                }
+            }
+        }
+        if held.len() == token.entries.len() {
+            let views: Vec<TokenEntryView<'_>> = held.iter().map(TokenEntryBytes::view).collect();
+            let again = Token {
+                route: token.route,
+                part_index: token.part_index,
+                part_count: token.part_count,
+                side: token.side,
+                entries: Entries::new(&views),
+            };
+            assert_eq!(again.encode_to_vec(&golden.spec), Ok(bytes), "{name}");
+            rebuilt += 1;
+        }
+    }
+    // Every ring-return golden has no tap, so each is rebuilt; the ingress goldens' entries with
+    // tap blocks are the refused ones.
+    assert!(
+        converted >= 5 && rebuilt >= 3 && taps >= 2,
+        "{converted} {rebuilt} {taps}"
+    );
+    // An owned entry with a tap is refused the same way, and so is a logprob block whose lengths
+    // disagree with its tokens.
+    let mut entry = token_with_logprobs();
+    entry.tap = Some(syntropy_core::LogitTap {
+        k: 0,
+        tail: 0,
+        rows: Vec::new(),
+    });
+    assert_eq!(
+        TokenEntryBytes::new(&entry),
+        Err(FrameError::TapNotDecoded { len: 0 })
+    );
+    let mut entry = token_with_logprobs();
+    entry.logprobs.as_mut().unwrap().chosen.pop();
+    assert!(matches!(
+        TokenEntryBytes::new(&entry),
+        Err(FrameError::Inconsistent {
+            ftype: FrameType::Token,
+            ..
+        })
+    ));
+}
+
+/// An owned entry with logprobs and a draft tree, as the tail builds one.
+fn token_with_logprobs() -> TokenEntry {
+    TokenEntry {
+        seq: seq(X, 1),
+        tokens: vec![7, 8].into(),
+        first_position: 3,
+        logprobs: Some(LogprobBlock {
+            k: 1,
+            chosen: vec![-0.5, -1.0],
+            top_ids: vec![9, 10],
+            top_logprobs: vec![-2.0, -3.0],
+        }),
+        finish: Some(FinishReason::Length),
+        approx: ApproxFlags::empty(),
+        draft: vec![11].into(),
+        draft_tree: Some(
+            vec![TreeNode {
+                parent: None,
+                depth: 1,
+                flags: 0,
+            }]
+            .into(),
+        ),
+        rng_counter: 4,
+        tap: None,
+    }
+}
+
+/// An owned entry converts to a view and back unchanged, its logprob floats bit for bit.
+#[test]
+fn an_owned_entry_converts_to_a_view_and_back() {
+    let entry = token_with_logprobs();
+    let held = TokenEntryBytes::new(&entry).unwrap();
+    assert_eq!(held.view().to_entry(), Ok(entry));
+}
+
+/// The criterion "`net` defines no type named `TokenEntry`, `FinishReason`, `Finish` or
+/// `TraceContext`": `core` owns them (RFC-0001 §5.13), and `net`'s `TraceContext` and
+/// `TreeNode` are `core`'s types under the codec's names.
+#[test]
+fn net_defines_none_of_the_sequence_types_core_owns() {
+    fn sources(dir: &std::path::Path, out: &mut Vec<(PathBuf, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                out.push((path, text));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    assert!(files.len() > 5);
+    for (path, text) in &files {
+        for definition in [
+            "struct TokenEntry ",
+            "struct TokenEntry<",
+            "struct TokenEntry{",
+            "enum Finish ",
+            "enum Finish{",
+            "enum FinishReason",
+            "struct TraceContext",
+            "struct TreeNode",
+        ] {
+            assert!(
+                !text.contains(definition),
+                "{} defines `{definition}`",
+                path.display()
+            );
+        }
+    }
+    // The same types, not copies: these compile only if `net`'s names are `core`'s types.
+    let trace: syntropy_core::TraceContext = TraceContext {
+        version: 0,
+        trace_id: [1; 16],
+        span_id: [2; 8],
+        flags: syntropy_core::TraceContext::SAMPLED,
+    };
+    let node: syntropy_core::DraftNode = TreeNode {
+        parent: None,
+        depth: 1,
+        flags: TreeNode::PROMPT_LOOKUP,
+    };
+    assert!(trace.sampled() && node.prompt_lookup());
+}
+
+/// The refusal on a named golden: `token-ingress-x` carries tap blocks, which no codec decodes
+/// before DIST-E8-T06, so each of its entries with one is refused with `TapNotDecoded`, an
+/// `Unsupported` refusal, and its bytes are untouched.
+#[test]
+fn token_ingress_x_entries_with_a_tap_block_are_refused_conversion() {
+    let bytes = read_golden("token-ingress-x");
+    let frame = Frame::decode(&bytes).unwrap();
+    let token = frame.token().unwrap();
+    let mut refused = 0;
+    for view in token.entries.iter() {
+        if view.tap.is_empty() {
+            continue;
+        }
+        let error = view.to_entry().unwrap_err();
+        assert_eq!(
+            error,
+            FrameError::TapNotDecoded {
+                len: view.tap.len()
+            }
+        );
+        assert_eq!(error.class(), ErrorClass::Unsupported);
+        refused += 1;
+    }
+    assert!(refused >= 1, "token-ingress-x carries a tap block");
+    assert_eq!(read_golden("token-ingress-x"), bytes);
+}
+
+/// An owned entry with `k = 0` logprobs, the chosen tokens' logprobs alone, is what the
+/// in-process path carries, but RFC-0031 §6.5's `logprob_k = 0` means no logprobs. So encoding
+/// one is refused with `ChosenLogprobsOnly`, an `Unsupported` refusal, until OQ-NET-35 gives it a
+/// form.
+#[test]
+fn a_chosen_only_logprob_block_is_refused_encoding() {
+    let mut entry = token_with_logprobs();
+    entry.logprobs = Some(LogprobBlock {
+        k: 0,
+        chosen: vec![-0.5, -1.0],
+        top_ids: Vec::new(),
+        top_logprobs: Vec::new(),
+    });
+    let error = TokenEntryBytes::new(&entry).unwrap_err();
+    assert_eq!(error, FrameError::ChosenLogprobsOnly { n_tokens: 2 });
+    assert_eq!(error.class(), ErrorClass::Unsupported);
+    // Without logprobs the same entry encodes.
+    entry.logprobs = None;
+    assert!(TokenEntryBytes::new(&entry).is_ok());
 }

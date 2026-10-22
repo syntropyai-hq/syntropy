@@ -23,7 +23,9 @@
 //! when set, every entry with a draft carries its tree (RFC-0031 §6.5, revised 2026-10-22).
 //!
 //! What this codec leaves to other tasks:
-//! - the tap block's contents, which travel as bytes until DIST-E8-T06 reads them;
+//! - the tap block's contents, which travel as bytes until DIST-E8-T06 reads them. Until then a
+//!   [`TokenEntryView`] converts to and from `core`'s `TokenEntry` only without a tap, and a
+//!   tap block is refused with [`FrameError::TapNotDecoded`];
 //! - the ring-return items (`KV_HEADROOM`, `PREFIX_DROPPED`, …), carried as
 //!   [`SideItem::Other`], and the narrower set of types a ring-return frame may carry, both
 //!   DIST-E8-T04's. Of the `Activation` items, types 1–7, only `TRACE` is accepted;
@@ -31,13 +33,18 @@
 //!
 //! Neither direction allocates: a decoded frame borrows its entries and items from the frame's
 //! bytes, and an encoded one is written straight into the caller's buffer.
+//! [`TokenEntryView::to_entry`] and [`TokenEntryBytes`] build `core`'s owned types, so they
+//! allocate; the codec itself does not.
 
 use std::fmt;
 
-use syntropy_core::{ApproxFlags, InstanceId, PlanEpoch, SequenceId};
+use syntropy_core::{
+    ApproxFlags, FinishReason, InstanceId, LogprobBlock, PlanEpoch, SequenceId, TokenEntry,
+};
 
 use super::activation::{
-    ABSENT, Side, SideItem, SideItems, TraceContext, TreeArea, get16, get32, get64, read_tlv,
+    ABSENT, Side, SideItem, SideItems, TraceContext, TreeArea, TreeNode, get16, get32, get64,
+    read_tlv,
 };
 use super::error::FrameError;
 use super::header::{self, ALIGN, Flags, Frame, FrameSpec, FrameType, HEADER_LEN};
@@ -78,60 +85,48 @@ pub enum TokenCopy {
     Ingress { ingress: u64 },
 }
 
-/// Why a sequence finished, from `finish` (RFC-0001 §5.8 `FinishReason`). `error_domain` and
-/// `error_code` are read only for `Error`, and written as zero otherwise.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Finish {
-    /// 1.
-    Stop,
-    /// 2.
-    Length,
-    /// 3.
-    TokenStop,
-    /// 4.
-    Cancelled,
-    /// 5, with the error's domain and code.
-    Error { domain: u16, code: u16 },
-}
-
-impl Finish {
-    fn code(finish: Option<Finish>) -> u8 {
-        match finish {
-            None => 0,
-            Some(Finish::Stop) => 1,
-            Some(Finish::Length) => 2,
-            Some(Finish::TokenStop) => 3,
-            Some(Finish::Cancelled) => 4,
-            Some(Finish::Error { .. }) => 5,
-        }
-    }
-
-    fn from_wire(code: u8, domain: u16, error: u16) -> Result<Option<Finish>, FrameError> {
-        Ok(match code {
-            0 => None,
-            1 => Some(Finish::Stop),
-            2 => Some(Finish::Length),
-            3 => Some(Finish::TokenStop),
-            4 => Some(Finish::Cancelled),
-            5 => Some(Finish::Error {
-                domain,
-                code: error,
-            }),
-            other => return Err(bad("finish", other)),
-        })
+/// `finish`'s wire code (RFC-0031 §6.5): 0 none, 1 to 5 [`FinishReason`]'s variants in order.
+fn finish_code(finish: Option<FinishReason>) -> u8 {
+    match finish {
+        None => 0,
+        Some(FinishReason::Stop) => 1,
+        Some(FinishReason::Length) => 2,
+        Some(FinishReason::TokenStop) => 3,
+        Some(FinishReason::Cancelled) => 4,
+        Some(FinishReason::Error { .. }) => 5,
     }
 }
 
-/// One sequence's tokens from a step (RFC-0031 §6.5; RFC-0001 §5.8 `TokenEntry`). Arrays are
-/// little-endian bytes, as on the wire, so a decoded entry borrows them from the frame.
+/// The [`FinishReason`] of `finish`'s wire code. `error_domain` and `error_code` are read only for
+/// `Error`, and written as zero otherwise.
+fn finish_from_wire(code: u8, domain: u16, error: u16) -> Result<Option<FinishReason>, FrameError> {
+    Ok(match code {
+        0 => None,
+        1 => Some(FinishReason::Stop),
+        2 => Some(FinishReason::Length),
+        3 => Some(FinishReason::TokenStop),
+        4 => Some(FinishReason::Cancelled),
+        5 => Some(FinishReason::Error {
+            domain,
+            code: error,
+        }),
+        other => return Err(bad("finish", other)),
+    })
+}
+
+/// One sequence's tokens from a step, as a zero-copy view of a `Token` frame's entry (RFC-0031
+/// §6.5): `core`'s [`TokenEntry`], whose definition this codec does not repeat (RFC-0001 §5.13).
+/// Arrays are little-endian bytes, as on the wire, so a decoded entry borrows them from the
+/// frame. [`TokenEntryView::to_entry`] converts it to the owned type, and [`TokenEntryBytes`]
+/// holds an owned entry's arrays as bytes, for a view to be encoded from.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TokenEntry<'a> {
+pub struct TokenEntryView<'a> {
     pub seq: SequenceId,
     /// The position of the first accepted token.
     pub first_position: u32,
     /// The accepted tokens, a u32 each: one for plain decode, 1..=γ+1 after a verify window.
     pub tokens: &'a [u8],
-    pub finish: Option<Finish>,
+    pub finish: Option<FinishReason>,
     /// Top-k alternatives per token; 0 for no logprobs.
     pub logprob_k: u8,
     /// Per token: the chosen token's logprob as an f32, then `logprob_k` × (id u32, logprob
@@ -150,7 +145,7 @@ pub struct TokenEntry<'a> {
     pub rng_counter: u64,
 }
 
-impl TokenEntry<'_> {
+impl TokenEntryView<'_> {
     /// Accepted tokens.
     pub fn n_tokens(&self) -> usize {
         self.tokens.len() / 4
@@ -251,6 +246,157 @@ impl TokenEntry<'_> {
     }
 }
 
+impl TokenEntryView<'_> {
+    /// The owned [`TokenEntry`] this view reads (RFC-0001 §5.8). A tap block is refused with
+    /// [`FrameError::TapNotDecoded`] until its codec exists (DIST-E8-T06): it travels here as
+    /// bytes, and `core`'s `TokenEntry::tap` is a decoded `LogitTap`.
+    pub fn to_entry(&self) -> Result<TokenEntry, FrameError> {
+        if !self.tap.is_empty() {
+            return Err(FrameError::TapNotDecoded {
+                len: self.tap.len(),
+            });
+        }
+        let logprobs = (self.logprob_k > 0).then(|| {
+            let k = usize::from(self.logprob_k);
+            let n = self.n_tokens();
+            let mut block = LogprobBlock {
+                k: self.logprob_k,
+                chosen: Vec::with_capacity(n),
+                top_ids: Vec::with_capacity(n * k),
+                top_logprobs: Vec::with_capacity(n * k),
+            };
+            for token in self.logprobs.chunks_exact(self.logprob_stride()) {
+                block
+                    .chosen
+                    .push(f32::from_le_bytes([token[0], token[1], token[2], token[3]]));
+                for alt in token[4..].as_chunks::<8>().0 {
+                    let [i0, i1, i2, i3, l0, l1, l2, l3] = *alt;
+                    block.top_ids.push(u32::from_le_bytes([i0, i1, i2, i3]));
+                    block
+                        .top_logprobs
+                        .push(f32::from_le_bytes([l0, l1, l2, l3]));
+                }
+            }
+            block
+        });
+        Ok(TokenEntry {
+            seq: self.seq,
+            tokens: words(self.tokens).collect(),
+            first_position: self.first_position,
+            logprobs,
+            finish: self.finish,
+            approx: self.approx,
+            draft: words(self.draft).collect(),
+            draft_tree: self
+                .draft_tree
+                .map(|tree| (0..tree.len()).filter_map(|i| tree.get(i)).collect()),
+            rng_counter: self.rng_counter,
+            tap: None,
+        })
+    }
+}
+
+fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+}
+
+/// An owned [`TokenEntry`]'s arrays as wire bytes, so that a [`TokenEntryView`] borrowing them
+/// can be encoded: build one with [`TokenEntryBytes::new`], then encode
+/// [`TokenEntryBytes::view`]. A tap is refused with [`FrameError::TapNotDecoded`] until its
+/// codec exists (DIST-E8-T06), a [`LogprobBlock`] with `k = 0` with
+/// [`FrameError::ChosenLogprobsOnly`] until RFC-0031 §6.5 has a form for it (OQ-NET-35), and one
+/// whose lengths disagree with its `k` and the entry's tokens as inconsistent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenEntryBytes {
+    seq: SequenceId,
+    first_position: u32,
+    tokens: Vec<u8>,
+    finish: Option<FinishReason>,
+    logprob_k: u8,
+    logprobs: Vec<u8>,
+    approx: ApproxFlags,
+    draft: Vec<u8>,
+    draft_tree: Option<Vec<TreeNode>>,
+    rng_counter: u64,
+}
+
+impl TokenEntryBytes {
+    /// `entry`'s arrays as little-endian bytes, in RFC-0031 §6.5's layout.
+    pub fn new(entry: &TokenEntry) -> Result<TokenEntryBytes, FrameError> {
+        if entry.tap.is_some() {
+            let len = entry.tap.as_ref().map_or(0, |tap| tap.rows.len());
+            return Err(FrameError::TapNotDecoded { len });
+        }
+        let bytes = |values: &[u32]| {
+            values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
+        };
+        let (logprob_k, logprobs) = match &entry.logprobs {
+            None => (0, Vec::new()),
+            Some(block) if block.k == 0 => {
+                return Err(FrameError::ChosenLogprobsOnly {
+                    n_tokens: block.chosen.len(),
+                });
+            }
+            Some(block) => {
+                let k = usize::from(block.k);
+                let expected = entry.tokens.len() * k;
+                if block.chosen.len() != entry.tokens.len() || !block.is_consistent() {
+                    return Err(inconsistent(
+                        "logprobs len",
+                        block.top_ids.len() as u64,
+                        expected as u64,
+                    ));
+                }
+                let mut out = Vec::with_capacity(entry.tokens.len() * (4 + 8 * k));
+                for (i, chosen) in block.chosen.iter().enumerate() {
+                    out.extend(chosen.to_le_bytes());
+                    for j in i * k..(i + 1) * k {
+                        out.extend(block.top_ids[j].to_le_bytes());
+                        out.extend(block.top_logprobs[j].to_le_bytes());
+                    }
+                }
+                (block.k, out)
+            }
+        };
+        Ok(TokenEntryBytes {
+            seq: entry.seq,
+            first_position: entry.first_position,
+            tokens: bytes(&entry.tokens),
+            finish: entry.finish,
+            logprob_k,
+            logprobs,
+            approx: entry.approx,
+            draft: bytes(&entry.draft),
+            draft_tree: entry.draft_tree.as_ref().map(|tree| tree.to_vec()),
+            rng_counter: entry.rng_counter,
+        })
+    }
+
+    /// A view of the entry, for [`StepTokens`] to encode.
+    pub fn view(&self) -> TokenEntryView<'_> {
+        TokenEntryView {
+            seq: self.seq,
+            first_position: self.first_position,
+            tokens: &self.tokens,
+            finish: self.finish,
+            logprob_k: self.logprob_k,
+            logprobs: &self.logprobs,
+            approx: self.approx,
+            draft: &self.draft,
+            draft_tree: self.draft_tree.as_deref().map(TreeArea::new),
+            tap: &[],
+            rng_counter: self.rng_counter,
+        }
+    }
+}
+
 fn word(bytes: &[u8], index: usize) -> Option<u32> {
     let at = index.checked_mul(4)?;
     bytes
@@ -280,7 +426,7 @@ fn read_entry(
     payload: &[u8],
     at: usize,
     tree: bool,
-) -> Result<(TokenEntry<'_>, usize), FrameError> {
+) -> Result<(TokenEntryView<'_>, usize), FrameError> {
     let header_end = at + ENTRY_HEADER_LEN;
     if header_end > payload.len() {
         return Err(inconsistent(
@@ -330,7 +476,7 @@ fn read_entry(
         cursor += len;
     }
     let [tokens, draft, tree_nodes, logprobs, tap] = parts;
-    let entry = TokenEntry {
+    let entry = TokenEntryView {
         seq: SequenceId {
             ingress: get64(h, 0),
             boot: get32(h, 8),
@@ -338,7 +484,7 @@ fn read_entry(
         },
         first_position: get32(h, 16),
         tokens,
-        finish: Finish::from_wire(h[22], get16(h, 28), get16(h, 30))?,
+        finish: finish_from_wire(h[22], get16(h, 28), get16(h, 30))?,
         logprob_k,
         logprobs,
         approx: ApproxFlags::from_bits_retain(get32(h, 24)),
@@ -351,8 +497,8 @@ fn read_entry(
 }
 
 /// Writes `entry` at `out[0..]`, with its draft and tap only when asked. `out` holds
-/// [`TokenEntry::wire_len`] zeroed bytes.
-fn write_entry(entry: &TokenEntry<'_>, draft: bool, tap: bool, out: &mut [u8]) {
+/// [`TokenEntryView::wire_len`] zeroed bytes.
+fn write_entry(entry: &TokenEntryView<'_>, draft: bool, tap: bool, out: &mut [u8]) {
     let (n_draft, tree) = if draft {
         (entry.n_draft(), entry.draft_tree)
     } else {
@@ -365,10 +511,10 @@ fn write_entry(entry: &TokenEntry<'_>, draft: bool, tap: bool, out: &mut [u8]) {
     h[12..16].copy_from_slice(&entry.seq.n.to_le_bytes());
     h[16..20].copy_from_slice(&entry.first_position.to_le_bytes());
     h[20..22].copy_from_slice(&(entry.n_tokens() as u16).to_le_bytes());
-    h[22] = Finish::code(entry.finish);
+    h[22] = finish_code(entry.finish);
     h[23] = entry.logprob_k;
     h[24..28].copy_from_slice(&entry.approx.bits().to_le_bytes());
-    if let Some(Finish::Error { domain, code }) = entry.finish {
+    if let Some(FinishReason::Error { domain, code }) = entry.finish {
         h[28..30].copy_from_slice(&domain.to_le_bytes());
         h[30..32].copy_from_slice(&code.to_le_bytes());
     }
@@ -405,11 +551,11 @@ enum EntryRepr<'a> {
         count: u16,
         tree: bool,
     },
-    Typed(&'a [TokenEntry<'a>]),
+    Typed(&'a [TokenEntryView<'a>]),
 }
 
 impl<'a> Entries<'a> {
-    pub fn new(entries: &'a [TokenEntry<'a>]) -> Entries<'a> {
+    pub fn new(entries: &'a [TokenEntryView<'a>]) -> Entries<'a> {
         Entries(EntryRepr::Typed(entries))
     }
 
@@ -424,7 +570,7 @@ impl<'a> Entries<'a> {
         self.len() == 0
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = TokenEntry<'a>> + 'a {
+    pub fn iter(&self) -> impl Iterator<Item = TokenEntryView<'a>> + 'a {
         let repr = self.0;
         let mut at = 0;
         let mut index = 0;
@@ -586,7 +732,7 @@ struct Contents<'s, 'a> {
 }
 
 impl Contents<'_, '_> {
-    fn keeps(&self, entry: &TokenEntry<'_>) -> bool {
+    fn keeps(&self, entry: &TokenEntryView<'_>) -> bool {
         self.ingress
             .is_none_or(|ingress| entry.seq.ingress == ingress)
     }
@@ -972,8 +1118,8 @@ mod tests {
         n: 2,
     };
 
-    fn entry<'a>(tokens: &'a [u8], draft: &'a [u8], tap: &'a [u8]) -> TokenEntry<'a> {
-        TokenEntry {
+    fn entry<'a>(tokens: &'a [u8], draft: &'a [u8], tap: &'a [u8]) -> TokenEntryView<'a> {
+        TokenEntryView {
             seq: SEQ,
             first_position: 9,
             tokens,
@@ -1003,22 +1149,22 @@ mod tests {
     fn finish_codes_round_trip_and_7_is_refused() {
         let all = [
             None,
-            Some(Finish::Stop),
-            Some(Finish::Length),
-            Some(Finish::TokenStop),
-            Some(Finish::Cancelled),
-            Some(Finish::Error {
+            Some(FinishReason::Stop),
+            Some(FinishReason::Length),
+            Some(FinishReason::TokenStop),
+            Some(FinishReason::Cancelled),
+            Some(FinishReason::Error {
                 domain: 3,
                 code: 0x030C,
             }),
         ];
         for (code, finish) in all.into_iter().enumerate() {
-            assert_eq!(Finish::code(finish) as usize, code);
-            assert_eq!(Finish::from_wire(code as u8, 3, 0x030C), Ok(finish));
+            assert_eq!(finish_code(finish) as usize, code);
+            assert_eq!(finish_from_wire(code as u8, 3, 0x030C), Ok(finish));
         }
         // The error fields are read only for `Error`.
-        assert_eq!(Finish::from_wire(1, 9, 9), Ok(Some(Finish::Stop)));
-        assert_eq!(Finish::from_wire(6, 0, 0), Err(bad("finish", 6u8)));
+        assert_eq!(finish_from_wire(1, 9, 9), Ok(Some(FinishReason::Stop)));
+        assert_eq!(finish_from_wire(6, 0, 0), Err(bad("finish", 6u8)));
     }
 
     #[test]

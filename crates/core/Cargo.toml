@@ -11,6 +11,8 @@ serde.workspace = true
 smallvec.workspace = true
 
 [dev-dependencies]
+# The plan and policy types round-trip through the IPC's encoding (RFC-0001 §3.5, §18.20).
+postcard.workspace = true
 proptest.workspace = true
 # Exact float round trips for the serde property tests.
 serde_json = { workspace = true, features = ["float_roundtrip"] }
