@@ -245,6 +245,9 @@ fn with_udp_blocked_a_two_node_ring_forms_over_tcp_and_passes_the_suite() {
     // The fallback: the ring's two hops over TCP.
     passes_the_suite(&rt, &a, &b, 100);
     passes_the_suite(&rt, &b, &a, 200);
+    // Its slots are far under the kernel's buffer caps, so every socket got 2 × slot_size.
+    assert_eq!(a.stats().buffers_autotuned, 0);
+    assert_eq!(b.stats().buffers_autotuned, 0);
 }
 
 /// A connector that pins another key than the acceptor's is refused by its own TLS check.
@@ -474,4 +477,30 @@ fn a_connection_that_never_starts_tls_is_let_go() {
             "a silent connection was held past the TLS timeout: {read:?}"
         );
     });
+}
+
+/// A channel whose receiver's slots are too large for the kernel's unprivileged buffer cap opens
+/// on sockets left to autotuning: the acceptor's, sized for its own slot, and the connector's
+/// send buffer, sized for the peer's slot from `HelloAck`. Both ends count it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_slot_over_the_kernel_cap_is_left_to_autotuning_and_counted() {
+    let rt = runtime();
+    let a = bind(&rt, 17, None);
+    let b = bind(&rt, 18, None);
+    b.allowed().allow(a.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 900);
+    let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    // 1 MiB slots: twice that is over Linux's default 212 992-byte cap.
+    let big = 1 << 20;
+    let receiver_pool = fabric.pool(big, 2 + u32::from(CONTROL_RECEIVES));
+    let sending = spec(key(6, 7), &a, &sender_pool, 0);
+    let mut receiving = spec(key(6, 7), &b, &receiver_pool, 2);
+    receiving.slot_size = Bytes(big as u64);
+    let to_b = remote(&b);
+    let (sender, receiver) =
+        rt.block_on(async { tokio::join!(a.connect(&to_b, sending), b.accept(receiving)) });
+    assert!(sender.is_ok() && receiver.is_ok());
+    assert_eq!(a.stats().buffers_autotuned, 1);
+    assert_eq!(b.stats().buffers_autotuned, 1);
 }

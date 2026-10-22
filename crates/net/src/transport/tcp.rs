@@ -9,8 +9,12 @@
 //! - **One TCP connection per channel**, so no two channels share a byte stream and neither waits
 //!   on the other's lost segments.
 //! - **Socket options.** `TCP_NODELAY` is on. `SO_SNDBUF` and `SO_RCVBUF` are at least twice the
-//!   channel's `slot_size`, set before the connector's `connect`. On Linux, `TCP_QUICKACK` is
-//!   re-armed after every read, since the kernel clears it.
+//!   larger `slot_size` of the channel's two sides where the OS allows it (the connector's
+//!   receive buffer before `connect`, from its own slot), and otherwise left to the kernel's
+//!   autotuning, which [`TcpStats::buffers_autotuned`] counts:
+//!   on Linux an unprivileged request over `net.core.wmem_max` or `rmem_max` is clamped, and
+//!   turns autotuning off. On Linux, `TCP_QUICKACK` is re-armed after every read, since the kernel
+//!   clears it.
 //! - **Framing** is RFC-0031 §6's, as on a QUIC stream: frames back to back on the stream, each
 //!   read by its base header's lengths. Credits, acknowledgements and retransmission are the
 //!   [`ChannelCore`]'s (§7), as on every backend.
@@ -40,6 +44,7 @@ pub mod tls;
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -161,6 +166,19 @@ impl Clock {
     }
 }
 
+/// A [`TcpTransport`]'s counters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TcpStats {
+    /// Sockets whose send or receive buffer was left to the kernel's autotuning, because 2 ×
+    /// `slot_size` was over the kernel's unprivileged cap (RFC-0031 §5.3, note of 2026-10-23).
+    pub buffers_autotuned: u64,
+}
+
+#[derive(Debug, Default)]
+struct Counters {
+    buffers_autotuned: AtomicU64,
+}
+
 /// A connection whose `Hello` has arrived, its credential checked, held for the `accept` of its
 /// key, at most the handshake timeout. `accept` checks the key and the credential again before
 /// it answers, since either may have stopped passing while the connection waited.
@@ -193,8 +211,9 @@ struct Inner {
     rendezvous: Mutex<Rendezvous>,
     /// One permit per handshake in progress, [`MAX_HANDSHAKES`] in all.
     handshakes: Arc<Semaphore>,
-    /// Handshakes in progress by source address.
+    /// Handshakes in progress by source ([`source`]).
     per_address: Mutex<Vec<(IpAddr, usize)>>,
+    stats: Counters,
     local_addr: SocketAddr,
     clock: Clock,
 }
@@ -271,6 +290,7 @@ impl TcpTransport {
             rendezvous: Mutex::new(Rendezvous::default()),
             handshakes: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
             per_address: Mutex::new(Vec::new()),
+            stats: Counters::default(),
             local_addr,
             clock: Clock(Instant::now()),
         });
@@ -290,6 +310,13 @@ impl TcpTransport {
 
     /// The keys the listener accepts connections from: the plan's neighbours, which the owner
     /// keeps current.
+    /// The transport's counters.
+    pub fn stats(&self) -> TcpStats {
+        TcpStats {
+            buffers_autotuned: self.inner.stats.buffers_autotuned.load(Ordering::Relaxed),
+        }
+    }
+
     pub fn allowed(&self) -> &AllowedKeys {
         &self.inner.allowed
     }
@@ -322,7 +349,14 @@ impl TcpTransport {
         for addr in &remote.addrs {
             let attempt = tokio::time::timeout(
                 config.handshake_timeout,
-                connect_one(&connector, *addr, &spec, config, remote.key),
+                connect_one(
+                    &connector,
+                    *addr,
+                    &spec,
+                    config,
+                    remote.key,
+                    &self.inner.stats,
+                ),
             )
             .await;
             match attempt {
@@ -374,7 +408,13 @@ impl TcpTransport {
             ));
         }
         let tcp = stream.get_ref().0;
-        size_buffers(tcp, spec.slot_size);
+        let largest = Bytes(spec.slot_size.0.max(u64::from(hello.slot_size)));
+        if size_buffers(tcp, largest) {
+            self.inner
+                .stats
+                .buffers_autotuned
+                .fetch_add(1, Ordering::Relaxed);
+        }
         let wire_minor = WIRE_MINOR.min(hello.wire_minor_max);
         let mismatch = matches!(hello.wire_dtype, Some(wire) if wire != spec.wire);
         let status = if mismatch {
@@ -509,13 +549,65 @@ fn control_spec(spec: &ChannelSpec) -> ControlSpec {
     }
 }
 
-/// `SO_SNDBUF` and `SO_RCVBUF` at twice the slot size at least (RFC-0031 §5.3). The kernel may
-/// round them; a refusal leaves its default, which still carries the frames.
-fn size_buffers(tcp: &TcpStream, slot_size: Bytes) {
-    let size = usize::try_from(slot_size.0.saturating_mul(2)).unwrap_or(usize::MAX);
+/// The largest `SO_SNDBUF` and `SO_RCVBUF` an unprivileged process may ask for: Linux's
+/// `net.core.wmem_max` and `net.core.rmem_max`, read once. `None` where the cap is not known,
+/// so the request is made as asked.
+fn buffer_caps() -> (Option<usize>, Option<usize>) {
+    #[cfg(target_os = "linux")]
+    {
+        static CAPS: std::sync::OnceLock<(Option<usize>, Option<usize>)> =
+            std::sync::OnceLock::new();
+        *CAPS.get_or_init(|| {
+            let read = |name: &str| {
+                std::fs::read_to_string(format!("/proc/sys/net/core/{name}"))
+                    .ok()?
+                    .trim()
+                    .parse()
+                    .ok()
+            };
+            (read("wmem_max"), read("rmem_max"))
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (None, None)
+    }
+}
+
+/// The buffer size to request for a channel whose slots hold `slot_size` bytes, against the
+/// kernel's `cap`: 2 × `slot_size` where it fits (RFC-0031 §5.3), or `None` to leave the kernel
+/// its autotuning. On Linux, a request over the cap would be clamped to it and would also turn
+/// autotuning off, so a large slot would get a smaller buffer than not asking.
+fn buffer_request(slot_size: Bytes, cap: Option<usize>) -> Option<usize> {
+    let want = usize::try_from(slot_size.0.saturating_mul(2)).unwrap_or(usize::MAX);
+    match cap {
+        Some(cap) if want > cap => None,
+        _ => Some(want),
+    }
+}
+
+/// The send and receive buffer sizes to request for `slot_size`, and whether either was left to
+/// autotuning.
+fn buffer_plan(slot_size: Bytes) -> (Option<usize>, Option<usize>, bool) {
+    let (send_cap, recv_cap) = buffer_caps();
+    let send = buffer_request(slot_size, send_cap);
+    let recv = buffer_request(slot_size, recv_cap);
+    (send, recv, send.is_none() || recv.is_none())
+}
+
+/// `SO_SNDBUF` and `SO_RCVBUF` on a connected socket, as [`buffer_plan`] gives them for the
+/// channel's larger slot, either side's. The kernel may round them; a refusal leaves its
+/// default, which still carries the frames. Returns whether either was left to autotuning.
+fn size_buffers(tcp: &TcpStream, slot_size: Bytes) -> bool {
+    let (send, recv, autotuned) = buffer_plan(slot_size);
     let socket = socket2::SockRef::from(tcp);
-    let _ = socket.set_send_buffer_size(size);
-    let _ = socket.set_recv_buffer_size(size);
+    if let Some(size) = send {
+        let _ = socket.set_send_buffer_size(size);
+    }
+    if let Some(size) = recv {
+        let _ = socket.set_recv_buffer_size(size);
+    }
+    autotuned
 }
 
 /// Whether the purpose's channels carry activations, so `Hello` names their wire dtype.
@@ -533,6 +625,7 @@ async fn connect_one(
     spec: &ChannelSpec,
     config: &TcpConfig,
     expected: [u8; 32],
+    stats: &Counters,
 ) -> Result<(TlsStream<TcpStream>, HelloAck), Error> {
     let socket = if addr.is_ipv4() {
         TcpSocket::new_v4()
@@ -540,9 +633,15 @@ async fn connect_one(
         TcpSocket::new_v6()
     }
     .map_err(|error| link(ErrorCode::CONNECT_TIMEOUT, error.to_string()))?;
-    let size = u32::try_from(spec.slot_size.0.saturating_mul(2)).unwrap_or(u32::MAX);
-    let _ = socket.set_send_buffer_size(size);
-    let _ = socket.set_recv_buffer_size(size);
+    // The receive buffer goes before `connect`, since the window scale is fixed in the SYN. It
+    // follows this side's slot; the send buffer follows the peer's, which `HelloAck` gives.
+    let mut autotuned = false;
+    match buffer_request(spec.slot_size, buffer_caps().1) {
+        Some(size) => {
+            let _ = socket.set_recv_buffer_size(u32::try_from(size).unwrap_or(u32::MAX));
+        }
+        None => autotuned = true,
+    }
     let tcp = socket.connect(addr).await.map_err(|error| {
         link(
             ErrorCode::CONNECT_TIMEOUT,
@@ -617,6 +716,16 @@ async fn connect_one(
         .check
         .hello_ack(&ack, kind, credential, &expected)
         .map_err(|code| Error::new(code, "the acceptor's credential was refused"))?;
+    let largest = Bytes(spec.slot_size.0.max(u64::from(ack.slot_size)));
+    match buffer_request(largest, buffer_caps().0) {
+        Some(size) => {
+            let _ = socket2::SockRef::from(stream.get_ref().0).set_send_buffer_size(size);
+        }
+        None => autotuned = true,
+    }
+    if autotuned {
+        stats.buffers_autotuned.fetch_add(1, Ordering::Relaxed);
+    }
     Ok((stream, ack))
 }
 
@@ -666,14 +775,27 @@ async fn listen(inner: Arc<Inner>, listener: TcpListener, acceptor: TlsAcceptor)
         };
         // Over either cap the connection is closed at once and the listener goes on accepting,
         // so slow or silent peers can neither hold every handshake nor stop the listener.
-        if let Some(slot) = Handshake::start(&inner, from.ip()) {
+        if let Some(slot) = Handshake::start(&inner, source(from.ip())) {
             tokio::spawn(arrive(Arc::clone(&inner), tcp, acceptor.clone(), slot));
         }
     }
 }
 
-/// One handshake in progress: a permit of [`MAX_HANDSHAKES`] and a count against its source
-/// address, both given back when it ends.
+/// What a handshake counts against for [`MAX_HANDSHAKES_PER_ADDRESS`]: an IPv4 address, or an
+/// IPv6 address's /64, since one host is commonly given a whole /64. An IPv4-mapped IPv6 address
+/// counts as its IPv4 address.
+fn source(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => {
+            let [a, b, c, d, ..] = v6.segments();
+            IpAddr::V6(std::net::Ipv6Addr::new(a, b, c, d, 0, 0, 0, 0))
+        }
+        v4 => v4,
+    }
+}
+
+/// One handshake in progress: a permit of [`MAX_HANDSHAKES`] and a count against its source,
+/// both given back when it ends.
 struct Handshake {
     inner: Arc<Inner>,
     address: IpAddr,
@@ -1151,11 +1273,60 @@ mod tests {
         let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
         let (_client, (server, _)) = (client.unwrap(), accepted.unwrap());
         let slot = Bytes(48 << 10);
-        size_buffers(&server, slot);
+        assert!(
+            !size_buffers(&server, slot),
+            "96 KiB fits under the default caps"
+        );
         let socket = socket2::SockRef::from(&server);
         let want = 2 * (48 << 10);
         assert!(socket.send_buffer_size().unwrap() >= want);
         assert!(socket.recv_buffer_size().unwrap() >= want);
+    }
+
+    /// 2 × `slot_size` is requested where the cap allows it, and left to autotuning where it does
+    /// not, or where the cap is not known.
+    #[test]
+    fn a_buffer_is_requested_only_under_the_cap() {
+        let slot = Bytes(100 << 10);
+        assert_eq!(buffer_request(slot, None), Some(200 << 10));
+        assert_eq!(buffer_request(slot, Some(200 << 10)), Some(200 << 10));
+        assert_eq!(buffer_request(slot, Some((200 << 10) - 1)), None);
+        assert_eq!(
+            buffer_request(Bytes(u64::MAX), Some(usize::MAX)),
+            Some(usize::MAX)
+        );
+    }
+
+    /// On Linux, whose caps are known, a slot whose double is over them is left to autotuning,
+    /// and the plan says so.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_slot_over_the_linux_cap_is_left_to_autotuning() {
+        let (send_cap, recv_cap) = buffer_caps();
+        let (send_cap, recv_cap) = (send_cap.unwrap(), recv_cap.unwrap());
+        let large = Bytes(u64::try_from(send_cap.max(recv_cap)).unwrap());
+        let (send, recv, autotuned) = buffer_plan(large);
+        assert_eq!((send, recv, autotuned), (None, None, true));
+        let small = Bytes(u64::try_from(send_cap.min(recv_cap) / 4).unwrap());
+        assert!(!buffer_plan(small).2);
+    }
+
+    /// One host's handshakes are counted together: an IPv6 /64 as one source, and an IPv4-mapped
+    /// address as its IPv4 address.
+    #[test]
+    fn a_handshake_counts_against_its_hosts_source() {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+        let v4 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+        assert_eq!(source(v4), v4);
+        assert_eq!(
+            source(IpAddr::V6(Ipv4Addr::new(192, 0, 2, 7).to_ipv6_mapped())),
+            v4
+        );
+        let a = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 2, 3, 4, 5, 6));
+        let b = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 2, 0xffff, 0, 0, 1));
+        let other = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 3, 3, 4, 5, 6));
+        assert_eq!(source(a), source(b));
+        assert_ne!(source(a), source(other));
     }
 
     /// The reading task's re-arm sets `TCP_QUICKACK` again after the kernel clears it.
