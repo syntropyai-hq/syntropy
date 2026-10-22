@@ -852,10 +852,12 @@ Extension:
 #### 6.14 `EmbeddingResult` frame
 
 This frame implements RFC-0050 amendment A5 for prefill-only embedding sequences (`SequenceOpen::limits.embed`, RFC-0032 §3.6).
-- **Channel.** The tail sends exactly one per sequence on its `Tokens` channel to the sequence's ingress, in place of tokens, after the last prefill chunk. No ring-return frame follows.
-- **Extension.** `seq[16]`, `dims: u32`, `dtype: u8` (1 = F32, always in v1), `pooling: u8` (1 last_token | 2 mean | 3 cls), `normalised: u8`, `reserved: u8`, `prompt_tokens: u32`, `reserved[4]`, padded to 64.
-- **Payload.** `dims × f32`. At a few tens of KiB this fits a token slot. Larger vectors use the `Token` part convention (§6.5).
-- **Capability.** Bit 14 `EMBEDDING` (§10).
+- **Channel.** The tail sends one result per sequence, in one or more parts, on its `Tokens` channel to the sequence's ingress, in place of tokens, after the last prefill chunk. No ring-return frame follows.
+- **Extension.** `seq[16]`, `dims: u32`, `dtype: u8` (1 = F32, always in v1), `pooling: u8` (1 last_token | 2 mean | 3 cls), `normalised: u8`, `reserved: u8`, `prompt_tokens: u32`, `part_index: u16`, `part_count: u16`, padded to 64.
+- **Payload.** This part's elements of the `dims × f32` vector, little-endian. A vector larger than the channel's slot is split at element boundaries, each part a whole frame holding as many elements as fit beside the header and extension. The receiver acts on the result only when every part has arrived, as with `Token` (§6.5).
+- **Capability.** Bit 14 `EMBEDDING` (§10). A sender never writes the frame on a channel that did not negotiate it.
+
+*Note 2026-10-23 (DIST-E8-T15):* the part fields took the extension's `reserved[4]` at offset 28. The text sent a larger vector in `Token`'s parts, but the extension had no part fields, and a 4096-dimension F32 vector (16 KiB) does not fit a 16 KiB `Tokens` slot with its header. `part_count = 0`, what those reserved bytes held, is refused, as `Token` refuses it: no sender ever wrote the reserved form, so nothing needs it read as one part. Recorded under the maintainers' standing instruction of 2026-10-22 on wire-format choices.
 
 ### 7. Flow control, acknowledgement, retransmission and failover
 

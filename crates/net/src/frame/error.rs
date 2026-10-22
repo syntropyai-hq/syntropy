@@ -85,6 +85,10 @@ pub enum FrameError {
     TooLong { what: &'static str, len: usize },
     /// The output buffer is shorter than the frame.
     BufferTooSmall { needed: usize, available: usize },
+    /// A frame whose type needs a capability (RFC-0031 §10) that the channel did not negotiate:
+    /// the encoder refuses it, so a peer that did not advertise the capability never receives
+    /// the frame.
+    CapabilityNotNegotiated { ftype: FrameType, capability: u64 },
 }
 
 impl FrameError {
@@ -127,7 +131,8 @@ impl FrameError {
         match self {
             FrameError::UnknownFrameType(_)
             | FrameError::WireDTypeMismatch { .. }
-            | FrameError::UnsupportedDType(_) => ErrorClass::Unsupported,
+            | FrameError::UnsupportedDType(_)
+            | FrameError::CapabilityNotNegotiated { .. } => ErrorClass::Unsupported,
             FrameError::TooLong { .. } | FrameError::BufferTooSmall { .. } => ErrorClass::Internal,
             _ => ErrorClass::Integrity,
         }
@@ -287,6 +292,11 @@ impl fmt::Display for FrameError {
                     "output buffer of {available} bytes; the frame needs {needed}"
                 )
             }
+            FrameError::CapabilityNotNegotiated { ftype, capability } => write!(
+                f,
+                "{ftype:?} needs capability bit {}, which the channel did not negotiate",
+                capability.trailing_zeros()
+            ),
         }
     }
 }
