@@ -59,3 +59,4 @@ pub use session::{ParseSessionIdError, SequenceId, SessionId};
 pub use tick::{DeviceClockSync, TickRate, TickSource};
 pub use transfer::{BufferView, ExtentRef, FileIx, HostRegion, StepLayer, ViewKind};
 pub use units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};
+// Fixture for QUAL-E1-T07: a change to `core`.

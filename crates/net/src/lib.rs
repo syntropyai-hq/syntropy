@@ -30,3 +30,4 @@ pub mod transport;
 pub mod words;
 
 pub use error::{Error, ErrorCode};
+// Fixture for QUAL-E1-T07: a change to `net`, a hardware path.

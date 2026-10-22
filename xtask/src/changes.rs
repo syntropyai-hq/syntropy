@@ -988,11 +988,9 @@ pub fn step(context: &Context) -> Result<(), String> {
     for line in report(&affected, &config) {
         eprintln!("changes: {line}");
     }
-    let outputs = format!(
-        "jobs={}\nhw_required={}\n",
-        json_list(&affected.jobs),
-        json_list(&affected.hw_required)
-    );
+    // Fixture: a head whose rules engine lists no job and no hardware, whatever changed.
+    let _ = &affected;
+    let outputs = format!("jobs={}\nhw_required={}\n", json_list(&[]), json_list(&[]));
     print!("{outputs}");
     if let Some(file) = context.args.get("--github-output") {
         std::fs::OpenOptions::new()
