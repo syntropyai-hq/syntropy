@@ -25,10 +25,22 @@ use syntropy_core::{Clock, Entropy, MonoTime, Nanos};
 
 /// The production [`Clock`]: monotonic nanoseconds that include time the host spent suspended,
 /// and the wall clock from [`SystemTime`].
+///
+/// Built with [`SystemClock::new`] or [`Default`], never as a bare value: `non_exhaustive`
+/// makes every construction outside this crate name the type, which the determinism lints'
+/// type ban then reports in every crate rule T1 covers (RFC-0060 §2.1, #1763). Only a binary's
+/// wiring builds it.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SystemClock;
 
 impl SystemClock {
+    /// The production clock.
+    #[must_use]
+    pub const fn new() -> Self {
+        SystemClock
+    }
+
     /// The clock that stops while the host is suspended (RFC-0030 §5.8), on its own timeline.
     ///
     /// Compare only differences between two readings of this clock, and against differences of
@@ -76,8 +88,20 @@ impl AwakeTime {
 
 /// The production [`Entropy`]: the OS CSPRNG, through `getrandom` (RFC-0060 §2.1 rule T2;
 /// RFC-0034 §3).
+///
+/// Built with [`OsEntropy::new`] or [`Default`], never as a bare value, for the reason
+/// [`SystemClock`] gives.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OsEntropy;
+
+impl OsEntropy {
+    /// The OS random source.
+    #[must_use]
+    pub const fn new() -> Self {
+        OsEntropy
+    }
+}
 
 impl Entropy for OsEntropy {
     /// Fills `buf` from the OS CSPRNG.
@@ -253,7 +277,7 @@ mod tests {
 
     #[test]
     fn now_is_monotonic_across_a_million_calls() {
-        let clock = SystemClock;
+        let clock = SystemClock::new();
         let mut last = clock.now();
         for _ in 0..CALLS {
             let next = clock.now();
@@ -264,7 +288,7 @@ mod tests {
 
     #[test]
     fn awake_is_monotonic_across_a_million_calls() {
-        let clock = SystemClock;
+        let clock = SystemClock::new();
         let mut last = clock.awake();
         for _ in 0..CALLS {
             let next = clock.awake();
@@ -277,7 +301,7 @@ mod tests {
     /// more time than the running one, within one tick of the coarser clock.
     #[test]
     fn the_awake_clock_never_outruns_now() {
-        let clock = SystemClock;
+        let clock = SystemClock::new();
         let tick = clock.tick().0;
         for _ in 0..CALLS {
             let n1 = clock.now();
@@ -299,7 +323,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let ms = u128::from(SystemClock.unix_ms());
+        let ms = u128::from(SystemClock::new().unix_ms());
         let after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -325,7 +349,7 @@ mod tests {
     fn now_agrees_with_the_os_suspend_aware_clock() {
         for _ in 0..1_000 {
             let before = direct::suspend_aware_nanos();
-            let now = SystemClock.now().0;
+            let now = SystemClock::new().now().0;
             let after = direct::suspend_aware_nanos();
             assert!(
                 before <= now && now <= after,
@@ -393,7 +417,7 @@ mod tests {
 
     #[test]
     fn fill_handles_empty_one_byte_and_one_mebibyte_buffers() {
-        let entropy = OsEntropy;
+        let entropy = OsEntropy::new();
         entropy.fill(&mut []);
         let mut one = [0u8; 1];
         entropy.fill(&mut one);
@@ -408,7 +432,7 @@ mod tests {
 
     #[test]
     fn two_fills_differ() {
-        let entropy = OsEntropy;
+        let entropy = OsEntropy::new();
         let mut a = [0u8; 32];
         let mut b = [0u8; 32];
         entropy.fill(&mut a);
@@ -418,7 +442,7 @@ mod tests {
 
     #[test]
     fn u64_comes_from_the_os_source() {
-        let entropy = OsEntropy;
+        let entropy = OsEntropy::new();
         let draws: Vec<u64> = (0..8).map(|_| entropy.u64()).collect();
         assert!(draws.windows(2).any(|w| w[0] != w[1]), "{draws:?}");
     }
