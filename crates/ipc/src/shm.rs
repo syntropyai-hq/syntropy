@@ -16,21 +16,24 @@
 //! | OS | Segment | Owner-only | Handle |
 //! |---|---|---|---|
 //! | Linux | `memfd_create`, sealed against growing and shrinking | `fchmod` 0600 | a descriptor the runner inherits |
-//! | Apple platforms | `shm_open` with `O_EXCL` | created 0600 | its name |
-//! | Windows | a named file mapping in the session's `Local\` namespace | a protected DACL with one entry, for the user | its name |
+//! | Apple platforms | `shm_open` with `O_EXCL` | created 0600 | its name, random, removed as soon as the runner maps the segment |
+//! | Windows | a named file mapping in the session's `Local\` namespace | a protected DACL with one entry, for the user | its name, random |
 //!
-//! [`Region::unlink`] removes the segment's name, so no new process can open it. On Linux a memfd
-//! never has a name, and on Windows the name goes when the last handle closes, so there it does
-//! nothing. The daemon calls it once the runner has exited.
+//! A name's random part comes from the [`Entropy`] the daemon passes to [`Region::create`], so
+//! another process cannot guess it. [`Region::unlink`] removes the segment's name, so no new
+//! process can open it. On Linux a memfd never has a name, and on Windows the name goes when the
+//! last handle closes, so there it does nothing. The daemon calls it once the runner has exited.
 //!
 //! **Sides.** A region is open on one [`Side`]: the daemon's or the runner's. A side takes the
 //! producing end of each ring that leaves it and the consuming end of each ring that arrives. It
 //! beats its own heartbeat and reads the other's.
 //!
 //! **Trust.** The two processes run as the same user, and the segment is owner-only, but each
-//! still checks what it reads: [`Region::open`] checks the magic, the version, the size, the
-//! protocol and the ring table against the layout it expects, and the rings bounds-check every
-//! index and length.
+//! treats the other as possibly hostile. [`Region::open`] copies the header's fixed fields and the
+//! ring table out once, checks the copies against the layout it expects (magic, version, size,
+//! protocol, rings), and keeps only the copies. The header's counters are atomics, and nothing
+//! else of the header is ever borrowed. The rings read each index and length once and
+//! bounds-check it (see [`syntropy_spsc::shared`]).
 //!
 //! The record types the rings carry belong to the rings' owners (RFC-0053 for telemetry, steps and
 //! logs; RFC-0031 for `TokenFrame`; RFC-0001 §3.5 for the sequence controls). `BuildId`
@@ -43,6 +46,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+use syntropy_core::Entropy;
 use syntropy_spsc::shared::{LayoutError, SharedConsumer, SharedLayout, SharedProducer};
 
 mod os;
@@ -470,6 +474,9 @@ fn place(layout: &ShmLayout) -> Result<Placement, LayoutProblem> {
 pub struct Region {
     segment: os::Segment,
     side: Side,
+    /// The header's fixed fields as this process wrote or checked them. They are never read from
+    /// the segment again, so a peer that rewrites them afterwards changes nothing here.
+    fixed: Fixed,
     placement: Placement,
     /// Per ring, whether this region has handed out this side's end.
     taken: Vec<AtomicBool>,
@@ -493,13 +500,17 @@ impl Region {
     ///
     /// [`ShmError::Layout`] for an invalid layout, and [`ShmError::Os`] if the OS refuses the
     /// segment.
+    ///
+    /// `entropy` draws the random part of the segment's name on Apple platforms and Windows, so
+    /// another process cannot guess it.
     pub fn create(
         layout: &ShmLayout,
         build_id: [u8; 32],
         protocol: IpcProtocol,
+        entropy: &dyn Entropy,
     ) -> Result<Region, ShmError> {
         let placement = place(layout).map_err(ShmError::Layout)?;
-        let segment = os::Segment::create(placement.total)?;
+        let segment = os::Segment::create(placement.total, entropy)?;
         let base = segment.base();
         let fixed = Fixed {
             magic: MAGIC,
@@ -528,12 +539,19 @@ impl Region {
                 placed.shape.init(base.add(placed.offset));
             }
         }
-        Ok(Region::with(segment, Side::Daemon, placement))
+        Ok(Region::with(segment, Side::Daemon, fixed, placement))
     }
 
     /// Opens a region another process created, on `side`, and checks it against `layout` and
     /// `protocol`. The build ID is the caller's to check ([`Region::build_id`]): a spawned runner
     /// must match the daemon's build, and an adopted one need not (RFC-0001 §3.5).
+    ///
+    /// On Apple platforms the segment's name is removed as soon as it is mapped here, so no third
+    /// process can open it. A daemon that adopts the runner later (RFC-0052 §6.5) gets the
+    /// segment's descriptor over the adoption socket, not by name.
+    ///
+    /// Every field read from the segment is copied out once, with a volatile read, and only the
+    /// copy is checked and kept.
     ///
     /// # Errors
     ///
@@ -548,9 +566,10 @@ impl Region {
         let placement = place(layout).map_err(ShmError::Layout)?;
         let segment = os::Segment::open(handle, placement.total)?;
         let base = segment.base();
-        // SAFETY: the segment is at least `placement.total` bytes, which covers the header. The
-        // fixed fields were written once, before the handle was passed here, and are read by copy.
-        let fixed = unsafe { base.cast::<Fixed>().read() };
+        // SAFETY: the segment is at least `placement.total` bytes, which covers the header, and its
+        // start is page-aligned. The fixed fields are copied out with one volatile read, so a
+        // later write by the peer cannot change what is checked below.
+        let fixed = unsafe { base.cast::<Fixed>().read_volatile() };
         if fixed.magic != MAGIC {
             return Err(ShmError::BadMagic);
         }
@@ -582,16 +601,17 @@ impl Region {
         // `place` laid them out; they were written once by the creator and are read by copy.
         let table = unsafe { base.add(table_offset()).cast::<TableEntry>() };
         for (at, placed) in placement.rings.iter().enumerate() {
-            // SAFETY: as above.
-            let entry = unsafe { table.add(at).read() };
+            // SAFETY: as above, copied out with one volatile read.
+            let entry = unsafe { table.add(at).read_volatile() };
             if entry != placed.entry() {
                 return Err(ShmError::RingTable);
             }
         }
-        Ok(Region::with(segment, side, placement))
+        segment.unlink_after_open()?;
+        Ok(Region::with(segment, side, fixed, placement))
     }
 
-    fn with(segment: os::Segment, side: Side, placement: Placement) -> Region {
+    fn with(segment: os::Segment, side: Side, fixed: Fixed, placement: Placement) -> Region {
         let taken = placement
             .rings
             .iter()
@@ -600,15 +620,37 @@ impl Region {
         Region {
             segment,
             side,
+            fixed,
             placement,
             taken,
         }
     }
 
-    fn header(&self) -> &Header {
-        // SAFETY: the header was written at offset 0 before any process opened the region, its
-        // mutable fields are atomics, and the mapping lives as long as `self`.
-        unsafe { self.segment.base().cast::<Header>().as_ref() }
+    /// The header, as a raw pointer: only its atomic fields are ever borrowed from it, never the
+    /// whole header, because its fixed fields are plain memory the peer could write.
+    fn header(&self) -> *const Header {
+        self.segment.base().cast::<Header>().as_ptr()
+    }
+
+    fn runner_heartbeat(&self) -> &AtomicU64 {
+        // SAFETY: the header lives at offset 0 for as long as the mapping, which `self` owns, and
+        // the field is an atomic, so borrowing it alone is sound while the peer writes it too.
+        unsafe { &(*self.header()).runner_heartbeat.0 }
+    }
+
+    fn daemon_heartbeat(&self) -> &AtomicU64 {
+        // SAFETY: as in `runner_heartbeat`.
+        unsafe { &(*self.header()).daemon_heartbeat.0 }
+    }
+
+    fn step_counter(&self) -> &AtomicU64 {
+        // SAFETY: as in `runner_heartbeat`.
+        unsafe { &(*self.header()).step_counter.0 }
+    }
+
+    fn state_word(&self) -> &AtomicU32 {
+        // SAFETY: as in `runner_heartbeat`.
+        unsafe { &(*self.header()).runner_state.0 }
     }
 
     /// The side this region is open on.
@@ -626,16 +668,15 @@ impl Region {
     /// The build ID of the daemon that created the region.
     #[must_use]
     pub fn build_id(&self) -> [u8; 32] {
-        self.header().fixed.0.build_id
+        self.fixed.build_id
     }
 
     /// The region's `ipc_protocol`.
     #[must_use]
     pub fn protocol(&self) -> IpcProtocol {
-        let fixed = &self.header().fixed.0;
         IpcProtocol {
-            major: fixed.protocol_major,
-            minor: fixed.protocol_minor,
+            major: self.fixed.protocol_major,
+            minor: self.fixed.protocol_minor,
         }
     }
 
@@ -661,8 +702,9 @@ impl Region {
 
     /// Removes the segment's name, so no new process can open it: `shm_unlink` on Apple
     /// platforms. A Linux memfd has no name, and a Windows mapping's name goes with its last
-    /// handle, so there it does nothing. The daemon calls it once the runner has exited. Calling
-    /// it twice is not an error.
+    /// handle, so there it does nothing. On Apple platforms [`Region::open`] already removes the
+    /// name once the runner has mapped the segment; the daemon calls this when the runner exits,
+    /// which also covers a runner that never opened it. Calling it twice is not an error.
     ///
     /// # Errors
     ///
@@ -690,8 +732,8 @@ impl Region {
     #[must_use]
     pub fn peer_heartbeat(&self) -> u64 {
         match self.side {
-            Side::Daemon => self.header().runner_heartbeat.0.load(Ordering::Acquire),
-            Side::Runner => self.header().daemon_heartbeat.0.load(Ordering::Acquire),
+            Side::Daemon => self.runner_heartbeat().load(Ordering::Acquire),
+            Side::Runner => self.daemon_heartbeat().load(Ordering::Acquire),
         }
     }
 
@@ -703,8 +745,8 @@ impl Region {
 
     fn own_heartbeat(&self) -> &AtomicU64 {
         match self.side {
-            Side::Daemon => &self.header().daemon_heartbeat.0,
-            Side::Runner => &self.header().runner_heartbeat.0,
+            Side::Daemon => self.daemon_heartbeat(),
+            Side::Runner => self.runner_heartbeat(),
         }
     }
 
@@ -712,26 +754,23 @@ impl Region {
     /// detection (ADR-0015 item 5).
     #[must_use]
     pub fn steps(&self) -> u64 {
-        self.header().step_counter.0.load(Ordering::Acquire)
+        self.step_counter().load(Ordering::Acquire)
     }
 
     /// Advances the step counter by one.
     pub fn step(&self) {
-        self.header().step_counter.0.fetch_add(1, Ordering::Release);
+        self.step_counter().fetch_add(1, Ordering::Release);
     }
 
     /// The runner's current `RunnerState` discriminant.
     #[must_use]
     pub fn runner_state(&self) -> u32 {
-        self.header().runner_state.0.load(Ordering::Acquire)
+        self.state_word().load(Ordering::Acquire)
     }
 
     /// Records the runner's current `RunnerState` discriminant.
     pub fn set_runner_state(&self, discriminant: u32) {
-        self.header()
-            .runner_state
-            .0
-            .store(discriminant, Ordering::Release);
+        self.state_word().store(discriminant, Ordering::Release);
     }
 
     /// The producing end of the ring `role`, which this side writes.

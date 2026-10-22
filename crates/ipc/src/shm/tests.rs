@@ -10,6 +10,28 @@ use super::*;
 const PROTOCOL: IpcProtocol = IpcProtocol { major: 1, minor: 0 };
 const BUILD: [u8; 32] = [7; 32];
 
+/// Names for the test segments: this process's ID and a counter, spread by a mixing step. The
+/// daemon passes the OS entropy source instead.
+struct TestEntropy(AtomicU64);
+
+impl Entropy for TestEntropy {
+    fn fill(&self, buf: &mut [u8]) {
+        let n = self.0.fetch_add(1, Ordering::Relaxed);
+        let mut x = (u64::from(std::process::id()) << 32 | n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        for byte in buf {
+            x ^= x >> 29;
+            x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            *byte = (x >> 56) as u8;
+        }
+    }
+}
+
+static ENTROPY: TestEntropy = TestEntropy(AtomicU64::new(0));
+
+fn create(layout: &ShmLayout) -> Result<Region, ShmError> {
+    Region::create(layout, BUILD, PROTOCOL, &ENTROPY)
+}
+
 fn ring(role: RingRole, slots: u32, slot_bytes: u32) -> RingSpec {
     RingSpec {
         role,
@@ -38,7 +60,7 @@ fn open(region: &Region, side: Side) -> Result<Region, ShmError> {
 
 #[test]
 fn a_new_region_is_owner_only_and_reads_back_its_header() {
-    let region = Region::create(&layout(), BUILD, PROTOCOL).unwrap();
+    let region = create(&layout()).unwrap();
     assert!(region.is_owner_only().unwrap());
     assert_eq!(region.side(), Side::Daemon);
     assert_eq!(region.build_id(), BUILD);
@@ -51,7 +73,7 @@ fn a_new_region_is_owner_only_and_reads_back_its_header() {
 /// The runner's side sees what the daemon's writes, and the other way round.
 #[test]
 fn both_sides_share_the_header() {
-    let daemon = Region::create(&layout(), BUILD, PROTOCOL).unwrap();
+    let daemon = create(&layout()).unwrap();
     let runner = open(&daemon, Side::Runner).unwrap();
     assert_eq!(runner.build_id(), BUILD);
     runner.beat();
@@ -67,7 +89,7 @@ fn both_sides_share_the_header() {
 
 #[test]
 fn each_side_takes_its_own_end_of_each_ring_once() {
-    let daemon = Region::create(&layout(), BUILD, PROTOCOL).unwrap();
+    let daemon = create(&layout()).unwrap();
     let runner = open(&daemon, Side::Runner).unwrap();
     let mut tokens_out = runner.producer(RingRole::LocalTokens).unwrap();
     let mut tokens_in = daemon.consumer(RingRole::LocalTokens).unwrap();
@@ -115,7 +137,7 @@ fn each_side_takes_its_own_end_of_each_ring_once() {
 /// Each step ring is separate, as RFC-0053 §2.5 has one per dispatcher.
 #[test]
 fn step_rings_are_separate_per_dispatcher() {
-    let daemon = Region::create(&layout(), BUILD, PROTOCOL).unwrap();
+    let daemon = create(&layout()).unwrap();
     let runner = open(&daemon, Side::Runner).unwrap();
     let mut first = runner.producer(RingRole::Step { dispatcher: 0 }).unwrap();
     let mut second = runner.producer(RingRole::Step { dispatcher: 1 }).unwrap();
@@ -133,7 +155,7 @@ fn step_rings_are_separate_per_dispatcher() {
 
 #[test]
 fn opening_checks_the_protocol_the_size_and_the_ring_table() {
-    let daemon = Region::create(&layout(), BUILD, PROTOCOL).unwrap();
+    let daemon = create(&layout()).unwrap();
     let other = IpcProtocol { major: 2, minor: 0 };
     assert!(matches!(
         Region::open(&daemon.handle(), Side::Runner, &layout(), other),
@@ -159,7 +181,7 @@ fn layouts_are_checked() {
     let mut twice = layout();
     twice.rings.push(ring(RingRole::Log, 8, 8));
     assert!(matches!(
-        Region::create(&twice, BUILD, PROTOCOL),
+        create(&twice),
         Err(ShmError::Layout(LayoutProblem::DuplicateRole(
             RingRole::Log
         )))
@@ -168,7 +190,7 @@ fn layouts_are_checked() {
         rings: vec![ring(RingRole::Telemetry, 3, 8)],
     };
     assert!(matches!(
-        Region::create(&bad, BUILD, PROTOCOL),
+        create(&bad),
         Err(ShmError::Layout(LayoutProblem::Ring {
             role: RingRole::Telemetry,
             ..
@@ -180,7 +202,7 @@ fn layouts_are_checked() {
             .collect(),
     };
     assert!(matches!(
-        Region::create(&many, BUILD, PROTOCOL),
+        create(&many),
         Err(ShmError::Layout(LayoutProblem::TooManyRings(257)))
     ));
 }
@@ -232,4 +254,54 @@ fn errors_name_what_happened() {
         EndError::Taken(RingRole::Log).to_string(),
         "this region already handed out its Log end"
     );
+}
+
+/// A peer that wrote garbage over the header and the ring table: opening fails with an error,
+/// never a panic or an out-of-range read.
+#[test]
+fn a_garbage_header_or_table_is_refused() {
+    let table_end = table_offset() + layout().rings.len() * std::mem::size_of::<TableEntry>();
+    for seed in 1..=200u64 {
+        let daemon = create(&layout()).unwrap();
+        let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        // Garbage over the header only for odd seeds, over the table only for even ones, so each
+        // check is reached with the fields before it intact.
+        let (from, to) = if seed % 2 == 1 {
+            (0, std::mem::size_of::<Fixed>())
+        } else {
+            (table_offset(), table_end)
+        };
+        for at in (from..to).step_by(8) {
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            // SAFETY: `at` is inside the segment, 8-aligned, and no other process maps it.
+            unsafe {
+                daemon
+                    .segment
+                    .base()
+                    .add(at)
+                    .cast::<u64>()
+                    .write_volatile(x.wrapping_mul(0x2545_f491_4f6c_dd1d))
+            };
+        }
+        let opened = open(&daemon, Side::Runner);
+        assert!(opened.is_err(), "seed {seed} opened a scribbled region");
+    }
+}
+
+/// The opener keeps the header fields it checked: a peer that rewrites them afterwards changes
+/// nothing it reads.
+#[test]
+fn fields_checked_at_open_cannot_be_changed_by_the_peer() {
+    let daemon = create(&layout()).unwrap();
+    let runner = open(&daemon, Side::Runner).unwrap();
+    // SAFETY: the fixed fields sit at offset 0 of the live segment; nothing else writes them now.
+    unsafe {
+        let fixed = daemon.segment.base().cast::<Fixed>().as_ptr();
+        (&raw mut (*fixed).build_id).write_volatile([0xee; 32]);
+        (&raw mut (*fixed).protocol_major).write_volatile(99);
+    }
+    assert_eq!(runner.build_id(), BUILD);
+    assert_eq!(runner.protocol(), PROTOCOL);
 }

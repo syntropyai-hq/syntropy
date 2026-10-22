@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 # `ShmLayout` travels in the command channel's `Init` (RFC-0001 §3.5).
 serde = { workspace = true }
+# `Entropy`, for the segment names' random part (`getrandom` itself is only in `io`, rule 6).
+syntropy-core = { path = "../core" }
 # The shared rings (RFC-0001 §4.2 rule 2, note of 2026-10-22: `ipc` may depend on `spsc`).
 syntropy-spsc = { path = "../spsc" }
 

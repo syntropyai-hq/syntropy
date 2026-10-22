@@ -753,6 +753,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "syntropy-core",
  "syntropy-spsc",
  "windows-sys",
 ]

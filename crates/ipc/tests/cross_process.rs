@@ -9,8 +9,10 @@
 //! - After the runner exits, the daemon unlinks the region, and no process can open it by name.
 
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
+use syntropy_core::Entropy;
 use syntropy_ipc::shm::{IpcProtocol, Region, RegionHandle, RingRole, RingSpec, ShmLayout, Side};
 use syntropy_spsc::shared::{SharedConsumer, SharedPopError, SharedProducer, SharedPushError};
 
@@ -21,6 +23,24 @@ const BUILD: [u8; 32] = [0x5a; 32];
 const RECORDS: u64 = 1_000_000;
 /// The `RunnerState` discriminant the runner records before it exits, as a test value.
 const FINAL_STATE: u32 = 7;
+
+/// The segment name's random part, for the test: the process's ID and a counter, mixed. The
+/// daemon passes the OS entropy source instead.
+struct TestEntropy(AtomicU64);
+
+impl Entropy for TestEntropy {
+    fn fill(&self, buf: &mut [u8]) {
+        let n = self.0.fetch_add(1, Ordering::Relaxed);
+        let mut x = (u64::from(std::process::id()) << 32 | n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        for byte in buf {
+            x ^= x >> 29;
+            x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            *byte = (x >> 56) as u8;
+        }
+    }
+}
+
+static ENTROPY: TestEntropy = TestEntropy(AtomicU64::new(0));
 
 fn layout() -> ShmLayout {
     let ring = |role, slots, slot_bytes| RingSpec {
@@ -108,7 +128,7 @@ fn a_runner_process_exchanges_a_million_records_each_way() {
         run_runner(&handle);
         return;
     }
-    let region = Region::create(&layout(), BUILD, PROTOCOL).unwrap();
+    let region = Region::create(&layout(), BUILD, PROTOCOL, &ENTROPY).unwrap();
     assert!(
         region.is_owner_only().unwrap(),
         "the daemon made an owner-only segment"
@@ -198,7 +218,7 @@ fn opens_by_name(_name: &str) -> bool {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_linux_region_has_no_name_in_the_filesystem() {
-    let region = Region::create(&layout(), BUILD, PROTOCOL).unwrap();
+    let region = Region::create(&layout(), BUILD, PROTOCOL, &ENTROPY).unwrap();
     let RegionHandle::Fd(fd) = region.handle() else {
         panic!("a Linux region is a descriptor");
     };

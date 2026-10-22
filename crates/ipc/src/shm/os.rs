@@ -4,22 +4,18 @@
 //! mapped read-write and shared.
 
 #[cfg(any(target_vendor = "apple", windows))]
-use std::sync::atomic::{AtomicU32, Ordering};
-
-/// Names created by this process so far, so each new name is new.
-#[cfg(any(target_vendor = "apple", windows))]
-static NEXT_NAME: AtomicU32 = AtomicU32::new(0);
+use syntropy_core::Entropy;
 
 /// How many names to try when one is already taken by another segment.
 #[cfg(any(target_vendor = "apple", windows))]
 const NAME_ATTEMPTS: u32 = 64;
 
-/// A fresh segment name for this process: its ID and a counter, short enough for Apple's
-/// 31-character limit on POSIX shared-memory names.
+/// A fresh segment name: 64 random bits from `entropy`, so another process cannot guess it, in a
+/// name short enough for Apple's 31-character limit on POSIX shared-memory names
+/// (`/syntropy-` and 16 hex digits).
 #[cfg(any(target_vendor = "apple", windows))]
-fn next_name(prefix: &str) -> String {
-    let n = NEXT_NAME.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}syntropy-{:x}-{n:x}", std::process::id())
+fn random_name(prefix: &str, entropy: &dyn Entropy) -> String {
+    format!("{prefix}syntropy-{:016x}", entropy.u64())
 }
 
 pub(super) use imp::{Inherited, Segment};
@@ -114,6 +110,8 @@ mod imp {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::ptr::NonNull;
 
+    use syntropy_core::Entropy;
+
     use super::super::RegionHandle;
     use super::unix::{Mapped, check, is_owner_only, size};
 
@@ -143,7 +141,8 @@ mod imp {
     }
 
     impl Segment {
-        pub(in super::super) fn create(len: usize) -> io::Result<Segment> {
+        /// A memfd has no name, so `entropy` is not needed.
+        pub(in super::super) fn create(len: usize, _entropy: &dyn Entropy) -> io::Result<Segment> {
             // SAFETY: a NUL-terminated name and flags; `memfd_create` returns a new descriptor or
             // -1.
             let fd = check(unsafe {
@@ -212,6 +211,10 @@ mod imp {
             Ok(())
         }
 
+        pub(in super::super) fn unlink_after_open(&self) -> io::Result<()> {
+            Ok(())
+        }
+
         pub(in super::super) fn is_owner_only(&self) -> io::Result<bool> {
             is_owner_only(&self.map.fd)
         }
@@ -226,9 +229,11 @@ mod imp {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::ptr::NonNull;
 
+    use syntropy_core::Entropy;
+
     use super::super::RegionHandle;
     use super::unix::{Mapped, check, is_owner_only, size};
-    use super::{NAME_ATTEMPTS, next_name};
+    use super::{NAME_ATTEMPTS, random_name};
 
     pub(in super::super) struct Segment {
         map: Mapped,
@@ -248,9 +253,9 @@ mod imp {
     }
 
     impl Segment {
-        pub(in super::super) fn create(len: usize) -> io::Result<Segment> {
+        pub(in super::super) fn create(len: usize, entropy: &dyn Entropy) -> io::Result<Segment> {
             for _ in 0..NAME_ATTEMPTS {
-                let name = CString::new(next_name("/")).map_err(io::Error::other)?;
+                let name = CString::new(random_name("/", entropy)).map_err(io::Error::other)?;
                 let fd = match shm_open(&name, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL) {
                     Ok(fd) => fd,
                     Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
@@ -315,6 +320,12 @@ mod imp {
             }
         }
 
+        /// The runner has mapped the segment, so its name is no longer needed: removing it now
+        /// keeps the time another process could open it to the spawn.
+        pub(in super::super) fn unlink_after_open(&self) -> io::Result<()> {
+            self.unlink()
+        }
+
         pub(in super::super) fn is_owner_only(&self) -> io::Result<bool> {
             is_owner_only(&self.map.fd)
         }
@@ -347,8 +358,10 @@ mod imp {
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+    use syntropy_core::Entropy;
+
     use super::super::RegionHandle;
-    use super::{NAME_ATTEMPTS, next_name};
+    use super::{NAME_ATTEMPTS, random_name};
 
     pub(in super::super) struct Segment {
         mapping: OwnedHandle,
@@ -489,7 +502,7 @@ mod imp {
     }
 
     impl Segment {
-        pub(in super::super) fn create(len: usize) -> io::Result<Segment> {
+        pub(in super::super) fn create(len: usize, entropy: &dyn Entropy) -> io::Result<Segment> {
             let descriptor = OwnerOnly::new()?;
             let attributes = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -498,7 +511,7 @@ mod imp {
             };
             let size = len as u64;
             for _ in 0..NAME_ATTEMPTS {
-                let name = next_name("Local\\");
+                let name = random_name("Local\\", entropy);
                 let wide_name = wide(&name);
                 // SAFETY: the paging file as backing, live security attributes, a read-write
                 // section of `size` bytes and a NUL-terminated name. It returns a handle or null.
@@ -564,6 +577,11 @@ mod imp {
         }
 
         pub(in super::super) fn unlink(&self) -> io::Result<()> {
+            Ok(())
+        }
+
+        /// A mapping's name lives as long as a handle to it does, so nothing is removed here.
+        pub(in super::super) fn unlink_after_open(&self) -> io::Result<()> {
             Ok(())
         }
 
