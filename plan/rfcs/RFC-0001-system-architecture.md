@@ -234,7 +234,7 @@ Command-channel messages:
 | D → R | `AssignPlan { plan: Arc<PlacementPlan>, stages: SmallVec<[StageIx; 2]> }` | starts `Fetching`, or is checked against the current shard to choose between `ApplyPlanDelta` and drain-and-replace |
 | D → R | `ShardProgress { have: Bytes, need: Bytes, complete: bool }` | store progress during `Fetching` |
 | D → R | `ApplyPlanDelta { epoch: PlanEpoch, delta: PlanDelta }` | budget, prefetch or speculative changes that leave the shard unchanged |
-| D → R | `Drain { reason: DrainReason, deadline: Deadline, successor: Option<PlanEpoch> }` | stop admitting; finish or migrate |
+| D → R | `Drain { reason: DrainReason, deadline: Deadline }` | stop admitting; finish or migrate. A re-plan's successor epoch travels in `DrainReason::Replan` (§18.28) |
 | D → R | `Shutdown { deadline: Deadline }` | drain, then exit |
 | D → R | `CancelSequence { seq: SequenceId, reason: CancelReason }` | local cancels (remote cancels arrive on the data plane) |
 | D → R | `MemoryPressure { level: PressureLevel, reclaim: Bytes, tier: Option<TierId> }` | the OS or the user needs memory back (§10.3). `tier: None` means host RAM; `Some` addresses one GPU's budget drop (DXGI or NVML budget, RFC-0010) |
@@ -254,15 +254,22 @@ Command-channel messages:
 
 *Note 2026-10-22 (amendment, §18.9):* `LedgerGrant` is plain data in `core`: the per-tier bytes the daemon grants the runner. `ipc` carries it in `Init`, and `tier` checks an `ArenaPlan` against it (RFC-0020 §3, §12; OQ-IO-27).
 
-*Note 2026-10-23 (amendment, §18.28): which task adds each message.* `ipc` is layer 1, and rule 2 (§4.2) lets it name only layer-0 types. So every type a message carries lives in `core`, `obs` or `config`, and each message arrives with the task that owns its field types:
+*Note 2026-10-23 (amendment, §18.28): which task adds each message.* `ipc` is layer 1, and rule 2 (§4.2) lets it name only layer-0 types. The message enums stay in `ipc`. Every type a message carries, and every type those types hold, lives in `core`, `obs` or `config` as plain data, and each message arrives with the task that owns its field types:
 - **DIST-E1-T03** builds the channel and `Hello`, `Ping`, `Pong`, `PeerRevoked`, `ShardProgress`, `AssignPlan`, `ApplyPlanDelta`, `StateChanged` (with `RunnerState`'s `u32` discriminant until DIST-E1-T05 adds the type) and `Init` without `config` and `grant`.
-- **DIST-E1-T15:** `Drain`, `Shutdown`, `MemoryPressure` and `SequenceEnded`. `Deadline`, `DrainReason`, `SequenceOutcome` and `FetchPriority` are new `core` types, and `PressureLevel` moves to `core` from `tier`.
+- **DIST-E1-T15:** `Drain`, `Shutdown`, `MemoryPressure` and `SequenceEnded`, and in `core`:
+  - `Deadline { within: Nanos }`, a duration counted from the message's receipt. An absolute instant cannot cross machines, and RFC-0011 §13's `RouteRequest` carries `Option<Deadline>` between nodes.
+  - `DrainReason` as §5.11 gives it. `Drain` carries no `successor`: `DrainReason::Replan { successor }` is the one place a drain's successor epoch travels.
+  - `SequenceOutcome`: `Finished`, `Failed(ErrorClass)` or `Migrated { to: PlanEpoch }`.
+  - `FetchPriority`: `Demand`, `Replacement`, `Prefetch` or `Background`, the classes of RFC-0031 §6.10's `BlobRequest::priority` that the store's fetch of a shard runs at. RFC-0021's `IoPriority` classes local NVMe reads, and stays `io`'s.
+  - `PressureLevel`, moved from `tier`.
+- **DIST-E1-T05:** `StateChanged` carries `RunnerState` in place of its discriminant. `RunnerState` and its field types are in `core` (§5.11), `Degradation` (RFC-0033 §7.1) among them, and `Draining` carries `deadline: Deadline` for `deadline_ms`.
 - **PROD-E1-T07:** `Init`'s `config` and `ConfigChanged`.
 - **DIST-E7-T04:** `Init`'s `grant` and `DataPlaneGrant`, with `DataPlaneCredential` as plain data in `core` (DIST-E2-T05).
 - **DIST-E1-T14:** `CancelSequence`.
-- **PLC-E2-T01:** `ProbeRequest`, with `ProbeSuite` in `core`.
+- **PLC-E2-T01:** `ProbeRequest`, with `ProbeSuite` and `ModelShapes` in `core`. `ProbeSuite::Confirm` arrives with PLC-E3-T01, which puts `ProfileKey` in `core`, and `DevicePath` with PLC-E2-T12.
 - **COMP-E10-T11:** `FetchShard` and `PackCommitted`, with `ShardSpec` and `PackKey`, and their field types `ChunkId` and `LayoutVersion`, in `core`.
-- **TIER-E1-T09:** `ResidencyDigest`, with `ResidencySummary` in `core`.
+- **TIER-E1-T09:** `ResidencyDigest`, with `ResidencySummary` and the types it holds in `core`: `TierUsage`, `PinProgress`, `PinState`, `YieldReport`, `YieldOption`, `KvHeadroom`, `PageClass`, `KvSpillOutcome`, `SpillOutcome` and `ExpertCacheDigest`.
+- **Two fields hold what `core` cannot.** `RemoteEndpoint`, in `ProbeSuite::DevicePath`, holds transport state: keys, socket addresses, a relay URL. The message carries the remote's `NodeId` and the endpoint as bytes in `net`'s encoding (PLC-E2-T12). `DegradeDetail::Fallback` names an `OpKind` and a `ProviderId`, which are `kernels`'. It carries the provider's `ProviderName` (§5.1) and the op's name as owned text (DIST-E14-T13).
 - **No task yet:** `ProbeResult` waits for the task that defines `CapabilityProfile` (#1524), and `ErrorReport` for the task that builds `core`'s `Error` (§5.12). No task row names either yet.
 
 Each added message or field changes the postcard layout, so it bumps `ipc_protocol` (§5, note of 2026-10-22).
@@ -1520,7 +1527,7 @@ pub enum RunnerState {
     /// Relinking, Absorbing (RFC-0032 §4.1) and TransportDemoted (RFC-0031); RFC-0033 §7.1
     /// defines the type.
     Ready { live_sequences: u32, degraded: Option<Degradation> },
-    Draining { reason: DrainReason, deadline_ms: u64, live_sequences: u32 },
+    Draining { reason: DrainReason, deadline: Deadline, live_sequences: u32 },   // `deadline_ms` before §18.28
     Failed { class: ErrorClass, during: RunnerStateKind, restarts: u32 },
     Stopped { reason: StopReason },
 }
@@ -2858,3 +2865,5 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 |---|---|---|
 | A type that a command-channel message carries lives in `core`, `obs` or `config`. `ShardSpec` and `PackKey` (with `ChunkId` and `LayoutVersion`), `ResidencySummary`, `ProbeSuite`, `PressureLevel` and `DataPlaneCredential` move to `core` as plain data, each in the task that owns it, with its owning RFC unchanged; the crate that held each re-exports it | §3.5 (dated note), §5.13 | `ipc` is layer 1, and rule 2 (§4.2) lets it name only layer 0. A message whose field type sat in `manifest`, `kernels`, `tier`, the probe or the crate with the signature scheme could not be defined at all (DIST-E1-T03) |
 | RFC-0001 §3.5's messages arrive with the tasks that own their field types, each with an `ipc_protocol` bump; DIST-E1-T03 builds the channel and the messages whose types exist at M0a, and the new DIST-E1-T15 the lifecycle types and messages that no task owned | §3.5 (dated note) | the full set needs types built in M1a and M2, and two of their owners (PROD-E1-T07, TIER-E1-T09) depend on DIST-E1-T03. One task holding every message would wait on M2 or form a cycle. `ProbeResult` and `ErrorReport` have no owning task yet. For the maintainers to confirm |
+| The rule covers the types a moved type holds: `RunnerState`'s (`Degradation` among them), `ResidencySummary`'s ten, `ProbeSuite`'s `ModelShapes` and `ProfileKey`, each listed under the task that defines it in `core`. A field that holds transport state or a `kernels` type travels in a form `core` holds: `RemoteEndpoint` as `net`-encoded bytes beside its `NodeId`, and `DegradeDetail::Fallback`'s op and provider as owned text | §3.5 (dated note) | a type in `core` can hold only layer-0 types. Listing each type under its owner keeps the RFC-0020, RFC-0022, RFC-0023 and RFC-0033 definitions unchanged; a narrower core-level summary would redesign them. Only these two fields reach past plain data |
+| `Deadline { within: Nanos }` is a duration counted from receipt, and `RunnerState::Draining` carries it for `deadline_ms`. `Drain` loses `successor`, which `DrainReason::Replan` already carries. `SequenceOutcome` and `FetchPriority` get their variants, `FetchPriority`'s from RFC-0031 §6.10 | §3.5, §5.11 | an absolute instant cannot cross machines, and RFC-0011 §13 already passes `Option<Deadline>` between nodes. One source for the successor epoch. A shard fetch is a blob-plane fetch, so its classes are the blob plane's |
