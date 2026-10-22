@@ -546,3 +546,15 @@ DIST-E5-T14 (M1a) models the commit-then-reveal pairing exchange. Its exit froze
 |---|---|---|---|
 | DIST-E5-T14's exit and criterion freeze the pairing fields (`commit` 32 B, `nonce_k` 16 B, `nonce_c` 16 B), their order with the reveal only after the challenge, and golden vectors for the commitment and the SAS; "golden vectors for the three messages" moves to DIST-E5-T03, whose criteria now check the messages' pairing fields and SAS against the spike's vectors | DIST-E5-T14, DIST-E5-T03 | R9 | DIST-E5-T03 builds the three messages and already reaches DIST-E8-T12, DIST-E2-T05, DIST-E4-T14 and PLC-E1-T09. Its Implements cell gains RFC-0030 §6.7, which defines the messages |
 | DIST-E5-T03 → DIST-E2-T06 | DIST-E5-T03 | R9 | `PairChallenge` carries `cluster_id`, and the SAS covers it. DIST-E2-T06 derives `ClusterId`, and DIST-E5-T03 did not reach it. DIST-E2-T06 does not reach DIST-E5-T03, so the edge adds no cycle |
+
+
+## DIST-E4-T01: the membership core without the simulator (2026-10-22)
+
+DIST-E4-T01 could not be finished as written. Its criterion "the simulator drives it for 1,000 seeded runs" needs QUAL-E8-T01's `SimWorld`, which had not started, and its body-size criterion needs the CBOR envelope of RFC-0030 §5.2, which is DIST-E8-T12's. These are plan corrections under R9, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E4-T01's "the simulator drives it for 1,000 seeded runs" becomes "a seeded driver over `ProtocolCore::handle` gives byte-identical outputs per seed over 1,000 seeds"; the simulator-driven runs move to DIST-E4-T03, which gains QUAL-E8-T01 | DIST-E4-T01, DIST-E4-T03 | R9 | the core's determinism can be checked without the simulator, as `core::protocol`'s own tests check cores; DIST-E4-T03's criteria already ran in the simulator without an edge to it |
+| DIST-E4-T01 → DIST-E8-T12 | DIST-E4-T01 | R9 | the 1,150 B body is the CBOR envelope of RFC-0031 §9 (RFC-0030 §5.2), measured with DIST-E8-T12's encoder |
+| DIST-E4-T01 owns the 1,150 B body bound; DIST-E4-T02 cites it | DIST-E4-T01, DIST-E4-T02 | R9 | both rows named the bound; DIST-E4-T02 keeps its own check, that a beat never exceeds the path's datagram limit |
+| DIST-E4-T01 defines `CoordinatorBeat` from RFC-0032 §7 | DIST-E4-T01 | R9 | the `Beat` carries it, and no election task defines it |

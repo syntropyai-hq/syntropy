@@ -315,7 +315,7 @@ No GAPs.
 | RFC-0032 | §4 | Plan transitions on the data plane | 3: DIST-E11-T11–T13 | ok |
 | RFC-0032 | §5 | Tensor and expert parallelism | 13: DIST-E13-T01–T13 | ok |
 | RFC-0032 | §6 | The cluster event log | 15: DIST-E9-T01–T13, DIST-E9-T15, DIST-E18-T03 | ok |
-| RFC-0032 | §7 | Coordinator election and leases | 9: DIST-E9-T13, DIST-E10-T01–T08 | ok |
+| RFC-0032 | §7 | Coordinator election and leases | 10: DIST-E4-T01, DIST-E9-T13, DIST-E10-T01–T08 | ok |
 | RFC-0032 | §8 | Two-phase scheduling | 7: DIST-E9-T08–T09, DIST-E10-T06, DIST-E11-T03, DIST-E12-T01–T03 | ok |
 | RFC-0032 | §9 | Configuration | 1: DIST-E18-T01 | ok |
 | RFC-0032 | §10 | Error codes | 1: DIST-E18-T02 | ok |
