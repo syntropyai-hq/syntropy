@@ -35,39 +35,68 @@ defaults:
     shell: bash
 
 jobs:
+  # The jobs this change runs and the hardware it requires (RFC-0062 §2.2). The base branch's
+  # `xtask` decides with the base's `ci/jobs.toml`, built with no cache, as for `ci-gate`, so a PR
+  # cannot make it list nothing and skip every job (note 2026-10-22). It reads the PR's files
+  # through git, as data: none of the PR's code runs in this job.
   changes:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     outputs:
       jobs: ${{ steps.jobs.outputs.jobs }}
+      hw_required: ${{ steps.jobs.outputs.hw_required }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # On a PR, the head is the merge commit GitHub tests, `github.sha`, and the base is its
+      # first parent, as for `pr-meta.yml`'s `dep-diff` (issue #1702). In a merge group, the base is
+      # the group's base commit.
+      - name: Check out the merge commit, two commits deep
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
-      # Until QUAL-E1-T07's `cargo xtask ci changes --base <merge base>` computes the affected-job
-      # set (§2.2), every run lists `lint`, `build` and `hosted-test`. `hosted-l3` is listed when
-      # the change touches a crate, vendored code, the cargo config, `xtask`, the workspace's
-      # `Cargo.toml` or `Cargo.lock`, the toolchain pin, this workflow or the composite actions it
-      # uses. That over-triggers, which is safe, and skips plan-only changes; T07 replaces it with
-      # §2.3's closure rule (the closure includes `ipc`, `tier`, `exec`, `io` or `net`).
-      # `hosted-parity-nano` is listed once its suite exists (QUAL-E5-T06). T07 also moves this
-      # step onto the base branch's `xtask`, as `ci-gate` is, so a PR cannot list nothing and skip
-      # every job.
-      - name: List the jobs to run
+      - name: Move to the base, the merge commit's first parent
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git rev-parse HEAD^2)" = "$HEAD_SHA"
+          git checkout --detach --quiet HEAD^1
+      - name: Check out the merge group's base
+        if: github.event_name == 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
+          persist-credentials: false
+      - name: Fetch the merge group's head, as data
+        if: github.event_name == 'merge_group'
+        env:
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: git fetch --no-tags --quiet --depth=1 origin "$HEAD_SHA"
+      # No cache: code the PR runs in any other job can write a cache entry under this PR's ref.
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: changes
+          cache: "off"
+      # A base without `ci/jobs.toml` predates QUAL-E1-T07 and has no `changes` job. Only then does
+      # the job list every hosted job that has a suite, and no hardware, as before T07; any other
+      # failure fails the job, and `ci-gate` with it.
+      - name: cargo xtask ci changes, from the base branch
         id: jobs
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          jobs='"lint","build","hosted-test"'
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          # Without renames, so a file moved out of a crate counts by its old path too.
-          changed="$(git diff --no-renames --name-only "$BASE_SHA" HEAD)"
-          l3='^(crates/|third_party/|\.cargo/|xtask/|Cargo\.(toml|lock)$|rust-toolchain\.toml$'
-          l3+='|\.github/(workflows/pr\.yml$|actions/))'
-          if grep -qE "$l3" <<< "$changed"; then
-            jobs="$jobs,\"hosted-l3\""
+          if [ ! -f ci/jobs.toml ]; then
+            echo "::warning::the base predates ci/jobs.toml (QUAL-E1-T07): listing every hosted job"
+            echo 'jobs=["lint","build","hosted-test","hosted-l3"]' >> "$GITHUB_OUTPUT"
+            echo 'hw_required=[]' >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "jobs=[$jobs]" >> "$GITHUB_OUTPUT"
+          cargo xtask ci changes \
+            --base "$(git rev-parse HEAD)" \
+            --head "$HEAD_SHA" \
+            --github-output "$GITHUB_OUTPUT"
 
   lint:
     needs: changes
@@ -190,11 +219,33 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      # The `hw/<job>` statuses on the PR's head commit (RFC-0062 §2.5).
+      statuses: read
     steps:
-      - name: Check out the base branch, not the PR
+      # On a PR, the head is the merge commit GitHub tests, `github.sha`, and the base is its
+      # first parent, as for `pr-meta.yml`'s `dep-diff` (issue #1702). In a merge group, the base is
+      # the group's base commit.
+      - name: Check out the merge commit, two commits deep
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Move to the base, the merge commit's first parent
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git rev-parse HEAD^2)" = "$HEAD_SHA"
+          git checkout --detach --quiet HEAD^1
+      - name: Check out the merge group's base
+        if: github.event_name == 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
@@ -204,38 +255,36 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: printf '%s\n' "$NEEDS" | tee "$RUNNER_TEMP/needs.json"
-      # The base branch's evaluator decides. `cargo xtask` exits 2 on a usage error, which an
-      # unknown job is; that exit code, not help text, says the base has no `ci-gate` job.
-      # Bootstrap: only #1577, the PR that adds the job, may then be judged by its own evaluator,
-      # once; every other base without the job fails the gate.
-      - name: cargo xtask ci ci-gate, from the base branch
-        id: gate
+      - name: Fetch the commit statuses of the PR's head
+        if: github.event_name == 'pull_request'
         env:
-          NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: gh api --paginate "repos/$REPO/commits/$HEAD_SHA/statuses" > "$RUNNER_TEMP/statuses.json"
+      # The base branch's evaluator decides, with the base's `ci/jobs.toml`. A base without that
+      # file predates QUAL-E1-T07: its `ci-gate` takes `--needs` alone and has no hardware clause,
+      # and only then is it called that way. A base with the file refuses that form, with exit
+      # code 2, so the clause cannot be skipped.
+      - name: cargo xtask ci ci-gate, from the base branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
+          if [ ! -f ci/jobs.toml ]; then
+            echo "::warning::the base predates ci/jobs.toml (QUAL-E1-T07): ci-gate runs without its hardware clause"
+            cargo xtask ci ci-gate --needs "$RUNNER_TEMP/needs.json"
+            exit
+          fi
+          statuses=()
+          if [ "$EVENT_NAME" = pull_request ]; then
+            statuses=(--statuses "$RUNNER_TEMP/statuses.json")
+          fi
           status=0
-          cargo xtask ci ci-gate --needs "$RUNNER_TEMP/needs.json" || status=$?
-          if [ "$status" -eq 0 ]; then
-            exit 0
-          fi
-          if [ "$status" -eq 2 ] && [ "$NUMBER" = 1577 ]; then
-            echo "::warning::the base branch has no ci-gate job yet; #1577, which adds it, is judged by its own"
-            echo "bootstrap=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          cargo xtask ci ci-gate \
+            --needs "$RUNNER_TEMP/needs.json" \
+            --event "$GITHUB_EVENT_PATH" \
+            "${statuses[@]}" || status=$?
           if [ "$status" -eq 2 ]; then
-            echo "::error::the base branch has no ci-gate job, or rejected its options; rebase onto main"
+            echo "::error::the base branch's ci-gate rejected its options; rebase onto main"
           fi
-          exit 1
-      - name: Check out #1577, to bootstrap the evaluator
-        if: steps.gate.outputs.bootstrap == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: pr
-          persist-credentials: false
-      - name: cargo xtask ci ci-gate, from #1577 (bootstrap only)
-        if: steps.gate.outputs.bootstrap == 'true'
-        working-directory: pr
-        run: |
-          rustup toolchain install --no-self-update
-          cargo xtask ci ci-gate --needs "$RUNNER_TEMP/needs.json"
+          exit "$status"

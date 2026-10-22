@@ -3,8 +3,6 @@
 //! DIST-E1-T14's criteria for the types themselves: a serde round trip of every type; a
 //! `SequenceMeta` built from a `SequenceOpen` keeps every field but the prompt tokens, and records
 //! their count; a `SequenceOpen` encoded without an addition decodes with the addition's default.
-//! Then DIST-E8-T05's additions: `SequenceControl::Reconcile`, and the prompt's two serde forms,
-//! an array in JSON and a byte string of little-endian `u32`s in a binary format.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -21,14 +19,6 @@ fn round_trip<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(val
     let json = serde_json::to_string(value).unwrap();
     let back: T = serde_json::from_str(&json).unwrap();
     assert_eq!(&back, value, "{json}");
-}
-
-/// The same through postcard, the IPC's encoding (RFC-0001 §3.5), which is binary and not
-/// self-describing, so the prompt takes its byte-string form and no field may be skipped.
-fn binary_round_trip<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(value: &T) {
-    let bytes = postcard::to_allocvec(value).unwrap();
-    let back: T = postcard::from_bytes(&bytes).unwrap();
-    assert_eq!(&back, value);
 }
 
 fn seq() -> SequenceId {
@@ -179,18 +169,6 @@ fn every_type_round_trips_through_serde() {
         seq: seq(),
         persist: Some(SessionId([9; 16])),
     });
-    for recent in [
-        smallvec![],
-        smallvec![7, 8, 9],
-        smallvec![1, 2, 3, 4, 5, 6, 7, 8],
-    ] {
-        round_trip(&SequenceControl::Reconcile {
-            seq: seq(),
-            emitted: 3,
-            rng_counter: 1 << 40,
-            recent,
-        });
-    }
     round_trip(&PrefixRef::Session {
         session: SessionId([5; 16]),
         tokens: 77,
@@ -416,78 +394,4 @@ fn a_token_slice_reads_as_its_tokens() {
     assert_eq!(prompt.len(), 3);
     assert_eq!(prompt.as_slice(), &[5, 6, 7]);
     assert_eq!(serde_json::to_string(&prompt).unwrap(), "[5,6,7]");
-}
-
-/// The open, its metadata and every control variant round-trip through postcard too: the IPC
-/// carries them in M0 (RFC-0001 §3.5), and there the prompt is a byte string.
-#[test]
-fn every_control_round_trips_through_a_binary_format() {
-    let open = full_open();
-    binary_round_trip(&open);
-    binary_round_trip(&open.meta());
-    binary_round_trip(&SequenceControl::Open(open));
-    for control in [
-        SequenceControl::Cancel {
-            seq: seq(),
-            reason: CancelReason::Error { domain: 4, code: 9 },
-        },
-        SequenceControl::Pause { seq: seq() },
-        SequenceControl::Resume { seq: seq() },
-        SequenceControl::Release {
-            seq: seq(),
-            persist: None,
-        },
-        SequenceControl::Reconcile {
-            seq: seq(),
-            emitted: 0,
-            rng_counter: u64::MAX,
-            recent: smallvec![u32::MAX, 0],
-        },
-    ] {
-        binary_round_trip(&control);
-    }
-}
-
-/// A binary format gets the prompt as a byte string of little-endian `u32`s, 4 bytes a token
-/// whatever the IDs (RFC-0031 §6.6), and JSON keeps the array. The canonical encoding is binary,
-/// so a digest over a prompt would cover those bytes; no digest covers one today.
-#[test]
-fn a_token_slice_is_a_byte_string_in_a_binary_format() {
-    let prompt = TokenSlice::from(vec![1, 0x0102_0304, u32::MAX]);
-    let mut expected = vec![0x08];
-    expected.extend_from_slice(&12u64.to_le_bytes());
-    expected.extend_from_slice(&[1, 0, 0, 0, 4, 3, 2, 1, 0xff, 0xff, 0xff, 0xff]);
-    assert_eq!(crate::canon::to_bytes(&prompt).unwrap(), expected);
-
-    // postcard writes a byte string as its varint length and the bytes.
-    let bytes = postcard::to_allocvec(&prompt).unwrap();
-    assert_eq!(bytes, [&[12][..], &expected[9..]].concat());
-    assert_eq!(postcard::from_bytes::<TokenSlice>(&bytes).unwrap(), prompt);
-    assert_eq!(
-        serde_json::to_string(&prompt).unwrap(),
-        "[1,16909060,4294967295]"
-    );
-
-    let empty = TokenSlice::default();
-    assert_eq!(postcard::to_allocvec(&empty).unwrap(), [0]);
-    assert_eq!(postcard::from_bytes::<TokenSlice>(&[0]).unwrap(), empty);
-}
-
-/// A byte string that is not a whole number of token IDs is refused, not truncated.
-#[test]
-fn a_prompt_byte_string_of_a_partial_token_is_refused() {
-    for len in [1u8, 2, 3, 5, 7] {
-        let mut bytes = vec![len];
-        bytes.extend(std::iter::repeat_n(0xaa, usize::from(len)));
-        assert!(
-            postcard::from_bytes::<TokenSlice>(&bytes).is_err(),
-            "{len} bytes"
-        );
-    }
-    let mut whole = vec![8];
-    whole.extend([1, 0, 0, 0, 2, 0, 0, 0]);
-    assert_eq!(
-        postcard::from_bytes::<TokenSlice>(&whole).unwrap(),
-        TokenSlice::from(vec![1, 2])
-    );
 }

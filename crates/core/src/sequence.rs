@@ -3,8 +3,7 @@
 //! The sequence types of RFC-0001 §5.8 and RFC-0032 §3.6: what ingress sends to open and control
 //! a sequence, and what the tail sends back (DIST-E1-T14).
 //!
-//! - **Control.** [`SequenceControl`], RFC-0033 §11's `Reconcile` among its variants, and
-//!   [`SequenceOpen`], with the types an open carries:
+//! - **Control.** [`SequenceControl`] and [`SequenceOpen`], with the types an open carries:
 //!   [`SamplingParams`], [`SequenceLimits`], [`PrefixRef`], [`PrefixScope`], [`ResumePoint`],
 //!   [`Priority`] and the rest. [`SequenceMeta`] is an open without its prompt tokens, which
 //!   travels downstream on the sequence's first frame.
