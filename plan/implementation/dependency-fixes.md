@@ -1021,3 +1021,14 @@ QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E7-T03 gains "keep-alive and idle timeout take the table's values per path, through `default_path_keep_alive_interval` and `default_path_max_idle_timeout`, as well as connection-wide through `keep_alive_interval` and `max_idle_timeout`, and a unit test reads all four back from the transport configuration `net` builds"; no edge | DIST-E7-T03 | Definition of done | with only the connection-wide values set, a dead path would be abandoned after iroh's 15 s per-path default, not within `link.failover_timeout` |
+
+## DIST-E14-T22: the recovery entries M2 tasks use, and `DriftTerm::Bandwidth`'s scheme (2026-10-23)
+
+The review of #1811 (review-1474's N2) found that DIST-E14-T15 (M3) builds the catalogue entries `ReportEdgeDemoted`, `EdgeDemoted` and `RecoveryStarted`, which M2 tasks use: DIST-E14-T01 emits `RecoveryStarted`, and DIST-E7-T10 sends `ReportEdgeDemoted`. The same review's N1 found that `DriftTerm::Bandwidth` left out the quant scheme, which RFC-0010 §6.2's W_eff estimator is keyed by. These are plan corrections under R3b and R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E14-T22 (M2) → DIST-E9-T03, DIST-E14-T21: `ReportEdgeDemoted`, `EdgeDemoted` and `RecoveryStarted` in `decide` and `apply`. DIST-E14-T15 keeps `ReportRecovery`, `RecoveryCompleted`, `InstanceDegraded` and `RecoveryRecord`, and the re-plan that applying `EdgeDemoted` raises; DIST-E14-T15 → DIST-E14-T22 | DIST-E14-T22, DIST-E14-T15 | R3b | M2 tasks used entries an M3 task built. The split puts the three they use in M2, with no `LATER` edge. The re-plan raise stays in M3 with its PLC-E6-T04 edge, so M2's critical path stays 16 tasks; with the raise in DIST-E14-T22, PLC-E6-T04's chain would run under DIST-E7-T10 and DIST-E14-T01 and lengthen it to 20 |
+| DIST-E14-T01 → DIST-E14-T22; DIST-E7-T10 → DIST-E14-T22 | DIST-E14-T01, DIST-E7-T10 | R9 | DIST-E14-T01 emits `RecoveryStarted`, and DIST-E7-T10 sends `ReportEdgeDemoted`. M2 → M2, with no cycle |
+| `DriftTerm::Bandwidth` gains `scheme: QuantScheme`, and DIST-E14-T21 → COMP-E13-T01 | DIST-E14-T21 | R9 | RFC-0010 §7.2's rule runs per observed quantity, and §6.2's W_eff estimator is keyed by (device, tier, class, scheme), so the term names the scheme that drifted. `QuantScheme` is COMP-E13-T01's (M0a), which DIST-E14-T21 did not reach |
+
