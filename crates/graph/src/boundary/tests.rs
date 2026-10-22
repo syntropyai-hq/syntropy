@@ -60,14 +60,8 @@ fn check_partition(f: &Fixture, cuts: &[LayerIx]) -> Result<(), TestCaseError> {
                 b
             );
         }
-        for v in &parts[k + 1].receives {
-            prop_assert!(
-                parts[k].sends.contains(v),
-                "stage {} receives {} not sent",
-                k + 1,
-                v.0
-            );
-        }
+        // The inbound frame is exactly the outbound frame of the stage before.
+        prop_assert_eq!(&parts[k + 1].receives, &parts[k].sends);
     }
     prop_assert!(parts.last().unwrap().sends.is_empty());
     prop_assert!(parts[0].receives.is_empty());
@@ -295,7 +289,11 @@ fn partition_rejects_bad_cuts() {
     assert_eq!(cut(&[2]), Err((2, CutCause::NotLegal)));
     assert_eq!(cut(&[5, 4]), Err((4, CutCause::OutOfRange)));
     assert_eq!(cut(&[0]), Err((0, CutCause::OutOfRange)));
-    assert_eq!(cut(&[8]), Err((8, CutCause::OutOfRange)));
+    // Boundary 8 ends the decoder layers; with MTP modules the last stage may hold only the
+    // epilogue and the MTP modules. Inside the MTP modules is never a cut.
+    assert_eq!(cut(&[8]), Ok(()));
+    assert_eq!(cut(&[9]), Err((9, CutCause::MtpSeparated)));
+    assert_eq!(cut(&[10]), Err((10, CutCause::OutOfRange)));
     assert_eq!(cut(&[1, 4, 5]), Ok(()));
 }
 
@@ -423,4 +421,96 @@ fn crossing_past_the_last_boundary_is_empty() {
     assert!(crossing(&f.graph, 4).is_empty());
     // Boundary 1 of a two-stream graph carries both residual streams.
     assert_eq!(crossing(&f.graph, 1).len(), 2);
+}
+
+#[test]
+fn check_cuts_and_partition_apply_one_rule() {
+    for mtp in [0u8, 2] {
+        let mut f = nano_shaped();
+        if mtp == 0 {
+            f.graph.mtp.clear();
+        }
+        let (f, _) = with_computed(f, &nano_facts());
+        let total = 8 + u16::from(mtp);
+        for b in 0..=11u16 {
+            let plan = check_cuts(
+                &f.graph.boundaries,
+                u16::from(mtp),
+                &[LayerIx(0)..LayerIx(b), LayerIx(b)..LayerIx(total)],
+            );
+            let parts = partition(&f.graph, &[LayerIx(b)]).map(|_| ());
+            assert_eq!(plan, parts, "boundary {b} with {mtp} MTP modules");
+        }
+    }
+}
+
+#[test]
+fn a_stage_forwards_side_data_it_does_not_read() {
+    // Cuts at 1 and 4: layers 1–3 do not read the per-layer input of layer 5, but stage 1
+    // must still receive it and pass it on.
+    let (f, _) = with_computed(nano_shaped(), &nano_facts());
+    let pl = ValueId(
+        u32::try_from(
+            f.graph
+                .values
+                .iter()
+                .position(|v| v.kind == ValueKind::LayerInput)
+                .unwrap(),
+        )
+        .unwrap(),
+    );
+    let parts = partition(&f.graph, &[LayerIx(1), LayerIx(4)]).unwrap();
+    let reads_it = |id: &ProgramId| match id {
+        ProgramId::Layer(l) => f.graph.layers[usize::from(*l)].body.inputs.contains(&pl),
+        _ => false,
+    };
+    assert!(!parts[1].programs.iter().any(reads_it));
+    assert!(parts[1].receives.contains(&pl));
+    assert!(parts[1].sends.contains(&pl));
+    assert!(parts[2].receives.contains(&pl));
+}
+
+#[test]
+fn layer_inputs_is_the_width_per_remaining_layer() {
+    // Two per-layer inputs of 64 F32 each, for layers 1 and 2: boundaries 0 and 1 carry both,
+    // boundary 2 the second only. `layer_inputs` stays 64; the bytes count both.
+    let mut f = build(&Params {
+        layers: vec![(false, false), (false, false), (false, false)],
+        streams: 1,
+        mtp: 0,
+        per_layer: Some(1),
+        legal: 0,
+    });
+    let tok = f.tok;
+    let second = ValueId(u32::try_from(f.graph.values.len()).unwrap());
+    f.graph.values.push(Value {
+        ty: ValueType {
+            dtype: DType::F32,
+            dims: smallvec![Dim::Rows, Dim::Const(HIDDEN)],
+        },
+        kind: ValueKind::LayerInput,
+    });
+    let mut node = f.graph.prologue.nodes[0].clone();
+    node.inputs = smallvec![tok];
+    node.outputs = smallvec![second];
+    f.graph.prologue.nodes.push(node);
+    f.graph.layers[2].body.inputs.push(second);
+    let a = compute(&f.graph, &none()).unwrap();
+    let got: Vec<(u32, u32)> = a
+        .set
+        .side
+        .iter()
+        .map(|s| (s.layer_inputs, s.bytes_per_token))
+        .collect();
+    assert_eq!(got, vec![(64, 512), (64, 512), (64, 256), (0, 0)]);
+
+    // A wider second input has no single width per remaining layer.
+    f.graph.values[second.0 as usize].ty.dims = smallvec![Dim::Rows, Dim::Const(2 * HIDDEN)];
+    assert_eq!(
+        compute(&f.graph, &none()),
+        Err(BoundaryError::LayerInputWidths {
+            boundary: 0,
+            value: second
+        })
+    );
 }

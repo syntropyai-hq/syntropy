@@ -21,12 +21,17 @@
 //!
 //! For every boundary, legal or not, the side data live across it is recorded with its bytes
 //! per token: the solver adds them to the hop size `S_hop` (cost model §3.7), and RFC-0031
-//! carries them in `ActivationFrame::side`. `layer_inputs` sums the elements per token of every
-//! per-layer input live across the boundary, which covers the inputs of every remaining layer.
+//! carries them in `ActivationFrame::side`. `layer_inputs` is RFC-0043 §6.1's "elements per
+//! token per remaining layer": the width of one per-layer input. Every per-layer input live
+//! across a boundary must have that one width ([`BoundaryError::LayerInputWidths`]), and
+//! `bytes_per_token` counts all of them, so it grows with the number of remaining layers that
+//! read one.
 //!
 //! **Plans.** [`check_cuts`] rejects a plan whose stage ranges cut at an illegal boundary,
 //! or between the decoder layers' end and the MTP modules' end, which separates an MTP module
-//! from the epilogue (both run on the tail, RFC-0043 §6.2). That is `BoundaryIllegal`, code
+//! from the epilogue (both run on the tail, RFC-0043 §6.2). A cut at boundary `n_layers` is
+//! accepted when the graph has MTP modules: the last stage then holds the epilogue and the MTP
+//! modules only. [`partition`] applies the same rule through the same function. That is `BoundaryIllegal`, code
 //! `(Graph, 5)`, class `Internal`: a solver bug, and the plan is rejected (RFC-0043 §10).
 //!
 //! **Parts.** [`partition`] splits the graph at legal cuts into the programs each stage runs
@@ -124,6 +129,14 @@ pub enum BoundaryError {
     AtomicInvalid(LayerIx),
     /// A side-data value has a `Ctx` dim, so its bytes per token are not fixed.
     SideDataShape(ValueId),
+    /// Two per-layer inputs live across one boundary differ in width, so the boundary has no
+    /// single "elements per token per remaining layer" (RFC-0043 §6.1).
+    LayerInputWidths {
+        /// The boundary.
+        boundary: usize,
+        /// The per-layer input whose width differs from an earlier one's.
+        value: ValueId,
+    },
     /// The graph has more layers than a `LayerIx` holds.
     TooManyLayers(usize),
 }
@@ -150,6 +163,11 @@ impl fmt::Display for BoundaryError {
                 )
             }
             Self::SideDataShape(v) => write!(f, "side data {} has a context-length dim", v.0),
+            Self::LayerInputWidths { boundary, value } => write!(
+                f,
+                "per-layer input {} across boundary {boundary} differs in width from another",
+                value.0
+            ),
             Self::TooManyLayers(n) => write!(f, "{n} layers do not fit a LayerIx"),
         }
     }
@@ -238,7 +256,14 @@ pub fn compute(
                 }
                 ValueKind::LayerInput => {
                     let (elems, bytes) = per_token(g, v)?;
-                    data.layer_inputs = data.layer_inputs.saturating_add(sat_u32(elems));
+                    let elems = sat_u32(elems);
+                    if data.layer_inputs != 0 && data.layer_inputs != elems {
+                        return Err(BoundaryError::LayerInputWidths {
+                            boundary: b,
+                            value: v,
+                        });
+                    }
+                    data.layer_inputs = elems;
                     inputs = inputs.saturating_add(bytes);
                 }
                 _ => {
@@ -328,6 +353,22 @@ impl fmt::Display for BoundaryIllegal {
 
 impl std::error::Error for BoundaryIllegal {}
 
+/// The one cut rule [`check_cuts`] and [`partition`] share: `b` is the next cut after `prev`
+/// over a graph whose boundaries are `legal` (`0..=n_layers`) and which has `n_mtp` MTP
+/// modules.
+fn cut_cause(legal: &[bool], n_mtp: usize, prev: usize, b: usize) -> Option<CutCause> {
+    let n = legal.len().saturating_sub(1);
+    if b <= prev || b >= n.saturating_add(n_mtp) {
+        Some(CutCause::OutOfRange)
+    } else if b > n {
+        Some(CutCause::MtpSeparated)
+    } else if !legal[b] {
+        Some(CutCause::NotLegal)
+    } else {
+        None
+    }
+}
+
 /// Checks a plan's cuts against `set` (RFC-0043 §6.1, §10). `stages` are the stages' layer
 /// ranges in ring order (`StageAssignment::layers`), covering the decoder layers and then the
 /// `n_mtp` MTP modules; every stage but the first starts at a cut. Contiguity and coverage are
@@ -342,23 +383,16 @@ pub fn check_cuts(
     n_mtp: u16,
     stages: &[Range<LayerIx>],
 ) -> Result<(), BoundaryIllegal> {
-    let n = set.legal.len().saturating_sub(1);
-    let total = n.saturating_add(usize::from(n_mtp));
+    let cuts: Vec<LayerIx> = stages.iter().skip(1).map(|s| s.start).collect();
+    check_cut_list(&set.legal, usize::from(n_mtp), &cuts)
+}
+
+fn check_cut_list(legal: &[bool], n_mtp: usize, cuts: &[LayerIx]) -> Result<(), BoundaryIllegal> {
     let mut prev = 0usize;
-    for s in stages.iter().skip(1) {
-        let b = usize::from(s.start.0);
-        let reject = |cause| BoundaryIllegal {
-            boundary: s.start,
-            cause,
-        };
-        if b <= prev || b >= total {
-            return Err(reject(CutCause::OutOfRange));
-        }
-        if b > n {
-            return Err(reject(CutCause::MtpSeparated));
-        }
-        if !set.legal[b] {
-            return Err(reject(CutCause::NotLegal));
+    for &c in cuts {
+        let b = usize::from(c.0);
+        if let Some(cause) = cut_cause(legal, n_mtp, prev, b) {
+            return Err(BoundaryIllegal { boundary: c, cause });
         }
         prev = b;
     }
@@ -371,34 +405,31 @@ pub struct StagePart {
     /// Its programs, in graph order. The first stage holds any encoders and the prologue; the
     /// last holds the epilogue and the MTP modules.
     pub programs: Vec<ProgramId>,
-    /// The values it reads that an earlier stage defines, in ID order: what its inbound frame
-    /// carries.
+    /// What its inbound frame carries, in ID order: every value live across its inbound
+    /// boundary, which is the previous stage's `sends`. That includes values it only passes
+    /// on, such as a per-layer input for a later stage (RFC-0043 §6.1). Empty for the first
+    /// stage, which reads token IDs from the step descriptor.
     pub receives: Vec<ValueId>,
     /// The values live across its outbound boundary, in ID order: what its outbound frame
     /// carries. Empty for the last stage.
     pub sends: Vec<ValueId>,
 }
 
-/// Splits `g` at the decoder boundaries `cuts`, each interior (`1..n_layers`), legal in
-/// [`ModelGraph::boundaries`] and in increasing order.
+/// Splits `g` at the boundaries `cuts`, in increasing order and each accepted by the rule
+/// [`check_cuts`] applies against [`ModelGraph::boundaries`]: interior and legal, or
+/// `n_layers` when the graph has MTP modules.
 ///
 /// # Errors
 ///
 /// [`BoundaryIllegal`] for the first cut that is not.
 pub fn partition(g: &ModelGraph, cuts: &[LayerIx]) -> Result<Vec<StagePart>, BoundaryIllegal> {
+    // A boundary set of the wrong size is rule 4's to report; treat its missing entries as
+    // illegal.
     let n = g.layers.len();
-    let mut prev = 0usize;
-    for &c in cuts {
-        let b = usize::from(c.0);
-        let reject = |cause| BoundaryIllegal { boundary: c, cause };
-        if b <= prev || b >= n {
-            return Err(reject(CutCause::OutOfRange));
-        }
-        if !g.boundaries.legal.get(b).copied().unwrap_or(false) {
-            return Err(reject(CutCause::NotLegal));
-        }
-        prev = b;
-    }
+    let legal: Vec<bool> = (0..=n)
+        .map(|b| g.boundaries.legal.get(b).copied().unwrap_or(false))
+        .collect();
+    check_cut_list(&legal, g.mtp.len(), cuts)?;
 
     let all = programs(g);
     let live = Liveness::of(g, &all);
@@ -416,45 +447,13 @@ pub fn partition(g: &ModelGraph, cuts: &[LayerIx]) -> Result<Vec<StagePart>, Bou
             sends: Vec::new(),
         })
         .collect();
-    // Where each value is defined: the step (token IDs, before any stage) or a stage.
-    let mut def_stage: Vec<Option<usize>> = vec![None; g.values.len()];
-    for &(id, body) in &all {
-        let st = stage_of(id);
-        parts[st].programs.push(id);
-        for &v in body.nodes.iter().flat_map(|n| &n.outputs) {
-            if let Some(slot) = def_stage.get_mut(usize::try_from(v.0).unwrap_or(usize::MAX)) {
-                slot.get_or_insert(st);
-            }
-        }
-    }
-    for &(id, body) in &all {
-        let st = stage_of(id);
-        let reads = body
-            .inputs
-            .iter()
-            .chain(body.nodes.iter().flat_map(|n| &n.inputs));
-        for &v in reads {
-            let i = usize::try_from(v.0).unwrap_or(usize::MAX);
-            let Some(value) = g.values.get(i) else {
-                continue;
-            };
-            // Token IDs come from the step: the head reads them from the step descriptor, and
-            // a later stage from its inbound frame.
-            let from = match def_stage[i] {
-                Some(d) => d,
-                None if value.kind == ValueKind::TokenIds => 0,
-                None => continue,
-            };
-            if from < st && !parts[st].receives.contains(&v) {
-                parts[st].receives.push(v);
-            }
-        }
+    for &(id, _) in &all {
+        parts[stage_of(id)].programs.push(id);
     }
     for (k, &c) in cuts.iter().enumerate() {
-        parts[k].sends = crossing_with(g, &live, usize::from(c.0));
-    }
-    for p in &mut parts {
-        p.receives.sort();
+        let frame = crossing_with(g, &live, usize::from(c.0));
+        parts[k + 1].receives.clone_from(&frame);
+        parts[k].sends = frame;
     }
     Ok(parts)
 }
