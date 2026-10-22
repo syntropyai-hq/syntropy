@@ -412,6 +412,14 @@ impl InstancePolicy {
 
 The instance's `resources` overlay is applied on each stage node to that node's own `ResourcePolicy`, and may only narrow it. The solver checks each node against the stricter of the two: more headroom, a lower pinned fraction, a narrower network scope.
 
+*Note 2026-10-22 (PROD-E1-T04): the canonical serialisation and who hashes it.* `core` links no hasher: RFC-0001 §4.2 rule 1 keeps the `blake3` crate out of it, and `core` holds the `Blake3` type only (RFC-0001 §5.1; the `PlanDigest` note in `core`). The digest is therefore split in two:
+- `InstancePolicy::canonical_bytes() -> Vec<u8>` is the contract, in `core` (`syntropy_core::canon`): a tagged binary encoding over serde, with integers widened to 64 bits little-endian, floats by bit pattern with one NaN and -0.0 as +0.0, structs and enum variants by field and variant name with fields sorted by name, maps sorted by encoded key, and fields that serde skips left out. Golden vectors are pinned on these bytes.
+- `InstancePolicy::digest_with(&self, hash: impl FnOnce(&[u8]) -> Blake3) -> Blake3` replaces `digest()`. The digest is still BLAKE3 over the canonical bytes, computed by the crate that links BLAKE3 (`config` or `api`, when it parses policies) and passes the hash in.
+
+`ResourceOverlay`, `ApproxParams` and the optional `Objective` fields skip unset values, so only explicitly set fields enter the bytes, and a field added later as an unset `Option` leaves earlier digests unchanged. RFC-0001 §18.16 records the change.
+
+Open, for the maintainers: should `digest()` live in `core` with its own hasher (a vendored or hand-written BLAKE3, or an amendment to rule 1), so that no caller can pass a different hash?
+
 **Node independence of the digest**.
 - `digest()` covers only what the policy tables and the explicit `EnsureInstance` set. It never covers node-computed defaults. That is why `resources` is an overlay of options, and why `"self"` is rejected in cluster-scope tables.
 - A property test builds the policy for one model on two simulated nodes with different hardware and `resource.mode`, and requires equal digests.
@@ -651,6 +659,11 @@ pub enum PinKind {
 /// optionally with `layers = "a..b"` and, for experts, `experts = "0..64"`.
 pub struct GroupSelector { pub class: ClassSel, pub layers: Option<Range<LayerIx>>, pub experts: Option<Range<ExpertIx>> }
 ```
+
+*Note 2026-10-22 (PROD-E1-T04): pins and overrides as data in `core`.* PROD-E1-T04 holds pins and tensor overrides in `core` as the policy tables write them, for PROD-E1-T09 to compile:
+- `PinKind::Layers::layers` and `GroupSelector::layers` are `LayerRange` (start and end each optional, §3), not `Range<LayerIx>`, so a table can name `"40.."` before the model's layer count is known. `GroupSelector::experts` stays `Option<Range<ExpertIx>>`.
+- `ExcludeTarget`, which the struct above names but does not define, is `Node(NodeSelector) | Device(DeviceSelector)`.
+- §6.3's override is `TensorOverride { pattern: String, layers: Option<LayerRange>, experts: Option<Range<ExpertIx>>, tier: TierSelector, compute: Option<DeviceSelector> }`. The TOML key `match` is the field `pattern`, because `match` is a Rust keyword. The pattern is its source text (OQ-PRD-27), and `config` keeps the compiled regex.
 
 Before solving, the solver front end checks pins against the census and the resource graph. Selectors that match nothing, tier kinds a node does not have, and pairs of `require` pins that contradict each other are reported before any MILP runs. An infeasible pin set is an error naming the smallest conflicting subset the front end found (RFC-0011 owns the search; the API surfaces it as `placement_infeasible`, RFC-0050 §12).
 
