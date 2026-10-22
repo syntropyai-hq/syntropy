@@ -282,6 +282,43 @@ fn an_armed_consumer_is_woken_by_the_close() {
     });
 }
 
+/// A thread that waits on two rings, as a dispatcher does between steps: it arms each with
+/// `arm_thread`, parks only if both are empty, then disarms both and pops. Loom's threads really
+/// park here, so a push that fails to wake the parked consumer shows as a deadlock. With `arm`
+/// in place of `arm_thread`, no thread is bound, and loom finds that deadlock.
+#[cfg(loom)]
+#[test]
+fn a_thread_parked_on_two_rings_wakes_for_a_push_to_either() {
+    model(|| {
+        let (mut tx_a, mut rx_a) = ring::<u32>(2).unwrap();
+        let (mut tx_b, mut rx_b) = ring::<u32>(2).unwrap();
+        let producer = thread::spawn(move || {
+            tx_a.push(1).unwrap();
+            tx_b.push(2).unwrap();
+            // Kept open, so only the pushes can wake the consumer.
+            (tx_a, tx_b)
+        });
+        let mut got = Vec::new();
+        while got.len() < 2 {
+            got.extend(rx_a.pop().ok());
+            got.extend(rx_b.pop().ok());
+            if got.len() == 2 {
+                break;
+            }
+            let a = rx_a.arm_thread();
+            let b = rx_b.arm_thread();
+            if a == crate::Arm::Waiting && b == crate::Arm::Waiting {
+                thread::park();
+            }
+            rx_a.disarm();
+            rx_b.disarm();
+        }
+        drop(producer.join().unwrap());
+        got.sort_unstable();
+        assert_eq!(got, [1, 2]);
+    });
+}
+
 /// A value pushed before the producer goes is popped before `Closed`: a consumer that sees the
 /// close and reloads `tail` finds the push. Two things order the close after the push, its
 /// release store and the push's trailing fence, so loom finds the lost value only with both gone
@@ -305,4 +342,147 @@ fn a_value_pushed_before_the_close_is_never_lost() {
         producer.join().unwrap();
         assert_eq!(got, [7]);
     });
+}
+
+/// Three threads, two one-slot rings: a source pushes into the first, a relay moves values from
+/// the first into the second, and the main thread pops the second (RFC-0060 §3.4: three threads).
+/// Each thread makes a fixed number of attempts that never wait, so loom runs every interleaving
+/// to its end. Spinning would not: in loom 0.7 a yielding thread hands over without spending a
+/// preemption, so two threads spinning on the third can pass control between them forever, and
+/// the run fails at loom's branch limit (RFC-0060 §3.4, note of 2026-10-23). The main thread then
+/// finishes the run alone, and every value must come out once, in order. The second
+/// value through each ring takes the slot the first left, so both rings wrap.
+#[test]
+fn values_cross_a_three_thread_pipeline_in_order() {
+    model(|| {
+        let (mut source_tx, mut relay_rx) = ring::<u32>(1).unwrap();
+        let (mut relay_tx, mut sink_rx) = ring::<u32>(1).unwrap();
+        let source = thread::spawn(move || {
+            // The first value the ring refused, if any; the source stops there to keep the order.
+            let mut unsent = None;
+            for value in 0..2 {
+                if let Err(PushError::Full(back)) = source_tx.push(value) {
+                    unsent = Some(back);
+                    break;
+                }
+            }
+            (source_tx, unsent)
+        });
+        let relay = thread::spawn(move || {
+            let mut held = None;
+            for _ in 0..2 {
+                if let Ok(value) = relay_rx.pop()
+                    && let Err(PushError::Full(back)) = relay_tx.push(value)
+                {
+                    held = Some(back);
+                    break;
+                }
+            }
+            (relay_rx, relay_tx, held)
+        });
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            if let Ok(value) = sink_rx.pop() {
+                seen.push(value);
+            }
+        }
+        let (mut source_tx, unsent) = source.join().unwrap();
+        let (mut relay_rx, mut relay_tx, held) = relay.join().unwrap();
+        // The rest of the run, in one thread: each value the relay holds or the first ring still
+        // has goes on through the second, and then the values the source never sent.
+        let mut through_second = |value, seen: &mut Vec<u32>| {
+            while let Ok(earlier) = sink_rx.pop() {
+                seen.push(earlier);
+            }
+            relay_tx.push(value).unwrap();
+            seen.push(sink_rx.pop().unwrap());
+        };
+        if let Some(value) = held {
+            through_second(value, &mut seen);
+        }
+        while let Ok(value) = relay_rx.pop() {
+            through_second(value, &mut seen);
+        }
+        let first = unsent.unwrap_or(2);
+        for value in first..2 {
+            source_tx.push(value).unwrap();
+            let value = relay_rx.pop().unwrap();
+            through_second(value, &mut seen);
+        }
+        while let Ok(value) = sink_rx.pop() {
+            seen.push(value);
+        }
+        assert_eq!(seen, [0, 1]);
+    });
+}
+
+/// The indices and the flags never share a cache line (RFC-0060 §3.4: the padded indices).
+/// Loom cannot see false sharing, so the layout is checked directly, in both builds.
+#[test]
+fn the_indices_and_the_flags_sit_on_separate_cache_lines() {
+    use std::mem::{align_of, offset_of};
+    let line = align_of::<CachePadded<AtomicUsize>>();
+    assert!(line >= 64, "a {line}-byte line");
+    let fields = [
+        ("head", offset_of!(Shared<u64>, head)),
+        ("tail", offset_of!(Shared<u64>, tail)),
+        ("flags", offset_of!(Shared<u64>, flags)),
+    ];
+    for (at, (name, offset)) in fields.iter().enumerate() {
+        assert_eq!(offset % line, 0, "{name} starts a line");
+        for (other, other_offset) in &fields[at + 1..] {
+            assert!(
+                offset.abs_diff(*other_offset) >= line,
+                "{name} and {other} share a line"
+            );
+        }
+    }
+}
+
+/// The child of `the_models_find_a_relaxed_publishing_store`: the cross-thread model on a ring
+/// whose `push` publishes with a relaxed store. Loom must fail it; run alone, it fails.
+#[cfg(loom)]
+#[test]
+#[ignore = "expected to fail; the_models_find_a_relaxed_publishing_store runs it"]
+fn planted_relaxed_publish_breaks_the_cross_thread_model() {
+    model(|| {
+        let (mut tx, mut rx) = crate::ring::planted_relaxed_publish::<u32>(2);
+        let producer = thread::spawn(move || {
+            for value in 0..3 {
+                push_spinning(&mut tx, value);
+            }
+        });
+        for expected in 0..3 {
+            assert_eq!(pop_spinning(&mut rx), Some(expected));
+        }
+        producer.join().unwrap();
+    });
+}
+
+/// The models find the bug they exist to find: with `push`'s publishing store relaxed, the
+/// cross-thread model fails with a causality violation (QUAL-E3-T09). The planted model runs in a
+/// child process, because loom may abort the process rather than unwind.
+#[cfg(loom)]
+#[test]
+fn the_models_find_a_relaxed_publishing_store() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "ring::tests::planted_relaxed_publish_breaks_the_cross_thread_model",
+            "--ignored",
+            "--test-threads",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.status.success(),
+        "the planted bug went unnoticed:\n{log}"
+    );
+    assert!(log.contains("Causality violation"), "{log}");
 }
