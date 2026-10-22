@@ -222,6 +222,29 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
 
 **Runtime fallback.** If the planned transport cannot connect within `link.connect_timeout` (2 s LAN, 10 s WAN), the runner connects on the next candidate by measured cost, marks the stage `Ready { degraded: TransportDemoted }`, and reports `Drift` with the new hop cost. The coordinator decides whether to re-plan (RFC-0001 §7.2). Demotion during operation is in §7.4.
 
+*Note 2026-10-23 (DIST-E7-T11; RFC-0001 §18.31): what `cost_t` is for, its defaults, and what the fallback returns.*
+- **Selection, not the objective.** `cost_t` ranks the transports of one edge. It picks `HopPlan::transport` at `S_dec`, and `prefill_transport` at `S_pf`. The solver's hop term in the objective stays RFC-0011 §5's `α^plan + S/β`, which since 2026-10-20 costs a wireless hop at its mean and bounds its tail with C14's stall rate. So λ = 1.0 on Wi-Fi weighs the tail when choosing between that edge's transports. It does not enter the plan's predicted time.
+- **Where it lives.** RFC-0001 §5.2's `LinkCaps` and `link_cost(caps, size, objective, λ) -> Nanos` are in `core::resource::link`, so the solver computes `cost_t` without depending on `net`. `Transport::cost` (§2) delegates to it.
+- **λ** is `link.p99_weight` (§11).
+  - **Defaults, in latency mode:** 1.0 on `WiFi` and `Overlay` links and on `QuicRelay`, and 0.25 otherwise [target]. Overlay links join Wi-Fi because RFC-0011's C14 groups the two as wireless-like hops.
+  - **Throughput mode:** 0.
+  - **A configured value** is one number that replaces both defaults.
+  - **Bounds:** validation keeps it within 0–10 [target: a chosen bound; 1.0 already prices a hop at its p99], so NaN and infinity are refused.
+- **Measured means both α and β.** A transport counts as measured only when both its α and its β come from a probe. Startup probes β on the best-ranked transport only (RFC-0010 §3), so until the background probe reaches the others, a transport with α alone ranks with the unmeasured ones, in the rank order above.
+- **z before an L2 probe.** Until `alpha_eff` exists, `z_t` is a per-transport constant for a 32 KiB F32 decode frame [estimate]:
+  - 25 µs on IP paths: `Quic`, `Tcp` and `QuicRelay`, the upper end of §Performance's ≈15–25 µs with polling;
+  - 20 µs on `Rdma`, the upper end of its ≈12–20 µs;
+  - 2 µs on `SharedMemory`. §Performance gives no z for it, so it comes from the per-hop table instead: the shared-memory hop of ≈5–10 µs, less its α of ≈1–5 µs and S/β of ≈3 µs, leaves ≈1–2 µs. The same subtraction on the RDMA and 10 GbE rows gives ≈12–22 µs and ≈17–22 µs, which matches their z ranges. The 2 µs assumes host-resident payloads, as the shared-memory row does. Activations that start and end in GPU memory add a device-to-host and a host-to-device copy, plus a doorbell at each end, which comes nearer RDMA's figure, so an L2 probe's `alpha_eff` replaces it on such a path.
+
+  The constant does not scale with S. A prefill-sized frame's CRC is in the measured `alpha_eff` once it exists.
+- **What the fallback returns.** The fallback is `net::transport::connect_hop`. It returns a `Demotion { edge: LinkId, from: TransportKind, to: TransportKind }`, plain data in `core` and the data `DegradeDetail::Demoted` (RFC-0033 §7.1) carries, together with the new transport's `cost_t` at `S_dec`.
+- **How the runner reports it.**
+  - **The message.** It sends the R→D message `EdgeDemoted { demotion, cause, cost }` (RFC-0001 §3.5), whose `cause` is a `DemotionCause` in `core`: `ConnectFailed` for this fallback, and `RepeatedFaults` for §7.4's demotion after 3 faults in 60 s. The one message serves both paths. DIST-E7-T11 adds it, and DIST-E7-T10 sends it from §7.4.
+  - **Forwarding.** The daemon forwards it as RFC-0033 §11's `ReportEdgeDemoted { edge, from, to, cause }`, as it forwards `StateChanged` as `ReportRunner`.
+  - **No second report.** `EdgeDemoted`'s `cost` is the "`Drift` with the new hop cost" of the runtime-fallback paragraph above. The daemon shows it, and no separate drift report is sent. The coordinator's solver costs the new transport from the resource graph (RFC-0033 §11's `EdgeDemoted` event).
+- **The flag.** DIST-E14-T13 sets `Ready { degraded }` with `TRANSPORT_DEMOTED` from the `Demotion`.
+- **A re-plan's reason.** If the coordinator re-plans for the demotion, the reason is RFC-0033 §6.1's `ReplanReason::Drift { node, term: DriftTerm }`, with a `Hop { link, transport }` term. No task builds `ReplanReason` yet (RFC-0001 §18.31).
+
 ### 4. QUIC backend (iroh)
 
 #### 4.1 Endpoints and paths
@@ -1107,7 +1130,7 @@ Blob streams use the data-plane frame layout (§6.10). Weight chunks are bulky a
 | `link.failover_timeout` | cluster | 2 s LAN, 10 s WAN; at most 15 s, iroh's per-path idle cap, so a larger value is refused at load with RFC-0054's `out_of_range` (revised 2026-10-23, §4.3's note) | §7.4 |
 | `link.demote_after` | cluster | 3 faults in 60 s | ADR-0011 item 7 |
 | `link.ack_timeout_min` | cluster | 200 µs | §7.3 |
-| `link.p99_weight` | cluster | 1.0 Wi-Fi or relay, 0.25 otherwise (latency mode) | §3 λ |
+| `link.p99_weight` | cluster | 1.0 Wi-Fi, overlay or relay, 0.25 otherwise (latency mode); within 0–10 | §3 λ (note of 2026-10-23) |
 | `quic.congestion` | node | `cubic` | `cubic` \| `bbr` |
 | `quic.lan_initial_window` | node | 256 KiB | §4.3 |
 | `quic.max_conn_window` | node | 64 MiB | |
