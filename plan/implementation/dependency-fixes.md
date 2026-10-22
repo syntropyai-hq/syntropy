@@ -631,6 +631,15 @@ COMP-E13-T05 (M0a) had criteria that no M0a task can meet. The fast-math audit n
 | COMP-E13-T05's last criteria → COMP-E13-T13; its FP16 criterion reworded | COMP-E13-T05 | R9 | RFC-0042 §4 gives `AccumKind` three variants (`F32`, `I32ThenF32`, `F64`), so FP16 accumulation cannot be declared. The static check rejects weaker declarations, and the detector rejects an FP16-accumulating variant that declares F32. The CI run of the static check over real provider registries moves to COMP-E13-T13, because no provider registers kernels at M0a |
 | QUAL-E4-T13 → COMP-E13-T13 (was COMP-E13-T05) | QUAL-E4-T13 | R8 | its edge was for the per-provider bit-exact list, which is now COMP-E13-T13's |
 
+## DIST-E2-T07: showing fingerprints in `identity show` (2026-10-22)
+
+DIST-E2-T07's task text said fingerprints are "shown by `identity show`", but `identity show` is DIST-E2-T01's library function, still open, with PROD-E6-T08 wiring the CLI. DIST-E2-T01 is M0b, so it cannot depend on DIST-E2-T07 (M3). RFC-0051 §2.1 lists three fingerprints for the command: the node ID, the cluster ID and the API certificate. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E2-T09 (`identity show` prints the six-word fingerprints, M3) → DIST-E2-T01, DIST-E2-T07, DIST-E2-T06, PROD-E5-T03, PROD-E6-T08; DIST-E2-T07's task text drops "shown by `identity show`" | DIST-E2-T07, DIST-E2-T09 | R9 | DIST-E2-T07 builds the fingerprint; showing it needs the command (DIST-E2-T01, PROD-E6-T08) and the three keys it shows: the node key (DIST-E2-T01), `ClusterId` (DIST-E2-T06) and the local CA's certificate (PROD-E5-T03) |
+| PROD-E5-T10 → DIST-E2-T09 | PROD-E5-T10 | R9 | its criterion, "the fingerprint matches `syntropy identity show`", needs `identity show` to print the CA's fingerprint |
+
 ## DIST-E9-T01's payload types (2026-10-22)
 
 The review of #1694 found that DIST-E9-T01's base events and entries carry types from tasks it does not reach: `NodeInfo` (PLC-E1-T09), `ChunkEvidence` (COMP-E12-T06, which depends on DIST-E9-T01 through DIST-E9-T15 and DIST-E9-T02), `CommandId` (credited to DIST-E9-T02 by DIST-E8-T17 and DIST-E4-T01), and `WorkloadReport` and `ConfigPatch`, which no task named. It also found DIST-E9-T12's text relying on approvals kept in `ClusterState`, which DIST-E9-T16 now keeps and which comes after it. These are plan corrections under R9, approved by the lead running DIST-E9-T01.
