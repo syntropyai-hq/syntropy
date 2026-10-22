@@ -1368,7 +1368,7 @@ fn every_golden_entry_converts_to_core_and_back() {
     });
     assert_eq!(
         TokenEntryBytes::new(&entry),
-        Err(FrameError::TapNotDecoded { len: 0 })
+        Err(FrameError::TapNotEncoded { rows: 0 })
     );
     let mut entry = token_with_logprobs();
     entry.logprobs.as_mut().unwrap().chosen.pop();
@@ -1518,4 +1518,73 @@ fn a_chosen_only_logprob_block_is_refused_encoding() {
     // Without logprobs the same entry encodes.
     entry.logprobs = None;
     assert!(TokenEntryBytes::new(&entry).is_ok());
+}
+
+/// Every field of the ring-return golden's entries against values written out here, not against
+/// the conversion's other direction. So a mapping wrong the same way in `to_entry` and
+/// `TokenEntryBytes::new` fails, which a view → owned → view round trip alone would miss
+/// (review-1493's N4 on #1780). The golden is step 21's ring-return copy: a plain entry, the
+/// verify entry with logprobs and a chain draft, and an Error entry.
+#[test]
+fn ring_return_entries_convert_field_by_field() {
+    let bytes = read_golden("token-ring-return");
+    let frame = Frame::decode(&bytes).unwrap();
+    let views: Vec<TokenEntryView<'_>> = frame.token().unwrap().entries.iter().collect();
+    let expected = [
+        TokenEntry {
+            seq: seq(X, 77),
+            tokens: vec![1001].into(),
+            first_position: 1600,
+            logprobs: None,
+            finish: None,
+            approx: ApproxFlags::empty(),
+            draft: Default::default(),
+            draft_tree: None,
+            rng_counter: 7,
+            tap: None,
+        },
+        TokenEntry {
+            seq: seq(X, 78),
+            tokens: vec![5, 6, 7].into(),
+            first_position: 41,
+            logprobs: Some(LogprobBlock {
+                k: 2,
+                chosen: vec![-0.25, -0.5, -0.125],
+                top_ids: vec![6, 9, 5, 8, 1, 2],
+                top_logprobs: vec![-1.5, -2.0, -1.25, -3.0, -2.5, -4.0],
+            }),
+            finish: None,
+            approx: ApproxFlags::SPEC_LENIENT,
+            draft: vec![8, 9, 10].into(),
+            draft_tree: None,
+            rng_counter: 0x1_0000_0005,
+            tap: None,
+        },
+        TokenEntry {
+            seq: seq(Y, 3),
+            tokens: Default::default(),
+            first_position: 7,
+            logprobs: None,
+            finish: Some(FinishReason::Error {
+                domain: 3,
+                code: 0x030C,
+            }),
+            approx: ApproxFlags::empty(),
+            draft: Default::default(),
+            draft_tree: None,
+            rng_counter: 0x2_0000_0000,
+            tap: None,
+        },
+    ];
+    assert_eq!(views.len(), expected.len());
+    for (index, (view, expected)) in views.iter().zip(&expected).enumerate() {
+        // The wire view, decoded by the codec, converts to the values written out above ...
+        assert_eq!(&view.to_entry().unwrap(), expected, "entry {index}");
+        // ... and those values, encoded, give back the view the codec decoded from the golden.
+        assert_eq!(
+            TokenEntryBytes::new(expected).unwrap().view(),
+            *view,
+            "entry {index}"
+        );
+    }
 }
