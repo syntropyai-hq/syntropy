@@ -340,7 +340,7 @@ impl DetectorCase {
     }
 }
 
-/// The largest relative error [`detect_dot`] accepts: 2^-8 [target], a chosen threshold.
+/// The largest relative error [`detect_dot`] accepts: 2^-8 \[target\], a chosen threshold.
 ///
 /// F32 accumulation in any order gets every case exactly, so it passes with no margin
 /// needed. Every fault the detector looks for misses by 50 % or more (see
@@ -349,18 +349,24 @@ pub const DETECTOR_REL_TOL: f32 = 1.0 / 256.0;
 
 /// The detector's inputs (RFC-0042 §4.1 rules 1 and 5).
 ///
-/// - `f16_overflow`: 4096 products of 32 × 32 sum to 2^22. Every partial sum past 64 of
-///   them exceeds FP16's largest finite value, 65504, so an FP16 accumulator returns
-///   infinity.
+/// - `f16_overflow`: 4096 products of 32 × 32 sum to 2^22. The total exceeds FP16's largest
+///   finite value, 65504, so an FP16 accumulator returns infinity in any summation order,
+///   sequential or a tree.
 /// - `f16_swamping`: 1 plus 4096 products of 2^-12 × 1 sums to 2. Each 2^-12 is a quarter of
-///   FP16's unit in the last place at 1 (2^-10), and a thirty-second of BF16's (2^-7), so an
-///   FP16 or BF16 accumulator that starts at 1 rounds every addition away and returns 1.
+///   FP16's unit in the last place at 1 (2^-10), and a thirty-second of BF16's (2^-7), so a
+///   sequential FP16 or BF16 accumulator that starts at 1 rounds every addition away and
+///   returns 1. A pairwise tree sums most of the small terms before they meet the 1, so this
+///   case catches sequential accumulation only.
 /// - `f16_large_terms`: 2048 plus 2048 products of 1 × 1 sums to 4096. FP16's spacing at
-///   2048 is 2, so each `+ 1` rounds back to even and the accumulator stays at 2048.
+///   2048 is 2, so each `+ 1` rounds back to even and a sequential accumulator stays at 2048.
+///   Like `f16_swamping`, it catches sequential accumulation only.
 /// - `f32_subnormal_inputs`: 1024 products of 2^-130 × 1 sum to 2^-120. An input of 2^-130
 ///   is an F32 subnormal, so a kernel that treats subnormal inputs as zero returns 0.
 /// - `f32_subnormal_products`: 1024 products of 2^-70 × 2^-70 sum to 2^-130. Each product,
 ///   2^-140, is an F32 subnormal, so a kernel that flushes subnormal results returns 0.
+///
+/// FP16 accumulation in any order also fails both subnormal cases, because FP16's smallest
+/// subnormal is 2^-24: its partial sums of these values round to 0, as a flush would.
 #[must_use]
 pub fn detector_cases() -> Vec<DetectorCase> {
     let p = pow2;
