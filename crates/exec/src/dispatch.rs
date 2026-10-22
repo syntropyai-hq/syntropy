@@ -156,9 +156,15 @@ pub trait StepScheduler {
     /// The step's outputs are ready. At the tail, this samples its tokens (RFC-0012 §8, §9).
     fn finish(&mut self, step: &mut Self::Step, now: MonoTime);
 
-    /// Queues the step's outbound frames. Returns `false` when the outbound ring is full: the
+    /// Queues the step's outbound frames. Returns `Ok(false)` when the outbound ring is full: the
     /// step stays in flight and its credit stall accrues (RFC-0001 §8.4 rule 1).
-    fn try_send(&mut self, step: &mut Self::Step, now: MonoTime) -> bool;
+    ///
+    /// # Errors
+    ///
+    /// The outbound ring has closed, because the `net` domain is gone, so the step can never
+    /// leave. The dispatcher faults, and the production loop ends, rather than spinning on the
+    /// step for good.
+    fn try_send(&mut self, step: &mut Self::Step, now: MonoTime) -> Result<bool, Error>;
 
     /// The step has left the stage. Its record goes to telemetry.
     fn sent(&mut self, step: Self::Step, now: MonoTime);
@@ -301,8 +307,11 @@ where
                     Err(error) => return self.faulted(error),
                 }
             }
-            if flight.phase == Phase::Sending && self.scheduler.try_send(&mut flight.step, now) {
-                left = true;
+            if flight.phase == Phase::Sending {
+                match self.scheduler.try_send(&mut flight.step, now) {
+                    Ok(sent) => left = sent,
+                    Err(error) => return self.faulted(error),
+                }
             }
         }
         if left && let Some(flight) = self.in_flight.take() {

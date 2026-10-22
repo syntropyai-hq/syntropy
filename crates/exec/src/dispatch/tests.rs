@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use syntropy_core::{DeviceClockSync, ErrorClass, MonoTime, Nanos, TickRate, TickSource};
 use syntropy_kernels::{Error, ErrorCode, HostWaker, WakeKind};
-use syntropy_spsc::{Arm, Consumer, PopError, Producer};
+use syntropy_spsc::{Arm, Consumer, PopError, Producer, PushError};
 
 use super::*;
 
@@ -117,8 +117,12 @@ impl StepScheduler for FakeScheduler {
         self.finished.push(*step);
     }
 
-    fn try_send(&mut self, step: &mut u32, _now: MonoTime) -> bool {
-        self.outbound.push(*step * 10).is_ok()
+    fn try_send(&mut self, step: &mut u32, _now: MonoTime) -> Result<bool, Error> {
+        match self.outbound.push(*step * 10) {
+            Ok(()) => Ok(true),
+            Err(PushError::Full(_)) => Ok(false),
+            Err(PushError::Closed(_)) => Err(closed_error()),
+        }
     }
 
     fn sent(&mut self, step: u32, _now: MonoTime) {
@@ -226,6 +230,14 @@ fn device_error() -> Error {
     }
 }
 
+fn closed_error() -> Error {
+    Error {
+        class: ErrorClass::Link,
+        code: ErrorCode(7),
+        message: "the outbound ring has closed".to_owned(),
+    }
+}
+
 type TestDispatcher = Dispatcher<FakeScheduler, FakeDevice, TestTicks>;
 
 /// A dispatcher with rings of `capacity`, and the test's ends of them.
@@ -328,6 +340,32 @@ fn a_full_outbound_ring_keeps_the_step_in_flight() {
     assert_eq!(poll(&mut d, MonoTime(6)), PollOutcome::Progress, "sent");
     assert_eq!(d.scheduler().sent, [1, 2]);
     assert_eq!(from_stage.pop(), Ok(20));
+}
+
+/// A step whose outbound ring has closed can never leave: the pass faults, rather than holding
+/// the step as `Waiting` for good, and the production loop ends with that fault.
+#[test]
+fn a_closed_outbound_ring_faults_instead_of_holding_the_step() {
+    let mut device = FakeDevice::new(0);
+    device.instant = true;
+    let (mut d, mut to_stage, from_stage) = dispatcher(device, TestTicks::default(), 4);
+    drop(from_stage);
+    to_stage.push(1).unwrap();
+    assert_eq!(poll(&mut d, MonoTime(0)), PollOutcome::Progress, "launch");
+    assert_eq!(
+        poll(&mut d, MonoTime(0)),
+        PollOutcome::Fault(closed_error())
+    );
+
+    let mut device = FakeDevice::new(0);
+    device.instant = true;
+    let (mut d, mut to_stage, from_stage) = dispatcher(device, stepping(), 4);
+    drop(from_stage);
+    to_stage.push(1).unwrap();
+    assert_eq!(
+        d.run(&LoopConfig::MAINS, &mut NoDeviceWake),
+        Err(closed_error())
+    );
 }
 
 /// A device error faults the dispatcher, and every later pass returns the same fault without
@@ -612,6 +650,132 @@ fn the_loop_spins_for_its_budget_before_it_parks() {
         armed >= idle + 50_000,
         "armed {armed} ns, idle from {idle} ns"
     );
+}
+
+/// A scheduler with two inbound rings, as a real one has: `FakeScheduler`'s, and a second ring
+/// whose values are steps too. It parks only when both rings are empty and armed.
+struct TwoRings {
+    main: FakeScheduler,
+    second: Consumer<u32>,
+    /// Arms that found both rings empty, so the loop could park.
+    parks: Arc<AtomicU32>,
+}
+
+impl StepScheduler for TwoRings {
+    type Step = u32;
+
+    fn ingest(&mut self, now: MonoTime) -> bool {
+        let mut arrived = self.main.ingest(now);
+        while let Ok(step) = self.second.pop() {
+            self.main.ready.push_back(step);
+            arrived = true;
+        }
+        arrived
+    }
+
+    fn next_step(&mut self, now: MonoTime) -> Option<u32> {
+        self.main.next_step(now)
+    }
+
+    fn finish(&mut self, step: &mut u32, now: MonoTime) {
+        self.main.finish(step, now);
+    }
+
+    fn try_send(&mut self, step: &mut u32, now: MonoTime) -> Result<bool, Error> {
+        self.main.try_send(step, now)
+    }
+
+    fn sent(&mut self, step: u32, now: MonoTime) {
+        self.main.sent(step, now);
+    }
+
+    fn next_wake(&self, now: MonoTime) -> Option<MonoTime> {
+        self.main.next_wake(now)
+    }
+
+    fn arm_inbound(&mut self) -> Arm {
+        let armed = (self.main.inbound.arm_thread(), self.second.arm_thread());
+        if armed == (Arm::Waiting, Arm::Waiting) {
+            self.parks.fetch_add(1, Ordering::SeqCst);
+            Arm::Waiting
+        } else {
+            Arm::Ready
+        }
+    }
+
+    fn disarm_inbound(&mut self) {
+        self.main.inbound.disarm();
+        self.second.disarm();
+    }
+
+    fn closed(&self) -> bool {
+        self.main.closed()
+    }
+}
+
+/// Between steps the loop parks on both inbound rings at once (`Consumer::arm_thread`, #1794),
+/// and a frame on either ring wakes it.
+#[test]
+fn the_loop_parked_on_two_rings_wakes_for_a_frame_on_either() {
+    let (mut to_main, main) = syntropy_spsc::ring(4).unwrap();
+    let (mut to_second, second) = syntropy_spsc::ring(4).unwrap();
+    let (outbound, mut from_stage) = syntropy_spsc::ring(4).unwrap();
+    let parks = Arc::new(AtomicU32::new(0));
+    let scheduler = TwoRings {
+        main: FakeScheduler::new(main, outbound),
+        second,
+        parks: Arc::clone(&parks),
+    };
+    let looping = thread::spawn(move || {
+        let mut device = FakeDevice::new(0);
+        device.instant = true;
+        let mut d = Dispatcher::new(scheduler, device, stepping());
+        d.run(&LoopConfig::MAINS, &mut NoDeviceWake)
+    });
+    eventually("a park on both rings", || parks.load(Ordering::SeqCst) >= 1);
+    to_second.push(6).unwrap();
+    assert_eq!(from_stage.pop_wait(Duration::ZERO), Some(60));
+    eventually("a park after the step", || {
+        parks.load(Ordering::SeqCst) >= 2
+    });
+    to_main.push(7).unwrap();
+    assert_eq!(from_stage.pop_wait(Duration::ZERO), Some(70));
+    drop(to_main);
+    assert_eq!(looping.join().unwrap(), Ok(()));
+    drop(to_second);
+}
+
+/// A partial arm: the first ring arms, the second already holds a value, so the loop does not
+/// park, and `disarm_inbound` leaves the first ring unarmed, so a later push to it makes no
+/// wake-up call. A wake handle on the first ring shows that, because a push signals it only
+/// while the ring is armed.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    windows
+))]
+#[test]
+fn a_partial_arm_is_disarmed_and_wakes_nobody() {
+    let (mut to_main, main) = syntropy_spsc::ring_with_wake::<u32>(4).unwrap();
+    let (mut to_second, second) = syntropy_spsc::ring(4).unwrap();
+    let (outbound, _from_stage) = syntropy_spsc::ring(4).unwrap();
+    let mut scheduler = TwoRings {
+        main: FakeScheduler::new(main, outbound),
+        second,
+        parks: Arc::default(),
+    };
+    to_second.push(1).unwrap();
+    assert_eq!(
+        scheduler.arm_inbound(),
+        Arm::Ready,
+        "the second ring holds a value"
+    );
+    scheduler.disarm_inbound();
+    to_main.push(2).unwrap();
+    let handle = scheduler.main.inbound.wake_handle().unwrap();
+    assert!(!handle.reset().unwrap(), "the disarmed ring signalled");
+    assert_eq!(scheduler.parks.load(Ordering::SeqCst), 0);
 }
 
 /// A fault ends the loop with that fault.

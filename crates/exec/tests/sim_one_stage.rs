@@ -29,7 +29,7 @@ use syntropy_exec::{
     StepScheduler, WakeSource,
 };
 use syntropy_kernels::Error;
-use syntropy_spsc::{Arm, Consumer, PopError, Producer};
+use syntropy_spsc::{Arm, Consumer, PopError, Producer, PushError};
 use syntropy_testkit::sim::{
     Checker, Env, Model, RunOutcome, Schedule, SimEntropy, SimTicks, SimWorld, TraceEvent,
 };
@@ -171,13 +171,17 @@ impl StepScheduler for SimScheduler {
         }
     }
 
-    fn try_send(&mut self, step: &mut Step, _now: MonoTime) -> bool {
+    fn try_send(&mut self, step: &mut Step, _now: MonoTime) -> Result<bool, Error> {
         let frame = TokenFrame {
             seq: step.seq,
             pos: step.pos,
             token: step.token,
         };
-        self.outbound.push(frame).is_ok()
+        match self.outbound.push(frame) {
+            Ok(()) => Ok(true),
+            Err(PushError::Full(_)) => Ok(false),
+            Err(PushError::Closed(_)) => unreachable!("the client holds its end"),
+        }
     }
 
     fn sent(&mut self, step: Step, now: MonoTime) {
