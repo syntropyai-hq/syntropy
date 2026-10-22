@@ -1093,9 +1093,11 @@ Keys are cluster scope except `solver.context_target`, which is instance scope; 
 | `solver.departure_margin` | 0.10 [target] | a departure-prone node hosts a stage only for at least this gain, or when capacity needs it (§4) |
 | `replan.min_gain` | 0.20 | adoption threshold (RFC-0001 §7.2; tuned by RFC-0033) |
 | `replan.payback_horizon` | 600 s | migration payback window |
-| `replan.max_defer` | 5 min | longest wait for an idle window in latency mode |
+| `replan.max_defer` | 5 min | longest wait for an idle window in latency mode (kept 2026-10-22, note below) |
 | `replan.cooldown` | 10 min | minimum time between adopted deferred re-plans |
 | `replan.delta_min_gain` | 0.02 | adoption threshold for delta solves |
+
+*Note 2026-10-22 (#1678):* this RFC declares `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` (RFC-0054 §5.1 gives `replan.*` to it); RFC-0033 §12 now refers to them and declares only `replan.degraded_min_gain`. RFC-0033 had given `replan.max_defer` 10 min. The 5 min here holds: §12.2's deferred plan must recover its move within `replan.payback_horizon` (600 s), and a 10 min wait would spend that whole horizon before the plan applied, while 5 min leaves half of it.
 
 ### 17. Failure handling
 
