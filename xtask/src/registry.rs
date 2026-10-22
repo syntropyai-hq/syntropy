@@ -556,10 +556,26 @@ pub const SUITES: &[Entry] = &[
         summary: "L1: the crate-local unit tests and doctests of every workspace crate",
         defined_in: "RFC-0060 §1.1",
         params: &[],
-        steps: &[Step {
-            name: "test",
-            action: Action::Cargo(&["test", "--workspace", "--locked"]),
-        }],
+        steps: &[
+            Step {
+                name: "test",
+                action: Action::Cargo(&["test", "--workspace", "--locked"]),
+            },
+            // `--workspace` builds `obs` without its test-only feature, so the fault plans,
+            // triggers and counters of RFC-0060 §9.2 are tested in a build of their own
+            // (QUAL-E9-T01).
+            Step {
+                name: "fault-injection",
+                action: Action::Cargo(&[
+                    "test",
+                    "--package",
+                    "syntropy-obs",
+                    "--features",
+                    "fault-injection",
+                    "--locked",
+                ]),
+            },
+        ],
         pending: &[],
     },
     Entry {
@@ -836,12 +852,19 @@ mod tests {
     }
 
     #[test]
-    fn unit_suite_tests_the_whole_workspace() {
+    fn unit_suite_tests_the_whole_workspace_then_the_fault_points() {
         let unit = find(SUITES, "unit").expect("unit is registered");
-        assert_eq!(unit.steps.len(), 1);
+        let steps: Vec<String> = unit
+            .steps
+            .iter()
+            .map(|step| step.action.display())
+            .collect();
         assert_eq!(
-            unit.steps[0].action.display(),
-            "cargo test --workspace --locked"
+            steps,
+            [
+                "cargo test --workspace --locked",
+                "cargo test --package syntropy-obs --features fault-injection --locked",
+            ]
         );
     }
 
