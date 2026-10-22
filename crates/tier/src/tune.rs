@@ -135,6 +135,11 @@ pub struct TuneRecord {
     pub original_mb: u64,
     /// The value tune wrote.
     pub new_mb: u64,
+    /// While a re-tune is pending, the value an earlier tune wrote and the sysctl still holds,
+    /// so a revert after an interrupted re-tune (a crash, or Ctrl-C at the approval prompt)
+    /// knows that value is tune's. `None` once the change is applied, and in a first tune.
+    #[serde(default)]
+    pub prior_mb: Option<u64>,
     /// When the change was recorded, in Unix milliseconds.
     pub at_unix_ms: u64,
     /// Why, as the CLI showed it: the plan that needed the limit.
@@ -440,15 +445,21 @@ where
             .store
             .load()?
             .filter(|record| matches!(record.state, RecordState::Applied | RecordState::Pending));
-        let original_mb = match &live {
-            Some(record) if record.new_mb == current => record.original_mb,
-            _ => current,
+        // The current value is tune's when the live record wrote it, or when an interrupted
+        // re-tune left it as the record's prior value.
+        let tunes_value = live
+            .as_ref()
+            .filter(|r| r.new_mb == current || r.prior_mb == Some(current));
+        let (original_mb, prior_mb) = match tunes_value {
+            Some(record) => (record.original_mb, Some(current)),
+            None => (current, None),
         };
         let mut record = TuneRecord {
             schema: SCHEMA,
             sysctl: WIRED_LIMIT_SYSCTL.to_owned(),
             original_mb,
             new_mb: limit_mb,
+            prior_mb,
             at_unix_ms: self.clock.unix_ms(),
             reason: reason.to_owned(),
             by_version: self.version.to_owned(),
@@ -476,6 +487,7 @@ where
             });
         }
         record.state = RecordState::Applied;
+        record.prior_mb = None;
         self.store.save(&record)?;
         self.reprobe.limit_changed(limit_mb);
         Ok(record)
@@ -500,7 +512,8 @@ where
     /// Undoes the recorded change (RFC-0020 §9.1 step 6). `syntropy tune --revert` and uninstall
     /// (RFC-0052 §11.2 step 4) both call it.
     ///
-    /// - If the value is still the one tune wrote, the original is restored and read back.
+    /// - If the value is still the one tune wrote, or the earlier tune's value an interrupted
+    ///   re-tune left (`prior_mb`), the original is restored and read back.
     /// - If it is already the original, nothing is written.
     /// - If someone changed it by hand, it is left alone ([`ValueRevert::HandEdited`]).
     ///
@@ -522,7 +535,7 @@ where
         let current = self.read()?;
         let value = if current == record.original_mb {
             ValueRevert::AlreadyOriginal { mb: current }
-        } else if current == record.new_mb {
+        } else if current == record.new_mb || record.prior_mb == Some(current) {
             self.run(&HostOp::SetWiredLimit {
                 mb: record.original_mb,
             })?;

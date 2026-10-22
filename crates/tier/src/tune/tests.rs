@@ -379,6 +379,64 @@ fn a_retune_after_a_hand_edit_keeps_the_job() {
     assert!(!f.host.borrow().job_installed);
 }
 
+/// The pending record a re-tune to `new_mb` leaves when it is killed between its record and
+/// the write (a crash, or Ctrl-C at the approval prompt), over the applied `live` record.
+fn interrupted_retune(live: &TuneRecord, new_mb: u64) -> TuneRecord {
+    TuneRecord {
+        new_mb,
+        prior_mb: Some(live.new_mb),
+        state: RecordState::Pending,
+        reason: "interrupted".to_owned(),
+        ..live.clone()
+    }
+}
+
+/// After an interrupted re-tune, the value is still the earlier tune's. Revert knows it from
+/// the record's `prior_mb`, so it restores the original and removes the job, rather than
+/// calling the value hand-edited (review of #1822).
+#[test]
+fn a_revert_after_an_interrupted_retune_restores_the_original() {
+    let mut f = Fixture::new("interrupted", 0);
+    f.tune().apply(400 * 1024, "plan j").unwrap();
+    f.host.borrow_mut().job_installed = true;
+    let live = f.tune().attach_boot_job(job()).unwrap();
+    assert_eq!(live.prior_mb, None, "an applied record has no prior value");
+    f.store
+        .save(&interrupted_retune(&live, 500 * 1024))
+        .unwrap();
+    assert_eq!(
+        f.tune().revert().unwrap(),
+        Reverted::Done {
+            value: ValueRevert::Restored { to_mb: 0 },
+            removed_job: Some(job())
+        }
+    );
+    assert_eq!(f.value(), 0);
+    assert!(!f.host.borrow().job_installed);
+}
+
+/// A re-tune after an interrupted one still counts the value as tune's, so it keeps the first
+/// original and the job, and its applied record drops `prior_mb`.
+#[test]
+fn a_retune_after_an_interrupted_one_keeps_the_first_original() {
+    let mut f = Fixture::new("interrupted-retune", 0);
+    f.tune().apply(400 * 1024, "plan k").unwrap();
+    let live = f.tune().attach_boot_job(job()).unwrap();
+    f.store
+        .save(&interrupted_retune(&live, 500 * 1024))
+        .unwrap();
+    let record = f.tune().apply(450 * 1024, "plan l").unwrap();
+    assert_eq!(
+        (
+            record.original_mb,
+            record.new_mb,
+            record.prior_mb,
+            record.boot_job
+        ),
+        (0, 450 * 1024, None, Some(job()))
+    );
+}
+
 /// A pending record left by a crash before the write: the value is still the original, so a
 /// revert writes nothing and closes the record.
 #[test]
@@ -389,6 +447,7 @@ fn a_pending_record_whose_write_never_happened_reverts_without_a_write() {
         sysctl: WIRED_LIMIT_SYSCTL.to_owned(),
         original_mb: 0,
         new_mb: 64 * 1024,
+        prior_mb: None,
         at_unix_ms: 1,
         reason: "crashed".to_owned(),
         by_version: "0.0.0-test".to_owned(),
@@ -435,6 +494,7 @@ fn the_record_is_json_with_stable_field_names() {
         "sysctl",
         "original_mb",
         "new_mb",
+        "prior_mb",
         "at_unix_ms",
         "reason",
         "by_version",
@@ -446,6 +506,20 @@ fn the_record_is_json_with_stable_field_names() {
     assert_eq!(json["state"], "applied");
     assert_eq!(json["sysctl"], "iogpu.wired_limit_mb");
     assert!(!f.store.path().with_extension("json.next").exists());
+}
+
+/// A record written before `prior_mb` existed still loads, with no prior value.
+#[test]
+fn a_record_without_prior_mb_loads() {
+    let f = Fixture::new("no-prior", 0);
+    fs::write(
+        f.store.path(),
+        r#"{"schema":1,"sysctl":"iogpu.wired_limit_mb","original_mb":0,"new_mb":1024,
+            "at_unix_ms":1,"reason":"r","by_version":"v","state":"applied","boot_job":null}"#,
+    )
+    .unwrap();
+    let record = f.store.load().unwrap().unwrap();
+    assert_eq!((record.new_mb, record.prior_mb), (1024, None));
 }
 
 /// The one command that writes the sysctl.
