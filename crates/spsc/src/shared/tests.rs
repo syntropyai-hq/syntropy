@@ -257,6 +257,18 @@ fn layouts_are_checked_and_sized() {
         (header_bytes() + 4 * 24).next_multiple_of(128)
     );
     assert_eq!(ring.bytes() % SharedLayout::ALIGN, 0);
+    // The largest ring is sized with checked arithmetic: it fits a 64-bit address space, and a
+    // 32-bit target refuses it rather than wrapping.
+    let largest = SharedLayout::new(SharedLayout::MAX_SLOTS, SharedLayout::MAX_SLOT_BYTES);
+    if cfg!(target_pointer_width = "64") {
+        let stride = 8 + SharedLayout::MAX_SLOT_BYTES as usize;
+        assert_eq!(
+            largest.unwrap().bytes(),
+            (header_bytes() + SharedLayout::MAX_SLOTS as usize * stride).next_multiple_of(128)
+        );
+    } else {
+        assert_eq!(largest, Err(LayoutError::TooLarge));
+    }
 }
 
 /// Across two threads, records cross in order through a ring smaller than the run.

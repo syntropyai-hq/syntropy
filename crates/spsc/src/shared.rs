@@ -71,6 +71,8 @@ pub enum LayoutError {
     Slots(u32),
     /// The slot size is not from 1 to [`SharedLayout::MAX_SLOT_BYTES`].
     SlotBytes(u32),
+    /// The ring would take more than `isize::MAX` bytes, which only a 32-bit target can reach.
+    TooLarge,
 }
 
 impl fmt::Display for LayoutError {
@@ -86,6 +88,7 @@ impl fmt::Display for LayoutError {
                 "a shared ring's slot holds 1 to {} bytes, not {bytes}",
                 SharedLayout::MAX_SLOT_BYTES
             ),
+            LayoutError::TooLarge => f.write_str("the shared ring would not fit the address space"),
         }
     }
 }
@@ -97,6 +100,8 @@ impl std::error::Error for LayoutError {}
 pub struct SharedLayout {
     slots: u32,
     slot_bytes: u32,
+    /// [`Self::bytes`], computed once with checked arithmetic.
+    bytes: usize,
 }
 
 impl SharedLayout {
@@ -112,7 +117,10 @@ impl SharedLayout {
     /// # Errors
     ///
     /// [`LayoutError::Slots`] when `slots` is not a power of two from 1 to [`Self::MAX_SLOTS`],
-    /// and [`LayoutError::SlotBytes`] when `slot_bytes` is 0 or above [`Self::MAX_SLOT_BYTES`].
+    /// [`LayoutError::SlotBytes`] when `slot_bytes` is 0 or above [`Self::MAX_SLOT_BYTES`], and
+    /// [`LayoutError::TooLarge`] when the ring would take more than `isize::MAX` bytes. At most
+    /// 2^24 slots of 1 MiB fit a 64-bit address space, so only a 32-bit target refuses a ring
+    /// that way.
     pub fn new(slots: u32, slot_bytes: u32) -> Result<SharedLayout, LayoutError> {
         if !slots.is_power_of_two() || slots > Self::MAX_SLOTS {
             return Err(LayoutError::Slots(slots));
@@ -120,7 +128,18 @@ impl SharedLayout {
         if slot_bytes == 0 || slot_bytes > Self::MAX_SLOT_BYTES {
             return Err(LayoutError::SlotBytes(slot_bytes));
         }
-        Ok(SharedLayout { slots, slot_bytes })
+        let stride = LENGTH_BYTES + (slot_bytes as usize).next_multiple_of(8);
+        let bytes = (slots as usize)
+            .checked_mul(stride)
+            .and_then(|slots_bytes| slots_bytes.checked_add(header_bytes()))
+            .and_then(|total| total.checked_next_multiple_of(Self::ALIGN))
+            .filter(|total| *total <= isize::MAX as usize)
+            .ok_or(LayoutError::TooLarge)?;
+        Ok(SharedLayout {
+            slots,
+            slot_bytes,
+            bytes,
+        })
     }
 
     /// The number of slots.
@@ -141,11 +160,10 @@ impl SharedLayout {
     }
 
     /// The bytes the ring takes: its header, then its slots. A multiple of [`Self::ALIGN`], so
-    /// rings laid end to end stay aligned. At most 2^24 slots of 1 MiB each plus the header, which
-    /// fits a 64-bit `usize`.
+    /// rings laid end to end stay aligned, and never more than `isize::MAX`.
     #[must_use]
     pub fn bytes(&self) -> usize {
-        (header_bytes() + self.slots as usize * self.stride()).next_multiple_of(Self::ALIGN)
+        self.bytes
     }
 
     /// Writes an empty ring's header at `memory`.
