@@ -1048,6 +1048,49 @@ QUAL-E1-T06 is the only blocker of QUAL-E1-T07, the affected-job rules engine. U
 | T06's criteria "a fork contributor's workflows wait for approval on their first and on every later PR" and "a force-push to `main` from a test account is rejected" move to a new **Maintainer action** task, QUAL-E1-T32 (M0a), with QUAL-E1-T32 → QUAL-E1-T06 | QUAL-E1-T06, QUAL-E1-T32 | R9 | both need a second, non-admin account, while the settings they check are in force and checked by T06's settings check (`fork-pr-contributor-approval.json: matches`; `ruleset-main.json`'s rules in force). None of T06's 24 dependents uses either behaviour. QUAL-E1-T07's fork clauses are about `ci-gate`'s hardware statuses on recorded payloads, and the "branch protection test" clauses of QUAL-E1-T16, QUAL-E1-T17 and QUAL-E1-T19 are about required checks and reviews. So QUAL-E1-T32 has no dependents. M0a → M0a, no cycle |
 | T06's "a fixture workflow on a test branch shows `ci-gate` passing with skipped hosted jobs and failing with a failed or cancelled job" may be met by recorded runs of real PRs | QUAL-E1-T06 | — | the recorded runs exercise the real `pr.yml` and `ci-gate`, which a fixture branch would only imitate: #1773 at `e64665f` passes with `hosted-l3` and `hosted-parity-nano` skipped; #1712 at `17263a6` (run 39785121248) fails with every build, test and lint job failed; #1723's run 39786377605, cancelled by a second push, fails. `xtask/src/ci_gate.rs`'s unit tests cover the same three verdicts on demand (`every_listed_job_passing_and_the_rest_skipped_passes`, `a_failed_job_fails_the_gate`, `a_cancelled_job_fails_the_gate`), so the criterion is no weaker |
 
+## COMP-E3-T02's `Numeric`-mode criterion (2026-10-23)
+
+COMP-E3-T02 builds the CPU provider's shell. Its first criterion read "the fake provider's `Numeric` mode runs on these kernels (QUAL-E3-T12)". QUAL-E3-T12 needs COMP-E3-T09's deterministic kernels, which need COMP-E3-T03's GEMV, and none of the three is a dependency of COMP-E3-T02 or was built when the shell was. So the criterion used work no finished task produces (R9). The clause belongs with the fake, which runs on the shell.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T02's first criterion becomes RFC-0040 §2's contract checks over real host buffers with a stand-in op; QUAL-E3-T12 gains "the fake's `Numeric` mode runs on the CPU provider shell's streams, buffers and capture", and QUAL-E3-T12 → COMP-E3-T02 | COMP-E3-T02, QUAL-E3-T12 | R9 | M0a → M0a. COMP-E3-T02 reaches none of QUAL-E3-T12, COMP-E3-T09 or COMP-E3-T03, so the edge adds no cycle, and COMP-E3-T02 stays ready for its M0a dependents |
+
+## The follow-ups of QUAL-E1-T07's rules (2026-10-23)
+
+QUAL-E1-T07 puts the affected-job rules in `ci/jobs.toml` (RFC-0062 §2.2). Four later tasks must change that file, and their rows did not say so. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E2-T01 → QUAL-E1-T07; its criterion names the App's bot account in `hardware.status_creators` | QUAL-E2-T01 | R9 | `ci-gate` counts a `hw/<job>` status only from an account that list names, and the list is empty until the App exists (RFC-0062 §2.5, note 2026-10-23) |
+| QUAL-E2-T02's criterion removes `hw-cuda-ada`'s `planned` mark | QUAL-E2-T02 | R9 | the interim of ADR-0620's revision of 2026-10-23 ends for `hw-cuda-ada` when its rig runs it. QUAL-E2-T02 already depends on QUAL-E1-T07 |
+| COMP-E4-T01 → QUAL-E1-T07; its criterion lists `cudarc` in `hw-cuda-ada`'s `lock_deps`, with a golden | COMP-E4-T01 | R9 | COMP-E4-T01 adds the CUDA bindings crate, so a `Cargo.lock` change to it should require the rig from then on. ggml's bindings are generated inside `kernels-ggml` (COMP-E7-T01), whose paths the rule covers, so COMP-E7-T01 needs no such line. From the engine-lane review of #1830 |
+| QUAL-E3-T10 → QUAL-E1-T07; its criterion widens `hosted-l3`'s rule to any further crate its Miri and sanitizer jobs build | QUAL-E3-T10 | R9 | RFC-0060 §3.4's sanitizer builds cover the `unsafe` crates and the CPU provider. QUAL-E1-T07 lists `spsc` and `kernels-cpu` beside §2.3's five crates; a crate QUAL-E3-T10 adds to its jobs needs the rule too. From the engine-lane review of #1830 |
+
+QUAL-E1-T07 is M0a, and so are QUAL-E2-T01, QUAL-E2-T02 and COMP-E4-T01; QUAL-E3-T10 is M1a. So no edge points later, and QUAL-E1-T07 depends only on QUAL-E1-T06, so there is no cycle.
+## DIST-E7-T12's channel slots and the control receives (2026-10-23)
+
+RFC-0031 §8's pool table counts "recv_slots + retention" slots per channel, and DIST-E7-T12's criterion said the same. But the channel core of DIST-E7-T02 takes a receive pool of `recv_slots + 4`: the four receives for control frames, which credit never counts (§7.1). A side that only receives keeps no retention, so with the table's count its pool would be four slots short.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T12's criterion reads `(recv_slots + 4 + retention) × slot_size`, and RFC-0031 §8 gains a dated note that the four control receives sit beside the data receives; no edge | DIST-E7-T12 | Definition of done | the criterion must hold for the pool the channel core already requires (DIST-E7-T02). Built under the lead's run, for the maintainers to confirm |
+
+## COMP-E15-T08's missing prerequisites (2026-10-23)
+
+COMP-E15-T08 gives `TpSharding` to the `llama`, `qwen_moe`, `deepseek3` and `gptoss` families, and its parity criterion runs a split layer through the reference executor. It depended only on COMP-E15-T06 and DIST-E13-T13, which are done, so the board showed it ready. But the families it shards, the blocks it splits and the machinery its parity check runs on were neither built nor edges, so it could not start (#333, released 2026-10-23). These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E15-T08 → COMP-E15-T02, COMP-E15-T04 | COMP-E15-T08 | R9 | RFC-0043 §6.3's `split(&LayerProgram, weights)` splits block nodes: `Gqa`, `DenseFfn` and `Moe` (COMP-E15-T02), `SlidingGqa` and `Mla` (COMP-E15-T04) |
+| COMP-E15-T08 → COMP-E16-T01, COMP-E16-T03, COMP-E16-T04, COMP-E16-T05, COMP-E16-T06 | COMP-E15-T08 | R9 | `TpSharding` is implemented by the family modules: the `Family` trait (COMP-E16-T01) and `llama`, `qwen_moe`, `gptoss` and `deepseek3` (COMP-E16-T03 to T06) |
+| COMP-E15-T08 → COMP-E15-T03, QUAL-E4-T01 | COMP-E15-T08 | R9 | the criterion "recombining member outputs in member order matches single-device output within `τ_op`" runs on `graph::reference`'s interpreter (COMP-E15-T03) driven by `testkit`'s `RefExecutor` (QUAL-E4-T01) |
+| COMP-E15-T08 → PLC-E4-T09 | COMP-E15-T08 | R9 | its solver test checks RFC-0011 §3.1's rule that an `IntraTp(n, G)` node exists only for a family with a TP sharding strategy, which PLC-E4-T09 builds |
+| COMP-E15-T08's solver test covers `IntraTp` only; PLC-E4-T10 gains the cross-node half | COMP-E15-T08, PLC-E4-T10 | R9 | RFC-0043 §6.3 keeps a family without `TpSharding` off `IntraNodeTp`, `CrossNodeTp` and `CrossNodeEp`. The island nodes for the last two are PLC-E4-T10's, which comes after COMP-E15-T08 (PLC-E4-T10 → PLC-E2-T12 → DIST-E13-T03 → DIST-E13-T02 → DIST-E13-T01 → COMP-E15-T08), so COMP-E15-T08 cannot test them and an edge would make a cycle |
+
+Nine are M0a or M1a and PLC-E4-T09 is M2, all before COMP-E15-T08's M3, so no edge points later. None of the ten reaches COMP-E15-T08, whose one dependent is DIST-E13-T01 (M3), so there is no cycle.
+
+Left for a follow-up: RFC-0011 §3.1's `Island(I, Tp)` and `Island(I, Ep)` rows do not state the family condition that its `IntraTp(n, G)` row and RFC-0043 §6.3 state. PLC-E4-T10's criterion cites RFC-0043 §6.3 for it until RFC-0011 says so too.
 ## COMP-E13-T15: `core::Error`, and DIST-E18-T02 in M0a (2026-10-23)
 
 Issue #1525, from the review of COMP-E1-T01, found that no task builds RFC-0001 §5.12's `Error`. COMP-E1-T01 built a stand-in, `kernels::Error { class, code: u16, message }`, whose bare `u16` cannot hold another domain's code, as in `DeviceHealth::Sticky { code }`. PLC-E7-T17 (#1802) reports a closed ring as Kernels code 7, `CaptureFailed`, because `exec` has no codes. The issue also found that `ProviderId` and `ProviderBuild` decode only from a `'static` buffer, which the selection cache (RFC-0040 §6.5) would leak on every load. These are plan corrections under R9 and R6, approved by the lead under the maintainer's standing instruction.

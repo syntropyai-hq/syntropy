@@ -739,7 +739,7 @@ pub fn source_settings(text: &str, tables: &[&str]) -> BTreeSet<String> {
 }
 
 /// FNV-1a, 64 bits: a digest of a file compared whole, so a change shows without printing it.
-fn fnv1a(text: &str) -> u64 {
+pub(crate) fn fnv1a(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
