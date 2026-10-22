@@ -17,7 +17,11 @@
 //!   checked and used, so the peer cannot change a value between its check and its use. A reader
 //!   that finds the indices more than `slots` apart, or a length above `slot_bytes`, returns
 //!   [`SharedPopError::Corrupt`] or [`SharedPushError::Corrupt`] and reads nothing out of range.
-//!   A record's bytes are copied out before the caller reads them.
+//!   A record's bytes are copied out before the caller reads them, and every access to a slot,
+//!   its length word and its bytes alike, is atomic (8-byte words, then single bytes), so a peer
+//!   writing at the same time causes no data race in this process (RFC-0060 §10). Copying through
+//!   relaxed atomics compiles to plain loads and stores on x86-64 and AArch64, so it costs about
+//!   what a `memcpy` of the same words would, without its vector instructions.
 //! - **No waking.** Both ends poll. A consumer that needs waking across processes needs a handle
 //!   passed to it, which the process that spawns the runner provides.
 //!
@@ -50,15 +54,68 @@ struct Header {
     tail: CachePadded<AtomicU64>,
     /// [`PRODUCER_CLOSED`] and [`CONSUMER_CLOSED`].
     closed: CachePadded<AtomicU32>,
+    /// Under loom only: one cell per slot, which `push` marks as written and `pop` as read, so
+    /// loom checks that the index protocol orders a slot's write before its read, and its read
+    /// before the next write. The slots' own bytes are plain memory, which loom cannot see.
+    #[cfg(loom)]
+    shadow: Box<[crate::sync::UnsafeCell<()>]>,
 }
 
 impl Header {
-    fn new() -> Header {
+    fn new(_slots: u32) -> Header {
         Header {
             head: CachePadded(AtomicU64::new(0)),
             tail: CachePadded(AtomicU64::new(0)),
             closed: CachePadded(AtomicU32::new(0)),
+            #[cfg(loom)]
+            shadow: (0.._slots)
+                .map(|_| crate::sync::UnsafeCell::new(()))
+                .collect(),
         }
+    }
+}
+
+/// Copies `from` into shared memory at `to`: 8-byte words with relaxed atomic stores, then the
+/// last bytes with atomic byte stores. Every access to slot memory is atomic, on both ends, so a
+/// peer that writes the same bytes at the same time makes no data race, only garbled bytes.
+///
+/// # Safety
+///
+/// `to` is 8-aligned and valid for `from.len()` bytes, inside a live ring.
+unsafe fn copy_in(from: &[u8], to: NonNull<u8>) {
+    use std::sync::atomic::{AtomicU8, AtomicU64 as SlotWord, Ordering::Relaxed};
+    let (words, rest) = from.as_chunks::<8>();
+    for (index, word) in words.iter().enumerate() {
+        // SAFETY: `index * 8` is a multiple of 8 below `from.len()`, so the word is 8-aligned and
+        // inside the region the caller promised.
+        let slot_word = unsafe { SlotWord::from_ptr(to.add(index * 8).cast::<u64>().as_ptr()) };
+        slot_word.store(u64::from_ne_bytes(*word), Relaxed);
+    }
+    let start = words.len() * 8;
+    for (offset, byte) in rest.iter().enumerate() {
+        // SAFETY: `start + offset` is below `from.len()`, inside the region the caller promised.
+        unsafe { AtomicU8::from_ptr(to.add(start + offset).as_ptr()) }.store(*byte, Relaxed);
+    }
+}
+
+/// Copies shared memory at `from` into `to`, as [`copy_in`] writes it: 8-byte words, then bytes,
+/// all with relaxed atomic loads.
+///
+/// # Safety
+///
+/// `from` is 8-aligned and valid for `to.len()` bytes, inside a live ring.
+unsafe fn copy_out(from: NonNull<u8>, to: &mut [u8]) {
+    use std::sync::atomic::{AtomicU8, AtomicU64 as SlotWord, Ordering::Relaxed};
+    let (words, rest) = to.as_chunks_mut::<8>();
+    let start = words.len() * 8;
+    for (index, word) in words.iter_mut().enumerate() {
+        // SAFETY: as in `copy_in`.
+        let slot_word = unsafe { SlotWord::from_ptr(from.add(index * 8).cast::<u64>().as_ptr()) };
+        *word = slot_word.load(Relaxed).to_ne_bytes();
+    }
+    for (offset, byte) in rest.iter_mut().enumerate() {
+        // SAFETY: as in `copy_in`.
+        *byte = unsafe { AtomicU8::from_ptr(from.add(start + offset).as_ptr()) }.load(Relaxed);
     }
 }
 
@@ -179,7 +236,7 @@ impl SharedLayout {
         // SAFETY: the caller promises `memory` is writable for the whole ring, so for the header
         // at its start, and aligned to 128 bytes, which covers `Header`'s alignment. No end reads
         // the header while it is written.
-        unsafe { memory.cast::<Header>().write(Header::new()) };
+        unsafe { memory.cast::<Header>().write(Header::new(self.slots)) };
     }
 
     /// The producing end of the ring at `memory`, continuing from the indices in its header. It
@@ -256,9 +313,26 @@ impl<'a> End<'a> {
         }
     }
 
+    /// The position, from 0, of the slot that index `at` names.
+    fn position(&self, at: u64) -> usize {
+        (at & u64::from(self.layout.slots - 1)) as usize
+    }
+
+    /// Under loom, records a write to the slot `at`; elsewhere, nothing.
+    fn shadow_write(&self, _at: u64) {
+        #[cfg(loom)]
+        self.header.shadow[self.position(_at)].with_mut(|_| ());
+    }
+
+    /// Under loom, records a read of the slot `at`; elsewhere, nothing.
+    fn shadow_read(&self, _at: u64) {
+        #[cfg(loom)]
+        self.header.shadow[self.position(_at)].with(|_| ());
+    }
+
     /// The slot that index `at` names.
     fn slot(&self, at: u64) -> NonNull<u8> {
-        let position = (at & u64::from(self.layout.slots - 1)) as usize;
+        let position = self.position(at);
         // SAFETY: `position` is below `slots`, so the slot's `stride` bytes lie inside the ring's
         // memory, which `layout.bytes()` sized for `slots` strides after the header.
         unsafe { self.slots.add(position * self.layout.stride()) }
@@ -388,20 +462,19 @@ impl SharedProducer<'_> {
                 return Err(SharedPushError::Full);
             }
         }
+        end.shadow_write(self.tail);
         let slot = end.slot(self.tail);
         // `record.len()` is at most `slot_bytes`, at most 1 MiB, so it fits a `u32`.
         let length = (record.len() as u32).to_le();
         // SAFETY: the slot at `tail` lies outside `head..tail`: the acquire load of `head` above, or
-        // an earlier one, saw the consumer finish reading it, so only this end touches it now. The
-        // slot is 8-aligned (the memory is 128-aligned and every stride is a multiple of 8), holds
-        // the length word, and has `slot_bytes` bytes after it, which `record` fits.
+        // an earlier one, saw the consumer finish reading it, so a peer that keeps the protocol
+        // does not touch it now. The slot is 8-aligned (the memory is 128-aligned and every stride
+        // is a multiple of 8), holds the length word, and has `slot_bytes` bytes after it, which
+        // `record` fits. Every write is atomic, so even a peer that breaks the protocol makes no
+        // data race.
         unsafe {
             length_word(slot).store(length, Ordering::Relaxed);
-            std::ptr::copy_nonoverlapping(
-                record.as_ptr(),
-                slot.add(LENGTH_BYTES).as_ptr(),
-                record.len(),
-            );
+            copy_in(record, slot.add(LENGTH_BYTES));
         }
         self.tail = self.tail.wrapping_add(1);
         end.header.tail.store(self.tail, Ordering::Release);
@@ -462,6 +535,7 @@ impl SharedConsumer<'_> {
             }
         }
         let end = &self.end;
+        end.shadow_read(self.head);
         let slot = end.slot(self.head);
         // SAFETY: the slot at `head` lies inside `head..tail`: the acquire load of `tail` saw the
         // producer's writes to it, and the producer will not write it again until the release
@@ -478,11 +552,11 @@ impl SharedConsumer<'_> {
             return Err(SharedPopError::BufferTooSmall { len });
         }
         // SAFETY: as above; the record's `len` bytes follow the length word, inside the slot,
-        // since `len` is at most `slot_bytes`, and `out` holds at least `len` bytes. The bytes are
-        // copied out before anything reads them, so a peer that writes them during the copy can
+        // since `len` is at most `slot_bytes`, and `out` holds at least `len` bytes. Every read is
+        // atomic, so a peer that writes the bytes during the copy makes no data race: it can
         // garble the record, which the caller parses from `out`, but reach nothing outside it.
         unsafe {
-            std::ptr::copy_nonoverlapping(slot.add(LENGTH_BYTES).as_ptr(), out.as_mut_ptr(), len);
+            copy_out(slot.add(LENGTH_BYTES), &mut out[..len]);
         }
         self.head = self.head.wrapping_add(1);
         end.header.head.store(self.head, Ordering::Release);
