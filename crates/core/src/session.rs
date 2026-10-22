@@ -5,8 +5,7 @@
 //! [`SessionId`] names a conversation or agent context whose KV state may persist and be
 //! resumed. Its string form, `ses_` plus 26 characters of lowercase Crockford base32, is what
 //! clients see (RFC-0050 §9.3). [`SequenceId`] names one generation stream and is unique across
-//! the cluster without coordination. [`Priority`] is a sequence's scheduling priority
-//! (RFC-0001 §5.8's `SequenceOpen::priority`).
+//! the cluster without coordination.
 
 use std::fmt;
 use std::str::FromStr;
@@ -53,26 +52,6 @@ impl SequenceId {
             n,
         }
     }
-}
-
-/// A sequence's scheduling priority (RFC-0001 §5.8, `SequenceOpen::priority`; RFC-0012 §6.3).
-/// RFC-0050 maps each API's fields onto it, and RFC-0054 §7 resolves a request's. Default:
-/// `Normal`. Owner: RFC-0012.
-///
-/// In latency mode an `Interactive` sequence's decode step goes first, and an instance holds at
-/// most one at a time (RFC-0054 §7).
-#[non_exhaustive]
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
-pub enum Priority {
-    /// The one sequence whose step goes first.
-    Interactive,
-    /// The default.
-    #[default]
-    Normal,
-    /// Runs when the others leave room, such as OpenAI's `service_tier = "flex"`.
-    Background,
 }
 
 /// The prefix of [`SessionId`]'s string form.
@@ -194,24 +173,6 @@ impl FromStr for SessionId {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-
-    /// `Normal` is the default, and the variant names are the serialised form, so they never
-    /// change.
-    #[test]
-    fn priority_defaults_to_normal_and_keeps_its_names() {
-        assert_eq!(super::Priority::default(), super::Priority::Normal);
-        for (priority, name) in [
-            (super::Priority::Interactive, "\"Interactive\""),
-            (super::Priority::Normal, "\"Normal\""),
-            (super::Priority::Background, "\"Background\""),
-        ] {
-            assert_eq!(serde_json::to_string(&priority).unwrap(), name);
-            assert_eq!(
-                serde_json::from_str::<super::Priority>(name).unwrap(),
-                priority
-            );
-        }
-    }
 
     use proptest::prelude::*;
 
