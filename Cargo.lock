@@ -802,6 +802,8 @@ name = "syntropy-manifest"
 version = "0.0.0"
 dependencies = [
  "proptest",
+ "serde",
+ "serde_json",
  "syntropy-core",
 ]
 
