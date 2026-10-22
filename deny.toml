@@ -76,6 +76,13 @@ deny = [
     # cadence (RFC-0062 §11.2).
     { crate = "openssl-sys", reason = "TLS is rustls; no native TLS stack (RFC-0062 §11.2)" },
 ]
+# `llguidance`, `syntropy-text`'s constraint engine (RFC-0050 §7.2; PROD-E3-T04), with its `lark`
+# feature and nothing else. Its default features pull `borrow-or-share`, whose MIT-0 licence the
+# allow list above does not hold, a `rayon` thread pool and `getrandom`. `exact` fails this check
+# when any other feature is turned on, whatever it pulls in.
+features = [
+    { crate = "llguidance", allow = ["lark"], exact = true },
+]
 
 [sources]
 unknown-registry = "deny"

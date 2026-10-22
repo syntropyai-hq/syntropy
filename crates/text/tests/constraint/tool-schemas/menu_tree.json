@@ -1,0 +1,21 @@
+{
+  "title": "menu_tree",
+  "description": "A nested menu, recursive through $defs.",
+  "$defs": {
+    "item": {
+      "type": "object",
+      "properties": {
+        "label": { "type": "string", "maxLength": 12 },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/item" }, "maxItems": 2 }
+      },
+      "required": ["label"],
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "properties": {
+    "root": { "$ref": "#/$defs/item" }
+  },
+  "required": ["root"],
+  "additionalProperties": false
+}

@@ -519,6 +519,14 @@ The engine is the `llguidance` library (MIT, Rust), behind a `ConstraintEngine` 
 
 **JSON Schema coverage.** Supported: `type` (including unions), `properties`, `required`, `additionalProperties` (false or a schema), `items`, `prefixItems`, `minItems`/`maxItems`, `enum`, `const`, `anyOf`, `oneOf` (treated as `anyOf`), `allOf` (merged where possible), `$ref` and `$defs` (recursion allowed), `pattern`, `format` (`date-time`, `date`, `time`, `uuid`, `email`, `ipv4`, `ipv6`), `minLength`/`maxLength`, `minimum`/`maximum` for integers. Unsupported keywords under `strict: true` fail the request with `constraint_unsupported`, naming the keyword. Without `strict`, they are ignored and named in `Syntropy-Warning`. Property order follows the schema's `properties` order, which is what model training data most often shows.
 
+*Note 2026-10-22 (PROD-E3-T04):* how the coverage above is applied.
+- **`$ref`.** It is supported as a document-local reference, `#` or `#/...`. The engine is built without its remote-reference support (`llguidance`'s `referencing` feature pulls `borrow-or-share`, whose MIT-0 licence is outside ADR-0018's allow list), so any other `$ref` counts as an unsupported keyword. Under `strict` it fails with `constraint_unsupported`, naming `$ref`; otherwise it is ignored and named in `Syntropy-Warning`.
+- **`definitions`.** The draft-07 name for `$defs` counts as `$defs`.
+- **Annotations.** Annotations (`title`, `description`, `default`, `examples`, `$comment`, `$schema`, `$id`, `readOnly`, `writeOnly`, `deprecated`) constrain nothing and are accepted. Vendor extensions (`x-...`) are ignored without a warning, except the engine's own option key, `x-guidance`, which is unsupported, so a request cannot change how its schema compiles.
+- **Format names.** A `format` outside the list above is named in the error or warning as `format: <name>`.
+- **Separators.** Constrained JSON uses `", "` between items and `": "` after keys, with no other whitespace between tokens, so a model cannot loop on whitespace inside a structure.
+- **Escapes.** Constrained JSON strings use no `\uXXXX` escapes. Each character is written as itself or with its short escape (`\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`), so each string has one spelling. Because of that, an additional property's name, once decoded, can never equal a declared name and leave that property's value unchecked. The cost is that a constrained string cannot hold any other control character.
+
 #### 7.3 Where masks run
 
 - **Compile at ingress**, cached by BLAKE3(constraint, tokenizer). The compiled grammar travels to the tail by reference: `SamplingParams` carries a `GrammarRef` (the hash), and the first `SequenceOpen` for a new hash carries the serialised grammar inline. The tail caches it by hash (proposed amendment A3). Ingress never ships the same grammar twice to one tail runner.
