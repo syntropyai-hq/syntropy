@@ -1000,3 +1000,12 @@ DIST-E7-T03 builds the QUIC backend's `net` domain, where channel tasks wait on 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E7-T03 gains "keep-alive and idle timeout take the table's values per path, through `default_path_keep_alive_interval` and `default_path_max_idle_timeout`, as well as connection-wide through `keep_alive_interval` and `max_idle_timeout`, and a unit test reads all four back from the transport configuration `net` builds"; no edge | DIST-E7-T03 | Definition of done | with only the connection-wide values set, a dead path would be abandoned after iroh's 15 s per-path default, not within `link.failover_timeout` |
+
+## DIST-E18-T01 after #1673 (2026-10-22)
+
+The post-merge review of #1673 found the code right and the row wrong. The row depended on the schema registry alone, though its criteria use layering and validation, and it claimed every key of RFC-0033 §12, though three of them are RFC-0011's.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E18-T01 → PROD-E1-T02, PROD-E1-T03 | DIST-E18-T01 | R9 | its criteria are "`syntropy config show --resolved` lists every key with its default", which is PROD-E1-T02's `ResolvedConfig` and `show_resolved`, and "unknown or mis-scoped keys fail validation", which is PROD-E1-T03's `unknown_key` (3) and `scope_mismatch` (9). Both are earlier milestones than M2 |
+| DIST-E18-T01's task text leaves `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` to PLC-E6-T11 | DIST-E18-T01 | Definition of done | RFC-0054 §5.1 gives `replan.*` to RFC-0011, whose key table declares those three. RFC-0033's shared `replan` section holds only `replan.degraded_min_gain`, as RFC-0054 §5.1's note of 2026-10-22 records. PLC-E6-T11 registers "the cluster-scope `solver.*` and `replan.*` keys" |
