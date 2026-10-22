@@ -834,3 +834,11 @@ DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-confor
 | Added TIER-E2-T25 (M2, `NetPool` registered with the transports, in `runner`) → TIER-E2-T21, DIST-E7-T01 | TIER-E2-T25 | R1 | `runner` (layer 5) may depend on both `tier` and `net`; a `runner` newtype over the `NetPool` lease implements `PoolMemory`, which the orphan rule allows, and the runner calls `Transport::register`. The `unsafe impl` sits in one `runner` module that RFC-0001 §4.2 rule 8's note of 2026-10-23 allows (§18.25), as `testkit`'s `GlobalAlloc` does. `core` cannot hold the trait instead: it forbids `unsafe` code, and an `unsafe trait` trips that lint. It has no edge to DIST-E7-T07: its criteria use fake transports, so neither the RDMA backend nor the two-Mac TB5 rig behind it has to come first, and DIST-E11-T01, which depends on it, does not wait on them |
 | DIST-E7-T12's pools are over any `PoolMemory` (`HeapMemory` in its tests), not "from TIER's pinned network sub-arena"; its edge to TIER-E2-T21 is cut | DIST-E7-T12 | R8 | `net` cannot depend on `tier`, and none of DIST-E7-T12's criteria uses `NetPool`; a runner's `NetPool` reaches `net` through TIER-E2-T25 |
 | DIST-E11-T01 → TIER-E2-T25 | DIST-E11-T01 | R9 | DIST-E11-T01 opens the runner's data-plane channels, and each channel's `ChannelSpec::pool` names a `NetPool` registration that TIER-E2-T25 makes |
+
+## QUAL-E3-T09's loom job (2026-10-23)
+
+QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the loom models. RFC-0060 §1.1 and RFC-0062 §2.3 put loom in L3, which runs in `hosted-l3`, and `ci-gate` already listed `hosted-l3` as planned for QUAL-E3-T09/T10. RFC-0062 §2.3 gains a dated note: `hosted-l3` runs `cargo xtask test loom`, behind a coarse path filter until QUAL-E1-T07 computes the closure. RFC-0060 §3.4 gains one on how the three-thread models are built.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E3-T09's and QUAL-E3-T22's criteria name the `hosted-l3` job in place of `hosted-test-linux`; no edge | QUAL-E3-T09, QUAL-E3-T22 | Definition of done | RFC-0060 §1.1 runs loom in L3, which RFC-0062 §2.3 gives to `hosted-l3`. The unit suite's job is not where loom models run, and T22's models are L3 too |

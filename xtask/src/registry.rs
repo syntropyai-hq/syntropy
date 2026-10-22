@@ -24,8 +24,8 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    ci_gate, codeowners, contrib, dep_diff, determinism, instructions, properties, repo_settings,
-    toolchain,
+    ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom, properties,
+    repo_settings, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -588,6 +588,26 @@ pub const SUITES: &[Entry] = &[
             },
         ],
         pending: &[],
+    },
+    Entry {
+        name: "loom",
+        summary: "L3: the loom models of the SPSC rings and of the IPC region's `local_tokens` and \
+                  `local_sequences` rings (QUAL-E3-T09), 3 threads, preemption bound 3",
+        defined_in: "RFC-0060 §1.1 and §3.4",
+        params: &[],
+        steps: &[Step {
+            name: "models",
+            action: Action::Builtin {
+                shown: "the unit tests of syntropy-spsc and syntropy-ipc built with `--cfg loom`, \
+                        then a check that the named models passed",
+                run: loom::suite_step,
+            },
+        }],
+        // RFC-0060 §3.4's M1 protocols get their models in their own crates.
+        pending: &[Pending {
+            check: "the residency seqlock, doorbell and lease/eviction models",
+            task: "QUAL-E3-T22",
+        }],
     },
     Entry {
         name: "pairing-grind",

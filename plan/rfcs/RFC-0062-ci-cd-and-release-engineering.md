@@ -168,6 +168,8 @@ paths = ["docs/**", "plan/**", "*.md"]
 
 *Note, 2026-10-22 (QUAL-E1-T31).* `lint` will also run rustdoc over the workspace with `-D warnings` (`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`), so a broken or ambiguous intra-doc link fails a PR. Until then no gate checks the docs, which is how #1666's links broke unnoticed. QUAL-E1-T31 adds the step after #1666's fix lands, and keeps `lint` within its budget or moves the step to a job of its own.
 
+*Note, 2026-10-23 (QUAL-E3-T09).* `hosted-l3` now runs `cargo xtask test loom`: the loom models of RFC-0060 §3.4 in `spsc` and `ipc`, built with `--cfg loom` into `target/loom/`, with a preemption bound of 3. Miri and the sanitizer builds stay with QUAL-E3-T10. Until QUAL-E1-T07 computes the closure (§2.2), `changes` lists `hosted-l3` when the PR's diff from its base touches `crates/`, `third_party/`, `.cargo/`, the workspace `Cargo.toml` or `Cargo.lock`, `rust-toolchain.toml`, `xtask/src/loom.rs` or `xtask/src/registry.rs`, or `pr.yml`. That runs it more often than the closure rule in the table above would, and skips plan-only PRs. `ci-gate` no longer lists `hosted-l3` as planned; `hosted-parity-nano` stays planned (QUAL-E5-T06).
+
 #### 2.4 Platform promises to jobs
 
 | ADR-0020 row | PR | Nightly | Weekly | RC |

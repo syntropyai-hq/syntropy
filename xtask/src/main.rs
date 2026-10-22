@@ -34,6 +34,7 @@ mod dep_diff;
 mod determinism;
 mod instructions;
 mod licences;
+mod loom;
 mod properties;
 mod registry;
 mod repo_settings;
