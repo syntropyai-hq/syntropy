@@ -12,9 +12,10 @@
 //! | macOS | `route -n get <ip>` | `networksetup -listallhardwareports` | `system_profiler SPAirPortDataType` |
 //! | Windows | `Find-NetRoute` and `Get-NetAdapter` (PowerShell) | the adapter's `InterfaceType` and description | `netsh wlan show interfaces` |
 //!
-//! The destination is the peer's address on a direct path, and 192.0.2.1 otherwise: a
+//! The destination is the peer's address on a direct path, and 192.0.2.1 on a relayed path: a
 //! documentation address (RFC 5737) whose route is the default route. A route lookup sends no
-//! packet. The parsers read only the lines they need: the tools also print the network's name,
+//! packet. A loopback peer is `Loopback` without a lookup, and a failed lookup for a peer is
+//! `Unknown`, never the default route's medium. The parsers read only the lines they need: the tools also print the network's name,
 //! the access point's and the interface's MAC addresses and the machine's addresses, and none of
 //! that is kept. The Windows parsers read English output only; other languages give `Unknown`.
 
@@ -56,6 +57,14 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(15);
 impl Detect for Platform {
     fn local_end(&self, peer: Option<IpAddr>) -> EndInfo {
         let os = Os::current();
+        // A loopback peer is on this host, whatever the tools would say about its route.
+        if peer.is_some_and(|ip| ip.is_loopback()) {
+            return EndInfo {
+                os,
+                medium: Medium::Loopback,
+                wifi: None,
+            };
+        }
         let (medium, wifi) = match os {
             Os::Linux | Os::Android => linux(peer),
             Os::Macos => macos(peer),
@@ -106,10 +115,11 @@ fn run(program: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out).into_owned())
 }
 
-/// The route lookup for `peer`, falling back to the default route when the peer's own fails (an
-/// IPv6 link-local address needs its interface, for example).
+/// The route lookup for `peer`, or for the default route when there is no peer (a relayed path).
+/// A failed lookup for a peer gives `None`, and so `Unknown`: the default route's interface need
+/// not be the one the peer's path leaves from.
 fn lookup<T>(peer: Option<IpAddr>, by: impl Fn(IpAddr) -> Option<T>) -> Option<T> {
-    peer.and_then(&by).or_else(|| by(DEFAULT_ROUTE))
+    by(peer.unwrap_or(DEFAULT_ROUTE))
 }
 
 fn linux(peer: Option<IpAddr>) -> (Medium, Option<Wifi>) {
@@ -157,21 +167,22 @@ fn windows(peer: Option<IpAddr>) -> (Medium, Option<Wifi>) {
     let adapter = lookup(peer, |ip| {
         // The address is formatted by `IpAddr`, so it holds only digits, hex letters, `.`, `:`
         // and `%`.
+        // The route's interface index comes first: `Get-NetAdapter` does not list the loopback
+        // pseudo-interface, so it fails for a loopback route, after the index is printed.
         let script = format!(
             "$ErrorActionPreference = 'Stop'; \
              $r = Find-NetRoute -RemoteIPAddress '{ip}' | Where-Object {{ $_.InterfaceIndex }} | \
              Select-Object -First 1; \
-             $a = Get-NetAdapter -InterfaceIndex $r.InterfaceIndex; \
-             'ifType=' + $a.InterfaceType; 'desc=' + $a.InterfaceDescription"
+             'ifIndex=' + $r.InterfaceIndex; \
+             try {{ $a = Get-NetAdapter -InterfaceIndex $r.InterfaceIndex; \
+             'ifType=' + $a.InterfaceType; 'desc=' + $a.InterfaceDescription }} catch {{ }}"
         );
         adapter_windows(&run(
             "powershell",
             &["-NoProfile", "-NonInteractive", "-Command", &script],
         )?)
     });
-    let medium = adapter.map_or(Medium::Unknown, |(if_type, description)| {
-        classify_windows(if_type, &description)
-    });
+    let medium = adapter.map_or(Medium::Unknown, |route| classify_windows(&route));
     let wifi = (medium == Medium::Wifi)
         .then(|| run("netsh", &["wlan", "show", "interfaces"]))
         .flatten()
@@ -255,33 +266,59 @@ pub fn classify_macos(device: &str, port: Option<&str>) -> Medium {
     }
 }
 
-/// The adapter's `InterfaceType` and description from the PowerShell lines `ifType=` and `desc=`.
-pub fn adapter_windows(output: &str) -> Option<(u32, String)> {
+/// A route's interface on Windows: its index, and the adapter's `InterfaceType` and description
+/// when `Get-NetAdapter` lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowsRoute {
+    /// The route's interface index.
+    pub if_index: u32,
+    /// The adapter's `InterfaceType` (`IfType`).
+    pub if_type: Option<u32>,
+    /// The adapter's description.
+    pub description: String,
+}
+
+/// The route's interface from the PowerShell lines `ifIndex=`, `ifType=` and `desc=`. `None`
+/// without an interface index.
+pub fn adapter_windows(output: &str) -> Option<WindowsRoute> {
+    let mut if_index = None;
     let mut if_type = None;
     let mut description = String::new();
     for line in output.lines() {
-        if let Some(value) = line.strip_prefix("ifType=") {
+        if let Some(value) = line.strip_prefix("ifIndex=") {
+            if_index = value.trim().parse().ok();
+        } else if let Some(value) = line.strip_prefix("ifType=") {
             if_type = value.trim().parse().ok();
         } else if let Some(value) = line.strip_prefix("desc=") {
             description = value.trim().to_owned();
         }
     }
-    Some((if_type?, description))
+    Some(WindowsRoute {
+        if_index: if_index?,
+        if_type,
+        description,
+    })
 }
 
-/// RFC-0030 §7.2's Windows rules: the overlay and Thunderbolt descriptions first, then
-/// `InterfaceType` (`IfType`).
-pub fn classify_windows(if_type: u32, description: &str) -> Medium {
-    if description.contains("Tailscale") || description.contains("WireGuard") {
+/// The index of Windows's loopback pseudo-interface.
+const WINDOWS_LOOPBACK_INDEX: u32 = 1;
+
+/// RFC-0030 §7.2's Windows rules: the loopback pseudo-interface, then the overlay and Thunderbolt
+/// descriptions, then `InterfaceType` (`IfType`).
+pub fn classify_windows(route: &WindowsRoute) -> Medium {
+    let description = route.description.as_str();
+    if route.if_index == WINDOWS_LOOPBACK_INDEX {
+        Medium::Loopback
+    } else if description.contains("Tailscale") || description.contains("WireGuard") {
         Medium::Overlay
     } else if description.contains("Thunderbolt") {
         Medium::ThunderboltIp
     } else {
-        match if_type {
-            71 => Medium::Wifi,
-            6 => Medium::Ethernet,
-            24 => Medium::Loopback,
-            53 => Medium::Overlay,
+        match route.if_type {
+            Some(71) => Medium::Wifi,
+            Some(6) => Medium::Ethernet,
+            Some(24) => Medium::Loopback,
+            Some(53) => Medium::Overlay,
             _ => Medium::Unknown,
         }
     }
@@ -588,8 +625,21 @@ There is 1 interface on the system:
         );
         assert_eq!(hardware_port_macos(ports, "en9"), None);
         assert_eq!(
-            adapter_windows("ifType=71\ndesc=Example Wireless Adapter\n"),
-            Some((71, "Example Wireless Adapter".to_owned()))
+            adapter_windows("ifIndex=12\nifType=71\ndesc=Example Wireless Adapter\n"),
+            Some(WindowsRoute {
+                if_index: 12,
+                if_type: Some(71),
+                description: "Example Wireless Adapter".to_owned(),
+            })
+        );
+        // The loopback route: `Get-NetAdapter` failed after the index was printed.
+        assert_eq!(
+            adapter_windows("ifIndex=1\n"),
+            Some(WindowsRoute {
+                if_index: 1,
+                if_type: None,
+                description: String::new(),
+            })
         );
         assert_eq!(adapter_windows("error\n"), None);
     }
@@ -636,32 +686,62 @@ There is 1 interface on the system:
         assert_eq!(classify_macos("utun3", None), Medium::Overlay);
         assert_eq!(classify_macos("lo0", None), Medium::Loopback);
 
+        let windows = |if_index, if_type, description: &str| {
+            classify_windows(&WindowsRoute {
+                if_index,
+                if_type,
+                description: description.to_owned(),
+            })
+        };
         assert_eq!(
-            classify_windows(71, "Example Wireless Adapter"),
+            windows(12, Some(71), "Example Wireless Adapter"),
             Medium::Wifi
         );
         assert_eq!(
-            classify_windows(6, "Example Gigabit Controller"),
+            windows(12, Some(6), "Example Gigabit Controller"),
             Medium::Ethernet
         );
         assert_eq!(
-            classify_windows(6, "Thunderbolt(TM) Networking"),
+            windows(12, Some(6), "Thunderbolt(TM) Networking"),
             Medium::ThunderboltIp
         );
-        assert_eq!(classify_windows(53, "Tailscale Tunnel"), Medium::Overlay);
-        assert_eq!(classify_windows(131, "Example Tunnel"), Medium::Unknown);
+        assert_eq!(windows(12, Some(53), "Tailscale Tunnel"), Medium::Overlay);
+        assert_eq!(windows(12, Some(131), "Example Tunnel"), Medium::Unknown);
+        // The loopback pseudo-interface, which `Get-NetAdapter` does not list.
+        assert_eq!(windows(1, None, ""), Medium::Loopback);
+        assert_eq!(windows(12, None, ""), Medium::Unknown);
+    }
+
+    #[test]
+    fn a_failed_peer_lookup_is_unknown_not_the_default_route() {
+        let peer = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
+        let asked = std::cell::RefCell::new(Vec::new());
+        // The peer's lookup fails, and the default route's would succeed: no fallback.
+        let found = lookup(Some(peer), |ip| {
+            asked.borrow_mut().push(ip);
+            (ip == DEFAULT_ROUTE).then_some("eth0")
+        });
+        assert_eq!(found, None);
+        assert_eq!(*asked.borrow(), [peer]);
+        // With no peer (a relayed path), the default route is the one asked.
+        assert_eq!(
+            lookup(None, |ip| (ip == DEFAULT_ROUTE).then_some("eth0")),
+            Some("eth0")
+        );
     }
 
     #[test]
     fn the_platform_finds_loopback_for_a_loopback_peer() {
-        // Platform tools vary between hosts; on any host the answer for a loopback peer is
-        // loopback or, without the tools, unknown, and never carries Wi-Fi details.
-        let end = Platform.local_end(Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        assert!(
-            matches!(end.medium, Medium::Loopback | Medium::Unknown),
-            "{end:?}"
-        );
-        assert_eq!(end.wifi, None);
-        assert_eq!(end.os, Os::current());
+        // On every host, before any tool runs: a loopback peer is on this host.
+        for peer in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        ] {
+            let end = Platform.local_end(Some(peer));
+            assert_eq!(end.medium, Medium::Loopback, "{peer}: {end:?}");
+            assert_eq!(end.wifi, None);
+            assert_eq!(end.os, Os::current());
+        }
     }
 }
