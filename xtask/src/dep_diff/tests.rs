@@ -29,6 +29,38 @@ fn metadata(package: &str, deps: &[(&str, Option<&str>, Option<&str>)]) -> Strin
     serde_json::json!({ "workspace_root": "/w", "packages": packages }).to_string()
 }
 
+/// What a `cargo metadata --no-deps` document's members declare.
+fn declared(metadata: &str) -> Result<BTreeMap<Crate, Vec<String>>, String> {
+    workspace(metadata).map(|workspace| workspace.crates)
+}
+
+/// A path dependency named `name` on the directory `path`, as `cargo metadata` lists it.
+fn path_dependency(name: &str, path: &str) -> Value {
+    serde_json::json!({ "name": name, "kind": null, "source": null, "path": path })
+}
+
+/// A workspace at `/w` whose member `a` depends on the non-member path crate `v` at
+/// `/w/vendor/v`, and whose member `b` declares nothing.
+fn with_path_crate() -> Workspace {
+    workspace(
+        &serde_json::json!({
+            "workspace_root": "/w",
+            "packages": [member("a", vec![path_dependency("v", "/w/vendor/v")]), member("b", vec![])],
+        })
+        .to_string(),
+    )
+    .unwrap()
+}
+
+/// Each crate of `workspace`, as `<name> <source> <- <users>`.
+fn shown(workspace: &Workspace) -> Vec<String> {
+    workspace
+        .crates
+        .iter()
+        .map(|(krate, users)| format!("{} {} <- {}", krate.name, krate.source, users.join("; ")))
+        .collect()
+}
+
 /// A member at `/w/<name>`, as `cargo metadata` lists it.
 fn member(name: &str, dependencies: Vec<Value>) -> Value {
     serde_json::json!({
@@ -134,6 +166,209 @@ fn a_path_dependency_outside_the_members_is_external() {
     );
     let no_root = serde_json::json!({ "packages": [] }).to_string();
     assert!(declared(&no_root).is_err());
+}
+
+#[test]
+fn a_dependency_of_one_platform_names_it() {
+    let dependency = |target: Value| {
+        serde_json::json!({ "name": "windows-sys", "kind": null, "source": CRATES_IO,
+                            "target": target })
+    };
+    let text = serde_json::json!({
+        "workspace_root": "/w",
+        "packages": [member("a", vec![
+            dependency(Value::Null),
+            dependency(serde_json::json!("cfg(windows)")),
+            dependency(serde_json::json!("x86_64-pc-windows-gnu")),
+        ])],
+    })
+    .to_string();
+    let crates = declared(&text).unwrap();
+    assert_eq!(
+        crates.values().collect::<Vec<_>>(),
+        [&vec![
+            "a (normal)".to_owned(),
+            "a (normal, cfg(windows))".to_owned(),
+            "a (normal, x86_64-pc-windows-gnu)".to_owned(),
+        ]]
+    );
+}
+
+#[test]
+fn a_non_member_path_crate_counts_what_its_manifest_declares() {
+    let manifests = BTreeMap::from([
+        (
+            PathBuf::from("/w/vendor/v/Cargo.toml"),
+            r#"[package]
+name = "v"
+
+[dependencies]
+serde = "1"
+alias = { package = "itoa", version = "1", optional = true }
+member-b = { path = "../../b" }
+inner = { path = "./../inner" }
+
+[dev-dependencies]
+proptest = "1"
+
+[build-dependencies]
+cc = { git = "https://example.invalid/cc", rev = "abc" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", registry = "mirror" }
+"#,
+        ),
+        (
+            PathBuf::from("/w/vendor/inner/Cargo.toml"),
+            r#"[package]
+name = "inner"
+
+[dependencies]
+foo = { git = "https://example.invalid/foo", branch = "dev" }
+v = { path = "../v" }
+"#,
+        ),
+    ]);
+    let mut workspace = with_path_crate();
+    let mut read = Vec::new();
+    workspace
+        .read_path_crates(|manifest| {
+            read.push(manifest.to_path_buf());
+            manifests
+                .get(manifest)
+                .map(|text| text.to_string())
+                .ok_or_else(|| format!("{} is not a fixture", manifest.display()))
+        })
+        .unwrap();
+    // Each manifest is read once, though `inner` depends on `v` again; the path dependency on
+    // the member `b` is a workspace edge.
+    assert_eq!(read.len(), 2, "{read:?}");
+    assert_eq!(
+        shown(&workspace),
+        [
+            "cc git+https://example.invalid/cc?rev=abc <- v at vendor/v (build)",
+            "foo git+https://example.invalid/foo?branch=dev <- inner at vendor/inner (normal)",
+            "inner path+vendor/inner <- v at vendor/v (normal)",
+            &format!("itoa {CRATES_IO} <- v at vendor/v (normal)"),
+            "libc registry+mirror <- v at vendor/v (normal, cfg(unix))",
+            &format!("proptest {CRATES_IO} <- v at vendor/v (dev)"),
+            &format!("serde {CRATES_IO} <- v at vendor/v (normal)"),
+            "v path+vendor/v <- a (normal); inner at vendor/inner (normal)",
+        ]
+    );
+    assert!(
+        workspace.unfollowed.is_empty(),
+        "{:?}",
+        workspace.unfollowed
+    );
+
+    // So a dependency added inside an already-declared directory is new.
+    let mut base = with_path_crate();
+    base.read_path_crates(
+        |_| Ok("[package]\nname = \"v\"\n[dependencies]\nserde = \"1\"\n".into()),
+    )
+    .unwrap();
+    let mut head = with_path_crate();
+    head.read_path_crates(|_| {
+        Ok(
+            "[package]\nname = \"v\"\n[dependencies]\nserde = \"1.0.200\"\nproptest = \"1\"\n"
+                .into(),
+        )
+    })
+    .unwrap();
+    let none = BTreeSet::new();
+    assert_eq!(
+        compare(&base.crates, &head.crates, &none, &none).lines(),
+        ["new crate `proptest` from crates.io, in v at vendor/v (normal)"]
+    );
+}
+
+#[test]
+fn what_the_check_cannot_follow_counts_on_every_pr() {
+    // A path crate outside the workspace root is not read.
+    let mut outside = workspace(
+        &serde_json::json!({
+            "workspace_root": "/w",
+            "packages": [member("a", vec![path_dependency("v", "/elsewhere/v")])],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    outside
+        .read_path_crates(|manifest| panic!("read {}", manifest.display()))
+        .unwrap();
+    assert_eq!(
+        outside.unfollowed,
+        [
+            "`../elsewhere/v`, a path dependency of a (normal), compared on every PR because it \
+             is outside the workspace root, where this check does not read"
+        ]
+    );
+    // Nor is a dependency inherited from a workspace the check does not read.
+    let mut inherited = with_path_crate();
+    inherited
+        .read_path_crates(|_| {
+            Ok("[package]\nname = \"v\"\n[dependencies]\nserde = { workspace = true }\n".into())
+        })
+        .unwrap();
+    assert_eq!(
+        inherited.unfollowed,
+        [
+            "`vendor/v/Cargo.toml`, compared on every PR because its dependency `serde` sets \
+             `workspace = true`, and this check does not read the workspace it inherits from"
+        ]
+    );
+    // A manifest that is missing or that cargo could not read fails the check.
+    let error = with_path_crate()
+        .read_path_crates(|_| Err("No such file or directory".into()))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "`vendor/v/Cargo.toml`, a path dependency that is not a member: No such file or directory"
+    );
+    for bad in [
+        "not = = toml",
+        "[package]\nversion = \"1\"\n",
+        "[package]\nname = \"v\"\n[dependencies]\nx = 1\n",
+        "[package]\nname = \"v\"\n[dependencies]\nx = { path = 1 }\n",
+        "dependencies = 1\n[package]\nname = \"v\"\n",
+        "[package]\nname = \"v\"\n[target]\nx = 1\n",
+        // What would be printed must be printable, and a name one cargo accepts.
+        "[package]\nname = \"v x\"\n",
+        "[package]\nname = \"v\"\n[dependencies]\n\"a\\nb\" = \"1\"\n",
+        "[package]\nname = \"v\"\n[dependencies]\nx = { package = \"a/b\", version = \"1\" }\n",
+        "[package]\nname = \"v\"\n[dependencies]\nx = { path = \"a\\nb\" }\n",
+        "[package]\nname = \"v\"\n[target.\"cfg(unix)\\n::error::x\".dependencies]\nx = \"1\"\n",
+        // A git source that could spell an approved one cargo reads otherwise.
+        "[package]\nname = \"v\"\n[dependencies]\nx = { git = \"https://e.invalid/x?branch=main\" }\n",
+        "[package]\nname = \"v\"\n[dependencies]\nx = { git = \"https://e.invalid/x#abc\" }\n",
+        "[package]\nname = \"v\"\n[dependencies]\nx = { git = \"https://e.invalid/x\", branch = \"a\", rev = \"b\" }\n",
+    ] {
+        let result = with_path_crate().read_path_crates(|_| Ok(bad.into()));
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|e| e.starts_with("`vendor/v/Cargo.toml`: ")),
+            "{bad:?}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn what_is_printed_has_its_control_characters_escaped() {
+    assert_eq!(printable("plain `text`"), "plain `text`");
+    assert_eq!(printable("a\nb\r\u{1b}[0m"), "a\\nb\\r\\u{1b}[0m");
+    // A setting line read from a PR's file cannot start a line of its own in the log.
+    let new = NewDependencies {
+        sources: vec!["Cargo.toml: [patch.crates-io] x = \"1\"\r::error::forged".to_owned()],
+        ..NewDependencies::default()
+    };
+    assert_eq!(
+        new.lines(),
+        [
+            "new dependency source setting in Cargo.toml: [patch.crates-io] x = \"1\"\\r::error::forged"
+        ]
+    );
 }
 
 #[test]

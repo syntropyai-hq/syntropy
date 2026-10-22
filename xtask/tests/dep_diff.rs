@@ -27,9 +27,14 @@ fn pr(comments: &str) -> Vec<String> {
 /// The exit status and the log of `dep-diff` on `head` against `base`, with `extra` options and
 /// the recorded registry.
 fn run(head: &str, extra: &[String]) -> (Option<i32>, String) {
+    run_against("base", head, extra)
+}
+
+/// [`run`], against the fixture `base` instead of `base/`.
+fn run_against(base: &str, head: &str, extra: &[String]) -> (Option<i32>, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .args(["ci", "dep-diff", "--base"])
-        .arg(fixtures().join("base"))
+        .arg(fixtures().join(base))
         .arg("--head")
         .arg(fixtures().join(head))
         .arg("--registry")
@@ -195,6 +200,44 @@ fn a_path_dependency_on_a_directory_outside_the_members_is_new() {
     assert!(log.contains("registry passed"), "{log}");
     let (code, log) = run("head-path-excluded", &pr("comments-approved.json"));
     assert_eq!(code, Some(0), "{log}");
+}
+
+#[test]
+fn a_dependency_added_inside_an_approved_path_crate_is_new() {
+    // `head-path-excluded` already depends on `vendor/fixture-vendored`; this head adds a
+    // dependency inside that directory's own manifest, for one platform.
+    let (code, log) = run_against("head-path-excluded", "head-path-crate-dependency", &[]);
+    assert_eq!(code, Some(1), "{log}");
+    assert!(
+        log.contains(
+            "dep-diff: new crate `proptest` from crates.io, in fixture-vendored at \
+             vendor/fixture-vendored (normal, cfg(unix))"
+        ),
+        "{log}"
+    );
+    // Only that one: the directory itself and its `serde`, which the members use, are not new.
+    assert_eq!(log.matches("dep-diff: new ").count(), 1, "{log}");
+    assert!(
+        log.contains("registry: `proptest` on crates.io: first published 2017-06-18"),
+        "{log}"
+    );
+    let (code, log) = run_against(
+        "head-path-excluded",
+        "head-path-crate-dependency",
+        &pr("comments-approved.json"),
+    );
+    assert_eq!(code, Some(0), "{log}");
+    // The same tree against itself adds nothing.
+    let (code, log) = run_against(
+        "head-path-crate-dependency",
+        "head-path-crate-dependency",
+        &[],
+    );
+    assert_eq!(code, Some(0), "{log}");
+    assert!(
+        log.contains("dep-diff: no new direct dependency or vendored component"),
+        "{log}"
+    );
 }
 
 #[test]
