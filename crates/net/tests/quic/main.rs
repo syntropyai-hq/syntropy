@@ -216,18 +216,24 @@ fn the_channel_conformance_suite_passes_over_quic_on_loopback() {
     // QUIC delivers what it has sent; the fabric cannot hold it in flight.
     assert_eq!(report.skipped, [Rule::CompletedAfterAck]);
 
-    // Every channel the suite opened rode the one latency connection, and its receive window is
-    // the sum of their credits (RFC-0031 §4.3). The receiver's side holds the data credits.
-    let windows = Pair::windows(&fabric.pair.b);
-    assert_eq!(windows.len(), 1, "{windows:#?}");
-    let latency = windows[0];
+    // Every channel the suite opened rode the one latency connection. Each check drops its
+    // channels, so once their tasks end the receive window is back at its floor: it covers the
+    // open channels only (RFC-0031 §4.3). The sums at each open are the next test's.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let latency = loop {
+        let windows = Pair::windows(&fabric.pair.b);
+        assert_eq!(windows.len(), 1, "{windows:#?}");
+        if windows[0].channels == 0 || std::time::Instant::now() > deadline {
+            break windows[0];
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
     assert_eq!(latency.role, Role::Latency);
     assert_eq!(latency.peer, fabric.pair.a.node_id());
-    let per_channel = u64::from(conformance::RECV_SLOTS) * SLOT as u64
-        + u64::from(CONTROL_RECEIVES) * MAX_CONTROL_FRAME as u64;
-    assert_eq!(latency.channels, Rule::ALL.len());
-    assert_eq!(latency.credited, per_channel * Rule::ALL.len() as u64);
-    assert_eq!(latency.window, latency.credited);
+    assert_eq!(
+        (latency.channels, latency.credited, latency.window),
+        (0, 0, QuicSettings::receive_window_floor())
+    );
     assert!(!latency.over_cap);
 
     // Each path has a controller. Whether it took the LAN window depends on the first round
@@ -373,4 +379,49 @@ fn a_channel_nobody_accepts_is_refused_with_its_code_not_timed_out() {
             "{class}: refused after {took:?}"
         );
     }
+}
+
+/// The connection receive window covers the open channels only: it falls back when channels
+/// close, and rises again when one opens (RFC-0031 §4.3; review of #1826, N1).
+#[test]
+fn closing_a_channel_lowers_the_receive_window_again() {
+    let mut pair = Pair::new();
+    let per_channel = 4 * SLOT as u64 + u64::from(CONTROL_RECEIVES) * MAX_CONTROL_FRAME as u64;
+    let floor = QuicSettings::receive_window_floor();
+    let wait_for = |pair: &Pair, channels: usize| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let windows = Pair::windows(&pair.b);
+            if windows.len() == 1 && windows[0].channels == channels {
+                return windows[0];
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never reached {channels} open channels: {windows:#?}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    for round in 0..3u8 {
+        let channels = pair
+            .open(key(ChannelPurpose::Activations, round), 4)
+            .expect("open");
+        let open = wait_for(&pair, 1);
+        assert_eq!(
+            (open.credited, open.window),
+            (per_channel, per_channel),
+            "round {round}"
+        );
+        drop(channels);
+        let closed = wait_for(&pair, 0);
+        assert_eq!(
+            (closed.credited, closed.window),
+            (0, floor),
+            "round {round}"
+        );
+    }
+    // The opening side gives its share back too.
+    let dialled = Pair::windows(&pair.a);
+    assert_eq!(dialled.len(), 1);
+    assert_eq!(dialled[0].channels, 0, "{dialled:#?}");
 }

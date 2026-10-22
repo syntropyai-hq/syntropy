@@ -20,7 +20,8 @@
 //! - **Windows** (§4.3). Each connection's stream receive window is twice `net.max_frame`, twice
 //!   the largest slot any of its channels can have. Its connection receive window is the sum of
 //!   the credited bytes, `recv_slots × slot_size` plus room for control frames, over the channels
-//!   opened on it, set with `Connection::set_receive_window` before each channel's handshake.
+//!   open on it: set with `Connection::set_receive_window` before each channel's handshake, and
+//!   lowered when a channel's task ends or its handshake fails.
 //!   [`QuicTransport::connection_windows`] shows each one.
 //! - **Early streams.** A stream whose `Hello` comes before its channel is accepted is held for
 //!   [`QuicSettings::early_hold`], half the shorter connect timeout, then refused with
@@ -481,16 +482,22 @@ impl Inner {
         if let Some(role) = role {
             let _ = conn.role.set(role);
         }
-        set_window(&conn, &self.settings, 0);
+        set_window(&conn, &self.settings, Change::None);
         conn
     }
 
     /// Adds a channel's credited bytes to its connection and sets the connection receive window
-    /// to the new sum (RFC-0031 §4.3).
-    fn credit_channel(&self, conn: &Conn, spec: &StreamSpec) {
-        let credited = u64::from(spec.recv_slots) * u64::from(spec.slot_size)
+    /// to the new sum (RFC-0031 §4.3). The bytes return when the guard drops: when the channel's
+    /// task ends, or when its handshake fails, so the sum covers the open channels only.
+    fn credit_channel(&self, conn: &Arc<Conn>, spec: &StreamSpec) -> Credited {
+        let bytes = u64::from(spec.recv_slots) * u64::from(spec.slot_size)
             + u64::from(CONTROL_RECEIVES) * MAX_CONTROL_FRAME as u64;
-        set_window(conn, &self.settings, credited);
+        set_window(conn, &self.settings, Change::Open(bytes));
+        Credited {
+            conn: Arc::clone(conn),
+            settings: self.settings,
+            bytes,
+        }
     }
 
     /// Hands an accepted stream to the `accept` waiting for its key, or holds it for one.
@@ -582,7 +589,7 @@ impl Inner {
         } = early;
         let peer = conn.peer;
         let agreed = stream::check_hello(&hello, &spec, &peer, self.auth.as_ref());
-        self.credit_channel(&conn, &spec);
+        let credited = self.credit_channel(&conn, &spec);
         stream::answer(
             &mut send,
             &spec,
@@ -593,16 +600,47 @@ impl Inner {
         let agreed = agreed
             .map_err(|code| Error::new(code, format!("refused the channel {:?}", spec.key)))?;
         let opened = stream::open(recv, send, spec, agreed, &self.domain)?;
-        Ok(opened.spawn(&self.domain))
+        Ok(opened.spawn_with(&self.domain, credited))
     }
 }
 
-/// Sets a connection's receive window after `added` more credited bytes.
-fn set_window(conn: &Conn, settings: &QuicSettings, added: u64) {
+/// A channel's credited bytes on its connection; dropping it gives them back.
+struct Credited {
+    conn: Arc<Conn>,
+    settings: QuicSettings,
+    bytes: u64,
+}
+
+impl Drop for Credited {
+    fn drop(&mut self) {
+        set_window(&self.conn, &self.settings, Change::Close(self.bytes));
+    }
+}
+
+/// What changed on a connection before its receive window is set again.
+enum Change {
+    /// A new connection: no channel yet.
+    None,
+    /// A channel opened with this many credited bytes.
+    Open(u64),
+    /// A channel with this many credited bytes closed.
+    Close(u64),
+}
+
+/// Sets a connection's receive window to the credited sum of its open channels (RFC-0031
+/// §4.3). Lowering it only lowers what later `MAX_DATA` frames grant.
+fn set_window(conn: &Conn, settings: &QuicSettings, change: Change) {
     let mut window = lock(&conn.window);
-    if added > 0 {
-        window.channels += 1;
-        window.credited = window.credited.saturating_add(added);
+    match change {
+        Change::None => {}
+        Change::Open(bytes) => {
+            window.channels += 1;
+            window.credited = window.credited.saturating_add(bytes);
+        }
+        Change::Close(bytes) => {
+            window.channels = window.channels.saturating_sub(1);
+            window.credited = window.credited.saturating_sub(bytes);
+        }
     }
     let set = settings.connection_window(window.credited);
     window.window = set.window;
@@ -722,7 +760,7 @@ impl Transport for QuicTransport {
                     .await
                     .map_err(|error| link(format!("cannot open a stream: {error}")))?;
                 let _ = send.set_priority(stream_priority(&spec.key, spec.priority));
-                inner.credit_channel(&conn, &spec_in);
+                let credited = inner.credit_channel(&conn, &spec_in);
                 let class = link_class(&remote);
                 let timeout = inner.settings.connect_timeout(class);
                 let offer = stream::offer(
@@ -742,7 +780,7 @@ impl Transport for QuicTransport {
                     }
                 };
                 let opened = stream::open(recv, send, spec_in, agreed, &inner.domain)?;
-                Ok(opened.spawn(&inner.domain))
+                Ok(opened.spawn_with(&inner.domain, credited))
             })
             .await
             .map_err(|error| link(format!("the net domain stopped: {error}")))?

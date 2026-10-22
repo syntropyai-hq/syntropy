@@ -617,8 +617,17 @@ where
 {
     /// Runs the channel's task in `domain`, and returns the channel.
     pub fn spawn(self, domain: &DomainHandle) -> Channel {
+        self.spawn_with(domain, ())
+    }
+
+    /// [`Opened::spawn`], keeping `keep` alive until the task ends and then dropping it: a
+    /// backend's hold on what the channel uses, such as its share of a connection's window.
+    pub fn spawn_with<K: Send + 'static>(self, domain: &DomainHandle, keep: K) -> Channel {
         let Opened { channel, driver } = self;
-        domain.spawn(driver.run());
+        domain.spawn(async move {
+            driver.run().await;
+            drop(keep);
+        });
         channel
     }
 }
