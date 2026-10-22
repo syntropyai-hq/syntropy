@@ -100,7 +100,7 @@ Rows are the dependent task's milestone, columns the prerequisite's, in delivery
 | M0b | 223 | 87 | 0 | 0 | 0 | 0 | 0 |
 | M1a | 350 | 167 | 786 | 0 | 0 | 0 | 0 |
 | M1b | 26 | 28 | 93 | 101 | 0 | 0 | 0 |
-| M2 | 75 | 26 | 159 | 6 | 510 | 0 | 0 |
+| M2 | 75 | 26 | 160 | 6 | 509 | 0 | 0 |
 | M3 | 45 | 15 | 117 | 14 | 141 | 250 | 0 |
 | M4 | 8 | 5 | 36 | 0 | 18 | 24 | 22 |
 <!-- END GENERATED -->
@@ -144,10 +144,10 @@ The 20 tasks with the most direct dependents. A change to one of their interface
 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request… | 19 | PLC 1, TIER 2, DIST 5, PROD 7, QUAL 4 |
 | COMP-E4-T05 | M0a | Graph capture: thread-local-mode stream capture (so housekeeping-thread registration… | 19 | PLC 5, TIER 1, COMP 11, PROD 1, QUAL 1 |
 | QUAL-E6-T04 | M0a | `ConformanceManifest`, minimal at M0: types in `core` (`FamilyCert` and `OpCert` at M0… | 19 | PLC 2, TIER 1, COMP 3, PROD 2, QUAL 11 |
-| DIST-E7-T03 | M2 | QUIC backend on iroh: `PathKind` (`Direct` or `Relay`, as iroh reports the path); daemon… | 18 | PLC 1, DIST 14, QUAL 3 |
 | COMP-E1-T04 | M1a | `kernels::reference` for the M1 ops: `Mla`, `SlidingGqa` with sinks, `BlockSparse`… | 18 | COMP 18 |
 | QUAL-E15-T17 | M0a | The rest of the M0 rigs (ADR-0610 decision 1): R-BW (RTX 5090, AVX-512 dual-CCD CPU, 128… | 18 | TIER 2, COMP 10, PROD 2, QUAL 4 |
 | PLC-E4-T08 | M2 | DP recurrence, factored: G over arrivals then F over ranges, states (physical subset… | 17 | PLC 16, QUAL 1 |
+| DIST-E7-T03 | M2 | QUIC backend on iroh, on DIST-E7-T23's pin and `PathKind`: daemon and runner endpoints, a… | 17 | PLC 1, DIST 13, QUAL 3 |
 | PROD-E1-T01 | M0a | `syntropy-config` crate | 17 | PLC 3, TIER 4, DIST 1, COMP 3, PROD 6 |
 | COMP-E1-T02 | M0a | Op registry: the closed `OpKind` list of §3.1 (including `AttnPartial`, `AttnMerge`… | 16 | PLC 3, TIER 2, COMP 10, QUAL 1 |
 | QUAL-E15-T06 | M2 | M2 lab infrastructure and composites: managed switch with data-plane and management… | 16 | TIER 1, DIST 7, COMP 1, QUAL 7 |
