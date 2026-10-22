@@ -679,3 +679,12 @@ PROD-E5-T02 could not meet two of its criteria as written: "a LAN bind without a
 | PROD-E5-T02 declares the `[api]` section's `bind`, `tls` and `allow_plaintext_lan` keys, and PROD-E2-T01 reuses the section for its `api.bind` default | PROD-E5-T02, PROD-E2-T01 | — | RFC-0054 §5.1 gives `api.*` to RFC-0050, and no task registered it; the rules need the real keys to run. PROD-E2-T01's default criterion is unchanged |
 
 Open, for the owning tasks (not changed here): PROD-E5-T03's "leaf rotation under 100 open streams drops none" and PROD-E5-T06's "replacing the certificate files switches new connections to the new certificate without restart" need a running HTTP server, and neither task reaches PROD-E2-T01 through its dependencies.
+
+## DIST-E7-T02's foreign frames and DIST-E7-T12's stale descriptors (2026-10-22)
+
+The independent review of #1737 (DIST-E7-T01) found two RFC-0031 rules that no task's criteria cover. First, RFC-0031 §2's rule that a frame whose `(instance, epoch)` is not the channel key's is dropped and counted is in no DIST-E7 row. DIST-E11-T02 and PLC-E7-T11 handle epochs a runner no longer serves at the step level, not the channel's drop and count. Second, buffer descriptors carry no generation, so a descriptor kept past its slot's reuse would lease the new bytes.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T02's property test gains foreign `(instance, epoch)` frames: dropped before the `chan_seq` check, never surfaced or NACKed, counted in `stats()`, and the channel's own frames still delivered exactly once; its Implements cell adds RFC-0031 §2 and §6.1; no edge | DIST-E7-T02 | Definition of done | the channel core is sans-I/O and checks the channel key before `chan_seq` continuity (RFC-0031 §6.1), so its property test can feed it such frames directly; the conformance suite needs no new `Fabric` hook |
+| DIST-E7-T12 gains the stale-descriptor refusal: a slot generation that advances when the slot is freed, carried by `PayloadSlice` and `ExtBuf`, and a descriptor of an earlier generation refused with `SendError::Invalid`; RFC-0031 §8 gains a dated note; no edge | DIST-E7-T12 | Definition of done | DIST-E7-T12 builds the lock-free slot handout, where a slot is freed and handed out again. Without a generation the rule "hold a reader until `try_send` returns" is enforced by nothing |

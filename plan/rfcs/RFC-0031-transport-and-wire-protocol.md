@@ -927,6 +927,11 @@ The limiter is a token bucket in the daemon's `bulk` runtime. It applies to `Blo
 
 **Send paths.** The GPU writes the stage's output hidden state straight into a host-mapped registered slot: the output kernel's destination is the slot, or a D2H copy into it. Completion is signalled with the doorbell (`signal_host`, RFC-0001 §5.7). The net side never calls a device synchronise. On RDMA the slot is posted as is. On QUIC and TCP, TLS reads it once while encrypting.
 
+**Note, 2026-10-22 (DIST-E7-T12): a slot's generation.** A buffer descriptor (`PayloadSlice`, `ExtBuf`; §2) names a slot by pool, slot index, offset and length, and is `Copy`. If its holder drops the slot's last reader before `try_send`, the slot can be freed, handed out and frozen again, and a lease taken through the old descriptor would carry the new bytes without any error.
+- Each slot's state therefore carries a generation, which advances whenever the slot is freed. Each descriptor carries the generation of the freeze it was made from.
+- Leasing a slot through a descriptor checks the generation, and a stale descriptor is refused with `SendError::Invalid`, never leased. Misuse becomes a refusal instead of a frame with the wrong payload.
+- DIST-E7-T12 builds this with the lock-free slot handout.
+
 **Multi-part prefill frames** land part by part in separate slots. The dispatcher issues one H2D per part into consecutive offsets of the stage's device input buffer. That copy is needed anyway, so reassembly costs no extra host copy.
 
 ### 9. Control-plane and blob-plane encoding
