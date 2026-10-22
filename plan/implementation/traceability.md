@@ -306,7 +306,7 @@ No GAPs.
 | RFC-0031 | §7 | Flow control, acknowledgement, retransmission and failover | 4: DIST-E7-T02, DIST-E7-T10, DIST-E7-T13, DIST-E7-T16 | ok |
 | RFC-0031 | §8 | Zero-copy receive and buffer pools | 2: DIST-E7-T09, DIST-E7-T12 | ok |
 | RFC-0031 | §9 | Control-plane and blob-plane encoding | 2: DIST-E8-T12, DIST-E8-T17 | ok |
-| RFC-0031 | §10 | Versioning and compatibility | 3: DIST-E8-T04, DIST-E8-T13–T14 | ok |
+| RFC-0031 | §10 | Versioning and compatibility | 4: DIST-E8-T04, DIST-E8-T06, DIST-E8-T13–T14 | ok |
 | RFC-0031 | §11 | Configuration | 1: DIST-E18-T01 | ok |
 | RFC-0031 | §12 | Error codes | 1: DIST-E18-T02 | ok |
 | RFC-0032 | §1 | Scope and split with neighbouring RFCs | 1: DIST-E9-T03 | ok |
