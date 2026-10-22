@@ -319,6 +319,22 @@ fn rule_8_a_file_whose_extension_is_rs_in_another_case_is_read() {
     );
 }
 
+// `kernels` denies `unsafe` too, and may only declare its listed `unsafe` trait methods, each in
+// the file the list names for it.
+
+#[test]
+fn rule_8_kernels_may_only_declare_its_listed_unsafe_methods() {
+    fails_with(
+        "rule-8-kernels",
+        8,
+        &[
+            "`kernels`: crates/kernels/src/provider.rs:17: sets a lint level for `unsafe_code`",
+            "`kernels`: crates/kernels/src/provider.rs:18: uses `unsafe` outside the listed `unsafe fn` declarations",
+            "`kernels`: crates/kernels/src/memory.rs:13: uses `unsafe` outside the listed `unsafe fn` declarations",
+        ],
+    );
+}
+
 #[test]
 fn rule_9_dev_only_crates_are_only_dev_dependencies() {
     fails_with(

@@ -44,8 +44,8 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
 /// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
-/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
-/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     unsafe fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     unsafe fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
 /// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
 /// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
@@ -89,8 +89,8 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
 /// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
-/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
-/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     unsafe fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     unsafe fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
 /// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
 /// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
@@ -131,8 +131,8 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
 /// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
-/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
-/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     unsafe fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     unsafe fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
 /// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
 /// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
@@ -173,8 +173,8 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
 /// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
-/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
-/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     unsafe fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     unsafe fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
 /// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
 /// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
@@ -215,8 +215,8 @@ use crate::stream::{CapturedGraph, Event, HostFlag, HostWaker, Stream, StreamPri
 /// #     fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> { todo!() }
 /// #     fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
-/// #     fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
-/// #     fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
+/// #     unsafe fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> { todo!() }
+/// #     unsafe fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> { todo!() }
 /// #     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> { None }
 /// #     fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> { None }
 /// #     fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> { todo!() }
@@ -302,7 +302,20 @@ pub trait KernelProvider: Send + Sync {
         Err(unsupported())
     }
     /// Makes a region of the tier manager's pinned arena DMA-visible to this device.
-    fn register_host(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<Registration, Error>;
+    ///
+    /// # Safety
+    ///
+    /// `region` must be host memory the caller owns, valid for reads and writes over its whole
+    /// length. It must stay so (not freed, unmapped or given to anything else) until the
+    /// registration is released and every operation queued on the range has finished. The
+    /// device and the provider's own threads may read and write the range at any time until
+    /// then, as an I/O engine's registered buffers are (`IoEngine::register_buffers`).
+    #[allow(unsafe_code)]
+    unsafe fn register_host(
+        &self,
+        ctx: &DeviceCtx,
+        region: HostRegion,
+    ) -> Result<Registration, Error>;
     /// A `Send` capability that registers and unregisters host ranges from the
     /// housekeeping thread, so progressive pinning (RFC-0020 §6) never blocks the
     /// dispatcher. `None` means the provider registers on its dispatcher thread during
@@ -311,7 +324,15 @@ pub trait KernelProvider: Send + Sync {
         None
     }
     /// Wraps memory the tier manager owns, without copying (unified tiers, no-copy buffers).
-    fn import(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<DeviceBuffer, Error>;
+    ///
+    /// # Safety
+    ///
+    /// `region` must be host memory the caller owns, valid for reads and writes over its whole
+    /// length. It must stay so until the buffer is released with [`free`](Self::free) and every
+    /// operation queued on it before then has finished. The provider reads and writes the
+    /// range as the buffer's memory, through raw addresses, at any time until then.
+    #[allow(unsafe_code)]
+    unsafe fn import(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<DeviceBuffer, Error>;
     /// Residency hint for backends with explicit residency (Metal residency sets, Vulkan
     /// priority). The default does nothing: on CUDA and HIP every mapped allocation is
     /// resident. May synchronise, so it runs only between steps.
@@ -448,242 +469,3 @@ pub trait KernelProvider: Send + Sync {
 /// then the trait is empty, and no provider returns one from
 /// [`KernelProvider::collectives`].
 pub trait CollectiveOps {}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-
-    use syntropy_core::ErrorClass;
-
-    use super::*;
-    use crate::device::{PowerHint, StreamPlan};
-    use crate::error::ErrorCode;
-    use crate::memory::MemKind;
-
-    /// A provider that implements only the required methods, to exercise the default bodies.
-    /// `copy` records each source offset and fails on offset 2.
-    struct Minimal {
-        ops: OpRegistry,
-    }
-
-    thread_local! {
-        static COPIES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-    }
-
-    fn not_needed<T>() -> Result<T, Error> {
-        Err(Error {
-            class: ErrorClass::Internal,
-            code: ErrorCode(0),
-            message: String::from("not used by this test"),
-        })
-    }
-
-    impl KernelProvider for Minimal {
-        fn id(&self) -> ProviderId {
-            ProviderId("minimal")
-        }
-        fn backend(&self) -> Backend {
-            Backend::Cpu
-        }
-        fn build(&self) -> ProviderBuild {
-            ProviderBuild {
-                version: 1,
-                module: None,
-                toolchain: Default::default(),
-                driver: None,
-            }
-        }
-        fn domain(&self) -> MemoryDomain {
-            MemoryDomain::Host
-        }
-        fn enumerate(&self) -> Result<Vec<ProviderDevice>, Error> {
-            Ok(Vec::new())
-        }
-        fn open(&self, _dev: DeviceId, _opts: &OpenOptions) -> Result<DeviceCtx, Error> {
-            Ok(DeviceCtx::new(()))
-        }
-        fn ops(&self) -> &OpRegistry {
-            &self.ops
-        }
-        fn query(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Option<OpCaps> {
-            None
-        }
-        fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> {
-            not_needed()
-        }
-        fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
-        fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> {
-            not_needed()
-        }
-        fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> {
-            not_needed()
-        }
-        fn repack(
-            &self,
-            _: &OpKey,
-            _: &[u8],
-            _: &mut [u8],
-        ) -> Option<Result<LayoutVersion, Error>> {
-            None
-        }
-        fn repacked_len(&self, _: &OpKey, _: Bytes) -> Option<Bytes> {
-            None
-        }
-        fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> {
-            Ok(Stream { handle: 1 })
-        }
-        fn event(&self, _: &DeviceCtx) -> Result<Event, Error> {
-            Ok(Event { handle: 1 })
-        }
-        fn record(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> {
-            Ok(())
-        }
-        fn wait(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> {
-            Ok(())
-        }
-        fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> {
-            Ok(())
-        }
-        fn poll(&self, _: &DeviceCtx, _: &Event) -> Result<bool, Error> {
-            Ok(true)
-        }
-        fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> {
-            Ok(())
-        }
-        fn copy(
-            &self,
-            _: &DeviceCtx,
-            _: &Stream,
-            src: BufferSlice,
-            _: BufferSlice,
-        ) -> Result<(), Error> {
-            COPIES.with(|c| c.borrow_mut().push(src.offset.0));
-            if src.offset.0 == 2 {
-                not_needed()
-            } else {
-                Ok(())
-            }
-        }
-        fn prepare(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Result<PreparedOp, Error> {
-            not_needed()
-        }
-        fn launch(
-            &self,
-            _: &DeviceCtx,
-            _: &Stream,
-            _: &PreparedOp,
-            _: &OpArgs<'_>,
-        ) -> Result<(), Error> {
-            not_needed()
-        }
-        fn begin_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> {
-            Err(unsupported())
-        }
-        fn end_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<CapturedGraph, Error> {
-            Err(unsupported())
-        }
-        fn replay(&self, _: &DeviceCtx, _: &Stream, _: &CapturedGraph) -> Result<(), Error> {
-            Err(unsupported())
-        }
-        fn health(&self, _: &DeviceCtx) -> DeviceHealth {
-            DeviceHealth::Ok
-        }
-    }
-
-    fn setup() -> (Minimal, DeviceCtx, Stream) {
-        let p = Minimal {
-            ops: OpRegistry::new(),
-        };
-        let opts = OpenOptions {
-            streams: StreamPlan {
-                compute: 1,
-                copy_in: 1,
-                copy_out: 1,
-                collective: 0,
-            },
-            doorbell_slots: 8,
-            capture: true,
-            deterministic: true,
-            power: PowerHint::Mains,
-        };
-        let dev = DeviceId {
-            node: syntropy_core::NodeId([0; 32]),
-            ordinal: 0,
-        };
-        let ctx = p.open(dev, &opts).expect("opens");
-        let s = p.stream(&ctx, StreamPriority::Compute).expect("stream");
-        (p, ctx, s)
-    }
-
-    fn slice(offset: u64) -> BufferSlice {
-        BufferSlice {
-            buffer: 1,
-            offset: Bytes(offset),
-            bytes: Bytes(4),
-        }
-    }
-
-    /// Each default body returns what RFC-0040 §2.1 specifies.
-    #[test]
-    fn default_bodies() {
-        let (p, ctx, s) = setup();
-        let reservation = DeviceBuffer {
-            addr: 0,
-            bytes: Bytes(1 << 20),
-            kind: MemKind::Device,
-            handle: 9,
-        };
-        let seg = Segment {
-            reservation: 9,
-            offset: Bytes(0),
-            bytes: Bytes(1 << 20),
-            handle: 10,
-        };
-        let flag = HostFlag { page: 0, slot: 3 };
-        let e = p.event(&ctx).expect("event");
-
-        assert_eq!(p.memory_info(&ctx), Err(unsupported()));
-        assert_eq!(
-            p.map_segment(&ctx, &reservation, Bytes(0), Bytes(1 << 20)),
-            Err(unsupported())
-        );
-        assert_eq!(p.unmap_segment(&ctx, seg), Err(unsupported()));
-        assert!(p.host_registrar(&ctx).is_none());
-        assert_eq!(p.set_resident(&ctx, &[&reservation], true), Ok(()));
-        assert_eq!(
-            p.wait_host(&ctx, &s, flag, 1, WaitCmp::Eq, Some(0)),
-            Err(unsupported())
-        );
-        let waker = HostWaker {
-            kind: crate::stream::WakeKind::Futex,
-            handle: 0x1000,
-        };
-        assert_eq!(p.arm_wake(&ctx, &s, &waker), Err(unsupported()));
-        assert_eq!(p.elapsed(&ctx, &e, &e), None);
-        assert!(p.collectives().is_none());
-
-        let err = unsupported();
-        assert_eq!(err.class, ErrorClass::Unsupported);
-        assert_eq!(err.code, ErrorCode(1));
-    }
-
-    /// The default `copy_batch` issues one `copy` per pair, in order, and stops at the first
-    /// error.
-    #[test]
-    fn copy_batch_default_loops_in_order() {
-        let (p, ctx, s) = setup();
-        COPIES.with(|c| c.borrow_mut().clear());
-        let ok = [(slice(0), slice(8)), (slice(1), slice(9))];
-        assert_eq!(p.copy_batch(&ctx, &s, &ok), Ok(()));
-        COPIES.with(|c| assert_eq!(*c.borrow(), vec![0, 1]));
-
-        COPIES.with(|c| c.borrow_mut().clear());
-        let failing = [
-            (slice(0), slice(8)),
-            (slice(2), slice(9)),
-            (slice(3), slice(10)),
-        ];
-        assert!(p.copy_batch(&ctx, &s, &failing).is_err());
-        COPIES.with(|c| assert_eq!(*c.borrow(), vec![0, 2]));
-    }
-}

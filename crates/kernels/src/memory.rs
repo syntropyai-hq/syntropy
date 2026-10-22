@@ -3,8 +3,8 @@
 //! Memory a provider allocates, maps, registers or imports for the tier manager
 //! (RFC-0001 §5.7; RFC-0040 §2.2, §5.1, §5.2; RFC-0020 §4.1, §6).
 //!
-//! `kernels` forbids `unsafe` (RFC-0040 §1; RFC-0001 §4.2 rule 8), so nothing here holds a
-//! raw pointer. Device and host addresses are `u64` values and provider objects are `u64`
+//! `kernels` uses no `unsafe` code beyond declaring three `unsafe` methods (see the crate
+//! docs), so nothing here holds a raw pointer. Device and host addresses are `u64` values and provider objects are `u64`
 //! handles, both meaningful only to the provider that issued them. The provider crates
 //! (`kernels-*`), which may use `unsafe`, turn them back into driver objects.
 
@@ -143,7 +143,19 @@ bitflags! {
 /// `Ready`, and none is issued while steps run.
 pub trait HostRegistrar: Send {
     /// Registers `region` with the device.
-    fn register(&self, region: HostRegion, flags: HostRegFlags) -> Result<Registration, Error>;
+    ///
+    /// # Safety
+    ///
+    /// As for [`KernelProvider::register_host`](crate::KernelProvider::register_host):
+    /// `region` must be host memory the caller owns, valid for reads and writes over its whole
+    /// length. It must stay so until [`unregister`](Self::unregister) releases the
+    /// registration and every operation queued on the range has finished.
+    #[allow(unsafe_code)]
+    unsafe fn register(
+        &self,
+        region: HostRegion,
+        flags: HostRegFlags,
+    ) -> Result<Registration, Error>;
     /// Releases a registration.
     fn unregister(&self, reg: Registration) -> Result<(), Error>;
 }

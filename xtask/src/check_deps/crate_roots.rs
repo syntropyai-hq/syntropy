@@ -56,7 +56,8 @@ pub fn check(graph: &Graph) -> Vec<Finding> {
                     format!(
                         "`{name}` does not set `#![forbid(unsafe_code)]` in {shown} ({kind} target \
                          `{}`); only `kernels-*`, `io`, `tier`, `net`, `ipc` and `spsc` may use `unsafe`, \
-                         and `testkit` only in its `GlobalAlloc` impl",
+                         `testkit` only in its `GlobalAlloc` impl, and `kernels` only in declaring \
+                         its listed `unsafe` trait methods",
                         target.name
                     ),
                 )),

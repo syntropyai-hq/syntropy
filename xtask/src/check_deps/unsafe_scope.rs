@@ -1,18 +1,30 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Rule 8's module-scoped exception (RFC-0001 §4.2 rule 8, note 2026-10-22).
+//! Rule 8's scoped exceptions (RFC-0001 §4.2 rule 8, note of 2026-10-22; §18.36).
 //!
-//! A crate in [`policy::UNSAFE_MODULES`](super::policy::UNSAFE_MODULES) may hold exactly one `unsafe impl` of one trait, in one
-//! file, under its one `#[allow(unsafe_code)]`. For such a crate the check:
+//! A crate in [`policy::UNSAFE_MODULES`](super::policy::UNSAFE_MODULES) may hold `unsafe` of one
+//! [`UnsafeShape`] only:
+//!
+//! - [`UnsafeShape::Impl`]: exactly one `unsafe impl` of one trait, in one file, under its one
+//!   `#[allow(unsafe_code)]`;
+//! - [`UnsafeShape::Declarations`]: the listed `unsafe fn` trait method declarations, each with no
+//!   body and under its own `#[allow(unsafe_code)]`, so the crate declares, and never implements
+//!   or calls, `unsafe` methods.
+//!
+//! For such a crate the check:
 //!
 //! - requires `#![deny(unsafe_code)]` (or `forbid`) among each production crate root's leading
-//!   inner attributes, so the compiler refuses `unsafe` everywhere the `allow` does not reach;
+//!   inner attributes, so the compiler refuses `unsafe` everywhere an `allow` does not reach;
 //! - reads every `.rs` file under the directory of each production target's root (the library's
 //!   and every bin's), with comments and literals blanked, so a mention in prose never counts;
-//! - refuses any `unsafe` token, and any lint attribute naming `unsafe_code`, outside the one
-//!   allowed item, apart from the root's own leading level;
-//! - requires the one `#[allow(unsafe_code)]` to sit on `unsafe impl <path ending in the trait>
-//!   for …`, and every `unsafe` in that file to lie within that item;
+//! - refuses any `unsafe` token, and any lint attribute naming `unsafe_code`, outside the allowed
+//!   items, apart from the root's own leading level;
+//! - for an impl, requires the one `#[allow(unsafe_code)]` to sit on `unsafe impl <path ending in
+//!   the trait> for …`, and every `unsafe` in that file to lie within that item;
+//! - for declarations, requires each `#[allow(unsafe_code)]` to sit directly on `unsafe fn
+//!   <listed name>` in the file the list names for it, a declaration that reaches its `;` with no
+//!   `{` on the way, and allows each listed one once; the only `unsafe` tokens allowed are the
+//!   keywords of those declarations;
 //! - refuses every way to compile code it does not read: a `path` in an attribute (`#[path]`,
 //!   also inside `cfg_attr`), an attribute built from a macro metavariable, the identifier
 //!   `include` anywhere, which covers `include!` under any name or path, a `macro_rules!`
@@ -35,7 +47,7 @@ use std::path::{Path, PathBuf};
 
 use super::crate_roots::{denies_unsafe_code, leading_attributes, shown_path};
 use super::graph::Graph;
-use super::policy::UnsafeModule;
+use super::policy::{UnsafeModule, UnsafeShape};
 use super::{Finding, Rule};
 
 /// The rule-8 findings for `module`'s crate, member `at` of `graph`.
@@ -86,7 +98,11 @@ pub fn check(graph: &Graph, at: usize, module: &UnsafeModule) -> Vec<Finding> {
     else {
         return findings;
     };
-    let allowed = crate_dir.join(module.file);
+    // The file that holds an impl exception's one impl.
+    let allowed = match module.shape {
+        UnsafeShape::Impl { file, .. } => Some(crate_dir.join(file)),
+        UnsafeShape::Declarations { .. } => None,
+    };
     // The directory of every production target's root, without one that another one holds.
     let mut dirs: Vec<PathBuf> = package
         .targets
@@ -121,21 +137,34 @@ pub fn check(graph: &Graph, at: usize, module: &UnsafeModule) -> Vec<Finding> {
                 continue;
             }
         };
-        let mut problems = if file == allowed {
-            check_allowed_file(&source, module)
-        } else {
-            let level_end = roots.contains(&file).then(|| leading_attributes(&source).1);
-            check_other_file(&source, level_end)
+        let mut problems = match module.shape {
+            UnsafeShape::Impl { implements, .. } if allowed.as_ref() == Some(&file) => {
+                check_allowed_file(&source, implements)
+            }
+            ref shape => {
+                // The declarations the list allows in this file.
+                let names: Vec<&str> = match shape {
+                    UnsafeShape::Declarations { methods } => methods
+                        .iter()
+                        .filter(|(in_file, _)| crate_dir.join(in_file) == file)
+                        .map(|&(_, method)| method)
+                        .collect(),
+                    UnsafeShape::Impl { .. } => Vec::new(),
+                };
+                let level_end = roots.contains(&file).then(|| leading_attributes(&source).1);
+                check_other_file(&source, level_end, shape, &names)
+            }
         };
-        if let Some(problem) = shebang(&source).or_else(|| frontmatter(&source)) {
+        if let Some(problem) = shebang(&source, name).or_else(|| frontmatter(&source, name)) {
             problems.insert(0, problem);
         }
         if file.extension().is_some_and(|extension| extension != "rs") {
             problems.insert(
                 0,
-                "1: has an extension that is `rs` only in another case; a case-insensitive file \
-                 system lets `mod` load it, so `testkit` names its files `.rs`"
-                    .to_owned(),
+                format!(
+                    "1: has an extension that is `rs` only in another case; a case-insensitive \
+                     file system lets `mod` load it, so `{name}` names its files `.rs`"
+                ),
             );
         }
         for problem in problems {
@@ -167,24 +196,55 @@ fn rust_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The problems in a file other than the allowed one, each as `<line>: <what>`. `level_end` is
-/// where a crate root's leading attributes end; a lint level for `unsafe_code` before it is the
-/// root's own.
-fn check_other_file(source: &str, level_end: Option<usize>) -> Vec<String> {
+/// The problems in a file other than an impl exception's allowed one, each as `<line>: <what>`.
+/// `level_end` is where a crate root's leading attributes end; a lint level for `unsafe_code`
+/// before it is the root's own. `names` are the `unsafe fn` declarations a declarations
+/// exception allows in this file, each once; it is empty for every other file.
+fn check_other_file(
+    source: &str,
+    level_end: Option<usize>,
+    shape: &UnsafeShape,
+    names: &[&str],
+) -> Vec<String> {
+    let (outside, allow_on) = match shape {
+        UnsafeShape::Impl { .. } => (
+            "the one allowed impl",
+            "the one `#[allow(unsafe_code)]` on the allowed impl",
+        ),
+        UnsafeShape::Declarations { .. } => (
+            "the listed `unsafe fn` declarations",
+            "an `#[allow(unsafe_code)]` directly on a listed `unsafe fn` declaration with no body",
+        ),
+    };
     let code = code_only(source);
     let mut problems = unread_code(&code);
+    // The `unsafe` keyword of each allowed declaration, and the names already seen.
+    let mut keywords = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
     for (at, ident) in idents(&code) {
         match ident {
-            "unsafe" => problems.push(format!(
-                "{}: uses `unsafe` outside the one allowed impl",
+            "unsafe" if !keywords.contains(&at) => problems.push(format!(
+                "{}: uses `unsafe` outside {outside}",
                 line_of(&code, at)
             )),
-            "unsafe_code" if level_end.is_none_or(|end| at >= end) => problems.push(format!(
-                "{}: sets a lint level for `unsafe_code`; only the crate root's leading \
-                 `#![deny(unsafe_code)]` and the one `#[allow(unsafe_code)]` on the allowed impl \
-                 may",
-                line_of(&code, at)
-            )),
+            "unsafe_code" if level_end.is_none_or(|end| at >= end) => {
+                match allowed_declaration(&code, at, names) {
+                    Some((_, name)) if seen.contains(&name) => problems.push(format!(
+                        "{}: declares `unsafe fn {name}` a second time; each listed declaration \
+                         is allowed once",
+                        line_of(&code, at)
+                    )),
+                    Some((keyword, name)) => {
+                        keywords.push(keyword);
+                        seen.push(name);
+                    }
+                    None => problems.push(format!(
+                        "{}: sets a lint level for `unsafe_code`; only the crate root's leading \
+                         `#![deny(unsafe_code)]` and {allow_on} may",
+                        line_of(&code, at)
+                    )),
+                }
+            }
             // In the root's leading attributes, only a plain `deny` or `forbid` keeps the
             // compiler refusing what has no `unsafe` token, such as `global_asm!`.
             "unsafe_code" if !plain_deny_or_forbid(&code, at) => problems.push(format!(
@@ -226,32 +286,35 @@ fn plain_deny_or_forbid(code: &str, at: usize) -> bool {
         })
 }
 
-/// A problem when `source`, after an optional byte-order mark, starts with `#!` not directly
-/// followed by `[`: rustc may strip that line as a shebang, in any source file, while this check
-/// reads it as code, where it could open a comment that hides the lines after it.
-fn shebang(source: &str) -> Option<String> {
+/// A problem when `source`, a file of crate `name`, after an optional byte-order mark, starts
+/// with `#!` not directly followed by `[`: rustc may strip that line as a shebang, in any source
+/// file, while this check reads it as code, where it could open a comment that hides the lines
+/// after it.
+fn shebang(source: &str, name: &str) -> Option<String> {
     let text = source.strip_prefix('\u{feff}').unwrap_or(source);
     (text.starts_with("#!") && !text.starts_with("#![")).then(|| {
-        "1: starts with `#!`, which rustc may strip as a shebang line while this check reads it \
-         as code; `testkit` files may not start so"
-            .to_owned()
+        format!(
+            "1: starts with `#!`, which rustc may strip as a shebang line while this check reads \
+             it as code; `{name}` files may not start so"
+        )
     })
 }
 
-/// A problem when `source`, after an optional byte-order mark, starts with `---`: a frontmatter
-/// block, which rustc 1.99.1 refuses but a later release may read as metadata, not code, while
-/// this check reads it as code.
-fn frontmatter(source: &str) -> Option<String> {
+/// A problem when `source`, a file of crate `name`, after an optional byte-order mark, starts
+/// with `---`: a frontmatter block, which rustc 1.99.1 refuses but a later release may read as
+/// metadata, not code, while this check reads it as code.
+fn frontmatter(source: &str, name: &str) -> Option<String> {
     let text = source.strip_prefix('\u{feff}').unwrap_or(source);
     text.starts_with("---").then(|| {
-        "1: starts with `---`, a frontmatter block, which this check would read as code; \
-         `testkit` files may not start so"
-            .to_owned()
+        format!(
+            "1: starts with `---`, a frontmatter block, which this check would read as code; \
+             `{name}` files may not start so"
+        )
     })
 }
 
-/// The problems in the file that holds the allowed impl.
-fn check_allowed_file(source: &str, module: &UnsafeModule) -> Vec<String> {
+/// The problems in the file that holds an impl exception's allowed impl of `implements`.
+fn check_allowed_file(source: &str, implements: &str) -> Vec<String> {
     let code = code_only(source);
     let mentions: Vec<usize> = idents(&code)
         .filter(|(_, ident)| *ident == "unsafe_code")
@@ -268,19 +331,19 @@ fn check_allowed_file(source: &str, module: &UnsafeModule) -> Vec<String> {
              `unsafe impl {} for …`, is allowed",
             mentions.first().map_or(1, |&at| line_of(&code, at)),
             mentions.len(),
-            module.implements
+            implements
         ));
     }
     // The span the `allow` covers: from its `#` to the end of the impl's body.
     let span = mentions
         .first()
-        .and_then(|&at| allowed_item(&code, at, module.implements));
+        .and_then(|&at| allowed_item(&code, at, implements));
     if let (Some(&at), None) = (mentions.first(), span) {
         problems.push(format!(
             "{}: the `unsafe_code` lint is set here, but only `#[allow(unsafe_code)]` directly on \
              `unsafe impl {} for …` is allowed",
             line_of(&code, at),
-            module.implements
+            implements
         ));
     }
     for at in unsafes {
@@ -288,7 +351,7 @@ fn check_allowed_file(source: &str, module: &UnsafeModule) -> Vec<String> {
             problems.push(format!(
                 "{}: uses `unsafe` outside the allowed `unsafe impl {}`",
                 line_of(&code, at),
-                module.implements
+                implements
             ));
         }
     }
@@ -400,10 +463,10 @@ fn attribute_spans(code: &str) -> Vec<(usize, usize)> {
     spans
 }
 
-/// When the `unsafe_code` at `at` is inside an outer `#[allow(unsafe_code)]` on `unsafe impl
-/// <path ending in trait> for …`, the span from the attribute's `#` to the impl's closing `}`.
-fn allowed_item(code: &str, at: usize, implements: &str) -> Option<(usize, usize)> {
-    // The attribute: `#[` … `]` around `at`, an outer one, saying exactly `allow(unsafe_code)`.
+/// When the `unsafe_code` at `at` is inside an outer attribute that says exactly
+/// `allow(unsafe_code)`, the offset of the attribute's `#` and of the item it is on, past any
+/// other outer attributes.
+fn allow_attribute(code: &str, at: usize) -> Option<(usize, usize)> {
     let open = code[..at].rfind('[')?;
     let hash = code[..open].trim_end();
     if !hash.ends_with('#') {
@@ -422,10 +485,15 @@ fn allowed_item(code: &str, at: usize, implements: &str) -> Option<(usize, usize
         if code[next..].starts_with("#[") {
             rest = next + code[next..].find(']')? + 1;
         } else {
-            rest = next;
-            break;
+            return Some((start, next));
         }
     }
+}
+
+/// When the `unsafe_code` at `at` is inside an outer `#[allow(unsafe_code)]` on `unsafe impl
+/// <path ending in trait> for …`, the span from the attribute's `#` to the impl's closing `}`.
+fn allowed_item(code: &str, at: usize, implements: &str) -> Option<(usize, usize)> {
+    let (start, rest) = allow_attribute(code, at)?;
     let mut words = idents(&code[rest..]);
     let (unsafe_at, first) = words.next()?;
     let (impl_at, second) = words.next()?;
@@ -447,6 +515,41 @@ fn allowed_item(code: &str, at: usize, implements: &str) -> Option<(usize, usize
     }
     let end = matching_brace(code, header_end)?;
     Some((start, end + 1))
+}
+
+/// When the `unsafe_code` at `at` is inside an outer `#[allow(unsafe_code)]` directly on
+/// `unsafe fn <one of names>`, a declaration with no body, the offset of its `unsafe` keyword and
+/// its name. The declaration must reach its `;`, outside parentheses and brackets, with no `{`
+/// on the way: a body, or a block in a type such as `[u8; { … }]`, is refused.
+fn allowed_declaration<'n>(code: &str, at: usize, names: &[&'n str]) -> Option<(usize, &'n str)> {
+    let (_, rest) = allow_attribute(code, at)?;
+    let mut words = idents(&code[rest..]).map(|(offset, word)| (rest + offset, word));
+    let (keyword, first) = words.next()?;
+    let (fn_at, second) = words.next()?;
+    let (name_at, name) = words.next()?;
+    // `unsafe`, `fn` and the name, with only whitespace between them.
+    let between = |from: usize, to: usize| code[from..to].trim().is_empty();
+    if keyword != rest
+        || first != "unsafe"
+        || second != "fn"
+        || !between(keyword + first.len(), fn_at)
+        || !between(fn_at + second.len(), name_at)
+    {
+        return None;
+    }
+    let name = *names.iter().find(|listed| **listed == name)?;
+    let after = name_at + name.len();
+    let mut depth = 0usize;
+    for c in code[after..].chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.checked_sub(1)?,
+            '{' | '}' => return None,
+            ';' if depth == 0 => return Some((keyword, name)),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The index of the `}` that closes the `{` at `open`.
@@ -619,11 +722,31 @@ fn raw_string_hashes(chars: &[(usize, char)], from: usize) -> Option<usize> {
 mod tests {
     use super::*;
 
-    const TESTKIT: UnsafeModule = UnsafeModule {
-        krate: "testkit",
+    /// The trait testkit's impl exception implements.
+    const IMPLEMENTS: &str = "GlobalAlloc";
+
+    const TESTKIT: UnsafeShape = UnsafeShape::Impl {
         file: "src/guards.rs",
-        implements: "GlobalAlloc",
+        implements: IMPLEMENTS,
     };
+
+    const KERNELS: UnsafeShape = UnsafeShape::Declarations {
+        methods: &[
+            ("src/provider.rs", "register_host"),
+            ("src/provider.rs", "import"),
+            ("src/memory.rs", "register"),
+        ],
+    };
+
+    /// The problems in a testkit file other than `src/guards.rs`.
+    fn testkit_other(source: &str, level_end: Option<usize>) -> Vec<String> {
+        check_other_file(source, level_end, &TESTKIT, &[])
+    }
+
+    /// The problems in kernels' `src/provider.rs`, where two declarations are allowed.
+    fn kernels_provider(source: &str) -> Vec<String> {
+        check_other_file(source, None, &KERNELS, &["register_host", "import"])
+    }
 
     /// A guards file of the allowed shape: the impl, with `unsafe fn`s and `unsafe` blocks inside.
     const ALLOWED: &str = r#"//! The guards. `unsafe` in a comment, and "unsafe_code" in a string, do not count.
@@ -654,13 +777,16 @@ pub fn alloc_count_this_thread() -> u64 {
 
     #[test]
     fn the_allowed_shape_passes() {
-        assert_eq!(check_allowed_file(ALLOWED, &TESTKIT), Vec::<String>::new());
+        assert_eq!(
+            check_allowed_file(ALLOWED, IMPLEMENTS),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn a_path_qualified_trait_and_other_attributes_pass() {
         let source = "#[allow(unsafe_code)]\n#[doc(hidden)]\nunsafe impl std::alloc::GlobalAlloc for A {\n    unsafe fn alloc(&self, l: L) -> *mut u8 { unsafe { S.alloc(l) } }\n}\n";
-        assert_eq!(check_allowed_file(source, &TESTKIT), Vec::<String>::new());
+        assert_eq!(check_allowed_file(source, IMPLEMENTS), Vec::<String>::new());
     }
 
     #[test]
@@ -668,7 +794,7 @@ pub fn alloc_count_this_thread() -> u64 {
         let source = format!(
             "{ALLOWED}\npub fn sneaky() {{ unsafe {{ core::hint::unreachable_unchecked() }} }}\n"
         );
-        let problems = check_allowed_file(&source, &TESTKIT);
+        let problems = check_allowed_file(&source, IMPLEMENTS);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(
             problems[0].contains("uses `unsafe` outside the allowed"),
@@ -680,14 +806,14 @@ pub fn alloc_count_this_thread() -> u64 {
     fn a_second_allow_or_a_module_wide_allow_fails() {
         let second = format!("{ALLOWED}\n#[allow(unsafe_code)]\npub fn f() {{}}\n");
         assert!(
-            check_allowed_file(&second, &TESTKIT)
+            check_allowed_file(&second, IMPLEMENTS)
                 .iter()
                 .any(|p| p.contains("names `unsafe_code` 2 times")),
             "{:?}",
-            check_allowed_file(&second, &TESTKIT)
+            check_allowed_file(&second, IMPLEMENTS)
         );
         let inner = ALLOWED.replace("#[allow(unsafe_code)]", "#![allow(unsafe_code)]");
-        let problems = check_allowed_file(&inner, &TESTKIT);
+        let problems = check_allowed_file(&inner, IMPLEMENTS);
         assert!(
             problems
                 .iter()
@@ -704,7 +830,7 @@ pub fn alloc_count_this_thread() -> u64 {
             "#[allow(unsafe_code, dead_code)]\nunsafe impl GlobalAlloc for A {}\n",
             "#[allow(unsafe_code)]\nunsafe impl NotGlobalAlloc for A {}\n",
         ] {
-            let problems = check_allowed_file(source, &TESTKIT);
+            let problems = check_allowed_file(source, IMPLEMENTS);
             assert!(
                 problems
                     .iter()
@@ -718,7 +844,7 @@ pub fn alloc_count_this_thread() -> u64 {
     fn a_guards_file_without_the_impl_and_without_unsafe_is_refused_for_its_missing_allow() {
         // No `allow` at all is no `unsafe` at all: still exactly one is required, so the file
         // and the policy entry do not drift apart.
-        let problems = check_allowed_file("pub fn f() {}\n", &TESTKIT);
+        let problems = check_allowed_file("pub fn f() {}\n", IMPLEMENTS);
         assert!(
             problems
                 .iter()
@@ -729,12 +855,12 @@ pub fn alloc_count_this_thread() -> u64 {
 
     #[test]
     fn other_files_may_not_use_unsafe_or_set_its_level() {
-        let problems = check_other_file("fn f() {\n    unsafe { g() }\n}\n", None);
+        let problems = testkit_other("fn f() {\n    unsafe { g() }\n}\n", None);
         assert_eq!(problems, ["2: uses `unsafe` outside the one allowed impl"]);
-        let problems = check_other_file("#[allow(unsafe_code)]\nfn f() {}\n", None);
+        let problems = testkit_other("#[allow(unsafe_code)]\nfn f() {}\n", None);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].starts_with("1: sets a lint level for `unsafe_code`"));
-        let problems = check_other_file("#![cfg_attr(test, allow(unsafe_code))]\n", None);
+        let problems = testkit_other("#![cfg_attr(test, allow(unsafe_code))]\n", None);
         assert_eq!(problems.len(), 1, "{problems:?}");
     }
 
@@ -742,10 +868,10 @@ pub fn alloc_count_this_thread() -> u64 {
     fn the_root_may_set_its_own_level_only_in_its_leading_attributes() {
         let root = "//! Docs about `unsafe`.\n\n#![deny(unsafe_code)]\n\npub mod guards;\n";
         let (_, end) = leading_attributes(root);
-        assert_eq!(check_other_file(root, Some(end)), Vec::<String>::new());
+        assert_eq!(testkit_other(root, Some(end)), Vec::<String>::new());
         let late = "#![deny(unsafe_code)]\npub mod guards;\n#[allow(unsafe_code)]\nfn f() {}\n";
         let (_, end) = leading_attributes(late);
-        assert_eq!(check_other_file(late, Some(end)).len(), 1);
+        assert_eq!(testkit_other(late, Some(end)).len(), 1);
         // In the leading attributes too, only a plain deny or forbid may name it.
         for leading in [
             "#![deny(unsafe_code)]\n#![allow(unsafe_code)]\npub mod guards;\n",
@@ -754,7 +880,7 @@ pub fn alloc_count_this_thread() -> u64 {
             "#![deny(unsafe_code)]\n#![cfg_attr(all(), allow(unsafe_code))]\npub mod guards;\n",
         ] {
             let (_, end) = leading_attributes(leading);
-            let problems = check_other_file(leading, Some(end));
+            let problems = testkit_other(leading, Some(end));
             assert_eq!(problems.len(), 1, "{leading}: {problems:?}");
             assert!(
                 problems[0].contains("to something other than a plain"),
@@ -768,7 +894,7 @@ pub fn alloc_count_this_thread() -> u64 {
         ] {
             let (_, end) = leading_attributes(plain);
             assert_eq!(
-                check_other_file(plain, Some(end)),
+                testkit_other(plain, Some(end)),
                 Vec::<String>::new(),
                 "{plain}"
             );
@@ -783,7 +909,7 @@ pub fn alloc_count_this_thread() -> u64 {
             "#! [allow(unsafe_code)]\n",
             "#!\n",
         ] {
-            assert!(shebang(text).is_some(), "{text:?} was accepted");
+            assert!(shebang(text, "testkit").is_some(), "{text:?} was accepted");
         }
         for text in [
             "#![deny(unsafe_code)]\n",
@@ -791,11 +917,11 @@ pub fn alloc_count_this_thread() -> u64 {
             "fn f() {}\n#!x\n",
             "",
         ] {
-            assert_eq!(shebang(text), None, "{text:?}");
+            assert_eq!(shebang(text, "testkit"), None, "{text:?}");
         }
-        assert!(frontmatter("---\n[package]\n---\n").is_some());
-        assert!(frontmatter("\u{feff}---cargo\n").is_some());
-        assert_eq!(frontmatter("// ---\n"), None);
+        assert!(frontmatter("---\n[package]\n---\n", "testkit").is_some());
+        assert!(frontmatter("\u{feff}---cargo\n", "testkit").is_some());
+        assert_eq!(frontmatter("// ---\n", "testkit"), None);
     }
 
     #[test]
@@ -819,7 +945,7 @@ pub fn alloc_count_this_thread() -> u64 {
             "#![cfg_attr(all(), path=\"x.rs\")]\n",
             "mod a {\n    # [ path = \"b.rs\" ]\n    mod b;\n}\n",
         ] {
-            let problems = check_other_file(source, None);
+            let problems = testkit_other(source, None);
             assert_eq!(problems.len(), 1, "{source}: {problems:?}");
             assert!(
                 problems[0].contains("sets a module `path` in an attribute"),
@@ -827,21 +953,23 @@ pub fn alloc_count_this_thread() -> u64 {
             );
         }
         // In a macro body, the macro, the `path` and the metavariable are each refused.
-        let problems = check_other_file(
+        let problems = testkit_other(
             "macro_rules! m { ($p:literal) => { #[path = $p] mod x; } }\n",
             None,
         );
         assert_eq!(problems.len(), 3, "{problems:?}");
         // The allowed file is held to the same rule.
-        let problems =
-            check_allowed_file(&format!("{ALLOWED}#[path = \"x.rs\"]\nmod x;\n"), &TESTKIT);
+        let problems = check_allowed_file(
+            &format!("{ALLOWED}#[path = \"x.rs\"]\nmod x;\n"),
+            IMPLEMENTS,
+        );
         assert_eq!(problems.len(), 1, "{problems:?}");
     }
 
     /// Checks that `source` is refused with a finding containing `what`, and that every other
     /// finding is for the macro the source defines.
     fn refused_for(source: &str, what: &str) {
-        let problems = check_other_file(source, None);
+        let problems = testkit_other(source, None);
         assert!(
             problems.iter().any(|p| p.contains(what)),
             "{source}: no `{what}` in {problems:?}"
@@ -893,7 +1021,7 @@ pub fn alloc_count_this_thread() -> u64 {
             ($h:tt $d:tt std :: $k:ident $v:literal ; $($rest:tt)*) => { $h [$k = $v] $($rest)* };\n\
             }\n\
             at!(#[doc = \"x\"] std::path \"../outside.rs\" ; pub mod probe;);\n";
-        let problems = check_other_file(source, None);
+        let problems = testkit_other(source, None);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(
             problems[0].starts_with("1: defines a declarative macro"),
@@ -901,7 +1029,7 @@ pub fn alloc_count_this_thread() -> u64 {
         );
         // A macro another crate defines may be called; see the module docs for that limit.
         let calls = "let v = vec![1, 2];\nassert!(v.len() == 2);\n";
-        assert_eq!(check_other_file(calls, None), Vec::<String>::new());
+        assert_eq!(testkit_other(calls, None), Vec::<String>::new());
     }
 
     #[test]
@@ -914,13 +1042,136 @@ pub fn alloc_count_this_thread() -> u64 {
             pub struct Filter { pub included: bool, pub path: String }\n\
             fn f() { let path = 1; if path == 1 {} }\n\
             use std::path::Path;\n";
-        assert_eq!(check_other_file(source, None), Vec::<String>::new());
+        assert_eq!(testkit_other(source, None), Vec::<String>::new());
+    }
+
+    /// A provider file of the allowed shape: two `unsafe fn` declarations, each under its own
+    /// `allow`, one with another attribute and a `where` clause, and safe methods with bodies.
+    const DECLARATIONS: &str = r#"//! The provider trait. `unsafe` in a comment does not count.
+
+pub trait KernelProvider {
+    fn name(&self) -> &str { "x" }
+
+    /// # Safety
+    /// The caller keeps `region` valid until the registration is released.
+    #[allow(unsafe_code)]
+    unsafe fn register_host(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<Registration, Error>;
+
+    #[allow(unsafe_code)]
+    #[doc(hidden)]
+    unsafe fn import<T>(&self, ctx: &DeviceCtx, region: [u8; 4]) -> Result<Buffer, Error>
+    where
+        T: Fn() -> u8;
+
+    fn free(&self, buffer: Buffer) -> Result<(), Error> { Ok(()) }
+}
+"#;
+
+    #[test]
+    fn listed_declarations_with_no_body_pass() {
+        assert_eq!(kernels_provider(DECLARATIONS), Vec::<String>::new());
+        // A file where the list names no declaration may hold none, and a root may set its level.
+        let root = "#![deny(unsafe_code)]\n\npub mod provider;\n";
+        let (_, end) = leading_attributes(root);
+        assert_eq!(
+            check_other_file(root, Some(end), &KERNELS, &[]),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Checks that `extra`, added to the allowed provider file, is refused with a finding that
+    /// contains `what`.
+    fn kernels_refuse(extra: &str, what: &str) {
+        let source = format!("{DECLARATIONS}{extra}");
+        let problems = kernels_provider(&source);
+        assert!(
+            !problems.is_empty() && problems.iter().all(|p| p.contains(what)),
+            "{extra}: expected `{what}` in {problems:?}"
+        );
+    }
+
+    #[test]
+    fn an_unsafe_block_in_kernels_is_refused() {
+        for extra in [
+            "pub fn f(p: *const u8) -> u8 { unsafe { *p } }\n",
+            "pub fn f(p: &dyn KernelProvider, c: &DeviceCtx, r: HostRegion) {\n    let _ = unsafe { p.register_host(c, r) };\n}\n",
+            "const N: usize = unsafe { core::mem::transmute(1usize) };\n",
+        ] {
+            kernels_refuse(
+                extra,
+                "uses `unsafe` outside the listed `unsafe fn` declarations",
+            );
+        }
+    }
+
+    #[test]
+    fn an_unsafe_impl_or_an_implemented_unsafe_method_in_kernels_is_refused() {
+        kernels_refuse(
+            "unsafe impl Send for Buffer {}\n",
+            "uses `unsafe` outside the listed `unsafe fn` declarations",
+        );
+        // With an `allow`, the `allow` is refused too. An implementation of an `unsafe` method
+        // has a body, so its `allow` is refused, and so its `unsafe`.
+        for extra in [
+            "#[allow(unsafe_code)]\nunsafe impl Send for Buffer {}\n",
+            "impl KernelProvider for Cpu {\n    #[allow(unsafe_code)]\n    unsafe fn import(&self, c: &DeviceCtx, r: HostRegion) -> R { todo!() }\n}\n",
+            "pub trait Other {\n    #[allow(unsafe_code)]\n    unsafe fn import(&self) -> u8 { 0 }\n}\n",
+        ] {
+            let problems = kernels_provider(&format!("{DECLARATIONS}{extra}"));
+            assert!(
+                problems
+                    .iter()
+                    .any(|p| p.contains("sets a lint level for `unsafe_code`"))
+                    && problems.iter().any(|p| p.contains("uses `unsafe` outside")),
+                "{extra}: {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_allow_on_any_other_item_in_kernels_is_refused() {
+        for extra in [
+            // A safe function, a module, a trait, and an unlisted `unsafe fn` declaration.
+            "#[allow(unsafe_code)]\npub fn f() {}\n",
+            "#[allow(unsafe_code)]\nmod m {}\n",
+            "#[allow(unsafe_code)]\npub trait T { fn f(&self); }\n",
+            "pub trait T {\n    #[allow(unsafe_code)]\n    unsafe fn unlisted(&self);\n}\n",
+            // A declaration whose type holds a block, an `allow` with another lint, a module-wide
+            // `allow`, and a conditional one.
+            "pub trait T {\n    #[allow(unsafe_code)]\n    unsafe fn import(&self, a: [u8; { 1 }]);\n}\n",
+            "pub trait T {\n    #[allow(unsafe_code, dead_code)]\n    unsafe fn import(&self);\n}\n",
+            "#![allow(unsafe_code)]\n",
+            "#[cfg_attr(all(), allow(unsafe_code))]\npub fn f() {}\n",
+            "pub trait T {\n    #[allow(unsafe_code)]\n    unsafe extern \"C\" fn import(&self);\n}\n",
+        ] {
+            let problems = kernels_provider(&format!("{DECLARATIONS}{extra}"));
+            assert!(
+                problems
+                    .iter()
+                    .any(|p| p.contains("sets a lint level for `unsafe_code`; only the crate root's leading `#![deny(unsafe_code)]` and an `#[allow(unsafe_code)]` directly on a listed `unsafe fn` declaration with no body may")),
+                "{extra}: {problems:?}"
+            );
+        }
+        // A listed declaration in a file the list does not name it for.
+        let problems = check_other_file(DECLARATIONS, None, &KERNELS, &["register"]);
+        assert_eq!(problems.len(), 4, "{problems:?}");
+    }
+
+    #[test]
+    fn each_listed_declaration_is_allowed_once() {
+        let source = format!(
+            "{DECLARATIONS}pub trait Twin {{\n    #[allow(unsafe_code)]\n    unsafe fn import(&self);\n}}\n"
+        );
+        let problems = kernels_provider(&source);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].contains("declares `unsafe fn import` a second time"));
+        assert!(problems[1].contains("uses `unsafe` outside the listed"));
     }
 
     #[test]
     fn identifiers_containing_unsafe_are_not_the_keyword() {
         assert_eq!(
-            check_other_file("fn not_unsafe() {}\nlet unsafely = 1;\n", None),
+            testkit_other("fn not_unsafe() {}\nlet unsafely = 1;\n", None),
             Vec::<String>::new()
         );
     }

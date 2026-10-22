@@ -362,7 +362,11 @@ impl KernelProvider for CpuProvider {
     }
 
     /// The CPU sees host memory directly, so a registration only records the region.
-    fn register_host(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<Registration, Error> {
+    unsafe fn register_host(
+        &self,
+        ctx: &DeviceCtx,
+        region: HostRegion,
+    ) -> Result<Registration, Error> {
         let device = self.live(ctx)?;
         Ok(Registration {
             region,
@@ -372,7 +376,7 @@ impl KernelProvider for CpuProvider {
 
     /// Wraps the tier manager's memory as a buffer, without copying. The tier manager keeps it,
     /// so `free` forgets the buffer and leaves the memory.
-    fn import(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<DeviceBuffer, Error> {
+    unsafe fn import(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<DeviceBuffer, Error> {
         let device = self.live(ctx)?;
         if region.addr == 0 || region.len.0 == 0 {
             return Err(alloc_failed("an empty or null region".to_owned()));
