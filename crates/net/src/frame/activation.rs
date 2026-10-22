@@ -395,8 +395,18 @@ fn read_node(b: &[u8]) -> TreeNode {
 }
 
 /// Reads the TLV at `at` in the side area and returns it with the offset of the next one. The
-/// `Token` frame's TLV area uses the same encoding (RFC-0031 §6.5).
-pub(super) fn read_tlv(side: &[u8], at: usize) -> Result<(Side<'_>, usize), FrameError> {
+/// `Token` frame's TLV area uses the same encoding (RFC-0031 §6.5), so its errors name `ftype`,
+/// the frame the area belongs to.
+pub(super) fn read_tlv(
+    side: &[u8],
+    at: usize,
+    ftype: FrameType,
+) -> Result<(Side<'_>, usize), FrameError> {
+    read_tlv_item(side, at).map_err(|e| e.in_frame(ftype))
+}
+
+/// [`read_tlv`], with its errors naming `Activation`.
+fn read_tlv_item(side: &[u8], at: usize) -> Result<(Side<'_>, usize), FrameError> {
     let remaining = side.len().saturating_sub(at);
     if remaining < TLV_HEADER_LEN {
         return Err(inconsistent(
@@ -586,7 +596,7 @@ impl<'a> SideItems<'a> {
         let mut at = 0;
         std::iter::from_fn(move || match repr {
             Repr::Wire(bytes) if at < bytes.len() => {
-                let (side, next) = read_tlv(bytes, at).ok()?;
+                let (side, next) = read_tlv_item(bytes, at).ok()?;
                 at = next;
                 Some(side)
             }
@@ -805,7 +815,7 @@ impl<'a> Activation<'a> {
         let side = &ext[tree_end..side_end];
         let mut at = 0;
         while at < side.len() {
-            at = read_tlv(side, at)?.1;
+            at = read_tlv(side, at, FrameType::Activation)?.1;
         }
         let activation = Activation {
             header,

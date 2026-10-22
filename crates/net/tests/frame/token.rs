@@ -678,6 +678,13 @@ fn raw_ingress() -> Raw {
     }
 }
 
+/// Ring-return, as [`raw_ring`], with one 8-byte `RESTART` item for entry 0.
+fn raw_with_tlv() -> Raw {
+    let mut raw = raw_ring();
+    raw.tlvs = vec![(tlv::RESTART, 0, vec![0; 8])];
+    raw
+}
+
 fn case(
     name: &'static str,
     mut raw: Raw,
@@ -811,6 +818,12 @@ fn a_token_frame_breaking_a_rule_is_refused_with_a_classified_error() {
         edit(&mut ext);
         raw.frame(&ext)
     };
+    frames.push((
+        "a TLV running past the side area",
+        // The only TLV claims 64 value bytes of its 16-byte area: the error names the Token frame.
+        edit(&raw_with_tlv(), |e| e[16 + 4] = 64),
+        inconsistent("side_len", 16, 72),
+    ));
     frames.push((
         "a side area of 12 bytes",
         edit(&raw, |e| e[4] = 12),

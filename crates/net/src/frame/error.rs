@@ -85,6 +85,33 @@ pub enum FrameError {
 }
 
 impl FrameError {
+    /// The same error, naming `ftype` as the frame it was found in: the TLV reader `Activation`
+    /// and `Token` frames share names its own frame otherwise.
+    pub(super) fn in_frame(self, ftype: FrameType) -> FrameError {
+        match self {
+            FrameError::BadField { field, value, .. } => FrameError::BadField {
+                ftype,
+                field,
+                value,
+            },
+            FrameError::Inconsistent {
+                field,
+                value,
+                expected,
+                ..
+            } => FrameError::Inconsistent {
+                ftype,
+                field,
+                value,
+                expected,
+            },
+            FrameError::ExtTooShort { len, needed, .. } => {
+                FrameError::ExtTooShort { ftype, len, needed }
+            }
+            other => other,
+        }
+    }
+
     /// The RFC-0001 §5.12 class. A refused frame is never `Internal`, as RFC-0060 §10.2 requires
     /// of every decoder of untrusted bytes: damaged or malformed bytes are `Integrity`
     /// (RFC-0031 §7.2 drops the frame and NACKs it). A frame type this minor does not define, an

@@ -742,7 +742,7 @@ impl<'a> Token<'a> {
         let side = &ext[TOKEN_FIXED_LEN..side_end];
         let mut at = 0;
         while at < side.len() {
-            at = read_tlv(side, at)?.1;
+            at = read_tlv(side, at, FrameType::Token)?.1;
         }
         let tree = flags & token_flags::DRAFT_TREE != 0;
         let mut at = 0;
