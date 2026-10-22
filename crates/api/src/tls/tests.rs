@@ -823,6 +823,23 @@ fn the_ca_key_never_prints() {
     }
 }
 
+/// Review probe N2: a `ca.json` widened to 0644 is narrowed to 0600 again when it is loaded.
+#[cfg(unix)]
+#[test]
+fn a_widened_ca_file_is_narrowed_on_load() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Dir::new("widened");
+    LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    let path = dir.path().join(CA_FILE);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let (_, opened) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    assert_eq!(opened, CaOpen::Loaded);
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
 /// Review probe N1 through `open`: a `tls` that is a link to a 0755 directory elsewhere is
 /// refused, and the directory it points at is neither narrowed nor written into.
 #[cfg(unix)]

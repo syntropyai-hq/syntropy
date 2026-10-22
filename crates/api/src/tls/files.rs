@@ -108,9 +108,10 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The regular file at `path`, or `None` if there is none. A link, even to a regular file, or
-/// anything else is refused, not followed.
-pub(super) fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
+/// The owner-only file at `path`, or `None` if there is none. It must be a regular file: a
+/// link, even to a regular file, or anything else is refused, not followed. A file whose mode
+/// was widened is narrowed to 0600 again on Unix, as [`private_dir`] narrows the directory.
+pub(super) fn read_private(path: &Path) -> io::Result<Option<Vec<u8>>> {
     let found = match fs::symlink_metadata(path) {
         Ok(found) => found,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -121,6 +122,13 @@ pub(super) fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
     }
     let mut file = File::open(path)?;
     same_file(&found, &file.metadata()?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if found.permissions().mode() & 0o777 != 0o600 {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+    }
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok(Some(bytes))
@@ -157,7 +165,7 @@ mod tests {
             assert_eq!(mode(&path), 0o600);
             assert_eq!(mode(&dir), 0o700);
         }
-        assert_eq!(read_optional(&dir.join("absent")).unwrap(), None);
+        assert_eq!(read_private(&dir.join("absent")).unwrap(), None);
         fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
 
@@ -185,9 +193,9 @@ mod tests {
         let secret = elsewhere.join("secret");
         fs::write(&secret, b"not the CA's").unwrap();
         symlink(&secret, tls.join("ca.json")).unwrap();
-        assert!(read_optional(&tls.join("ca.json")).is_err());
+        assert!(read_private(&tls.join("ca.json")).is_err());
         assert!(
-            read_optional(&tls).is_err(),
+            read_private(&tls).is_err(),
             "a directory is not a regular file"
         );
         fs::remove_dir_all(&root).unwrap();

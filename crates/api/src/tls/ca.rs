@@ -500,7 +500,7 @@ impl LocalCa {
     ) -> Result<(LocalCa, CaOpen), TlsError> {
         files::private_dir(dir).map_err(io_error(dir))?;
         let path = dir.join(CA_FILE);
-        let Some(mut bytes) = files::read_optional(&path).map_err(io_error(&path))? else {
+        let Some(mut bytes) = files::read_private(&path).map_err(io_error(&path))? else {
             let ca = LocalCa::generate(dir, scope, node_key, now)?;
             ca.save()?;
             return Ok((ca, CaOpen::Created));
@@ -534,7 +534,7 @@ impl LocalCa {
     /// The last replacement recorded in `dir`, if any: what SEC-006 reports.
     pub fn last_replacement(dir: &Path) -> Result<Option<CaReplacement>, TlsError> {
         let path = dir.join(REPLACED_FILE);
-        let Some(bytes) = files::read_optional(&path).map_err(io_error(&path))? else {
+        let Some(bytes) = files::read_private(&path).map_err(io_error(&path))? else {
             return Ok(None);
         };
         serde_json::from_slice(&bytes)
