@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod gguf;
 pub mod range;
 pub mod safetensors;
 
