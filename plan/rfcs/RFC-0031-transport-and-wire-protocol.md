@@ -929,7 +929,7 @@ Defaults: Activations 4, or M + 2 in throughput mode; Tokens 4; prefill (the sam
 **Note, 2026-10-23 (DIST-E7-T02): the channel core, as built, and the credit probe.** `net::transport::core::ChannelCore` is §7.1–§7.3 for one side of one channel, sans I/O: every backend wraps one per side, moves its frames and passes the time in. Where this section leaves a choice open, the core takes these:
 - **The credit probe, which amends §7.1's "control frames never trigger credits".**
   - The gap it closes: a credit that only grants more, sent when the receiver's caller drops a frame, can be lost while the sender has nothing unacknowledged. No later credit follows, since no data arrives, and no ack timeout fires, since nothing is outstanding.
-  - So a sender whose `try_send` was refused for credit, with nothing unacknowledged, sends a `Ping` after one `ack_timeout`, then after 2, 4, … up to 64 `ack_timeout`s, until a credit lets it send. A data receiver answers a `Ping` with its reply and its current credit.
+  - So a sender whose `try_send` was refused for credit, with nothing unacknowledged, sends a `Ping` after one `ack_timeout`, then after 2, 4, … up to 64 `ack_timeout`s [target], until a credit lets it send. A data receiver answers a `Ping` with its reply and its current credit.
   - Only a refused send arms the probe, so an idle channel sends nothing.
 - **The receive checks** run `magic`, the lengths and `header_crc`, then the channel key, then `wire_minor ≤ negotiated` and the frame rules (§6.2), then `chan_seq` and `payload_crc`. §6.1 lists `wire_minor` before `header_crc` and the key.
   - Reading the minor after `header_crc` means a damaged minor byte counts as damage, which is NACKed, and does not close the channel.
