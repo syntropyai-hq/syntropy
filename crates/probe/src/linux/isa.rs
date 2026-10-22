@@ -95,7 +95,8 @@ impl Feature {
 /// set, not only RFC-0040 §7.3's "SSE4.2, POPCNT" for `X86V2`. ADR-0014 and ADR-0020 name
 /// x86-64-v2 as the platform floor, and the core's ggml CPU backend is built for that baseline
 /// (RFC-0040 §8.1), so a CPU with SSE4.2 and POPCNT but without CX16, LAHF-SAHF, SSE4.1 or
-/// SSSE3 cannot run it.
+/// SSSE3 cannot run it. The psABI set also names SSE3; it is not listed, because every CPU with
+/// SSSE3 has it.
 const X86_V2: [Feature; 6] = [
     Feature::Cx16,
     Feature::LahfLm,
