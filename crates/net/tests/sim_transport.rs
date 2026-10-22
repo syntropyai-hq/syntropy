@@ -427,7 +427,8 @@ struct Run {
     end: u64,
 }
 
-/// 60 frames through a four-slot window over a lossy, jittery `wifi6_home` link, from `seed`.
+/// 60 frames through a four-slot window over a lossy, jittery `wifi6_home` link, from `seed`,
+/// with the clock stepped from one event to the next.
 fn replay(seed: u64) -> Run {
     let mut model = LinkModel::preset("wifi6_home").expect("a preset");
     model.loss = 0.05;
@@ -447,7 +448,12 @@ fn replay(seed: u64) -> Run {
             send_one(&mut sender, &pool, next, 200).expect("credit to send");
             next += 1;
         }
-        two.run(Nanos(100_000));
+        // Step on events: the clock lands on each arrival and timer, so a delivery's recorded
+        // time is its arrival time to the nanosecond.
+        let now = two.clock_now();
+        let due = two.net.next_deadline().unwrap_or(MonoTime(now.0 + 100_000));
+        two.clock.advance_to(due.max(now));
+        two.net.step();
         let now = two.clock_now().0;
         while let Some(frame) = receiver.try_recv() {
             deliveries.push((now, frame.header.spec.chan_seq, frame.header.spec.step));
