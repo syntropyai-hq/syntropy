@@ -254,6 +254,19 @@ Command-channel messages:
 
 *Note 2026-10-22 (amendment, §18.9):* `LedgerGrant` is plain data in `core`: the per-tier bytes the daemon grants the runner. `ipc` carries it in `Init`, and `tier` checks an `ArenaPlan` against it (RFC-0020 §3, §12; OQ-IO-27).
 
+*Note 2026-10-23 (amendment, §18.28): which task adds each message.* `ipc` is layer 1, and rule 2 (§4.2) lets it name only layer-0 types. So every type a message carries lives in `core`, `obs` or `config`, and each message arrives with the task that owns its field types:
+- **DIST-E1-T03** builds the channel and `Hello`, `Ping`, `Pong`, `PeerRevoked`, `ShardProgress`, `AssignPlan`, `ApplyPlanDelta`, `StateChanged` (with `RunnerState`'s `u32` discriminant until DIST-E1-T05 adds the type) and `Init` without `config` and `grant`.
+- **DIST-E1-T15:** `Drain`, `Shutdown`, `MemoryPressure` and `SequenceEnded`. `Deadline`, `DrainReason`, `SequenceOutcome` and `FetchPriority` are new `core` types, and `PressureLevel` moves to `core` from `tier`.
+- **PROD-E1-T07:** `Init`'s `config` and `ConfigChanged`.
+- **DIST-E7-T04:** `Init`'s `grant` and `DataPlaneGrant`, with `DataPlaneCredential` as plain data in `core` (DIST-E2-T05).
+- **DIST-E1-T14:** `CancelSequence`.
+- **PLC-E2-T01:** `ProbeRequest`, with `ProbeSuite` in `core`.
+- **COMP-E10-T11:** `FetchShard` and `PackCommitted`, with `ShardSpec` and `PackKey`, and their field types `ChunkId` and `LayoutVersion`, in `core`.
+- **TIER-E1-T09:** `ResidencyDigest`, with `ResidencySummary` in `core`.
+- **No task yet:** `ProbeResult` waits for the task that defines `CapabilityProfile` (#1524), and `ErrorReport` for the task that builds `core`'s `Error` (§5.12). No task row names either yet.
+
+Each added message or field changes the postcard layout, so it bumps `ipc_protocol` (§5, note of 2026-10-22).
+
 IPC never carries per-token traffic across the network boundary, and no message on the command channel is sent per token. Local token delivery uses `local_tokens`.
 
 ## 4. Crate layout
@@ -1566,7 +1579,7 @@ pub enum ErrorClass {
 | `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
 | `BufferView`, `ViewKind` | core | 0020 | 0040 (`OpArgs::weights`) |
 | `ResourceGraph`, `CapabilityProfile` | core | 0010 | 0011 (what the solver reads), 0021 (`StorageCaps` fields) |
-| `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
+| `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`, and `ShardSpec` and `PackKey` by §18.28: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
 | `DType`, `QuantScheme` | core | 0042 | 0040 |
 | `KvFormula` | manifest | 0022 | 0043 |
 | `PlacementPlan`, `StageAssignment`, `TierAssignment`, `PlanDelta`, and the named parts RFC-0011 defines (`PredictedCost`, `BatchingLimits`, `Assumption`, `DeltaItem`, `TransitionStrategy`, `PlanCertification`) | core | 0011 | 0020, 0022, 0023, 0032 (`DeltaItem::Relink`, `ExtendShard`), 0053 (`CostTerm` keys) |
@@ -2838,3 +2851,10 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 | Change | Sections touched | Reason |
 |---|---|---|
 | rule 8 gains a second module-scoped exception: one `runner` module holds only the `unsafe impl PoolMemory` for a newtype over `tier`'s `NetPool` lease, with a `// SAFETY:` comment stating the contract the lease meets; `runner` moves from `forbid(unsafe_code)` to `deny(unsafe_code)` with one `allow` on that impl, and `check-deps`' placement check allows `unsafe` in exactly that module | §4.2 rule 8 (dated note) | rule 3 keeps `tier` off `net`, so `tier` cannot implement the trait, and `core` forbids `unsafe` code, so it cannot declare it; `runner` (layer 5) may depend on both. The cost: the refusals rule 8's note of 2026-10-22 gives `testkit` then apply to all of `runner`, so no `include`, no `#[path]` attribute, no local `macro_rules!` definition and no build script anywhere in it, since any of them could compile code the placement check does not read. Recommended by the stand-in engine-lane review of #1737 and taken under the maintainer's standing instruction, for the maintainers to confirm; TIER-E2-T25 builds it |
+
+### 18.28 Types the IPC carries live in `core`, and their messages arrive with them (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A type that a command-channel message carries lives in `core`, `obs` or `config`. `ShardSpec` and `PackKey` (with `ChunkId` and `LayoutVersion`), `ResidencySummary`, `ProbeSuite`, `PressureLevel` and `DataPlaneCredential` move to `core` as plain data, each in the task that owns it, with its owning RFC unchanged; the crate that held each re-exports it | §3.5 (dated note), §5.13 | `ipc` is layer 1, and rule 2 (§4.2) lets it name only layer 0. A message whose field type sat in `manifest`, `kernels`, `tier`, the probe or the crate with the signature scheme could not be defined at all (DIST-E1-T03) |
+| RFC-0001 §3.5's messages arrive with the tasks that own their field types, each with an `ipc_protocol` bump; DIST-E1-T03 builds the channel and the messages whose types exist at M0a, and the new DIST-E1-T15 the lifecycle types and messages that no task owned | §3.5 (dated note) | the full set needs types built in M1a and M2, and two of their owners (PROD-E1-T07, TIER-E1-T09) depend on DIST-E1-T03. One task holding every message would wait on M2 or form a cycle. `ProbeResult` and `ErrorReport` have no owning task yet. For the maintainers to confirm |
