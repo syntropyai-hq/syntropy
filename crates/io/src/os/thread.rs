@@ -270,14 +270,14 @@ mod platform {
     }
 
     /// The calling thread's id, which `setpriority` takes on Linux to act on one thread.
-    fn tid() -> libc::id_t {
+    pub(super) fn tid() -> libc::id_t {
         // SAFETY: `SYS_gettid` takes no arguments and cannot fail.
         let tid = unsafe { libc::syscall(libc::SYS_gettid) };
         libc::id_t::try_from(tid).unwrap_or(0)
     }
 
     /// The calling thread's nice value.
-    fn nice_of(tid: libc::id_t) -> Option<i32> {
+    pub(super) fn nice_of(tid: libc::id_t) -> Option<i32> {
         // `getpriority` may return -1 as a value, so `errno` tells success from failure.
         // SAFETY: `errno_location` returns the calling thread's `errno`, valid while it runs.
         unsafe { *errno_location() = 0 };
@@ -517,14 +517,31 @@ mod tests {
 
     #[test]
     fn raising_the_priority_never_lowers_it() {
-        let granted = std::thread::spawn(raise_current_thread_priority)
-            .join()
-            .unwrap();
+        let (before, granted) =
+            std::thread::spawn(|| (current_nice(), raise_current_thread_priority()))
+                .join()
+                .unwrap();
         match granted {
-            Priority::Nice(nice) => assert!(nice <= 0, "{nice}"),
+            // Lower runs first, so a raised priority is a nice value no higher than before, which
+            // need not be 0: under `nice cargo test` it starts above.
+            Priority::Nice(nice) => {
+                let before = before.expect("the nice value before the call");
+                assert!(nice <= before, "{before} -> {nice}");
+            }
             Priority::Level(level) => assert_eq!(level, 15),
             Priority::UserInteractive | Priority::Unchanged => {}
         }
+    }
+
+    /// The calling thread's nice value, where the OS has one.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn current_nice() -> Option<i32> {
+        platform::nice_of(platform::tid())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    fn current_nice() -> Option<i32> {
+        None
     }
 
     /// Windows' cores come from the process's mask over its primary group, and each core's NUMA
