@@ -1,0 +1,19 @@
+# activation-canary: Canary: one F32 row of hidden 16, no side items
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 01 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+01 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0020 header
+80 00 00 00 40 00 00 00 6f c3 0c 2b a1 60 67 ee  # 0030 header
+02 00 03 00 05 01 01 00 10 00 00 00 01 00 00 00  # 0040 extension
+01 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+08 07 06 05 04 03 02 01 02 00 00 00 50 00 00 00  # 0080 extension
+00 00 00 00 01 00 00 00 00 00 00 00 ff ff 00 00  # 0090 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00a0 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00b0 extension
+00 00 00 00 00 00 80 3f 00 00 00 40 00 00 40 40  # 00c0 payload
+00 00 80 40 00 00 a0 40 00 00 c0 40 00 00 e0 40  # 00d0 payload
+00 00 00 41 00 00 10 41 00 00 20 41 00 00 30 41  # 00e0 payload
+00 00 40 41 00 00 50 41 00 00 60 41 00 00 70 41  # 00f0 payload

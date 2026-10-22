@@ -64,8 +64,8 @@ pub struct TierInfoExt {
     pub numa: Option<u16>,
     /// Where `usable` came from, so the dashboard can explain a low number.
     pub budget_source: BudgetSource,
-    /// Raw OS inputs for `HostPinned` and `HostPageable` tiers. RFC-0020's pure rule
-    /// `budget::host_usable(&HostMemInfo, &ResourcePolicy)` turns them into `usable`.
+    /// Raw OS inputs for `HostPinned` and `HostPageable` tiers. RFC-0020 §5's pure rule,
+    /// [`crate::budget::host_budget`], turns them into `usable` and `pin_limit`.
     pub host: Option<HostMemInfo>,
     /// Context reserve measured at device open (RFC-0001 §9.3 item 1). `Vram` and `Unified`
     /// only.
@@ -107,7 +107,9 @@ pub struct HostMemInfo {
     pub available: Bytes,
     /// Free memory in this tier's NUMA domain.
     pub numa_free: Option<Bytes>,
-    /// cgroup v2 `memory.max` (v1 `memory.limit_in_bytes`) − current.
+    /// cgroup v2 `memory.max` (v1 `memory.limit_in_bytes`) − current. RFC-0020 §5's v2 term
+    /// is `min(memory.max, memory.high) − memory.current`. Windows: the job object's limit −
+    /// usage. `None` when no limit is set.
     pub cgroup_limit: Option<Bytes>,
     /// `RLIMIT_MEMLOCK`; `None` = unlimited or `CAP_IPC_LOCK` held.
     pub memlock_limit: Option<Bytes>,

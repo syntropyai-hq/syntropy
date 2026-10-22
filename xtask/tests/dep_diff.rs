@@ -177,6 +177,27 @@ fn a_git_dependency_is_new_and_has_no_registry_entry() {
 }
 
 #[test]
+fn a_path_dependency_on_a_directory_outside_the_members_is_new() {
+    // `vendor/` is excluded from the workspace, so `fixture-vendored` is code the members do
+    // not cover, and the path dependency on it needs approval like a new crate.
+    let (code, log) = run("head-path-excluded", &[]);
+    assert_eq!(code, Some(1), "{log}");
+    assert!(
+        log.contains(
+            "dep-diff: new crate `fixture-vendored` from the directory `vendor/fixture-vendored`, \
+             which is not a workspace member, in fixture-a (normal)"
+        ),
+        "{log}"
+    );
+    // `fixture-b`'s path dependency on the member `fixture-a` is not listed.
+    assert!(!log.contains("new crate `fixture-a`"), "{log}");
+    assert!(log.contains("it has no registry entry to check"), "{log}");
+    assert!(log.contains("registry passed"), "{log}");
+    let (code, log) = run("head-path-excluded", &pr("comments-approved.json"));
+    assert_eq!(code, Some(0), "{log}");
+}
+
+#[test]
 fn approval_reads_all_of_the_pr_data_or_none() {
     let at = |file: &str| fixtures().join("pr").join(file).display().to_string();
     let (code, log) = run(

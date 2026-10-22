@@ -21,5 +21,56 @@
 #   version = "<release tag or commit>"
 #   license = "MIT"                          # an SPDX expression
 #   notice = "third_party/ggml/LICENSE"      # the file with its copyright and licence text
-#
-# No third-party code is vendored yet.
+
+# The official BLAKE3 test vectors (`test_vectors/test_vectors.json`) and the project's three
+# licence files, byte-identical to the upstream commit. `syntropy-net`'s tests check the `blake3`
+# crate against them (RFC-0034 §3, DIST-E2-T04). Upstream releases the work under CC0 1.0, or
+# alternatively Apache-2.0 or Apache-2.0 with the LLVM exception.
+[[file]]
+path = "third_party/blake3/test_vectors.json"
+upstream = "https://github.com/BLAKE3-team/BLAKE3"
+version = "f55849f89cd85083c1c9daa2c5de20766f309c00"
+license = "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+notice = "third_party/blake3/LICENSE_CC0"
+
+[[file]]
+path = "third_party/blake3/LICENSE_A2"
+upstream = "https://github.com/BLAKE3-team/BLAKE3"
+version = "f55849f89cd85083c1c9daa2c5de20766f309c00"
+license = "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+notice = "third_party/blake3/LICENSE_CC0"
+
+[[file]]
+path = "third_party/blake3/LICENSE_A2LLVM"
+upstream = "https://github.com/BLAKE3-team/BLAKE3"
+version = "f55849f89cd85083c1c9daa2c5de20766f309c00"
+license = "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+notice = "third_party/blake3/LICENSE_CC0"
+
+[[file]]
+path = "third_party/blake3/LICENSE_CC0"
+upstream = "https://github.com/BLAKE3-team/BLAKE3"
+version = "f55849f89cd85083c1c9daa2c5de20766f309c00"
+license = "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+notice = "third_party/blake3/LICENSE_CC0"
+
+# The BIP-39 English word list, frozen as the fingerprint and recovery-code word list (RFC-0034
+# §6.5, DIST-E2-T08). `LICENSE` is byte-identical to the upstream commit. `english.txt` differs
+# from it in one line: line 259 holds `cairn` in place of a word the naming rule (AGENTS.md, D5)
+# keeps out of the repository. Upstream's `english.txt` has SHA-256
+# 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda; this one has
+# 5bc8ba148bf7a2017a985d0fb4c21fe8293b3bc71001f2f6568c3a522bbbdb90. The words the offensive-word
+# review replaced are applied in `syntropy-net`'s `words` module, not here.
+[[file]]
+path = "third_party/bip39/english.txt"
+upstream = "https://github.com/trezor/python-mnemonic"
+version = "b57a5ad77a981e743f4167ab2f7927a55c1e82a8"
+license = "MIT"
+notice = "third_party/bip39/LICENSE"
+
+[[file]]
+path = "third_party/bip39/LICENSE"
+upstream = "https://github.com/trezor/python-mnemonic"
+version = "b57a5ad77a981e743f4167ab2f7927a55c1e82a8"
+license = "MIT"
+notice = "third_party/bip39/LICENSE"

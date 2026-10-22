@@ -15,16 +15,24 @@
 //!   [`ResolvedConfig`], an immutable snapshot whose every value carries its [`Origin`], held
 //!   for readers by [`SharedConfig`];
 //! - the text of `config show --resolved`, `config check` and `config path`
-//!   ([`command`]).
+//!   ([`command`]);
+//! - the debug-key gates of §7.1 ([`DebugSection`]): the three `debug.*` keys, the loopback
+//!   predicate the API applies to the debug endpoints, the warning a [`ResolvedConfig`] carries
+//!   while any key is on, and the predicate for a manifest signed by the CI test key;
+//! - the validation of RFC-0054 §8 (PROD-E1-T03): [`load_and_validate`] runs phases 1–5 and keeps
+//!   every error, each a [`Problem`] with its [`Code`], and [`diagnostic::render`] prints them in
+//!   §8's format without ever showing a secret.
 //!
-//! The validation phases of §8, the cluster and instance scopes, and reload come in later
-//! tasks.
+//! The cluster and instance scopes, and reload, come in later tasks.
 //!
 //! # Loading a node's configuration
 //!
 //! ```
 //! use std::path::Path;
-//! use syntropy_config::{Env, Flags, Mode, Os, Registry, command, load, locate};
+//! use syntropy_config::{
+//!     BUILTIN_RULES, Env, Flags, HostEnvironment, Mode, Os, Registry, command, load_and_validate,
+//!     locate,
+//! };
 //!
 //! // A binary registers every section it loads.
 //! static REGISTRY: Registry = Registry::new(&[]);
@@ -39,10 +47,14 @@
 //! # // A doctest must not read this host's own config files, so it scans nothing.
 //! # let scan = syntropy_config::Scan { system_file: None, dropins: vec![], user_file: None, explicit: None };
 //! // let scan = locate(os, Mode::User, &env, None).scan()?;
-//! let outcome = load(&REGISTRY, os, &scan, &env, &Flags::new());
-//! let report = command::check(&outcome);
+//! let checked = load_and_validate(
+//!     &REGISTRY, os, &scan, &env, &Flags::new(), |_| None, &[], &HostEnvironment,
+//! );
+//! let report = command::check(&checked, &REGISTRY);
 //! assert_eq!(report.exit, command::EXIT_OK);
-//! assert!(report.text.contains("warning: env SYNTROPY_TYPO: unknown variable"));
+//! assert!(report.text.contains("warning[config/0003]: unknown variable: `SYNTROPY_TYPO`"));
+//! assert!(report.text.contains("  --> env SYNTROPY_TYPO"));
+//! # let _ = BUILTIN_RULES;
 //! ```
 //!
 //! # Declaring a section
@@ -73,6 +85,7 @@
 //! | `scope = Node \| Cluster \| Instance \| Request` | yes | the keys' scope unless a key overrides it |
 //! | `owner = "RFC-NNNN"` | yes | the owning RFC unless a key overrides it |
 //! | `shared` | no | own only these keys, inside a table another section owns |
+//! | `deprecated = CONST` | no | a `&[Deprecated]` of keys this section renamed or removed (RFC-0054 §8); [`Registry::check`] validates the records |
 //!
 //! Key attributes, on each field:
 //!
@@ -98,18 +111,26 @@
 // Lets the derive's `::syntropy_config::…` paths resolve inside this crate's own tests.
 extern crate self as syntropy_config;
 
+mod code;
 pub mod command;
+mod debug;
 mod default;
+pub mod diagnostic;
 mod discovery;
 mod env;
 mod holds_secret;
 mod origin;
 mod registry;
+mod render;
 mod resolve;
 mod schema;
 mod text;
+mod validate;
 pub mod value;
 
+pub use code::{Code, suggest};
+pub use debug::{DebugApi, DebugSection, ManifestSignerNotAllowed, Peer, is_loopback};
+pub use diagnostic::{Problem, Severity};
 pub use discovery::{
     CONFIG_FLAG, CONFIG_VAR, Dirs, Explicit, HOME_VAR, Locations, Mode, Os, Runtime, Scan, locate,
     order_dropins,
@@ -119,12 +140,12 @@ pub use holds_secret::HoldsSecret;
 pub use origin::Origin;
 pub use registry::{Registry, RegistryError};
 pub use resolve::{
-    ConfigFile, Flags, Layers, Problem, Proposal, Rejected, Resolved, ResolvedConfig, SectionError,
+    ConfigFile, Flags, Layers, Proposal, Rejected, Resolved, ResolvedConfig, SectionError,
     SharedConfig, load,
 };
 pub use schema::{
-    Authority, ConfigSection, DefaultSpec, DefaultValue, KeyError, KeySchema, Reload, Scope,
-    SectionSchema,
+    Authority, ConfigSection, DefaultSpec, DefaultValue, Deprecated, KeyError, KeySchema, Reload,
+    Scope, SectionSchema,
 };
 /// Declares a configuration section. See the [crate documentation](crate) for the attributes.
 pub use syntropy_config_derive::ConfigSection;
@@ -132,6 +153,10 @@ pub use syntropy_config_derive::ConfigSection;
 pub use syntropy_config_derive::HoldsSecret;
 /// A TOML value, as the layers hold it.
 pub use toml::Value;
+pub use validate::{
+    BUILTIN_RULES, CONFIG_VERSION, Checked, Environment, Findings, HostEnvironment, PathUse, Phase,
+    Rule, RuleInput, config_version_problem, load_and_validate, validate,
+};
 pub use value::{
     ByteSize, DeviceApi, DeviceSelector, Duration, Fraction, InRange, LayerRange, ModelSelector,
     NodeSelector, Rate, Regex, Reserve, Secret, SecretSource, TierSelector, ValueError,
@@ -145,7 +170,101 @@ pub mod __private {
 
     use crate::default::UnsetDeserializer;
     use crate::schema::{DefaultSpec, DefaultValue, KeyError, KeySchema};
-    use crate::value::{InRange, ValueError};
+    use crate::value::{InRange, ValueError, ValueErrorKind, capture_kind};
+
+    /// The TOML value type the generated `check` functions take, so a crate that declares a
+    /// section needs no `toml` dependency of its own.
+    pub use toml;
+
+    /// How a field with `#[serde(with = …)]` or `deserialize_with` reads a TOML value.
+    pub type FromToml<T> = fn(toml::Value) -> Result<T, toml::de::Error>;
+
+    /// What a default written in an attribute deserializes from.
+    pub type DefaultDeserializer = crate::default::ValueDeserializer<'static>;
+
+    /// How a field with `#[serde(with = …)]` or `deserialize_with` reads an attribute value.
+    pub type FromDefault<T> = fn(DefaultDeserializer) -> Result<T, serde::de::value::Error>;
+
+    /// Checks that `value` deserializes into `T`, keeping the kind of the error.
+    pub fn check_value<T: DeserializeOwned>(value: &toml::Value) -> Result<T, ValueError> {
+        check_value_by(value, T::deserialize)
+    }
+
+    /// Checks that `value` deserializes through `de`, the field's `serde(with)` path.
+    pub fn check_value_by<T>(value: &toml::Value, de: FromToml<T>) -> Result<T, ValueError> {
+        let (result, kind) = capture_kind(|| de(value.clone()));
+        result.map_err(|e| {
+            ValueError::new(
+                kind.unwrap_or(ValueErrorKind::WrongType),
+                e.message().to_owned(),
+            )
+        })
+    }
+
+    /// Checks that `value` deserializes into `T` and lies in `key`'s range.
+    pub fn check_value_in_range<T: DeserializeOwned + InRange>(
+        value: &toml::Value,
+        key: &'static KeySchema,
+    ) -> Result<(), ValueError> {
+        in_range(&check_value::<T>(value)?, key)
+    }
+
+    /// Checks that `value` deserializes through `de` and lies in `key`'s range.
+    pub fn check_value_by_in_range<T: InRange>(
+        value: &toml::Value,
+        key: &'static KeySchema,
+        de: FromToml<T>,
+    ) -> Result<(), ValueError> {
+        in_range(&check_value_by(value, de)?, key)
+    }
+
+    /// Checks a key's default deserializes through `de`, the field's `serde(with)` path. An
+    /// unset default is not checked: the field's `serde(default)` supplies its absence.
+    pub fn check_default_by<T>(
+        key: &'static KeySchema,
+        errors: &mut Vec<KeyError>,
+        de: FromDefault<T>,
+    ) {
+        if let Err(error) = default_by(key, de) {
+            errors.push(KeyError {
+                key: key.path,
+                error,
+            });
+        }
+    }
+
+    /// Checks a key's default deserializes through `de` and lies in the key's range.
+    pub fn check_default_by_in_range<T: InRange>(
+        key: &'static KeySchema,
+        errors: &mut Vec<KeyError>,
+        de: FromDefault<T>,
+    ) {
+        let checked = default_by(key, de).and_then(|value| match value {
+            Some(value) => in_range(&value, key),
+            None => bounds::<T>(key).map(|_| ()),
+        });
+        if let Err(error) = checked {
+            errors.push(KeyError {
+                key: key.path,
+                error,
+            });
+        }
+    }
+
+    /// The key's fixed default read through `de`; `None` for an unset or computed default.
+    fn default_by<T>(key: &'static KeySchema, de: FromDefault<T>) -> Result<Option<T>, ValueError> {
+        match &key.default {
+            DefaultSpec::Value(value) => de(crate::default::ValueDeserializer::new(value))
+                .map(Some)
+                .map_err(|e| {
+                    ValueError::new(
+                        ValueErrorKind::WrongType,
+                        format!("the default does not fit `{}`: {e}", key.ty),
+                    )
+                }),
+            DefaultSpec::Unset | DefaultSpec::Computed(_) => Ok(None),
+        }
+    }
 
     /// Checks a key's default deserializes into `T`.
     pub fn check_default<T: DeserializeOwned>(key: &'static KeySchema, errors: &mut Vec<KeyError>) {

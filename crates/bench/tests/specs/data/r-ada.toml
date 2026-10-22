@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Fixture data for crates/bench/tests/specs: R-ADA as RFC-0061 §6.2 describes it, with the
+# parts the spec database covers (RTX 4090 class, Core Ultra 200-class, 990 PRO-class), until
+# QUAL-E15-T02 adds the real rig's record to bench/lab/rigs.toml. The firmware, driver and part
+# strings are made up.
+
+version = 1
+
+[[rig]]
+id = "R-ADA"
+os_image = "lab-linux-fixture-1"
+kernel = "6.8.0-fixture"
+power_plan = "performance"
+room_sensor = "fixture-room-1"
+
+[rig.cpu]
+model = "Intel Core Ultra 7 265K"
+microcode = "0x114"
+
+[[rig.memory]]
+slot = "DIMM_A2"
+size_gib = 64
+speed_mts = 6000
+part = "FIXTURE-64G-6000-A"
+
+[[rig.memory]]
+slot = "DIMM_B2"
+size_gib = 64
+speed_mts = 6000
+part = "FIXTURE-64G-6000-B"
+
+[[rig.gpu]]
+slot = "PCIEX16_1"
+model = "NVIDIA GeForce RTX 4090"
+vbios = "95.02.18.80.5F"
+driver = "580.65.06"
+pcie = "gen4x16"
+
+[[rig.nvme]]
+slot = "M2_1"
+model = "Samsung SSD 990 PRO 2TB"
+firmware = "4B2QJXD7"
+attachment = "cpu"
+pcie = "gen4x4"

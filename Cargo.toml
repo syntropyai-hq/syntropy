@@ -61,15 +61,22 @@ publish = false
 # The config snapshot swap with lock-free readers (RFC-0054 §9.1).
 arc-swap = "1.9.3"
 bitflags = { version = "2", features = ["serde"] }
-# The `RigFingerprint` of RFC-0061 §2.1 (QUAL-E15-T01). `pure` is the portable Rust code: no C or
-# assembly to build, and the same digest on every target.
+# The `RigFingerprint` of RFC-0061 §2.1 (QUAL-E15-T01), and RFC-0034 §3's hashes and derivations
+# in `syntropy-net`. `pure` is the portable Rust code: no C or assembly to build, and the same
+# digest on every target.
 blake3 = { version = "1.8.7", default-features = false, features = ["pure"] }
 # `SimEntropy`'s seeded ChaCha20 stream in `testkit` (RFC-0060 §2.1 rule T2). `rng` alone: the
 # block generator over `rand_core`, without the cipher traits.
 chacha20 = { version = "0.10.2", default-features = false, features = ["rng"] }
+# Deterministic CBOR for the control envelope (RFC-0031 §9.1, ADR-0305), `syntropy-net` only.
+ciborium = "0.2.2"
 # CRC32C (Castagnoli) for frame headers and payloads (RFC-0031 §6.1), with SSE4.2 or Armv8 CRC
 # instructions picked at run time and a table fallback; also the beacon, invite and log codecs.
 crc32c = "0.6.8"
+# Ed25519 with strict verification (RFC-0034 §3), `syntropy-net` only. Major 3 is the one iroh's
+# key types use, so the two share one implementation. Pinned exactly: which keys and signatures
+# it accepts is part of the protocol, so a new version is a reviewed change.
+ed25519-dalek = "=3.0.0"
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
@@ -77,12 +84,20 @@ regex = { version = "1.13.1", default-features = false, features = ["std", "unic
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 smallvec = { version = "1", features = ["serde"] }
+# The explicit-state model check of election, lease, replication and heal (RFC-0032 Testing,
+# DIST-E10-T08). A dev-dependency of `cluster` only.
+stateright = "0.31.0"
+# Constant-time comparison of secrets (RFC-0034 §3), `syntropy-net` only.
+subtle = "2.6.1"
 syn = { version = "3.0.9", default-features = false, features = ["derive", "parsing", "printing", "proc-macro"] }
 # TOML reading only (no writer): the RFC-0042 tolerance tables, `numerics/tolerances-v<N>.toml`,
 # and the rig inventory `bench/lab/rigs.toml` (RFC-0061 §6.3).
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 trybuild = "1.0.122"
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
+# zstd level 3 for control messages over 64 KiB (RFC-0031 §9.1), `syntropy-net` only. It builds
+# the bundled C library (BSD-3-Clause), so the build needs a C compiler.
+zstd = { version = "0.14.3", default-features = false }
 
 # Build profiles (RFC-0062 §4.4, RFC-0060 §1.3). `cargo xtask build --profile <p>` builds each
 # with its test features: `dev` (cargo's own) and `test-release` with `fault-injection`,
