@@ -229,7 +229,9 @@ pub fn unmeasured_rank(transport: TransportKind) -> u8 {
 /// The order in which to try an edge's candidate transports (RFC-0031 §3): every measured
 /// candidate by [`link_cost`] at `size`, cheapest first, then every unmeasured one in
 /// [`unmeasured_rank`] order. Ties go by the unmeasured rank, then by the transport, so the order
-/// is the same on every node.
+/// is the same on every node. A measured candidate whose β is not a positive rate costs
+/// `Nanos(u64::MAX)`, so it comes last among the measured ones but still before every unmeasured
+/// one.
 #[must_use]
 pub fn candidate_order<'a>(
     candidates: &'a [LinkCaps],
