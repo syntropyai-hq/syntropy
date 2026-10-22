@@ -47,6 +47,7 @@
 
 mod pad;
 mod ring;
+pub mod shared;
 mod sync;
 mod wait;
 #[cfg(all(
