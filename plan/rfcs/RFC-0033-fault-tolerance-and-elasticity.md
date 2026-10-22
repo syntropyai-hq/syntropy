@@ -326,7 +326,7 @@ For sequence q on retiring epoch e, moving to target epoch e′ (or another inst
 t_finish   = remaining(q) · t_tok(e)              remaining(q) = min(limits.max_tokens − emitted, p90_len(class) − emitted)
 t_kvmig    = Σ_moved stages KV_bytes(q, layers) / β_bulk(holder → new) + α        (needs old holders alive and e′ loaded)
 t_replay   = H_bytes(q) / β + t_prefill(moved layers, ctx(q))                      (needs a surviving upstream source in e′)
-t_reprefill= TTFT_{e′}(prompt_len + emitted)                                      (always available)
+t_reprefill= TTFT_{e′}(prompt_len + emitted)                                      (when e′ holds ctx(q))
 feasible   = { finish  if t_finish ≤ drain_deadline,
                kvmig   if make-before-break and β_bulk known,
                replay  if e′ shares the upstream stages that hold q's history,
@@ -602,12 +602,12 @@ pub enum Standby {
   - predicted `t_tok` improves by at least `replan.min_gain` (20 %), or 10 % from a degraded plan;
   - its moved bytes divided by measured link rates are recovered within `replan.payback_horizon`.
 - **In latency mode** the adoption waits for an idle window (no live sequences) for up to `replan.max_defer` (5 min, RFC-0011 §16; 10 min before 2026-10-22, §12's note).
-  - A long agent session may never go idle. When the deadline passes, each live sequence takes the per-sequence choice of §5.1. A sequence that fits `recovery.drain_deadline` finishes on the retiring epoch. The others move at step boundaries, usually by KV migration under make-before-break when memory allows, otherwise by replay or re-prefill (revised 2026-10-22, note below).
+  - A long agent session may never go idle. When the deadline passes, the plan is applied if its `context_length` holds every live sequence's `prompt_len + emitted`, and otherwise it keeps waiting, as before, until the sequences it cannot hold have ended (RFC-0011 §12.2). Once it is applied, each live sequence takes the per-sequence choice of §5.1. A sequence that fits `recovery.drain_deadline` finishes on the retiring epoch. The others move at step boundaries, usually by KV migration under make-before-break when memory allows, otherwise by replay or re-prefill (revised 2026-10-22, note below).
   - Persisted sessions are re-homed by RFC-0022.
 - **In throughput mode** the plan is adopted by make-before-break when capacity allows. Otherwise it waits for the instance's load to fall below half its admission limit.
 - A returning node that held the lost stage of a degraded plan usually still has its pack. If so, `Replace` back onto it costs only `t_load + t_warm + t_replay`, and the solver's move cost reflects that through `ChunksAnnounced`.
 
-*Note 2026-10-22 (#1748):* the deadline bullet said live sequences "are moved at step boundaries by the per-sequence rule of §5.1, usually KV migration under make-before-break when memory allows, otherwise replay". That left out §5.1's `finish`, which wins whenever a sequence fits the drain deadline, and re-prefill, which is always feasible. RFC-0011 §12.2 now refers to this section for the deadline; before, it waited for the next idle window with no bound.
+*Note 2026-10-22 (#1748):* the deadline bullet said live sequences "are moved at step boundaries by the per-sequence rule of §5.1, usually KV migration under make-before-break when memory allows, otherwise replay". That left out §5.1's `finish`, which wins whenever a sequence fits the drain deadline, and re-prefill, which is always feasible. RFC-0011 §12.2 now refers to this section for the deadline; before, it waited for the next idle window with no bound. Re-prefill needs e′ to hold the sequence's context, which a deferred plan need not (RFC-0011 §11.2), so the plan is applied at the deadline only if it holds every live sequence. §5.1's `t_reprefill` reads "(when e′ holds ctx(q))" where it read "(always available)", and so does the choice rule's test under Testing. Settled under the maintainer's standing instruction of 2026-10-22.
 
 ### 11. Commands, events and types added
 
@@ -736,7 +736,7 @@ Re-prefill instead of replay would take the full ≈ 22 s two-stage prefill (RFC
   - truncation stays consistent with KV truncation across verify windows;
   - spill and restore are byte-exact;
   - drops advance `from` and set `HISTORY_PARTIAL`.
-- *Choice rule (§5.1):* property tests that `finish` is chosen whenever it fits the deadline, and that `reprefill` is always feasible.
+- *Choice rule (§5.1):* property tests that `finish` is chosen whenever it fits the deadline, and that `reprefill` is feasible whenever e′ holds `ctx(q)`.
 - *Repair choice (§6.2):* deterministic on identical inputs.
 
 **Exactness.** The parity harness decodes N tokens, kills stage s, resumes, and compares the continuation with uninterrupted decode under teacher forcing. It runs for each conformance family, hybrid State-layer families included, for s ∈ {head, middle, tail}, with F32 and BF16 wire. KL and top-1 must stay within RFC-0042's tolerances (ADR-0019).
