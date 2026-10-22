@@ -3778,6 +3778,7 @@ dependencies = [
  "subtle",
  "syntropy-config",
  "syntropy-core",
+ "syntropy-testkit",
  "tokio",
  "zstd",
 ]
@@ -3844,6 +3845,7 @@ dependencies = [
  "syntropy-config",
  "syntropy-core",
  "syntropy-graph",
+ "syntropy-net",
  "toml",
 ]
 
