@@ -106,7 +106,7 @@ impl Preset {
     /// presets set them plainly: no jitter, no reorder, no per-packet overhead, an MTU of 1,500
     /// bytes on IP links and 4,096 on RDMA, and on shared memory a frame of any size as one
     /// packet. `wifi6_home`'s body has σ 0.92, the value that puts the mixture's p50, p90 and p99
-    /// at the table's 5, 18 and 250 ms (RFC-0060 §8.3, note of 2026-10-22).
+    /// at the table's 5, 18 and 250 ms (RFC-0060 §8.3, note of 2026-10-23).
     pub fn model(self) -> LinkModel {
         let log_normal = |median_us: u64, sigma: f64| Dist::LogNormal {
             median: Nanos(median_us * US),
@@ -198,9 +198,13 @@ impl RttEstimate {
             self.srtt = rtt;
             self.rttvar = Nanos(rtt.0 / 2);
         } else {
+            // In 128 bits: a century-scale α overflows `3·rttvar` and `7·srtt` in 64, and each
+            // average is at most the larger of its terms, so it fits back.
             let deviation = self.srtt.0.abs_diff(rtt.0);
-            self.rttvar = Nanos((3 * self.rttvar.0 + deviation) / 4);
-            self.srtt = Nanos((7 * self.srtt.0 + rtt.0) / 8);
+            let rttvar = (3 * u128::from(self.rttvar.0) + u128::from(deviation)) / 4;
+            let srtt = (7 * u128::from(self.srtt.0) + u128::from(rtt.0)) / 8;
+            self.rttvar = Nanos(u64::try_from(rttvar).expect("an average of u64 values"));
+            self.srtt = Nanos(u64::try_from(srtt).expect("an average of u64 values"));
         }
         self.samples += 1;
     }
@@ -434,5 +438,33 @@ impl Link {
             u64::MAX
         };
         transfer.saturating_add(packets.saturating_mul(self.model.per_packet_overhead.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 9002 §5.3's averages hold for round trips up to `u64::MAX` nanoseconds, a century-scale
+    /// α included, without overflow.
+    #[test]
+    fn the_rtt_estimate_takes_century_scale_samples() {
+        let mut estimate = RttEstimate::new();
+        estimate.sample(Nanos(u64::MAX));
+        assert_eq!(estimate.srtt, Nanos(u64::MAX));
+        estimate.sample(Nanos(u64::MAX));
+        assert_eq!(estimate.srtt, Nanos(u64::MAX));
+        let first = 3 * u128::from(u64::MAX / 2) / 4;
+        assert_eq!(estimate.rttvar, Nanos(first as u64));
+        estimate.sample(Nanos(0));
+        let rttvar = (3 * first + u128::from(u64::MAX)) / 4;
+        assert_eq!(estimate.rttvar, Nanos(rttvar as u64));
+        assert_eq!(estimate.srtt, Nanos((7 * u128::from(u64::MAX) / 8) as u64));
+        assert_eq!(estimate.pto(), Nanos(u64::MAX));
+        // Small samples keep their exact averages.
+        let mut small = RttEstimate::new();
+        small.sample(Nanos(8));
+        small.sample(Nanos(16));
+        assert_eq!((small.srtt, small.rttvar), (Nanos(9), Nanos(5)));
     }
 }

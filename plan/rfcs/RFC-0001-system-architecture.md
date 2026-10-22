@@ -2840,6 +2840,14 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 |---|---|---|
 | rule 8 gains a second module-scoped exception: one `runner` module holds only the `unsafe impl PoolMemory` for a newtype over `tier`'s `NetPool` lease, with a `// SAFETY:` comment stating the contract the lease meets; `runner` moves from `forbid(unsafe_code)` to `deny(unsafe_code)` with one `allow` on that impl, and `check-deps`' placement check allows `unsafe` in exactly that module | §4.2 rule 8 (dated note) | rule 3 keeps `tier` off `net`, so `tier` cannot implement the trait, and `core` forbids `unsafe` code, so it cannot declare it; `runner` (layer 5) may depend on both. The cost: the refusals rule 8's note of 2026-10-22 gives `testkit` then apply to all of `runner`, so no `include`, no `#[path]` attribute, no local `macro_rules!` definition and no build script anywhere in it, since any of them could compile code the placement check does not read. Recommended by the stand-in engine-lane review of #1737 and taken under the maintainer's standing instruction, for the maintainers to confirm; TIER-E2-T25 builds it |
 
+### 18.26 Hot-thread placement on Apple platforms (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| On Apple platforms, ADR-0012 item 2's hot threads run unpinned at QoS `USER_INTERACTIVE`, and their placement report gives no core and NUMA node 0 | ADR-0012 (dated revision); RFC-0012 §1.1 (dated note) | macOS and iOS have no call that binds a thread to a core, and Apple silicon ignores the `THREAD_AFFINITY_POLICY` tags. The recommended option, taken under the maintainer's standing instruction, 2026-10-23 |
+| The OS calls that place hot threads (`cpu_topology`, `pin_current_thread`, `raise_current_thread_priority`, `current_core`) are `syntropy_io::os` functions, and `exec` keeps `forbid(unsafe_code)` | §4.2 rule 8 (its note of 2026-10-22 already places OS calls that need `unsafe` in `io`) | PLC-E7-T01 pins its dispatchers, and pinning, priority and NUMA queries need `unsafe` FFI |
+| `/debug/state` lists each runner's hot-thread placement records | RFC-0050 §13.6 (dated note) | PLC-E7-T01's criterion: dispatchers report their pinned core and NUMA node in the debug state |
+
 ### 18.30 The sequence types' field types in `core` (2026-10-23)
 
 | Change | Sections touched | Reason |
