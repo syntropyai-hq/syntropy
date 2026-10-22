@@ -208,7 +208,7 @@ pub fn commands_lost(n: u8) -> Config {
 
 /// The bounded 3-node configuration the default tests check: every scenario on 3 nodes, at
 /// bounds the dev profile checks in seconds. Every scenario here runs to exhaustion: about
-/// 1.5 million states, 31 s in the dev profile and 4.0 s release-optimised, with a test-process
+/// 1.5 million states, 28 s in the dev profile and 4.9 s release-optimised, with a test-process
 /// peak of 15 MB [measured, 2026-10-22, AMD Ryzen 9 5950X under WSL2, toolchain 1.99.1,
 /// 4 checker threads].
 pub fn bounded() -> Vec<Config> {
@@ -236,9 +236,9 @@ pub fn bounded() -> Vec<Config> {
 /// `state_cap` of generated states. Nine reach it, so their check is an exploration to that
 /// bound, not an exhaustive one: `split-heal`, `equal-counters` and `commands-crash` on 3 and 4
 /// nodes, `stale-heal` on 3, and `tag-collision` and `byzantine-snapshot` on 4. The other 17 run
-/// to exhaustion. In all: 75 million states, 679 s release-optimised on one checker thread, with
-/// a test-process peak of 170 MB [measured, 2026-10-22, AMD Ryzen 9 5950X under WSL2, toolchain
-/// 1.99.1, under `ulimit -v 4000000`].
+/// to exhaustion. In all: 75 million states, 716 s release-optimised on one checker thread, with
+/// a test-process peak of 166 MB [measured, 2026-10-22, AMD Ryzen 9 5950X under WSL2, toolchain
+/// 1.99.1, under `ulimit -v 4000000`, with other builds running].
 pub fn full() -> Vec<Config> {
     vec![
         split_heal(3, 0),
