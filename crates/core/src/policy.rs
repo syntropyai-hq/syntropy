@@ -43,10 +43,12 @@ pub enum Objective {
         /// The slowest rate one sequence may see, in tokens per second.
         per_sequence_floor_tps: f32,
         /// The sequences the plan is sized for; `None` lets the solver choose (RFC-0054 §4.1).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Unset, it is absent from the canonical form only: a `PlacementPlan` carries this
+        /// type over the IPC in postcard (RFC-0001 §18.20).
+        #[serde(default, skip_serializing_if = "crate::canon::absent_if_none")]
         target_concurrency: Option<u16>,
         /// Admission rejects a request whose predicted TTFT is above this (RFC-0054 §4.1).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "crate::canon::absent_if_none")]
         ttft_ceiling: Option<Nanos>,
     },
 }
@@ -118,17 +120,19 @@ pub type ApproxFlags = ApproxKnobs;
 /// Only the knobs whose parameter types `core` already holds have a field here; each M3 knob
 /// task adds its own (`expert_skip`, `expert_defer`, `topk_reduce`, `approx_attention`,
 /// `spec_lenient`). `None` takes RFC-0042's default for the knob. Unset fields are left out of
-/// the serialised form, so adding a field leaves earlier policies' digests unchanged.
+/// the canonical form, so adding a field leaves earlier policies' digests unchanged. Every other
+/// format writes them: a `PlacementPlan` carries this type over the IPC in postcard, which cannot
+/// skip a field (RFC-0001 §3.5, §18.20; [`canon::absent_if_none`](crate::canon::absent_if_none)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ApproxParams {
     /// `MISS_LOW_PRECISION`: the scheme of the lower-precision expert copies.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "crate::canon::absent_if_none")]
     pub miss_low_precision: Option<QuantScheme>,
     /// `KV_LOSSY`: the KV dtype.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "crate::canon::absent_if_none")]
     pub kv_lossy: Option<KvDType>,
     /// `WIRE_COMPRESS`: the activation wire dtype.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "crate::canon::absent_if_none")]
     pub wire_compress: Option<WireDType>,
 }
 

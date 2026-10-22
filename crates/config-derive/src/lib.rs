@@ -932,6 +932,28 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         };
 
+        // `KeySchema::same`, which `InstanceSection::changes` uses to tell a value written
+        // another way (`"30s"`, `"30000ms"`) from a new one. It reads both values through the
+        // deserializer the section uses, then compares them:
+        // - with `==` where the field type implements `PartialEq`;
+        // - as written where it does not, such as `Secret<T>`, which has no `PartialEq` on
+        //   purpose.
+        //
+        // A derive cannot ask whether a type implements a trait, so the choice is made by method
+        // lookup, a pattern known as autoref specialization. `__private::Same<T>` implements
+        // `SameByValue` when `T: PartialEq`, and `&Same<T>` implements `SameAsWritten` for every
+        // `T`. The call `(&probe).same(a, b)` has a receiver of type `&Same<T>`. Lookup tries
+        // that type before it adds a reference, so it takes `SameByValue::same` when its impl
+        // applies and `SameAsWritten::same` otherwise. Both arms are tested in
+        // `tests/derive.rs`, `the_generated_same_compares_by_value_or_as_written`.
+        let same_probe = match &with {
+            None => quote! { ::syntropy_config::__private::Same::<#ty>::deserialized() },
+            Some(with) => {
+                let call = with.call();
+                quote! { ::syntropy_config::__private::Same::<#ty>(#call) }
+            }
+        };
+
         key_tokens.push(quote! {
             ::syntropy_config::KeySchema {
                 name: #key_name,
@@ -955,6 +977,19 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         #check_body
                     }
                     check
+                },
+                same: {
+                    // `PartialEq` where the type has it, else as written: see `Same`.
+                    #[allow(clippy::needless_borrow)]
+                    fn same(
+                        a: &::syntropy_config::__private::toml::Value,
+                        b: &::syntropy_config::__private::toml::Value,
+                    ) -> bool {
+                        #[allow(unused_imports)]
+                        use ::syntropy_config::__private::{SameAsWritten as _, SameByValue as _};
+                        (&#same_probe).same(a, b)
+                    }
+                    same
                 },
             }
         });

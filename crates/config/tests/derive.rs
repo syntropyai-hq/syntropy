@@ -227,6 +227,36 @@ struct SecretsSection {
     labels: BTreeMap<String, Vec<String>>,
 }
 
+/// `KeySchema::same`, the derive's value comparison. A field type with `PartialEq` compares
+/// the values it reads, through its `serde(with)` path where it has one. A type without
+/// `PartialEq`, such as `Secret<T>`, compares them as written. The derive picks the arm by
+/// method lookup (autoref specialization), so this tests both.
+#[test]
+fn the_generated_same_compares_by_value_or_as_written() {
+    use syntropy_config::Value;
+    let text = |s: &str| Value::String(s.to_owned());
+    // By value: a size, a duration read through `serde(with = "never")`, and a fraction read
+    // through `serde(with = "syntropy_config::form")`.
+    let size = key("example.size");
+    assert!((size.same)(&text("1GiB"), &text("1024MiB")));
+    assert!(!(size.same)(&text("1GiB"), &text("2GiB")));
+    let keep = key("example.keep");
+    assert!((keep.same)(&text("2m"), &text("120s")));
+    assert!((keep.same)(&text("never"), &text("never")));
+    assert!(!(keep.same)(&text("never"), &text("2m")));
+    let sample = key("example.sample");
+    assert!((sample.same)(&text("25%"), &Value::Float(0.25)));
+    assert!(!(sample.same)(&text("25%"), &text("26%")));
+    // A value that does not read compares as written.
+    assert!(!(size.same)(&text("1 parsec"), &text("1GiB")));
+    assert!((size.same)(&text("1 parsec"), &text("1 parsec")));
+    // As written: `Secret<String>` has no `PartialEq`, and a section holding one still derives.
+    let token = SecretsSection::SCHEMA.key("token").unwrap();
+    assert!(token.holds_secret);
+    assert!((token.same)(&text("a"), &text("a")));
+    assert!(!(token.same)(&text("a"), &text("b")));
+}
+
 #[test]
 fn holds_secret_is_found_at_any_depth() {
     let flag = |name: &str| SecretsSection::SCHEMA.key(name).expect(name).holds_secret;

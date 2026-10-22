@@ -856,4 +856,31 @@ Building DIST-E1-T14 found three field types that no row defined, though its own
 | TIER-E7-T01 computes its page keys as `core`'s `PrefixKey`; its existing edge to DIST-E1-T14 now names `PrefixKey` too | TIER-E7-T01 | R9 | the key is what `PrefixRef::Cached` carries |
 | PROD-E3-T05 uses `core`'s `GrammarRef` and `SamplingParams`; PROD-E3-T05 → DIST-E1-T14 | PROD-E3-T05 | R9 | its criterion ships each grammar hash to a tail once, inside `SamplingParams`. M1a → M0a, no cycle |
 | DIST-E1-T14's view conversion covers every field but the tap block, and refuses a non-empty one either way with a classified error; DIST-E8-T06 gains "`net`'s `TokenEntryView` converts a tap block to and from `core`'s `LogitTap` in both tap modes, with the golden frames unchanged"; no edge | DIST-E1-T14, DIST-E8-T06 | R9 | `core`'s `TokenEntry::tap` is a typed `LogitTap`, while `net` carries the block as bytes until DIST-E8-T06 builds its codec, and the `Token` goldens' tap blocks are fill bytes. DIST-E8-T06 already depends on DIST-E8-T03, whose view it extends. M0's taps travel in-process (PLC-E9-T16) |
-| PLC-E7-T17's criterion 1 says a watchdog counts any call over its budget (`PollStats`), where it said fails; PLC-E7-T18's hardware criterion gains "and the dispatcher's `PollStats` records no overrun"; no edge | PLC-E7-T17, PLC-E7-T18 | R9 | under test, `poll_once` is timed on an injected `TickSource` that no pass can move: the simulator's clock moves only between events, so a pass that parks or spins measures 0 there, and no test can fail it (review of #1802). PLC-E7-T18's 10,000-step run on the CUDA and Mac rigs is the first `Dispatcher::run` on a real `TickSource`, so the check that fails on an overrun moves there. PLC-E7-T18 already depends on PLC-E7-T17 |
+
+## TIER-E5-T08's conformance suite (2026-10-23)
+
+TIER-E5-T08 (M1b) builds `IoRingEngine` and `IocpEngine`, and its criterion is that the conformance suite passes. The suite is TIER-E5-T04, which TIER-E5-T08 does not reach, and TIER-E5-T04 waits on the nano fixture files and the fixture store. The engine-agnostic harness moves to a new task that needs only TIER-E5-T01's interface, and TIER-E5-T04 keeps the run over the fixture files on every engine the CI host has. These are plan corrections under R9, approved by the lead running TIER-E5-T08.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added TIER-E5-T33 (M0b) → TIER-E5-T01: the harness, which takes any `IoEngine` and a file, reads random aligned extents into fixed and raw destinations, compares them with buffered `std::fs` reads, and reads writes back; its own tests run it over a generated file | TIER-E5-T33 | R9 | an engine task can pass the harness without fixture files. The harness uses only TIER-E5-T01's types, and M0b → M0b keeps M0 closure |
+| TIER-E5-T04 becomes TIER-E5-T33's harness over the nano fixture files against every engine on the CI host, and TIER-E5-T04 → TIER-E5-T33 | TIER-E5-T04 | R9 | its criterion is unchanged. M0b → M0b |
+| TIER-E5-T08's criterion reads "TIER-E5-T33's conformance harness passes", and TIER-E5-T08 → TIER-E5-T33 | TIER-E5-T08 | R9 | M1b → M0b. TIER-E5-T33 reaches no TIER-E5 engine task, so the edge adds no cycle |
+| TIER-E5-T03's, TIER-E5-T06's and TIER-E5-T09's criteria read "TIER-E5-T33's conformance harness passes", TIER-E5-T22's "engines pass TIER-E5-T33's conformance harness on the Tier 2/3 CI targets", and each gains an edge to TIER-E5-T33 | TIER-E5-T03, TIER-E5-T06, TIER-E5-T09, TIER-E5-T22 | R9 | each criterion cited the suite, and none reached TIER-E5-T04. #1738, TIER-E5-T03's change, reports that criterion as not run for that reason. M0b, M1a, M1b and M4 → M0b, and TIER-E5-T33 reaches none of them, so the edges add no cycle and no `LATER` |
+
+## PROD-E1-T10: instance-wide knobs a request did not name (2026-10-22)
+
+Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request that names its knobs and leaves out one the candidate's plan applies to every sequence would run with it while its label omitted it. The RFC-0054 §7 note of 2026-10-22 refuses that case with `fidelity_conflict`.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T10 gains a criterion for that case | PROD-E1-T10 | Definition of done | the rule needs a check that can fail: a P-config-2 case shows that such a request never resolves to a knob set missing a plan knob, and that `fidelity_conflict` names exactly the missing ones |
+| The criterion also covers a knob bit this version cannot name: it counts as instance-wide, and a plan holding one serves no request | PROD-E1-T10 | Definition of done | `ApproxKnobs` keeps a bit it does not name, and RFC-0042 §10 reserves `1 << 8` for a later knob. The review of #1771 found that such a bit counted as neither scope, so an exact request could be served by a plan that applied it, and an approximate label could leave it out |
+
+## PLC-E7-T17's watchdog criterion (2026-10-23)
+
+Building PLC-E7-T17 found that its criterion 1, "a watchdog fails any call over its budget", has no check that can fail. `poll_once` is timed on the dispatcher's injected `TickSource`, and under test no pass can move that clock: the simulator's moves only between events, so a pass that parks or spins measures 0 there (the review of #1802). The first `Dispatcher::run` on a real `TickSource` is PLC-E7-T18's hardware run.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E7-T17's criterion 1 reads "a watchdog counts any call over its budget (`PollStats`)"; PLC-E7-T18's hardware criterion gains "and the dispatcher's `PollStats` records no overrun"; no edge | PLC-E7-T17, PLC-E7-T18 | R9 | the check that fails on an overrun moves to the first run where a pass's time is real. PLC-E7-T18 already depends on PLC-E7-T17 |
