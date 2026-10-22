@@ -22,12 +22,12 @@
 //! credit granted is `ack_seq + recv_slots −` the frames handed over or waiting to be, which only
 //! grows: it rises when the caller drops a received frame and its slot comes back.
 //!
-//! **Receive checks** (§6.1, §7.2), in order: the header's integrity, `wire_minor`, the channel
-//! key, then `chan_seq`, then the payload's CRC. A frame for another instance or epoch is dropped and counted
-//! before its `chan_seq` or its payload is looked at, and never NACKed. A broken header NACKs the
-//! next expected frame; a broken payload NACKs its own; a duplicate is dropped and the current
-//! credit sent again; a frame past a gap is held in its slot, and each missing frame NACKed once
-//! per `nack_interval`.
+//! **Receive checks** (§6.1, §7.2), in order: the header's integrity, the channel key, then
+//! `wire_minor` and the frame rules, then `chan_seq`, then the payload's CRC. A frame for another
+//! instance or epoch is dropped and counted as soon as its header CRC passes, whatever else its
+//! header holds, and never NACKed. A broken header NACKs the next expected frame; a broken payload
+//! NACKs its own; a duplicate is dropped and the current credit sent again; a frame past a gap is
+//! held in its slot, and each missing frame NACKed once per `nack_interval`.
 //!
 //! **Retention** (§7.3). Each sent frame keeps its 64-byte header and its leases on its extension
 //! and payload slots until the peer's `ack_seq` covers it, so a resend, after a NACK or an ack
@@ -41,7 +41,7 @@
 
 use std::collections::VecDeque;
 
-use syntropy_core::{ErrorClass, MonoTime, Nanos};
+use syntropy_core::{ErrorClass, InstanceId, MonoTime, Nanos, PlanEpoch};
 
 use super::buffer::{BufferPool, ExtRef, PayloadRef, SlotReader, SlotWriter};
 use super::channel::{
@@ -81,7 +81,10 @@ const MAX_PING_REPLIES: usize = 4;
 pub const PROBE_BACKOFF_MAX: u64 = 64;
 
 /// One-way α samples the core keeps for its p99 estimate.
-const ALPHA_WINDOW: usize = 128;
+pub const ALPHA_WINDOW: usize = 128;
+
+/// Pings this core sent whose replies it still accepts; an older one's reply gives no sample.
+const PINGS_OUT: usize = 4;
 
 /// When the receiver sends a credit (§7.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -253,6 +256,10 @@ pub struct ChannelCore {
     fault_close_sent: bool,
     /// A credit probe waits to be sent.
     probe_due: bool,
+    /// The `origin_ns` of the pings this core sent, newest last: only a reply carrying one of
+    /// them gives an α sample, so a peer cannot raise α and with it the ack timeout.
+    pings_out: [Option<u64>; PINGS_OUT],
+    ping_next: usize,
     out: [u8; MAX_CONTROL_FRAME],
     stats: ChannelStats,
 }
@@ -260,6 +267,18 @@ pub struct ChannelCore {
 /// A configuration the core cannot run with.
 fn invalid(message: impl Into<String>) -> Error {
     Error::uncoded(ErrorClass::InvalidRequest, message)
+}
+
+/// The `(instance, epoch)` in a base header's bytes 8..32 (RFC-0031 §6.1).
+fn raw_key(header: &[u8]) -> (InstanceId, PlanEpoch) {
+    let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().expect("8 bytes"));
+    (
+        InstanceId(word(8)),
+        PlanEpoch {
+            term: word(16),
+            seq: word(24),
+        },
+    )
 }
 
 /// A received frame the frame rules refuse though its header is intact, as `net`'s error: with
@@ -354,6 +373,8 @@ impl ChannelCore {
             fault: None,
             fault_close_sent: false,
             probe_due: false,
+            pings_out: [None; PINGS_OUT],
+            ping_next: 0,
             out: [0; MAX_CONTROL_FRAME],
             stats: ChannelStats::default(),
         })
@@ -381,7 +402,10 @@ impl ChannelCore {
     /// retention window.
     pub fn credit(&self) -> u32 {
         self.send.as_ref().map_or(0, |send| {
-            let credit = (send.limit_seq + 1).saturating_sub(send.next_seq);
+            let credit = send
+                .limit_seq
+                .saturating_add(1)
+                .saturating_sub(send.next_seq);
             let room = usize::from(send.config.retention).saturating_sub(send.retained.len());
             credit.min(room as u64) as u32
         })
@@ -583,8 +607,14 @@ impl ChannelCore {
             send.last_progress = now;
             send.timeouts = 0;
         }
-        if credit.limit_seq > send.limit_seq {
-            send.limit_seq = credit.limit_seq;
+        // `limit_seq − ack_seq` is at most the peer's `recv_slots` (§7.1); a peer that grants
+        // more gets no more.
+        let limit = credit.limit_seq.min(
+            send.ack_seq
+                .saturating_add(u64::from(send.config.peer_recv_slots)),
+        );
+        if limit > send.limit_seq {
+            send.limit_seq = limit;
             if send.next_seq <= send.limit_seq
                 && let Some(since) = send.stalled_since.take()
             {
@@ -681,14 +711,27 @@ impl ChannelCore {
                 return;
             }
             Err(error) => {
-                // An intact header the frame rules refuse, such as an unknown frame type: a
-                // protocol error, which closes the channel with the code `FrameError` gives.
-                self.raise(refusal(&error));
+                // Every other refusal comes after the header CRC passed, so the key bytes are the
+                // sender's. Another channel's frame is stale, whatever else its header holds;
+                // this channel's is a protocol error, which closes the channel with the code
+                // `FrameError` gives, such as `UnknownFrameType`.
+                if raw_key(bytes) == (self.key.instance, self.key.epoch) {
+                    self.raise(refusal(&error));
+                } else {
+                    self.stats.stale_dropped += 1;
+                }
                 return;
             }
         };
         let header = frame.header;
         let spec = header.spec;
+        if spec.instance != self.key.instance || spec.epoch != self.key.epoch {
+            // Another instance's or epoch's frame: dropped and counted before its minor, its
+            // `chan_seq` or its payload is looked at, and never NACKed (§2, §7.2; RFC-0001
+            // invariant 7).
+            self.stats.stale_dropped += 1;
+            return;
+        }
         if spec.wire_minor > self.wire_minor {
             self.raise(Error::uncoded(
                 ErrorClass::InvalidRequest,
@@ -697,12 +740,6 @@ impl ChannelCore {
                     spec.wire_minor, self.wire_minor
                 ),
             ));
-            return;
-        }
-        if spec.instance != self.key.instance || spec.epoch != self.key.epoch {
-            // Another instance's or epoch's frame: dropped and counted before its `chan_seq` or
-            // its payload is looked at, and never NACKed (§2, §7.2; RFC-0001 invariant 7).
-            self.stats.stale_dropped += 1;
             return;
         }
         if spec.ftype.is_control() {
@@ -927,8 +964,15 @@ impl ChannelCore {
                 }
             }
             Control::Ping(ping) => {
-                let rtt = now.0.saturating_sub(ping.origin_ns);
-                self.sample_alpha(Nanos(rtt / 2));
+                let sent = self
+                    .pings_out
+                    .iter_mut()
+                    .find(|out| **out == Some(ping.origin_ns));
+                if let Some(out) = sent {
+                    *out = None;
+                    let rtt = now.0.saturating_sub(ping.origin_ns);
+                    self.sample_alpha(Nanos(rtt / 2));
+                }
             }
             Control::Close { close, .. } => {
                 self.peer_close.get_or_insert(*close);
@@ -1102,6 +1146,8 @@ impl ChannelCore {
 
     /// Sends a ping, whose reply gives an α sample.
     pub fn ping(&mut self, now: MonoTime) -> Option<Transmit<'_>> {
+        self.pings_out[self.ping_next] = Some(now.0);
+        self.ping_next = (self.ping_next + 1) % PINGS_OUT;
         self.encode_control(&Control::Ping(Ping {
             origin_ns: now.0,
             reply: false,

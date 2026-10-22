@@ -712,6 +712,128 @@ fn foreign_frames_are_dropped_counted_and_never_nacked() {
     assert_eq!(got, [(2, b"two".to_vec())]);
 }
 
+/// Recomputes a frame's header CRC after a test changed its header.
+fn reseal_header(bytes: &mut [u8]) {
+    let ext_len = u32::from_le_bytes(bytes[48..52].try_into().unwrap()) as usize;
+    let crc = frame::crc32c_append(frame::crc32c(&bytes[..60]), &bytes[64..64 + ext_len]);
+    bytes[60..64].copy_from_slice(&crc.to_le_bytes());
+}
+
+/// `bytes` with its wire minor, frame type or `chan_seq` changed and its header CRC recomputed:
+/// an intact header the frame rules refuse.
+fn rewritten(
+    mut bytes: Vec<u8>,
+    minor: Option<u8>,
+    ftype: Option<u8>,
+    chan_seq: Option<u64>,
+) -> Vec<u8> {
+    if let Some(minor) = minor {
+        bytes[4] = minor;
+    }
+    if let Some(ftype) = ftype {
+        bytes[5] = ftype;
+    }
+    if let Some(chan_seq) = chan_seq {
+        bytes[40..48].copy_from_slice(&chan_seq.to_le_bytes());
+    }
+    reseal_header(&mut bytes);
+    bytes
+}
+
+/// A frame of another instance or epoch is stale whatever else its header holds: a newer wire
+/// minor, a type the minor lacks, or a control frame with a `chan_seq`. The same headers on
+/// this channel's key close the channel, each with its class (RFC-0031 §6.1, §6.2, §12).
+#[test]
+fn foreign_frames_are_stale_whatever_their_minor_or_type() {
+    let other = InstanceId(INSTANCE.0 ^ 2);
+    let foreign_ping = Control::Ping(Ping {
+        origin_ns: 1,
+        reply: false,
+    })
+    .encode_to_vec(&control_spec(other, EPOCH))
+    .unwrap();
+    let foreign = [
+        rewritten(
+            data_frame(other, EPOCH, 1, b"x"),
+            Some(WIRE_MINOR + 1),
+            None,
+            None,
+        ),
+        rewritten(data_frame(other, EPOCH, 1, b"x"), None, Some(0x7F), None),
+        rewritten(foreign_ping, None, None, Some(5)),
+    ];
+    let mut b = receiver(Shape::SMALL, ALPHA, RFC);
+    for bytes in &foreign {
+        deliver(&mut b, bytes, at(0));
+    }
+    assert_eq!(b.fault(), None);
+    assert_eq!(b.stats().stale_dropped, 3);
+    assert!(drain(&mut b, at(1)).is_empty());
+
+    let own = data_frame(INSTANCE, EPOCH, 1, b"x");
+    let cases = [
+        (
+            rewritten(own.clone(), Some(WIRE_MINOR + 1), None, None),
+            ErrorClass::InvalidRequest,
+            None,
+        ),
+        (
+            rewritten(own.clone(), None, Some(0x7F), None),
+            ErrorClass::Unsupported,
+            Some(ErrorCode::UNKNOWN_FRAME_TYPE),
+        ),
+        (
+            rewritten(ping(1), None, None, Some(5)),
+            ErrorClass::Integrity,
+            None,
+        ),
+    ];
+    for (bytes, class, code) in cases {
+        let mut b = receiver(Shape::SMALL, ALPHA, RFC);
+        deliver(&mut b, &bytes, at(0));
+        let fault = b.fault().expect("a fault");
+        assert_eq!(
+            (fault.class, fault.code),
+            (class, code),
+            "{}",
+            fault.message
+        );
+        assert_ne!(fault.class, ErrorClass::Internal);
+        assert_eq!(b.stats().stale_dropped, 0);
+    }
+}
+
+/// Only a reply to a ping this core sent gives an α sample, so a peer cannot raise α, and with
+/// it the ack timeout, with a forged `origin_ns`; and a credit's `limit_seq` counts no further
+/// than the peer's `recv_slots` past the ack, so even `u64::MAX` is safe.
+#[test]
+fn a_forged_ping_reply_or_a_huge_limit_changes_nothing() {
+    let mut a = sender(Shape::SMALL, ALPHA, RFC);
+    let reply = |origin_ns| {
+        encode(Control::Ping(Ping {
+            origin_ns,
+            reply: true,
+        }))
+    };
+    deliver(&mut a, &reply(0), at(1_000_000));
+    assert_eq!(a.stats().alpha_samples, 0);
+    assert_eq!(a.alpha_p99(), ALPHA);
+    let sent = a.ping(at(100)).map(wire_bytes).expect("a ping");
+    let origin = match control_of(&sent) {
+        Some(Control::Ping(ping)) => ping.origin_ns,
+        other => panic!("{other:?}"),
+    };
+    deliver(&mut a, &reply(origin), at(140));
+    assert_eq!(a.stats().alpha_last, Some(Nanos(20_000)));
+    // Its reply counts once.
+    deliver(&mut a, &reply(origin), at(10_000));
+    assert_eq!(a.stats().alpha_samples, 1);
+
+    deliver(&mut a, &credit(0, u64::MAX, &[]), at(2));
+    assert_eq!(a.credit(), 4);
+    assert_eq!(a.fault(), None);
+}
+
 /// The credit (RFC-0031 §7.1): `recv_slots` at the start, no more while the receiver holds its
 /// frames, and back once it drops them; control frames take none.
 #[test]
@@ -839,15 +961,15 @@ fn alpha_comes_from_credit_echoes_and_never_from_a_resent_frame() {
     assert_eq!(a.completed().map(|t| t.chan_seq), Some(2));
 }
 
-/// Retention bounds memory whatever the peer grants (RFC-0031 §7.3): a credit past
-/// `retention` frames still leaves the sender at `retention × slot_size` retained bytes.
+/// Retention bounds memory whatever the peer grants (RFC-0031 §7.3): a credit past the peer's
+/// `recv_slots` still leaves the sender at `retention × slot_size` retained bytes.
 #[test]
 fn a_peer_granting_too_much_still_meets_the_retention_window() {
     let shape = Shape::SMALL;
     let pool = send_pool(8, 1024);
     let mut a = sender(shape, ALPHA, RFC);
     deliver(&mut a, &credit(0, 100, &[]), at(0));
-    assert_eq!(a.credit(), 4, "the credit, within the retention window");
+    assert_eq!(a.credit(), 4, "no more than recv_slots past the ack");
     for step in 0..4 {
         send(&mut a, &pool, step, &[4; 1024 - 64], at(0)).unwrap();
     }

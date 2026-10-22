@@ -15,8 +15,8 @@
 //!   the backend through [`ChannelBackend`].
 //! - Frames name their extension and payload by descriptors into registered slots
 //!   ([`buffer`]), so no frame is copied on the way in or out except where RFC-0031 §8 says.
-//! - [`core`](self::core) is RFC-0031 §7's flow control, acknowledgement and retransmission, sans I/O: every
-//!   backend wraps one [`ChannelCore`] per channel side (DIST-E7-T02).
+//! - [`core`] is RFC-0031 §7's flow control, acknowledgement and retransmission, sans I/O:
+//!   every backend wraps one [`ChannelCore`] per channel side (DIST-E7-T02).
 //!
 //! `exec` and `sched` never see this module: they hand frames to the runner over SPSC rings,
 //! and only the runner and the daemon depend on `net` (RFC-0001 §4.2 rule 3).
