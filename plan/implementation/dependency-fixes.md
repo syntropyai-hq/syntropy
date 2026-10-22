@@ -813,3 +813,13 @@ RFC-0011 §12.2 now applies a deferred plan at the `replan.max_defer` deadline t
 | PLC-E6-T04 → DIST-E11-T03 and PLC-E6-T04 → DIST-E8-T05 | PLC-E6-T04 | R9 | the M2 re-prefill reads the ingress transcript (DIST-E11-T03) and sends `SequenceOpen { resume }` (DIST-E8-T05). PLC-E6-T04 reached neither, and its node-loss criterion, which re-prefills the same way, had the same gap (the stand-in engine review of #1749). Both are M2, and neither reaches PLC-E6-T04, so the edges add no cycle and no `LATER` |
 | DIST-E14-T10's property "re-prefill always feasible" becomes "re-prefill feasible whenever the new epoch holds the sequence's context"; DIST-E15-T03 gains "a plan whose `context_length` the session exceeds is not applied until the session ends"; no edge | DIST-E14-T10, DIST-E15-T03 | Definition of done | RFC-0033 §5.1's `t_reprefill` now holds only when e′ holds `ctx(q)`, and §10 applies the plan at the deadline only if it holds every live sequence |
 | PLC-E6-T11 registers the `replan.*` keys except `replan.degraded_min_gain`, which RFC-0033 owns; no edge | PLC-E6-T11 | Definition of done | RFC-0054 §5.1 lists that key as RFC-0033's carve-out (#1742); registering it twice would make the schema registry refuse to build |
+
+## TIER-E5-T08's conformance suite (2026-10-23)
+
+TIER-E5-T08 (M1b) builds `IoRingEngine` and `IocpEngine`, and its criterion is that the conformance suite passes. The suite is TIER-E5-T04, which TIER-E5-T08 does not reach, and TIER-E5-T04 waits on the nano fixture files and the fixture store. The engine-agnostic harness moves to a new task that needs only TIER-E5-T01's interface, and TIER-E5-T04 keeps the run over the fixture files on every engine the CI host has. These are plan corrections under R9, approved by the lead running TIER-E5-T08.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added TIER-E5-T33 (M0b) → TIER-E5-T01: the harness, which takes any `IoEngine` and a file, reads random aligned extents into fixed and raw destinations, compares them with buffered `std::fs` reads, and reads writes back; its own tests run it over a generated file | TIER-E5-T33 | R9 | an engine task can pass the harness without fixture files. The harness uses only TIER-E5-T01's types, and M0b → M0b keeps M0 closure |
+| TIER-E5-T04 becomes TIER-E5-T33's harness over the nano fixture files against every engine on the CI host, and TIER-E5-T04 → TIER-E5-T33 | TIER-E5-T04 | R9 | its criterion is unchanged. M0b → M0b |
+| TIER-E5-T08's criterion reads "TIER-E5-T33's conformance harness passes", and TIER-E5-T08 → TIER-E5-T33 | TIER-E5-T08 | R9 | M1b → M0b. TIER-E5-T33 reaches no TIER-E5 engine task, so the edge adds no cycle |
