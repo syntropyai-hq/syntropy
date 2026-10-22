@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use syntropy_testkit::sim::presets::{
-    self, DRIVE_KEYS, Figure, Label, MemoryTier, Preset, PresetError, PresetKind,
+    self, DRIVE_KEYS, Figure, FigureError, Label, MemoryTier, Preset, PresetError, PresetKind,
 };
 
 #[test]
@@ -312,4 +312,40 @@ fn a_preset_without_sources_or_with_an_unsourced_figure_does_not_load() {
             expected: "gpu.test.toml".into()
         }
     );
+}
+
+/// `figure` gives a known figure, and refuses an `unknown` or absent one, so a fake cannot read
+/// either as a zero.
+#[test]
+fn figure_refuses_an_unknown_or_absent_figure() {
+    let all = presets::by_name();
+    let ada = &all["gpu:ada-24g"];
+    let known = ada.figure("w_eff.vram.dense_gemv").expect("a known figure");
+    assert_eq!((known.value, known.unit.as_str()), (Some(800.0), "GB/s"));
+    assert_eq!(
+        ada.figure("t_fixed"),
+        Err(FigureError::Unknown {
+            preset: "gpu:ada-24g".into(),
+            key: "t_fixed".into(),
+            open: "research §2.2 and §3.4 give t_fixed only for ggml Metal on M3 Ultra; none for this GPU"
+                .into(),
+        })
+    );
+    assert_eq!(
+        ada.figure("w_eff.unified.dense_gemv"),
+        Err(FigureError::Absent {
+            preset: "gpu:ada-24g".into(),
+            key: "w_eff.unified.dense_gemv".into(),
+        })
+    );
+    // Every required key of every preset is either known or refused as unknown, never absent.
+    for preset in all.values() {
+        for key in preset.required_keys() {
+            assert!(
+                !matches!(preset.figure(&key), Err(FigureError::Absent { .. })),
+                "{} {key}",
+                preset.name
+            );
+        }
+    }
 }

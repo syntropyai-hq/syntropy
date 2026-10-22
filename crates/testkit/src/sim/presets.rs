@@ -26,6 +26,10 @@
 //! - a drive (`nvme`): `seq_read`, `sustained_read`, `throttled_read`, `heating_time`,
 //!   `qd1_4k_read_iops`, `qd32_4k_read_iops` and `read_latency`.
 //!
+//! **A figure is read through [`Preset::figure`]**, which refuses one that is `unknown` or
+//! absent, so no fake can take a figure the research leaves open for a zero or a default. A
+//! scenario supplies such a figure itself, labelled.
+//!
 //! Other figures, such as peak rates, may be added beside them. A `w_eff.*` key outside the set
 //! is refused, so a misspelt tier or class cannot pass for a figure. `cargo xtask ci lint`'s
 //! `sim-presets` step checks every file the same way: its sources, its keys, and each figure's
@@ -265,6 +269,35 @@ impl fmt::Display for PresetError {
 
 impl std::error::Error for PresetError {}
 
+/// Why a figure cannot be used.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FigureError {
+    /// The preset has no figure of that key.
+    Absent { preset: String, key: String },
+    /// The research leaves the figure open; `open` says where.
+    Unknown {
+        preset: String,
+        key: String,
+        open: String,
+    },
+}
+
+impl fmt::Display for FigureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FigureError::Absent { preset, key } => {
+                write!(f, "preset `{preset}` has no figure `{key}`")
+            }
+            FigureError::Unknown { preset, key, open } => write!(
+                f,
+                "preset `{preset}`'s `{key}` is unknown ({open}); a scenario must supply it"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FigureError {}
+
 impl Preset {
     /// Parses the preset file `file` and checks it: its name, its sources, and each figure's
     /// value and source.
@@ -328,6 +361,23 @@ impl Preset {
             }
         }
         Ok(preset)
+    }
+
+    /// The figure `key`, if the research gives it: an `unknown` or absent figure is an error,
+    /// never a default.
+    pub fn figure(&self, key: &str) -> Result<&Known, FigureError> {
+        match self.figures.get(key) {
+            Some(Figure::Known(known)) => Ok(known),
+            Some(Figure::Unknown { unknown }) => Err(FigureError::Unknown {
+                preset: self.name.clone(),
+                key: key.to_owned(),
+                open: unknown.clone(),
+            }),
+            None => Err(FigureError::Absent {
+                preset: self.name.clone(),
+                key: key.to_owned(),
+            }),
+        }
     }
 
     /// The memory tiers the device's kernels read, which its W_eff keys name (RFC-0010's M1
