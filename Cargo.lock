@@ -585,8 +585,10 @@ dependencies = [
 name = "syntropy-xtask"
 version = "0.0.0"
 dependencies = [
+ "proc-macro2",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

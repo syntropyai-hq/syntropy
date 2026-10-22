@@ -14,3 +14,7 @@ path = "src/main.rs"
 # payloads the contribution checks read (QUAL-E1-T05, RFC-0062 §12.3).
 serde.workspace = true
 serde_json.workspace = true
+# The `determinism` step (QUAL-E3-T03): Rust tokens with their lines, to find lint attributes as
+# the compiler does, and the repository's cargo config as TOML.
+proc-macro2 = { workspace = true, features = ["span-locations"] }
+toml.workspace = true
