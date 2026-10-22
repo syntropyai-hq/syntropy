@@ -17,11 +17,11 @@
 //!   checked and used, so the peer cannot change a value between its check and its use. A reader
 //!   that finds the indices more than `slots` apart, or a length above `slot_bytes`, returns
 //!   [`SharedPopError::Corrupt`] or [`SharedPushError::Corrupt`] and reads nothing out of range.
-//!   A record's bytes are copied out before the caller reads them, and every access to a slot,
-//!   its length word and its bytes alike, is atomic (8-byte words, then single bytes), so a peer
-//!   writing at the same time causes no data race in this process (RFC-0060 §10). Copying through
-//!   relaxed atomics compiles to plain loads and stores on x86-64 and AArch64, so it costs about
-//!   what a `memcpy` of the same words would, without its vector instructions.
+//!   A record's bytes are copied out before the caller reads them, and every access to a slot is
+//!   atomic and always the same size at the same place: the length word as a `u32`, and the record
+//!   as whole 8-byte words, the last one zero-padded. So a peer writing at the same time causes no
+//!   data race in this process (RFC-0060 §10), and no two accesses to the same bytes differ in
+//!   size, which std's atomic model also forbids.
 //! - **No waking.** Both ends poll. A consumer that needs waking across processes needs a handle
 //!   passed to it, which the process that spawns the runner provides.
 //!
@@ -81,47 +81,57 @@ impl Header {
     }
 }
 
-/// Copies `from` into shared memory at `to`: 8-byte words with relaxed atomic stores, then the
-/// last bytes with atomic byte stores. Every access to slot memory is atomic, on both ends, so a
-/// peer that writes the same bytes at the same time makes no data race, only garbled bytes.
+/// Copies `from` into shared memory at `to` as whole 8-byte words with relaxed atomic stores:
+/// `from.len().div_ceil(8)` words, the last one zero-padded. Every access to a record's bytes, on
+/// either end, is then a `u64` at an 8-aligned offset from the slot's record area. So the ends
+/// never touch the same bytes with different access sizes, even when they disagree about a
+/// length, as a garbled length word can make them.
 ///
 /// # Safety
 ///
-/// `to` is 8-aligned and valid for `from.len()` bytes, inside a live ring.
+/// `to` is 8-aligned and valid for `from.len().next_multiple_of(8)` bytes, inside a live ring.
 unsafe fn copy_in(from: &[u8], to: NonNull<u8>) {
-    use std::sync::atomic::{AtomicU8, AtomicU64 as SlotWord, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicU64 as SlotWord, Ordering::Relaxed};
+    let store = |index: usize, bytes: [u8; 8]| {
+        // SAFETY: `index` counts words below `from.len().div_ceil(8)`, so the word starts at a
+        // multiple of 8 below `from.len().next_multiple_of(8)`: 8-aligned, and inside the region
+        // the caller promised.
+        let word = unsafe { SlotWord::from_ptr(to.add(index * 8).cast::<u64>().as_ptr()) };
+        word.store(u64::from_ne_bytes(bytes), Relaxed);
+    };
     let (words, rest) = from.as_chunks::<8>();
-    for (index, word) in words.iter().enumerate() {
-        // SAFETY: `index * 8` is a multiple of 8 below `from.len()`, so the word is 8-aligned and
-        // inside the region the caller promised.
-        let slot_word = unsafe { SlotWord::from_ptr(to.add(index * 8).cast::<u64>().as_ptr()) };
-        slot_word.store(u64::from_ne_bytes(*word), Relaxed);
+    for (index, bytes) in words.iter().enumerate() {
+        store(index, *bytes);
     }
-    let start = words.len() * 8;
-    for (offset, byte) in rest.iter().enumerate() {
-        // SAFETY: `start + offset` is below `from.len()`, inside the region the caller promised.
-        unsafe { AtomicU8::from_ptr(to.add(start + offset).as_ptr()) }.store(*byte, Relaxed);
+    if !rest.is_empty() {
+        let mut last = [0u8; 8];
+        last[..rest.len()].copy_from_slice(rest);
+        store(words.len(), last);
     }
 }
 
-/// Copies shared memory at `from` into `to`, as [`copy_in`] writes it: 8-byte words, then bytes,
-/// all with relaxed atomic loads.
+/// Copies shared memory at `from` into `to`, as [`copy_in`] writes it: whole 8-byte words with
+/// relaxed atomic loads, of which only the first `to.len()` bytes are kept.
 ///
 /// # Safety
 ///
-/// `from` is 8-aligned and valid for `to.len()` bytes, inside a live ring.
+/// `from` is 8-aligned and valid for `to.len().next_multiple_of(8)` bytes, inside a live ring.
 unsafe fn copy_out(from: NonNull<u8>, to: &mut [u8]) {
-    use std::sync::atomic::{AtomicU8, AtomicU64 as SlotWord, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicU64 as SlotWord, Ordering::Relaxed};
+    let load = |index: usize| {
+        // SAFETY: as in `copy_in`, for `to.len()`.
+        let word = unsafe { SlotWord::from_ptr(from.add(index * 8).cast::<u64>().as_ptr()) };
+        word.load(Relaxed).to_ne_bytes()
+    };
     let (words, rest) = to.as_chunks_mut::<8>();
-    let start = words.len() * 8;
-    for (index, word) in words.iter_mut().enumerate() {
-        // SAFETY: as in `copy_in`.
-        let slot_word = unsafe { SlotWord::from_ptr(from.add(index * 8).cast::<u64>().as_ptr()) };
-        *word = slot_word.load(Relaxed).to_ne_bytes();
+    let full = words.len();
+    for (index, bytes) in words.iter_mut().enumerate() {
+        *bytes = load(index);
     }
-    for (offset, byte) in rest.iter_mut().enumerate() {
-        // SAFETY: as in `copy_in`.
-        *byte = unsafe { AtomicU8::from_ptr(from.add(start + offset).as_ptr()) }.load(Relaxed);
+    if !rest.is_empty() {
+        let last = load(full);
+        let kept = rest.len();
+        rest.copy_from_slice(&last[..kept]);
     }
 }
 
@@ -499,9 +509,9 @@ impl SharedProducer<'_> {
         // SAFETY: the slot at `tail` lies outside `head..tail`: the acquire load of `head` above, or
         // an earlier one, saw the consumer finish reading it, so a peer that keeps the protocol
         // does not touch it now. The slot is 8-aligned (the memory is 128-aligned and every stride
-        // is a multiple of 8), holds the length word, and has `slot_bytes` bytes after it, which
-        // `record` fits. Every write is atomic, so even a peer that breaks the protocol makes no
-        // data race.
+        // is a multiple of 8), holds the length word, and has `slot_bytes.next_multiple_of(8)`
+        // bytes after it, which cover `record.len().next_multiple_of(8)`, since `record` fits a
+        // slot. Every write is atomic, so even a peer that breaks the protocol makes no data race.
         unsafe {
             length_word(slot).store(length, Ordering::Relaxed);
             copy_in(record, slot.add(LENGTH_BYTES));
@@ -581,10 +591,11 @@ impl SharedConsumer<'_> {
         if len > out.len() {
             return Err(SharedPopError::BufferTooSmall { len });
         }
-        // SAFETY: as above; the record's `len` bytes follow the length word, inside the slot,
-        // since `len` is at most `slot_bytes`, and `out` holds at least `len` bytes. Every read is
-        // atomic, so a peer that writes the bytes during the copy makes no data race: it can
-        // garble the record, which the caller parses from `out`, but reach nothing outside it.
+        // SAFETY: as above; the record's words follow the length word, and `len.next_multiple_of(8)`
+        // bytes fit the slot's `slot_bytes.next_multiple_of(8)`, since `len` is at most
+        // `slot_bytes`. `out[..len]` holds exactly `len` bytes. Every read is atomic, so a peer that
+        // writes the words during the copy makes no data race: it can garble the record, which the
+        // caller parses from `out`, but reach nothing outside it.
         unsafe {
             copy_out(slot.add(LENGTH_BYTES), &mut out[..len]);
         }
