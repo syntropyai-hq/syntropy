@@ -25,6 +25,13 @@ const NOT_A_SECRET: &str = "a secret must be a string, { file = \"…\" } or { e
 const SECRET_WRONG_FORM: &str =
     "a secret must be a value of its key's type; the value given is not, and is not shown";
 
+/// The errors for a `file` or `env` that is not a string. A path and a variable name are not
+/// the secret, but serde's own message would quote them, so they get a fixed message as well.
+const FILE_NOT_A_STRING: &str =
+    "a secret's `file` must be a path, written as a string; the value given is not shown";
+const ENV_NOT_A_STRING: &str =
+    "a secret's `env` must be a variable name, written as a string; the value given is not shown";
+
 /// The error for a key in a secret table other than `file` and `env`. The key is not shown,
 /// in case the secret was written as one.
 const NOT_A_SECRET_TABLE: &str =
@@ -207,8 +214,14 @@ impl<'de> Visitor<'de> for SourceVisitor {
             .next_key()?
             .ok_or_else(|| de::Error::custom("a secret table needs `file` or `env`"))?;
         let source = match key.as_str() {
-            "file" => SecretSource::File(map.next_value()?),
-            "env" => SecretSource::Env(map.next_value()?),
+            "file" => SecretSource::File(
+                map.next_value()
+                    .map_err(|_: A::Error| de::Error::custom(FILE_NOT_A_STRING))?,
+            ),
+            "env" => SecretSource::Env(
+                map.next_value()
+                    .map_err(|_: A::Error| de::Error::custom(ENV_NOT_A_STRING))?,
+            ),
             _ => return Err(de::Error::custom(NOT_A_SECRET_TABLE)),
         };
         if map.next_key::<String>()?.is_some() {
@@ -417,6 +430,40 @@ mod tests {
                 !message.contains("300") && !message.contains("7731"),
                 "{message}"
             );
+        }
+    }
+
+    #[test]
+    fn a_non_string_file_or_env_is_not_echoed() {
+        // A path and a variable name are not the secret, but they get the fixed treatment too.
+        fn table<V: IntoDeserializer<'static, ValueDeError>>(
+            key: &'static str,
+            value: V,
+        ) -> String {
+            source_error(MapDeserializer::<_, ValueDeError>::new(
+                [(key, value)].into_iter(),
+            ))
+        }
+        for key in ["file", "env"] {
+            let seq = SeqDeserializer::<_, ValueDeError>::new([13_579i64].into_iter());
+            let messages = [
+                table(key, 24_680i64),
+                table(key, 0.246_8f64),
+                table(key, true),
+                source_error(MapDeserializer::<_, ValueDeError>::new(
+                    [(key, seq)].into_iter(),
+                )),
+            ];
+            for message in messages {
+                assert!(
+                    !message.chars().any(|c| c.is_ascii_digit()) && !message.contains("true"),
+                    "the error shows the value: {message}"
+                );
+                assert!(
+                    message.contains(&format!("`{key}`")),
+                    "not the fixed message: {message}"
+                );
+            }
         }
     }
 

@@ -524,6 +524,15 @@ off  len  field
 
 **Payload.** `n_rows` rows, in row order. Each row is `streams × hidden` elements of `dtype`, laid out `[stream][hidden]`, with the row stride rounded up to 64 bytes. `payload_len = n_rows · stride` for plain dtypes.
 
+**Revision note, 2026-10-22 (DIST-E8-T02): what each part carries, and tree parents.**
+- **Parts.** A sender splits a frame larger than `max_frame` into the fewest parts. Each part holds as many rows as fit with its own extension, which counts against the part's row limit (§8). Each part is a whole `Activation` frame for its rows:
+  - Its fixed fields are the chunk's, except `n_rows`, `n_spans`, `part_index`, `part_count`, `tree_len` and `side_len`.
+  - It carries the spans of its rows, cut at the part's edges. `row_offset` counts from the part's first row, and `first_position` moves on by the rows the cut left in earlier parts.
+  - `TOKEN_IDS` and `ROUTER_HINT` are cut with their rows. Every other item travels once: in the first part that carries its span, or in part 0 when it applies to every span.
+  - A span without rows, which an empty frame uses to name the sequence of its `SEQ_CTRL` (RFC-0032 §3.1), goes in the part that holds its `row_offset`, or in the last part when that offset is `n_rows`.
+  - The receiver lands the parts at consecutive offsets of the stage's input (§8). A verify frame with `TREE` is never split: its parents and `DRAFT_CONF` are per span, and its window is small (RFC-0032 §3.5).
+- **Tree parents.** A node's `parent` is the index of an earlier node of the same span, counted from the span's first node, or 0xFFFF for the root. A receiver refuses any other value, so the parents always form a tree.
+
 #### 6.4 Wire dtypes
 
 | Code | `WireDType` | Exact mode | Container |
@@ -681,6 +690,10 @@ The payload is the credential: 168 bytes for `DataPlaneCredential`, 192 for `Adm
 `Close` extension: `code: u16`, `reserved[6]`, `last_seq: u64` at offset 8 (the last data `chan_seq` the closer sent). The payload is a UTF-8 reason. A graceful close waits until `last_seq` is acked.
 
 A reconnect `Hello` (§7.4) adds `resume_from: u64` at extension offset 64: the first data `chan_seq` the sender will resend. The matching `HelloAck` carries the receiver's current `ack_seq` in `limit_seq − recv_slots`.
+
+**Revision note, 2026-10-22 (the DIST-E8-T01 codec's review): telling the cases apart.**
+- **`resume_from`.** Data `chan_seq` starts at 1, so a reconnect's `resume_from` is never 0. A `Hello` whose extension is longer than 64 bytes with 0 at offset 64 is a fresh `Hello` carrying a later minor's trailing fields (§10), not a reconnect; one shorter than 72 bytes but longer than 64 is refused. A sender never writes 0 as a reconnect. Offsets 64–72 therefore sit in every `Hello` longer than 64 bytes, and a later minor's trailing `Hello` fields start at offset 72, after a zero `resume_from` (maintainer decision, 2026-10-22).
+- **A refusing `HelloAck`.** The receiver reads `status` first. A refusal is read whatever its `cred_kind` and payload hold: its status is the message, so neither is checked, since a refusal may come before the acceptor has a credential to show. A refusing acceptor may write `cred_kind = 0` with no credential. An acceptance (`status = 0`) must name a known `cred_kind` and carry its credential.
 
 #### 6.10 Blob-plane frames (weight chunks and digests)
 
@@ -995,7 +1008,7 @@ Per-hop transport choice is not a knob. It comes from the plan. An operator who 
 | 0x0203 | `NotANeighbour` (credential valid, but the plan does not connect these stages) | `Auth` |
 | 0x0204 | `UnknownFrameType` | `Unsupported` (was `Internal`; see the revision note below) |
 | 0x0205 | `FrameTooLarge` | `Internal` |
-| 0x0206 | `WireDTypeMismatch` | `Internal` |
+| 0x0206 | `WireDTypeMismatch` | `Unsupported` (was `Internal`; see the revision note below) |
 | 0x0207 | `CrcStorm` (3 payload CRC failures in 10 s) | `Link` |
 | 0x0208 | `AckTimeout` | `Link` |
 | 0x0209 | `QpError` (RDMA QP entered the error state) | `Link` |
@@ -1011,6 +1024,8 @@ Per-hop transport choice is not a knob. It comes from the plan. An operator who 
 | 0x0213 | `QpBudgetExhausted` (informational: channel opened on the next transport) | `Link` |
 
 **Revision note, 2026-10-22 (DIST-E8-T01): the class of `UnknownFrameType`.** A receiver that refuses a frame because its `ftype` is not a type of the negotiated minor (§6.2) classes the refusal `Unsupported`, not `Internal`. RFC-0060 §10.2 requires a decoder of untrusted bytes to class every refusal `Integrity`, `InvalidRequest`, `Auth` or `Unsupported`, never `Internal`, and the fuzz targets assert it. The code is unchanged: the receiver still sends `Close { UnknownFrameType }` with 0x0204. The table now gives `Unsupported` for 0x0204, so the two RFCs agree.
+
+**Revision note, 2026-10-22 (DIST-E8-T02): the class of `WireDTypeMismatch`.** A receiver that refuses an `Activation` because its `dtype` is not the channel's `ChannelSpec::wire` (§6.4) classes the refusal `Unsupported`, not `Internal`, for the reason the note above gives. It is not `Integrity` either: the frame's CRCs passed, and a resend carries the same bytes (§7.3), so no NACK can repair it. The code is unchanged: the receiver reports 0x0206. A dtype container the build does not carry is refused as `Unsupported` too, with no code of its own. The table now gives `Unsupported` for 0x0206.
 
 ## Performance model and budgets
 

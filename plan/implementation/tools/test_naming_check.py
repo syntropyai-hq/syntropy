@@ -391,6 +391,56 @@ class HookTest(unittest.TestCase):
                        capture_output=True)
         return repo
 
+    def commit_in(self, repo, name, message):
+        (repo / name).write_text(f"{name}\n", encoding="utf-8")
+        for args in (["add", name], ["commit", "-q", "--no-verify", "-m", message]):
+            subprocess.run(["git", *args], cwd=repo, env=self.env, check=True, capture_output=True)
+
+    def merged_repo(self):
+        """A repository whose HEAD is a merge commit, after the merge has finished: HEAD has a
+        second parent and there is no MERGE_HEAD, as when the merge commit is amended."""
+        repo = self.other_repo()
+        self.commit_in(repo, "readme.txt", "docs: base")
+        subprocess.run(["git", "checkout", "-q", "-b", "side"], cwd=repo, env=self.env,
+                       check=True, capture_output=True)
+        self.commit_in(repo, "side.txt", "docs: side")
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, env=self.env, check=True,
+                       capture_output=True)
+        self.commit_in(repo, "main.txt", "docs: main")
+        subprocess.run(["git", "merge", "-q", "--no-ff", "--no-verify", "-m",
+                        "Merge branch 'side'", "side"], cwd=repo, env=self.env, check=True,
+                       capture_output=True)
+        for ref, present in (("HEAD^2", True), ("MERGE_HEAD", False)):
+            found = subprocess.run(["git", "rev-parse", "-q", "--verify", ref], cwd=repo,
+                                   env=self.env, capture_output=True).returncode == 0
+            self.assertEqual(found, present, ref)
+        return repo
+
+    def test_commit_msg_accepts_an_amended_merge_commit(self):
+        code, output = self.run_hook(
+            ["Merge branch 'side'", "", "Signed-off-by: Test <test@example.invalid>"],
+            cwd=self.merged_repo())
+        self.assertEqual(code, 0, output)
+        self.assertIn("commit-msg: subject: skipped for an amended merge commit", output)
+        self.assertIn("commit-msg: sign-off: ok", output)
+
+    def test_commit_msg_still_checks_a_merge_subject_without_a_merge_head(self):
+        # HEAD has one parent, so a "Merge ..." subject is an ordinary commit's and fails.
+        repo = self.other_repo()
+        self.commit_in(repo, "readme.txt", "docs: base")
+        code, output = self.run_hook(
+            ["Merge branch 'side'", "", "Signed-off-by: Test <test@example.invalid>"], cwd=repo)
+        self.assertEqual(code, 1, output)
+        self.assertIn("commit-msg: subject: FAIL", output)
+
+    def test_commit_msg_still_checks_other_subjects_on_a_merge_head(self):
+        # An amended merge commit whose subject is not git's "Merge ..." is checked as usual.
+        code, output = self.run_hook(
+            ["merged side in", "", "Signed-off-by: Test <test@example.invalid>"],
+            cwd=self.merged_repo())
+        self.assertEqual(code, 1, output)
+        self.assertIn("commit-msg: subject: FAIL", output)
+
     def test_commit_msg_runs_for_a_repository_without_the_hooks_or_tools(self):
         code, output = self.run_hook(
             ["docs: a message", "", "Signed-off-by: Test <test@example.invalid>"],

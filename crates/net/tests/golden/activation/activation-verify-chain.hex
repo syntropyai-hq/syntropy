@@ -1,0 +1,47 @@
+# activation-verify-chain: Verify of a chain: window 4 (γ = 3), BF16 hidden 64, TOKEN_IDS
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 01 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+0f 00 00 00 00 00 00 00 04 00 00 00 00 00 00 00  # 0020 header
+80 00 00 00 00 02 00 00 33 5c 68 ae 10 a8 1b 3b  # 0030 header
+00 00 01 00 03 02 01 00 40 00 00 00 04 00 00 00  # 0040 extension
+01 00 00 00 01 00 00 00 04 00 00 00 00 00 00 00  # 0050 extension
+00 00 00 00 18 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+08 07 06 05 04 03 02 01 02 00 00 00 4e 00 00 00  # 0080 extension
+29 00 00 00 04 00 00 00 00 00 00 00 ff ff 00 00  # 0090 extension
+01 00 00 00 10 00 00 00 05 00 00 00 06 00 00 00  # 00a0 extension
+07 00 00 00 08 00 00 00 00 00 00 00 00 00 00 00  # 00b0 extension
+00 00 80 3f 00 40 40 40 80 40 a0 40 c0 40 e0 40  # 00c0 payload
+00 41 10 41 20 41 30 41 40 41 50 41 60 41 70 41  # 00d0 payload
+80 41 88 41 90 41 98 41 a0 41 a8 41 b0 41 b8 41  # 00e0 payload
+c0 41 c8 41 d0 41 d8 41 e0 41 e8 41 f0 41 f8 41  # 00f0 payload
+00 42 04 42 08 42 0c 42 10 42 14 42 18 42 1c 42  # 0100 payload
+20 42 24 42 28 42 2c 42 30 42 34 42 38 42 3c 42  # 0110 payload
+40 42 44 42 48 42 4c 42 50 42 54 42 58 42 5c 42  # 0120 payload
+60 42 64 42 68 42 6c 42 70 42 74 42 78 42 7c 42  # 0130 payload
+7a 44 7a 44 7a 44 7a 44 7b 44 7b 44 7b 44 7b 44  # 0140 payload
+7c 44 7c 44 7c 44 7c 44 7d 44 7d 44 7d 44 7d 44  # 0150 payload
+7e 44 7e 44 7e 44 7e 44 7f 44 7f 44 7f 44 7f 44  # 0160 payload
+80 44 80 44 80 44 80 44 80 44 80 44 80 44 80 44  # 0170 payload
+81 44 81 44 81 44 81 44 81 44 81 44 81 44 81 44  # 0180 payload
+82 44 82 44 82 44 82 44 82 44 82 44 82 44 82 44  # 0190 payload
+83 44 83 44 83 44 83 44 83 44 83 44 83 44 83 44  # 01a0 payload
+84 44 84 44 84 44 84 44 84 44 84 44 84 44 84 44  # 01b0 payload
+fa 44 fa 44 fa 44 fa 44 fa 44 fa 44 fa 44 fa 44  # 01c0 payload
+fb 44 fb 44 fb 44 fb 44 fb 44 fb 44 fb 44 fb 44  # 01d0 payload
+fc 44 fc 44 fc 44 fc 44 fc 44 fc 44 fc 44 fc 44  # 01e0 payload
+fd 44 fd 44 fd 44 fd 44 fd 44 fd 44 fd 44 fd 44  # 01f0 payload
+fe 44 fe 44 fe 44 fe 44 fe 44 fe 44 fe 44 fe 44  # 0200 payload
+ff 44 ff 44 ff 44 ff 44 ff 44 ff 44 ff 44 ff 44  # 0210 payload
+00 45 00 45 00 45 00 45 00 45 00 45 00 45 00 45  # 0220 payload
+00 45 00 45 00 45 00 45 00 45 00 45 00 45 00 45  # 0230 payload
+3b 45 3b 45 3b 45 3b 45 3b 45 3b 45 3b 45 3b 45  # 0240 payload
+3c 45 3c 45 3c 45 3c 45 3c 45 3c 45 3c 45 3c 45  # 0250 payload
+3c 45 3c 45 3c 45 3c 45 3c 45 3c 45 3c 45 3c 45  # 0260 payload
+3d 45 3d 45 3d 45 3d 45 3d 45 3d 45 3d 45 3d 45  # 0270 payload
+3d 45 3d 45 3d 45 3d 45 3d 45 3d 45 3d 45 3d 45  # 0280 payload
+3e 45 3e 45 3e 45 3e 45 3e 45 3e 45 3e 45 3e 45  # 0290 payload
+3e 45 3e 45 3e 45 3e 45 3e 45 3e 45 3e 45 3e 45  # 02a0 payload
+3f 45 3f 45 3f 45 3f 45 3f 45 3f 45 3f 45 3f 45  # 02b0 payload

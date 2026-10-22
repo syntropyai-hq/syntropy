@@ -298,6 +298,7 @@ mod tests {
                 "codeowners",
                 "agent-instructions",
                 "rigs",
+                "specs",
                 "deny",
                 "advisories",
                 "spdx",

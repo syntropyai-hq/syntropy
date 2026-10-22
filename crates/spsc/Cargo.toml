@@ -5,3 +5,27 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 description = "The lock-free SPSC ring that io, net and ipc share (RFC-0001 §8.3)"
+
+# The wake handle's OS calls (ADR-0012 item 4): eventfd on Linux and Android, a kqueue user event
+# on Apple platforms, an event handle on Windows. The same versions as `syntropy-io`'s.
+[target.'cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
+# Only under `RUSTFLAGS="--cfg loom"`: loom's atomics and cells replace the standard ones, so the
+# ring's tests run under loom's model checker (RFC-0060 §3.4; the loom models are QUAL-E3-T09's).
+[target.'cfg(loom)'.dependencies]
+loom = "0.7.2"
+
+[dev-dependencies]
+# `CountingAlloc`, for the test that the ring allocates nothing in steady state.
+syntropy-testkit = { path = "../testkit" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }

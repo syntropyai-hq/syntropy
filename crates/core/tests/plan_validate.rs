@@ -56,6 +56,9 @@ fn stage(ix: u16, node: NodeId, layers: std::ops::Range<u16>, role: StageRole) -
             transport: TransportKind::Quic,
             wire: WireDType::F32,
             predicted: Nanos(1_000),
+            prefill_transport: None,
+            relay: None,
+            predicted_p99: Nanos(1_000),
         },
         predicted_step: Nanos(10_000),
     }
