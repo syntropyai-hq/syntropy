@@ -6,8 +6,9 @@
 //! ring that lacks them.
 //!
 //! On a host without IoRing, its tests say so and check nothing. They write that, the Windows
-//! build and what `QueryIoRingCapabilities` reports to the CI job's summary when there is one
-//! (`GITHUB_STEP_SUMMARY`), so a hosted run shows which engines it covered.
+//! build and what `QueryIoRingCapabilities` reports to standard error, uncaptured, and to the CI
+//! job's summary when there is one (`GITHUB_STEP_SUMMARY`), so a hosted run shows which engines
+//! it covered.
 
 #![cfg(windows)]
 #![deny(clippy::undocumented_unsafe_blocks)]
@@ -27,9 +28,11 @@ use syntropy_io::{
 
 const UNIT: u64 = 16384;
 
-/// Writes `line` to standard error and, in a CI job, to its summary.
+/// Writes `line` to standard error and, in a CI job, to its summary. The test harness captures
+/// `eprintln!`, so the line goes to the stderr handle itself, which it does not, and shows in the
+/// job's log as well.
 fn summary(line: &str) {
-    eprintln!("{line}");
+    let _ = writeln!(std::io::stderr(), "windows_engines: {line}");
     if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY")
         && let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path)
     {
@@ -64,7 +67,7 @@ impl Drop for Files {
 }
 
 /// The conformance harness over a generated 8 MiB file.
-fn conformance_run<E: IoEngine>(engine: E, name: &str) -> Report {
+fn conformance_run<E: IoEngine + 'static>(engine: E, name: &str) -> Report {
     let files = Files::new(name, 8 << 20);
     let seed = conformance::seed_from_env();
     let report = conformance::check(engine, &files.file, &files.scratch, &Options::new(seed))
