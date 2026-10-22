@@ -16,20 +16,26 @@
 //! - `windows` is the Windows adapter (TIER-E2-T03): `VirtualAllocExNuma`, `VirtualLock`,
 //!   the hard working-set minimum, `GlobalMemoryStatusEx`, job-object limits and the
 //!   low-memory notification, with its kernel32 declarations; built for x86-64 and AArch64.
-//! - Both adapters keep their live ranges in one shared registry (`registry`).
-//!
-//! WSL2 and macOS come in TIER-E2-T04.
+//! - [`wsl`] is WSL2 (TIER-E2-T04): `/dev/dxg` detection, the register-only DMA path and the
+//!   512 MiB pinned-allocation cap, all portable policy; on Linux its `Wsl2Memory` adapter is
+//!   the Linux adapter with that cap recorded in [`PinLimits::host_alloc_cap`].
+//! - `macos` is the macOS adapter (TIER-E2-T04): anonymous `mmap` at 16 KiB, `mlock` within
+//!   `vm.user_wire_limit`, and read-only `sysctlbyname`. Built for macOS on AArch64 only, the
+//!   macOS target ADR-0020 supports.
+//! - The Linux, Windows and macOS adapters keep their live ranges in one shared registry
+//!   (`registry`).
 
 pub mod procfs;
 
-// Shared by the adapters; unused, and so allowed to be, where neither is built.
+// Shared by the adapters; unused, and so allowed to be, where none that uses it is built.
 #[cfg_attr(
     not(any(
         all(
             target_os = "linux",
             any(target_arch = "x86_64", target_arch = "aarch64")
         ),
-        all(windows, any(target_arch = "x86_64", target_arch = "aarch64"))
+        all(windows, any(target_arch = "x86_64", target_arch = "aarch64")),
+        all(target_os = "macos", target_arch = "aarch64")
     )),
     allow(dead_code)
 )]
@@ -43,6 +49,11 @@ pub mod linux;
 
 #[cfg(all(windows, any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub mod windows;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod macos;
+
+pub mod wsl;
 
 use std::fmt;
 use std::ops::Range;
@@ -390,6 +401,16 @@ pub enum PageableReason {
         /// The bytes the lock asked for.
         requested: Bytes,
     },
+    /// macOS: wiring the range would take this process's wired bytes past the lower of
+    /// `vm.user_wire_limit` and `vm.global_user_wire_limit` (RFC-0020 §4.2, macOS row; §5).
+    WireLimit {
+        /// The lower of the two limits; 0 when neither could be read, so nothing is wired.
+        limit: Bytes,
+        /// What this process already holds wired through the adapter.
+        wired: Bytes,
+        /// The bytes the lock asked for.
+        requested: Bytes,
+    },
     /// The limit allowed it, but the lock call itself failed.
     LockFailed {
         /// The OS error number.
@@ -402,6 +423,7 @@ impl PageableReason {
     pub fn id(&self) -> &'static str {
         match self {
             PageableReason::MemlockLimit { .. } => "memlock_limit",
+            PageableReason::WireLimit { .. } => "wire_limit",
             PageableReason::LockFailed { .. } => "lock_failed",
         }
     }
@@ -420,6 +442,17 @@ impl fmt::Display for PageableReason {
                  locked; the range stays pageable. Raise LimitMEMLOCK for the service, or grant \
                  CAP_IPC_LOCK",
                 limit.0, locked.0, requested.0
+            ),
+            PageableReason::WireLimit {
+                limit,
+                wired,
+                requested,
+            } => write!(
+                f,
+                "the user wire limit (vm.user_wire_limit, vm.global_user_wire_limit) is {} bytes \
+                 and {} are already wired, so {} more cannot be wired; the range stays \
+                 pageable",
+                limit.0, wired.0, requested.0
             ),
             PageableReason::LockFailed { errno } => write!(
                 f,
