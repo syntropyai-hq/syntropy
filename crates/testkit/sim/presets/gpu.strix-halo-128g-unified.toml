@@ -3,6 +3,7 @@
 # Labels as in `gpu.ada-24g.toml`.
 name = "gpu:strix-halo-128g-unified"
 kind = "gpu"
+memory_tier = "unified"
 describes = "AMD Ryzen AI Max+ 395 (Strix Halo): 128 GB of 256-bit LPDDR5X-8000, integrated GPU"
 sources = [
     "research §2.1: Strix Halo memory and bandwidth [S19]; CPU-side reads [S20]",
@@ -32,8 +33,11 @@ unit = "GB/s"
 label = "measured"
 source = "research §2.1 [S20]: limited by the CCD links, 64 GB/s each"
 
-[figures.w_eff]
+[figures."w_eff.unified.dense_gemv"]
 unknown = "research §2.1: the GPU side's DRAM bandwidth was not found; expected above 124 GB/s, to be measured"
+
+[figures."w_eff.unified.expert_gemv"]
+unknown = "research §2.2 and §4 give W_eff for dense decode only; none for expert-sized blocks read in random order (RFC-0010's M1 ExpertGemv)"
 
 [figures.f_eff]
 unknown = "the research note gives no Strix Halo GPU compute rate"

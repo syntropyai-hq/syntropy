@@ -22,10 +22,16 @@ unknown = "research §2.4 gives no figures for a generic Gen4 drive"
 [figures.sustained_read]
 unknown = "research §2.4 gives no figures for a generic Gen4 drive"
 
+[figures.throttled_read]
+unknown = "research §2.4 gives no figures for a generic Gen4 drive"
+
 [figures.heating_time]
 unknown = "research §2.4 gives no figures for a generic Gen4 drive"
 
 [figures.qd1_4k_read_iops]
+unknown = "research §2.4 gives no figures for a generic Gen4 drive"
+
+[figures.qd32_4k_read_iops]
 unknown = "research §2.4 gives no figures for a generic Gen4 drive"
 
 [figures.read_latency]

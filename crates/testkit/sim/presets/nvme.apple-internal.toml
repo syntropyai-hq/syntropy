@@ -20,7 +20,13 @@ unknown = "research §2.4: no sustained-read figures were found for Apple intern
 [figures.heating_time]
 unknown = "research §2.4: no throttling figures were found for Apple internal SSDs"
 
+[figures.throttled_read]
+unknown = "research §2.4: no throttling figures were found for Apple internal SSDs"
+
 [figures.qd1_4k_read_iops]
+unknown = "the research note gives no small-read figures for Apple internal SSDs"
+
+[figures.qd32_4k_read_iops]
 unknown = "the research note gives no small-read figures for Apple internal SSDs"
 
 [figures.read_latency]

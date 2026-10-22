@@ -6,6 +6,7 @@
 # figure the note does not give is `unknown`, with where the note leaves it open (RFC-0060 §8.5).
 name = "gpu:ada-24g"
 kind = "gpu"
+memory_tier = "vram"
 describes = "NVIDIA GeForce RTX 4090: Ada, 24 GB GDDR6X on a 384-bit bus, PCIe 4.0 x16"
 sources = [
     "research §2.1: RTX 4090 memory and compute [S10]",
@@ -79,11 +80,23 @@ unit = "GB/s"
 label = "measured"
 source = "research §2.3 [S30]: one forum system; about 11 GB/s with E-cores disabled"
 
-[figures.w_eff]
+[figures."w_eff.vram.dense_gemv"]
 value = 800
 unit = "GB/s"
 label = "estimate"
 source = "research §4 (a): η ≈ 0.8 of 1008 GB/s, in line with §2.2's dense-model anchors"
+
+[figures."w_eff.vram.expert_gemv"]
+unknown = "research §2.2 and §4 give W_eff for dense decode only; none for expert-sized blocks read in random order (RFC-0010's M1 ExpertGemv)"
+
+[figures."w_eff.host_pinned.dense_gemv"]
+unknown = "research §2.3 gives the pinned host-to-device copy rate (host_link_pinned_h2d), not a kernel's read rate from host memory"
+
+[figures."w_eff.host_pinned.expert_gemv"]
+unknown = "research §2.3 gives the pinned host-to-device copy rate (host_link_pinned_h2d), not a kernel's read rate from host memory"
+
+[figures.f_eff]
+unknown = "research §2.1 gives this GPU's peak tensor and FP32 rates only (the figures above); no achieved compute rate"
 
 [figures.t_fixed]
 unknown = "research §2.2 and §3.4 give t_fixed only for ggml Metal on M3 Ultra; none for this GPU"

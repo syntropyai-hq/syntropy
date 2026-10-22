@@ -30,12 +30,25 @@ unit = "GB/s"
 label = "measured"
 source = "research §2.1 [S22]: Core Ultra 7 265K"
 
-[figures.w_eff]
+[figures."w_eff.host_pinned.dense_gemv"]
 value = 70
 range = [55, 85]
 unit = "GB/s"
 label = "estimate"
-source = "research §4 (a): CPU matvec; at most 60 on a single-CCD Ryzen (§2.1, AM5 trap)"
+source = "research §4 (a): CPU matvec over RAM, given once for RAM and not per host tier; at most 60 on a single-CCD Ryzen (§2.1, AM5 trap)"
+
+[figures."w_eff.host_pinned.expert_gemv"]
+unknown = "research §2.2 and §4 give W_eff for dense decode only; none for expert-sized blocks read in random order (RFC-0010's M1 ExpertGemv)"
+
+[figures."w_eff.host_pageable.dense_gemv"]
+value = 70
+range = [55, 85]
+unit = "GB/s"
+label = "estimate"
+source = "research §4 (a): CPU matvec over RAM, given once for RAM and not per host tier; at most 60 on a single-CCD Ryzen (§2.1, AM5 trap)"
+
+[figures."w_eff.host_pageable.expert_gemv"]
+unknown = "research §2.2 and §4 give W_eff for dense decode only; none for expert-sized blocks read in random order (RFC-0010's M1 ExpertGemv)"
 
 [figures.f_eff]
 unknown = "the research note gives no CPU compute rate"

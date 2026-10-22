@@ -1,6 +1,7 @@
 # A well-formed preset: the `sim-presets` step passes it.
 name = "gpu:test"
 kind = "gpu"
+memory_tier = "unified"
 describes = "a test GPU"
 sources = ["research §2.1 [S10]"]
 
@@ -10,12 +11,21 @@ unit = "GB"
 label = "published"
 source = "research §2.1 [S10]"
 
-[figures.w_eff]
+[figures."w_eff.unified.dense_gemv"]
 value = 70
 range = [55, 85]
 unit = "GB/s"
 label = "estimate"
 source = "research §4 (a)"
 
+[figures."w_eff.unified.expert_gemv"]
+unknown = "research §4 gives none for expert-sized blocks"
+
+[figures.f_eff]
+unknown = "research §2.1 gives peak rates only"
+
 [figures.t_fixed]
 unknown = "research §2.2 gives none for this GPU"
+
+[figures.sigma_dev]
+unknown = "research gives no per-device jitter"

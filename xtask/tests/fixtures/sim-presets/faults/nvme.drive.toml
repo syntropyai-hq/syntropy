@@ -27,3 +27,15 @@ range = [5, 1]
 unit = "µs"
 label = "measured"
 source = "research §2.4"
+
+[figures.heating_time]
+unknown = "research §2.4: not found"
+
+[figures.qd1_4k_read_iops]
+unknown = "research §2.4: not found"
+
+[figures.qd32_4k_read_iops]
+unknown = "research §2.4: not found"
+
+[figures.read_latency]
+unknown = "research §2.4: not found"

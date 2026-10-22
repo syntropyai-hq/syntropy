@@ -8,10 +8,16 @@
 //! - `sources`, a list with at least one citation;
 //! - `figures`, and for each figure either a `label` (`published`, `measured`, `estimate` or
 //!   `target`), a non-empty `source`, a `unit` and a `value` or a `range`; or an `unknown` that
-//!   says where the research leaves it open, and nothing else.
+//!   says where the research leaves it open, and nothing else;
+//! - every figure key of its kind, known or `unknown`, and no `w_eff.*` key outside them. A
+//!   device has `memory`, `f_eff`, `t_fixed`, `sigma_dev` and `w_eff.<tier>.<kernel class>` for
+//!   each tier it reads and each of `dense_gemv` and `expert_gemv`; a discrete GPU also has
+//!   `host_link_pinned_h2d`. A drive has `seq_read`, `sustained_read`, `throttled_read`,
+//!   `heating_time`, `qd1_4k_read_iops`, `qd32_4k_read_iops` and `read_latency`;
+//! - a `memory_tier` of `vram` or `unified` if it is a `gpu`, and none otherwise.
 //!
-//! `testkit::sim::presets` loads the same files and refuses the same faults. This step reads them
-//! as plain TOML, so `lint` needs no `testkit` build.
+//! `testkit::sim::presets` loads the same files and refuses the same faults, from the same key
+//! table. This step reads them as plain TOML, so `lint` needs no `testkit` build.
 
 use std::fs;
 use std::path::Path;
@@ -26,6 +32,43 @@ const LABELS: [&str; 4] = ["published", "measured", "estimate", "target"];
 
 /// The kinds a preset may describe.
 const KINDS: [&str; 3] = ["gpu", "cpu", "nvme"];
+
+/// `testkit::sim::presets`'s key table, which this step cannot import without building
+/// `testkit`: the keys of every device, a discrete GPU's extra key, every drive's keys, and the
+/// kernel classes of the W_eff keys.
+const DEVICE_KEYS: [&str; 4] = ["memory", "f_eff", "t_fixed", "sigma_dev"];
+const DISCRETE_GPU_KEY: &str = "host_link_pinned_h2d";
+const DRIVE_KEYS: [&str; 7] = [
+    "seq_read",
+    "sustained_read",
+    "throttled_read",
+    "heating_time",
+    "qd1_4k_read_iops",
+    "qd32_4k_read_iops",
+    "read_latency",
+];
+const KERNEL_CLASSES: [&str; 2] = ["dense_gemv", "expert_gemv"];
+
+/// The figure keys a preset of `kind` with `memory_tier` must have.
+fn required_keys(kind: &str, memory_tier: Option<&str>) -> Vec<String> {
+    let tiers: &[&str] = match (kind, memory_tier) {
+        ("gpu", Some("vram")) => &["vram", "host_pinned"],
+        ("gpu", Some("unified")) => &["unified"],
+        ("cpu", _) => &["host_pinned", "host_pageable"],
+        ("nvme", _) => return DRIVE_KEYS.iter().map(|key| (*key).to_owned()).collect(),
+        _ => &[],
+    };
+    let mut keys: Vec<String> = DEVICE_KEYS.iter().map(|key| (*key).to_owned()).collect();
+    for tier in tiers {
+        for class in KERNEL_CLASSES {
+            keys.push(format!("w_eff.{tier}.{class}"));
+        }
+    }
+    if kind == "gpu" && memory_tier == Some("vram") {
+        keys.push(DISCRETE_GPU_KEY.to_owned());
+    }
+    keys
+}
 
 /// The `lint` step.
 pub fn step(context: &Context) -> Result<(), String> {
@@ -100,8 +143,35 @@ fn check_file(file: &str, text: &str) -> Vec<String> {
     if !cited {
         problems.push(format!("preset `{name}` cites no source"));
     }
+    let memory_tier = text_of("memory_tier");
+    match (kind, memory_tier) {
+        ("gpu", Some("vram" | "unified")) | ("cpu" | "nvme", None) => {}
+        ("gpu", Some(tier)) => {
+            problems.push(format!("memory_tier `{tier}` is not `vram` or `unified`"))
+        }
+        ("gpu", None) => problems.push("a gpu needs `memory_tier`, `vram` or `unified`".into()),
+        (_, Some(_)) => problems.push("has `memory_tier`, which only a gpu has".into()),
+        // A kind outside the three is already named above.
+        (_, None) => {}
+    }
     match table.get("figures").and_then(toml::Value::as_table) {
         Some(figures) if !figures.is_empty() => {
+            let required = required_keys(kind, memory_tier);
+            for key in &required {
+                if !figures.contains_key(key) {
+                    problems.push(format!(
+                        "has no figure `{key}`; write it as `unknown`, with where the research \
+                         leaves it open, if the research gives none"
+                    ));
+                }
+            }
+            for key in figures.keys() {
+                if (key == "w_eff" || key.starts_with("w_eff.")) && !required.contains(key) {
+                    problems.push(format!(
+                        "figure `{key}` is not one of its W_eff keys, `w_eff.<tier>.<kernel class>`"
+                    ));
+                }
+            }
             for (figure, value) in figures {
                 problems.extend(
                     check_figure(value)
@@ -210,6 +280,25 @@ mod tests {
             problems,
             [format!("{DIR}/gpu.test.toml: figure `memory` has no label")]
         );
+    }
+
+    #[test]
+    fn a_missing_key_a_stray_w_eff_key_or_a_misplaced_memory_tier_fails() {
+        let problems = check_dir(&fixture("keys")).unwrap();
+        let open = "; write it as `unknown`, with where the research leaves it open, if the research gives none";
+        let want = [
+            "cpu.tiered.toml: has `memory_tier`, which only a gpu has".to_owned(),
+            format!("gpu.discrete.toml: has no figure `w_eff.host_pinned.expert_gemv`{open}"),
+            format!("gpu.discrete.toml: has no figure `host_link_pinned_h2d`{open}"),
+            "gpu.discrete.toml: figure `w_eff` is not one of its W_eff keys, `w_eff.<tier>.<kernel class>`".to_owned(),
+            "gpu.discrete.toml: figure `w_eff.vram.dense_gemm` is not one of its W_eff keys, `w_eff.<tier>.<kernel class>`".to_owned(),
+            "gpu.no-tier.toml: a gpu needs `memory_tier`, `vram` or `unified`".to_owned(),
+        ];
+        let got: Vec<&str> = problems
+            .iter()
+            .map(|problem| problem.strip_prefix(&format!("{DIR}/")).unwrap())
+            .collect();
+        assert_eq!(got, want);
     }
 
     #[test]
