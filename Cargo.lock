@@ -430,6 +430,13 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-graph"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "smallvec",
+ "syntropy-core",
+ "syntropy-kernels",
+ "syntropy-manifest",
+]
 
 [[package]]
 name = "syntropy-io"
@@ -522,6 +529,10 @@ version = "0.0.0"
 
 [[package]]
 name = "syntropy-solver"
+version = "0.0.0"
+
+[[package]]
+name = "syntropy-spsc"
 version = "0.0.0"
 
 [[package]]

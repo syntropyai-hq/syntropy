@@ -4,7 +4,7 @@
 - Area: compute and models
 - Depends on: RFC-0001 (§3.3, §5.3, §5.6, §7.1, §9), RFC-0021, RFC-0023, RFC-0030, RFC-0031, RFC-0034, RFC-0040, RFC-0042, RFC-0043, RFC-0052, RFC-0054; ADR-0005, ADR-0007, ADR-0009, ADR-0013, ADR-0015, ADR-0016, ADR-0019; ADR-0410 to ADR-0413
 - Date: 2026-10-19
-- Revised: 2026-10-20: source ranges punched under disk pressure when a pack extent holds them (§4.5); licence acceptance on receiving nodes (§7.5); no project-published packs or draft heads, and fixtures under the fixture store's licence rule (Non-goals, Testing); same-class pack transfer off by default (§8.5); header parsing in a child process (§2); open questions 2, 3, 4 and 6 answered
+- Revised: 2026-10-20: source ranges punched under disk pressure when a pack extent holds them (§4.5); licence acceptance on receiving nodes (§7.5); no project-published packs or draft heads, and fixtures under the fixture store's licence rule (Non-goals, Testing); same-class pack transfer off by default (§8.5); header parsing in a child process (§2); open questions 2, 3, 4 and 6 answered; 2026-10-22: the text form of the `<device-class>` directory name (§4.1; ADR-0405)
 
 ## Summary
 
@@ -225,6 +225,19 @@ The store is a daemon component (`syntropy-store`); runners write packs through 
   sessions/                           persisted session KV (RFC-0022)
   locks/                              advisory locks; one writer process per root; runner pack leases
 ```
+
+**The `<device-class>` directory name** (ADR-0405 decision 6; added 2026-10-22). It is one text form of the `DeviceClass` value (RFC-0040 §2.2). The form is a pure, one-to-one function of the value, and it never changes between releases for an unchanged value. It uses lowercase ASCII letters, digits and `-` only, so it is a valid directory name on every supported file system:
+
+| Variant | Form | Example |
+|---|---|---|
+| `Cuda { sm }` | `cuda-sm<sm in decimal>` | `cuda-sm89` |
+| `Hip { gfx }` | `hip-gfx<gfx in lowercase hex>` | `hip-gfx1100`, `hip-gfx942` |
+| `Metal { family, metal4 }` | `metal-<family in lowercase>`, then `-metal4` when `metal4` is set | `metal-apple9-metal4` |
+| `Vulkan { vendor, coopmat, subgroup }` | `vulkan-<vendor in lowercase hex, at least 4 digits>-sg<subgroup in decimal>`, then `-coopmat` when `coopmat` is set | `vulkan-1002-sg32-coopmat` |
+| `Cpu { isa }` | `cpu-<isa in lowercase>` | `cpu-x86v4amx`, `cpu-arm92sme2` |
+| `Npu { vendor, model }` | `npu-<vendor in lowercase hex>-<model in lowercase hex>` | never written in v1: no provider produces it, so no pack is keyed by it |
+
+A field added to a variant later is written only when its value differs from its default, so existing directories keep their names. A new variant gets a new prefix. When a node's class changes, for example after an OS update that enables Metal 4, a granted AMX permission or a `features.disable` change, its new packs go in a new directory. The old directory is never renamed. The store reclaims it under the pack budget like any unused pack (§4.4).
 
 Backend modules are not kept in the store. They live in the running version's `modules/` directory (RFC-0052 §4.3, RFC-0054 §5.1), and `kernels.module_dir = <store>/modules` is only a developer override (RFC-0040 §12).
 
