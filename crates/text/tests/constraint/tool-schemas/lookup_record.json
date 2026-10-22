@@ -1,0 +1,16 @@
+{
+  "title": "lookup_record",
+  "description": "Find a record by one of its keys.",
+  "type": "object",
+  "properties": {
+    "key": {
+      "oneOf": [
+        { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" } }, "required": ["id"], "additionalProperties": false },
+        { "type": "object", "properties": { "email": { "type": "string", "format": "email" } }, "required": ["email"], "additionalProperties": false }
+      ]
+    },
+    "fields": { "type": "array", "items": { "type": "string", "pattern": "^[a-z_]{1,12}$" }, "maxItems": 3 }
+  },
+  "required": ["key"],
+  "additionalProperties": false
+}

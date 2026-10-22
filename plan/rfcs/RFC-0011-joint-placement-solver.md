@@ -702,7 +702,9 @@ gain ≥ replan.min_gain                                       default 0.20
 no adopted re-plan of this instance in the last replan.cooldown                   default 10 min
 ```
 
-In latency mode an adopted deferred plan also waits for an idle window (no live sequence on the instance) of 2 s, for at most `replan.max_defer` (default 5 min); after that it is applied with make-before-break if possible, otherwise at the next idle window regardless of the deferral limit. Gains below `min_gain` are kept as a "pending improvement" in the explanation, so the dashboard can show what an operator could get by forcing a re-plan.
+In latency mode an adopted deferred plan also waits for an idle window (no live sequence on the instance) of 2 s, for at most `replan.max_defer` (default 5 min). When that deadline passes, the plan is applied if its `context_length` holds every live sequence's `prompt_len + emitted`. If it does not, the plan keeps waiting, as before, and is applied once the sequences it cannot hold have ended. Once applied, each live sequence takes RFC-0033 §5.1's per-sequence choice, as RFC-0033 §10 says. A sequence that fits `recovery.drain_deadline` finishes on the retiring epoch. The others move at a step boundary, usually by KV migration under make-before-break when memory allows, otherwise by replay or re-prefill, which is feasible for every sequence the plan holds. So a plan that holds every live sequence is in place by `replan.max_defer + recovery.drain_deadline` (revised 2026-10-22, note below). Gains below `min_gain` are kept as a "pending improvement" in the explanation, so the dashboard can show what an operator could get by forcing a re-plan.
+
+*Note 2026-10-22 (#1748):* this paragraph said that after `replan.max_defer` the plan "is applied with make-before-break if possible, otherwise at the next idle window regardless of the deferral limit". For a session that never goes idle, on an instance with no memory for make-before-break, that wait had no bound. It also disagreed with RFC-0033 §10, which moves live sequences at the deadline, and with DIST-E15-T03, which tests that rule. RFC-0033 §10's rule now applies. A sequence that fits the drain deadline still finishes where it is; for the rest, make-before-break is still the first choice, through §5.1's KV migration, and replay and re-prefill are the fallbacks. DIST-E14-T10 builds §5.1's choice in M3, after PLC-E6-T04's M2 adoption rule. Until it lands, PLC-E6-T04 re-prefills live sequences at the `replan.max_defer` deadline, as it does for a node loss before RFC-0033 lands: the ingress reopens each one on the new epoch from its transcript (DIST-E11-T03) with `SequenceOpen { resume }` (DIST-E8-T05). Re-prefill needs the new epoch to hold the sequence's context, and a deferred plan need not hold it: §11.2 sets `context_length` to the largest L that C9 allows, and the adoption test above does not look at live sequences. So at the deadline, in M2 and after, the plan is applied only if its `context_length` holds every live sequence, and otherwise it waits as before. RFC-0033 §5.1's re-prefill now reads "when e′ holds ctx(q)" where it read "always available". The bound holds for every session the new plan can hold. These were settled under the maintainer's standing instruction of 2026-10-22.
 
 #### 12.3 Delta solve
 
@@ -1093,9 +1095,11 @@ Keys are cluster scope except `solver.context_target`, which is instance scope; 
 | `solver.departure_margin` | 0.10 [target] | a departure-prone node hosts a stage only for at least this gain, or when capacity needs it (§4) |
 | `replan.min_gain` | 0.20 | adoption threshold (RFC-0001 §7.2; tuned by RFC-0033) |
 | `replan.payback_horizon` | 600 s | migration payback window |
-| `replan.max_defer` | 5 min | longest wait for an idle window in latency mode |
+| `replan.max_defer` | 5 min | longest wait for an idle window in latency mode (kept 2026-10-22, note below) |
 | `replan.cooldown` | 10 min | minimum time between adopted deferred re-plans |
 | `replan.delta_min_gain` | 0.02 | adoption threshold for delta solves |
+
+*Note 2026-10-22 (#1678):* this RFC declares `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` (RFC-0054 §5.1 gives `replan.*` to it); RFC-0033 §12 now refers to them and declares only `replan.degraded_min_gain`. RFC-0033 had given `replan.max_defer` 10 min. The 5 min here holds because RFC-0054 §5.1 gives `replan.*` to this RFC, and RFC-0001 §7.2 names the key without a value: the default was settled at 5 min (RFC-0011's value) under the maintainer's standing instruction of 2026-10-22.
 
 ### 17. Failure handling
 

@@ -428,6 +428,13 @@ impl ProcReader {
     /// One snapshot. `own_locked` is `VmLck`; `own_registered` is `VmPin`, which counts pages
     /// pinned for device or I/O access (provider registrations where the driver pins through
     /// the kernel's pinning interface, io_uring fixed buffers, RDMA memory regions).
+    // `MemSnapshot::at` is a `std::time::Instant` (RFC-0020 §3), stamped here on the OS side of
+    // the tier manager, not in its policy (RFC-0060 §2.1 rule T1). A listed exception to the
+    // determinism lints (`xtask/src/determinism.rs`).
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "stamps the OS reading's `MemSnapshot::at`, a std `Instant`"
+    )]
     pub fn snapshot(&self) -> MemSnapshot {
         let root = &self.root;
         let meminfo = read(root, "proc/meminfo").unwrap_or_default();

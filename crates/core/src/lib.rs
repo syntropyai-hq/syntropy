@@ -18,11 +18,13 @@ pub mod ids;
 pub mod ledger;
 pub mod measured;
 pub mod numerics;
+pub mod parity;
 pub mod plan;
 pub mod policy;
 pub mod protocol;
 pub mod quant;
 pub mod resource;
+pub mod sequence;
 pub mod session;
 pub mod transfer;
 pub mod units;
@@ -38,6 +40,7 @@ pub use ids::{
 };
 pub use measured::{DerivedFrom, MeasureSource, Measured};
 pub use numerics::{AccumKind, ActQuant, Numerics};
+pub use parity::{ForceMode, LogitTap, ParityTapSpec, TapMode, TapRow, TapValues, TeacherStreamId};
 pub use plan::{PlacementPlan, PlanDelta, PlanDigest, PlanEpoch, PlanViolation};
 pub use policy::{
     ApproxFlags, ApproxKnobs, ApproxParams, ExactnessPolicy, Fidelity, InstancePolicy,
@@ -45,6 +48,7 @@ pub use policy::{
 };
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
+pub use sequence::Priority;
 pub use session::{ParseSessionIdError, SequenceId, SessionId};
 pub use transfer::{BufferView, ExtentRef, FileIx, HostRegion, StepLayer, ViewKind};
 pub use units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};

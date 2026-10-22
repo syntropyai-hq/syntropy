@@ -5,7 +5,7 @@
 - Depends on: RFC-0001; ADR-0002, ADR-0003, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0017, ADR-0019, ADR-0020; ADR-0600, ADR-0601, ADR-0602, ADR-0603
 - Expanded by: RFC-0042 (tolerance tables), RFC-0043 (per-family fixtures and boundaries), RFC-0033 (recovery expectations for chaos scenarios), RFC-0062 (where and when each suite runs)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; the production clock and entropy sources in `io`, §2.1, ADR-0022; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
+- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; the production clock and entropy sources in `io`, §2.1, ADR-0022; `TeacherStreamId` defined and `LogitTap` made the per-entry block, §5.5; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
 
 ## Summary
 
@@ -215,6 +215,12 @@ The production thread wraps `poll_once` in the spin-then-park loop of ADR-0012. 
 
 - **Rule T3.** Crates reachable from a protocol core or the solver use `BTreeMap`/`BTreeSet`, or `syntropy_core::DetHashMap`, a `HashMap` with a fixed-key hasher. They never use `std::collections::HashMap` with `RandomState`. A clippy `disallowed-types` configuration on those crates enforces this.
 - **Rule T4.** Nothing whose output reaches a plan, a log entry or a wire frame iterates over a hash container whose order depends on insertion history. Sorting at the boundary is the fix.
+- *Note 2026-10-22 (QUAL-E3-T03):* one clippy config, `ci/clippy-determinism.toml`, carries the rule T3 types and the rule T1 clock and generator calls. Each covered crate holds a copy as its `clippy.toml`, because clippy reads its config from the crate's directory. The covered crates are:
+  - those rule T1 names: `cluster`, `solver`, `sched`, `tier`, `store`, `api` and `runner`;
+  - `exec` and `obs`;
+  - for rule T3, the crates that hold the protocol cores and the solver (`cluster`, `daemon` for the supervisor, `solver`) and the crates their code calls into (`core`, `manifest`). The cores are sans-I/O, so the crates of their shells, such as `net`, are not reached.
+
+  A lint covers a whole crate. A part outside a rule, such as `tier`'s OS-facing module, lifts it with a scoped `#[allow]` in a file that `xtask/src/determinism.rs` lists, and in `exec` and `obs` only the `TickSource` implementation may. The `determinism` step of `cargo xtask ci lint` checks the copies and the list.
 
 #### 2.5 Deterministic kernels in tests
 
@@ -400,6 +406,11 @@ pub trait RefSink {
     fn hidden(&mut self, seq: u32, layer: LayerIx, rows: &HiddenBlock);  // only for tapped layers
 }
 ```
+
+*Note 2026-10-22 (QUAL-E4-T14, where the types live):* the code block above shows the types without crate paths.
+- `RefMode` and `RefDevice` live in `kernels::reference` (layer 1). `graph::reference` reads them, and so does the GPU reference in `kernels-cuda` (COMP-E14-T23); those two crates are peers in layer 2, so neither can hold them (RFC-0001 §4.2 rule 2).
+- `RefOptions`, the `WeightSource` and `RefSink` traits, `TapSpec` and `HiddenBlock` live in `graph::reference`, beside the interpreter that uses them. That interpreter is production code (the warm-up canary), and `testkit` is a dev-dependency only (rule 9). A `WeightSource` returns F32 values, dequantised with RFC-0042's reference dequantisers, for a `WeightKey`: a `graph::ir::WeightRef` and, for a routed expert, its index.
+- `RefExecutor`, `RefKv` and `RefStats` live in `testkit::refexec`, with the stub sources and sinks tests use.
 
 Reference semantics that matter for parity:
 - **Routing ties.** MoE top-k selection breaks score ties toward the lower expert index. RFC-0042 requires every provider to use the same rule, so a tie is never an inter-kernel divergence by construction. Near-ties are real numerics, and the metrics capture them.
@@ -617,11 +628,30 @@ pub enum TapMode {
     /// (both computed in F64), its argmax and its top-2 margin.
     Gather { k: u16, tail: u16 },
 }
+/// Names the teacher stream of one parity run. Chosen by the driver's daemon, opaque to the tail;
+/// the tokens arrive in `TapIds` frames for the sequence (RFC-0031 §6.13).
+pub struct TeacherStreamId(pub u64);
+/// `TokenEntry::tap`: one row per tapped position of the entry (RFC-0031 §6.5's tap block).
+pub struct LogitTap { pub k: u16, pub tail: u16, pub rows: Vec<TapRow> }
+pub struct TapRow {
+    pub pos: u32,
+    pub argmax: u32,                     // ties to the lower id
+    pub margin: f32,                     // top-1 minus top-2 logit
+    pub lse: f64,                        // logsumexp over the full vocabulary, in F64
+    pub lse_complement: f64,             // logsumexp over V∖T, in F64; 0 for FullLocal
+    pub values: TapValues,
+}
+pub enum TapValues {
+    Gather { top: Vec<f32>, tail: Vec<f32> },   // logits at T and at S, in the order sent
+    FullLocal { shm_offset: u64 },              // the row's offset in the mapped region
+}
 ```
+
+*Revised 2026-10-22 (QUAL-E5-T19), a plan correction for the maintainers:* this block named `TeacherStreamId` and `LogitTap` without defining them, and the RFCs that use `LogitTap` disagreed on its shape. RFC-0050 §13.6 gave one record per position. RFC-0001 §5.8's `TokenEntry::tap: Option<LogitTap>` and RFC-0031 §6.5's tap block hold one per entry, which covers every position of a verify window or prefill chunk. `LogitTap` is now the per-entry block, matching RFC-0001 and RFC-0031, and `TapRow` is the per-position record that the parity endpoint streams. `TeacherStreamId` is a `u64` the driver's daemon chooses; it needs no wire field, because `TapIds` frames already carry the sequence's ID. In JSON a non-finite tap value is the string `"nan"`, `"inf"` or `"-inf"` (RFC-0050 §13.6), and a binary format keeps its bits (RFC-0031 §6.5).
 
 At the tail, `ForceMode` replaces sampling. The token that goes back around the ring is the teacher token, so every stage sees exactly the decode or verify traffic it would see in service. The tap returns results in `TokenEntry::tap` (amendment A4). The endpoint that accepts a `ParityTapSpec` is `POST /v1/syntropy/parity` on the native API. The node config key `debug.parity_api` enables it; it defaults to `false` and answers on loopback binds only (§1.3).
 
-**Crate** (revised 2026-10-22). The block's "core / net" means `syntropy-core`. `ParityTapSpec`, `ForceMode`, `TapMode` and `LogitTap` live there, because the tail in `exec` and the driver both build against them, and RFC-0001 §4.2 rule 3 keeps compute crates such as `exec` off `net`. `net` carries them on the wire without defining them.
+**Crate** (revised 2026-10-22). The block's "core / net" means `syntropy-core`. `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId`, `LogitTap`, `TapRow` and `TapValues` live there, because the tail in `exec` and the driver both build against them, and RFC-0001 §4.2 rule 3 keeps compute crates such as `exec` off `net`. `net` carries them on the wire without defining them.
 
 #### 5.6 Layer-level error and bisection
 
@@ -931,6 +961,13 @@ impl SimWorld {
 ```
 
 The loop pops the earliest event and advances the clock to its time. It hands the event to the node and component it targets, schedules everything the handler emits, and then runs every checker against the new state. Events at the same instant are ordered by `tiebreak`, drawn from the RNG when the event is scheduled. Different seeds therefore explore different interleavings of simultaneous events, which is where most distributed races live, while one seed always replays one interleaving.
+
+**Note, 2026-10-22 (QUAL-E8-T01): the core as built.** `testkit::sim` builds the loop above as `SimWorld<M: Model>`, generic over the state its events act on.
+- **The model.** The cluster is one model. It holds the nodes, the fabric (QUAL-E8-T02) and the `SimEvent` enum. The later simulator tasks build it, so the world core needs none of their types. A model handles one event at a time and schedules what it emits through a `Schedule`, at an instant or after a delay, never in the past.
+- **Time and randomness.** The model's code gets the world's clock as a read-only `SimClockHandle`, and its entropy as the seeded `SimEntropy` (QUAL-E3-T02). That stream is also where the tie-breaks come from, so a seed fixes both the model's random draws and the interleaving.
+- **The trace hash.** `TraceHasher` is BLAKE3, in key-derivation mode with a versioned context. For each processed event it hashes the instant, the length of the event's bytes, and the bytes each event type writes through `TraceEvent`. `trace_hash` returns `core`'s `Blake3`.
+- **Checkers.** `Checker::after_event` is the safety check, run after every event. `Checker::at_milestone` is the liveness check, run at milestones the scenario sets, once every event up to the milestone's instant has run. A scenario sets one at its end.
+- **Violations.** A failed check stops the run with a `Violation`. It carries the checker, the message, the seed, where the check failed (after event *n*, or at a named milestone), the virtual instant, the number of events processed, and the trace prefix: the hash of those events, which a replay with the same seed reaches at the same point. A stopped world returns the same violation from every later `run_until`.
 
 #### 8.3 Simulated fabric
 

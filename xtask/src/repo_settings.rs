@@ -389,7 +389,11 @@ fn compare(path: &str, want: &Value, live: Option<&Value>, problems: &mut Vec<St
                 problems.push(format!("{shown_path} is {}, not an object", shown(live)));
                 return;
             };
-            for (name, want) in want {
+            // By name, so the findings read the same whatever order the map keeps: `serde_json`'s
+            // `preserve_order` keeps the declared file's order (RFC-0060 §2.4 rule T4).
+            let mut members: Vec<(&String, &Value)> = want.iter().collect();
+            members.sort_by_key(|(name, _)| *name);
+            for (name, want) in members {
                 compare(&member(path, name), want, live.get(name), problems);
             }
         }

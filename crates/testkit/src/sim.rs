@@ -6,10 +6,16 @@
 //! virtual time advanced only by its owner, and [`SimEntropy`], a seeded ChaCha20 stream. They
 //! implement `syntropy_core`'s [`Clock`](syntropy_core::Clock) and
 //! [`Entropy`](syntropy_core::Entropy), which the code under rule T1 is given (RFC-0060 §2.1).
-//! The world, the fabric, the fakes and the checkers are planned.
+//! It also holds the world's core (QUAL-E8-T01): [`SimWorld`] and its event loop, the
+//! [`Checker`] trait, and the [`TraceHasher`]. The fabric, the fakes and the cluster model are
+//! planned.
 
 mod clock;
 mod entropy;
+mod trace;
+mod world;
 
 pub use clock::{SIM_UNIX_MS_ORIGIN, SimClock, SimClockHandle};
 pub use entropy::SimEntropy;
+pub use trace::{Hex, TraceEvent, TraceHasher};
+pub use world::{Checker, Env, Found, Model, RunOutcome, Schedule, SimWorld, Violation};
