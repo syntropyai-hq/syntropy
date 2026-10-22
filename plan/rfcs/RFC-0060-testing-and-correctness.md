@@ -229,6 +229,8 @@ pub enum PollOutcome { Progress, Idle { next_wake: Option<MonoTime> }, Fault(Err
 
 The production thread wraps `poll_once` in the spin-then-park loop of ADR-0012. The simulator calls it when the device's virtual timeline says the dispatcher has work. The CPU compute pool gets the same treatment: `ComputePool::run_inline` executes a doorbell's work on the calling thread, which the simulator uses so that one OS thread runs every node. The I/O engine is a trait owned by RFC-0021, and the simulator implements it with `FakeIo` (§8.4).
 
+*Note 2026-10-23 (PLC-E7-T17):* built in `syntropy_exec::dispatch` and `syntropy_exec::pool`, as RFC-0012 §3.1's note of the same date describes. A pass is timed on the dispatcher's `TickSource`, and a pass over its budget counts as an overrun. A unit test moves the injected clock inside a pass and sees the count. In the simulator a pass takes no virtual time, because `SimTicks` moves only between events, so the watchdog cannot fire there. A pass that waited for an event would hang the run's one thread. A bounded wait inside a pass, such as a timed park, a sleep or a counted spin, goes unseen under test. The check that fails on it is PLC-E7-T18's hardware run, the first on a real `TickSource`. `crates/exec/tests/sim_one_stage.rs` drives a one-stage instance through `poll_once` and `run_inline` on one OS thread in a `SimWorld`. Two runs of one seed give identical step records, tokens and trace hashes. A checker fails the run if a pass returns `Idle` with a step in flight.
+
 #### 2.4 Deterministic iteration and hashing
 
 - **Rule T3.** Crates reachable from a protocol core or the solver use `BTreeMap`/`BTreeSet`, or `syntropy_core::DetHashMap`, a `HashMap` with a fixed-key hasher. They never use `std::collections::HashMap` with `RandomState`. A clippy `disallowed-types` configuration on those crates enforces this.
@@ -323,6 +325,11 @@ Each stateful component listed below has a **reference model**: a deliberately s
   Each primitive's crate keeps its loom model next to it under `#[cfg(loom)]`.
 - **Miri** runs the unit tests of `tier` (arenas), `ipc` (shared-memory layout) and `net` (frame codecs, shared-memory transport) with FFI stubbed. It catches undefined behaviour in the `unsafe` blocks that ADR-0001 confines to these crates.
 - **Sanitizers.** A test-only job builds the `unsafe` crates and the CPU provider with AddressSanitizer and ThreadSanitizer on a pinned nightly toolchain. ADR-0001 forbids nightly compilers only for release builds.
+
+*Note 2026-10-23 (QUAL-E3-T09):* the M0 loom models are in `spsc` (the heap ring and the shared ring) and `ipc` (the `local_tokens` and `local_sequences` rings of one region), and `cargo xtask test loom` runs them in `hosted-l3` (RFC-0062 §2.3). Three findings apply to the M1 models of QUAL-E3-T22:
+- **No spinning between three threads.** In loom 0.7, a thread that yields hands over to another without spending a preemption. When two threads spin on a third, loom can hand control between the two indefinitely, and the run fails at loom's branch limit rather than finishing. A model of three threads therefore gives each thread a fixed number of attempts that never wait. The main thread then finishes the run alone and checks the outcome: every record arrives once and in order. Two-thread models may still spin.
+- **The planted bug is a twin, not a one-off edit.** Each ring has a test-only twin whose publishing store is relaxed, and a test runs the cross-thread model on it in a child process and expects loom's causality violation. A child process, because loom may abort instead of unwinding.
+- **Slot bytes are invisible to loom.** The shared ring's slots are plain memory that loom cannot see, so a loom-only cell per slot records each write and read, and loom checks those are ordered.
 
 #### 3.5 Hot-path guards
 
@@ -1044,6 +1051,19 @@ pub enum Dist {
 - **Fields the table leaves out.** The presets set them plainly: no jitter, no reorder, no per-packet overhead, an MTU of 1,500 bytes on IP links and 4,096 on RDMA, and one packet per frame on shared memory. `wan_invite`'s tail is `Const(100 ms)`, 4 × its median, at p_tail 0.01.
 - **Portable sampling.** Every draw comes from the run's `SimEntropy`. The log-normal's `exp` and the Marsaglia polar method's `ln` are computed in `testkit::sim` from addition, subtraction, multiplication, division and square root only, which IEEE 754 rounds the same everywhere, not from the platform's maths library, whose `exp` and `ln` may differ between Linux, macOS and Windows. So a seed replays one run on any host (§8). A golden test pins the exact bits of seeded draws, so a platform difference fails loudly.
 - **Loss on reliable channels.** Each packet of a frame is lost at most once, independently, with probability `loss`, and each lost packet adds one PTO. A round-trip sample is twice a message's α plus jitter, and the PTO uses the link's estimate before the frame's own sample. Before any sample, a link assumes RFC 9002's initial RTT, 333 ms.
+
+**Note, 2026-10-23 (QUAL-E8-T04): `SimTransport` as built.**
+- **Where.** `testkit::sim::SimTransport` implements `net`'s `Transport`, one per simulated node, over a shared `SimNet` that holds the fabric and every channel. It sits behind `testkit`'s `transport` feature, which `net`'s tests turn on, so crates that use `testkit` for anything else don't build `net`.
+- **Channels.** Each side of a channel is DIST-E7-T02's channel core, so the credit window, `WouldBlock`, `credit_stall`, acknowledgements and retention are production's. Every frame goes through `SimFabric::send_reliable`, one stream per channel side, and is delivered at its own arrival time.
+- **Link down.** The failure timeout is `link.failover_timeout`, RFC-0031 §4's QUIC idle timeout: 2 s on a LAN, 10 s across a WAN, chosen per `SimNet`.
+  - A channel fails at both ends, with an uncoded `Link` error, when either direction of its link has been down for the timeout. The timeout counts from the moment the link went down, noted when the fabric changes, however late the driver next steps. That includes a one-way split, since the far end hears nothing.
+  - `SimNet::next_deadline` gives the next time anything is due: a frame's arrival, a failover, or a core's timer (`ChannelCore::next_deadline`). So a driver that steps on events sees each one at its time.
+  - A link back up sooner loses nothing: the cores send the dropped frames again on their ack timeouts.
+  - The cores never escalate ack timeouts to a link fault, since QUIC retransmits lost packets itself (RFC-0031 §7.3).
+- **Not modelled yet.**
+  - Handshake time: `connect` and `accept` pair as soon as both are called, and a `connect` with no link up fails at once with `ConnectTimeout`.
+  - `reconnect`.
+  - Gossip datagrams use the fabric's `send_datagram` directly, not the transport.
 
 #### 8.4 Fake devices, tiers and drives
 

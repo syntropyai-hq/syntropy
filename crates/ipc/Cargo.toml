@@ -16,6 +16,11 @@ syntropy-spsc = { path = "../spsc" }
 [dev-dependencies]
 serde_json = { workspace = true }
 
+# Only under `RUSTFLAGS="--cfg loom"`: the model checker for the region's loom model (RFC-0060
+# §3.4; QUAL-E3-T09). `syntropy-spsc` then builds its rings on loom's atomics. The same version.
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7.2"
+
 # The segment's OS calls: memfd on Linux, `shm_open` on Apple platforms, a file mapping on Windows
 # (ADR-0015 item 4). The same versions as `syntropy-io`'s and `syntropy-spsc`'s.
 [target.'cfg(any(target_os = "linux", target_vendor = "apple"))'.dependencies]
@@ -29,3 +34,6 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Memory",
     "Win32_System_Threading",
 ] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
