@@ -484,9 +484,7 @@ pub fn check(point: &'static str, ctx: &Ctx) -> FaultEffect {
         FaultEffect::Hang => {
             let mut state = state();
             while state.generation == generation {
-                state = RELEASE
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner);
+                state = RELEASE.wait(state).unwrap_or_else(PoisonError::into_inner);
             }
         }
         FaultEffect::None | FaultEffect::Error(_) | FaultEffect::Corrupt { .. } => {}

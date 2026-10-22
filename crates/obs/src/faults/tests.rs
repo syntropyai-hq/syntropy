@@ -21,7 +21,10 @@ fn effects_have_the_plan_files_names() {
             r#"{"error":"Device"}"#,
         ),
         (FaultEffect::Delay(Nanos(5_000)), r#"{"delay":5000}"#),
-        (FaultEffect::Corrupt { bytes: 4 }, r#"{"corrupt":{"bytes":4}}"#),
+        (
+            FaultEffect::Corrupt { bytes: 4 },
+            r#"{"corrupt":{"bytes":4}}"#,
+        ),
         (FaultEffect::Panic, r#""panic""#),
         (FaultEffect::Hang, r#""hang""#),
     ];
@@ -126,7 +129,9 @@ mod injected {
 
     /// The hits, from 1, among the first `hits` that fire.
     fn firing(hits: u64, mut point: impl FnMut() -> FaultEffect) -> Vec<u64> {
-        (1..=hits).filter(|_| point() != FaultEffect::None).collect()
+        (1..=hits)
+            .filter(|_| point() != FaultEffect::None)
+            .collect()
     }
 
     #[test]
@@ -169,7 +174,10 @@ mod injected {
             ),
         ]);
         assert!(firing(1_000, || crate::fault_point!("obs.test.p0")).is_empty());
-        assert_eq!(firing(1_000, || crate::fault_point!("obs.test.p1")).len(), 1_000);
+        assert_eq!(
+            firing(1_000, || crate::fault_point!("obs.test.p1")).len(),
+            1_000
+        );
     }
 
     /// The fires are the draws below p, a seed replays them, and another seed gives others.
@@ -180,7 +188,9 @@ mod injected {
         let plan = |seed| vec![rule(point, Trigger::Probability { p: 0.25, seed }, DEVICE)];
         run(plan(42));
         let first = firing(10_000, || crate::fault_point!("obs.test.probability"));
-        let expected: Vec<u64> = (1..=10_000).filter(|&k| draw(42, point, k) < 0.25).collect();
+        let expected: Vec<u64> = (1..=10_000)
+            .filter(|&k| draw(42, point, k) < 0.25)
+            .collect();
         assert_eq!(first, expected);
         // Installing the plan again starts its hit count again, so the same seed replays.
         run(plan(42));
@@ -239,7 +249,12 @@ mod injected {
             Trigger::After(MonoTime(200)),
             DEVICE,
         )]);
-        for (now, effect) in [(0, FaultEffect::None), (199, FaultEffect::None), (200, DEVICE), (5_000, DEVICE)] {
+        for (now, effect) in [
+            (0, FaultEffect::None),
+            (199, FaultEffect::None),
+            (200, DEVICE),
+            (5_000, DEVICE),
+        ] {
             clock.set(now);
             assert_eq!(crate::fault_point!("obs.test.after"), effect, "at {now} ns");
         }
@@ -263,7 +278,11 @@ mod injected {
             (300, FaultEffect::None),
         ] {
             clock.set(now);
-            assert_eq!(crate::fault_point!("obs.test.window"), effect, "at {now} ns");
+            assert_eq!(
+                crate::fault_point!("obs.test.window"),
+                effect,
+                "at {now} ns"
+            );
         }
     }
 
@@ -312,20 +331,34 @@ mod injected {
     #[test]
     fn panic_names_the_point_and_leaves_the_plan_usable() {
         let _serial = serial();
-        run(vec![rule("obs.test.panic", Trigger::Nth(1), FaultEffect::Panic)]);
+        run(vec![rule(
+            "obs.test.panic",
+            Trigger::Nth(1),
+            FaultEffect::Panic,
+        )]);
         let payload = panic::catch_unwind(|| crate::fault_point!("obs.test.panic")).unwrap_err();
         let message = payload.downcast_ref::<String>().unwrap();
-        assert_eq!(message, "fault point `obs.test.panic` fired: an injected panic");
+        assert_eq!(
+            message,
+            "fault point `obs.test.panic` fired: an injected panic"
+        );
         // The lock was not held when the point panicked, so the next hit goes through.
         assert_eq!(crate::fault_point!("obs.test.panic"), FaultEffect::None);
-        assert_eq!(counters()["obs.test.panic"], PointCounts { hits: 2, fires: 1 });
+        assert_eq!(
+            counters()["obs.test.panic"],
+            PointCounts { hits: 2, fires: 1 }
+        );
     }
 
     /// A hang holds its thread until the plan is cleared, then returns.
     #[test]
     fn hang_blocks_until_the_plan_is_cleared() {
         let _serial = serial();
-        run(vec![rule("obs.test.hang", Trigger::Always, FaultEffect::Hang)]);
+        run(vec![rule(
+            "obs.test.hang",
+            Trigger::Always,
+            FaultEffect::Hang,
+        )]);
         let (sent, received) = mpsc::channel();
         let thread = std::thread::spawn(move || {
             sent.send(crate::fault_point!("obs.test.hang")).unwrap();
@@ -352,7 +385,11 @@ mod injected {
     #[test]
     fn hang_ends_when_the_plan_is_replaced() {
         let _serial = serial();
-        run(vec![rule("obs.test.hang-replace", Trigger::Always, FaultEffect::Hang)]);
+        run(vec![rule(
+            "obs.test.hang-replace",
+            Trigger::Always,
+            FaultEffect::Hang,
+        )]);
         let thread = std::thread::spawn(|| crate::fault_point!("obs.test.hang-replace"));
         let deadline = Instant::now() + Duration::from_secs(10);
         while fired().is_empty() {
@@ -387,11 +424,20 @@ mod injected {
         let at = |device, node, link| Ctx { node, device, link };
         let none = FaultEffect::None;
         // The device filter: only that device matches, and a context without one does not.
-        assert_eq!(crate::fault_point!("obs.test.filter", at(Some(device(1, 0)), None, None)), DEVICE);
-        assert_eq!(crate::fault_point!("obs.test.filter", at(Some(device(1, 1)), None, None)), none);
+        assert_eq!(
+            crate::fault_point!("obs.test.filter", at(Some(device(1, 0)), None, None)),
+            DEVICE
+        );
+        assert_eq!(
+            crate::fault_point!("obs.test.filter", at(Some(device(1, 1)), None, None)),
+            none
+        );
         assert_eq!(crate::fault_point!("obs.test.filter", Ctx::default()), none);
         // The link filter needs both fields it names; the panic shows it matched.
-        assert_eq!(crate::fault_point!("obs.test.filter", at(None, None, Some(link))), none);
+        assert_eq!(
+            crate::fault_point!("obs.test.filter", at(None, None, Some(link))),
+            none
+        );
         let both = at(None, Some(node(1)), Some(link));
         assert!(panic::catch_unwind(|| crate::fault_point!("obs.test.filter", both)).is_err());
     }
@@ -436,7 +482,11 @@ mod injected {
         let _serial = serial();
         run(vec![
             rule("obs.test.order", Trigger::Nth(2), DEVICE),
-            rule("obs.test.order", Trigger::Always, FaultEffect::Corrupt { bytes: 1 }),
+            rule(
+                "obs.test.order",
+                Trigger::Always,
+                FaultEffect::Corrupt { bytes: 1 },
+            ),
             rule("obs.test.order", Trigger::Nth(3), FaultEffect::Panic),
             rule("obs.test.other", Trigger::Always, FaultEffect::Panic),
         ]);
@@ -465,14 +515,20 @@ mod injected {
             ("obs.test.count-a", PointCounts { hits: 3, fires: 1 }),
             ("obs.test.count-b", PointCounts { hits: 1, fires: 1 }),
             ("obs.test.count-never", PointCounts { hits: 1, fires: 0 }),
-            ("obs.test.count-unplanned", PointCounts { hits: 1, fires: 0 }),
+            (
+                "obs.test.count-unplanned",
+                PointCounts { hits: 1, fires: 0 },
+            ),
         ]);
         assert_eq!(counters(), expected);
         assert_eq!(fired(), ["obs.test.count-a", "obs.test.count-b"]);
         // Counters carry on across plans until they are reset.
         run(vec![rule("obs.test.count-b", Trigger::Always, DEVICE)]);
         crate::fault_point!("obs.test.count-b");
-        assert_eq!(counters()["obs.test.count-b"], PointCounts { hits: 2, fires: 2 });
+        assert_eq!(
+            counters()["obs.test.count-b"],
+            PointCounts { hits: 2, fires: 2 }
+        );
         reset_counters();
         assert!(counters().is_empty());
         assert!(fired().is_empty());
@@ -582,7 +638,14 @@ mod injected {
                 "probability -0.1 is not in [0, 1]",
             ),
             (
-                rule("a.b.c", Trigger::Probability { p: f64::NAN, seed: 0 }, DEVICE),
+                rule(
+                    "a.b.c",
+                    Trigger::Probability {
+                        p: f64::NAN,
+                        seed: 0,
+                    },
+                    DEVICE,
+                ),
                 "probability NaN is not in [0, 1]",
             ),
             (
@@ -636,8 +699,8 @@ mod injected {
             FaultEffect::Error(ErrorClass::Link)
         );
         let missing = path.with_extension("missing");
-        let error = load_from_var(Some(missing.clone().into_os_string()), ManualClock::at(0))
-            .unwrap_err();
+        let error =
+            load_from_var(Some(missing.clone().into_os_string()), ManualClock::at(0)).unwrap_err();
         assert!(matches!(&error, PlanError::Read { path, .. } if *path == missing));
         let bad = plan_file("bad", "[[rules]]\npoint = 1\n");
         let error = load_from_path(&bad, ManualClock::at(0)).unwrap_err();
@@ -655,7 +718,10 @@ mod injected {
         if std::env::var_os(CHILD).is_some() {
             // The child: load the plan, then fire its point.
             assert!(load_from_env(ManualClock::at(0)).unwrap());
-            assert_eq!(crate::fault_point!("obs.test.env"), FaultEffect::Error(ErrorClass::Timeout));
+            assert_eq!(
+                crate::fault_point!("obs.test.env"),
+                FaultEffect::Error(ErrorClass::Timeout)
+            );
             assert_eq!(fired(), ["obs.test.env"]);
             return;
         }
@@ -664,7 +730,10 @@ mod injected {
             "[[rules]]\npoint = \"obs.test.env\"\nwhen = \"always\"\neffect = { error = \"Timeout\" }\n",
         );
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "faults::tests::injected::a_process_loads_the_plan_its_environment_names"])
+            .args([
+                "--exact",
+                "faults::tests::injected::a_process_loads_the_plan_its_environment_names",
+            ])
             .args(["--test-threads", "1"])
             .env(CHILD, "1")
             .env(PLAN_ENV, &path)
@@ -672,7 +741,11 @@ mod injected {
             .unwrap();
         std::fs::remove_file(&path).unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(stdout.contains("1 passed"), "{stdout}");
     }
 }

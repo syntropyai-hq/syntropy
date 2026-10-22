@@ -32,7 +32,7 @@
 //!   handles `Error` and `Corrupt`, and may ignore the rest.
 //! - A plan comes from a TOML file named by `SYNTROPY_FAULT_PLAN` at process start
 //!   (`faults::load_from_env`), or from a harness through `faults::install`. Pushing a plan over
-//!   the daemon–runner IPC channel needs a message RFC-0001 §3.5 does not define yet: DIST-E1-T12
+//!   the daemon–runner IPC channel needs a message RFC-0001 §3.5 does not define yet: DIST-E1-T13
 //!   adds it, and its handler calls `faults::install`.
 //! - `faults::counters` and `faults::fired` report each point's hits and fires.
 //!
@@ -72,7 +72,7 @@ pub enum FaultEffect {
     Hang,
 }
 
-/// Where a fault point was reached, for a rule's [`CtxFilter`] (RFC-0060 §9.2).
+/// Where a fault point was reached, for a rule's `CtxFilter` (RFC-0060 §9.2).
 ///
 /// `sequence` arrives with `core`'s `SequenceId` (RFC-0001 §5.13).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
