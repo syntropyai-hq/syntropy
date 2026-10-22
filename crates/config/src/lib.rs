@@ -23,6 +23,11 @@
 //! - the validation of RFC-0054 §8 (PROD-E1-T03): [`load_and_validate`] runs phases 1–5 and keeps
 //!   every error, each a [`Problem`] with its [`Code`], and [`diagnostic::render`] prints them in
 //!   §8's format without ever showing a secret;
+//! - an instance's typed section from its policy (§5.4, PROD-E1-T24): [`InstanceSection`] builds
+//!   a domain crate's section from the `<prefix>` table of the policy, or from
+//!   `InstancePolicy::domain`, with the computed defaults the caller supplies, checks it as a
+//!   policy table is checked at load, and lists what changed between two builds with each key's
+//!   reload class;
 //! - per-request overrides (§7, PROD-E1-T10): [`RequestOverrides`] and [`resolve_request`], which
 //!   resolves a request against one candidate instance's policy, enforcing D3: approximate only
 //!   when the request, the instance and the cluster all opt in.
@@ -128,6 +133,7 @@ pub mod diagnostic;
 mod discovery;
 mod env;
 mod holds_secret;
+mod instance;
 mod origin;
 mod registry;
 mod render;
@@ -147,6 +153,7 @@ pub use discovery::{
 };
 pub use env::{API_KEY_VAR, Env, HF_TOKEN_VAR, HOST_VAR, OTHER_KNOWN, path_for, var_for};
 pub use holds_secret::HoldsSecret;
+pub use instance::{Change, InstanceSection, InstanceSectionError};
 pub use origin::Origin;
 pub use registry::{Registry, RegistryError};
 pub use request::{

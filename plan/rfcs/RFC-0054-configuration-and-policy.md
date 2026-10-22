@@ -597,6 +597,8 @@ Recommended default: (a). Nothing yet checks a shared section's keys against thi
 
 These keys build an `InstancePolicy` (§4.5). In addition, every instance-scope key that a domain section declares, such as `solver.context_target`, `ring.max_inflight_steps` or `recovery.history`, may appear in a `policy.*` table. It travels in `InstancePolicy::domain`, so it reaches the solver through `EnsureInstance` and is covered by the digest. Each may be set in `[policy.default]` or `[policy."<selector>"]`, which live in the cluster log, or explicitly when a model is loaded. Rule 3 (§2.2) decides which applies. "Req" says what a request may do with the key (§7). "Hot" here means the change applies to new requests, or to idle-unload and preload decisions, without a new plan.
 
+*Note 2026-10-22 (PROD-E1-T24):* a domain crate builds its typed section from an instance's policy through `syntropy_config::InstanceSection`, never by parsing the table itself. `InstanceSection::<S>::from_policy` takes the section's `<prefix>` table, and `from_domain` the matching entries of `InstancePolicy::domain`, with a function that supplies each computed default the crate owns. It applies §8's phases 2 and 3 with each key's own check, so a value gets the same `Config` code here as in a node file's `[policy."…"]` table at load, and every problem is reported. `InstanceSection::changes` lists the keys two builds differ in, each with its §9.1 reload class.
+
 | Key | Type | Default | Reload | Req | Owner |
 |---|---|---|---|---|---|
 | `objective` | `latency` \| `throughput` | `latency` (D2) | instance | — | 0011 |

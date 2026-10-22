@@ -814,6 +814,14 @@ RFC-0011 §12.2 now applies a deferred plan at the `replan.max_defer` deadline t
 | DIST-E14-T10's property "re-prefill always feasible" becomes "re-prefill feasible whenever the new epoch holds the sequence's context"; DIST-E15-T03 gains "a plan whose `context_length` the session exceeds is not applied until the session ends"; no edge | DIST-E14-T10, DIST-E15-T03 | Definition of done | RFC-0033 §5.1's `t_reprefill` now holds only when e′ holds `ctx(q)`, and §10 applies the plan at the deadline only if it holds every live sequence |
 | PLC-E6-T11 registers the `replan.*` keys except `replan.degraded_min_gain`, which RFC-0033 owns; no edge | PLC-E6-T11 | Definition of done | RFC-0054 §5.1 lists that key as RFC-0033's carve-out (#1742); registering it twice would make the schema registry refuse to build |
 
+## DIST-E1-T02's segment unlink (2026-10-22)
+
+DIST-E1-T02 (M0a) builds the shared-memory region. Its criterion "the daemon unlinks segments on runner exit" needs a daemon that spawns and reaps runners, and that is DIST-E1-T04, which depends on DIST-E1-T02 through DIST-E1-T03. An edge would make a cycle.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T02's criterion becomes the creating side's unlink after the runner process exits, shown by its cross-process test; "the daemon calls `Region::unlink` when a runner exits" moves to DIST-E1-T04 | DIST-E1-T02, DIST-E1-T04 | R9 | DIST-E1-T04 spawns runners and sees them exit. DIST-E1-T02's test plays both processes, so it can show the unlink itself. On Linux a memfd has no name, and on Windows a mapping's name goes with its last handle, so the test checks each OS's own form of "no name left" |
+
 ## PROD-E1-T10: instance-wide knobs a request did not name (2026-10-22)
 
 Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request that names its knobs and leaves out one the candidate's plan applies to every sequence would run with it while its label omitted it. The RFC-0054 §7 note of 2026-10-22 refuses that case with `fidelity_conflict`.
