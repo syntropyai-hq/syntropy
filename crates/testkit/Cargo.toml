@@ -6,5 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The simulator's trace hash (RFC-0060 §8.2).
+blake3.workspace = true
 chacha20.workspace = true
 syntropy-core = { path = "../core" }

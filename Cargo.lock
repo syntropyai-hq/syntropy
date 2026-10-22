@@ -1078,6 +1078,7 @@ version = "0.0.0"
 name = "syntropy-testkit"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "chacha20",
  "syntropy-core",
 ]

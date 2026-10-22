@@ -926,6 +926,13 @@ impl SimWorld {
 
 The loop pops the earliest event and advances the clock to its time. It hands the event to the node and component it targets, schedules everything the handler emits, and then runs every checker against the new state. Events at the same instant are ordered by `tiebreak`, drawn from the RNG when the event is scheduled. Different seeds therefore explore different interleavings of simultaneous events, which is where most distributed races live, while one seed always replays one interleaving.
 
+**Note, 2026-10-22 (QUAL-E8-T01): the core as built.** `testkit::sim` builds the loop above as `SimWorld<M: Model>`, generic over the state its events act on.
+- **The model.** The cluster is one model. It holds the nodes, the fabric (QUAL-E8-T02) and the `SimEvent` enum. The later simulator tasks build it, so the world core needs none of their types. A model handles one event at a time and schedules what it emits through a `Schedule`, at an instant or after a delay, never in the past.
+- **Time and randomness.** The model's code gets the world's clock as a read-only `SimClockHandle`, and its entropy as the seeded `SimEntropy` (QUAL-E3-T02). That stream is also where the tie-breaks come from, so a seed fixes both the model's random draws and the interleaving.
+- **The trace hash.** `TraceHasher` is BLAKE3, in key-derivation mode with a versioned context. For each processed event it hashes the instant, the length of the event's bytes, and the bytes each event type writes through `TraceEvent`. `trace_hash` returns `core`'s `Blake3`.
+- **Checkers.** `Checker::after_event` is the safety check, run after every event. `Checker::at_milestone` is the liveness check, run at milestones the scenario sets, once every event up to the milestone's instant has run. A scenario sets one at its end.
+- **Violations.** A failed check stops the run with a `Violation`. It carries the checker, the message, the seed, where the check failed (after event *n*, or at a named milestone), the virtual instant, the number of events processed, and the trace prefix: the hash of those events, which a replay with the same seed reaches at the same point. A stopped world returns the same violation from every later `run_until`.
+
 #### 8.3 Simulated fabric
 
 ```rust
