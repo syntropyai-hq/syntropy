@@ -163,7 +163,8 @@ fn dram_counts_fitted_channels_at_the_slowest_speed_and_a_fabric_limit_caps_it()
         let text = fs::read_to_string(root().join(specs::DIR).join(name)).expect("record");
         let text = if matches!(record, specs::Record::Cpu { .. }) {
             format!(
-                "{text}\n[fabric_read_gb_per_s]\nvalue = 64.0\nsource = \"https://example.com/fabric\"\n\
+                "{text}\n[fabric_read_gb_per_s]\nvalue = 64.0\n\
+                 source = \"https://example.com/fabric\"\n\
                  where = \"fixture\"\nchecked = \"2026-10-22\"\n"
             )
         } else {
@@ -244,7 +245,8 @@ fn every_inventory_rig_has_its_spec_records() {
 fn the_lint_step_fails_a_record_without_a_url() {
     let dir = TempDir::new("lint");
     let good = "kind = \"gpu\"\nmodels = [\"Fixture GPU\"]\n\n[memory_gb_per_s]\nvalue = 100.0\n\
-                source = \"https://example.com/gpu.pdf\"\nwhere = \"p. 1\"\nchecked = \"2026-10-22\"\n";
+                source = \"https://example.com/gpu.pdf\"\nwhere = \"p. 1\"\n\
+                checked = \"2026-10-22\"\n";
     fs::write(dir.0.join("gpu-fixture.toml"), good).expect("write");
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_syntropy-bench"))

@@ -6,13 +6,12 @@
 //! A record names the exact `models` it covers, as the rig inventory (`bench/lab/rigs.toml`,
 //! [`crate::rigs`]) spells them, and its kind decides which figures it holds:
 //!
-//! | `kind` | Figures | Used for |
-//! |---|---|---|
-//! | `gpu` | `memory_gb_per_s` | the `Vram` tier |
-//! | `cpu` | `memory_type`, `memory_channels`, optional `fabric_read_gb_per_s` | the DRAM formula's channel count, and a fabric limit narrower than DRAM |
-//! | `dram` | `bytes_per_transfer` | the DRAM formula, per channel |
-//! | `pcie` | `generation`, `transfer_gt_per_s`, `encoding` | a PCIe link's rate per lane |
-//! | `nvme` | `sequential_read_gb_per_s` | the `Nvme` tier |
+//! - `gpu`: `memory_gb_per_s`, for the `Vram` tier.
+//! - `cpu`: `memory_type`, `memory_channels` and an optional `fabric_read_gb_per_s`, for the
+//!   DRAM formula's channel count and a fabric limit narrower than DRAM.
+//! - `dram`: `bytes_per_transfer`, the DRAM formula's width per channel.
+//! - `pcie`: `generation`, `transfer_gt_per_s` and `encoding`, a PCIe link's rate per lane.
+//! - `nvme`: `sequential_read_gb_per_s`, for the `Nvme` tier.
 //!
 //! Every figure is a table `{ value, source, where, checked }`: the value; the vendor or
 //! standards document it is read from, an `https://` URL; where in that document; and the date
@@ -29,8 +28,11 @@
 //!   31.5 GB/s per direction for a 4.0 x16 link.
 //! - A GPU reading host memory is capped by its PCIe link, and a drive by its link.
 //!
-//! Every other figure is a cited vendor or standards figure, never a measurement. [`sanity`] compares probe figures with those peaks: one below 50% of its peak marks the
-//! run `dirty: misconfigured` (`00-vision-and-scope.md` §9, principle 2).
+//! Every other figure is a cited vendor or standards figure, never a measurement.
+//!
+//! [`sanity`] compares probe figures with those peaks: one below 50% of its peak marks the run
+//! `dirty: misconfigured` (`00-vision-and-scope.md` §9, principle 2), and a probe of a path
+//! with no peak is reported as unchecked.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
