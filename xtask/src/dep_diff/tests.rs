@@ -7,16 +7,35 @@ fn roster() -> Roster {
         .unwrap()
 }
 
-/// A `cargo metadata --no-deps` document with one package and `deps` as
-/// `(name, kind, source)`; a `None` source is a path dependency.
+/// A `cargo metadata --no-deps` document for a workspace at `/w`, with one package and `deps` as
+/// `(name, kind, source)`. A `None` source is a path dependency on a member at `/w/<name>`,
+/// which the document lists too.
 fn metadata(package: &str, deps: &[(&str, Option<&str>, Option<&str>)]) -> String {
+    let mut packages = Vec::new();
     let deps: Vec<Value> = deps
         .iter()
-        .map(|(name, kind, source)| {
-            serde_json::json!({ "name": name, "kind": kind, "source": source, "rename": null })
+        .map(|(name, kind, source)| match source {
+            Some(source) => {
+                serde_json::json!({ "name": name, "kind": kind, "source": source, "rename": null })
+            }
+            None => {
+                packages.push(member(name, vec![]));
+                serde_json::json!({ "name": name, "kind": kind, "source": null, "rename": null,
+                                    "path": format!("/w/{name}") })
+            }
         })
         .collect();
-    serde_json::json!({ "packages": [{ "name": package, "dependencies": deps }] }).to_string()
+    packages.insert(0, member(package, deps));
+    serde_json::json!({ "workspace_root": "/w", "packages": packages }).to_string()
+}
+
+/// A member at `/w/<name>`, as `cargo metadata` lists it.
+fn member(name: &str, dependencies: Vec<Value>) -> Value {
+    serde_json::json!({
+        "name": name,
+        "manifest_path": format!("/w/{name}/Cargo.toml"),
+        "dependencies": dependencies,
+    })
 }
 
 #[test]
@@ -55,6 +74,66 @@ fn declared_dependencies_are_external_crates_by_name_and_source() {
         ]
     );
     assert!(declared("{}").is_err());
+}
+
+#[test]
+fn a_path_dependency_outside_the_members_is_external() {
+    let path_dep = |path: &str| serde_json::json!({ "name": "fixture-v", "kind": null, "source": null, "path": path });
+    let document = |path: &str| {
+        serde_json::json!({
+            "workspace_root": "/w",
+            "packages": [member("a", vec![path_dep(path)])],
+        })
+        .to_string()
+    };
+    for (path, dir) in [
+        // A directory the workspace excludes.
+        ("/w/vendor/fixture-v", "vendor/fixture-v"),
+        // Beside the workspace root, and further out.
+        ("/fixture-v", "../fixture-v"),
+        ("/elsewhere/fixture-v", "../elsewhere/fixture-v"),
+    ] {
+        let crates = declared(&document(path)).unwrap();
+        let sources: Vec<&str> = crates.keys().map(|k| k.source.as_str()).collect();
+        assert_eq!(sources, [format!("path+{dir}")], "{path}");
+    }
+    // The same directory in two checkouts compares equal, so it is new only once.
+    let at = |root: &str| {
+        serde_json::json!({
+            "workspace_root": root,
+            "packages": [{
+                "name": "a",
+                "manifest_path": format!("{root}/a/Cargo.toml"),
+                "dependencies": [path_dep(&format!("{root}/vendor/fixture-v"))],
+            }],
+        })
+        .to_string()
+    };
+    let base = declared(&at("/checkout/base")).unwrap();
+    let head = declared(&at("/checkout/head")).unwrap();
+    let none = BTreeSet::new();
+    assert!(compare(&base, &head, &none, &none).is_empty());
+    let new = compare(&BTreeMap::new(), &head, &none, &none);
+    assert_eq!(
+        new.lines(),
+        [
+            "new crate `fixture-v` from the directory `vendor/fixture-v`, which is not a workspace \
+          member, in a (normal)"
+        ]
+    );
+    // A path dependency with no path, or a document without a root, fails closed.
+    let no_path = serde_json::json!({
+        "workspace_root": "/w",
+        "packages": [member("a", vec![serde_json::json!({ "name": "x", "source": null })])],
+    })
+    .to_string();
+    assert!(
+        declared(&no_path)
+            .unwrap_err()
+            .contains("neither a source nor a path")
+    );
+    let no_root = serde_json::json!({ "packages": [] }).to_string();
+    assert!(declared(&no_root).is_err());
 }
 
 #[test]
