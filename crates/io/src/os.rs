@@ -112,81 +112,98 @@ pub enum TickCounter {
 
 /// The production [`TickSource`] (RFC-0060 §2.1 rule T1).
 ///
-/// [`SystemTicks::new`] picks the counter once per process and finds its rate:
+/// The first use of any `SystemTicks` in a process picks the counter and finds its rate:
 /// - the TSC on x86-64, when CPUID reports it invariant and, on Linux and Android, the kernel's
 ///   current clocksource is `tsc`. A kernel that found the TSC unreliable has switched away
-///   from it. The rate is calibrated against the OS monotonic counter over
-///   [`TSC_CALIBRATION`] at first use;
+///   from it. Its rate is calibrated over [`TSC_CALIBRATION`];
 /// - CNTVCT_EL0 on arm64, at the rate CNTFRQ_EL0 reports, or calibrated the same way when it
 ///   reports none;
 /// - otherwise the OS monotonic counter, which already counts nanoseconds.
 ///
-/// The calibration reads the OS monotonic counter (`std::time::Instant`: `CLOCK_MONOTONIC`,
-/// `mach_absolute_time`, `QueryPerformanceCounter`), not [`SystemClock`]. On Windows
-/// `SystemClock` advances only at the timer interrupt, up to 15.625 ms at a time, which would
-/// put a 20 ms calibration off by tens of percent. Suspend-awareness does not matter over 20 ms.
+/// The calibration measures against a clock that nothing adjusts: `CLOCK_MONOTONIC_RAW` on
+/// Linux and Android, `mach_absolute_time` on macOS and iOS, and `QueryPerformanceCounter`
+/// (through `std::time::Instant`) on Windows.
+/// - Not `CLOCK_MONOTONIC`, which `adjtimex` slews by up to 10%. Whatever slew is active during
+///   the calibration would stay in the TSC's rate for the life of the process.
+/// - Not [`SystemClock`], which on Windows advances only at the timer interrupt, up to 15.625 ms
+///   at a time.
+///
+/// Each end of the window is bracketed between two reads of the reference.
+///
+/// That first use blocks for up to [`TSC_CALIBRATION`], so a binary calls
+/// [`SystemTicks::rate`] at startup, before a hot thread's first step.
 ///
 /// [`TickSource::now`] reads [`SystemClock`] itself, so it is on the `Clock` timeline exactly and
 /// counts suspended time. Mapping ticks onto that timeline through an offset that is re-sampled
-/// after every resume is QUAL-E3-T16's. Clones share the calibration, and the source holds no
-/// lock and allocates nothing after the first `new`.
+/// after every resume is QUAL-E3-T16's.
+///
+/// `SystemTicks` has a private field, so [`SystemTicks::new`] is the only way to build one, and
+/// a determinism lint can name that one constructor. Every value shares the process's
+/// calibration: reading it is one atomic load, with no lock and no allocation after the first
+/// use.
 ///
 /// Two readings on different cores can differ by the cores' counter skew, so a caller taking a
 /// delta across a possible thread migration uses `saturating_sub`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SystemTicks {
+    _private: (),
+}
+
+/// What the process's first use of [`SystemTicks`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Calibration {
     counter: TickCounter,
     rate: TickRate,
 }
 
-/// How long [`SystemTicks::new`] spends calibrating a counter whose rate it cannot read, once
-/// per process: 20 ms keeps the rate within about 10 parts per million when each end is
-/// bracketed to within 100 ns [derivation: 2 × 100 ns / 20 ms].
+/// How long the first use of [`SystemTicks`] spends calibrating a counter whose rate it cannot
+/// read, once per process. 20 ms keeps the rate within about 10 parts per million when each end
+/// is bracketed to within 100 ns [derivation: 2 × 100 ns / 20 ms].
 pub const TSC_CALIBRATION: Nanos = Nanos(20_000_000);
 
 impl SystemTicks {
-    /// The process's tick source. The first call picks the counter and finds its rate, which
-    /// can take [`TSC_CALIBRATION`]; later calls return the same source.
+    /// A handle on the process's tick source. It does no work. The first use of any handle
+    /// calibrates.
     #[must_use]
-    pub fn new() -> SystemTicks {
-        static SOURCE: OnceLock<SystemTicks> = OnceLock::new();
-        *SOURCE.get_or_init(SystemTicks::pick)
+    pub const fn new() -> SystemTicks {
+        SystemTicks { _private: () }
     }
 
-    /// The counter this source reads.
+    /// The counter this process reads.
     #[must_use]
     pub fn counter(&self) -> TickCounter {
-        self.counter
+        calibration().counter
     }
 
-    /// The counter's rate.
+    /// The counter's rate. The first use in a process calibrates, which can take
+    /// [`TSC_CALIBRATION`].
     #[must_use]
     pub fn rate(&self) -> TickRate {
-        self.rate
-    }
-
-    fn pick() -> SystemTicks {
-        if let Some(source) = counter::hardware() {
-            return source;
-        }
-        os_monotonic_base();
-        SystemTicks {
-            counter: TickCounter::OsMonotonic,
-            rate: TickRate::NANOS,
-        }
+        calibration().rate
     }
 }
 
-impl Default for SystemTicks {
-    fn default() -> SystemTicks {
-        SystemTicks::new()
+/// The process's calibration, found at first use.
+fn calibration() -> &'static Calibration {
+    static CALIBRATION: OnceLock<Calibration> = OnceLock::new();
+    CALIBRATION.get_or_init(pick)
+}
+
+fn pick() -> Calibration {
+    if let Some(found) = counter::hardware() {
+        return found;
+    }
+    os_monotonic_base();
+    Calibration {
+        counter: TickCounter::OsMonotonic,
+        rate: TickRate::NANOS,
     }
 }
 
 impl TickSource for SystemTicks {
     #[inline]
     fn ticks(&self) -> u64 {
-        match self.counter {
+        match calibration().counter {
             TickCounter::Tsc | TickCounter::Cntvct => counter::read(),
             TickCounter::OsMonotonic => os_monotonic_ticks(),
         }
@@ -194,7 +211,7 @@ impl TickSource for SystemTicks {
 
     #[inline]
     fn ticks_to_nanos(&self, ticks: u64) -> Nanos {
-        self.rate.ticks_to_nanos(ticks)
+        calibration().rate.ticks_to_nanos(ticks)
     }
 
     fn now(&self) -> MonoTime {
@@ -202,7 +219,7 @@ impl TickSource for SystemTicks {
     }
 
     fn device_to_ticks(&self, device_ts: u64, sync: &DeviceClockSync) -> u64 {
-        sync.to_ticks(device_ts, self.rate.hz())
+        sync.to_ticks(device_ts, calibration().rate.hz())
     }
 }
 
@@ -219,16 +236,16 @@ fn os_monotonic_ticks() -> u64 {
 /// How many times [`bracketed`] reads, keeping the tightest bracket.
 const BRACKET_READS: usize = 16;
 
-/// One reading of `read` taken between two readings of the OS monotonic counter, as
-/// `(counter, clock)`. The clock value is the midpoint of the tightest of [`BRACKET_READS`]
-/// brackets, in nanoseconds since `base`.
-fn bracketed(read: fn() -> u64, base: Instant) -> (u64, u128) {
-    let mut best = (0, 0, u128::MAX);
+/// One reading of `read` taken between two reads of the calibration reference
+/// ([`platform::reference_nanos`]), as `(counter, reference)`. The reference value is the
+/// midpoint of the tightest of [`BRACKET_READS`] brackets.
+fn bracketed(read: fn() -> u64) -> (u64, u64) {
+    let mut best = (0, 0, u64::MAX);
     for _ in 0..BRACKET_READS {
-        let before = base.elapsed().as_nanos();
+        let before = platform::reference_nanos();
         let counter = read();
-        let after = base.elapsed().as_nanos();
-        let spread = after - before;
+        let after = platform::reference_nanos();
+        let spread = after.saturating_sub(before);
         if spread < best.2 {
             best = (counter, before + spread / 2, spread);
         }
@@ -236,18 +253,18 @@ fn bracketed(read: fn() -> u64, base: Instant) -> (u64, u128) {
     (best.0, best.1)
 }
 
-/// The rate of `read`, measured against the OS monotonic counter over [`TSC_CALIBRATION`] with
+/// The rate of `read`, measured against the calibration reference over [`TSC_CALIBRATION`] with
 /// each end bracketed, or `None` if the counter did not advance.
 fn calibrate(read: fn() -> u64) -> Option<TickRate> {
-    let base = Instant::now();
-    let (first, start) = bracketed(read, base);
-    let span = u128::from(TSC_CALIBRATION.0);
-    while base.elapsed().as_nanos() < start + span {
+    let (first, start) = bracketed(read);
+    let until = start.saturating_add(TSC_CALIBRATION.0);
+    while platform::reference_nanos() < until {
         std::hint::spin_loop();
     }
-    let (last, end) = bracketed(read, base);
+    let (last, end) = bracketed(read);
     let ticks = last.checked_sub(first)?;
-    let hz = u128::from(ticks) * 1_000_000_000 / (end - start).max(1);
+    let elapsed = u128::from(end.saturating_sub(start).max(1));
+    let hz = u128::from(ticks) * 1_000_000_000 / elapsed;
     TickRate::from_hz(u64::try_from(hz).ok()?)
 }
 
@@ -255,39 +272,44 @@ fn calibrate(read: fn() -> u64) -> Option<TickRate> {
 mod counter {
     use std::arch::x86_64::{__cpuid, _rdtsc};
 
-    use super::{SystemTicks, TickCounter, calibrate};
+    use super::{Calibration, TickCounter, calibrate};
 
     /// The extended CPUID leaf that holds the invariant-TSC bit, and the bit (EDX bit 8).
     const POWER_LEAF: u32 = 0x8000_0007;
     const INVARIANT_TSC: u32 = 1 << 8;
 
     /// Whether CPUID reports an invariant TSC.
-    fn invariant_tsc() -> bool {
+    pub(super) fn invariant_tsc() -> bool {
         let max_extended = __cpuid(0x8000_0000).eax;
         max_extended >= POWER_LEAF && __cpuid(POWER_LEAF).edx & INVARIANT_TSC != 0
     }
 
-    /// Whether the kernel still uses the TSC as its clocksource. A kernel that found it
-    /// unreliable, from cores out of step or a hypervisor that does not keep it, has switched to
-    /// another source. Where the file cannot be read, as in some containers, CPUID's bit is all
-    /// there is to go on.
+    /// The kernel's current clocksource, where it can be read.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn kernel_uses_tsc() -> bool {
+    pub(super) fn kernel_clocksource() -> Option<String> {
         const CURRENT: &str = "/sys/devices/system/clocksource/clocksource0/current_clocksource";
-        std::fs::read_to_string(CURRENT).map_or(true, |source| source.trim() == "tsc")
+        std::fs::read_to_string(CURRENT).ok()
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    fn kernel_uses_tsc() -> bool {
-        true
+    pub(super) fn kernel_clocksource() -> Option<String> {
+        None
     }
 
-    /// The TSC, if it is invariant and the kernel uses it, with its calibrated rate.
-    pub(super) fn hardware() -> Option<SystemTicks> {
-        if !invariant_tsc() || !kernel_uses_tsc() {
+    /// Whether to use the TSC. CPUID must report it invariant. Where the kernel's clocksource
+    /// is known, it must also be `tsc`: a kernel that found the TSC unreliable, from cores out
+    /// of step or a hypervisor that does not keep it, has switched to another source. Where the
+    /// clocksource cannot be read, as in some containers, CPUID's bit is all there is to go on.
+    pub(super) fn use_tsc(invariant: bool, clocksource: Option<&str>) -> bool {
+        invariant && clocksource.is_none_or(|source| source.trim() == "tsc")
+    }
+
+    /// The TSC, if [`use_tsc`] allows it, with its calibrated rate.
+    pub(super) fn hardware() -> Option<Calibration> {
+        if !use_tsc(invariant_tsc(), kernel_clocksource().as_deref()) {
             return None;
         }
-        Some(SystemTicks {
+        Some(Calibration {
             counter: TickCounter::Tsc,
             rate: calibrate(read)?,
         })
@@ -297,7 +319,7 @@ mod counter {
     pub(super) fn read() -> u64 {
         // SAFETY: RDTSC needs no CPU feature beyond x86-64's baseline, reads only the
         // time-stamp counter into registers, and touches no memory. `hardware` picks this
-        // counter only when CPUID reports it invariant.
+        // counter only when `use_tsc` allows it.
         unsafe { _rdtsc() }
     }
 }
@@ -308,15 +330,15 @@ mod counter {
 
     use syntropy_core::TickRate;
 
-    use super::{SystemTicks, TickCounter, calibrate};
+    use super::{Calibration, TickCounter, calibrate};
 
     /// CNTVCT_EL0, with its rate from CNTFRQ_EL0, or calibrated if that reads 0.
-    pub(super) fn hardware() -> Option<SystemTicks> {
+    pub(super) fn hardware() -> Option<Calibration> {
         let rate = match TickRate::from_hz(frequency()) {
             Some(rate) => rate,
             None => calibrate(read)?,
         };
-        Some(SystemTicks {
+        Some(Calibration {
             counter: TickCounter::Cntvct,
             rate,
         })
@@ -354,10 +376,10 @@ mod counter {
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 mod counter {
-    use super::SystemTicks;
+    use super::Calibration;
 
     /// No hardware counter on this architecture; the OS monotonic counter is used.
-    pub(super) fn hardware() -> Option<SystemTicks> {
+    pub(super) fn hardware() -> Option<Calibration> {
         None
     }
 
@@ -376,7 +398,8 @@ mod platform {
         let mut ts = MaybeUninit::<libc::timespec>::uninit();
         // SAFETY: `ts` points to writable memory the size of a `timespec`, valid for the call,
         // and `clock_gettime` writes only through it. `clock` is `CLOCK_BOOTTIME` (Linux 2.6.39
-        // and later) or `CLOCK_MONOTONIC`, both of which every supported kernel has.
+        // and later), `CLOCK_MONOTONIC` or `CLOCK_MONOTONIC_RAW` (Linux 2.6.28 and later), all
+        // of which every supported kernel has.
         let rc = unsafe { libc::clock_gettime(clock, ts.as_mut_ptr()) };
         assert_eq!(rc, 0, "clock_gettime({clock}) failed");
         // SAFETY: `clock_gettime` returned 0, so it initialised every field of `ts`.
@@ -409,6 +432,11 @@ mod platform {
 
     pub(super) fn awake_nanos() -> u64 {
         read(libc::CLOCK_MONOTONIC)
+    }
+
+    /// The calibration reference: `CLOCK_MONOTONIC_RAW`, which `adjtimex` never slews.
+    pub(super) fn reference_nanos() -> u64 {
+        read(libc::CLOCK_MONOTONIC_RAW)
     }
 
     pub(super) fn tick_nanos() -> u64 {
@@ -466,6 +494,11 @@ mod platform {
         to_nanos(mach_absolute_time())
     }
 
+    /// The calibration reference: `mach_absolute_time`, which nothing slews.
+    pub(super) fn reference_nanos() -> u64 {
+        awake_nanos()
+    }
+
     /// Both clocks count the same ticks: one tick, rounded up to whole nanoseconds.
     pub(super) fn tick_nanos() -> u64 {
         let tb = timebase();
@@ -475,6 +508,9 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
     use windows_sys::Win32::System::WindowsProgramming::{
         QueryInterruptTime, QueryUnbiasedInterruptTime,
     };
@@ -503,6 +539,15 @@ mod platform {
     /// the default configuration.
     pub(super) fn tick_nanos() -> u64 {
         15_625_000
+    }
+
+    /// The calibration reference: `QueryPerformanceCounter`, through `Instant`, in nanoseconds
+    /// since the process first read it. Unlike the interrupt-time clocks above, it resolves well
+    /// below a microsecond.
+    pub(super) fn reference_nanos() -> u64 {
+        static BASE: OnceLock<Instant> = OnceLock::new();
+        let elapsed = BASE.get_or_init(Instant::now).elapsed();
+        u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
     }
 }
 
@@ -692,12 +737,18 @@ mod tests {
     }
 
     /// The counter is the one the platform should have, and a duration in ticks agrees with
-    /// the same duration on the OS monotonic counter within 0.5%. Both ends are bracketed, as
-    /// the calibration's are, so a coarse clock read does not swamp a 50 ms span.
+    /// the same duration on the calibration reference within 0.5%. Both ends are bracketed,
+    /// as the calibration's are, so a coarse read does not swamp a 50 ms span. The reference is
+    /// never slewed, so a host that is slewing `CLOCK_MONOTONIC` does not fail it.
     #[test]
     fn system_ticks_measure_durations_at_the_clock_rate() {
-        let ticks = SystemTicks::new();
-        assert_eq!(SystemTicks::new(), ticks, "one calibration per process");
+        const TICKS: SystemTicks = SystemTicks::new();
+        let ticks = TICKS;
+        assert_eq!(
+            SystemTicks::default().rate(),
+            ticks.rate(),
+            "one calibration per process"
+        );
         #[cfg(target_arch = "aarch64")]
         assert_eq!(ticks.counter(), TickCounter::Cntvct);
         #[cfg(target_arch = "x86_64")]
@@ -708,13 +759,12 @@ mod tests {
         fn read() -> u64 {
             SystemTicks::new().ticks()
         }
-        let base = Instant::now();
-        let (first, start) = bracketed(read, base);
-        while base.elapsed().as_nanos() < start + 50_000_000 {
+        let (first, start) = bracketed(read);
+        while platform::reference_nanos() < start + 50_000_000 {
             std::hint::spin_loop();
         }
-        let (last, end) = bracketed(read, base);
-        let by_clock = u64::try_from(end - start).unwrap();
+        let (last, end) = bracketed(read);
+        let by_clock = end - start;
         let by_ticks = ticks.ticks_to_nanos(last.saturating_sub(first)).0;
         assert!(
             by_ticks.abs_diff(by_clock) <= by_clock / 200,
@@ -724,20 +774,58 @@ mod tests {
         );
     }
 
-    /// On Linux, the TSC is used only when the kernel's clocksource is `tsc`.
-    #[cfg(all(
-        target_arch = "x86_64",
-        any(target_os = "linux", target_os = "android")
-    ))]
+    /// The TSC is used only when CPUID reports it invariant and the kernel's clocksource,
+    /// where known, is `tsc`; and this process's choice follows that rule.
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn the_tsc_is_used_only_where_the_kernel_uses_it() {
-        let current = std::fs::read_to_string(
-            "/sys/devices/system/clocksource/clocksource0/current_clocksource",
-        );
-        if let Ok(current) = current
-            && current.trim() != "tsc"
-        {
-            assert_eq!(SystemTicks::new().counter(), TickCounter::OsMonotonic);
+        use super::counter::{invariant_tsc, kernel_clocksource, use_tsc};
+
+        assert!(use_tsc(true, Some("tsc\n")));
+        assert!(use_tsc(true, Some("tsc")));
+        assert!(use_tsc(true, None));
+        assert!(!use_tsc(true, Some("hyperv_clocksource_tsc_page\n")));
+        assert!(!use_tsc(true, Some("hpet")));
+        assert!(!use_tsc(true, Some("tsc-early")));
+        assert!(!use_tsc(false, Some("tsc")));
+        assert!(!use_tsc(false, None));
+
+        let chosen = SystemTicks::new().counter();
+        if use_tsc(invariant_tsc(), kernel_clocksource().as_deref()) {
+            assert!(
+                matches!(chosen, TickCounter::Tsc | TickCounter::OsMonotonic),
+                "{chosen:?}"
+            );
+        } else {
+            assert_eq!(chosen, TickCounter::OsMonotonic);
+        }
+    }
+
+    /// On Linux and Android the calibration reference is `CLOCK_MONOTONIC_RAW`: a reading
+    /// taken between two direct readings lies between them.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn the_calibration_reference_is_the_raw_clock() {
+        #[allow(clippy::useless_conversion)] // `time_t` is 32-bit on some targets
+        fn raw() -> u64 {
+            let mut ts = std::mem::MaybeUninit::<libc::timespec>::uninit();
+            // SAFETY: `ts` is writable for the call, and `clock_gettime` writes only through it.
+            let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, ts.as_mut_ptr()) };
+            assert_eq!(rc, 0);
+            // SAFETY: `clock_gettime` returned 0, so `ts` is initialised.
+            let ts = unsafe { ts.assume_init() };
+            let sec = u64::try_from(i64::from(ts.tv_sec)).unwrap();
+            let nsec = u64::try_from(i64::from(ts.tv_nsec)).unwrap();
+            sec * 1_000_000_000 + nsec
+        }
+        for _ in 0..1_000 {
+            let before = raw();
+            let reference = platform::reference_nanos();
+            let after = raw();
+            assert!(
+                before <= reference && reference <= after,
+                "{before} <= {reference} <= {after}"
+            );
         }
     }
 
