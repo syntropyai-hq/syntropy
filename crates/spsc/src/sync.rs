@@ -8,7 +8,9 @@ pub(crate) use loom::cell::UnsafeCell;
 #[cfg(loom)]
 pub(crate) use loom::sync::Arc;
 #[cfg(loom)]
-pub(crate) use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
+pub(crate) use loom::sync::atomic::{
+    AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
+};
 
 /// Threads for the unit tests: loom's under `--cfg loom`, so the model checker sees them.
 #[cfg(all(test, loom))]
@@ -19,7 +21,9 @@ pub(crate) use std::thread;
 #[cfg(not(loom))]
 pub(crate) use std::sync::Arc;
 #[cfg(not(loom))]
-pub(crate) use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
+pub(crate) use std::sync::atomic::{
+    AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
+};
 
 /// `std::cell::UnsafeCell` with loom's `with` and `with_mut` API, so the ring's code is the same in
 /// both builds.
