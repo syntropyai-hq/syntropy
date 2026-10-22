@@ -532,8 +532,8 @@ impl Region {
     /// must match the daemon's build, and an adopted one need not (RFC-0001 §3.5).
     ///
     /// On Apple platforms the segment's name is removed as soon as it is mapped here, so no third
-    /// process can open it. A daemon that adopts the runner later (RFC-0052 §6.5) gets the
-    /// segment's descriptor over the adoption socket, not by name.
+    /// process can open it. A daemon that adopts the runner later gets the segment's descriptor over
+    /// the adoption socket, not by name (RFC-0052 §6.5, note of 2026-10-22; DIST-E1-T08).
     ///
     /// Every field read from the segment is copied out once, with a volatile read, and only the
     /// copy is checked and kept.
