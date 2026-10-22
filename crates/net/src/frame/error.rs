@@ -61,6 +61,7 @@ pub enum FrameError {
     },
     /// A field that disagrees with what the rest of the frame gives it: a span's `row_offset`
     /// that the spans before it do not reach, or a payload that is not `n_rows` strides long.
+    /// For a result assembled from parts, `value` is a part's and `expected` the first part's.
     Inconsistent {
         ftype: FrameType,
         field: &'static str,

@@ -350,7 +350,9 @@ impl<'a> Iterator for EmbeddingParts<'a> {
 /// A sequence's vector from all of its parts, which the receiver acts on only when every part
 /// has arrived (RFC-0031 §6.5, §6.14). The parts may come in any order; each `part_index` must
 /// appear once, every part must agree on the result's fields, and the parts must hold `dims`
-/// elements in all.
+/// elements in all. A part that disagrees is refused with [`FrameError::Inconsistent`], naming
+/// the field (`seq.ingress`, `seq.boot` and `seq.n` for the sequence), the part's value and the
+/// first part's.
 pub fn assemble(parts: &[EmbeddingResult<'_>]) -> Result<Vec<f32>, FrameError> {
     let first = parts.first().ok_or(inconsistent("part_count", 0, 1))?;
     let count = first.part_count;
@@ -364,16 +366,31 @@ pub fn assemble(parts: &[EmbeddingResult<'_>]) -> Result<Vec<f32>, FrameError> {
     let mut ordered: Vec<Option<&EmbeddingResult<'_>>> = vec![None; parts.len()];
     for part in parts {
         part.validate()?;
+        // Each field as (this part's value, the first part's value).
         let agree = [
-            ("seq", part.seq == first.seq),
-            ("dims", part.dims == first.dims),
-            ("pooling", part.pooling == first.pooling),
-            ("normalised", part.normalised == first.normalised),
-            ("prompt_tokens", part.prompt_tokens == first.prompt_tokens),
-            ("part_count", part.part_count == count),
+            ("seq.ingress", part.seq.ingress, first.seq.ingress),
+            ("seq.boot", part.seq.boot.into(), first.seq.boot.into()),
+            ("seq.n", part.seq.n.into(), first.seq.n.into()),
+            ("dims", part.dims.into(), first.dims.into()),
+            (
+                "pooling",
+                part.pooling.wire().into(),
+                first.pooling.wire().into(),
+            ),
+            (
+                "normalised",
+                part.normalised.into(),
+                first.normalised.into(),
+            ),
+            (
+                "prompt_tokens",
+                part.prompt_tokens.into(),
+                first.prompt_tokens.into(),
+            ),
+            ("part_count", part.part_count.into(), count.into()),
         ];
-        if let Some((field, _)) = agree.iter().find(|(_, same)| !same) {
-            return Err(bad(field, u64::from(part.part_index)));
+        if let Some(&(field, value, expected)) = agree.iter().find(|(_, v, e)| v != e) {
+            return Err(inconsistent(field, value, expected));
         }
         let slot = &mut ordered[usize::from(part.part_index)];
         if slot.is_some() {

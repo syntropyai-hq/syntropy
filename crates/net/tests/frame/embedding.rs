@@ -613,28 +613,57 @@ fn assembly_needs_every_part_once_and_in_agreement() {
     assert_eq!(assemble(&[]), Err(inconsistent("part_count", 0, 1)));
     assert_eq!(assemble(&[a]), Err(inconsistent("part_count", 1, 2)));
     assert_eq!(assemble(&[a, a]), Err(field("part_index", 0)));
+    // A disagreement names the field, this part's value and the first part's.
     let other_seq = EmbeddingResult { seq: seq(10), ..b };
-    assert_eq!(assemble(&[a, other_seq]), Err(field("seq", 1)));
+    assert_eq!(assemble(&[a, other_seq]), Err(inconsistent("seq.n", 10, 9)));
+    let other_boot = EmbeddingResult {
+        seq: SequenceId { boot: 3, ..b.seq },
+        ..b
+    };
+    assert_eq!(
+        assemble(&[a, other_boot]),
+        Err(inconsistent("seq.boot", 3, 2))
+    );
+    let other_ingress = EmbeddingResult {
+        seq: SequenceId {
+            ingress: X + 1,
+            ..b.seq
+        },
+        ..b
+    };
+    assert_eq!(
+        assemble(&[a, other_ingress]),
+        Err(inconsistent("seq.ingress", X + 1, X))
+    );
     let other_pooling = EmbeddingResult {
         pooling: Pooling::Cls,
         ..b
     };
-    assert_eq!(assemble(&[a, other_pooling]), Err(field("pooling", 1)));
+    assert_eq!(
+        assemble(&[a, other_pooling]),
+        Err(inconsistent("pooling", 3, 2))
+    );
     let other_dims = EmbeddingResult { dims: 4097, ..b };
-    assert_eq!(assemble(&[a, other_dims]), Err(field("dims", 1)));
+    assert_eq!(
+        assemble(&[a, other_dims]),
+        Err(inconsistent("dims", 4097, 4096))
+    );
     let other_normalised = EmbeddingResult {
         normalised: !b.normalised,
         ..b
     };
     assert_eq!(
         assemble(&[a, other_normalised]),
-        Err(field("normalised", 1))
+        Err(inconsistent("normalised", 0, 1))
     );
     let other_prompt = EmbeddingResult {
         prompt_tokens: b.prompt_tokens + 1,
         ..b
     };
-    assert_eq!(assemble(&[a, other_prompt]), Err(field("prompt_tokens", 1)));
+    assert_eq!(
+        assemble(&[a, other_prompt]),
+        Err(inconsistent("prompt_tokens", 513, 512))
+    );
     // A hostile part whose `part_index` passes its own `part_count` but not the result's: it
     // must be refused before it indexes past the result's parts, in either order.
     let hostile = EmbeddingResult {
@@ -643,7 +672,10 @@ fn assembly_needs_every_part_once_and_in_agreement() {
         ..b
     };
     assert_eq!(hostile.validate(), Ok(()));
-    assert_eq!(assemble(&[a, hostile]), Err(field("part_count", 2)));
+    assert_eq!(
+        assemble(&[a, hostile]),
+        Err(inconsistent("part_count", 3, 2))
+    );
     assert_eq!(
         assemble(&[hostile, a]),
         Err(inconsistent("part_count", 2, 3))
