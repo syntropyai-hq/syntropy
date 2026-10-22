@@ -834,6 +834,14 @@ Three merged PRs left non-blocking review findings that tasks not yet started mu
 | PLC-E7-T17 → QUAL-E3-T17 | PLC-E7-T17 | R9 | PLC-E7-T17's dispatchers take a statically dispatched `TickSource`, which is QUAL-E3-T17's trait. QUAL-E3-T17 also provides the `SimClock`-backed source that a simulator run, as in PLC-E7-T17's criteria, can use. While QUAL-E3-T17 was M0b, the M0a task could not depend on it. With the move above the edge is legal, and it adds no cycle: QUAL-E3-T17 reaches only QUAL-E3-T01, QUAL-E3-T02 and QUAL-E3-T24 |
 | DIST-E1-T01's task cell records `crates/spsc/tests/safety_comments.rs` and the three shapes in which it asks for one more `// SAFETY:` comment than clippy does; no edge | DIST-E1-T01 | — | #1723 added the scan, because `lint` runs clippy on Linux only and the Apple and Windows wake handles' `unsafe` would otherwise go unchecked. Its module doc names two of the stricter shapes. The third, a second `unsafe` argument of one call under one comment above the statement, came from the stand-in engine review's N1 on #1723 (issuecomment-6342060373). Clippy 0.1.99 accepts that shape and the scan reports the second argument. That errs in the safe direction, and no current source has the shape |
 
+## OQ-NET-34 settled (2026-10-23)
+
+DIST-E10-T10 model-checked OQ-NET-34's option (a) and settled it in RFC-0032 §7.5, §6.3 and Testing, under the maintainers' standing instruction. The check needed two parts more than the open question named: a node's own `Endorse`s count as support, because a `SignedElection`'s `acks` miss support given after the win; and two heal-path rules, that a held proof's support only grows and that every accepted election is endorsed once. DIST-E10-T05 builds the heal, so it takes them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E10-T05's task and criteria take the settled rule: the standing comparison, the endorsement record, support that only grows, endorsing once, and fencing replies with the sender's strongest supported election; its `gate: OQ-NET-34` is removed, and its edge to DIST-E10-T10 stays | DIST-E10-T05 | Definition of done (the spike closed the question) | DIST-E10-T05 builds the heal comparison, the fencing replies and the endorsement the answer changes. Its new criteria replay the election model's two pinned traces in the simulator, DIST-E10-T08's `stale-heal` trace and DIST-E10-T10's `stale-heal-late-support` trace, which DIST-E10-T05's existing simulator criterion already uses |
+
 ## DIST-E7-T01's conformance criterion and buffer types (2026-10-22)
 
 DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-conformance suite", could not be met by DIST-E7-T01: `SimTransport` is QUAL-E8-T04, which depends on DIST-E7-T01 and DIST-E7-T02, and no task row built the suite itself, though DIST-E7-T03, T05, T06 and T08 and QUAL-E8-T04 all run it. RFC-0001 §5.8 and RFC-0031 §2 also name six buffer types without defining them (`BufferPool`, `PoolRegistration`, `PayloadSlice`, `PayloadRef`, `ExtBuf`, `ExtRef`), and DIST-E7-T01's signatures need them. These are plan corrections that take the recommended default, under the maintainer's standing instruction; RFC-0031 §2's note of 2026-10-22 records the definitions.
@@ -964,6 +972,14 @@ QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec behind capability bit 16, with RFC-0050 §3.1's rewrite kept towards peers without the bit | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
+
+## DIST-E7-T24: a Windows wake for the QUIC `net` domain (2026-10-23)
+
+DIST-E7-T03 builds the QUIC backend's `net` domain, where channel tasks wait on their rings' wake handles. On Windows the runtime cannot wait on a `syntropy-spsc` event handle, so DIST-E7-T03's parked tasks re-check their rings every 1 ms, as the lead approved. Its criteria run on Linux and loopback and do not see that delay. No task covered the bridge.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T24 (M2) → DIST-E7-T03, QUAL-E15-T05 | DIST-E7-T24 | Definition of done | the bridge needs DIST-E7-T03's domain, and its latency criterion needs the R-WIN rig, as DIST-E7-T19's does. It names `windows-sys`, the new direct dependency of `net` it brings, and pins the one lifetime hazard it creates: the callback runs on a pool thread, so the wait is unregistered before the ring's handle drops (review of #1826, N2) |
 
 ## COMP-E3-T02's `Numeric`-mode criterion (2026-10-23)
 

@@ -284,6 +284,14 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
 - **Keep-alive and idle timeout** are reachable through `keep_alive_interval` (`quic.rs:366`; iroh's default is 5 s) and `max_idle_timeout` (`quic.rs:212`). iroh clamps a per-path idle timeout to 15 s and ignores a per-path keep-alive above 5 s (`iroh src/socket.rs:109`, `117`). The table's values lie inside those bounds.
 - **Who does what.** `net`'s endpoint (DIST-E7-T23) sets none of these yet. DIST-E7-T03 sets them, and DIST-E7-T16 measures what the initial window and GSO gain, macOS included.
 
+*Note 2026-10-23 (DIST-E7-T03): what the backend sets, and the connection window's cap.* For the maintainers to confirm the first bullet.
+- **`quic.max_conn_window` defaults to 64 MiB.** The table above says 256 MiB; §11 and the registered key (`net::config::QuicSection`) say 64 MiB, and 64 MiB is the default. The row's other rule wins over the cap: the connection window is never smaller than the credited sum. When the sum passes the cap, the backend still raises the window to the sum, and reports it (`QuicTransport::connection_windows`, `over_cap`), because `net` has no logger until RFC-0053's lands. The cap is a sanity bound that shows a large credit, never one that stalls it.
+- **Stream receive window: `2 × net.max_frame`.** iroh sets one value for every stream of a connection when it is set up, so twice the largest slot any channel can have meets the row. A channel whose slot is larger than `net.max_frame` is refused at open.
+- **Connection receive window.** It starts at room for one channel's control frames, and is raised before each channel's handshake by that channel's `recv_slots × slot_size` plus four control frames (`CONTROL_RECEIVES × MAX_CONTROL_FRAME`).
+- **The LAN window's first sample.** noq-proto calls `on_ack` for each acknowledged packet before it updates the round-trip estimate with that acknowledgement, so the first `on_ack` sees the configured initial round trip. The wrapper takes the first estimate that differs from it as the path's first sample.
+- **Keep-alive and idle timeout.** These follow the table, connection-wide and per path. A dialled connection takes `link.*`'s LAN defaults when every address the peer gave is loopback, link-local or private, and the WAN defaults otherwise, a relay-only peer among them. An accepted connection takes the WAN idle timeout; QUIC uses the smaller of the two sides', so a LAN dialler brings its 2 s.
+- **Windows.** The runtime cannot wait on a `syntropy-spsc` ring's event handle, so a parked channel's task re-checks its rings every 1 ms. While live sequences exist it busy-polls, as on other platforms (§4.4). DIST-E7-T24 adds the wait bridge.
+
 #### 4.4 Hot-path integration
 
 QUIC is asynchronous. The runner's `net` domain is a single-threaded tokio runtime on its own reserved core (RFC-0001 §8.1, ADR-0012). Per channel:
