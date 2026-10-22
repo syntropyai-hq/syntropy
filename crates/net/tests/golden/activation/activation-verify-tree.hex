@@ -1,0 +1,39 @@
+# activation-verify-tree: Verify with TREE: window 5, one span of 5 nodes, a prompt-lookup branch, DRAFT_CONF; a 20-byte tree area, so the side area starts 4 bytes past an 8-byte boundary
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 01 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+0e 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00  # 0020 header
+c0 00 00 00 40 01 00 00 dc 20 00 b4 e0 e0 f6 34  # 0030 header
+00 00 01 00 03 01 01 00 10 00 00 00 05 00 00 00  # 0040 extension
+01 00 00 00 01 00 00 00 05 00 00 00 01 00 00 00  # 0050 extension
+14 00 00 00 18 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+08 07 06 05 04 03 02 01 02 00 00 00 4d 00 00 00  # 0080 extension
+41 06 00 00 05 00 00 00 00 00 00 00 00 00 05 00  # 0090 extension
+ff ff 01 00 00 00 02 00 00 00 02 01 01 00 03 00  # 00a0 extension
+ff ff 01 01 07 00 00 00 0a 00 00 00 00 3c 00 38  # 00b0 extension
+00 34 00 30 00 2c 00 00 00 00 00 00 00 00 00 00  # 00c0 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00d0 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00e0 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00f0 extension
+00 00 00 00 00 00 80 3f 00 00 00 40 00 00 40 40  # 0100 payload
+00 00 80 40 00 00 a0 40 00 00 c0 40 00 00 e0 40  # 0110 payload
+00 00 00 41 00 00 10 41 00 00 20 41 00 00 30 41  # 0120 payload
+00 00 40 41 00 00 50 41 00 00 60 41 00 00 70 41  # 0130 payload
+00 00 7a 44 00 40 7a 44 00 80 7a 44 00 c0 7a 44  # 0140 payload
+00 00 7b 44 00 40 7b 44 00 80 7b 44 00 c0 7b 44  # 0150 payload
+00 00 7c 44 00 40 7c 44 00 80 7c 44 00 c0 7c 44  # 0160 payload
+00 00 7d 44 00 40 7d 44 00 80 7d 44 00 c0 7d 44  # 0170 payload
+00 00 fa 44 00 20 fa 44 00 40 fa 44 00 60 fa 44  # 0180 payload
+00 80 fa 44 00 a0 fa 44 00 c0 fa 44 00 e0 fa 44  # 0190 payload
+00 00 fb 44 00 20 fb 44 00 40 fb 44 00 60 fb 44  # 01a0 payload
+00 80 fb 44 00 a0 fb 44 00 c0 fb 44 00 e0 fb 44  # 01b0 payload
+00 80 3b 45 00 90 3b 45 00 a0 3b 45 00 b0 3b 45  # 01c0 payload
+00 c0 3b 45 00 d0 3b 45 00 e0 3b 45 00 f0 3b 45  # 01d0 payload
+00 00 3c 45 00 10 3c 45 00 20 3c 45 00 30 3c 45  # 01e0 payload
+00 40 3c 45 00 50 3c 45 00 60 3c 45 00 70 3c 45  # 01f0 payload
+00 00 7a 45 00 10 7a 45 00 20 7a 45 00 30 7a 45  # 0200 payload
+00 40 7a 45 00 50 7a 45 00 60 7a 45 00 70 7a 45  # 0210 payload
+00 80 7a 45 00 90 7a 45 00 a0 7a 45 00 b0 7a 45  # 0220 payload
+00 c0 7a 45 00 d0 7a 45 00 e0 7a 45 00 f0 7a 45  # 0230 payload

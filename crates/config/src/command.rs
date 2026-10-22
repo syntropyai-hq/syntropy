@@ -10,8 +10,10 @@ use std::fmt::Write as _;
 
 use crate::discovery::{Locations, Mode, Scan};
 use crate::origin::Origin;
-use crate::resolve::{Problem, Rejected, ResolvedConfig};
+use crate::registry::Registry;
+use crate::resolve::ResolvedConfig;
 use crate::schema::Scope;
+use crate::validate::Checked;
 
 /// The exit status of a command that succeeded (RFC-0051 §2.2).
 pub const EXIT_OK: u8 = 0;
@@ -19,7 +21,8 @@ pub const EXIT_OK: u8 = 0;
 pub const EXIT_INVALID: u8 = 5;
 
 /// `config show --resolved`: every node and cluster key with its effective value and the layer
-/// it came from, then the cluster values this node proposes. One line per key:
+/// it came from, then every instance key with its schema default, then the cluster values this
+/// node proposes. Each block's header names its keys' scope. One line per key:
 ///
 /// ```text
 /// api.bind = ["0.0.0.0:7433"]        # /etc/syntropy/config.toml:4
@@ -30,20 +33,28 @@ pub const EXIT_INVALID: u8 = 5;
 ///
 /// A key with no value (an unset `Option` key, or a computed default not yet computed) prints
 /// its path alone. Secrets print redacted.
+///
+/// An instance key shows its schema default only: a policy table or an explicit value sets it
+/// per model by RFC-0054 §2.2 Rule 3, which PROD-E1-T08 resolves. Request-scope keys are not
+/// listed, since a request sets them and a node holds no value for them. The comment column
+/// is shared by every block, so a long key in one block moves the comments of the others.
 pub fn show_resolved(config: &ResolvedConfig) -> String {
-    let mut node = Vec::new();
-    let mut cluster = Vec::new();
-    for resolved in config.iter() {
+    let row = |resolved: &crate::Resolved| {
         let left = match resolved.shown() {
             Some(value) => format!("{} = {value}", resolved.key.path),
             None => resolved.key.path.to_owned(),
         };
-        let row = (left, resolved.origin.to_string());
+        (left, resolved.origin.to_string())
+    };
+    let mut node = Vec::new();
+    let mut cluster = Vec::new();
+    for resolved in config.iter() {
         match resolved.key.scope {
-            Scope::Cluster => cluster.push(row),
-            _ => node.push(row),
+            Scope::Cluster => cluster.push(row(resolved)),
+            _ => node.push(row(resolved)),
         }
     }
+    let instance: Vec<(String, String)> = config.instance_defaults().map(row).collect();
     let proposals: Vec<(String, String)> = config
         .proposals()
         .iter()
@@ -53,6 +64,7 @@ pub fn show_resolved(config: &ResolvedConfig) -> String {
     let width = node
         .iter()
         .chain(&cluster)
+        .chain(&instance)
         .chain(&proposals)
         .map(|(left, _)| left.chars().count())
         .max()
@@ -71,6 +83,13 @@ pub fn show_resolved(config: &ResolvedConfig) -> String {
             "\n# cluster keys: the cluster's value; the default until the cluster sets one\n",
         );
         rows(&mut out, &cluster, width);
+    }
+    if !instance.is_empty() {
+        out.push_str(
+            "\n# instance keys: the schema default; a [policy.\"<selector>\"] table or an explicit \
+             value overrides it per model\n",
+        );
+        rows(&mut out, &instance, width);
     }
     if !proposals.is_empty() {
         out.push_str("\n# proposed to the cluster by this node's file, environment or flags\n");
@@ -91,27 +110,22 @@ fn rows(out: &mut String, rows: &[(String, String)], width: usize) {
 /// What `config check` reports: the text, and the exit status.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckReport {
-    /// One line per error and warning, then a summary line.
+    /// Every error and warning in RFC-0054 §8's format, then a summary line.
     pub text: String,
     /// [`EXIT_OK`] when there is no error, else [`EXIT_INVALID`].
     pub exit: u8,
 }
 
-/// `config check`: the errors and warnings of one load, from [`crate::load`]. The validation
-/// phases of RFC-0054 §8 beyond layering (types, ranges, cross-field rules and the
-/// environment) add their findings to the same report when they land.
-pub fn check(outcome: &Result<ResolvedConfig, Rejected>) -> CheckReport {
-    let (errors, warnings, files): (&[Problem], &[Problem], usize) = match outcome {
-        Ok(config) => (&[], config.warnings(), config.files().len()),
-        Err(rejected) => (&rejected.errors, &rejected.warnings, 0),
-    };
-    let mut text = String::new();
-    for error in errors {
-        let _ = writeln!(text, "error: {error}");
-    }
-    for warning in warnings {
-        let _ = writeln!(text, "warning: {warning}");
-    }
+/// `config check`: every error and warning of one load and validation, from
+/// [`crate::load_and_validate`], rendered in RFC-0054 §8's format with their source lines, and
+/// never showing a secret.
+pub fn check(checked: &Checked, registry: &Registry) -> CheckReport {
+    let (errors, warnings) = (checked.errors(), checked.warnings());
+    let files = checked
+        .outcome
+        .as_ref()
+        .map_or(0, |config: &ResolvedConfig| config.files().len());
+    let mut text = checked.render(registry);
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     if errors.is_empty() {
         let _ = writeln!(
