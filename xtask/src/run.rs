@@ -295,6 +295,7 @@ mod tests {
                 "clippy",
                 "determinism",
                 "check-deps",
+                "properties",
                 "codeowners",
                 "agent-instructions",
                 "rigs",
