@@ -11,7 +11,8 @@
 //! [`endpoint`], a minimal iroh endpoint that reports a connection's path kind and round-trip
 //! time (DIST-E7-T23); [`iface`]: interface enumeration and medium classification
 //! (RFC-0030 §7.1–§7.2); and [`transport`]: the `Transport` trait, `Channel`, their buffer types,
-//! the channel-conformance suite of RFC-0031 §2 and the channel core of §7, with no backend yet.
+//! the channel-conformance suite of RFC-0031 §2, the channel core of §7, and the first backend,
+//! the TCP fallback of §5.3 ([`transport::tcp`]).
 //! [`Error`] is what its fallible calls return.
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries

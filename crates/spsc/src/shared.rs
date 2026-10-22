@@ -59,6 +59,10 @@ struct Header {
     /// before the next write. The slots' own bytes are plain memory, which loom cannot see.
     #[cfg(loom)]
     shadow: Box<[crate::sync::UnsafeCell<()>]>,
+    /// Under loom only: whether `push` publishes with a relaxed store, the ordering bug the loom
+    /// models must find (QUAL-E3-T09). Only the tests' planted initialiser sets it.
+    #[cfg(loom)]
+    planted_relaxed_publish: bool,
 }
 
 impl Header {
@@ -71,6 +75,8 @@ impl Header {
             shadow: (0.._slots)
                 .map(|_| crate::sync::UnsafeCell::new(()))
                 .collect(),
+            #[cfg(loom)]
+            planted_relaxed_publish: false,
         }
     }
 }
@@ -249,6 +255,20 @@ impl SharedLayout {
         unsafe { memory.cast::<Header>().write(Header::new(self.slots)) };
     }
 
+    /// Under loom, for the models only: [`Self::init`], with the bug the models must find
+    /// planted: `push` publishes with a relaxed store (QUAL-E3-T09).
+    ///
+    /// # Safety
+    ///
+    /// As for [`Self::init`].
+    #[cfg(all(test, loom))]
+    pub(crate) unsafe fn init_planted_relaxed_publish(&self, memory: NonNull<u8>) {
+        let mut header = Header::new(self.slots);
+        header.planted_relaxed_publish = true;
+        // SAFETY: as in `init`.
+        unsafe { memory.cast::<Header>().write(header) };
+    }
+
     /// The producing end of the ring at `memory`, continuing from the indices in its header. It
     /// clears the producer's close flag, so a producer can reattach after an earlier one went.
     ///
@@ -326,6 +346,16 @@ impl<'a> End<'a> {
     /// The position, from 0, of the slot that index `at` names.
     fn position(&self, at: u64) -> usize {
         (at & u64::from(self.layout.slots - 1)) as usize
+    }
+
+    /// The ordering of the store that publishes a push: `Release`, or `Relaxed` in a ring with the
+    /// planted bug, under loom.
+    fn publish_ordering(&self) -> Ordering {
+        #[cfg(loom)]
+        if self.header.planted_relaxed_publish {
+            return Ordering::Relaxed;
+        }
+        Ordering::Release
     }
 
     /// Under loom, records a write to the slot `at`; elsewhere, nothing.
@@ -487,7 +517,7 @@ impl SharedProducer<'_> {
             copy_in(record, slot.add(LENGTH_BYTES));
         }
         self.tail = self.tail.wrapping_add(1);
-        end.header.tail.store(self.tail, Ordering::Release);
+        end.header.tail.store(self.tail, end.publish_ordering());
         Ok(())
     }
 

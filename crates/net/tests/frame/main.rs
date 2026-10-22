@@ -13,6 +13,7 @@
 
 mod activation;
 mod collective;
+mod embedding;
 mod seq_control;
 mod spec;
 mod token;

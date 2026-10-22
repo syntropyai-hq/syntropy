@@ -1,0 +1,13 @@
+# embedding-mean: a mean-pooled, normalised 8-dimension vector for a 12-token prompt, in one part
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 12 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+1e 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 20 00 00 00 de 2f 9b c3 a5 e1 dc 84  # 0030 header
+08 07 06 05 04 03 02 01 02 00 00 00 03 00 00 00  # 0040 extension
+08 00 00 00 01 02 01 00 0c 00 00 00 00 00 01 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+00 00 80 3f 00 00 00 40 00 00 40 40 00 00 80 40  # 0080 payload
+00 00 a0 40 00 00 c0 40 00 00 e0 40 00 00 00 41  # 0090 payload
