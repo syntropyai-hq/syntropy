@@ -13,7 +13,7 @@ use syntropy_core::Bytes;
 
 use super::bytes::ByteSizeVisitor;
 use super::fraction::FractionVisitor;
-use super::{ByteSize, Fraction, ValueError};
+use super::{ByteSize, Fraction, ValueError, serde_error};
 
 /// Memory kept back from a tier: `"8GiB"`, `"10%"`, `{ min = "6GiB", fraction = 0.10 }` or
 /// `{ min = "6GiB", fraction = 0.10, max = "32GiB" }` (RFC-0054 §3).
@@ -252,7 +252,7 @@ impl<'de> Visitor<'de> for ReserveVisitor {
     }
 
     fn visit_str<E: de::Error>(self, s: &str) -> Result<Reserve, E> {
-        s.parse().map_err(E::custom)
+        s.parse().map_err(serde_error)
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Reserve, A::Error> {
@@ -270,7 +270,7 @@ impl<'de> Visitor<'de> for ReserveVisitor {
         }
         let mut table = Table::default();
         while let Some(key) = map.next_key::<String>()? {
-            let duplicate = || de::Error::custom(format!("`{key}` is set twice"));
+            let duplicate = || serde_error(ValueError::bad_unit(format!("`{key}` is set twice")));
             match key.as_str() {
                 "min" if table.min.is_none() => {
                     table.min = Some(map.next_value::<Size>()?.0.bytes())
@@ -288,7 +288,7 @@ impl<'de> Visitor<'de> for ReserveVisitor {
             }
         }
         let reserve = table.finish();
-        reserve.validate().map_err(de::Error::custom)?;
+        reserve.validate().map_err(serde_error)?;
         Ok(reserve)
     }
 }

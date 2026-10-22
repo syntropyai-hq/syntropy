@@ -454,6 +454,31 @@ mod tests {
     }
 
     #[test]
+    fn an_unaligned_extension_length_is_refused() {
+        // A data frame with a 60-byte extension and a correct `header_crc`: everything holds but
+        // the alignment, which `encode` would otherwise re-pad to different bytes.
+        let mut bytes = encode_to_vec(&spec(FrameType::Activation), &[1, 2, 3], &[]).unwrap();
+        bytes.truncate(HEADER_LEN + 60);
+        bytes[48..52].copy_from_slice(&60u32.to_le_bytes());
+        let header_crc = crc32c_append(crc32c(&bytes[..60]), &bytes[HEADER_LEN..]);
+        bytes[60..64].copy_from_slice(&header_crc.to_le_bytes());
+        assert_eq!(Frame::decode(&bytes), Err(FrameError::ExtLenUnaligned(60)));
+    }
+
+    #[test]
+    fn only_a_sealed_control_frame_has_a_ctl_seq() {
+        let unsealed = encode_to_vec(&spec(FrameType::Ping), &[0; 16], &[]).unwrap();
+        assert_eq!(Frame::decode(&unsealed).unwrap().header.ctl_seq(), None);
+        let data = encode_to_vec(&spec(FrameType::Activation), &[], &[1]).unwrap();
+        assert_eq!(Frame::decode(&data).unwrap().header.ctl_seq(), None);
+        let mut sealed = spec(FrameType::Ping);
+        sealed.flags = Flags(Flags::ENCRYPTED);
+        sealed.step = 3;
+        let bytes = encode_to_vec(&sealed, &[0; 64], &[0; 16]).unwrap();
+        assert_eq!(Frame::decode(&bytes).unwrap().header.ctl_seq(), Some(3));
+    }
+
+    #[test]
     fn an_empty_payload_has_a_zero_crc() {
         let bytes = encode_to_vec(&spec(FrameType::Ping), &[0; 16], &[]).unwrap();
         assert_eq!(u32_at(&bytes, 56), 0);
