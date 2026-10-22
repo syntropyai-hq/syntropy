@@ -834,3 +834,11 @@ DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-confor
 | Added TIER-E2-T25 (M2, `NetPool` registered with the transports, in `runner`) → TIER-E2-T21, DIST-E7-T01 | TIER-E2-T25 | R1 | `runner` (layer 5) may depend on both `tier` and `net`; a `runner` newtype over the `NetPool` lease implements `PoolMemory`, which the orphan rule allows, and the runner calls `Transport::register`. The `unsafe impl` sits in one `runner` module that RFC-0001 §4.2 rule 8's note of 2026-10-23 allows (§18.25), as `testkit`'s `GlobalAlloc` does. `core` cannot hold the trait instead: it forbids `unsafe` code, and an `unsafe trait` trips that lint. It has no edge to DIST-E7-T07: its criteria use fake transports, so neither the RDMA backend nor the two-Mac TB5 rig behind it has to come first, and DIST-E11-T01, which depends on it, does not wait on them |
 | DIST-E7-T12's pools are over any `PoolMemory` (`HeapMemory` in its tests), not "from TIER's pinned network sub-arena"; its edge to TIER-E2-T21 is cut | DIST-E7-T12 | R8 | `net` cannot depend on `tier`, and none of DIST-E7-T12's criteria uses `NetPool`; a runner's `NetPool` reaches `net` through TIER-E2-T25 |
 | DIST-E11-T01 → TIER-E2-T25 | DIST-E11-T01 | R9 | DIST-E11-T01 opens the runner's data-plane channels, and each channel's `ChannelSpec::pool` names a `NetPool` registration that TIER-E2-T25 makes |
+
+## PLC-E8-T13's rejection criterion after the section builder (2026-10-23)
+
+#1792 builds `SchedSection` with `config`'s `InstanceSection` (PROD-E1-T24), as RFC-0054 §5.4's note of 2026-10-22 says every domain crate's section is built. It removes `SchedSection::from_policy`, which PLC-E8-T13's criterion named.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E8-T13's criterion names `config`'s `InstanceSection::<SchedSection>::from_policy` in place of `SchedSection::from_policy`, and PLC-E8-T13 → PROD-E1-T24 | PLC-E8-T13 | R9 | the criterion's wording had drifted from the code: the builder now rejects the invalid values, and PROD-E1-T24 produces it. Both tasks are M1a and done (#1656, #1772), so the edge adds no wait |
