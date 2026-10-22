@@ -376,7 +376,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M2: multiple devices on a LAN
 
-289 tasks in the epics (`implementation/roadmap.md`, M2).
+291 tasks in the epics (`implementation/roadmap.md`, M2).
 
 - [ ] Discovery with blinded beacons sent only on networks where a member has been seen, SWIM membership, coordinator lease and event log, with the election and split-heal design model-checked before its code; admission with commit-then-reveal and number matching, and encryption (RFC-0034 core). Coordination is keyholders-only by default, offered with a second-keyholder grant at pairing, with an optional offline recovery code at bootstrap, a guard against removing the last keyholder, and re-founding (RFC-0030, RFC-0032, RFC-0034).
 - [ ] QUIC, TCP and shared-memory transports; RDMA over Thunderbolt 5 on macOS (RFC-0031).
@@ -393,7 +393,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M3: feature complete
 
-212 tasks in the epics (`implementation/roadmap.md`, M3).
+211 tasks in the epics (`implementation/roadmap.md`, M3).
 
 - [ ] Invite links with relays and hole punching, the built-in relay set read from a signed `relays.json`; Tailscale paths (RFC-0030, RFC-0034).
 - [ ] Fault tolerance: activation-history replay from every sending stage, request migration, in-place relink and shard extension, KV migration on re-placement and recovery, an evictable second copy of each stage's source chunks on the node a repair would absorb it into, a 60 s detach grace that lets a client re-attach to a paused stream, degraded modes, automatic re-placement (RFC-0033, RFC-0022, RFC-0050).
