@@ -700,6 +700,15 @@ The review of #1694 found that DIST-E9-T01's base events and entries carry types
 | `ChunkIdsCommitted` is not one of DIST-E9-T01's events; DIST-E9-T03 already wires it with COMP-E12-T06 | DIST-E9-T01 | R9 | its evidence is a signed record (DIST-E9-T16) whose type COMP-E12-T06 defines, after DIST-E9-T01 |
 | DIST-E9-T12 checks an invite's single use against earlier `InviteConsumed` entries, and a `CoordinatorElected`'s certificate as carried with it and against applied `NodeRevoked` entries | DIST-E9-T12 | R9 | its old text read approvals and certificates kept in `ClusterState`, which DIST-E9-T16 keeps after DIST-E9-T12. The log's own events give the same verdicts |
 
+## QUAL-E9-T01's IPC loading and release-artefact criterion (2026-10-22)
+
+QUAL-E9-T01 (M1a) builds the fault points in `syntropy-obs`. Two parts of its row need work from tasks it does not depend on: pushing a plan over IPC needs DIST-E1-T03's command channel and a message RFC-0001 §3.5 does not define, and a scan of a `release` artefact needs a job that builds one.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "over IPC" moved from QUAL-E9-T01 to DIST-E1-T13 (M1a, added) → DIST-E1-T03, QUAL-E9-T01 | QUAL-E9-T01, DIST-E1-T13 | R9 | RFC-0060 §9.2 pushes plans over IPC in tests, but RFC-0001 §3.5's message set has no fault-plan message and DIST-E1-T03, which builds the channel, is still open. DIST-E1-T13 proposes the message, and its handler calls QUAL-E9-T01's `install` |
+| QUAL-E9-T01's symbol check reads the core binary built in `lint` with the release build's features; the scan of the nightly `release` artefact moved to QUAL-E16-T15; QUAL-E16-T15 → QUAL-E9-T01 | QUAL-E9-T01, QUAL-E16-T15 | R9 | no M1a job builds a `release` artefact: the PR build is `dev` until QUAL-E16-T21's `pr` profile, and the `test-release` build turns `fault-injection` on by design. QUAL-E16-T15 builds and inspects the nightly `release` Linux core binary |
+
 ## RFC-0054 §5.1's missing claims (2026-10-22)
 
 DIST-E18-T01 registered three claims that RFC-0054 §5.1 did not list (#1679). §5.1 now lists `orphan.*` (RFC-0032), the `invite.require_confirm` carve-out (RFC-0034 inside RFC-0030's `invite.*`) and the top-level `standby` (RFC-0033), and §5.4 lists `standby`. PROD-E1-T16 is the task that checks section claims against that table. It had no criterion for shared sections, which RFC-0054 §5.1's carve-out note of 2026-10-21 says its check should cover.
