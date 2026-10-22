@@ -33,6 +33,11 @@ pub const EXIT_INVALID: u8 = 5;
 ///
 /// A key with no value (an unset `Option` key, or a computed default not yet computed) prints
 /// its path alone. Secrets print redacted.
+///
+/// An instance key shows its schema default only: a policy table or an explicit value sets it
+/// per model by RFC-0054 §2.2 Rule 3, which PROD-E1-T08 resolves. Request-scope keys are not
+/// listed, since a request sets them and a node holds no value for them. The comment column
+/// is shared by every block, so a long key in one block moves the comments of the others.
 pub fn show_resolved(config: &ResolvedConfig) -> String {
     let row = |resolved: &crate::Resolved| {
         let left = match resolved.shown() {
@@ -81,7 +86,8 @@ pub fn show_resolved(config: &ResolvedConfig) -> String {
     }
     if !instance.is_empty() {
         out.push_str(
-            "\n# instance keys: the default; a model's `[policy.\"<model>\"]` table or its load sets them\n",
+            "\n# instance keys: the schema default; a [policy.\"<selector>\"] table or an explicit \
+             value overrides it per model\n",
         );
         rows(&mut out, &instance, width);
     }

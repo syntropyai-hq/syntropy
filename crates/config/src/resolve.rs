@@ -416,7 +416,8 @@ pub struct ResolvedConfig {
     values: BTreeMap<&'static str, Resolved>,
     /// Every instance key of the registry with its schema default, by path. A node's layers
     /// never set one (§2.2 Rule 3), so this is what an instance gets when no policy table and
-    /// no explicit value sets the key.
+    /// no explicit value sets the key. Request-scope keys are kept nowhere: a request sets
+    /// them.
     instance: BTreeMap<&'static str, Resolved>,
     proposals: Vec<Proposal>,
     files: Vec<PathBuf>,
@@ -508,7 +509,9 @@ impl ResolvedConfig {
         self.values.values()
     }
 
-    /// Every instance key with its schema default, in path order.
+    /// Every instance key with its schema default, in path order. A computed default stays
+    /// unset here, with its rule in the origin, since it depends on the instance; request-scope
+    /// keys are not included.
     pub fn instance_defaults(&self) -> impl Iterator<Item = &Resolved> {
         self.instance.values()
     }
