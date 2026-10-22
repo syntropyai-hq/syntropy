@@ -353,7 +353,9 @@ fn a_ring_full_of_garbage_is_refused_without_harm() {
         }
         let mut tx = memory.producer(ring);
         let mut rx = memory.consumer(ring);
-        let mut buffer = [0u8; 24];
+        // Larger than a slot, so a record longer than a slot would come back `Ok`, not
+        // `BufferTooSmall`, and `in_range` would see it.
+        let mut buffer = [0u8; 1024];
         for _ in 0..40 {
             in_range(rx.pop_into(&mut buffer), ring);
             let _ = tx.push(&[0xab; 24]);
@@ -406,11 +408,37 @@ fn a_peer_scribbling_while_the_ring_runs_cannot_push_it_out_of_range() {
     }
     let mut tx = memory.producer(ring);
     let mut rx = memory.consumer(ring);
-    let mut buffer = [0u8; 24];
+    // Larger than a slot, as above.
+    let mut buffer = [0u8; 1024];
     for round in 0..200_000u32 {
         let _ = tx.push(&round.to_le_bytes());
         in_range(rx.pop_into(&mut buffer), ring);
     }
     stop.store(true, Ordering::Relaxed);
     assert!(scribbler.join().unwrap() > 0, "the scribbler never ran");
+}
+
+/// The length guard on its own: a length word above `slot_bytes` is `Corrupt`, even when the
+/// caller's buffer would hold that many bytes, and whatever the word says, up to `u32::MAX`.
+#[test]
+fn a_length_longer_than_a_slot_is_corrupt_whatever_the_buffer() {
+    model(|| {
+        let ring = SharedLayout::new(4, 16).unwrap();
+        for length in [17u32, 32, 4096, u32::MAX] {
+            let memory = Memory::new(ring);
+            let mut tx = memory.producer(ring);
+            let mut rx = memory.consumer(ring);
+            tx.push(b"ok").unwrap();
+            // SAFETY: slot 0 holds the record just pushed and lies past the header; nothing else
+            // uses it now, and every access to its length word is atomic.
+            unsafe { length_word(memory.base.add(header_bytes())) }
+                .store(length.to_le(), Ordering::Relaxed);
+            let mut buffer = vec![0u8; 8192];
+            assert_eq!(
+                rx.pop_into(&mut buffer),
+                Err(SharedPopError::Corrupt),
+                "a length of {length}"
+            );
+        }
+    });
 }
