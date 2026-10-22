@@ -620,6 +620,34 @@ fn assembly_needs_every_part_once_and_in_agreement() {
         ..b
     };
     assert_eq!(assemble(&[a, other_pooling]), Err(field("pooling", 1)));
+    let other_dims = EmbeddingResult { dims: 4097, ..b };
+    assert_eq!(assemble(&[a, other_dims]), Err(field("dims", 1)));
+    let other_normalised = EmbeddingResult {
+        normalised: !b.normalised,
+        ..b
+    };
+    assert_eq!(
+        assemble(&[a, other_normalised]),
+        Err(field("normalised", 1))
+    );
+    let other_prompt = EmbeddingResult {
+        prompt_tokens: b.prompt_tokens + 1,
+        ..b
+    };
+    assert_eq!(assemble(&[a, other_prompt]), Err(field("prompt_tokens", 1)));
+    // A hostile part whose `part_index` passes its own `part_count` but not the result's: it
+    // must be refused before it indexes past the result's parts, in either order.
+    let hostile = EmbeddingResult {
+        part_index: 2,
+        part_count: 3,
+        ..b
+    };
+    assert_eq!(hostile.validate(), Ok(()));
+    assert_eq!(assemble(&[a, hostile]), Err(field("part_count", 2)));
+    assert_eq!(
+        assemble(&[hostile, a]),
+        Err(inconsistent("part_count", 2, 3))
+    );
     let short = EmbeddingResult {
         vector: &b.vector[..64],
         ..b
