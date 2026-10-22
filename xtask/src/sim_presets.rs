@@ -16,11 +16,15 @@
 //!   `heating_time`, `qd1_4k_read_iops`, `qd32_4k_read_iops` and `read_latency`;
 //! - a `memory_tier` of `vram` or `unified` if it is a `gpu`, and none otherwise.
 //!
-//! `testkit::sim::presets` loads the same files and refuses the same faults, from the same key
-//! table. This step reads them as plain TOML, so `lint` needs no `testkit` build.
+//! The keys come from [`KEYS`], the table `testkit::sim::presets` compiles in, so the loader and
+//! this step check one table. `testkit` loads the same files and refuses the same faults. This
+//! step reads them as plain TOML, so `lint` needs no `testkit` build: `xtask` depends on no
+//! workspace crate (`ci/layers.toml`), but it reads their files.
 
 use std::fs;
 use std::path::Path;
+
+use serde::Deserialize;
 
 use crate::run::Context;
 
@@ -33,46 +37,60 @@ const LABELS: [&str; 4] = ["published", "measured", "estimate", "target"];
 /// The kinds a preset may describe.
 const KINDS: [&str; 3] = ["gpu", "cpu", "nvme"];
 
-/// `testkit::sim::presets`'s key table, which this step cannot import without building
-/// `testkit`: the keys of every device, a discrete GPU's extra key, every drive's keys, and the
-/// kernel classes of the W_eff keys.
-const DEVICE_KEYS: [&str; 4] = ["memory", "f_eff", "t_fixed", "sigma_dev"];
-const DISCRETE_GPU_KEY: &str = "host_link_pinned_h2d";
-const DRIVE_KEYS: [&str; 7] = [
-    "seq_read",
-    "sustained_read",
-    "throttled_read",
-    "heating_time",
-    "qd1_4k_read_iops",
-    "qd32_4k_read_iops",
-    "read_latency",
-];
-const KERNEL_CLASSES: [&str; 2] = ["dense_gemv", "expert_gemv"];
+/// The figure-key table, relative to the workspace root: the file `testkit::sim::presets`
+/// compiles in.
+pub const KEYS: &str = "crates/testkit/sim/figure-keys.toml";
+
+/// The figure keys each preset kind must have, as [`KEYS`] holds them.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Table {
+    device: Vec<String>,
+    discrete_gpu: Vec<String>,
+    drive: Vec<String>,
+    kernel_classes: Vec<String>,
+    tiers: Tiers,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Tiers {
+    gpu_vram: Vec<String>,
+    gpu_unified: Vec<String>,
+    cpu: Vec<String>,
+}
+
+/// Reads the figure-key table at `path`.
+fn load_table(path: &Path) -> Result<Table, String> {
+    let text = fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    toml::from_str(&text).map_err(|error| format!("{KEYS}: not the figure-key table: {error}"))
+}
 
 /// The figure keys a preset of `kind` with `memory_tier` must have.
-fn required_keys(kind: &str, memory_tier: Option<&str>) -> Vec<String> {
-    let tiers: &[&str] = match (kind, memory_tier) {
-        ("gpu", Some("vram")) => &["vram", "host_pinned"],
-        ("gpu", Some("unified")) => &["unified"],
-        ("cpu", _) => &["host_pinned", "host_pageable"],
-        ("nvme", _) => return DRIVE_KEYS.iter().map(|key| (*key).to_owned()).collect(),
+fn required_keys(table: &Table, kind: &str, memory_tier: Option<&str>) -> Vec<String> {
+    let tiers: &[String] = match (kind, memory_tier) {
+        ("gpu", Some("vram")) => &table.tiers.gpu_vram,
+        ("gpu", Some("unified")) => &table.tiers.gpu_unified,
+        ("cpu", _) => &table.tiers.cpu,
+        ("nvme", _) => return table.drive.clone(),
         _ => &[],
     };
-    let mut keys: Vec<String> = DEVICE_KEYS.iter().map(|key| (*key).to_owned()).collect();
+    let mut keys = table.device.clone();
     for tier in tiers {
-        for class in KERNEL_CLASSES {
+        for class in &table.kernel_classes {
             keys.push(format!("w_eff.{tier}.{class}"));
         }
     }
     if kind == "gpu" && memory_tier == Some("vram") {
-        keys.push(DISCRETE_GPU_KEY.to_owned());
+        keys.extend(table.discrete_gpu.iter().cloned());
     }
     keys
 }
 
 /// The `lint` step.
 pub fn step(context: &Context) -> Result<(), String> {
-    let problems = check_dir(&context.root.join(DIR))?;
+    let table = load_table(&context.root.join(KEYS))?;
+    let problems = check_dir(&context.root.join(DIR), &table)?;
     if problems.is_empty() {
         Ok(())
     } else {
@@ -81,7 +99,7 @@ pub fn step(context: &Context) -> Result<(), String> {
 }
 
 /// Every problem in the presets under `dir`, one line each.
-fn check_dir(dir: &Path) -> Result<Vec<String>, String> {
+fn check_dir(dir: &Path, table: &Table) -> Result<Vec<String>, String> {
     let entries = fs::read_dir(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     let mut files: Vec<String> = entries
         .map(|entry| {
@@ -105,7 +123,7 @@ fn check_dir(dir: &Path) -> Result<Vec<String>, String> {
         let text = fs::read_to_string(dir.join(&file))
             .map_err(|error| format!("{DIR}/{file}: {error}"))?;
         problems.extend(
-            check_file(&file, &text)
+            check_file(&file, &text, table)
                 .into_iter()
                 .map(|problem| format!("{DIR}/{file}: {problem}")),
         );
@@ -114,7 +132,7 @@ fn check_dir(dir: &Path) -> Result<Vec<String>, String> {
 }
 
 /// The problems in one preset file.
-fn check_file(file: &str, text: &str) -> Vec<String> {
+fn check_file(file: &str, text: &str, keys: &Table) -> Vec<String> {
     let table: toml::Table = match toml::from_str(text) {
         Ok(table) => table,
         Err(error) => return vec![format!("not TOML: {error}")],
@@ -156,7 +174,7 @@ fn check_file(file: &str, text: &str) -> Vec<String> {
     }
     match table.get("figures").and_then(toml::Value::as_table) {
         Some(figures) if !figures.is_empty() => {
-            let required = required_keys(kind, memory_tier);
+            let required = required_keys(keys, kind, memory_tier);
             for key in &required {
                 if !figures.contains_key(key) {
                     problems.push(format!(
@@ -245,6 +263,15 @@ mod tests {
 
     use super::*;
 
+    fn root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+    }
+
+    /// The repository's figure-key table.
+    fn table() -> Table {
+        load_table(&root().join(KEYS)).expect("the repository's table")
+    }
+
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/sim-presets")
@@ -254,17 +281,48 @@ mod tests {
     #[test]
     fn the_presets_in_the_repository_pass() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        assert_eq!(check_dir(&root.join(DIR)), Ok(Vec::new()));
+        assert_eq!(check_dir(&root.join(DIR), &table()), Ok(Vec::new()));
+    }
+
+    /// The table is `testkit`'s file, and this step refuses a table it cannot read, rather than
+    /// checking against nothing.
+    #[test]
+    fn the_keys_come_from_testkits_table() {
+        let table = table();
+        assert_eq!(
+            required_keys(&table, "gpu", Some("vram")),
+            [
+                "memory",
+                "f_eff",
+                "t_fixed",
+                "sigma_dev",
+                "w_eff.vram.dense_gemv",
+                "w_eff.vram.expert_gemv",
+                "w_eff.host_pinned.dense_gemv",
+                "w_eff.host_pinned.expert_gemv",
+                "host_link_pinned_h2d",
+            ]
+        );
+        assert_eq!(required_keys(&table, "nvme", None).len(), 7);
+        let missing = load_table(&root().join("no/such/figure-keys.toml")).unwrap_err();
+        assert!(missing.contains("no/such/figure-keys.toml"), "{missing}");
+        let dir = std::env::temp_dir().join(format!("sim-presets-table-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("figure-keys.toml");
+        std::fs::write(&bad, "device = [\"memory\"]\n").unwrap();
+        let error = load_table(&bad).unwrap_err();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(error.contains("not the figure-key table"), "{error}");
     }
 
     #[test]
     fn a_well_formed_preset_passes() {
-        assert_eq!(check_dir(&fixture("pass")), Ok(Vec::new()));
+        assert_eq!(check_dir(&fixture("pass"), &table()), Ok(Vec::new()));
     }
 
     #[test]
     fn a_preset_with_no_source_fails() {
-        let problems = check_dir(&fixture("no-source")).unwrap();
+        let problems = check_dir(&fixture("no-source"), &table()).unwrap();
         assert_eq!(
             problems,
             [format!(
@@ -275,7 +333,7 @@ mod tests {
 
     #[test]
     fn a_figure_with_no_label_fails() {
-        let problems = check_dir(&fixture("no-label")).unwrap();
+        let problems = check_dir(&fixture("no-label"), &table()).unwrap();
         assert_eq!(
             problems,
             [format!("{DIR}/gpu.test.toml: figure `memory` has no label")]
@@ -284,7 +342,7 @@ mod tests {
 
     #[test]
     fn a_missing_key_a_stray_w_eff_key_or_a_misplaced_memory_tier_fails() {
-        let problems = check_dir(&fixture("keys")).unwrap();
+        let problems = check_dir(&fixture("keys"), &table()).unwrap();
         let open = "; write it as `unknown`, with where the research leaves it open, if the research gives none";
         let want = [
             "cpu.tiered.toml: has `memory_tier`, which only a gpu has".to_owned(),
@@ -303,7 +361,7 @@ mod tests {
 
     #[test]
     fn each_other_fault_is_named() {
-        let problems = check_dir(&fixture("faults")).unwrap();
+        let problems = check_dir(&fixture("faults"), &table()).unwrap();
         let want = [
             "nvme.drive.toml: figure `seq_read` has label `verified`, which is not one of published, measured, estimate, target",
             "nvme.drive.toml: figure `seq_read` cites no source",
