@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# The contribution checks `dco` and `pr-title` (RFC-0062 §12.3), and `dep-diff` for new direct
-# dependencies (§12.3, §11.4), all required checks (§2.5). They judge a PR's commits, title, body,
-# labels, comments and manifests, so the PR must not be able to change
+# The contribution checks `dco` and `pr-title` (RFC-0062 §12.3), `dep-diff` for new direct
+# dependencies (§12.3, §11.4), and `properties-removal` for properties removed from
+# `ci/properties.toml` (RFC-0060 §3.2), all required checks (§2.5). They judge a PR's commits,
+# title, body, labels, comments, manifests and property registry, so the PR must not be able to
+# change
 # how it is judged. Each job checks out the base branch, never the PR, and runs the base branch's
 # `cargo xtask` with the base branch's `governance/maintainers.toml` and `version.txt`. It restores
 # no cache, so nothing the PR ran elsewhere reaches the build.
@@ -213,3 +215,71 @@ jobs:
             --event "$GITHUB_EVENT_PATH" \
             --comments "$RUNNER_TEMP/comments.json" \
             --roster "$RUNNER_TEMP/maintainers.toml"
+
+  # A property removed from `ci/properties.toml` needs a reason in the PR description (RFC-0060
+  # §3.2; QUAL-E3-T05). It judges the description, so it is here and re-runs on every edit.
+  properties-removal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Pass on a merge group
+        if: github.event_name == 'merge_group'
+        run: echo "properties-removal is required on each member PR's head (RFC-0060 §3.2)"
+      - name: Check out the base branch, not the PR
+        if: github.event_name != 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      # The PR merged into its base, read as data: only its `ci/properties.toml`. None of its code
+      # runs.
+      - name: Check out the PR's registry, as data
+        if: github.event_name != 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          persist-credentials: false
+      # No cache, as in `dco`.
+      - if: github.event_name != 'merge_group'
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: pr-meta
+          cache: "off"
+      # The base branch's `properties-removal` decides. `cargo xtask` exits 2 on a usage error,
+      # which an unknown job is: that exit code says the base has no such job. Bootstrap: only
+      # #PR_ADDING_PROPERTIES_REMOVAL, the PR that adds the job, may then be judged by its own;
+      # every other such base fails.
+      - name: cargo xtask ci properties-removal, from the base branch
+        id: gate
+        if: github.event_name != 'merge_group'
+        env:
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          status=0
+          cargo xtask ci properties-removal \
+            --base "$GITHUB_WORKSPACE" \
+            --head "$GITHUB_WORKSPACE/pr" \
+            --event "$GITHUB_EVENT_PATH" || status=$?
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$status" -eq 2 ] && [ "$NUMBER" = PR_ADDING_PROPERTIES_REMOVAL ]; then
+            echo "::warning::the base branch has no properties-removal job yet; #$NUMBER, which adds it, is judged by its own"
+            echo "bootstrap=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$status" -eq 2 ]; then
+            echo "::error::the base branch has no properties-removal job, or rejected its options; rebase onto main"
+          fi
+          exit 1
+      - name: cargo xtask ci properties-removal, from the PR that adds it (bootstrap only)
+        if: steps.gate.outputs.bootstrap == 'true'
+        working-directory: pr
+        run: |
+          rustup toolchain install --no-self-update
+          cargo xtask ci properties-removal \
+            --base "$GITHUB_WORKSPACE" \
+            --head "$GITHUB_WORKSPACE/pr" \
+            --event "$GITHUB_EVENT_PATH"

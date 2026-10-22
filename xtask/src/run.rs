@@ -294,6 +294,7 @@ mod tests {
                 "fmt",
                 "clippy",
                 "check-deps",
+                "properties",
                 "codeowners",
                 "agent-instructions",
                 "rigs",
