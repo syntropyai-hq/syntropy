@@ -58,7 +58,8 @@ bitflags! {
         const UP = 1 << 0;
         /// It supports multicast, which discovery's beacons need (RFC-0030 §4).
         const MULTICAST = 1 << 1;
-        /// The OS reports it as metered. Unset when the OS does not say (RFC-0030 §7.2).
+        /// The OS reports it as metered. Unset both when the OS reports it unmetered and when
+        /// the OS does not say, so an unset bit does not prove a link is free to use.
         const METERED = 1 << 2;
         /// It is a member of a bridge, named in [`IfaceInfo::bridge`].
         const BRIDGE_MEMBER = 1 << 3;
@@ -103,7 +104,10 @@ impl IpNet {
     }
 
     /// Whether `addr` lies in this network: the same family, and the same leading
-    /// `prefix_len` bits. An over-long prefix matches nothing.
+    /// `prefix_len` bits. A /0 matches every address of its family; an over-long prefix
+    /// matches nothing. It compares addresses only and ignores `scope_id`, so a link-local
+    /// network matches its addresses on every interface; a caller that needs the zone compares
+    /// `scope_id` itself.
     pub fn contains(&self, addr: IpAddr) -> bool {
         if self.prefix_len > max_prefix(self.addr) {
             return false;
@@ -209,6 +213,36 @@ mod tests {
             scope_id: None,
         };
         assert!(!over_long.contains("192.0.2.0".parse().unwrap()));
+    }
+
+    /// The prefix lengths at both ends of each family. A /0 shifts by the full width without
+    /// its guard, which overflows for IPv6, so these pin the guard.
+    #[test]
+    fn contains_at_the_prefix_bounds() {
+        let v4_any = net("0.0.0.0", 0);
+        assert!(v4_any.contains("0.0.0.0".parse().unwrap()));
+        assert!(v4_any.contains("255.255.255.255".parse().unwrap()));
+        assert!(!v4_any.contains("::1".parse().unwrap()));
+        let v4_host = net("198.51.100.7", 32);
+        assert!(v4_host.contains("198.51.100.7".parse().unwrap()));
+        assert!(!v4_host.contains("198.51.100.6".parse().unwrap()));
+        let v6_any = net("::", 0);
+        assert!(v6_any.contains("::".parse().unwrap()));
+        assert!(v6_any.contains("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff".parse().unwrap()));
+        assert!(v6_any.contains("fe80::1".parse().unwrap()));
+        assert!(!v6_any.contains("0.0.0.0".parse().unwrap()));
+        let v6_host = net("2001:db8::42", 128);
+        assert!(v6_host.contains("2001:db8::42".parse().unwrap()));
+        assert!(!v6_host.contains("2001:db8::43".parse().unwrap()));
+    }
+
+    /// `contains` ignores the scope: a link-local network matches the address whatever zone
+    /// either side names.
+    #[test]
+    fn contains_ignores_the_scope() {
+        let scoped = net("fe80::", 64).with_scope(3);
+        assert!(scoped.contains("fe80::9".parse().unwrap()));
+        assert!(net("fe80::", 64).contains("fe80::9".parse().unwrap()));
     }
 
     #[test]
