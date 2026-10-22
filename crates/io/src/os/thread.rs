@@ -9,10 +9,18 @@
 //!
 //! | | Linux, Android | Windows | macOS, iOS |
 //! |---|---|---|---|
-//! | [`cpu_topology`] | the process's affinity mask (`sched_getaffinity`), NUMA nodes from `/sys/devices/system/node` | the process's affinity mask in processor group 0, NUMA nodes from `GetNumaProcessorNode` | every core, all on node 0 (unified memory) |
-//! | [`pin_current_thread`] | `sched_setaffinity` | `SetThreadAffinityMask` | [`PinError::Unsupported`]: the OS has no thread-to-core affinity |
+//! | [`cpu_topology`] | the process's affinity mask (`sched_getaffinity`), NUMA nodes from `/sys/devices/system/node` | the process's affinity mask over its primary group (`GetProcessAffinityMask`), NUMA nodes from `GetNumaProcessorNodeEx` in that group | every core, all on node 0 (unified memory) |
+//! | [`pin_current_thread`] | `sched_setaffinity` | `SetThreadAffinityMask`, within the thread's primary group | [`PinError::Unsupported`]: the OS has no thread-to-core affinity |
 //! | [`raise_current_thread_priority`] | the lowest nice value `RLIMIT_NICE` allows, if below the current one | `THREAD_PRIORITY_TIME_CRITICAL` | QoS class `USER_INTERACTIVE` |
-//! | [`current_core`] | `sched_getcpu` | `GetCurrentProcessorNumber` | `None` |
+//! | [`current_core`] | `sched_getcpu` | `GetCurrentProcessorNumberEx`, `None` outside the primary group | `None` |
+//!
+//! **Windows processor groups.** Windows numbers a logical processor within its processor group,
+//! a set of up to 64. A process gets one primary group when it starts, and by default its
+//! threads share it. `GetProcessAffinityMask` and `SetThreadAffinityMask` act within that group,
+//! so on Windows a [`CoreId`] is a number within the process's primary group. On a host with more
+//! than 64 logical processors, hot threads use only that group's cores. Before Windows 11, a
+//! process with threads in several groups gets no affinity mask. There, [`cpu_topology`] fails
+//! with an error that says so, rather than returning no cores.
 
 use std::io;
 
@@ -34,7 +42,8 @@ pub struct Core {
 pub enum PinError {
     /// The OS has no way to bind a thread to a core: macOS and iOS.
     Unsupported,
-    /// The core cannot be named in the call, such as a core outside processor group 0 on Windows.
+    /// The core cannot be named in the call, such as a number of 64 or more on Windows, which
+    /// numbers cores within the process's primary group.
     OutOfRange(CoreId),
     /// The OS refused, for example because the core is outside the process's affinity mask.
     Os(io::Error),
@@ -73,7 +82,8 @@ pub enum Priority {
 ///
 /// # Errors
 ///
-/// If the OS cannot report the process's affinity mask.
+/// If the OS cannot report the process's affinity mask: on Windows before Windows 11, that
+/// includes a process with threads in more than one processor group.
 pub fn cpu_topology() -> io::Result<Vec<Core>> {
     platform::cpu_topology()
 }
@@ -119,6 +129,46 @@ fn parse_cpulist(text: &str) -> Vec<u32> {
         }
     }
     cpus
+}
+
+/// Why a Windows process has no affinity mask before Windows 11.
+#[cfg(any(windows, test))]
+const MULTI_GROUP: &str = "this process has threads in more than one Windows processor group, and \
+     before Windows 11 GetProcessAffinityMask reports no mask for such a process, so its cores \
+     cannot be listed and its hot threads cannot be pinned";
+
+/// The cores of a Windows process, from what its calls report: `mask`, the process's affinity
+/// mask over its primary group `group`, and `node_of(group, number)`, the NUMA node
+/// `GetNumaProcessorNodeEx` gives a processor of a group, or `None` if the call fails. A node of
+/// `0xFFFF` means the processor does not exist. Either way, the core's node is unknown and
+/// reported as 0, as [`Core::numa_node`] says.
+///
+/// Kept apart from the calls so a test can run it on any OS.
+///
+/// # Errors
+///
+/// A mask of 0, which `GetProcessAffinityMask` returns before Windows 11 for a process with
+/// threads in more than one group ([`MULTI_GROUP`]).
+#[cfg(any(windows, test))]
+fn group_topology(
+    group: u16,
+    mask: usize,
+    mut node_of: impl FnMut(u16, u8) -> Option<u16>,
+) -> io::Result<Vec<Core>> {
+    if mask == 0 {
+        return Err(io::Error::other(MULTI_GROUP));
+    }
+    Ok((0..usize::BITS)
+        .filter(|&number| mask & (1usize << number) != 0)
+        .map(|number| {
+            // `number` is below `usize::BITS`, at most 64, so it fits the call's `u8`.
+            let node = node_of(group, number as u8).filter(|&node| node != u16::MAX);
+            Core {
+                id: CoreId(number),
+                numa_node: node.unwrap_or(0),
+            }
+        })
+        .collect())
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -285,15 +335,31 @@ mod platform {
 mod platform {
     use std::io;
 
+    use windows_sys::Win32::System::Kernel::PROCESSOR_NUMBER;
+    use windows_sys::Win32::System::SystemInformation::GROUP_AFFINITY;
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetCurrentProcessorNumber, GetCurrentThread, GetNumaProcessorNode,
-        GetProcessAffinityMask, SetThreadAffinityMask, SetThreadPriority,
+        GetCurrentProcess, GetCurrentProcessorNumberEx, GetCurrentThread, GetNumaProcessorNodeEx,
+        GetProcessAffinityMask, GetThreadGroupAffinity, SetThreadAffinityMask, SetThreadPriority,
         THREAD_PRIORITY_TIME_CRITICAL,
     };
 
-    use super::{Core, CoreId, PinError, Priority};
+    use super::{Core, CoreId, PinError, Priority, group_topology};
+
+    /// The calling thread's primary group: the group `GetProcessAffinityMask` and
+    /// `SetThreadAffinityMask` number its cores in. Its threads share the process's by default.
+    fn primary_group() -> io::Result<u16> {
+        let mut affinity = GROUP_AFFINITY::default();
+        // SAFETY: `affinity` is a writable `GROUP_AFFINITY` valid for the call, which writes only
+        // through it. `GetCurrentThread`'s pseudo-handle carries the query right the call needs.
+        let ok = unsafe { GetThreadGroupAffinity(GetCurrentThread(), &mut affinity) };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(affinity.Group)
+    }
 
     pub(super) fn cpu_topology() -> io::Result<Vec<Core>> {
+        let group = primary_group()?;
         let (mut process, mut system) = (0usize, 0usize);
         // SAFETY: both pointers are to writable `usize`s valid for the call, and the call writes
         // only through them. `GetCurrentProcess` returns a pseudo-handle that needs no closing.
@@ -301,19 +367,18 @@ mod platform {
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok((0..usize::BITS)
-            .filter(|&cpu| process & (1usize << cpu) != 0)
-            .map(|cpu| {
-                let mut node = 0u8;
-                // SAFETY: `node` is a writable byte for the call; `cpu` is below 64, so it fits
-                // the call's `u8`.
-                let ok = unsafe { GetNumaProcessorNode(cpu as u8, &mut node) };
-                Core {
-                    id: CoreId(cpu),
-                    numa_node: if ok != 0 { u16::from(node) } else { 0 },
-                }
-            })
-            .collect())
+        group_topology(group, process, |group, number| {
+            let processor = PROCESSOR_NUMBER {
+                Group: group,
+                Number: number,
+                Reserved: 0,
+            };
+            let mut node = 0u16;
+            // SAFETY: `processor` is a readable `PROCESSOR_NUMBER` and `node` a writable `u16`,
+            // both valid for the call, which writes only through `node`.
+            let ok = unsafe { GetNumaProcessorNodeEx(&processor, &mut node) };
+            (ok != 0).then_some(node)
+        })
     }
 
     pub(super) fn pin_current_thread(core: CoreId) -> Result<(), PinError> {
@@ -321,7 +386,8 @@ mod platform {
             return Err(PinError::OutOfRange(core));
         }
         // SAFETY: `GetCurrentThread` returns the calling thread's pseudo-handle, valid for the
-        // call; the mask names one core of processor group 0.
+        // call; the mask names one core of the thread's primary group, and the call reads no
+        // memory of the caller.
         let previous = unsafe { SetThreadAffinityMask(GetCurrentThread(), 1usize << core.0) };
         if previous != 0 {
             Ok(())
@@ -330,9 +396,15 @@ mod platform {
         }
     }
 
+    /// The core the thread runs on, if it is in the primary group: since Windows 11 an unpinned
+    /// thread may run in another group, where its number would name a different core.
     pub(super) fn current_core() -> Option<CoreId> {
-        // SAFETY: `GetCurrentProcessorNumber` takes no arguments and cannot fail.
-        Some(CoreId(unsafe { GetCurrentProcessorNumber() }))
+        let group = primary_group().ok()?;
+        let mut processor = PROCESSOR_NUMBER::default();
+        // SAFETY: `processor` is a writable `PROCESSOR_NUMBER` valid for the call, which writes
+        // only through it and cannot fail.
+        unsafe { GetCurrentProcessorNumberEx(&mut processor) };
+        (processor.Group == group).then_some(CoreId(u32::from(processor.Number)))
     }
 
     pub(super) fn raise_current_thread_priority() -> Priority {
@@ -453,6 +525,45 @@ mod tests {
             Priority::Level(level) => assert_eq!(level, 15),
             Priority::UserInteractive | Priority::Unchanged => {}
         }
+    }
+
+    /// Windows' cores come from the process's mask over its primary group, and each core's NUMA
+    /// node is looked up in that group, not in group 0 or the group the caller runs in.
+    #[test]
+    fn windows_cores_are_numbered_and_noded_within_the_primary_group() {
+        let mut asked = Vec::new();
+        // Group 1 of a two-group host: its processor 0 on node 2, processor 1 on node 3,
+        // processor 3 failing the lookup and the top processor reported as not existing.
+        let top = usize::BITS - 1;
+        let cores = group_topology(1, 0b1011 | 1 << top, |group, number| {
+            asked.push((group, number));
+            match number {
+                0 => Some(2),
+                1 => Some(3),
+                _ if u32::from(number) == top => Some(u16::MAX),
+                _ => None,
+            }
+        })
+        .unwrap();
+        assert_eq!(asked, [(1, 0), (1, 1), (1, 3), (1, top as u8)]);
+        let node = |id, numa_node| Core {
+            id: CoreId(id),
+            numa_node,
+        };
+        assert_eq!(cores, [node(0, 2), node(1, 3), node(3, 0), node(top, 0)]);
+    }
+
+    /// Before Windows 11, a process with threads in several groups gets a mask of 0. That is an
+    /// error that says why, not a topology with no cores.
+    #[test]
+    fn a_multi_group_process_without_a_mask_is_an_error() {
+        let error = group_topology(0, 0, |_, _| Some(0)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("more than one Windows processor group"),
+            "{error}"
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
