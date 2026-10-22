@@ -24,7 +24,7 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom, properties,
+    changes, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom, properties,
     repo_settings, sim_presets, toolchain,
 };
 
@@ -305,9 +305,18 @@ pub const JOBS: &[Entry] = &[
                     run: sim_presets::step,
                 },
             },
+            // The affected-job rules and their golden suite (RFC-0062 §2.2; QUAL-E1-T07).
+            Step {
+                name: "jobs",
+                action: Action::Builtin {
+                    shown: "ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its \
+                            expected jobs, and covers pr.yml's jobs",
+                    run: changes::goldens_step,
+                },
+            },
         ],
         // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
-        // further checks to `lint`, such as the `ci/jobs.toml` goldens (QUAL-E1-T07). The row's DCO
+        // further checks to `lint`. The row's DCO
         // and PR-title checks need a PR's data, so they are the `dco` and `pr-title` jobs, which are
         // separate required checks (RFC-0062 §2.5).
         pending: &[Pending {
@@ -511,26 +520,76 @@ pub const JOBS: &[Entry] = &[
         pending: &[],
     },
     Entry {
-        name: "ci-gate",
-        summary: "the required check over `pr.yml`: every job `changes` listed passed, and no job \
-                  failed or was cancelled",
-        defined_in: "RFC-0062 §2.3 and §2.5",
-        params: &[Param {
-            name: "--needs",
-            value: "<file>",
-            help: "the `needs` context of the `ci-gate` job, as `${{ toJSON(needs) }}` writes it",
-            required: true,
+        name: "changes",
+        summary: "`changes` in `pr.yml`: the hosted jobs a change runs and the hardware jobs it \
+                  requires, from ci/jobs.toml",
+        defined_in: "RFC-0062 §2.2",
+        params: &[
+            Param {
+                name: "--base",
+                value: "<rev>",
+                help: "the commit the change is made against",
+                required: true,
+            },
+            Param {
+                name: "--head",
+                value: "<rev>",
+                help: "the commit with the change: a PR's merge commit, or a merge group's head",
+                required: true,
+            },
+            Param {
+                name: "--github-output",
+                value: "<file>",
+                help: "append `jobs=` and `hw_required=` to <file>, as $GITHUB_OUTPUT",
+                required: false,
+            },
+        ],
+        steps: &[Step {
+            name: "changes",
+            action: Action::Builtin {
+                shown: "the affected-job set of the change from --base to --head",
+                run: changes::step,
+            },
         }],
+        pending: &[],
+    },
+    Entry {
+        name: "ci-gate",
+        summary: "the required check over `pr.yml`: every job `changes` listed passed, no job \
+                  failed or was cancelled, and each required hardware job passed, by event",
+        defined_in: "RFC-0062 §2.3 and §2.5",
+        params: &[
+            Param {
+                name: "--needs",
+                value: "<file>",
+                help: "the `needs` context of the `ci-gate` job, as `${{ toJSON(needs) }}` writes \
+                       it",
+                required: true,
+            },
+            Param {
+                name: "--event",
+                value: "<file>",
+                help: "the run's `pull_request` or `merge_group` event payload",
+                required: true,
+            },
+            Param {
+                name: "--statuses",
+                value: "<file>",
+                help: "the PR head's commit statuses, every page of GET /commits/{sha}/statuses",
+                required: false,
+            },
+        ],
         steps: &[Step {
             name: "ci-gate",
             action: Action::Builtin {
-                shown: "every listed job passed, and none failed or was cancelled",
+                shown: "every listed job passed, none failed or was cancelled, and each required \
+                        hardware job has a passing `hw/<job>` status",
                 run: ci_gate::step,
             },
         }],
         pending: &[Pending {
-            check: "a passing `hw/<job>` status for each job in `hw_required`, by event",
-            task: "QUAL-E1-T07",
+            check: "on a merge group, the `hw/<job>` statuses of members labelled `hw:queue`",
+            task: "QUAL-E1-T11",
         }],
     },
     Entry {
@@ -817,6 +876,8 @@ mod tests {
                  scenarios check",
                 "xtask: every simulator preset cites its sources, and labels and sources each \
                  figure",
+                "xtask: ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its expected \
+                 jobs, and covers pr.yml's jobs",
             ]
         );
     }
@@ -882,7 +943,24 @@ mod tests {
     fn ci_gate_needs_the_needs_context_and_repo_settings_needs_nothing() {
         let gate = find(JOBS, "ci-gate").expect("ci-gate is registered");
         let params: Vec<(&str, bool)> = gate.params.iter().map(|p| (p.name, p.required)).collect();
-        assert_eq!(params, [("--needs", true)]);
+        assert_eq!(
+            params,
+            [("--needs", true), ("--event", true), ("--statuses", false)]
+        );
+        let changes = find(JOBS, "changes").expect("changes is registered");
+        let params: Vec<(&str, bool)> = changes
+            .params
+            .iter()
+            .map(|p| (p.name, p.required))
+            .collect();
+        assert_eq!(
+            params,
+            [
+                ("--base", true),
+                ("--head", true),
+                ("--github-output", false)
+            ]
+        );
         let settings = find(JOBS, "repo-settings").expect("repo-settings is registered");
         let params: Vec<(&str, bool)> = settings
             .params
