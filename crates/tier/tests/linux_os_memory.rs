@@ -338,3 +338,27 @@ fn unlock_keeps_a_page_a_neighbour_shares() {
     os.unlock(&r, 0..2 * page).unwrap();
     os.release(r);
 }
+
+/// Reservation ids are unique across adapters: a handle from adapter A, released there, is
+/// refused by adapter B even when B reserves at the same address.
+#[test]
+fn a_handle_from_another_adapter_is_refused() {
+    let a = LinuxMemory::new(Bytes(0));
+    let b = LinuxMemory::new(Bytes(0));
+    let r = a.reserve(Bytes(MIB), None, HugePages::Off).unwrap();
+    let stale = Handle::of(&r);
+    a.release(r);
+    let fresh: Vec<_> = (0..16)
+        .map(|_| b.reserve(Bytes(MIB), None, HugePages::Off).unwrap())
+        .collect();
+    assert!(fresh.iter().all(|r| r.os_handle != stale.id));
+    assert_eq!(
+        b.commit(&stale.range(), 0..MIB),
+        Err(OsMemError::UnknownRange)
+    );
+    b.release(stale.range());
+    for r in fresh {
+        assert_eq!(b.commit(&r, 0..MIB), Ok(()));
+        b.release(r);
+    }
+}

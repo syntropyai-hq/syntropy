@@ -100,9 +100,11 @@ pub struct LinuxMemory {
     page: u64,
     /// Live reservations by base address.
     live: RwLock<BTreeMap<usize, Live>>,
-    /// The next reservation id; 0 is never handed out.
-    next_id: AtomicU64,
 }
+
+/// The next reservation id, process-wide, so a handle from one adapter never matches a range
+/// another adapter reserves at the same address; 0 is never handed out.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// One live reservation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,7 +133,6 @@ impl LinuxMemory {
             reader: ProcReader::new("/", numa_reserve),
             page: u64::try_from(page).ok().filter(|p| *p > 0).unwrap_or(4096),
             live: RwLock::new(BTreeMap::new()),
-            next_id: AtomicU64::new(1),
         }
     }
 
@@ -300,7 +301,7 @@ impl OsMemory for LinuxMemory {
         let bound = numa.filter(|&node| {
             Self::bind(addr, len, node).is_ok() || Self::bind(addr, len, node).is_ok()
         });
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         self.live.write().unwrap_or_else(|p| p.into_inner()).insert(
             addr as usize,
             Live {
