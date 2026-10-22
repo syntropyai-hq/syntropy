@@ -1538,6 +1538,7 @@ pub enum ErrorClass {
 | `BuildId` | core (type); value built in `cli` | 0062 | 0052 |
 | `DeviceId`, `TierId`, `LinkId`, `DeviceKind`, `Measured` | core | 0010 | 0031 (network `LinkKind`s) |
 | `TierKind` | core | 0020 | 0010 |
+| The host budget rule (`budget::host_budget`, `HostBudget`, `HostBudgetPolicy`, `HostPoolInfo` construction, `IoFixedLedger`) | core | 0020 (§5) | 0010 (probe inputs), 0011 (the joint host rows) |
 | `DeviceClass`, `CpuIsa`, `DeviceFeatures` | core | 0040 | 0010 (`Npu`, ADR-0405 decision 4's fields, the provider-record merge) |
 | `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
 | `BufferView`, `ViewKind` | core | 0020 | 0040 (`OpArgs::weights`) |
@@ -2739,3 +2740,9 @@ COMP-E3-T01 found that the detection macro named for SME2 does not compile on th
 | Change | Sections touched | Reason |
 |---|---|---|
 | On Linux and Android the CPU provider detects SME2 from `AT_HWCAP2` (`HWCAP2_SME2`, bit 37) through `getauxval`, not `is_aarch64_feature_detected!("sme2")`; macOS keeps `hw.optional.arm.FEAT_SME2` | RFC-0040 §7.3 and ADR-0402 item 3 (dated notes) | on 1.99.1 the macro's `sme` and `sme2` names are unstable (E0658), and release builds use stable only (ADR-0001 decision 1). `AT_HWCAP2` is what ADR-0014's SME2 row names and what the macro reads, so the result is the same and the provider can switch to the macro once it is stable |
+
+### 18.15 The host budget rule in core (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| RFC-0020 §5's host budget rule is `syntropy_core::budget`: `host_budget(&HostBudgetInputs, &HostBudgetPolicy) -> HostBudget`, `host_pool`, `numa_available` and `IoFixedLedger`, not RFC-0010 A5's `host_usable(&HostMemInfo, &ResourcePolicy)`; WSL2 is `HostOs::Linux` with `HostMemInfo::wsl2`; Linux `lockable` adds back `own_locked`; Windows falls back to `windows_lockable` before H5 | §5.13 | `ResourcePolicy` is not in `core` yet and `HostMemInfo` lacks `own`, the OS kind, the macOS working-set limit and the user's `locked_vm`; `probe`, `solver` and `tier` all call the rule (TIER-E2-T01; RFC-0020 §5, note of 2026-10-22; RFC-0010 A5) |
