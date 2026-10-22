@@ -27,9 +27,10 @@ use syntropy_core::{
 };
 use syntropy_net::ctl::envelope::{self, BodyLimit, DecodeError};
 use syntropy_net::frame::{
-    Flags, Frame, FrameError, FrameSpec, FrameType, MAX_RECENT, OPEN_ALLOWANCE, SeqControlError,
-    SeqControlKind, SeqControlLimits, SeqControlSpec, WIRE_MINOR, code, decode_seq_meta,
-    encode_seq_control, encode_seq_meta, encode_to_vec, sequence_slot_size,
+    Flags, Frame, FrameError, FrameSpec, FrameType, INLINE_ALLOWANCE, MAX_RECENT, OPEN_ALLOWANCE,
+    SMALL_BODY, SeqControlError, SeqControlKind, SeqControlLimits, SeqControlSpec, WIRE_MINOR,
+    code, decode_seq_meta, encode_seq_control, encode_seq_meta, encode_to_vec, open_body_limit,
+    sequence_slot_size,
 };
 
 use super::{INSTANCE, REFUSAL_CLASSES, base, epoch, golden_dir, spec};
@@ -800,6 +801,132 @@ fn compression_is_used_only_when_plain_cbor_does_not_fit() {
     assert!(len > slot, "{len} bytes compressed");
     assert_eq!(slot_size, slot);
     assert_eq!(error.class(), ErrorClass::Capacity);
+}
+
+/// A `Reconcile` body as bytes, its `recent` array declaring `zeros` zero tokens: review-net's
+/// shape of frame, built straight as CBOR so the test never holds the array as values.
+fn reconcile_with_zeros(zeros: u32) -> Vec<u8> {
+    let mut body = vec![0xa4];
+    for (key, value) in [
+        ("seq", seq_value(seq(1))),
+        ("emitted", int(4)),
+        ("rng_counter", int(99)),
+    ] {
+        body.extend(cbor(&text(key)));
+        body.extend(cbor(&value));
+    }
+    body.extend(cbor(&text("recent")));
+    body.push(0x9a);
+    body.extend(zeros.to_be_bytes());
+    body.resize(body.len() + zeros as usize, 0);
+    body
+}
+
+/// B1 of #1809's review: a 2 KB zstd frame whose `Reconcile` declares millions of tokens is
+/// refused once decompression passes the small kinds' 1 KiB ceiling, before any array is built.
+/// A body over the ceiling is refused plain too, and an encoder never writes one.
+#[test]
+fn a_small_frame_cannot_declare_a_large_body_for_a_small_kind() {
+    let body = reconcile_with_zeros(6_000_000);
+    let compressed = zstd::bulk::compress(&body, 3).unwrap();
+    let frame = raw_frame(SeqControlKind::Reconcile.code(), 1, &compressed);
+    assert!(frame.len() < 4096, "a {}-byte frame", frame.len());
+    let error = Frame::decode(&frame)
+        .unwrap()
+        .seq_control(SeqControlLimits::slot(sequence_slot_size(LONG_CONTEXT)))
+        .unwrap_err();
+    let SeqControlError::Body(DecodeError::TooLarge { limit, .. }) = error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(limit, SMALL_BODY);
+    assert_eq!(error.class(), ErrorClass::InvalidRequest);
+
+    let plain = raw_frame(7, 0, &reconcile_with_zeros(2000));
+    let error = Frame::decode(&plain)
+        .unwrap()
+        .seq_control(SeqControlLimits::slot(small_slot()))
+        .unwrap_err();
+    assert!(
+        matches!(error, SeqControlError::Body(DecodeError::TooLarge { .. })),
+        "{error:?}"
+    );
+}
+
+/// N1 of #1809's review: an `Open` whose body is over [`open_body_limit`] of the receiver's slot
+/// is refused by the encoder before it compresses, and, built by hand and compressed into a small
+/// frame, by the decoder once decompression passes the limit.
+#[test]
+fn an_open_over_its_declared_size_is_refused_both_ways() {
+    let slot = small_slot();
+    let open = plain_open(5, vec![0; 1_000_000]);
+    let cbor = envelope::to_cbor(&open).unwrap();
+    assert!(cbor.len() > open_body_limit(slot));
+    assert_eq!(
+        encode_seq_control(&SequenceControl::Open(open), &spec_for(1), slot),
+        Err(SeqControlError::BodyTooLarge {
+            len: cbor.len(),
+            limit: open_body_limit(slot),
+        })
+    );
+    let frame = raw_frame(
+        SeqControlKind::Open.code(),
+        1,
+        &zstd::bulk::compress(&cbor, 3).unwrap(),
+    );
+    assert!(frame.len() < slot, "a {}-byte frame", frame.len());
+    let error = Frame::decode(&frame)
+        .unwrap()
+        .seq_control(SeqControlLimits::slot(slot))
+        .unwrap_err();
+    let SeqControlError::Body(DecodeError::TooLarge { limit, .. }) = error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(limit, open_body_limit(slot));
+
+    // Within the ceiling, an open larger than the slot still compresses and decodes.
+    let mut open = plain_open(6, vec![1; 100]);
+    open.sampling.grammar_inline = Some(vec![b'g'; INLINE_ALLOWANCE / 2]);
+    let control = SequenceControl::Open(open);
+    let bytes = encode_seq_control(&control, &spec_for(1), slot).unwrap();
+    assert_eq!(ext_bytes(&bytes).1, 1, "zstd");
+    assert_eq!(
+        Frame::decode(&bytes)
+            .unwrap()
+            .seq_control(SeqControlLimits::slot(slot)),
+        Ok(control)
+    );
+}
+
+/// The small kinds' ceiling holds on the encoder too: a `Release` or a `Reconcile` never needs
+/// more than [`SMALL_BODY`], and every legitimate one is far under it.
+#[test]
+fn every_small_kind_fits_its_ceiling() {
+    for control in [
+        SequenceControl::Cancel {
+            seq: seq(1),
+            reason: CancelReason::Error {
+                domain: u16::MAX,
+                code: u16::MAX,
+            },
+        },
+        SequenceControl::Release {
+            seq: seq(u32::MAX),
+            persist: Some(SessionId([0xff; 16])),
+        },
+        SequenceControl::Reconcile {
+            seq: seq(u32::MAX),
+            emitted: u32::MAX,
+            rng_counter: u64::MAX,
+            recent: vec![u32::MAX; MAX_RECENT].into(),
+        },
+    ] {
+        let bytes = encode_seq_control(&control, &spec_for(1), small_slot()).unwrap();
+        assert!(
+            bytes.len() - 128 < SMALL_BODY / 4,
+            "{} bytes",
+            bytes.len() - 128
+        );
+    }
 }
 
 /// A frame larger than the receiver's slot is refused, with RFC-0031 §12's `FrameTooLarge`.

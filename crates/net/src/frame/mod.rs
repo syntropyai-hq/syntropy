@@ -71,9 +71,9 @@ pub use route::{
     route_row_len,
 };
 pub use seq_control::{
-    MAX_RECENT, OPEN_ALLOWANCE, SEQ_CONTROL_FIXED_LEN, SeqControlError, SeqControlKind,
-    SeqControlLimits, SeqControlSpec, decode_seq_meta, encode_seq_control, encode_seq_meta,
-    sequence_slot_size,
+    INLINE_ALLOWANCE, MAX_RECENT, OPEN_ALLOWANCE, SEQ_CONTROL_FIXED_LEN, SMALL_BODY,
+    SeqControlError, SeqControlKind, SeqControlLimits, SeqControlSpec, decode_seq_meta,
+    encode_seq_control, encode_seq_meta, open_body_limit, sequence_slot_size,
 };
 pub use token::{
     ENTRY_HEADER_LEN, Entries, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,

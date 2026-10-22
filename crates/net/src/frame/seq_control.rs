@@ -33,9 +33,19 @@
 //! **Size.** A frame must fit the receiver's slot, its `ChannelSpec::slot_size` (header
 //! included). The encoder writes plain CBOR when the frame fits, compresses the body with zstd
 //! (level 3, as the envelope does) only when it does not, and refuses the message when neither
-//! fits. The decoder refuses a frame over the slot, and a body over its [`BodyLimit`] before or
-//! after decompression. The ingress daemon sizes the head's sequence slots for the instance's
-//! maximum context with [`sequence_slot_size`].
+//! fits. The decoder refuses a frame over the slot. The ingress daemon sizes the head's sequence
+//! slots for the instance's maximum context with [`sequence_slot_size`].
+//!
+//! **What a decoder holds** (RFC-0060 §10.2). A small compressed frame must not make the receiver
+//! hold a large body, so each kind's body has a declared ceiling, before and after
+//! decompression, which both ends check:
+//! - every kind but `Open` and `ResumeOpen`: [`SMALL_BODY`], 1 KiB, since their bodies are small
+//!   fixed maps;
+//! - `Open` and `ResumeOpen`: [`open_body_limit`] of the receiver's slot, the slot plus
+//!   [`INLINE_ALLOWANCE`] for a grammar sent inline.
+//!
+//! The encoder refuses a body over its ceiling before it compresses anything, so a sender never
+//! builds a frame its receiver must refuse.
 //!
 //! [`encode_seq_meta`] and [`decode_seq_meta`] read and write the `SEQ_META` item that carries
 //! `SequenceMeta` on a sequence's first `Activation` frame (RFC-0031 §6.3): the same CBOR, with
@@ -68,6 +78,24 @@ pub const OPEN_ALLOWANCE: usize = 64 << 10;
 
 /// The most tokens `Reconcile::recent` holds (RFC-0033 §4.2).
 pub const MAX_RECENT: usize = 8;
+
+/// The largest body of every kind but `Open` and `ResumeOpen`, before and after decompression
+/// \[target\]. Their bodies are small fixed maps, a `Reconcile` with its 8 tokens under 100 bytes,
+/// so this bounds what such a frame can make a decoder hold (RFC-0060 §10.2).
+pub const SMALL_BODY: usize = 1 << 10;
+
+/// What an `Open` body may hold beyond its receiver's slot once decompressed \[target\]: a
+/// compiled grammar sent inline, the one field that can outgrow the slot's [`OPEN_ALLOWANCE`].
+pub const INLINE_ALLOWANCE: usize = 1 << 20;
+
+/// The largest `Open` or `ResumeOpen` body a receiver whose slots hold `slot_size` bytes takes,
+/// before and after decompression: the slot plus [`INLINE_ALLOWANCE`], within the envelope's 64
+/// MiB. The format declares this size, which is the decoder's bound under RFC-0060 §10.2.
+pub fn open_body_limit(slot_size: usize) -> usize {
+    slot_size
+        .saturating_add(INLINE_ALLOWANCE)
+        .min(envelope::MAX_BODY)
+}
 
 /// The slot size a head's `Sequence` channel needs for an instance whose context is
 /// `max_context` tokens: the frame of an `Open` whose prompt fills the context, 4 bytes a token,
@@ -150,17 +178,27 @@ pub struct SeqControlLimits {
     /// The receiver's slot size, its `ChannelSpec::slot_size`, header included: a larger frame
     /// is refused (RFC-0031 §6.1, §6.6).
     pub slot_size: usize,
-    /// The largest body before and after decompression.
+    /// The largest `Open` or `ResumeOpen` body, before and after decompression. Every other
+    /// kind's is at most [`SMALL_BODY`] whatever this says.
     pub body: BodyLimit,
 }
 
 impl SeqControlLimits {
-    /// A slot of `slot_size` bytes, and the envelope's 64 MiB body limit after decompression.
+    /// A slot of `slot_size` bytes, and [`open_body_limit`] of it for an open's body.
     pub fn slot(slot_size: usize) -> SeqControlLimits {
         SeqControlLimits {
             slot_size,
-            body: BodyLimit::MAX,
+            body: BodyLimit::new(open_body_limit(slot_size))
+                .expect("open_body_limit stays within the envelope's limit"),
         }
+    }
+}
+
+/// The ceiling on `kind`'s body for a receiver with `slot_size`-byte slots.
+fn body_limit(kind: SeqControlKind, slot_size: usize) -> usize {
+    match kind {
+        SeqControlKind::Open | SeqControlKind::ResumeOpen => open_body_limit(slot_size),
+        _ => SMALL_BODY,
     }
 }
 
@@ -175,6 +213,9 @@ pub enum SeqControlError {
     /// A message whose frame does not fit the receiver's slot even with its body compressed:
     /// `len` is the compressed frame's length.
     DoesNotFit { len: usize, slot_size: usize },
+    /// A message whose body is over its kind's ceiling for the receiver's slot, `limit` bytes,
+    /// before any compression: [`SMALL_BODY`], or [`open_body_limit`] for an open.
+    BodyTooLarge { len: usize, limit: usize },
     /// A `kind` this build does not know.
     UnknownKind(u8),
     /// An `Open` with `resume` set, or a `ResumeOpen` without it.
@@ -201,7 +242,9 @@ impl SeqControlError {
             | SeqControlError::ResumeMismatch { .. }
             | SeqControlError::TooManyRecent { .. } => ErrorClass::InvalidRequest,
             SeqControlError::UnknownKind(_) => ErrorClass::Unsupported,
-            SeqControlError::DoesNotFit { .. } => ErrorClass::Capacity,
+            SeqControlError::DoesNotFit { .. } | SeqControlError::BodyTooLarge { .. } => {
+                ErrorClass::Capacity
+            }
             SeqControlError::UnknownVariant => ErrorClass::Internal,
             SeqControlError::Body(error) => error.class(),
             SeqControlError::Encode(error) => error.class(),
@@ -230,6 +273,10 @@ impl fmt::Display for SeqControlError {
                 f,
                 "the SeqControl frame takes {len} bytes compressed, over the receiver's \
                  {slot_size}-byte slot"
+            ),
+            SeqControlError::BodyTooLarge { len, limit } => write!(
+                f,
+                "a {len}-byte SeqControl body is over its kind's {limit}-byte ceiling"
             ),
             SeqControlError::UnknownKind(kind) => write!(f, "unknown SeqControl kind {kind}"),
             SeqControlError::ResumeMismatch { kind } => match kind {
@@ -334,13 +381,21 @@ fn extension(kind: SeqControlKind, encoding: Encoding) -> [u8; ALIGN] {
 
 /// Writes `control` as a `SeqControl` frame for a receiver whose slots hold `slot_size` bytes:
 /// plain CBOR when the frame fits, zstd-compressed when only that fits, and
-/// [`SeqControlError::DoesNotFit`] when neither does.
+/// [`SeqControlError::DoesNotFit`] when neither does. A body over its kind's ceiling is refused
+/// first, with [`SeqControlError::BodyTooLarge`].
 pub fn encode_seq_control(
     control: &SequenceControl,
     spec: &SeqControlSpec,
     slot_size: usize,
 ) -> Result<Vec<u8>, SeqControlError> {
     let (kind, cbor) = body(control)?;
+    let limit = body_limit(kind, slot_size);
+    if cbor.len() > limit {
+        return Err(SeqControlError::BodyTooLarge {
+            len: cbor.len(),
+            limit,
+        });
+    }
     let frame = FrameSpec {
         wire_minor: spec.wire_minor,
         ftype: FrameType::SeqControl,
@@ -405,7 +460,14 @@ impl Frame<'_> {
             });
         }
         let (kind, encoding) = self.seq_control_kind()?;
-        let (payload, body) = (self.payload, limits.body);
+        let payload = self.payload;
+        // The ceiling applies before and after decompression, so a small frame cannot make this
+        // decoder hold a large body (RFC-0060 §10.2).
+        let body = match kind {
+            SeqControlKind::Open | SeqControlKind::ResumeOpen => limits.body,
+            _ => BodyLimit::new(SMALL_BODY.min(limits.body.bytes()))
+                .expect("SMALL_BODY is within the envelope's limit"),
+        };
         Ok(match kind {
             SeqControlKind::Open | SeqControlKind::ResumeOpen => {
                 let open: SequenceOpen = read(encoding, payload, body)?;
