@@ -894,5 +894,6 @@ COMP-E15-T08 gives `TpSharding` to the `llama`, `qwen_moe`, `deepseek3` and `gpt
 | COMP-E15-T08 → COMP-E15-T02, COMP-E15-T04 | COMP-E15-T08 | R9 | RFC-0043 §6.3's `split(&LayerProgram, weights)` splits block nodes: `Gqa`, `DenseFfn` and `Moe` (COMP-E15-T02), `SlidingGqa` and `Mla` (COMP-E15-T04) |
 | COMP-E15-T08 → COMP-E16-T01, COMP-E16-T03, COMP-E16-T04, COMP-E16-T05, COMP-E16-T06 | COMP-E15-T08 | R9 | `TpSharding` is implemented by the family modules: the `Family` trait (COMP-E16-T01) and `llama`, `qwen_moe`, `gptoss` and `deepseek3` (COMP-E16-T03 to T06) |
 | COMP-E15-T08 → COMP-E15-T03, QUAL-E4-T01 | COMP-E15-T08 | R9 | the criterion "recombining member outputs in member order matches single-device output within `τ_op`" runs on `graph::reference`'s interpreter (COMP-E15-T03) driven by `testkit`'s `RefExecutor` (QUAL-E4-T01) |
+| COMP-E15-T08 → PLC-E4-T09 | COMP-E15-T08 | R9 | the criterion "families without `TpSharding` are never placed with TP (solver test)" checks RFC-0011 §3.1's rule that an `IntraTp(n, G)` node exists only for a family with a TP sharding strategy, which PLC-E4-T09 builds |
 
-All nine are M0a or M1a, before COMP-E15-T08's M3, so no edge points later. None of them reaches COMP-E15-T08, whose one dependent is DIST-E13-T01 (M3), so there is no cycle.
+Nine are M0a or M1a and PLC-E4-T09 is M2, all before COMP-E15-T08's M3, so no edge points later. None of the ten reaches COMP-E15-T08, whose one dependent is DIST-E13-T01 (M3), so there is no cycle.
