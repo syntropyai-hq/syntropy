@@ -94,6 +94,11 @@ pub struct StageMember {
 }
 
 /// How a layer's work is divided among members, in member order (RFC-0032 §5.1).
+///
+/// A split may be uneven, weighted by each member's `W_eff`, at the legal granularity the family
+/// declares: whole KV-head groups for attention, a tile multiple of the quant block for FFN
+/// columns (ADR-0006 item 2; RFC-0043). Checking a split against a family's granularities is
+/// DIST-E13-T01's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TpSplit {
     /// KV-head groups per member (GQA), or query heads per member (MLA).
