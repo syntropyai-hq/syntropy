@@ -46,6 +46,7 @@
 
 mod pad;
 mod ring;
+pub mod shared;
 mod sync;
 #[cfg(not(loom))]
 mod wait;
