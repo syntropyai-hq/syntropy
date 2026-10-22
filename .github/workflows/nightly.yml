@@ -25,6 +25,9 @@ on:
     # Daily at 02:00 UTC (RFC-0062 §2.1).
     - cron: "0 2 * * *"
   workflow_dispatch:
+  # Demo copy only (throwaway branch): a push registers the workflow so it can be dispatched.
+  push:
+    branches: [tmp/qual-e1-t08-dispatch-demo]
 
 permissions:
   contents: read
@@ -40,9 +43,11 @@ defaults:
 jobs:
   placeholder:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Nightly suites
         run: |
+          # Demo copy only: hold the run so the next dispatches queue behind it.
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then sleep 150; fi
           echo "nightly: skeleton (QUAL-E1-T08). The nightly suites of RFC-0062 §2.1 land with"
           echo "the tasks that build them; lab work goes through the lab dispatcher (§3.2)."
