@@ -11,5 +11,6 @@
 #![forbid(unsafe_code)]
 
 pub mod range;
+pub mod safetensors;
 
 pub use range::{FileSource, HeaderReader, RangeError, RangeSource};
