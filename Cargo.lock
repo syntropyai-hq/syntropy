@@ -881,6 +881,8 @@ name = "syntropy-cluster"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "ciborium",
+ "proptest",
  "serde",
  "stateright",
  "syntropy-config",
@@ -949,6 +951,7 @@ version = "0.0.0"
 dependencies = [
  "getrandom 0.4.3",
  "libc",
+ "proptest",
  "syntropy-core",
  "syntropy-spsc",
  "syntropy-testkit",
@@ -1083,6 +1086,7 @@ version = "0.0.0"
 dependencies = [
  "chacha20",
  "syntropy-core",
+ "syntropy-graph",
 ]
 
 [[package]]

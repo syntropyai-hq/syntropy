@@ -9,3 +9,7 @@
 # A fixture that must keep its exact bytes, such as a CRLF or mixed line-ending sample, is
 # marked `-text` here with a comment saying why. None does today: every tracked file is LF in
 # the index (`git ls-files --eol`, 2026-10-22).
+
+# Golden vectors are compared with what a test renders; a CRLF checkout would change their bytes.
+/crates/cluster/tests/log/vectors.txt text eol=lf
+/crates/cluster/tests/pairing/vectors.txt text eol=lf
