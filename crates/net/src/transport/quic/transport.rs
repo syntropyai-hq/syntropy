@@ -65,6 +65,7 @@ use crate::error::{Error, ErrorCode};
 use crate::transport::buffer::{BufferPool, PoolRegistration};
 use crate::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
 use crate::transport::domain::DomainHandle;
+use crate::transport::registration::RegistrationTable;
 use crate::transport::stream::{self, ChannelAuth, HelloIn, StreamSpec};
 use crate::transport::{
     Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, RemoteEndpoint, Transport,
@@ -262,12 +263,13 @@ struct Inner {
     settings: QuicSettings,
     auth: Arc<dyn ChannelAuth>,
     capabilities: u64,
-    pools: Mutex<Vec<BufferPool>>,
+    pools: RegistrationTable,
     conns: Mutex<Conns>,
     routes: Mutex<Routes>,
 }
 
-/// The QUIC backend of RFC-0031 §4. See the [module](self).
+/// The QUIC backend of RFC-0031 §4: endpoints, two connections per peer, a stream per channel,
+/// and the transport configuration of §4.3.
 #[derive(Clone)]
 pub struct QuicTransport {
     inner: Arc<Inner>,
@@ -327,7 +329,7 @@ impl QuicTransport {
                     settings,
                     auth,
                     capabilities,
-                    pools: Mutex::new(Vec::new()),
+                    pools: RegistrationTable::new(),
                     conns: Mutex::new(HashMap::new()),
                     routes: Mutex::new(Routes::default()),
                 });
@@ -422,20 +424,16 @@ impl Inner {
 
     /// The receive pool and send pools of a channel spec, resolved from the registrations.
     fn stream_spec(&self, spec: &ChannelSpec) -> Result<StreamSpec, Error> {
-        let pools = lock(&self.pools).clone();
-        let pool = pools
-            .iter()
-            .find(|pool| pool.id() == spec.pool.pool)
-            .cloned()
-            .ok_or_else(|| {
-                Error::uncoded(
-                    ErrorClass::InvalidRequest,
-                    format!(
-                        "pool {:?} is not registered with this transport",
-                        spec.pool.pool
-                    ),
-                )
-            })?;
+        let pools = self.pools.pools();
+        let pool = self.pools.resolve(spec.pool).ok_or_else(|| {
+            Error::uncoded(
+                ErrorClass::InvalidRequest,
+                format!(
+                    "pool {:?} is not registered with this transport",
+                    spec.pool.pool
+                ),
+            )
+        })?;
         let slot_size = spec.slot_size.0;
         if slot_size > self.settings.max_frame {
             return Err(Error::uncoded(
@@ -811,20 +809,13 @@ impl Transport for QuicTransport {
         }
     }
 
+    /// Records the pool in the transport's registration table (RFC-0031 §8): QUIC needs no
+    /// registration with the OS, so the handle is 0. The same pool again returns its one
+    /// registration; another pool under a registered id is refused.
     fn register(&self, pool: &BufferPool) -> Result<PoolRegistration, Error> {
-        let mut pools = lock(&self.inner.pools);
-        if pools.iter().any(|known| known.id() == pool.id()) {
-            return Err(Error::uncoded(
-                ErrorClass::InvalidRequest,
-                format!("pool {:?} is already registered", pool.id()),
-            ));
-        }
-        pools.push(pool.clone());
-        Ok(PoolRegistration {
-            pool: pool.id(),
-            transport: TransportKind::Quic,
-            handle: 0,
-        })
+        self.inner
+            .pools
+            .register_transport(pool, TransportKind::Quic, 0)
     }
 
     async fn connect(&self, remote: &RemoteEndpoint, spec: ChannelSpec) -> Result<Channel, Error> {

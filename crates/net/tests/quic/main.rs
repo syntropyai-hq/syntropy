@@ -15,9 +15,13 @@ use std::time::Duration;
 
 use syntropy_core::plan::WireDType;
 use syntropy_core::resource::TransportKind;
-use syntropy_core::{Bytes, ErrorClass, InstanceId, NodeId, PlanEpoch, StageIx};
+use syntropy_core::{Bytes, ErrorClass, InstanceId, NodeId, PlanEpoch, SequenceId, StageIx};
 use syntropy_net::ErrorCode;
 use syntropy_net::endpoint::Config as EndpointConfig;
+use syntropy_net::frame::{
+    Activation, ActivationHeader, ActivationKind, Flags, FrameType, RowLayout, SideItems, Span,
+    Spans, TreeArea,
+};
 use syntropy_net::transport::conformance::{self, Fabric, MAX_FRAME, Rule, SEND_SLOT, SEND_SLOTS};
 use syntropy_net::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
 use syntropy_net::transport::domain::NetDomain;
@@ -26,8 +30,8 @@ use syntropy_net::transport::quic::{
 };
 use syntropy_net::transport::stream::UncheckedAuth;
 use syntropy_net::transport::{
-    BufferPool, Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, PoolId,
-    RemoteEndpoint, Transport,
+    BufferPool, Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, OutFrame,
+    PoolId, RemoteEndpoint, SendError, SlotReader, Transport,
 };
 
 /// A receive slot: the suite's largest frame and any control frame, rounded up to 64 bytes.
@@ -191,6 +195,13 @@ impl Fabric for QuicFabric {
 
     fn send_pool(&self) -> &BufferPool {
         &self.send_pool
+    }
+
+    fn register(
+        &mut self,
+        pool: &BufferPool,
+    ) -> Option<Result<syntropy_net::transport::PoolRegistration, syntropy_net::Error>> {
+        Some(self.pair.a.register(pool))
     }
 
     /// Frames, credits and acknowledgements move on their own; the suite waits a little.
@@ -694,4 +705,154 @@ fn a_held_stream_is_not_replaced_by_another_peer() {
     assert!(took < hold, "c's stream was held: {took:?}");
     assert_eq!(*first.expect("a's channel").key(), channel);
     assert_eq!(*receiver.expect("the channel at b").key(), channel);
+}
+
+/// A one-row `Activation` frame in a free slot of `pool`: its extension at offset 0, then its
+/// payload, with the slot's first reader, which the caller holds.
+fn activation_frame(pool: &BufferPool) -> (SlotReader, OutFrame) {
+    let spans = [Span {
+        seq: SequenceId {
+            ingress: 1,
+            boot: 1,
+            n: 1,
+        },
+        first_position: 0,
+        n_positions: 1,
+        row_offset: 0,
+        tree: None,
+    }];
+    let payload = [0x5Au8; 64];
+    let chunk = Activation {
+        header: ActivationHeader {
+            from_stage: StageIx(0),
+            to_stage: StageIx(1),
+            kind: ActivationKind::Decode,
+            layout: RowLayout {
+                dtype: WireDType::F32,
+                streams: 1,
+                hidden: 16,
+            },
+            n_rows: 1,
+            part_index: 0,
+            part_count: 1,
+        },
+        spans: Spans::new(&spans),
+        tree: TreeArea::new(&[]),
+        side: SideItems::new(&[]),
+        payload: &payload,
+    };
+    let mut writer = pool.take().expect("a free send slot");
+    let ext_len = chunk
+        .write_ext(writer.bytes_mut())
+        .expect("the extension fits");
+    writer.bytes_mut()[ext_len..ext_len + payload.len()].copy_from_slice(&payload);
+    let reader = writer.freeze();
+    let frame = OutFrame {
+        ftype: FrameType::Activation,
+        step: 1,
+        flags: Flags(Flags::FIRST_OF_SEQ),
+        ext: reader.ext(0, ext_len as u32).expect("in the slot"),
+        payload: reader
+            .payload(ext_len as u32, payload.len() as u32)
+            .expect("in the slot"),
+    };
+    (reader, frame)
+}
+
+/// RFC-0031 §8's note of 2026-10-22, through a channel: a descriptor whose slot was freed and
+/// handed out again since is refused with `SendError::Invalid`, never leased or sent. The same
+/// holds for a stale `ExtBuf`.
+#[test]
+fn a_stale_descriptor_is_refused_with_invalid_and_never_sent() {
+    let mut fabric = QuicFabric::new();
+    let (mut sender, mut receiver) = fabric
+        .open(key(ChannelPurpose::Activations, 0), 4)
+        .expect("open");
+    let pool = fabric.send_pool().clone();
+
+    // The holder drops the slot's last reader; the slot is claimed and frozen again.
+    let (reader, stale) = activation_frame(&pool);
+    let slot = reader.slot();
+    drop(reader);
+    let refrozen = pool.claim(slot).expect("the freed slot").freeze();
+    assert_eq!(sender.try_send(stale), Err(SendError::Invalid));
+
+    // A fresh payload with the stale extension is refused too.
+    let (fresh_reader, fresh) = activation_frame(&pool);
+    let stale_ext = OutFrame {
+        ext: stale.ext,
+        ..fresh
+    };
+    assert_eq!(sender.try_send(stale_ext), Err(SendError::Invalid));
+
+    // Nothing was sent: the first frame the channel takes is chan_seq 1, and it arrives.
+    assert_eq!(sender.try_send(fresh).map(|t| t.chan_seq), Ok(1));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let frame = loop {
+        if let Some(frame) = receiver.try_recv() {
+            break frame;
+        }
+        assert!(std::time::Instant::now() < deadline, "the frame never came");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(frame.header.spec.chan_seq, 1);
+    assert!(receiver.try_recv().is_none());
+    drop((refrozen, fresh_reader));
+}
+
+/// RFC-0031 §8's receive-path row for QUIC: the frame lands in a slot of the receiver's
+/// registered pool, one host copy from the transport's decrypt buffer, and the consumer reads it
+/// there. The sender sends from its own registered slot, which it keeps until the frame is
+/// acknowledged (the conformance suite's `Retention` rule), so no copy is made before TLS reads
+/// it.
+#[test]
+fn a_frame_lands_in_a_registered_receive_slot_after_one_host_copy() {
+    let mut fabric = QuicFabric::new();
+    let (mut sender, mut receiver) = fabric
+        .open(key(ChannelPurpose::Activations, 1), 4)
+        .expect("open");
+    // `Pair::open` makes the sender's pool, then the receiver's.
+    let receive_pool = PoolId(fabric.pair.next_pool - 1);
+    let pool = fabric.send_pool().clone();
+    let (reader, frame) = activation_frame(&pool);
+    let send_slot = reader.slot();
+    let ticket = sender.try_send(frame).expect("sent");
+    drop(reader);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let received = loop {
+        if let Some(frame) = receiver.try_recv() {
+            break frame;
+        }
+        assert!(std::time::Instant::now() < deadline, "the frame never came");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let (pool_id, slot) = received.payload.slot().expect("a payload in a slot");
+    assert_eq!(
+        pool_id, receive_pool,
+        "landed in the receiver's registered pool"
+    );
+    assert_eq!(
+        received.ext.slot(),
+        Some((receive_pool, slot)),
+        "one slot per frame"
+    );
+    assert_eq!(received.payload.bytes(), &[0x5A; 64]);
+
+    // The sender sent from its slot and kept it leased until the peer acknowledged the frame:
+    // the conformance suite's `Retention` rule holds the frame back to check that, which a live
+    // link cannot. Here the slot is free once the ticket is back.
+    let completed = loop {
+        if let Some(done) = sender.completed() {
+            break done;
+        }
+        assert!(std::time::Instant::now() < deadline, "no ticket");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(completed, ticket);
+    assert!(
+        pool.claim(send_slot).is_some(),
+        "released once acknowledged"
+    );
+    drop(received);
 }

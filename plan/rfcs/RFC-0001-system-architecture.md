@@ -2715,7 +2715,9 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | SC-17's bound is `α_wire + S/β + 2 · t_switch`; Goals item 3 and §5.3 still quote `α_wire + 2 · t_switch`. Done 2026-10-20 | DIST | RFC-0032 Goals, §5.3 |
 | RFC-0062 §12.1: row 1 checks `core`'s normal and build dependencies (rule 1's 2026-10-21 note), and row 7 is named for rule 7 as it now reads (GPU providers ship in backend modules) instead of "backends are cargo features resolved at runtime" | QUAL | RFC-0062 §12.1 |
 
-### 18.6 Core types for the I/O interface (2026-10-21)
+### 18.6a Core types for the I/O interface (2026-10-21)
+
+*Note 2026-10-23:* this entry was headed §18.6, a number §18.6 "Changes requested in other documents" already had. It is §18.6a, so the log keeps its date order without renumbering the entries after it. The two citations of §18.6, in this section's introduction and in §18.2's row on the b2 prefill figure, mean "Changes requested in other documents", and no text cited this entry by number.
 
 `syntropy-io`'s interface (RFC-0021 §2) needs types that other crates share. They are placed in `core`.
 
