@@ -630,3 +630,11 @@ COMP-E13-T05 (M0a) had criteria that no M0a task can meet. The fast-math audit n
 | Added COMP-E13-T14 (M1a) → COMP-E13-T13, COMP-E13-T04, COMP-E13-T10, COMP-E5-T18 | COMP-E13-T14 | R9 | the bit-exact cases for E8M0 scales (e = 0 included), FP8, MXFP4, NVFP4, the remaining GGUF types and KV page moves need kernels first built at M1a, so they cannot close with COMP-E13-T13 at M0b. The wire codecs stay with COMP-E14-T05 and COMP-E14-T19, which already require them bit-exact |
 | COMP-E13-T05's last criteria → COMP-E13-T13; its FP16 criterion reworded | COMP-E13-T05 | R9 | RFC-0042 §4 gives `AccumKind` three variants (`F32`, `I32ThenF32`, `F64`), so FP16 accumulation cannot be declared. The static check rejects weaker declarations, and the detector rejects an FP16-accumulating variant that declares F32. The CI run of the static check over real provider registries moves to COMP-E13-T13, because no provider registers kernels at M0a |
 | QUAL-E4-T13 → COMP-E13-T13 (was COMP-E13-T05) | QUAL-E4-T13 | R8 | its edge was for the per-provider bit-exact list, which is now COMP-E13-T13's |
+
+## DIST-E1-T02's segment unlink (2026-10-22)
+
+DIST-E1-T02 (M0a) builds the shared-memory region. Its criterion "the daemon unlinks segments on runner exit" needs a daemon that spawns and reaps runners, and that is DIST-E1-T04, which depends on DIST-E1-T02 through DIST-E1-T03. An edge would make a cycle.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T02's criterion becomes the creating side's unlink after the runner process exits, shown by its cross-process test; "the daemon calls `Region::unlink` when a runner exits" moves to DIST-E1-T04 | DIST-E1-T02, DIST-E1-T04 | R9 | DIST-E1-T04 spawns runners and sees them exit. DIST-E1-T02's test plays both processes, so it can show the unlink itself. On Linux a memfd has no name, and on Windows a mapping's name goes with its last handle, so the test checks each OS's own form of "no name left" |
