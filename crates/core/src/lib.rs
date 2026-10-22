@@ -26,6 +26,7 @@ pub mod quant;
 pub mod resource;
 pub mod sequence;
 pub mod session;
+pub mod tick;
 pub mod transfer;
 pub mod units;
 
@@ -55,5 +56,6 @@ pub use sequence::{
     TraceContext,
 };
 pub use session::{ParseSessionIdError, SequenceId, SessionId};
+pub use tick::{DeviceClockSync, TickRate, TickSource};
 pub use transfer::{BufferView, ExtentRef, FileIx, HostRegion, StepLayer, ViewKind};
 pub use units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};
