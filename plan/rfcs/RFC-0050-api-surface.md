@@ -1055,22 +1055,24 @@ These endpoints exist so the quality RFCs can test and benchmark the signed rele
 | Endpoint | Gate | Request | Response |
 |---|---|---|---|
 | `GET /v1/syntropy/debug/state` | `dashboard` scope (RFC-0001 §13 names it); no `debug.*` key | `?instance=` optional | JSON: `ClusterState` rebuilt from the event log; each runner's `ResidencySummary`; each instance's current `PlacementPlan` with RFC-0011's explanation and `PredictedCost` per `CostTerm` (RFC-0053 §2.2); per stage, the plan's per-operation provider selection, as `{ op_class, provider, cert: CertLevel }` entries (`Certified` or `Derived`, RFC-0040 §6.2; RFC-0060 §6.4), from which RFC-0060's driver derives `ExecPath`; the resolved-config hash, BLAKE3 over the canonical `ResolvedConfig` (RFC-0054 §2.2), which RFC-0061 records as `BenchResult::config_hash` |
-| `POST /v1/syntropy/parity` | `debug.parity_api` | NDJSON body, streamed. Line 1: `{ instance? \| model, policy?, teacher: { tokens } \| { corpus_ref }, parity: ParityTapSpec }`, with `ParityTapSpec`, `ForceMode` and `TapMode` as in RFC-0060 §5.5. With `TapMode::Gather`, each later line is `{ pos, top: [u32; K], tail: [u32; M] }`: the reference top-K and tail-sample ids for an upcoming position (RFC-0060 §5.3), which ingress forwards to the tail over the `Tap` channel | NDJSON stream: one `LogitTap` (below) per scored position, then a summary with instance, plan epoch and fidelity. With `TapMode::FullLocal`, the first record instead names a shared-memory region of full F32 logits and gives its size; the driver must run on the tail's host |
+| `POST /v1/syntropy/parity` | `debug.parity_api` | NDJSON body, streamed. Line 1: `{ instance? \| model, policy?, teacher: { tokens } \| { corpus_ref }, parity: ParityTapSpec }`, with `ParityTapSpec`, `ForceMode` and `TapMode` as in RFC-0060 §5.5. With `TapMode::Gather`, each later line is `{ pos, top: [u32; K], tail: [u32; M] }`: the reference top-K and tail-sample ids for an upcoming position (RFC-0060 §5.3), which ingress forwards to the tail over the `Tap` channel | NDJSON stream: one `TapRow` (below) per scored position, then a summary with instance, plan epoch and fidelity. With `TapMode::FullLocal`, the first record instead names a shared-memory region of full F32 logits and gives its size; the driver must run on the tail's host |
 | `GET /v1/syntropy/debug/telemetry` | `debug.telemetry_api` | `?instance=…&since=<unix ms>&until=<unix ms>&follow=bool&format=ndjson\|binary` | the per-step records of every stage of the instance for the window (RFC-0053 §2.5), gathered from other nodes over the node-query channel. NDJSON by default; `binary` streams the records' postcard encoding with a header naming the schema version |
 | `POST /v1/syntropy/generate` with `bench: { ignore_eos: true, gen_tokens: N }` | `debug.bench_api` | as §13.1 | as §13.1. Exactly `N` tokens are generated: EOS, stop sets and stop strings are ignored. The response carries `bench` in `syntropy.warnings` |
 
-- **`LogitTap`** mirrors RFC-0031's `Tap` frame (RFC-0060 §5.4–§5.5):
+- **`TapRow`** mirrors one position of RFC-0031's tap block (RFC-0060 §5.4–§5.5):
   ```rust
-  pub struct LogitTap {
+  pub struct TapRow {
       pub pos: u32,
-      pub top: Vec<f32>,          // the candidate's F32 logits at the K reference top-K ids, in the order sent
-      pub tail: Vec<f32>,         // the candidate's F32 logits at the M tail-sample ids, in the order sent
-      pub lse: f64,               // logsumexp over the full vocabulary, computed in F64
-      pub lse_complement: f64,    // logsumexp over V∖T, where T is the top-K ids sent, computed in F64
       pub argmax: u32,            // ties to the lower id
       pub margin: f32,            // top-1 minus top-2 logit
+      pub lse: f64,               // logsumexp over the full vocabulary, computed in F64
+      pub lse_complement: f64,    // logsumexp over V∖T, where T is the top-K ids sent, computed in F64
+      pub values: TapValues,      // Gather { top, tail }: the candidate's F32 logits at the K top-K
+                                  // ids and the M tail-sample ids, in the order sent;
+                                  // FullLocal { shm_offset }: the row's offset in the mapped region
   }
   ```
+  *Revised 2026-10-22 (QUAL-E5-T19), a plan correction for the maintainers:* this record was named `LogitTap`, one per position. `LogitTap` is now RFC-0060 §5.5's per-entry block, `{ k, tail, rows: Vec<TapRow> }`, which RFC-0001 §5.8's `TokenEntry::tap` and RFC-0031 §6.5 already describe, so the endpoint streams one `TapRow` per scored position. Under `FullLocal`, a row's `shm_offset` is the row offset RFC-0012 §8.5 mentions.
   F64 values are written with round-trip precision. A non-finite value is written as the string `"nan"`, `"inf"` or `"-inf"` and is never clamped, so the harness can treat it as an error (RFC-0060 §5.4).
 - **The parity endpoint drives a real instance.** It opens a sequence whose `SequenceOpen` carries the `ParityTapSpec` (RFC-0060 amendment A4). The tail replaces sampling with the teacher token, so every stage sees service-shaped traffic. Ingress applies no template, tokenizer or detokenizer: the teacher stream is token IDs.
 - **Cost of the drain.** The drain runs on the daemon's `ctl` runtime and reads records the telemetry ring already carries. RFC-0061's A/A rule requires that decode rate with the drain active stays within 2% of the rate without it.
