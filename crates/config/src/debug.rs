@@ -129,7 +129,9 @@ pub enum Peer {
     LocalSocket,
     /// A TCP connection to one of the `api.bind` listeners.
     Tcp {
-        /// The address the listener is bound to, as `api.bind` gives it.
+        /// The address the listening socket is bound to, as `api.bind` gives it. Never the
+        /// accepted stream's `local_addr`: on a wildcard listener that is `127.0.0.1` for a local
+        /// client, which would make a LAN bind look like loopback.
         listener: IpAddr,
         /// The address of the peer that connected.
         remote: IpAddr,
@@ -201,6 +203,10 @@ impl DebugSection {
     /// True only while `api`'s key is on and `peer` is the local socket or loopback
     /// ([`Peer::is_loopback`]). The API returns 404 whenever it is false, whatever key the
     /// caller holds (RFC-0054 §7.1, ADR-0505 item 7).
+    ///
+    /// The caller passes, as [`Peer::Tcp`]'s `listener`, the address the listening socket is
+    /// bound to, never the accepted stream's `local_addr`. A wildcard listener's accepted stream
+    /// reports `127.0.0.1` to a local client, so its `local_addr` would let a LAN bind pass.
     pub fn allows(self, api: DebugApi, peer: &Peer) -> bool {
         self.is_on(api) && peer.is_loopback()
     }
