@@ -34,7 +34,10 @@ pub use arena::{
     SlotGeometry, TierBudgetLine,
 };
 pub use manager::TierCommand;
-pub use os::{CgroupMem, CommitCharge, HostRange, MemSnapshot, Psi, ReclaimStalls};
+pub use os::{
+    CgroupMem, CommitCharge, HostRange, HugePages, LockOutcome, MemSnapshot, OsMemError, OsMemory,
+    PageableReason, PinLimits, Psi, ReclaimStalls,
+};
 pub use pin::{PinProgress, PinState};
 pub use pressure::PressureLevel;
 pub use residency::{HomeState, StepFence};

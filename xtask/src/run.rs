@@ -298,11 +298,13 @@ mod tests {
                 "codeowners",
                 "agent-instructions",
                 "rigs",
+                "specs",
                 "deny",
                 "advisories",
                 "spdx",
                 "third-party",
                 "notices",
+                "scenarios",
             ]
         );
         for pending in lint.pending {

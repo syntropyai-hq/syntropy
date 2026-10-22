@@ -243,6 +243,10 @@ pub struct KeySchema {
     /// `config show`, flag handling and the diagnostics redact by this flag, never by the
     /// type's name (RFC-0054 §10.1).
     pub holds_secret: bool,
+    /// Checks a value for this key, as a file, the environment or a flag gives it: it must
+    /// deserialize into the field's type and lie in the key's range (RFC-0054 §8 phase 3). The
+    /// error's kind gives its code, such as `bad_unit`.
+    pub check: fn(&toml::Value) -> Result<(), ValueError>,
 }
 
 /// One section, as `#[derive(ConfigSection)]` records it.
@@ -265,6 +269,9 @@ pub struct SectionSchema {
     pub doc: &'static str,
     /// The keys, in field order.
     pub keys: &'static [KeySchema],
+    /// Keys a release renamed or removed, which the section still accepts with a warning
+    /// (RFC-0054 §8, RFC-0062 §10.1).
+    pub deprecated: &'static [Deprecated],
     /// Deserializes every fixed default into its field's type and checks it against the key's
     /// range. [`ConfigSection::check_defaults`] calls it.
     pub check_defaults: fn() -> Vec<KeyError>,
@@ -274,6 +281,49 @@ impl SectionSchema {
     /// The key named `name` (the field name, not the full path).
     pub fn key(&self, name: &str) -> Option<&'static KeySchema> {
         self.keys.iter().find(|k| k.name == name)
+    }
+}
+
+/// A key a release renamed or removed (RFC-0054 §8). A file, variable or flag that sets it loads
+/// with a warning naming the replacement, and its value goes to the replacement. The record is
+/// removed by the release that closes RFC-0062 §10.1's window ([`Deprecated::closes_in`]);
+/// from then on the key is unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deprecated {
+    /// The old full path.
+    pub path: &'static str,
+    /// The full path of the key that replaced it, or `None` if it was removed outright.
+    pub replacement: Option<&'static str>,
+    /// The release that deprecated it, as `major.minor`.
+    pub since: &'static str,
+}
+
+impl Deprecated {
+    /// The first release, as `(major, minor)`, that no longer accepts the key: one minor
+    /// release before 1.0 and one major release after (RFC-0062 §10.1). `None` if `since` is
+    /// not `major.minor`, which the derive rejects.
+    pub fn closes_in(&self) -> Option<(u32, u32)> {
+        let (major, minor) = self.since.split_once('.')?;
+        let (major, minor): (u32, u32) = (major.parse().ok()?, minor.parse().ok()?);
+        Some(if major == 0 {
+            (0, minor + 1)
+        } else {
+            (major + 1, 0)
+        })
+    }
+
+    /// The warning a load prints for the key.
+    pub fn warning(&self) -> String {
+        match self.replacement {
+            Some(new) => format!(
+                "`{}` is deprecated since {}; use `{new}`, which now takes its value",
+                self.path, self.since
+            ),
+            None => format!(
+                "`{}` is deprecated since {} and has no effect; remove it",
+                self.path, self.since
+            ),
+        }
     }
 }
 

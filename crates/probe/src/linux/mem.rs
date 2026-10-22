@@ -19,8 +19,9 @@ pub(super) struct MemFacts {
     pub available: u64,
     pub free: u64,
     pub cgroup: CgroupVersion,
-    /// The tightest `limit − usage` over this process's cgroup and its ancestors; `None`
-    /// when no level sets a memory limit or the memory controller is off.
+    /// The tightest `limit − usage` over this process's cgroup and its ancestors, where a v2
+    /// level's limit is `min(memory.max, memory.high)` (RFC-0020 §5); `None` when no level
+    /// sets a memory limit or the memory controller is off.
     pub cgroup_headroom: Option<u64>,
     /// `RLIMIT_MEMLOCK`'s soft limit; `None` when unlimited or `CAP_IPC_LOCK` is held
     /// (`HostMemInfo::memlock_limit`'s convention).
@@ -72,13 +73,19 @@ pub(super) fn facts(fs: &dyn HostFs) -> Result<MemFacts, EnumError> {
 /// whose cgroup namespace or bind mount shows its own cgroup at the mount root), the mount
 /// root is the process's cgroup. Every level from there up to the mount root is checked and
 /// the smallest `limit − usage` wins, since a parent's limit binds its children.
+///
+/// On v2 a level's limit is `min(memory.max, memory.high)` (RFC-0020 §5): above `memory.high`
+/// the kernel throttles the cgroup and reclaims hard, so the budget stops there. Either file
+/// may be `max` (no limit) or absent (`memory.high` on kernels or levels without it). v1 uses
+/// `memory.limit_in_bytes` alone: RFC-0020 §5's v1 term has no soft limit, and v1's
+/// `memory.soft_limit_in_bytes` only guides reclaim under global pressure.
 fn cgroup(fs: &dyn HostFs) -> Result<(CgroupVersion, Option<u64>), EnumError> {
     const SELF: &str = "proc/self/cgroup";
     let Some(text) = read_opt(fs, SELF)? else {
         return Ok((CgroupVersion::None, None));
     };
     let lines = at(SELF, parse::cgroup_lines(&text))?;
-    let (version, mount, path, limit_file, usage_file) = if let Some(l) = lines
+    let (version, mount, path, limit_file, high_file, usage_file) = if let Some(l) = lines
         .iter()
         .find(|l| l.controllers.iter().any(|c| c == "memory"))
     {
@@ -87,6 +94,7 @@ fn cgroup(fs: &dyn HostFs) -> Result<(CgroupVersion, Option<u64>), EnumError> {
             format!("{CGROUP_ROOT}/memory"),
             &l.path,
             "memory.limit_in_bytes",
+            None,
             "memory.usage_in_bytes",
         )
     } else if let Some(l) = lines.iter().find(|l| l.hierarchy == 0) {
@@ -95,6 +103,7 @@ fn cgroup(fs: &dyn HostFs) -> Result<(CgroupVersion, Option<u64>), EnumError> {
             CGROUP_ROOT.to_owned(),
             &l.path,
             "memory.max",
+            Some("memory.high"),
             "memory.current",
         )
     } else {
@@ -117,9 +126,25 @@ fn cgroup(fs: &dyn HostFs) -> Result<(CgroupVersion, Option<u64>), EnumError> {
             format!("{mount}/{}", parts[..depth].join("/"))
         };
         let lim_path = format!("{dir}/{limit_file}");
-        if let Some(t) = read_opt(fs, &lim_path)?
-            && let Some(limit) = at(&lim_path, parse::cgroup_limit(&t))?
-        {
+        let max = match read_opt(fs, &lim_path)? {
+            Some(t) => at(&lim_path, parse::cgroup_limit(&t))?,
+            None => None,
+        };
+        let high = match high_file {
+            Some(file) => {
+                let high_path = format!("{dir}/{file}");
+                match read_opt(fs, &high_path)? {
+                    Some(t) => at(&high_path, parse::cgroup_limit(&t))?,
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        let limit = match (max, high) {
+            (Some(m), Some(h)) => Some(m.min(h)),
+            (m, h) => m.or(h),
+        };
+        if let Some(limit) = limit {
             let use_path = format!("{dir}/{usage_file}");
             let usage = at(&use_path, parse::number::<u64>(&read(fs, &use_path)?))?;
             let headroom = limit.saturating_sub(usage);
