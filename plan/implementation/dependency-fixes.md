@@ -1000,3 +1000,11 @@ DIST-E7-T03 builds the QUIC backend's `net` domain, where channel tasks wait on 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E7-T03 gains "keep-alive and idle timeout take the table's values per path, through `default_path_keep_alive_interval` and `default_path_max_idle_timeout`, as well as connection-wide through `keep_alive_interval` and `max_idle_timeout`, and a unit test reads all four back from the transport configuration `net` builds"; no edge | DIST-E7-T03 | Definition of done | with only the connection-wide values set, a dead path would be abandoned after iroh's 15 s per-path default, not within `link.failover_timeout` |
+
+## DIST-E7-T12's channel slots and the control receives (2026-10-23)
+
+RFC-0031 §8's pool table counts "recv_slots + retention" slots per channel, and DIST-E7-T12's criterion said the same. But the channel core of DIST-E7-T02 takes a receive pool of `recv_slots + 4`: the four receives for control frames, which credit never counts (§7.1). A side that only receives keeps no retention, so with the table's count its pool would be four slots short.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T12's criterion reads `(recv_slots + 4 + retention) × slot_size`, and RFC-0031 §8 gains a dated note that the four control receives sit beside the data receives; no edge | DIST-E7-T12 | Definition of done | the criterion must hold for the pool the channel core already requires (DIST-E7-T02). Built under the lead's run, for the maintainers to confirm |

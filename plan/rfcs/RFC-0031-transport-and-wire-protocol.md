@@ -1026,6 +1026,15 @@ The limiter is a token bucket in the daemon's `bulk` runtime. It applies to `Blo
 - Leasing a slot through a descriptor checks the generation, and a stale descriptor is refused with `SendError::Invalid`, never leased. Misuse becomes a refusal instead of a frame with the wrong payload.
 - DIST-E7-T12 builds this with the lock-free slot handout.
 
+**Note, 2026-10-23 (DIST-E7-T12): as built.**
+- **The generation.** A slot's state is one 64-bit word: the generation in the high 32 bits, and in the low 32 bits free, writing, or the count of readers. A writer dropped unfrozen and the last reader dropped both free the slot at the next generation. `PayloadSlice` and `ExtBuf` carry `generation`, and `BufferPool::retain_payload` and `retain_ext` lease only at it.
+- **Handing out slots.** `BufferPool::take` claims any free slot with no lock: each taker starts one slot further round than the last and claims the first free slot with a compare-and-swap. A channel core takes its receive slots this way.
+- **Registration tables.** `RegistrationTable` holds one registration per pool per registrant: a transport kind, or a kernel provider by its `ProviderId` name, which the runner records, since `net` cannot depend on `kernels`. Registering the same pool again with the same registrant returns its one registration, and another pool under a registered `PoolId` is refused. The QUIC and TCP backends keep their pools in one.
+- **A channel side's slots** are `recv_slots + 4 + retention`. The table above gives "recv_slots + retention". The four are the receives the channel core keeps for control frames beside the data receives (§7.1), so a full data window never stops a `Ping` or a `Credit`.
+- **Header areas** count each per-row item's TLV header and padding in every span of the frame, so a frame whose rows spread over its spans still fits. The 512-row frame with `TOKEN_IDS` and `ROUTER_HINT` at k = 8 needs a 10,496-byte area. The codec's own extension for it, with one span, is 10,368 bytes [derivation: 64 B of fixed fields, a 32 B span, (8 + 2,048) B of `TOKEN_IDS` and (8 + 4 + 8,192) B of `ROUTER_HINT`, padded to 64].
+- **Token slots** count each entry as 8-aligned, with `T_max × (4 + 8 × logprob_k)` logprob bytes, 4 B per drafted token and 4 B more per tree node. The tap block is 8 B plus `32 + 4 × (k + tail)` per position, padded to 8, for `Gather`, or 40 B per position for `FullLocal`.
+- **Landing parts.** `Landing` gives each part of a chunk, in order, the byte range `rows_before × stride` of the stage's input its payload goes to. A part out of order, or a part count or layout that changes inside the chunk, is refused (`InvalidRequest`).
+
 **Multi-part prefill frames** land part by part in separate slots. The dispatcher issues one H2D per part into consecutive offsets of the stage's device input buffer. That copy is needed anyway, so reassembly costs no extra host copy.
 
 ### 9. Control-plane and blob-plane encoding
