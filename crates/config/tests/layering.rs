@@ -597,6 +597,98 @@ fn a_secret_in_a_policy_table_never_prints() {
     assert!(!format!("{resolved:?}").contains("canary"));
 }
 
+/// `section()` on a secret-typed key with a value of the wrong shape: serde's own error for a
+/// map, a list or a struct quotes the value (`invalid type: string "…"`), so the error must not
+/// carry it, from a file, `--set` or the environment.
+#[test]
+fn a_wrong_shaped_secret_never_reaches_a_section_error() {
+    let file = |text: &str| vec![ConfigFile::new("/c.toml", text)];
+    let cases: Vec<(Vec<ConfigFile>, Env, Flags)> = vec![
+        (
+            file("p.headers = \"canary-s1\"\n"),
+            Env::default(),
+            Flags::new(),
+        ),
+        (
+            file("q.exporter = \"canary-s2\"\n"),
+            Env::default(),
+            Flags::new(),
+        ),
+        (
+            file("q.headers = [\"canary-s3\"]\n"),
+            Env::default(),
+            Flags::new(),
+        ),
+        (file("q.exporter = 7\n"), Env::default(), Flags::new()),
+        (
+            Vec::new(),
+            env(&[("SYNTROPY_P__HEADERS", "canary-s4")]),
+            Flags::new(),
+        ),
+        (Vec::new(), Env::default(), {
+            let mut flags = Flags::new();
+            flags.set("q.headers=[\"canary-s5\"]").expect("well-formed");
+            flags
+        }),
+    ];
+    for (files, env, flags) in cases {
+        let resolved = resolve_secrets(&files, &env, &flags);
+        let errors = [
+            resolved
+                .section::<SecretMapSection>()
+                .err()
+                .map(|e| e.to_string()),
+            resolved
+                .section::<NestedSecretSection>()
+                .err()
+                .map(|e| e.to_string()),
+        ];
+        let errors: Vec<String> = errors.into_iter().flatten().collect();
+        assert!(
+            !errors.is_empty(),
+            "a wrong-shaped value must fail its section"
+        );
+        for error in errors {
+            assert!(!error.contains("canary"), "{error}");
+            assert!(
+                error.contains("withheld because the key holds a secret"),
+                "{error}"
+            );
+            assert!(
+                !error.contains('7') || !error.contains("integer"),
+                "{error}"
+            );
+        }
+    }
+    let resolved = resolve_secrets(
+        &file("p.headers = \"canary-s6\"\n"),
+        &Env::default(),
+        &Flags::new(),
+    );
+    let error = resolved
+        .section::<SecretMapSection>()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("`p.headers`"), "{error}");
+
+    // A key that holds no secret, in a section that also holds one, keeps serde's message.
+    let files = [ConfigFile::new("/c.toml", "t.a = \"not-a-number\"\n")];
+    let resolved = ResolvedConfig::resolve_with(
+        &REGISTRY,
+        Layers {
+            os: Os::Linux,
+            files: &files,
+            env: &Env::default(),
+            flags: &Flags::new(),
+        },
+        |_| Some(Value::Integer(8)),
+    )
+    .expect("resolves");
+    let error = resolved.section::<TSection>().unwrap_err().to_string();
+    assert!(error.contains("invalid type"), "{error}");
+    assert!(!error.contains("withheld"), "{error}");
+}
+
 /// A malformed `--set` never echoes its value, whatever the separator.
 #[test]
 fn a_malformed_set_never_echoes_its_value() {

@@ -102,9 +102,20 @@ fn plan_epoch() -> impl Strategy<Value = PlanEpoch> {
 fn objective() -> impl Strategy<Value = Objective> {
     prop_oneof![
         Just(Objective::Latency),
-        f32s().prop_map(|per_sequence_floor_tps| Objective::Throughput {
-            per_sequence_floor_tps
-        }),
+        (
+            f32s(),
+            proptest::option::of(any::<u16>()),
+            proptest::option::of(any::<u64>().prop_map(Nanos))
+        )
+            .prop_map(
+                |(per_sequence_floor_tps, target_concurrency, ttft_ceiling)| {
+                    Objective::Throughput {
+                        per_sequence_floor_tps,
+                        target_concurrency,
+                        ttft_ceiling,
+                    }
+                }
+            ),
     ]
 }
 
@@ -112,7 +123,8 @@ fn exactness() -> impl Strategy<Value = ExactnessPolicy> {
     prop_oneof![
         Just(ExactnessPolicy::Exact),
         any::<u32>().prop_map(|bits| ExactnessPolicy::Approximate {
-            knobs: ApproxKnobs::from_bits_truncate(bits)
+            knobs: ApproxKnobs::from_bits_truncate(bits),
+            params: ApproxParams::default(),
         }),
     ]
 }

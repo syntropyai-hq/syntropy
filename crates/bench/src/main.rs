@@ -17,6 +17,11 @@
 //!   that RFC-0061 §4.2's generated table is current (RFC-0061 §4.1, §4.2). `lint` runs it.
 //! - `scenarios render [--write] [--root <dir>]` prints that table, or writes it into RFC-0061.
 //!   `--root` defaults to the working directory, which must be the repository root.
+//! - `specs check [--dir <path>]` validates the spec database, `bench/specs/` by default
+//!   (RFC-0061 §5.3): every figure has a vendor or standards source URL, its location in the
+//!   document and the date it was checked. `cargo xtask ci lint` runs it.
+//! - `specs peaks <rig> [--file <path>] [--dir <path>]` prints the rig's `W_peak` per path, with
+//!   each path's elements and the narrowest one, from its inventory record and the database.
 //!
 //! Exit status: 0 on success, 1 when a check fails, 2 on a usage error.
 
@@ -27,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use syntropy_bench::rigs::{self, Inventory};
+use syntropy_bench::specs::{self, SpecDb};
 use syntropy_bench::{sc_map, scenario};
 
 const USAGE: &str = "\
@@ -41,10 +47,13 @@ Commands:
                                     §4.2's table (RFC-0061 §4); `lint` runs it
   scenarios render [--write] [--root <dir>]
                                     print RFC-0061 §4.2's table; --write puts it into the RFC
+  specs check [--dir <path>]        validate the spec database (RFC-0061 §5.3); `lint` runs it
+  specs peaks <rig> [--file <path>] [--dir <path>]
+                                    print the rig's W_peak per path from its inventory record
   help                              print this message
 
-<path> defaults to bench/lab/rigs.toml in the workspace. --base defaults to
-`git merge-base HEAD origin/main`; --root to the working directory.";
+--file defaults to bench/lab/rigs.toml and --dir to bench/specs, in the workspace. --base
+defaults to `git merge-base HEAD origin/main`; --root to the working directory.";
 
 const PASS: u8 = 0;
 const FAIL: u8 = 1;
@@ -75,6 +84,29 @@ fn main() -> ExitCode {
                 USAGE_ERROR
             }
         },
+        ["specs", "check", rest @ ..] => match rest {
+            [] => specs_check(&workspace(specs::DIR)),
+            ["--dir", dir] => specs_check(Path::new(dir)),
+            _ => usage(rest),
+        },
+        ["specs", "peaks", rig, rest @ ..] => {
+            let mut file = default_inventory();
+            let mut dir = workspace(specs::DIR);
+            let mut options = rest.iter();
+            let mut ok = true;
+            while let Some(option) = options.next() {
+                match (*option, options.next()) {
+                    ("--file", Some(path)) => file = PathBuf::from(path),
+                    ("--dir", Some(path)) => dir = PathBuf::from(path),
+                    _ => ok = false,
+                }
+            }
+            if ok {
+                specs_peaks(rig, &file, &dir)
+            } else {
+                usage(rest)
+            }
+        }
         _ => {
             eprintln!("error: unknown command `{}`\n\n{USAGE}", words.join(" "));
             USAGE_ERROR
@@ -102,16 +134,89 @@ fn file_option(rest: &[&str]) -> Option<PathBuf> {
     }
 }
 
-/// `bench/lab/rigs.toml` in the workspace `cargo run` started from: the run-time
-/// `CARGO_MANIFEST_DIR` is this crate's directory, two levels below the root. Without it, the
-/// path is taken from the current directory.
+/// `bench/lab/rigs.toml` in the workspace.
 fn default_inventory() -> PathBuf {
+    workspace(rigs::PATH)
+}
+
+/// `rel` in the workspace `cargo run` started from: the run-time `CARGO_MANIFEST_DIR` is this
+/// crate's directory, two levels below the root. Without it, the path is taken from the current
+/// directory.
+fn workspace(rel: &str) -> PathBuf {
     let root = std::env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
         .and_then(|dir| dir.ancestors().nth(2).map(Path::to_path_buf));
     match root {
-        Some(root) => root.join(rigs::PATH),
-        None => PathBuf::from(rigs::PATH),
+        Some(root) => root.join(rel),
+        None => PathBuf::from(rel),
+    }
+}
+
+fn usage(rest: &[&str]) -> u8 {
+    eprintln!(
+        "error: unexpected arguments `{}`\n\n{USAGE}",
+        rest.join(" ")
+    );
+    USAGE_ERROR
+}
+
+fn specs_check(dir: &Path) -> u8 {
+    let (db, problems) = SpecDb::load(dir);
+    for problem in &problems {
+        eprintln!("specs: {problem}");
+    }
+    if problems.is_empty() {
+        eprintln!(
+            "specs: PASS: {}: {} records, every figure with a vendor or standards source \
+             (RFC-0061 §5.3)",
+            dir.display(),
+            db.records.len()
+        );
+        PASS
+    } else {
+        eprintln!(
+            "specs: FAIL: {} problems in {} (RFC-0061 §5.3)",
+            problems.len(),
+            dir.display()
+        );
+        FAIL
+    }
+}
+
+fn specs_peaks(id: &str, file: &Path, dir: &Path) -> u8 {
+    let Some(inventory) = load(file) else {
+        return FAIL;
+    };
+    let Some(rig) = inventory.rig(id) else {
+        eprintln!("specs: FAIL: {} has no rig `{id}`", file.display());
+        return FAIL;
+    };
+    let (db, problems) = SpecDb::load(dir);
+    for problem in &problems {
+        eprintln!("specs: {problem}");
+    }
+    if !problems.is_empty() {
+        return FAIL;
+    }
+    match specs::peaks(rig, &db) {
+        Ok(peaks) => {
+            for peak in &peaks {
+                println!("{}: W_peak {:.2} GB/s", peak.path, peak.gb_per_s());
+                for element in &peak.chain {
+                    println!("  {:.2} GB/s  {}", element.gb_per_s, element.name);
+                }
+            }
+            for (path, why) in specs::without_peak(rig) {
+                println!("{path}: no W_peak: {why}");
+            }
+            PASS
+        }
+        Err(problems) => {
+            for problem in problems {
+                eprintln!("specs: {id}: {problem}");
+            }
+            FAIL
+        }
     }
 }
 
