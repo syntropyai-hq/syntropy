@@ -17,6 +17,7 @@ use std::fmt;
 
 use syntropy_core::ErrorClass;
 
+use crate::endpoint::EndpointError;
 use crate::frame::code;
 
 /// A code in the `Net` domain, 0x0200–0x02FF: the `n` of RFC-0031 §12's `(Domain::Net, n)`. The
@@ -161,6 +162,30 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// An endpoint's error as `net`'s (DIST-E7-T23's `net::endpoint`). A failed connect is RFC-0031
+/// §12's `ConnectTimeout`, the one code §12 has for it. The rest have no §12 code, so they keep a
+/// class:
+/// - a node ID or relay URL that does not parse, and a configuration with neither relays nor
+///   direct paths, are the caller's input: `InvalidRequest`;
+/// - a failed bind or accept is `Link`;
+/// - `Closed` comes from `accept` on an endpoint this node closed, a shutdown with no peer
+///   involved: `Cancelled`.
+impl From<EndpointError> for Error {
+    fn from(error: EndpointError) -> Error {
+        let message = error.to_string();
+        match error {
+            EndpointError::Connect(_) => Error::new(ErrorCode::CONNECT_TIMEOUT, message),
+            EndpointError::InvalidNodeId
+            | EndpointError::InvalidRelayUrl(_)
+            | EndpointError::NoTransport => Error::uncoded(ErrorClass::InvalidRequest, message),
+            EndpointError::Bind(_) | EndpointError::Accept(_) => {
+                Error::uncoded(ErrorClass::Link, message)
+            }
+            EndpointError::Closed => Error::uncoded(ErrorClass::Cancelled, message),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +230,45 @@ mod tests {
         assert_eq!(
             Error::unsupported().to_string(),
             "not supported by this transport backend (Unsupported)"
+        );
+    }
+
+    #[test]
+    fn an_endpoint_error_keeps_its_message_and_gets_a_class() {
+        let cases = [
+            (
+                EndpointError::Connect("timed out".into()),
+                ErrorClass::Link,
+                Some(ErrorCode::CONNECT_TIMEOUT),
+            ),
+            (
+                EndpointError::InvalidNodeId,
+                ErrorClass::InvalidRequest,
+                None,
+            ),
+            (
+                EndpointError::InvalidRelayUrl("no scheme".into()),
+                ErrorClass::InvalidRequest,
+                None,
+            ),
+            (EndpointError::NoTransport, ErrorClass::InvalidRequest, None),
+            (EndpointError::Bind("in use".into()), ErrorClass::Link, None),
+            (
+                EndpointError::Accept("reset".into()),
+                ErrorClass::Link,
+                None,
+            ),
+            (EndpointError::Closed, ErrorClass::Cancelled, None),
+        ];
+        for (endpoint, class, code) in cases {
+            let message = endpoint.to_string();
+            let error = Error::from(endpoint);
+            assert_eq!((error.class, error.code), (class, code), "{message}");
+            assert_eq!(error.message, message);
+        }
+        assert_eq!(
+            Error::from(EndpointError::Connect("timed out".into())).to_string(),
+            "cannot connect: timed out (Link, Net 0x020a)"
         );
     }
 

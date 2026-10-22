@@ -38,6 +38,7 @@ pub use channel::{
     ChannelStats, CloseReason, INGRESS, InFrame, OutFrame, SendError, SendTicket,
 };
 
+use crate::endpoint::{PathKind, RelayUrl};
 use crate::error::Error;
 
 /// What a transport can do (RFC-0031 §2).
@@ -67,9 +68,8 @@ pub struct TransportCaps {
 
 /// Where to reach a peer's endpoint (RFC-0031 §2).
 ///
-/// RFC-0031 §2 gives three more fields, each added by the task that builds its type: the relay
-/// URL (`RelayUrl`, DIST-E7-T23's endpoint), the RDMA pairing (DIST-E7-T07) and the
-/// shared-memory offer (DIST-E7-T06).
+/// RFC-0031 §2 gives two more fields, each added by the task that builds its type: the RDMA
+/// pairing (DIST-E7-T07) and the shared-memory offer (DIST-E7-T06).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RemoteEndpoint {
     pub node: NodeId,
@@ -77,6 +77,19 @@ pub struct RemoteEndpoint {
     pub key: [u8; 32],
     /// Every known direct address, best first; iroh races them (RFC-0031 §4.1).
     pub addrs: Vec<SocketAddr>,
+    /// The peer's relay, for a path when no direct one connects (RFC-0031 §4.1, §5.4).
+    pub relay: Option<RelayUrl>,
+}
+
+/// The transport kind of a QUIC path: `Quic` when direct, `QuicRelay` through a relay, so plans
+/// and metrics never mistake a relayed edge for a direct one (RFC-0031 §2, §4.1).
+impl From<PathKind> for TransportKind {
+    fn from(path: PathKind) -> TransportKind {
+        match path {
+            PathKind::Direct => TransportKind::Quic,
+            PathKind::Relay => TransportKind::QuicRelay,
+        }
+    }
 }
 
 /// A data-plane transport backend (ADR-0011). The solver picks one per hop from measured α
@@ -116,5 +129,32 @@ pub trait Transport: Send + Sync {
     fn reconnect(&self, channel: &mut Channel) -> impl Future<Output = Result<(), Error>> + Send {
         let _ = channel;
         async { Err(Error::unsupported()) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_direct_path_is_quic_and_a_relayed_one_quic_relay() {
+        assert_eq!(TransportKind::from(PathKind::Direct), TransportKind::Quic);
+        assert_eq!(
+            TransportKind::from(PathKind::Relay),
+            TransportKind::QuicRelay
+        );
+    }
+
+    #[test]
+    fn a_remote_endpoint_names_its_relay() {
+        let relay: RelayUrl = "https://relay.example.net".parse().expect("a relay URL");
+        let remote = RemoteEndpoint {
+            node: NodeId([7; 32]),
+            key: [7; 32],
+            addrs: vec![SocketAddr::from(([192, 0, 2, 1], 7600))],
+            relay: Some(relay.clone()),
+        };
+        assert_eq!(remote.relay.as_ref(), Some(&relay));
+        assert!(relay.to_string().starts_with("https://relay.example.net"));
     }
 }
