@@ -568,6 +568,18 @@ DIST-E4-T01 could not be finished as written. Its criteria need the simulator (Q
 | `Beat.coord` (`CoordinatorBeat` with its proof digest) moves from DIST-E4-T01 to DIST-E10-T01, which adds it with `#[serde(default)]` (ADR-0305 item 3), with the proof-digest criterion; `RankKey` moves there too: DIST-E4-T01 emits `MembersChanged { alive: Vec<NodeId> }`, and DIST-E10-T01 adds each member's rank to that variant | DIST-E4-T01, DIST-E10-T01 | R2 | DIST-E10-T01 depends on DIST-E4-T01, so the membership core can't take election types from it. `Beat.coord` is a CBOR body field, so a beat without it decodes on either side; `MembersChanged` is an in-process output, so the rank changes that variant's shape rather than adding a serialized field |
 | DIST-E4-T01 owns the 1,150 B body bound; DIST-E4-T02 cites it | DIST-E4-T01, DIST-E4-T02 | R9 | both rows named the bound; DIST-E4-T02 keeps its own check, that a beat never exceeds the path's datagram limit |
 
+## The iroh pin for the field probe (2026-10-22)
+
+DIST-E4-T15 (M1a) is a standalone probe "on the daemon's iroh version", and its criteria need iroh to tell a direct path from a relayed one. But no task before DIST-E7-T03 (M2) pinned iroh in the workspace, and DIST-E4-T15 depended only on the workspace task. The new DIST-E7-T23 pins iroh in M1a, and gives `net` the minimal endpoint the probe needs.
+
+| Change | Tasks | Rule applied | Reason |
+|---|---|---|---|
+| Added DIST-E7-T23 (M1a) → QUAL-E1-T03, QUAL-E1-T04 | DIST-E7-T23 | R9 | iroh pinned in the workspace and linked only by `net` (RFC-0001 §4.2 rule 6), with a minimal endpoint: bind with a node key, connect by node ID through iroh's public relays (internal and alpha builds, RFC-0030 §6.4) or a given relay URL, and report the path kind and RTT. The new direct dependencies need a maintainer's approval |
+| DIST-E4-T15 → DIST-E7-T23 | DIST-E4-T15 | R9 | the probe runs on the pinned iroh and reports direct or relayed paths through the endpoint |
+| DIST-E7-T03 → DIST-E7-T23 | DIST-E7-T03 | R9 | the QUIC backend builds on the same pin |
+| DIST-E7-T21: its "iroh pinned in the workspace" edge moves from DIST-E7-T03 to DIST-E7-T23 | DIST-E7-T21 | R8 | the desk check reads iroh's configuration API at the pinned version and uses nothing else of DIST-E7-T03's; DIST-E7-T16 still depends on both |
+| `PathKind` moves from DIST-E7-T03 to DIST-E7-T23; DIST-E4-T01's `PathKind` edge moves from DIST-E7-T03 to DIST-E7-T23 | DIST-E7-T03, DIST-E7-T23, DIST-E4-T01 | R8 | amends the assignment in "DIST-E4-T01: the membership core's dependencies" above, which gave `PathKind` to DIST-E7-T03 (M2). DIST-E7-T23 (M1a) reports the path kind, and the M1a probe (DIST-E4-T15) needs it, so one type is defined there and DIST-E7-T03 builds on it. DIST-E4-T01 uses nothing else of DIST-E7-T03's |
+
 ## DIST-E8-T12: the control envelope without its message set (2026-10-22)
 
 DIST-E8-T12 could not be built as written. Its criterion "fuzz target registered" needs `fuzz/targets.toml`, which QUAL-E10-T01 builds, and that task and its prerequisite QUAL-E1-T07 had not started. Its `CtlMsg` carries payload types that later DIST tasks define, and one of them, DIST-E9-T01 (`LogEntry`), depends on DIST-E8-T12. These are plan corrections under R9 and R2, approved by the lead running the task.
