@@ -229,6 +229,8 @@ pub enum PollOutcome { Progress, Idle { next_wake: Option<MonoTime> }, Fault(Err
 
 The production thread wraps `poll_once` in the spin-then-park loop of ADR-0012. The simulator calls it when the device's virtual timeline says the dispatcher has work. The CPU compute pool gets the same treatment: `ComputePool::run_inline` executes a doorbell's work on the calling thread, which the simulator uses so that one OS thread runs every node. The I/O engine is a trait owned by RFC-0021, and the simulator implements it with `FakeIo` (§8.4).
 
+*Note 2026-10-23 (PLC-E7-T17):* built in `syntropy_exec::dispatch` and `syntropy_exec::pool`, as RFC-0012 §3.1's note of the same date describes. A pass is timed on the dispatcher's `TickSource`, and a pass over its budget counts as an overrun. A unit test moves the injected clock inside a pass and sees the count. In the simulator a pass takes no virtual time, because `SimTicks` moves only between events, so the watchdog cannot fire there. A pass that waited for an event would hang the run's one thread. A bounded wait inside a pass, such as a timed park, a sleep or a counted spin, goes unseen under test. The check that fails on it is PLC-E7-T18's hardware run, the first on a real `TickSource`. `crates/exec/tests/sim_one_stage.rs` drives a one-stage instance through `poll_once` and `run_inline` on one OS thread in a `SimWorld`. Two runs of one seed give identical step records, tokens and trace hashes. A checker fails the run if a pass returns `Idle` with a step in flight.
+
 #### 2.4 Deterministic iteration and hashing
 
 - **Rule T3.** Crates reachable from a protocol core or the solver use `BTreeMap`/`BTreeSet`, or `syntropy_core::DetHashMap`, a `HashMap` with a fixed-key hasher. They never use `std::collections::HashMap` with `RandomState`. A clippy `disallowed-types` configuration on those crates enforces this.
@@ -323,6 +325,11 @@ Each stateful component listed below has a **reference model**: a deliberately s
   Each primitive's crate keeps its loom model next to it under `#[cfg(loom)]`.
 - **Miri** runs the unit tests of `tier` (arenas), `ipc` (shared-memory layout) and `net` (frame codecs, shared-memory transport) with FFI stubbed. It catches undefined behaviour in the `unsafe` blocks that ADR-0001 confines to these crates.
 - **Sanitizers.** A test-only job builds the `unsafe` crates and the CPU provider with AddressSanitizer and ThreadSanitizer on a pinned nightly toolchain. ADR-0001 forbids nightly compilers only for release builds.
+
+*Note 2026-10-23 (QUAL-E3-T09):* the M0 loom models are in `spsc` (the heap ring and the shared ring) and `ipc` (the `local_tokens` and `local_sequences` rings of one region), and `cargo xtask test loom` runs them in `hosted-l3` (RFC-0062 §2.3). Three findings apply to the M1 models of QUAL-E3-T22:
+- **No spinning between three threads.** In loom 0.7, a thread that yields hands over to another without spending a preemption. When two threads spin on a third, loom can hand control between the two indefinitely, and the run fails at loom's branch limit rather than finishing. A model of three threads therefore gives each thread a fixed number of attempts that never wait. The main thread then finishes the run alone and checks the outcome: every record arrives once and in order. Two-thread models may still spin.
+- **The planted bug is a twin, not a one-off edit.** Each ring has a test-only twin whose publishing store is relaxed, and a test runs the cross-thread model on it in a child process and expects loom's causality violation. A child process, because loom may abort instead of unwinding.
+- **Slot bytes are invisible to loom.** The shared ring's slots are plain memory that loom cannot see, so a loom-only cell per slot records each write and read, and loom checks those are ordered.
 
 #### 3.5 Hot-path guards
 

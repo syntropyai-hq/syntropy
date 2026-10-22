@@ -69,16 +69,29 @@ fn check_scenario(cfg: Config, threads: usize) -> usize {
 }
 
 /// Checks each scenario in turn. `ELECTION_SCENARIO=<name>-<nodes>`, such as `split-heal-4`,
-/// checks only that one.
+/// checks only that one. `ELECTION_HEAL_RULE` picks the heal comparison, to compare the rules
+/// DIST-E10-T10 weighed: `proof` is §7.5's proof comparison from before OQ-NET-34, `acks` is
+/// option (a) with a past election's support read from its `SignedElection`'s `acks` alone, and
+/// `chain`, the default, is option (a) with a node's own endorsements counted too. Each keeps the
+/// support merge and endorse-once, so only the comparison differs.
 fn check_all(configs: Vec<Config>, threads: usize) {
     let only = std::env::var("ELECTION_SCENARIO").ok();
+    let rule = std::env::var("ELECTION_HEAL_RULE").unwrap_or_else(|_| "chain".to_owned());
+    assert!(
+        ["proof", "acks", "chain"].contains(&rule.as_str()),
+        "ELECTION_HEAL_RULE is proof, acks or chain, not {rule}"
+    );
     let total: usize = configs
         .into_iter()
         .filter(|c| {
             only.as_ref()
                 .is_none_or(|o| *o == format!("{}-{}", c.name, c.n))
         })
-        .map(|cfg| check_scenario(cfg, threads))
+        .map(|mut cfg| {
+            cfg.proof_only_heal = rule == "proof";
+            cfg.own_endorsement_counts = rule == "chain";
+            check_scenario(cfg, threads)
+        })
         .sum();
     eprintln!("{total} states in all");
 }
@@ -118,8 +131,8 @@ const ORIGINATOR_ACK_TRACE: [&str; 8] = [
     "Deliver(Command { from: 2, to: 0, id: 1 })",
     "Replicate(0, 2)",
     "Deliver(Append { from: 0, to: 2, term: Term { counter: 1, tag: 10 }, log: [Elected { node: 0, \
-     term: Term { counter: 1, tag: 10 } }, Command { id: 1 }], proof: Proof { node: 0, term: Term \
-     { counter: 1, tag: 10 }, sig_ok: true, support: 6 } })",
+     term: Term { counter: 1, tag: 10 }, acks: 6 }, Command { id: 1 }], proof: Proof { node: 0, \
+     term: Term { counter: 1, tag: 10 }, sig_ok: true, support: 6 } })",
     "Crash(0)",
     "Expire(1)",
     "Claim(1)",
@@ -129,20 +142,27 @@ const ORIGINATOR_ACK_TRACE: [&str; 8] = [
 
 /// Replays `trace` in `cfg` and returns the model and its final state.
 fn replay(cfg: Config, trace: &[&str]) -> (ElectionModel, model::State) {
+    try_replay(cfg, trace).unwrap_or_else(|step| panic!("not enabled: {step}"))
+}
+
+/// Replays `trace` in `cfg`, or returns the first step that is not enabled.
+fn try_replay<'t>(
+    cfg: Config,
+    trace: &[&'t str],
+) -> Result<(ElectionModel, model::State), &'t str> {
     let model = ElectionModel { cfg };
     let mut state = model.initial();
     for step in trace {
         let mut actions = Vec::new();
         model.actions(&state, &mut actions);
-        let action = actions
-            .into_iter()
-            .find(|a| format!("{a:?}") == *step)
-            .unwrap_or_else(|| panic!("not enabled: {step}"));
+        let Some(action) = actions.into_iter().find(|a| format!("{a:?}") == *step) else {
+            return Err(step);
+        };
         state = model
             .next_state(&state, action)
             .expect("a step changes the state");
     }
-    (model, state)
+    Ok((model, state))
 }
 
 /// Replays [`ORIGINATOR_ACK_TRACE`] and returns the model and its final state.
@@ -188,9 +208,9 @@ const STALE_HEAL_TRACE: [&str; 15] = [
     "Win(2)",
     "Replicate(2, 1)",
     "Deliver(Append { from: 2, to: 1, term: Term { counter: 2, tag: 12 }, log: [Elected { node: 0, \
-     term: Term { counter: 1, tag: 10 } }, Elected { node: 2, term: Term { counter: 2, tag: 12 } }, \
-     Command { id: 1 }], proof: Proof { node: 2, term: Term { counter: 2, tag: 12 }, sig_ok: true, \
-     support: 2 } })",
+     term: Term { counter: 1, tag: 10 }, acks: 6 }, Elected { node: 2, term: Term { counter: 2, \
+     tag: 12 }, acks: 2 }, Command { id: 1 }], proof: Proof { node: 2, term: Term { counter: 2, \
+     tag: 12 }, sig_ok: true, support: 2 } })",
     "Crash(2)",
     "Expire(1)",
     "Claim(1)",
@@ -198,22 +218,18 @@ const STALE_HEAL_TRACE: [&str; 15] = [
     "Replicate(0, 1)",
     "Win(1)",
     "Deliver(Append { from: 0, to: 1, term: Term { counter: 1, tag: 10 }, log: [Elected { node: 0, \
-     term: Term { counter: 1, tag: 10 } }], proof: Proof { node: 0, term: Term { counter: 1, tag: \
-     10 }, sig_ok: true, support: 6 } })",
+     term: Term { counter: 1, tag: 10 }, acks: 6 }], proof: Proof { node: 0, term: Term { counter: \
+     1, tag: 10 }, sig_ok: true, support: 6 } })",
 ];
 
-/// The counterexample OQ-NET-34 holds: the command is lost, and the cause is the one
-/// `stale-heal` expects. DIST-E10-T10 checks whether the rule OQ-NET-34 recommends removes it.
+/// The counterexample that opened OQ-NET-34, under §7.5's heal comparison as written before it:
+/// the command is lost, through the rollback past node 1's own ack.
 #[test]
 fn a_stale_supported_proof_rolls_a_survivor_back_past_its_own_ack() {
     let (name, holds) = check::PROPERTIES[12];
-    // Without the scenario's expectation, so the property is judged strictly.
     let mut cfg = scenarios::stale_heal(3);
-    let expected = cfg.expected_failure.take();
-    assert_eq!(
-        expected,
-        Some((check::COMMANDS_SURVIVE, model::flag::ROLLBACK_PAST_OWN_ACK))
-    );
+    assert_eq!(cfg.expected_failure, None);
+    cfg.proof_only_heal = true;
     let (model, state) = replay(cfg, &STALE_HEAL_TRACE);
     assert_eq!(state.acked_replicated.get(&1), Some(&model::bit(1)));
     assert!(!state.nodes[2].alive);
@@ -226,4 +242,127 @@ fn a_stale_supported_proof_rolls_a_survivor_back_past_its_own_ack() {
     );
     assert_ne!(state.flags & model::flag::ROLLBACK_PAST_OWN_ACK, 0);
     assert!(!holds(&model, &state), "{name}");
+}
+
+/// The same 15 steps under OQ-NET-34's option (a), which DIST-E10-T10 checks. Node 1's chain holds
+/// node 2's election at counter 2, supported by node 1's ack, which beats node 0's proof at
+/// counter 1, so node 0's append is refused and node 1 keeps the command. Its fencing reply
+/// carries that election, so node 0 learns its own was succeeded, steps down and follows node 1.
+#[test]
+fn a_chain_with_a_newer_supported_election_keeps_its_acknowledged_command() {
+    let (model, state) = replay(scenarios::stale_heal(3), &STALE_HEAL_TRACE);
+    assert!(state.nodes[1].has_command(1));
+    assert!(state.nodes[1].is_coordinator(1));
+    assert_eq!(state.flags & model::flag::ROLLBACK_PAST_OWN_ACK, 0);
+    let fence = state
+        .net
+        .iter()
+        .find(|m| matches!(m, model::Msg::Fence { from: 1, to: 0, .. }))
+        .expect("node 1 fences node 0's append")
+        .clone();
+    let model::Msg::Fence { chain, .. } = &fence else {
+        unreachable!()
+    };
+    assert_eq!(
+        chain.map(|c| (c.node, c.term.counter)),
+        Some((2, 2)),
+        "the fence carries node 2's supported election"
+    );
+    let next = model
+        .next_state(&state, model::Action::Deliver(fence))
+        .expect("the fence changes node 0");
+    assert_eq!(next.nodes[0].coordinator, Some(1), "node 0 follows node 1");
+    assert!(!next.nodes[0].is_coordinator(0));
+    // Node 1's own election is unsupported and node 0's was supported, so the strict wording of
+    // "an unsupported self-election never deposes a supported coordinator" would count this. The
+    // property as restated for option (a) does not: node 1's chain holds a supported election
+    // that beats node 0's.
+    assert_eq!(next.flags & model::flag::UNSUPPORTED_DEPOSED_SUPPORTED, 0);
+}
+
+/// The probe's counterexample under option (a) with a past election's support read from its
+/// `SignedElection`'s `acks` alone, in `stale-heal-late-support` (DIST-E10-T10). Node 1's ack of
+/// node 2's claim is lost, so node 2 wins at counter 2 with no `acks`; node 1 endorses it on the
+/// first append, which holds the command, and that ack makes the command `replicated = true`.
+/// Later the log still shows node 2's election as unsupported, so nothing in node 1's chain beats
+/// node 0's older supported proof, and the command is lost with node 2's disk.
+const ACKS_ONLY_TRACE: [&str; 33] = [
+    "Split(0)",
+    "Expire(2)",
+    "Claim(2)",
+    "Drop(Claim { from: 2, to: 1, term: Term { counter: 2, tag: 12 } })",
+    "Expire(1)",
+    "Claim(1)",
+    "Heal",
+    "Resubmit(2, 1)",
+    "Replicate(0, 2)",
+    "Replicate(0, 1)",
+    "Deliver(Claim { from: 1, to: 2, term: Term { counter: 2, tag: 11 } })",
+    "Win(2)",
+    "Replicate(2, 1)",
+    "Replicate(2, 0)",
+    "Deliver(Append { from: 2, to: 1, term: Term { counter: 2, tag: 12 }, log: [Elected { node: \
+     0, term: Term { counter: 1, tag: 10 }, acks: 6 }, Elected { node: 2, term: Term { counter: \
+     2, tag: 12 }, acks: 0 }, Command { id: 1 }], proof: Proof { node: 2, term: Term { counter: \
+     2, tag: 12 }, sig_ok: true, support: 0 } })",
+    "Replicate(2, 1)",
+    "Deliver(Append { from: 2, to: 0, term: Term { counter: 2, tag: 12 }, log: [Elected { node: \
+     0, term: Term { counter: 1, tag: 10 }, acks: 6 }, Elected { node: 2, term: Term { counter: \
+     2, tag: 12 }, acks: 0 }, Command { id: 1 }], proof: Proof { node: 2, term: Term { counter: \
+     2, tag: 12 }, sig_ok: true, support: 0 } })",
+    "Replicate(2, 0)",
+    "Deliver(Fence { from: 0, to: 2, proof: Some(Proof { node: 0, term: Term { counter: 1, tag: \
+     10 }, sig_ok: true, support: 6 }), chain: Some(Proof { node: 0, term: Term { counter: 1, \
+     tag: 10 }, sig_ok: true, support: 6 }) })",
+    "Deliver(Append { from: 0, to: 2, term: Term { counter: 1, tag: 10 }, log: [Elected { node: \
+     0, term: Term { counter: 1, tag: 10 }, acks: 6 }], proof: Proof { node: 0, term: Term { \
+     counter: 1, tag: 10 }, sig_ok: true, support: 6 } })",
+    "Crash(2)",
+    "Expire(1)",
+    "Deliver(Fence { from: 2, to: 0, proof: Some(Proof { node: 2, term: Term { counter: 2, tag: \
+     12 }, sig_ok: true, support: 2 }), chain: Some(Proof { node: 2, term: Term { counter: 2, \
+     tag: 12 }, sig_ok: true, support: 2 }) })",
+    "Claim(0)",
+    "Deliver(Command { from: 2, to: 0, id: 1 })",
+    "Deliver(Append { from: 0, to: 1, term: Term { counter: 1, tag: 10 }, log: [Elected { node: \
+     0, term: Term { counter: 1, tag: 10 }, acks: 6 }], proof: Proof { node: 0, term: Term { \
+     counter: 1, tag: 10 }, sig_ok: true, support: 6 } })",
+    "Expire(1)",
+    "Deliver(Append { from: 2, to: 1, term: Term { counter: 2, tag: 12 }, log: [Elected { node: \
+     0, term: Term { counter: 1, tag: 10 }, acks: 6 }, Elected { node: 2, term: Term { counter: \
+     2, tag: 12 }, acks: 0 }, Command { id: 1 }], proof: Proof { node: 2, term: Term { counter: \
+     2, tag: 12 }, sig_ok: true, support: 2 } })",
+    "Deliver(Claim { from: 0, to: 1, term: Term { counter: 2, tag: 10 } })",
+    "Win(0)",
+    "Replicate(0, 1)",
+    "Deliver(Append { from: 2, to: 0, term: Term { counter: 2, tag: 12 }, log: [Elected { node: \
+     0, term: Term { counter: 1, tag: 10 }, acks: 6 }, Elected { node: 2, term: Term { counter: \
+     2, tag: 12 }, acks: 0 }, Command { id: 1 }], proof: Proof { node: 2, term: Term { counter: \
+     2, tag: 12 }, sig_ok: true, support: 2 } })",
+    "Deliver(Append { from: 0, to: 1, term: Term { counter: 2, tag: 10 }, log: [Elected { node: \
+     0, term: Term { counter: 1, tag: 10 }, acks: 6 }, Elected { node: 0, term: Term { counter: \
+     2, tag: 10 }, acks: 2 }], proof: Proof { node: 0, term: Term { counter: 2, tag: 10 }, \
+     sig_ok: true, support: 2 } })",
+];
+
+/// Why a node counts its own `Endorse`: under option (a) with support read from `acks` alone, the
+/// probe's trace loses a command that node 1's own ack made `replicated = true`. With node 1's
+/// endorsement counted, as the settled rule does, the same steps never get that far.
+#[test]
+fn a_late_endorsement_counts_as_support() {
+    let (name, holds) = check::PROPERTIES[12];
+    let mut acks_only = scenarios::stale_heal_late_support(3);
+    acks_only.own_endorsement_counts = false;
+    let (model, state) = replay(acks_only, &ACKS_ONLY_TRACE);
+    assert!(!state.nodes[2].alive);
+    assert_ne!(
+        state.acked_replicated.get(&1).copied().unwrap_or(0) & model::bit(1),
+        0,
+        "node 1's ack made the command replicated = true"
+    );
+    assert!(!holds(&model, &state), "acks alone: {name}");
+    match try_replay(scenarios::stale_heal_late_support(3), &ACKS_ONLY_TRACE) {
+        Err(_) => {}
+        Ok((model, state)) => assert!(holds(&model, &state), "with endorsements: {name}"),
+    }
 }
