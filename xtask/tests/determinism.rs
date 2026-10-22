@@ -5,8 +5,8 @@
 //!
 //! The test writes a fixture workspace under cargo's temporary target directory and runs clippy
 //! on it as the `clippy` step of `cargo xtask ci lint` does (`--all-targets -- -D warnings`). It
-//! adds `--offline`, with a copy of the workspace's `Cargo.lock`, and `--keep-going`, so one
-//! failing crate does not hide the other. The fixture has two crates with the same code:
+//! adds `--offline`, with a copy of the workspace's `Cargo.lock`, `--keep-going`, so one failing
+//! crate does not hide the other, and `--color never`, so the reports read the same in CI. The fixture has two crates with the same code:
 //!
 //! - `exec`, a covered crate, with `ci/clippy-determinism.toml` copied as its `clippy.toml`, as
 //!   every covered crate has it. It calls each item the config bans in `src/banned.rs`, one per
@@ -205,11 +205,21 @@ fn the_fixture_uses_every_banned_path_once() {
 fn every_banned_item_fails_clippy_in_a_covered_crate_only() {
     let root = fixture();
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    // Plain text: CI sets `CARGO_TERM_COLOR=always` (`.github/actions/setup-rust`), and coloured
+    // lines would not match the reports below.
     let output = Command::new(cargo)
-        .args(["clippy", "--offline", "--keep-going", "--all-targets"])
+        .args([
+            "clippy",
+            "--offline",
+            "--keep-going",
+            "--all-targets",
+            "--color",
+            "never",
+        ])
         .args(["--message-format=short", "--", "-D", "warnings"])
         .current_dir(&root)
         .env("CARGO_TARGET_DIR", root.join("target"))
+        .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("cargo runs");
     let stderr = String::from_utf8_lossy(&output.stderr);
