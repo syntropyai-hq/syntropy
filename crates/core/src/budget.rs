@@ -19,13 +19,13 @@ use crate::units::Bytes;
 
 const GIB: u64 = 1 << 30;
 
-/// The floor of RFC-0020 §5's default headroom: 4 GiB [target].
+/// The floor of RFC-0020 §5's default headroom: 4 GiB \[target\].
 pub const DEFAULT_HEADROOM_MIN: Bytes = Bytes(4 * GIB);
 
-/// The share of RAM in RFC-0020 §5's default headroom: 0.10 [target].
+/// The share of RAM in RFC-0020 §5's default headroom: 0.10 \[target\].
 pub const DEFAULT_HEADROOM_FRACTION: f32 = 0.10;
 
-/// RFC-0020 §5's default `numa_reserve`: 1 GiB [target].
+/// RFC-0020 §5's default `numa_reserve`: 1 GiB \[target\].
 pub const DEFAULT_NUMA_RESERVE: Bytes = Bytes(GIB);
 
 /// Which of RFC-0020 §5's rules applies.
@@ -47,7 +47,7 @@ pub enum HostOs {
 
 impl HostOs {
     /// RFC-0020 §5's per-OS `max_pinned_fraction` default: 0.85 on Linux, 0.75 on WSL2 (Linux
-    /// with `wsl2` set), 0.50 on Windows [target]. `None` on macOS, where it does not apply
+    /// with `wsl2` set), 0.50 on Windows \[target\]. `None` on macOS, where it does not apply
     /// unless the user sets it, and on Tier 3, where `pin_limit` is 0.
     pub fn default_max_pinned_fraction(self, wsl2: bool) -> Option<f32> {
         match self {

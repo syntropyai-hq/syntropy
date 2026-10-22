@@ -577,6 +577,18 @@ Tokens travel tail → head (ring return, all of the step's sequences) and tail 
 - The draft travels only on the ring-return frame. The ingress copy omits it (`n_draft = 0`).
 - The tap block travels only on the ingress copy, which goes to the parity driver.
 
+**Revision note, 2026-10-22 (DIST-E8-T03): chains and trees, and what each copy carries.**
+- **Chain or tree.** A tree has one node per drafted token, so `draft_nodes` equals `n_draft` for a tree as for a chain, and the entry cannot say which it holds. The extension's flags bit2 `DRAFT_TREE` says it for the frame:
+  - When it is set, every entry with a draft carries its tree. A chain in such a frame is written as a tree whose nodes each have the one before as parent.
+  - When it is clear, no entry carries a tree, and each draft is a chain.
+  - A node's `parent` is an earlier node of the same draft, or 0xFFFF for the last accepted token, as in §6.3. Its `depth` is 1 under the last accepted token and its parent's plus one otherwise. A receiver refuses any other `parent` or `depth`, and an entry whose `draft_nodes` is not `n_draft`.
+  - Bits 3–15 are reserved.
+- **Copies.** A frame sets exactly one of `RING_RETURN` and `TO_INGRESS`. A receiver refuses a ring-return frame that carries a tap block, and an ingress frame that carries a draft. Of the `Activation` items (types 1–7), only `TRACE` may travel on a `Token` frame, so a receiver refuses the rest.
+- **Trace context.** `TRACE` (§6.3) joins the types a `Token` frame may carry, on both copies, so the return path from the tail to the head and to ingress appears as a hop span (RFC-0053 §3.2, RFC-0001 §13).
+  - The tail writes one `TRACE` per sampled entry, with `span` the entry's index in the frame, and sets flags bit0 `HAS_TRACE`. A receiver refuses a `TRACE` that names no entry (`span` 0xFFFF), which would carry one sequence's trace context to every ingress, and a second `TRACE` for the same entry.
+  - An ingress copy carries only its own entries' `TRACE`, indexed among them, and no other item. That amends "only ring-return frames carry TLVs" above.
+  - A receiver refuses a frame whose `HAS_TRACE` does not match its `TRACE` items.
+
 **Tap block** (`LogitTap`, RFC-0060 §5.5 `TapMode::Gather { k, tail }` and RFC-0050 §13.6; RFC-0012 owns its semantics, RFC-0060 §5.3–§5.4 the arithmetic that consumes it):
 
 ```text
@@ -658,6 +670,19 @@ pad to 64
 ```
 
 The payload is `n_rows` hidden-state rows (dispatch), or `n_rows` rows of summed, weighted expert outputs (combine). A part's row limit counts the extension with the rows: the largest r with `64 + ⌈(24 + r · m_row) / 64⌉ · 64 + r · row_bytes ≤ max message`, where `m_row` is the per-row dispatch metadata. At hidden 7168 in F32 on Thunderbolt 5, that is 584 rows at `k_local = 1` (m_row = 12 B) and 583 at `k_local = 8` (m_row = 52 B), so prefill-sized dispatches travel in parts [derivation at k_local = 8: 583 rows take 64 + 30,400 + 16,715,776 = 16,746,240 B ≤ 16,773,120; 584 rows take 16,774,912 B].
+
+**Revision note, 2026-10-22 (DIST-E8-T08): how the codec reads the fields the tables leave open.**
+- **`Collective` payload.** Every phase but `ROUTER_BCAST` carries `elems` elements of `dtype`, packed with no row stride. A ring step's slice starts at element `elem_offset` of the vector, so it need not start on a row. `rows` is the token positions the whole vector covers.
+- **`ROUTER_BCAST`.** The primary, member 0 (RFC-0032 §5.1), sends it with `algo` ONE_SHOT and `elem_offset` 0.
+  - `rows` counts its rows, and `elems` the experts they name in all. A row may name none.
+  - The weights are F32 whatever `dtype` holds. `dtype` is still the channel's wire dtype, which every frame is checked against (§6.4).
+- **Members.** `n_members` is at least 2, `src_member` is below it, and a ONE_SHOT frame has `ring_step` 0.
+- **The step.** The `step` in these extensions equals the base header's. The frames carry no `TRACE`, so `HAS_TRACE` is clear.
+- **EP rows.** `EpDispatch` and `EpCombine` rows are `hidden` elements of `dtype` at the `Activation` payload's stride (§6.3), each row's bytes rounded up to 64.
+  - `hidden` is the stage's, from the plan, because neither extension carries it. At hidden 7168 in F32 the stride is the row, 28,672 B, as the derivation above uses.
+  - A message holds at least one row, and every dispatch row names at least one expert (`k_local ≥ 1`).
+- **EP parts.** Each part is a whole frame for its rows, with their routing rows, and holds as many rows as the row limit above allows. A combine part has no routing rows, so its `m_row` is 0.
+- **`StepDescriptor`.** The primary forwards the inbound frame's extension and payload byte for byte, under ftype 0x09 and the `Collective` channel's `chan_seq`. The base header keeps the minor, flags, instance, epoch and step.
 
 #### 6.9 `Hello`, `HelloAck`, `Close`
 
@@ -913,6 +938,11 @@ The limiter is a token bucket in the daemon's `bulk` runtime. It applies to `Blo
 | QUIC, TCP | the transport's decrypt buffer, then a registered slot | 1 memcpy (unavoidable on IP paths) | as above |
 
 **Send paths.** The GPU writes the stage's output hidden state straight into a host-mapped registered slot: the output kernel's destination is the slot, or a D2H copy into it. Completion is signalled with the doorbell (`signal_host`, RFC-0001 §5.7). The net side never calls a device synchronise. On RDMA the slot is posted as is. On QUIC and TCP, TLS reads it once while encrypting.
+
+**Note, 2026-10-22 (DIST-E7-T12): a slot's generation.** A buffer descriptor (`PayloadSlice`, `ExtBuf`; §2) names a slot by pool, slot index, offset and length, and is `Copy`. If its holder drops the slot's last reader before `try_send`, the slot can be freed, handed out and frozen again, and a lease taken through the old descriptor would carry the new bytes without any error.
+- Each slot's state therefore carries a generation, which advances whenever the slot is freed. Each descriptor carries the generation of the freeze it was made from.
+- Leasing a slot through a descriptor checks the generation, and a stale descriptor is refused with `SendError::Invalid`, never leased. Misuse becomes a refusal instead of a frame with the wrong payload.
+- DIST-E7-T12 builds this with the lock-free slot handout.
 
 **Multi-part prefill frames** land part by part in separate slots. The dispatcher issues one H2D per part into consecutive offsets of the stage's device input buffer. That copy is needed anyway, so reassembly costs no extra host copy.
 

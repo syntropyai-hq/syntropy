@@ -42,6 +42,11 @@ pub enum FrameError {
     NotControl(FrameType),
     /// A typed `Activation` was asked of a frame of another type.
     NotActivation(FrameType),
+    /// A typed message of one frame type was asked of a frame of another.
+    WrongType {
+        expected: FrameType,
+        found: FrameType,
+    },
     /// A control frame's extension is shorter than its fields.
     ExtTooShort {
         ftype: FrameType,
@@ -83,6 +88,33 @@ pub enum FrameError {
 }
 
 impl FrameError {
+    /// The same error, naming `ftype` as the frame it was found in: the TLV reader `Activation`
+    /// and `Token` frames share names its own frame otherwise.
+    pub(super) fn in_frame(self, ftype: FrameType) -> FrameError {
+        match self {
+            FrameError::BadField { field, value, .. } => FrameError::BadField {
+                ftype,
+                field,
+                value,
+            },
+            FrameError::Inconsistent {
+                field,
+                value,
+                expected,
+                ..
+            } => FrameError::Inconsistent {
+                ftype,
+                field,
+                value,
+                expected,
+            },
+            FrameError::ExtTooShort { len, needed, .. } => {
+                FrameError::ExtTooShort { ftype, len, needed }
+            }
+            other => other,
+        }
+    }
+
     /// The RFC-0001 §5.12 class. A refused frame is never `Internal`, as RFC-0060 §10.2 requires
     /// of every decoder of untrusted bytes: damaged or malformed bytes are `Integrity`
     /// (RFC-0031 §7.2 drops the frame and NACKs it). A frame type this minor does not define, an
@@ -98,6 +130,41 @@ impl FrameError {
             | FrameError::UnsupportedDType(_) => ErrorClass::Unsupported,
             FrameError::TooLong { .. } | FrameError::BufferTooSmall { .. } => ErrorClass::Internal,
             _ => ErrorClass::Integrity,
+        }
+    }
+
+    /// The same refusal, naming `to` wherever it names `from`: a `StepDescriptor` is read with
+    /// the `Activation` codec, and its refusals name the `StepDescriptor`.
+    pub fn retyped(self, from: FrameType, to: FrameType) -> FrameError {
+        let swap = |ftype: FrameType| if ftype == from { to } else { ftype };
+        match self {
+            FrameError::Sealed(ftype) => FrameError::Sealed(swap(ftype)),
+            FrameError::ExtTooShort { ftype, len, needed } => FrameError::ExtTooShort {
+                ftype: swap(ftype),
+                len,
+                needed,
+            },
+            FrameError::BadField {
+                ftype,
+                field,
+                value,
+            } => FrameError::BadField {
+                ftype: swap(ftype),
+                field,
+                value,
+            },
+            FrameError::Inconsistent {
+                ftype,
+                field,
+                value,
+                expected,
+            } => FrameError::Inconsistent {
+                ftype: swap(ftype),
+                field,
+                value,
+                expected,
+            },
+            other => other,
         }
     }
 
@@ -166,6 +233,9 @@ impl fmt::Display for FrameError {
             FrameError::Sealed(ftype) => write!(f, "{ftype:?} is sealed; open it first"),
             FrameError::NotControl(ftype) => write!(f, "{ftype:?} is not a control frame"),
             FrameError::NotActivation(ftype) => write!(f, "{ftype:?} is not an Activation frame"),
+            FrameError::WrongType { expected, found } => {
+                write!(f, "{found:?} is not a {expected:?} frame")
+            }
             FrameError::ExtTooShort { ftype, len, needed } => {
                 write!(
                     f,

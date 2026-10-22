@@ -34,7 +34,7 @@ use syntropy_core::plan::WireDType;
 use syntropy_core::{InstanceId, PlanEpoch, SequenceId, SessionId, StageIx};
 
 use super::error::FrameError;
-use super::header::{self, ALIGN, Flags, Frame, FrameSpec, FrameType, HEADER_LEN};
+use super::header::{self, ALIGN, Flags, Frame, FrameSpec, FrameType, HEADER_LEN, Header};
 
 /// The extension's fixed part, before the spans.
 pub const ACTIVATION_FIXED_LEN: usize = 64;
@@ -70,7 +70,7 @@ pub mod tlv {
 
 /// `span` of an item for every span, `tree_offset` of a span that is not a tree, and `parent` of
 /// a node whose parent is the root.
-const ABSENT: u16 = 0xFFFF;
+pub(super) const ABSENT: u16 = 0xFFFF;
 
 /// The `TRACE` value: W3C trace context.
 const TRACE_LEN: usize = 26;
@@ -153,7 +153,7 @@ impl ActivationKind {
 }
 
 /// The wire code of a dtype (RFC-0031 §6.4).
-fn dtype_code(dtype: WireDType) -> Option<u8> {
+pub(super) fn dtype_code(dtype: WireDType) -> Option<u8> {
     match dtype {
         WireDType::F32 => Some(1),
         WireDType::BF16 => Some(2),
@@ -164,7 +164,7 @@ fn dtype_code(dtype: WireDType) -> Option<u8> {
     }
 }
 
-fn dtype_from_code(code: u8) -> Option<WireDType> {
+pub(super) fn dtype_from_code(code: u8) -> Option<WireDType> {
     match code {
         1 => Some(WireDType::F32),
         2 => Some(WireDType::BF16),
@@ -324,15 +324,15 @@ pub struct TraceContext {
     pub flags: u8,
 }
 
-fn get16(b: &[u8], at: usize) -> u16 {
+pub(super) fn get16(b: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([b[at], b[at + 1]])
 }
 
-fn get32(b: &[u8], at: usize) -> u32 {
+pub(super) fn get32(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
 }
 
-fn get64(b: &[u8], at: usize) -> u64 {
+pub(super) fn get64(b: &[u8], at: usize) -> u64 {
     let mut word = [0; 8];
     word.copy_from_slice(&b[at..at + 8]);
     u64::from_le_bytes(word)
@@ -394,8 +394,19 @@ fn read_node(b: &[u8]) -> TreeNode {
     }
 }
 
-/// Reads the TLV at `at` in the side area and returns it with the offset of the next one.
-fn read_tlv(side: &[u8], at: usize) -> Result<(Side<'_>, usize), FrameError> {
+/// Reads the TLV at `at` in the side area and returns it with the offset of the next one. The
+/// `Token` frame's TLV area uses the same encoding (RFC-0031 §6.5), so its errors name `ftype`,
+/// the frame the area belongs to.
+pub(super) fn read_tlv(
+    side: &[u8],
+    at: usize,
+    ftype: FrameType,
+) -> Result<(Side<'_>, usize), FrameError> {
+    read_tlv_item(side, at).map_err(|e| e.in_frame(ftype))
+}
+
+/// [`read_tlv`], with its errors naming `Activation`.
+fn read_tlv_item(side: &[u8], at: usize) -> Result<(Side<'_>, usize), FrameError> {
     let remaining = side.len().saturating_sub(at);
     if remaining < TLV_HEADER_LEN {
         return Err(inconsistent(
@@ -538,6 +549,11 @@ impl<'a> TreeArea<'a> {
         TreeArea(Repr::Typed(nodes))
     }
 
+    /// Nodes on the wire, 4 bytes each, already checked.
+    pub(super) fn wire(bytes: &'a [u8]) -> TreeArea<'a> {
+        TreeArea(Repr::Wire(bytes))
+    }
+
     pub fn len(&self) -> usize {
         match self.0 {
             Repr::Wire(bytes) => bytes.len() / TREE_NODE_LEN,
@@ -570,12 +586,17 @@ impl<'a> SideItems<'a> {
         SideItems(Repr::Typed(items))
     }
 
+    /// TLVs on the wire, already walked with `read_tlv`.
+    pub(super) fn wire(bytes: &'a [u8]) -> SideItems<'a> {
+        SideItems(Repr::Wire(bytes))
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = Side<'a>> + 'a {
         let repr = self.0;
         let mut at = 0;
         std::iter::from_fn(move || match repr {
             Repr::Wire(bytes) if at < bytes.len() => {
-                let (side, next) = read_tlv(bytes, at).ok()?;
+                let (side, next) = read_tlv_item(bytes, at).ok()?;
                 at = next;
                 Some(side)
             }
@@ -794,7 +815,7 @@ impl<'a> Activation<'a> {
         let side = &ext[tree_end..side_end];
         let mut at = 0;
         while at < side.len() {
-            at = read_tlv(side, at)?.1;
+            at = read_tlv(side, at, FrameType::Activation)?.1;
         }
         let activation = Activation {
             header,
@@ -1237,6 +1258,7 @@ impl<'a> Activation<'a> {
         &self,
         window: &Window,
         spec: &ActivationSpec,
+        ftype: FrameType,
         out: &mut [u8],
     ) -> Result<usize, FrameError> {
         if spec.flags.encrypted() {
@@ -1258,7 +1280,7 @@ impl<'a> Activation<'a> {
         }
         let frame = FrameSpec {
             wire_minor: spec.wire_minor,
-            ftype: FrameType::Activation,
+            ftype,
             flags: Flags(flags),
             instance: spec.instance,
             epoch: spec.epoch,
@@ -1272,14 +1294,39 @@ impl<'a> Activation<'a> {
     /// frame, whatever its size; [`Activation::parts`] splits a chunk that exceeds `max_frame`.
     pub fn encode(&self, spec: &ActivationSpec, out: &mut [u8]) -> Result<usize, FrameError> {
         self.validate()?;
-        self.encode_window(&self.whole(), spec, out)
+        self.encode_window(&self.whole(), spec, FrameType::Activation, out)
     }
 
     /// [`Activation::encode`] into a new vector.
     pub fn encode_to_vec(&self, spec: &ActivationSpec) -> Result<Vec<u8>, FrameError> {
         self.validate()?;
         let mut out = vec![0; self.window_len(&self.whole())?];
-        let len = self.encode_window(&self.whole(), spec, &mut out)?;
+        let len = self.encode_window(&self.whole(), spec, FrameType::Activation, &mut out)?;
+        out.truncate(len);
+        Ok(out)
+    }
+
+    /// Encodes this frame, unsealed, as a `StepDescriptor` (ftype 0x09) into `out` and returns
+    /// its length: the `Activation` extension and payload under the step descriptor's frame
+    /// type (RFC-0031 §6.8; RFC-0032 §5.2). A primary that forwards an inbound frame uses
+    /// [`Frame::forward_as_step_descriptor`], which copies its bytes.
+    pub fn encode_step_descriptor(
+        &self,
+        spec: &ActivationSpec,
+        out: &mut [u8],
+    ) -> Result<usize, FrameError> {
+        self.validate()?;
+        self.encode_window(&self.whole(), spec, FrameType::StepDescriptor, out)
+    }
+
+    /// [`Activation::encode_step_descriptor`] into a new vector.
+    pub fn encode_step_descriptor_to_vec(
+        &self,
+        spec: &ActivationSpec,
+    ) -> Result<Vec<u8>, FrameError> {
+        self.validate()?;
+        let mut out = vec![0; self.window_len(&self.whole())?];
+        let len = self.encode_window(&self.whole(), spec, FrameType::StepDescriptor, &mut out)?;
         out.truncate(len);
         Ok(out)
     }
@@ -1385,7 +1432,7 @@ impl<'a> Activation<'a> {
             part_index: part.index,
             part_count: part.count,
         };
-        self.encode_window(&window, spec, out)
+        self.encode_window(&window, spec, FrameType::Activation, out)
     }
 }
 
@@ -1411,6 +1458,53 @@ impl<'a> Frame<'a> {
             ));
         }
         Ok(activation)
+    }
+
+    /// The `Activation` a `StepDescriptor` carries, read on a `Collective` channel whose wire
+    /// dtype is `wire`: the same extension and payload as the inbound frame it forwards, under
+    /// ftype 0x09 (RFC-0031 §6.8; RFC-0032 §5.2). The same rules apply, and a refusal names the
+    /// `StepDescriptor`.
+    pub fn step_descriptor(&self, wire: WireDType) -> Result<Activation<'a>, FrameError> {
+        let ftype = self.header.spec.ftype;
+        if ftype != FrameType::StepDescriptor {
+            return Err(FrameError::WrongType {
+                expected: FrameType::StepDescriptor,
+                found: ftype,
+            });
+        }
+        let as_activation = Frame {
+            header: Header {
+                spec: FrameSpec {
+                    ftype: FrameType::Activation,
+                    ..self.header.spec
+                },
+                ..self.header
+            },
+            ..*self
+        };
+        as_activation
+            .activation(wire)
+            .map_err(|e| e.retyped(FrameType::Activation, FrameType::StepDescriptor))
+    }
+
+    /// Forwards an unsealed inbound `Activation` frame as a `StepDescriptor` on a `Collective`
+    /// channel: its extension and payload are copied unchanged, and its header keeps the
+    /// minor, flags, instance, epoch and step, with ftype 0x09 and the collective channel's
+    /// `chan_seq` (RFC-0032 §5.2 step 1). Writes into `out` and returns the length. The frame is
+    /// checked first, so a malformed one is never forwarded.
+    pub fn forward_as_step_descriptor(
+        &self,
+        wire: WireDType,
+        chan_seq: u64,
+        out: &mut [u8],
+    ) -> Result<usize, FrameError> {
+        self.activation(wire)?;
+        let spec = FrameSpec {
+            ftype: FrameType::StepDescriptor,
+            chan_seq,
+            ..self.header.spec
+        };
+        header::encode(&spec, self.ext, self.payload, out)
     }
 }
 

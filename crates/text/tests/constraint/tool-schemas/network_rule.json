@@ -1,0 +1,12 @@
+{
+  "title": "network_rule",
+  "type": "object",
+  "properties": {
+    "source": { "anyOf": [{ "type": "string", "format": "ipv4" }, { "type": "string", "format": "ipv6" }] },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "action": { "const": "allow" },
+    "expires": { "type": "string", "format": "date" }
+  },
+  "required": ["source", "port", "action"],
+  "additionalProperties": false
+}

@@ -1,0 +1,12 @@
+{
+  "title": "send_message",
+  "type": "object",
+  "properties": {
+    "to": { "type": "array", "items": { "type": "string", "format": "email" }, "minItems": 1, "maxItems": 2 },
+    "subject": { "type": "string", "maxLength": 40 },
+    "body": { "type": "string" },
+    "priority": { "enum": ["low", "normal", "high"] }
+  },
+  "required": ["to", "body"],
+  "additionalProperties": false
+}

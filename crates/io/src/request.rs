@@ -166,6 +166,76 @@ impl IoDest {
     pub const fn len(&self) -> Bytes {
         self.len
     }
+
+    /// Splits the destination into its first `at` bytes and the rest, so the I/O thread can
+    /// read one request in chunks (RFC-0021 §3.3).
+    ///
+    /// Safe: the two halves name disjoint parts of the range this value named. The caller who
+    /// built it vouched for every byte of that range, and each half inherits that contract
+    /// until it is dropped unsubmitted or its own request's completion is reaped. Neither half
+    /// is `Copy` or `Clone`, so the range can't be named twice.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` unchanged when `at` is longer than the destination, or when the second
+    /// half's start does not fit in 64 bits.
+    pub fn split_at(self, at: Bytes) -> Result<(IoDest, IoDest), IoDest> {
+        if at.0 > self.len.0 {
+            return Err(self);
+        }
+        let rest_kind = match self.kind {
+            IoDestKind::Fixed { buf, offset } => match offset.checked_add(at.0) {
+                Some(offset) => IoDestKind::Fixed { buf, offset },
+                None => return Err(self),
+            },
+            IoDestKind::Raw { addr } => match addr.checked_add(at.0) {
+                Some(addr) => IoDestKind::Raw { addr },
+                None => return Err(self),
+            },
+        };
+        let rest = IoDest {
+            kind: rest_kind,
+            len: Bytes(self.len.0 - at.0),
+        };
+        let head = IoDest {
+            kind: self.kind,
+            len: at,
+        };
+        Ok((head, rest))
+    }
+
+    /// Joins this destination with `next` when `next` starts in the same registered buffer
+    /// exactly where this one ends, so the I/O thread can coalesce adjacent reads into one
+    /// (RFC-0021 §3.3).
+    ///
+    /// Only [`IoDestKind::Fixed`] destinations join. Each half lies inside buffer `buf` on every
+    /// engine that registered it, so the contiguous union does too, and it is reserved for as
+    /// long as both halves were. Two adjacent [`IoDestKind::Raw`] ranges may lie in two
+    /// different allocations, so they never join.
+    ///
+    /// # Errors
+    ///
+    /// Returns both destinations unchanged when they are not adjacent `Fixed` ranges of one
+    /// buffer, or when the joined length does not fit in 64 bits.
+    pub fn join(self, next: IoDest) -> Result<IoDest, (IoDest, IoDest)> {
+        if let (
+            IoDestKind::Fixed { buf, offset },
+            IoDestKind::Fixed {
+                buf: next_buf,
+                offset: next_offset,
+            },
+        ) = (self.kind, next.kind)
+            && buf == next_buf
+            && offset.checked_add(self.len.0) == Some(next_offset)
+            && let Some(len) = self.len.0.checked_add(next.len.0)
+        {
+            return Ok(IoDest {
+                kind: self.kind,
+                len: Bytes(len),
+            });
+        }
+        Err((self, next))
+    }
 }
 
 /// The class of a request, which decides its place in the I/O thread's queues (RFC-0021 §3.2).
@@ -323,6 +393,75 @@ mod tests {
         for (i, p) in IoPriority::ALL.iter().enumerate() {
             assert_eq!(*p as usize, i);
         }
+    }
+
+    /// A `Fixed` destination for tests that submit nothing.
+    fn fixed(buf: u16, offset: u64, len: u64) -> IoDest {
+        // SAFETY: no engine in this test process registers buffers, so the destination names
+        // no memory, and these tests submit nothing.
+        unsafe { IoDest::fixed(BufIndex(buf), offset, Bytes(len)) }
+    }
+
+    #[test]
+    fn split_at_gives_two_disjoint_halves_or_returns_self() {
+        let (head, rest) = fixed(3, 4096, 12288).split_at(Bytes(8192)).unwrap();
+        assert_eq!(head, fixed(3, 4096, 8192));
+        assert_eq!(rest, fixed(3, 12288, 4096));
+        // The ends: an empty head, or the whole range as the head.
+        let (empty, all) = fixed(0, 0, 4096).split_at(Bytes(0)).unwrap();
+        assert_eq!((empty.len(), all), (Bytes(0), fixed(0, 0, 4096)));
+        let (all, empty) = fixed(0, 0, 4096).split_at(Bytes(4096)).unwrap();
+        assert_eq!((all, empty.len()), (fixed(0, 0, 4096), Bytes(0)));
+        // Past the end, or past 2^64, the destination comes back unchanged.
+        assert_eq!(
+            fixed(0, 0, 4096).split_at(Bytes(4097)),
+            Err(fixed(0, 0, 4096))
+        );
+        assert_eq!(
+            fixed(0, u64::MAX, 2).split_at(Bytes(1)),
+            Err(fixed(0, u64::MAX, 2))
+        );
+        let mut page = [0u8; 8192];
+        let addr = page.as_mut_ptr() as u64;
+        // SAFETY: `page` is one 8192-byte allocation this test owns; it outlives `raw` and its
+        // halves, which are never submitted, and nothing else reads or writes it meanwhile.
+        let raw = unsafe { IoDest::raw(addr, Bytes(8192)) };
+        let (head, rest) = raw.split_at(Bytes(4096)).unwrap();
+        assert_eq!(head.kind(), IoDestKind::Raw { addr });
+        assert_eq!(rest.kind(), IoDestKind::Raw { addr: addr + 4096 });
+        assert_eq!((head.len(), rest.len()), (Bytes(4096), Bytes(4096)));
+    }
+
+    #[test]
+    fn join_takes_only_adjacent_fixed_ranges_of_one_buffer() {
+        assert_eq!(
+            fixed(1, 4096, 4096).join(fixed(1, 8192, 8192)),
+            Ok(fixed(1, 4096, 12288))
+        );
+        // A gap, an overlap, the wrong order or another buffer: both come back.
+        for (a, b) in [
+            (fixed(1, 0, 4096), fixed(1, 8192, 4096)),
+            (fixed(1, 0, 8192), fixed(1, 4096, 4096)),
+            (fixed(1, 4096, 4096), fixed(1, 0, 4096)),
+            (fixed(1, 0, 4096), fixed(2, 4096, 4096)),
+        ] {
+            let (ka, kb) = (a.kind(), b.kind());
+            let (a, b) = a.join(b).unwrap_err();
+            assert_eq!((a.kind(), b.kind()), (ka, kb));
+        }
+        let mut page = [0u8; 8192];
+        let addr = page.as_mut_ptr() as u64;
+        // SAFETY: as in the test above; neither half is submitted.
+        let (a, b) = unsafe {
+            (
+                IoDest::raw(addr, Bytes(4096)),
+                IoDest::raw(addr + 4096, Bytes(4096)),
+            )
+        };
+        assert!(a.join(b).is_err(), "raw ranges never join");
+        // Splitting and joining again gives back the same destination.
+        let (h, r) = fixed(5, 0, 65536).split_at(Bytes(16384)).unwrap();
+        assert_eq!(h.join(r), Ok(fixed(5, 0, 65536)));
     }
 
     #[test]

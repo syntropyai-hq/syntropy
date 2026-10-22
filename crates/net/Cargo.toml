@@ -11,6 +11,8 @@ ciborium.workspace = true
 # Header and payload CRCs of every frame (RFC-0031 §6.1, ADR-0307 item 2).
 crc32c.workspace = true
 ed25519-dalek.workspace = true
+# The endpoint of DIST-E7-T23; `net` is the only crate that links iroh (RFC-0001 §4.2 rule 6).
+iroh.workspace = true
 serde.workspace = true
 subtle.workspace = true
 syntropy-config = { path = "../config" }
@@ -21,6 +23,10 @@ zstd.workspace = true
 # `hazmat` signs with a chosen public key in the challenge, and `digest` exports its SHA-512, to
 # build the mixed-order key vector.
 ed25519-dalek = { workspace = true, features = ["digest", "hazmat"] }
+# `test-utils` runs a relay server on this host for the forced-relay test, through iroh-relay's
+# server.
+iroh = { workspace = true, features = ["test-utils"] }
 proptest.workspace = true
 # Reads the official BLAKE3 test vectors (`third_party/blake3/test_vectors.json`).
 serde_json.workspace = true
+tokio.workspace = true

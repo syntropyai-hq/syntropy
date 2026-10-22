@@ -6,8 +6,9 @@ use std::cmp::Ordering;
 use std::fmt::Display;
 
 use serde::de::DeserializeOwned;
+use syntropy_core::policy::{Fraction, Reserve};
 
-use super::{ByteSize, Duration, Fraction, Rate, Reserve, ValueError};
+use super::{ByteSize, Duration, Rate, ValueError};
 
 /// A type a key can declare `min` or `max` for. The bounds are written in the attribute as
 /// values of [`InRange::Bound`].
@@ -65,7 +66,16 @@ macro_rules! ordered_in_range {
 }
 
 ordered_in_range!(u8, u16, u32, u64, usize, i8, i16, i32, i64, f32, f64);
-ordered_in_range!(ByteSize, Duration, Fraction);
+ordered_in_range!(ByteSize, Duration);
+
+/// A range on a fraction is written as numbers in [0, 1], such as `max = 0.5`.
+impl InRange for Fraction {
+    type Bound = f32;
+
+    fn check_range(&self, min: Option<&f32>, max: Option<&f32>) -> Result<(), ValueError> {
+        ordered(&self.get(), min, max)
+    }
+}
 
 /// A range on a rate needs bounds of the same kind: tokens for a token rate, bytes for a byte
 /// rate.

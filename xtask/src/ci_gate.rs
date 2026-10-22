@@ -90,7 +90,11 @@ pub fn evaluate(text: &str) -> Evaluation {
     };
 
     let mut outcomes = Vec::new();
-    for (job, value) in &needs {
+    // By name, so the report reads the same whatever order the map keeps: `serde_json`'s
+    // `preserve_order` keeps document order (RFC-0060 §2.4 rule T4).
+    let mut jobs: Vec<(&String, &Value)> = needs.iter().collect();
+    jobs.sort_by_key(|(job, _)| *job);
+    for (job, value) in jobs {
         let result = value.get("result").and_then(Value::as_str);
         match result.and_then(Outcome::parse) {
             Some(outcome) => outcomes.push((job.as_str(), outcome)),

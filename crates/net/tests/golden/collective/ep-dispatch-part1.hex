@@ -1,0 +1,27 @@
+# ep-dispatch-part1: part 1 of 2 of the same dispatch: rows 3..5
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 0e 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+1e 00 00 00 00 00 00 00 0e 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 00 01 00 00 a8 b7 8e 4c cf b0 c2 6e  # 0030 header
+1e 00 00 00 00 00 00 00 07 00 02 00 01 00 01 00  # 0040 extension
+02 00 00 00 00 00 00 00 04 00 02 00 66 66 66 3f  # 0050 extension
+cd cc cc 3d 08 00 04 00 06 00 01 00 00 00 80 3f  # 0060 extension
+08 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+00 80 3b 45 00 90 3b 45 00 a0 3b 45 00 b0 3b 45  # 0080 payload
+00 c0 3b 45 00 d0 3b 45 00 e0 3b 45 00 f0 3b 45  # 0090 payload
+00 00 3c 45 00 10 3c 45 00 20 3c 45 00 30 3c 45  # 00a0 payload
+00 40 3c 45 00 50 3c 45 00 60 3c 45 00 70 3c 45  # 00b0 payload
+00 80 3c 45 00 90 3c 45 00 a0 3c 45 00 b0 3c 45  # 00c0 payload
+00 c0 3c 45 00 d0 3c 45 00 e0 3c 45 00 f0 3c 45  # 00d0 payload
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00e0 payload
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 00f0 payload
+00 00 7a 45 00 10 7a 45 00 20 7a 45 00 30 7a 45  # 0100 payload
+00 40 7a 45 00 50 7a 45 00 60 7a 45 00 70 7a 45  # 0110 payload
+00 80 7a 45 00 90 7a 45 00 a0 7a 45 00 b0 7a 45  # 0120 payload
+00 c0 7a 45 00 d0 7a 45 00 e0 7a 45 00 f0 7a 45  # 0130 payload
+00 00 7b 45 00 10 7b 45 00 20 7b 45 00 30 7b 45  # 0140 payload
+00 40 7b 45 00 50 7b 45 00 60 7b 45 00 70 7b 45  # 0150 payload
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0160 payload
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0170 payload
