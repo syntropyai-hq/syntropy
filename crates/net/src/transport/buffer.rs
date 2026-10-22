@@ -280,6 +280,15 @@ impl BufferPool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    /// Whether slot `slot` is free: no writer and no reader holds it. A channel core that hands
+    /// out a pool's slots uses it to see which of its delivered frames' slots have come back.
+    pub fn is_free(&self, slot: u32) -> bool {
+        self.inner
+            .states
+            .get(slot as usize)
+            .is_some_and(|state| state.load(Ordering::Acquire) == FREE)
+    }
+
     /// Takes slot `slot` for writing, if it is free.
     pub fn claim(&self, slot: u32) -> Option<SlotWriter> {
         let state = self.inner.states.get(slot as usize)?;

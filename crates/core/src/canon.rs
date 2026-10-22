@@ -33,7 +33,15 @@
 //! and so its digest, unchanged. A newtype struct encodes as its content, so `#[serde(transparent)]`
 //! wrappers cost nothing. Encoding is not human-readable, so `bitflags` types encode as their
 //! bits. 128-bit integers are refused.
+//!
+//! **Skipping in this encoding only.** A type that also travels in a format that is not
+//! self-describing, such as the IPC's postcard (RFC-0001 §3.5), cannot skip a field: the decoder
+//! reads fields by position and has no way to know one is missing. Such a type marks its optional
+//! fields `skip_serializing_if = "crate::canon::absent_if_none"`. The predicate is true only for
+//! `None` while [`to_bytes`] is encoding on the current thread, so the canonical bytes are those of
+//! `Option::is_none`, and every other format writes the field (RFC-0001 §18.20).
 
+use std::cell::Cell;
 use std::fmt;
 
 use serde::Serialize;
@@ -72,8 +80,38 @@ impl ser::Error for CanonError {
     }
 }
 
+thread_local! {
+    /// How many [`to_bytes`] calls are encoding on this thread.
+    static ENCODING: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Marks this thread as encoding canonically while it lives, so nested and panicking calls
+/// leave the count right.
+struct Encoding;
+
+impl Encoding {
+    fn start() -> Encoding {
+        ENCODING.with(|depth| depth.set(depth.get() + 1));
+        Encoding
+    }
+}
+
+impl Drop for Encoding {
+    fn drop(&mut self) {
+        ENCODING.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+/// A `skip_serializing_if` predicate: true for `None` while [`to_bytes`] encodes on this thread,
+/// false otherwise. The field is absent from the canonical bytes, as with `Option::is_none`, and
+/// present in every other format (see the module docs).
+pub fn absent_if_none<T>(value: &Option<T>) -> bool {
+    value.is_none() && ENCODING.with(|depth| depth.get() > 0)
+}
+
 /// The canonical encoding of `value`.
 pub fn to_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, CanonError> {
+    let _encoding = Encoding::start();
     let mut out = Vec::new();
     value.serialize(&mut Encoder { out: &mut out })?;
     Ok(out)
@@ -545,6 +583,13 @@ mod tests {
     }
 
     #[derive(Serialize)]
+    struct SkipsInCanon {
+        a: u8,
+        #[serde(skip_serializing_if = "absent_if_none")]
+        b: Option<u8>,
+    }
+
+    #[derive(Serialize)]
     enum E {
         A,
         B(u8),
@@ -590,6 +635,26 @@ mod tests {
             to_bytes(&Wide { a: 7 }).unwrap(),
             to_bytes(&Narrow { a: 7 }).unwrap()
         );
+    }
+
+    #[test]
+    fn absent_if_none_skips_only_while_encoding_canonically() {
+        // The canonical bytes are `Option::is_none`'s, for `None` and for `Some`.
+        for b in [None, Some(0), Some(9)] {
+            assert_eq!(
+                to_bytes(&SkipsInCanon { a: 7, b }).unwrap(),
+                to_bytes(&Skips { a: 7, b }).unwrap()
+            );
+        }
+        // Outside the encoder the field is written, as `null` in JSON.
+        assert!(!absent_if_none(&None::<u8>));
+        assert_eq!(
+            serde_json::to_string(&SkipsInCanon { a: 7, b: None }).unwrap(),
+            r#"{"a":7,"b":null}"#
+        );
+        // An encoding that fails leaves the thread as it was.
+        assert!(to_bytes(&1u128).is_err());
+        assert!(!absent_if_none(&None::<u8>));
     }
 
     #[test]

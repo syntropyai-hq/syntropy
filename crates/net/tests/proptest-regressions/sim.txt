@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 05d418c738665ecdf2e8a3cf99027c54ef1be52c95b8fc684d38baeadac2031b # shrinks to seed = 0, shape = Shape { recv_slots: 1, slot_size: 256, retention: 1, cadence: EveryFrame }, frames = 1, loss = 0, corrupt = 0, jitter = 0, foreign = 104
+cc ca0cd2353b4419dd0e2cf67c08143ce734f32bc2ff4151fb22dab9221683401b # shrinks to seed = 507643826620405991, shape = Shape { recv_slots: 1, slot_size: 256, retention: 1, cadence: EveryFrame }, frames = 16, loss = 0, duplicate = 0, corrupt = 42, jitter = 7, control = 0, hold = 133
