@@ -26,6 +26,7 @@ mod channel;
 pub mod conformance;
 pub mod core;
 pub mod domain;
+pub mod pacing;
 pub mod quic;
 pub mod stream;
 pub mod tcp;

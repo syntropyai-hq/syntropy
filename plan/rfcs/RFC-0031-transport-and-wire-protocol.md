@@ -992,10 +992,23 @@ on fault(ch):                        // QP error, QUIC connection lost, TCP rese
 
 Bulk transfers yield to the data plane (RFC-0001 §8.4 rule 6; ADR-0011 item 8):
 - Every 250 ms, a node that carries both a live data channel and a blob stream on the same physical edge compares the data channel's α p99 over that window with its idle p99, which RFC-0010 records.
-- If the ratio exceeds `net.bulk_p99_ratio` (1.2), the blob send rate halves. Otherwise it grows by 5 % of the edge's β.
-- The rate never drops below `net.bulk_floor` (5 % of β). Progress is guaranteed, and a 100 GB fetch cannot starve.
+- If the ratio exceeds `net.bulk_p99_ratio` (1.2), the blob send rate halves, and growth then stops two steps, 10 % of β [target], below the rate that broke the bound. Otherwise it grows by 5 % of the edge's β, up to that ceiling, or β.
+- The ceiling rises one step after 64 windows (16 s) within the bound [target]. That wait doubles after each breach that follows a rise, up to 1,024 windows [target].
+- The rate starts at the floor and never drops below it: `net.bulk_floor`, 5 % of β. Progress is guaranteed, and a 100 GB fetch cannot starve.
 
 The limiter is a token bucket in the daemon's `bulk` runtime. It applies to `BlobData` sends and to `KvChunk` sends on Bulk channels.
+
+**Note, 2026-10-23 (DIST-E7-T13): the ceiling, the start at the floor, and where the pacer lives.** The task lead took these under the maintainer's standing instruction.
+- **Why a ceiling.** As first written, the rule climbs back into saturation every few seconds. In the simulator, the p99 of each window but the probe windows stays within 1.2 × idle, but each probe window holds enough samples above the bound that the p99 over a long transfer exceeds it.
+  - The figures are [estimate]s from RFC-0060 §8.3's `lan_2_5g`, seed 1. The data channel sends 16 KiB every 2 ms; bulk goes in 4 KiB frames; the transfer is 10 GiB, 47 s simulated.
+  - Without the ceiling: 1.515 × idle over the transfer, with 17 halvings.
+  - With a ceiling that re-probes every 8 windows: 1.333 ×, with 4 halvings.
+  - With the rule above: 1.046 ×, with 2 halvings, and the rate settles at 90 % of β.
+  - The first climb from the floor always breaks the bound once. Its window drops below 1 % of a transfer's samples only beyond about 100 windows (25 s) [estimate], which a 10 GB transfer on 2.5 GbE reaches.
+- **The start at the floor.** A transfer that starts beside a live ring never begins by taking the whole link.
+- **The pacer** is `net::transport::pacing::BulkPacer`, sans I/O. It holds the token bucket, in whole bytes and nanoseconds. Its AIMD takes the nearest-rank p99 of each window's α samples from the edge's other channels; a window with no sample, when no data channel is live, counts as within the bound.
+  - In the simulator, `SimNet::pace` gates `Bulk` and `Replay` sends on an edge with it.
+  - ADR-0011 item 8 states only the 1.2 × bound, which this keeps, so it needs no revision.
 
 ### 8. Zero-copy receive and buffer pools
 
