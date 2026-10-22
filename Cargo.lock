@@ -881,6 +881,8 @@ name = "syntropy-cluster"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "ciborium",
+ "proptest",
  "serde",
  "stateright",
  "syntropy-config",
