@@ -281,7 +281,7 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
   - On Apple, batched sends need `UdpSocketState::set_apple_fast_path` (`unix.rs:388`). iroh's default `fast-apple-datapath` feature compiles it in (`iroh Cargo.toml:70`, `74`), but nothing calls it: not iroh 1.4.1, not noq 1.4.0, and not netwatch 0.19.3, which owns the socket (`netwatch src/udp.rs:736`, `801`). iroh does not expose its sockets, so `net` cannot call it either.
   - No upstream issue tracks enabling it. Searches of the iroh and noq trackers on 2026-10-23 found noq #204, which exposed the feature, and none that enables it.
   - iroh #4555 (open) reports that existing connections keep sending GSO batches after noq-udp turns GSO off. That bears on a Linux host whose probe passes but whose driver drops the batches.
-- **Keep-alive and idle timeout** are reachable through `keep_alive_interval` (`quic.rs:366`; iroh's default is 5 s) and `max_idle_timeout` (`quic.rs:212`). iroh clamps a per-path idle timeout to 15 s and ignores a per-path keep-alive above 5 s (`iroh src/socket.rs:109`, `117`). The table's values lie inside those bounds.
+- **Keep-alive and idle timeout** are reachable through `keep_alive_interval` (`quic.rs:366`; iroh's default is 5 s) and `max_idle_timeout` (`quic.rs:212`). iroh clamps a per-path idle timeout to 15 s and ignores a per-path keep-alive above 5 s (`quic.rs:492`, `514`). Each path also has its own keep-alive and idle timeout, 5 s and 15 s by default (`quic.rs:157–159`), and iroh abandons a path when its own idle timeout expires. So `net` sets the table's values per path too, through `default_path_keep_alive_interval` (`quic.rs:514`) and `default_path_max_idle_timeout` (`quic.rs:492`), as well as connection-wide (added 2026-10-23 after #1773's review; the line references were `src/socket.rs:109`, `117`, which hold the constants). The table's values lie inside those bounds.
 - **Who does what.** `net`'s endpoint (DIST-E7-T23) sets none of these yet. DIST-E7-T03 sets them, and DIST-E7-T16 measures what the initial window and GSO gain, macOS included.
 
 #### 4.4 Hot-path integration
@@ -616,6 +616,8 @@ Tokens travel tail → head (ring return, all of the step's sequences) and tail 
         padding to 8
 ```
 
+- *Note 2026-10-23 (DIST-E1-T14, as built; review-1493's N2 on #1780):* `core`'s `TokenEntry::rng_counter` has no serde default, though the item below calls it an addition with a default. A missing counter defaulting to 0 would restart a resumed sequence's random stream (RFC-0032 §3.7), so a later step's tokens would differ from the reference, which breaks exact mode (D3). The binary entry always carries it at offset 40, and `core`'s type is new, so no older encoding exists to need a default. A serde encoding without it is refused rather than read as 0. `draft`, `draft_tree` and `tap` keep their defaults.
+- *Note 2026-10-23:* `logprob_k = 0` means no logprobs, so the entry has no form for the chosen tokens' logprobs without alternatives. OQ-NET-35 tracks it, with `logprob_k = 0x80` recommended behind capability bit 16 `CHOSEN_LOGPROBS` (§10): a new value of an existing field is not additive, so it is sent only on channels whose two ends advertise the bit, and ingress asks for it only when both of the tail's channels the entry travels, to the ingress and to the head, have it (RFC-0050 §3.1's note). DIST-E8-T18 settles it.
 - `TokenEntry::draft`, `rng_counter` and `tap` are additions to RFC-0001's `TokenEntry`, made under the extension rules as fields with defaults. `tap` is RFC-0060 amendment A4's `TokenEntry::tap: Option<LogitTap>`.
 - The draft travels only on the ring-return frame. The ingress copy omits it (`n_draft = 0`).
 - The tap block travels only on the ingress copy, which goes to the parity driver.
@@ -783,6 +785,13 @@ Blob streams on `syntropy/blob/1` carry `Hello` (with `cred_kind = AdmissionCert
 72  8   offset       resume offset within the object
 80  8   len          bytes wanted; 0 = to the end
 ```
+
+*Note 2026-10-23 (RFC-0001 §18.28): a shard fetch's class.* A runner's `FetchShard` carries RFC-0041 §7's `FetchPriority`, and the store's chunk requests for it use these classes:
+- `Urgent`, recovery after a node loss, uses `replacement`, as RFC-0033 §6.3 runs a replacement's fetch.
+- `Normal`, a load, uses `demand`: a runner is `Fetching`.
+- `Background`, pre-staging a sibling or a replica, uses `background`.
+
+`prefetch` is RFC-0023's peer-to-local expert prefetch, which no shard fetch uses.
 
 The response is a sequence of `BlobData` frames with payloads of at most `net.blob_frame` (1 MiB). Their extension is `id[32], offset u64, total u64, flags u16` (bit0 `LAST`), followed by padding. Errors use `Close` with `NotFound`, `Busy` (with a `retry_after_ms` in the reason) or `Throttled`. The receiver writes data through the store's direct-I/O path and verifies the object's BLAKE3 when it completes (RFC-0041). A mismatch discards it and marks the source suspect for that model (ADR-0016).
 
@@ -1052,7 +1061,7 @@ Blob streams use the data-plane frame layout (§6.10). Weight chunks are bulky a
 |---|---|---|
 | Protocol major | `1` in every ALPN; `proto_major` in beacons and `Hello` | incompatible changes bump it. Nodes of different majors never connect, and discovery lists them as incompatible (RFC-0030 §4.1). Upgrading across a major is cluster-wide (RFC-0052 drains and upgrades node by node; mixed-major nodes form separate clusters until all are upgraded) |
 | Data wire minor | `wire_minor` in every frame header and in `Hello` | additive only: new frame types, new TLV types, new flag bits, new trailing extension fields (receivers use `ext_len` to skip them). A channel runs at the lower of the two minors |
-| Capabilities | 64-bit set in `Hello`/`HelloAck` | bit0 VERIFY_TREE, bit1 Q8_WIRE, bit2 F8_WIRE, bit3 KV_CHUNK_V1, bit4 SACK, bit5 RDMA_AEAD, bit6 MULTI_STREAM, bit7 EP_FRAMES, bit8 RING_ALLREDUCE, bit9 RECOVER_V1, bit10 PREFIX_ITEMS (the RFC-0022 items, TLVs 9–15), bit11 KV_HEADROOM, bit12 TAP, bit13 TENSOR_GROUP, bit14 EMBEDDING, bit15 TOKEN_PARTS, bits 16–63 reserved. A frame or TLV type tied to a capability is sent only when both sides advertise it |
+| Capabilities | 64-bit set in `Hello`/`HelloAck` | bit0 VERIFY_TREE, bit1 Q8_WIRE, bit2 F8_WIRE, bit3 KV_CHUNK_V1, bit4 SACK, bit5 RDMA_AEAD, bit6 MULTI_STREAM, bit7 EP_FRAMES, bit8 RING_ALLREDUCE, bit9 RECOVER_V1, bit10 PREFIX_ITEMS (the RFC-0022 items, TLVs 9–15), bit11 KV_HEADROOM, bit12 TAP, bit13 TENSOR_GROUP, bit14 EMBEDDING, bit15 TOKEN_PARTS, bit16 CHOSEN_LOGPROBS (added 2026-10-23: the `Token` entry's `logprob_k = 0x80`, OQ-NET-35, DIST-E8-T18), bits 17–63 reserved. A frame or TLV type tied to a capability is sent only when both sides advertise it |
 | Control feature level | `feature_level: u32` in the control `Hello` | the coordinator emits event variants only up to the cluster minimum (RFC-0032 §6.4) |
 | Beacon version | `beacon_version` byte | a receiver ignores beacon versions it does not know, and still lists the node as "unknown beacon version" |
 
