@@ -973,6 +973,14 @@ QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the
 |---|---|---|---|
 | Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec behind capability bit 16, with RFC-0050 §3.1's rewrite kept towards peers without the bit | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
 
+## DIST-E7-T24: a Windows wake for the QUIC `net` domain (2026-10-23)
+
+DIST-E7-T03 builds the QUIC backend's `net` domain, where channel tasks wait on their rings' wake handles. On Windows the runtime cannot wait on a `syntropy-spsc` event handle, so DIST-E7-T03's parked tasks re-check their rings every 1 ms, as the lead approved. Its criteria run on Linux and loopback and do not see that delay. No task covered the bridge.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T24 (M2) → DIST-E7-T03, QUAL-E15-T05 | DIST-E7-T24 | Definition of done | the bridge needs DIST-E7-T03's domain, and its latency criterion needs the R-WIN rig, as DIST-E7-T19's does. It names `windows-sys`, the new direct dependency of `net` it brings, and pins the one lifetime hazard it creates: the callback runs on a pool thread, so the wait is unregistered before the ring's handle drops (review of #1826, N2) |
+
 ## PLC-E8-T21: resumed sequences at the head and tail (2026-10-23)
 
 #1749 gave PLC-E6-T04 an M2 re-prefill: the ingress reopens each live sequence on the new epoch from its transcript with `SequenceOpen { resume }`. No task before M3's DIST-E14-T08 built the other side, where the head prefills the transcript, the tail emits from token `emitted + 1`, and the tail's state is rebuilt from the transcript (RFC-0033 §5.3, RFC-0012 §8.6). The stand-in engine review of #1749 asked for that as its own PLC-E8 row. These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
