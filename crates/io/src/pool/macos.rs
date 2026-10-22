@@ -431,7 +431,8 @@ mod tests {
         let got: Vec<u8> = blocks.iter().flat_map(|b| b.0).take(12 * 4096).collect();
         assert_eq!(got, bytes[..12 * 4096]);
 
-        let reads: Vec<(usize, u64)> = calls
+        // Two workers run the two reads concurrently, so the record's order varies.
+        let mut reads: Vec<(usize, u64)> = calls
             .lock()
             .unwrap()
             .iter()
@@ -440,7 +441,8 @@ mod tests {
                 Call::Fcntl { .. } => None,
             })
             .collect();
-        assert_eq!(reads, [(8, MIN_REQUEST), (4, 16384)]);
+        reads.sort_unstable();
+        assert_eq!(reads, [(4, 16384), (8, MIN_REQUEST)]);
         let _ = std::fs::remove_file(&path);
     }
 
