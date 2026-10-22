@@ -18,6 +18,7 @@ Once the crates hold code, contributions follow the tasks in [plan/implementatio
 2. Read [AGENTS.md](AGENTS.md) and the RFC and ADRs for the part you want to change. [plan/README.md](plan/README.md) maps them.
 3. For anything larger than a focused fix, open an issue first that says what problem it solves, what it changes and what it costs. A change to a decision needs an ADR (below).
 4. For implementation work, pick a task from the [project board](https://github.com/orgs/syntropyai-hq/projects/1). Every task in the plan is an issue there, and the [roadmap](plan/implementation/roadmap.md)'s "Start here" list and zero-slack tasks say which come first. Take one that is unassigned and ready: every task in its "Depends on" cell is done. `python3 plan/implementation/tools/depcheck.py --task <ID>` lists them, and the issue's "blocked by" links mirror the cell. Assigning an issue and moving it on the board need write access, so say in a comment on the issue that you're taking it, and a maintainer assigns it to you. If the work you want has no task, propose one in an issue or add it to the right epic in your PR.
+5. On Windows, every text file checks out with LF (`.gitattributes`), so tests see the same bytes as on Linux and macOS. A clone made before 2026-10-22 keeps CRLF in each file it has not checked out since, so clone again to get LF everywhere.
 
 ## Issues
 
