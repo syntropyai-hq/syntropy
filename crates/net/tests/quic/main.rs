@@ -524,58 +524,77 @@ fn an_accept_whose_caller_stopped_waiting_can_be_called_again() {
     assert_eq!(*receiver.key(), channel);
 }
 
-/// One peer holds at most `MAX_EARLY_PER_PEER` early streams: its next is refused at once with
-/// `NotANeighbour`, while another peer's early stream is still held for its `accept`.
+/// One peer holds at most `MAX_EARLY_PER_PEER` early streams. Its next is closed at once without
+/// a `HelloAck`, a link failure the connector may retry, not `NotANeighbour`, which nothing
+/// retries (RFC-0001 §10). Another peer's early stream is still held for its `accept`. Once the
+/// acceptor accepts one of the held streams, the same channel retried is held, and opens.
 #[test]
 fn one_peer_cannot_take_every_early_stream() {
     let mut pair = Pair::new();
     let c = Peer::bind(&pair.runtime, 0xC3);
-    let (_, a_pool) = pair.pool(true, u32::from(CONTROL_RECEIVES));
-    let (_, b_pool) = pair.pool(false, 4 + u32::from(CONTROL_RECEIVES));
+    let lanes = u8::try_from(MAX_EARLY_PER_PEER).expect("a lane");
+    // A pool for each of a's channels, the retried one included, and for each of b's accepts.
+    let a_pools: Vec<_> = (0..=lanes)
+        .map(|_| pair.pool(true, u32::from(CONTROL_RECEIVES)).1)
+        .collect();
+    let (_, retry_pool) = pair.pool(true, u32::from(CONTROL_RECEIVES));
+    let [c_at_b, freed_at_b, retried_at_b] =
+        [(); 3].map(|()| pair.pool(false, 4 + u32::from(CONTROL_RECEIVES)).1);
     let c_pool = c.pool(900, u32::from(CONTROL_RECEIVES));
     let to_b = pair.remote_b();
-    let lanes = u8::try_from(MAX_EARLY_PER_PEER).expect("a lane");
     let hold = settings().early_hold();
-    let (held, (over, took), (sent, received)) = pair.runtime.block_on(async {
-        let held = join_all(
-            (0..lanes)
-                .map(|lane| {
-                    pair.a.connect(
-                        &to_b,
-                        channel_spec(key(ChannelPurpose::Activations, lane), a_pool, 0),
-                    )
-                })
-                .collect(),
-        );
-        let over = async {
-            // Every one of a's streams is held by now.
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            let started = std::time::Instant::now();
-            let refused = pair
-                .a
-                .connect(
-                    &to_b,
-                    channel_spec(key(ChannelPurpose::Activations, lanes), a_pool, 0),
+    let on_lane = |lane| key(ChannelPurpose::Activations, lane);
+    let (held, (over, took), (sent, received), (freed, retried, retried_received)) =
+        pair.runtime.block_on(async {
+            let held = join_all(
+                (0..lanes)
+                    .map(|lane| {
+                        let spec = channel_spec(on_lane(lane), a_pools[usize::from(lane)], 0);
+                        pair.a.connect(&to_b, spec)
+                    })
+                    .collect(),
+            );
+            let over = async {
+                // Every one of a's streams is held by now.
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                let started = std::time::Instant::now();
+                let spec = channel_spec(on_lane(lanes), a_pools[usize::from(lanes)], 0);
+                let closed = pair.a.connect(&to_b, spec).await;
+                (closed, started.elapsed())
+            };
+            let other = async {
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                let channel = key(ChannelPurpose::Tokens, 0);
+                tokio::join!(
+                    c.transport.connect(&to_b, channel_spec(channel, c_pool, 0)),
+                    async {
+                        // c's stream is held by now, beside a's.
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        pair.b.accept(channel_spec(channel, c_at_b, 4)).await
+                    }
                 )
-                .await;
-            (refused, started.elapsed())
-        };
-        let other = async {
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            let channel = key(ChannelPurpose::Tokens, 0);
-            tokio::join!(
-                c.transport.connect(&to_b, channel_spec(channel, c_pool, 0)),
-                async {
-                    // c's stream is held by now, beside a's.
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    pair.b.accept(channel_spec(channel, b_pool, 4)).await
-                }
-            )
-        };
-        tokio::join!(held, over, other)
-    });
-    let refused = over.expect_err("a stream over the peer's cap");
-    assert_eq!(refused.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{refused}");
+            };
+            let retry = async {
+                // After the stream over the cap was closed, and well within the others' hold.
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                let freed = pair.b.accept(channel_spec(on_lane(0), freed_at_b, 4)).await;
+                let (retried, retried_received) = tokio::join!(
+                    pair.a
+                        .connect(&to_b, channel_spec(on_lane(lanes), retry_pool, 0)),
+                    async {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        pair.b
+                            .accept(channel_spec(on_lane(lanes), retried_at_b, 4))
+                            .await
+                    }
+                );
+                (freed, retried, retried_received)
+            };
+            tokio::join!(held, over, other, retry)
+        });
+    let closed = over.expect_err("a stream over the peer's cap");
+    assert_eq!(closed.class, ErrorClass::Link, "{closed}");
+    assert_eq!(closed.code, None, "{closed}");
     assert!(took < hold, "the stream over the cap was held: {took:?}");
     assert_eq!(
         *sent.expect("c's channel").key(),
@@ -585,7 +604,23 @@ fn one_peer_cannot_take_every_early_stream() {
         *received.expect("c's channel at b").key(),
         key(ChannelPurpose::Tokens, 0)
     );
-    // Nobody accepted a's held streams, so each was refused once its hold ended.
+    // The accept for lane 0 freed a slot, and the retried channel opened in it.
+    assert_eq!(*freed.expect("lane 0 at b").key(), on_lane(0));
+    assert_eq!(*retried.expect("the retried channel").key(), on_lane(lanes));
+    assert_eq!(
+        *retried_received.expect("the retried channel at b").key(),
+        on_lane(lanes)
+    );
+    // Lane 0 opened; nobody accepted the others, so each was refused once its hold ended.
+    let mut held = held.into_iter();
+    assert_eq!(
+        *held
+            .next()
+            .expect("lane 0")
+            .expect("lane 0's channel")
+            .key(),
+        on_lane(0)
+    );
     for result in held {
         let error = result.expect_err("a held stream nobody accepted");
         assert_eq!(error.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{error}");
