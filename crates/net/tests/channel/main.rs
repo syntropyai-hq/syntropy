@@ -26,7 +26,7 @@ use syntropy_net::frame::{
 };
 use syntropy_net::transport::core::{
     ACK_TIMEOUT_MIN, ACK_TIMEOUTS_TO_FAULT, CONTROL_RECEIVES, CRC_STORM_COUNT, MAX_CONTROL_FRAME,
-    PROBE_BACKOFF_MAX,
+    NACK_INTERVAL_MIN, PROBE_BACKOFF_MAX,
 };
 use syntropy_net::transport::{
     BufferPool, ChannelCore, ChannelKey, ChannelPurpose, CloseReason, CoreConfig, CreditCadence,
@@ -1119,6 +1119,70 @@ fn next_deadline_is_when_the_next_timer_fires() {
     assert_eq!(drain(&mut a, probe).len(), 1, "the probe at its deadline");
     a.fail(syntropy_net::Error::uncoded(ErrorClass::Link, "gone"));
     assert_eq!(a.next_deadline(), None);
+}
+
+/// `next_deadline`'s NACK term (RFC-0031 §7.2): a missing frame is due again `nack_interval`
+/// after its last NACK; a frame held past the gap adds nothing; and once the gap closes nothing
+/// is due. One nanosecond before the deadline `on_tick` NACKs nothing; at it, the missing frame
+/// is NACKed again.
+#[test]
+fn next_deadline_counts_a_missing_frames_next_nack() {
+    let shape = Shape {
+        recv_slots: 8,
+        retention: 8,
+        ..Shape::SMALL
+    };
+    let interval = NACK_INTERVAL_MIN.0;
+    let mut b = receiver(shape, ALPHA, RFC);
+    assert_eq!(b.next_deadline(), None, "nothing received, nothing due");
+    // Frame 3 arrives first: 1 and 2 are missing, and both are NACKed at once.
+    deliver(&mut b, &data_frame(INSTANCE, EPOCH, 3, b"three"), at(10));
+    assert_eq!(b.stats().nacks_sent, 2);
+    let due = b.next_deadline().expect("the next NACK");
+    assert_eq!(due, MonoTime(at(10).0 + interval));
+    drain(&mut b, at(10));
+    // Frame 2 arrives and is held: only 1 is missing, still due at the same time.
+    deliver(&mut b, &data_frame(INSTANCE, EPOCH, 2, b"two"), at(20));
+    assert_eq!(b.next_deadline(), Some(due));
+    // Not before the deadline; at it, frame 1 is NACKed again, and the next one is an interval on.
+    b.on_tick(MonoTime(due.0 - 1));
+    assert_eq!(b.stats().nacks_sent, 2);
+    b.on_tick(due);
+    assert_eq!(b.stats().nacks_sent, 3);
+    let nacks = credits_in(&drain(&mut b, due));
+    assert_eq!(
+        nacks.last().map(|c| c.nacks.as_slice().to_vec()),
+        Some(vec![1])
+    );
+    assert_eq!(b.next_deadline(), Some(MonoTime(due.0 + interval)));
+    // Frame 1 closes the gap: nothing is due.
+    deliver(&mut b, &data_frame(INSTANCE, EPOCH, 1, b"one"), due);
+    assert_eq!(b.next_deadline(), None);
+}
+
+/// A missing frame the core could not NACK yet, because a `Credit` carries at most 16 NACKs, is
+/// due now: `next_deadline` gives a time already past.
+#[test]
+fn next_deadline_is_now_for_a_missing_frame_not_yet_nacked() {
+    let shape = Shape {
+        recv_slots: 32,
+        retention: 32,
+        ..Shape::SMALL
+    };
+    let mut b = receiver(shape, ALPHA, RFC);
+    // Frame 20 arrives first: 19 frames are missing, and only 16 fit in the next credit.
+    deliver(&mut b, &data_frame(INSTANCE, EPOCH, 20, b"x"), at(1_000));
+    assert_eq!(b.stats().nacks_sent, 16);
+    let due = b.next_deadline().expect("due");
+    assert!(due < at(1_000), "already due: {due:?}");
+    // Once the credit carries the 16, the tick NACKs the other 3.
+    drain(&mut b, at(1_000));
+    b.on_tick(at(1_000));
+    assert_eq!(b.stats().nacks_sent, 19);
+    assert_eq!(
+        b.next_deadline(),
+        Some(MonoTime(at(1_000).0 + NACK_INTERVAL_MIN.0))
+    );
 }
 
 /// RFC-0031 §7.3: three ack timeouts in a row are a link fault, `AckTimeout` (0x0208, `Link`).

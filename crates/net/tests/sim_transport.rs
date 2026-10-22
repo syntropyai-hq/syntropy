@@ -443,7 +443,15 @@ fn replay(seed: u64) -> Run {
     let mut next = 1;
     let mut deliveries = Vec::new();
     let limit = two.clock_now().0 + 60_000_000_000;
+    // A deadline stuck at "due now" would not move the clock: cap the steps too, so such a bug
+    // fails the test instead of hanging it.
+    let mut steps = 0u32;
     while deliveries.len() < 60 && two.clock_now().0 < limit {
+        steps += 1;
+        assert!(
+            steps <= 100_000,
+            "seed {seed}: no progress after {steps} steps"
+        );
         while next <= 60 && sender.credit() > 0 {
             send_one(&mut sender, &pool, next, 200).expect("credit to send");
             next += 1;
