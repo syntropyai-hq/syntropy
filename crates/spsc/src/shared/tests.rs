@@ -442,3 +442,29 @@ fn a_length_longer_than_a_slot_is_corrupt_whatever_the_buffer() {
         }
     });
 }
+
+/// Every record length from 0 to `slot_bytes` round-trips exactly, through whole words with a
+/// padded last word, and a pop writes only the record's bytes of the caller's buffer. The slot size
+/// is not a multiple of 8, and one slot is reused by every length, long and short in turn.
+#[test]
+fn every_length_round_trips_through_whole_words() {
+    model(|| {
+        let ring = SharedLayout::new(1, 21).unwrap();
+        let memory = Memory::new(ring);
+        let mut tx = memory.producer(ring);
+        let mut rx = memory.consumer(ring);
+        for len in (0..=21usize).chain((0..=21).rev()) {
+            let record: Vec<u8> = (0..len)
+                .map(|at| (at as u8).wrapping_mul(37) ^ 0x5a)
+                .collect();
+            tx.push(&record).unwrap();
+            let mut out = [0xee_u8; 40];
+            assert_eq!(rx.pop_into(&mut out), Ok(len));
+            assert_eq!(&out[..len], record.as_slice(), "a {len}-byte record");
+            assert!(
+                out[len..].iter().all(|byte| *byte == 0xee),
+                "past a {len}-byte record"
+            );
+        }
+    });
+}
