@@ -25,6 +25,9 @@ pub mod buffer;
 mod channel;
 pub mod conformance;
 pub mod core;
+pub mod domain;
+pub mod quic;
+pub mod stream;
 pub mod tcp;
 
 use std::future::Future;
