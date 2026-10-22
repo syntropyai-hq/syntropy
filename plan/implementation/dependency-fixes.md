@@ -667,3 +667,11 @@ DIST-E10-T08's model check found that a supported older proof can depose a lone 
 |---|---|---|---|
 | Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
 | DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |
+
+## DIST-E11-T10's zero-`predicted_p99` criterion (2026-10-22)
+
+A post-merge review of #1658 found that `HopPlan::predicted_p99` decodes as 0 from a plan written without it, so code that read 0 as a real prediction would show constant drift or fail validation on every such plan (issue #1661). The field stays `Nanos`. RFC-0032 §3.3 gains a dated note that 0 means no tail prediction, and DIST-E11-T10, which builds the extensions' validation, gains the criterion.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E11-T10 gains the criterion: a hop with `predicted_p99 = 0` has no tail prediction, so the drift detector makes no tail comparison for it and `validate()` accepts it; DIST-E11-T10 → PLC-E3-T07 | DIST-E11-T10 | R9 | the criterion's drift half runs the hop through PLC-E3-T07's drift detector, which DIST-E11-T10 did not reach. PLC-E3-T07 is M1a, so the edge points to an earlier milestone |
