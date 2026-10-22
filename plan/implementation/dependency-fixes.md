@@ -916,3 +916,11 @@ Its fuzz criterion also needs QUAL-E10-T01's harness (M0b), which it did not dep
 | COMP-E11-T05 → COMP-E10-T11 and COMP-E12-T04 → COMP-E10-T11 | COMP-E11-T05, COMP-E12-T04 | R9 | they use `PackCommitted` and `FetchShard`, which COMP-E10-T11 adds; neither reached DIST-E1-T03 on `main` either, so the gap predates this split |
 | COMP-E2-T13 defines `ReaderId` and `ProviderName` in `core`; DIST-E14-T13 → COMP-E2-T13 | COMP-E2-T13, DIST-E14-T13 | R1, R9 | RFC-0001 §5.1 puts both in `core`, and no row defined them; `DegradeDetail::Fallback` carries a `ProviderName` |
 | COMP-E10-T11 moves `LayoutVersion`'s inherent `SOURCE` constant with the type | COMP-E10-T11 | R9 | an inherent impl cannot stay in `kernels` once the type is `core`'s, and `LayoutVersion::SOURCE` must keep resolving through the re-export |
+
+## PLC-E7-T17's watchdog criterion (2026-10-23)
+
+Building PLC-E7-T17 found that its criterion 1, "a watchdog fails any call over its budget", has no check that can fail. `poll_once` is timed on the dispatcher's injected `TickSource`, and under test no pass can move that clock: the simulator's moves only between events, so a pass that parks or spins measures 0 there (the review of #1802). The first `Dispatcher::run` on a real `TickSource` is PLC-E7-T18's hardware run.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E7-T17's criterion 1 reads "a watchdog counts any call over its budget (`PollStats`)"; PLC-E7-T18's hardware criterion gains "and the dispatcher's `PollStats` records no overrun"; no edge | PLC-E7-T17, PLC-E7-T18 | R9 | the check that fails on an overrun moves to the first run where a pass's time is real. PLC-E7-T18 already depends on PLC-E7-T17 |
