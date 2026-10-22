@@ -64,6 +64,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 
 use self::tls::AllowedKeys;
 use super::domain::DomainHandle;
+use super::registration::RegistrationTable;
 use super::stream::{self, ChannelAuth, HelloIn, StreamSpec};
 use super::{
     BufferPool, Channel, ChannelKey, ChannelSpec, PoolId, PoolRegistration, RemoteEndpoint,
@@ -293,7 +294,7 @@ struct Inner {
     /// This endpoint's public key.
     key: [u8; 32],
     allowed: AllowedKeys,
-    pools: Mutex<Vec<BufferPool>>,
+    pools: RegistrationTable,
     routes: Mutex<Routes>,
     /// One permit per handshake in progress, [`MAX_HANDSHAKES`] in all.
     handshakes: Arc<Semaphore>,
@@ -373,7 +374,7 @@ impl TcpTransport {
                     config,
                     key,
                     allowed,
-                    pools: Mutex::new(Vec::new()),
+                    pools: RegistrationTable::new(),
                     routes: Mutex::new(Routes::default()),
                     handshakes: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
                     per_address: Mutex::new(Vec::new()),
@@ -417,20 +418,16 @@ impl TcpTransport {
 impl Inner {
     /// The stream driver's spec for `spec`, its pool resolved.
     fn stream_spec(&self, spec: &ChannelSpec) -> Result<StreamSpec, Error> {
-        let pools = lock(&self.pools).clone();
-        let pool = pools
-            .iter()
-            .find(|pool| pool.id() == spec.pool.pool)
-            .cloned()
-            .ok_or_else(|| {
-                Error::uncoded(
-                    ErrorClass::InvalidRequest,
-                    format!(
-                        "pool {:?} is not registered with this transport",
-                        spec.pool.pool
-                    ),
-                )
-            })?;
+        let pools = self.pools.pools();
+        let pool = self.pools.resolve(spec.pool).ok_or_else(|| {
+            Error::uncoded(
+                ErrorClass::InvalidRequest,
+                format!(
+                    "pool {:?} is not registered with this transport",
+                    spec.pool.pool
+                ),
+            )
+        })?;
         let slot_size = u32::try_from(spec.slot_size.0)
             .ok()
             .filter(|size| u64::from(*size) <= MAX_FRAME)
@@ -855,15 +852,9 @@ impl Transport for TcpTransport {
     /// Records the pool, so a channel's frames may name it. TCP needs no registration with the
     /// OS, so the handle is 0. Register every pool before opening the channels that use it.
     fn register(&self, pool: &BufferPool) -> Result<PoolRegistration, Error> {
-        let mut pools = lock(&self.inner.pools);
-        if !pools.iter().any(|known| known.same_pool(pool)) {
-            pools.push(pool.clone());
-        }
-        Ok(PoolRegistration {
-            pool: pool.id(),
-            transport: TransportKind::Tcp,
-            handle: 0,
-        })
+        self.inner
+            .pools
+            .register_transport(pool, TransportKind::Tcp, 0)
     }
 
     /// Dials `remote`'s addresses in turn and opens the channel on the first that completes the
