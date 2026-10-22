@@ -674,4 +674,4 @@ A post-merge review of #1658 found that `HopPlan::predicted_p99` decodes as 0 fr
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| DIST-E11-T10 gains the criterion: a hop with `predicted_p99 = 0` has no tail prediction, so the drift detector makes no tail comparison for it and `validate()` accepts it; DIST-E11-T10 → PLC-E3-T07 | DIST-E11-T10 | R9 | the criterion's drift half runs the hop through PLC-E3-T07's drift detector, which DIST-E11-T10 did not reach. PLC-E3-T07 is M1a, so the edge points to an earlier milestone |
+| DIST-E11-T10 gains the criterion: a hop with `predicted_p99 = 0` has no tail prediction, so the drift detector makes no tail comparison for it and `validate()` accepts it; a hop whose measured p99 exceeds a nonzero `predicted_p99` by more than `replan.drift_threshold`, sustained past `replan.drift_window`, raises drift; DIST-E11-T10 → PLC-E3-T07 | DIST-E11-T10 | R9 | both drift cases run the hop through PLC-E3-T07's drift detector, which DIST-E11-T10 did not reach. The positive case keeps the zero case from passing on a detector that never compares tails. PLC-E3-T07 is M1a, so the edge points to an earlier milestone |

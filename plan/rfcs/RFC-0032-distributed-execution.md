@@ -144,6 +144,7 @@ pub struct RelayVia { pub node: NodeId, pub first: LinkId, pub second: LinkId, p
 - `predicted_p99` is `Nanos`, not `Option<Nanos>`. Its serde default is 0 (DIST-E11-T18), and 0 means the plan carries no tail prediction for the hop. A plan written before the field existed has none.
 - Plan assembly sets every hop's value from the link profile (PLC-E6-T22).
 - For a hop at 0, the drift detector makes no tail comparison, and `validate()` accepts the hop. So an older plan neither shows constant drift nor fails validation (DIST-E11-T10).
+- A nonzero value is a real prediction. A measured p99 above it by more than `replan.drift_threshold`, sustained past `replan.drift_window`, raises drift.
 
 #### 3.4 Relayed token-return hops
 
