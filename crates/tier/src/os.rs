@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use smallvec::SmallVec;
 use syntropy_core::Bytes;
+use syntropy_core::budget::{self, NodeMem};
 
 use crate::pressure::PressureLevel;
 
@@ -194,8 +195,8 @@ pub const SYS_NODE_DIR: &str = "/sys/devices/system/node";
 
 /// One node's available estimate from its `node<n>/meminfo` text, with `numa_reserve`
 /// subtracted once (RFC-0020 §5): `MemFree + Active(file) + Inactive(file) + SReclaimable −
-/// numa_reserve`, floored at zero. `None` when any of the four fields is missing or does not
-/// parse, so a partial file never yields a low-looking estimate.
+/// numa_reserve`, floored at zero, by [`budget::numa_available`]. `None` when any of the four
+/// fields is missing or does not parse, so a partial file never yields a low-looking estimate.
 pub fn numa_available(node_meminfo: &str, numa_reserve: Bytes) -> Option<Bytes> {
     let mut fields = [None::<u64>; 4];
     const KEYS: [&str; 4] = [
@@ -221,11 +222,14 @@ pub fn numa_available(node_meminfo: &str, numa_reserve: Bytes) -> Option<Bytes> 
             fields[i] = Some(kib.checked_mul(1024)?);
         }
     }
-    let mut sum: u64 = 0;
-    for f in fields {
-        sum = sum.checked_add(f?)?;
-    }
-    Some(Bytes(sum.saturating_sub(numa_reserve.0)))
+    let [mem_free, active_file, inactive_file, sreclaimable] = fields;
+    let node = NodeMem {
+        mem_free: Bytes(mem_free?),
+        active_file: Bytes(active_file?),
+        inactive_file: Bytes(inactive_file?),
+        sreclaimable: Bytes(sreclaimable?),
+    };
+    budget::numa_available(&node, numa_reserve)
 }
 
 /// [`numa_available`] for every node under `dir` (normally [`SYS_NODE_DIR`]), sorted by node.
