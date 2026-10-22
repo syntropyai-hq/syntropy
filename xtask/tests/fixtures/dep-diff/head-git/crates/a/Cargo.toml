@@ -1,0 +1,12 @@
+[package]
+name = "fixture-a"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = "1.0.100"
+
+[build-dependencies]
+fixture-build-helper = { git = "https://example.invalid/fixture-build-helper.git", rev = "0123456789abcdef0123456789abcdef01234567" }

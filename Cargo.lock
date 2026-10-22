@@ -547,6 +547,10 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-solver"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "syntropy-core",
+]
 
 [[package]]
 name = "syntropy-spsc"

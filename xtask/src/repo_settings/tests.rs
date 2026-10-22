@@ -571,7 +571,12 @@ fn the_declared_state_meets_the_plan() {
     // 15368 is the GitHub Actions app, so only a workflow job can satisfy each check.
     assert_eq!(
         checks,
-        [("ci-gate", 15368), ("dco", 15368), ("pr-title", 15368)]
+        [
+            ("ci-gate", 15368),
+            ("dco", 15368),
+            ("pr-title", 15368),
+            ("dep-diff", 15368)
+        ]
     );
     let release = read("ruleset-release.json");
     assert_eq!(

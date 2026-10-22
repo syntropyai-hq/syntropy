@@ -515,6 +515,14 @@ ADR-0405 (option A, with V1 for exactness on Vulkan) keeps one `DeviceClass` in 
 | Added QUAL-E6-T23 (M2) → QUAL-E6-T04, QUAL-E6-T16, COMP-E2-T11 | QUAL-E6-T23 | R9 | V1's runtime rule, label and fallback for Vulkan-domain providers: the Vulkan counterpart of QUAL-E6-T16, which "Exactness on Vulkan" names |
 | COMP-E8-T10 → QUAL-E6-T23; QUAL-E4-T11 → QUAL-E6-T23 | COMP-E8-T10, QUAL-E4-T11 | R9 | the M2 ggml Vulkan preview's conformance run and the M3 Vulkan conformance issue Vulkan certificates, which V1 makes full only on the rig's device and driver |
 | COMP-E8-T04 gains a criterion for decision 3's `subgroup` rule; no edge | COMP-E8-T04 | R9 | the native Vulkan provider computes the class at `enumerate`. `kernels`' current `Vulkan` variant already has `subgroup`, so the criterion needs no new type |
+## DIST-E13-T12's M3 and PLC-E4-T09 criteria (2026-10-22)
+
+DIST-E13-T12 (M2) builds the collective cost model in `syntropy-solver`. Two of its criteria could not be shown in M2: the simulator check at M3, and "PLC-E4-T09 links the module", whose task does not exist yet. `depcheck.py` did not list the first as `AC-LATER`, because the row said "at M3" rather than "from M3".
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The M3 simulator check moved from DIST-E13-T12 to DIST-E13-T03 (one-shot time) and DIST-E13-T04 (ring time); DIST-E13-T03, DIST-E13-T04 → DIST-E13-T12 | DIST-E13-T12, DIST-E13-T03, DIST-E13-T04 | R9, Definition of done (no later-milestone criterion) | the simulated one-shot and ring all-reduces are built in M3 by DIST-E13-T03 and DIST-E13-T04. DIST-E13-T04 already checked ring time against the same formula, so its criterion now names DIST-E13-T12's function. DIST-E13-T03 had no timing criterion and gains one |
+| "PLC-E4-T09 links the module with no network dependency" reworded as the module sitting in `syntropy-solver` and reaching no network or I/O crate (`check-deps` rule 5, `cargo tree`) | DIST-E13-T12 | R9 | the producer it named, PLC-E4-T09, is a dependent of DIST-E13-T12, not a prerequisite. What the criterion checks, that the solver can link the module without the network crates, is shown by where the module lives |
 
 ## ADR-0022 accepted (2026-10-22)
 

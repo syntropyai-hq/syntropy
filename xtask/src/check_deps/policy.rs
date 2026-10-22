@@ -320,6 +320,31 @@ pub fn is_system_library(needed: &str) -> bool {
 /// 2026-10-22 (RFC-0001 §4.2 rule 8).
 pub const UNSAFE_ALLOWED: &[&str] = &["io", "tier", "net", "ipc", "spsc"];
 
+/// Rule 8's module-scoped exception (RFC-0001 §4.2 rule 8, note 2026-10-22): a crate that sets
+/// `#![deny(unsafe_code)]` at its root instead of `forbid`, and whose only `unsafe` is one
+/// `unsafe impl` of one trait, in one file, under the crate's one `#[allow(unsafe_code)]`.
+pub struct UnsafeModule {
+    /// The crate's short name, such as `testkit`.
+    pub krate: &'static str,
+    /// The file that holds the impl, relative to the crate's directory.
+    pub file: &'static str,
+    /// The trait the impl implements.
+    pub implements: &'static str,
+}
+
+/// The crates that hold a module-scoped `unsafe` exception. `testkit::guards` holds the counting
+/// allocator, a `GlobalAlloc` that delegates to `std::alloc::System` (RFC-0060 §3.5).
+pub const UNSAFE_MODULES: &[UnsafeModule] = &[UnsafeModule {
+    krate: "testkit",
+    file: "src/guards.rs",
+    implements: "GlobalAlloc",
+}];
+
+/// Rule 8: the module-scoped exception `name` holds, if any.
+pub fn unsafe_module(name: &str) -> Option<&'static UnsafeModule> {
+    UNSAFE_MODULES.iter().find(|module| module.krate == name)
+}
+
 /// Rule 10: the crates release artefacts are built from: the core binary, and the provider
 /// libraries of the backend modules (rule 7). The check resolves each one's features on its own,
 /// as its artefact is built.
@@ -364,6 +389,7 @@ pub fn named_crates() -> Vec<&'static str> {
     names.extend(SOLVER_MUST_NOT_REACH);
     names.extend(SYSTEMS.iter().map(|system| system.only_in));
     names.extend(UNSAFE_ALLOWED);
+    names.extend(UNSAFE_MODULES.iter().map(|module| module.krate));
     names.extend(RELEASE_CRATES);
     names
 }
@@ -388,6 +414,20 @@ mod tests {
         assert_eq!(same_layer_users("ipc"), None);
         assert!(allows_unsafe("spsc"));
         assert!(is_compute("spsc"));
+    }
+
+    #[test]
+    fn only_testkit_holds_a_module_scoped_unsafe_exception() {
+        let module = unsafe_module("testkit").expect("testkit has the exception");
+        assert_eq!(
+            (module.file, module.implements),
+            ("src/guards.rs", "GlobalAlloc")
+        );
+        // No other crate has one, and the exception does not put testkit on the allow-list.
+        for name in ["solver", "bench", "core", "cli", "kernels", "runner"] {
+            assert!(unsafe_module(name).is_none(), "{name}");
+        }
+        assert!(!allows_unsafe("testkit"));
     }
 
     #[test]
