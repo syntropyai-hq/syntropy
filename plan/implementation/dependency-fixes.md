@@ -888,5 +888,5 @@ Issue #1525, from the review of COMP-E1-T01, found that no task builds RFC-0001 
 | COMP-E2-T05 → COMP-E13-T15 | COMP-E2-T05 | R9 | the selection cache decodes `ProviderId` and `ProviderBuild`, which must be owned to load without a leak |
 | DIST-E18-T02 M2 → M0a | DIST-E18-T02 | R6 | COMP-E13-T15 is M0a, because PLC-E7-T03 is, and it builds on DIST-E18-T02's `ErrorCode` and `Domain`. DIST-E18-T02's one dependency, QUAL-E1-T01, is M0a, and its PR (#1669) is already open |
 
-Not changed here: `Domain::Kernels`'s range, `Domain::Exec`'s range and exec's codes are for RFC-0040 §13 and RFC-0012 §13 to assign. COMP-E13-T15's criterion requires them before it lands, so no code is chosen here.
+Not changed here: `Domain::Kernels`'s range, `Domain::Exec`'s range and exec's codes. RFC-0040 §13 numbers its codes but gives no range, and RFC-0012 §13 has no codes. COMP-E13-T15's PR proposes them in dated notes in those two sections, and the engine lane's review confirms them as the RFCs' owner. So the task that needs them owns the proposal, and this plan fix chooses none (review-plan3's B1 on #1810).
 
