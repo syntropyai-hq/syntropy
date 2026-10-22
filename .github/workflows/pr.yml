@@ -127,6 +127,14 @@ jobs:
       # The licence fixtures run cargo-deny on Linux, and in CI they must.
       - if: matrix.os == 'linux'
         uses: ./.github/actions/install-cargo-deny
+      # The second OS account that `syntropy-ipc`'s peer test connects from (DIST-E1-T03,
+      # RFC-0034 §6.4). On Linux in CI the test fails without it. The macOS and Windows jobs
+      # create none, so the refusal of another user is not tested there.
+      - if: matrix.os == 'linux'
+        name: Add a second OS account for the IPC peer test
+        run: |
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin syntropy-peer
+          echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
       - run: cargo xtask test unit
 
   # L3: loom models, Miri and the sanitizer builds (RFC-0060 §3.4), when the closure includes
