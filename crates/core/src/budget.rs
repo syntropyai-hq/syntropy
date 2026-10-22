@@ -106,8 +106,10 @@ pub struct HostBudgetInputs<'a> {
     /// Linux: the bytes this node's runners already hold locked that
     /// [`LockAccounting::vmlck_before`](crate::resource::LockAccounting::vmlck_before) counts.
     /// They are added back to `lockable`, the `own` convention, so a re-evaluation before a
-    /// pinning step does not count a running plan's locked memory against itself. 0 at first
-    /// probe. Unused elsewhere.
+    /// pinning step does not count a running plan's locked memory against itself. The add-back
+    /// is clamped to `VmLck`, so `lockable` never exceeds `RLIMIT_MEMLOCK`. The caller passes a
+    /// live `VmLck` together with its live `own_locked`, never a cached probe-time `VmLck`. 0 at
+    /// first probe. Unused elsewhere.
     pub own_locked: Bytes,
     /// macOS: `recommendedMaxWorkingSetSize`, read in the probe runner (RFC-0010 §2.2). `None`
     /// leaves the term out, and the two RAM terms still hold the reserve (RFC-0020 §5, note of
@@ -175,7 +177,7 @@ pub fn host_usable(inputs: &HostBudgetInputs<'_>, policy: &HostBudgetPolicy) -> 
 /// - Linux, WSL2: `min(host_usable, max_pinned_fraction · MemTotal, lockable)`, where
 ///   `lockable` is unlimited with `CAP_IPC_LOCK` or no `RLIMIT_MEMLOCK`, or when the probe
 ///   showed provider registration is not charged to it, and `RLIMIT_MEMLOCK − VmLck +
-///   own_locked` otherwise. An untested charge (`None`) counts as charged.
+///   min(own_locked, VmLck)` otherwise. An untested charge (`None`) counts as charged.
 /// - Windows: `min(host_usable, max_pinned_fraction · ullTotalPhys, lockable_measured)`. Until
 ///   H5 measures `lockable_measured`, the static estimate is
 ///   [`HostMemInfo::windows_lockable`], the working-set ceiling obtainable without privilege
@@ -191,7 +193,8 @@ pub fn pin_limit(inputs: &HostBudgetInputs<'_>, policy: &HostBudgetPolicy) -> By
             match mem.memlock_limit {
                 Some(limit) if !uncharged => {
                     let vmlck = lock.map(|l| l.vmlck_before).unwrap_or_default();
-                    Some(sub(add(limit, inputs.own_locked), vmlck))
+                    // Never add back more than VmLck counts, so lockable ≤ RLIMIT_MEMLOCK.
+                    Some(sub(add(limit, inputs.own_locked.min(vmlck)), vmlck))
                 }
                 _ => None,
             }

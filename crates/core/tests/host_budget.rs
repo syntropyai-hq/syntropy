@@ -115,6 +115,26 @@ fn linux_own_locked_is_not_counted_against_itself() {
     assert_eq!(pin_limit(&i, &DEFAULT), Bytes(2 * GIB));
 }
 
+/// The add-back never passes `VmLck`: with no lock reading (`VmLck` taken as 0), an 8 GiB
+/// memlock limit and 6 GiB claimed as `own_locked`, `lockable` stays at the 8 GiB limit, not
+/// 14 GiB.
+#[test]
+fn linux_own_locked_is_clamped_to_vmlck() {
+    let mut m = mem(64 * GIB, 60 * GIB);
+    m.memlock_limit = Some(Bytes(8 * GIB));
+    let mut i = inputs(HostOs::Linux, &m);
+    i.own_locked = Bytes(6 * GIB);
+    // pin_limit = min(60 GiB − 6871947673, 58411555225, 8 GiB + min(6 GiB, 0) − 0)
+    let pin = pin_limit(&i, &DEFAULT);
+    assert_eq!(pin, Bytes(8 * GIB));
+    assert!(pin <= Bytes(8 * GIB));
+    // With VmLck 2 GiB, only 2 GiB is added back.
+    m.lock = charged(2 * GIB, Some(true));
+    let mut i = inputs(HostOs::Linux, &m);
+    i.own_locked = Bytes(6 * GIB);
+    assert_eq!(pin_limit(&i, &DEFAULT), Bytes(8 * GIB));
+}
+
 /// Registration charged, with 1 MiB already locked: `lockable = RLIMIT_MEMLOCK − VmLck`.
 #[test]
 fn linux_registration_charged_subtracts_vmlck() {
