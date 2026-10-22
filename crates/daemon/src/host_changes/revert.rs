@@ -375,23 +375,30 @@ fn replace_in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .map_or_else(Default::default, |n| n.to_string_lossy());
     let tmp = dir.join(format!(".{name}.syntropy-revert-{}", std::process::id()));
     let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        io::Write::write_all(&mut file, bytes)?;
-        file.set_permissions(meta.permissions())?;
+        // Owner-only until its owner and mode are the old file's, and only then the content, so
+        // nobody else can read restored bytes the old file kept from them.
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
             // Root gives the file back its owner. Anyone else can only keep their own, and a group
-            // they are not in is not worth failing the revert over.
+            // they are not in is not worth failing the revert over. The owner goes first, because
+            // a change of owner clears the set-user-ID and set-group-ID bits.
             if let Err(e) = std::os::unix::fs::fchown(&file, Some(meta.uid()), Some(meta.gid()))
                 && file.metadata()?.uid() != meta.uid()
             {
                 return Err(e);
             }
         }
+        file.set_permissions(meta.permissions())?;
+        io::Write::write_all(&mut file, bytes)?;
         file.sync_all()?;
         fs::rename(&tmp, path)
     })();

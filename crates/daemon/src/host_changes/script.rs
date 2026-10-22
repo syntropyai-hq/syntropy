@@ -117,7 +117,6 @@ pub fn render_sh(ledger: &HostChangeLedger, by_version: &str) -> String {
 set -u
 left=0
 m=; cw=; cpr=
-mkdir -p {copies} && chmod 700 {copies}
 note() {{ printf 'syntropy-revert: %s\\n' \"$1\"; }}
 # Records that the current change is done, so a second run skips it, and deletes its copies.
 mark() {{ : > \"$m\"; rm -f -- \"$cw\" \"$cpr\"; }}
@@ -125,12 +124,16 @@ ok() {{ note \"$1\"; mark; }}
 gone() {{ note \"already gone: $1\"; mark; }}
 leave() {{ note \"left in place, edited since Syntropy changed it: $1\"; left=$((left + 1)); }}
 # A revert may run with more privilege than whoever could write the state, so refuse unless the
-# state directory and the copies are private to the user running it.
-for d in {state} {copies}; do
-  if [ -L \"$d\" ] || [ ! -O \"$d\" ] || [ -n \"$(find \"$d\" -prune \\( -perm -0002 -o -perm -0020 \\) 2>/dev/null)\" ]; then
-    note \"refusing to run: $d is not private to this user\"; exit 1
+# state directory and the copies directory are private to the user running it. The copies
+# directory is made only once the state directory passes, and only if nothing is in its place.
+private() {{
+  if [ -L \"$1\" ] || [ ! -d \"$1\" ] || [ ! -O \"$1\" ] || [ -n \"$(find \"$1\" -prune \\( -perm -0002 -o -perm -0020 \\) 2>/dev/null)\" ]; then
+    note \"refusing to run: $1 is not private to this user\"; exit 1
   fi
-done
+}}
+private {state}
+[ -e {copies} ] || [ -L {copies} ] || mkdir -m 700 {copies}
+private {copies}
 ",
         ledger = comment(&path_str(&ledger.state_dir().join(super::LEDGER_FILE))),
         version = comment(by_version),
@@ -364,7 +367,6 @@ pub fn render_ps1(ledger: &HostChangeLedger, by_version: &str) -> String {
 $ErrorActionPreference = 'Continue'
 $left = 0
 $m = $null; $cw = $null; $cpr = $null
-New-Item -ItemType Directory -Path {copies} -Force | Out-Null
 function Note([string]$t) {{ Write-Output \"syntropy-revert: $t\" }}
 # Records that the current change is done, so a second run skips it, and deletes its copies.
 function Mark {{
@@ -374,10 +376,22 @@ function Mark {{
 function Reverted([string]$t) {{ Note $t; Mark }}
 function Gone([string]$t) {{ Note \"already gone: $t\"; Mark }}
 function Leave([string]$p) {{ Note \"left in place, edited since Syntropy changed it: $p\"; $script:left++ }}
+# Refuse a state directory or copies directory that is missing, not a directory, or a link (a
+# junction or symbolic link). The copies directory is made only once the state directory passes.
+function Private([string]$d) {{
+  $i = Get-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue
+  if ($null -eq $i -or -not $i.PSIsContainer -or ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) {{
+    Note \"refusing to run: $d is not a directory of its own\"; exit 1
+  }}
+}}
+Private {state}
+if (-not (Test-Path -LiteralPath {copies})) {{ New-Item -ItemType Directory -Path {copies} | Out-Null }}
+Private {copies}
 ",
         ledger = comment(&path_str(&ledger.state_dir().join(super::LEDGER_FILE))),
         version = comment(by_version),
         bom = PS1_BOM,
+        state = ps_quote(&path_str(ledger.state_dir())),
         copies = ps_quote(&path_str(&ledger.state_dir().join(super::COPIES_DIR))),
     );
     for change in open_changes(ledger) {
@@ -668,10 +682,59 @@ mod tests {
         let ledger = ledger_with(vec![]);
         let sh = render_sh(&ledger, "v");
         assert!(
-            sh.contains("refusing to run: $d is not private to this user"),
+            sh.contains("refusing to run: $1 is not private to this user"),
             "{sh}"
         );
-        assert!(sh.contains("[ ! -O \"$d\" ]"), "{sh}");
+        assert!(sh.contains("[ ! -O \"$1\" ]"), "{sh}");
+        // The state directory is checked before anything is made in it, and nothing is chmod'ed.
+        let state_check = sh.find("private '").unwrap();
+        assert!(sh.find("mkdir -m 700").unwrap() > state_check, "{sh}");
+        assert!(!sh.contains("chmod"), "{sh}");
+        let ps1 = render_ps1(&ledger, "v");
+        assert!(
+            ps1.find("Private '").unwrap() < ps1.find("New-Item -ItemType Directory").unwrap(),
+            "{ps1}"
+        );
+    }
+
+    /// Run for real: a state directory others can write, and a link in place of the copies
+    /// directory, both stop the script before it changes anything, and the link's target keeps
+    /// its mode.
+    #[cfg(unix)]
+    #[test]
+    fn the_sh_script_stops_on_state_that_is_not_private() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        let run = |ledger: &HostChangeLedger| {
+            let script = write_revert_script(ledger, "v").unwrap();
+            std::process::Command::new("sh")
+                .arg(&script)
+                .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+                .output()
+                .unwrap()
+        };
+        let mode = |p: &Path| fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+
+        let ledger = ledger_with(vec![]);
+        fs::set_permissions(ledger.state_dir(), fs::Permissions::from_mode(0o777)).unwrap();
+        let out = run(&ledger);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("is not private to this user"));
+        assert!(!ledger.state_dir().join(super::super::COPIES_DIR).exists());
+
+        let ledger = ledger_with(vec![]);
+        let elsewhere = ledger.state_dir().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(
+            &elsewhere,
+            ledger.state_dir().join(super::super::COPIES_DIR),
+        )
+        .unwrap();
+        let out = run(&ledger);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("is not private to this user"));
+        assert_eq!(mode(&elsewhere), 0o755);
     }
 
     /// One rendering check per change kind, in both scripts: the command that reverts it, and the

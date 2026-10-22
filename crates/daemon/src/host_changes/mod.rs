@@ -230,7 +230,9 @@ pub enum LedgerError {
     },
     /// No change has this ID.
     UnknownId(u32),
-    /// The ledger's state could have been written by someone else, so a revert does not trust it.
+    /// A path the ledger would use could have been written or redirected by someone else: a
+    /// state directory, copies directory or ledger that is not private to this user, or a
+    /// symbolic link where a file or directory should be. It is refused rather than used.
     Insecure {
         /// The file or directory.
         path: PathBuf,
@@ -255,11 +257,9 @@ impl std::fmt::Display for LedgerError {
                 "the host-change ledger has format version {found}; this build reads {SCHEMA}"
             ),
             LedgerError::UnknownId(id) => write!(f, "no host change has ID {id}"),
-            LedgerError::Insecure { path, why } => write!(
-                f,
-                "refusing to revert from {}: {why}, so the ledger cannot be trusted",
-                path.display()
-            ),
+            LedgerError::Insecure { path, why } => {
+                write!(f, "refusing to use {}: {why}", path.display())
+            }
         }
     }
 }
@@ -451,6 +451,13 @@ impl HostChangeLedger {
         by_version: &str,
     ) -> Result<u32, LedgerError> {
         let id = self.file.next_id;
+        // Syntropy writes a file, never through a link someone left in its place.
+        if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(LedgerError::Insecure {
+                path: path.to_owned(),
+                why: "it is a symbolic link".into(),
+            });
+        }
         self.copies_dir()?;
         // A replaced file keeps its mode when it is rewritten, so both copies take it.
         let mode = file_mode(path);
@@ -479,14 +486,35 @@ impl HostChangeLedger {
         Ok(id)
     }
 
-    /// Creates the copies directory, owner-only (0700 on Unix), and returns it.
+    /// Creates the copies directory, owner-only (0700 on Unix), and returns it. A link in its
+    /// place is refused, never followed or given new permissions.
     fn copies_dir(&self) -> Result<PathBuf, LedgerError> {
         let dir = self.state_dir.join(COPIES_DIR);
-        fs::create_dir_all(&dir).map_err(io_error(&dir))?;
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io_error(&dir)(e)),
+        }
+        let meta = fs::symlink_metadata(&dir).map_err(io_error(&dir))?;
+        if !meta.is_dir() {
+            return Err(LedgerError::Insecure {
+                path: dir,
+                why: "it is not a directory".into(),
+            });
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(io_error(&dir))?;
+            if meta.permissions().mode() & 0o777 != 0o700 {
+                fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+                    .map_err(io_error(&dir))?;
+            }
         }
         Ok(dir)
     }
@@ -572,18 +600,11 @@ pub fn copy_mode(original: Option<u32>) -> u32 {
 
 /// Writes a copy of a file with [`copy_mode`], synced.
 fn write_copy(path: &Path, bytes: &[u8], original: Option<u32>) -> Result<(), LedgerError> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).map_err(io_error(path))?;
+    let mut file = new_private_file(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        // The mode set at creation does not apply to a file that already existed.
+        // Narrower still if the original was, such as 0400; never wider than 0600.
         file.set_permissions(fs::Permissions::from_mode(copy_mode(original)))
             .map_err(io_error(path))?;
     }
@@ -593,7 +614,25 @@ fn write_copy(path: &Path, bytes: &[u8], original: Option<u32>) -> Result<(), Le
     file.sync_all().map_err(io_error(path))
 }
 
-/// Writes `bytes` to `path` and syncs it.
+/// Creates `path` as a new file, owner-only (0600 on Unix) before any byte is written. Whatever
+/// was at `path`, a stale file or a link someone planted, is removed first rather than opened.
+fn new_private_file(path: &Path) -> Result<File, LedgerError> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io_error(path)(e)),
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).map_err(io_error(path))
+}
+
+/// Writes `bytes` to the host file at `path`, in place, and syncs it.
 fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), LedgerError> {
     let mut file = File::create(path).map_err(io_error(path))?;
     file.write_all(bytes).map_err(io_error(path))?;
@@ -601,11 +640,15 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), LedgerError> {
 }
 
 /// Replaces `path` with `bytes` so a reader sees the old or the new file, never a mix.
+/// The new file is owner-only (0600 on Unix), as the ledger is; a caller widens it after.
 pub(crate) fn replace_atomically(path: &Path, bytes: &[u8]) -> Result<(), LedgerError> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    write_synced(&tmp, bytes)?;
+    let mut file = new_private_file(&tmp)?;
+    file.write_all(bytes).map_err(io_error(&tmp))?;
+    file.sync_all().map_err(io_error(&tmp))?;
+    drop(file);
     fs::rename(&tmp, path).map_err(io_error(path))?;
     #[cfg(unix)]
     if let Some(dir) = path.parent() {
@@ -714,6 +757,48 @@ mod tests {
 
     /// A copy of an owner-only file is owner-only, a copy of a world-readable one is still
     /// owner-only, and the copies directory is 0700.
+    /// No link is followed: not at a file Syntropy writes, not in place of the copies directory,
+    /// and not in place of the ledger's temporary file.
+    #[cfg(unix)]
+    #[test]
+    fn links_are_refused_or_replaced_never_followed() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        let state = temp_state();
+        let elsewhere = state.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o755)).unwrap();
+        let theirs = elsewhere.join("theirs");
+        fs::write(&theirs, b"theirs\n").unwrap();
+
+        // A link at the file to write.
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let target = state.join("unit.service");
+        std::os::unix::fs::symlink(&theirs, &target).unwrap();
+        let err = ledger.write_file(&target, b"ours\n", 0, "v").unwrap_err();
+        assert!(matches!(err, LedgerError::Insecure { .. }), "{err}");
+        assert_eq!(fs::read(&theirs).unwrap(), b"theirs\n");
+        assert!(ledger.changes().is_empty());
+        fs::remove_file(&target).unwrap();
+
+        // A link in place of the copies directory: refused, and its target keeps its mode.
+        std::os::unix::fs::symlink(&elsewhere, state.join(COPIES_DIR)).unwrap();
+        let err = ledger.write_file(&target, b"ours\n", 0, "v").unwrap_err();
+        assert!(matches!(err, LedgerError::Insecure { .. }), "{err}");
+        assert_eq!(mode(&elsewhere), 0o755);
+        assert!(!target.exists());
+        fs::remove_file(state.join(COPIES_DIR)).unwrap();
+
+        // A link in place of the ledger's temporary file: removed, not written through.
+        let mut tmp = state.join(LEDGER_FILE).into_os_string();
+        tmp.push(".tmp");
+        std::os::unix::fs::symlink(&theirs, &tmp).unwrap();
+        ledger.write_file(&target, b"ours\n", 0, "v").unwrap();
+        assert_eq!(fs::read(&theirs).unwrap(), b"theirs\n");
+        assert_eq!(mode(&state.join(LEDGER_FILE)), 0o600);
+        assert_eq!(fs::read(&target).unwrap(), b"ours\n");
+    }
+
     #[cfg(unix)]
     #[test]
     fn copies_are_owner_only() {
