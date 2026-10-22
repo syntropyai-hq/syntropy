@@ -9,6 +9,7 @@
 use std::fmt;
 
 use crate::registry::Registry;
+use crate::schema::KeySchema;
 use crate::value::ValueErrorKind;
 
 /// An error code in the `Config` domain (RFC-0054 §8).
@@ -144,10 +145,18 @@ impl From<ValueErrorKind> for Code {
 /// such as `example.` would otherwise let a different word in the last segment count as a typo.
 /// Ties go to the first key in registration order.
 pub fn suggest(registry: &Registry, path: &str) -> Option<&'static str> {
+    suggest_among(registry.keys(), path)
+}
+
+/// [`suggest`] among `keys` only, such as one section's.
+pub(crate) fn suggest_among(
+    keys: impl IntoIterator<Item = &'static KeySchema>,
+    path: &str,
+) -> Option<&'static str> {
     let last = path.rsplit('.').next().unwrap_or(path).chars().count();
     let limit = (last / 3).max(1);
     let mut best: Option<(&'static str, usize)> = None;
-    for key in registry.keys() {
+    for key in keys {
         let distance = levenshtein(path, key.path);
         if distance == 0 || distance > limit {
             continue;
