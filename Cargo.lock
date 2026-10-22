@@ -3767,6 +3767,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "syntropy-netprobe"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "syntropy-core",
+ "syntropy-io",
+ "syntropy-net",
+ "tokio",
+]
+
+[[package]]
 name = "syntropy-obs"
 version = "0.0.0"
 dependencies = [
