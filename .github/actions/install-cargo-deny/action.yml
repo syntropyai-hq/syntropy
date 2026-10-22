@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Installs the cargo-deny release that `cargo xtask deny` pins (RFC-0062 §11.2), for the Linux
+# jobs that run it: `lint`, and `hosted-test-linux`, whose licence fixtures need it in CI. Use it
+# after `./.github/actions/setup-rust`, which puts `~/.cargo/bin` on the path:
+#
+#   - uses: ./.github/actions/install-cargo-deny
+#
+# It downloads the release tarball and checks it against the SHA-256 pinned here before it
+# unpacks anything, which takes seconds where `cargo install` takes minutes. A version bump
+# changes VERSION and SHA256 together, and `cargo xtask deny` refuses any other version.
+
+name: Install cargo-deny
+description: >-
+  Installs the pinned cargo-deny release for x86_64 Linux into ~/.cargo/bin, after checking the
+  tarball against a pinned SHA-256.
+
+runs:
+  using: composite
+  steps:
+    - name: Install cargo-deny
+      shell: bash
+      env:
+        VERSION: 0.20.2
+        SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+      run: |
+        if [ "$RUNNER_OS" != Linux ] || [ "$RUNNER_ARCH" != X64 ]; then
+          echo "::error::this action installs the x86_64 Linux build, not $RUNNER_OS $RUNNER_ARCH"
+          exit 1
+        fi
+        name="cargo-deny-$VERSION-x86_64-unknown-linux-musl"
+        dir="$RUNNER_TEMP/cargo-deny"
+        mkdir -p "$dir"
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 \
+          --output "$dir/$name.tar.gz" \
+          "https://github.com/EmbarkStudios/cargo-deny/releases/download/$VERSION/$name.tar.gz"
+        echo "$SHA256  $dir/$name.tar.gz" | sha256sum --check --strict
+        tar -xzf "$dir/$name.tar.gz" -C "$dir" "$name/cargo-deny"
+        install -m 0755 "$dir/$name/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
+        cargo deny --version

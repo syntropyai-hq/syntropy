@@ -1,0 +1,20 @@
+{
+  "changes": {
+    "result": "success",
+    "outputs": {
+      "jobs": "[\"lint\"]"
+    }
+  },
+  "lint": {
+    "result": "success",
+    "outputs": {}
+  },
+  "hosted-test": {
+    "result": "skipped",
+    "outputs": {}
+  },
+  "hosted-l3": {
+    "result": "skipped",
+    "outputs": {}
+  }
+}
