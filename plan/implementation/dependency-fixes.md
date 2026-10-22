@@ -835,6 +835,18 @@ DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-confor
 | DIST-E7-T12's pools are over any `PoolMemory` (`HeapMemory` in its tests), not "from TIER's pinned network sub-arena"; its edge to TIER-E2-T21 is cut | DIST-E7-T12 | R8 | `net` cannot depend on `tier`, and none of DIST-E7-T12's criteria uses `NetPool`; a runner's `NetPool` reaches `net` through TIER-E2-T25 |
 | DIST-E11-T01 → TIER-E2-T25 | DIST-E11-T01 | R9 | DIST-E11-T01 opens the runner's data-plane channels, and each channel's `ChannelSpec::pool` names a `NetPool` registration that TIER-E2-T25 makes |
 
+## DIST-E8-T15: the `EmbeddingResult` frame without the embedding path (2026-10-23)
+
+DIST-E8-T15 could not be finished as written. Its first criterion, "an embedding request through a 2-stage instance returns the vector", needs two tasks it does not reach: the tail's pooling path, PLC-E9-T22 (M3), and the API path, PROD-E4-T09, which depends on DIST-E8-T15. PLC-E9-T22's row already sends the frame and already checks the vector through one- and two-stage instances, but it had no edge to DIST-E8-T15. These are plan corrections under R9, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E8-T15's criteria become: golden frames round-trip with `dims`, `pooling`, `normalised` and `prompt_tokens` recorded, a 4096-dimension vector among them in parts; hostile input is refused; the encoder refuses a channel without bit 14 `EMBEDDING`. The end-to-end criterion rests with PLC-E9-T22, which already states it | DIST-E8-T15, PLC-E9-T22 | R9 | the codec is what DIST-E8-T15 builds. "A peer without the capability never receives one" is kept as the encoder's refusal, which DIST-E8-T15 can check; negotiating the set is DIST-E8-T13's capability intersection |
+| PLC-E9-T22 → DIST-E8-T15 | PLC-E9-T22 | R9 | the tail sends the frame DIST-E8-T15 defines. DIST-E8-T15 is M2 and PLC-E9-T22 M3, so the edge adds no delay |
+| DIST-E8-T15 carries the frame's parts in the extension's `reserved[4]` (RFC-0031 §6.14, revised 2026-10-23) | DIST-E8-T15 | — | §6.14 sent a larger vector in `Token`'s parts, but its extension had no part fields; a 4096-dimension F32 vector does not fit a 16 KiB slot with its header |
+| PLC-E9-T22 moves from M3 to M2, and PROD-E4-T09 → PLC-E9-T22 and PROD-E4-T10 → PLC-E9-T22 are added | PLC-E9-T22, PROD-E4-T09, PROD-E4-T10 | R9 | RFC-0050 serves `/v1/embeddings` at M2, and PROD-E4-T09 and PROD-E4-T10 check it end to end there, but the pooling path at the tail they rely on was M3 and unreachable from them. Every task PLC-E9-T22 depends on is M2 or earlier, so it moves to M2 with nothing else (review of #1777) |
+| PLC-E9-T22's criterion reads the vector at ingress from the `EmbeddingResult` frame, with the frame's `dims` and `pooling` recorded | PLC-E9-T22 | R9 | the end-to-end check DIST-E8-T15 gave up is then the one PLC-E9-T22 runs: through one- and two-stage instances, across the frame, not inside the tail alone (review of #1777) |
+
 ## DIST-E6-T01's p99 criterion and the metered gap (2026-10-22)
 
 DIST-E6-T01 enumerates and classifies interfaces. One of its criteria needed measured link probes, and the agreed sources leave metered unread on two systems.
