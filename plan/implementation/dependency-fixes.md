@@ -670,8 +670,8 @@ DIST-E10-T08's model check found that a supported older proof can depose a lone 
 
 ## QUAL-E17-T15's nested-field case (2026-10-22)
 
-A post-merge review of #1658 found that a serde default keeps an added field compatible only in CBOR. Over the postcard IPC, a field added to any type under `PlacementPlan` or `PlanDelta` changes the message layout. RFC-0001 §5 gains a dated note that such an addition is an `ipc_protocol` change (RFC-0001 §18.19, issue #1675).
+The post-merge reviews of #1658 found that a serde default keeps an added field compatible only in CBOR. Over the postcard IPC, a field added to any type under `PlacementPlan` or `PlanDelta` changes the message layout, and a new enum variant cannot be decoded by an older peer. RFC-0001 §5 gains a dated note that either addition is an `ipc_protocol` change (RFC-0001 §18.19, issues #1675 and #1660).
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| QUAL-E17-T15's fingerprint criterion gains a nested-field case: a field added to `HopPlan` inside `AssignPlan`'s `PlacementPlan` without an `ipc_protocol` bump fails `compat`; no edge | QUAL-E17-T15 | Definition of done | only a ring-record change was covered, and a fingerprint that missed nested fields would let such an addition break adoption across builds |
+| QUAL-E17-T15's fingerprint criterion gains a nested field (a `HopPlan` field inside `AssignPlan`'s `PlacementPlan`) and a new `PlanDelta` variant, each failing `compat` without an `ipc_protocol` bump; its IPC golden vectors include `PlacementPlan`, `StagePlan` and `PlanDelta`; no edge | QUAL-E17-T15 | Definition of done | only a ring-record change was covered. A fingerprint that missed nested fields or variants, or vectors without the plan types, would let such an addition break adoption across builds |
