@@ -121,7 +121,7 @@ struct TableTerms {
 struct TableProgram {
     domain: String,
     ops: Vec<TableOp>,
-    expect_step: u64,
+    expect_step: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -265,7 +265,7 @@ fn replay(json: &str) {
         }
         assert_eq!(
             got.predicted_step,
-            Nanos(program.expect_step),
+            program.expect_step.map(Nanos),
             "{} {d:?}",
             table.name
         );
@@ -278,7 +278,7 @@ fn replay(json: &str) {
             let d = domain(name);
             DomainOption {
                 domain: d,
-                predicted: steps.iter().find(|(s, _)| *s == d).map(|&(_, t)| t),
+                predicted: steps.iter().find(|(s, _)| *s == d).and_then(|&(_, t)| t),
             }
         })
         .collect();
@@ -589,12 +589,12 @@ fn the_program_stops_at_the_costliest_unsupported_op() {
         &CostTerms::default(),
     )
     .unwrap();
-    assert_eq!(fine.predicted_step, Nanos(2));
+    assert_eq!(fine.predicted_step, Some(Nanos(2)));
     assert_eq!(fine.estimated, 0);
 
     let none = select_program(&[], MemoryDomain::Cuda, false, &CostTerms::default()).unwrap();
     assert!(none.choices.is_empty());
-    assert_eq!(none.predicted_step, Nanos(0));
+    assert_eq!(none.predicted_step, Some(Nanos(0)));
 }
 
 #[test]
@@ -612,6 +612,90 @@ fn without_a_full_benchmark_the_estimates_decide() {
     assert_eq!(decide(&op).unwrap().provider, ProviderId("cuda"));
     op.offers[1].candidate.caps.as_mut().unwrap().est = Some(Nanos(900));
     assert_eq!(decide(&op).unwrap().provider, ProviderId("cuda"));
+}
+
+/// A program of `n` Gemv slots in `domain`, each offered by one native provider: the first
+/// `measured` slots benchmarked at `ns`, the rest left to the provider's estimate of `ns`.
+fn program(
+    domain: MemoryDomain,
+    backend: Backend,
+    n: usize,
+    measured_ops: usize,
+    ns: u64,
+) -> Vec<OpSlot> {
+    (0..n)
+        .map(|i| {
+            let mut c = caps(&OpKind::Gemv);
+            c.est = Some(Nanos(ns));
+            slot(
+                OpKind::Gemv,
+                vec![Offer {
+                    candidate: cand("native", backend, domain, c),
+                    measurement: if i < measured_ops { measured(ns) } else { None },
+                }],
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_partly_benchmarked_domain_cannot_win_on_a_partial_sum() {
+    // Review of #1718: HIP measured all 10 ops at 100 µs (1000 µs); the budget ran out after
+    // 5 of Vulkan's 10 ops at 110 µs. A partial sum of 550 µs would beat 1000 µs by 45 %.
+    let terms = CostTerms::default();
+    let hip = select_program(
+        &program(MemoryDomain::Hip, Backend::Hip, 10, 10, 100_000),
+        MemoryDomain::Hip,
+        false,
+        &terms,
+    )
+    .unwrap();
+    let vk = select_program(
+        &program(MemoryDomain::Vulkan, Backend::Vulkan, 10, 5, 110_000),
+        MemoryDomain::Vulkan,
+        false,
+        &terms,
+    )
+    .unwrap();
+    assert_eq!(hip.predicted_step, Some(Nanos(1_000_000)));
+    assert_eq!((vk.predicted_step, vk.estimated), (None, 5));
+    let opts = [
+        DomainOption {
+            domain: MemoryDomain::Hip,
+            predicted: hip.predicted_step,
+        },
+        DomainOption {
+            domain: MemoryDomain::Vulkan,
+            predicted: vk.predicted_step,
+        },
+    ];
+    assert_eq!(
+        choose_domain(Vendor::Amd, &opts).unwrap(),
+        DomainChoice {
+            domain: MemoryDomain::Hip,
+            reason: DomainReason::Unmeasured(MemoryDomain::Vulkan)
+        }
+    );
+    // Fully benchmarked, the same Vulkan times lose on the like-for-like sum (1100 µs).
+    let vk_full = select_program(
+        &program(MemoryDomain::Vulkan, Backend::Vulkan, 10, 10, 110_000),
+        MemoryDomain::Vulkan,
+        false,
+        &terms,
+    )
+    .unwrap();
+    assert_eq!(vk_full.predicted_step, Some(Nanos(1_100_000)));
+    let full = [
+        opts[0],
+        DomainOption {
+            domain: MemoryDomain::Vulkan,
+            predicted: vk_full.predicted_step,
+        },
+    ];
+    assert_eq!(
+        choose_domain(Vendor::Amd, &full).unwrap().domain,
+        MemoryDomain::Hip
+    );
 }
 
 // ---- Domain choice -------------------------------------------------------------------------
@@ -688,9 +772,22 @@ fn a_measured_domain_choice_needs_both_measurements() {
     );
     let only_hip = choose_domain(Vendor::Amd, &opened(&[(Hip, None), (Cuda, Some(1))])).unwrap();
     assert_eq!(only_hip.domain, Hip);
+    // Both open but one prediction is missing: the default stays, whichever is missing.
+    let vk_missing = choose_domain(Vendor::Amd, &opened(&[(Hip, Some(1000)), (Vulkan, None)]));
     assert_eq!(
-        choose_domain(Vendor::Amd, &opened(&[(Hip, Some(1)), (Vulkan, None)])),
-        Err(DomainError::Unmeasured(Vulkan))
+        vk_missing.unwrap(),
+        DomainChoice {
+            domain: Hip,
+            reason: DomainReason::Unmeasured(Vulkan)
+        }
+    );
+    let hip_missing = choose_domain(Vendor::Amd, &opened(&[(Hip, None), (Vulkan, Some(1))]));
+    assert_eq!(
+        hip_missing.unwrap(),
+        DomainChoice {
+            domain: Hip,
+            reason: DomainReason::Unmeasured(Hip)
+        }
     );
     assert_eq!(
         choose_domain(Vendor::Amd, &opened(&[(Cuda, Some(1))])),

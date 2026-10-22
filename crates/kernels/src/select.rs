@@ -14,7 +14,11 @@
 //! times when both open: the other domain must be more than 5 % faster
 //! ([`DOMAIN_MARGIN_PERCENT`]) to replace `Hip` (or `Vulkan`). The predicted step time of a
 //! domain is [`ProgramChoice::predicted_step`], the sum over the step program of the per-op
-//! winners' costs, segment breaks included.
+//! winners' costs, segment breaks included. It exists only when every op of the program was
+//! decided by measurement: RFC-0040 §6.4 compares the two domains when both were benchmarked,
+//! and a sum that leaves out the ops the benchmark budget skipped (§6.3) is not comparable
+//! with one that covers them. When either prediction is missing, the other domain cannot show
+//! the 5 % win, so the default stays ("else `Hip`").
 //!
 //! **Candidates** ([`admit`], RFC-0040 §6.2 conditions 1–4). A candidate is in the device's
 //! domain, its `query` answered `Some`, its `Numerics` passes the RFC-0042 §4 accumulation
@@ -122,7 +126,8 @@ impl Vendor {
 pub struct DomainOption {
     /// The domain.
     pub domain: MemoryDomain,
-    /// [`ProgramChoice::predicted_step`] in this domain; `None` when not benchmarked.
+    /// [`ProgramChoice::predicted_step`] in this domain; `None` when not benchmarked, or not
+    /// benchmarked for every op.
     pub predicted: Option<Nanos>,
 }
 
@@ -137,6 +142,9 @@ pub enum DomainReason {
     FirstThatOpens,
     /// Only one of the two measured domains opened.
     OnlyOneOpens,
+    /// Both measured domains opened, but this one has no complete predicted step time, so the
+    /// default domain stays (RFC-0040 §6.4, "else `Hip`").
+    Unmeasured(MemoryDomain),
     /// Both measured domains opened and the step times decided.
     Measured {
         /// The default domain's predicted step time.
@@ -161,8 +169,6 @@ pub struct DomainChoice {
 pub enum DomainError {
     /// No domain the vendor's row considers opened the device.
     NoneOpens(Vendor),
-    /// Both measured domains opened, but this one has no predicted step time.
-    Unmeasured(MemoryDomain),
 }
 
 impl fmt::Display for DomainError {
@@ -173,9 +179,6 @@ impl fmt::Display for DomainError {
                     f,
                     "no memory domain considered for {vendor:?} opened the device"
                 )
-            }
-            Self::Unmeasured(domain) => {
-                write!(f, "domain {domain:?} opened but has no predicted step time")
             }
         }
     }
@@ -189,9 +192,7 @@ impl std::error::Error for DomainError {}
 ///
 /// # Errors
 ///
-/// [`DomainError::NoneOpens`] when no considered domain opened, and
-/// [`DomainError::Unmeasured`] when both measured domains opened and one has no predicted
-/// step time.
+/// [`DomainError::NoneOpens`] when no considered domain opened.
 pub fn choose_domain(vendor: Vendor, opened: &[DomainOption]) -> Result<DomainChoice, DomainError> {
     let find = |domain: MemoryDomain| opened.iter().find(|o| o.domain == domain);
     let pick = |domain, reason| DomainChoice { domain, reason };
@@ -199,8 +200,11 @@ pub fn choose_domain(vendor: Vendor, opened: &[DomainOption]) -> Result<DomainCh
     if let Some((default, other)) = vendor.measured_pair() {
         return match (find(default), find(other)) {
             (Some(d), Some(o)) => {
-                let dt = d.predicted.ok_or(DomainError::Unmeasured(default))?;
-                let ot = o.predicted.ok_or(DomainError::Unmeasured(other))?;
+                let (dt, ot) = match (d.predicted, o.predicted) {
+                    (Some(dt), Some(ot)) => (dt, ot),
+                    (None, _) => return Ok(pick(default, DomainReason::Unmeasured(default))),
+                    (Some(_), None) => return Ok(pick(default, DomainReason::Unmeasured(other))),
+                };
                 let reason = DomainReason::Measured {
                     default: dt,
                     challenger: ot,
@@ -627,9 +631,10 @@ pub fn decide_op(
 pub struct ProgramChoice {
     /// One choice per slot, in program order.
     pub choices: Vec<OpChoice>,
-    /// The sum of the chosen costs: the domain's predicted step time for
-    /// [`choose_domain`]. Ops chosen by estimate add nothing.
-    pub predicted_step: Nanos,
+    /// The sum of the chosen costs, segment breaks and fences included: the domain's predicted
+    /// step time for [`choose_domain`]. `None` when any op was chosen by estimate, because a
+    /// sum without that op's time would understate the step.
+    pub predicted_step: Option<Nanos>,
     /// How many ops were chosen by estimate rather than measurement.
     pub estimated: usize,
 }
@@ -659,12 +664,9 @@ pub fn select_program(
         choices[i] = Some(decide_op(&program[i], i, domain, deterministic, terms)?);
     }
     let choices: Vec<OpChoice> = choices.into_iter().map(|c| c.expect("decided")).collect();
-    let predicted_step = Nanos(
-        choices
-            .iter()
-            .filter_map(|c| c.cost)
-            .fold(0u64, |sum, c| sum.saturating_add(c.0)),
-    );
+    let predicted_step = choices.iter().try_fold(Nanos(0), |sum, c| {
+        c.cost.map(|cost| Nanos(sum.0.saturating_add(cost.0)))
+    });
     let estimated = choices.iter().filter(|c| c.cost.is_none()).count();
     Ok(ProgramChoice {
         choices,

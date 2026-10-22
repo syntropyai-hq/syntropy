@@ -1,6 +1,6 @@
 {
   "name": "cpu_budget",
-  "note": "Hand-written in the recorded-table format; the times are chosen to exercise each rule, not measured on hardware. The benchmark budget ran out before Gemv and Gemm, so their offers carry the providers' own estimates only.",
+  "note": "Hand-written in the recorded-table format; the times are chosen to exercise each rule, not measured on hardware. The benchmark budget ran out before Gemv and Gemm, so their offers carry the providers' own estimates only, and the program has no predicted step time.",
   "vendor": "Cpu",
   "deterministic": true,
   "terms": { "t_submit": 0, "t_fence": 0 },
@@ -33,7 +33,7 @@
           "expect": "cpu#0"
         }
       ],
-      "expect_step": 1000
+      "expect_step": null
     }
   ],
   "opened": ["Host"],
