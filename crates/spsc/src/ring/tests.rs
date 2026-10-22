@@ -235,3 +235,74 @@ fn errors_name_what_happened() {
         "the ring is empty and its producer is gone"
     );
 }
+
+/// The wait/wake handshake (`wait.rs`): a consumer that arms and sees `Arm::Waiting` is woken by
+/// the producer's next push. The consumer stores `waiting`, fences and checks the ring; the
+/// producer stores `tail`, fences and reads `waiting`. Loom explores every order of the two, and
+/// without either fence it finds the one where each misses the other and the consumer sleeps on
+/// a value it never sees.
+#[cfg(loom)]
+#[test]
+fn an_armed_consumer_is_woken_by_the_next_push() {
+    model(|| {
+        let (mut tx, mut rx) = ring::<u32>(2).unwrap();
+        let producer = thread::spawn(move || {
+            tx.push(1).unwrap();
+            tx
+        });
+        let armed = rx.arm();
+        let tx = producer.join().unwrap();
+        if armed == crate::Arm::Waiting {
+            assert!(
+                rx.shared.waker.notified() >= 1,
+                "the consumer waits, and the push never woke it"
+            );
+        }
+        assert_eq!(rx.pop(), Ok(1));
+        drop(tx);
+    });
+}
+
+/// As above, for the producer's close: an armed consumer is woken when the producer goes.
+#[cfg(loom)]
+#[test]
+fn an_armed_consumer_is_woken_by_the_close() {
+    model(|| {
+        let (tx, mut rx) = ring::<u32>(2).unwrap();
+        let producer = thread::spawn(move || drop(tx));
+        let armed = rx.arm();
+        producer.join().unwrap();
+        if armed == crate::Arm::Waiting {
+            assert!(
+                rx.shared.waker.notified() >= 1,
+                "the consumer waits, and the close never woke it"
+            );
+        }
+        assert_eq!(rx.pop(), Err(PopError::Closed));
+    });
+}
+
+/// A value pushed before the producer goes is popped before `Closed`: a consumer that sees the
+/// close and reloads `tail` finds the push. Two things order the close after the push, its
+/// release store and the push's trailing fence, so loom finds the lost value only with both gone
+/// (a relaxed close and no fence in `wake_consumer`); with either one it passes.
+#[test]
+fn a_value_pushed_before_the_close_is_never_lost() {
+    model(|| {
+        let (mut tx, mut rx) = ring::<u32>(2).unwrap();
+        let producer = thread::spawn(move || {
+            tx.push(7).unwrap();
+            drop(tx);
+        });
+        let mut got = Vec::new();
+        loop {
+            match rx.pop() {
+                Ok(value) => got.push(value),
+                Err(PopError::Closed) => break,
+                Err(PopError::Empty) => thread::yield_now(),
+            }
+        }
+        producer.join().unwrap();
+        assert_eq!(got, [7]);
+    });
+}

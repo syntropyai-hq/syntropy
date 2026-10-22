@@ -17,17 +17,27 @@ use crate::sync::{Arc, AtomicBool, AtomicUsize, Ordering, UnsafeCell, fence};
 #[cfg(not(loom))]
 pub(crate) use crate::wait::Waker;
 
-/// Under loom there is no thread to park and no wake handle, so there is nothing to wake. It has
-/// a field so that both builds make it with `Waker::default()`.
+/// Under loom there is no thread to park and no wake handle. The waker counts its wake-ups
+/// instead, so a model can check that a consumer that armed and saw [`Arm::Waiting`] was woken.
+///
+/// [`Arm::Waiting`]: crate::Arm::Waiting
 #[cfg(loom)]
 #[derive(Debug, Default)]
 pub(crate) struct Waker {
-    _nothing: (),
+    notified: AtomicUsize,
 }
 
 #[cfg(loom)]
 impl Waker {
-    fn notify(&self) {}
+    fn notify(&self) {
+        self.notified.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many times the producer has woken the consumer.
+    #[cfg(test)]
+    pub(crate) fn notified(&self) -> usize {
+        self.notified.load(Ordering::Relaxed)
+    }
 }
 
 /// Why [`ring`] refused a capacity.
@@ -291,6 +301,12 @@ impl<T> Producer<T> {
 
 impl<T> Drop for Producer<T> {
     fn drop(&mut self) {
+        // The close is ordered after the last push twice over: it is a release store, and every
+        // push ends with `wake_consumer`'s sequentially consistent fence, which alone makes any
+        // later store, this one included, a release for a consumer that reads it. So a relaxed
+        // close would still be correct today, and no test can tell the two apart. The release
+        // keeps the close correct if the push path ever loses its fence
+        // (`a_value_pushed_before_the_close_is_never_lost`).
         self.shared.flags.closed.store(true, Ordering::Release);
         self.shared.wake_consumer();
     }

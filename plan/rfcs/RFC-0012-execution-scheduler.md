@@ -710,6 +710,11 @@ Acceptance is learned per (drafter, model) and per request kind (greedy or sampl
 | `exec.profile_every` | 64 | profiled-step period (shared with RFC-0010 `probe.online.profile_every`) |
 | `exec.max_gpu_segment_ms` (node, per device) | 500 ms on GPUs that report a run-time limit (WDDM display GPUs); 1,000 ms on Metal [target, RFC-0040 §4.5]; none on compute-only GPUs and the CPU | the longest unit of GPU work the OS times (§7.6); lower values split more and cost a few launch or commit overheads per prefill chunk |
 
+*Note 2026-10-22 (PLC-E8-T13, as built; open, for the maintainers): the `sched.*` keys' types, reload classes and ranges.* `syntropy_sched::config::SchedSection` registers the eight `sched.*` rows above, all instance scope, with this RFC as owner. The table gives no types, reload classes or ranges, so the section chooses them:
+- **Types.** The four times are `Duration`s, because RFC-0054 §3 accepts no bare integer where a unit is meant. So `sched.spin_us = 50` is rejected as `wrong_type`, and the value is written `"50us"`. Renaming `sched.spin_us` and `sched.prewake_us` to `sched.spin` and `sched.prewake` would remove the mismatch between name and syntax. The counts are `u32`. A key whose default depends on the instance or the power source (`spin_us`, `decode_stall_budget`, `prefill_inflight`, `prefill_share`) has a `computed` default with the rule above as its text, and is unset until the scheduler applies the rule.
+- **Reload classes** (RFC-0054 §9.1). `instance` for `sched.prefill_inflight` and `sched.latency_decode_rows`, which change the lane credits or the captured `Batch { rows }` buckets. `hot` for the other six, which the head reads each step.
+- **Ranges.** `sched.prefill_inflight` and `sched.prefill_share` are at least 1. `sched.latency_decode_rows` is 1 to 4, since §4.6's step uses the `Batch { rows }` bucket at 2 or 4 rows; RFC-0040 §9's kernel targets cover 2–8 rows, so a larger maximum is possible once those buckets are captured. The other keys have no upper bound, so `sched.max_queued = 0` and a large `sched.spin_us` are accepted.
+
 ### 13. Failure handling
 
 | Failure | Detection | Action |
