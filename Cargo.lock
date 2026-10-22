@@ -855,6 +855,11 @@ dependencies = [
 [[package]]
 name = "syntropy-api"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "syntropy-config",
+ "toml",
+]
 
 [[package]]
 name = "syntropy-bench"
@@ -876,6 +881,8 @@ name = "syntropy-cluster"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "ciborium",
+ "proptest",
  "serde",
  "stateright",
  "syntropy-config",
@@ -942,9 +949,13 @@ dependencies = [
 name = "syntropy-io"
 version = "0.0.0"
 dependencies = [
+ "getrandom 0.4.3",
+ "libc",
+ "proptest",
  "syntropy-core",
  "syntropy-spsc",
  "syntropy-testkit",
+ "windows-sys",
 ]
 
 [[package]]
@@ -1074,6 +1085,11 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-testkit"
 version = "0.0.0"
+dependencies = [
+ "chacha20",
+ "syntropy-core",
+ "syntropy-graph",
+]
 
 [[package]]
 name = "syntropy-text"
@@ -1098,6 +1114,7 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
