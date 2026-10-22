@@ -2,6 +2,9 @@
 
 //! The HTTP API surfaces, ingress routing, sequence channels and dashboard state endpoints.
 //!
-//! Stub: layer 4 in RFC-0001 §4.1, designed in RFC-0050. Nothing is implemented yet.
+//! Layer 4 in RFC-0001 §4.1, designed in RFC-0050. So far it holds [`tls`]: the node's local
+//! TLS CA and the leaves it serves (RFC-0050 §11.1.1).
 
 #![forbid(unsafe_code)]
+
+pub mod tls;

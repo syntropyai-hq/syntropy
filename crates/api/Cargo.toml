@@ -4,3 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+syntropy-net = { path = "../net" }
+# The local CA (PROD-E5-T03): certificates, the leaf resolver, validity times and the stored CA.
+rcgen.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+x509-parser.workspace = true
+zeroize.workspace = true
+

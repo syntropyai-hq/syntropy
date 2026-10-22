@@ -768,6 +768,26 @@ TLS on a LAN is practical only if clients can trust the certificate without a pu
   - **Client runtimes with their own CA bundles.** Python's common HTTP stacks use a bundled certificate set, and Node.js ignores the OS store unless told otherwise. So `syntropy trust` also writes a PEM file and prints the environment variables those clients read: `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`.
   - **Phones.** iOS needs a configuration profile installed by hand, and then full trust enabled in Settings. Android apps ignore user-installed CAs unless they opt in. For phones the practical routes are an overlay network (no TLS needed, key still required) or a certificate from the user's own CA via `{ cert, key }`.
   - **Every client machine** needs this step once per node it talks to, or once per cluster with `trust --cluster` (open question 8, answered).
+*Note 2026-10-22 (PROD-E5-T03): how the CA is built.*
+- **Storage.** The CA lives in one file, `tls/ca.json`, in the state directory. It holds the key (PKCS#8), the certificate, the scope and the node-key binding (RFC-0034 §3's `syntropy-tls-ca-v1`, note of the same date).
+  - The file is mode 0600, in a 0700 directory.
+  - It is written to a new file, flushed, renamed over the old one, and then the directory is flushed, so a replacement is one atomic step.
+  - A file the daemon cannot read, or whose parts disagree, is refused and left as it is. No key is overwritten without a reason the user can see.
+- **Randomness.** The CA and leaf keys come from ring's `SystemRandom`, the OS CSPRNG of RFC-0034 §3. ring's random source is sealed, so it cannot draw from `core`'s `Entropy`.
+- **The CA certificate.** It is valid for 10 years [target, a chosen budget], since it is replaced when its scope changes, not on a schedule.
+  - Its path length is 0, so it signs leaves only.
+  - Its key usages are certificate and CRL signing.
+  - A certificate's validity starts 1 hour before it is issued [target, a chosen budget], for clients whose clocks run behind.
+- **Names.** A dNSName constraint also permits every name below it (RFC 5280 §4.2.1.10).
+  - So the scope leaves out single-label names. A node named `box` would otherwise get a CA for the whole `.box` top-level domain.
+  - The node is still reachable as `<host>.local` and by its other names of two or more labels.
+  - A leaf carries the scope's names exactly; a name below one of them is refused.
+- **Addresses.** The scope leaves out public and loopback addresses: a local CA covers only private, shared (RFC 6598), link-local and unique-local ones.
+  - An address family with no served subnet is excluded whole, so the CA can issue for no address of that family.
+  - A node that serves only public addresses gets a CA for its names alone.
+- **Replacement.** A new CA replaces the old one when the node's names or served subnets change, and also when the node key changes (`identity reset`), since the old binding names another identity. The replacement is recorded first in `tls/ca-replaced.json`: when, why, and the old and new fingerprints, `BLAKE3("syntropy-fp-v1" ‖ SPKI DER)` (RFC-0034 §6.5). SEC-006 reads that record.
+- **Rotation.** The listener serves the current leaf through a resolver that swaps leaves. A connection keeps the leaf it was handshaken with, and the next full handshake gets the new one. A client that resumes an earlier TLS session sees no certificate until its session ends.
+
 - **Plain HTTP on the LAN.** `api.allow_plaintext_lan = true` exists for users who accept the risk, for example on an isolated lab network. Keys are still required. The dashboard shows a permanent "API traffic on this LAN is unencrypted" banner, `doctor` reports SEC-005 as a warning on every run, and the startup log says so on every start.
 
 #### 11.2 Requests from browsers

@@ -125,7 +125,14 @@ A compromised member (A5) or the holder of a used, leaked token (A8) can therefo
 - `syntropy-ns-v1`, `syntropy-term-tag`;
 - `syntropy-keyrotate-v1`, `syntropy-release-v1`, `syntropy-module-v1`, `syntropy-rdma-aead-v1`, `syntropy-fp-v1`;
 - `syntropy-session-wrap-v1` (§13);
-- `syntropy-admit-v1`, `syntropy-revoke-v1`, `syntropy-authority-v1` (the other authority events of §8.3), `syntropy-apikey-v1`.
+- `syntropy-admit-v1`, `syntropy-revoke-v1`, `syntropy-authority-v1` (the other authority events of §8.3), `syntropy-apikey-v1`;
+- `syntropy-tls-ca-v1` (R5: the node key's binding of its local TLS CA, RFC-0050 §11.1.1).
+
+*Note 2026-10-22 (PROD-E5-T03): the local CA's binding.* R5 binds each node's local TLS CA to the node identity with a statement signed by the node key. This note fixes its bytes.
+- The node key signs, in context `syntropy-tls-ca-v1`, the bytes `0x01 ‖ the CA certificate's SubjectPublicKeyInfo, DER`. The leading byte is the statement's version.
+- The statement covers the CA's public key, not its certificate. So a CA reissued over the same key keeps its binding, and the binding says only "this key is the node's CA".
+- A client that knows the node key, from the node's admission certificate (§5), checks the binding before it trusts the CA. That is how `syntropy trust --cluster` (RFC-0050 §11.1.1) checks every member's CA.
+- The context is the 24th in the list above. Like the others, it is no prefix of another context string, and no other context's string is a prefix of it.
 
 *Note 2026-10-22 (DIST-E2-T04, from review):* strict verification also refuses a public key that is not of prime order, where `[ℓ]A ≠ identity`. Refusing small-order keys alone is not enough. A key `A + T`, with `T` a point of small order, verifies a signature made with `A`'s secret whenever `T`'s order divides the challenge `k`, so one secret could sign under up to eight public keys, and a `NodeId` would not name one key. Every honest key is `[a]B` and has prime order, so the check costs honest peers nothing. `net::crypto::verify` applies it after the canonical-encoding and small-order checks.
 
@@ -137,6 +144,7 @@ A compromised member (A5) or the holder of a used, leaked token (A8) can therefo
 | Cluster key (Ed25519; public half = `ClusterId`) | cluster bootstrap (RFC-0030 §6.1), or rotation (§8.2) | keyholders | `identity/cluster.key`, same protection | until rotated |
 | Runner key (Ed25519) | by the daemon at each runner spawn | that runner; passed in `Init` over the inherited IPC channel (RFC-0001 §3.5) | runner memory only | the runner's life |
 | API keys | `syntropy api-key create` | clients; the node stores only BLAKE3 hashes | node config, `api-keys.toml`, mode 0600 | until revoked |
+| Local TLS CA key (ECDSA P-256; added 2026-10-22, PROD-E5-T03) | the first non-loopback bind (RFC-0050 §11.1.1) | the daemon only; never sent to another node or the coordinator | `tls/ca.json` in the state directory, with the CA certificate, its scope and its node-key binding; mode 0600 in a 0700 directory. The OS keystore holds it from M3 (PROD-E5-T10) | until the node's names, served subnets or node key change |
 | Hub tokens | user input | the node that owns them | OS keystore, or a 0600 file; never logged, never sent to another node (ADR-0016) | user-managed |
 | Release root keys (public) | offline, in a key ceremony by the token custodians, each a maintainer or a recorded delegate (**Maintainer action**, §12.1) | embedded in the binary | — | rolled with releases (§12) |
 
