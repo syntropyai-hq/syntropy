@@ -1,0 +1,292 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Every success criterion of plan/00-vision-and-scope.md §7, mapped to the scenarios, rigs, metric
+# and pass rule that measure it (RFC-0061 §4.2). RFC-0061 §4.2's table is rendered from this file:
+# after editing it, run `syntropy-bench scenarios render --write`. The `lint` job's
+# `syntropy-bench scenarios check` fails if a criterion has no row or the table is stale.
+#
+# - `scenarios`, `rigs`, `measured`, `pass`: the table's cells, as Markdown on one line each.
+# - `patterns`: the scenario IDs the cell names, with `*` for one segment, or one or more as the
+#   last segment. Empty when no scenario file measures the criterion (an RFC-0060 property,
+#   chaos or parity result, or the release gate).
+# - `added_owners`: owners the acceptance criteria don't show. A row's owners are derived from
+#   plan/implementation/epics/: every task whose acceptance criteria name the criterion (ranges
+#   such as SC-1–SC-4 included), in milestone order, plus these. List here only a scenario task
+#   whose row names the criterion in its task or Implements cell but not in its acceptance
+#   criteria. `syntropy-bench scenarios check` fails when an added owner's criteria name the
+#   criterion already, or its row doesn't name it at all.
+# - `[[not_owner]]`, at the end: a task whose acceptance criteria name criteria it does not own,
+#   with the reason. The check fails when the task's criteria stop naming one of them.
+#
+# When an epic edit starts or stops citing a criterion, RFC-0061 §4.2's table goes stale and the
+# check names the row and the task: render the table again, or add a `[[not_owner]]` entry.
+
+[[sc]]
+id = "SC-1"
+scenarios = "`kern.gemv.dense.*`, `kern.moe.grouped.*`, `kern.cpu.eip.*` (§9)"
+patterns = ["kern.gemv.dense.*", "kern.moe.grouped.*", "kern.cpu.eip.*"]
+rigs = "R-ADA (AVX2 host), R-BW (AVX-512 host), R-WIN, R-MACF, R-ULTRA-A, R-HALO"
+measured = "η = W_ach / W_peak per kernel class; CPU: W_ach / probe all-core read"
+pass = "≥ 0.80 dense on `Vram`/`Unified`; ≥ 0.63 grouped MoE; ≥ 0.75 CPU in place"
+
+[[sc]]
+id = "SC-2"
+scenarios = "`decode.single.llama1b`, `.llama8b`, `.llama70b` at Q4 on each rig; intercept of `t_tok` against bytes"
+patterns = ["decode.single.llama1b.*", "decode.single.llama8b.*", "decode.single.llama70b.*"]
+rigs = "every Tier 1 GPU rig"
+measured = "fitted `t_fixed`; telemetry `t_fixed_ach`"
+pass = "`t_fixed ≤ 0.2 · 3.79 GB / W_probe`"
+
+[[sc]]
+id = "SC-3"
+scenarios = "every `decode.single.*` scenario"
+patterns = ["decode.single.*"]
+rigs = "all"
+measured = "`t_tok` against `t_model` (§5.1)"
+pass = "`t_tok ≤ 1.05 · t_model`"
+added_owners = ["QUAL-E13-T02"]
+
+[[sc]]
+id = "SC-4"
+scenarios = "`decode.single.llama70b.q4km.cap64g` (scenario a); `.llama70b.q4km` and `tiered.single.dsv3.4bit` on R-ULTRA-A"
+patterns = ["decode.single.llama70b.q4km.cap64g", "decode.single.llama70b.q4km", "tiered.single.dsv3.4bit"]
+rigs = "R-ADA, R-ULTRA-A"
+measured = "decode rate against `t_peak` (§5.1)"
+pass = "≥ 0.67 (split across `Vram` and DRAM); ≥ 0.76 (one tier); ≥ 0.60 (MoE in `Vram`/`Unified`)"
+
+[[sc]]
+id = "SC-5"
+scenarios = "`tiered.single.dsv3.q4km.sustained` (scenario b2)"
+patterns = ["tiered.single.dsv3.q4km.sustained"]
+rigs = "R-ADA (128 GB)"
+measured = "`t_tok`, measured h"
+pass = "`t_tok ≤ 1.10 · t_overlap(h)`"
+
+[[sc]]
+id = "SC-6"
+scenarios = "`prefill.nstar.sweep`: chunk n ∈ {1, 2, 4, …, 64} on a RAM-homed layer range"
+patterns = ["prefill.nstar.*"]
+rigs = "R-ADA, R-BW"
+measured = "chosen path per n; time of both paths, forced by pins"
+pass = "the chosen path is the faster one at every n, except within ±1 chunk of the measured crossover"
+
+[[sc]]
+id = "SC-7"
+scenarios = "`io.nvme.expert.*` (§9); telemetry of b2"
+patterns = ["io.nvme.expert.*"]
+rigs = "R-ADA, R-BW (Gen5)"
+measured = "expert-read GB/s"
+pass = "≥ 0.85 × probe sustained rate at the same size and queue depth"
+
+[[sc]]
+id = "SC-8"
+scenarios = "b2 telemetry"
+patterns = ["tiered.single.dsv3.q4km.sustained"]
+rigs = "R-ADA"
+measured = "share of NVMe misses issued before their layer's router ran"
+pass = "≥ 50%"
+
+[[sc]]
+id = "SC-9"
+scenarios = "`cache.policy.trace.*`: offline replay of RFC-0060 routing traces"
+patterns = ["cache.policy.trace.*"]
+rigs = "any CPU host"
+measured = "hit rate per policy and capacity"
+pass = "≥ max(cache fraction, LRU at equal capacity) on every trace"
+
+[[sc]]
+id = "SC-10"
+scenarios = "`prefill.single.llama70b.q4km.cap64g` at 4K and 32K prompts"
+patterns = ["prefill.single.llama70b.q4km.cap64g"]
+rigs = "R-ADA, R-BW"
+measured = "H2D GB/s during streamed prefill; micro-batch size"
+pass = "≥ 0.90 × probe pinned rate; micro-batch ≥ `n_hide` where VRAM allows"
+
+[[sc]]
+id = "SC-11"
+scenarios = "every scenario (peak bytes per tier); the RFC-0060 matrix (OOM kills)"
+patterns = ["decode.*", "prefill.*", "tiered.*", "pipeline.*", "throughput.*"]
+rigs = "all"
+measured = "predicted against measured peak per tier per node"
+pass = "within 5%; zero OOM kills"
+
+[[sc]]
+id = "SC-12"
+scenarios = "`net.hop.*` (§9), runner to runner through the real rings"
+patterns = ["net.hop.*"]
+rigs = "R-PAIR10, the S2 cluster, R-TB5 pair"
+measured = "added time per hop"
+pass = "≤ `α_probe + S/β_probe + 2 · t_switch(probe)`"
+
+[[sc]]
+id = "SC-13"
+scenarios = "`pipeline.single.llama70b.q4km.s2` (scenario c1)"
+patterns = ["pipeline.single.llama70b.q4km.s2"]
+rigs = "S2 cluster on 2.5 GbE"
+measured = "`t_tok` against `Σ_s t_s + D · t_hop`"
+pass = "≤ 1.05×"
+
+[[sc]]
+id = "SC-14"
+scenarios = "prop P-solver-3; `pipeline.vs.single.*`: forced single-node plans against the chosen plan"
+patterns = ["pipeline.vs.single.*"]
+rigs = "sim; S2 cluster"
+measured = "predicted and measured `t_tok`"
+pass = "chosen ≤ best single-node, both predicted and measured"
+
+[[sc]]
+id = "SC-15"
+scenarios = "`throughput.pipeline.llama70b.q4km.s2` at concurrency 1–8 (scenario c2)"
+patterns = ["throughput.pipeline.llama70b.q4km.s2"]
+rigs = "S2 cluster"
+measured = "aggregate rate"
+pass = "≥ 0.85 × `min(M, D) / (Σ_s t_s + D · t_hop)`, capped at `1 / max_s t_s`"
+
+[[sc]]
+id = "SC-16"
+scenarios = "prop P-solver-4; the probe's `α_eff` on each lab link"
+patterns = []
+rigs = "sim; R-TB5 pair, R-PAIR10, R-ROCE"
+measured = "TP/EP chosen only when the gate holds"
+pass = "gate formula holds for every committed plan"
+
+[[sc]]
+id = "SC-17"
+scenarios = "`net.collective.allreduce.tb5` (§9)"
+patterns = ["net.collective.allreduce.tb5"]
+rigs = "R-TB5 pair"
+measured = "`α_eff` per collective"
+pass = "≤ `α_wire + 2 · t_switch`"
+
+[[sc]]
+id = "SC-18"
+scenarios = "`prefill.single.llama70b.q4km.cap64g` at 4K (scenario a step 4)"
+patterns = ["prefill.single.llama70b.q4km.cap64g"]
+rigs = "R-ADA"
+measured = "TTFT"
+pass = "≤ 1.15 × the formula + queueing"
+
+[[sc]]
+id = "SC-19"
+scenarios = "`agent.session.restore.*`"
+patterns = ["agent.session.restore.*"]
+rigs = "R-ADA, R-ULTRA-A"
+measured = "resumed TTFT"
+pass = "≤ `1.25 · KV_bytes / W_read(tier) + t_prefill(new tokens)`"
+
+[[sc]]
+id = "SC-20"
+scenarios = "`agent.prefix.*`"
+patterns = ["agent.prefix.*"]
+rigs = "R-ADA, R-ULTRA-A"
+measured = "tokens prefilled per turn"
+pass = "exactly the tokens after the longest cached-prefix match"
+
+[[sc]]
+id = "SC-21"
+scenarios = "`spec.*` pairs (Off against Auto): dense 70B with draft model; DeepSeek-class with MTP"
+patterns = ["spec.*"]
+rigs = "R-ADA, R-ULTRA-A"
+measured = "realised speedup against the predicted, with measured `a`"
+pass = "≥ 0.85 × predicted; speculation off whenever predicted < 1"
+
+[[sc]]
+id = "SC-22"
+scenarios = "`life.probe`"
+patterns = ["life.probe"]
+rigs = "every rig"
+measured = "quick-probe time"
+pass = "≤ 15 s"
+
+[[sc]]
+id = "SC-23"
+scenarios = "`life.packload.llama70b.q4km`"
+patterns = ["life.packload.llama70b.q4km"]
+rigs = "R-ADA (Gen4), R-BW (Gen5)"
+measured = "`t_pack + t_load`"
+pass = "≤ `1.25 · (2S/W_read + S/W_write)`"
+
+[[sc]]
+id = "SC-24"
+scenarios = "`life.install.clean` on clean VM images per Tier 1 OS (RFC-0052 owns the script)"
+patterns = ["life.install.clean"]
+rigs = "hosted VMs; R-MACF"
+measured = "steps, typed inputs, time to first token"
+pass = "one command, one model choice, no config file, no typed address"
+added_owners = ["QUAL-E13-T04"]
+
+[[sc]]
+id = "SC-25"
+scenarios = "`cluster.rejoin`, `cluster.newjoin` (scripted pairing approval), `cluster.detect`; sim checker"
+patterns = ["cluster.rejoin", "cluster.newjoin", "cluster.detect"]
+rigs = "S2 cluster; sim"
+measured = "heartbeats to admit (from probe for a rejoin, from approval for a new node) and to detect"
+pass = "≤ 2; ≤ 3"
+
+[[sc]]
+id = "SC-26"
+scenarios = "`cluster.invite.offlan` (RFC-0060 L7 with timing)"
+patterns = ["cluster.invite.offlan"]
+rigs = "lab + an off-site node through a relay"
+measured = "join success, time"
+pass = "joins with one token, no port forwarding"
+
+[[sc]]
+id = "SC-27"
+scenarios = "RFC-0060 chaos F-03"
+patterns = []
+rigs = "lab; sim"
+measured = "failed in-flight requests"
+pass = "0"
+
+[[sc]]
+id = "SC-28"
+scenarios = "RFC-0060 chaos F-01, F-02 with timing"
+patterns = []
+rigs = "lab"
+measured = "resume time against the RFC-0033 formula"
+pass = "within the formula; no client-visible error"
+
+[[sc]]
+id = "SC-29"
+scenarios = "RFC-0060 parity, every release"
+patterns = []
+rigs = "Tier 1"
+measured = "parity verdicts"
+pass = "all pass; approximate settings visible in API, CLI and dashboard"
+added_owners = ["QUAL-E5-T10"]
+
+[[sc]]
+id = "SC-30"
+scenarios = "every `decode.single.*`, `pipeline.*`, `tiered.*` scenario"
+patterns = ["decode.single.*", "pipeline.*", "tiered.*"]
+rigs = "reference rigs"
+measured = "`|t_pred − t_meas| / t_meas`"
+pass = "≤ 0.15"
+
+[[sc]]
+id = "SC-31"
+scenarios = "`solver.regress.*` (§9)"
+patterns = ["solver.regress.*"]
+rigs = "any CPU host"
+measured = "slow-solve time (≤ 8 nodes), routing time, DP feasibility"
+pass = "≤ 2 s; ≤ 1 ms; feasible whenever one exists"
+
+[[sc]]
+id = "SC-32"
+scenarios = "the release gate (§8.4); publishing rules (§11)"
+patterns = []
+rigs = "Tier 1 rigs"
+measured = "per-scenario deltas against the previous release"
+pass = "no reference benchmark outside its noise band; every published number fully keyed"
+added_owners = ["QUAL-E14-T05"]
+
+[[not_owner]]
+task = "QUAL-E13-T20"
+sc = ["SC-5", "SC-6", "SC-7", "SC-8", "SC-9", "SC-10", "SC-18"]
+reason = "its criteria list SC-5–SC-8, SC-10 and SC-18 as not applicable on the Windows and Apple rigs, and SC-9 as staying QUAL-E13-T03's"
+
+[[not_owner]]
+task = "PLC-E8-T20"
+sc = ["SC-4"]
+reason = "its criteria name SC-4 only for its rigs (\"on the SC-4 rigs\"), not as a target it meets"

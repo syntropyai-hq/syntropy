@@ -18,7 +18,9 @@
 //!   a multi-line string, counts on every PR while it stays.
 //!
 //! Path dependencies between workspace members are not new dependencies: `check-deps` judges
-//! those edges (RFC-0001 §4.2).
+//! those edges (RFC-0001 §4.2). A path dependency on a directory that is not a member, such as
+//! one the workspace `exclude`s, is external code, and is new like a crate when the base does not
+//! declare it.
 //!
 //! Its two steps:
 //! - **`dep-diff`** lists what is new and fails unless a maintainer has approved it: a PR
@@ -112,6 +114,8 @@ impl NewDependencies {
 fn shown_source(source: &str) -> String {
     if source == CRATES_IO {
         "crates.io".to_owned()
+    } else if let Some(dir) = source.strip_prefix("path+") {
+        format!("the directory `{dir}`, which is not a workspace member")
     } else {
         format!("`{source}`")
     }
@@ -119,6 +123,12 @@ fn shown_source(source: &str) -> String {
 
 /// The external direct dependencies a `cargo metadata --no-deps` document declares: each crate
 /// with the members that name it.
+///
+/// A path dependency on a workspace member is a workspace edge, not an external crate. A path
+/// dependency on any other directory, such as one the workspace `exclude`s or one outside the
+/// workspace root, is external code like any other: its source is `path+<dir>`, with `<dir>`
+/// relative to the workspace root, so the same directory compares equal in the base and the
+/// head checkouts.
 pub fn declared(metadata: &str) -> Result<BTreeMap<Crate, Vec<String>>, String> {
     let value: Value =
         serde_json::from_str(metadata).map_err(|e| format!("cargo metadata: not JSON: {e}"))?;
@@ -126,6 +136,22 @@ pub fn declared(metadata: &str) -> Result<BTreeMap<Crate, Vec<String>>, String> 
         .get("packages")
         .and_then(Value::as_array)
         .ok_or("cargo metadata: no `packages` array")?;
+    let root = value
+        .get("workspace_root")
+        .and_then(Value::as_str)
+        .map(Path::new)
+        .ok_or("cargo metadata: no `workspace_root`")?;
+    // With `--no-deps`, `packages` holds exactly the workspace members.
+    let members = packages
+        .iter()
+        .map(|package| {
+            package
+                .get("manifest_path")
+                .and_then(Value::as_str)
+                .and_then(|manifest| Path::new(manifest).parent())
+                .ok_or("cargo metadata: a package has no `manifest_path`")
+        })
+        .collect::<Result<BTreeSet<&Path>, _>>()?;
     let mut crates: BTreeMap<Crate, Vec<String>> = BTreeMap::new();
     for package in packages {
         let name = package
@@ -137,14 +163,30 @@ pub fn declared(metadata: &str) -> Result<BTreeMap<Crate, Vec<String>>, String> 
             .and_then(Value::as_array)
             .ok_or_else(|| format!("cargo metadata: `{name}` has no `dependencies` array"))?;
         for dependency in dependencies {
-            // A path dependency has no source; it is a workspace edge, not an external crate.
-            let Some(source) = dependency.get("source").and_then(Value::as_str) else {
-                continue;
-            };
             let crate_name = dependency
                 .get("name")
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("cargo metadata: a dependency of `{name}` has no name"))?;
+            let source = match dependency.get("source").and_then(Value::as_str) {
+                Some(source) => source.to_owned(),
+                // A path dependency has no source.
+                None => {
+                    let path = dependency
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(Path::new)
+                        .ok_or_else(|| {
+                            format!(
+                                "cargo metadata: dependency `{crate_name}` of `{name}` has \
+                                 neither a source nor a path"
+                            )
+                        })?;
+                    if members.contains(path) {
+                        continue;
+                    }
+                    format!("path+{}", relative(root, path))
+                }
+            };
             let kind = dependency
                 .get("kind")
                 .and_then(Value::as_str)
@@ -153,7 +195,7 @@ pub fn declared(metadata: &str) -> Result<BTreeMap<Crate, Vec<String>>, String> 
             let users = crates
                 .entry(Crate {
                     name: crate_name.to_owned(),
-                    source: source.to_owned(),
+                    source,
                 })
                 .or_default();
             if !users.contains(&user) {
@@ -162,6 +204,20 @@ pub fn declared(metadata: &str) -> Result<BTreeMap<Crate, Vec<String>>, String> 
         }
     }
     Ok(crates)
+}
+
+/// `path` relative to `root`, by their components and with `/` on every OS: `vendor/x` under the
+/// root, `../x` beside it. cargo prints both paths absolute and normalised, so no component is
+/// `.` or `..`.
+fn relative(root: &Path, path: &Path) -> String {
+    let root: Vec<_> = root.components().collect();
+    let path: Vec<_> = path.components().collect();
+    let common = root.iter().zip(&path).take_while(|(a, b)| a == b).count();
+    let parents = (common..root.len()).map(|_| "..".into());
+    let rest = path[common..]
+        .iter()
+        .map(|component| component.as_os_str().to_string_lossy());
+    parents.chain(rest).collect::<Vec<_>>().join("/")
 }
 
 /// `cargo metadata --no-deps` for the workspace under `root`, run from `cwd`, so cargo reads no
@@ -799,6 +855,13 @@ pub fn check_registry(new: &NewDependencies, registry: &mut dyn Registry) -> Vec
                     "registry: `{}` comes from git, {}; it has no registry entry to check, so \
                      the maintainer reviews that repository",
                     krate.name, krate.source
+                );
+            } else if let Some(dir) = krate.source.strip_prefix("path+") {
+                eprintln!(
+                    "registry: `{}` comes from the directory `{dir}`, which is not a workspace \
+                     member; it has no registry entry to check, so the maintainer reviews that \
+                     code",
+                    krate.name
                 );
             } else {
                 problems.push(format!(

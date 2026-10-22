@@ -221,6 +221,22 @@ pub const JOBS: &[Entry] = &[
                     "check",
                 ]),
             },
+            // The spec database's source lint (RFC-0061 §5.3; QUAL-E12-T11).
+            Step {
+                name: "specs",
+                action: Action::Cargo(&[
+                    "run",
+                    "--quiet",
+                    "--locked",
+                    "--package",
+                    "syntropy-bench",
+                    "--bin",
+                    "syntropy-bench",
+                    "--",
+                    "specs",
+                    "check",
+                ]),
+            },
             // The licence policy of ADR-0018 (RFC-0062 §11.2, §12.2; QUAL-E1-T04). `advisories` is
             // the only step that needs the network, and it fails closed without it.
             Step {
@@ -242,6 +258,22 @@ pub const JOBS: &[Entry] = &[
             Step {
                 name: "notices",
                 action: Action::Xtask(&["notices"]),
+            },
+            // Scenario files, the SC map and RFC-0061 §4.2's table (QUAL-E13-T01, RFC-0061 §4).
+            Step {
+                name: "scenarios",
+                action: Action::Cargo(&[
+                    "run",
+                    "--locked",
+                    "--quiet",
+                    "--package",
+                    "syntropy-bench",
+                    "--bin",
+                    "syntropy-bench",
+                    "--",
+                    "scenarios",
+                    "check",
+                ]),
             },
         ],
         // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
@@ -486,6 +518,32 @@ pub const SUITES: &[Entry] = &[
         pending: &[],
     },
     Entry {
+        name: "pairing-grind",
+        summary: "L2: the full grinding-relay runs of the pairing model (DIST-E5-T14): 20 first-draft \
+                  trials, ten million honest-reveal attempts and 20 cheating reveals, \
+                  release-optimised",
+        defined_in: "RFC-0034 Testing and validation",
+        params: &[],
+        // The default tests run a seeded prefix of each; the dev profile is too slow for the
+        // full runs. `test-release` is RFC-0060 §1.3's release-optimised test profile.
+        steps: &[Step {
+            name: "test",
+            action: Action::Cargo(&[
+                "test",
+                "--profile",
+                "test-release",
+                "--locked",
+                "--package",
+                "syntropy-cluster",
+                "--test",
+                "pairing",
+                "--",
+                "--ignored",
+            ]),
+        }],
+        pending: &[],
+    },
+    Entry {
         name: "election-model",
         summary: "L2: the full model check of coordinator election, lease, replication and heal \
                   (DIST-E10-T08) on 3 and 4 nodes with partitions and message loss, \
@@ -625,11 +683,15 @@ mod tests {
                  lists",
                 "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- rigs \
                  check",
+                "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- specs \
+                 check",
                 "cargo xtask deny",
                 "cargo xtask deny --advisories",
                 "cargo xtask spdx",
                 "cargo xtask third-party",
                 "cargo xtask notices",
+                "cargo run --locked --quiet --package syntropy-bench --bin syntropy-bench -- \
+                 scenarios check",
             ]
         );
     }
@@ -715,6 +777,17 @@ mod tests {
         assert_eq!(
             unit.steps[0].action.display(),
             "cargo test --workspace --locked"
+        );
+    }
+
+    #[test]
+    fn pairing_grind_runs_the_ignored_pairing_tests_release_optimised() {
+        let suite = find(SUITES, "pairing-grind").expect("pairing-grind is registered");
+        assert_eq!(suite.steps.len(), 1);
+        assert_eq!(
+            suite.steps[0].action.display(),
+            "cargo test --profile test-release --locked --package syntropy-cluster --test pairing \
+             -- --ignored"
         );
     }
 

@@ -161,7 +161,7 @@ const INDEX: [IndexKind; 3] = [
 const SCAN: [ScanKind; 3] = [ScanKind::GatedDeltaNet, ScanKind::Kda, ScanKind::Mamba2];
 
 /// Every kind with every parameter value (`SlidingGqa` with and without sinks).
-fn all_kinds() -> Vec<OpKind> {
+pub(crate) fn all_kinds() -> Vec<OpKind> {
     let mut attn: Vec<AttnKind> = ATTN_KINDS.to_vec();
     attn.push(AttnKind::SlidingGqa { sinks: true });
     let mut kinds = vec![

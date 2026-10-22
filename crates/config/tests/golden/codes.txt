@@ -1,0 +1,76 @@
+=== config/0001 syntax
+error[config/0001]: TOML syntax: invalid basic string, expected `"`
+ --> /etc/syntropy/config.toml:2:13
+  |
+2 | size = "1GiB
+  |             ^
+=== config/0002 wrong_type
+error[config/0002]: `t.count`: invalid type: string "four", expected u32
+ --> /etc/syntropy/config.toml:2:1
+  |
+2 | count = "four"
+  | ^^^^^
+=== config/0003 unknown_key
+error[config/0003]: unknown key `t.sise`
+ --> /etc/syntropy/config.toml:2:1
+  |
+2 | sise = [redacted]
+  | ^^^^ did you mean `t.size`?
+=== config/0004 out_of_range
+error[config/0004]: `t.count`: 99 is above the maximum, 8
+ --> /etc/syntropy/config.toml:2:1
+  |
+2 | count = 99
+  | ^^^^^
+=== config/0005 bad_unit
+error[config/0005]: `t.size`: `16XB` is not a size: `XB` is not a unit; write a number and a unit, such as "16GiB", "512MiB" or "20GB"
+ --> /etc/syntropy/config.toml:2:1
+  |
+2 | size = "16XB"
+  | ^^^^
+=== config/0006 bad_selector
+error[config/0006]: `t.node`: `id:12`: an ID prefix is 8 to 64 hex digits
+ --> /etc/syntropy/config.toml:2:1
+  |
+2 | node = "id:12"
+  | ^^^^
+=== config/0007 bad_regex
+error[config/0007]: `t.pattern`: `a)|(b` does not compile: unopened group
+ --> /etc/syntropy/config.toml:2:1
+  |
+2 | pattern = 'a)|(b'
+  | ^^^^^^^
+=== config/0008 knob_without_approximate
+error[config/0008]: `policy."qwen3*"` turns on approximate.topk_reduce, but its `fidelity` is not "approximate"; a model is approximate only where its policy says so (RFC-0054 §5.4)
+ --> /etc/syntropy/config.toml:1:1
+  |
+1 | [policy."qwen3*"]
+  | ^ add `fidelity = "approximate"` to this table, or to `[policy.default]`
+=== config/0009 scope_mismatch
+error[config/0009]: `objective` is an instance key: set it in a `[policy."<model>"]` table, or when loading the model
+ --> /etc/syntropy/config.toml:1:1
+  |
+1 | objective = "throughput"
+  | ^^^^^^^^^
+=== config/0010 insecure_listener
+error[config/0010]: `t.bind` listens beyond loopback, which needs an API key and TLS
+ --> /etc/syntropy/config.toml:2:1
+  |
+2 | bind = ["0.0.0.0:7433"]
+  | ^^^^ create a key with `syntropy api-key create`
+=== config/0011 path_unusable
+error[config/0011]: `node.state_dir` names `/var/lib/syntropy`, which cannot be used: permission denied
+ --> /etc/syntropy/config.toml:2:1
+  |
+2 | state_dir = "/var/lib/syntropy"
+  | ^^^^^^^^^
+=== config/0012 override_splits_group
+error[config/0012]: override 2 splits group `blk.3.ffn_up_exps`: it selects the gate matrix but not the up and down matrices
+=== config/0013 cluster_proposal_rejected
+error[config/0013]: the cluster has `objective = "latency"`, set by node `mac-studio` at index 4127
+=== config/0014 reload_partially_deferred
+warning[config/0014]: `io.engine` takes effect when the daemon restarts
+=== config/0015 manifest_signer_not_allowed
+error[config/0015]: the conformance manifest is signed by a key `models.trusted_signers` does not list
+=== config/0016 alias_shadows_model
+error[config/0016]: the alias `qwen3-8b` has the name of a registered model

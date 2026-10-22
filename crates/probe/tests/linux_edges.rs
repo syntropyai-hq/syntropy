@@ -213,6 +213,133 @@ fn cgroup_parent_limit_binds_the_child() {
     assert_eq!(host.host_mem[0].mem.cgroup_limit, Some(Bytes(6 * GIB)));
 }
 
+/// The docker fixture: `memory.max` 8 GiB, `memory.current` 1 GiB, `memory.high` `max`.
+#[test]
+fn cgroup_v2_high_below_max_binds() {
+    let mut fs = MemFs::fixture("docker");
+    fs.set("sys/fs/cgroup/memory.high", &(4 * GIB).to_string());
+    let host = fs.run().unwrap();
+    // min(8, 4) − 1 GiB.
+    assert_eq!(host.host_mem[0].mem.cgroup_limit, Some(Bytes(3 * GIB)));
+}
+
+/// The budget rule follows `memory.high`: RFC-0020 §5's Linux `host_usable` over the probe's
+/// `HostMemInfo` is the cgroup term, 3 GiB, not the 7 GiB `memory.max` alone leaves.
+#[test]
+fn host_usable_follows_memory_high() {
+    use syntropy_core::budget::{HostBudgetInputs, HostBudgetPolicy, HostOs, host_usable};
+    let usable = |fs: &MemFs| {
+        let host = fs.run().unwrap();
+        let mem = host.host_mem[0].mem.clone();
+        host_usable(
+            &HostBudgetInputs {
+                os: HostOs::Linux,
+                mem: &mem,
+                own: Bytes(0),
+                own_locked: Bytes(0),
+                working_set: None,
+                user_locked_vm: Bytes(0),
+            },
+            &HostBudgetPolicy::default(),
+        )
+    };
+    let mut fs = MemFs::fixture("docker");
+    assert_eq!(usable(&fs), Bytes(7 * GIB));
+    fs.set("sys/fs/cgroup/memory.high", &(4 * GIB).to_string());
+    assert_eq!(usable(&fs), Bytes(3 * GIB));
+}
+
+#[test]
+fn cgroup_v2_high_of_max_changes_nothing() {
+    let host = MemFs::fixture("docker").run().unwrap();
+    // 8 − 1 GiB, as before memory.high was read.
+    assert_eq!(host.host_mem[0].mem.cgroup_limit, Some(Bytes(7 * GIB)));
+    // memory.high above memory.max: max still binds.
+    let mut fs = MemFs::fixture("docker");
+    fs.set("sys/fs/cgroup/memory.high", &(12 * GIB).to_string());
+    assert_eq!(
+        fs.run().unwrap().host_mem[0].mem.cgroup_limit,
+        Some(Bytes(7 * GIB))
+    );
+}
+
+/// Usage above `memory.high` (the kernel is throttling the cgroup) leaves no headroom: the
+/// subtraction saturates to 0, not to a wrapped value or no limit.
+#[test]
+fn cgroup_v2_usage_above_high_leaves_zero() {
+    let mut fs = MemFs::fixture("docker");
+    fs.set("sys/fs/cgroup/memory.high", &(2 * GIB).to_string())
+        .set("sys/fs/cgroup/memory.current", &(3 * GIB).to_string());
+    assert_eq!(
+        fs.run().unwrap().host_mem[0].mem.cgroup_limit,
+        Some(Bytes(0))
+    );
+}
+
+#[test]
+fn cgroup_v2_without_high_changes_nothing() {
+    let host = MemFs::fixture("docker")
+        .remove("sys/fs/cgroup/memory.high")
+        .run()
+        .unwrap();
+    assert_eq!(host.host_mem[0].mem.cgroup_limit, Some(Bytes(7 * GIB)));
+}
+
+/// `memory.high` alone, with `memory.max` unlimited, is a limit too.
+#[test]
+fn cgroup_v2_high_alone_binds() {
+    let mut fs = MemFs::fixture("docker");
+    fs.set("sys/fs/cgroup/memory.max", "max\n")
+        .set("sys/fs/cgroup/memory.high", &(5 * GIB).to_string());
+    assert_eq!(
+        fs.run().unwrap().host_mem[0].mem.cgroup_limit,
+        Some(Bytes(4 * GIB))
+    );
+}
+
+/// A parent's `memory.high` binds the child, as a parent's `memory.max` does.
+#[test]
+fn cgroup_v2_parent_high_binds_the_child() {
+    let mut fs = MemFs::fixture("desktop");
+    let slice = "sys/fs/cgroup/user.slice/user-1000.slice";
+    let leaf =
+        "sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/syntropy.scope";
+    fs.set(&format!("{slice}/memory.high"), &(12 * GIB).to_string())
+        .set(&format!("{slice}/memory.current"), &(10 * GIB).to_string())
+        .set(&format!("{leaf}/memory.max"), &(12 * GIB).to_string())
+        .set(&format!("{leaf}/memory.current"), &GIB.to_string());
+    // min(12 − 10, 12 − 1) GiB.
+    assert_eq!(
+        fs.run().unwrap().host_mem[0].mem.cgroup_limit,
+        Some(Bytes(2 * GIB))
+    );
+}
+
+#[test]
+fn cgroup_v2_malformed_high_is_an_error() {
+    let mut fs = MemFs::fixture("docker");
+    fs.set("sys/fs/cgroup/memory.high", "4G");
+    malformed_at(fs.run(), "sys/fs/cgroup/memory.high");
+}
+
+/// v1 has no `memory.high`; its soft limit is not a budget term (RFC-0020 §5).
+#[test]
+fn cgroup_v1_soft_limit_is_ignored() {
+    let mut fs = MemFs::fixture("docker");
+    fs.remove("sys/fs/cgroup")
+        .set("proc/self/cgroup", "12:memory:/\n0::/\n")
+        .set("sys/fs/cgroup/memory/memory.limit_in_bytes", "4294967296\n")
+        .set(
+            "sys/fs/cgroup/memory/memory.soft_limit_in_bytes",
+            "1073741824\n",
+        )
+        .set("sys/fs/cgroup/memory/memory.usage_in_bytes", "536870912\n");
+    assert_eq!(
+        fs.run().unwrap().host_mem[0].mem.cgroup_limit,
+        Some(Bytes(3 * GIB + GIB / 2))
+    );
+}
+
 #[test]
 fn cgroup_usage_above_limit_leaves_zero() {
     let mut fs = MemFs::fixture("docker");

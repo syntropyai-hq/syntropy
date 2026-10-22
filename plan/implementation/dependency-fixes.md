@@ -538,6 +538,98 @@ ADR-0022 (option 1a) puts `SystemClock` and `OsEntropy` in `io`, in `syntropy_io
 | DIST-E1-T06 → QUAL-E3-T24; DIST-E4-T05's "DIST-E1-T06 (clock helper)" becomes "DIST-E1-T06 (suspended-interval detector)" plus QUAL-E3-T24 | DIST-E1-T06, DIST-E4-T05 | R9, R8 | both rows built their own suspend-aware clock helper in the daemon, which forbids `unsafe` (RFC-0001 §4.2 rule 8). ADR-0022 decision 2 puts both clock readings in `syntropy_io::os` so the shell needs no OS call of its own. DIST-E1-T06 keeps the detector over the two readings, which DIST-E4-T05 still reuses. DIST-E4-T05 no longer supplies "the suspend-aware clock for the supervisor", which is `io`'s |
 | PROD-E5-T01 → QUAL-E3-T24 | PROD-E5-T01 | R9 | API keys are 32 random bytes (RFC-0050 §11.3), and the standard library has no stable random source, so key generation needs `OsEntropy`. The other key-material tasks (DIST-E5-T08, PROD-E4-T15, DIST-E17-T14, PROD-E5-T07) reach QUAL-E3-T24 through DIST-E2-T01 |
 | PROD-E10-T13 and PROD-E10-T16 gain a criterion for the Android and iOS suspend-aware clocks | PROD-E10-T13, PROD-E10-T16 | R9 | QUAL-E3-T24 covers the Tier 1 OSes only, and ADR-0022 names these tasks as the homes of `CLOCK_BOOTTIME` on Android and `mach_continuous_time` on iOS. Both already reach QUAL-E3-T24 through their dependencies, so no edge is added |
+## DIST-E5-T14's message golden vectors (2026-10-22)
+
+DIST-E5-T14 (M1a) models the commit-then-reveal pairing exchange. Its exit froze "the `PairRequest`, `PairChallenge` and `PairReveal` messages and their golden vectors". RFC-0030 §6.7 defines those messages as CBOR-enveloped `JoinMsg` variants. They carry `NodeInfo` (RFC-0001 §5, assembled by PLC-E1-T09, with additions in DIST-E4-T14), `AdmissionCert` (DIST-E2-T05) and `ClusterId` (DIST-E2-T06), in the envelope's deterministic CBOR (DIST-E8-T12). All four producers are M2, and none is a dependency of the spike, so its wire goldens would have had to invent their encodings. The exchange itself needs none of them: the commitment and the SAS are BLAKE3 over 32-byte keys and the nonces (RFC-0030 §6.2). This pass applies R9. The spike freezes the pairing fields, their order and the derivations, and the messages' wire goldens move to DIST-E5-T03, which builds the messages.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E5-T14's exit and criterion freeze the pairing fields (`commit` 32 B, `nonce_k` 16 B, `nonce_c` 16 B), their order with the reveal only after the challenge, and golden vectors for the commitment and the SAS; "golden vectors for the three messages" moves to DIST-E5-T03, whose criteria now check the messages' pairing fields and SAS against the spike's vectors | DIST-E5-T14, DIST-E5-T03 | R9 | DIST-E5-T03 builds the three messages and already reaches DIST-E8-T12, DIST-E2-T05, DIST-E4-T14 and PLC-E1-T09. Its Implements cell gains RFC-0030 §6.7, which defines the messages |
+| DIST-E5-T03 → DIST-E2-T06 | DIST-E5-T03 | R9 | `PairChallenge` carries `cluster_id`, and the SAS covers it. DIST-E2-T06 derives `ClusterId`, and DIST-E5-T03 did not reach it. DIST-E2-T06 does not reach DIST-E5-T03, so the edge adds no cycle |
+
+## PROD-E1-T03's layering inputs (2026-10-22)
+
+PROD-E1-T03's redaction criterion names cases that only PROD-E1-T02's layering produces, so the task now depends on it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T03 → PROD-E1-T02 | PROD-E1-T03 | R9 | Three of PROD-E1-T03's cases use PROD-E1-T02's outputs: values from `--set`, values from the `SYNTROPY_A__B` mapping, and the warning for an unknown `SYNTROPY_*` variable. PROD-E1-T02 depends only on PROD-E1-T01, so the edge adds no cycle, and it runs M0b → M0a |
+
+## DIST-E4-T01: the membership core's dependencies (2026-10-22)
+
+DIST-E4-T01 could not be finished as written. Its criteria need the simulator (QUAL-E8-T01) and the CBOR envelope of RFC-0030 §5.2 (DIST-E8-T12), and the `MembershipInput` and `MembershipOutput` enums of RFC-0030 §5.10 carry types other tasks define. Its only edge was to QUAL-E3-T01. Taking `RankKey` from the election core would have been a cycle, because DIST-E10-T01 depends on DIST-E4-T01. These are plan corrections under R2 and R9, approved by the lead running the task. DIST-E4-T01 is now blocked by the new edges.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E4-T01's "the simulator drives it for 1,000 seeded runs" becomes "a seeded driver over `ProtocolCore::handle` gives byte-identical outputs per seed over 1,000 seeds"; the simulator-driven runs move to DIST-E4-T03, which gains QUAL-E8-T01 | DIST-E4-T01, DIST-E4-T03 | R9 | DIST-E4-T03's criteria already ran in the simulator without an edge to it |
+| DIST-E4-T01 → QUAL-E3-T02 | DIST-E4-T01 | R9 | the core reads time only as `MonoTime` and randomness only through `Entropy` (RFC-0030 §5.10); the seeded driver uses QUAL-E3-T02's `SimClock` and `SimEntropy` only, so DIST-E4-T01 does not wait for QUAL-E8-T01's `SimWorld`, which DIST-E4-T03 needs |
+| DIST-E4-T01 → DIST-E8-T12 | DIST-E4-T01 | R9 | the 1,150 B body is the CBOR envelope of RFC-0031 §9 (RFC-0030 §5.2), measured with DIST-E8-T12's encoder |
+| DIST-E4-T01 → DIST-E9-T01 (`LogEntry`), DIST-E9-T02 (`ClusterCommand`, `CommandId`), DIST-E3-T07 (`Candidate`, `NearbyUpdate`), DIST-E7-T03 (`PathKind`), PLC-E4-T17 (`PlanEpoch`), PLC-E1-T01 (`Nanos`); DIST-E9-T02, DIST-E3-T07 and DIST-E7-T03 now name the types they own | DIST-E4-T01, DIST-E9-T02, DIST-E3-T07, DIST-E7-T03 | R9 | `MembershipInput::Applied`, `MembershipOutput::Submit`, `Candidate`, `Nearby` and `Dial`, the `path` of a beat and of `MemberView`, and `LoadDigest` carry them. `PlanEpoch` and `Nanos` are already in `core` |
+| `Beat.coord` (`CoordinatorBeat` with its proof digest) moves from DIST-E4-T01 to DIST-E10-T01, which adds it with `#[serde(default)]` (ADR-0305 item 3), with the proof-digest criterion; `RankKey` moves there too: DIST-E4-T01 emits `MembersChanged { alive: Vec<NodeId> }`, and DIST-E10-T01 adds each member's rank to that variant | DIST-E4-T01, DIST-E10-T01 | R2 | DIST-E10-T01 depends on DIST-E4-T01, so the membership core can't take election types from it. `Beat.coord` is a CBOR body field, so a beat without it decodes on either side; `MembersChanged` is an in-process output, so the rank changes that variant's shape rather than adding a serialized field |
+| DIST-E4-T01 owns the 1,150 B body bound; DIST-E4-T02 cites it | DIST-E4-T01, DIST-E4-T02 | R9 | both rows named the bound; DIST-E4-T02 keeps its own check, that a beat never exceeds the path's datagram limit |
+
+## The iroh pin for the field probe (2026-10-22)
+
+DIST-E4-T15 (M1a) is a standalone probe "on the daemon's iroh version", and its criteria need iroh to tell a direct path from a relayed one. But no task before DIST-E7-T03 (M2) pinned iroh in the workspace, and DIST-E4-T15 depended only on the workspace task. The new DIST-E7-T23 pins iroh in M1a, and gives `net` the minimal endpoint the probe needs.
+
+| Change | Tasks | Rule applied | Reason |
+|---|---|---|---|
+| Added DIST-E7-T23 (M1a) → QUAL-E1-T03, QUAL-E1-T04 | DIST-E7-T23 | R9 | iroh pinned in the workspace and linked only by `net` (RFC-0001 §4.2 rule 6), with a minimal endpoint: bind with a node key, connect by node ID through iroh's public relays (internal and alpha builds, RFC-0030 §6.4) or a given relay URL, and report the path kind and RTT. The new direct dependencies need a maintainer's approval |
+| DIST-E4-T15 → DIST-E7-T23 | DIST-E4-T15 | R9 | the probe runs on the pinned iroh and reports direct or relayed paths through the endpoint |
+| DIST-E7-T03 → DIST-E7-T23 | DIST-E7-T03 | R9 | the QUIC backend builds on the same pin |
+| DIST-E7-T21: its "iroh pinned in the workspace" edge moves from DIST-E7-T03 to DIST-E7-T23 | DIST-E7-T21 | R8 | the desk check reads iroh's configuration API at the pinned version and uses nothing else of DIST-E7-T03's; DIST-E7-T16 still depends on both |
+| `PathKind` moves from DIST-E7-T03 to DIST-E7-T23; DIST-E4-T01's `PathKind` edge moves from DIST-E7-T03 to DIST-E7-T23 | DIST-E7-T03, DIST-E7-T23, DIST-E4-T01 | R8 | amends the assignment in "DIST-E4-T01: the membership core's dependencies" above, which gave `PathKind` to DIST-E7-T03 (M2). DIST-E7-T23 (M1a) reports the path kind, and the M1a probe (DIST-E4-T15) needs it, so one type is defined there and DIST-E7-T03 builds on it. DIST-E4-T01 uses nothing else of DIST-E7-T03's |
+
+## DIST-E8-T12: the control envelope without its message set (2026-10-22)
+
+DIST-E8-T12 could not be built as written. Its criterion "fuzz target registered" needs `fuzz/targets.toml`, which QUAL-E10-T01 builds, and that task and its prerequisite QUAL-E1-T07 had not started. Its `CtlMsg` carries payload types that later DIST tasks define, and one of them, DIST-E9-T01 (`LogEntry`), depends on DIST-E8-T12. These are plan corrections under R9 and R2, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E8-T12's "fuzz target registered" becomes "decode is total over arbitrary bytes" (a property test: arbitrary input never panics and returns a classified error); QUAL-E10-T04's `control_msgs` target wraps the same entry point | DIST-E8-T12, QUAL-E10-T04 | R9 | the fuzz registry is QUAL-E10-T01's, and QUAL-E10-T04 already owns the M2 control-message target and depends on DIST-E8-T12 |
+| Added DIST-E8-T17 (`CtlMsg`) → DIST-E8-T12, DIST-E2-T05, DIST-E2-T06, DIST-E9-T01, DIST-E9-T02, DIST-E10-T01, DIST-E9-T14; DIST-E8-T12 keeps the envelope, generic over the serde types it carries | DIST-E8-T12, DIST-E8-T17 | R2, R9 | of `CtlMsg`'s payload types only `BuildId` existed; the rest come from DIST-E2-T05, DIST-E2-T06, DIST-E9-T01, DIST-E9-T02, DIST-E10-T01 and DIST-E9-T14, and DIST-E9-T01 depends on DIST-E8-T12 |
+| DIST-E8-T13 → DIST-E8-T17 instead of DIST-E8-T12; DIST-E5-T05 → DIST-E8-T17; QUAL-E7-T10 → DIST-E8-T17; QUAL-E10-T04 → DIST-E8-T17 | DIST-E8-T13, DIST-E5-T05, QUAL-E7-T10, QUAL-E10-T04 | R9 | each criterion uses `CtlMsg`: the control `Hello`'s feature level and version ranges (RFC-0031 §10), the `Hello`/`HelloAck` certificate checks, a golden vector per control message, and the `control_msgs` target. DIST-E8-T05 and DIST-E9-T01 use only the envelope and keep their edge to DIST-E8-T12 |
+| DIST-E5-T02 → DIST-E8-T12; DIST-E5-T02 decodes join messages with a 1 MiB `BodyLimit` [target] and gains the criterion that a join body over it is refused before deserialisation | DIST-E5-T02 | R9 | DIST-E8-T12's `decode` takes a caller-supplied `BodyLimit` at most 64 MiB, because a decoded message can take far more memory than its body: an empty array or string is one byte of CBOR and at least a 24-byte `Vec` or `String` in memory. The join ALPN's peers are not admitted, so it reads with a small limit. The 270 B per `JoinGrant` member entry [estimate] is the CBOR size, measured with DIST-E8-T12's encoder, of a stand-in entry: a 32-byte node ID, four IPv6 socket addresses and a 42-byte relay URL. Per-type or per-ALPN budgets for the control plane's own messages are left to DIST-E8-T17 |
+| DIST-E8-T17 gains two criteria from DIST-E8-T12's review: no `HashMap` or `HashSet` in a control message type, enforced by `clippy::disallowed_types` in `net::ctl`; and decoding each variant within RFC-0060 §10.2's bounded allocation, through a per-variant `BodyLimit` or decode budget that QUAL-E10-T04's `control_msgs` target uses | DIST-E8-T17 | R9 | the envelope can't see map iteration order or a type's memory per byte, so both belong to the task that defines `CtlMsg`. The control plane reads with `BodyLimit::MAX` until then, and a body of empty arrays decoded as `Vec<Vec<_>>` takes at least 24 bytes of memory per byte of CBOR [estimate]: a 24-byte `Vec` header for each one-byte empty array on a 64-bit target |
+
+## #1663's follow-ups: the policy digest and `config`'s value types (2026-10-22)
+
+The cross-review of #1663 (PROD-E1-T04) found two gaps with no owning task. `core` holds `InstancePolicy::canonical_bytes()` and `digest_with`, but links no hasher (RFC-0001 §4.2 rule 1), and no task supplied BLAKE3. And OQ-PRD-27 (a) has `config` parse into `core`'s value types, but `config` still has its own copies, and no task switched it over.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T08 gains the digest helper and its golden digests | PROD-E1-T08 | Definition of done | PROD-E1-T08's criteria already need identical digests across nodes, and it is the first task to build an `InstancePolicy` in `config`. One helper keeps every caller on the same hash |
+| Added PROD-E1-T23 (M0b) → PROD-E1-T01, PROD-E1-T02, PROD-E1-T03, PROD-E1-T04; PROD-E1-T08 → PROD-E1-T23 | PROD-E1-T23, PROD-E1-T08 | R9 | PROD-E1-T08 resolves policy tables into `InstancePolicy`, whose fields are `core`'s types, so it needs `config` to parse into them. M0b, after PROD-E1-T04, because each key registered on `config`'s copies adds to the switch. PROD-E1-T23's own criteria use PROD-E1-T02's `show_resolved` and PROD-E1-T03's `Config` codes, so it depends on both; its output check is on the library call, not the binary, so it needs no CLI task. PROD-E1-T07 gets no edge: its criteria do not use the types, and PROD-E1-T23 moves whatever code uses the copies |
+
+## DIST-E18-T02's API mapping criterion (2026-10-22)
+
+DIST-E18-T02's criterion "every code maps to an API error shape in RFC-0050's table" could not be met: RFC-0050 §12.1 maps errors by class and condition, and 37 of the distributed codes had neither a whole-class shape nor a row (issue #1668). RFC-0050 §12.1 now gives a row to each code that can reach an API client, lists the codes that never leave the cluster as exempt, and says `DuplicateCommand` never appears in `Error::code`. RFC-0050 §12.3 adds `cluster_proposal_rejected` (code 35). These are plan corrections that take the recommended default, under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E18-T02's criterion becomes "every code maps to an RFC-0050 §12.1 shape or is on §12.1's exempt list", and its row cites RFC-0050 §12.1 | DIST-E18-T02 | R9 | a code raised only between nodes, or reported only as a node diagnostic, never meets an API client, so no shape can be tested for it; the exempt list names each such code, and §12.1 gives the one shape it would take if it ever escaped (503 `instance_unavailable`) |
+
+## DIST-E9-T01: the event log without its signed records (2026-10-22)
+
+DIST-E9-T01 could not be finished as written. Its last criterion needs every authority-derived field of `ClusterState` to hold a signed record that verifies. The tasks that define and verify those records all depend on DIST-E9-T01: DIST-E5-T13 (`Approval`, `KeyholderChanged`), DIST-E5-T07 (`SignedRevocation`), DIST-E5-T15 (the recovery `RotationStatement`) and DIST-E9-T12 (`validate()`). So does DIST-E9-T02, which defines the `decide()` its first criterion names. The cluster identity it hashes at index 0, `ClusterId`, is DIST-E2-T06's, still open behind the OS keystore work (DIST-E2-T02). These are plan corrections under R2 and R9, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E9-T16 (signed records in `ClusterState`) → DIST-E9-T01, DIST-E9-T12, DIST-E5-T07, DIST-E5-T13, DIST-E5-T15, DIST-E17-T14, COMP-E12-T06, DIST-E2-T06; DIST-E9-T01's signed-record invariant, its last criterion and its RFC-0034 §8.3 citation move there | DIST-E9-T01, DIST-E9-T16 | R2, R9 | each listed task produces one kind of record the criterion checks: approvals and certificates, the keyholder chain, invites and keyholder-signed configuration (DIST-E5-T13), revocations (DIST-E5-T07), rotation statements (DIST-E5-T15; the M3 rotation of DIST-E5-T11 adds no new record type), API-key records (DIST-E17-T14) and chunk evidence (COMP-E12-T06), and DIST-E9-T12 verifies them. All are M2, so no criterion moves milestone |
+| DIST-E9-T01's first criterion becomes "`apply` is total over arbitrary sequences of well-formed base events, a superset of every log `decide` can produce" | DIST-E9-T01 | R9 | `decide()` is DIST-E9-T02's, which depends on DIST-E9-T01. A property test over every well-formed event sequence covers every log `decide` can produce, and needs no `decide` |
+| DIST-E9-T01 holds the cluster key's 32-byte public half, which RFC-0034 §4 calls the `ClusterId`, in `ClusterState.cluster` and the chain's index-0 input; DIST-E9-T16 swaps in DIST-E2-T06's `ClusterId` and keeps DIST-E9-T01's golden chain vectors | DIST-E9-T01, DIST-E9-T16 | R9 | the chain needs a cluster identity at index 0, and an edge to DIST-E2-T06 would hold the event log behind the OS keystore work. The chain hashes the same 32 bytes either way, so the swap changes no vector |
+| DIST-E9-T07 → DIST-E9-T16 | DIST-E9-T07 | R9 | its criterion refuses a crafted snapshot with "a member with no valid signed record", which needs the records in the state. DIST-E9-T01's ten direct dependents use only `LogEntry`, `ClusterState`, `apply` or the base events, and keep their edge |
+
+## COMP-E13-T05 split (2026-10-22)
+
+COMP-E13-T05 (M0a) had criteria that no M0a task can meet. The fast-math audit needs kernel builds, which start with COMP-E9-T02 (M0b). The per-provider bit-exact list needs `kernels::reference` (COMP-E1-T03) and provider kernels, which its "Depends on" didn't name. Those criteria move to a new task. COMP-E13-T05 keeps the static `Numerics` check and the dynamic detector, which COMP-E2-T01 (M0a) needs.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added COMP-E13-T13 (M0b) → COMP-E13-T05, COMP-E1-T03, COMP-E9-T02, COMP-E3-T08, COMP-E3-T22, COMP-E5-T01, COMP-E5-T04, COMP-E5-T09, COMP-E5-T12, COMP-E5-T26, COMP-E7-T02, COMP-E7-T05 | COMP-E13-T13, COMP-E13-T05 | R9 | the CI run of the static check over every provider's registry, the flag audit, the detector run on `kernels::reference` and on provider matrix-product kernels, and the per-provider bit-exact list for the ops built at M0b. COMP-E5-T01, COMP-E5-T04 and COMP-E5-T09 bring CUDA's matrix products, which the detector runs on. The CPU, CUDA and ggml kernels of the M0b bit-exact-class ops (copies, `RowGather`, `Convert` with the M0 dequantisers, `Argmax`, `TopKTopP`) come from the listed tasks. The detector's subnormal cases apply only to F32- and BF16-operand kernels, because F16 weights, F16 block scales and Q8 activation blocks cannot hold 2^-70 or 2^-130. COMP-E9-T02 and COMP-E7-T05 are M0b, so the new task is M0b. The Metal, HIP and Vulkan rows of the table join when those providers build |
+| Added COMP-E13-T14 (M1a) → COMP-E13-T13, COMP-E13-T04, COMP-E13-T10, COMP-E5-T18 | COMP-E13-T14 | R9 | the bit-exact cases for E8M0 scales (e = 0 included), FP8, MXFP4, NVFP4, the remaining GGUF types and KV page moves need kernels first built at M1a, so they cannot close with COMP-E13-T13 at M0b. The wire codecs stay with COMP-E14-T05 and COMP-E14-T19, which already require them bit-exact |
+| COMP-E13-T05's last criteria → COMP-E13-T13; its FP16 criterion reworded | COMP-E13-T05 | R9 | RFC-0042 §4 gives `AccumKind` three variants (`F32`, `I32ThenF32`, `F64`), so FP16 accumulation cannot be declared. The static check rejects weaker declarations, and the detector rejects an FP16-accumulating variant that declares F32. The CI run of the static check over real provider registries moves to COMP-E13-T13, because no provider registers kernels at M0a |
+| QUAL-E4-T13 → COMP-E13-T13 (was COMP-E13-T05) | QUAL-E4-T13 | R8 | its edge was for the per-provider bit-exact list, which is now COMP-E13-T13's |
 
 ## DIST-E10-T08's named cases and CI wiring (2026-10-22)
 
