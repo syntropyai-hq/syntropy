@@ -225,7 +225,12 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
 *Note 2026-10-23 (DIST-E7-T11; RFC-0001 §18.31): what `cost_t` is for, its defaults, and what the fallback returns.*
 - **Selection, not the objective.** `cost_t` ranks the transports of one edge. It picks `HopPlan::transport` at `S_dec`, and `prefill_transport` at `S_pf`. The solver's hop term in the objective stays RFC-0011 §5's `α^plan + S/β`, which since 2026-10-20 costs a wireless hop at its mean and bounds its tail with C14's stall rate. So λ = 1.0 on Wi-Fi weighs the tail when choosing between that edge's transports. It does not enter the plan's predicted time.
 - **Where it lives.** RFC-0001 §5.2's `LinkCaps` and `link_cost(caps, size, objective, λ) -> Nanos` are in `core::resource::link`, so the solver computes `cost_t` without depending on `net`. `Transport::cost` (§2) delegates to it.
-- **λ** is `link.p99_weight` (§11): in latency mode 1.0 on `WiFi` links and on `QuicRelay`, and 0.25 otherwise; 0 in throughput mode [target].
+- **λ** is `link.p99_weight` (§11).
+  - **Defaults, in latency mode:** 1.0 on `WiFi` and `Overlay` links and on `QuicRelay`, and 0.25 otherwise [target]. Overlay links join Wi-Fi because RFC-0011's C14 groups the two as wireless-like hops.
+  - **Throughput mode:** 0.
+  - **A configured value** is one number that replaces both defaults.
+  - **Bounds:** validation keeps it within 0–10 [target: a chosen bound; 1.0 already prices a hop at its p99], so NaN and infinity are refused.
+- **Measured means both α and β.** A transport counts as measured only when both its α and its β come from a probe. Startup probes β on the best-ranked transport only (RFC-0010 §3), so until the background probe reaches the others, a transport with α alone ranks with the unmeasured ones, in the rank order above.
 - **z before an L2 probe.** Until `alpha_eff` exists, `z_t` is a per-transport constant for a 32 KiB F32 decode frame [estimate]:
   - 25 µs on IP paths: `Quic`, `Tcp` and `QuicRelay`, the upper end of §Performance's ≈15–25 µs with polling;
   - 20 µs on `Rdma`, the upper end of its ≈12–20 µs;
@@ -1091,7 +1096,7 @@ Blob streams use the data-plane frame layout (§6.10). Weight chunks are bulky a
 | `link.failover_timeout` | cluster | 2 s LAN, 10 s WAN | §7.4 |
 | `link.demote_after` | cluster | 3 faults in 60 s | ADR-0011 item 7 |
 | `link.ack_timeout_min` | cluster | 200 µs | §7.3 |
-| `link.p99_weight` | cluster | 1.0 Wi-Fi or relay, 0.25 otherwise (latency mode) | §3 λ |
+| `link.p99_weight` | cluster | 1.0 Wi-Fi, overlay or relay, 0.25 otherwise (latency mode); within 0–10 | §3 λ (note of 2026-10-23) |
 | `quic.congestion` | node | `cubic` | `cubic` \| `bbr` |
 | `quic.lan_initial_window` | node | 256 KiB | §4.3 |
 | `quic.max_conn_window` | node | 64 MiB | |
