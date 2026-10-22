@@ -554,3 +554,16 @@ PROD-E1-T03's redaction criterion names cases that only PROD-E1-T02's layering p
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | PROD-E1-T03 → PROD-E1-T02 | PROD-E1-T03 | R9 | Three of PROD-E1-T03's cases use PROD-E1-T02's outputs: values from `--set`, values from the `SYNTROPY_A__B` mapping, and the warning for an unknown `SYNTROPY_*` variable. PROD-E1-T02 depends only on PROD-E1-T01, so the edge adds no cycle, and it runs M0b → M0a |
+
+## DIST-E4-T01: the membership core's dependencies (2026-10-22)
+
+DIST-E4-T01 could not be finished as written. Its criteria need the simulator (QUAL-E8-T01) and the CBOR envelope of RFC-0030 §5.2 (DIST-E8-T12), and the `MembershipInput` and `MembershipOutput` enums of RFC-0030 §5.10 carry types other tasks define. Its only edge was to QUAL-E3-T01. Taking `RankKey` from the election core would have been a cycle, because DIST-E10-T01 depends on DIST-E4-T01. These are plan corrections under R2 and R9, approved by the lead running the task. DIST-E4-T01 is now blocked by the new edges.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E4-T01's "the simulator drives it for 1,000 seeded runs" becomes "a seeded driver over `ProtocolCore::handle` gives byte-identical outputs per seed over 1,000 seeds"; the simulator-driven runs move to DIST-E4-T03, which gains QUAL-E8-T01 | DIST-E4-T01, DIST-E4-T03 | R9 | DIST-E4-T03's criteria already ran in the simulator without an edge to it |
+| DIST-E4-T01 → QUAL-E3-T02 | DIST-E4-T01 | R9 | the core reads time only as `MonoTime` and randomness only through `Entropy` (RFC-0030 §5.10); the seeded driver uses QUAL-E3-T02's `SimClock` and `SimEntropy` only, so DIST-E4-T01 does not wait for QUAL-E8-T01's `SimWorld`, which DIST-E4-T03 needs |
+| DIST-E4-T01 → DIST-E8-T12 | DIST-E4-T01 | R9 | the 1,150 B body is the CBOR envelope of RFC-0031 §9 (RFC-0030 §5.2), measured with DIST-E8-T12's encoder |
+| DIST-E4-T01 → DIST-E9-T01 (`LogEntry`), DIST-E9-T02 (`ClusterCommand`, `CommandId`), DIST-E3-T07 (`Candidate`, `NearbyUpdate`), DIST-E7-T03 (`PathKind`), PLC-E4-T17 (`PlanEpoch`), PLC-E1-T01 (`Nanos`); DIST-E9-T02, DIST-E3-T07 and DIST-E7-T03 now name the types they own | DIST-E4-T01, DIST-E9-T02, DIST-E3-T07, DIST-E7-T03 | R9 | `MembershipInput::Applied`, `MembershipOutput::Submit`, `Candidate`, `Nearby` and `Dial`, the `path` of a beat and of `MemberView`, and `LoadDigest` carry them. `PlanEpoch` and `Nanos` are already in `core` |
+| `Beat.coord` (`CoordinatorBeat` with its proof digest) moves from DIST-E4-T01 to DIST-E10-T01, which adds it with `#[serde(default)]` (ADR-0305 item 3), with the proof-digest criterion; `RankKey` moves there too: DIST-E4-T01 emits `MembersChanged { alive: Vec<NodeId> }`, and DIST-E10-T01 adds each member's rank to that variant | DIST-E4-T01, DIST-E10-T01 | R2 | DIST-E10-T01 depends on DIST-E4-T01, so the membership core can't take election types from it. `Beat.coord` is a CBOR body field, so a beat without it decodes on either side; `MembersChanged` is an in-process output, so the rank changes that variant's shape rather than adding a serialized field |
+| DIST-E4-T01 owns the 1,150 B body bound; DIST-E4-T02 cites it | DIST-E4-T01, DIST-E4-T02 | R9 | both rows named the bound; DIST-E4-T02 keeps its own check, that a beat never exceeds the path's datagram limit |
