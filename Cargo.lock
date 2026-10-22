@@ -2832,6 +2832,7 @@ dependencies = [
  "time",
  "x509-parser",
  "yasna",
+ "zeroize",
 ]
 
 [[package]]
@@ -3524,9 +3525,16 @@ dependencies = [
 name = "syntropy-api"
 version = "0.0.0"
 dependencies = [
+ "rcgen",
+ "rustls",
  "serde",
+ "serde_json",
  "syntropy-config",
+ "syntropy-net",
+ "time",
  "toml",
+ "x509-parser",
+ "zeroize",
 ]
 
 [[package]]
@@ -3710,6 +3718,8 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "syntropy-core",
+ "toml",
 ]
 
 [[package]]
