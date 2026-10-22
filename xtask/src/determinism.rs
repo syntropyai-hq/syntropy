@@ -3,13 +3,13 @@
 //! The determinism lints of RFC-0060 §2.1 (rule T1) and §2.4 (rule T3), QUAL-E3-T03.
 //!
 //! Clippy enforces the rules. `disallowed-types` bans `HashMap`, `HashSet`, `RandomState`, the
-//! OS-seeded generator types and the production clock and entropy sources,
-//! `syntropy_io::os::SystemClock` and `OsEntropy`, and `disallowed-methods` bans clock reads and
-//! unseeded random generators, as `ci/clippy-determinism.toml` lists them. Only a binary's wiring
-//! builds the production sources: the CLI, which the lints do not cover, and the wiring files of
-//! `runner` and `daemon`, which join [`EXCEPTIONS`] for `clippy::disallowed_types` when they land
-//! (#1763). Clippy reads its config from each
-//! crate's own directory, so every crate in [`COVERED`] holds a copy as its `clippy.toml`, and the
+//! OS-seeded generator types and the production clock, entropy and tick sources,
+//! `syntropy_io::os::SystemClock`, `OsEntropy` and `SystemTicks`, and `disallowed-methods` bans
+//! clock reads and unseeded random generators, as `ci/clippy-determinism.toml` lists them. Only a
+//! binary's wiring builds the production sources: the CLI, which the lints do not cover, and the
+//! wiring files of `runner` and `daemon`, which join [`EXCEPTIONS`] for
+//! `clippy::disallowed_types` when they land (#1763). Clippy reads its config from each crate's
+//! own directory, so every crate in [`COVERED`] holds a copy as its `clippy.toml`, and the
 //! `clippy` step of `cargo xtask ci lint` applies it to the crate's library, binaries, tests and
 //! benches. `xtask/tests/determinism.rs` lints a fixture to show that each banned item fails.
 //!
@@ -20,8 +20,8 @@
 //! - no covered crate's `[lints]` table, and not the workspace's, sets the lints;
 //! - the repository's cargo config (`.cargo/config.toml`, `.cargo/config`), parsed as TOML, holds
 //!   only the `cargo xtask` alias. Much else in it reaches clippy-driver: lint-level `rustflags`
-//!   (nothing in CI sets `RUSTFLAGS`), `[env]`, compiler wrappers, and an alias that shadows
-//!   `cargo clippy`;
+//!   (CI sets `RUSTFLAGS` only for the loom suite's own test build, never for clippy), `[env]`,
+//!   compiler wrappers, and an alias that shadows `cargo clippy`;
 //! - an attribute in a covered crate that sets a level below `deny` (`allow`, `expect`, `warn`,
 //!   `force_warn`) names one of the lints, a group that holds them (`warnings`, `clippy::all`,
 //!   `clippy::style`) or one of their old names only in a file of [`EXCEPTIONS`], and only for the

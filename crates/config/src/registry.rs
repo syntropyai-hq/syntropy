@@ -409,6 +409,7 @@ mod tests {
             env: None,
             holds_secret: false,
             check: |_| Ok(()),
+            same: |a, b| a == b,
         }
     }
 

@@ -234,7 +234,7 @@ Command-channel messages:
 | D → R | `AssignPlan { plan: Arc<PlacementPlan>, stages: SmallVec<[StageIx; 2]> }` | starts `Fetching`, or is checked against the current shard to choose between `ApplyPlanDelta` and drain-and-replace |
 | D → R | `ShardProgress { have: Bytes, need: Bytes, complete: bool }` | store progress during `Fetching` |
 | D → R | `ApplyPlanDelta { epoch: PlanEpoch, delta: PlanDelta }` | budget, prefetch or speculative changes that leave the shard unchanged |
-| D → R | `Drain { reason: DrainReason, deadline: Deadline, successor: Option<PlanEpoch> }` | stop admitting; finish or migrate |
+| D → R | `Drain { reason: DrainReason, deadline: Deadline }` | stop admitting; finish or migrate. A re-plan's successor epoch travels in `DrainReason::Replan` (§18.28) |
 | D → R | `Shutdown { deadline: Deadline }` | drain, then exit |
 | D → R | `CancelSequence { seq: SequenceId, reason: CancelReason }` | local cancels (remote cancels arrive on the data plane) |
 | D → R | `MemoryPressure { level: PressureLevel, reclaim: Bytes, tier: Option<TierId> }` | the OS or the user needs memory back (§10.3). `tier: None` means host RAM; `Some` addresses one GPU's budget drop (DXGI or NVML budget, RFC-0010) |
@@ -253,6 +253,25 @@ Command-channel messages:
 | R → D | `Pong` | — |
 
 *Note 2026-10-22 (amendment, §18.9):* `LedgerGrant` is plain data in `core`: the per-tier bytes the daemon grants the runner. `ipc` carries it in `Init`, and `tier` checks an `ArenaPlan` against it (RFC-0020 §3, §12; OQ-IO-27).
+
+*Note 2026-10-23 (amendment, §18.28): which task adds each message.* `ipc` is layer 1, and rule 2 (§4.2) lets it name only layer-0 types. The message enums stay in `ipc`, with `ipc`'s own types (`ShmLayout`, `DataPlaneGrant`). Every type from outside `ipc` that a message carries, and every type those types hold, lives in `core`, `obs` or `config` as plain data, and each message arrives with the task that owns its field types:
+- **DIST-E1-T03** builds the channel and `Hello`, `Ping`, `Pong`, `PeerRevoked`, `ShardProgress`, `AssignPlan`, `ApplyPlanDelta`, `CancelSequence`, `StateChanged` (with `RunnerState`'s `u32` discriminant until DIST-E1-T05 adds the type) and `Init` without `config` and `grant`.
+- **DIST-E1-T15:** `Drain`, `Shutdown`, `MemoryPressure` and `SequenceEnded`, and in `core`:
+  - `Deadline { within: Nanos }`, a duration counted from the message's receipt. An absolute instant cannot cross machines, and RFC-0011 §13's `RouteRequest` carries `Option<Deadline>` between nodes.
+  - `DrainReason` as §5.11 gives it. `Drain` carries no `successor`: `DrainReason::Replan { successor }` is the one place a drain's successor epoch travels.
+  - `SequenceOutcome`: `Finished`, `Failed(ErrorClass)` or `Migrated { to: PlanEpoch }`.
+  - `FetchPriority`: RFC-0041 §7's `Urgent`, `Normal` or `Background`, which COMP-E12-T04's fetch planner implements. RFC-0031 §6.10's note of 2026-10-23 maps each to the blob-plane class its chunk requests use.
+  - `PressureLevel`, moved from `tier`.
+- **DIST-E1-T05:** `StateChanged` carries `RunnerState` in place of its discriminant. `RunnerState` and its field types are in `core` (§5.11), `Degradation` (RFC-0033 §7.1) among them. `Draining` carries `deadline: Deadline` for `deadline_ms`. `Stopped` carries the runner's own `StopReason`, which §5.11 never defined: `Drained(DrainReason)` from `Draining`, or `Fatal(ErrorClass)` from `Failed`, when the error is fatal or the restart budget is spent (§3.3), with the last failure's class. It is not the API's completion reason.
+- **PROD-E1-T07:** `Init`'s `config` and `ConfigChanged`. `RunnerConfig` is `ResourcePolicy` plus the resolved node-scope values as `KeyPath → ConfigValue`, and `RunnerConfigPatch` the changed `hot` keys in that form. The typed sections are their crates': `runner.*` is `cluster`'s `RunnerSection` (layer 3), and `tier.*` and `io.*` are `tier`'s and `io`'s. PROD-E1-T07 generalises `config`'s section builder over the key scope: one builder with a scope parameter, of which `InstanceSection` (PROD-E1-T24) is the instance-scope use. Each runner crate builds its node-scope section from the values with it.
+- **DIST-E7-T04:** `Init`'s `grant` and `DataPlaneGrant`, with `DataPlaneCredential` as plain data in `core` (DIST-E2-T05). Its `purposes` stays a `u16` bitmask, its bit layout given as `core` constants, and `net`'s channel-purpose enum stays in `net`.
+- **PLC-E2-T01:** `ProbeRequest`, with `ProbeSuite` and `ModelShapes` in `core`, and every variant but `DevicePath`, which arrives with PLC-E2-T12. `Confirm`'s `ProfileKey` is already in `core`.
+- **COMP-E10-T11:** `FetchShard` and `PackCommitted`, with `ShardSpec` and `PackKey`, and their field types `ChunkId` and `LayoutVersion`, in `core`.
+- **TIER-E1-T09:** `ResidencyDigest`, with `ResidencySummary` and the types it holds in `core`: `TierUsage`, `Purpose` (moved from `tier`), `PinProgress`, `PinState`, `YieldReport`, `YieldOption`, `KvHeadroom`, `PageClass`, `KvSpillOutcome`, `SpillOutcome` and `ExpertCacheDigest`.
+- **Two fields hold what `core` cannot.** `RemoteEndpoint`, in `ProbeSuite::DevicePath`, holds transport state: keys, socket addresses, a relay URL. The message carries the remote's `NodeId` and the endpoint as bytes in `net`'s encoding (PLC-E2-T12). `DegradeDetail::Fallback` names an `OpKind` and a `ProviderId`, which are `kernels`'. It carries the provider's `ProviderName` (§5.1), which COMP-E2-T13 defines in `core` with `ReaderId`, and the op's name as owned text (DIST-E14-T13).
+- **No task yet:** `ProbeResult` waits for the task that defines `CapabilityProfile` (#1524), and `ErrorReport` for the task that builds `core`'s `Error` (§5.12). No task row names either yet.
+
+Each added message or field changes the postcard layout, so it bumps `ipc_protocol` (§5, note of 2026-10-22).
 
 IPC never carries per-token traffic across the network boundary, and no message on the command channel is sent per token. Local token delivery uses `local_tokens`.
 
@@ -319,6 +338,7 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
    - *Note 2026-10-22 (amendment, §18.9):* OS system calls that need `unsafe` go in `io`, behind safe functions that `probe`, `cluster` and `daemon` call (OQ-PRC-26): E1's host enumeration on Windows and macOS, the AMX and io_uring checks, E3's volume queries and the state directory's DACL. E2's management APIs (NVML, DXGI, IOKit) run in the runner's probe mode, in `kernels-loader`, which rules 4 and 6 already let load them, and the daemon merges the records (RFC-0010 §2.1).
    - *Note 2026-10-22 (amendment, §18.18):* `spsc`'s `unsafe` covers the ring's slots and its wake handle's OS calls: an eventfd on Linux and Android, a kqueue user event on Apple platforms and an event handle on Windows (ADR-0012 item 4; §4.1's row gives `spsc` the wake handles). `spsc` depends on no workspace crate, so it cannot call `io`'s OS functions. The note above that sends OS calls to `io` is for the crates that forbid `unsafe`. `spsc` links `libc` and `windows-sys` for these calls, at the versions `io` uses. Neither is one of rule 6's external systems.
    - *Note 2026-10-22 (amendment, §18.13):* one module-scoped exception. `testkit`'s `guards` module holds exactly one `unsafe impl GlobalAlloc`, the counting allocator of RFC-0060 §3.5, which delegates to `std::alloc::System`. `testkit` sets `#![deny(unsafe_code)]` instead of `forbid`, with a single `#[allow(unsafe_code)]` on that impl. The `check-deps` placement check refuses any other `unsafe`, and any other lint level for it, anywhere in `testkit`, and still requires `forbid` in every other crate outside the list. Because `deny` can be overridden where `forbid` cannot, the check reads every `.rs` file under the root directory of each of `testkit`'s library and bin targets, and refuses every way to compile a file it does not read: a `path` in an attribute (`#[path]`, also inside `cfg_attr`), an attribute built from a macro metavariable, the identifier `include` anywhere, a `macro_rules!` definition, which could assemble either from tokens taken anywhere in the crate, and a build script. It also refuses a file that opens with a shebang (`#!` not directly followed by `[`) or a frontmatter block (`---`), which rustc reads differently from the check; a file whose extension is `rs` only in another case, which a case-insensitive file system lets `mod` load; and any level but a plain `deny` or `forbid` for `unsafe_code` among the crate root's leading attributes. A macro exported by another crate can still emit either from tokens that name neither, the same limit as `unsafe` from another crate's macro.
+   - *Note 2026-10-23 (amendment, §18.25):* a second module-scoped exception. `runner` may hold one module, its `NetPool` adapter (TIER-E2-T25), containing only the `unsafe impl net::transport::PoolMemory` for a newtype over `tier`'s owned `NetPool` slot-range lease, with a `// SAFETY:` comment that states each term of the contract the lease meets (TIER-E2-T21). As in `testkit`, `runner` sets `#![deny(unsafe_code)]` instead of `forbid`, with a single `#[allow(unsafe_code)]` on that impl, and the `check-deps` placement check allows `unsafe` in exactly that module and refuses it anywhere else in `runner`. `tier` cannot implement the trait itself, because rule 3 keeps it off `net`, and `core` cannot declare it, because `core` forbids `unsafe` code.
 9. **`testkit` is a dev-dependency only.** No production crate depends on it.
    - *Note 2026-10-21:* the same holds for `bench`, the other crate on §4.1's dev-only row ("—").
 10. **Test-only features never reach a release.** Any crate may declare the cargo features `fault-injection`, `debug-taps` and `guards`. Release artefacts are built without them, and the L0 `check-deps` job enforces it (RFC-0060 §3.6, RFC-0062 §12.1).
@@ -1294,6 +1314,17 @@ pub struct SequenceOpen {
 
 The head forwards `SequenceOpen` metadata (`SequenceMeta`: every field except the prompt tokens, plus the prompt length) on the sequence's first `ActivationFrame`, so every stage allocates KV for it and the tail learns its sampler and ingress node without a separate round of messages.
 
+*Note 2026-10-23 (DIST-E1-T14, as built): the types this section leaves open.* `syntropy_core::sequence` defines every type above. The listing leaves some shapes open, and the build fixes them:
+- **`SamplingParams`** holds `seed`, `temperature` (0 is greedy), `top_p`, `top_k` (0 off), `min_p`, `presence_penalty`, `frequency_penalty`, `repetition_penalty` and `logit_bias`, then amendment A3's `constraint`, `grammar_inline` and `reasoning_budget`. Its defaults are RFC-0054 §5's fallbacks. It also carries `logprobs: Option<u8>`, the top-k alternatives the tail returns, since the tail needs it and no other field holds it.
+- **`SequenceLimits`** holds `max_tokens`, `stop_tokens` (the request's stop token IDs, which the tail checks beside the model's end-of-sequence token and end-of-turn set, RFC-0012 §8.4), `deadline` (time from the open to the request's deadline) and amendment A5's `embed`.
+- **`CancelReason`** is `ClientGone`, `ClientRequest`, `StopString`, `Deadline` or `Error { domain, code }`, a sequence-scoped error (§10.4). A sequence whose ingress is lost, or whose detach grace runs out, ends with `finish = Cancelled` and a `Release` instead (RFC-0033 §9.2), so neither is a reason.
+- **`FinishReason::Error`** and `CancelReason::Error` carry §10's `ErrorCode` in the wire's numeric form, a domain and a code, until `core` has the `Domain` type (DIST-E18-T02).
+- **`LogprobBlock`** follows RFC-0031 §6.5's layout: per token, the chosen logprob and `k` (id, logprob) pairs. `k = 0` is the chosen tokens' logprobs alone, OpenAI's `top_logprobs = 0`, which the in-process path (PROD-E2-T06) carries. The wire's `logprob_k = 0` means no logprobs, so `net` refuses a `k = 0` block with a classified `Unsupported` error until OQ-NET-35 gives it a form.
+- **`TokenEntry`** also carries `draft` and `draft_tree`, the tail-side drafter's draft for the next window (RFC-0032 §3.5), which RFC-0031 §6.5 carries on the ring-return copy. A tree node is `DraftNode { parent, depth, flags }`, which `net` re-exports as `TreeNode`.
+- **`SequenceMeta`** holds every `SequenceOpen` field but the prompt, `trace` and `prefix_scope` included, which RFC-0032 §3.6's listing leaves out.
+- **`net`'s view and the tap block.** `net`'s `TokenEntryView` converts to and from `TokenEntry` for every field but `tap`. The tap block travels as bytes until its codec exists (DIST-E8-T06, M2), and `TokenEntry::tap` is the typed `LogitTap`, so `net` refuses a non-empty tap block either way with a classified `Unsupported` error. M0 loses nothing: PLC-E9-T16's parity taps travel in-process on the `local_tokens` ring as `core` types, never through `net`'s codec.
+- **Field types.** `TokenSlice` is the prompt's owned token IDs. `PrefixKey` and `TailId` are RFC-0022 §7.1's and §7.2's, as plain newtypes in `core`, since `core` cannot name a `tier` type. `GrammarRef` is the BLAKE3 of a compiled grammar. `PoolingMode` is `LastToken`, `Mean` or `Cls`. `PrefixScope` is amendment A7's.
+
 ### 5.9 Sessions, sequences and KV
 
 ```rust
@@ -1495,13 +1526,15 @@ pub enum RunnerState {
     /// Relinking, Absorbing (RFC-0032 §4.1) and TransportDemoted (RFC-0031); RFC-0033 §7.1
     /// defines the type.
     Ready { live_sequences: u32, degraded: Option<Degradation> },
-    Draining { reason: DrainReason, deadline_ms: u64, live_sequences: u32 },
+    Draining { reason: DrainReason, deadline: Deadline, live_sequences: u32 },   // `deadline_ms` before §18.28
     Failed { class: ErrorClass, during: RunnerStateKind, restarts: u32 },
-    Stopped { reason: StopReason },
+    Stopped { reason: StopReason },             // defined below by §18.28
 }
 /// Field-less mirror used in the event log.
 pub enum RunnerStateKind { Fetching, Packing, Loading, Warming, Ready, Draining, Failed, Stopped }
 pub enum DrainReason { Replan { successor: PlanEpoch }, Unload, Shutdown, NodeLeaving, RestartBudgetSpent }
+/// Why a runner stopped (§18.28): after a drain, or from `Failed` (§3.3). Not the API's completion reason.
+pub enum StopReason { Drained(DrainReason), Fatal(ErrorClass) }
 ```
 
 ### 5.12 Error taxonomy *(core)*
@@ -1554,7 +1587,7 @@ pub enum ErrorClass {
 | `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
 | `BufferView`, `ViewKind` | core | 0020 | 0040 (`OpArgs::weights`) |
 | `ResourceGraph`, `CapabilityProfile` | core | 0010 | 0011 (what the solver reads), 0021 (`StorageCaps` fields) |
-| `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
+| `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`, and `ShardSpec` and `PackKey` by §18.28: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
 | `DType`, `QuantScheme` | core | 0042 | 0040 |
 | `KvFormula` | manifest | 0022 | 0043 |
 | `PlacementPlan`, `StageAssignment`, `TierAssignment`, `PlanDelta`, and the named parts RFC-0011 defines (`PredictedCost`, `BatchingLimits`, `Assumption`, `DeltaItem`, `TransitionStrategy`, `PlanCertification`) | core | 0011 | 0020, 0022, 0023, 0032 (`DeltaItem::Relink`, `ExtendShard`), 0053 (`CostTerm` keys) |
@@ -1572,6 +1605,8 @@ pub enum ErrorClass {
 | `TokenFrame`, `TokenEntry`, `FinishReason` | core (revised 2026-10-22, was net; §5.8's note); `net` keeps the borrowed views `Token<'a>` and `TokenEntryView<'a>` | 0031 (layout) | 0032, 0012 (semantics), 0022 (side-channel items) |
 | `SequenceControl`, `SequenceOpen`, `SequenceMeta` | core (revised 2026-10-22, was net; §5.8's note) | 0032 | 0011 (routing fields), 0050 (`SamplingParams`, `SequenceLimits`), 0060 (`parity`) |
 | `TraceContext` | core (added 2026-10-22; §5.8's note) | 0053 (semantics), 0031 (layout) | — |
+| `PrefixRef`, `PrefixKey`, `TailId` | core (added 2026-10-23; §5.8's note) | 0022 | 0032 |
+| `GrammarRef` | core (added 2026-10-23; §5.8's note) | 0050 | 0012 (masks) |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
 | `Error`, `ErrorClass` | core | 0001 | every RFC (codes) |
@@ -2816,3 +2851,28 @@ RFC-0060 §5.5 (amendment A4) defines the teacher-forced tap types that §5.8's 
 | Change | Sections touched | Reason |
 |---|---|---|
 | `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame`, `TokenEntry`, `FinishReason` and `TraceContext` live in `core`, not `net`; `net` encodes them without defining them, and keeps its zero-copy views under names of their own (`Token<'a>`, `TokenEntryView<'a>`) | §5.8 (dated note), §5.13; RFC-0053 §3.2 (dated note) | rule 3 (§4.2) keeps `exec` and `sched` off `net`, and the head's and tail's step loops read these types from the M0 rings (DIST-E1-T14, which defines them). For the maintainers to confirm |
+
+### 18.25 The `NetPool` adapter's `unsafe` (2026-10-23)
+
+DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementing it promises that a pool's memory is allocated, aligned, stable and used by nothing else. A runner's network pools live in `tier`'s `NetPool` arena.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| rule 8 gains a second module-scoped exception: one `runner` module holds only the `unsafe impl PoolMemory` for a newtype over `tier`'s `NetPool` lease, with a `// SAFETY:` comment stating the contract the lease meets; `runner` moves from `forbid(unsafe_code)` to `deny(unsafe_code)` with one `allow` on that impl, and `check-deps`' placement check allows `unsafe` in exactly that module | §4.2 rule 8 (dated note) | rule 3 keeps `tier` off `net`, so `tier` cannot implement the trait, and `core` forbids `unsafe` code, so it cannot declare it; `runner` (layer 5) may depend on both. The cost: the refusals rule 8's note of 2026-10-22 gives `testkit` then apply to all of `runner`, so no `include`, no `#[path]` attribute, no local `macro_rules!` definition and no build script anywhere in it, since any of them could compile code the placement check does not read. Recommended by the stand-in engine-lane review of #1737 and taken under the maintainer's standing instruction, for the maintainers to confirm; TIER-E2-T25 builds it |
+
+### 18.26 Hot-thread placement on Apple platforms (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| On Apple platforms, ADR-0012 item 2's hot threads run unpinned at QoS `USER_INTERACTIVE`, and their placement report gives no core and NUMA node 0 | ADR-0012 (dated revision); RFC-0012 §1.1 (dated note) | macOS and iOS have no call that binds a thread to a core, and Apple silicon ignores the `THREAD_AFFINITY_POLICY` tags. The recommended option, taken under the maintainer's standing instruction, 2026-10-23 |
+| The OS calls that place hot threads (`cpu_topology`, `pin_current_thread`, `raise_current_thread_priority`, `current_core`) are `syntropy_io::os` functions, and `exec` keeps `forbid(unsafe_code)` | §4.2 rule 8 (its note of 2026-10-22 already places OS calls that need `unsafe` in `io`) | PLC-E7-T01 pins its dispatchers, and pinning, priority and NUMA queries need `unsafe` FFI |
+| `/debug/state` lists each runner's hot-thread placement records | RFC-0050 §13.6 (dated note) | PLC-E7-T01's criterion: dispatchers report their pinned core and NUMA node in the debug state |
+
+### 18.28 Types the IPC carries live in `core`, and their messages arrive with them (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A type from outside `ipc` that a command-channel message carries lives in `core`, `obs` or `config`. `ShardSpec` and `PackKey` (with `ChunkId` and `LayoutVersion`), `ResidencySummary`, `ProbeSuite`, `PressureLevel` and `DataPlaneCredential` move to `core` as plain data, each in the task that owns it, with its owning RFC unchanged; the crate that held each re-exports it | §3.5 (dated note), §5.13 | `ipc` is layer 1, and rule 2 (§4.2) lets it name only layer 0. A message whose field type sat in `manifest`, `kernels`, `tier`, the probe or the crate with the signature scheme could not be defined at all (DIST-E1-T03) |
+| RFC-0001 §3.5's messages arrive with the tasks that own their field types, each with an `ipc_protocol` bump; DIST-E1-T03 builds the channel and the messages whose types exist at M0a, and the new DIST-E1-T15 the lifecycle types and messages that no task owned | §3.5 (dated note) | the full set needs types built in M1a and M2, and two of their owners (PROD-E1-T07, TIER-E1-T09) depend on DIST-E1-T03. One task holding every message would wait on M2 or form a cycle. `ProbeResult` and `ErrorReport` have no owning task yet. For the maintainers to confirm |
+| The rule covers the types a moved type holds: `RunnerState`'s (`Degradation` among them), `ResidencySummary`'s eleven (`Purpose` among them), `ProbeSuite`'s `ModelShapes`, and `ProviderName` (COMP-E2-T13), each listed under the task that defines it in `core`. `RunnerConfig` is `ResourcePolicy` plus resolved `KeyPath → ConfigValue` values, not the typed sections. A field that holds transport state or a `kernels` type travels in a form `core` holds: `RemoteEndpoint` as `net`-encoded bytes beside its `NodeId`, and `DegradeDetail::Fallback`'s op and provider as owned text | §3.5 (dated note) | a type in `core` can hold only layer-0 types. Listing each type under its owner keeps the RFC-0020, RFC-0022, RFC-0023 and RFC-0033 definitions unchanged; a narrower core-level summary would redesign them. Only these two fields reach past plain data |
+| `Deadline { within: Nanos }` is a duration counted from receipt, and `RunnerState::Draining` carries it for `deadline_ms`. `Drain` loses `successor`, which `DrainReason::Replan` already carries. `StopReason` is defined: `Drained(DrainReason)` or `Fatal(ErrorClass)`. `SequenceOutcome` gets its variants, and `FetchPriority` RFC-0041 §7's, with RFC-0031 §6.10 mapping them to blob-plane classes | §3.5, §5.11; RFC-0031 §6.10 (dated note) | an absolute instant cannot cross machines, and RFC-0011 §13 already passes `Option<Deadline>` between nodes. One source for the successor epoch. §3.3 stops a runner from `Draining` or from `Failed`, and the only `StopReason` in the RFCs was the API's completion reason. RFC-0041 §7 defines what `FetchShard`'s priority does |

@@ -45,6 +45,17 @@ impl Memory {
         Memory { base, layout }
     }
 
+    /// As `new`, with the bug the models must find planted: a relaxed publishing store.
+    #[cfg(loom)]
+    fn planted(ring: SharedLayout) -> Memory {
+        let layout = Layout::from_size_align(ring.bytes(), SharedLayout::ALIGN).unwrap();
+        // SAFETY: as in `new`.
+        let base = NonNull::new(unsafe { alloc::alloc_zeroed(layout) }).unwrap();
+        // SAFETY: as in `new`.
+        unsafe { ring.init_planted_relaxed_publish(base) };
+        Memory { base, layout }
+    }
+
     fn header(&self) -> &Header {
         // SAFETY: `new` wrote the header, and it lives as long as `self`.
         unsafe { self.base.cast::<Header>().as_ref() }
@@ -441,4 +452,155 @@ fn a_length_longer_than_a_slot_is_corrupt_whatever_the_buffer() {
             );
         }
     });
+}
+
+/// Every record length from 0 to `slot_bytes` round-trips exactly, through whole words with a
+/// padded last word, and a pop writes only the record's bytes of the caller's buffer. The slot size
+/// is not a multiple of 8, and one slot is reused by every length, long and short in turn. A round
+/// trip cannot tell whole-word copies from byte copies; `a_short_record_zero_pads_its_last_word`
+/// checks the write side. The read side's whole-word loads return the same `len` bytes that byte
+/// loads would, so no test can observe them.
+#[test]
+fn every_length_round_trips_through_whole_words() {
+    model(|| {
+        let ring = SharedLayout::new(1, 21).unwrap();
+        let memory = Memory::new(ring);
+        let mut tx = memory.producer(ring);
+        let mut rx = memory.consumer(ring);
+        for len in (0..=21usize).chain((0..=21).rev()) {
+            let record: Vec<u8> = (0..len)
+                .map(|at| (at as u8).wrapping_mul(37) ^ 0x5a)
+                .collect();
+            tx.push(&record).unwrap();
+            let mut out = [0xee_u8; 40];
+            assert_eq!(rx.pop_into(&mut out), Ok(len));
+            assert_eq!(&out[..len], record.as_slice(), "a {len}-byte record");
+            assert!(
+                out[len..].iter().all(|byte| *byte == 0xee),
+                "past a {len}-byte record"
+            );
+        }
+    });
+}
+
+/// A push writes a short record's last word whole, so the bytes past the record are zero, not
+/// what a longer record left there. Byte stores after the whole words would leave them. The slot
+/// is read only through an `AtomicU64`, as the ring itself reads it.
+#[test]
+fn a_short_record_zero_pads_its_last_word() {
+    model(|| {
+        let ring = SharedLayout::new(1, 21).unwrap();
+        let memory = Memory::new(ring);
+        let mut tx = memory.producer(ring);
+        let mut rx = memory.consumer(ring);
+        tx.push(&[0xff; 21]).unwrap();
+        let mut out = [0u8; 21];
+        assert_eq!(rx.pop_into(&mut out), Ok(21));
+        tx.push(&[0x11; 13]).unwrap();
+        // SAFETY: the slot's second record word, 8-aligned and inside the ring; only this thread
+        // uses the memory, and the slot is only ever accessed as whole u64 words.
+        let word = unsafe {
+            std::sync::atomic::AtomicU64::from_ptr(
+                memory
+                    .base
+                    .add(header_bytes() + LENGTH_BYTES + 8)
+                    .cast::<u64>()
+                    .as_ptr(),
+            )
+        }
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .to_ne_bytes();
+        assert_eq!(word, [0x11, 0x11, 0x11, 0x11, 0x11, 0, 0, 0]);
+        assert_eq!(rx.pop_into(&mut out), Ok(13));
+    });
+}
+
+/// The indices and the close flags never share a cache line (RFC-0060 §3.4: the padded indices),
+/// in the header's `repr(C)` layout. Loom cannot see false sharing, so the layout is checked
+/// directly, in both builds.
+#[test]
+fn the_shared_indices_and_flags_sit_on_separate_cache_lines() {
+    use std::mem::{align_of, offset_of};
+    let line = align_of::<CachePadded<AtomicU64>>();
+    assert!(line >= 64, "a {line}-byte line");
+    let fields = [
+        ("head", offset_of!(Header, head)),
+        ("tail", offset_of!(Header, tail)),
+        ("closed", offset_of!(Header, closed)),
+    ];
+    for (at, (name, offset)) in fields.iter().enumerate() {
+        assert_eq!(offset % line, 0, "{name} starts a line");
+        for (other, other_offset) in &fields[at + 1..] {
+            assert!(
+                offset.abs_diff(*other_offset) >= line,
+                "{name} and {other} share a line"
+            );
+        }
+    }
+    assert_eq!(
+        header_bytes() % SharedLayout::ALIGN,
+        0,
+        "the slots start on a line"
+    );
+}
+
+/// The child of `the_models_find_a_relaxed_publishing_store_in_a_shared_ring`: the cross-thread
+/// model on a shared ring whose `push` publishes with a relaxed store. Loom must fail it.
+#[cfg(loom)]
+#[test]
+#[ignore = "expected to fail; the_models_find_a_relaxed_publishing_store_in_a_shared_ring runs it"]
+fn planted_relaxed_publish_breaks_the_shared_model() {
+    model(|| {
+        let ring = SharedLayout::new(2, 8).unwrap();
+        let memory = std::sync::Arc::new(Memory::planted(ring));
+        let shared = memory.clone();
+        let producer = thread::spawn(move || {
+            let mut tx = shared.producer(ring);
+            for value in 0u8..3 {
+                while tx.push(&[value]) == Err(SharedPushError::Full) {
+                    thread::yield_now();
+                }
+            }
+        });
+        let mut rx = memory.consumer(ring);
+        let mut seen = Vec::new();
+        loop {
+            match pop(&mut rx) {
+                Ok(record) => seen.push(record[0]),
+                Err(SharedPopError::Empty) => thread::yield_now(),
+                Err(SharedPopError::Closed) => break,
+                Err(other) => panic!("{other}"),
+            }
+        }
+        assert_eq!(seen, [0, 1, 2]);
+        producer.join().unwrap();
+    });
+}
+
+/// The models find the planted bug in the shared ring too, the ring the IPC region's
+/// `local_tokens` and `local_sequences` use: loom reports a causality violation on the slot's
+/// shadow cell. Run in a child process, as loom may abort rather than unwind.
+#[cfg(loom)]
+#[test]
+fn the_models_find_a_relaxed_publishing_store_in_a_shared_ring() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "shared::tests::planted_relaxed_publish_breaks_the_shared_model",
+            "--ignored",
+            "--test-threads",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.status.success(),
+        "the planted bug went unnoticed:\n{log}"
+    );
+    assert!(log.contains("Causality violation"), "{log}");
 }

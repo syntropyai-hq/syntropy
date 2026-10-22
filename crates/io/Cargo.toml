@@ -24,4 +24,6 @@ syntropy-testkit = { path = "../testkit" }
 libc = "0.2.191"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_System_WindowsProgramming"] }
+# `Win32_System_Threading`, `Win32_System_Kernel`, `Win32_System_SystemInformation` and
+# `Win32_Foundation` for hot-thread placement (`os::thread`).
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Kernel", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }

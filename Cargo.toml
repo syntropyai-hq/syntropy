@@ -93,6 +93,13 @@ iroh = "=1.4.1"
 # `deny.toml` bans every feature but `lark`. Without `referencing`, a schema's `$ref` resolves
 # only as a document-local `#/...` pointer.
 llguidance = { version = "1.9.1", default-features = false, features = ["lark"] }
+# The daemon-runner command channel's encoding (RFC-0001 §3.5): `syntropy-ipc`, and the
+# dev-dependency of `syntropy-core` whose tests show the plan types postcard-encode. MIT OR
+# Apache-2.0. The lock file already held this version, through iroh. Postcard's 1.x wire format is
+# a published specification that stays fixed within the major version, which the cross-build
+# adoption of RFC-0052 §6.5 relies on. No default features: `heapless-cas` serves targets without
+# an allocator; `use-std` gives `Vec` output.
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
 # The node's local TLS CA and its leaves (RFC-0050 §11.1.1, PROD-E5-T03), `syntropy-api` only. On
 # ring, the one TLS crypto provider (RFC-0034 §3), with no aws-lc build: `ring` implies its

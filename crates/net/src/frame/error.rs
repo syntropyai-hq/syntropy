@@ -61,6 +61,7 @@ pub enum FrameError {
     },
     /// A field that disagrees with what the rest of the frame gives it: a span's `row_offset`
     /// that the spans before it do not reach, or a payload that is not `n_rows` strides long.
+    /// For a result assembled from parts, `value` is a part's and `expected` the first part's.
     Inconsistent {
         ftype: FrameType,
         field: &'static str,
@@ -85,6 +86,18 @@ pub enum FrameError {
     TooLong { what: &'static str, len: usize },
     /// The output buffer is shorter than the frame.
     BufferTooSmall { needed: usize, available: usize },
+    /// A frame whose type needs a capability (RFC-0031 §10) that the channel did not negotiate:
+    /// the encoder refuses it, so a peer that did not advertise the capability never receives
+    /// the frame.
+    CapabilityNotNegotiated { ftype: FrameType, capability: u64 },
+    /// A `Token` entry's tap block, carried as bytes, was to be converted to or from `core`'s
+    /// `LogitTap`. The block's codec is DIST-E8-T06's (RFC-0031 §6.13), so until it exists a
+    /// `TokenEntryView` converts to and from `core`'s `TokenEntry` only without a tap.
+    TapNotDecoded { len: usize },
+    /// A `core` `LogprobBlock` with `k = 0`, the chosen tokens' logprobs alone, was to be encoded.
+    /// RFC-0031 §6.5's `logprob_k = 0` means no logprobs, so the entry has no form for it until
+    /// OQ-NET-35 settles.
+    ChosenLogprobsOnly { n_tokens: usize },
 }
 
 impl FrameError {
@@ -120,14 +133,21 @@ impl FrameError {
     /// (RFC-0031 §7.2 drops the frame and NACKs it). A frame type this minor does not define, an
     /// `Activation` in another dtype than its channel's, and a dtype container this build does
     /// not carry are `Unsupported` (RFC-0031 §12, revised 2026-10-22); a resend would carry the
-    /// same bytes, so no NACK can repair them. The first two are sent in `Close` as the code
-    /// [`FrameError::code`] gives. Only the encoder's own failures, a buffer too small or a length
-    /// too long for its field, are `Internal`.
+    /// same bytes, so no NACK can repair them. So is a tap block this build has no codec for
+    /// ([`FrameError::TapNotDecoded`]), and a logprob block the entry has no form for
+    /// ([`FrameError::ChosenLogprobsOnly`]). The first two are sent in `Close` as the code
+    /// [`FrameError::code`] gives. The encoder's refusal of a frame type whose capability the
+    /// channel did not negotiate ([`FrameError::CapabilityNotNegotiated`]) is `Unsupported` too,
+    /// with no code: the frame is never written, so nothing travels. The encoder's other
+    /// failures, a buffer too small or a length too long for its field, are `Internal`.
     pub fn class(&self) -> ErrorClass {
         match self {
             FrameError::UnknownFrameType(_)
             | FrameError::WireDTypeMismatch { .. }
-            | FrameError::UnsupportedDType(_) => ErrorClass::Unsupported,
+            | FrameError::UnsupportedDType(_)
+            | FrameError::CapabilityNotNegotiated { .. }
+            | FrameError::TapNotDecoded { .. }
+            | FrameError::ChosenLogprobsOnly { .. } => ErrorClass::Unsupported,
             FrameError::TooLong { .. } | FrameError::BufferTooSmall { .. } => ErrorClass::Internal,
             _ => ErrorClass::Integrity,
         }
@@ -287,6 +307,19 @@ impl fmt::Display for FrameError {
                     "output buffer of {available} bytes; the frame needs {needed}"
                 )
             }
+            FrameError::CapabilityNotNegotiated { ftype, capability } => write!(
+                f,
+                "{ftype:?} needs capability bit {}, which the channel did not negotiate",
+                capability.trailing_zeros()
+            ),
+            FrameError::TapNotDecoded { len } => write!(
+                f,
+                "a Token entry's {len}-byte tap block has no LogitTap codec in this build"
+            ),
+            FrameError::ChosenLogprobsOnly { n_tokens } => write!(
+                f,
+                "a Token entry cannot carry {n_tokens} chosen-token logprobs without alternatives"
+            ),
         }
     }
 }
