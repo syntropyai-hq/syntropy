@@ -11,9 +11,11 @@
 //! - a parser and classifier over what the gatherer read. These compile on every OS, so each
 //!   OS's rules are tested on any host from recorded output.
 //!
-//! A listing fails only when a source it needs cannot be read at all. A line or interface a
-//! parser cannot read costs that line or that interface, and becomes a warning in the
-//! [`Listing`], so one odd interface never hides the others.
+//! A listing fails only when a source it needs cannot be used: it cannot be read or run, or it
+//! printed something of which nothing could be read. A source whose every line fails is not a
+//! host with no interfaces. Otherwise a line or interface a parser cannot read costs only that
+//! line or interface, and becomes a warning in the [`Listing`], so one odd interface never
+//! hides the others.
 //!
 //! RFC-0030 §7.2's note of 2026-10-22 records these sources and the rules beyond its table.
 //! Nothing here uses `unsafe`.
@@ -231,6 +233,26 @@ pub fn is_tailnet(addr: IpAddr) -> bool {
         .any(|&(net, prefix)| IpNet::new(net, prefix).is_some_and(|range| range.contains(addr)))
 }
 
+/// Fails when `source` gave something but none of it could be read: `items` is empty and the
+/// parser left `warnings`. Such a source cannot be used, and an empty result from it would
+/// read as a host with nothing on it.
+pub(crate) fn require_some<T>(
+    source: &str,
+    items: &[T],
+    warnings: &[IfaceError],
+) -> Result<(), IfaceError> {
+    match warnings.first() {
+        Some(first) if items.is_empty() => Err(IfaceError::source(
+            source,
+            format!(
+                "none of the {} things it gave could be read; the first: {first}",
+                warnings.len()
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The listing for `gathered`, sorted by name, each interface with its ordinal from
 /// `ordinals`. An interface that gets no ordinal is left out, with a warning.
 pub fn build((mut observed, mut warnings): Gathered, ordinals: &mut Ordinals) -> Listing {
@@ -258,7 +280,7 @@ pub fn build((mut observed, mut warnings): Gathered, ordinals: &mut Ordinals) ->
 }
 
 /// This host's interfaces, classified by RFC-0030 §7.2, with ordinals from `ordinals`. It
-/// fails only when a source it needs cannot be read at all.
+/// fails only when a source it needs cannot be used.
 pub fn interfaces(ordinals: &mut Ordinals) -> Result<Listing, IfaceError> {
     Ok(build(gather()?, ordinals))
 }
@@ -408,6 +430,23 @@ mod tests {
         );
         ordinals.retire("veth0");
         assert_eq!(ordinals.ordinal("eth9"), Some(0));
+    }
+
+    /// A source that gave lines of which none read fails, naming it; one good line is enough.
+    #[test]
+    fn a_source_with_nothing_readable_fails() {
+        let bad = [
+            IfaceError::parse("`tool`", "x"),
+            IfaceError::parse("`tool`", "y"),
+        ];
+        let failed = require_some::<u8>("`tool`", &[], &bad).unwrap_err();
+        assert!(
+            matches!(&failed, IfaceError::Source { source, why } if source == "`tool`" && why.contains("none of the 2")),
+            "{failed}"
+        );
+        assert!(require_some("`tool`", &[1u8], &bad).is_ok());
+        // Nothing printed at all is no warning and no failure: an empty table is an empty table.
+        assert!(require_some::<u8>("`tool`", &[], &[]).is_ok());
     }
 
     #[test]

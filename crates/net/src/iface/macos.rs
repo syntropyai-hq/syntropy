@@ -107,6 +107,14 @@ pub fn parse_ifconfig(text: &str) -> (Vec<IfconfigIface>, Vec<IfaceError>) {
     (out, warnings)
 }
 
+/// [`parse_ifconfig`] for a listing: `ifconfig -a`'s text that printed lines of which none
+/// read fails, naming the command.
+pub fn read_ifconfig(text: &str) -> Result<(Vec<IfconfigIface>, Vec<IfaceError>), IfaceError> {
+    let (ifaces, warnings) = parse_ifconfig(text);
+    super::require_some("`ifconfig -a`", &ifaces, &warnings)?;
+    Ok((ifaces, warnings))
+}
+
 /// An `ifconfig` header line: `name: flags=8863<UP,…> mtu 1500`.
 fn ifconfig_header(line: &str) -> Option<IfconfigIface> {
     let (name, rest) = line.split_once(": ")?;
@@ -280,7 +288,7 @@ pub fn observe(
 }
 
 /// Runs this host's tools and observes its interfaces. It fails only when `networksetup` or
-/// `ifconfig` cannot be run.
+/// `ifconfig` cannot be used.
 #[cfg(target_os = "macos")]
 pub(crate) fn gather() -> Result<super::Gathered, IfaceError> {
     use super::run;
@@ -290,7 +298,7 @@ pub(crate) fn gather() -> Result<super::Gathered, IfaceError> {
         &["-listallhardwareports"],
         &mut warnings,
     )?);
-    let (ifaces, ifconfig_warnings) = parse_ifconfig(&run("ifconfig", &["-a"], &mut warnings)?);
+    let (ifaces, ifconfig_warnings) = read_ifconfig(&run("ifconfig", &["-a"], &mut warnings)?)?;
     warnings.extend(ifconfig_warnings);
     // `route` fails when there is no default route of that family; that is no default.
     let mut defaults = BTreeSet::new();
@@ -426,6 +434,14 @@ awdl0: flags=8943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1500
         );
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert_eq!(ifaces.len(), 8);
+    }
+
+    /// `ifconfig` output of which nothing reads fails, naming the command.
+    #[test]
+    fn an_unreadable_ifconfig_fails() {
+        let failed = read_ifconfig("no header here\nnor here\n").unwrap_err();
+        assert!(failed.to_string().contains("ifconfig -a"), "{failed}");
+        assert!(read_ifconfig(IFCONFIG).is_ok());
     }
 
     #[test]

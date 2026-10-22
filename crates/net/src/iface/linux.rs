@@ -137,6 +137,7 @@ pub fn read_sysfs(root: &Path) -> Result<(Vec<SysfsIface>, Vec<IfaceError>), Ifa
             is_bridge: dir.join("bridge").exists(),
         });
     }
+    super::require_some(&shown, &out, &warnings)?;
     Ok((out, warnings))
 }
 
@@ -180,6 +181,22 @@ pub fn parse_if_inet6(text: &str) -> (Vec<(String, IpNet)>, Vec<IfaceError>) {
         Some((name.to_owned(), net))
     };
     lines_of(text, SOURCE, one)
+}
+
+/// Addresses by interface name.
+pub type Addresses = Vec<(String, IpNet)>;
+
+/// The addresses in `ip -o -4 addr show`'s text (`v4`) and `/proc/net/if_inet6`'s (`v6`), and
+/// a warning for each line that does not read. Either source that printed lines of which none
+/// read fails, naming it.
+pub fn read_addresses(v4: &str, v6: &str) -> Result<(Addresses, Vec<IfaceError>), IfaceError> {
+    let (mut addrs, mut warnings) = parse_ip_addr_v4(v4);
+    super::require_some("`ip -o -4 addr show`", &addrs, &warnings)?;
+    let (v6_addrs, v6_warnings) = parse_if_inet6(v6);
+    super::require_some("/proc/net/if_inet6", &v6_addrs, &v6_warnings)?;
+    addrs.extend(v6_addrs);
+    warnings.extend(v6_warnings);
+    Ok((addrs, warnings))
 }
 
 /// Each non-blank line of `text` read by `one`, and a warning for each line `one` refuses.
@@ -286,24 +303,21 @@ pub fn parse_nmcli_metered(text: &str) -> BTreeMap<String, bool> {
 /// - loopback;
 /// - Wi-Fi when the interface has a wireless marker, whatever its type;
 /// - Thunderbolt IP when its driver is `thunderbolt-net`;
-/// - overlay when it holds a tailnet address, or its name is `tailscale*`, `wg*` or `tun*` and
-///   its type is not `ARPHRD_ETHER`. A name alone never overrides an Ethernet type, so an
-///   Ethernet interface that happens to be named `wg…` stays Ethernet;
+/// - overlay when it holds a tailnet address;
 /// - Ethernet when its type is `ARPHRD_ETHER`;
 /// - an overlay for any other type, a tunnel (`tun`, `sit`, `gre`, `ipip`, …).
+///
+/// The table's `tailscale*`, `wg*` and `tun*` names are tunnels, so the type rule covers them;
+/// no separate name rule is applied, and a name alone never makes an Ethernet-type interface
+/// an overlay.
 pub fn classify(iface: &SysfsIface, addrs: &[IpNet]) -> NetMedium {
-    let overlay_name = ["tailscale", "wg", "tun"]
-        .iter()
-        .any(|prefix| iface.name.starts_with(prefix));
     if iface.arphrd == ARPHRD_LOOPBACK || iface.iff & IFF_LOOPBACK != 0 {
         NetMedium::Loopback
     } else if iface.wireless {
         NetMedium::WiFi
     } else if iface.thunderbolt() {
         NetMedium::ThunderboltIp
-    } else if (overlay_name && iface.arphrd != ARPHRD_ETHER)
-        || addrs.iter().any(|a| is_tailnet(a.addr))
-    {
+    } else if addrs.iter().any(|a| is_tailnet(a.addr)) {
         NetMedium::Overlay
     } else if iface.arphrd == ARPHRD_ETHER {
         NetMedium::Ethernet
@@ -357,8 +371,8 @@ pub fn observe(
         .collect()
 }
 
-/// Reads this host's sources and observes its interfaces. It fails only when sysfs or
-/// `ip` cannot be read at all.
+/// Reads this host's sources and observes its interfaces. It fails only when sysfs, `ip` or
+/// `/proc/net/if_inet6` cannot be used.
 #[cfg(target_os = "linux")]
 pub(crate) fn gather() -> Result<super::Gathered, IfaceError> {
     let optional = |path: &str| -> Result<String, IfaceError> {
@@ -371,11 +385,8 @@ pub(crate) fn gather() -> Result<super::Gathered, IfaceError> {
     };
     let (sysfs, mut warnings) = read_sysfs(Path::new("/sys/class/net"))?;
     let v4_text = super::run("ip", &["-o", "-4", "addr", "show"], &mut warnings)?;
-    let (mut addrs, v4_warnings) = parse_ip_addr_v4(&v4_text);
-    warnings.extend(v4_warnings);
-    let (v6, v6_warnings) = parse_if_inet6(&optional("/proc/net/if_inet6")?);
-    addrs.extend(v6);
-    warnings.extend(v6_warnings);
+    let (addrs, address_warnings) = read_addresses(&v4_text, &optional("/proc/net/if_inet6")?)?;
+    warnings.extend(address_warnings);
     let defaults = parse_default_routes(
         &optional("/proc/net/route")?,
         &optional("/proc/net/ipv6_route")?,
@@ -544,6 +555,31 @@ fd7a115ca1e0000000000000000000aa 05 80 00 00 tailscale0
         assert_eq!((parsed.len(), warnings.len()), (0, 2));
     }
 
+    /// An address source that printed lines of which none read fails the listing, naming it;
+    /// one with a good line among bad ones does not.
+    #[test]
+    fn an_unreadable_address_source_fails() {
+        let v6 = "fe8000000000000002155dfffed4df5b 02 40 20 80     eth0\n";
+        let failed = read_addresses("garbage\nmore garbage\n", v6).unwrap_err();
+        assert!(
+            failed.to_string().contains("ip -o -4 addr show"),
+            "{failed}"
+        );
+        let failed = read_addresses("", "not\nif_inet6\n").unwrap_err();
+        assert!(
+            failed.to_string().contains("/proc/net/if_inet6"),
+            "{failed}"
+        );
+        let (addrs, warnings) = read_addresses(
+            "garbage\n2: eth0    inet 10.0.0.2/24 scope global eth0\n",
+            v6,
+        )
+        .unwrap();
+        assert_eq!((addrs.len(), warnings.len()), (2, 1));
+        // A host with no IPv4 address prints nothing, which is not a failure.
+        assert_eq!(read_addresses("", "").unwrap(), (Vec::new(), Vec::new()));
+    }
+
     #[test]
     fn finds_default_routes() {
         let route = "\
@@ -616,6 +652,22 @@ GENERAL.METERED:unknown
         );
         assert!(!w.flags.contains(IfaceFlags::MULTICAST));
         assert!(!w.flags.contains(IfaceFlags::TRUSTED_FABRIC));
+    }
+
+    /// A sysfs tree whose only interface does not read fails, naming the directory.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_sysfs_fails() {
+        let root = std::env::temp_dir().join(format!("syntropy-sysfs-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("bad0")).unwrap();
+        fs::write(root.join("bad0/type"), "not-a-number\n").unwrap();
+        let failed = read_sysfs(&root).unwrap_err();
+        assert!(
+            failed.to_string().contains(&root.display().to_string()),
+            "{failed}"
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 
     /// A sysfs tree as the kernel lays it out, built in a temporary directory.

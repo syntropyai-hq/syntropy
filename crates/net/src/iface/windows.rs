@@ -98,6 +98,15 @@ pub fn parse(text: &str) -> (Parsed, Vec<IfaceError>) {
     (parsed, warnings)
 }
 
+/// [`parse`] for a listing: output that printed lines of which none read fails, naming the
+/// command.
+pub fn read_output(text: &str) -> Result<(Parsed, Vec<IfaceError>), IfaceError> {
+    let (parsed, warnings) = parse(text);
+    let read = parsed.adapters.len() + parsed.addrs.len() + parsed.defaults.len();
+    super::require_some("PowerShell Get-NetAdapter", &vec![(); read], &warnings)?;
+    Ok((parsed, warnings))
+}
+
 /// Reads one line of [`SCRIPT`]'s output into `parsed`. `None` if it does not read.
 fn read_line(line: &str, parsed: &mut Parsed) -> Option<()> {
     let fields: Vec<&str> = line.split('\t').collect();
@@ -226,7 +235,7 @@ pub fn observe(parsed: &Parsed) -> Vec<Observed> {
 /// Runs [`SCRIPT`] and observes this host's adapters. PowerShell is started by its full path
 /// under `%SystemRoot%`, so no `powershell.exe` elsewhere on the search path runs instead, and
 /// with `CREATE_NO_WINDOW`, so a daemon with no console of its own flashes no window. It
-/// fails only when PowerShell cannot be run.
+/// fails only when PowerShell cannot be used.
 #[cfg(target_os = "windows")]
 pub(crate) fn gather() -> Result<super::Gathered, IfaceError> {
     use std::os::windows::process::CommandExt;
@@ -247,7 +256,7 @@ pub(crate) fn gather() -> Result<super::Gathered, IfaceError> {
         .creation_flags(CREATE_NO_WINDOW);
     let mut warnings = Vec::new();
     let text = super::output_text(&mut command, &shown, &mut warnings)?;
-    let (parsed, parse_warnings) = parse(&text);
+    let (parsed, parse_warnings) = read_output(&text)?;
     warnings.extend(parse_warnings);
     Ok((observe(&parsed), warnings))
 }
@@ -316,6 +325,14 @@ R\t15\r
             "X\t1\nA\tnot-a-number\tEthernet\td\t6\t1\t1500\t0\t\n{OUTPUT}"
         ));
         assert_eq!((parsed.adapters.len(), warnings.len()), (8, 2));
+    }
+
+    /// Output of which nothing reads fails, naming the command.
+    #[test]
+    fn unreadable_output_fails() {
+        let failed = read_output("not\tthe\nformat\n").unwrap_err();
+        assert!(failed.to_string().contains("Get-NetAdapter"), "{failed}");
+        assert!(read_output(OUTPUT).is_ok());
     }
 
     #[test]
