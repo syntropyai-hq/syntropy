@@ -120,9 +120,67 @@ fn tls_none_on_a_lan_bind_needs_the_opt_in() {
     let plan = plan_binds(&api, true).unwrap();
     assert_eq!(plan[0].transport, Transport::Plain);
 
-    // A wildcard is a LAN bind.
+    // A wildcard needs a key like a LAN bind, and is refused plain without the opt-in too.
     let errors = load("[api]\nbind = [\"0.0.0.0:7433\"]\ntls = \"none\"\n").unwrap_err();
     assert_eq!(codes(&errors), vec![Some(Code::InsecureListener)]);
+}
+
+/// A wildcard listens on every interface, a public one included, so it is never served plain,
+/// even with the opt-in: validation rejects it, and so does the plan.
+#[test]
+fn a_wildcard_bind_is_never_served_plain() {
+    for wildcard in ["0.0.0.0:7433", "[::]:7433", "[::ffff:0.0.0.0]:7433"] {
+        let text =
+            format!("[api]\nbind = [\"{wildcard}\"]\ntls = \"none\"\nallow_plaintext_lan = true\n");
+        let errors = load(&text).unwrap_err();
+        assert_eq!(
+            codes(&errors),
+            vec![Some(Code::InsecureListener)],
+            "{wildcard}"
+        );
+        assert!(
+            errors[0].message.contains("wildcard"),
+            "{}",
+            errors[0].message
+        );
+        assert!(
+            errors[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("bind a specific LAN address")),
+            "{:?}",
+            errors[0].help
+        );
+
+        let api = ApiSection {
+            bind: vec![wildcard.parse().unwrap()],
+            tls: TlsSource::None,
+            allow_plaintext_lan: true,
+        };
+        let refusal = plan_binds(&api, true).unwrap_err();
+        assert!(
+            matches!(
+                refusal,
+                StartRefusal::PlainNotAllowed {
+                    class: BindClass::Lan,
+                    ..
+                }
+            ),
+            "{wildcard}: {refusal:?}"
+        );
+        assert!(
+            refusal.to_string().contains("bind a specific LAN address"),
+            "{refusal}"
+        );
+    }
+    // A specific LAN address beside it still may, with the opt-in.
+    let api =
+        load("[api]\nbind = [\"192.168.1.10:7433\"]\ntls = \"none\"\nallow_plaintext_lan = true\n")
+            .unwrap();
+    assert_eq!(
+        plan_binds(&api, true).unwrap()[0].transport,
+        Transport::Plain
+    );
 }
 
 /// The opt-in never allows plain HTTP on a public address.

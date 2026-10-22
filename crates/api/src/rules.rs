@@ -4,7 +4,8 @@
 //! `syntropy_config::load_and_validate` after its built-in rules:
 //!
 //! - phase 4, [`API_RULES`]' `api_tls_none_allowed`: `api.tls = "none"` is rejected on a public
-//!   bind, and on a LAN bind unless `api.allow_plaintext_lan = true`. Loopback binds serve plain
+//!   bind and on a wildcard, which listens on every interface, a public one included; on a
+//!   specific LAN address it needs `api.allow_plaintext_lan = true`. Loopback binds serve plain
 //!   HTTP whatever `api.tls` says, so they are not checked;
 //! - phase 5, `api_tls_files_readable`: both files of a `{ cert, key }` pair exist and can be
 //!   read. A table with only one of them never gets this far: it is the wrong shape, rejected when
@@ -17,7 +18,7 @@ use std::path::Path;
 
 use syntropy_config::{Code, Findings, Origin, Phase, Problem, Rule, RuleInput};
 
-use crate::bind::{BindClass, classify};
+use crate::bind::{BindClass, classify, is_wildcard};
 use crate::config::{ApiSection, TlsSource};
 
 /// The rules a binary that serves the API adds to `load_and_validate`.
@@ -65,6 +66,18 @@ fn tls_none_allowed(input: &RuleInput<'_>, findings: &mut Findings) {
     for addr in &api.bind {
         let refused = match classify(addr.ip()) {
             BindClass::Loopback => continue,
+            BindClass::Lan if is_wildcard(addr.ip()) => problem(
+                Code::InsecureListener,
+                origin.clone(),
+                "api.tls",
+                format!(
+                    "`api.tls = \"none\"` would serve plain HTTP on the wildcard bind `{addr}`, \
+                     which listens on every interface, a public one included; a wildcard is \
+                     always served with TLS (RFC-0050 §11.1)"
+                ),
+                "use `api.tls = \"auto\"` for the local CA, or, for plain HTTP, bind a specific \
+                 LAN address and set `api.allow_plaintext_lan = true`",
+            ),
             BindClass::Lan if api.allow_plaintext_lan => continue,
             BindClass::Lan => problem(
                 Code::InsecureListener,

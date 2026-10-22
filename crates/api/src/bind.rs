@@ -5,7 +5,7 @@
 //! | Class | Addresses | API key | Transport |
 //! |---|---|---|---|
 //! | [`BindClass::Loopback`] | `127.0.0.0/8`, `::1` | by route (RFC-0050 §11.1) | plain HTTP |
-//! | [`BindClass::Lan`] | private, link-local and unique local addresses, and the wildcards `0.0.0.0` and `::` | required | TLS; plain HTTP only with `api.allow_plaintext_lan = true` |
+//! | [`BindClass::Lan`] | private, link-local and unique local addresses, and the wildcards `0.0.0.0` and `::` | required | TLS; plain HTTP only on a specific LAN address with `api.allow_plaintext_lan = true`, never on a wildcard |
 //! | [`BindClass::Public`] | every other address | required | TLS, always |
 //!
 //! The daemon runs [`plan_binds`] at start. It refuses to start a non-loopback bind until at
@@ -27,10 +27,12 @@ pub enum BindClass {
     /// `127.0.0.0/8` and `::1`, and their IPv4-mapped forms: plain HTTP, with no key for
     /// `inference` and the read-only routes (RFC-0050 §11.1).
     Loopback,
-    /// A LAN address, or a wildcard: an API key and TLS, or plain HTTP with
-    /// `api.allow_plaintext_lan = true`. LAN addresses are IPv4 `10/8`, `172.16/12`,
+    /// A LAN address, or a wildcard: an API key and TLS. A specific LAN address may serve plain
+    /// HTTP with `api.allow_plaintext_lan = true`. LAN addresses are IPv4 `10/8`, `172.16/12`,
     /// `192.168/16` and link-local `169.254/16`, and IPv6 unique local `fc00::/7` and link-local
-    /// `fe80::/10`. The wildcards `0.0.0.0` and `::` count as LAN binds (ADR-0505 item 2).
+    /// `fe80::/10`. The wildcards `0.0.0.0` and `::` count as LAN binds for the key (ADR-0505
+    /// item 2), but they listen on every interface, a public one included, so they are always
+    /// served with TLS (RFC-0050 §11.1; [`is_wildcard`]).
     Lan,
     /// Any other address: an API key and TLS, with no plain-HTTP opt-in. That includes
     /// `100.64/10`, the shared range tailnets use, until PROD-E5-T09 classifies overlay
@@ -57,6 +59,13 @@ pub fn classify(ip: IpAddr) -> BindClass {
     } else {
         BindClass::Public
     }
+}
+
+/// Whether `ip` is a wildcard, `0.0.0.0` or `::` (or its IPv4-mapped form): a bind on every
+/// interface. A wildcard counts as a LAN bind for the API key, and is never served plain.
+#[must_use]
+pub fn is_wildcard(ip: IpAddr) -> bool {
+    ip.to_canonical().is_unspecified()
 }
 
 /// Where a TLS listener's certificate comes from.
@@ -102,7 +111,8 @@ pub enum StartRefusal {
         /// The binds that need a key.
         binds: Vec<SocketAddr>,
     },
-    /// `api.tls = "none"` on a bind that may not serve plain HTTP. Validation rejects such a
+    /// `api.tls = "none"` on a bind that may not serve plain HTTP: a public address, a wildcard,
+    /// or a LAN address without `api.allow_plaintext_lan`. Validation rejects such a
     /// configuration first ([`crate::rules`]); the plan refuses it again rather than serve
     /// plain HTTP where the policy forbids it.
     PlainNotAllowed {
@@ -128,6 +138,10 @@ impl fmt::Display for StartRefusal {
             StartRefusal::PlainNotAllowed { bind, class } => {
                 let why = match class {
                     BindClass::Public => "plain HTTP is never allowed on a public address",
+                    _ if is_wildcard(bind.ip()) => {
+                        "a wildcard listens on every interface, a public one included, so it is \
+                         always served with TLS; bind a specific LAN address for plain HTTP"
+                    }
                     _ => "plain HTTP beyond loopback needs `api.allow_plaintext_lan = true`",
                 };
                 write!(
@@ -149,7 +163,7 @@ impl std::error::Error for StartRefusal {}
 ///
 /// - [`StartRefusal::NoApiKey`] when a bind is not loopback and no key exists.
 /// - [`StartRefusal::PlainNotAllowed`] when `api.tls = "none"` would serve plain HTTP on a
-///   public address, or on a LAN address without `api.allow_plaintext_lan`.
+///   public address or a wildcard, or on a LAN address without `api.allow_plaintext_lan`.
 pub fn plan_binds(api: &ApiSection, has_api_key: bool) -> Result<Vec<Listener>, StartRefusal> {
     let beyond_loopback: Vec<SocketAddr> = api
         .bind
@@ -173,7 +187,11 @@ pub fn plan_binds(api: &ApiSection, has_api_key: bool) -> Result<Vec<Listener>, 
                     cert: cert.clone(),
                     key: key.clone(),
                 }),
-                (BindClass::Lan, TlsSource::None) if api.allow_plaintext_lan => Transport::Plain,
+                (BindClass::Lan, TlsSource::None)
+                    if api.allow_plaintext_lan && !is_wildcard(addr.ip()) =>
+                {
+                    Transport::Plain
+                }
                 (_, TlsSource::None) => {
                     return Err(StartRefusal::PlainNotAllowed { bind: addr, class });
                 }
@@ -193,6 +211,16 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn wildcards_are_the_unspecified_addresses() {
+        for wildcard in ["0.0.0.0", "::", "::ffff:0.0.0.0"] {
+            assert!(is_wildcard(ip(wildcard)), "{wildcard}");
+        }
+        for other in ["127.0.0.1", "192.168.1.10", "fe80::1", "8.8.8.8"] {
+            assert!(!is_wildcard(ip(other)), "{other}");
+        }
     }
 
     #[test]
