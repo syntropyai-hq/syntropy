@@ -27,7 +27,10 @@
 //!   a domain crate's section from the `<prefix>` table of the policy, or from
 //!   `InstancePolicy::domain`, with the computed defaults the caller supplies, checks it as a
 //!   policy table is checked at load, and lists what changed between two builds with each key's
-//!   reload class.
+//!   reload class;
+//! - per-request overrides (§7, PROD-E1-T10): [`RequestOverrides`] and [`resolve_request`], which
+//!   resolves a request against one candidate instance's policy, enforcing D3: approximate only
+//!   when the request, the instance and the cluster all opt in.
 //!
 //! The cluster and instance scopes, and reload, come in later tasks.
 //!
@@ -134,6 +137,7 @@ mod instance;
 mod origin;
 mod registry;
 mod render;
+mod request;
 mod resolve;
 mod schema;
 mod text;
@@ -152,6 +156,10 @@ pub use holds_secret::HoldsSecret;
 pub use instance::{Change, InstanceSection, InstanceSectionError};
 pub use origin::Origin;
 pub use registry::{Registry, RegistryError};
+pub use request::{
+    BenchControls, EffectiveRequestPolicy, RequestError, RequestOverrides, RequestWarning,
+    SessionBinding, knob_names, priority_for_service_tier, resolve_request,
+};
 pub use resolve::{
     ConfigFile, Flags, Layers, Proposal, Rejected, Resolved, ResolvedConfig, SectionError,
     SharedConfig, load,
