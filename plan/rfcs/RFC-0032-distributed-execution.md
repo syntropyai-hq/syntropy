@@ -453,6 +453,7 @@ pub struct LogEntry {
 }
 ```
 
+- **The chain's bytes.** `index` and `term` are 8-byte little-endian integers, as everywhere on the wire (RFC-0031). `cause` is one byte `0` when there is none, else `1` followed by the origin's 32 bytes and its counter as 8 little-endian bytes. `event_bytes` come last, so they need no length. `cluster_id` is the cluster key's 32-byte public half (RFC-0034 §4). `crates/cluster/tests/log/vectors.txt` pins the result for a fixed log.
 - **Divergence check.** The chain makes divergence detectable in one comparison: two nodes agree on everything up to index i if and only if their `chain` values at i match. It is used in sync (§6.7), in split-brain heal (§7.5) and in the debug endpoint.
 - **Not a security mechanism.** Security comes from `validate()` (§6.3) and the keyholder signatures that authority events carry (RFC-0034 §8.3).
 
