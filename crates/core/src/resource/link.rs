@@ -86,10 +86,9 @@ impl LinkCaps {
     }
 }
 
-/// A hop that the runtime fallback moved off its planned transport (RFC-0031 §3, note of
-/// 2026-10-23): the data RFC-0033 §7.1's `DegradeDetail::Demoted` carries. The runner reports it
-/// with the new transport's cost in the command channel's `LinkDemoted` (RFC-0001 §3.5). Owner:
-/// RFC-0031.
+/// A hop moved off its transport (RFC-0031 §3, note of 2026-10-23): the data RFC-0033 §7.1's
+/// `DegradeDetail::Demoted` carries. The runner reports it, with its [`DemotionCause`] and the new
+/// transport's cost, in the command channel's `EdgeDemoted` (RFC-0001 §3.5). Owner: RFC-0031.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Demotion {
     /// The hop's link.
@@ -98,6 +97,18 @@ pub struct Demotion {
     pub from: TransportKind,
     /// The transport the hop connected on.
     pub to: TransportKind,
+}
+
+/// Why a hop moved off its transport: the `cause` of the command channel's `EdgeDemoted` and of
+/// RFC-0033 §11's `ReportEdgeDemoted`. Owner: RFC-0031.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DemotionCause {
+    /// The planned transport did not connect within `link.connect_timeout`, so the hop connected
+    /// on the next candidate (RFC-0031 §3).
+    ConnectFailed,
+    /// The transport faulted 3 times within 60 s (RFC-0031 §7.4, ADR-0011 item 7).
+    RepeatedFaults,
 }
 
 /// λ on Wi-Fi links and on relayed QUIC, in latency mode: the default of `link.p99_weight` there
@@ -113,10 +124,15 @@ pub const P99_WEIGHT: f64 = 0.25;
 /// 32 KiB F32 decode frame].
 pub const SOFTWARE_PATH_IP: Nanos = Nanos(25_000);
 
-/// RFC-0031 §3's z on `Rdma` and `SharedMemory` until an L2 probe gives `alpha_eff` [estimate:
-/// the upper end of RFC-0031 §Performance's ≈12–20 µs for RDMA, which has no decrypt copy; shared
-/// memory's software path has the same steps].
-pub const SOFTWARE_PATH_DIRECT: Nanos = Nanos(20_000);
+/// RFC-0031 §3's z on `Rdma` until an L2 probe gives `alpha_eff` [estimate: the upper end of
+/// RFC-0031 §Performance's ≈12–20 µs, for a 32 KiB F32 decode frame].
+pub const SOFTWARE_PATH_RDMA: Nanos = Nanos(20_000);
+
+/// RFC-0031 §3's z on `SharedMemory` until an L2 probe gives `alpha_eff` [estimate: RFC-0031
+/// §Performance gives no z for it; its per-hop table's shared-memory hop of ≈5–10 µs, less α of
+/// ≈1–5 µs and S/β of ≈3 µs, leaves ≈1–2 µs. The same subtraction on its RDMA and 10 GbE rows
+/// gives ≈12–22 µs and ≈17–22 µs, matching their z ranges].
+pub const SOFTWARE_PATH_SHARED_MEMORY: Nanos = Nanos(2_000);
 
 /// λ, the weight of a link's p99 in its cost (RFC-0031 §3). In latency mode it is
 /// `link.p99_weight`, `configured`, and by default [`P99_WEIGHT_TAIL_HEAVY`] on a Wi-Fi link or
@@ -139,15 +155,16 @@ pub fn p99_weight(caps: &LinkCaps, objective: &Objective, configured: Option<f64
 
 /// RFC-0031 §3's z_t: the backend's software path at the two ends. Where an L2 probe exists it is
 /// `alpha_eff − α_p50`, at 0 when `alpha_eff` is the smaller. Otherwise it is the transport's
-/// default, [`SOFTWARE_PATH_IP`] or [`SOFTWARE_PATH_DIRECT`], which does not scale with the frame
-/// size.
+/// default, [`SOFTWARE_PATH_IP`], [`SOFTWARE_PATH_RDMA`] or [`SOFTWARE_PATH_SHARED_MEMORY`],
+/// which does not scale with the frame size.
 #[must_use]
 pub fn software_path(caps: &LinkCaps) -> Nanos {
     match caps.alpha_eff {
         Some(eff) => Nanos(eff.p50.0.saturating_sub(caps.alpha.p50.0)),
         None => match caps.transport {
             TransportKind::Quic | TransportKind::Tcp | TransportKind::QuicRelay => SOFTWARE_PATH_IP,
-            TransportKind::Rdma(_) | TransportKind::SharedMemory => SOFTWARE_PATH_DIRECT,
+            TransportKind::Rdma(_) => SOFTWARE_PATH_RDMA,
+            TransportKind::SharedMemory => SOFTWARE_PATH_SHARED_MEMORY,
         },
     }
 }
@@ -336,10 +353,10 @@ mod tests {
             NetMedium::Rdma(RdmaKind::Thunderbolt5),
             TransportKind::Rdma(RdmaKind::Thunderbolt5),
         );
-        assert_eq!(software_path(&rdma), SOFTWARE_PATH_DIRECT);
+        assert_eq!(software_path(&rdma), Nanos(20_000));
         assert_eq!(
             software_path(&caps(NetMedium::Loopback, TransportKind::SharedMemory)),
-            SOFTWARE_PATH_DIRECT
+            Nanos(2_000)
         );
         for ip in [
             TransportKind::Quic,

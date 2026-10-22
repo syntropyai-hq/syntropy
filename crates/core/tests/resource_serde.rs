@@ -876,6 +876,13 @@ fn link_caps() -> impl Strategy<Value = LinkCaps> {
         })
 }
 
+fn demotion_cause() -> impl Strategy<Value = DemotionCause> {
+    prop_oneof![
+        Just(DemotionCause::ConnectFailed),
+        Just(DemotionCause::RepeatedFaults),
+    ]
+}
+
 fn demotion() -> impl Strategy<Value = Demotion> {
     (link_id(), transport_kind(), transport_kind()).prop_map(|(edge, from, to)| Demotion {
         edge,
@@ -1392,6 +1399,7 @@ round_trip_tests! {
     rt_link_info: link_info();
     rt_link_caps: link_caps();
     rt_demotion: demotion();
+    rt_demotion_cause: demotion_cause();
     rt_iface_info: iface_info();
     rt_iface_flags: iface_flags();
     rt_ip_net: ip_net();
