@@ -302,6 +302,7 @@ mod tests {
                 "spdx",
                 "third-party",
                 "notices",
+                "scenarios",
             ]
         );
         for pending in lint.pending {
