@@ -16,12 +16,16 @@
 //!   `CLOCK_MONOTONIC`, `mach_absolute_time` and `QueryUnbiasedInterruptTime`. RFC-0030 §5.8's
 //!   shell compares the two to detect a suspend, without an OS call of its own.
 //! - [`OsEntropy`] fills buffers from the OS CSPRNG. Key material always comes from it (rule T2).
+//! - [`SystemTicks`] is the production [`TickSource`] for hot-thread timing in `exec` and `obs`:
+//!   the invariant TSC on x86-64, CNTVCT_EL0 on arm64, or the OS monotonic counter where neither
+//!   is usable (RFC-0060 §2.1, note of 2026-10-22).
 //!
 //! Every `unsafe` block carries a `// SAFETY:` comment with its invariant (ADR-0001 item 4).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use syntropy_core::{Clock, Entropy, MonoTime, Nanos};
+use syntropy_core::{Clock, DeviceClockSync, Entropy, MonoTime, Nanos, TickRate, TickSource};
 
 /// The production [`Clock`]: monotonic nanoseconds that include time the host spent suspended,
 /// and the wall clock from [`SystemTime`].
@@ -90,6 +94,232 @@ impl Entropy for OsEntropy {
         if let Err(error) = getrandom::fill(buf) {
             panic!("the OS random source failed: {error}");
         }
+    }
+}
+
+/// The counter a [`SystemTicks`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TickCounter {
+    /// The x86-64 time-stamp counter, used when CPUID reports it invariant: constant rate, and
+    /// running in every power state but suspend.
+    Tsc,
+    /// The arm64 virtual counter, CNTVCT_EL0, at CNTFRQ_EL0.
+    Cntvct,
+    /// The OS monotonic counter, through `std::time::Instant`, in nanoseconds since the process
+    /// first read it. It is used where neither hardware counter is usable.
+    OsMonotonic,
+}
+
+/// The production [`TickSource`] (RFC-0060 §2.1 rule T1).
+///
+/// [`SystemTicks::new`] picks the counter once per process and finds its rate:
+/// - the invariant TSC on x86-64, calibrated against [`SystemClock`] over
+///   [`TSC_CALIBRATION`] at first use;
+/// - CNTVCT_EL0 on arm64, at the rate CNTFRQ_EL0 reports, or calibrated the same way when it
+///   reports none;
+/// - otherwise the OS monotonic counter, which already counts nanoseconds.
+///
+/// [`TickSource::now`] reads [`SystemClock`] itself, so it is on the `Clock` timeline exactly and
+/// counts suspended time. Mapping ticks onto that timeline through an offset that is re-sampled
+/// after every resume is QUAL-E3-T16's. Clones share the calibration, and the source holds no
+/// lock and allocates nothing after the first `new`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SystemTicks {
+    counter: TickCounter,
+    rate: TickRate,
+}
+
+/// How long [`SystemTicks::new`] spends calibrating a counter whose rate it cannot read, once
+/// per process: 20 ms keeps the rate within about 10 parts per million when each clock read is
+/// accurate to 100 ns [derivation: 2 × 100 ns / 20 ms].
+pub const TSC_CALIBRATION: Nanos = Nanos(20_000_000);
+
+impl SystemTicks {
+    /// The process's tick source. The first call picks the counter and finds its rate, which
+    /// can take [`TSC_CALIBRATION`]; later calls return the same source.
+    #[must_use]
+    pub fn new() -> SystemTicks {
+        static SOURCE: OnceLock<SystemTicks> = OnceLock::new();
+        *SOURCE.get_or_init(SystemTicks::pick)
+    }
+
+    /// The counter this source reads.
+    #[must_use]
+    pub fn counter(&self) -> TickCounter {
+        self.counter
+    }
+
+    /// The counter's rate.
+    #[must_use]
+    pub fn rate(&self) -> TickRate {
+        self.rate
+    }
+
+    fn pick() -> SystemTicks {
+        if let Some(source) = counter::hardware() {
+            return source;
+        }
+        os_monotonic_base();
+        SystemTicks {
+            counter: TickCounter::OsMonotonic,
+            rate: TickRate::NANOS,
+        }
+    }
+}
+
+impl Default for SystemTicks {
+    fn default() -> SystemTicks {
+        SystemTicks::new()
+    }
+}
+
+impl TickSource for SystemTicks {
+    #[inline]
+    fn ticks(&self) -> u64 {
+        match self.counter {
+            TickCounter::Tsc | TickCounter::Cntvct => counter::read(),
+            TickCounter::OsMonotonic => os_monotonic_ticks(),
+        }
+    }
+
+    #[inline]
+    fn ticks_to_nanos(&self, ticks: u64) -> Nanos {
+        self.rate.ticks_to_nanos(ticks)
+    }
+
+    fn now(&self) -> MonoTime {
+        SystemClock.now()
+    }
+
+    fn device_to_ticks(&self, device_ts: u64, sync: &DeviceClockSync) -> u64 {
+        sync.to_ticks(device_ts, self.rate.hz())
+    }
+}
+
+/// The origin of [`TickCounter::OsMonotonic`]: the first reading in this process.
+fn os_monotonic_base() -> Instant {
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    *BASE.get_or_init(Instant::now)
+}
+
+fn os_monotonic_ticks() -> u64 {
+    u64::try_from(os_monotonic_base().elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// The rate of `read`, measured against [`SystemClock`] over [`TSC_CALIBRATION`], or `None` if
+/// the counter did not advance.
+fn calibrate(read: fn() -> u64) -> Option<TickRate> {
+    let clock = SystemClock;
+    let start = clock.now();
+    let first = read();
+    let mut end = clock.now();
+    while end.saturating_duration_since(start) < TSC_CALIBRATION {
+        end = clock.now();
+    }
+    let last = read();
+    let elapsed = end.saturating_duration_since(start).0;
+    let ticks = last.checked_sub(first)?;
+    let hz = u128::from(ticks) * 1_000_000_000 / u128::from(elapsed.max(1));
+    TickRate::from_hz(u64::try_from(hz).ok()?)
+}
+
+#[cfg(target_arch = "x86_64")]
+mod counter {
+    use std::arch::x86_64::{__cpuid, _rdtsc};
+
+    use super::{SystemTicks, TickCounter, calibrate};
+
+    /// The extended CPUID leaf that holds the invariant-TSC bit, and the bit (EDX bit 8).
+    const POWER_LEAF: u32 = 0x8000_0007;
+    const INVARIANT_TSC: u32 = 1 << 8;
+
+    /// Whether CPUID reports an invariant TSC.
+    fn invariant_tsc() -> bool {
+        let max_extended = __cpuid(0x8000_0000).eax;
+        max_extended >= POWER_LEAF && __cpuid(POWER_LEAF).edx & INVARIANT_TSC != 0
+    }
+
+    /// The TSC, if it is invariant, with its calibrated rate.
+    pub(super) fn hardware() -> Option<SystemTicks> {
+        if !invariant_tsc() {
+            return None;
+        }
+        Some(SystemTicks {
+            counter: TickCounter::Tsc,
+            rate: calibrate(read)?,
+        })
+    }
+
+    #[inline]
+    pub(super) fn read() -> u64 {
+        // SAFETY: RDTSC needs no CPU feature beyond x86-64's baseline, reads only the
+        // time-stamp counter into registers, and touches no memory. `hardware` picks this
+        // counter only when CPUID reports it invariant.
+        unsafe { _rdtsc() }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod counter {
+    use std::arch::asm;
+
+    use syntropy_core::TickRate;
+
+    use super::{SystemTicks, TickCounter, calibrate};
+
+    /// CNTVCT_EL0, with its rate from CNTFRQ_EL0, or calibrated if that reads 0.
+    pub(super) fn hardware() -> Option<SystemTicks> {
+        let rate = match TickRate::from_hz(frequency()) {
+            Some(rate) => rate,
+            None => calibrate(read)?,
+        };
+        Some(SystemTicks {
+            counter: TickCounter::Cntvct,
+            rate,
+        })
+    }
+
+    /// CNTFRQ_EL0: the rate of the system counter that CNTVCT_EL0 reads.
+    fn frequency() -> u64 {
+        let hz: u64;
+        // SAFETY: CNTFRQ_EL0 is readable at EL0 on every OS Syntropy supports (Linux, Android,
+        // macOS, iOS and Windows enable user access to the generic timer), the instruction only
+        // writes the output register, and it touches no memory or flags.
+        unsafe {
+            asm!("mrs {hz}, cntfrq_el0", hz = out(reg) hz, options(nomem, nostack, preserves_flags));
+        }
+        hz
+    }
+
+    #[inline]
+    pub(super) fn read() -> u64 {
+        let ticks: u64;
+        // SAFETY: as in `frequency`, CNTVCT_EL0 is readable at EL0 on every supported OS. The
+        // `isb` keeps the read from being taken ahead of earlier instructions. Neither
+        // instruction touches memory or flags.
+        unsafe {
+            asm!(
+                "isb",
+                "mrs {ticks}, cntvct_el0",
+                ticks = out(reg) ticks,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        ticks
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+mod counter {
+    use super::SystemTicks;
+
+    /// No hardware counter on this architecture; the OS monotonic counter is used.
+    pub(super) fn hardware() -> Option<SystemTicks> {
+        None
+    }
+
+    pub(super) fn read() -> u64 {
+        unreachable!("SystemTicks reads a hardware counter only when one was picked")
     }
 }
 
@@ -389,6 +619,81 @@ mod tests {
             unsafe { QueryInterruptTime(&mut units) };
             units * 100
         }
+    }
+
+    /// The criterion "the production `now` never goes backwards over 10⁶ reads".
+    #[test]
+    fn system_ticks_now_never_goes_backwards() {
+        let ticks = SystemTicks::new();
+        let mut last = ticks.now();
+        for _ in 0..CALLS {
+            let next = ticks.now();
+            assert!(next >= last, "now went back from {last:?} to {next:?}");
+            last = next;
+        }
+    }
+
+    /// `now` is on the `Clock` timeline: between two `SystemClock` readings.
+    #[test]
+    fn system_ticks_now_is_the_clock_timeline() {
+        let ticks = SystemTicks::new();
+        for _ in 0..1_000 {
+            let before = SystemClock.now();
+            let now = ticks.now();
+            let after = SystemClock.now();
+            assert!(
+                before <= now && now <= after,
+                "{before:?} <= {now:?} <= {after:?}"
+            );
+        }
+    }
+
+    /// The counter is the one the platform should have, and a duration in ticks agrees with
+    /// the same duration on `SystemClock` within 0.5%.
+    #[test]
+    fn system_ticks_measure_durations_at_the_clock_rate() {
+        let ticks = SystemTicks::new();
+        assert_eq!(SystemTicks::new(), ticks, "one calibration per process");
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(ticks.counter(), TickCounter::Cntvct);
+        #[cfg(target_arch = "x86_64")]
+        assert!(matches!(
+            ticks.counter(),
+            TickCounter::Tsc | TickCounter::OsMonotonic
+        ));
+        let clock = SystemClock;
+        let start = clock.now();
+        let first = ticks.ticks();
+        let mut end = clock.now();
+        while end.saturating_duration_since(start) < Nanos(50_000_000) {
+            end = clock.now();
+        }
+        let last = ticks.ticks();
+        let by_clock = end.saturating_duration_since(start).0;
+        let by_ticks = ticks.ticks_to_nanos(last - first).0;
+        assert!(
+            by_ticks.abs_diff(by_clock) <= by_clock / 200,
+            "{:?} at {} Hz: {by_ticks} ns by ticks, {by_clock} ns by the clock",
+            ticks.counter(),
+            ticks.rate().hz()
+        );
+    }
+
+    #[test]
+    fn system_ticks_map_device_timestamps_at_their_rate() {
+        let ticks = SystemTicks::new();
+        let hz = ticks.rate().hz();
+        let sync = DeviceClockSync {
+            device_ts: 1_000,
+            host_ticks: 5_000_000,
+            device_hz: 1_000_000_000,
+        };
+        // One device nanosecond later is one host nanosecond of ticks later.
+        assert_eq!(
+            ticks.device_to_ticks(1_000 + 1_000_000_000, &sync),
+            5_000_000 + hz
+        );
+        assert_eq!(ticks.device_to_ticks(1_000, &sync), 5_000_000);
     }
 
     #[test]
