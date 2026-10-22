@@ -156,7 +156,7 @@ paths = ["docs/**", "plan/**", "*.md"]
   - `scenarios` checks the vision's §7, RFC-0061 §4.2 and the epics;
   - a new `plan` step runs the plan tools: `epics.py`, `depcheck.py`, and `deps_report.py`, `trace.py` and `roadmap.py` with `--check`. Before this, no hosted job ran the task-graph check.
   A hosted test may read a file outside its crate only when `inputs` lists that file, or when the test checks only what a `lint` step also checks. Otherwise a plan-only PR could break it unseen.
-- **The hardware rule.** `hw-cuda-ada` takes the paths of the excerpt's `hw-cuda`, its row's list.
+- **The hardware rule.** `hw-cuda-ada` takes the paths of the excerpt's `hw-cuda`, its row's list, and `numerics/**`, the tolerance tables `kernels` embeds and the op conformance checks run against (ADR-0019), so a change to a ceiling alone requires the rig.
   - Each module is named in both forms, `<name>.rs` and `<name>/**`, because `testkit`'s reference executor is the single file `refexec.rs`.
   - QUAL-E2-T08 adds the other Tier 1 rigs' jobs with their own rules. Each job is named by its status context, `hw/<job>`, so the excerpt's `hw-cuda` and `hw-metal` groups become per-rig jobs.
   - `lock_deps` stays empty until the CUDA and ggml bindings crates exist.

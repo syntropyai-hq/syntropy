@@ -86,8 +86,8 @@ when = "closure"
 planned = "QUAL-E5-T06"
 
 # Op conformance, parity smoke and the `pr-quick` bench on R-ADA (RFC-0062 §2.3). The paths are
-# RFC-0062 §2.2's, from ADR-0019 §9 and ADR-0020. QUAL-E2-T08 adds the other Tier 1 rigs' jobs
-# with their own rules.
+# RFC-0062 §2.2's, from ADR-0019 §9 and ADR-0020, and the tolerance tables (note 2026-10-23).
+# QUAL-E2-T08 adds the other Tier 1 rigs' jobs with their own rules.
 [job.hw-cuda-ada]
 runner = "lab"
 when = "direct"
@@ -111,6 +111,9 @@ paths = [
     "crates/testkit/src/parity/**",
     "crates/testkit/src/conformance.rs",
     "crates/testkit/src/conformance/**",
+    # The tolerance tables `kernels` embeds, which the op conformance checks run against
+    # (ADR-0019).
+    "numerics/**",
     "third_party/ggml/**",
     "ci/images/cuda*/**",
     "rust-toolchain.toml",

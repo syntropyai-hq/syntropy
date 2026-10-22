@@ -27,7 +27,7 @@ Hardware runners are owned lab machines (ADR-0610). Those machines are bare meta
    - Rigs never compile. They are wiped and inventory-checked between jobs.
    - Nightly and weekly work is a chain of jobs of at most 60 minutes, with one queued chunk per rig, and PR† jobs take at most 20.
 3. **Triggers.**
-   - `cargo xtask ci changes` computes the affected-job set. It uses the crate-graph closure for hosted jobs and direct path rules for hardware jobs, output as `hw_required`. The rules cover `kernels` and every `kernels-*` crate, `exec`, `sched`, `tier`, `io`, `net`, `graph`, the census and KV modules, the reference and parity modules of `testkit`, the vendored ggml and `rust-toolchain.toml` (revised 2026-10-22), as RFC-0062 §2.2 lists them.
+   - `cargo xtask ci changes` computes the affected-job set. It uses the crate-graph closure for hosted jobs and direct path rules for hardware jobs, output as `hw_required`. The rules cover `kernels` and every `kernels-*` crate, `exec`, `sched`, `tier`, `io`, `net`, `graph`, the census and KV modules, the reference and parity modules of `testkit`, the vendored ggml and `rust-toolchain.toml` (revised 2026-10-22), and the tolerance tables under `numerics/` (revised 2026-10-23), as RFC-0062 §2.2 lists them.
    - A single required check, `ci-gate`, aggregates the conditional jobs. Skipped hosted jobs pass; failed or cancelled jobs fail. Its hardware clause depends on the event (revised 2026-10-19; RFC-0062 §2.5):
      - on `pull_request`, a job in `hw_required` without a passing `hw/<job>` status on the PR head fails the gate, including for fork PRs. Until a job's rig runs it, a same-repository PR is not held for that job; a fork PR still is (revised 2026-10-23);
      - on `merge_group`, the gate evaluates hosted jobs only, plus the statuses of any member a maintainer labelled `hw:queue` (decision 5), so an unlabelled batch never waits for a rig;
@@ -69,6 +69,7 @@ Hardware runners are owned lab machines (ADR-0610). Those machines are bare meta
 - GitHub offers per-workflow runner-group restrictions on the organisation's plan. Then add them, and keep the random per-run label anyway.
 
 ## Revisions
+- Revised 2026-10-23: decision 3's direct hardware paths gain `numerics/`. `kernels` embeds the tolerance tables there, and the op conformance a hardware job runs checks against them, so a change to a ceiling alone needs the rig as a kernel change does (ADR-0019).
 - Revised 2026-10-23: decision 3's `pull_request` clause gains an interim for same-repository PRs.
   - **The rule.** While a hardware job's rig and its `lab.yml` job do not exist, `ci/jobs.toml` marks the job `planned` with the task that brings it. `ci-gate` then does not hold a same-repository PR for it, and the summary names the task.
   - **Fork PRs are unchanged.** They wait for every job in `hw_required`, as decision 4 requires.

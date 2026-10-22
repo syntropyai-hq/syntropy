@@ -15,7 +15,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:b5eb0a37f9ff4f6b"
+jobs_toml = "fnv1a:e33d3e3797b93150"
 
 [[golden]]
 name = "plan only"
@@ -437,3 +437,11 @@ paths = [
 jobs = ["build", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "tolerance tables only"
+source = "constructed: a change to the release tolerance table alone, which `kernels` embeds and the op conformance checks run against"
+paths = ["numerics/tolerances-v1.toml"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
