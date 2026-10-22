@@ -9,24 +9,35 @@
 //! either the consumer's second check sees the push, or the producer sees the flag and wakes the
 //! consumer. The producer clears the flag when it wakes the consumer, so a busy ring, whose
 //! consumer is not waiting, makes no system call.
+//!
+//! Under `--cfg loom` only the handshake is built, [`Consumer::arm`], with loom's atomics and a
+//! [`Waker`](crate::ring::Waker) that counts its wake-ups, so loom's model checker explores the
+//! two fences (`ring::tests`). Parking a thread and the wake handle are left out of that build.
 
+#[cfg(not(loom))]
 use std::sync::OnceLock;
+#[cfg(not(loom))]
 use std::thread::{self, Thread};
+#[cfg(not(loom))]
 use std::time::{Duration, Instant};
 
 use crate::ring::Consumer;
 use crate::sync::{Ordering, fence};
 
 /// How long a hot consumer spins before it parks, by default: 50 µs (ADR-0012 item 5).
+#[cfg(not(loom))]
 pub const SPIN_DEFAULT: Duration = Duration::from_micros(50);
 
 /// How long a hot consumer spins before it parks on battery power: 10 µs (ADR-0012 item 5).
+#[cfg(not(loom))]
 pub const SPIN_ON_BATTERY: Duration = Duration::from_micros(10);
 
 /// Spins between two reads of the clock while spinning, so the clock costs little.
+#[cfg(not(loom))]
 const SPINS_PER_CLOCK_READ: u32 = 64;
 
 /// Who a producer wakes when the consumer is waiting.
+#[cfg(not(loom))]
 #[derive(Debug, Default)]
 pub(crate) struct Waker {
     /// The thread that waits in [`Consumer::wait`], once it has.
@@ -42,6 +53,7 @@ pub(crate) struct Waker {
     pub(crate) handle: Option<crate::wake::WakeHandle>,
 }
 
+#[cfg(not(loom))]
 impl Waker {
     /// A waker that also signals `handle`.
     #[cfg(any(
@@ -87,6 +99,7 @@ pub enum Arm {
     Waiting,
 }
 
+#[cfg(not(loom))]
 impl<T> Consumer<T> {
     /// Waits until a value is ready to pop or the producer is gone: spins for `spin`, then parks
     /// this thread until the producer wakes it (ADR-0012 item 5). Returns at once if a value is
@@ -144,7 +157,9 @@ impl<T> Consumer<T> {
             }
         }
     }
+}
 
+impl<T> Consumer<T> {
     /// Starts a wait for a consumer that sleeps elsewhere, such as on its ring's
     /// [`WakeHandle`](crate::WakeHandle) in an async runtime. Returns [`Arm::Ready`] if a value is
     /// ready or the producer is gone, and [`Arm::Waiting`] if the producer's next push or close
