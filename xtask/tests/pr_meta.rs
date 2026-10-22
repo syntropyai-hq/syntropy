@@ -11,7 +11,9 @@ const WORKFLOW: &str = include_str!("../../.github/workflows/pr-meta.yml");
 const STALE_BASE: &str = include_str!("fixtures/pr_meta/stale-base.yml");
 
 /// The jobs of a workflow: each key two spaces in under `jobs:`, with the lines that follow it.
+/// Line endings are normalised first: a Windows checkout has CRLF.
 fn jobs(workflow: &str) -> Vec<(String, String)> {
+    let workflow = workflow.replace("\r\n", "\n");
     let start = workflow.find("\njobs:\n").expect("a `jobs:` section") + "\njobs:\n".len();
     let mut jobs: Vec<(String, String)> = Vec::new();
     for line in workflow[start..].lines() {
