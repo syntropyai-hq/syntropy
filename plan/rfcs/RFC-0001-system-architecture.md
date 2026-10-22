@@ -1104,9 +1104,9 @@ pub trait KernelProvider: Send + Sync {
     /// Checks for sticky device errors. A sticky error fails the runner with class Device.
     fn health(&self, ctx: &DeviceCtx) -> DeviceHealth;
 
-    // Added by RFC-0040 §2.1, which gives their full signatures. All but `poll` and
-    // `synchronize` have default bodies (Unsupported, None or a no-op); those two have none,
-    // because every backend implements them.
+    // Added by RFC-0040 §2.1, which gives their full signatures. All but `build`, `domain`,
+    // `poll` and `synchronize` have default bodies (Unsupported, None or a no-op); those four
+    // have none, because every backend implements them (corrected 2026-10-23, §18.32).
     // build() -> ProviderBuild           build identity; part of every selection-cache key
     // domain() -> MemoryDomain           providers that share buffers, streams and events
     // memory_info(ctx)                   free and budgeted memory now; never on a hot path
@@ -1326,6 +1326,10 @@ The head forwards `SequenceOpen` metadata (`SequenceMeta`: every field except th
 - **`SequenceMeta`** holds every `SequenceOpen` field but the prompt, `trace` and `prefix_scope` included, which RFC-0032 §3.6's listing leaves out.
 - **`net`'s view and the tap block.** `net`'s `TokenEntryView` converts to and from `TokenEntry` for every field but `tap`. The tap block travels as bytes until its codec exists (DIST-E8-T06, M2), and `TokenEntry::tap` is the typed `LogitTap`, so `net` refuses a non-empty tap block either way with a classified `Unsupported` error. M0 loses nothing: PLC-E9-T16's parity taps travel in-process on the `local_tokens` ring as `core` types, never through `net`'s codec.
 - **Field types.** `TokenSlice` is the prompt's owned token IDs. `PrefixKey` and `TailId` are RFC-0022 §7.1's and §7.2's, as plain newtypes in `core`, since `core` cannot name a `tier` type. `GrammarRef` is the BLAKE3 of a compiled grammar. `PoolingMode` is `LastToken`, `Mean` or `Cls`. `PrefixScope` is amendment A7's.
+
+*Note 2026-10-23 (DIST-E8-T05): `Reconcile`, and the prompt's binary form.*
+- **`SequenceControl::Reconcile { seq, emitted: u32, rng_counter: u64, recent: SmallVec<[u32; 8]> }`** is the sixth variant, as RFC-0033 §11 lists it: ingress tells the head what the client has seen of a sequence during recovery (RFC-0033 §4.2). `recent` holds the last emitted tokens, up to 8, in the order they were emitted.
+- **`TokenSlice`'s serde form depends on the format.** A human-readable format such as JSON gets an array of the IDs. A binary one gets a byte string of the IDs as little-endian `u32`s, so a prompt takes 4 bytes a token whatever its IDs, as RFC-0031 §6.6 requires of the `SeqControl` body. That covers CBOR, the IPC's postcard and `canon`. A byte string whose length is not a multiple of 4 is refused. No canonical digest covers a prompt, so no digest changes.
 
 ### 5.9 Sessions, sequences and KV
 
@@ -1552,7 +1556,7 @@ pub struct Error {
     pub scope: ErrorScope,                      // Sequence(SequenceId) | Stage(StageIx) | Runner
                                                 // | Node(NodeId) | Link(LinkId) | Instance | Cluster
     pub retry: RetryHint,                       // Never | After(Nanos) | OnNewPlan | Backoff
-    pub context: SmallVec<[(&'static str, String); 4]>,
+    pub context: SmallVec<[(Cow<'static, str>, String); 4]>, // Cow since 2026-10-23 (§18.32)
     pub source: Option<Box<Error>>,
 }
 
@@ -2899,3 +2903,12 @@ DIST-E10-T10 model-checked OQ-NET-34's option (a), which was settled under the m
 | Change | Sections touched | Reason |
 |---|---|---|
 | `PrefixRef` and its `PrefixKey` and `TailId`, and `GrammarRef`, are `core` types in `core::sequence`. `TailId` was one of TIER-E6-T02's supporting types, listed in RFC-0022's KV listing; TIER-E6-T02 and TIER-E7-T01 now use `core`'s, and PROD-E3-T05 uses `core`'s `GrammarRef`. `LogprobBlock { k: 0 }` is the chosen tokens' logprobs alone, which `net` cannot encode until OQ-NET-35 settles. `TokenEntry::rng_counter` has no serde default | §5.8 (dated notes of 2026-10-23), §5.13; RFC-0022 §7.1, §7.2; RFC-0031 §6.5 (dated notes); RFC-0050 §3.1 (dated note) | DIST-E1-T14 builds `SequenceOpen` and `SamplingParams`, which hold these types, and `core` cannot name a type of `tier` or `api` (review-1493's N5 on #1780). For the maintainers to confirm |
+
+### 18.32 Default bodies in §5.7, and owned names in `Error` (2026-10-23)
+
+From issue #1525, the review of COMP-E1-T01.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| §5.7's comment says that `build`, `domain`, `poll` and `synchronize` have no default bodies | §5.7 | RFC-0040 §2.1, which §5.7 defers to, gives `build` and `domain` no body; the comment named only `poll` and `synchronize` |
+| `Error::context`'s keys are `Cow<'static, str>`, not `&'static str` | §5.12 | `Error` crosses the IPC in `ErrorReport` (§3.5), and decoding a `&'static str` needs a buffer that lives for the whole program, so every decode would leak one. Code still writes literal keys without allocating. RFC-0040 §2.2 makes the same change to `ProviderId` and `ProviderBuild` (note of the same date) |
