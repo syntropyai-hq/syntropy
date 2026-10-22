@@ -78,6 +78,7 @@ pub const ACK_TIMEOUTS_TO_FAULT: u32 = 3;
 const MAX_PING_REPLIES: usize = 4;
 
 /// The longest wait between a stalled sender's credit probes, in ack timeouts; a power of 2.
+/// 64 \[target\]: a chosen budget, with the 1, 2, 4, … backoff, not a measured figure.
 pub const PROBE_BACKOFF_MAX: u64 = 64;
 
 /// One-way α samples the core keeps for its p99 estimate.
