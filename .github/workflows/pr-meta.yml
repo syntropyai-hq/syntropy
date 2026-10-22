@@ -168,6 +168,13 @@ jobs:
       - name: Check that the base is the head's first parent
         if: github.event_name != 'merge_group'
         run: test "$(git -C pr rev-parse HEAD^1)" = "$(git rev-parse HEAD)"
+      # And that the head is this PR's merge: its second parent is the PR's head commit. A merge
+      # commit without a second parent fails here too.
+      - name: Check that the head's second parent is the PR's head commit
+        if: github.event_name != 'merge_group'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git -C pr rev-parse HEAD^2)" = "$HEAD_SHA"
       # No cache, as in `dco`.
       - if: github.event_name != 'merge_group'
         uses: ./.github/actions/setup-rust

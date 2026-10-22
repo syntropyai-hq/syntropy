@@ -100,6 +100,11 @@ fn problems(job: &str) -> Vec<&'static str> {
     if !job.contains(r#"test "$(git -C pr rev-parse HEAD^1)" = "$(git rev-parse HEAD)""#) {
         problems.push("does not check that the base is the head's first parent");
     }
+    if !(job.contains(r#"test "$(git -C pr rev-parse HEAD^2)" = "$HEAD_SHA""#)
+        && job.contains("HEAD_SHA: ${{ github.event.pull_request.head.sha }}"))
+    {
+        problems.push("does not check that the head's second parent is the PR's head commit");
+    }
     // A merge group has no PR merge commit to pair: the job passes it in its own step, and every
     // step that checks out, moves or checks the pair is skipped there.
     let pairing = steps.iter().filter(|step| {
@@ -181,6 +186,7 @@ fn a_pairing_step_without_the_merge_group_guard_is_caught() {
         "run: git checkout --detach --quiet HEAD^1",
         "path: pr",
         r#"test "$(git -C pr rev-parse HEAD^1)""#,
+        r#"test "$(git -C pr rev-parse HEAD^2)""#,
     ] {
         let mut mutated = steps.clone();
         let at = step_with(&steps, text);
