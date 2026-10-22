@@ -176,6 +176,24 @@ pub struct DeviceClockSync { pub device_ts: u64, pub host_ticks: u64, pub device
   - **The solver's wall-clock safety limit** is disabled in the simulator, where only its count-based work limits apply (ADR-0101). A firing of the wall-clock limit is a simulator failure.
 - **Rule T2.** Key material (`NodeId` secrets, invite tokens, session IDs in production) always comes from `OsEntropy`. The simulator substitutes a seeded ChaCha20 stream. That substitution is possible only in `test` builds, because `SimEntropy` exists only in `testkit`.
 - *Revised 2026-10-22 (ADR-0022):* `SystemClock` and `OsEntropy` are `syntropy-io` types, in `syntropy_io::os`, not `syntropy-core` ones. The suspend-aware clocks need an `unsafe` OS call and `OsEntropy` needs `getrandom`, which RFC-0001 §4.2 rules 1 and 8 keep out of `core`. The traits, `MonoTime`, `TickSource` and `DeviceClockSync` stay in `core`. Rules T1 and T2 are unchanged: key material still comes only from `OsEntropy`.
+- *Note, 2026-10-22 (QUAL-E3-T17): the `TickSource` parts, as built.*
+  - **`core`** holds `TickSource` and `DeviceClockSync` as above, and `TickRate`: a counter's rate, with a fixed-point tick-to-nanosecond conversion that rounds to the nearest nanosecond and needs no division. `DeviceClockSync::to_ticks` maps a device timestamp onto a tick timeline of any rate, so every source implements `device_to_ticks` the same way.
+  - **No `dyn`.** The trait requires `Clone`, so `dyn TickSource` does not compile in any crate, `exec` and `obs` included. A compile-fail doctest on the trait shows it.
+  - **The production source** is `SystemTicks` in `syntropy_io::os`, beside `SystemClock`, because reading the counter needs `unsafe`. It picks its counter once per process:
+    - the TSC when CPUID reports it invariant and, on Linux and Android, the kernel's current clocksource is `tsc`;
+    - CNTVCT_EL0 on arm64, at the rate CNTFRQ_EL0 reports;
+    - otherwise the OS monotonic counter through `std::time::Instant`, at 1 GHz.
+  - **Calibration.** The TSC's rate is calibrated over 20 ms against a clock that nothing adjusts, with each end bracketed between two reads of it:
+    - `CLOCK_MONOTONIC_RAW` on Linux and Android;
+    - `mach_absolute_time` on macOS and iOS;
+    - `QueryPerformanceCounter`, through `std::time::Instant`, on Windows.
+  - **Why those clocks.**
+    - **Not `CLOCK_MONOTONIC`,** which `adjtimex` slews by up to 10%. The process keeps the calibration window's slew for life: the review of #1762 measured rates up to 8.5% off on a slewing host.
+    - **Not `SystemClock`,** whose Windows clock advances only at the timer interrupt, up to 15.625 ms at a time. A 20 ms calibration against it was 5% off on a hosted run.
+    - **Suspend-awareness** does not matter over 20 ms.
+  - **When it calibrates.** The first use of `SystemTicks` in a process calibrates, so a binary does it at startup, before a hot thread's first step. `SystemTicks` is `#[non_exhaustive]` with a `const fn new`, so a determinism lint can name its one constructor (#1763).
+  - **`now`** reads `SystemClock`, so it is on the `Clock` timeline exactly and counts suspended time. Deriving it from ticks, through an offset re-sampled after every resume, is QUAL-E3-T16's.
+  - **The test source** is `SimTicks` in `testkit`, which counts a `SimClock`'s virtual time at a rate the test chooses. The device timelines of §8.4 are QUAL-E3-T16's.
 
 #### 2.2 Control-plane protocol logic is sans-I/O
 
