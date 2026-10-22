@@ -28,6 +28,7 @@
 //! [`encode_seq_control`] and [`Frame::seq_control`] write and read the `SeqControl` frame (§6.6,
 //! DIST-E8-T05), whose body is the CBOR of `core`'s `SequenceControl` variant, and
 //! [`encode_seq_meta`] and [`decode_seq_meta`] the `SEQ_META` item's `SequenceMeta`.
+//!
 //! [`EmbeddingResult`] reads and writes the `EmbeddingResult` frame (§6.14), the pooled vector of
 //! an embedding sequence, splits a vector larger than `max_frame` into parts and [`assemble`]s
 //! them, and is written only on a channel that negotiated [`capability::EMBEDDING`].
