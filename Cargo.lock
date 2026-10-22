@@ -3791,6 +3791,10 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-sched"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "syntropy-config",
+]
 
 [[package]]
 name = "syntropy-solver"
