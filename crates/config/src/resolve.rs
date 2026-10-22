@@ -430,12 +430,15 @@ impl ResolvedConfig {
             };
             values.insert(key.path, resolved);
         }
-        Ok(Self {
+        let mut config = Self {
             values,
             proposals: r.proposals.into_values().collect(),
             files: layers.files.iter().map(|f| f.path.clone()).collect(),
             warnings: r.warnings,
-        })
+        };
+        // A `debug.*` key that is on is accepted with a warning (RFC-0054 §7.1, §8 phase 4).
+        config.warnings.extend(crate::debug::warnings(&config));
+        Ok(config)
     }
 
     /// The effective value of the node or cluster key at `path`.
@@ -458,7 +461,8 @@ impl ResolvedConfig {
         &self.files
     }
 
-    /// The warnings found while layering, such as an unknown `SYNTROPY_*` variable.
+    /// The warnings found while layering, such as an unknown `SYNTROPY_*` variable, then one for
+    /// each `debug.*` key that is on ([`crate::DebugSection`]).
     pub fn warnings(&self) -> &[Problem] {
         &self.warnings
     }

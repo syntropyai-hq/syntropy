@@ -15,7 +15,10 @@
 //!   [`ResolvedConfig`], an immutable snapshot whose every value carries its [`Origin`], held
 //!   for readers by [`SharedConfig`];
 //! - the text of `config show --resolved`, `config check` and `config path`
-//!   ([`command`]).
+//!   ([`command`]);
+//! - the debug-key gates of §7.1 ([`DebugSection`]): the three `debug.*` keys, the loopback
+//!   predicate the API applies to the debug endpoints, the warning a [`ResolvedConfig`] carries
+//!   while any key is on, and the predicate for a manifest signed by the CI test key.
 //!
 //! The validation phases of §8, the cluster and instance scopes, and reload come in later
 //! tasks.
@@ -99,6 +102,7 @@
 extern crate self as syntropy_config;
 
 pub mod command;
+mod debug;
 mod default;
 mod discovery;
 mod env;
@@ -110,6 +114,7 @@ mod schema;
 mod text;
 pub mod value;
 
+pub use debug::{DebugApi, DebugSection, ManifestSignerNotAllowed, Peer, is_loopback};
 pub use discovery::{
     CONFIG_FLAG, CONFIG_VAR, Dirs, Explicit, HOME_VAR, Locations, Mode, Os, Runtime, Scan, locate,
     order_dropins,
