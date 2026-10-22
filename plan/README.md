@@ -9,7 +9,7 @@ In one paragraph: Syntropy runs one large language model across every machine yo
 | Path | Contents |
 |---|---|
 | [00-vision-and-scope.md](00-vision-and-scope.md) | The problem, what Syntropy is, users and scenarios, the platform matrix, target models, success criteria SC-1 to SC-32, and what "feature complete" means per milestone |
-| [decisions/](decisions/) | Architecture decision records. ADR-0000 holds the product directives D1–D8, ADR-0001 to ADR-0021 the foundation, and domain ADRs are numbered by area |
+| [decisions/](decisions/) | Architecture decision records. ADR-0000 holds the product directives D1–D8, ADR-0001 to ADR-0022 the foundation, and domain ADRs are numbered by area |
 | [rfcs/](rfcs/) | RFC-0001, the system architecture, and 24 domain RFCs, each specifying one part of the system |
 | [implementation/](implementation/README.md) | The tasks, in six epic files, with the roadmap, dependency report, traceability matrix, risk register and the scripts that check them |
 | [open-questions.md](open-questions.md) | What is still undecided, each item with the task, spike or measurement that settles it, and the questions already settled |
@@ -70,6 +70,7 @@ In one paragraph: Syntropy runs one large language model across every machine yo
 | [0019](decisions/ADR-0019-exactness-contract.md) | Exactness means teacher-forced agreement with a reference at the same quantization, within published tolerances |
 | [0020](decisions/ADR-0020-platform-support-tiers.md) | Platform tiers. Tier 1: Linux and Windows with NVIDIA, macOS on Apple silicon, and CPU-only on all three |
 | [0021](decisions/ADR-0021-development-model-ai-agents-open-source.md) | Open source from the first commit, built by AI agents executing the plan's tasks. Areas are domains, not teams. Gates and an independent review agent review every change, and maintainers approve the sensitive change classes |
+| [0022](decisions/ADR-0022-production-clock-and-entropy-outside-core.md) | `core` keeps the clock and entropy traits as plain types. The production sources, `SystemClock` over the suspend-aware OS clock and `OsEntropy` over `getrandom`, live in `io`, where OS calls and `unsafe` are already allowed |
 
 The other foundational ADRs cover MLX (0004), async and threading (0012), the I/O path (0013), the process model (0015) and weight distribution (0016). Domain ADRs are numbered by area: 01xx placement, 02xx tiers, 03xx distributed, 04xx compute, 05xx product and 06xx quality.
 

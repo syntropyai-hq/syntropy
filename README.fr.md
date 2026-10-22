@@ -172,7 +172,7 @@ Une sortie identique à l'octet près sur des processeurs différents n'est pas 
 | Chemin | Contenu |
 |---|---|
 | [`plan/00-vision-and-scope.md`](plan/00-vision-and-scope.md) | Le problème, les scénarios, la matrice des plateformes, les modèles visés, les critères de succès SC-1 à SC-32 (tous des cibles) et ce que signifie « fonctionnellement complet » |
-| [`plan/decisions/`](plan/decisions/) | Les ADR. ADR-0000 contient les directives produit D1–D8, ADR-0001 à ADR-0021 les fondations, et le reste est numéroté par domaine |
+| [`plan/decisions/`](plan/decisions/) | Les ADR. ADR-0000 contient les directives produit D1–D8, ADR-0001 à ADR-0022 les fondations, et le reste est numéroté par domaine |
 | [`plan/rfcs/`](plan/rfcs/) | RFC-0001, l'architecture du système, et 24 RFC de domaine : placement, niveaux de mémoire, exécution distribuée, calcul, produit et qualité |
 | [`plan/implementation/`](plan/implementation/README.md) | Les tâches, dans six fichiers d'epics, la feuille de route, le rapport de dépendances, la traçabilité, le registre des risques et les scripts qui les vérifient |
 | [`plan/open-questions.md`](plan/open-questions.md) | Ce qui reste à décider, chaque point avec la tâche ou la mesure qui le tranchera |

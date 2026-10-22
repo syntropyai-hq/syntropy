@@ -172,7 +172,7 @@ Syntropy の階層マネージャーがメモリに常駐するすべてのバ�
 | パス | 内容 |
 |---|---|
 | [`plan/00-vision-and-scope.md`](plan/00-vision-and-scope.md) | 解決する課題、シナリオ、プラットフォーム対応表、対象モデル、成功基準 SC-1 から SC-32（すべて目標値）、「機能完成」の定義 |
-| [`plan/decisions/`](plan/decisions/) | ADR。ADR-0000 にプロダクト指針 D1–D8、ADR-0001 から ADR-0021 に基盤となる決定があり、残りは領域ごとに番号が振られています |
+| [`plan/decisions/`](plan/decisions/) | ADR。ADR-0000 にプロダクト指針 D1–D8、ADR-0001 から ADR-0022 に基盤となる決定があり、残りは領域ごとに番号が振られています |
 | [`plan/rfcs/`](plan/rfcs/) | システムアーキテクチャを定める RFC-0001 と、配置、階層、分散実行、計算、プロダクト、品質の各領域を扱う 24 件の RFC |
 | [`plan/implementation/`](plan/implementation/README.md) | 6 つのエピックファイルにまとめたタスク、ロードマップ、依存関係レポート、トレーサビリティ、リスク台帳、そしてそれらを検査するスクリプト |
 | [`plan/open-questions.md`](plan/open-questions.md) | 未決定の事項。各項目に、それを決着させるタスクまたは計測を記載 |

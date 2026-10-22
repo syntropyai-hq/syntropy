@@ -102,60 +102,82 @@ pub struct System {
     pub links: &'static [&'static str],
     /// The one workspace crate allowed to reach it.
     pub only_in: &'static str,
+    /// Whether only a member's own normal or build dependency on a binding counts. Set for a
+    /// system whose binding most crates reach through other packages, such as `getrandom` under
+    /// the TLS stack and test crates: the rule then names the one crate that depends on it
+    /// directly, and a binding reached through another package is not a finding.
+    pub direct_only: bool,
 }
 
 /// Rule 6: one crate per external system. A system with no binding crate listed is not checked
 /// until the task that adopts one lists it here. IoRing and IOCP are calls through the Windows API
 /// crates that the async ecosystem also uses, so a package name cannot single them out, and the
-/// Thunderbolt RDMA API has no binding crate yet.
+/// Thunderbolt RDMA API has no binding crate yet. `getrandom` is checked on direct dependencies
+/// only (RFC-0001 §4.2 rule 6's 2026-10-22 note).
 pub const SYSTEMS: &[System] = &[
     System {
         name: "iroh",
         packages: &["iroh", "iroh-base", "iroh-net", "iroh-relay", "iroh-quinn"],
         links: &[],
         only_in: "net",
+        direct_only: false,
     },
     System {
         name: "ibverbs",
         packages: &["ibverbs", "ibverbs-sys", "rdma-sys"],
         links: &[],
         only_in: "net",
+        direct_only: false,
     },
     System {
         name: "io_uring",
         packages: &["io-uring", "tokio-uring", "glommio", "monoio"],
         links: &[],
         only_in: "io",
+        direct_only: false,
     },
     System {
         name: "HiGHS",
         packages: &["highs", "highs-sys"],
         links: &[],
         only_in: "solver",
+        direct_only: false,
     },
     System {
         name: "ggml",
         packages: &["ggml"],
         links: &["ggml"],
         only_in: "kernels-ggml",
+        direct_only: false,
     },
     System {
         name: "the CUDA runtime",
         packages: &["cudarc", "cust"],
         links: &["cuda"],
         only_in: "kernels-cuda",
+        direct_only: false,
     },
     System {
         name: "Vulkan",
         packages: &["ash", "vulkano"],
         links: &[],
         only_in: "kernels-vulkan",
+        direct_only: false,
     },
     System {
         name: "Metal",
         packages: &["metal", "objc2-metal"],
         links: &[],
         only_in: "kernels-metal",
+        direct_only: false,
+    },
+    // ADR-0022 decision 3: `OsEntropy` in `io` is the one crate that names the OS CSPRNG.
+    System {
+        name: "the OS random source",
+        packages: &["getrandom"],
+        links: &[],
+        only_in: "io",
+        direct_only: true,
     },
 ];
 

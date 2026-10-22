@@ -493,6 +493,8 @@ Laptops sleep, and VMs pause. Two failures follow from that: a waking node decla
 | macOS, iOS | `mach_absolute_time` | `mach_continuous_time` |
 | Windows | `QueryUnbiasedInterruptTime` | `QueryInterruptTime` |
 
+*Note 2026-10-22 (ADR-0022):* both readings come from `syntropy_io::os`. `SystemClock::now` reads the clock that keeps running, and the same module reads the one that stops, so the daemon's shell makes no OS call of its own.
+
 When the running clock advances at least `swim.resume_detect` (5 s) more than the stopped clock between two ticks, the node was suspended. A tick that is late by more than 5 s on *both* clocks, from a VM pause or a starved process, is handled the same way. `SuspendAwareInstant` timestamps every liveness observation with the running clock.
 
 **Resume procedure.**
@@ -1094,7 +1096,7 @@ Both are negligible next to a single decode hop's 16 KiB at tens of tokens per s
 3. **macOS Local Network privacy for a per-user launch agent.** Apple's documentation exempts root daemons. Forum reports show prompts and denials for launch agents and for non-Apple tools launched by them. Whether the prompt is attributed to the signed Syntropy binary, so it appears once and persists, needs a spike on macOS 15 and 26. The spike moves to the start of M1, once a Developer-ID-signed build exists, in one session with RFC-0052's headless daemon check (DIST-E3-T09), because a wrongly attributed prompt forces app-bundle work into M1 packaging. If it misbehaves, RFC-0052 needs a small signed app bundle as the responsible process. Discovery retries after a first denial either way.
 4. **Ed25519 beacon verification cost** on Raspberry Pi 5-class CPUs (Tier 2). *Answered (OQ-NET-16).* Keep verifying every open beacon: about 0.1–0.2 % of a Pi 5 core at the 20 per second cap [estimate]. DIST-E3-T10 confirms it in the same R-PI5 session as DIST-E7-T17. Blinded beacons cost one keyed hash each (§4.8).
 5. **Relay operator default.** *Answered (OQ-NET-11 closed against it).* A hosted shared relay service is the built-in set, delivered as the signed `relays.json` target; `custom` and `disabled` stay; weight chunks never use a relayed path; the public relays serve internal and alpha testing only (§6.4).
-6. **Clock for protocol cores** (RFC-0060 §2.1). RFC-0060's `SystemClock` names `CLOCK_MONOTONIC` on Linux, which stops during suspend, while macOS uses `mach_continuous_time`, which does not. Leases, suspicion and grace periods (§5.8, RFC-0032 §7) need a clock that keeps running through suspend on every OS. Proposal to RFC-0060: `SystemClock::now()` uses `CLOCK_BOOTTIME` on Linux and Android and `QueryInterruptTime` on Windows, and the shells use the stopped clocks only to detect suspend.
+6. **Clock for protocol cores** (RFC-0060 §2.1). *Answered (RFC-0060 §2.1; ADR-0022, 2026-10-22).* `SystemClock::now()` reads `CLOCK_BOOTTIME` on Linux and Android, `mach_continuous_time` on macOS and iOS and `QueryInterruptTime` on Windows, so leases, suspicion and grace periods (§5.8, RFC-0032 §7) see a suspend as elapsed time. The shells use the stopped clocks only to detect suspend. Both readings live in `syntropy_io::os`.
 
 ## Proposed amendments to RFC-0001
 

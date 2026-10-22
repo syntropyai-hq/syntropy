@@ -5,7 +5,7 @@
 - Depends on: RFC-0001; ADR-0002, ADR-0003, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0017, ADR-0019, ADR-0020; ADR-0600, ADR-0601, ADR-0602, ADR-0603
 - Expanded by: RFC-0042 (tolerance tables), RFC-0043 (per-family fixtures and boundaries), RFC-0033 (recovery expectations for chaos scenarios), RFC-0062 (where and when each suite runs)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
+- Revised: 2026-10-20 (the publisher-reference check, the GPU reference, fixture access rules, the corpus and checkpoint licence rules, the fault-injection and fuzzing answers); 2026-10-21 (P-bench-1 and P-bench-2, §3.2); 2026-10-22 (the `test` build profile renamed `dev`, §1.3, §9; the production clock and entropy sources in `io`, §2.1, ADR-0022; `OpCert::rig` and derived certificates on Vulkan, §6.4, ADR-0405)
 
 ## Summary
 
@@ -141,12 +141,15 @@ pub trait Entropy: Send + Sync {
     fn u64(&self) -> u64 { let mut b = [0u8; 8]; self.fill(&mut b); u64::from_le_bytes(b) }
 }
 
+// syntropy-io (ADR-0022), in syntropy_io::os
 /// Suspend-aware monotonic source: Linux and Android clock_gettime(CLOCK_BOOTTIME); macOS and iOS
 /// mach_continuous_time; Windows QueryInterruptTime (not QueryUnbiasedInterruptTime, which
-/// excludes sleep). Clocks that stop during suspend (CLOCK_MONOTONIC, mach_absolute_time) are not used.
+/// excludes sleep). Clocks that stop during suspend (CLOCK_MONOTONIC, mach_absolute_time) are never
+/// used for `now`; the same module reads them only for RFC-0030 §5.8's suspend check.
 pub struct SystemClock;
 pub struct OsEntropy;             // getrandom
 
+// syntropy-core
 /// Hot-thread time source for `exec` and `obs` (rule T1). Used only as a generic parameter, never `dyn`.
 /// The tick-to-`Clock` offset is re-sampled after every resume from suspend.
 pub trait TickSource: Clone + Send + Sync {
@@ -172,6 +175,7 @@ pub struct DeviceClockSync { pub device_ts: u64, pub host_ticks: u64, pub device
   - **Hot counters** are keyed by a per-(node, role) context object passed to the dispatcher, not by thread-local storage, so nodes sharing the simulator's one OS thread do not merge their counters.
   - **The solver's wall-clock safety limit** is disabled in the simulator, where only its count-based work limits apply (ADR-0101). A firing of the wall-clock limit is a simulator failure.
 - **Rule T2.** Key material (`NodeId` secrets, invite tokens, session IDs in production) always comes from `OsEntropy`. The simulator substitutes a seeded ChaCha20 stream. That substitution is possible only in `test` builds, because `SimEntropy` exists only in `testkit`.
+- *Revised 2026-10-22 (ADR-0022):* `SystemClock` and `OsEntropy` are `syntropy-io` types, in `syntropy_io::os`, not `syntropy-core` ones. The suspend-aware clocks need an `unsafe` OS call and `OsEntropy` needs `getrandom`, which RFC-0001 §4.2 rules 1 and 8 keep out of `core`. The traits, `MonoTime`, `TickSource` and `DeviceClockSync` stay in `core`. Rules T1 and T2 are unchanged: key material still comes only from `OsEntropy`.
 
 #### 2.2 Control-plane protocol logic is sans-I/O
 
