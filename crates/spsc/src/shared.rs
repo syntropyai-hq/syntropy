@@ -12,9 +12,12 @@
 //!   up to `slot_bytes` bytes of record.
 //! - **A record is bytes.** The record types and their encodings belong to the rings' owners
 //!   (RFC-0053 for telemetry, steps and logs).
-//! - **Neither end trusts the other.** The peer may be another process with its own bugs. A
-//!   reader that finds the indices more than `slots` apart, or a length above `slot_bytes`, returns
+//! - **Neither end trusts the other.** The peer may be another process, buggy or hostile. Each
+//!   index and each length is read once, atomically, into a local copy, and only the copy is
+//!   checked and used, so the peer cannot change a value between its check and its use. A reader
+//!   that finds the indices more than `slots` apart, or a length above `slot_bytes`, returns
 //!   [`SharedPopError::Corrupt`] or [`SharedPushError::Corrupt`] and reads nothing out of range.
+//!   A record's bytes are copied out before the caller reads them.
 //! - **No waking.** Both ends poll. A consumer that needs waking across processes needs a handle
 //!   passed to it, which the process that spawns the runner provides.
 //!
@@ -219,6 +222,19 @@ impl SharedLayout {
     }
 }
 
+/// The length word at the start of `slot`, as an atomic. Every access to it is atomic, on both
+/// ends, so the reader's single load cannot be split or repeated.
+///
+/// # Safety
+///
+/// `slot` is a slot of a live ring: 8-aligned, with its length word inside the ring's memory, which
+/// stays mapped for `'b`.
+unsafe fn length_word<'b>(slot: NonNull<u8>) -> &'b std::sync::atomic::AtomicU32 {
+    // SAFETY: the caller promises the word is aligned, in bounds and live for `'b`, and every
+    // access to it goes through this atomic.
+    unsafe { std::sync::atomic::AtomicU32::from_ptr(slot.cast::<u32>().as_ptr()) }
+}
+
 /// What both ends hold: the header, the first slot and the layout.
 struct End<'a> {
     header: &'a Header,
@@ -380,7 +396,7 @@ impl SharedProducer<'_> {
         // slot is 8-aligned (the memory is 128-aligned and every stride is a multiple of 8), holds
         // the length word, and has `slot_bytes` bytes after it, which `record` fits.
         unsafe {
-            slot.cast::<u32>().write(length);
+            length_word(slot).store(length, Ordering::Relaxed);
             std::ptr::copy_nonoverlapping(
                 record.as_ptr(),
                 slot.add(LENGTH_BYTES).as_ptr(),
@@ -450,7 +466,11 @@ impl SharedConsumer<'_> {
         // SAFETY: the slot at `head` lies inside `head..tail`: the acquire load of `tail` saw the
         // producer's writes to it, and the producer will not write it again until the release
         // store of `head` below. The slot is 8-aligned and starts with its length word.
-        let len = u32::from_le(unsafe { slot.cast::<u32>().read() }) as usize;
+        //
+        // The length is read once, with an atomic load, into `len`, and only that copy is checked
+        // and used: a hostile peer that rewrites the word after the check cannot change the bound
+        // the copy below uses.
+        let len = u32::from_le(unsafe { length_word(slot) }.load(Ordering::Relaxed)) as usize;
         if len > end.layout.slot_bytes as usize {
             return Err(SharedPopError::Corrupt);
         }
@@ -458,7 +478,9 @@ impl SharedConsumer<'_> {
             return Err(SharedPopError::BufferTooSmall { len });
         }
         // SAFETY: as above; the record's `len` bytes follow the length word, inside the slot,
-        // since `len` is at most `slot_bytes`, and `out` holds at least `len` bytes.
+        // since `len` is at most `slot_bytes`, and `out` holds at least `len` bytes. The bytes are
+        // copied out before anything reads them, so a peer that writes them during the copy can
+        // garble the record, which the caller parses from `out`, but reach nothing outside it.
         unsafe {
             std::ptr::copy_nonoverlapping(slot.add(LENGTH_BYTES).as_ptr(), out.as_mut_ptr(), len);
         }

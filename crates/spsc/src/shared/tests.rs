@@ -221,13 +221,8 @@ fn corrupt_indices_and_lengths_are_refused() {
         memory.header().tail.store(1, Ordering::Release);
         // A length above the slot size.
         // SAFETY: slot 0 is the first slot, past the header, and nothing else uses it now.
-        unsafe {
-            memory
-                .base
-                .add(header_bytes())
-                .cast::<u32>()
-                .write(9u32.to_le())
-        };
+        unsafe { length_word(memory.base.add(header_bytes())) }
+            .store(9u32.to_le(), Ordering::Relaxed);
         assert_eq!(pop(&mut rx), Err(SharedPopError::Corrupt));
         // The consumer's index runs behind the producer's by more than the ring holds, as a new
         // producer finds it.
@@ -319,4 +314,103 @@ fn errors_name_what_happened() {
         LayoutError::Slots(3).to_string(),
         "a shared ring's slot count is a power of two from 1 to 16777216, not 3"
     );
+}
+
+/// A small deterministic generator for the scribble tests: xorshift64*.
+#[cfg(not(loom))]
+struct Garbage(u64);
+
+#[cfg(not(loom))]
+impl Garbage {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+}
+
+/// Checks one result of a pop: a record is never longer than a slot.
+#[cfg(not(loom))]
+fn in_range(result: Result<usize, SharedPopError>, ring: SharedLayout) {
+    if let Ok(len) = result {
+        assert!(len <= ring.slot_bytes() as usize, "a {len}-byte record");
+    }
+}
+
+/// A peer that wrote garbage over the whole ring, header and slots, before either end attached:
+/// every pop and push returns a result, and none reads or writes outside the ring.
+#[cfg(not(loom))]
+#[test]
+fn a_ring_full_of_garbage_is_refused_without_harm() {
+    let ring = SharedLayout::new(8, 24).unwrap();
+    for seed in 1..=300u64 {
+        let memory = Memory::new(ring);
+        let mut garbage = Garbage(seed);
+        for at in (0..ring.bytes()).step_by(8) {
+            // SAFETY: `at` is inside the ring's memory, 8-aligned, and nothing else uses it yet.
+            unsafe { memory.base.add(at).cast::<u64>().write(garbage.next()) };
+        }
+        let mut tx = memory.producer(ring);
+        let mut rx = memory.consumer(ring);
+        let mut buffer = [0u8; 24];
+        for _ in 0..40 {
+            in_range(rx.pop_into(&mut buffer), ring);
+            let _ = tx.push(&[0xab; 24]);
+        }
+    }
+}
+
+/// A peer that keeps rewriting the indices, the close flags and every length word while both ends
+/// run: no pop returns a record longer than a slot, and nothing panics. Each word is written
+/// through its own atomic type, as a second process would see it.
+#[cfg(not(loom))]
+#[test]
+fn a_peer_scribbling_while_the_ring_runs_cannot_push_it_out_of_range() {
+    use std::sync::atomic::AtomicBool;
+    let ring = SharedLayout::new(8, 24).unwrap();
+    let memory = std::sync::Arc::new(Memory::new(ring));
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let running = std::sync::Arc::new(AtomicBool::new(false));
+    let scribbler = {
+        let memory = memory.clone();
+        let stop = stop.clone();
+        let running = running.clone();
+        std::thread::spawn(move || {
+            let mut garbage = Garbage(0x9e37_79b9_7f4a_7c15);
+            let stride = ring.stride();
+            let mut passes = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                passes += 1;
+                let header = memory.header();
+                header.head.store(garbage.next(), Ordering::Relaxed);
+                header.tail.store(garbage.next(), Ordering::Relaxed);
+                header
+                    .closed
+                    .store(garbage.next() as u32, Ordering::Relaxed);
+                for slot in 0..ring.slots() as usize {
+                    // SAFETY: each slot's length word is 8-aligned and inside the ring's memory,
+                    // and every access to it is atomic.
+                    let word =
+                        unsafe { length_word(memory.base.add(header_bytes() + slot * stride)) };
+                    word.store(garbage.next() as u32, Ordering::Relaxed);
+                }
+                running.store(true, Ordering::Release);
+            }
+            passes
+        })
+    };
+    // Start once the scribbler has made one pass, so the two run at the same time.
+    while !running.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
+    let mut tx = memory.producer(ring);
+    let mut rx = memory.consumer(ring);
+    let mut buffer = [0u8; 24];
+    for round in 0..200_000u32 {
+        let _ = tx.push(&round.to_le_bytes());
+        in_range(rx.pop_into(&mut buffer), ring);
+    }
+    stop.store(true, Ordering::Relaxed);
+    assert!(scribbler.join().unwrap() > 0, "the scribbler never ran");
 }
