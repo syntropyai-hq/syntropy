@@ -7,6 +7,8 @@
 # - every job and pattern in the rules is met by some golden;
 # - each pattern and lock dependency of a direct rule has a golden that it alone of its job's
 #   patterns and lock dependencies meets, so dropping it changes that golden;
+# - each crate of a closure rule's `crates` whose own closure holds no other listed crate has a
+#   golden whose closure holds it alone of them; a crate whose closure holds another is redundant;
 # - some golden has a path no rule knows;
 # - `jobs_toml` is the digest of the `ci/jobs.toml` the goldens were last checked against.
 #
@@ -445,6 +447,22 @@ hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
 [[golden]]
+name = "exec only"
+source = "constructed: a change to `exec` alone; no commit has touched only `exec`"
+paths = ["crates/exec/src/lib.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "ipc only"
+source = "constructed: a change to `ipc` alone; no commit has touched only `ipc`"
+paths = ["crates/ipc/src/lib.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
 name = "census module file"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/manifest/src/census.rs"]
@@ -545,13 +563,5 @@ name = "CUDA image"
 source = "constructed: a CUDA toolchain image alone; none exists yet"
 paths = ["ci/images/cuda-12/Dockerfile"]
 jobs = ["build", "hosted-test", "lint"]
-hw_required = ["hw-cuda-ada"]
-planned = ["hosted-parity-nano", "hw-cuda-ada"]
-
-[[golden]]
-name = "exec only"
-source = "constructed: a change to `exec` alone; no commit has touched only `exec`"
-paths = ["crates/exec/src/lib.rs"]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]

@@ -533,6 +533,26 @@ fn each_part_of_a_rule_needs_a_golden_that_depends_on_it_alone() {
              lock dependencies and paths, so dropping it would go unseen"
         ]
     );
+    // Of a closure rule's crates, one whose own closure reaches another listed crate is
+    // redundant and needs no golden; `core`'s closure holds `net`. `net` alone needs one.
+    let rules = RULES.replace("crates = [\"net\"]", "crates = [\"net\", \"core\"]");
+    let goldens = passing_goldens(&rules);
+    assert_eq!(
+        check(&rules, &goldens, &workspace, WORKFLOW_TEXT),
+        [
+            "ci/jobs-goldens.toml: no golden's closure includes `net` alone among `hosted-l3`'s \
+             crates, so dropping it would go unseen"
+        ]
+    );
+    let goldens = format!(
+        "{goldens}\n[[golden]]\nname = \"net\"\nsource = \"constructed\"\n\
+         paths = [\"crates/net/src/lib.rs\"]\njobs = [\"lint\", \"hosted-test\", \"hosted-l3\"]\n\
+         hw_required = []\nplanned = [\"hosted-parity-nano\"]\n"
+    );
+    assert_eq!(
+        check(&rules, &goldens, &workspace, WORKFLOW_TEXT),
+        Vec::<String>::new()
+    );
 }
 
 #[test]

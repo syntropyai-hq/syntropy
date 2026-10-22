@@ -165,7 +165,7 @@ paths = ["docs/**", "plan/**", "*.md"]
 - **The golden suite.** `ci/jobs-goldens.toml` holds recorded diffs, most of them commits on `main`, each with its expected sets. `lint`'s `jobs` step fails when:
   - a golden's sets differ;
   - a job, pattern or lock dependency has no golden, or no golden fails closed;
-  - a direct rule's pattern or lock dependency has no golden that it alone of its job's meets. So dropping any one of them changes a golden;
+  - a direct rule's pattern or lock dependency has no golden that it alone of its job's meets, or a closure rule's crate that could stand alone has no golden whose closure holds it alone of the listed crates. So dropping any one of them changes a golden;
   - `pr.yml`'s jobs and the hosted rules differ;
   - the recorded digest of `ci/jobs.toml` is stale, so the rules cannot change without the goldens.
 - **Old bases.** A base without `ci/jobs.toml` predates QUAL-E1-T07. Only then does `changes` list every hosted job with a suite and no hardware, and `ci-gate` run with `--needs` alone. #1577 has merged, so its bootstrap is gone.

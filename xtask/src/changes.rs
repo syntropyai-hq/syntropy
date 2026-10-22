@@ -1097,6 +1097,7 @@ pub fn check(
     let mut names = BTreeSet::new();
     let mut seen_jobs = BTreeSet::new();
     let mut unclassified = false;
+    let mut closures: Vec<BTreeSet<String>> = Vec::new();
     for golden in &file.golden {
         if !names.insert(golden.name.as_str()) {
             problems.push(format!("{GOLDENS}: golden `{}` appears twice", golden.name));
@@ -1127,6 +1128,7 @@ pub fn check(
         seen_jobs.extend(golden.hw_required.iter().cloned());
         seen_jobs.extend(golden.planned.iter().cloned());
         unclassified |= got.paths.iter().any(|(_, c)| *c == Class::Unclassified);
+        closures.push(got.closure);
     }
 
     // One diff per rule: every job and every pattern is met by some golden.
@@ -1168,47 +1170,73 @@ pub fn check(
     // `ci/jobs.toml` changes that golden's sets. A golden met by two of a job's patterns would
     // still require the job with either one gone.
     for job in &config.jobs {
-        if let When::Direct { paths, lock_deps } = &job.when {
-            // The indices of the job's patterns the golden meets, and its lock dependencies.
-            let met = |golden: &Golden| -> (Vec<usize>, Vec<String>) {
-                let globs = (0..paths.len())
-                    .filter(|&i| golden.paths.iter().any(|path| paths[i].matches(path)))
-                    .collect();
-                let locks = golden
-                    .lock
-                    .iter()
-                    .filter(|p| lock_deps.contains(*p))
-                    .cloned()
-                    .collect();
-                (globs, locks)
-            };
-            for (i, glob) in paths.iter().enumerate() {
-                let pinned = file.golden.iter().any(|golden| {
-                    let (globs, locks) = met(golden);
-                    globs == [i] && locks.is_empty()
-                });
-                if !pinned {
-                    problems.push(format!(
-                        "{GOLDENS}: no golden meets `{}` alone among `{}`'s patterns, so \
-                         dropping it would go unseen",
-                        glob.as_str(),
-                        job.name
-                    ));
+        match &job.when {
+            When::Direct { paths, lock_deps } => {
+                // The indices of the job's patterns the golden meets, and its lock dependencies.
+                let met = |golden: &Golden| -> (Vec<usize>, Vec<String>) {
+                    let globs = (0..paths.len())
+                        .filter(|&i| golden.paths.iter().any(|path| paths[i].matches(path)))
+                        .collect();
+                    let locks = golden
+                        .lock
+                        .iter()
+                        .filter(|p| lock_deps.contains(*p))
+                        .cloned()
+                        .collect();
+                    (globs, locks)
+                };
+                for (i, glob) in paths.iter().enumerate() {
+                    let pinned = file.golden.iter().any(|golden| {
+                        let (globs, locks) = met(golden);
+                        globs == [i] && locks.is_empty()
+                    });
+                    if !pinned {
+                        problems.push(format!(
+                            "{GOLDENS}: no golden meets `{}` alone among `{}`'s patterns, so \
+                             dropping it would go unseen",
+                            glob.as_str(),
+                            job.name
+                        ));
+                    }
+                }
+                for package in lock_deps {
+                    let pinned = file.golden.iter().any(|golden| {
+                        let (globs, locks) = met(golden);
+                        globs.is_empty() && locks == [package.clone()]
+                    });
+                    if !pinned {
+                        problems.push(format!(
+                            "{GOLDENS}: no golden changes `{package}` alone among `{}`'s lock \
+                             dependencies and paths, so dropping it would go unseen",
+                            job.name
+                        ));
+                    }
                 }
             }
-            for package in lock_deps {
-                let pinned = file.golden.iter().any(|golden| {
-                    let (globs, locks) = met(golden);
-                    globs.is_empty() && locks == [package.clone()]
-                });
-                if !pinned {
-                    problems.push(format!(
-                        "{GOLDENS}: no golden changes `{package}` alone among `{}`'s lock \
-                         dependencies and paths, so dropping it would go unseen",
-                        job.name
-                    ));
+            When::Closure {
+                crates: Some(crates),
+            } => {
+                for name in crates {
+                    // A crate whose own closure reaches another listed crate is redundant:
+                    // whenever it is in a closure, so is that other crate.
+                    let own = workspace.closure(&BTreeSet::from([name.clone()]));
+                    if crates.iter().filter(|c| own.contains(*c)).count() > 1 {
+                        continue;
+                    }
+                    let pinned = closures.iter().any(|closure| {
+                        closure.contains(name)
+                            && crates.iter().filter(|c| closure.contains(*c)).count() == 1
+                    });
+                    if !pinned {
+                        problems.push(format!(
+                            "{GOLDENS}: no golden's closure includes `{name}` alone among \
+                             `{}`'s crates, so dropping it would go unseen",
+                            job.name
+                        ));
+                    }
                 }
             }
+            _ => {}
         }
     }
 
