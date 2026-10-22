@@ -329,7 +329,8 @@ pub fn encode(
     let total = check_frame(spec, ext_len, ext.len(), payload.len(), out.len())?;
     out[HEADER_LEN..HEADER_LEN + ext.len()].copy_from_slice(ext);
     out[HEADER_LEN + ext.len()..HEADER_LEN + ext_len].fill(0);
-    finish(spec, ext_len, payload, &mut out[..total]);
+    out[HEADER_LEN + ext_len..total].copy_from_slice(payload);
+    finish(spec, ext_len, &mut out[..total]);
     Ok(total)
 }
 
@@ -346,14 +347,15 @@ pub fn encode_in_place(
     if !ext_len.is_multiple_of(ALIGN) {
         return Err(FrameError::ExtLenUnaligned(ext_len as u32));
     }
-    finish(spec, ext_len, payload, &mut out[..total]);
+    out[HEADER_LEN + ext_len..total].copy_from_slice(payload);
+    finish(spec, ext_len, &mut out[..total]);
     Ok(total)
 }
 
-/// [`encode_in_place`] for a frame whose payload the caller has also written in place, at
-/// `out[64 + ext_len..][..payload_len]`, as a codec does when it builds the payload from typed
-/// values. Writes the header and computes both CRCs; nothing is copied.
-pub(super) fn encode_written(
+/// [`encode`] for a frame whose extension and payload the caller has both written in place, at
+/// `out[64..64 + ext_len]` (padding included) and the `payload_len` bytes after it, as a typed
+/// codec does when it builds its payload too. Writes the header and computes both CRCs.
+pub fn encode_assembled(
     spec: &FrameSpec,
     ext_len: usize,
     payload_len: usize,
@@ -363,7 +365,7 @@ pub(super) fn encode_written(
     if !ext_len.is_multiple_of(ALIGN) {
         return Err(FrameError::ExtLenUnaligned(ext_len as u32));
     }
-    finish_written(spec, ext_len, payload_len, &mut out[..total]);
+    finish(spec, ext_len, &mut out[..total]);
     Ok(total)
 }
 
@@ -395,21 +397,15 @@ fn check_frame(
     Ok(total)
 }
 
-/// Writes the header and the payload around an extension already at `out[64..64 + ext_len]`,
-/// then both CRCs. `out` is exactly the frame; [`check_frame`] has passed.
-fn finish(spec: &FrameSpec, ext_len: usize, payload: &[u8], out: &mut [u8]) {
-    out[HEADER_LEN + ext_len..].copy_from_slice(payload);
-    finish_written(spec, ext_len, payload.len(), out);
-}
-
 /// Writes the header around an extension and a payload already in `out`, then both CRCs. `out`
 /// is exactly the frame; [`check_frame`] has passed.
-fn finish_written(spec: &FrameSpec, ext_len: usize, payload_len: usize, out: &mut [u8]) {
+fn finish(spec: &FrameSpec, ext_len: usize, out: &mut [u8]) {
     let ext_end = HEADER_LEN + ext_len;
+    let payload_len = out.len() - ext_end;
     let payload_crc = if payload_len == 0 {
         0
     } else {
-        crc32c(&out[ext_end..ext_end + payload_len])
+        crc32c(&out[ext_end..])
     };
     let h = &mut out[..HEADER_LEN];
     h[0..4].copy_from_slice(&MAGIC);

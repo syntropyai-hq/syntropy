@@ -409,7 +409,7 @@ impl<'a> Collective<'a> {
             }
             CollectivePayload::Router(rows) => {
                 let len = rows.write(&mut out[HEADER_LEN + ext_len..total]);
-                header::encode_written(&frame, ext_len, len, out)
+                header::encode_assembled(&frame, ext_len, len, out)
             }
         }
     }
