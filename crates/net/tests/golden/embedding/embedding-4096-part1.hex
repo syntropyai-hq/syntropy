@@ -1,0 +1,19 @@
+# embedding-4096-part1: part 1 of 2 of the 4096-dimension vector: elements 4064..4096
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 12 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+21 00 00 00 00 00 00 00 05 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 80 00 00 00 30 23 53 c0 8b 78 ac b6  # 0030 header
+08 07 06 05 04 03 02 01 02 00 00 00 09 00 00 00  # 0040 extension
+00 10 00 00 01 02 01 00 00 02 00 00 01 00 02 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+00 10 7e 45 00 20 7e 45 00 30 7e 45 00 40 7e 45  # 0080 payload
+00 50 7e 45 00 60 7e 45 00 70 7e 45 00 80 7e 45  # 0090 payload
+00 90 7e 45 00 a0 7e 45 00 b0 7e 45 00 c0 7e 45  # 00a0 payload
+00 d0 7e 45 00 e0 7e 45 00 f0 7e 45 00 00 7f 45  # 00b0 payload
+00 10 7f 45 00 20 7f 45 00 30 7f 45 00 40 7f 45  # 00c0 payload
+00 50 7f 45 00 60 7f 45 00 70 7f 45 00 80 7f 45  # 00d0 payload
+00 90 7f 45 00 a0 7f 45 00 b0 7f 45 00 c0 7f 45  # 00e0 payload
+00 d0 7f 45 00 e0 7f 45 00 f0 7f 45 00 00 80 45  # 00f0 payload

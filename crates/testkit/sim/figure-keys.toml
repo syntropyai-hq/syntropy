@@ -1,0 +1,32 @@
+# The figure keys every preset of a kind must have, each with a value or as `unknown` (RFC-0060
+# §8.5, note of 2026-10-23). `testkit::sim::presets` compiles this file in, and the `sim-presets`
+# step of `cargo xtask ci lint` reads it, so the loader and the lint check one table.
+
+# Every device, `gpu` or `cpu`.
+device = ["memory", "f_eff", "t_fixed", "sigma_dev"]
+
+# A discrete GPU, besides: its host link's pinned host-to-device copy rate.
+discrete_gpu = ["host_link_pinned_h2d"]
+
+# Every drive: `FakeIo`'s model (RFC-0060 §8.4).
+drive = [
+    "seq_read",
+    "sustained_read",
+    "throttled_read",
+    "heating_time",
+    "qd1_4k_read_iops",
+    "qd32_4k_read_iops",
+    "read_latency",
+]
+
+# A device's W_eff is keyed `w_eff.<tier>.<kernel class>`, for each tier it reads and each of the
+# kernel classes RFC-0010's M1 probe measures W_eff for (`KernelClass::DenseGemv`, `ExpertGemv`).
+kernel_classes = ["dense_gemv", "expert_gemv"]
+
+# The tiers each device's kernels read, as the M1 probe measures them.
+[tiers]
+# A discrete GPU (`memory_tier = "vram"`): its own memory, and pinned host memory over its link.
+gpu_vram = ["vram", "host_pinned"]
+# A unified GPU (`memory_tier = "unified"`).
+gpu_unified = ["unified"]
+cpu = ["host_pinned", "host_pageable"]

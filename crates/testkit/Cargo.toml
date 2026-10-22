@@ -14,4 +14,10 @@ serde.workspace = true
 syntropy-config = { path = "../config" }
 syntropy-core = { path = "../core" }
 syntropy-graph = { path = "../graph" }
+# `SimTransport` (QUAL-E8-T04) implements `net`'s `Transport` and `Channel`. Optional, so the crates
+# that use `testkit` for anything else do not build `net` and iroh; `net`'s tests turn it on.
+syntropy-net = { path = "../net", optional = true }
 toml.workspace = true
+
+[features]
+transport = ["dep:syntropy-net"]
