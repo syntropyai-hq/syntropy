@@ -107,6 +107,10 @@ The file is never written. Local GGUFs are indexed in place (§4.3).
 | Side files | `config.json` (architecture, hyperparameters, `quantization_config`), `generation_config.json`, `tokenizer.json`, `tokenizer_config.json` (chat template), `special_tokens_map.json`; each is a source file with its own `FileDigest` |
 | dtypes | `F32`, `F16`, `BF16`, `F8_E4M3`, `F8_E5M2`, `F8_E8M0`, `F4` (E2M1, two per byte), `F6_E2M3`, `F6_E3M2`, `I8`, `U8`, `I16`, `I32`, `I64`, `BOOL`. F6 tensors are readable but have no kernels; they get an exact widened copy in the pack (RFC-0042 §3) |
 
+*Note 2026-10-22 (COMP-E10-T10, as built):* `syntropy_manifest::safetensors::SafetensorsDtype` reads every dtype above, and nothing else (`F64` is `UnsupportedContainer`). Each variant is named as `syntropy_core::DType` names its format (`F4` is `F4E2M1`).
+
+*Revision 2026-10-22 (COMP-E10-T10; RFC-0001 §18.19) of the Container row.* The old wording was "match `numel × element size` (sub-byte types round up per row as the dtype defines)". The new rule is whole-tensor bit packing, as the format's reference reader does it. A tensor's elements are packed in order across the whole tensor, not row by row, so it holds `numel × bits` bits. A tensor whose bit count is not a whole number of bytes is `HeaderInvalid`, for example an `F4 [3]` or an `F6` scalar. Any other tensor takes `numel × bits / 8` bytes. The reason is exactness: the per-row rule refuses valid files, such as an `F6 [4, 2]` of 6 bytes, and accepts invalid ones, such as an `F4 [3]`. The row above keeps its original text. A tensor with a zero dimension takes no bytes, but an overflow in its other dimensions is still `HeaderInvalid`. A `data_offsets` length other than the computed one is `HeaderInvalid`. `BOOL` is one byte per element and has no `DType`, because RFC-0042 §1.1 lists no boolean element type, so `SafetensorsDtype::dtype` returns `None` for it.
+
 `quantization_config` maps to `QuantScheme` with no conversion (ADR-0413):
 
 | `quant_method` / `format` | Tensors involved | `QuantScheme` |
@@ -122,6 +126,13 @@ The file is never written. Local GGUFs are indexed in place (§4.3).
 | anything else | — | `Unsupported` naming the method and format |
 
 Modules on the config's `ignore` list stay in their stored dtype. Scale, zero-point and global-scale tensors are bound to their weight as **auxiliary extents** of one logical `TensorRecord` (field `aux`, added with a serde default), so a group always carries everything its kernel needs and a shard never holds a weight without its scales. Stacked expert tensors (expert index in dimension 0) are sliced as in §2.1; per-expert tensors (`…experts.E.gate_proj.weight`) are taken as they are.
+
+*Note 2026-10-22 (COMP-E10-T04, the container reader as built):* `syntropy_manifest::safetensors` reads the container, the sharded index and the side-file roles. It supports `F32`, `F16` and `BF16`; any other dtype is `UnsupportedContainer` (2) naming it until COMP-E10-T10. The choices this section leaves open:
+- **Reads.** The first 8 bytes, then the header, through the shared header-read routine: two requests, no byte of the data section. A declared length above 100 MiB, or past `store.header_max_bytes`, is `HeaderLimit` (5); a header past the file's end is `HeaderInvalid` (6).
+- **Strict JSON.** The header must start with `{`, may be padded with trailing whitespace, and must not repeat a key at any level, so a tensor named twice or given two `data_offsets` is `HeaderInvalid`. A tensor entry has exactly `dtype`, `shape` and `data_offsets`; another field is `HeaderInvalid`. `__metadata__` must map strings to strings. Nesting is bounded by the JSON parser's recursion limit (128).
+- **Offsets.** Each tensor's `[begin, end]` must satisfy `begin ≤ end ≤` the data section's length, and `end − begin = numel × element size`, with overflow checked. Tensors with bytes must not overlap; an empty tensor holds no byte, so it overlaps nothing. Gaps between tensors are allowed.
+- **Index.** `model.safetensors.index.json` is read whole, bounded like a header. It may hold only `metadata` (whose `total_size` is recorded, not checked) and `weight_map`. Every shard name must be a plain file name: no path separator, `:`, NUL, `.` or `..`. The index and the shards must agree exactly: every indexed tensor in its shard, every shard tensor indexed to that shard, no tensor in two shards.
+- **Side files.** `side::classify` gives each file name its role; `SourceRole::in_model_id` is true for weights, the index, `config.json` and `generation_config.json`, as §1's formula lists. Reading and hashing them are COMP-E10-T06 and COMP-E10-T07.
 
 ### 3. The census builder
 

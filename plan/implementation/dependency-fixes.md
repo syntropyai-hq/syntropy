@@ -639,3 +639,51 @@ DIST-E2-T07's task text said fingerprints are "shown by `identity show`", but `i
 |---|---|---|---|
 | Added DIST-E2-T09 (`identity show` prints the six-word fingerprints, M3) → DIST-E2-T01, DIST-E2-T07, DIST-E2-T06, PROD-E5-T03, PROD-E6-T08; DIST-E2-T07's task text drops "shown by `identity show`" | DIST-E2-T07, DIST-E2-T09 | R9 | DIST-E2-T07 builds the fingerprint; showing it needs the command (DIST-E2-T01, PROD-E6-T08) and the three keys it shows: the node key (DIST-E2-T01), `ClusterId` (DIST-E2-T06) and the local CA's certificate (PROD-E5-T03) |
 | PROD-E5-T10 → DIST-E2-T09 | PROD-E5-T10 | R9 | its criterion, "the fingerprint matches `syntropy identity show`", needs `identity show` to print the CA's fingerprint |
+
+## COMP-E10-T01's HTTP range source split out (2026-10-22)
+
+COMP-E10-T01 could not start: its HTTP range implementation needs an HTTPS client, which no maintainer has approved, and a ruling on which crate links it (issue #216). The trait, the local-file source, coalescing, the header cap and the replay of recorded Hub fixtures need neither, and COMP-E10-T02 and COMP-E10-T04 need only those.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T01 keeps the `RangeSource` trait, the local-file and recorded-fixture replay sources, coalescing and the header cap; its first criterion reads "from a recorded Hub fixture replayed through the replay source" | COMP-E10-T01 | R9 | the criterion compares bytes, which a recorded fixture gives without a live HTTP client |
+| Added COMP-E10-T14 (M0b), the HTTP range source → COMP-E10-T01; gate: OQ-MF-18 | COMP-E10-T14 | R9 | the client crate and its linking crate are a maintainer decision (AGENTS.md: new direct dependencies; RFC-0001 §4.2 rule 6). OQ-MF-18 lists the options and a recommended default, and leaves the choice to the maintainers |
+| COMP-E12-T02 → COMP-E10-T14 in place of COMP-E10-T01 | COMP-E12-T02 | R9 | the Hub client issues HTTP range requests, so it needs the HTTP source, not only the trait. COMP-E10-T02 and COMP-E10-T04 keep COMP-E10-T01: their criteria read recorded fixtures |
+
+## DIST-E10-T08's named cases and CI wiring (2026-10-22)
+
+DIST-E10-T08 (M2) asked for "every RT-DIST scenario as a named case". No list of RT-DIST scenarios exists in the plan: the label appears only in that row, RFC-0032's M2 rollout row and ADR-0304's revision of 2026-10-20, all from the first plan commit. Its criterion "the job gates changes to `cluster`" also needs QUAL-E1-T07's affected-job rules, which DIST-E10-T08 did not depend on. QUAL-E1-T07 is M0a, so it cannot take the wiring without depending on M2 work. This pass names the cases and applies R9 to the wiring.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "Every RT-DIST scenario" becomes each property of RFC-0032 Testing's "Election safety and liveness" row, as a named case; ADR-0304 and RFC-0032's rollout get dated notes saying so | DIST-E10-T08 | Definition of done | the label names no list; that row holds the 13 properties the model must check, the row's own six among them |
+| "The job gates changes to `cluster`" moves to the new DIST-E10-T09 (M2) → DIST-E10-T08, QUAL-E1-T07. DIST-E10-T08 runs a bounded 3-node configuration in the default tests and registers the full 3–4-node run as the `test-release` xtask suite `election-model` | DIST-E10-T08, DIST-E10-T09 | R9 | the rule that runs a suite on changes to `cluster` is a `ci/jobs.toml` entry, which needs QUAL-E1-T07's rules engine; the new task sits in DIST-E10-T08's milestone, so no edge points to a later one |
+
+## OQ-NET-34 and its spike (2026-10-22)
+
+DIST-E10-T08's model check found that a supported older proof can depose a lone survivor's unsupported election at heal and roll back an entry acknowledged `replicated = true` under RFC-0032 §6.3 as revised by OQ-NET-33, when the command's originator was lost with its disk. OQ-NET-34 holds the question and recommends comparing an incoming proof against the strongest supported election in the receiver's own chain. That rule changes §7.5, so it is model-checked before the heal code is written.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
+| DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |
+
+## PROD-E5-T02: the bind plan's server-side criteria (2026-10-22)
+
+PROD-E5-T02 could not meet two of its criteria as written: "a LAN bind without a key refuses to start" and "a wildcard bind is served with TLS" need a running server, a key store and a certificate, and PROD-E5-T02 depends only on PROD-E1-T03. The HTTP server is PROD-E2-T01, which is M0a, so it can't depend on this M1a task (R6). PROD-E5-T02 now meets both at the policy level, through the bind plan the daemon runs at start (`syntropy_api::bind::plan_binds`), and the end-to-end checks move to the M1a tasks that own what they need. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E5-T02's refusal and wildcard criteria are checked on the bind plan; PROD-E5-T01 gains "the daemon applies the bind plan at start: with a LAN bind and no key it does not start and prints the plan's message, and once a key exists it starts", and PROD-E5-T01 → PROD-E5-T02 | PROD-E5-T02, PROD-E5-T01 | R9 | PROD-E5-T01 owns the key store and already reaches the server (PROD-E2-T01) through its dependencies; M1a → M1a, and PROD-E5-T02 does not depend on PROD-E5-T01, so the edge adds no cycle |
+| PROD-E5-T03 gains "a wildcard bind with `api.tls = "auto"` is served with TLS from a local CA leaf, as the bind plan gives it", and PROD-E5-T03 → PROD-E5-T02 | PROD-E5-T03, PROD-E5-T02 | R9 | the local CA is what `"auto"` serves on LAN binds (RFC-0050 §11.1); M1a → M1a, no cycle |
+| PROD-E5-T02 declares the `[api]` section's `bind`, `tls` and `allow_plaintext_lan` keys, and PROD-E2-T01 reuses the section for its `api.bind` default | PROD-E5-T02, PROD-E2-T01 | — | RFC-0054 §5.1 gives `api.*` to RFC-0050, and no task registered it; the rules need the real keys to run. PROD-E2-T01's default criterion is unchanged |
+
+Open, for the owning tasks (not changed here): PROD-E5-T03's "leaf rotation under 100 open streams drops none" and PROD-E5-T06's "replacing the certificate files switches new connections to the new certificate without restart" need a running HTTP server, and neither task reaches PROD-E2-T01 through its dependencies.
+
+## QUAL-E17-T15's nested-field case (2026-10-22)
+
+The post-merge reviews of #1658 found that a serde default keeps an added field compatible only in CBOR. Over the postcard IPC, a field added to any type under `PlacementPlan` or `PlanDelta` changes the message layout, and a new enum variant cannot be decoded by an older peer. RFC-0001 §5 gains a dated note that either addition is an `ipc_protocol` change (RFC-0001 §18.20, issues #1675 and #1660).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E17-T15's fingerprint criterion gains a nested field (a `HopPlan` field inside `AssignPlan`'s `PlacementPlan`) and a new `PlanDelta` variant, each failing `compat` without an `ipc_protocol` bump; its IPC golden vectors include `PlacementPlan`, `StagePlan` and `PlanDelta`; no edge | QUAL-E17-T15 | Definition of done | only a ring-record change was covered. A fingerprint that missed nested fields or variants, or vectors without the plan types, would let such an addition break adoption across builds |

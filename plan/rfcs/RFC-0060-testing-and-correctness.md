@@ -228,6 +228,10 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 - **Hosted budget.** A unit test takes under 1 s on a hosted runner (target). Longer tests carry `#[ignore = "suite:<name>"]` and run in their named suite.
 - No unit test opens a network socket other than loopback, touches a GPU, or writes outside its temporary directory. GPU-touching tests live in L4/L5 suites selected by runner labels (RFC-0062).
 - Each property has a stable ID (`P-<crate>-<n>`). A failing case shrinks, and its seed goes into the crate's `proptest-regressions/` file, which is committed.
+  - *Note 2026-10-22 (QUAL-E3-T05):* `ci/properties.toml` lists every property that has tests, with its crate and owning task. A property's tests are the test functions in its crate whose names start with its ID in snake case (`p_core_1_` for P-core-1).
+    - They run on proptest's default configuration. That is what lets `PROPTEST_CASES` set the case count: unset, it is 256, the PR count, and nightly runs `cargo xtask test properties --cases 16384`.
+    - A property lives under `src/`, where proptest saves seeds to `crates/<crate>/proptest-regressions/`, or in a `tests/<suite>/` directory with a `main.rs`, where it saves them to `tests/proptest-regressions/`.
+    - The `properties` step of `cargo xtask ci lint` checks the registry against this table, the epic files and the tests. The `properties-removal` check in `pr-meta.yml` fails a property removed from the registry unless the PR description has a line `Removes <ID>: <reason>` (§3.2).
 - **Statistical properties** (P-sched-2 and any later test with a false-positive rate) run outside proptest's case loop, in the `stat-props` suite: a fixed seeded case set, a family-wise α, no shrinking, and no entries in `proptest-regressions/`. The suite has its own budget (≤ 5 min nightly [target]), and a failure is re-run once with fresh seeds before it is reported. A chance rejection at α is expected, so only a repeated one counts.
 
 #### 3.2 Named properties
@@ -266,6 +270,8 @@ The CPU reference kernels and the native CPU provider's `deterministic` variants
 *Note 2026-10-22 (OQ-PRC-27):* P-core-2 and P-core-3 became P-tier-3 and P-config-2. `TensorHandle` resolution is `tier`'s (RFC-0001 §5.5, §5.13), and exactness resolution is built in `config` (PROD-E1-T10), so their properties live in those crates' suites. TIER-E1-T03 and PROD-E1-T10 own them, and QUAL-E3-T05 keeps P-core-1.
 
 Each crate's RFC adds its properties to this table. A property removed from the table needs a reason in the PR description.
+
+*Note 2026-10-22 (QUAL-E3-T05):* the same holds for `ci/properties.toml`, the registry of properties that have tests (§3.1). A property removed from it needs a line `Removes <ID>: <reason>` in the PR description. The `properties-removal` check enforces this in `pr-meta.yml`, not in `lint`, because it reads the description. Like `dco` and `pr-title` (RFC-0062 §12.3), it runs the base branch's `cargo xtask`, so a PR cannot change how its own removal is judged, it runs again when the description is edited, and it passes on a merge group.
 
 #### 3.3 Model-based tests
 

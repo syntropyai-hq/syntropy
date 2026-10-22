@@ -2,9 +2,24 @@
 
 //! The HTTP API surfaces, ingress routing, sequence channels and dashboard state endpoints.
 //!
-//! Layer 4 in RFC-0001 §4.1, designed in RFC-0050. So far it holds [`tls`]: the node's local
-//! TLS CA and the leaves it serves (RFC-0050 §11.1.1).
+//! Layer 4 in RFC-0001 §4.1, designed in RFC-0050. So far it holds the bind policy of RFC-0050
+//! §11.1 (PROD-E5-T02) and the node's local TLS CA (PROD-E5-T03):
+//!
+//! - [`config`]: the `[api]` section's listener keys, `api.bind`, `api.tls` and
+//!   `api.allow_plaintext_lan` (RFC-0054 §5.2);
+//! - [`bind`]: each bind address's class (loopback, LAN or public) and [`bind::plan_binds`],
+//!   which the daemon runs at start to choose each listener's transport, or to refuse to start;
+//! - [`rules`]: the validation rules for those keys, which the daemon passes to
+//!   `syntropy_config::load_and_validate`;
+//! - [`tls`]: the node's local TLS CA and the leaves it serves (RFC-0050 §11.1.1).
+//!
+//! Binds restricted to overlay interfaces, which may omit TLS, need RFC-0030's interface classes
+//! and come with PROD-E5-T09.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
+pub mod bind;
+pub mod config;
+pub mod rules;
 pub mod tls;

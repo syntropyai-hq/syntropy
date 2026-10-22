@@ -23,7 +23,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::run::Context;
-use crate::{ci_gate, codeowners, contrib, dep_diff, instructions, repo_settings, toolchain};
+use crate::{
+    ci_gate, codeowners, contrib, dep_diff, instructions, properties, repo_settings, toolchain,
+};
 
 /// A named job or suite: the steps it runs, in order.
 #[derive(Debug, PartialEq, Eq)]
@@ -189,6 +191,14 @@ pub const JOBS: &[Entry] = &[
             Step {
                 name: "check-deps",
                 action: Action::Xtask(&["check-deps"]),
+            },
+            // The property registry of RFC-0060 §3.2 (QUAL-E3-T05).
+            Step {
+                name: "properties",
+                action: Action::Builtin {
+                    shown: "ci/properties.toml matches the property tests, RFC-0060 and the epics",
+                    run: properties::step,
+                },
             },
             Step {
                 name: "codeowners",
@@ -418,6 +428,41 @@ pub const JOBS: &[Entry] = &[
         ],
         pending: &[],
     },
+    // The removal half of the property registry (QUAL-E3-T05). It reads the PR description, so
+    // it runs in `pr-meta.yml` with the base branch's xtask, like `dco` and `pr-title`.
+    Entry {
+        name: "properties-removal",
+        summary: "a property removed from ci/properties.toml has a reason in the PR description",
+        defined_in: "RFC-0060 §3.2",
+        params: &[
+            Param {
+                name: "--base",
+                value: "<dir>",
+                help: "a checkout of the PR's base commit",
+                required: true,
+            },
+            Param {
+                name: "--head",
+                value: "<dir>",
+                help: "a checkout of the PR merged into its base",
+                required: true,
+            },
+            Param {
+                name: "--event",
+                value: "<file>",
+                help: "the pull_request event payload, or GET /repos/{owner}/{repo}/pulls/{n}",
+                required: true,
+            },
+        ],
+        steps: &[Step {
+            name: "properties-removal",
+            action: Action::Builtin {
+                shown: "each removed property has a `Removes <ID>: <reason>` line",
+                run: properties::removal_step,
+            },
+        }],
+        pending: &[],
+    },
     Entry {
         name: "build",
         summary: "`build-<os>` in `pr.yml`: the PR build of the workspace on each Tier 1 OS",
@@ -543,6 +588,53 @@ pub const SUITES: &[Entry] = &[
         }],
         pending: &[],
     },
+    Entry {
+        name: "election-model",
+        summary: "L2: the full model check of coordinator election, lease, replication and heal \
+                  (DIST-E10-T08) on 3 and 4 nodes with partitions and message loss, \
+                  release-optimised",
+        defined_in: "RFC-0032 Testing and validation",
+        params: &[],
+        // The default tests check the bounded 3-node configuration; the dev profile is too slow
+        // for the full one. `test-release` is RFC-0060 §1.3's release-optimised test profile.
+        // `--nocapture` prints each scenario's state count against its cap.
+        steps: &[Step {
+            name: "test",
+            action: Action::Cargo(&[
+                "test",
+                "--profile",
+                "test-release",
+                "--locked",
+                "--package",
+                "syntropy-cluster",
+                "--test",
+                "election",
+                "--",
+                "--ignored",
+                "--nocapture",
+            ]),
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "properties",
+        summary: "L2: the named properties of ci/properties.toml at a given case count",
+        defined_in: "RFC-0060 §1.1 and §3.1",
+        params: &[Param {
+            name: "--cases",
+            value: "<n>",
+            help: "cases per property, as PROPTEST_CASES (default 256, a PR run; nightly 16384)",
+            required: false,
+        }],
+        steps: &[Step {
+            name: "properties",
+            action: Action::Builtin {
+                shown: "each listed property's tests with PROPTEST_CASES set",
+                run: properties::suite_step,
+            },
+        }],
+        pending: &[],
+    },
 ];
 
 /// The entry called `name`, if the registry has one.
@@ -650,6 +742,7 @@ mod tests {
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
                 "cargo xtask check-deps",
+                "xtask: ci/properties.toml matches the property tests, RFC-0060 and the epics",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
                 "xtask: ci/agent-instructions.toml is well formed and CODEOWNERS owns every file it \
                  lists",
@@ -760,6 +853,17 @@ mod tests {
             suite.steps[0].action.display(),
             "cargo test --profile test-release --locked --package syntropy-cluster --test pairing \
              -- --ignored"
+        );
+    }
+
+    #[test]
+    fn election_model_runs_the_ignored_election_tests_release_optimised() {
+        let suite = find(SUITES, "election-model").expect("election-model is registered");
+        assert_eq!(suite.steps.len(), 1);
+        assert_eq!(
+            suite.steps[0].action.display(),
+            "cargo test --profile test-release --locked --package syntropy-cluster --test election \
+             -- --ignored --nocapture"
         );
     }
 
