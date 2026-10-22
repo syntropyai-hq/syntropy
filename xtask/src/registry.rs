@@ -221,6 +221,22 @@ pub const JOBS: &[Entry] = &[
                     "check",
                 ]),
             },
+            // The spec database's source lint (RFC-0061 §5.3; QUAL-E12-T11).
+            Step {
+                name: "specs",
+                action: Action::Cargo(&[
+                    "run",
+                    "--quiet",
+                    "--locked",
+                    "--package",
+                    "syntropy-bench",
+                    "--bin",
+                    "syntropy-bench",
+                    "--",
+                    "specs",
+                    "check",
+                ]),
+            },
             // The licence policy of ADR-0018 (RFC-0062 §11.2, §12.2; QUAL-E1-T04). `advisories` is
             // the only step that needs the network, and it fails closed without it.
             Step {
@@ -638,6 +654,8 @@ mod tests {
                 "xtask: ci/agent-instructions.toml is well formed and CODEOWNERS owns every file it \
                  lists",
                 "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- rigs \
+                 check",
+                "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- specs \
                  check",
                 "cargo xtask deny",
                 "cargo xtask deny --advisories",

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# A spec record (RFC-0061 §5.3): `crates/bench/src/specs.rs` documents the format. A DDR5
+# module's data bus is 64 bits, so one channel moves 8 bytes per transfer, and DRAM peak is
+# channels × 8 B × MT/s.
+
+kind = "dram"
+models = ["DDR5"]
+
+[bytes_per_transfer]
+value = 8
+source = "https://www.kingston.com/datasheets/KF560C30BBE-32.pdf"
+where = "p. 1, Description: \"Kingston FURY KF560C30BBE-32 is a 4G x 64-bit (32GB) DDR5-6000 CL30 SDRAM (Synchronous DRAM) 2Rx8, memory module\""
+checked = "2026-10-22"

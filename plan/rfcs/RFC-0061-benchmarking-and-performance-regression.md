@@ -5,7 +5,7 @@
 - Depends on: RFC-0001 (§13, §14, §16), RFC-0060, RFC-0010, RFC-0053; ADR-0004, ADR-0008, ADR-0013, ADR-0017, ADR-0019, ADR-0020; ADR-0610, ADR-0611, ADR-0612
 - Expanded by: RFC-0062 (when and where benchmark jobs run), every domain RFC (its microbenchmarks, §9)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2); 2026-10-22 (§4.3's ADR-0017 row names loaded draft heads, as ADR-0017's revised item 7 does; the grid at RC, the two ID forms, model references and the version check, §4.1; the success-criteria table generated from `bench/sc-map.toml`, §4.2)
+- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2); 2026-10-22 (§4.3's ADR-0017 row names loaded draft heads, as ADR-0017's revised item 7 does; the grid at RC, the two ID forms, model references and the version check, §4.1; the success-criteria table generated from `bench/sc-map.toml`, §4.2; the spec database as built, §5.3)
 
 ## Summary
 
@@ -396,6 +396,22 @@ The harness emits this table for every result and flags each row where measured 
 - vendor-documented fabric limits where they are narrower than DRAM, for example per-CCD read bandwidth on AM5 parts. Here the SC conventions take the narrowest element as `W_peak`.
 
 The records reuse the verified figures in `hardware-and-performance-model.md` §2, and add rows only from vendor documentation. A spec record never comes from a measurement. A probe result below 50% of its spec record flags the rig as misconfigured (`00-vision-and-scope.md` §9, principle 2), and the run is marked `dirty`.
+
+*Note 2026-10-22 (QUAL-E12-T11, the database as built):*
+- **Records.** Each record is `bench/specs/<kind>-<name>.toml`, of kind `gpu`, `cpu`, `dram`, `pcie` or `nvme`, and names the exact inventory `models` it covers. Each figure is `{ value, source, where, checked }`: an `https://` URL to the vendor or standards document, where in it the figure is, and the date it was checked. `syntropy-bench specs check`, a `lint` step, fails a figure without them. The crate's `specs` module documents the format.
+- **Paths.** `W_peak` is computed per path, as the narrowest element along it:
+  - a GPU reading its own memory (`Vram`): the GPU record;
+  - the CPU reading host memory in place (`HostPinned`, `HostPageable`): DRAM, then any fabric limit the CPU record documents;
+  - a GPU reading host memory (`HostPinned`): DRAM, then the GPU's negotiated PCIe link;
+  - a drive (`Nvme`): the drive, then its link.
+
+  DRAM's channel count is the CPU's, capped by the number of DIMMs fitted, and runs at the slowest DIMM's speed, which the inventory records as the speed the module runs at. A chipset-attached drive has no peak until the chipset uplink has a record, and the rig's other paths keep theirs.
+- **Sources.** Where the research note cites a third-party measurement rather than a vendor or standards document, the record cites a vendor or standards document for the same figure instead:
+  - the DRAM formula's inputs: the CPU vendor's channel count, and a DDR5 module datasheet's 64-bit data width;
+  - PCIe 4.0: PCI-SIG's 16.0 GT/s and 128b/130b encoding.
+
+  R-ADA's figures match the research's: 1008 GB/s (cited), 96.0 GB/s (derived: 2 channels × 8 B × 6000 MT/s), 31.5 GB/s (derived: 16 GT/s × 16 lanes × 128/130 ÷ 8, per direction) and 7.45 GB/s (cited).
+- **Sanity.** A probe figure below 50% of its path's `W_peak` sets `EnvCapture.dirty` to `misconfigured`. A run already dirty for another reason keeps that reason. A probe of a path with no peak is reported as unchecked, a gap in the database rather than in the rig, and leaves the run as it is.
 
 #### 5.4 Roofline views
 
