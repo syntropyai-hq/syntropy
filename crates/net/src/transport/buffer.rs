@@ -136,7 +136,9 @@ pub enum PoolError {
     /// A pool has at least one slot.
     NoSlots,
     /// The memory is smaller than `slots × slot_size`.
-    TooSmall { needed: u64, available: usize },
+    TooSmall { needed: usize, available: usize },
+    /// `slots × slot_size` is more bytes than one allocation can have: past `isize::MAX`.
+    TooLarge { slot_size: usize, slots: u32 },
     /// The memory's base address is not a multiple of [`SLOT_ALIGN`].
     BaseUnaligned,
 }
@@ -160,11 +162,34 @@ impl fmt::Display for PoolError {
             PoolError::BaseUnaligned => {
                 write!(f, "the memory is not aligned to {SLOT_ALIGN} bytes")
             }
+            PoolError::TooLarge { slot_size, slots } => write!(
+                f,
+                "{slots} slots of {slot_size} bytes are more than one allocation can hold"
+            ),
         }
     }
 }
 
 impl std::error::Error for PoolError {}
+
+/// The bytes `slots` slots of `slot_size` bytes take, after checking the shape: `slot_size` a
+/// positive multiple of [`SLOT_ALIGN`], at least one slot, and a product computed without
+/// overflow that one allocation can hold (at most `isize::MAX`). Every slot's bounds rest on
+/// this check.
+fn pool_bytes(slot_size: usize, slots: u32) -> Result<usize, PoolError> {
+    if slot_size == 0 || !slot_size.is_multiple_of(SLOT_ALIGN) {
+        return Err(PoolError::SlotSize(slot_size));
+    }
+    if slots == 0 {
+        return Err(PoolError::NoSlots);
+    }
+    // A `usize` times a `u32` always fits in 128 bits.
+    let bytes = slot_size as u128 * u128::from(slots);
+    if bytes > isize::MAX as u128 {
+        return Err(PoolError::TooLarge { slot_size, slots });
+    }
+    Ok(bytes as usize)
+}
 
 /// A slot's state: free, held by one writer, or held by this many readers.
 const FREE: u32 = 0;
@@ -204,14 +229,8 @@ impl BufferPool {
         slot_size: usize,
         slots: u32,
     ) -> Result<BufferPool, PoolError> {
-        if slot_size == 0 || !slot_size.is_multiple_of(SLOT_ALIGN) {
-            return Err(PoolError::SlotSize(slot_size));
-        }
-        if slots == 0 {
-            return Err(PoolError::NoSlots);
-        }
-        let needed = slot_size as u64 * u64::from(slots);
-        if needed > memory.size() as u64 {
+        let needed = pool_bytes(slot_size, slots)?;
+        if needed > memory.size() {
             return Err(PoolError::TooSmall {
                 needed,
                 available: memory.size(),
@@ -233,15 +252,7 @@ impl BufferPool {
 
     /// A pool of `slots` slots of `slot_size` bytes in zeroed [`HeapMemory`].
     pub fn heap(id: PoolId, slot_size: usize, slots: u32) -> Result<BufferPool, PoolError> {
-        if slot_size == 0 || !slot_size.is_multiple_of(SLOT_ALIGN) {
-            return Err(PoolError::SlotSize(slot_size));
-        }
-        if slots == 0 {
-            return Err(PoolError::NoSlots);
-        }
-        let size = slot_size
-            .checked_mul(slots as usize)
-            .expect("the pool's size fits in memory");
+        let size = pool_bytes(slot_size, slots)?;
         BufferPool::new(id, Box::new(HeapMemory::new(size)), slot_size, slots)
     }
 
@@ -336,8 +347,9 @@ impl BufferPool {
     /// The first byte of slot `slot`, which is in bounds.
     fn slot_ptr(&self, slot: u32) -> *mut u8 {
         debug_assert!(slot < self.slots());
-        // SAFETY: `slot < slots`, and `new` checked that `slots × slot_size` bytes fit in the
-        // memory, so the offset stays inside its allocation.
+        // SAFETY: `slot < slots`, and `new` checked, without overflow (`pool_bytes`), that
+        // `slots × slot_size` is at most `isize::MAX` and at most the memory's size. So
+        // `slot × slot_size` cannot overflow, and the offset stays inside the allocation.
         unsafe {
             self.inner
                 .memory
@@ -369,8 +381,10 @@ impl SlotWriter {
     pub fn bytes_mut(&mut self) -> &mut [u8] {
         // SAFETY: the slot's state is `WRITING`, set by this writer's claim, so no reader or
         // other writer of these bytes exists until this writer is frozen or dropped, which needs
-        // the `&mut self` this borrow holds. The range is in bounds (`slot_ptr`), aligned, and
-        // lives while the pool does; `self.pool` keeps it alive.
+        // the `&mut self` this borrow holds. The range is `slot_size` bytes from `slot_ptr`, so it
+        // ends at `(slot + 1) × slot_size ≤ slots × slot_size`, which `new` checked is at most the
+        // memory's size (`pool_bytes`). It is aligned, and lives while the pool does;
+        // `self.pool` keeps it alive.
         unsafe {
             std::slice::from_raw_parts_mut(self.pool.slot_ptr(self.slot), self.pool.slot_size())
         }
@@ -423,8 +437,10 @@ impl SlotReader {
     /// The slot's bytes.
     pub fn bytes(&self) -> &[u8] {
         // SAFETY: this reader is counted in the slot's state, so no writer exists until it is
-        // dropped: a claim needs the state to be `FREE`. The range is in bounds (`slot_ptr`),
-        // aligned, and lives while the pool does; `self.pool` keeps it alive.
+        // dropped: a claim needs the state to be `FREE`. The range is `slot_size` bytes from
+        // `slot_ptr`, so it ends at `(slot + 1) × slot_size ≤ slots × slot_size`, which `new`
+        // checked is at most the memory's size (`pool_bytes`). It is aligned, and lives while
+        // the pool does; `self.pool` keeps it alive.
         unsafe { std::slice::from_raw_parts(self.pool.slot_ptr(self.slot), self.pool.slot_size()) }
     }
 
@@ -697,6 +713,52 @@ mod tests {
             (PoolId(7), 128, 3)
         );
         assert!(pool.claim(3).is_none(), "slot 3 is past the end");
+    }
+
+    /// `slots × slot_size` cannot wrap past the size check (review of #1737, B1). In a build
+    /// without overflow checks, as `[profile.release]` ships, an unchecked product of 2^24 slots
+    /// of 2^40 bytes wraps to 0 and passes any size check.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn a_size_that_overflows_is_refused() {
+        let small = || -> Box<dyn PoolMemory> { Box::new(HeapMemory::new(64)) };
+        let too_large = |slot_size, slots| PoolError::TooLarge { slot_size, slots };
+        // 2^24 × 2^40 = 2^64: the probe's input.
+        assert_eq!(
+            BufferPool::new(PoolId(0), small(), 1 << 40, 1 << 24).unwrap_err(),
+            too_large(1 << 40, 1 << 24)
+        );
+        assert_eq!(
+            BufferPool::heap(PoolId(0), 1 << 40, 1 << 24).unwrap_err(),
+            too_large(1 << 40, 1 << 24),
+            "refused before it allocates"
+        );
+        // The boundary: 2^23 × 2^40 = 2^63 is one past isize::MAX; one slot fewer is within it,
+        // and then simply more than the memory holds.
+        assert_eq!(
+            BufferPool::new(PoolId(0), small(), 1 << 40, 1 << 23).unwrap_err(),
+            too_large(1 << 40, 1 << 23)
+        );
+        assert_eq!(
+            BufferPool::new(PoolId(0), small(), 1 << 40, (1 << 23) - 1).unwrap_err(),
+            PoolError::TooSmall {
+                needed: (1 << 63) - (1 << 40),
+                available: 64
+            }
+        );
+        // The most slots at the smallest size is large, but no overflow.
+        assert_eq!(
+            BufferPool::new(PoolId(0), small(), 64, u32::MAX).unwrap_err(),
+            PoolError::TooSmall {
+                needed: 64 * u32::MAX as usize,
+                available: 64
+            }
+        );
+        assert!(
+            too_large(1 << 40, 1 << 24)
+                .to_string()
+                .contains("16777216 slots")
+        );
     }
 
     #[test]
