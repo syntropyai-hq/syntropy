@@ -814,6 +814,14 @@ RFC-0011 §12.2 now applies a deferred plan at the `replan.max_defer` deadline t
 | DIST-E14-T10's property "re-prefill always feasible" becomes "re-prefill feasible whenever the new epoch holds the sequence's context"; DIST-E15-T03 gains "a plan whose `context_length` the session exceeds is not applied until the session ends"; no edge | DIST-E14-T10, DIST-E15-T03 | Definition of done | RFC-0033 §5.1's `t_reprefill` now holds only when e′ holds `ctx(q)`, and §10 applies the plan at the deadline only if it holds every live sequence |
 | PLC-E6-T11 registers the `replan.*` keys except `replan.degraded_min_gain`, which RFC-0033 owns; no edge | PLC-E6-T11 | Definition of done | RFC-0054 §5.1 lists that key as RFC-0033's carve-out (#1742); registering it twice would make the schema registry refuse to build |
 
+## DIST-E1-T02's segment unlink (2026-10-22)
+
+DIST-E1-T02 (M0a) builds the shared-memory region. Its criterion "the daemon unlinks segments on runner exit" needs a daemon that spawns and reaps runners, and that is DIST-E1-T04, which depends on DIST-E1-T02 through DIST-E1-T03. An edge would make a cycle.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T02's criterion becomes the creating side's unlink after the runner process exits, shown by its cross-process test; "the daemon calls `Region::unlink` when a runner exits" moves to DIST-E1-T04 | DIST-E1-T02, DIST-E1-T04 | R9 | DIST-E1-T04 spawns runners and sees them exit. DIST-E1-T02's test plays both processes, so it can show the unlink itself. On Linux a memfd has no name, and on Windows a mapping's name goes with its last handle, so the test checks each OS's own form of "no name left" |
+
 ## DIST-E7-T01's conformance criterion and buffer types (2026-10-22)
 
 DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-conformance suite", could not be met by DIST-E7-T01: `SimTransport` is QUAL-E8-T04, which depends on DIST-E7-T01 and DIST-E7-T02, and no task row built the suite itself, though DIST-E7-T03, T05, T06 and T08 and QUAL-E8-T04 all run it. RFC-0001 §5.8 and RFC-0031 §2 also name six buffer types without defining them (`BufferPool`, `PoolRegistration`, `PayloadSlice`, `PayloadRef`, `ExtBuf`, `ExtRef`), and DIST-E7-T01's signatures need them. These are plan corrections that take the recommended default, under the maintainer's standing instruction; RFC-0031 §2's note of 2026-10-22 records the definitions.
