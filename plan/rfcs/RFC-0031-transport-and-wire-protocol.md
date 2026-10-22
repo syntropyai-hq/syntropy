@@ -857,7 +857,7 @@ This frame implements RFC-0050 amendment A5 for prefill-only embedding sequences
 - **Payload.** This part's elements of the `dims × f32` vector, little-endian. A vector larger than the channel's slot is split at element boundaries, each part a whole frame holding as many elements as fit beside the header and extension. The receiver acts on the result only when every part has arrived, as with `Token` (§6.5).
 - **Capability.** Bit 14 `EMBEDDING` (§10). A sender never writes the frame on a channel that did not negotiate it.
 
-*Note 2026-10-23 (DIST-E8-T15):* the part fields took the extension's `reserved[4]` at offset 28. The text sent a larger vector in `Token`'s parts, but the extension had no part fields, and a 4096-dimension F32 vector (16 KiB) does not fit a 16 KiB `Tokens` slot with its header. `part_count = 0`, what those reserved bytes held, is refused, as `Token` refuses it: no sender ever wrote the reserved form, so nothing needs it read as one part. Recorded under the maintainers' standing instruction of 2026-10-22 on wire-format choices.
+*Note 2026-10-23 (DIST-E8-T15):* the part fields took the extension's `reserved[4]` at offset 28. The text sent a larger vector in `Token`'s parts, but the extension had no part fields, and a 4096-dimension F32 vector (16 KiB) does not fit a 16 KiB `Tokens` slot with its header. `part_count = 0`, what those reserved bytes held, is refused, as `Token` refuses it: no sender ever wrote the reserved form, so nothing needs it read as one part. A result in several parts needs only bit 14 `EMBEDDING`; bit 15 `TOKEN_PARTS` gates `Token`'s parts alone. Recorded under the maintainers' standing instruction of 2026-10-22 on wire-format choices.
 
 ### 7. Flow control, acknowledgement, retransmission and failover
 
