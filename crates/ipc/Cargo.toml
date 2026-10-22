@@ -4,3 +4,26 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+# `ShmLayout` travels in the command channel's `Init` (RFC-0001 §3.5).
+serde = { workspace = true }
+# The shared rings (RFC-0001 §4.2 rule 2, note of 2026-10-22: `ipc` may depend on `spsc`).
+syntropy-spsc = { path = "../spsc" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+# The segment's OS calls: memfd on Linux, `shm_open` on Apple platforms, a file mapping on Windows
+# (ADR-0015 item 4). The same versions as `syntropy-io`'s and `syntropy-spsc`'s.
+[target.'cfg(any(target_os = "linux", target_vendor = "apple"))'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }

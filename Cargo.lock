@@ -749,6 +749,13 @@ dependencies = [
 [[package]]
 name = "syntropy-ipc"
 version = "0.0.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "syntropy-spsc",
+ "windows-sys",
+]
 
 [[package]]
 name = "syntropy-kernels"
