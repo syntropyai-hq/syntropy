@@ -493,12 +493,59 @@ impl ResolvedConfig {
                 None => {}
             }
         }
-        let section: S = deserialize(Value::Table(table)).map_err(error)?;
+        let section: S = match deserialize(Value::Table(table.clone())) {
+            Ok(section) => section,
+            Err(message) => return Err(error(withhold_secrets::<S>(table, message))),
+        };
         let range_errors = section.check_ranges();
         if let Some(first) = range_errors.first() {
-            return Err(error(first.to_string()));
+            // A range error's text can quote the value, so a secret key's is withheld too.
+            let message = match schema.keys.iter().find(|k| k.path == first.key) {
+                Some(key) if key.holds_secret => {
+                    format!(
+                        "`{}`: out of range; its value is withheld because it holds a secret",
+                        key.path
+                    )
+                }
+                _ => first.to_string(),
+            };
+            return Err(error(message));
         }
         Ok(section)
+    }
+}
+
+/// The error to report when section `S` does not deserialize from `table`. serde's message can
+/// quote the value it rejected (`invalid type: string "…"`), and for a key that holds a secret
+/// the value is the secret (RFC-0054 §10.1, G7). So when the section has secret-typed keys, it
+/// deserializes again with each of them at its schema default:
+/// - if that still fails, a key that holds no secret is at fault, and its message is shown;
+/// - otherwise a secret-typed key is, and the message names the section's secret-typed keys
+///   with no serde text.
+fn withhold_secrets<S: ConfigSection>(table: toml::Table, message: String) -> String {
+    let secrets: Vec<&KeySchema> = S::SCHEMA.keys.iter().filter(|k| k.holds_secret).collect();
+    if secrets.is_empty() {
+        return message;
+    }
+    let mut without = table;
+    for key in &secrets {
+        match key.default {
+            DefaultSpec::Value(v) => {
+                without.insert(key.name.to_owned(), to_value(&v));
+            }
+            DefaultSpec::Unset | DefaultSpec::Computed(_) => {
+                without.remove(key.name);
+            }
+        }
+    }
+    let paths: Vec<String> = secrets.iter().map(|k| format!("`{}`", k.path)).collect();
+    match deserialize::<S>(Value::Table(without)) {
+        Err(other) => other,
+        Ok(_) => format!(
+            "{}: a value has the wrong type or shape; it is withheld because the key holds a \
+             secret",
+            paths.join(", ")
+        ),
     }
 }
 

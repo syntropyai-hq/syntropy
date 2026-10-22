@@ -6,12 +6,16 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-syntropy-core = { path = "../core" }
+blake3.workspace = true
+ciborium.workspace = true
 # Header and payload CRCs of every frame (RFC-0031 §6.1, ADR-0307 item 2).
 crc32c.workspace = true
-blake3.workspace = true
 ed25519-dalek.workspace = true
+serde.workspace = true
 subtle.workspace = true
+syntropy-config = { path = "../config" }
+syntropy-core = { path = "../core" }
+zstd.workspace = true
 
 [dev-dependencies]
 # `hazmat` signs with a chosen public key in the challenge, and `digest` exports its SHA-512, to

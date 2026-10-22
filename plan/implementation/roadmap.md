@@ -24,36 +24,36 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 
 | # | Task | Milestone | What | Depends on | Step | Direct dependents | Unblocks (transitive, M0a–M4) |
 |---|---|---|---|---|---|---|---|
-| 1 | QUAL-E1-T01 | M0a | Workspace skeleton: one Cargo workspace with every crate of RFC-0001 §4.1 as a stub (`lib.rs` with… | none | 1 | 28 | 1404 |
-| 2 | QUAL-E1-T02 | M0a | `xtask` framework: `cargo xtask ci <job>`, `cargo xtask test <suite>` and a registry of job and… | QUAL-E1-T01 | 2 | 10 | 1315 |
-| 3 | QUAL-E1-T03 | M0a | `cargo xtask check-deps`: RFC-0001 §4.2 rules 1–9 and the release-feature rule over… | QUAL-E1-T02 | 3 | 9 | 1249 |
-| 4 | QUAL-E1-T05 | M0a | Contribution checks: `dco` (every commit signed off, matching author), `pr-title` (conventional… | QUAL-E1-T02 | 3 | 4 | 1144 |
-| 5 | QUAL-E1-T06 | M0a | `pr.yml` skeleton: `changes`, `lint`, `build-<os>` (the `pr` profile, plus a Linux `test-release`… | QUAL-E1-T02, QUAL-E1-T05 | 4 | 23 | 1143 |
-| 6 | COMP-E1-T01 | M0a | `syntropy-kernels` crate: the `KernelProvider` trait with RFC-0001 §5.7's methods and RFC-0040… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 15 | 1093 |
-| 7 | COMP-E13-T01 | M0a | Types in `core`: the extended `DType`, `QuantScheme`, `ScaleGranularity`, `CtScheme`, `ActQuant`… | QUAL-E1-T01 | 2 | 6 | 1069 |
-| 8 | COMP-E1-T02 | M0a | Op registry: the closed `OpKind` list of §3.1 (including `AttnPartial`, `AttnMerge`… | COMP-E1-T01, COMP-E13-T01 | 5 | 16 | 1059 |
-| 9 | QUAL-E12-T01 | M0a | `syntropy-bench` schemas: `BenchKey` (including `expert_cache: CacheStart`), `RigFingerprint`… | QUAL-E1-T01 | 2 | 4 | 986 |
-| 10 | QUAL-E15-T01 | M0a | Inventory schema and fingerprints: the `bench/lab/rigs.toml` record (CPU and microcode, DIMMs, GPU… | QUAL-E12-T01 | 3 | 6 | 984 |
-| 11 | QUAL-E15-T02 | M0a | R-ADA online (ADR-0610): an Ada-class 24 GB GPU (`sm_89`), an AVX2-only desktop CPU, 2 × 64 GB… | QUAL-E15-T01 | 4 | 22 | 983 |
-| 12 | QUAL-E3-T25 | M0a | `CountingAlloc` and `alloc_count_this_thread` in `testkit::guards` (split from QUAL-E3-T11, so M0a… | QUAL-E1-T01 | 2 | 10 | 976 |
-| 13 | DIST-E1-T12 | M0a | The `spsc` crate (OQ-IO-29): the layer-1 crate that holds the lock-free SPSC ring `io`, `net` and… | QUAL-E1-T03 | 4 | 1 | 956 |
-| 14 | DIST-E1-T01 | M0a | Lock-free SPSC ring library in `spsc` (OQ-IO-29): power-of-two capacity, cache-line-padded indices… | DIST-E1-T12, QUAL-E1-T01, QUAL-E3-T25 | 5 | 6 | 955 |
-| 15 | QUAL-E3-T01 | M0a | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 12 | 940 |
+| 1 | QUAL-E1-T01 | M0a | Workspace skeleton: one Cargo workspace with every crate of RFC-0001 §4.1 as a stub (`lib.rs` with… | none | 1 | 28 | 1406 |
+| 2 | QUAL-E1-T02 | M0a | `xtask` framework: `cargo xtask ci <job>`, `cargo xtask test <suite>` and a registry of job and… | QUAL-E1-T01 | 2 | 10 | 1320 |
+| 3 | QUAL-E1-T03 | M0a | `cargo xtask check-deps`: RFC-0001 §4.2 rules 1–9 and the release-feature rule over… | QUAL-E1-T02 | 3 | 10 | 1254 |
+| 4 | QUAL-E1-T05 | M0a | Contribution checks: `dco` (every commit signed off, matching author), `pr-title` (conventional… | QUAL-E1-T02 | 3 | 4 | 1154 |
+| 5 | QUAL-E1-T06 | M0a | `pr.yml` skeleton: `changes`, `lint`, `build-<os>` (the `pr` profile, plus a Linux `test-release`… | QUAL-E1-T02, QUAL-E1-T05 | 4 | 23 | 1153 |
+| 6 | COMP-E1-T01 | M0a | `syntropy-kernels` crate: the `KernelProvider` trait with RFC-0001 §5.7's methods and RFC-0040… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 15 | 1102 |
+| 7 | COMP-E13-T01 | M0a | Types in `core`: the extended `DType`, `QuantScheme`, `ScaleGranularity`, `CtScheme`, `ActQuant`… | QUAL-E1-T01 | 2 | 6 | 1078 |
+| 8 | COMP-E1-T02 | M0a | Op registry: the closed `OpKind` list of §3.1 (including `AttnPartial`, `AttnMerge`… | COMP-E1-T01, COMP-E13-T01 | 5 | 16 | 1068 |
+| 9 | QUAL-E3-T25 | M0a | `CountingAlloc` and `alloc_count_this_thread` in `testkit::guards` (split from QUAL-E3-T11, so M0a… | QUAL-E1-T01 | 2 | 10 | 986 |
+| 10 | QUAL-E12-T01 | M0a | `syntropy-bench` schemas: `BenchKey` (including `expert_cache: CacheStart`), `RigFingerprint`… | QUAL-E1-T01 | 2 | 4 | 986 |
+| 11 | QUAL-E15-T01 | M0a | Inventory schema and fingerprints: the `bench/lab/rigs.toml` record (CPU and microcode, DIMMs, GPU… | QUAL-E12-T01 | 3 | 6 | 984 |
+| 12 | QUAL-E15-T02 | M0a | R-ADA online (ADR-0610): an Ada-class 24 GB GPU (`sm_89`), an AVX2-only desktop CPU, 2 × 64 GB… | QUAL-E15-T01 | 4 | 22 | 983 |
+| 13 | DIST-E1-T12 | M0a | The `spsc` crate (OQ-IO-29): the layer-1 crate that holds the lock-free SPSC ring `io`, `net` and… | QUAL-E1-T03 | 4 | 1 | 968 |
+| 14 | DIST-E1-T01 | M0a | Lock-free SPSC ring library in `spsc` (OQ-IO-29): power-of-two capacity, cache-line-padded indices… | DIST-E1-T12, QUAL-E1-T01, QUAL-E3-T25 | 5 | 6 | 967 |
+| 15 | QUAL-E3-T01 | M0a | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 12 | 945 |
 | 16 | QUAL-E15-T17 | M0a | The rest of the M0 rigs (ADR-0610 decision 1): R-BW (RTX 5090, AVX-512 dual-CCD CPU, 128 GB, Gen5… | QUAL-E15-T01–T02 | 5 | 18 | 934 |
-| 17 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01, QUAL-E1-T06 | 5 | 6 | 890 |
-| 18 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 6 | 880 |
-| 19 | PLC-E1-T01 | M0a | Core graph types: `DeviceId`/`TierId`/`LinkId` ordinal rules, `Measured<T>` with… | QUAL-E1-T01 | 2 | 9 | 878 |
-| 20 | TIER-E1-T13 | M0a | `LedgerGrant` in `core` (OQ-IO-27): the per-tier granted bytes that RFC-0020 §3 and §12 check an… | QUAL-E1-T01 | 2 | 2 | 875 |
-| 21 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver through `cudarc`, driver ≥ 580 check… | COMP-E1-T01, COMP-E9-T04, QUAL-E15-T02, QUAL-E15-T17 | 6 | 7 | 872 |
-| 22 | QUAL-E3-T02 | M0a | `testkit` deterministic clock and entropy: `SimClock` (advanced only by its owner), `SimEntropy`… | QUAL-E3-T01 | 5 | 7 | 866 |
-| 23 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and HTTP range implementations: coalescing, the header-read cap… | QUAL-E1-T01 | 2 | 3 | 858 |
-| 24 | COMP-E15-T01 | M0a | IR types (`ModelGraph`, `LayerProgram`, `Program`, `Node`, `WeightRef`, `GroupSel`, `TensorRole`… | COMP-E1-T02, QUAL-E1-T03 | 6 | 5 | 852 |
-| 25 | COMP-E7-T01 | M0a | Vendoring and the core's static build: ggml's tensor library at the `third_party/ggml.lock` commit… | QUAL-E1-T01, QUAL-E16-T24 | 6 | 8 | 845 |
-| 26 | COMP-E10-T02 | M0a | GGUF reader: v2 and v3, little-endian only; limits on tensor count, KV pairs, string, array and… | COMP-E10-T01 | 3 | 7 | 844 |
-| 27 | COMP-E16-T01 | M0a | `Family` trait and static registry; `MetaView` over GGUF metadata and… | COMP-E10-T02, COMP-E15-T01 | 7 | 11 | 837 |
-| 28 | PLC-E1-T02 | M0a | Linux host enumeration (E1) from world-readable files: CPU topology and hybrid cores, ISA flags… | PLC-E1-T01 | 3 | 7 | 837 |
-| 29 | DIST-E1-T02 | M0a | Shared-memory region: header (magic, build ID, heartbeat, step counter, `RunnerState` discriminant)… | DIST-E1-T01 | 6 | 4 | 837 |
-| 30 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request IDs, `Hello`… | TIER-E1-T13, DIST-E1-T02 | 7 | 19 | 834 |
+| 17 | PLC-E1-T01 | M0a | Core graph types: `DeviceId`/`TierId`/`LinkId` ordinal rules, `Measured<T>` with… | QUAL-E1-T01 | 2 | 10 | 907 |
+| 18 | QUAL-E3-T02 | M0a | `testkit` deterministic clock and entropy: `SimClock` (advanced only by its owner), `SimEntropy`… | QUAL-E3-T01 | 5 | 8 | 893 |
+| 19 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01, QUAL-E1-T06 | 5 | 6 | 890 |
+| 20 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 6 | 880 |
+| 21 | TIER-E1-T13 | M0a | `LedgerGrant` in `core` (OQ-IO-27): the per-tier granted bytes that RFC-0020 §3 and §12 check an… | QUAL-E1-T01 | 2 | 2 | 875 |
+| 22 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver through `cudarc`, driver ≥ 580 check… | COMP-E1-T01, COMP-E9-T04, QUAL-E15-T02, QUAL-E15-T17 | 6 | 7 | 872 |
+| 23 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and HTTP range implementations: coalescing, the header-read cap… | QUAL-E1-T01 | 2 | 3 | 867 |
+| 24 | QUAL-E1-T04 | M0a | Licence policy: `deny.toml` (allowed licences including `CDLA-Permissive-2.0`, per-crate MPL-2.0… | QUAL-E1-T02 | 3 | 8 | 864 |
+| 25 | COMP-E15-T01 | M0a | IR types (`ModelGraph`, `LayerProgram`, `Program`, `Node`, `WeightRef`, `GroupSel`, `TensorRole`… | COMP-E1-T02, QUAL-E1-T03 | 6 | 5 | 861 |
+| 26 | COMP-E10-T02 | M0a | GGUF reader: v2 and v3, little-endian only; limits on tensor count, KV pairs, string, array and… | COMP-E10-T01 | 3 | 7 | 853 |
+| 27 | COMP-E16-T01 | M0a | `Family` trait and static registry; `MetaView` over GGUF metadata and… | COMP-E10-T02, COMP-E15-T01 | 7 | 11 | 846 |
+| 28 | COMP-E7-T01 | M0a | Vendoring and the core's static build: ggml's tensor library at the `third_party/ggml.lock` commit… | QUAL-E1-T01, QUAL-E16-T24 | 6 | 8 | 845 |
+| 29 | PLC-E1-T02 | M0a | Linux host enumeration (E1) from world-readable files: CPU topology and hybrid cores, ISA flags… | PLC-E1-T01 | 3 | 7 | 837 |
+| 30 | DIST-E1-T02 | M0a | Shared-memory region: header (magic, build ID, heartbeat, step counter, `RunnerState` discriminant)… | DIST-E1-T01 | 6 | 4 | 837 |
 <!-- END GENERATED -->
 
 ## Overview
@@ -61,18 +61,18 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 ### Tasks per milestone and area
 
 <!-- BEGIN GENERATED: roadmap-counts -->
-Generated by `tools/roadmap.py` from 1421 tasks and 3751 dependency edges. Every task sits in exactly one milestone.
+Generated by `tools/roadmap.py` from 1423 tasks and 3777 dependency edges. Every task sits in exactly one milestone.
 
 | Milestone | PLC | TIER | DIST | COMP | PROD | QUAL | Total |
 |---|---|---|---|---|---|---|---|
 | M0a | 22 | 8 | 6 | 60 | 17 | 66 | 179 |
 | M0b | 16 | 12 | 2 | 32 | 15 | 50 | 127 |
-| M1a | 75 | 100 | 10 | 101 | 96 | 94 | 476 |
+| M1a | 75 | 100 | 11 | 101 | 96 | 94 | 477 |
 | M1b | 11 | 19 | 2 | 23 | 16 | 21 | 92 |
-| M2 | 36 | 12 | 121 | 27 | 34 | 55 | 285 |
+| M2 | 36 | 12 | 122 | 27 | 34 | 55 | 286 |
 | M3 | 24 | 23 | 64 | 46 | 27 | 27 | 211 |
 | M4 | 3 | 4 | 13 | 10 | 11 | 10 | 51 |
-| Total | 187 | 178 | 218 | 299 | 216 | 323 | 1421 |
+| Total | 187 | 178 | 220 | 299 | 216 | 323 | 1423 |
 <!-- END GENERATED -->
 
 ### Critical paths
@@ -82,9 +82,9 @@ Generated by `tools/roadmap.py` from 1421 tasks and 3751 dependency edges. Every
 |---|---|---|---|---|---|
 | M0a | 179 | 26 | 26 | 27 | 3 |
 | M0b | 127 | 7 | 28 | 7 | 67 |
-| M1a | 476 | 19 | 42 | 21 | 108 |
+| M1a | 477 | 19 | 42 | 21 | 108 |
 | M1b | 92 | 7 | 39 | 7 | 24 |
-| M2 | 285 | 15 | 45 | 31 | 48 |
+| M2 | 286 | 15 | 45 | 31 | 48 |
 | M3 | 211 | 9 | 47 | 18 | 64 |
 | M4 | 51 | 6 | 49 | 6 | 36 |
 
@@ -420,7 +420,7 @@ Success criteria first required at this exit: SC-1, SC-2, SC-3, SC-5, SC-6, SC-7
 ### Plan
 
 <!-- BEGIN GENERATED: roadmap-m1a -->
-**Tasks:** 476 (PLC 75, TIER 100, DIST 10, COMP 101, PROD 96, QUAL 94).
+**Tasks:** 477 (PLC 75, TIER 100, DIST 11, COMP 101, PROD 96, QUAL 94).
 
 **Critical path inside M1a:** 19 tasks, assuming every earlier milestone is done. 21 M1a tasks lie on a chain of that length (no slack); the chain below is one of them.
 
@@ -450,7 +450,7 @@ Zero-slack tasks by area: PLC 10, TIER 4, COMP 5, PROD 1, QUAL 1.
 
 **Longest chain from project start to an M1a task:** 42 tasks: QUAL-E1-T01 (M0a) → QUAL-E12-T01 → QUAL-E15-T01 → QUAL-E15-T02 → QUAL-E12-T04 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T13 → TIER-E6-T15 → TIER-E6-T17 → PROD-E4-T03 → PLC-E8-T16 → PLC-E8-T20.
 
-**Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 108, 2: 64, 3: 49, 4: 39, 5: 21, 6: 31, 7: 37, 8: 20, 9: 17, 10: 10, 11: 9, 12: 18, 13: 6, 14: 17, 15: 13, 16: 11, 17: 2, 18: 3, 19: 1. 108 tasks can start as soon as M1a opens.
+**Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 108, 2: 64, 3: 50, 4: 39, 5: 21, 6: 31, 7: 37, 8: 20, 9: 17, 10: 10, 11: 9, 12: 18, 13: 6, 14: 17, 15: 13, 16: 11, 17: 2, 18: 3, 19: 1. 108 tasks can start as soon as M1a opens.
 
 Work streams are the epics with tasks in this milestone. "First step" and "last step" are the steps of the stream's earliest and latest tasks. Streams whose step ranges overlap, and that do not wait on each other, can run in parallel.
 
@@ -476,8 +476,9 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | TIER-E9 | The MoE step: three sites, CPU execute-in-place and the balancer | 9 | 6 | 14 | PLC-E6, PLC-E7, PLC-E8, PLC-E9, TIER-E3, TIER-E5, TIER-E8, TIER-E10, COMP-E3, COMP-E4, COMP-E5, QUAL-E15 |
 | TIER-E10 | Prediction, prefetch, solver curves and approximate knobs | 10 | 6 | 9 | PLC-E3, TIER-E1, TIER-E5, TIER-E8, TIER-E9, COMP-E3, COMP-E5, QUAL-E7 |
 | DIST-E1 | Process model: rings, IPC, runner spawn, lifecycle and supervision | 4 | 1 | 2 | – |
-| DIST-E4 | Membership and failure detection | 2 | 1 | 2 | – |
+| DIST-E4 | Membership and failure detection | 2 | 2 | 3 | DIST-E7 |
 | DIST-E5 | Admission, invites, revocation and key rotation | 1 | 1 | 1 | – |
+| DIST-E7 | Transports, channels and link management | 1 | 1 | 1 | – |
 | DIST-E17 | Security hardening: encryption policy, integrity, signing hierarchy and privacy | 3 | 1 | 7 | COMP-E11, PROD-E12, QUAL-E16 |
 | COMP-E1 | Kernel provider core | 4 | 1 | 2 | – |
 | COMP-E2 | Op selection, certification, coverage and kernel targets | 9 | 1 | 15 | PLC-E6, COMP-E3, COMP-E4, COMP-E5, COMP-E11, QUAL-E4, QUAL-E6, QUAL-E12, QUAL-E17 |
@@ -686,7 +687,7 @@ Success criteria first required at this exit: SC-12, SC-13, SC-14, SC-22, SC-23,
 ### Plan
 
 <!-- BEGIN GENERATED: roadmap-m2 -->
-**Tasks:** 285 (PLC 36, TIER 12, DIST 121, COMP 27, PROD 34, QUAL 55).
+**Tasks:** 286 (PLC 36, TIER 12, DIST 122, COMP 27, PROD 34, QUAL 55).
 
 **Critical path inside M2:** 15 tasks, assuming every earlier milestone is done. 31 M2 tasks lie on a chain of that length (no slack); the chain below is one of them.
 
@@ -694,7 +695,7 @@ Success criteria first required at this exit: SC-12, SC-13, SC-14, SC-22, SC-23,
 |---|---|---|
 | 1 | DIST-E8-T12 | Control envelope: deterministic CBOR via serde (shortest ints, definite lengths, sorted map keys), zstd above 64 KiB… |
 | 2 | DIST-E9-T01 | `ClusterState`, `LogEntry` (with `at_ms`, `cause`, verbatim `event_bytes` and the BLAKE3 hash chain over those bytes)… |
-| 3 | DIST-E9-T02 | `decide()` for the base commands, with `CommandId` deduplication (high-water mark plus a 64-entry window) and per-node… |
+| 3 | DIST-E9-T02 | `ClusterCommand` (the base commands) and `decide()` for them, with `CommandId` deduplication (high-water mark plus a… |
 | 4 | DIST-E9-T05 | `LogCore`: the coordinator command loop, `LogAppend`/`LogAck` replication with `prev` chain checks, bounded follower… |
 | 5 | DIST-E9-T09 | `TransitionCore` and `plan_actions()`: a 250 ms reconciliation loop, at most one action per instance per call in… |
 | 6 | DIST-E11-T01 | Data-plane bring-up: runner endpoints at `Loading`, `RunnerEndpointOffer` to neighbours, outbound and inbound channels… |
@@ -712,7 +713,7 @@ Zero-slack tasks by area: PLC 1, TIER 2, DIST 21, COMP 2, PROD 5.
 
 **Longest chain from project start to an M2 task:** 45 tasks: QUAL-E1-T01 (M0a) → QUAL-E12-T01 → QUAL-E15-T01 → QUAL-E15-T02 → QUAL-E12-T04 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T19 → PROD-E2-T08 → PROD-E2-T13 (M2) → QUAL-E8-T08 → QUAL-E8-T09 → QUAL-E6-T08 → QUAL-E6-T11 → COMP-E14-T05 → COMP-E14-T17.
 
-**Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 48, 2: 42, 3: 22, 4: 27, 5: 23, 6: 24, 7: 21, 8: 22, 9: 13, 10: 16, 11: 7, 12: 7, 13: 8, 14: 3, 15: 2. 48 tasks can start as soon as M2 opens.
+**Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 48, 2: 39, 3: 20, 4: 24, 5: 18, 6: 23, 7: 24, 8: 18, 9: 12, 10: 23, 11: 13, 12: 11, 13: 8, 14: 3, 15: 2. 48 tasks can start as soon as M2 opens.
 
 Work streams are the epics with tasks in this milestone. "First step" and "last step" are the steps of the stream's earliest and latest tasks. Streams whose step ranges overlap, and that do not wait on each other, can run in parallel.
 
@@ -720,7 +721,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 |---|---|---|---|---|---|
 | PLC-E1 | Resource graph types and hardware enumeration | 2 | 3 | 5 | DIST-E6, DIST-E7, DIST-E9 |
 | PLC-E2 | Startup microbenchmark suite | 1 | 7 | 7 | PLC-E1, DIST-E7 |
-| PLC-E3 | Profile cache, online refinement and drift detection | 1 | 5 | 5 | DIST-E4, DIST-E7 |
+| PLC-E3 | Profile cache, online refinement and drift detection | 1 | 7 | 7 | DIST-E4, DIST-E7 |
 | PLC-E4 | Solver foundations: inputs, preprocessing, filter, evaluator and DP | 5 | 1 | 7 | PLC-E1, TIER-E10, DIST-E9, DIST-E13, COMP-E4, COMP-E12 |
 | PLC-E5 | Joint MILP on HiGHS | 2 | 3 | 4 | PLC-E4, DIST-E7 |
 | PLC-E6 | Plan assembly, re-solve, routing and explanations | 13 | 1 | 13 | PLC-E1, PLC-E3, PLC-E4, PLC-E9, TIER-E7, DIST-E7, DIST-E8, DIST-E9, DIST-E11 |
@@ -734,18 +735,18 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | TIER-E10 | Prediction, prefetch, solver curves and approximate knobs | 2 | 5 | 11 | PLC-E6, DIST-E8, DIST-E9, DIST-E11 |
 | DIST-E2 | Identity, keys and signed structures | 6 | 1 | 6 | PLC-E1 |
 | DIST-E3 | LAN discovery | 9 | 1 | 10 | DIST-E2, DIST-E5, DIST-E6, DIST-E7 |
-| DIST-E4 | Membership and failure detection | 9 | 1 | 8 | DIST-E7, DIST-E9, QUAL-E8, QUAL-E15 |
-| DIST-E5 | Admission, invites, revocation and key rotation | 11 | 4 | 10 | DIST-E2, DIST-E4, DIST-E7, DIST-E9 |
+| DIST-E4 | Membership and failure detection | 9 | 5 | 10 | DIST-E3, DIST-E7, DIST-E8, DIST-E9, QUAL-E8, QUAL-E15 |
+| DIST-E5 | Admission, invites, revocation and key rotation | 11 | 4 | 10 | DIST-E2, DIST-E4, DIST-E7, DIST-E8, DIST-E9 |
 | DIST-E6 | Interfaces, edges and Thunderbolt topology | 6 | 1 | 9 | DIST-E3, DIST-E7, DIST-E9 |
 | DIST-E7 | Transports, channels and link management | 16 | 1 | 7 | PLC-E1, PLC-E4, PLC-E7, TIER-E2, DIST-E2, DIST-E6, DIST-E8, QUAL-E15 |
-| DIST-E8 | Wire formats and codecs | 12 | 1 | 10 | QUAL-E17 |
+| DIST-E8 | Wire formats and codecs | 13 | 1 | 12 | DIST-E2, DIST-E9, DIST-E10, QUAL-E17 |
 | DIST-E9 | Cluster event log | 15 | 2 | 7 | PLC-E6, TIER-E10, DIST-E2, DIST-E8, COMP-E12 |
-| DIST-E10 | Coordinator election and split heal | 7 | 1 | 10 | DIST-E4, DIST-E5, DIST-E9, DIST-E11, QUAL-E8, QUAL-E9 |
+| DIST-E10 | Coordinator election and split heal | 7 | 1 | 11 | DIST-E4, DIST-E5, DIST-E9, DIST-E11, QUAL-E8, QUAL-E9 |
 | DIST-E11 | Ring pipeline execution | 13 | 1 | 13 | PLC-E6, PLC-E8, DIST-E7, DIST-E8, DIST-E9, QUAL-E5, QUAL-E15 |
 | DIST-E12 | Two-phase scheduling integration | 3 | 7 | 15 | PLC-E6, DIST-E4, DIST-E9 |
 | DIST-E13 | Cross-node TP and EP, and intra-node TP | 1 | 1 | 1 | – |
-| DIST-E14 | Fault tolerance: detection, history, replay, migration and repair | 3 | 5 | 10 | DIST-E4, DIST-E7, DIST-E9, DIST-E11, DIST-E12 |
-| DIST-E15 | Elasticity: stragglers, joins and coordinator co-failure | 1 | 4 | 4 | DIST-E4 |
+| DIST-E14 | Fault tolerance: detection, history, replay, migration and repair | 3 | 7 | 10 | DIST-E4, DIST-E7, DIST-E9, DIST-E11, DIST-E12 |
+| DIST-E15 | Elasticity: stragglers, joins and coordinator co-failure | 1 | 8 | 8 | DIST-E4 |
 | DIST-E17 | Security hardening: encryption policy, integrity, signing hierarchy and privacy | 6 | 1 | 10 | DIST-E5, DIST-E7, DIST-E8, DIST-E9, DIST-E11, COMP-E12 |
 | DIST-E18 | Configuration keys, error codes, metrics and diagnostics | 3 | 1 | 1 | – |
 | COMP-E1 | Kernel provider core | 1 | 1 | 1 | – |
@@ -760,7 +761,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | COMP-E14 | The exactness contract: tolerances, wire, canary, knobs and requantization | 2 | 12 | 13 | QUAL-E6 |
 | COMP-E15 | Graph IR, blocks, segments and tensor-parallel sharding | 2 | 2 | 7 | PLC-E7, COMP-E1 |
 | COMP-E16 | Family modules, classification and certification | 3 | 1 | 4 | COMP-E3, COMP-E5, COMP-E15 |
-| PROD-E1 | Configuration and policy | 4 | 2 | 9 | DIST-E5, DIST-E9, DIST-E10, DIST-E18, QUAL-E8 |
+| PROD-E1 | Configuration and policy | 4 | 2 | 10 | DIST-E5, DIST-E9, DIST-E10, DIST-E18, QUAL-E8 |
 | PROD-E2 | API core, vendor shapes, routing and streaming | 2 | 1 | 6 | DIST-E9 |
 | PROD-E4 | Native API, fidelity labels, debug surface, sessions and embeddings | 6 | 1 | 12 | PLC-E4, PLC-E6, DIST-E4, DIST-E5, DIST-E8, DIST-E9, COMP-E16 |
 | PROD-E5 | API authentication, bind policy and LAN TLS | 4 | 2 | 14 | TIER-E7, DIST-E5, DIST-E6, DIST-E9, DIST-E17 |
@@ -770,23 +771,23 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | PROD-E9 | Doctor, diagnostic bundles, exporters and privacy | 1 | 6 | 6 | DIST-E6, DIST-E7, DIST-E9 |
 | PROD-E10 | Packaging, installers and first run | 2 | 1 | 2 | QUAL-E16 |
 | PROD-E11 | Backend modules | 1 | 3 | 3 | COMP-E8 |
-| PROD-E12 | Services, updates, rollback and uninstall | 5 | 1 | 10 | DIST-E5, PROD-E1, QUAL-E17 |
+| PROD-E12 | Services, updates, rollback and uninstall | 5 | 1 | 12 | DIST-E5, PROD-E1, QUAL-E17 |
 | PROD-E13 | User documentation and community intake | 1 | 15 | 15 | PROD-E6, PROD-E7 |
 | QUAL-E1 | Workspace, CI skeleton and policy checks | 2 | 1 | 1 | – |
 | QUAL-E3 | Determinism foundations, testkit core and the test pyramid's base | 3 | 1 | 8 | PLC-E4, PLC-E5, DIST-E8, DIST-E9, DIST-E10, DIST-E11 |
 | QUAL-E5 | Parity harness | 3 | 2 | 5 | PLC-E9, DIST-E8, COMP-E11 |
 | QUAL-E6 | Execution-path coverage, family conformance and the `ConformanceManifest` | 4 | 1 | 11 | DIST-E8, DIST-E11, QUAL-E5, QUAL-E8 |
-| QUAL-E7 | Fixtures and test data | 4 | 1 | 7 | DIST-E8, DIST-E9, QUAL-E8 |
-| QUAL-E8 | Deterministic multi-node simulator and emulated fabric | 9 | 2 | 9 | DIST-E3, DIST-E4, DIST-E7, DIST-E9, DIST-E10, DIST-E14, PROD-E2, QUAL-E3, QUAL-E7, QUAL-E15 |
-| QUAL-E9 | Fault injection and chaos | 7 | 2 | 10 | DIST-E7, DIST-E9, DIST-E14, QUAL-E8, QUAL-E15, QUAL-E17 |
-| QUAL-E10 | Fuzzing | 1 | 8 | 8 | DIST-E4, DIST-E5, DIST-E8, DIST-E9, DIST-E10, DIST-E14, QUAL-E7, QUAL-E8 |
+| QUAL-E7 | Fixtures and test data | 4 | 1 | 9 | DIST-E8, DIST-E9, QUAL-E8 |
+| QUAL-E8 | Deterministic multi-node simulator and emulated fabric | 9 | 2 | 11 | DIST-E3, DIST-E4, DIST-E7, DIST-E9, DIST-E10, DIST-E14, PROD-E2, QUAL-E3, QUAL-E7, QUAL-E15 |
+| QUAL-E9 | Fault injection and chaos | 7 | 2 | 12 | DIST-E7, DIST-E9, DIST-E14, QUAL-E8, QUAL-E15, QUAL-E17 |
+| QUAL-E10 | Fuzzing | 1 | 10 | 10 | DIST-E4, DIST-E5, DIST-E8, DIST-E9, DIST-E10, DIST-E14, QUAL-E7, QUAL-E8 |
 | QUAL-E11 | Platform and feature-fallback suites | 2 | 1 | 4 | DIST-E7, QUAL-E15 |
 | QUAL-E12 | Benchmark harness, measurement protocol and results store | 2 | 1 | 1 | – |
 | QUAL-E13 | Scenarios, success-criteria mapping and microbenchmarks | 5 | 4 | 13 | PLC-E5, DIST-E4, DIST-E5, DIST-E7, DIST-E8, DIST-E9, DIST-E10, DIST-E11, COMP-E8, COMP-E12, QUAL-E7, QUAL-E15 |
 | QUAL-E14 | Regression gates, baseline comparisons and publishing | 5 | 1 | 13 | QUAL-E12, QUAL-E13 |
 | QUAL-E15 | Reference hardware lab | 1 | 1 | 1 | – |
 | QUAL-E16 | Build matrix, kernel cache, reproducibility, signing and provenance | 2 | 1 | 1 | – |
-| QUAL-E17 | Versioning, release pipeline, compatibility and dependencies | 5 | 2 | 10 | DIST-E8, DIST-E9, QUAL-E1, QUAL-E7, QUAL-E8 |
+| QUAL-E17 | Versioning, release pipeline, compatibility and dependencies | 5 | 2 | 12 | DIST-E8, DIST-E9, QUAL-E1, QUAL-E7, QUAL-E8 |
 
 **Spike and decision tasks in M2:** 16.
 

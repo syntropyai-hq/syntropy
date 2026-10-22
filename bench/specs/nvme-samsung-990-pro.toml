@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# A spec record (RFC-0061 §5.3): `crates/bench/src/specs.rs` documents the format. The
+# datasheet gives one sequential read figure for both capacities it covers.
+
+kind = "nvme"
+models = ["Samsung SSD 990 PRO 1TB", "Samsung SSD 990 PRO 2TB"]
+
+[sequential_read_gb_per_s]
+value = 7.45
+source = "https://download.semiconductor.samsung.com/resources/data-sheet/Samsung_NVMe_SSD_990_PRO_Datasheet_Rev.1.0_10129514072296.pdf"
+where = "Technical Specifications (p. 3): Performance, Sequential Read 7,450 MB/s for 1TB and 2TB; Interface PCIe Gen 4.0 x4"
+checked = "2026-10-22"
