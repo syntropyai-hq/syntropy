@@ -17,20 +17,36 @@ use crate::sync::{Arc, AtomicBool, AtomicUsize, Ordering, UnsafeCell, fence};
 #[cfg(not(loom))]
 pub(crate) use crate::wait::Waker;
 
-/// Under loom there is no thread to park and no wake handle. The waker counts its wake-ups
-/// instead, so a model can check that a consumer that armed and saw [`Arm::Waiting`] was woken.
+/// Under loom there is no wake handle. The waker counts its wake-ups, so a model can check that a
+/// consumer that armed and saw [`Arm::Waiting`] was woken, and it unparks loom's thread bound by
+/// [`Consumer::arm_thread`], so a model whose consumer parks deadlocks if a wake-up is lost.
 ///
 /// [`Arm::Waiting`]: crate::Arm::Waiting
 #[cfg(loom)]
 #[derive(Debug, Default)]
 pub(crate) struct Waker {
     notified: AtomicUsize,
+    thread: loom::sync::Mutex<Option<loom::thread::Thread>>,
 }
 
 #[cfg(loom)]
 impl Waker {
     fn notify(&self) {
         self.notified.fetch_add(1, Ordering::Relaxed);
+        if let Some(thread) = &*self.thread.lock().unwrap() {
+            thread.unpark();
+        }
+    }
+
+    /// As the standard build's: binds the calling thread, once.
+    pub(crate) fn bind_current(&self) {
+        let me = loom::thread::current();
+        let mut bound = self.thread.lock().unwrap();
+        let bound = bound.get_or_insert_with(|| me.clone());
+        assert!(
+            bound.id() == me.id(),
+            "a ring's consumer waits on the thread that first waited on it"
+        );
     }
 
     /// How many times the producer has woken the consumer.

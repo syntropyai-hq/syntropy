@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use syntropy_spsc::{Arm, ring};
+use syntropy_spsc::{Arm, Consumer, PopError, ring};
 
 /// Long enough that a missed wake-up shows as a failure, not a slow pass.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -70,6 +70,95 @@ fn a_consumer_waits_on_one_thread_only() {
     let mut rx = first.join().unwrap();
     assert_eq!(rx.pop(), Ok(1));
     let second = thread::spawn(move || rx.wait(Duration::ZERO));
+    let panic = second.join().unwrap_err();
+    let message = panic.downcast_ref::<String>().unwrap();
+    assert!(
+        message.contains("a ring's consumer waits on the thread that first waited on it"),
+        "{message}"
+    );
+    drop(tx);
+}
+
+/// One wait of `Consumer::arm_thread`'s loop, the way a dispatcher waits between steps: parks
+/// the calling thread unless `a` or `b` has a value or has lost its producer. It may return with
+/// neither ready, as `park` may, so the caller pops and calls again.
+fn park_on_both(a: &mut Consumer<u32>, b: &mut Consumer<u32>) {
+    if (a.arm_thread(), b.arm_thread()) == (Arm::Waiting, Arm::Waiting) {
+        thread::park();
+    }
+    a.disarm();
+    b.disarm();
+}
+
+/// A thread parked on two rings wakes for a push to either one, and for a close.
+#[test]
+fn a_thread_parked_on_two_rings_wakes_for_either() {
+    let (mut tx_a, rx_a) = ring::<u32>(4).unwrap();
+    let (mut tx_b, rx_b) = ring::<u32>(4).unwrap();
+    let (done, finished) = mpsc::channel();
+    let consumer = thread::spawn(move || {
+        let (mut rx_a, mut rx_b) = (rx_a, rx_b);
+        let mut got = Vec::new();
+        loop {
+            park_on_both(&mut rx_a, &mut rx_b);
+            let a = rx_a.pop();
+            let b = rx_b.pop();
+            if let Ok(value) = a {
+                got.push(value);
+            }
+            if let Ok(value) = b {
+                got.push(value);
+            }
+            if a.is_ok() || b.is_ok() {
+                done.send(got.clone()).unwrap();
+            }
+            if a == Err(PopError::Closed) {
+                return got;
+            }
+        }
+    });
+    let_it_park();
+    tx_b.push(2).unwrap();
+    assert_eq!(finished.recv_timeout(PATIENCE), Ok(vec![2]));
+    let_it_park();
+    tx_a.push(1).unwrap();
+    assert_eq!(finished.recv_timeout(PATIENCE), Ok(vec![2, 1]));
+    let_it_park();
+    drop(tx_a);
+    assert_eq!(consumer.join().unwrap(), [2, 1]);
+    drop(tx_b);
+}
+
+/// `disarm` ends the wait: a push after it makes no wake-up call. A ring with a wake handle
+/// shows that, because a push signals the handle only while the consumer is armed.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    windows
+))]
+#[test]
+fn a_disarmed_ring_wakes_nobody() {
+    let (mut tx, mut rx) = syntropy_spsc::ring_with_wake::<u32>(4).unwrap();
+    assert_eq!(rx.arm_thread(), Arm::Waiting);
+    rx.disarm();
+    tx.push(1).unwrap();
+    assert!(!rx.wake_handle().unwrap().reset().unwrap(), "signalled");
+    assert_eq!(rx.arm_thread(), Arm::Ready);
+    assert_eq!(rx.pop(), Ok(1));
+}
+
+/// `arm_thread` binds the thread as `wait` does, so arming from a second thread panics.
+#[test]
+fn arm_thread_binds_one_thread() {
+    let (tx, mut rx) = ring::<u32>(4).unwrap();
+    let first = thread::spawn(move || {
+        assert_eq!(rx.arm_thread(), Arm::Waiting);
+        rx.disarm();
+        rx
+    });
+    let mut rx = first.join().unwrap();
+    let second = thread::spawn(move || rx.arm_thread());
     let panic = second.join().unwrap_err();
     let message = panic.downcast_ref::<String>().unwrap();
     assert!(
