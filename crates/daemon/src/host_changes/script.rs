@@ -752,12 +752,21 @@ mod tests {
                 .chars()
                 .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
         );
-        let ledger = ledger_with(vec![(
-            HostChangeKind::SystemUser {
+        // `begin` refuses a name with a line break, so the entry goes in as a tampered or older
+        // ledger could hold it: the renderer must still keep it out of the script's code.
+        let mut ledger = ledger_with(vec![]);
+        ledger.file.next_id = 2;
+        ledger.file.changes.push(HostChange {
+            id: 1,
+            kind: HostChangeKind::SystemUser {
                 name: hostile.into(),
             },
-            None,
-        )]);
+            state: ChangeState::Applied,
+            at: 0,
+            by_version: "v".into(),
+            fingerprint: None,
+            prior: None,
+        });
         // The value appears twice: once in the comment, with its line breaks gone, and once as a
         // single-quoted literal, where line breaks are data. Nowhere else.
         for (script, literal) in [

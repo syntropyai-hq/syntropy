@@ -260,13 +260,20 @@ pub enum LedgerError {
         /// The lock file.
         path: PathBuf,
     },
-    /// A start-up line holds a line break (`\n`, `\r`) or a NUL byte. The sh script would read a
-    /// line break as two lines, and can't carry a NUL byte (a shell string ends at one), so either
-    /// way its pattern would match a line of the user's that Syntropy never wrote. The ledger
-    /// records only single lines of text.
-    ControlCharacter {
-        /// The line.
-        line: String,
+    /// A value in a change that the revert scripts could not carry as it is, so a script would act
+    /// on something other than what was recorded (`check_change`):
+    /// - a NUL byte anywhere, which a shell or PowerShell string can't hold, so the scripts drop it;
+    /// - a line break in a start-up line or a name, which the sh script would read as two lines or
+    ///   two patterns;
+    /// - a start-up line that is empty or only blanks, which would match the user's blank lines;
+    /// - a `;` in a user `Path` entry, which would split it in two.
+    BadText {
+        /// Which value: "the start-up line", "the service name", "the path".
+        field: &'static str,
+        /// The value.
+        value: String,
+        /// What is wrong with it.
+        why: &'static str,
     },
     /// The file [`HostChangeLedger::write_file`] would replace is read-only. Its owner made it so,
     /// and an in-place write would have been refused, so the replacement is refused too.
@@ -313,10 +320,9 @@ impl std::fmt::Display for LedgerError {
                  has finished",
                 path.display()
             ),
-            LedgerError::ControlCharacter { line } => write!(
+            LedgerError::BadText { field, value, why } => write!(
                 f,
-                "a start-up line must be a single line of text, but {line:?} holds a line break \
-                 or a NUL byte"
+                "{field} {value:?} {why}, which the revert script could not carry as it is"
             ),
             LedgerError::ReadOnly { path } => write!(
                 f,
@@ -473,8 +479,8 @@ impl HostChangeLedger {
     /// # Errors
     ///
     /// [`LedgerError::Io`] if the ledger cannot be saved; then the change must not be made.
-    /// [`LedgerError::NotRooted`] if a path in `kind` is relative, and [`LedgerError::ControlCharacter`]
-    /// if its start-up line holds a line break.
+    /// [`LedgerError::NotRooted`] if a path in `kind` is relative, and [`LedgerError::BadText`]
+    /// if a value in `kind` or `prior` could not reach the revert scripts as it is.
     pub fn begin(
         &mut self,
         kind: HostChangeKind,
@@ -497,7 +503,7 @@ impl HostChangeLedger {
         at: u64,
         by_version: &str,
     ) -> Result<u32, LedgerError> {
-        check_rooted(&kind)?;
+        check_change(&kind, prior.as_ref())?;
         let id = self.file.next_id;
         self.file.next_id += 1;
         self.file.changes.push(HostChange {
@@ -591,7 +597,7 @@ impl HostChangeLedger {
         let kind = HostChangeKind::FileWritten {
             path: path.to_owned(),
         };
-        check_rooted(&kind)?;
+        check_change(&kind, None)?;
         // The lock covers the ID, the copies written under it, the entry and the host write.
         let _lock = self.lock()?;
         self.reload()?;
@@ -804,16 +810,73 @@ fn unix_mode(meta: &fs::Metadata) -> Option<u32> {
     }
 }
 
-/// Refuses a change whose paths do not start at a root ([`LedgerError::NotRooted`]), or whose
-/// start-up line holds a line break or a NUL byte ([`LedgerError::ControlCharacter`]). A symbolic link's target may be
-/// relative: it is resolved from the link, not from where a script runs.
-fn check_rooted(kind: &HostChangeKind) -> Result<(), LedgerError> {
-    if let HostChangeKind::PathEntry { line, .. } = kind
-        && line.contains(['\n', '\r', '\0'])
-    {
-        return Err(LedgerError::ControlCharacter { line: line.clone() });
+/// Refuses a change the revert scripts could not carry as it is ([`LedgerError::BadText`]), or
+/// whose paths do not start at a root ([`LedgerError::NotRooted`]). Every value reaches the
+/// scripts quoted, and the scripts drop a NUL byte, so no value may hold one. A start-up line and
+/// a name must be a single line, since the sh script matches them as lines and patterns. A
+/// start-up line must hold text, or it would match the user's blank lines. A symbolic link's
+/// target may be relative: it is resolved from the link, not from where a script runs.
+fn check_change(kind: &HostChangeKind, prior: Option<&PriorState>) -> Result<(), LedgerError> {
+    fn bad(field: &'static str, value: &str, why: &'static str) -> LedgerError {
+        LedgerError::BadText {
+            field,
+            value: value.to_owned(),
+            why,
+        }
     }
-    let path = match kind {
+    // A name or value the scripts pass to a command: one line, and no NUL byte.
+    fn one_line(field: &'static str, value: &str) -> Result<(), LedgerError> {
+        if value.contains(['\n', '\r', '\0']) {
+            Err(bad(field, value, "holds a line break or a NUL byte"))
+        } else {
+            Ok(())
+        }
+    }
+    fn no_nul(field: &'static str, value: &Path) -> Result<(), LedgerError> {
+        let text = value.as_os_str().to_string_lossy();
+        if text.contains('\0') {
+            Err(bad(field, &text, "holds a NUL byte"))
+        } else {
+            Ok(())
+        }
+    }
+    match kind {
+        HostChangeKind::FileWritten { path } => no_nul("the path", path)?,
+        HostChangeKind::Symlink { path, target } => {
+            no_nul("the path", path)?;
+            no_nul("the link's target", target)?;
+        }
+        HostChangeKind::PathEntry { shell_rc, line } => {
+            if let Some(rc) = shell_rc {
+                no_nul("the start-up file", rc)?;
+            }
+            one_line("the start-up line", line)?;
+            if line.trim().is_empty() {
+                return Err(bad("the start-up line", line, "is empty or only blanks"));
+            }
+        }
+        HostChangeKind::WindowsUserPath { entry } => {
+            one_line("the user Path entry", entry)?;
+            if entry.contains(';') {
+                return Err(bad("the user Path entry", entry, "holds a `;`"));
+            }
+        }
+        HostChangeKind::ServiceRegistered { name, .. } => one_line("the service name", name)?,
+        HostChangeKind::LingerEnabled { user } => one_line("the user name", user)?,
+        HostChangeKind::FirewallRule { name, .. } => one_line("the firewall rule's name", name)?,
+        HostChangeKind::RegistryKey { hive, key } => {
+            one_line("the registry hive", hive)?;
+            one_line("the registry key", key)?;
+        }
+        HostChangeKind::SystemUser { name } => one_line("the system user's name", name)?,
+        HostChangeKind::BootTimeSetting { name } => one_line("the setting's name", name)?,
+    }
+    match prior {
+        Some(PriorState::Value { value }) => one_line("the prior value", value)?,
+        Some(PriorState::SavedAt { path }) => no_nul("the prior copy's path", path)?,
+        Some(PriorState::AlreadySet) | None => {}
+    }
+    let rooted = match kind {
         HostChangeKind::FileWritten { path } | HostChangeKind::Symlink { path, .. } => path,
         HostChangeKind::PathEntry {
             shell_rc: Some(path),
@@ -821,10 +884,12 @@ fn check_rooted(kind: &HostChangeKind) -> Result<(), LedgerError> {
         } => path,
         _ => return Ok(()),
     };
-    if path.has_root() {
+    if rooted.has_root() {
         Ok(())
     } else {
-        Err(LedgerError::NotRooted { path: path.clone() })
+        Err(LedgerError::NotRooted {
+            path: rooted.clone(),
+        })
     }
 }
 
@@ -1341,13 +1406,107 @@ mod tests {
                 line: line.into(),
             };
             let err = ledger.begin(kind, None, None, 0, "v").unwrap_err();
-            assert!(matches!(err, LedgerError::ControlCharacter { .. }), "{err}");
+            assert!(matches!(err, LedgerError::BadText { .. }), "{err}");
             assert!(
                 err.to_string().contains("line break or a NUL byte"),
                 "{err}"
             );
         }
         assert!(ledger.changes().is_empty());
+    }
+
+    /// Every other value that reaches the scripts is checked the same way: no NUL byte anywhere,
+    /// no line break in a name or prior value, no blank start-up line, no `;` in a user `Path`
+    /// entry.
+    #[test]
+    fn values_the_scripts_could_not_carry_are_refused() {
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let rc = state.join("profile");
+        let cases: Vec<(HostChangeKind, Option<PriorState>)> = vec![
+            (
+                HostChangeKind::PathEntry {
+                    shell_rc: Some(rc.clone()),
+                    line: String::new(),
+                },
+                None,
+            ),
+            (
+                HostChangeKind::PathEntry {
+                    shell_rc: Some(rc.clone()),
+                    line: " \t ".into(),
+                },
+                None,
+            ),
+            (
+                HostChangeKind::FileWritten {
+                    path: state.join("a\0b.conf"),
+                },
+                None,
+            ),
+            (
+                HostChangeKind::Symlink {
+                    path: state.join("syntropy"),
+                    target: "bin/syn\0tropy".into(),
+                },
+                None,
+            ),
+            (
+                HostChangeKind::ServiceRegistered {
+                    manager: ServiceManager::SystemdUser,
+                    name: "syntropy\0.service".into(),
+                },
+                None,
+            ),
+            (
+                HostChangeKind::FirewallRule {
+                    platform: FirewallKind::MacosApplicationFirewall,
+                    name: "Syntropy\n/Applications/Other.app".into(),
+                },
+                None,
+            ),
+            (
+                HostChangeKind::SystemUser {
+                    name: "syntropy\r".into(),
+                },
+                None,
+            ),
+            (
+                HostChangeKind::WindowsUserPath {
+                    entry: r"C:\a;C:\b".into(),
+                },
+                None,
+            ),
+            (
+                HostChangeKind::BootTimeSetting {
+                    name: "kern.x".into(),
+                },
+                Some(PriorState::Value {
+                    value: "0\nkern.y=1".into(),
+                }),
+            ),
+        ];
+        for (kind, prior) in cases {
+            let err = ledger.begin(kind.clone(), prior, None, 0, "v").unwrap_err();
+            assert!(
+                matches!(err, LedgerError::BadText { .. }),
+                "{kind:?}: {err}"
+            );
+        }
+        assert!(ledger.changes().is_empty());
+        // Ordinary values pass: a start-up line with a tab, and a name with spaces.
+        for kind in [
+            HostChangeKind::PathEntry {
+                shell_rc: Some(rc),
+                line: "export PATH=\"$HOME/bin:$PATH\"\t# syntropy".into(),
+            },
+            HostChangeKind::FirewallRule {
+                platform: FirewallKind::WindowsFirewall,
+                name: "Syntropy discovery".into(),
+            },
+        ] {
+            ledger.begin(kind, None, None, 0, "v").unwrap();
+        }
     }
 
     /// A read-only file is not replaced: its owner made it so, and an in-place write would have
