@@ -52,14 +52,17 @@ fn probe() -> PathBuf {
     dir
 }
 
-/// `cargo check` on the probe with `args`.
+/// `cargo check` on the probe with `args`, in plain text: CI sets `CARGO_TERM_COLOR=always`
+/// (`.github/actions/setup-rust`), and coloured lines would not match the checks below.
 fn check(dir: &Path, args: &[&str]) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     std::process::Command::new(cargo)
-        .args(["check", "--offline", "--quiet", "--message-format=short"])
+        .args(["check", "--offline", "--quiet", "--color", "never"])
+        .arg("--message-format=short")
         .args(args)
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", dir.join("target"))
+        .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("cargo runs")
 }
