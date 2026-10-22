@@ -14,18 +14,18 @@
 //! - every covered crate's `clippy.toml` is identical to `ci/clippy-determinism.toml`, and no
 //!   `.clippy.toml` sits beside it, since clippy would read that file instead;
 //! - no covered crate's `[lints]` table, and not the workspace's, sets the lints;
-//! - the repository's cargo config (`.cargo/config.toml`, `.cargo/config`), parsed as TOML, does
-//!   not reach clippy another way: no `CLIPPY_CONF_DIR` or `RUSTFLAGS` key (as in `[env]`), no
-//!   compiler wrapper, and no `rustflags` at any depth that set a lint level (`-A`, `-W`,
-//!   `--allow`, `--warn`, `--cap-lints`), which reach clippy-driver because nothing in CI sets
-//!   `RUSTFLAGS`;
+//! - the repository's cargo config (`.cargo/config.toml`, `.cargo/config`), parsed as TOML, holds
+//!   only the `cargo xtask` alias. Much else in it reaches clippy-driver: lint-level `rustflags`
+//!   (nothing in CI sets `RUSTFLAGS`), `[env]`, compiler wrappers, and an alias that shadows
+//!   `cargo clippy`;
 //! - an attribute in a covered crate that sets a level below `deny` (`allow`, `expect`, `warn`,
 //!   `force_warn`) names one of the lints, a group that holds them (`warnings`, `clippy::all`,
 //!   `clippy::style`) or one of their old names only in a file of [`EXCEPTIONS`], and only for the
 //!   lints that entry lists. An in-source level beats the command line's `-D warnings`: a bare
 //!   `#![allow(warnings)]` turns the lints off, and `#![warn(warnings)]` makes them warnings. The
-//!   attributes are found from the file's Rust tokens, so no comment or literal can hide one.
-//!   Every exception must still be in use;
+//!   levels are found from the file's Rust tokens, so no comment or literal can hide one, and in
+//!   macro bodies and arguments too; a lint name a macro substitutes (`allow($lint)`, `#[$attr]`)
+//!   fails, because it cannot be read. Every exception must still be in use;
 //! - in `exec` and `obs`, only the `TickSource` implementation may lift `disallowed_methods`
 //!   (rule T1), so an exception there must be the file that implements `TickSource`.
 
@@ -287,6 +287,14 @@ fn source_problems(
             }
         };
         for LintLevel { level, lint, line } in levels {
+            if lint.contains('$') {
+                problems.push(format!(
+                    "{file}:{line}: `{level}` takes `{lint}` from a macro, so the lint it names \
+                     cannot be checked; name the lint where the attribute is written (RFC-0060 \
+                     §2.1, §2.4)"
+                ));
+                continue;
+            }
             if !LIFTING.contains(&lint.as_str()) {
                 continue;
             }
@@ -353,10 +361,15 @@ pub struct LintLevel {
     pub line: usize,
 }
 
-/// Every lint a lowering attribute in `text` names, found from the file's Rust tokens as the
-/// compiler sees them, so comments, string and char literals and raw strings cannot hide one:
-/// `#[...]`, `#![...]`, `cfg_attr(pred, ...)` at any depth, and attributes inside macro bodies.
-/// Doc comments are `doc` attributes and name nothing. A file that does not tokenize is an error.
+/// Every lint a lowering level names in `text`, found from the file's Rust tokens as the
+/// compiler sees them, so comments, string and char literals and raw strings cannot hide one.
+///
+/// A level followed by its list counts wherever it appears: in `#[...]` and `#![...]`, inside
+/// `cfg_attr(pred, ...)` at any depth, in a macro body, and in a macro's arguments, where
+/// `m!(allow(warnings))` could hand the attribute to a macro defined elsewhere. Lint names built
+/// from a macro's metavariables (`allow($lint)`, `#[$attr]`) are reported as `$...`, because the
+/// name they expand to cannot be read here. Doc comments are `doc` attributes and name nothing. A
+/// file that does not tokenize is an error.
 pub fn lint_levels(text: &str) -> Result<Vec<LintLevel>, String> {
     let stream: TokenStream = text
         .parse()
@@ -366,17 +379,35 @@ pub fn lint_levels(text: &str) -> Result<Vec<LintLevel>, String> {
     Ok(found)
 }
 
-/// Finds the attributes in `stream` and in every group inside it.
+/// Finds lint levels in `stream` and in every group inside it.
 fn walk(stream: TokenStream, found: &mut Vec<LintLevel>) {
     let tokens: Vec<TokenTree> = stream.into_iter().collect();
     for (index, token) in tokens.iter().enumerate() {
-        let TokenTree::Group(group) = token else {
-            continue;
-        };
-        if group.delimiter() == Delimiter::Bracket && after_hash(&tokens, index) {
-            attribute(group.stream(), found);
+        match token {
+            TokenTree::Ident(name) if LOWERING.contains(&name.to_string().as_str()) => {
+                if let Some(TokenTree::Group(args)) = tokens.get(index + 1)
+                    && args.delimiter() == Delimiter::Parenthesis
+                {
+                    level_list(&name.to_string(), args.stream(), found);
+                }
+            }
+            TokenTree::Group(group) => {
+                // An attribute whose whole content is a metavariable: `#[$attr]`.
+                if group.delimiter() == Delimiter::Bracket
+                    && after_hash(&tokens, index)
+                    && let Some(TokenTree::Punct(dollar)) = group.stream().into_iter().next()
+                    && dollar.as_char() == '$'
+                {
+                    found.push(LintLevel {
+                        level: "attribute".to_owned(),
+                        lint: group.stream().to_string().replace(' ', ""),
+                        line: dollar.span().start().line,
+                    });
+                }
+                walk(group.stream(), found);
+            }
+            _ => {}
         }
-        walk(group.stream(), found);
     }
 }
 
@@ -390,28 +421,9 @@ fn after_hash(tokens: &[TokenTree], index: usize) -> bool {
         || (punct(index.checked_sub(1), '!') && punct(index.checked_sub(2), '#'))
 }
 
-/// One attribute's tokens: a lint level with its list, or `cfg_attr` with its attributes.
-fn attribute(stream: TokenStream, found: &mut Vec<LintLevel>) {
-    let tokens: Vec<TokenTree> = stream.into_iter().collect();
-    let (Some(TokenTree::Ident(name)), Some(TokenTree::Group(args))) =
-        (tokens.first(), tokens.get(1))
-    else {
-        return;
-    };
-    if args.delimiter() != Delimiter::Parenthesis {
-        return;
-    }
-    let name = name.to_string();
-    if name == "cfg_attr" {
-        for item in split_commas(args.stream()).into_iter().skip(1) {
-            attribute(item, found);
-        }
-        return;
-    }
-    if !LOWERING.contains(&name.as_str()) {
-        return;
-    }
-    for item in split_commas(args.stream()) {
+/// The lints of one level's list, `allow(a, b, reason = "...")`.
+fn level_list(level: &str, list: TokenStream, found: &mut Vec<LintLevel>) {
+    for item in split_commas(list) {
         let tokens: Vec<TokenTree> = item.into_iter().collect();
         // `reason = "..."` names no lint.
         if tokens
@@ -428,7 +440,7 @@ fn attribute(stream: TokenStream, found: &mut Vec<LintLevel>) {
             .map(|t| t.to_string().trim_start_matches("r#").to_owned())
             .collect();
         found.push(LintLevel {
-            level: name.clone(),
+            level: level.to_owned(),
             lint,
             line: first.span().start().line,
         });
@@ -449,76 +461,56 @@ fn split_commas(stream: TokenStream) -> Vec<TokenStream> {
     items
 }
 
-/// The flags in a `rustflags` value that set a lint level clippy would obey.
-fn lint_level_flags(value: &toml::Value) -> Vec<String> {
-    let flags: Vec<String> = match value {
-        toml::Value::String(text) => text.split_whitespace().map(str::to_owned).collect(),
-        toml::Value::Array(items) => items
-            .iter()
-            .map(|item| {
-                item.as_str()
-                    .map_or_else(|| format!("{item:?}"), str::to_owned)
-            })
-            .collect(),
-        other => vec![format!("{other:?}")],
-    };
-    flags
-        .into_iter()
-        .filter(|flag| {
-            let flag = flag.trim();
-            ["-A", "-W", "--allow", "--warn", "--cap-lints"]
-                .iter()
-                .any(|level| flag.starts_with(level))
-                || flag.contains("crate-attr")
-        })
-        .collect()
-}
+/// The only key the repository's cargo config may hold: the `cargo xtask` alias that every CI job
+/// calls (`.cargo/config.toml`). Its value must run this package; its other flags may change.
+const XTASK_ALIAS: &str = "xtask";
 
-/// Ways a repository cargo config file would reach clippy around the per-crate configs, read
-/// from the parsed TOML, so inline tables, dotted and quoted keys all count. A file that does not
-/// parse is a problem: cargo would refuse it, and the check cannot vouch for it.
+/// What the `xtask` alias must run.
+const XTASK_PACKAGE: &str = "--package syntropy-xtask";
+
+/// A repository cargo config file against an allowlist: the `xtask` alias and nothing else.
+///
+/// Cargo reads this file for every run from the root, and much of it can change how clippy lints
+/// the covered crates: `rustflags` that set a lint level (`-A`, `--cap-lints`, `--force-warn`),
+/// `[env]` entries that reach rustc and clippy-driver (`CLIPPY_ARGS` with `force = true`),
+/// compiler wrappers, a different `rustc`, and an alias that shadows `cargo clippy` itself, an
+/// external subcommand that an alias overrides. An allowlist closes them all, including ones not
+/// listed here; a change to this file is CI configuration, so the check changes with it. The file
+/// is parsed as TOML, so inline tables and quoted or dotted keys count. A file that does not parse
+/// is a problem: the check cannot vouch for it.
 fn cargo_config_problems(file: &str, text: &str) -> Vec<String> {
     let table: toml::Table = match toml::from_str(text) {
         Ok(table) => table,
         Err(error) => return vec![format!("{file}: does not parse as TOML: {error}")],
     };
     let mut problems = Vec::new();
-    config_walk(file, "", &table, &mut problems);
-    problems
-}
-
-fn config_walk(file: &str, path: &str, table: &toml::Table, problems: &mut Vec<String>) {
-    for (key, value) in table {
-        let full = if path.is_empty() {
-            key.clone()
-        } else {
-            format!("{path}.{key}")
+    let refuse = |key: &str| {
+        format!(
+            "{file}: `{key}` is outside the allowlist (only `alias.{XTASK_ALIAS}`): the \
+             repository's cargo config reaches every clippy run of the covered crates"
+        )
+    };
+    for (key, value) in &table {
+        let Some(aliases) = value.as_table().filter(|_| key == "alias") else {
+            problems.push(refuse(key));
+            continue;
         };
-        for variable in ["CLIPPY_CONF_DIR", "RUSTFLAGS"] {
-            if key.contains(variable) {
+        for (name, command) in aliases {
+            let full = format!("alias.{name}");
+            let runs_xtask = command
+                .as_str()
+                .is_some_and(|c| c.starts_with("run ") && c.contains(XTASK_PACKAGE));
+            if name != XTASK_ALIAS {
+                problems.push(refuse(&full));
+            } else if !runs_xtask {
                 problems.push(format!(
-                    "{file}: `{full}` sets {variable}, which would change how clippy lints every \
-                     covered crate"
+                    "{file}: `{full}` must be a `run {XTASK_PACKAGE} ...` string; every CI job \
+                     reaches xtask through it"
                 ));
             }
-        }
-        if key == "rustc-wrapper" || key == "rustc-workspace-wrapper" {
-            problems.push(format!(
-                "{file}: sets `{full}`; a wrapper can rewrite clippy's flags in every covered crate"
-            ));
-        }
-        if key == "rustflags" {
-            for flag in lint_level_flags(value) {
-                problems.push(format!(
-                    "{file}: `{full}` passes `{flag}`, which sets a lint level clippy would obey; \
-                     the lints of {SOURCE} stay on in covered crates"
-                ));
-            }
-        }
-        if let toml::Value::Table(inner) = value {
-            config_walk(file, &full, inner, problems);
         }
     }
+    problems
 }
 
 /// Every `.rs` file under `dir`, skipping `target` directories, sorted.
@@ -691,15 +683,17 @@ mod tests {
         assert_eq!(found.len(), 7, "{found:#?}");
     }
 
+    /// The levels in `text` that name a lifting lint or a macro-built one.
     fn levels(text: &str) -> Vec<(String, String, usize)> {
         lint_levels(text)
             .unwrap()
             .into_iter()
+            .filter(|l| LIFTING.contains(&l.lint.as_str()) || l.lint.contains('$'))
             .map(|l| (l.level, l.lint, l.line))
             .collect()
     }
 
-    /// The attributes come from Rust's tokens: no literal or comment can hide or fake one.
+    /// The levels come from Rust's tokens: no literal or comment can hide or fake one.
     #[test]
     fn lint_levels_come_from_tokens_not_text() {
         let text = r##"#[allow(
@@ -717,7 +711,7 @@ const R: &str = r#"#[allow(clippy::all)] " still raw"#;
 #![cfg_attr(feature = "f", expect(clippy::style, warnings))]
 #[cfg_attr(all(), cfg_attr(test, allow(clippy::disallowed_types)))]
 macro_rules! m { () => { #[allow(clippy::disallowed_methods)] fn h() {} } }
-let s = "#[allow(warnings)]"; foo.allow(warnings);
+let s = "#[allow(warnings)]";
 "##;
         assert_eq!(
             levels(text),
@@ -730,6 +724,37 @@ let s = "#[allow(warnings)]"; foo.allow(warnings);
                 ("allow".into(), "clippy::disallowed_methods".into(), 15),
             ]
         );
+    }
+
+    /// A macro can carry the attribute or build the lint's name; both are found or refused.
+    #[test]
+    fn lint_levels_through_macros_are_found_or_refused() {
+        let text = "macro_rules! a { ($l:ident) => { #[allow($l)] fn f() {} } }\n\
+                    macro_rules! b { ($m:meta) => { #[$m] fn g() {} } }\n\
+                    a!(warnings);\nb!(allow(warnings));\nother::m!(expect(clippy::all));\n";
+        assert_eq!(
+            levels(text),
+            [
+                ("allow".into(), "$l".into(), 1),
+                ("attribute".into(), "$m".into(), 2),
+                ("allow".into(), "warnings".into(), 4),
+                ("expect".into(), "clippy::all".into(), 5),
+            ]
+        );
+        let files = [file("crates/exec/src/lib.rs", text)];
+        let found = source_problems(&files, EXEC_ONLY, &[]);
+        for expected in [
+            ":1: `allow` takes `$l` from a macro",
+            ":2: `attribute` takes `$m` from a macro",
+            ":4: `allow(warnings)` lifts",
+            ":5: `expect(clippy::all)` lifts",
+        ] {
+            assert!(
+                found.iter().any(|line| line.contains(expected)),
+                "{expected}: {found:#?}"
+            );
+        }
+        assert_eq!(found.len(), 4, "{found:#?}");
     }
 
     #[test]
@@ -746,73 +771,54 @@ let s = "#[allow(warnings)]"; foo.allow(warnings);
         );
     }
 
-    /// Review B2: rustflags in the repository's cargo config reach clippy-driver. The config is
-    /// parsed as TOML, so inline tables and quoted or dotted keys count too.
+    /// Review B2 and its follow-ups: the repository's cargo config holds the `xtask` alias and
+    /// nothing else, read as TOML, so no table, key form or flag gets past it.
     #[test]
-    fn a_cargo_config_that_reaches_clippy_fails() {
+    fn the_cargo_config_holds_only_the_xtask_alias() {
         let real = std::fs::read_to_string(root().join(".cargo/config.toml")).unwrap();
         assert_eq!(
             cargo_config_problems(".cargo/config.toml", &real),
             Vec::<String>::new()
         );
-        let fine = "[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n";
+        let alias = "[alias]\nxtask = \"run --quiet --locked --package syntropy-xtask --\"\n";
         assert_eq!(
-            cargo_config_problems(".cargo/config.toml", fine),
+            cargo_config_problems(".cargo/config", alias),
             Vec::<String>::new()
         );
         for (text, expected) in [
             (
                 "[build]\nrustflags = [\"-Aclippy::disallowed_methods\"]\n",
-                "`build.rustflags` passes `-Aclippy::disallowed_methods`",
+                "`build` is outside the allowlist",
             ),
             (
-                "[build]\nrustflags = \"-A warnings\"\n",
-                "`build.rustflags` passes `-A`",
+                "[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n",
+                "`build` is outside the allowlist",
             ),
             (
-                "build = { rustflags = [\"-Awarnings\"] }\n",
-                "`build.rustflags` passes `-Awarnings`",
+                "build = { rustflags = [\"--force-warn\", \"clippy::disallowed_methods\"] }\n",
+                "`build` is outside the allowlist",
             ),
             (
-                "[build]\n\"rustflags\" = [\"--cap-lints\", \"allow\"]\n",
-                "`build.rustflags` passes `--cap-lints`",
+                "[target.'cfg(all())']\nrustflags = [\"--cap-lints\", \"allow\"]\n",
+                "`target` is outside the allowlist",
             ),
             (
-                "[target.'cfg(all())']\nrustflags = [\n  \"--cap-lints\",\n  \"allow\",\n]\n",
-                "`target.cfg(all()).rustflags` passes `--cap-lints`",
+                "[env]\nCLIPPY_ARGS = { value = \"\", force = true }\n",
+                "`env` is outside the allowlist",
             ),
             (
-                "target.x86_64-unknown-linux-gnu.rustflags = [\"--allow=warnings\"]\n",
-                "`target.x86_64-unknown-linux-gnu.rustflags` passes `--allow=warnings`",
+                "[alias]\nclippy = \"run --package other --\"\n",
+                "`alias.clippy` is outside the allowlist",
             ),
             (
-                "[target.x86_64-unknown-linux-gnu]\nrustflags = [\"-W\", \"clippy::all\"]\n",
-                "passes `-W`",
+                "alias = { fmt = \"check\" }\n",
+                "`alias.fmt` is outside the allowlist",
             ),
             (
-                "[profile.dev]\nrustflags = [\"-Zcrate-attr=allow(warnings)\"]\n",
-                "`profile.dev.rustflags` passes `-Zcrate-attr=allow(warnings)`",
+                "[alias]\nxtask = \"run --quiet --package other --\"\n",
+                "`alias.xtask` must be a `run --package syntropy-xtask ...` string",
             ),
-            (
-                "[env]\nRUSTFLAGS = \"-Awarnings\"\n",
-                "`env.RUSTFLAGS` sets RUSTFLAGS",
-            ),
-            (
-                "[env]\nCARGO_ENCODED_RUSTFLAGS = { value = \"x\", force = true }\n",
-                "`env.CARGO_ENCODED_RUSTFLAGS` sets RUSTFLAGS",
-            ),
-            (
-                "[env]\nCLIPPY_CONF_DIR = \"/x\"\n",
-                "`env.CLIPPY_CONF_DIR` sets CLIPPY_CONF_DIR",
-            ),
-            (
-                "build = { rustc-wrapper = \"w\" }\n",
-                "sets `build.rustc-wrapper`",
-            ),
-            (
-                "[build]\nrustc-workspace-wrapper = \"w\"\n",
-                "sets `build.rustc-workspace-wrapper`",
-            ),
+            ("alias = \"x\"\n", "`alias` is outside the allowlist"),
             ("[build\nrustflags = 1\n", "does not parse as TOML"),
         ] {
             let found = cargo_config_problems(".cargo/config.toml", text);
