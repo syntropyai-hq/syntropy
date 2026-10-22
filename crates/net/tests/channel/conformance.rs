@@ -229,7 +229,12 @@ fn the_core_passes_every_conformance_rule() {
     };
     let report = conformance::run(&mut fabric);
     assert!(report.passed(), "{report}");
-    assert!(report.skipped.is_empty(), "{report}");
+    // Bare cores have no transport to register a pool with.
+    assert_eq!(
+        report.skipped,
+        [conformance::Rule::Registration],
+        "{report}"
+    );
     for pair in &fabric.pairs {
         let pair = pair.lock().unwrap();
         assert_eq!((pair.a.fault(), pair.b.fault()), (None, None));

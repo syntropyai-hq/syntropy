@@ -182,6 +182,13 @@ impl Fabric for Tcp<'_> {
         &self.send_pool
     }
 
+    fn register(
+        &mut self,
+        pool: &BufferPool,
+    ) -> Option<Result<syntropy_net::transport::PoolRegistration, Error>> {
+        Some(self.from.register(pool))
+    }
+
     fn pump(&mut self) {
         std::thread::sleep(Duration::from_millis(1));
     }

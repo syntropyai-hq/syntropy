@@ -1027,6 +1027,20 @@ mod tests {
         assert_eq!(pool.take().map(|w| w.slot()), Some(freed));
     }
 
+    /// Review of #1833, N2: each taker starts one slot further round than the last, so a slot
+    /// freed and taken again on an idle pool is not handed straight back.
+    #[test]
+    fn take_starts_one_slot_further_round_each_time() {
+        let pool = pool(4);
+        let first = pool.take().expect("a free slot").slot();
+        let second = pool.take().expect("a free slot").slot();
+        let third = pool.take().expect("a free slot").slot();
+        assert_ne!(first, second);
+        assert_ne!(second, third);
+        assert_eq!((second + 4 - first) % 4, 1);
+        assert_eq!((third + 4 - second) % 4, 1);
+    }
+
     /// Takers on several threads never hold one slot at once: each writes its thread's mark into
     /// the slot, checks it is still there, and frees it.
     #[test]

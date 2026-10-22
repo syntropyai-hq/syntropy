@@ -195,6 +195,13 @@ impl Fabric for QuicFabric {
         &self.send_pool
     }
 
+    fn register(
+        &mut self,
+        pool: &BufferPool,
+    ) -> Option<Result<syntropy_net::transport::PoolRegistration, syntropy_net::Error>> {
+        Some(self.pair.a.register(pool))
+    }
+
     /// Frames, credits and acknowledgements move on their own; the suite waits a little.
     fn pump(&mut self) {
         std::thread::sleep(Duration::from_micros(500));
