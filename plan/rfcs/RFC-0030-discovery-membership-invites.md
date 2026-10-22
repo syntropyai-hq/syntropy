@@ -862,6 +862,11 @@ Rules the table leaves open:
 - On Windows, `IfType` 53 and 131 are overlays, every other non-Wi-Fi adapter is Ethernet, and `MULTICAST` is set for Ethernet, Wi-Fi and Thunderbolt IP, since `Get-NetAdapter` reports no multicast flag.
 - Flagging an "Ethernet" interface that behaves as Wi-Fi by its measured p99 is DIST-E6-T07's.
 
+How a listing degrades, and its limits:
+- A listing fails only when a source it needs cannot be read at all. A line or interface that does not parse is skipped with a warning, so it costs only itself. On Linux, a point-to-point address (`inet LOCAL peer PEER/len`, as OpenVPN and PPP print it) reads as `LOCAL` with that prefix.
+- **Ordinals.** An interface keeps its ordinal while the node's ordinal table holds its name. No two names held at once share an ordinal, and an ordinal freed by retiring a name is given out again only after every other free one. The table holds 65,536 names at once. When it is full, a new interface is left out of the listing with a warning. On a host that makes a name per container (`veth…`), the daemon retires names it no longer sees; DIST-E6-T03 sets when.
+- **Localised names.** macOS port names come from `networksetup`. They may be localised on a system in another language (`WLAN` for `Wi-Fi`), and such a port would be classified Ethernet. No non-English rig has checked this yet. If they are localised, DIST-E6-T08 reads the interface type (`SCNetworkInterfaceGetInterfaceType`) instead. On Windows the script reads the numeric operational status and writes UTF-8, so neither a localised status nor a non-ASCII adapter name changes the listing.
+
 #### 7.3 Thunderbolt topology and the bridge
 
 macOS joins every Thunderbolt port into a "Thunderbolt Bridge" (`bridge0`) by default. With three or more Macs cabled in a loop, a bridged loop with no spanning tree causes a broadcast storm. Apple's RDMA-over-Thunderbolt guidance also says to disable the bridge when the cables form a loop (TN3205, cited in ADR-0011).
