@@ -87,10 +87,16 @@ pub enum WakeSource {
 }
 
 /// Where a step in flight stands once its fired doorbells are serviced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StepProgress {
     /// The step's outputs are ready: its `O[p]` flag is set (RFC-0012 §3.2).
     Done,
+    /// The device gave the step up, and every flag is re-armed (RFC-0012 §3.2), so the stage
+    /// carries on with its next step. An example is an in-step host wait past its budget,
+    /// `DoorbellTimeout` (RFC-0040 §4.5 item 2, §13 code 11; RFC-0012 §7.6). The dispatcher
+    /// hands the step to [`StepScheduler::abandoned`]. A device error the stage cannot survive is
+    /// an `Err` from [`StepDevice::service`] instead.
+    Abandoned(Error),
     /// The step's next doorbell has not fired.
     Pending {
         /// When that doorbell is predicted.
@@ -101,7 +107,7 @@ pub enum StepProgress {
 }
 
 /// What [`StepDevice::service`] did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Serviced {
     /// Doorbells that had fired and were serviced in this call, each reset and its host work
     /// done.
@@ -168,6 +174,10 @@ pub trait StepScheduler {
 
     /// The step has left the stage. Its record goes to telemetry.
     fn sent(&mut self, step: Self::Step, now: MonoTime);
+
+    /// The device abandoned the step ([`StepProgress::Abandoned`]). Its sequences end or retry
+    /// as `error` says (RFC-0012 §13), and the stage carries on.
+    fn abandoned(&mut self, step: Self::Step, error: Error, now: MonoTime);
 
     /// When the stage next wants a poll with nothing in flight, if it does (RFC-0012 §3.3).
     ///
@@ -287,6 +297,7 @@ where
 
         // 2. Advance the step in flight.
         let mut left = false;
+        let mut abandoned = None;
         if let Some(flight) = &mut self.in_flight {
             if flight.phase == Phase::Serving {
                 match self.device.service(&mut flight.step, now) {
@@ -302,6 +313,7 @@ where
                             StepProgress::Pending { expect, wake } => {
                                 flight.next = Some((expect, wake));
                             }
+                            StepProgress::Abandoned(error) => abandoned = Some(error),
                         }
                     }
                     Err(error) => return self.faulted(error),
@@ -316,6 +328,12 @@ where
         }
         if left && let Some(flight) = self.in_flight.take() {
             self.scheduler.sent(flight.step, now);
+            progress = true;
+        }
+        if let Some(error) = abandoned
+            && let Some(flight) = self.in_flight.take()
+        {
+            self.scheduler.abandoned(flight.step, error, now);
             progress = true;
         }
 

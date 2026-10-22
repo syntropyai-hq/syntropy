@@ -61,6 +61,7 @@ struct FakeScheduler {
     inbound_closed: bool,
     finished: Vec<u32>,
     sent: Vec<u32>,
+    abandoned: Vec<(u32, Error)>,
     next_wake: Option<MonoTime>,
     /// How many times the loop armed every inbound ring and could park.
     parks: Arc<AtomicU32>,
@@ -80,6 +81,7 @@ impl FakeScheduler {
             inbound_closed: false,
             finished: Vec::new(),
             sent: Vec::new(),
+            abandoned: Vec::new(),
             next_wake: None,
             parks: Arc::default(),
             first_idle: Arc::new(AtomicU64::new(u64::MAX)),
@@ -129,6 +131,10 @@ impl StepScheduler for FakeScheduler {
         self.sent.push(step);
     }
 
+    fn abandoned(&mut self, step: u32, error: Error, _now: MonoTime) {
+        self.abandoned.push((step, error));
+    }
+
     fn next_wake(&self, now: MonoTime) -> Option<MonoTime> {
         self.first_idle.fetch_min(now.0, Ordering::SeqCst);
         self.next_wake
@@ -169,6 +175,8 @@ struct FakeDevice {
     instant: bool,
     services: u32,
     fail: Option<Error>,
+    /// The next service gives the step up with this error, its flags re-armed.
+    abandon: Option<Error>,
     /// Moves `ticks` on by this much inside each service: a call that takes that long.
     slow: Option<(TestTicks, Nanos)>,
 }
@@ -185,6 +193,7 @@ impl FakeDevice {
             instant: false,
             services: 0,
             fail: None,
+            abandon: None,
             slow: None,
         }
     }
@@ -206,6 +215,12 @@ impl StepDevice<u32> for FakeDevice {
         }
         if let Some(error) = self.fail.take() {
             return Err(error);
+        }
+        if let Some(error) = self.abandon.take() {
+            return Ok(Serviced {
+                fired: 0,
+                progress: StepProgress::Abandoned(error),
+            });
         }
         let written = self.written.load(Ordering::SeqCst).min(self.doorbells + 1);
         let fired = written - self.serviced;
@@ -230,8 +245,9 @@ fn device_error() -> Error {
     }
 }
 
-/// The test's error for a closed outbound ring. Its code is one no RFC lists, since `kernels`'
-/// `Error` carries a Kernels-domain code and none names this case.
+/// The test's error for a closed outbound ring. `kernels`' `Error` is a stand-in until `core`
+/// has RFC-0001 §5.12's `Error` (issue #1525 item 2), and its codes are Kernels codes, none of
+/// which names this case, so the test uses one no RFC lists.
 fn closed_error() -> Error {
     Error {
         class: ErrorClass::Link,
@@ -368,6 +384,46 @@ fn a_closed_outbound_ring_faults_instead_of_holding_the_step() {
         d.run(&LoopConfig::MAINS, &mut NoDeviceWake),
         Err(closed_error())
     );
+}
+
+/// `DoorbellTimeout`, `(Kernels, 11)`: an in-step host wait past its budget (RFC-0040 §13).
+fn doorbell_timeout() -> Error {
+    Error {
+        class: ErrorClass::Timeout,
+        code: ErrorCode(11),
+        message: "a host wait passed its budget".to_owned(),
+    }
+}
+
+/// An abandoned step is survived, not a fault. The scheduler gets it back with its error, the
+/// next step launches in the same pass, and that step completes (RFC-0040 §4.5 item 2;
+/// PLC-E7-T03's criterion that the step after an abandoned step completes).
+#[test]
+fn the_step_after_an_abandoned_step_completes() {
+    let mut device = FakeDevice::new(1);
+    device.abandon = Some(doorbell_timeout());
+    let written = Arc::clone(&device.written);
+    let (mut d, mut to_stage, mut from_stage) = dispatcher(device, TestTicks::default(), 4);
+    to_stage.push(1).unwrap();
+    to_stage.push(2).unwrap();
+    let t = MonoTime(10);
+    assert_eq!(poll(&mut d, t), PollOutcome::Progress, "launch step 1");
+    assert_eq!(
+        poll(&mut d, t),
+        PollOutcome::Progress,
+        "step 1 abandoned, step 2 launched"
+    );
+    assert_eq!(d.scheduler().abandoned, [(1, doorbell_timeout())]);
+    assert!(d.in_flight());
+    written.store(2, Ordering::SeqCst);
+    assert_eq!(
+        poll(&mut d, t),
+        PollOutcome::Progress,
+        "step 2 done and sent"
+    );
+    assert_eq!(d.scheduler().sent, [2]);
+    assert_eq!(from_stage.pop(), Ok(20));
+    assert!(matches!(poll(&mut d, t), PollOutcome::Idle { .. }));
 }
 
 /// A device error faults the dispatcher, and every later pass returns the same fault without
@@ -689,6 +745,10 @@ impl StepScheduler for TwoRings {
 
     fn sent(&mut self, step: u32, now: MonoTime) {
         self.main.sent(step, now);
+    }
+
+    fn abandoned(&mut self, step: u32, error: Error, now: MonoTime) {
+        self.main.abandoned(step, error, now);
     }
 
     fn next_wake(&self, now: MonoTime) -> Option<MonoTime> {

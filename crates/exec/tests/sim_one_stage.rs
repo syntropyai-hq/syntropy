@@ -196,6 +196,10 @@ impl StepScheduler for SimScheduler {
         });
     }
 
+    fn abandoned(&mut self, step: Step, error: Error, _now: MonoTime) {
+        panic!("step {} abandoned: {error}", step.number);
+    }
+
     fn next_wake(&self, _now: MonoTime) -> Option<MonoTime> {
         None
     }
