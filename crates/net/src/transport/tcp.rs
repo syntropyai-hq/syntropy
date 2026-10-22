@@ -39,7 +39,7 @@
 pub mod tls;
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -76,10 +76,18 @@ pub const TICK: Duration = Duration::from_millis(1);
 /// The bytes a writer gathers from the core before it writes them out \[target\].
 const FLUSH_AT: usize = 256 << 10;
 
-/// Connections the listener takes through TLS and `Hello` at once \[target\]: a peer that never
-/// finishes its handshake holds one until the handshake timeout, and no more are accepted while
-/// every one is held.
+/// Connections the listener takes through TLS and `Hello` at once \[target\]. A connection that
+/// arrives while every one is held is closed at once, and the listener keeps accepting.
 pub const MAX_HANDSHAKES: usize = 64;
+
+/// Of those, the most from one source address \[target\], so one host's slow or silent
+/// connections cannot hold every handshake.
+pub const MAX_HANDSHAKES_PER_ADDRESS: usize = 8;
+
+/// The longest the TLS handshake may take, before the peer has proved its key \[target\]:
+/// shorter than the whole handshake's timeout, so an unauthenticated connection is let go
+/// soonest. TLS 1.3 takes one round trip and a bit.
+pub const TLS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long the listener waits after an `accept` fails, such as when the process is out of file
 /// descriptors, before it tries again \[target\].
@@ -185,6 +193,8 @@ struct Inner {
     rendezvous: Mutex<Rendezvous>,
     /// One permit per handshake in progress, [`MAX_HANDSHAKES`] in all.
     handshakes: Arc<Semaphore>,
+    /// Handshakes in progress by source address.
+    per_address: Mutex<Vec<(IpAddr, usize)>>,
     local_addr: SocketAddr,
     clock: Clock,
 }
@@ -260,6 +270,7 @@ impl TcpTransport {
             pools: Mutex::new(Vec::new()),
             rendezvous: Mutex::new(Rendezvous::default()),
             handshakes: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
+            per_address: Mutex::new(Vec::new()),
             local_addr,
             clock: Clock(Instant::now()),
         });
@@ -646,18 +657,54 @@ async fn read_control(stream: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>, 
 /// peer never holds up another.
 async fn listen(inner: Arc<Inner>, listener: TcpListener, acceptor: TlsAcceptor) {
     loop {
-        // At most `MAX_HANDSHAKES` at once: no new connection is taken while every permit is
-        // held, so silent peers cannot pile up unauthenticated sockets.
-        let Ok(permit) = Arc::clone(&inner.handshakes).acquire_owned().await else {
-            return;
-        };
-        match listener.accept().await {
-            Ok((tcp, _)) => {
-                tokio::spawn(arrive(Arc::clone(&inner), tcp, acceptor.clone(), permit));
-            }
+        let (tcp, from) = match listener.accept().await {
+            Ok(accepted) => accepted,
             Err(_) => {
-                drop(permit);
                 tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+        };
+        // Over either cap the connection is closed at once and the listener goes on accepting,
+        // so slow or silent peers can neither hold every handshake nor stop the listener.
+        if let Some(slot) = Handshake::start(&inner, from.ip()) {
+            tokio::spawn(arrive(Arc::clone(&inner), tcp, acceptor.clone(), slot));
+        }
+    }
+}
+
+/// One handshake in progress: a permit of [`MAX_HANDSHAKES`] and a count against its source
+/// address, both given back when it ends.
+struct Handshake {
+    inner: Arc<Inner>,
+    address: IpAddr,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl Handshake {
+    /// A handshake for a connection from `address`, or `None` when a cap is reached.
+    fn start(inner: &Arc<Inner>, address: IpAddr) -> Option<Handshake> {
+        let permit = Arc::clone(&inner.handshakes).try_acquire_owned().ok()?;
+        let mut counts = lock(&inner.per_address);
+        match counts.iter_mut().find(|(known, _)| *known == address) {
+            Some((_, count)) if *count >= MAX_HANDSHAKES_PER_ADDRESS => return None,
+            Some((_, count)) => *count += 1,
+            None => counts.push((address, 1)),
+        }
+        Some(Handshake {
+            inner: Arc::clone(inner),
+            address,
+            _permit: permit,
+        })
+    }
+}
+
+impl Drop for Handshake {
+    fn drop(&mut self) {
+        let mut counts = lock(&self.inner.per_address);
+        if let Some(at) = counts.iter().position(|(known, _)| *known == self.address) {
+            counts[at].1 -= 1;
+            if counts[at].1 == 0 {
+                counts.swap_remove(at);
             }
         }
     }
@@ -666,16 +713,12 @@ async fn listen(inner: Arc<Inner>, listener: TcpListener, acceptor: TlsAcceptor)
 /// One arriving connection: TLS, then its `Hello`, its credential checked, then on to the
 /// `accept` of its key. A connection that fails is dropped, after a refusing `HelloAck` where
 /// the `Hello` was read.
-async fn arrive(
-    inner: Arc<Inner>,
-    tcp: TcpStream,
-    acceptor: TlsAcceptor,
-    permit: OwnedSemaphorePermit,
-) {
+async fn arrive(inner: Arc<Inner>, tcp: TcpStream, acceptor: TlsAcceptor, slot: Handshake) {
     let timeout = inner.config.handshake_timeout;
     let arrived = tokio::time::timeout(timeout, async {
         tcp.set_nodelay(true).ok()?;
-        let mut stream = TlsStream::Server(acceptor.accept(tcp).await.ok()?);
+        let tls = tokio::time::timeout(TLS_TIMEOUT.min(timeout), acceptor.accept(tcp));
+        let mut stream = TlsStream::Server(tls.await.ok()?.ok()?);
         let peer = {
             let (_, connection) = stream.get_ref();
             let certs = connection.peer_certificates()?;
@@ -709,7 +752,7 @@ async fn arrive(
         })
     })
     .await;
-    drop(permit);
+    drop(slot);
     let Ok(Some(arrived)) = arrived else {
         return;
     };

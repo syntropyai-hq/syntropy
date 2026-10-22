@@ -22,11 +22,14 @@ use syntropy_net::error::ErrorCode;
 use syntropy_net::frame::{CredKind, Hello, HelloAck};
 use syntropy_net::transport::conformance::{self, Fabric, MAX_FRAME, Rule, SEND_SLOT, SEND_SLOTS};
 use syntropy_net::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
-use syntropy_net::transport::tcp::{Credential, CredentialCheck, TcpConfig, TcpTransport};
+use syntropy_net::transport::tcp::{
+    Credential, CredentialCheck, MAX_HANDSHAKES_PER_ADDRESS, TLS_TIMEOUT, TcpConfig, TcpTransport,
+};
 use syntropy_net::transport::{
     BufferPool, Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, PoolId,
     RemoteEndpoint, Transport,
 };
+use tokio::io::AsyncReadExt;
 
 /// A check that admits every credential, or refuses each with `refuse`: runner credentials and
 /// their checks are DIST-E7-T04's, so these tests stand in for them.
@@ -422,4 +425,53 @@ fn a_connection_left_waiting_past_the_handshake_timeout_is_dropped() {
     );
     let error = sender.unwrap_err();
     assert_eq!(error.class, ErrorClass::Link, "{error}");
+}
+
+/// One source address holds at most `MAX_HANDSHAKES_PER_ADDRESS` handshakes: a connection past
+/// that is closed at once, while the listener keeps accepting.
+#[test]
+fn one_address_cannot_hold_every_handshake() {
+    let rt = runtime();
+    let b = bind(&rt, 15, None);
+    let addr = b.local_addr();
+    rt.block_on(async {
+        let mut silent = Vec::new();
+        for _ in 0..MAX_HANDSHAKES_PER_ADDRESS {
+            silent.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+        }
+        // The listener has taken them all into handshakes by now.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut extra = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_millis(500), extra.read(&mut byte)).await;
+        assert!(
+            matches!(read, Ok(Ok(0) | Err(_))),
+            "a connection past the address's cap was kept: {read:?}"
+        );
+        drop(silent);
+    });
+}
+
+/// A connection that never starts TLS is let go after `TLS_TIMEOUT`, well before the whole
+/// handshake's timeout.
+#[test]
+fn a_connection_that_never_starts_tls_is_let_go() {
+    let rt = runtime();
+    let b = bind_with(
+        &rt,
+        TcpConfig {
+            handshake_timeout: Duration::from_secs(30),
+            ..config(16, None)
+        },
+    );
+    let addr = b.local_addr();
+    rt.block_on(async {
+        let mut silent = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(TLS_TIMEOUT * 2, silent.read(&mut byte)).await;
+        assert!(
+            matches!(read, Ok(Ok(0) | Err(_))),
+            "a silent connection was held past the TLS timeout: {read:?}"
+        );
+    });
 }
