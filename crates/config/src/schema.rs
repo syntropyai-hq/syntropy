@@ -247,6 +247,12 @@ pub struct KeySchema {
     /// deserialize into the field's type and lie in the key's range (RFC-0054 §8 phase 3). The
     /// error's kind gives its code, such as `bad_unit`.
     pub check: fn(&toml::Value) -> Result<(), ValueError>,
+    /// Whether two values for this key give the same value. Both are read as the field's
+    /// type, through its `serde(with)` path if it has one, and compared with `==` where the
+    /// type implements `PartialEq`, so `"300us"` and `"300000ns"` are one duration. A type
+    /// without `PartialEq`, such as a `Secret`, compares values as written, and so does a
+    /// value that does not read.
+    pub same: fn(&toml::Value, &toml::Value) -> bool,
 }
 
 /// One section, as `#[derive(ConfigSection)]` records it.
