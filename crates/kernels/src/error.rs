@@ -23,6 +23,11 @@ pub struct ErrorCode(pub u16);
 impl ErrorCode {
     /// `OpUnsupported` (RFC-0040 §13 code 1): what [`unsupported`] carries.
     pub const OP_UNSUPPORTED: Self = Self(1);
+    /// `DeviceSticky` (RFC-0040 §13 code 8): a sticky device error. The runner exits, and the
+    /// supervisor restarts it.
+    pub const DEVICE_STICKY: Self = Self(8);
+    /// `AllocFailed` (RFC-0040 §13 code 9): `alloc`, `map_segment` or `import` failed.
+    pub const ALLOC_FAILED: Self = Self(9);
     /// `AmxDenied` (RFC-0040 §13 code 13): the OS refused AMX tile permission to a process
     /// opening a device whose class is `X86V4Amx` (RFC-0040 §7.3; ADR-0405 decision 3).
     pub const AMX_DENIED: Self = Self(13);
