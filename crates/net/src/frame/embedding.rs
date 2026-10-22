@@ -392,7 +392,11 @@ pub fn assemble(parts: &[EmbeddingResult<'_>]) -> Result<Vec<f32>, FrameError> {
         if let Some(&(field, value, expected)) = agree.iter().find(|(_, v, e)| v != e) {
             return Err(inconsistent(field, value, expected));
         }
-        let slot = &mut ordered[usize::from(part.part_index)];
+        // `validate` and the `part_count` check keep the index below `parts.len()`. A part that
+        // got past them anyway is refused, never indexed.
+        let Some(slot) = ordered.get_mut(usize::from(part.part_index)) else {
+            return Err(bad("part_index", part.part_index));
+        };
         if slot.is_some() {
             return Err(bad("part_index", part.part_index));
         }
