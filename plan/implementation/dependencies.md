@@ -136,7 +136,7 @@ Plan-rule notes. None of them fails the check; each one is a row for its area to
 ## Most depended-on tasks
 
 <!-- BEGIN GENERATED: deps-hubs -->
-The 20 tasks with the most direct dependents. A change to one of their interfaces reaches every area in the last column. 12 tasks depend on nothing; 417 tasks have no dependents.
+The 20 tasks with the most direct dependents. A change to one of their interfaces reaches every area in the last column. 12 tasks depend on nothing; 416 tasks have no dependents.
 
 | Task | Milestone | What | Direct dependents | Dependents by area |
 |---|---|---|---|---|
