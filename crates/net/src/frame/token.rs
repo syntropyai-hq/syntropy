@@ -12,9 +12,10 @@
 //!
 //! The two copies of a step carry different things. The ring-return copy carries each entry's
 //! draft for the next window and the items for the head, and no tap block. The ingress copy
-//! carries the tap blocks, and no draft and no items. [`StepTokens::encode`] writes either copy
-//! from the tail's whole step, leaving out what that copy does not carry. [`Frame::token`]
-//! refuses a frame that carries one.
+//! carries the tap blocks, and no draft, and of the items only its entries' `TRACE`. Both carry
+//! a sampled step's `TRACE` items, so the return path appears as a hop span (RFC-0053 §3.2).
+//! [`StepTokens::encode`] writes either copy from the tail's whole step, leaving out what that
+//! copy does not carry. [`Frame::token`] refuses a frame that carries one.
 //!
 //! An entry's header cannot say whether its draft is a chain or a tree, since `draft_nodes`
 //! equals `n_draft` either way. The extension's flags bit2 `DRAFT_TREE` says it for the frame:
@@ -24,7 +25,7 @@
 //! - the tap block's contents, which travel as bytes until DIST-E8-T06 reads them;
 //! - the ring-return items (`KV_HEADROOM`, `PREFIX_DROPPED`, …), carried as
 //!   [`SideItem::Other`], and the narrower set of types a ring-return frame may carry, both
-//!   DIST-E8-T04's. The `Activation` items, types 1–7, are refused here;
+//!   DIST-E8-T04's. Of the `Activation` items, types 1–7, only `TRACE` is accepted;
 //! - splitting a step into parts: [`Token`] reads and writes `part_index` and `part_count`.
 //!
 //! Neither direction allocates: a decoded frame borrows its entries and items from the frame's
@@ -34,7 +35,9 @@ use std::fmt;
 
 use syntropy_core::{ApproxFlags, InstanceId, PlanEpoch, SequenceId};
 
-use super::activation::{ABSENT, SideItem, SideItems, TreeArea, get16, get32, get64, read_tlv};
+use super::activation::{
+    ABSENT, Side, SideItem, SideItems, TraceContext, TreeArea, get16, get32, get64, read_tlv,
+};
 use super::error::FrameError;
 use super::header::{self, ALIGN, Flags, Frame, FrameSpec, FrameType, HEADER_LEN};
 
@@ -443,8 +446,9 @@ impl fmt::Debug for Entries<'_> {
     }
 }
 
-/// The header fields of an unsealed `Token` frame. `HAS_TRACE` must be clear, since a `Token`
-/// frame carries no `TRACE` item, and `ENCRYPTED` is the AEAD layer's.
+/// The header fields of an unsealed `Token` frame. `flags` bit0 `HAS_TRACE` is set from the
+/// `TRACE` items the copy carries, as the lengths and CRCs follow from the frame; `ENCRYPTED`
+/// is the AEAD layer's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TokenSpec {
     pub wire_minor: u8,
@@ -463,7 +467,8 @@ pub struct Token<'a> {
     pub part_index: u16,
     /// At least 1.
     pub part_count: u16,
-    /// The items for the head, on the ring-return copy only.
+    /// The items: the items for the head on the ring-return copy, and `TRACE` for a sampled
+    /// step's entries on either copy, its `span` the entry.
     pub side: SideItems<'a>,
     pub entries: Entries<'a>,
 }
@@ -489,6 +494,7 @@ fn check_frame_fields(
     }
     for item in side.iter() {
         match item.item {
+            SideItem::Trace(_) => {}
             SideItem::Other { ty, value } if !(1..=7).contains(&ty) => {
                 if u32::try_from(value.len()).is_err() {
                     return Err(FrameError::TooLong {
@@ -509,7 +515,7 @@ fn check_frame_fields(
     Ok(())
 }
 
-/// The type code of an `Activation` item that has no place in a `Token` frame.
+/// The type code of an `Activation` item.
 fn tlv_type(item: &SideItem<'_>) -> u16 {
     match item {
         SideItem::TokenIds(_) => 1,
@@ -520,6 +526,27 @@ fn tlv_type(item: &SideItem<'_>) -> u16 {
         SideItem::Truncate { .. } => 6,
         SideItem::DraftConf(_) => 7,
         SideItem::Other { ty, .. } => *ty,
+    }
+}
+
+/// `TRACE`'s value: W3C trace context, 26 bytes (RFC-0031 §6.3).
+const TRACE_LEN: usize = 26;
+
+fn trace_bytes(trace: &TraceContext) -> [u8; TRACE_LEN] {
+    let mut b = [0u8; TRACE_LEN];
+    b[0] = trace.version;
+    b[1..17].copy_from_slice(&trace.trace_id);
+    b[17..25].copy_from_slice(&trace.span_id);
+    b[25] = trace.flags;
+    b
+}
+
+/// The value bytes of an item a `Token` frame may carry.
+fn item_len(item: &SideItem<'_>) -> usize {
+    match item {
+        SideItem::Trace(_) => TRACE_LEN,
+        SideItem::Other { value, .. } => value.len(),
+        _ => 0,
     }
 }
 
@@ -548,6 +575,30 @@ impl Contents<'_, '_> {
         self.route == Route::ToIngress
     }
 
+    /// Where `item` goes in this copy, with its span there: every item on the ring-return copy;
+    /// on an ingress copy, only `TRACE`, for every entry or for an entry it keeps, the span
+    /// counted among the kept entries.
+    fn place(&self, item: &Side<'_>) -> Option<Option<u16>> {
+        if self.route == Route::RingReturn {
+            return Some(item.span);
+        }
+        if !matches!(item.item, SideItem::Trace(_)) {
+            return None;
+        }
+        let Some(span) = item.span else {
+            return Some(None);
+        };
+        let mut kept = 0u16;
+        for (index, entry) in self.entries.iter().enumerate() {
+            let keeps = self.keeps(&entry);
+            if index == usize::from(span) {
+                return keeps.then_some(Some(kept));
+            }
+            kept += u16::from(keeps);
+        }
+        None
+    }
+
     /// Whether the frame's drafts are trees: `DRAFT_TREE`.
     fn tree(&self) -> bool {
         self.draft() && self.entries.iter().any(|entry| entry.draft_tree.is_some())
@@ -556,11 +607,9 @@ impl Contents<'_, '_> {
     /// The unpadded extension length, and the payload length.
     fn lens(&self) -> (usize, usize) {
         let mut ext = TOKEN_FIXED_LEN;
-        if self.route == Route::RingReturn {
-            for item in self.side.iter() {
-                if let SideItem::Other { value, .. } = item.item {
-                    ext += 8 + value.len().next_multiple_of(8);
-                }
+        for item in self.side.iter() {
+            if self.place(&item).is_some() {
+                ext += 8 + item_len(&item.item).next_multiple_of(8);
             }
         }
         let payload = self
@@ -573,7 +622,7 @@ impl Contents<'_, '_> {
     }
 
     fn encode(&self, spec: &TokenSpec, out: &mut [u8]) -> Result<usize, FrameError> {
-        if spec.flags.encrypted() || spec.flags.has_trace() {
+        if spec.flags.encrypted() {
             return Err(bad("flags", spec.flags.0));
         }
         let tree = self.tree();
@@ -616,17 +665,27 @@ impl Contents<'_, '_> {
         e[8..10].copy_from_slice(&self.part_index.to_le_bytes());
         e[10..12].copy_from_slice(&self.part_count.to_le_bytes());
         let mut at = TOKEN_FIXED_LEN;
-        if self.route == Route::RingReturn {
-            for item in self.side.iter() {
-                let SideItem::Other { ty, value } = item.item else {
-                    continue;
-                };
-                e[at..at + 2].copy_from_slice(&ty.to_le_bytes());
-                e[at + 2..at + 4].copy_from_slice(&item.span.unwrap_or(ABSENT).to_le_bytes());
-                e[at + 4..at + 8].copy_from_slice(&(value.len() as u32).to_le_bytes());
-                e[at + 8..at + 8 + value.len()].copy_from_slice(value);
-                at += 8 + value.len().next_multiple_of(8);
-            }
+        let mut has_trace = false;
+        for item in self.side.iter() {
+            let Some(span) = self.place(&item) else {
+                continue;
+            };
+            let trace;
+            let (ty, value): (u16, &[u8]) = match item.item {
+                SideItem::Trace(t) => {
+                    trace = trace_bytes(&t);
+                    has_trace = true;
+                    (5, &trace[..])
+                }
+                SideItem::Other { ty, value } => (ty, value),
+                // Refused by `check_frame_fields` before any copy is written.
+                _ => continue,
+            };
+            e[at..at + 2].copy_from_slice(&ty.to_le_bytes());
+            e[at + 2..at + 4].copy_from_slice(&span.unwrap_or(ABSENT).to_le_bytes());
+            e[at + 4..at + 8].copy_from_slice(&(value.len() as u32).to_le_bytes());
+            e[at + 8..at + 8 + value.len()].copy_from_slice(value);
+            at += 8 + value.len().next_multiple_of(8);
         }
         let mut at = HEADER_LEN + ext_len;
         for entry in self.entries.iter().filter(|entry| self.keeps(entry)) {
@@ -634,10 +693,14 @@ impl Contents<'_, '_> {
             write_entry(&entry, self.draft(), self.tap(), &mut frame[at..at + len]);
             at += len;
         }
+        let mut frame_flags = spec.flags.0 & !Flags::HAS_TRACE;
+        if has_trace {
+            frame_flags |= Flags::HAS_TRACE;
+        }
         let spec = FrameSpec {
             wire_minor: spec.wire_minor,
             ftype: FrameType::Token,
-            flags: spec.flags,
+            flags: Flags(frame_flags),
             instance: spec.instance,
             epoch: spec.epoch,
             step: spec.step,
@@ -705,12 +768,14 @@ impl<'a> Token<'a> {
     }
 
     /// Checks the rules the bytes cannot express:
-    /// - the ring-return copy carries no tap block, and the ingress copy no draft and no items;
+    /// - the ring-return copy carries no tap block, and the ingress copy no draft and no item
+    ///   but `TRACE`;
     /// - each entry's logprobs are `n_tokens` strides of the chosen logprob and `logprob_k`
     ///   alternatives, and a draft tree has a node per drafted token, each node's parent before
     ///   it;
     /// - a frame whose drafts are trees has a tree for every draft;
-    /// - side items are not `Activation` items (types 1–7), and name an entry of the frame;
+    /// - side items are `TRACE` or not `Activation` items (types 1–7), and name an entry of the
+    ///   frame;
     /// - `part_index < part_count`.
     pub fn validate(&self) -> Result<(), FrameError> {
         check_frame_fields(
@@ -738,11 +803,22 @@ impl<'a> Token<'a> {
         if trees > 0 && trees != drafts {
             return Err(inconsistent("draft_tree", trees as u64, drafts as u64));
         }
-        let items = self.side.iter().count();
-        if self.route == Route::ToIngress && items > 0 {
-            return Err(bad("side items", items as u64));
+        if self.route == Route::ToIngress
+            && let Some(item) = self
+                .side
+                .iter()
+                .find(|item| !matches!(item.item, SideItem::Trace(_)))
+        {
+            return Err(bad("ingress TLV type", tlv_type(&item.item)));
         }
         Ok(())
+    }
+
+    /// Whether the frame carries a `TRACE` item, which flags bit0 `HAS_TRACE` announces.
+    pub fn has_trace(&self) -> bool {
+        self.side
+            .iter()
+            .any(|item| matches!(item.item, SideItem::Trace(_)))
     }
 
     fn contents(&self) -> Contents<'_, 'a> {
@@ -839,8 +915,7 @@ impl<'a> StepTokens<'a> {
 }
 
 impl<'a> Frame<'a> {
-    /// The `Token` of an unsealed frame. `HAS_TRACE` must be clear: a `Token` frame carries no
-    /// `TRACE` item.
+    /// The `Token` of an unsealed frame. `HAS_TRACE` must match the `TRACE` items.
     pub fn token(&self) -> Result<Token<'a>, FrameError> {
         let ftype = self.header.spec.ftype;
         if ftype != FrameType::Token {
@@ -850,10 +925,15 @@ impl<'a> Frame<'a> {
         if flags.encrypted() {
             return Err(FrameError::Sealed(ftype));
         }
-        if flags.has_trace() {
-            return Err(bad("flags", flags.0));
+        let token = Token::parse(self.ext, self.payload)?;
+        if flags.has_trace() != token.has_trace() {
+            return Err(inconsistent(
+                "HAS_TRACE",
+                u64::from(flags.has_trace()),
+                u64::from(token.has_trace()),
+            ));
         }
-        Token::parse(self.ext, self.payload)
+        Ok(token)
     }
 }
 

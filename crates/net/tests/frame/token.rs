@@ -19,8 +19,8 @@ use proptest::prelude::*;
 use syntropy_core::{ApproxFlags, InstanceId, SequenceId};
 use syntropy_net::frame::{
     ENTRY_HEADER_LEN, Entries, Finish, Flags, Frame, FrameError, FrameType, Route, Side, SideItem,
-    SideItems, StepTokens, Token, TokenCopy, TokenEntry, TokenSpec, TreeArea, TreeNode, WIRE_MINOR,
-    tlv, token_flags,
+    SideItems, StepTokens, Token, TokenCopy, TokenEntry, TokenSpec, TraceContext, TreeArea,
+    TreeNode, WIRE_MINOR, tlv, token_flags,
 };
 
 use super::{INSTANCE, REFUSAL_CLASSES, base, epoch, golden_dir, leak, reseal, spec};
@@ -126,8 +126,18 @@ fn step21() -> Vec<TokenEntry<'static>> {
     ]
 }
 
-/// Step 21's items for the head: `KV_HEADROOM` for two stages and a `RESTART` for entry 0, both
-/// carried as bytes until DIST-E8-T04 types them.
+/// A sampled step's trace context for entry `n`.
+fn trace(n: u8) -> SideItem<'static> {
+    SideItem::Trace(TraceContext {
+        version: 0,
+        trace_id: spec::fill(0x70 + n, 16).try_into().unwrap(),
+        span_id: spec::fill(0x80 + n, 8).try_into().unwrap(),
+        flags: 1,
+    })
+}
+
+/// Step 21's items: `KV_HEADROOM` for two stages and a `RESTART` for entry 0, both carried as
+/// bytes until DIST-E8-T04 types them, and `TRACE` for the sampled entries 1 and 2.
 fn step21_side() -> Vec<Side<'static>> {
     let mut headroom = vec![2u8, 0, 0, 0, 0, 0, 0, 0];
     for stage in 0..2u16 {
@@ -151,6 +161,14 @@ fn step21_side() -> Vec<Side<'static>> {
                 ty: tlv::RESTART,
                 value: leak([1536u32.to_le_bytes(), [0; 4]].concat()),
             },
+        },
+        Side {
+            span: Some(1),
+            item: trace(1),
+        },
+        Side {
+            span: Some(2),
+            item: trace(2),
         },
     ]
 }
@@ -281,17 +299,33 @@ fn golden(
     }
     let tlvs: Vec<(u16, u16, Vec<u8>)> = side
         .iter()
-        .map(|s| match s.item {
-            SideItem::Other { ty, value } => (ty, s.span.unwrap_or(0xFFFF), value.to_vec()),
-            other => panic!("not a Token item: {other:?}"),
+        .map(|s| {
+            let span = s.span.unwrap_or(0xFFFF);
+            match s.item {
+                SideItem::Other { ty, value } => (ty, span, value.to_vec()),
+                // §6.3: version, trace-id, span-id, flags.
+                SideItem::Trace(t) => {
+                    let mut v = vec![t.version];
+                    v.extend(t.trace_id);
+                    v.extend(t.span_id);
+                    v.push(t.flags);
+                    (5, span, v)
+                }
+                other => panic!("not a Token item: {other:?}"),
+            }
         })
         .collect();
+    let has_trace = side.iter().any(|s| matches!(s.item, SideItem::Trace(_)));
     let ext = spec::token_ext(entries.len() as u16, flags, part.0, part.1, &tlvs);
     let payload: Vec<u8> = entries
         .iter()
         .flat_map(|e| spec::token_entry(&entry_fields(e, route)))
         .collect();
-    let bytes = spec::frame(&base(0x02, 0, spec.step, spec.chan_seq), &ext, &payload);
+    let bytes = spec::frame(
+        &base(0x02, u16::from(has_trace), spec.step, spec.chan_seq),
+        &ext,
+        &payload,
+    );
     Golden {
         name,
         about,
@@ -315,8 +349,8 @@ fn goldens() -> Vec<Golden> {
         golden(
             "token-ring-return",
             "step 21's ring-return copy: 3 entries, the verify result with logprobs (k = 2) and a \
-             chain draft and no tap, an Error finish, rng_counters above 2^32, KV_HEADROOM and \
-             RESTART",
+             chain draft and no tap, an Error finish, rng_counters above 2^32, KV_HEADROOM, \
+             RESTART, and TRACE for entries 1 and 2 with HAS_TRACE",
             spec_for(21, 1),
             Route::RingReturn,
             (0, 1),
@@ -325,20 +359,27 @@ fn goldens() -> Vec<Golden> {
         ),
         golden(
             "token-ingress-x",
-            "step 21's copy to ingress X: its 2 entries, the tap block and no draft, no items",
+            "step 21's copy to ingress X: its 2 entries, the tap block and no draft, and entry 1's \
+             TRACE",
             spec_for(21, 1),
             Route::ToIngress,
             (0, 1),
-            vec![],
+            vec![Side {
+                span: Some(1),
+                item: trace(1),
+            }],
             ingress(X),
         ),
         golden(
             "token-ingress-y",
-            "step 21's copy to ingress Y: the Error entry alone",
+            "step 21's copy to ingress Y: the Error entry alone, its TRACE moved to span 0",
             spec_for(21, 1),
             Route::ToIngress,
             (0, 1),
-            vec![],
+            vec![Side {
+                span: Some(0),
+                item: trace(2),
+            }],
             ingress(Y),
         ),
         golden(
@@ -499,8 +540,14 @@ fn each_copy_leaves_out_what_it_does_not_carry() {
         token.entries.iter().nth(1).unwrap().draft,
         le32s(&[8, 9, 10])
     );
-    assert_eq!(token.side.iter().count(), 2);
-    for (node, name, count) in [(X, "token-ingress-x", 2), (Y, "token-ingress-y", 1)] {
+    assert_eq!(token.side.iter().count(), 4);
+    assert!(frame.header.spec.flags.has_trace());
+    // Each ingress copy keeps its own entries' TRACE, with the span counted among them, and no
+    // other item.
+    for (node, name, count, traced) in [
+        (X, "token-ingress-x", 2, (1, trace(1))),
+        (Y, "token-ingress-y", 1, (0, trace(2))),
+    ] {
         let bytes = step
             .encode_to_vec(TokenCopy::Ingress { ingress: node }, &spec)
             .unwrap();
@@ -516,7 +563,16 @@ fn each_copy_leaves_out_what_it_does_not_carry() {
                 .iter()
                 .all(|e| e.draft.is_empty() && e.draft_tree.is_none())
         );
-        assert_eq!(token.side.iter().count(), 0);
+        let side: Vec<Side<'_>> = token.side.iter().collect();
+        assert_eq!(
+            side,
+            [Side {
+                span: Some(traced.0),
+                item: traced.1
+            }],
+            "{name}"
+        );
+        assert!(frame.header.spec.flags.has_trace(), "{name}");
     }
     let bytes = read_golden("token-ingress-x");
     let frame = Frame::decode(&bytes).unwrap();
@@ -654,12 +710,12 @@ fn a_token_frame_breaking_a_rule_is_refused_with_a_classified_error() {
             field("n_draft", 2),
         ),
         case(
-            "items on an ingress copy",
+            "an item other than TRACE on an ingress copy",
             ingress(),
             |r| {
                 r.tlvs = vec![(tlv::KV_HEADROOM, 0xFFFF, vec![0; 8])];
             },
-            field("side items", 1),
+            field("ingress TLV type", 8),
         ),
         case(
             "both copies at once",
@@ -693,10 +749,10 @@ fn a_token_frame_breaking_a_rule_is_refused_with_a_classified_error() {
             field("parent", 2),
         ),
         case(
-            "a TRACE item",
+            "a TRUNCATE item",
             ring(),
-            |r| r.tlvs = vec![(tlv::TRACE, 0xFFFF, vec![0; 26])],
-            field("TLV type", 5),
+            |r| r.tlvs = vec![(tlv::TRUNCATE, 0, vec![0; 4])],
+            field("TLV type", 6),
         ),
         case(
             "a TOKEN_IDS item",
@@ -730,7 +786,18 @@ fn a_token_frame_breaking_a_rule_is_refused_with_a_classified_error() {
             |r| r.trailer = vec![0; 8],
             inconsistent("payload_len", 200, 192),
         ),
-        case("HAS_TRACE", ring(), |r| r.base_flags = 1, field("flags", 1)),
+        case(
+            "HAS_TRACE without a TRACE",
+            ring(),
+            |r| r.base_flags = 1,
+            inconsistent("HAS_TRACE", 1, 0),
+        ),
+        case(
+            "a TRACE without HAS_TRACE",
+            ring(),
+            |r| r.tlvs = vec![(tlv::TRACE, 1, vec![0; 26])],
+            inconsistent("HAS_TRACE", 0, 1),
+        ),
         case(
             "an Activation frame",
             ring(),
@@ -874,7 +941,7 @@ fn the_encoder_refuses_what_the_decoder_would() {
             .encode_to_vec(TokenCopy::Ingress { ingress: X }, &spec)
             .is_ok()
     );
-    let trace = Vec::leak(vec![Side {
+    let disguised = Vec::leak(vec![Side {
         span: None,
         item: SideItem::Other {
             ty: tlv::TRACE,
@@ -883,16 +950,26 @@ fn the_encoder_refuses_what_the_decoder_would() {
     }]);
     let entries = Vec::leak(entries);
     assert_eq!(
-        step(entries, trace).encode_to_vec(TokenCopy::RingReturn, &spec),
+        step(entries, disguised).encode_to_vec(TokenCopy::RingReturn, &spec),
         Err(field("TLV type", 5))
     );
-    for flags in [Flags(1), Flags(Flags::ENCRYPTED)] {
-        let spec = TokenSpec { flags, ..spec };
-        assert_eq!(
-            step(entries, &[]).encode_to_vec(TokenCopy::RingReturn, &spec),
-            Err(field("flags", u64::from(flags.0)))
-        );
-    }
+    let sealed = TokenSpec {
+        flags: Flags(Flags::ENCRYPTED),
+        ..spec
+    };
+    assert_eq!(
+        step(entries, &[]).encode_to_vec(TokenCopy::RingReturn, &sealed),
+        Err(field("flags", u64::from(Flags::ENCRYPTED)))
+    );
+    // `HAS_TRACE` follows the items the copy carries, whatever the spec says.
+    let traced = TokenSpec {
+        flags: Flags(Flags::HAS_TRACE),
+        ..spec
+    };
+    let bytes = step(entries, &[])
+        .encode_to_vec(TokenCopy::Ingress { ingress: X }, &traced)
+        .unwrap();
+    assert!(!Frame::decode(&bytes).unwrap().header.spec.flags.has_trace());
     // A decoded frame re-encodes only as it came.
     let token = Token {
         route: Route::RingReturn,
@@ -1066,7 +1143,8 @@ proptest! {
     }
 
     /// A generated step's ring-return copy holds every entry, in order, with its draft and no
-    /// tap; its two ingress copies hold each entry once between them, with its tap and no draft.
+    /// tap, and every `TRACE`; its two ingress copies hold each entry once between them, with
+    /// its tap and no draft, and each copy the `TRACE` of its own entries.
     #[test]
     fn generated_steps_split_into_their_copies(
         entries in proptest::collection::vec(
@@ -1081,9 +1159,38 @@ proptest! {
             .map(|(index, numbers)| generate(index, *numbers, trees))
             .collect();
         let typed: Vec<TokenEntry<'_>> = owned.iter().map(Owned::entry).collect();
+        // Entries whose `rng_counter` has bit 3 set are on a sampled step.
+        let side: Vec<Side<'_>> = typed
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.rng_counter & 8 != 0)
+            .map(|(index, _)| Side { span: Some(index as u16), item: trace(index as u8) })
+            .collect();
+        // Each copy's TRACE items, by the sequence of the entry they name.
+        let traced = |token: &Token<'_>| -> Vec<(SequenceId, SideItem<'static>)> {
+            let entries: Vec<TokenEntry<'_>> = token.entries.iter().collect();
+            token
+                .side
+                .iter()
+                .map(|s| {
+                    let SideItem::Trace(t) = s.item else { panic!("{s:?} is not a TRACE") };
+                    (entries[usize::from(s.span.unwrap())].seq, SideItem::Trace(t))
+                })
+                .collect()
+        };
+        let expected = |node: Option<u64>| -> Vec<(SequenceId, SideItem<'static>)> {
+            side.iter()
+                .filter_map(|s| {
+                    let SideItem::Trace(t) = s.item else { return None };
+                    let seq = typed[usize::from(s.span.unwrap())].seq;
+                    node.is_none_or(|node| seq.ingress == node)
+                        .then_some((seq, SideItem::Trace(t)))
+                })
+                .collect()
+        };
         let step = StepTokens {
             entries: Entries::new(&typed),
-            side: SideItems::new(&[]),
+            side: SideItems::new(&side),
             part_index: 0,
             part_count: 1,
         };
@@ -1093,6 +1200,8 @@ proptest! {
         let token = frame.token().unwrap();
         let carried: Vec<TokenEntry<'_>> = typed.iter().map(|e| as_carried(e, Route::RingReturn)).collect();
         prop_assert_eq!(token.entries, Entries::new(&carried));
+        prop_assert_eq!(traced(&token), expected(None));
+        prop_assert_eq!(frame.header.spec.flags.has_trace(), !side.is_empty());
         let mut seen = Vec::new();
         for node in [X, Y] {
             let bytes = step.encode_to_vec(TokenCopy::Ingress { ingress: node }, &spec).unwrap();
@@ -1104,6 +1213,7 @@ proptest! {
                 .map(|e| as_carried(e, Route::ToIngress))
                 .collect();
             prop_assert_eq!(token.entries, Entries::new(&carried));
+            prop_assert_eq!(traced(&token), expected(Some(node)));
             seen.extend(token.entries.iter().map(|e| e.seq.n));
         }
         seen.sort();

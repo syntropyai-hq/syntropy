@@ -1,14 +1,14 @@
-# token-ingress-x: step 21's copy to ingress X: its 2 entries, the tap block and no draft, no items
+# token-ingress-x: step 21's copy to ingress X: its 2 entries, the tap block and no draft, and entry 1's TRACE
 # Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
 # A change to this file needs a wire-minor bump (ADR-0307 item 1).
-53 59 4e 46 01 02 00 00 88 77 66 55 44 33 22 11  # 0000 header
+53 59 4e 46 01 02 01 00 88 77 66 55 44 33 22 11  # 0000 header
 03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
 15 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0020 header
-40 00 00 00 d8 00 00 00 72 f3 31 4f ae 96 d2 68  # 0030 header
-02 00 02 00 00 00 00 00 00 00 01 00 00 00 00 00  # 0040 extension
-00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0050 extension
-00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
-00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+40 00 00 00 d8 00 00 00 72 f3 31 4f 5c aa 5d 46  # 0030 header
+02 00 02 00 28 00 00 00 00 00 01 00 00 00 00 00  # 0040 extension
+05 00 01 00 1a 00 00 00 00 71 90 af ce ed 0c 2b  # 0050 extension
+4a 69 88 a7 c6 e5 04 23 42 81 a0 bf de fd 1c 3b  # 0060 extension
+5a 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
 08 07 06 05 04 03 02 01 02 00 00 00 4d 00 00 00  # 0080 payload
 40 06 00 00 01 00 00 00 00 00 00 00 00 00 00 00  # 0090 payload
 00 00 00 00 00 00 00 00 07 00 00 00 00 00 00 00  # 00a0 payload
