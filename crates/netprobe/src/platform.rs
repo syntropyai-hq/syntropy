@@ -14,10 +14,11 @@
 //!
 //! The destination is the peer's address on a direct path, and 192.0.2.1 on a relayed path: a
 //! documentation address (RFC 5737) whose route is the default route. A route lookup sends no
-//! packet. A loopback peer is `Loopback` without a lookup, and a failed lookup for a peer is
-//! `Unknown`, never the default route's medium. The parsers read only the lines they need: the tools also print the network's name,
-//! the access point's and the interface's MAC addresses and the machine's addresses, and none of
-//! that is kept. The Windows parsers read English output only; other languages give `Unknown`.
+//! packet. A loopback peer, an IPv4-mapped one included, is `Loopback` without a lookup, and a
+//! failed lookup for a peer is `Unknown`, never the default route's medium. The parsers read only
+//! the lines they need: the tools also print the network's name, the access point's and the
+//! interface's MAC addresses and the machine's addresses, and none of that is kept. The Windows
+//! parsers read English output only; other languages give `Unknown`.
 
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr};
@@ -48,6 +49,12 @@ impl Detect for Fixed {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Platform;
 
+/// Whether `ip` is on this host: a loopback address, or an IPv4-mapped IPv6 one such as
+/// `::ffff:127.0.0.1`, for which `Ipv6Addr::is_loopback` is false.
+fn is_loopback_peer(ip: IpAddr) -> bool {
+    ip.to_canonical().is_loopback()
+}
+
 /// The destination whose route is the default route.
 const DEFAULT_ROUTE: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
 
@@ -58,7 +65,7 @@ impl Detect for Platform {
     fn local_end(&self, peer: Option<IpAddr>) -> EndInfo {
         let os = Os::current();
         // A loopback peer is on this host, whatever the tools would say about its route.
-        if peer.is_some_and(|ip| ip.is_loopback()) {
+        if peer.is_some_and(is_loopback_peer) {
             return EndInfo {
                 os,
                 medium: Medium::Loopback,
@@ -713,6 +720,21 @@ There is 1 interface on the system:
     }
 
     #[test]
+    fn an_ipv4_mapped_loopback_peer_is_on_this_host() {
+        let mapped = IpAddr::V6(Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped());
+        // `Ipv6Addr::is_loopback` alone says no, which is why the predicate canonicalises.
+        assert!(!mapped.is_loopback());
+        assert!(is_loopback_peer(mapped));
+        assert!(is_loopback_peer(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)));
+        assert!(!is_loopback_peer(IpAddr::V6(
+            Ipv4Addr::new(192, 0, 2, 1).to_ipv6_mapped()
+        )));
+        assert!(!is_loopback_peer(IpAddr::V4(Ipv4Addr::new(
+            198, 51, 100, 7
+        ))));
+    }
+
+    #[test]
     fn a_failed_peer_lookup_is_unknown_not_the_default_route() {
         let peer = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
         let asked = std::cell::RefCell::new(Vec::new());
@@ -737,6 +759,7 @@ There is 1 interface on the system:
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+            IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped()),
         ] {
             let end = Platform.local_end(Some(peer));
             assert_eq!(end.medium, Medium::Loopback, "{peer}: {end:?}");
