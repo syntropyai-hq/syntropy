@@ -418,6 +418,9 @@ t.token = [redacted]                            # /etc/syntropy/config.toml:6
 # cluster keys: the cluster's value; the default until the cluster sets one
 allow_approximate = false                       # default
 
+# instance keys: the default; a model's `[policy.\"<model>\"]` table or its load sets them
+objective = \"latency\"                           # default
+
 # proposed to the cluster by this node's file, environment or flags
 allow_approximate = true                        # /etc/syntropy/config.toml:2
 policy.\"qwen3*\" = { objective = \"throughput\" }  # /etc/syntropy/config.d/50-distro.toml:3
