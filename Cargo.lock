@@ -3668,7 +3668,9 @@ dependencies = [
  "serde_json",
  "syntropy-core",
  "syntropy-io",
+ "syntropy-kernels",
  "syntropy-spsc",
+ "syntropy-testkit",
 ]
 
 [[package]]
