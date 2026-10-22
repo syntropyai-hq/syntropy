@@ -202,6 +202,47 @@ pub mod __private {
         check_value_by(value, T::deserialize)
     }
 
+    /// A key's comparison of two values, for `KeySchema::same`: each is read through `.0`,
+    /// the field's deserializer. The derive calls `(&Same::<T>(..)).same(a, b)` with both
+    /// traits below in scope. Method lookup takes [`SameByValue`] when `T` implements
+    /// `PartialEq`, and otherwise falls back to [`SameAsWritten`], which needs one more
+    /// auto-reference.
+    pub struct Same<T>(pub FromToml<T>);
+
+    impl<T: DeserializeOwned> Same<T> {
+        /// Reads through `T`'s own `Deserialize`.
+        pub fn deserialized() -> Self {
+            Same(T::deserialize)
+        }
+    }
+
+    /// The comparison for a field type with `PartialEq`.
+    pub trait SameByValue {
+        /// Whether `a` and `b` read as equal values; as written when either does not read.
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool;
+    }
+
+    impl<T: PartialEq> SameByValue for Same<T> {
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool {
+            match ((self.0)(a.clone()), (self.0)(b.clone())) {
+                (Ok(read_a), Ok(read_b)) => read_a == read_b,
+                _ => a == b,
+            }
+        }
+    }
+
+    /// The comparison for a field type without `PartialEq`, such as a `Secret`.
+    pub trait SameAsWritten {
+        /// Whether `a` and `b` are written alike.
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool;
+    }
+
+    impl<T> SameAsWritten for &Same<T> {
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool {
+            a == b
+        }
+    }
+
     /// Checks that `value` deserializes through `de`, the field's `serde(with)` path. A
     /// failure keeps the kind this crate's types recorded; one they did not record is
     /// `out_of_range` for an integer outside the field's integer type and `wrong_type`
