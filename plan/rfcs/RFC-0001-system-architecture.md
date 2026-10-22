@@ -2825,3 +2825,12 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 | Change | Sections touched | Reason |
 |---|---|---|
 | rule 8 gains a second module-scoped exception: one `runner` module holds only the `unsafe impl PoolMemory` for a newtype over `tier`'s `NetPool` lease, with a `// SAFETY:` comment stating the contract the lease meets; `runner` moves from `forbid(unsafe_code)` to `deny(unsafe_code)` with one `allow` on that impl, and `check-deps`' placement check allows `unsafe` in exactly that module | §4.2 rule 8 (dated note) | rule 3 keeps `tier` off `net`, so `tier` cannot implement the trait, and `core` forbids `unsafe` code, so it cannot declare it; `runner` (layer 5) may depend on both. The cost: the refusals rule 8's note of 2026-10-22 gives `testkit` then apply to all of `runner`, so no `include`, no `#[path]` attribute, no local `macro_rules!` definition and no build script anywhere in it, since any of them could compile code the placement check does not read. Recommended by the stand-in engine-lane review of #1737 and taken under the maintainer's standing instruction, for the maintainers to confirm; TIER-E2-T25 builds it |
+
+### 18.29 The split heal compares standings (2026-10-23)
+
+DIST-E10-T10 model-checked OQ-NET-34's option (a), which was settled under the maintainers' standing instruction of 2026-10-22.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| the split heal compares standings, the strongest supported election in a node's chain and then its coordinator's proof, instead of proofs alone; a node keeps the elections it endorsed on disk with its command journal; a held proof's support only grows; every accepted election is endorsed once; fencing replies carry the sender's strongest supported election | RFC-0032 §6.3, §7.5 (dated notes); ADR-0304 (revision of 2026-10-23, changing items 2–4 of its second 2026-10-19 revision) | a stale supported proof rolled a lone survivor back past a command its own ack had made `replicated = true` (OQ-NET-34). For the maintainers to confirm |
+| RFC-0032 Testing's property "an unsupported self-election never deposes a supported coordinator" ends "unless the deposing side's chain holds a supported election that beats that coordinator's" | RFC-0032 Testing (the row, and a dated note) | OQ-NET-34's 15-step trace shows that any rule which keeps the acknowledged command must depose the stale coordinator there; an isolated node still cannot win a heal by inflating its counter |

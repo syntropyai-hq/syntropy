@@ -210,7 +210,7 @@ pub fn commands_lost(n: u8) -> Config {
 
 /// The bounded 3-node configuration the default tests check: every scenario on 3 nodes, at
 /// bounds the dev profile checks in about a minute. Every scenario here runs to exhaustion: about
-/// 2.3 million states, 53 s in the dev profile and 7.7 s release-optimised, with a test-process
+/// 2.3 million states, 53 s in the dev profile and 8.1 s release-optimised, with a test-process
 /// peak of 85 MB [measured, 2026-10-23, DIST-E10-T10's model, AMD Ryzen 9 5950X under WSL2,
 /// toolchain 1.99.1, 4 checker threads, with other builds running].
 pub fn bounded() -> Vec<Config> {
@@ -336,10 +336,11 @@ pub fn stale_heal(n: u8) -> Config {
 }
 
 /// As [`stale_heal`], with one claim per node, which is all OQ-NET-34's 15-step trace needs. It
-/// runs to exhaustion, so it checks the heal rule completely at these bounds: under §7.5 as written
-/// before OQ-NET-34 (`ELECTION_HEAL_RULE=proof`) it finds that trace's rollback, and under the
-/// settled rule nothing. `stale-heal` stops at its cap first, and under the old rule it no longer
-/// reaches the trace before then. The cap is raised so that the run stays exhaustive.
+/// runs to exhaustion, so it checks the heal rule completely at these bounds: under §7.5's proof
+/// comparison from before OQ-NET-34 (`ELECTION_HEAL_RULE=proof`) it finds that trace's
+/// rollback, and under the settled rule nothing. `stale-heal` stops at its cap first, and under
+/// the old comparison it no longer reaches the trace before then. The cap is raised so that the
+/// run stays exhaustive.
 pub fn stale_heal_one_claim(n: u8) -> Config {
     Config {
         claims_per_node: 1,

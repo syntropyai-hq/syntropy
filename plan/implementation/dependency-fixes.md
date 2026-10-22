@@ -828,7 +828,7 @@ DIST-E10-T10 model-checked OQ-NET-34's option (a) and settled it in RFC-0032 §7
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| DIST-E10-T05's task and criteria take the settled rule: the standing comparison, the endorsement record, support that only grows, endorsing once, and fencing replies with the sender's strongest supported election; its `gate: OQ-NET-34` is removed, and its edge to DIST-E10-T10 stays | DIST-E10-T05 | Definition of done (the spike closed the question) | DIST-E10-T05 builds the heal comparison, the fencing replies and the endorsement the answer changes. Its new criteria replay DIST-E10-T08's two pinned traces in the simulator, which DIST-E10-T05's existing simulator criterion already uses |
+| DIST-E10-T05's task and criteria take the settled rule: the standing comparison, the endorsement record, support that only grows, endorsing once, and fencing replies with the sender's strongest supported election; its `gate: OQ-NET-34` is removed, and its edge to DIST-E10-T10 stays | DIST-E10-T05 | Definition of done (the spike closed the question) | DIST-E10-T05 builds the heal comparison, the fencing replies and the endorsement the answer changes. Its new criteria replay the election model's two pinned traces in the simulator, DIST-E10-T08's `stale-heal` trace and DIST-E10-T10's `stale-heal-late-support` trace, which DIST-E10-T05's existing simulator criterion already uses |
 
 ## DIST-E7-T01's conformance criterion and buffer types (2026-10-22)
 

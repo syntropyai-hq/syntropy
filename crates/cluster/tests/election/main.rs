@@ -70,9 +70,10 @@ fn check_scenario(cfg: Config, threads: usize) -> usize {
 
 /// Checks each scenario in turn. `ELECTION_SCENARIO=<name>-<nodes>`, such as `split-heal-4`,
 /// checks only that one. `ELECTION_HEAL_RULE` picks the heal comparison, to compare the rules
-/// DIST-E10-T10 weighed: `proof` is §7.5 as written before OQ-NET-34, `acks` is option (a) with a
-/// past election's support read from its `SignedElection`'s `acks` alone, and `chain`, the
-/// default, is option (a) with a node's own endorsements counted too.
+/// DIST-E10-T10 weighed: `proof` is §7.5's proof comparison from before OQ-NET-34, `acks` is
+/// option (a) with a past election's support read from its `SignedElection`'s `acks` alone, and
+/// `chain`, the default, is option (a) with a node's own endorsements counted too. Each keeps the
+/// support merge and endorse-once, so only the comparison differs.
 fn check_all(configs: Vec<Config>, threads: usize) {
     let only = std::env::var("ELECTION_SCENARIO").ok();
     let rule = std::env::var("ELECTION_HEAL_RULE").unwrap_or_else(|_| "chain".to_owned());

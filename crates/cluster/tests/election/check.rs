@@ -401,7 +401,13 @@ pub fn oracle(m: &ElectionModel, before: &State, action: &Action, after: &mut St
                     // An unsupported self-election deposing a supported coordinator, except when
                     // the deposing side's chain holds a supported election that beats the
                     // coordinator's: then the deposed election had a supported successor it did
-                    // not know of (OQ-NET-34's option (a)).
+                    // not know of (OQ-NET-34's option (a)). The excuse trusts the message's own
+                    // chain. That is sound here because nothing in the model forges one: honest
+                    // nodes compute it from their own state, a byzantine fence carries
+                    // `chain: None`, and a byzantine append carries its sender's own log, in which
+                    // no `Elected` entry is forged. A change that lets a byzantine sender fill
+                    // `chain` or forge an `Elected` entry must check `q` against
+                    // `after.elections` instead.
                     if let Some(old) = b.proof
                         && old.supported()
                         && !p.supported()

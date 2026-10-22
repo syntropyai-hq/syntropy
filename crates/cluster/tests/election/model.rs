@@ -32,9 +32,9 @@
 //!   with the other side's. A chain's support comes from each `SignedElection`'s `acks`, the
 //!   elections the node itself endorsed, and its coordinator's proof. A proof's support only grows,
 //!   a node endorses each election it accepts once, and a fencing reply carries the sender's
-//!   strongest supported election. `proof_only_heal` restores §7.5 as written before, and
-//!   `own_endorsement_counts = false` the reading of `acks` alone, for the tests that show why
-//!   each changed.
+//!   strongest supported election. `proof_only_heal` restores §7.5's proof comparison from
+//!   before, and `own_endorsement_counts = false` the reading of `acks` alone, for the tests that
+//!   show why each changed. Neither turns off the support merge or endorse-once.
 //! - **Planned handover** (§7.7) is not modelled; DIST-E10-T04 builds it.
 //!
 //! Ghost state, which no node reads, records what really happened: the elections nodes actually
@@ -423,9 +423,10 @@ pub struct Config {
     /// The reply rule before OQ-NET-33: the originator's own ack also counts toward
     /// `replicated = true`. Only the regression test that shows why the rule changed sets it.
     pub originator_ack_counts: bool,
-    /// The heal comparison of RFC-0032 §7.5 as written before OQ-NET-34: an incoming proof is
-    /// compared with the receiver's coordinator's proof alone. Otherwise each side's standing
-    /// ([`standing`]) is compared. Only the regression test of the rollback sets it.
+    /// RFC-0032 §7.5's heal comparison from before OQ-NET-34: an incoming proof is compared with
+    /// the receiver's coordinator's proof alone. Otherwise each side's standing ([`standing`]) is
+    /// compared. Only the comparison changes: the support merge and endorse-once stay on. Only
+    /// the regression test of the rollback sets it.
     pub proof_only_heal: bool,
     /// A node counts its own `Endorse` of an election in its chain as support. Otherwise a past
     /// election's support is read from its `SignedElection`'s `acks` alone, which misses support
