@@ -1046,3 +1046,19 @@ RFC-0031 §8's pool table counts "recv_slots + retention" slots per channel, and
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E7-T12's criterion reads `(recv_slots + 4 + retention) × slot_size`, and RFC-0031 §8 gains a dated note that the four control receives sit beside the data receives; no edge | DIST-E7-T12 | Definition of done | the criterion must hold for the pool the channel core already requires (DIST-E7-T02). Built under the lead's run, for the maintainers to confirm |
+
+## COMP-E15-T08's missing prerequisites (2026-10-23)
+
+COMP-E15-T08 gives `TpSharding` to the `llama`, `qwen_moe`, `deepseek3` and `gptoss` families, and its parity criterion runs a split layer through the reference executor. It depended only on COMP-E15-T06 and DIST-E13-T13, which are done, so the board showed it ready. But the families it shards, the blocks it splits and the machinery its parity check runs on were neither built nor edges, so it could not start (#333, released 2026-10-23). These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E15-T08 → COMP-E15-T02, COMP-E15-T04 | COMP-E15-T08 | R9 | RFC-0043 §6.3's `split(&LayerProgram, weights)` splits block nodes: `Gqa`, `DenseFfn` and `Moe` (COMP-E15-T02), `SlidingGqa` and `Mla` (COMP-E15-T04) |
+| COMP-E15-T08 → COMP-E16-T01, COMP-E16-T03, COMP-E16-T04, COMP-E16-T05, COMP-E16-T06 | COMP-E15-T08 | R9 | `TpSharding` is implemented by the family modules: the `Family` trait (COMP-E16-T01) and `llama`, `qwen_moe`, `gptoss` and `deepseek3` (COMP-E16-T03 to T06) |
+| COMP-E15-T08 → COMP-E15-T03, QUAL-E4-T01 | COMP-E15-T08 | R9 | the criterion "recombining member outputs in member order matches single-device output within `τ_op`" runs on `graph::reference`'s interpreter (COMP-E15-T03) driven by `testkit`'s `RefExecutor` (QUAL-E4-T01) |
+| COMP-E15-T08 → PLC-E4-T09 | COMP-E15-T08 | R9 | its solver test checks RFC-0011 §3.1's rule that an `IntraTp(n, G)` node exists only for a family with a TP sharding strategy, which PLC-E4-T09 builds |
+| COMP-E15-T08's solver test covers `IntraTp` only; PLC-E4-T10 gains the cross-node half | COMP-E15-T08, PLC-E4-T10 | R9 | RFC-0043 §6.3 keeps a family without `TpSharding` off `IntraNodeTp`, `CrossNodeTp` and `CrossNodeEp`. The island nodes for the last two are PLC-E4-T10's, which comes after COMP-E15-T08 (PLC-E4-T10 → PLC-E2-T12 → DIST-E13-T03 → DIST-E13-T02 → DIST-E13-T01 → COMP-E15-T08), so COMP-E15-T08 cannot test them and an edge would make a cycle |
+
+Nine are M0a or M1a and PLC-E4-T09 is M2, all before COMP-E15-T08's M3, so no edge points later. None of the ten reaches COMP-E15-T08, whose one dependent is DIST-E13-T01 (M3), so there is no cycle.
+
+Left for a follow-up: RFC-0011 §3.1's `Island(I, Tp)` and `Island(I, Ep)` rows do not state the family condition that its `IntraTp(n, G)` row and RFC-0043 §6.3 state. PLC-E4-T10's criterion cites RFC-0043 §6.3 for it until RFC-0011 says so too.
