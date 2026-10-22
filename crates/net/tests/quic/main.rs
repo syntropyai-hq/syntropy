@@ -2,8 +2,8 @@
 
 //! The QUIC backend (DIST-E7-T03; RFC-0031 §4) between two endpoints on this host: the
 //! channel-conformance suite over real QUIC streams, the connection receive windows, the two
-//! connections per peer, the LAN initial window, the path kind, and a timeout told from a
-//! refusal.
+//! connections per peer, the LAN initial window, the path kind, a timeout told from a refusal,
+//! and the early streams: the per-peer cap, replacement, and an `accept` whose caller gave up.
 //!
 //! Each endpoint runs in a `net` domain of its own, as two runners would. The tests dial over
 //! loopback with no relay, so they need no network beyond this host. The run over 2.5 GbE between
@@ -21,7 +21,9 @@ use syntropy_net::endpoint::Config as EndpointConfig;
 use syntropy_net::transport::conformance::{self, Fabric, MAX_FRAME, Rule, SEND_SLOT, SEND_SLOTS};
 use syntropy_net::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
 use syntropy_net::transport::domain::NetDomain;
-use syntropy_net::transport::quic::{QuicConfig, QuicSettings, QuicTransport, Role, WindowReport};
+use syntropy_net::transport::quic::{
+    MAX_EARLY_PER_PEER, QuicConfig, QuicSettings, QuicTransport, Role, WindowReport,
+};
 use syntropy_net::transport::stream::UncheckedAuth;
 use syntropy_net::transport::{
     BufferPool, Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, PoolId,
@@ -424,4 +426,237 @@ fn closing_a_channel_lowers_the_receive_window_again() {
     let dialled = Pair::windows(&pair.a);
     assert_eq!(dialled.len(), 1);
     assert_eq!(dialled[0].channels, 0, "{dialled:#?}");
+}
+
+/// A third endpoint in a `net` domain of its own, for the tests that need a second peer of `b`.
+struct Peer {
+    transport: QuicTransport,
+    // Dropped after the transport, which runs in it.
+    _domain: NetDomain,
+}
+
+impl Peer {
+    fn bind(runtime: &tokio::runtime::Runtime, seed: u8) -> Peer {
+        let domain = NetDomain::start("syntropy-net-c").expect("domain c");
+        let transport = runtime
+            .block_on(QuicTransport::bind(
+                domain.handle(),
+                [seed; 32],
+                config(settings()),
+            ))
+            .expect("bind c");
+        Peer {
+            transport,
+            _domain: domain,
+        }
+    }
+
+    /// A send-side pool of `slots` slots, registered with this peer.
+    fn pool(&self, id: u32, slots: u32) -> syntropy_net::transport::PoolRegistration {
+        let pool = BufferPool::heap(PoolId(id), SLOT, slots).expect("a pool");
+        self.transport.register(&pool).expect("register")
+    }
+}
+
+/// The spec of `key`'s side with `recv_slots` receive slots, from `pool`.
+fn channel_spec(
+    key: ChannelKey,
+    pool: syntropy_net::transport::PoolRegistration,
+    recv_slots: u16,
+) -> ChannelSpec {
+    ChannelSpec {
+        key,
+        pool,
+        slot_size: Bytes(SLOT as u64),
+        recv_slots,
+        priority: ChannelPriority::Data,
+        wire: WireDType::F32,
+        retention: recv_slots.max(4),
+    }
+}
+
+/// Polls every future in `futures` to completion on the calling task, and returns their outputs
+/// in order.
+async fn join_all<F: std::future::Future>(futures: Vec<F>) -> Vec<F::Output> {
+    use std::task::Poll;
+    let mut futures: Vec<_> = futures.into_iter().map(Box::pin).collect();
+    let mut outputs: Vec<Option<F::Output>> = futures.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (future, output) in futures.iter_mut().zip(outputs.iter_mut()) {
+            if output.is_none() {
+                match future.as_mut().poll(cx) {
+                    Poll::Ready(value) => *output = Some(value),
+                    Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
+    outputs
+        .into_iter()
+        .map(|output| output.expect("polled to completion"))
+        .collect()
+}
+
+/// An `accept` whose caller stopped waiting, here on its own timeout, leaves nothing registered:
+/// the same channel can be accepted again, and opens.
+#[test]
+fn an_accept_whose_caller_stopped_waiting_can_be_called_again() {
+    let mut pair = Pair::new();
+    let channel = key(ChannelPurpose::Activations, 20);
+    let (_, registration) = pair.pool(false, 4 + u32::from(CONTROL_RECEIVES));
+    let gave_up = pair.runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            pair.b.accept(channel_spec(channel, registration, 4)),
+        )
+        .await
+    });
+    assert!(gave_up.is_err(), "an accept with no peer returned");
+    let (sender, receiver) = pair.open(channel, 4).expect("the second accept opens it");
+    assert_eq!(*sender.key(), channel);
+    assert_eq!(*receiver.key(), channel);
+}
+
+/// One peer holds at most `MAX_EARLY_PER_PEER` early streams: its next is refused at once with
+/// `NotANeighbour`, while another peer's early stream is still held for its `accept`.
+#[test]
+fn one_peer_cannot_take_every_early_stream() {
+    let mut pair = Pair::new();
+    let c = Peer::bind(&pair.runtime, 0xC3);
+    let (_, a_pool) = pair.pool(true, u32::from(CONTROL_RECEIVES));
+    let (_, b_pool) = pair.pool(false, 4 + u32::from(CONTROL_RECEIVES));
+    let c_pool = c.pool(900, u32::from(CONTROL_RECEIVES));
+    let to_b = pair.remote_b();
+    let lanes = u8::try_from(MAX_EARLY_PER_PEER).expect("a lane");
+    let hold = settings().early_hold();
+    let (held, (over, took), (sent, received)) = pair.runtime.block_on(async {
+        let held = join_all(
+            (0..lanes)
+                .map(|lane| {
+                    pair.a.connect(
+                        &to_b,
+                        channel_spec(key(ChannelPurpose::Activations, lane), a_pool, 0),
+                    )
+                })
+                .collect(),
+        );
+        let over = async {
+            // Every one of a's streams is held by now.
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let started = std::time::Instant::now();
+            let refused = pair
+                .a
+                .connect(
+                    &to_b,
+                    channel_spec(key(ChannelPurpose::Activations, lanes), a_pool, 0),
+                )
+                .await;
+            (refused, started.elapsed())
+        };
+        let other = async {
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let channel = key(ChannelPurpose::Tokens, 0);
+            tokio::join!(
+                c.transport.connect(&to_b, channel_spec(channel, c_pool, 0)),
+                async {
+                    // c's stream is held by now, beside a's.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    pair.b.accept(channel_spec(channel, b_pool, 4)).await
+                }
+            )
+        };
+        tokio::join!(held, over, other)
+    });
+    let refused = over.expect_err("a stream over the peer's cap");
+    assert_eq!(refused.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{refused}");
+    assert!(took < hold, "the stream over the cap was held: {took:?}");
+    assert_eq!(
+        *sent.expect("c's channel").key(),
+        key(ChannelPurpose::Tokens, 0)
+    );
+    assert_eq!(
+        *received.expect("c's channel at b").key(),
+        key(ChannelPurpose::Tokens, 0)
+    );
+    // Nobody accepted a's held streams, so each was refused once its hold ended.
+    for result in held {
+        let error = result.expect_err("a held stream nobody accepted");
+        assert_eq!(error.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{error}");
+    }
+}
+
+/// A second stream for a held key from the same peer replaces the first, as a reconnect would:
+/// `accept` opens the channel on the second, and the first stream is closed, a link failure
+/// rather than a refusal.
+#[test]
+fn a_second_stream_for_a_held_key_from_its_peer_replaces_the_first() {
+    let mut pair = Pair::new();
+    let (_, a_pool) = pair.pool(true, u32::from(CONTROL_RECEIVES));
+    let (_, b_pool) = pair.pool(false, 4 + u32::from(CONTROL_RECEIVES));
+    let to_b = pair.remote_b();
+    let channel = key(ChannelPurpose::Activations, 21);
+    let (first, second, receiver) = pair.runtime.block_on(async {
+        tokio::join!(
+            pair.a.connect(&to_b, channel_spec(channel, a_pool, 0)),
+            async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                pair.a
+                    .connect(&to_b, channel_spec(channel, a_pool, 0))
+                    .await
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                pair.b.accept(channel_spec(channel, b_pool, 4)).await
+            }
+        )
+    });
+    let error = first.expect_err("the replaced stream");
+    assert_eq!(error.class, ErrorClass::Link, "{error}");
+    assert_eq!(*second.expect("the second stream's channel").key(), channel);
+    assert_eq!(*receiver.expect("the channel at b").key(), channel);
+}
+
+/// A stream for a held key from another peer is refused at once, and leaves the held one in
+/// place.
+#[test]
+fn a_held_stream_is_not_replaced_by_another_peer() {
+    let mut pair = Pair::new();
+    let c = Peer::bind(&pair.runtime, 0xC4);
+    let (_, a_pool) = pair.pool(true, u32::from(CONTROL_RECEIVES));
+    let (_, b_pool) = pair.pool(false, 4 + u32::from(CONTROL_RECEIVES));
+    let c_pool = c.pool(901, u32::from(CONTROL_RECEIVES));
+    let to_b = pair.remote_b();
+    let channel = key(ChannelPurpose::Activations, 22);
+    let hold = settings().early_hold();
+    let (first, (other, took), receiver) = pair.runtime.block_on(async {
+        tokio::join!(
+            pair.a.connect(&to_b, channel_spec(channel, a_pool, 0)),
+            async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let started = std::time::Instant::now();
+                let refused = c
+                    .transport
+                    .connect(&to_b, channel_spec(channel, c_pool, 0))
+                    .await;
+                (refused, started.elapsed())
+            },
+            async {
+                // Late enough for c's dial and its refusal.
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                pair.b.accept(channel_spec(channel, b_pool, 4)).await
+            }
+        )
+    });
+    let refused = other.expect_err("c's stream for a's key");
+    assert_eq!(refused.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{refused}");
+    assert!(took < hold, "c's stream was held: {took:?}");
+    assert_eq!(*first.expect("a's channel").key(), channel);
+    assert_eq!(*receiver.expect("the channel at b").key(), channel);
 }
