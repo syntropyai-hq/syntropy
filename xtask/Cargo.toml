@@ -14,3 +14,5 @@ path = "src/main.rs"
 # payloads the contribution checks read (QUAL-E1-T05, RFC-0062 §12.3).
 serde.workspace = true
 serde_json.workspace = true
+# The manifests of non-member path crates, which `dep-diff` reads itself (#1692).
+toml.workspace = true

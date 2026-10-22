@@ -1,0 +1,14 @@
+# The vendored copy the members depend on by path, with a dependency head-path-excluded's copy
+# lacks. It is not a member.
+[package]
+name = "fixture-vendored"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+serde = "1.0.100"
+
+[target.'cfg(unix)'.dependencies]
+proptest = "1.0.0"
