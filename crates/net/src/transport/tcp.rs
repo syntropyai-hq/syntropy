@@ -47,7 +47,7 @@ use syntropy_core::resource::TransportKind;
 use syntropy_core::{Bytes, ErrorClass, MonoTime, Nanos};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 
@@ -75,6 +75,15 @@ pub const TICK: Duration = Duration::from_millis(1);
 
 /// The bytes a writer gathers from the core before it writes them out \[target\].
 const FLUSH_AT: usize = 256 << 10;
+
+/// Connections the listener takes through TLS and `Hello` at once \[target\]: a peer that never
+/// finishes its handshake holds one until the handshake timeout, and no more are accepted while
+/// every one is held.
+pub const MAX_HANDSHAKES: usize = 64;
+
+/// How long the listener waits after an `accept` fails, such as when the process is out of file
+/// descriptors, before it tries again \[target\].
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 
 /// A credential this endpoint presents in its `Hello` or `HelloAck` (RFC-0031 §6.9): a runner's
 /// data-plane credential, or a daemon's admission certificate. Its bytes are `kind`'s length.
@@ -145,10 +154,19 @@ impl Clock {
 }
 
 /// A connection whose `Hello` has arrived, its credential checked, held for the `accept` of its
-/// key.
+/// key, at most the handshake timeout. `accept` checks the key and the credential again before
+/// it answers, since either may have stopped passing while the connection waited.
 struct Arrived {
     hello: Hello,
+    credential: Vec<u8>,
+    peer: [u8; 32],
     stream: TlsStream<TcpStream>,
+    at: Instant,
+}
+
+/// Drops the arrived connections that waited longer than `timeout`, closing them.
+fn expire(arrived: &mut Vec<(ChannelKey, Arrived)>, timeout: Duration) {
+    arrived.retain(|(_, waiting)| waiting.at.elapsed() < timeout);
 }
 
 /// Arrived connections and waiting accepts, matched by channel key.
@@ -165,6 +183,8 @@ struct Inner {
     allowed: AllowedKeys,
     pools: Mutex<Vec<BufferPool>>,
     rendezvous: Mutex<Rendezvous>,
+    /// One permit per handshake in progress, [`MAX_HANDSHAKES`] in all.
+    handshakes: Arc<Semaphore>,
     local_addr: SocketAddr,
     clock: Clock,
 }
@@ -239,6 +259,7 @@ impl TcpTransport {
             allowed,
             pools: Mutex::new(Vec::new()),
             rendezvous: Mutex::new(Rendezvous::default()),
+            handshakes: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
             local_addr,
             clock: Clock(Instant::now()),
         });
@@ -315,9 +336,32 @@ impl TcpTransport {
 
     /// Answers the `Hello` of an arrived connection for `spec` and opens the channel.
     async fn answer(&self, spec: ChannelSpec, arrived: Arrived) -> Result<Channel, Error> {
-        let Arrived { hello, mut stream } = arrived;
+        let Arrived {
+            hello,
+            credential,
+            peer,
+            mut stream,
+            ..
+        } = arrived;
         let pool = self.pool(spec.pool)?;
         let config = &self.inner.config;
+        // The key may have been forbidden, or the credential stopped passing, since the `Hello`
+        // arrived.
+        let refusal = if self.inner.allowed.allows(&peer) {
+            config
+                .check
+                .hello(&hello, hello.cred_kind, &credential, &peer)
+                .err()
+        } else {
+            Some(ErrorCode::CREDENTIAL_INVALID)
+        };
+        if let Some(code) = refusal {
+            refuse(&mut stream, &hello, code.0).await;
+            return Err(Error::new(
+                code,
+                "the peer's key or credential no longer passes",
+            ));
+        }
         let tcp = stream.get_ref().0;
         size_buffers(tcp, spec.slot_size);
         let wire_minor = WIRE_MINOR.min(hello.wire_minor_max);
@@ -602,17 +646,32 @@ async fn read_control(stream: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>, 
 /// peer never holds up another.
 async fn listen(inner: Arc<Inner>, listener: TcpListener, acceptor: TlsAcceptor) {
     loop {
-        let Ok((tcp, _)) = listener.accept().await else {
-            continue;
+        // At most `MAX_HANDSHAKES` at once: no new connection is taken while every permit is
+        // held, so silent peers cannot pile up unauthenticated sockets.
+        let Ok(permit) = Arc::clone(&inner.handshakes).acquire_owned().await else {
+            return;
         };
-        tokio::spawn(arrive(Arc::clone(&inner), tcp, acceptor.clone()));
+        match listener.accept().await {
+            Ok((tcp, _)) => {
+                tokio::spawn(arrive(Arc::clone(&inner), tcp, acceptor.clone(), permit));
+            }
+            Err(_) => {
+                drop(permit);
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+            }
+        }
     }
 }
 
 /// One arriving connection: TLS, then its `Hello`, its credential checked, then on to the
 /// `accept` of its key. A connection that fails is dropped, after a refusing `HelloAck` where
 /// the `Hello` was read.
-async fn arrive(inner: Arc<Inner>, tcp: TcpStream, acceptor: TlsAcceptor) {
+async fn arrive(
+    inner: Arc<Inner>,
+    tcp: TcpStream,
+    acceptor: TlsAcceptor,
+    permit: OwnedSemaphorePermit,
+) {
     let timeout = inner.config.handshake_timeout;
     let arrived = tokio::time::timeout(timeout, async {
         tcp.set_nodelay(true).ok()?;
@@ -641,9 +700,16 @@ async fn arrive(inner: Arc<Inner>, tcp: TcpStream, acceptor: TlsAcceptor) {
             refuse(&mut stream, &hello, status).await;
             return None;
         }
-        Some(Arrived { hello, stream })
+        Some(Arrived {
+            hello,
+            credential: credential.to_vec(),
+            peer,
+            stream,
+            at: Instant::now(),
+        })
     })
     .await;
+    drop(permit);
     let Ok(Some(arrived)) = arrived else {
         return;
     };
@@ -663,6 +729,7 @@ async fn arrive(inner: Arc<Inner>, tcp: TcpStream, acceptor: TlsAcceptor) {
     if let Some(arrived) = arrived {
         // A second connection for a key replaces the first, which a reconnect would do.
         rendezvous.arrived.retain(|(k, _)| *k != key);
+        expire(&mut rendezvous.arrived, timeout);
         rendezvous.arrived.push((key, arrived));
     }
 }
@@ -748,6 +815,7 @@ impl Transport for TcpTransport {
     async fn accept(&self, spec: ChannelSpec) -> Result<Channel, Error> {
         let waiting = {
             let mut rendezvous = lock(&self.inner.rendezvous);
+            expire(&mut rendezvous.arrived, self.inner.config.handshake_timeout);
             match rendezvous.arrived.iter().position(|(k, _)| *k == spec.key) {
                 Some(at) => Ok(rendezvous.arrived.remove(at).1),
                 None => {

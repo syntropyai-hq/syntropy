@@ -72,8 +72,12 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 fn bind(rt: &tokio::runtime::Runtime, seed: u8, refuse: Option<ErrorCode>) -> TcpTransport {
+    bind_with(rt, config(seed, refuse))
+}
+
+fn bind_with(rt: &tokio::runtime::Runtime, config: TcpConfig) -> TcpTransport {
     rt.block_on(TcpTransport::bind(
-        config(seed, refuse),
+        config,
         SocketAddr::from(([127, 0, 0, 1], 0)),
     ))
     .expect("a listener on loopback")
@@ -343,4 +347,79 @@ fn a_connector_falls_through_to_the_next_address() {
     });
     assert!(sender.is_ok(), "{:?}", sender.err());
     assert!(receiver.is_ok());
+}
+
+/// A connection that arrived while its key was allowed, and waits for `accept`, is refused if
+/// the key is forbidden before `accept` answers it: the acceptor checks the key and the
+/// credential again.
+#[test]
+fn a_key_forbidden_while_its_connection_waits_is_refused() {
+    let rt = runtime();
+    let a = bind(&rt, 11, None);
+    let b = bind(&rt, 12, None);
+    b.allowed().allow(a.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 700);
+    let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let receiver_pool = fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8);
+    let to_b = remote(&b);
+    let a_key = a.public_key();
+    let (sender, receiver) = rt.block_on(async {
+        tokio::join!(
+            a.connect(&to_b, spec(key(2, 3), &a, &sender_pool, 0)),
+            async {
+                // The Hello has arrived by now and waits for this accept.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                b.allowed().forbid(&a_key);
+                b.accept(spec(key(2, 3), &b, &receiver_pool, 4)).await
+            }
+        )
+    });
+    let refused = receiver.unwrap_err();
+    assert_eq!(
+        refused.code,
+        Some(ErrorCode::CREDENTIAL_INVALID),
+        "{refused}"
+    );
+    let error = sender.unwrap_err();
+    assert_eq!(error.code, Some(ErrorCode::CREDENTIAL_INVALID), "{error}");
+    assert_eq!(error.class, ErrorClass::Auth);
+}
+
+/// A connection whose `accept` does not come within the handshake timeout is dropped, so a peer
+/// cannot leave connections parked indefinitely.
+#[test]
+fn a_connection_left_waiting_past_the_handshake_timeout_is_dropped() {
+    let rt = runtime();
+    let a = bind(&rt, 13, None);
+    let b = bind_with(
+        &rt,
+        TcpConfig {
+            handshake_timeout: Duration::from_millis(300),
+            ..config(14, None)
+        },
+    );
+    b.allowed().allow(a.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 800);
+    let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let receiver_pool = fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8);
+    let to_b = remote(&b);
+    let (sender, receiver) = rt.block_on(async {
+        tokio::join!(
+            a.connect(&to_b, spec(key(4, 5), &a, &sender_pool, 0)),
+            async {
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                tokio::time::timeout(
+                    Duration::from_millis(300),
+                    b.accept(spec(key(4, 5), &b, &receiver_pool, 4)),
+                )
+                .await
+            }
+        )
+    });
+    assert!(
+        receiver.is_err(),
+        "an accept found a connection past its timeout"
+    );
+    let error = sender.unwrap_err();
+    assert_eq!(error.class, ErrorClass::Link, "{error}");
 }
