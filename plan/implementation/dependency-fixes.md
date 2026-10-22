@@ -863,4 +863,4 @@ Building DIST-E1-T14 found three field types that no row defined, though its own
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
+| Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec behind capability bit 16, with RFC-0050 §3.1's rewrite kept towards peers without the bit | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
