@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! An encoder written from RFC-0031's tables, independent of `syntropy_net::frame`: every field
-//! is put at the offset §6.1, §6.2, §6.3, §6.5, §6.7, §6.8 and §6.9 give it, and CRC32C is computed
+//! is put at the offset §6.1, §6.2, §6.3, §6.5, §6.7, §6.8, §6.9 and §6.14 give it, and CRC32C is computed
 //! bit by bit. The golden frames are generated with it, so the codec is checked against the
 //! tables, not against itself.
 
@@ -492,6 +492,39 @@ pub fn bf16_rows(rows: usize, elements: usize) -> Vec<u8> {
         }
     }
     out
+}
+
+/// The fields of an `EmbeddingResult` extension (RFC-0031 §6.14, revised 2026-10-23).
+pub struct EmbeddingFields {
+    pub ingress: u64,
+    pub boot: u32,
+    pub n: u32,
+    pub dims: u32,
+    pub dtype: u8,
+    pub pooling: u8,
+    pub normalised: u8,
+    pub prompt_tokens: u32,
+    pub part_index: u16,
+    pub part_count: u16,
+}
+
+/// An `EmbeddingResult` extension: `seq[16]` (ingress u64, boot u32, n u32), `dims u32`,
+/// `dtype u8`, `pooling u8`, `normalised u8`, `reserved u8`, `prompt_tokens u32`,
+/// `part_index u16`, `part_count u16`, padded to 64.
+pub fn embedding_ext(f: &EmbeddingFields) -> Vec<u8> {
+    let mut ext = ext(32);
+    put(&mut ext, 0, 8, f.ingress); //          0  seq.ingress
+    put(&mut ext, 8, 4, f.boot.into()); //      8  seq.boot
+    put(&mut ext, 12, 4, f.n.into()); //       12  seq.n
+    put(&mut ext, 16, 4, f.dims.into()); //    16  dims
+    ext[20] = f.dtype; //                      20  dtype
+    ext[21] = f.pooling; //                    21  pooling
+    ext[22] = f.normalised; //                 22  normalised
+    //                                         23  reserved
+    put(&mut ext, 24, 4, f.prompt_tokens.into()); // 24 prompt_tokens
+    put(&mut ext, 28, 2, f.part_index.into()); // 28 part_index
+    put(&mut ext, 30, 2, f.part_count.into()); // 30 part_count
+    ext
 }
 
 /// Writes `bytes` as the golden file text: a header comment, then 16 bytes per line in hex,

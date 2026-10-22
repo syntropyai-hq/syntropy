@@ -192,6 +192,67 @@ fn parse_array(value: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// RFC-0001, whose §4.1 holds the table this file copies.
+pub const RFC: &str = "plan/rfcs/RFC-0001-system-architecture.md";
+
+/// The table of RFC-0001 §4.1: each row's layer cell, and the backquoted crate names in its crate
+/// cell. `None` when the text has no §4.1.
+pub fn rfc_table(rfc: &str) -> Option<Vec<(String, Place)>> {
+    let section = rfc
+        .split("### 4.1 Workspace")
+        .nth(1)?
+        .split("### 4.2")
+        .next()?;
+    let mut rows = Vec::new();
+    for line in section.lines().filter(|line| line.starts_with("| ")) {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 3 {
+            continue;
+        }
+        let place = match cells[1] {
+            "—" => Place::DevOnly,
+            layer => match layer.parse() {
+                Ok(layer) => Place::Layer(layer),
+                Err(_) => continue, // the header row
+            },
+        };
+        for name in cells[2].split('`').skip(1).step_by(2) {
+            rows.push((name.to_owned(), place));
+        }
+    }
+    Some(rows)
+}
+
+/// Every way `layers` differs from RFC-0001 §4.1 under `root`: a crate the RFC places elsewhere
+/// or not at all, and a crate the table has that the RFC lacks, `Tool` entries apart. A checkout
+/// without RFC-0001, such as a test fixture, has nothing to compare.
+pub fn matches_rfc_0001(layers: &Layers, root: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(root.join(RFC)) else {
+        return Vec::new();
+    };
+    let Some(rows) = rfc_table(&text.replace("\r\n", "\n")) else {
+        return vec![format!("{RFC} has no §4.1 table to check {PATH} against")];
+    };
+    let mut problems = Vec::new();
+    for (name, place) in &rows {
+        match layers.place(name) {
+            Some(found) if found == *place => {}
+            Some(found) => problems.push(format!(
+                "`{name}` is {} in {PATH} but {} in RFC-0001 §4.1",
+                describe(found),
+                describe(*place)
+            )),
+            None => problems.push(format!("`{name}` is in RFC-0001 §4.1 but not in {PATH}")),
+        }
+    }
+    for name in layers.names() {
+        if layers.place(name) != Some(Place::Tool) && !rows.iter().any(|(n, _)| n == name) {
+            problems.push(format!("`{name}` is in {PATH} but not in RFC-0001 §4.1"));
+        }
+    }
+    problems
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,31 +353,41 @@ tools = ["xtask"]
         assert_eq!(layers, layers_of(&[("a", Place::Layer(0))]));
     }
 
-    /// The table of RFC-0001 §4.1, read from the RFC itself: each row's layer cell and the
-    /// backquoted crate names in its crate cell.
+    /// The table of RFC-0001 §4.1, read from the RFC itself.
     fn rfc_0001_table(root: &Path) -> Vec<(String, Place)> {
-        let rfc = std::fs::read_to_string(root.join("plan/rfcs/RFC-0001-system-architecture.md"))
-            .expect("RFC-0001 is readable");
-        let section = rfc
-            .split("### 4.1 Workspace")
-            .nth(1)
-            .and_then(|rest| rest.split("### 4.2").next())
-            .expect("RFC-0001 has §4.1");
-        let mut rows = Vec::new();
-        for line in section.lines().filter(|line| line.starts_with("| ")) {
-            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
-            let place = match cells[1] {
-                "—" => Place::DevOnly,
-                layer => match layer.parse() {
-                    Ok(layer) => Place::Layer(layer),
-                    Err(_) => continue, // the header row
-                },
-            };
-            for name in cells[2].split('`').skip(1).step_by(2) {
-                rows.push((name.to_owned(), place));
-            }
-        }
-        rows
+        let rfc = std::fs::read_to_string(root.join(RFC)).expect("RFC-0001 is readable");
+        rfc_table(&rfc).expect("RFC-0001 has §4.1")
+    }
+
+    #[test]
+    fn check_deps_compares_the_table_with_rfc_0001() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let layers = Layers::load(root).unwrap();
+        assert_eq!(matches_rfc_0001(&layers, root), Vec::<String>::new());
+
+        let dir =
+            std::env::temp_dir().join(format!("syntropy-xtask-layers-rfc-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("plan/rfcs")).unwrap();
+        // No RFC: a fixture, with nothing to compare.
+        let table = Layers::parse(
+            "[layers]\n0 = [\"core\"]\n1 = [\"net\"]\n[outside]\ntools = [\"xtask\"]\n",
+        )
+        .unwrap();
+        assert_eq!(matches_rfc_0001(&table, &dir), Vec::<String>::new());
+        std::fs::write(
+            dir.join(RFC),
+            "### 4.1 Workspace\n\n| Layer | Crates |\n|---|---|\n| 0 | `core`, `obs` |\n| 2 | `net` |\n\n### 4.2 Rules\n",
+        )
+        .unwrap();
+        let problems = matches_rfc_0001(&table, &dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            problems,
+            [
+                "`obs` is in RFC-0001 §4.1 but not in ci/layers.toml",
+                "`net` is layer 1 in ci/layers.toml but layer 2 in RFC-0001 §4.1",
+            ]
+        );
     }
 
     #[test]

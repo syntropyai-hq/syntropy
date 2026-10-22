@@ -168,7 +168,8 @@ impl std::error::Error for EndpointError {}
 /// neither, only [`Relays::Public`]'s online lookup can find the node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeAddr {
-    inner: EndpointAddr,
+    /// The iroh address, for the transport code in this crate (DIST-E7-T03).
+    pub(crate) inner: EndpointAddr,
 }
 
 impl NodeAddr {
@@ -213,7 +214,9 @@ impl NodeAddr {
 /// A bound iroh endpoint. Its `Debug` shows the node ID only: iroh's own carries the host's
 /// addresses, which must stay out of logs and of the field probe's report (DIST-E4-T15).
 pub struct Endpoint {
-    inner: iroh::Endpoint,
+    /// The iroh endpoint, for the transport code in this crate (DIST-E7-T03) to connect and
+    /// accept with its own transport configuration.
+    pub(crate) inner: iroh::Endpoint,
 }
 
 /// A node ID as lowercase hex, for `Debug`.
@@ -250,8 +253,8 @@ impl Endpoint {
     }
 
     /// [`bind`](Self::bind), with a last change to the builder. Tests use it to trust a test
-    /// relay's self-signed certificate.
-    async fn bind_with(
+    /// relay's self-signed certificate, and the QUIC backend to set its transport configuration.
+    pub(crate) async fn bind_with(
         secret_key: [u8; 32],
         config: Config,
         last: impl FnOnce(Builder) -> Builder,

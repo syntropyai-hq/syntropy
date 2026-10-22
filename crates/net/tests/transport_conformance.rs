@@ -14,12 +14,14 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use syntropy_core::ErrorClass;
+use syntropy_core::resource::TransportKind;
 use syntropy_net::Error;
 use syntropy_net::frame::{self, Frame, FrameSpec, Header, WIRE_MINOR};
 use syntropy_net::transport::conformance::{self, Fabric, MAX_FRAME, Rule, SEND_SLOT, SEND_SLOTS};
 use syntropy_net::transport::{
     BufferPool, Channel, ChannelBackend, ChannelKey, ChannelStats, CloseReason, ExtRef, InFrame,
-    OutFrame, PayloadRef, PoolId, SendError, SendTicket, SlotReader,
+    OutFrame, PayloadRef, PoolId, PoolRegistration, RegistrationTable, SendError, SendTicket,
+    SlotReader,
 };
 
 /// A way for the double to break one rule.
@@ -49,6 +51,8 @@ enum Fault {
     DuplicateOnNack,
     /// `try_send` still sends after `close`.
     SendAfterClose,
+    /// `register` refuses a pool it already holds, instead of returning its registration.
+    RefuseRepeatRegistration,
 }
 
 /// Receive slots hold the suite's largest frame, rounded up to a slot size.
@@ -308,6 +312,8 @@ struct Double {
     hold: bool,
     send_pool: BufferPool,
     links: Vec<Arc<Mutex<Link>>>,
+    /// The double's transport registrations, kept as a backend keeps them (RFC-0031 §8).
+    registrations: RegistrationTable,
 }
 
 impl Double {
@@ -318,11 +324,28 @@ impl Double {
             hold: false,
             send_pool: BufferPool::heap(PoolId(1), SEND_SLOT, SEND_SLOTS).expect("a valid pool"),
             links: Vec::new(),
+            registrations: RegistrationTable::new(),
         }
     }
 }
 
 impl Fabric for Double {
+    fn register(&mut self, pool: &BufferPool) -> Option<Result<PoolRegistration, Error>> {
+        let id = pool.id();
+        if self.fault == Some(Fault::RefuseRepeatRegistration)
+            && !self.registrations.registrants(id).is_empty()
+        {
+            return Some(Err(Error::uncoded(
+                ErrorClass::InvalidRequest,
+                format!("pool {id:?} is already registered"),
+            )));
+        }
+        Some(
+            self.registrations
+                .register_transport(pool, TransportKind::Quic, 0),
+        )
+    }
+
     fn open(&mut self, key: ChannelKey, recv_slots: u16) -> Result<(Channel, Channel), Error> {
         let pool_id = PoolId(100 + self.links.len() as u32);
         let recv_pool = BufferPool::heap(pool_id, RECV_SLOT, u32::from(recv_slots))
@@ -397,7 +420,7 @@ fn the_double_passes_every_rule() {
     let report = conformance::run(&mut Double::new(None, true));
     assert!(report.passed(), "{report}");
     assert!(report.skipped.is_empty(), "{report}");
-    assert_eq!(report.to_string(), "12 of 12 rules passed");
+    assert_eq!(report.to_string(), "13 of 13 rules passed");
 }
 
 #[test]
@@ -407,7 +430,7 @@ fn a_fabric_that_cannot_hold_delivery_skips_the_ack_rule() {
     assert_eq!(report.skipped, [Rule::CompletedAfterAck]);
     assert_eq!(
         report.to_string(),
-        "11 of 11 rules passed, skipped [CompletedAfterAck]"
+        "12 of 12 rules passed, skipped [CompletedAfterAck]"
     );
 }
 
@@ -426,6 +449,7 @@ fn a_double_that_breaks_a_rule_fails_that_rule() {
         (Fault::MiscountStats, Rule::Stats),
         (Fault::DuplicateOnNack, Rule::Nack),
         (Fault::SendAfterClose, Rule::Close),
+        (Fault::RefuseRepeatRegistration, Rule::Registration),
     ];
     // Every rule is broken by one of the doubles.
     let mut rules: Vec<Rule> = cases.iter().map(|(_, rule)| *rule).collect();
