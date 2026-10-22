@@ -284,7 +284,8 @@ impl StreamRunner {
                 }
             }
             Item::Record { event, generation } => {
-                event.done.store(*generation, Ordering::Release);
+                // `fetch_max`, so an event recorded on two streams never moves back.
+                event.done.fetch_max(*generation, Ordering::AcqRel);
             }
             Item::WaitEvent { event, generation } => {
                 if !event.reached(*generation) {

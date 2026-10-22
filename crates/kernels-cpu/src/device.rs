@@ -61,6 +61,9 @@ pub(crate) struct CpuDevice {
     pub(crate) prepared: RefCell<Vec<KernelFn>>,
     pub(crate) graphs: RefCell<Vec<Vec<Item>>>,
     pub(crate) wakers: RefCell<Vec<Arc<CpuWaker>>>,
+    /// Memory `free` released while a stream still had items queued, which may hold its
+    /// address. It is deallocated once every stream has drained.
+    pub(crate) deferred: RefCell<Vec<(u64, Layout)>>,
 }
 
 impl CpuDevice {
@@ -77,6 +80,37 @@ impl CpuDevice {
             prepared: RefCell::new(Vec::new()),
             graphs: RefCell::new(Vec::new()),
             wakers: RefCell::new(Vec::new()),
+            deferred: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Whether every stream has run everything pushed onto it, or lost the runner that would
+    /// (its thread dropped it), so no queued item can still touch memory.
+    pub(crate) fn quiet(&self) -> bool {
+        self.streams.borrow().iter().all(|s| {
+            s.shared.completed.load(Ordering::Acquire) >= s.pushed
+                || (s.runner.is_none() && Arc::strong_count(&s.shared) == 1)
+        })
+    }
+
+    /// Deallocates `addr` now if no queued item can touch it, else once every stream has
+    /// drained.
+    pub(crate) fn release(&self, addr: u64, layout: Layout) {
+        self.deferred.borrow_mut().push((addr, layout));
+        self.release_deferred();
+    }
+
+    /// Deallocates the deferred memory if every stream has drained. Called from `free`,
+    /// `synchronize` and `poll`; with nothing deferred it reads no stream.
+    pub(crate) fn release_deferred(&self) {
+        if self.deferred.borrow().is_empty() || !self.quiet() {
+            return;
+        }
+        for (addr, layout) in self.deferred.borrow_mut().drain(..) {
+            // SAFETY: each entry is memory `alloc` allocated at `addr` with `layout`, which
+            // `free` took out of the buffer table, so it is deallocated once. Every stream has
+            // drained, so no queued copy still holds the address.
+            unsafe { std::alloc::dealloc(addr as *mut u8, layout) };
         }
     }
 
@@ -166,6 +200,19 @@ impl CpuDevice {
 
 impl Drop for CpuDevice {
     fn drop(&mut self) {
+        // Items still in a runner kept here never run, so only taken runners can touch memory:
+        // wait until each has drained or its thread has dropped it.
+        for stream in self.streams.get_mut().iter_mut() {
+            stream.runner = None;
+        }
+        while !self.quiet() {
+            std::hint::spin_loop();
+        }
+        for (addr, layout) in self.deferred.get_mut().drain(..) {
+            // SAFETY: as in `release_deferred`: memory `free` deferred, deallocated once, with
+            // every stream drained.
+            unsafe { std::alloc::dealloc(addr as *mut u8, layout) };
+        }
         for buf in self.buffers.get_mut().values() {
             if let Some(layout) = buf.owned {
                 // SAFETY: `owned` is set only for memory `alloc` allocated with exactly this

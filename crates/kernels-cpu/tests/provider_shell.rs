@@ -196,6 +196,52 @@ fn a_copy_runs_in_stream_order_over_host_buffers() {
     );
 }
 
+/// A buffer freed while a copy into it is still queued is not deallocated until the streams
+/// have drained, so the copy cannot land in memory a later `alloc` hands out (review of #1829,
+/// B1).
+#[test]
+fn a_buffer_freed_under_a_queued_copy_outlives_the_copy() {
+    let provider = CpuProvider::new(KillSwitches::NONE);
+    let ctx = open(&provider);
+    let s = provider.stream(&ctx, StreamPriority::Compute).unwrap();
+    let mut src = vec![0xABu8; 4096];
+    let a = import(&provider, &ctx, &mut src);
+    let request = AllocRequest {
+        bytes: Bytes(4096),
+        kind: MemKind::HostMapped,
+        align: Bytes(64),
+        reserve_only: false,
+    };
+    let dst = provider.alloc(&ctx, request).unwrap();
+    provider
+        .copy(&ctx, &s, slice(a, 0, 4096), slice(dst.handle, 0, 4096))
+        .unwrap();
+    provider.free(&ctx, dst);
+    assert_eq!(
+        provider.deferred_frees(&ctx).unwrap(),
+        1,
+        "the copy is still queued"
+    );
+    let next = provider.alloc(&ctx, request).unwrap();
+    assert_eq!(provider.run(&ctx, &s).unwrap(), Run::Idle);
+    let mut seen = vec![0u8; 4096];
+    let probe = import(&provider, &ctx, &mut seen);
+    let t = provider.stream(&ctx, StreamPriority::CopyIn).unwrap();
+    provider
+        .copy(&ctx, &t, slice(next.handle, 0, 4096), slice(probe, 0, 4096))
+        .unwrap();
+    provider.synchronize(&ctx, &t).unwrap();
+    assert!(
+        seen.iter().all(|&b| b == 0),
+        "the queued copy landed in the next buffer"
+    );
+    assert_eq!(
+        provider.deferred_frees(&ctx).unwrap(),
+        0,
+        "released once drained"
+    );
+}
+
 #[test]
 fn events_are_atomics_that_streams_record_and_wait_on() {
     let provider = CpuProvider::new(KillSwitches::NONE);

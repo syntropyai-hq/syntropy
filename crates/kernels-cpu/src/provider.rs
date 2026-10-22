@@ -135,6 +135,15 @@ impl CpuProvider {
         result
     }
 
+    /// How many freed allocations wait for the streams to drain before they are deallocated.
+    ///
+    /// # Errors
+    ///
+    /// The context is not a CPU device's.
+    pub fn deferred_frees(&self, ctx: &DeviceCtx) -> Result<usize, Error> {
+        Ok(self.device(ctx)?.deferred.borrow().len())
+    }
+
     /// The NUMA node the device is.
     ///
     /// # Errors
@@ -337,15 +346,18 @@ impl KernelProvider for CpuProvider {
         let Ok(device) = self.device(ctx) else {
             return;
         };
+        let removed = device.buffers.borrow_mut().remove(&buf.handle);
         if let Some(HostBuf {
             addr,
             owned: Some(layout),
             ..
-        }) = device.buffers.borrow_mut().remove(&buf.handle)
+        }) = removed
         {
-            // SAFETY: the entry held memory `alloc` allocated at `addr` with `layout`, and it is
-            // removed from the table here, so it is deallocated once.
-            unsafe { std::alloc::dealloc(addr as *mut u8, layout) };
+            // A queued copy may still hold the address, so the memory goes only once every
+            // stream has drained.
+            device.release(addr, layout);
+        } else {
+            device.release_deferred();
         }
     }
 
@@ -507,6 +519,7 @@ impl KernelProvider for CpuProvider {
 
     fn poll(&self, ctx: &DeviceCtx, e: &Event) -> Result<bool, Error> {
         let device = self.live(ctx)?;
+        device.release_deferred();
         Ok(Self::event_state(device, e)?.complete())
     }
 
@@ -520,6 +533,7 @@ impl KernelProvider for CpuProvider {
         if let Some(mut runner) = self.take_runner(ctx, s)? {
             let result = runner.drain(None).map(|_| ());
             device.streams.borrow_mut()[index].runner = Some(runner);
+            device.release_deferred();
             return result;
         }
         while !device.drained(index) {
@@ -528,6 +542,7 @@ impl KernelProvider for CpuProvider {
             }
             std::hint::spin_loop();
         }
+        device.release_deferred();
         Ok(())
     }
 
