@@ -8,14 +8,17 @@
 //!   node when one is free, else any free core, so each dispatcher owns one core (ADR-0012
 //!   item 3).
 //! - [`spawn_dispatcher`] starts the thread, pins it, raises its priority, and returns a
-//!   [`Dispatcher`] whose [`HotThreadReport`] says where it runs: the record the runner's debug
-//!   state lists (RFC-0050 §13.6, note of 2026-10-23).
+//!   [`DispatcherThread`] whose [`HotThreadReport`] says where it runs: the record the runner's
+//!   debug state lists (RFC-0050 §13.6, note of 2026-10-23).
 //! - [`DispatcherRings`] are the thread's rings to the runner's `net` domain and to the I/O
 //!   engine, all `syntropy-spsc` rings, with no lock and no tokio (ADR-0012 items 4 and 6).
-//! - Between steps the thread waits with [`DispatcherCtx::idle_wait`]: it spins for its spin
-//!   budget, then parks on the inbound ring until a frame arrives (RFC-0012 §3.3; ADR-0012
-//!   item 5). The runner sets the budget from `sched.spin_us` (50 µs, or 10 µs on battery), which
-//!   `sched` declares: `exec` sits below `sched` (RFC-0001 §4.1) and takes the value.
+//! - The thread's body is normally a [`Dispatcher`](crate::Dispatcher)'s production loop,
+//!   [`Dispatcher::run`](crate::Dispatcher::run). It spins and parks as RFC-0012 §3.3 says,
+//!   between steps on every inbound ring (PLC-E7-T17). [`DispatcherCtx::idle_wait`] is the
+//!   simpler wait, for a body with one inbound ring: spin for the spin budget, then park on the
+//!   ring until a frame arrives (ADR-0012 item 5).
+//! - The runner sets the spin budget from `sched.spin_us` (50 µs, or 10 µs on battery). `sched`
+//!   declares that key; `exec` sits below `sched` (RFC-0001 §4.1) and takes the value.
 //!
 //! The OS calls are `syntropy_io::os`'s, because `exec` holds no `unsafe` (RFC-0001 §4.2
 //! rule 8). On macOS and iOS a thread cannot be bound to a core, so a dispatcher runs unpinned at
@@ -203,12 +206,12 @@ impl<In, Out> DispatcherCtx<In, Out> {
 
 /// A running dispatcher thread.
 #[derive(Debug)]
-pub struct Dispatcher<R> {
+pub struct DispatcherThread<R> {
     report: HotThreadReport,
     handle: JoinHandle<R>,
 }
 
-impl<R> Dispatcher<R> {
+impl<R> DispatcherThread<R> {
     /// Where the thread runs, as it reported once it had pinned itself.
     #[must_use]
     pub fn report(&self) -> &HotThreadReport {
@@ -226,7 +229,8 @@ impl<R> Dispatcher<R> {
 }
 
 /// Starts a dispatcher thread for `spec`: pins it to `spec.core`, raises its priority, and runs
-/// `body` with its rings. Returns once the thread has reported where it runs.
+/// `body` with its rings, normally a [`Dispatcher`](crate::Dispatcher)'s production loop.
+/// Returns once the thread has reported where it runs.
 ///
 /// # Errors
 ///
@@ -235,7 +239,7 @@ pub fn spawn_dispatcher<In, Out, R>(
     spec: DispatcherSpec,
     rings: DispatcherRings<In, Out>,
     body: impl FnOnce(DispatcherCtx<In, Out>) -> R + Send + 'static,
-) -> io::Result<Dispatcher<R>>
+) -> io::Result<DispatcherThread<R>>
 where
     In: Send + 'static,
     Out: Send + 'static,
@@ -278,7 +282,7 @@ where
     let report = rx.recv().map_err(|_| {
         io::Error::other("the dispatcher thread ended before it reported where it runs")
     })?;
-    Ok(Dispatcher { report, handle })
+    Ok(DispatcherThread { report, handle })
 }
 
 #[cfg(test)]

@@ -3669,7 +3669,9 @@ dependencies = [
  "serde_json",
  "syntropy-core",
  "syntropy-io",
+ "syntropy-kernels",
  "syntropy-spsc",
+ "syntropy-testkit",
 ]
 
 [[package]]
@@ -3701,6 +3703,7 @@ name = "syntropy-ipc"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "loom",
  "serde",
  "serde_json",
  "syntropy-core",
@@ -3778,6 +3781,7 @@ dependencies = [
  "subtle",
  "syntropy-config",
  "syntropy-core",
+ "syntropy-testkit",
  "tokio",
  "zstd",
 ]
@@ -3840,8 +3844,12 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "chacha20",
+ "serde",
+ "syntropy-config",
  "syntropy-core",
  "syntropy-graph",
+ "syntropy-net",
+ "toml",
 ]
 
 [[package]]

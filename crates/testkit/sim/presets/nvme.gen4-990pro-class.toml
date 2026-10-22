@@ -1,0 +1,50 @@
+# The §8.5 example's `gen4-990pro-class` drive: a Samsung 990 PRO.
+#
+# Labels as in `gpu.ada-24g.toml`.
+name = "gen4-990pro-class"
+kind = "nvme"
+describes = "Samsung 990 PRO, PCIe 4.0 x4"
+sources = [
+    "research §2.4: 990 PRO datasheet figures [S32]; throttling",
+    "research §2.3: PCIe 4.0 x4 raw rate [S28]",
+    "research §4 (a): sustained rate assumed",
+]
+
+[figures.link_raw]
+value = 7.88
+unit = "GB/s"
+label = "published"
+source = "research §2.3 [S28]: PCIe 4.0 x4, per direction, after 128b/130b"
+
+[figures.seq_read]
+value = 7450
+unit = "MB/s"
+label = "published"
+source = "research §2.4 [S32]"
+
+[figures.qd1_4k_read_iops]
+value = 22000
+unit = "IOPS"
+label = "published"
+source = "research §2.4 [S32]: ≈ 90 MB/s, ≈ 45 µs per I/O"
+
+[figures.qd32_4k_read_iops]
+range = [1200000, 1400000]
+unit = "IOPS"
+label = "published"
+source = "research §2.4 [S32]: 1 TB and 2 TB models"
+
+[figures.sustained_read]
+value = 6
+unit = "GB/s"
+label = "estimate"
+source = "research §4 (a)"
+
+[figures.throttled_read]
+unknown = "research §2.4: no read-only sustained figure was found; to be measured with a 60–120 s read"
+
+[figures.heating_time]
+unknown = "research §2.4: the read-side time to throttle was not found"
+
+[figures.read_latency]
+unknown = "the research note gives no per-request latency distribution beyond the QD1 rate"

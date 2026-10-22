@@ -29,4 +29,6 @@ iroh = { workspace = true, features = ["test-utils"] }
 proptest.workspace = true
 # Reads the official BLAKE3 test vectors (`third_party/blake3/test_vectors.json`).
 serde_json.workspace = true
+# The simulator's `SimTransport`, which the channel-conformance suite runs over (QUAL-E8-T04).
+syntropy-testkit = { path = "../testkit", features = ["transport"] }
 tokio.workspace = true

@@ -784,6 +784,13 @@ Blob streams on `syntropy/blob/1` carry `Hello` (with `cred_kind = AdmissionCert
 80  8   len          bytes wanted; 0 = to the end
 ```
 
+*Note 2026-10-23 (RFC-0001 §18.28): a shard fetch's class.* A runner's `FetchShard` carries RFC-0041 §7's `FetchPriority`, and the store's chunk requests for it use these classes:
+- `Urgent`, recovery after a node loss, uses `replacement`, as RFC-0033 §6.3 runs a replacement's fetch.
+- `Normal`, a load, uses `demand`: a runner is `Fetching`.
+- `Background`, pre-staging a sibling or a replica, uses `background`.
+
+`prefetch` is RFC-0023's peer-to-local expert prefetch, which no shard fetch uses.
+
 The response is a sequence of `BlobData` frames with payloads of at most `net.blob_frame` (1 MiB). Their extension is `id[32], offset u64, total u64, flags u16` (bit0 `LAST`), followed by padding. Errors use `Close` with `NotFound`, `Busy` (with a `retry_after_ms` in the reason) or `Throttled`. The receiver writes data through the store's direct-I/O path and verifies the object's BLAKE3 when it completes (RFC-0041). A mismatch discards it and marks the source suspect for that model (ADR-0016).
 
 `TENSOR_GROUP` requests are served from a *runner's* resident tier, and daemons hold no model bytes (RFC-0001 §2.1). They therefore travel on a runner-to-runner `Bulk`-purpose data-plane channel, which carries the same `BlobRequest` and `BlobData` frames and is paced like the blob plane (§7.5). The bytes are verified against the group's tensor hashes from the manifest (RFC-0001 §5.3).
@@ -871,10 +878,12 @@ Extension:
 #### 6.14 `EmbeddingResult` frame
 
 This frame implements RFC-0050 amendment A5 for prefill-only embedding sequences (`SequenceOpen::limits.embed`, RFC-0032 §3.6).
-- **Channel.** The tail sends exactly one per sequence on its `Tokens` channel to the sequence's ingress, in place of tokens, after the last prefill chunk. No ring-return frame follows.
-- **Extension.** `seq[16]`, `dims: u32`, `dtype: u8` (1 = F32, always in v1), `pooling: u8` (1 last_token | 2 mean | 3 cls), `normalised: u8`, `reserved: u8`, `prompt_tokens: u32`, `reserved[4]`, padded to 64.
-- **Payload.** `dims × f32`. At a few tens of KiB this fits a token slot. Larger vectors use the `Token` part convention (§6.5).
-- **Capability.** Bit 14 `EMBEDDING` (§10).
+- **Channel.** The tail sends one result per sequence, in one or more parts, on its `Tokens` channel to the sequence's ingress, in place of tokens, after the last prefill chunk. No ring-return frame follows.
+- **Extension.** `seq[16]`, `dims: u32`, `dtype: u8` (1 = F32, always in v1), `pooling: u8` (1 last_token | 2 mean | 3 cls), `normalised: u8`, `reserved: u8`, `prompt_tokens: u32`, `part_index: u16`, `part_count: u16`, padded to 64.
+- **Payload.** This part's elements of the `dims × f32` vector, little-endian. A vector larger than the channel's slot is split at element boundaries, each part a whole frame holding as many elements as fit beside the header and extension. The receiver acts on the result only when every part has arrived, as with `Token` (§6.5).
+- **Capability.** Bit 14 `EMBEDDING` (§10). A sender never writes the frame on a channel that did not negotiate it.
+
+*Note 2026-10-23 (DIST-E8-T15):* the part fields took the extension's `reserved[4]` at offset 28. The text sent a larger vector in `Token`'s parts, but the extension had no part fields, and a 4096-dimension F32 vector (16 KiB) does not fit a 16 KiB `Tokens` slot with its header. `part_count = 0`, what those reserved bytes held, is refused, as `Token` refuses it: no sender ever wrote the reserved form, so nothing needs it read as one part. A result in several parts needs only bit 14 `EMBEDDING`; bit 15 `TOKEN_PARTS` gates `Token`'s parts alone. Recorded under the maintainers' standing instruction of 2026-10-22 on wire-format choices.
 
 ### 7. Flow control, acknowledgement, retransmission and failover
 
@@ -929,14 +938,14 @@ Defaults: Activations 4, or M + 2 in throughput mode; Tokens 4; prefill (the sam
 **Note, 2026-10-23 (DIST-E7-T02): the channel core, as built, and the credit probe.** `net::transport::core::ChannelCore` is §7.1–§7.3 for one side of one channel, sans I/O: every backend wraps one per side, moves its frames and passes the time in. Where this section leaves a choice open, the core takes these:
 - **The credit probe, which amends §7.1's "control frames never trigger credits".**
   - The gap it closes: a credit that only grants more, sent when the receiver's caller drops a frame, can be lost while the sender has nothing unacknowledged. No later credit follows, since no data arrives, and no ack timeout fires, since nothing is outstanding.
-  - So a sender whose `try_send` was refused for credit, with nothing unacknowledged, sends a `Ping` after one `ack_timeout`, then after 2, 4, … up to 64 `ack_timeout`s, until a credit lets it send. A data receiver answers a `Ping` with its reply and its current credit.
+  - So a sender whose `try_send` was refused for credit, with nothing unacknowledged, sends a `Ping` after one `ack_timeout`, then after 2, 4, … up to 64 `ack_timeout`s [target], until a credit lets it send. A data receiver answers a `Ping` with its reply and its current credit.
   - Only a refused send arms the probe, so an idle channel sends nothing.
 - **The receive checks** run `magic`, the lengths and `header_crc`, then the channel key, then `wire_minor ≤ negotiated` and the frame rules (§6.2), then `chan_seq` and `payload_crc`. §6.1 lists `wire_minor` before `header_crc` and the key.
   - Reading the minor after `header_crc` means a damaged minor byte counts as damage, which is NACKed, and does not close the channel.
   - Reading it after the key means a frame of another instance or epoch is dropped and counted as stale whatever its minor or type, and never closes the channel.
   - An intact frame of the channel gets the same verdict either way. A minor above the negotiated one closes the channel as `InvalidRequest`, with no code of its own.
 - **The credit granted** is `ack_seq + recv_slots −` the frames handed over or waiting to be, so it never shrinks and `limit_seq − ack_seq` is the data slots free. The receiver refuses a frame past the credit it granted as a protocol error. The sender takes no `limit_seq` above its `ack_seq` plus the peer's `recv_slots`, and stops at `retention` unacknowledged frames, so §7.3's memory bound holds against any peer.
-- **α samples** come from credit echoes and from replies to `Ping`s the core itself sent; a reply carrying any other `origin_ns` gives none, so a peer cannot raise α and with it the ack timeout. An echo of a frame sent more than once gives none, since its arrival cannot be matched to one send. The core's α p99 is the largest of its last 128 samples, or the link profile's before the first.
+- **α samples** come from credit echoes and from replies to `Ping`s the core itself sent; a reply carrying any other `origin_ns` gives none, so a peer cannot raise α and with it the ack timeout. An echo of a frame sent more than once gives none, since its arrival cannot be matched to one send. The core's α p99 is the largest of its last 128 samples [target], or the link profile's before the first.
 - **Escalation.** Three ack timeouts in a row are `AckTimeout`, and an ack resets the count (§7.4's "ack timeout × 3"). Payload CRC failures of control frames count towards `CrcStorm` as data frames' do; a control frame is dropped and never NACKed.
 - **A stream backend** (QUIC, TCP) gives the core each frame's base header before reading its body. A data frame longer than the slot size, or a control frame longer than 512 bytes, is `FrameTooLarge` (§12), and the channel closes.
 
