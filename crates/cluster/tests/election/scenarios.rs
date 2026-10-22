@@ -4,8 +4,8 @@
 //! the situations it names, so those properties are not vacuously true; every property is
 //! checked in every scenario.
 
-use crate::check::TWO_AT_ONE_TERM;
-use crate::model::{Config, seen, side};
+use crate::check::{COMMANDS_SURVIVE, TWO_AT_ONE_TERM};
+use crate::model::{Config, flag, seen, side};
 
 fn base(name: &'static str, n: u8) -> Config {
     Config {
@@ -45,7 +45,7 @@ pub fn split_heal(n: u8, losses: u8) -> Config {
         split_budget: 1,
         loss_budget: losses,
         commands: vec![(1, 1)],
-        must_reach: seen::HEALED_AFTER_SPLIT_ELECTION,
+        must_reach: seen::HEALED_AFTER_SPLIT_ELECTION | seen::SETTLED_AFTER_HEAL,
         ..base("split-heal", n)
     }
 }
@@ -58,7 +58,9 @@ pub fn equal_counters(n: u8) -> Config {
         splits: vec![side(n, &half)],
         split_budget: 1,
         max_counter: 2,
-        must_reach: seen::SPLIT_ELECTED_EQUAL_COUNTERS | seen::HEALED_AFTER_SPLIT_ELECTION,
+        must_reach: seen::SPLIT_ELECTED_EQUAL_COUNTERS
+            | seen::HEALED_AFTER_SPLIT_ELECTION
+            | seen::SETTLED_AFTER_HEAL,
         ..base("equal-counters", n)
     }
 }
@@ -71,7 +73,7 @@ pub fn tag_collision(n: u8) -> Config {
     let mut cfg = equal_counters(n);
     cfg.name = "tag-collision";
     cfg.tags[0] = cfg.tags[(n / 2) as usize];
-    cfg.expected_failure = Some(TWO_AT_ONE_TERM);
+    cfg.expected_failure = Some((TWO_AT_ONE_TERM, flag::TAG_COLLISION));
     cfg
 }
 
@@ -174,7 +176,7 @@ pub fn isolated_self_election(n: u8) -> Config {
         split_budget: 1,
         max_counter: 4,
         claims_per_node: 3,
-        must_reach: seen::SUPPORTED_BEAT_UNSUPPORTED,
+        must_reach: seen::SUPPORTED_BEAT_UNSUPPORTED | seen::SETTLED_AFTER_HEAL,
         ..base("isolated-self-election", n)
     }
 }
@@ -188,7 +190,7 @@ pub fn commands_crash(n: u8) -> Config {
         crash_budget: 2,
         restart: true,
         loss_budget: 1,
-        must_reach: seen::REPLICATED_ACK,
+        must_reach: seen::REPLICATED_ACK | seen::SETTLED_CONVERGED,
         ..base("commands-crash", n)
     }
 }
@@ -206,8 +208,8 @@ pub fn commands_lost(n: u8) -> Config {
 
 /// The bounded 3-node configuration the default tests check: every scenario on 3 nodes, at
 /// bounds the dev profile checks in seconds. Every scenario here runs to exhaustion: about
-/// 1.5 million states, 26 s in the dev profile and 3.6 s release-optimised, with a test-process
-/// peak of 14 MB [measured, 2026-10-22, AMD Ryzen 9 5950X under WSL2, toolchain 1.99.1,
+/// 1.5 million states, 31 s in the dev profile and 4.0 s release-optimised, with a test-process
+/// peak of 15 MB [measured, 2026-10-22, AMD Ryzen 9 5950X under WSL2, toolchain 1.99.1,
 /// 4 checker threads].
 pub fn bounded() -> Vec<Config> {
     vec![
@@ -232,17 +234,18 @@ pub fn bounded() -> Vec<Config> {
 
 /// The full run: 3 and 4 nodes, with partitions and message loss. Each scenario stops at its
 /// `state_cap` of generated states. Nine reach it, so their check is an exploration to that
-/// bound, not an exhaustive one: `split-heal` on 3 and 4 nodes, `split-heal-lossy`,
-/// `equal-counters` on 3 and 4, `tag-collision`, `byzantine-snapshot` on 4, and `commands-crash`
-/// on 3 and 4. The other 17 run to exhaustion. In all: 74 million states, 216–224 s
-/// release-optimised over two runs, with a test-process peak of 174–179 MB [measured,
-/// 2026-10-22, AMD Ryzen 9 5950X under WSL2, toolchain 1.99.1, 4 checker threads, under
-/// `ulimit -v 4000000`].
+/// bound, not an exhaustive one: `split-heal`, `equal-counters` and `commands-crash` on 3 and 4
+/// nodes, `stale-heal` on 3, and `tag-collision` and `byzantine-snapshot` on 4. The other 17 run
+/// to exhaustion. In all: 75 million states, 679 s release-optimised on one checker thread, with
+/// a test-process peak of 170 MB [measured, 2026-10-22, AMD Ryzen 9 5950X under WSL2, toolchain
+/// 1.99.1, under `ulimit -v 4000000`].
 pub fn full() -> Vec<Config> {
     vec![
         split_heal(3, 0),
         split_heal(3, 2)
             .without_commands()
+            .claims(1)
+            .counter(2)
             .renamed("split-heal-lossy"),
         equal_counters(3),
         partial_partition(3),
@@ -255,7 +258,7 @@ pub fn full() -> Vec<Config> {
         isolated_self_election(3),
         commands_crash(3).claims(1).counter(2),
         commands_lost(3),
-        stale_heal(3).claims(1).counter(2),
+        stale_heal(3),
         split_heal(4, 0).without_commands().claims(1).counter(2),
         equal_counters(4).claims(1),
         tag_collision(4).claims(1),
@@ -306,10 +309,12 @@ impl Config {
     }
 }
 
-/// The coordinator holds a command its originator acked when a split cuts the coordinator off;
-/// the other side elects, then loses the originator with its disk, and the network heals, and
-/// the coordinator's branch loses the heal. Under the reply rule before OQ-NET-33 the command
-/// had been acknowledged `replicated = true` and was lost; under the rule as revised it never is.
+/// A split cuts the coordinator off alone. The other side elects the command's originator,
+/// which commits the command with the other member's ack, then is lost with its disk; the
+/// survivor elects itself, unsupported, at the next counter, and the network heals. Under
+/// RFC-0032 §7.5 the cut-off coordinator's older but supported proof wins, and the survivor
+/// rolls back to its branch, past the command its own ack made `replicated = true`. The command
+/// is gone: the expected counterexample, with that rollback as its cause, pending OQ-NET-34.
 pub fn stale_heal(n: u8) -> Config {
     Config {
         splits: vec![side(n, &[0])],
@@ -317,7 +322,10 @@ pub fn stale_heal(n: u8) -> Config {
         commands: vec![(1, n - 1)],
         crashable: vec![n - 1],
         crash_budget: 1,
-        must_reach: seen::HEALED_AFTER_SPLIT_ELECTION | seen::REPLICATED_ACK,
+        expected_failure: Some((COMMANDS_SURVIVE, flag::ROLLBACK_PAST_OWN_ACK)),
+        must_reach: seen::HEALED_AFTER_SPLIT_ELECTION
+            | seen::REPLICATED_ACK
+            | seen::SETTLED_AFTER_HEAL,
         ..base("stale-heal", n)
     }
 }

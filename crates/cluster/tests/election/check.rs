@@ -36,13 +36,43 @@ impl Model for ElectionModel {
         PROPERTIES
             .iter()
             .map(|&(name, condition)| Property::always(name, condition))
-            .chain([Property::sometimes(REACHES, reaches)])
+            .chain([
+                Property::sometimes(REACHES, reaches),
+                Property::sometimes(EXPECTED, expected_counterexample_occurs),
+            ])
             .collect()
     }
 }
 
 /// The scenario's situations, reached on some path, so its properties are not vacuous.
 pub const REACHES: &str = "the scenario reaches its situations";
+
+/// The scenario's expected counterexample, if it names one, occurs with the cause it predicts.
+pub const EXPECTED: &str = "the expected counterexample occurs with its predicted cause";
+
+fn expected_counterexample_occurs(m: &ElectionModel, s: &State) -> bool {
+    match m.cfg.expected_failure {
+        None => true,
+        Some((name, cause)) => s.flags & cause != 0 && !holds_strictly(name, m, s),
+    }
+}
+
+/// A property as RFC-0032 Testing states it, with no expected cause excused.
+fn holds_strictly(name: &str, m: &ElectionModel, s: &State) -> bool {
+    match name {
+        TWO_AT_ONE_TERM => s.flags & flag::TWO_AT_ONE_TERM == 0,
+        COMMANDS_SURVIVE => commands_survive(m, s),
+        _ => unreachable!("no expected failure is defined for {name}"),
+    }
+}
+
+/// A state counts against `name` unless the scenario expects that property to fail and the
+/// predicted cause occurred on the way. A counterexample with any other cause still fails.
+fn excused(name: &str, m: &ElectionModel, s: &State) -> bool {
+    m.cfg
+        .expected_failure
+        .is_some_and(|(expected, cause)| expected == name && s.flags & cause != 0)
+}
 
 fn reaches(m: &ElectionModel, s: &State) -> bool {
     s.reached & m.cfg.must_reach == m.cfg.must_reach
@@ -52,7 +82,9 @@ type Condition = fn(&ElectionModel, &State) -> bool;
 
 /// The 13 properties, by their names in RFC-0032 Testing.
 pub const PROPERTIES: [(&str, Condition); 13] = [
-    (TWO_AT_ONE_TERM, |_, s| s.flags & flag::TWO_AT_ONE_TERM == 0),
+    (TWO_AT_ONE_TERM, |m, s| {
+        holds_strictly(TWO_AT_ONE_TERM, m, s) || excused(TWO_AT_ONE_TERM, m, s)
+    }),
     ("after heal every node's chain converges", |m, s| {
         !settled(m, s) || converged(m, s).is_some()
     }),
@@ -93,7 +125,9 @@ pub const PROPERTIES: [(&str, Condition); 13] = [
         "an unsupported self-election never deposes a supported coordinator",
         |_, s| s.flags & flag::UNSUPPORTED_DEPOSED_SUPPORTED == 0,
     ),
-    (COMMANDS_SURVIVE, commands_survive),
+    (COMMANDS_SURVIVE, |m, s| {
+        holds_strictly(COMMANDS_SURVIVE, m, s) || excused(COMMANDS_SURVIVE, m, s)
+    }),
 ];
 
 /// The first property. Two claimants share a term only when their 24-bit tags collide, and the
@@ -222,7 +256,7 @@ fn commands_survive(m: &ElectionModel, s: &State) -> bool {
         .filter(|&i| s.nodes[i as usize].alive)
         .flat_map(|i| s.nodes[i as usize].journal.iter().copied());
     s.acked_replicated
-        .iter()
+        .keys()
         .copied()
         .chain(journalled)
         .all(|id| log.contains(&Entry::Command { id }))
@@ -364,12 +398,44 @@ pub fn oracle(m: &ElectionModel, before: &State, action: &Action, after: &mut St
             _ => {}
         }
     }
-    let live: Vec<Ix> = (0..m.cfg.n)
-        .filter(|&i| after.nodes[i as usize].alive)
-        .collect();
-    if let [only] = live.as_slice()
-        && after.nodes[*only as usize].is_coordinator(*only)
-    {
-        after.reached |= seen::LONE_SURVIVOR_LEADS;
+    // A rollback at heal past the node's own ack: the node adopted a branch whose election sits
+    // in its own log before a later election, and discarded a command that its own ack had made
+    // `replicated = true`.
+    for i in 0..m.cfg.n {
+        let (b, a) = (&before.nodes[i as usize].log, &after.nodes[i as usize].log);
+        let acked_by_i = |e: &Entry| match e {
+            Entry::Command { id } => before
+                .acked_replicated
+                .get(id)
+                .is_some_and(|ackers| ackers & bit(i) != 0),
+            _ => false,
+        };
+        if !a.starts_with(b)
+            && let Some((node, term)) = crate::model::last_elected(a)
+            && let Some(at) = b.iter().position(|e| *e == Entry::Elected { node, term })
+            && b[at + 1..]
+                .iter()
+                .any(|e| matches!(e, Entry::Elected { .. }))
+            && b.iter().any(|e| acked_by_i(e) && !a.contains(e))
+        {
+            after.flags |= flag::ROLLBACK_PAST_OWN_ACK;
+        }
+    }
+    // Situations the liveness properties are judged in, so a scenario can require reaching them.
+    if after.net.is_empty() && after.cut.is_empty() && settled(m, after) {
+        if converged(m, after).is_some() {
+            after.reached |= seen::SETTLED_CONVERGED;
+            if !after.split_elected.is_empty() {
+                after.reached |= seen::SETTLED_AFTER_HEAL;
+            }
+        }
+        let live: Vec<Ix> = (0..m.cfg.n)
+            .filter(|&i| after.nodes[i as usize].alive)
+            .collect();
+        if let [only] = live.as_slice()
+            && after.nodes[*only as usize].is_coordinator(*only)
+        {
+            after.reached |= seen::LONE_SURVIVOR_LEADS;
+        }
     }
 }

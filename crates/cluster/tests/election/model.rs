@@ -254,6 +254,16 @@ pub mod flag {
     pub const FORGED_TERM_DEPOSED: u16 = 1 << 4;
     pub const UNSUPPORTED_DEPOSED_SUPPORTED: u16 = 1 << 5;
     pub const HEAL_UNDECIDED: u16 = 1 << 6;
+    /// Causes, recorded so an expected counterexample is matched to the cause it predicts.
+    /// Two coordinators at one term whose 24-bit tags collide (§7.2).
+    pub const TAG_COLLISION: u16 = 1 << 7;
+    /// At heal, a stale supported proof rolled a node back past a command that the node's own
+    /// ack had made `replicated = true`: the node adopted the branch of an election that its
+    /// own log follows with a later election (OQ-NET-34).
+    pub const ROLLBACK_PAST_OWN_ACK: u16 = 1 << 8;
+    /// The originator's own ack made a reply `replicated = true`, under the rule before
+    /// OQ-NET-33.
+    pub const ORIGINATOR_ACK: u16 = 1 << 9;
 }
 
 /// Situations a scenario must reach, so its properties are not vacuous, as bits.
@@ -270,6 +280,10 @@ pub mod seen {
     pub const NO_ROLE_CLAIM_IGNORED: u16 = 1 << 9;
     pub const CLAIM_ABORTED: u16 = 1 << 10;
     pub const LONE_SURVIVOR_LEADS: u16 = 1 << 11;
+    /// A settled state in which every live honest node follows one coordinator.
+    pub const SETTLED_CONVERGED: u16 = 1 << 12;
+    /// The same, after a split elected on some side and healed.
+    pub const SETTLED_AFTER_HEAL: u16 = 1 << 13;
 }
 
 /// The whole system's state.
@@ -288,8 +302,9 @@ pub struct State {
     pub elections: BTreeSet<(Ix, Term)>,
     /// Ghost: per node, the coordinator it accepted at each term.
     pub accepted: Vec<BTreeMap<Term, Ix>>,
-    /// Ghost: commands a coordinator acknowledged with `replicated = true`.
-    pub acked_replicated: BTreeSet<u8>,
+    /// Ghost: commands a coordinator acknowledged with `replicated = true`, each with the
+    /// members whose ack made it so, as bits.
+    pub acked_replicated: BTreeMap<u8, u8>,
     /// Ghost: a split happened, then elections at the same counter on both sides.
     pub split_elected: BTreeSet<(Ix, Term)>,
     /// Ghost: voters that acked a claim in progress, as `(claimant, claim term, voter)`, with
@@ -375,8 +390,9 @@ pub struct Config {
     pub partial_partition: bool,
     /// The situations ([`seen`]) the scenario must reach.
     pub must_reach: u16,
-    /// A property this scenario is expected to fail, with the plan record that explains it.
-    pub expected_failure: Option<&'static str>,
+    /// A property this scenario is expected to fail, with the cause ([`flag`]) the plan predicts
+    /// for it. A counterexample with any other cause still fails.
+    pub expected_failure: Option<(&'static str, u16)>,
     /// The most states the checker generates; beyond it the run stops and reports the bound.
     pub state_cap: usize,
 }
@@ -554,7 +570,7 @@ impl ElectionModel {
             revoke_issued: false,
             elections,
             accepted,
-            acked_replicated: BTreeSet::new(),
+            acked_replicated: BTreeMap::new(),
             split_elected: BTreeSet::new(),
             ackers: BTreeMap::new(),
             aborted_ackers: BTreeMap::new(),
@@ -784,8 +800,13 @@ impl ElectionModel {
 
     pub fn record_accept(&self, s: &mut State, node: Ix, term: Term, coordinator: Ix) {
         let prev = s.accepted[node as usize].insert(term, coordinator);
-        if prev.is_some_and(|p| p != coordinator) {
+        if let Some(p) = prev
+            && p != coordinator
+        {
             s.flags |= flag::TWO_AT_ONE_TERM;
+            if self.tag(p) == self.tag(coordinator) {
+                s.flags |= flag::TAG_COLLISION;
+            }
         }
     }
 
@@ -996,8 +1017,11 @@ impl ElectionModel {
                 .collect();
             for id in covered {
                 s.nodes[c as usize].pending.remove(&id);
-                s.acked_replicated.insert(id);
+                *s.acked_replicated.entry(id).or_default() |= bit(f);
                 s.reached |= seen::REPLICATED_ACK;
+                if originated_by_f(id) {
+                    s.flags |= flag::ORIGINATOR_ACK;
+                }
             }
         }
     }
