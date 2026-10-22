@@ -5,6 +5,7 @@
 use std::fmt;
 
 use syntropy_core::ErrorClass;
+use syntropy_core::plan::WireDType;
 
 use super::header::FrameType;
 
@@ -35,10 +36,12 @@ pub enum FrameError {
     },
     /// A sealed frame whose payload is shorter than the AEAD tag.
     SealedWithoutTag { payload_len: usize },
-    /// A typed control message was asked of a sealed frame, which must be opened first.
+    /// A typed message was asked of a sealed frame, which must be opened first.
     Sealed(FrameType),
     /// A typed control message was asked of a frame of another type.
     NotControl(FrameType),
+    /// A typed `Activation` was asked of a frame of another type.
+    NotActivation(FrameType),
     /// A control frame's extension is shorter than its fields.
     ExtTooShort {
         ftype: FrameType,
@@ -51,6 +54,22 @@ pub enum FrameError {
         field: &'static str,
         value: u64,
     },
+    /// A field that disagrees with what the rest of the frame gives it: a span's `row_offset`
+    /// that the spans before it do not reach, or a payload that is not `n_rows` strides long.
+    Inconsistent {
+        ftype: FrameType,
+        field: &'static str,
+        value: u64,
+        expected: u64,
+    },
+    /// An `Activation` whose dtype is not its channel's `ChannelSpec::wire` (RFC-0031 §6.4).
+    WireDTypeMismatch {
+        expected: WireDType,
+        found: WireDType,
+    },
+    /// A wire dtype whose container this build does not carry: `F16`, `Q8B32` and
+    /// `F8E4M3B32`, which come with the `WIRE_COMPRESS` containers (DIST-E8-T11).
+    UnsupportedDType(WireDType),
     /// A `Hello` or `HelloAck` credential whose length does not fit its `cred_kind`.
     CredentialLength { kind: u16, len: usize },
     /// A `Close` reason that is not UTF-8 or is longer than 256 bytes.
@@ -66,13 +85,17 @@ pub enum FrameError {
 impl FrameError {
     /// The RFC-0001 §5.12 class. A refused frame is never `Internal`, as RFC-0060 §10.2 requires
     /// of every decoder of untrusted bytes: damaged or malformed bytes are `Integrity`
-    /// (RFC-0031 §7.2 drops the frame and NACKs it), and a frame type this minor does not define
-    /// is `Unsupported` (RFC-0031 §12, revised 2026-10-22), sent in `Close` as the code
+    /// (RFC-0031 §7.2 drops the frame and NACKs it). A frame type this minor does not define, an
+    /// `Activation` in another dtype than its channel's, and a dtype container this build does
+    /// not carry are `Unsupported` (RFC-0031 §12, revised 2026-10-22); a resend would carry the
+    /// same bytes, so no NACK can repair them. The first two are sent in `Close` as the code
     /// [`FrameError::code`] gives. Only the encoder's own failures, a buffer too small or a length
     /// too long for its field, are `Internal`.
     pub fn class(&self) -> ErrorClass {
         match self {
-            FrameError::UnknownFrameType(_) => ErrorClass::Unsupported,
+            FrameError::UnknownFrameType(_)
+            | FrameError::WireDTypeMismatch { .. }
+            | FrameError::UnsupportedDType(_) => ErrorClass::Unsupported,
             FrameError::TooLong { .. } | FrameError::BufferTooSmall { .. } => ErrorClass::Internal,
             _ => ErrorClass::Integrity,
         }
@@ -83,6 +106,7 @@ impl FrameError {
         match self {
             FrameError::UnknownFrameType(_) => Some(super::control::code::UNKNOWN_FRAME_TYPE),
             FrameError::TooLong { .. } => Some(super::control::code::FRAME_TOO_LARGE),
+            FrameError::WireDTypeMismatch { .. } => Some(super::control::code::WIRE_DTYPE_MISMATCH),
             _ => None,
         }
     }
@@ -141,6 +165,7 @@ impl fmt::Display for FrameError {
             }
             FrameError::Sealed(ftype) => write!(f, "{ftype:?} is sealed; open it first"),
             FrameError::NotControl(ftype) => write!(f, "{ftype:?} is not a control frame"),
+            FrameError::NotActivation(ftype) => write!(f, "{ftype:?} is not an Activation frame"),
             FrameError::ExtTooShort { ftype, len, needed } => {
                 write!(
                     f,
@@ -155,6 +180,22 @@ impl fmt::Display for FrameError {
                 f,
                 "{ftype:?} field `{field}` has the undefined value {value}"
             ),
+            FrameError::Inconsistent {
+                ftype,
+                field,
+                value,
+                expected,
+            } => write!(
+                f,
+                "{ftype:?} field `{field}` is {value}; the rest of the frame gives {expected}"
+            ),
+            FrameError::WireDTypeMismatch { expected, found } => write!(
+                f,
+                "frame dtype {found:?} is not the channel's wire dtype {expected:?}"
+            ),
+            FrameError::UnsupportedDType(dtype) => {
+                write!(f, "wire dtype {dtype:?} is not carried by this build")
+            }
             FrameError::CredentialLength { kind, len } => {
                 write!(f, "credential of {len} bytes does not fit cred_kind {kind}")
             }

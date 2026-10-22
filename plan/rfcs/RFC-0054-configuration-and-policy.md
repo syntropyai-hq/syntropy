@@ -237,6 +237,8 @@ RFC-0001 §11.3 defines these types in `syntropy-core`, and §5.13 assigns them 
 
 *Note 2026-10-22 (OQ-PRD-27):* the field types these objects hold that `config` parses (`Reserve`, `Fraction`, the selectors behind `DeviceFilter` and `NodeFilter`, tensor-override patterns, `KeyPath` and `ConfigValue`) have plain-data forms in `core`, so the objects can live there under RFC-0001 §4.2 rule 1. `config` parses text into them and validates it. Patterns are held in `core` as their source text, and `config` keeps the compiled regex.
 
+*Note 2026-10-22 (#1672):* `config` still defines its own `Fraction`, `Reserve`, `NodeSelector`, `DeviceSelector`, `TierSelector` and `LayerRange`, which match `core`'s today. PROD-E1-T23 moves `config` onto `core`'s types and deletes the copies, so the two cannot drift.
+
 #### 4.1 `Objective`
 
 RFC-0001 §11.3 defines the type. This RFC adds two optional fields with serde defaults, under the RFC-0001 §5 rules:
@@ -417,6 +419,8 @@ The instance's `resources` overlay is applied on each stage node to that node's 
 - `InstancePolicy::digest_with(&self, hash: impl FnOnce(&[u8]) -> Blake3) -> Blake3` replaces `digest()`. The digest is still BLAKE3 over the canonical bytes, computed by the crate that links BLAKE3 (`config` or `api`, when it parses policies) and passes the hash in.
 
 `ResourceOverlay`, `ApproxParams` and the optional `Objective` fields skip unset values, so only explicitly set fields enter the bytes, and a field added later as an unset `Option` leaves earlier digests unchanged. RFC-0001 §18.16 records the change.
+
+*Note 2026-10-22 (#1672):* one function in `config` supplies the hash: BLAKE3 over `canonical_bytes()` through `digest_with`. PROD-E1-T08 builds it, with golden digests, and every caller uses it, so no two nodes hash a policy differently. The open question below still stands; if `digest()` moves into `core`, that function calls it.
 
 Open, for the maintainers: should `digest()` live in `core` with its own hasher (a vendored or hand-written BLAKE3, or an amendment to rule 1), so that no caller can pass a different hash?
 
@@ -830,6 +834,17 @@ error[config/0003]: unknown key `resource.ram_headroon`
 - **Never the library's text.** The renderer never prints the TOML library's rendered error, which appends the source line in every phase. It renders from the error's span and message.
 - **Drop-ins.** Lines are attributed one file at a time, since a table header never carries over from one file to the next.
 - **Tests.** PROD-E1-T03's golden tests plant a marker token in every secret-typed value, and in the value of every unknown key and unknown `SYNTROPY_*` variable, and check that no rendered output, for any error code, contains it. The `config/0003` example above shows the unknown key's value withheld.
+
+*Note 2026-10-22 (PROD-E1-T03):* how the validation runs, as built.
+- **Phases 1–3 report together.** Phase 3 checks each value as layering assigns it, so a bad value in a file is an error even when a later layer overrides it. A file that cannot be read, or is not UTF-8, is an error beside the other files' errors, which are still resolved. Phases 4 and 5 run once phases 1–3 pass, and a load reports every error it finds, not only the first.
+- **Phases 4 and 5 are frameworks.** A rule reads resolved values by path. The task that owns a key adds its rules: PROD-E5-T02 the API bind and TLS rules, and PROD-E1-T07 the `ram_headroom` floor. PROD-E1-T05 is M0a, before this framework, so its `ResolvedConfig` emits the `debug.*` warning itself, which the startup log and each reload print. Phase 5 asks an `Environment` about the host: `config` answers paths and file permissions from the standard library, and the daemon adds direct I/O and interface names (PROD-E6-T24).
+- **Directory keys.** A key whose last segment is `dir` or `dirs`, or ends in `_dir` or `_dirs`, such as `node.state_dir`, names a directory. Phase 5 requires a writable directory there, or a missing one whose nearest existing ancestor is writable, so a regular file is unusable. The check writes: it creates an empty `.syntropy-write-check-<pid>` file in the directory and removes it at once, since the standard library has no check that writes nothing. `config check` therefore touches every directory a path key names.
+- **Warnings without a code.** A warning that §8's table gives no code, such as a deprecated key or a secret-holding file that others can read, prints as `warning: …`.
+- **The deprecation window (open, for the maintainers).** "One minor release before 1.0" can be read two ways:
+  - (a) a key deprecated in 0.3 is accepted throughout 0.3.x and unknown from 0.4.0;
+  - (b) it is accepted through 0.4.x too.
+
+  Recommended default: (a), the literal reading, as built (`Deprecated::closes_in`). The release that closes a window removes the record.
 
 **Startup.** `syntropy serve` refuses to start on any phase 1–4 error and prints every error, not only the first. `syntropy config check [--file <path>] [--strict]` runs phases 1–5 without a daemon; `--strict` turns phase 5 warnings and empty override matches into errors for CI use.
 

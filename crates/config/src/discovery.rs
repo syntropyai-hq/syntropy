@@ -22,9 +22,10 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::code::Code;
+use crate::diagnostic::Problem;
 use crate::env::Env;
 use crate::origin::Origin;
-use crate::resolve::Problem;
 
 /// The operating system whose path rules apply. Every Unix other than macOS takes the Linux
 /// rules, which are the XDG base directory rules.
@@ -319,6 +320,7 @@ impl Locations {
         if let Some(explicit) = &self.explicit {
             if !explicit.path.is_file() {
                 return Err(Problem::new(
+                    Code::PathUnusable,
                     Some(explicit.from.clone()),
                     format!(
                         "the config file `{}` does not exist or is not a file",
@@ -342,6 +344,7 @@ impl Locations {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(e) => {
                 return Err(Problem::new(
+                    Code::PathUnusable,
                     None,
                     format!(
                         "cannot read the drop-in directory `{}`: {e}",

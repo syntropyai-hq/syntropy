@@ -328,7 +328,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M0b: parity, certification and the lab
 
-127 tasks in the epics (`implementation/roadmap.md`, M0b).
+130 tasks in the epics (`implementation/roadmap.md`, M0b).
 
 - [ ] `qwen_moe` (GQA with softmax top-k MoE, every expert resident in VRAM), its `FamilyCert` gated on golden logits from the publisher's F32 reference as in M0a (RFC-0043, RFC-0042 §7).
 - [ ] The other M0 schemes (Q4_0, BF16, F16) and captured execution on CUDA (RFC-0040, RFC-0012).
@@ -344,7 +344,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M1a: Linux preview (CUDA and CPU tiering)
 
-478 tasks in the epics (`implementation/roadmap.md`, M1a).
+479 tasks in the epics (`implementation/roadmap.md`, M1a).
 
 - [ ] Tier manager with DMA-registered `HostPinned` and locked `HostPageable` arenas per NUMA domain, the Linux budgets, and progressive locking and registration; packs with 4 KiB alignment; the io_uring and thread-pool I/O engines (RFC-0020, RFC-0021, RFC-0041).
 - [ ] Expert cache with decayed LFU, CPU execute-in-place for misses, next-layer prediction fused into the router op, and prefetch. How much of the NVMe expert tier M1a takes on follows the hit curves from S-01's routing traces. Until those exist, the model class that fits in RAM leads, and DeepSeek-V3 at Q4 is a capacity demonstration (RFC-0023).
@@ -376,7 +376,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M2: multiple devices on a LAN
 
-286 tasks in the epics (`implementation/roadmap.md`, M2).
+287 tasks in the epics (`implementation/roadmap.md`, M2).
 
 - [ ] Discovery with blinded beacons sent only on networks where a member has been seen, SWIM membership, coordinator lease and event log, with the election and split-heal design model-checked before its code; admission with commit-then-reveal and number matching, and encryption (RFC-0034 core). Coordination is keyholders-only by default, offered with a second-keyholder grant at pairing, with an optional offline recovery code at bootstrap, a guard against removing the last keyholder, and re-founding (RFC-0030, RFC-0032, RFC-0034).
 - [ ] QUIC, TCP and shared-memory transports; RDMA over Thunderbolt 5 on macOS (RFC-0031).
@@ -393,7 +393,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M3: feature complete
 
-211 tasks in the epics (`implementation/roadmap.md`, M3).
+212 tasks in the epics (`implementation/roadmap.md`, M3).
 
 - [ ] Invite links with relays and hole punching, the built-in relay set read from a signed `relays.json`; Tailscale paths (RFC-0030, RFC-0034).
 - [ ] Fault tolerance: activation-history replay from every sending stage, request migration, in-place relink and shard extension, KV migration on re-placement and recovery, an evictable second copy of each stage's source chunks on the node a repair would absorb it into, a 60 s detach grace that lets a client re-attach to a paused stream, degraded modes, automatic re-placement (RFC-0033, RFC-0022, RFC-0050).

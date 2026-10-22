@@ -10,7 +10,7 @@ use serde::forward_to_deserialize_any;
 use crate::schema::DefaultValue;
 
 /// Deserializes one [`DefaultValue`].
-pub(crate) struct ValueDeserializer<'a> {
+pub struct ValueDeserializer<'a> {
     value: &'a DefaultValue,
 }
 

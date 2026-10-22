@@ -22,9 +22,9 @@ use std::sync::{Arc, Barrier};
 use proptest::prelude::*;
 use serde::Deserialize;
 use syntropy_config::{
-    ByteSize, ConfigFile, ConfigSection, Dirs, Env, Flags, HoldsSecret, Layers, Locations, Mode,
-    Origin, Os, Registry, ResolvedConfig, SecretSource, SharedConfig, Value, command, load,
-    order_dropins,
+    ByteSize, Checked, Code, ConfigFile, ConfigSection, Dirs, Env, Flags, HoldsSecret,
+    HostEnvironment, Layers, Locations, Mode, Origin, Os, Registry, ResolvedConfig, SecretSource,
+    SharedConfig, Value, command, diagnostic, load, load_and_validate, order_dropins,
 };
 
 /// Keys for the layering tests.
@@ -379,6 +379,128 @@ fn a_system_service_reads_no_user_file() {
     assert_eq!(int(&as_service.unwrap(), "t.a"), Some(10));
 }
 
+/// Instance keys of each kind: a plain default, a computed one and two that hold secrets.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "inst", scope = Instance, owner = "RFC-0054")]
+struct InstanceDefaults {
+    /// A plain default.
+    #[config(reload = Instance, default = 4)]
+    depth: u32,
+    /// A default the instance computes.
+    #[config(reload = Instance, default = computed("from the model's maximum"))]
+    context_target: Option<u32>,
+    /// Tokens by name, each a secret.
+    #[config(reload = Instance, default = {})]
+    tokens: std::collections::BTreeMap<String, syntropy_config::Secret<String>>,
+    /// A secret with no default.
+    #[config(reload = Instance, default = unset)]
+    draft_token: Option<syntropy_config::Secret<String>>,
+}
+
+/// A request key, which `config show --resolved` never lists.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "req", scope = Request, owner = "RFC-0054")]
+struct RequestOnly {
+    /// Per request.
+    #[config(reload = Hot, default = 1)]
+    per_request: u32,
+}
+
+/// A long instance key, to move the shared comment column.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "a_rather_long_instance_section", scope = Instance, owner = "RFC-0054")]
+struct LongInstanceKey {
+    /// A long path.
+    #[config(reload = Instance, default = 1)]
+    with_a_long_key_name: u32,
+}
+
+static WITH_INSTANCE: Registry = Registry::new(&[
+    &TSection::SCHEMA,
+    &ClusterKeys::SCHEMA,
+    &InstanceDefaults::SCHEMA,
+    &RequestOnly::SCHEMA,
+]);
+static WITHOUT_INSTANCE: Registry = Registry::new(&[&TSection::SCHEMA, &ClusterKeys::SCHEMA]);
+static WITH_LONG_INSTANCE: Registry = Registry::new(&[
+    &TSection::SCHEMA,
+    &ClusterKeys::SCHEMA,
+    &LongInstanceKey::SCHEMA,
+]);
+
+fn shown_with(registry: &'static Registry) -> String {
+    let resolved = ResolvedConfig::resolve(
+        registry,
+        Layers {
+            os: Os::Linux,
+            files: &[],
+            env: &Env::default(),
+            flags: &Flags::new(),
+        },
+    )
+    .expect("resolves");
+    command::show_resolved(&resolved)
+}
+
+/// The lines of `shown`'s block whose header starts with `header`, each with its padding
+/// collapsed to one space.
+fn block(shown: &str, header: &str) -> Vec<String> {
+    shown
+        .split("\n\n")
+        .find(|b| b.starts_with(header))
+        .unwrap_or_else(|| panic!("no block {header:?} in\n{shown}"))
+        .lines()
+        .skip(1)
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect()
+}
+
+/// `config show --resolved` lists every instance key with its schema default: a plain value, a
+/// computed default by its rule, and a key that holds a secret redacted or by its path alone.
+/// Request-scope keys are not listed.
+#[test]
+fn show_resolved_lists_instance_defaults() {
+    let shown = shown_with(&WITH_INSTANCE);
+    let instance = block(&shown, "# instance keys:");
+    assert_eq!(
+        instance,
+        [
+            "inst.context_target # default, computed: from the model's maximum",
+            "inst.depth = 4 # default",
+            "inst.draft_token # default",
+            "inst.tokens = [redacted] # default",
+        ],
+        "\n{shown}"
+    );
+    assert!(
+        shown.contains(
+            "\n# instance keys: the schema default; a [policy.\"<selector>\"] table or an \
+             explicit value overrides it per model\n"
+        ),
+        "{shown}"
+    );
+    assert!(!shown.contains("req.per_request"), "{shown}");
+}
+
+/// Instance keys leave the node and cluster rows as they were, apart from alignment: a long
+/// instance key moves the shared comment column, and nothing else.
+#[test]
+fn instance_keys_change_only_the_alignment_of_other_rows() {
+    let without = shown_with(&WITHOUT_INSTANCE);
+    for registry in [&WITH_INSTANCE, &WITH_LONG_INSTANCE] {
+        let with = shown_with(registry);
+        for header in ["# node keys:", "# cluster keys:"] {
+            assert_eq!(block(&with, header), block(&without, header), "\n{with}");
+        }
+    }
+    let long = shown_with(&WITH_LONG_INSTANCE);
+    assert_ne!(
+        long.lines().nth(1),
+        without.lines().nth(1),
+        "the column moves"
+    );
+}
+
 /// `config show --resolved` prints each value with its file and line, variable or flag.
 #[test]
 fn show_resolved_prints_the_origin_of_every_value() {
@@ -417,6 +539,9 @@ t.token = [redacted]                            # /etc/syntropy/config.toml:6
 
 # cluster keys: the cluster's value; the default until the cluster sets one
 allow_approximate = false                       # default
+
+# instance keys: the schema default; a [policy.\"<selector>\"] table or an explicit value overrides it per model
+objective = \"latency\"                           # default
 
 # proposed to the cluster by this node's file, environment or flags
 allow_approximate = true                        # /etc/syntropy/config.toml:2
@@ -563,12 +688,12 @@ fn a_secret_nested_in_a_struct_or_an_array_of_tables_never_prints() {
 }
 
 /// A `policy.*` table is a proposal printed whole, so each entry is redacted by its instance
-/// key's `holds_secret` flag; an entry no instance key names is redacted too, since it may be a
-/// misspelt secret.
+/// key's `holds_secret` flag. An entry no instance key names is an `unknown_key` error, which
+/// never prints its value, since it may be a misspelt secret.
 #[test]
 fn a_secret_in_a_policy_table_never_prints() {
     let text = "[policy.\"qwen3*\"]\nobjective = \"throughput\"\ndraft_token = \"canary-p1\"\n\
-                mystery = \"canary-p2\"\n\n[policy.\"qwen3*\".approximate]\nkv_lossy = true\n\
+                \n[policy.\"qwen3*\".approximate]\nkv_lossy = true\n\
                 endpoint_token = \"canary-p3\"\n\n[policy.plain]\nobjective = \"latency\"\n";
     let files = vec![ConfigFile::new("/c.toml", text)];
     let resolved = resolve_secrets(&files, &Env::default(), &Flags::new());
@@ -577,7 +702,7 @@ fn a_secret_in_a_policy_table_never_prints() {
     assert!(
         shown.contains(
             "policy.\"qwen3*\" = { approximate = { endpoint_token = [redacted], kv_lossy = true \
-             }, draft_token = [redacted], mystery = [redacted], objective = \"throughput\" }"
+             }, draft_token = [redacted], objective = \"throughput\" }"
         ),
         "{shown}"
     );
@@ -595,13 +720,35 @@ fn a_secret_in_a_policy_table_never_prints() {
     assert_eq!(proposal("policy.\"qwen3*\"").value(), None);
     assert!(proposal("policy.plain").value().is_some());
     assert!(!format!("{resolved:?}").contains("canary"));
+
+    // An entry no instance key names is rejected, and its error withholds the value.
+    let text = "[policy.\"qwen3*\"]\nmystery = \"canary-p2\"\n";
+    let files = vec![ConfigFile::new("/c.toml", text)];
+    let layers = Layers {
+        os: Os::Linux,
+        files: &files,
+        env: &Env::default(),
+        flags: &Flags::new(),
+    };
+    let Err(rejected) = ResolvedConfig::resolve(&SECRET_MAP, layers) else {
+        panic!("an unknown policy entry is an error");
+    };
+    assert_eq!(rejected.errors.len(), 1, "{:#?}", rejected.errors);
+    assert_eq!(rejected.errors[0].code, Some(Code::UnknownKey));
+    let rendered =
+        diagnostic::render_all(&rejected.errors, &rejected.warnings, &files, &SECRET_MAP);
+    assert!(rendered.contains("2 | mystery = [redacted]"), "{rendered}");
+    assert!(!rendered.contains("canary"), "{rendered}");
+    assert!(!format!("{rejected:?}").contains("canary"));
 }
 
-/// `section()` on a secret-typed key with a value of the wrong shape: serde's own error for a
-/// map, a list or a struct quotes the value (`invalid type: string "…"`), so the error must not
-/// carry it, from a file, `--set` or the environment.
+/// A secret-typed key given a value of the wrong shape: serde's own error for a map, a list or a
+/// struct quotes the value (`invalid type: string "…"`). Phase 3 rejects such a value at load
+/// (RFC-0054 §8), and neither the error nor its rendering carries it, from a file, `--set` or
+/// the environment. `section()`'s own fallback for a value that reaches it is tested in
+/// `resolve.rs`.
 #[test]
-fn a_wrong_shaped_secret_never_reaches_a_section_error() {
+fn a_wrong_shaped_secret_is_rejected_at_load_without_its_value() {
     let file = |text: &str| vec![ConfigFile::new("/c.toml", text)];
     let cases: Vec<(Vec<ConfigFile>, Env, Flags)> = vec![
         (
@@ -632,61 +779,31 @@ fn a_wrong_shaped_secret_never_reaches_a_section_error() {
         }),
     ];
     for (files, env, flags) in cases {
-        let resolved = resolve_secrets(&files, &env, &flags);
-        let errors = [
-            resolved
-                .section::<SecretMapSection>()
-                .err()
-                .map(|e| e.to_string()),
-            resolved
-                .section::<NestedSecretSection>()
-                .err()
-                .map(|e| e.to_string()),
-        ];
-        let errors: Vec<String> = errors.into_iter().flatten().collect();
-        assert!(
-            !errors.is_empty(),
-            "a wrong-shaped value must fail its section"
-        );
-        for error in errors {
-            assert!(!error.contains("canary"), "{error}");
-            assert!(
-                error.contains("withheld because the key holds a secret"),
-                "{error}"
-            );
-            assert!(
-                !error.contains('7') || !error.contains("integer"),
-                "{error}"
-            );
-        }
-    }
-    let resolved = resolve_secrets(
-        &file("p.headers = \"canary-s6\"\n"),
-        &Env::default(),
-        &Flags::new(),
-    );
-    let error = resolved
-        .section::<SecretMapSection>()
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("`p.headers`"), "{error}");
-
-    // A key that holds no secret, in a section that also holds one, keeps serde's message.
-    let files = [ConfigFile::new("/c.toml", "t.a = \"not-a-number\"\n")];
-    let resolved = ResolvedConfig::resolve_with(
-        &REGISTRY,
-        Layers {
+        let layers = Layers {
             os: Os::Linux,
             files: &files,
-            env: &Env::default(),
-            flags: &Flags::new(),
-        },
-        |_| Some(Value::Integer(8)),
-    )
-    .expect("resolves");
-    let error = resolved.section::<TSection>().unwrap_err().to_string();
-    assert!(error.contains("invalid type"), "{error}");
-    assert!(!error.contains("withheld"), "{error}");
+            env: &env,
+            flags: &flags,
+        };
+        let Err(rejected) = ResolvedConfig::resolve(&SECRET_MAP, layers) else {
+            panic!("a wrong-shaped secret is rejected at load");
+        };
+        let codes: Vec<Option<Code>> = rejected.errors.iter().map(|p| p.code).collect();
+        assert_eq!(codes, [Some(Code::WrongType)], "{:#?}", rejected.errors);
+        let message = &rejected.errors[0].message;
+        assert!(
+            message.contains("the value is not shown, since the key holds a secret"),
+            "{message}"
+        );
+        assert!(
+            !message.contains('7') || !message.contains("integer"),
+            "{message}"
+        );
+        let rendered =
+            diagnostic::render_all(&rejected.errors, &rejected.warnings, &files, &SECRET_MAP);
+        assert!(!rendered.contains("canary"), "{rendered}");
+        assert!(!format!("{rejected:?}").contains("canary"));
+    }
 }
 
 /// A malformed `--set` never echoes its value, whatever the separator.
@@ -781,7 +898,11 @@ fn unknown_syntropy_variables_are_warnings() {
         ]
     );
     assert_eq!(int(&resolved, "t.a"), Some(5));
-    let report = command::check(&Ok(resolved));
+    let checked = Checked {
+        files: Vec::new(),
+        outcome: Ok(resolved),
+    };
+    let report = command::check(&checked, &REGISTRY);
     assert_eq!(report.exit, command::EXIT_OK);
     assert!(
         report
@@ -812,7 +933,11 @@ fn layering_errors_name_the_file_line_variable_or_flag() {
             flags: &flags,
         },
     );
-    let report = command::check(&outcome);
+    let checked = Checked {
+        files: files.to_vec(),
+        outcome: outcome.clone(),
+    };
+    let report = command::check(&checked, &REGISTRY);
     assert_eq!(report.exit, command::EXIT_INVALID);
     let errors: Vec<String> = outcome
         .unwrap_err()
@@ -820,7 +945,8 @@ fn layering_errors_name_the_file_line_variable_or_flag() {
         .iter()
         .map(ToString::to_string)
         .collect();
-    assert_eq!(errors.len(), 5, "{errors:#?}");
+    // The layering errors, and the phase-3 type error for the environment's value.
+    assert_eq!(errors.len(), 6, "{errors:#?}");
     assert_eq!(errors[0], "/a.toml:3: unknown key `t.bogus`");
     assert!(
         errors[1].starts_with("/b.toml:3:3: TOML syntax: "),
@@ -832,16 +958,21 @@ fn layering_errors_name_the_file_line_variable_or_flag() {
         "{}",
         errors[2]
     );
-    assert_eq!(errors[3], "flag --set t.missing: unknown key `t.missing`");
     assert!(
-        errors[4].starts_with("flag --set max_tokens: `max_tokens` is a request key"),
+        errors[3].starts_with("env SYNTROPY_T__A: `t.a`: invalid type"),
         "{}",
-        errors[4]
+        errors[3]
+    );
+    assert_eq!(errors[4], "flag --set t.missing: unknown key `t.missing`");
+    assert!(
+        errors[5].starts_with("flag --set max_tokens: `max_tokens` is a request key"),
+        "{}",
+        errors[5]
     );
     assert!(
         report
             .text
-            .ends_with("config check: 5 errors, 0 warnings\n"),
+            .ends_with("config check: 6 errors, 0 warnings\n"),
         "{}",
         report.text
     );
@@ -935,8 +1066,10 @@ fn a_section_builds_from_the_resolved_values() {
     assert_eq!(t.size, "4GiB".parse::<ByteSize>().unwrap());
     assert!(t.token.is_none());
 
+    // A value below its key's minimum is rejected at load, by RFC-0054 §8's phase 3, before a
+    // section is built from it.
     let files = [ConfigFile::new("/c.toml", "t.size = \"1KiB\"\n")];
-    let resolved = ResolvedConfig::resolve_with(
+    let rejected = ResolvedConfig::resolve_with(
         &REGISTRY,
         Layers {
             files: &files,
@@ -944,8 +1077,10 @@ fn a_section_builds_from_the_resolved_values() {
         },
         |_| Some(Value::Integer(8)),
     )
-    .unwrap();
-    assert!(resolved.section::<TSection>().is_err());
+    .unwrap_err();
+    assert_eq!(rejected.errors.len(), 1, "{rejected:?}");
+    assert_eq!(rejected.errors[0].code, Some(Code::OutOfRange));
+    assert_eq!(rejected.errors[0].key.as_deref(), Some("t.size"));
 }
 
 /// Readers never see a mix of two snapshots while a writer swaps them.
@@ -1018,6 +1153,55 @@ fn snapshots_swap_whole() {
     }
     assert_eq!(int(&shared.load(), "t.d"), Some(n));
     assert!(n >= MIN_SWAPS, "the writer stopped after {n} swaps");
+}
+
+/// A file that cannot be read is reported beside every other file's errors, and the files that
+/// can be read still render with their source lines (RFC-0054 §8: every error, not only the
+/// first).
+#[test]
+fn an_unreadable_file_does_not_hide_the_other_files_errors() {
+    let root = TempDir::new("unreadable");
+    let locations = root.locations(Mode::Service);
+    fs::create_dir_all(&locations.dropin_dir).expect("mkdir");
+    fs::write(&locations.system_file, b"t.a = \"\xff\"\n").expect("write");
+    let dropin = locations.dropin_dir.join("50-x.toml");
+    fs::write(&dropin, "t.b = \"unterminated\n").expect("write");
+    let scan = locations.scan().expect("scans");
+    let codes = |errors: &[syntropy_config::Problem]| -> Vec<Option<Code>> {
+        errors.iter().map(|p| p.code).collect()
+    };
+    let expected = [Some(Code::PathUnusable), Some(Code::Syntax)];
+
+    let Err(rejected) = load(&REGISTRY, Os::Linux, &scan, &Env::default(), &Flags::new()) else {
+        panic!("both files are errors");
+    };
+    assert_eq!(codes(&rejected.errors), expected, "{:#?}", rejected.errors);
+
+    let checked = load_and_validate(
+        &REGISTRY,
+        Os::Linux,
+        &scan,
+        &Env::default(),
+        &Flags::new(),
+        |_| None,
+        &[],
+        &HostEnvironment,
+    );
+    assert_eq!(codes(checked.errors()), expected, "{:#?}", checked.errors());
+    assert_eq!(
+        checked.files.len(),
+        1,
+        "the readable drop-in is kept for rendering"
+    );
+    let rendered = checked.render(&REGISTRY);
+    assert!(rendered.contains("error[config/0011]"), "{rendered}");
+    assert!(rendered.contains("is not UTF-8"), "{rendered}");
+    assert!(rendered.contains("error[config/0001]"), "{rendered}");
+    assert!(
+        rendered.contains(&format!("{}:1:", dropin.display())),
+        "{rendered}"
+    );
+    assert!(rendered.contains("1 | t.b = "), "{rendered}");
 }
 
 #[test]
