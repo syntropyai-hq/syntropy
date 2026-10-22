@@ -547,3 +547,12 @@ DIST-E10-T08 (M2) asked for "every RT-DIST scenario as a named case". No list of
 |---|---|---|---|
 | "Every RT-DIST scenario" becomes each property of RFC-0032 Testing's "Election safety and liveness" row, as a named case; ADR-0304 and RFC-0032's rollout get dated notes saying so | DIST-E10-T08 | Definition of done | the label names no list; that row holds the 13 properties the model must check, the row's own six among them |
 | "The job gates changes to `cluster`" moves to the new DIST-E10-T09 (M2) → DIST-E10-T08, QUAL-E1-T07. DIST-E10-T08 runs a bounded 3-node configuration in the default tests and registers the full 3–4-node run as the `test-release` xtask suite `election-model` | DIST-E10-T08, DIST-E10-T09 | R9 | the rule that runs a suite on changes to `cluster` is a `ci/jobs.toml` entry, which needs QUAL-E1-T07's rules engine; the new task sits in DIST-E10-T08's milestone, so no edge points to a later one |
+
+## OQ-NET-34 and its spike (2026-10-22)
+
+DIST-E10-T08's model check found that a supported older proof can depose a lone survivor's unsupported election at heal and roll back an entry acknowledged `replicated = true` under RFC-0032 §6.3 as revised by OQ-NET-33, when the command's originator was lost with its disk. OQ-NET-34 holds the question and recommends comparing an incoming proof against the strongest supported election in the receiver's own chain. That rule changes §7.5, so it is model-checked before the heal code is written.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
+| DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |
