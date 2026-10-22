@@ -867,3 +867,19 @@ TIER-E5-T08 (M1b) builds `IoRingEngine` and `IocpEngine`, and its criterion is t
 | TIER-E5-T04 becomes TIER-E5-T33's harness over the nano fixture files against every engine on the CI host, and TIER-E5-T04 → TIER-E5-T33 | TIER-E5-T04 | R9 | its criterion is unchanged. M0b → M0b |
 | TIER-E5-T08's criterion reads "TIER-E5-T33's conformance harness passes", and TIER-E5-T08 → TIER-E5-T33 | TIER-E5-T08 | R9 | M1b → M0b. TIER-E5-T33 reaches no TIER-E5 engine task, so the edge adds no cycle |
 | TIER-E5-T03's, TIER-E5-T06's and TIER-E5-T09's criteria read "TIER-E5-T33's conformance harness passes", TIER-E5-T22's "engines pass TIER-E5-T33's conformance harness on the Tier 2/3 CI targets", and each gains an edge to TIER-E5-T33 | TIER-E5-T03, TIER-E5-T06, TIER-E5-T09, TIER-E5-T22 | R9 | each criterion cited the suite, and none reached TIER-E5-T04. #1738, TIER-E5-T03's change, reports that criterion as not run for that reason. M0b, M1a, M1b and M4 → M0b, and TIER-E5-T33 reaches none of them, so the edges add no cycle and no `LATER` |
+
+## DIST-E7-T11's link selection: what it builds and who carries its report (2026-10-23)
+
+DIST-E7-T11 (M2) could not meet its criteria as written:
+- "flags `TransportDemoted`" needs RFC-0033 §7.1's `Degradation`, which DIST-E14-T13 builds at M3;
+- "reports `Drift`" names no message;
+- "connects on QUIC" needs a QUIC backend that DIST-E7-T11 did not depend on;
+- "exposed to the solver" needs RFC-0001 §5.2's base `LinkCaps`, which no task built, in a crate the solver can use.
+
+These were settled under the maintainers' standing instruction. RFC-0031 §3's note of 2026-10-23 and RFC-0001 §18.30 record them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T11 builds `LinkCaps` and `link_cost` in `core::resource::link`, with `Transport::cost` delegating to it, and a fallback generic over `Transport` that returns a `Demotion` and the new hop's `cost_t`, which the runner reports as `LinkDemoted`. Its criteria test the fallback with two test transports, read as "the fallback picks QUIC"; DIST-E7-T11 → DIST-E1-T03 | DIST-E7-T11 | R9 | the solver must not depend on `net`, and no task had built the base `LinkCaps`. The fallback's choice does not depend on the backend, so test transports show it. `LinkDemoted` travels on DIST-E1-T03's command channel, and arrives with the task that owns its field type (RFC-0001 §3.5's note of 2026-10-23) |
+| "flags `TransportDemoted`" moves to DIST-E14-T13, which sets `TRANSPORT_DEMOTED` and `DegradeDetail::Demoted` from DIST-E7-T11's `Demotion`; DIST-E14-T13 → DIST-E7-T11 | DIST-E7-T11, DIST-E14-T13 | R9 | DIST-E14-T13 (M3) carries `Degradation` through runner state, and DIST-E7-T11 (M2) cannot depend on it |
+| DIST-E7-T03 and QUAL-E8-T04 each gain "DIST-E7-T11's fallback connects a hop planned on an unavailable `Rdma(_)` transport on QUIC", through the real backend and through `SimTransport`; DIST-E7-T03 → DIST-E7-T11 and QUAL-E8-T04 → DIST-E7-T11 | DIST-E7-T03, QUAL-E8-T04 | R9 | the check on a real backend needs one, and each of these tasks builds one. Neither reaches DIST-E7-T11's dependencies, so the edges add no cycle |
