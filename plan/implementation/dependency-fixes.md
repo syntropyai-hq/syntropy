@@ -924,3 +924,11 @@ Building PLC-E7-T17 found that its criterion 1, "a watchdog fails any call over 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | PLC-E7-T17's criterion 1 reads "a watchdog counts any call over its budget (`PollStats`)"; PLC-E7-T18's hardware criterion gains "and the dispatcher's `PollStats` records no overrun"; no edge | PLC-E7-T17, PLC-E7-T18 | R9 | the check that fails on an overrun moves to the first run where a pass's time is real. PLC-E7-T18 already depends on PLC-E7-T17 |
+
+## QUAL-E3-T09's loom job (2026-10-23)
+
+QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the loom models. RFC-0060 §1.1 and RFC-0062 §2.3 put loom in L3, which runs in `hosted-l3`, and `ci-gate` already listed `hosted-l3` as planned for QUAL-E3-T09/T10. RFC-0062 §2.3 gains a dated note: `hosted-l3` runs `cargo xtask test loom`, behind a coarse path filter until QUAL-E1-T07 computes the closure. RFC-0060 §3.4 gains one on how the three-thread models are built.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E3-T09's and QUAL-E3-T22's criteria name the `hosted-l3` job in place of `hosted-test-linux`; no edge | QUAL-E3-T09, QUAL-E3-T22 | Definition of done | RFC-0060 §1.1 runs loom in L3, which RFC-0062 §2.3 gives to `hosted-l3`. The unit suite's job is not where loom models run, and T22's models are L3 too |

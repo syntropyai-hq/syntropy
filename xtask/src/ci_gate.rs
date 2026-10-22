@@ -37,10 +37,7 @@ pub const JOBS_OUTPUT: &str = "jobs";
 
 /// Jobs `pr.yml` waits for whose suites later tasks add, with those tasks. Until then `changes`
 /// does not list them, and the summary names the tasks beside their skip.
-pub const PLANNED: &[(&str, &str)] = &[
-    ("hosted-l3", "QUAL-E3-T09/T10"),
-    ("hosted-parity-nano", "QUAL-E5-T06"),
-];
+pub const PLANNED: &[(&str, &str)] = &[("hosted-parity-nano", "QUAL-E5-T06")];
 
 /// A job's result, as the `needs` context reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,7 +266,7 @@ mod tests {
             evaluation.lines,
             [
                 "build: success",
-                "hosted-l3: skipped, planned: QUAL-E3-T09/T10",
+                "hosted-l3: skipped, not listed by `changes`",
                 "hosted-parity-nano: skipped, planned: QUAL-E5-T06",
                 "hosted-test: success",
                 "lint: success",

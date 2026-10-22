@@ -326,6 +326,11 @@ Each stateful component listed below has a **reference model**: a deliberately s
 - **Miri** runs the unit tests of `tier` (arenas), `ipc` (shared-memory layout) and `net` (frame codecs, shared-memory transport) with FFI stubbed. It catches undefined behaviour in the `unsafe` blocks that ADR-0001 confines to these crates.
 - **Sanitizers.** A test-only job builds the `unsafe` crates and the CPU provider with AddressSanitizer and ThreadSanitizer on a pinned nightly toolchain. ADR-0001 forbids nightly compilers only for release builds.
 
+*Note 2026-10-23 (QUAL-E3-T09):* the M0 loom models are in `spsc` (the heap ring and the shared ring) and `ipc` (the `local_tokens` and `local_sequences` rings of one region), and `cargo xtask test loom` runs them in `hosted-l3` (RFC-0062 §2.3). Three findings apply to the M1 models of QUAL-E3-T22:
+- **No spinning between three threads.** In loom 0.7, a thread that yields hands over to another without spending a preemption. When two threads spin on a third, loom can hand control between the two indefinitely, and the run fails at loom's branch limit rather than finishing. A model of three threads therefore gives each thread a fixed number of attempts that never wait. The main thread then finishes the run alone and checks the outcome: every record arrives once and in order. Two-thread models may still spin.
+- **The planted bug is a twin, not a one-off edit.** Each ring has a test-only twin whose publishing store is relaxed, and a test runs the cross-thread model on it in a child process and expects loom's causality violation. A child process, because loom may abort instead of unwinding.
+- **Slot bytes are invisible to loom.** The shared ring's slots are plain memory that loom cannot see, so a loom-only cell per slot records each write and read, and loom checks those are ordered.
+
 #### 3.5 Hot-path guards
 
 `syntropy-testkit::guards` provides the instrumentation that turns ADR-0012's invariants into assertions:
