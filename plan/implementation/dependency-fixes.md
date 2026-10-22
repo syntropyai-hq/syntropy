@@ -959,4 +959,4 @@ DIST-E7-T03 builds the QUIC backend's `net` domain, where channel tasks wait on 
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| Added DIST-E7-T24 (M2) → DIST-E7-T03, QUAL-E15-T05 | DIST-E7-T24 | Definition of done | the bridge needs DIST-E7-T03's domain, and its latency criterion needs the R-WIN rig, as DIST-E7-T19's does |
+| Added DIST-E7-T24 (M2) → DIST-E7-T03, QUAL-E15-T05 | DIST-E7-T24 | Definition of done | the bridge needs DIST-E7-T03's domain, and its latency criterion needs the R-WIN rig, as DIST-E7-T19's does. It names `windows-sys`, the new direct dependency of `net` it brings, and pins the one lifetime hazard it creates: the callback runs on a pool thread, so the wait is unregistered before the ring's handle drops (review of #1826, N2) |
