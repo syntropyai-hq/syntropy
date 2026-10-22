@@ -107,7 +107,8 @@ fn run_runner(handle: &str) {
     );
     assert!(
         region.is_owner_only().unwrap(),
-        "the runner sees an owner-only segment"
+        "the runner sees an owner-only segment: {}",
+        region.permissions_text().unwrap()
     );
     let tokens = region.producer(RingRole::LocalTokens).unwrap();
     let sequences = region.consumer(RingRole::LocalSequences).unwrap();
@@ -131,20 +132,18 @@ fn a_runner_process_exchanges_a_million_records_each_way() {
     let region = Region::create(&layout(), BUILD, PROTOCOL, &ENTROPY).unwrap();
     assert!(
         region.is_owner_only().unwrap(),
-        "the daemon made an owner-only segment"
+        "the daemon made an owner-only segment: {}",
+        region.permissions_text().unwrap()
     );
-    let spawn = region.spawn_handle().unwrap();
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "a_runner_process_exchanges_a_million_records_each_way",
-            "--test-threads",
-            "1",
-        ])
-        .env(RUNNER, spawn.handle().to_string())
-        .spawn()
-        .unwrap();
-    drop(spawn);
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command.args([
+        "--exact",
+        "a_runner_process_exchanges_a_million_records_each_way",
+        "--test-threads",
+        "1",
+    ]);
+    let handle = region.configure_spawn(&mut command).unwrap();
+    let mut child = command.env(RUNNER, handle.to_string()).spawn().unwrap();
     let tokens = region.consumer(RingRole::LocalTokens).unwrap();
     let sequences = region.producer(RingRole::LocalSequences).unwrap();
     thread::scope(|scope| {
@@ -225,4 +224,43 @@ fn a_linux_region_has_no_name_in_the_filesystem() {
     let link = std::fs::read_link(format!("/proc/self/fd/{fd}")).unwrap();
     let link = link.to_string_lossy();
     assert!(link.starts_with("/memfd:syntropy-runner"), "{link}");
+}
+
+/// Set only in the child of the next test: the descriptor number to look for.
+#[cfg(target_os = "linux")]
+const PROBE: &str = "SYNTROPY_IPC_TEST_FD_PROBE";
+
+/// A child spawned without `configure_spawn`, as another runner or helper spawned at the same
+/// time would be, does not inherit the region's descriptor: it keeps close-on-exec.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_child_spawned_without_the_hook_does_not_inherit_the_region() {
+    if let Ok(fd) = std::env::var(PROBE) {
+        let fd: i32 = fd.parse().unwrap();
+        // SAFETY: `F_GETFD` takes a descriptor number and reads its flags; it fails with `EBADF`
+        // if the number is not open.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        let error = std::io::Error::last_os_error();
+        assert_eq!(
+            flags, -1,
+            "descriptor {fd} reached a child it was not meant for"
+        );
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF), "{error}");
+        return;
+    }
+    let region = Region::create(&layout(), BUILD, PROTOCOL, &ENTROPY).unwrap();
+    let RegionHandle::Fd(fd) = region.handle() else {
+        panic!("a Linux region is a descriptor");
+    };
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_child_spawned_without_the_hook_does_not_inherit_the_region",
+            "--test-threads",
+            "1",
+        ])
+        .env(PROBE, fd.to_string())
+        .status()
+        .unwrap();
+    assert!(status.success(), "the probe child failed: {status}");
 }

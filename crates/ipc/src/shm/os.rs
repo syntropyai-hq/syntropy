@@ -10,15 +10,25 @@ use syntropy_core::Entropy;
 #[cfg(any(target_vendor = "apple", windows))]
 const NAME_ATTEMPTS: u32 = 64;
 
-/// A fresh segment name: 64 random bits from `entropy`, so another process cannot guess it, in a
-/// name short enough for Apple's 31-character limit on POSIX shared-memory names
-/// (`/syntropy-` and 16 hex digits).
+/// A fresh segment name: `prefix`, then 128 random bits from `entropy` as 26 lowercase base32
+/// characters, so another process can neither guess the name nor take it first. With Apple's
+/// prefix, `/syn`, the name is 30 characters, inside the 31-character limit on POSIX
+/// shared-memory names.
 #[cfg(any(target_vendor = "apple", windows))]
 fn random_name(prefix: &str, entropy: &dyn Entropy) -> String {
-    format!("{prefix}syntropy-{:016x}", entropy.u64())
+    const DIGITS: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut bits = [0u8; 16];
+    entropy.fill(&mut bits);
+    let value = u128::from_le_bytes(bits);
+    let mut name = String::with_capacity(prefix.len() + 26);
+    name.push_str(prefix);
+    for digit in 0..26 {
+        name.push(char::from(DIGITS[(value >> (digit * 5)) as usize & 31]));
+    }
+    name
 }
 
-pub(super) use imp::{Inherited, Segment};
+pub(super) use imp::Segment;
 
 /// The mapping both Unix builds share: `mmap` of a descriptor, and the owner-only check.
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
@@ -60,6 +70,18 @@ mod unix {
         check(unsafe { libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr()) })?;
         // SAFETY: `fstat` succeeded, so it filled the whole struct.
         Ok(unsafe { stat.assume_init() })
+    }
+
+    /// The mode and owner, for diagnostics.
+    pub(super) fn permissions(fd: &OwnedFd) -> io::Result<String> {
+        let stat = stat(fd)?;
+        // SAFETY: `geteuid` takes no arguments and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        Ok(format!(
+            "mode {:o}, owner uid {}, this process's euid {me}",
+            stat.st_mode & 0o7777,
+            stat.st_uid
+        ))
     }
 
     /// Mode 0600 and owned by this process's effective user.
@@ -113,7 +135,7 @@ mod imp {
     use syntropy_core::Entropy;
 
     use super::super::RegionHandle;
-    use super::unix::{Mapped, check, is_owner_only, size};
+    use super::unix::{Mapped, check, is_owner_only, permissions, size};
 
     /// The seals a region's memfd carries: its size can never change, and no seal can be removed.
     const SEALS: libc::c_int = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
@@ -121,10 +143,6 @@ mod imp {
     pub(in super::super) struct Segment {
         map: Mapped,
     }
-
-    /// The descriptor a spawned runner inherits, closed when this drops.
-    #[derive(Debug)]
-    pub(in super::super) struct Inherited(#[allow(dead_code)] OwnedFd);
 
     /// A new descriptor for `fd`, with or without close-on-exec.
     fn duplicate(fd: libc::c_int, close_on_exec: bool) -> io::Result<OwnedFd> {
@@ -172,6 +190,16 @@ mod imp {
                 ));
             };
             let fd = duplicate(*inherited, true)?;
+            // The inherited number stays open in this process; with close-on-exec set, it goes no
+            // further, to this process's own children.
+            // SAFETY: `fcntl` with `F_SETFD` takes a descriptor and an integer flag, no pointers.
+            check(unsafe { libc::fcntl(*inherited, libc::F_SETFD, libc::FD_CLOEXEC) })?;
+            if !is_owner_only(&fd)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "the region is not owner-only",
+                ));
+            }
             // A segment whose size could change could shrink under the mapping, so only a sealed
             // memfd is mapped.
             // SAFETY: `fcntl` with `F_GET_SEALS` takes the open descriptor and returns the seals or
@@ -202,9 +230,28 @@ mod imp {
             RegionHandle::Fd(self.map.fd.as_raw_fd())
         }
 
-        pub(in super::super) fn inheritable(&self) -> io::Result<(RegionHandle, Inherited)> {
-            let fd = duplicate(self.map.fd.as_raw_fd(), false)?;
-            Ok((RegionHandle::Fd(fd.as_raw_fd()), Inherited(fd)))
+        /// The descriptor keeps close-on-exec in this process, so no other child inherits it.
+        /// A hook clears the flag in `command`'s child alone, after the fork and before the exec,
+        /// and the child finds it at the same number.
+        pub(in super::super) fn configure_spawn(
+            &self,
+            command: &mut std::process::Command,
+        ) -> io::Result<RegionHandle> {
+            use std::os::unix::process::CommandExt;
+            let fd = self.map.fd.as_raw_fd();
+            // SAFETY: the hook runs in the child between `fork` and `exec`, where only
+            // async-signal-safe calls are allowed. It makes one `fcntl` call, which is one,
+            // builds its error without allocating, and touches nothing else.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        Err(io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+            Ok(RegionHandle::Fd(fd))
         }
 
         pub(in super::super) fn unlink(&self) -> io::Result<()> {
@@ -217,6 +264,10 @@ mod imp {
 
         pub(in super::super) fn is_owner_only(&self) -> io::Result<bool> {
             is_owner_only(&self.map.fd)
+        }
+
+        pub(in super::super) fn permissions(&self) -> io::Result<String> {
+            permissions(&self.map.fd)
         }
     }
 }
@@ -232,17 +283,13 @@ mod imp {
     use syntropy_core::Entropy;
 
     use super::super::RegionHandle;
-    use super::unix::{Mapped, check, is_owner_only, size};
+    use super::unix::{Mapped, check, is_owner_only, permissions, size};
     use super::{NAME_ATTEMPTS, random_name};
 
     pub(in super::super) struct Segment {
         map: Mapped,
         name: CString,
     }
-
-    /// Nothing to inherit: a runner opens the segment by name.
-    #[derive(Debug)]
-    pub(in super::super) struct Inherited;
 
     fn shm_open(name: &CString, flags: libc::c_int) -> io::Result<OwnedFd> {
         // SAFETY: a NUL-terminated name, flags and a mode (passed as `c_uint`, the type the
@@ -255,7 +302,7 @@ mod imp {
     impl Segment {
         pub(in super::super) fn create(len: usize, entropy: &dyn Entropy) -> io::Result<Segment> {
             for _ in 0..NAME_ATTEMPTS {
-                let name = CString::new(random_name("/", entropy)).map_err(io::Error::other)?;
+                let name = CString::new(random_name("/syn", entropy)).map_err(io::Error::other)?;
                 let fd = match shm_open(&name, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL) {
                     Ok(fd) => fd,
                     Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
@@ -287,6 +334,12 @@ mod imp {
             };
             let name = CString::new(name.as_str()).map_err(io::Error::other)?;
             let fd = shm_open(&name, libc::O_RDWR)?;
+            if !is_owner_only(&fd)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "the region is not owner-only",
+                ));
+            }
             if size(&fd)? < len as u64 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -307,8 +360,12 @@ mod imp {
             RegionHandle::Name(self.name.to_string_lossy().into_owned())
         }
 
-        pub(in super::super) fn inheritable(&self) -> io::Result<(RegionHandle, Inherited)> {
-            Ok((self.handle(), Inherited))
+        /// A runner opens the segment by name, so `command` needs nothing.
+        pub(in super::super) fn configure_spawn(
+            &self,
+            _command: &mut std::process::Command,
+        ) -> io::Result<RegionHandle> {
+            Ok(self.handle())
         }
 
         pub(in super::super) fn unlink(&self) -> io::Result<()> {
@@ -328,6 +385,10 @@ mod imp {
 
         pub(in super::super) fn is_owner_only(&self) -> io::Result<bool> {
             is_owner_only(&self.map.fd)
+        }
+
+        pub(in super::super) fn permissions(&self) -> io::Result<String> {
+            permissions(&self.map.fd)
         }
     }
 }
@@ -349,8 +410,10 @@ mod imp {
         SE_KERNEL_OBJECT,
     };
     use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-        TOKEN_QUERY, TOKEN_USER, TokenUser,
+        ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+        GetSecurityDescriptorControl, GetTokenInformation, PSECURITY_DESCRIPTOR, PSID,
+        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
     use windows_sys::Win32::System::Memory::{
         CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
@@ -374,10 +437,6 @@ mod imp {
     unsafe impl Send for Segment {}
     // SAFETY: shared access goes through the region's atomics and rings, which synchronise it.
     unsafe impl Sync for Segment {}
-
-    /// Nothing to inherit: a runner opens the mapping by name.
-    #[derive(Debug)]
-    pub(in super::super) struct Inherited;
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -403,51 +462,67 @@ mod imp {
         string
     }
 
-    /// The current user's SID in its string form, such as `S-1-5-21-…`.
-    fn user_sid() -> io::Result<String> {
-        let mut token: HANDLE = std::ptr::null_mut();
-        // SAFETY: the pseudo-handle of this process, a query right, and a live output pointer.
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-            return Err(io::Error::last_os_error());
+    /// The current user's SID, from this process's token.
+    struct UserSid {
+        /// The `TOKEN_USER` and the SID it points to. `u64`s keep the `TOKEN_USER` aligned.
+        buffer: Vec<u64>,
+    }
+
+    impl UserSid {
+        fn current() -> io::Result<UserSid> {
+            let mut token: HANDLE = std::ptr::null_mut();
+            // SAFETY: the pseudo-handle of this process, a query right, and a live output pointer.
+            if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `token` is the handle `OpenProcessToken` just returned, owned only here.
+            let token = unsafe { OwnedHandle::from_raw_handle(token.cast()) };
+            let mut needed = 0u32;
+            // SAFETY: a null buffer of length 0 asks only for the size the token user takes.
+            unsafe {
+                GetTokenInformation(
+                    token.as_raw_handle().cast(),
+                    TokenUser,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut needed,
+                )
+            };
+            let mut buffer = vec![0u64; (needed as usize).div_ceil(8).max(1)];
+            // SAFETY: the buffer holds at least `needed` bytes, and the call writes at most that.
+            if unsafe {
+                GetTokenInformation(
+                    token.as_raw_handle().cast(),
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    (buffer.len() * 8) as u32,
+                    &mut needed,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(UserSid { buffer })
         }
-        // SAFETY: `token` is the handle `OpenProcessToken` just returned, owned only here.
-        let token = unsafe { OwnedHandle::from_raw_handle(token.cast()) };
-        let mut needed = 0u32;
-        // SAFETY: a null buffer of length 0 asks only for the size the token user takes.
-        unsafe {
-            GetTokenInformation(
-                token.as_raw_handle().cast(),
-                TokenUser,
-                std::ptr::null_mut(),
-                0,
-                &mut needed,
-            )
-        };
-        // A `u64` buffer keeps the `TOKEN_USER` at its start aligned.
-        let mut buffer = vec![0u64; (needed as usize).div_ceil(8).max(1)];
-        // SAFETY: the buffer holds at least `needed` bytes, and the call writes at most that.
-        if unsafe {
-            GetTokenInformation(
-                token.as_raw_handle().cast(),
-                TokenUser,
-                buffer.as_mut_ptr().cast(),
-                (buffer.len() * 8) as u32,
-                &mut needed,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
+
+        /// The SID, which points into `buffer`, so it lives as long as `self`.
+        fn sid(&self) -> PSID {
+            // SAFETY: `current` filled the buffer with a `TOKEN_USER`, aligned by the `u64`
+            // buffer, whose SID pointer points into the same buffer.
+            unsafe { (*self.buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid }
         }
-        // SAFETY: the call succeeded, so the buffer starts with a `TOKEN_USER`, aligned by the
-        // `u64` buffer, whose SID pointer points into the same buffer.
-        let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
-        let mut text: *mut u16 = std::ptr::null_mut();
-        // SAFETY: a valid SID and a live output pointer; on success the string is `LocalAlloc`ed.
-        if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) } == 0 {
-            return Err(io::Error::last_os_error());
+
+        /// The SID in its string form, such as `S-1-5-21-…`.
+        fn text(&self) -> io::Result<String> {
+            let mut text: *mut u16 = std::ptr::null_mut();
+            // SAFETY: a valid SID and a live output pointer; on success the string is
+            // `LocalAlloc`ed.
+            if unsafe { ConvertSidToStringSidW(self.sid(), &mut text) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `ConvertSidToStringSidW` returned a `LocalAlloc`ed, NUL-terminated string.
+            Ok(unsafe { take_local_string(text) })
         }
-        // SAFETY: `ConvertSidToStringSidW` returned a `LocalAlloc`ed, NUL-terminated string.
-        Ok(unsafe { take_local_string(text) })
     }
 
     /// A security descriptor whose protected DACL has one entry: all access for the current user.
@@ -455,7 +530,7 @@ mod imp {
 
     impl OwnerOnly {
         fn new() -> io::Result<OwnerOnly> {
-            let sddl = wide(&format!("D:P(A;;GA;;;{})", user_sid()?));
+            let sddl = wide(&format!("D:P(A;;GA;;;{})", UserSid::current()?.text()?));
             let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
             // SAFETY: a NUL-terminated SDDL string and a live output pointer; on success the
             // descriptor is `LocalAlloc`ed, and `drop` frees it.
@@ -561,6 +636,12 @@ mod imp {
             }
             // SAFETY: `opened` is the handle `OpenFileMappingW` just returned, owned only here.
             let mapping = unsafe { OwnedHandle::from_raw_handle(opened.cast()) };
+            if !owner_only(&mapping)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "the region is not owner-only",
+                ));
+            }
             map(mapping, len, name.clone())
         }
 
@@ -572,8 +653,12 @@ mod imp {
             RegionHandle::Name(self.name.clone())
         }
 
-        pub(in super::super) fn inheritable(&self) -> io::Result<(RegionHandle, Inherited)> {
-            Ok((self.handle(), Inherited))
+        /// A runner opens the mapping by name, so `command` needs nothing.
+        pub(in super::super) fn configure_spawn(
+            &self,
+            _command: &mut std::process::Command,
+        ) -> io::Result<RegionHandle> {
+            Ok(self.handle())
         }
 
         pub(in super::super) fn unlink(&self) -> io::Result<()> {
@@ -586,57 +671,116 @@ mod imp {
         }
 
         pub(in super::super) fn is_owner_only(&self) -> io::Result<bool> {
-            let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-            // SAFETY: a live mapping handle opened with all access (which includes reading its
-            // security); null owner, group, DACL and SACL outputs; and a live descriptor output,
-            // `LocalAlloc`ed on success.
-            let status = unsafe {
-                GetSecurityInfo(
-                    self.mapping.as_raw_handle().cast(),
-                    SE_KERNEL_OBJECT,
-                    DACL_SECURITY_INFORMATION,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    &mut descriptor,
-                )
-            };
-            if status != 0 {
-                return Err(io::Error::from_raw_os_error(status as i32));
-            }
-            let descriptor = OwnerOnly(descriptor);
-            let mut text: *mut u16 = std::ptr::null_mut();
-            // SAFETY: a live descriptor and a live output pointer; on success the string is
-            // `LocalAlloc`ed.
-            if unsafe {
-                ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                    descriptor.0,
-                    SDDL_REVISION_1,
-                    DACL_SECURITY_INFORMATION,
-                    &mut text,
-                    std::ptr::null_mut(),
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: the call returned a `LocalAlloc`ed, NUL-terminated string.
-            let sddl = unsafe { take_local_string(text) };
-            Ok(owner_only_sddl(&sddl, &user_sid()?))
+            owner_only(&self.mapping)
+        }
+
+        pub(in super::super) fn permissions(&self) -> io::Result<String> {
+            permissions_text(&self.mapping)
         }
     }
 
-    /// Whether `sddl` is a protected DACL with one entry, allowing `sid`.
-    fn owner_only_sddl(sddl: &str, sid: &str) -> bool {
-        let Some(entries) = sddl.strip_prefix("D:P") else {
-            return false;
+    /// The security descriptor of `mapping` with its DACL, `LocalAlloc`ed, and the DACL inside it.
+    fn dacl(mapping: &OwnedHandle) -> io::Result<(OwnerOnly, *mut ACL)> {
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        // SAFETY: a live mapping handle opened with all access (which includes reading its
+        // security); null owner, group and SACL outputs; live DACL and descriptor outputs. On
+        // success the descriptor is `LocalAlloc`ed and the DACL points into it.
+        let status = unsafe {
+            GetSecurityInfo(
+                mapping.as_raw_handle().cast(),
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
         };
-        let aces: Vec<&str> = entries.split(')').filter(|ace| !ace.is_empty()).collect();
-        match aces.as_slice() {
-            [ace] => ace.starts_with("(A;") && ace.ends_with(&format!(";{sid}")),
-            _ => false,
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32));
         }
+        Ok((OwnerOnly(descriptor), dacl))
+    }
+
+    /// Whether `mapping`'s DACL is protected and has exactly one entry, which allows the current
+    /// user. Read from the DACL itself, not its text form, which abbreviates some SIDs.
+    fn owner_only(mapping: &OwnedHandle) -> io::Result<bool> {
+        let (descriptor, dacl) = dacl(mapping)?;
+        if dacl.is_null() {
+            // A null DACL allows everyone.
+            return Ok(false);
+        }
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        // SAFETY: a live descriptor and two live outputs.
+        if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if control & SE_DACL_PROTECTED == 0 {
+            return Ok(false);
+        }
+        let mut size = ACL_SIZE_INFORMATION {
+            AceCount: 0,
+            AclBytesInUse: 0,
+            AclBytesFree: 0,
+        };
+        // SAFETY: a live DACL and a live output of the size the class needs.
+        if unsafe {
+            GetAclInformation(
+                dacl,
+                (&raw mut size).cast(),
+                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if size.AceCount != 1 {
+            return Ok(false);
+        }
+        let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: a live DACL with one entry, index 0, and a live output; on success `ace` points
+        // into the DACL.
+        if unsafe { GetAce(dacl, 0, &mut ace) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
+        // SAFETY: `GetAce` returned a live entry, which starts with its header.
+        let kind = unsafe { (*ace).Header.AceType };
+        // `ACCESS_ALLOWED_ACE_TYPE` is 0 (it lives behind another windows-sys feature).
+        if kind != 0 {
+            return Ok(false);
+        }
+        let user = UserSid::current()?;
+        // SAFETY: an access-allowed entry's SID starts at its `SidStart` field, inside the DACL,
+        // which `descriptor` keeps alive; the user's SID lives in `user`.
+        let same = unsafe { EqualSid((&raw const (*ace).SidStart).cast_mut().cast(), user.sid()) };
+        Ok(same != 0)
+    }
+
+    /// The DACL in its text form, for diagnostics.
+    pub(in super::super) fn permissions_text(mapping: &OwnedHandle) -> io::Result<String> {
+        let (descriptor, _) = dacl(mapping)?;
+        let mut text: *mut u16 = std::ptr::null_mut();
+        // SAFETY: a live descriptor and a live output pointer; on success the string is
+        // `LocalAlloc`ed.
+        if unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.0,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the call returned a `LocalAlloc`ed, NUL-terminated string.
+        Ok(unsafe { take_local_string(text) })
     }
 
     impl Drop for Segment {

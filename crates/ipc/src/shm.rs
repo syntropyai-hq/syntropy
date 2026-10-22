@@ -15,12 +15,13 @@
 //!
 //! | OS | Segment | Owner-only | Handle |
 //! |---|---|---|---|
-//! | Linux | `memfd_create`, sealed against growing and shrinking | `fchmod` 0600 | a descriptor the runner inherits |
+//! | Linux | `memfd_create`, sealed against growing and shrinking | `fchmod` 0600 | a descriptor only the spawned runner inherits |
 //! | Apple platforms | `shm_open` with `O_EXCL` | created 0600 | its name, random, removed as soon as the runner maps the segment |
 //! | Windows | a named file mapping in the session's `Local\` namespace | a protected DACL with one entry, for the user | its name, random |
 //!
-//! A name's random part comes from the [`Entropy`] the daemon passes to [`Region::create`], so
-//! another process cannot guess it. [`Region::unlink`] removes the segment's name, so no new
+//! A name's random part is 128 bits from the [`Entropy`] the daemon passes to [`Region::create`],
+//! so another process can neither guess the name nor take it first. Opening a segment checks it
+//! is owner-only before mapping it. [`Region::unlink`] removes the segment's name, so no new
 //! process can open it. On Linux a memfd never has a name, and on Windows the name goes when the
 //! last handle closes, so there it does nothing. The daemon calls it once the runner has exited.
 //!
@@ -341,22 +342,6 @@ impl FromStr for RegionHandle {
             Some(name) if !name.is_empty() => Ok(RegionHandle::Name(name.to_owned())),
             _ => Err(bad()),
         }
-    }
-}
-
-/// The handle to give a runner the daemon spawns, and on Linux the descriptor the runner inherits:
-/// keep this until the runner has started, then drop it.
-#[derive(Debug)]
-pub struct SpawnHandle {
-    handle: RegionHandle,
-    _inherited: os::Inherited,
-}
-
-impl SpawnHandle {
-    /// The handle, for the runner's command line.
-    #[must_use]
-    pub fn handle(&self) -> &RegionHandle {
-        &self.handle
     }
 }
 
@@ -686,18 +671,19 @@ impl Region {
         self.segment.handle()
     }
 
-    /// The handle to give a runner this daemon spawns. On Linux it holds a descriptor without
-    /// close-on-exec, for the runner to inherit, until it is dropped.
+    /// Sets up `command`, the runner this daemon is about to spawn, to receive the region, and
+    /// returns the handle for its command line (`__runner --ipc <handle>`).
+    ///
+    /// On Linux the region's descriptor keeps close-on-exec in this process, so no other child,
+    /// spawned at the same time from another thread, inherits it. A hook clears the flag in
+    /// `command`'s child alone, after the fork and before the exec. On Apple platforms and
+    /// Windows the runner opens the region by name, and `command` is left as it is.
     ///
     /// # Errors
     ///
-    /// The OS error if the descriptor cannot be duplicated.
-    pub fn spawn_handle(&self) -> io::Result<SpawnHandle> {
-        let (handle, inherited) = self.segment.inheritable()?;
-        Ok(SpawnHandle {
-            handle,
-            _inherited: inherited,
-        })
+    /// None today; the `Result` leaves room for an OS that needs a call here.
+    pub fn configure_spawn(&self, command: &mut std::process::Command) -> io::Result<RegionHandle> {
+        self.segment.configure_spawn(command)
     }
 
     /// Removes the segment's name, so no new process can open it: `shm_unlink` on Apple
@@ -721,6 +707,16 @@ impl Region {
     /// The OS error if the segment's permissions cannot be read.
     pub fn is_owner_only(&self) -> io::Result<bool> {
         self.segment.is_owner_only()
+    }
+
+    /// The segment's permissions as the OS reports them, for diagnostics: the mode and owner on
+    /// Unix, and the DACL's text form on Windows.
+    ///
+    /// # Errors
+    ///
+    /// The OS error if the permissions cannot be read.
+    pub fn permissions_text(&self) -> io::Result<String> {
+        self.segment.permissions()
     }
 
     /// Adds one to this side's heartbeat.

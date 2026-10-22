@@ -61,7 +61,11 @@ fn open(region: &Region, side: Side) -> Result<Region, ShmError> {
 #[test]
 fn a_new_region_is_owner_only_and_reads_back_its_header() {
     let region = create(&layout()).unwrap();
-    assert!(region.is_owner_only().unwrap());
+    assert!(
+        region.is_owner_only().unwrap(),
+        "{}",
+        region.permissions_text().unwrap()
+    );
     assert_eq!(region.side(), Side::Daemon);
     assert_eq!(region.build_id(), BUILD);
     assert_eq!(region.protocol(), PROTOCOL);
@@ -304,4 +308,38 @@ fn fields_checked_at_open_cannot_be_changed_by_the_peer() {
     }
     assert_eq!(runner.build_id(), BUILD);
     assert_eq!(runner.protocol(), PROTOCOL);
+}
+
+/// Writes `value` over the fixed header field at `offset` of `region`'s segment.
+fn overwrite<T: Copy>(region: &Region, offset: usize, value: T) {
+    // SAFETY: `offset` is a field of the fixed header, inside the live segment, aligned for `T`;
+    // nothing else writes it now.
+    unsafe {
+        region
+            .segment
+            .base()
+            .add(offset)
+            .cast::<T>()
+            .write_volatile(value)
+    };
+}
+
+#[test]
+fn a_segment_without_the_magic_is_refused() {
+    let daemon = create(&layout()).unwrap();
+    overwrite(&daemon, std::mem::offset_of!(Fixed, magic), *b"NOTSHMEM");
+    assert!(matches!(
+        open(&daemon, Side::Runner),
+        Err(ShmError::BadMagic)
+    ));
+}
+
+#[test]
+fn a_segment_of_another_layout_version_is_refused() {
+    let daemon = create(&layout()).unwrap();
+    overwrite(&daemon, std::mem::offset_of!(Fixed, layout_version), 99u32);
+    assert!(matches!(
+        open(&daemon, Side::Runner),
+        Err(ShmError::Version { found: 99 })
+    ));
 }
