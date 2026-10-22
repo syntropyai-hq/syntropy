@@ -885,3 +885,12 @@ These were settled under the maintainers' standing instruction. RFC-0031 §3's n
 | DIST-E7-T03 and QUAL-E8-T04 each gain "DIST-E7-T11's fallback connects a hop planned on an unavailable `Rdma(_)` transport on QUIC", through the real backend and through `SimTransport`; DIST-E7-T03 → DIST-E7-T11 and QUAL-E8-T04 → DIST-E7-T11 | DIST-E7-T03, QUAL-E8-T04 | R9 | the check on a real backend needs one, and each of these tasks builds one. Neither reaches DIST-E7-T11's dependencies, so the edges add no cycle |
 | DIST-E7-T10 reports its fault-time demotion through DIST-E7-T11's `EdgeDemoted` with cause `RepeatedFaults`; DIST-E7-T10 → DIST-E7-T11 | DIST-E7-T10 | R9 | one message serves both demotion paths, and DIST-E7-T11, written first, owns it. RFC-0031 §7.4 and RFC-0033 §11 already call the report `ReportEdgeDemoted`, which the daemon forwards it as. DIST-E7-T11 does not reach DIST-E7-T10 |
 | DIST-E11-T01 connects each hop through DIST-E7-T11's `connect_hop` and reports a demotion as `EdgeDemoted` with cause `ConnectFailed`, with a simulator criterion; DIST-E11-T01 → DIST-E7-T11 | DIST-E11-T01 | R9 | DIST-E11-T01 opens the runner's outbound and inbound channels at `Loading`, so it is where the fallback runs. DIST-E7-T11 does not reach DIST-E11-T01 |
+
+## PROD-E1-T10: instance-wide knobs a request did not name (2026-10-22)
+
+Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request that names its knobs and leaves out one the candidate's plan applies to every sequence would run with it while its label omitted it. The RFC-0054 §7 note of 2026-10-22 refuses that case with `fidelity_conflict`.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T10 gains a criterion for that case | PROD-E1-T10 | Definition of done | the rule needs a check that can fail: a P-config-2 case shows that such a request never resolves to a knob set missing a plan knob, and that `fidelity_conflict` names exactly the missing ones |
+| The criterion also covers a knob bit this version cannot name: it counts as instance-wide, and a plan holding one serves no request | PROD-E1-T10 | Definition of done | `ApproxKnobs` keeps a bit it does not name, and RFC-0042 §10 reserves `1 << 8` for a later knob. The review of #1771 found that such a bit counted as neither scope, so an exact request could be served by a plan that applied it, and an approximate label could leave it out |
