@@ -15,12 +15,18 @@
 //! - **Replication.** An append carries the coordinator's whole log and its current
 //!   `ElectionProof`, so it is also the beat and the snapshot (§6.7). A follower whose log is a
 //!   prefix of it takes the new entries after `validate()`; one whose log diverges replaces it
-//!   only after `validate_snapshot()`.
+//!   only after `validate_snapshot()`. A node acts on an append from a node it does not follow,
+//!   a new election or a heal, only while that sender is up and reachable: it fetches the proof
+//!   (`Rpc::ElectionProof`, §7.1) and, on a heal, probes the fork and fetches the snapshot from
+//!   it (§6.10, §7.5).
 //! - **Replies.** A voter's reply to a claim, and a follower's `LogAck` (with its `Endorse`) to
 //!   an append, travel on the stream of the message they answer and arrive with it. Losing the
 //!   claim or the append loses the reply too.
 //! - **Rank.** A lower node index ranks higher; operator preference and capability class only
 //!   reorder the same rule.
+//! - **Support.** A proof's `Ack`s and `Endorse`s count whoever gave them; §7.5's rule that a
+//!   revoked member's endorsement no longer counts is not modelled. No scenario revokes a node
+//!   that endorsed another's election.
 //! - **Planned handover** (§7.7) is not modelled; DIST-E10-T04 builds it.
 //!
 //! Ghost state, which no node reads, records what really happened: the elections nodes actually
@@ -862,12 +868,13 @@ impl ElectionModel {
     }
 
     /// Treats the coordinator's lease as expired and stops following it.
+    /// The node keeps `current_term` and the proof of the election it last applied, which a
+    /// newcomer must still beat (§7.1); a revoked node's proof stops counting through the deny
+    /// list.
     fn stop_following(&self, s: &mut State, f: Ix) {
         s.aborted_ackers.remove(&f);
         let node = &mut s.nodes[f as usize];
         node.coordinator = None;
-        node.term = None;
-        node.proof = None;
         node.lease_live = false;
         node.pending.clear();
     }
@@ -1024,6 +1031,11 @@ impl ElectionModel {
             return;
         }
         let following = node.coordinator == Some(c) && node.term == Some(term);
+        // A new election or a heal needs the sender's proof, and on a heal its snapshot, fetched
+        // from it: a sender that is down or cut off cannot serve them.
+        if !following && !self.link(s, f, c) {
+            return;
+        }
         let extends = log.starts_with(&node.log);
         if following && extends {
             let new_ok = log[node.log.len()..].iter().all(|e| self.valid_entry(e));
