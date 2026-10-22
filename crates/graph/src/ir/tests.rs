@@ -24,20 +24,20 @@ const TOP_K: u32 = 2;
 
 /// The shape of one generated graph.
 #[derive(Clone, Debug)]
-struct Params {
+pub(crate) struct Params {
     /// Per layer: MoE FFN (else dense), and whether it adds n-gram rows by token ID.
-    layers: Vec<(bool, bool)>,
+    pub(crate) layers: Vec<(bool, bool)>,
     /// One or two residual streams.
-    streams: u8,
+    pub(crate) streams: u8,
     /// How many MTP modules.
-    mtp: u8,
+    pub(crate) mtp: u8,
     /// The layer that reads a per-layer input from the prologue, if any.
-    per_layer: Option<usize>,
+    pub(crate) per_layer: Option<usize>,
     /// Bit `b − 1` marks interior boundary `b` legal.
-    legal: u8,
+    pub(crate) legal: u8,
 }
 
-fn params() -> impl Strategy<Value = Params> {
+pub(crate) fn params() -> impl Strategy<Value = Params> {
     (
         prop::collection::vec((any::<bool>(), any::<bool>()), 1..=5),
         1u8..=2,
@@ -59,38 +59,38 @@ fn params() -> impl Strategy<Value = Params> {
 
 /// What the generator records about one layer, for the mutators.
 #[derive(Clone, Debug)]
-struct LayerInfo {
-    mixer: TensorGroupId,
-    qkv_node: usize,
-    o_node: usize,
-    o: ValueId,
-    att: ValueId,
-    moe_node: Option<usize>,
+pub(crate) struct LayerInfo {
+    pub(crate) mixer: TensorGroupId,
+    pub(crate) qkv_node: usize,
+    pub(crate) o_node: usize,
+    pub(crate) o: ValueId,
+    pub(crate) att: ValueId,
+    pub(crate) moe_node: Option<usize>,
     /// The router group of a MoE layer.
-    router: Option<TensorGroupId>,
+    pub(crate) router: Option<TensorGroupId>,
     /// The pre-FFN norm.
-    ffn_norm_node: usize,
+    pub(crate) ffn_norm_node: usize,
     /// The `KvWrite` node.
-    kv_node: usize,
+    pub(crate) kv_node: usize,
     /// The final `Add`, whose output is residual stream 0.
-    last_node: usize,
-    out: ValueId,
+    pub(crate) last_node: usize,
+    pub(crate) out: ValueId,
 }
 
 /// A generated graph with its census and op set, and handles for the mutators.
 #[derive(Clone, Debug)]
-struct Fixture {
-    graph: ModelGraph,
-    census: Vec<CensusGroup>,
-    ops: OpSet,
-    tok: ValueId,
-    embed: TensorGroupId,
-    head: TensorGroupId,
-    layers: Vec<LayerInfo>,
+pub(crate) struct Fixture {
+    pub(crate) graph: ModelGraph,
+    pub(crate) census: Vec<CensusGroup>,
+    pub(crate) ops: OpSet,
+    pub(crate) tok: ValueId,
+    pub(crate) embed: TensorGroupId,
+    pub(crate) head: TensorGroupId,
+    pub(crate) layers: Vec<LayerInfo>,
 }
 
 impl Fixture {
-    fn validate(&self) -> Result<(), Violation> {
+    pub(crate) fn validate(&self) -> Result<(), Violation> {
         validate(&self.graph, &self.census, &self.ops)
     }
 
@@ -169,7 +169,7 @@ fn fixed(id: TensorGroupId, role: TensorRole) -> (GroupSel, TensorRole) {
     (GroupSel::Fixed(id), role)
 }
 
-fn build(p: &Params) -> Fixture {
+pub(crate) fn build(p: &Params) -> Fixture {
     let n = p.layers.len();
     let mut b = Builder::default();
     let tok = b.value(DType::I32, smallvec![Dim::Rows], ValueKind::TokenIds);

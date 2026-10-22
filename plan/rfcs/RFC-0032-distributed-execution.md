@@ -549,6 +549,11 @@ loop:
                    for entry: for r in reactions(&state, &entry): spawn(r)  // e.g. solver task
 ```
 
+**Revision note, 2026-10-22 (OQ-NET-33): which acks count toward `replicated = true`.**
+- **The rule.** The ack the loop awaits must come from a `COORDINATOR`-eligible member other than both the coordinator and the command's originator. A command the coordinator originates itself still needs an ack from any other eligible member.
+- **Why.** The originator's own ack adds no independent copy: its journal already guards the command (§6.10). DIST-E10-T08's model check found an 8-step trace in which that ack alone made a reply `replicated = true`, and the command was then lost with the coordinator's and the originator's disks.
+- **The consequence.** In a two-node cluster, a follower's command is never `replicated = true`. The reply then says, truthfully, that only the coordinator and the originator hold it.
+
 - **Long work stays out of `decide()`.**
   - `EnsureInstance` produces `InstanceRequested`. Its reaction runs the solver (RFC-0011) on a blocking thread over a snapshot of the inputs, then submits an internal `CommitPlan { instance, plan, solved_against: GraphVersion }` command.
   - `decide()` accepts `CommitPlan` only if the graph version is unchanged, or if every change since is one that RFC-0011's `plan_still_valid()` accepts. Otherwise it rejects, and the reaction re-solves.
@@ -1108,6 +1113,25 @@ Chunking hides the 4090 stage and the hop behind the Strix's compute, which domi
 | No deadlock in collectives | randomised step-descriptor sequences (window sizes, trees, cancels mid-step) on a simulated 4-member island |
 | Performance | RFC-0061 gates: SC-13 on rig (c), SC-15 in throughput mode, SC-16/SC-17 on the two-Mac TB5 rig, routing ≤ 1 ms |
 
+**Revision note, 2026-10-22 (DIST-E10-T08): the model check, run.** An explicit-state model of election, the lease, replication and heal (`crates/cluster/tests/election/`, checked with stateright by depth-first search) checks each property of the "Election safety and liveness" row as a named case. It runs them in 14 scenarios on 3 nodes and 12 on 4:
+- splits that heal, with and without message loss;
+- elections at equal counters, and a 24-bit tag collision;
+- a partial partition, a lone survivor, and a claim aborted after an `Ack`;
+- a byzantine coordinator that forges an authority entry and omits its own revocation, forged terms, and a byzantine snapshot;
+- a claimant without `COORDINATOR`, and an isolated self-election;
+- commands under crash-recover, and under the loss of nodes with their disks.
+
+Splits, message loss, crashes, claims and elections are bounded per scenario. Each scenario must reach the situation it names, including a settled state wherever a liveness property is judged. The default tests check a bounded 3-node configuration, every scenario to exhaustion. `cargo xtask test election-model` runs the full configuration release-optimised and stops each scenario at 5 × 10⁷ generated states. Seventeen scenarios finish within that cap. Nine reach it, so for them the check explores up to the cap rather than exhaustively: `split-heal` on 3 and 4 nodes, `equal-counters` on 3 and 4, `tag-collision`, `stale-heal`, `byzantine-snapshot` on 4, and `commands-crash` on 3 and 4. The full run uses one thread, so a capped scenario explores the same states on every run. DIST-E10-T09 runs the suite on every change to `cluster`.
+
+A scenario that expects a property to fail names the cause the plan predicts. A counterexample with any other cause fails the check. Two properties have expected failures:
+- "No two coordinators accepted by one node at the same term" fails in `tag-collision`, caused by a 24-bit tag collision. Both sides of a split elect at one term, and at heal the lower node ID wins the tie, so a node switches coordinators within that term. §7.2 accepts this risk.
+- "Every command acknowledged with `replicated = true` … appears in the converged log" fails in `stale-heal`, caused by a heal that rolls a node back past a command its own ack made `replicated = true`. A stale but supported proof deposes the node's unsupported self-election, though a supported election follows the stale one in the node's own chain (§7.5), and the command's originator, lost with its disk, cannot re-submit it. OQ-NET-34 holds the question, with the 15-step trace a default test replays, and DIST-E10-T10 model-checks the rule it recommends.
+
+The model found one other cause of lost commands, the originator's own ack, and §6.3's rule as revised by OQ-NET-33 removes it. A default test replays its 8-step trace against the old rule. Under crash-recover the command property shows no counterexample: exhaustively in the bounded `commands-crash`, and up to the cap in the full ones. In `commands-lost`, where nodes are lost with their disks but the network never splits, it holds exhaustively.
+
+The liveness properties are judged in quiescent states with the network whole, so the check finds a heal that stalls but not one that cycles for ever. Ties in the heal order would make a heal cycle, and they are checked directly.
+
+
 ## Rollout / milestones
 
 | Milestone | Lands |
@@ -1115,6 +1139,8 @@ Chunking hides the 4090 stage and the hop behind the Strix's compute, which domi
 | M2 | first, before the election and heal code: an explicit-state model check of lease, pre-vote, signed proofs, replication and heal against §7, with every RT-DIST scenario as a named case, then run in CI on every change to `cluster` (DIST-E10-T08; OQ-NET-08); `LogCore`, `ElectionCore` and `TransitionCore` as sans-I/O protocol cores driven by the deterministic simulator (RFC-0060); side-channel relays for KV headroom, router hints and prefix-cache items (§3.10); parity `Tap` channels; ring pipeline: channels, steps, `Activation`/`Token`/`SeqControl` semantics, `SequenceOpen::resume` field (used from M3), chunked staggered prefill with the TTFT model; make-before-break and break-before-make; event log with `decide`, `apply`, `reactions`, `plan_actions`, hash chain, persistence, snapshots and sync; election with leases, tagged terms, fencing, heal with orphan records, relayed commands and planned handover; feature levels; routing integration with load digests; verify-window frames in the wire format (enabled in M3) |
 | M3 | cross-node TP (one-shot and ring) and EP; intra-node TP with P2P verification; step descriptors and verified local router; in-place `Relink` and `ExtendShard` (with RFC-0033); relayed token-return hops; throughput mode with multiple steps in flight; orphan adoption by re-plan |
 | M4 | validation above 16 members; prefill/decode disaggregation decision (open question 1); the optional quorum mode, only if the model checker or the simulator finds a heal that cannot be repaired |
+
+**Note, 2026-10-22 (DIST-E10-T08).** "Every RT-DIST scenario" in the M2 row means each property in the Testing table's "Election safety and liveness" row, each a named case of the model check. The run on every change to `cluster` is DIST-E10-T09, which needs QUAL-E1-T07's change detection. Until then the default tests run a bounded 3-node configuration, and `cargo xtask test election-model` runs the full check.
 
 ## Open questions
 

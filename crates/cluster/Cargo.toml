@@ -17,3 +17,4 @@ syntropy-net = { path = "../net" }
 
 [dev-dependencies]
 proptest.workspace = true
+stateright.workspace = true
