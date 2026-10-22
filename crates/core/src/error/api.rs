@@ -27,9 +27,10 @@
 //! **Retry hints.** The [`ApiError::retry_after`] of a shape is the row's default. The
 //! error's own retry hint (`Error::retry`, RFC-0001 §5.12) overrides it. When the hint is
 //! `Never`, the response carries `x-should-retry: false` and no `Retry-After` (RFC-0050
-//! §12.1, "Retry signalling"). That is the case for an escaped `Integrity` code, such as
-//! Security 0x050C–0x050F (a signature that does not verify), even though the shape is
-//! `instance_unavailable`.
+//! §12.1, "Retry signalling"). That is the case for an escaped `Integrity` code such as
+//! Security 0x050C–0x050E (a signature that does not verify), even though the shape is
+//! `instance_unavailable`. (0x050F `SourceDistrusted` has an override and never reaches a
+//! client.)
 
 use super::codes::{self, CodeInfo, cluster, dist, net, recovery, security};
 use super::{ErrorClass, ErrorCode};
