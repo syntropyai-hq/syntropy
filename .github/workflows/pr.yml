@@ -41,14 +41,33 @@ jobs:
     outputs:
       jobs: ${{ steps.jobs.outputs.jobs }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Until QUAL-E1-T07's `cargo xtask ci changes --base <merge base>` computes the affected-job
-      # set (§2.2), every run lists every hosted job that has a suite to run. `hosted-l3` and
-      # `hosted-parity-nano` are listed once their suites exist (QUAL-E3-T09/T10, QUAL-E5-T06).
-      # T07 also moves this step onto the base branch's `xtask`, as `ci-gate` is, so a PR cannot
-      # list nothing and skip every job.
+      # set (§2.2), every run lists `lint`, `build` and `hosted-test`. `hosted-l3` is listed when
+      # the change touches a crate, vendored code, the cargo config, `xtask`, the workspace's
+      # `Cargo.toml` or `Cargo.lock`, the toolchain pin, this workflow or the composite actions it
+      # uses. That over-triggers, which is safe, and skips plan-only changes; T07 replaces it with
+      # §2.3's closure rule (the closure includes `ipc`, `tier`, `exec`, `io` or `net`).
+      # `hosted-parity-nano` is listed once its suite exists (QUAL-E5-T06). T07 also moves this
+      # step onto the base branch's `xtask`, as `ci-gate` is, so a PR cannot list nothing and skip
+      # every job.
       - name: List the jobs to run
         id: jobs
-        run: echo 'jobs=["lint","build","hosted-test"]' >> "$GITHUB_OUTPUT"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          jobs='"lint","build","hosted-test"'
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          # Without renames, so a file moved out of a crate counts by its old path too.
+          changed="$(git diff --no-renames --name-only "$BASE_SHA" HEAD)"
+          l3='^(crates/|third_party/|\.cargo/|xtask/|Cargo\.(toml|lock)$|rust-toolchain\.toml$'
+          l3+='|\.github/(workflows/pr\.yml$|actions/))'
+          if grep -qE "$l3" <<< "$changed"; then
+            jobs="$jobs,\"hosted-l3\""
+          fi
+          echo "jobs=[$jobs]" >> "$GITHUB_OUTPUT"
 
   lint:
     needs: changes
@@ -129,23 +148,27 @@ jobs:
         uses: ./.github/actions/install-cargo-deny
       - run: cargo xtask test unit
 
-  # L3: loom models, Miri and the sanitizer builds (RFC-0060 §3.4), when the closure includes
-  # `ipc`, `tier`, `exec`, `io` or `net`. Planned: QUAL-E3-T09/T10. `changes` does not list it
-  # until it has a suite, so it shows as skipped, and `ci-gate` names the tasks. Listed before
-  # then, it fails rather than passing on nothing.
+  # L3: loom models, Miri and the sanitizer builds (RFC-0060 §3.4), when `changes` lists it. The
+  # loom models run now, as `cargo xtask test loom` (QUAL-E3-T09); Miri and the sanitizer builds
+  # join them with QUAL-E3-T10.
   hosted-l3:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-l3')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: No L3 suite yet
-        run: |
-          echo "::error::hosted-l3 has no suite yet (planned: QUAL-E3-T09/T10)"
-          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: hosted-l3
+          cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
+      - run: cargo xtask test loom
 
-  # L5 nano parity smoke on the CPU provider (RFC-0060 §5). Planned: QUAL-E5-T06. As for
-  # `hosted-l3`, it shows as skipped, and fails if listed before its suite exists.
+  # L5 nano parity smoke on the CPU provider (RFC-0060 §5). Planned: QUAL-E5-T06. `changes` does
+  # not list it until it has a suite, so it shows as skipped, and `ci-gate` names the task.
+  # Listed before then, it fails rather than passing on nothing.
   hosted-parity-nano:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-parity-nano')

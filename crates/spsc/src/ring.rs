@@ -158,6 +158,22 @@ pub(crate) struct Shared<T> {
     slots: Box<[UnsafeCell<MaybeUninit<T>>]>,
     /// Who to wake when the consumer waits: its thread, and the wake handle if the ring has one.
     pub(crate) waker: Waker,
+    /// Under loom only: whether `push` publishes with a relaxed store, the ordering bug the loom
+    /// models must find (QUAL-E3-T09). Only [`planted_relaxed_publish`] sets it.
+    #[cfg(loom)]
+    planted_relaxed_publish: bool,
+}
+
+impl<T> Shared<T> {
+    /// The ordering of the store that publishes a push: `Release`, or `Relaxed` in a ring with the
+    /// planted bug, under loom.
+    fn publish_ordering(&self) -> Ordering {
+        #[cfg(loom)]
+        if self.planted_relaxed_publish {
+            return Ordering::Relaxed;
+        }
+        Ordering::Release
+    }
 }
 
 // SAFETY: the producer and the consumer each hold an `Arc<Shared<T>>`, possibly on two threads.
@@ -242,6 +258,23 @@ pub(crate) fn starting_at<T>(
     waker: Waker,
     start: usize,
 ) -> Result<(Producer<T>, Consumer<T>), CapacityError> {
+    build(capacity, waker, start, false)
+}
+
+/// Under loom, for the models only: a ring whose `push` publishes with a relaxed store, the bug
+/// the models must find (QUAL-E3-T09).
+#[cfg(all(test, loom))]
+pub(crate) fn planted_relaxed_publish<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+    build(capacity, Waker::default(), 0, true).expect("a power-of-two capacity")
+}
+
+#[cfg_attr(not(loom), allow(unused_variables))]
+fn build<T>(
+    capacity: usize,
+    waker: Waker,
+    start: usize,
+    planted: bool,
+) -> Result<(Producer<T>, Consumer<T>), CapacityError> {
     if !capacity.is_power_of_two() || capacity > MAX_CAPACITY {
         return Err(CapacityError { capacity });
     }
@@ -258,6 +291,8 @@ pub(crate) fn starting_at<T>(
         mask: capacity - 1,
         slots,
         waker,
+        #[cfg(loom)]
+        planted_relaxed_publish: planted,
     });
     Ok((
         Producer {
@@ -297,7 +332,7 @@ impl<T> Producer<T> {
         // a `MaybeUninit` drops nothing, and the slot held no live value.
         slot.with_mut(|cell| unsafe { cell.write(MaybeUninit::new(value)) });
         self.tail = self.tail.wrapping_add(1);
-        shared.tail.store(self.tail, Ordering::Release);
+        shared.tail.store(self.tail, shared.publish_ordering());
         shared.wake_consumer();
         Ok(())
     }

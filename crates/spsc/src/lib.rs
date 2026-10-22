@@ -43,6 +43,10 @@
 //! under loom's model checker, and so does the wait/wake handshake ([`Consumer::arm`],
 //! [`Consumer::arm_thread`] and the producer's side of it), with loom's threads parking and
 //! unparking. The spin of [`Consumer::wait`] and the wake handle are left out of that build.
+//! `cargo xtask test loom` runs them with a preemption bound of 3 (RFC-0060 §3.4). They include a
+//! three-thread pipeline through two heap rings, and for each kind of ring a model whose ring has
+//! a relaxed publishing store planted, which loom must reject. The shared ring's three-thread
+//! model is `syntropy-ipc`'s, over the region's local rings.
 
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(unsafe_op_in_unsafe_fn)]

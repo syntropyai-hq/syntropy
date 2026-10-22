@@ -122,7 +122,7 @@ pub const PROPERTIES: [(&str, Condition); 13] = [
         |_, s| s.flags & flag::FORGED_TERM_DEPOSED == 0,
     ),
     (
-        "an unsupported self-election never deposes a supported coordinator",
+        "an unsupported self-election never deposes a supported coordinator, unless the deposing side's chain holds a supported election that beats that coordinator's",
         |_, s| s.flags & flag::UNSUPPORTED_DEPOSED_SUPPORTED == 0,
     ),
     (COMMANDS_SURVIVE, |m, s| {
@@ -390,7 +390,29 @@ pub fn oracle(m: &ElectionModel, before: &State, action: &Action, after: &mut St
                     if !genuine {
                         after.flags |= flag::FORGED_TERM_DEPOSED;
                     }
-                    if b.proof.is_some_and(|old| old.supported()) && !p.supported() {
+                    // The deposing side's chain: what the fence carries, or the log sent.
+                    let chain = match action {
+                        Action::Deliver(Msg::Fence { chain, .. }) => *chain,
+                        Action::Deliver(Msg::Append { log, .. }) => {
+                            crate::model::chain_support(log, Some(p))
+                        }
+                        _ => None,
+                    };
+                    // An unsupported self-election deposing a supported coordinator, except when
+                    // the deposing side's chain holds a supported election that beats the
+                    // coordinator's: then the deposed election had a supported successor it did
+                    // not know of (OQ-NET-34's option (a)). The excuse trusts the message's own
+                    // chain. That is sound here because nothing in the model forges one: honest
+                    // nodes compute it from their own state, a byzantine fence carries
+                    // `chain: None`, and a byzantine append carries its sender's own log, in which
+                    // no `Elected` entry is forged. A change that lets a byzantine sender fill
+                    // `chain` or forge an `Elected` entry must check `q` against
+                    // `after.elections` instead.
+                    if let Some(old) = b.proof
+                        && old.supported()
+                        && !p.supported()
+                        && !chain.is_some_and(|q| q.supported() && q.beats(&old))
+                    {
                         after.flags |= flag::UNSUPPORTED_DEPOSED_SUPPORTED;
                     }
                 }
@@ -412,7 +434,9 @@ pub fn oracle(m: &ElectionModel, before: &State, action: &Action, after: &mut St
         };
         if !a.starts_with(b)
             && let Some((node, term)) = crate::model::last_elected(a)
-            && let Some(at) = b.iter().position(|e| *e == Entry::Elected { node, term })
+            && let Some(at) = b.iter().position(
+                |e| matches!(*e, Entry::Elected { node: n, term: t, .. } if n == node && t == term),
+            )
             && b[at + 1..]
                 .iter()
                 .any(|e| matches!(e, Entry::Elected { .. }))
