@@ -667,3 +667,12 @@ DIST-E10-T08's model check found that a supported older proof can depose a lone 
 |---|---|---|---|
 | Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
 | DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |
+
+## RFC-0054 §5.1's missing claims (2026-10-22)
+
+DIST-E18-T01 registered three claims that RFC-0054 §5.1 did not list (#1679). §5.1 now lists `orphan.*` (RFC-0032), the `invite.require_confirm` carve-out (RFC-0034 inside RFC-0030's `invite.*`) and the top-level `standby` (RFC-0033), and §5.4 lists `standby`. PROD-E1-T16 is the task that checks section claims against that table. It had no criterion for shared sections, which RFC-0054 §5.1's carve-out note of 2026-10-21 says its check should cover.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E1-T16 gains "CI fails on a key of a shared section that RFC-0054 §5.1 does not list as that owner's carve-out" | PROD-E1-T16 | Definition of done | without it, a shared section could add a key inside another owner's prefix unchecked, as the carve-out note warns. The row names no carve-outs: the check reads them from §5.1, and code already shares keys in `net.*`, `rdma.*`, `invite.*`, `models.*` and `replan.*`, so a list in the row would drift. PROD-E1-T16 already depends on DIST-E18-T01, which registers them, so no edge changes |
+
