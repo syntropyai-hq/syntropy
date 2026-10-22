@@ -283,6 +283,9 @@ struct Probe {
     /// The instance's stage count, which the caller computes.
     #[config(reload = Instance, default = computed("the stage count"))]
     stages: u32,
+    /// A computed default that may stay unset, so its absence is no error.
+    #[config(reload = Hot, default = computed("a share the caller may work out"))]
+    spare: Option<u32>,
     /// A node key that strayed into an instance section.
     #[config(reload = Node, default = false, scope = Node)]
     node_only: bool,
@@ -376,6 +379,64 @@ fn changes_name_each_differing_key_with_its_reload_class() {
     // Only a hot key: the reload applies without a new plan.
     let hot = build("max_pause = \"1m\"").unwrap();
     assert_eq!(same.reload_needed(&hot), Some(Reload::Hot));
+}
+
+/// Sizes and a fraction, which RFC-0054 §3 lets a policy write in more than one form.
+#[derive(Clone, Debug, PartialEq, Deserialize, ConfigSection)]
+#[config(section = "units", scope = Instance, owner = "RFC-0054")]
+struct Units {
+    /// A size.
+    #[config(reload = Instance, default = "1GiB")]
+    size: crate::ByteSize,
+    /// A share, read through its `serde(with)` path.
+    #[config(reload = Hot, default = "20%")]
+    #[serde(with = "crate::form")]
+    share: syntropy_core::policy::Fraction,
+}
+
+/// Two builds that write the same values in other forms differ in nothing, so a reload of
+/// `"300us"` as `"300000ns"` starts no new plan epoch (review of #1772, N1). The review's
+/// `"0.3ms"` is not a duration in RFC-0054 §3, which takes whole numbers, so it is `bad_unit`.
+#[test]
+fn changes_compare_values_as_their_type_reads_them() {
+    let one = build("prewake_us = \"300us\"\nmax_pause = \"30s\"").unwrap();
+    let other_forms = build("prewake_us = \"300000ns\"\nmax_pause = \"30000ms\"").unwrap();
+    assert!(one.changes(&other_forms).is_empty());
+    assert_eq!(one.reload_needed(&other_forms), None);
+    // The default written another way is the default.
+    assert!(build("").unwrap().changes(&other_forms).is_empty());
+    // A different value is still a change.
+    let longer = build("prewake_us = \"301us\"").unwrap();
+    assert_eq!(
+        one.changes(&longer),
+        [Change {
+            key: "sched.prewake_us",
+            reload: Reload::Hot
+        }]
+    );
+
+    let units = |text: &str| InstanceSection::<Units>::from_policy(&table(text), |_| None).unwrap();
+    let gib = units("size = \"1GiB\"\nshare = \"20%\"");
+    assert!(
+        gib.changes(&units("size = \"1024MiB\"\nshare = 0.2"))
+            .is_empty()
+    );
+    assert_eq!(
+        gib.changes(&units("size = \"2GiB\"\nshare = \"25%\"")),
+        [
+            Change {
+                key: "units.share",
+                reload: Reload::Hot
+            },
+            Change {
+                key: "units.size",
+                reload: Reload::Instance
+            },
+        ]
+    );
+
+    // A secret-typed key compares by fingerprint, as written: see
+    // `a_secret_typed_value_is_not_kept_but_its_change_is_seen`.
 }
 
 #[test]
@@ -488,6 +549,36 @@ fn a_top_level_section_reads_its_bare_keys_from_the_domain_map() {
     let s = InstanceSection::<TopLevel>::from_domain(&domain, |_| None).unwrap();
     assert_eq!(s.standby, "replica");
     assert_eq!(s.value("standby"), Some(&Value::String("replica".into())));
+}
+
+/// An entry below a top-level section's key is that section's unknown key, as a prefixed
+/// section reports `sched.max_queued.limit`. Other sections' entries are still skipped
+/// (review of #1772, N5).
+#[test]
+fn an_entry_below_a_top_level_key_is_unknown() {
+    let domain: BTreeMap<KeyPath, ConfigValue> = [
+        ("standby", ConfigValue::String("replica".into())),
+        ("standby.x", ConfigValue::Integer(1)),
+        ("recovery.history", ConfigValue::Integer(5)),
+    ]
+    .into_iter()
+    .map(|(path, value)| (KeyPath::from(path), value))
+    .collect();
+    match InstanceSection::<TopLevel>::from_domain(&domain, |_| None) {
+        Err(InstanceSectionError::Rejected(problems)) => {
+            let got: Vec<_> = problems
+                .iter()
+                .map(|p| (p.key.as_deref(), p.code))
+                .collect();
+            assert_eq!(got, [(Some("standby.x"), Some(Code::UnknownKey))]);
+            assert!(
+                problems[0].to_string().contains("unknown key `standby.x`"),
+                "{}",
+                problems[0]
+            );
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
