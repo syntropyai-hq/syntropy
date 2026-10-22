@@ -7,7 +7,7 @@
 //! every indexed tensor is in its shard, every shard tensor is indexed to that shard, and no
 //! name is in two shards. A shard name must be a plain file name in the index's directory, so
 //! an index cannot point a reader at another path. The index is read whole, bounded by
-//! [`HEADER_MAX`](super::HEADER_MAX) like a header.
+//! [`HEADER_MAX`] like a header.
 
 use super::json::Json;
 use super::{HEADER_MAX, SafetensorsError, SafetensorsHeader, read_header};
@@ -153,7 +153,7 @@ pub fn parse_index(bytes: &[u8]) -> Result<ShardIndex, SafetensorsError> {
 ///
 /// # Errors
 ///
-/// As [`read_index`] and [`read_header`](super::read_header), `open`'s errors, and
+/// As [`read_index`] and [`read_header`], `open`'s errors, and
 /// [`SafetensorsError::HeaderInvalid`] when the index and the shards disagree.
 pub fn read_sharded<S, T, F>(
     index_source: S,

@@ -401,7 +401,7 @@ No GAPs.
 | RFC-0050 | §8 | Reasoning content | 3: PROD-E3-T03, PROD-E3-T07, PROD-E3-T11 | ok |
 | RFC-0050 | §9 | Sessions, prefix reuse and stored responses | 8: PROD-E2-T14, PROD-E2-T16, PROD-E4-T07, PROD-E4-T19, PROD-E5-T12–T13, PROD-E7-T15, PROD-E13-T12 | ok |
 | RFC-0050 | §10 | Fidelity and approximate-mode labels | 3: PROD-E4-T03, PROD-E4-T16, PROD-E13-T05 | ok |
-| RFC-0050 | §11 | Authentication and bind policy | 13: PROD-E5-T01–T11, PROD-E13-T08, PROD-E13-T11 | ok |
+| RFC-0050 | §11 | Authentication and bind policy | 14: PROD-E5-T01–T11, PROD-E9-T03, PROD-E13-T08, PROD-E13-T11 | ok |
 | RFC-0050 | §12 | Error mapping | 4: DIST-E18-T02, PROD-E2-T05, PROD-E2-T20, PROD-E13-T07 | ok |
 | RFC-0050 | §13 | Native API | 13: PROD-E4-T01–T02, PROD-E4-T04–T06, PROD-E4-T08, PROD-E4-T13–T15, PROD-E4-T18, PROD-E6-T16, PROD-E7-T12, PROD-E13-T07 | ok |
 | RFC-0050 | §14 | Embeddings | 3: PLC-E9-T22, PROD-E4-T09–T10 | ok |
