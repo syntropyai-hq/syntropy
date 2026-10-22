@@ -952,7 +952,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | DIST-E16-T06 | benchmark | Benchmark: ADR-0312's `t_resume` predictions against measured recoveries, over the simulator scenarios and the hardware subset | OQ-NET-28 | 0 |
 | COMP-E8-T07 | spike | Spike for RFC-0040 open question 8: HIP against Vulkan for decode and prefill on RDNA3 and RDNA4 once both have native kernels | OQ-KB-17 | 0 |
 | COMP-E14-T18 | spike | Spike for RFC-0042 open question 6: reference cost on 1T-class models under sampled layers | – | 0 |
-| COMP-E16-T18 | decision | Decision on DeepSeek-V4's compressed attention (OQ-MF-16 (a)–(c)), before any task builds the `Compressed` block or op: revise RFC-0040… | OQ-MF-16 | 5 |
+| COMP-E16-T18 | decision | Decision on DeepSeek-V4's compressed attention (OQ-MF-16 (a)–(c)), before any task builds the `Compressed` block or op: revise RFC-0040… | – | 5 |
 | PROD-E6-T13 | spike | Spike: hit-rate ranges for NVMe-dependent MoE (open question 3) | OQ-PRD-18 | 0 |
 | PROD-E11-T08 | decision | Decision on ROCm user-space libraries (RFC-0052 open question 6): the licence part is answered (no obstacle; RCCL, ROCgdb and binary-only… | OQ-PKG-10 | 0 |
 | QUAL-E6-T15 | spike | Spike: strength-2 inference | OQ-PRC-11 | 0 |
