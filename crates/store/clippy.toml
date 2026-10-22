@@ -17,6 +17,16 @@
 # - tokio's clock, `tokio::time::Instant::now` and `elapsed`, listed since tokio joined the
 #   workspace (#1711), exists only with tokio's `time` feature.
 # Timers such as `tokio::time::sleep` are not listed, as `std::thread::sleep` is not.
+#
+# The production clock, entropy and tick sources, `syntropy_io::os::SystemClock`, `OsEntropy`
+# and `SystemTicks` (ADR-0022; RFC-0060 §2.1), are banned as types, so a covered crate cannot
+# construct one or name it (#1763). `exec` and `obs` take a `TickSource` as a generic parameter;
+# they never build `SystemTicks` (#1762). clippy does not report a unit struct written as a bare
+# value, so all three are `non_exhaustive` (#1765, #1762): every construction outside `io` is
+# `new()` or `Default`, which names the type. Only a binary's wiring builds them: the CLI, which
+# the lints do not cover, and the wiring files of `runner` and `daemon`, each listed in
+# `xtask/src/determinism.rs` with a scoped `#[allow]` when it lands. A crate that cannot reach
+# `syntropy-io` ignores the entries, as above.
 # `xtask/tests/determinism.rs` proves every path: it lints a fixture that calls each item with
 # every feature on and fails unless each call is reported.
 
@@ -26,6 +36,9 @@ disallowed-types = [
     { path = "std::hash::RandomState", reason = "rule T3 (RFC-0060 §2.4): a hash seed drawn per process" },
     { path = "rand::rngs::ThreadRng", reason = "rule T1 (RFC-0060 §2.1): read randomness through the Entropy you are given", allow-invalid = true },
     { path = "getrandom::SysRng", reason = "rule T1 (RFC-0060 §2.1): read randomness through the Entropy you are given; key material comes from OsEntropy (rule T2)", allow-invalid = true },
+    { path = "syntropy_io::os::SystemClock", reason = "rule T1 (RFC-0060 §2.1): read time through the Clock you are given; only a binary's wiring builds the production clock (ADR-0022)" },
+    { path = "syntropy_io::os::OsEntropy", reason = "rule T1 (RFC-0060 §2.1): read randomness through the Entropy you are given; only a binary's wiring builds the OS source (ADR-0022)" },
+    { path = "syntropy_io::os::SystemTicks", reason = "rule T1 (RFC-0060 §2.1): time hot loops through the TickSource you are given; only a binary's wiring builds the production one (ADR-0022)" },
 ]
 
 disallowed-methods = [
