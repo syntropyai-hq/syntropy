@@ -744,6 +744,8 @@ name = "syntropy-io"
 version = "0.0.0"
 dependencies = [
  "syntropy-core",
+ "syntropy-spsc",
+ "syntropy-testkit",
 ]
 
 [[package]]
