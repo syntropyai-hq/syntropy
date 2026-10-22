@@ -74,12 +74,13 @@ runner = "hosted"
 when = "closure"
 
 # L3: the loom models now (QUAL-E3-T09), and Miri and the sanitizer builds with QUAL-E3-T10
-# (RFC-0060 §3.4), which widens `crates` to every crate those jobs build. `spsc`'s closure already
-# includes `ipc` and `io`.
+# (RFC-0060 §3.4). RFC-0062 §2.3's five crates, and `spsc`, whose ring the loom models cover, and
+# `kernels-cpu`, the CPU provider RFC-0060 §3.4 builds with the sanitizers. QUAL-E3-T10 adds any
+# other crate its jobs build.
 [job.hosted-l3]
 runner = "hosted"
 when = "closure"
-crates = ["ipc", "tier", "exec", "io", "net"]
+crates = ["ipc", "tier", "exec", "io", "net", "spsc", "kernels-cpu"]
 
 # L5 nano parity smoke on the CPU provider (RFC-0060 §5).
 [job.hosted-parity-nano]

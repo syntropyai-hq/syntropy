@@ -160,6 +160,7 @@ paths = ["docs/**", "plan/**", "*.md"]
   - Each module is named in both forms, `<name>.rs` and `<name>/**`, because `testkit`'s reference executor is the single file `refexec.rs`.
   - QUAL-E2-T08 adds the other Tier 1 rigs' jobs with their own rules. Each job is named by its status context, `hw/<job>`, so the excerpt's `hw-cuda` and `hw-metal` groups become per-rig jobs.
   - `lock_deps` stays empty until the CUDA and ggml bindings crates exist.
+- **`hosted-l3`'s crates.** Beside §2.3's `ipc`, `tier`, `exec`, `io` and `net`, the rule lists `spsc`, whose ring the loom models cover, and `kernels-cpu`, the CPU provider that RFC-0060 §3.4 builds with the sanitizers. So a change to the CPU provider alone runs L3. QUAL-E3-T10 adds any other crate its Miri and sanitizer jobs build.
 - **Planned jobs.** A job marked `planned = "<task>"` has no suite or rig yet. Its rule is evaluated and reported. A planned hosted job is not listed, and a planned hardware job is handled as §2.5's note describes.
 - **The golden suite.** `ci/jobs-goldens.toml` holds recorded diffs, most of them commits on `main`, each with its expected sets. `lint`'s `jobs` step fails when:
   - a golden's sets differ;
