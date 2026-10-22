@@ -884,3 +884,15 @@ Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | PLC-E8-T13's criterion names `config`'s `InstanceSection::<SchedSection>::from_policy` in place of `SchedSection::from_policy`, and PLC-E8-T13 → PROD-E1-T24 | PLC-E8-T13 | R9 | the criterion's wording had drifted from the code: the builder now rejects the invalid values, and PROD-E1-T24 produces it. Both tasks are M1a and done (#1656, #1772), so the edge adds no wait |
+
+## COMP-E15-T08's missing prerequisites (2026-10-23)
+
+COMP-E15-T08 gives `TpSharding` to the `llama`, `qwen_moe`, `deepseek3` and `gptoss` families, and its parity criterion runs a split layer through the reference executor. It depended only on COMP-E15-T06 and DIST-E13-T13, which are done, so the board showed it ready. But the families it shards, the blocks it splits and the machinery its parity check runs on were neither built nor edges, so it could not start (#333, released 2026-10-23). These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E15-T08 → COMP-E15-T02, COMP-E15-T04 | COMP-E15-T08 | R9 | RFC-0043 §6.3's `split(&LayerProgram, weights)` splits block nodes: `Gqa`, `DenseFfn` and `Moe` (COMP-E15-T02), `SlidingGqa` and `Mla` (COMP-E15-T04) |
+| COMP-E15-T08 → COMP-E16-T01, COMP-E16-T03, COMP-E16-T04, COMP-E16-T05, COMP-E16-T06 | COMP-E15-T08 | R9 | `TpSharding` is implemented by the family modules: the `Family` trait (COMP-E16-T01) and `llama`, `qwen_moe`, `gptoss` and `deepseek3` (COMP-E16-T03 to T06) |
+| COMP-E15-T08 → COMP-E15-T03, QUAL-E4-T01 | COMP-E15-T08 | R9 | the criterion "recombining member outputs in member order matches single-device output within `τ_op`" runs on `graph::reference`'s interpreter (COMP-E15-T03) driven by `testkit`'s `RefExecutor` (QUAL-E4-T01) |
+
+All nine are M0a or M1a, before COMP-E15-T08's M3, so no edge points later. None of them reaches COMP-E15-T08, whose one dependent is DIST-E13-T01 (M3), so there is no cycle.
