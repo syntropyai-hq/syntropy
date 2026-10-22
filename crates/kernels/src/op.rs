@@ -37,5 +37,16 @@ pub struct OpArgs<'a> {
     _borrows: PhantomData<&'a ()>,
 }
 
+impl OpArgs<'_> {
+    /// The placeholder's one value: no bindings. A provider that replays a recorded launch
+    /// passes it, until COMP-E1-T05 gives launches their real arguments.
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            _borrows: PhantomData,
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests;
