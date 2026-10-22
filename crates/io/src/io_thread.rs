@@ -32,7 +32,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::{Arc, OnceLock};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
@@ -135,10 +135,18 @@ impl From<CapacityError> for ConfigError {
     }
 }
 
-/// One doorbell word, on a cache line of its own so producers don't share one.
+/// One producer's doorbell word and completion count, on a cache line of their own so producers
+/// don't share one.
 #[repr(align(128))]
 #[derive(Debug, Default)]
-struct Word(AtomicBool);
+struct Word {
+    /// Set by a loop about to park; cleared by the producer that unparks it.
+    waiting: AtomicBool,
+    /// Completions the producer has taken from its completion ring, ever. The loop compares it
+    /// with the completions it has posted, so it never holds more of the producer's requests
+    /// than the ring has free slots for.
+    popped: AtomicU64,
+}
 
 /// The doorbells of one loop: one word per producer ring, and the loop's thread to unpark
 /// (RFC-0021 §3.1; ADR-0012 item 5).
@@ -149,6 +157,9 @@ struct Word(AtomicBool);
 /// the push or the producer sees its word set and unparks the loop. A producer clears its word
 /// when it unparks the loop, so a busy loop, which never sets the words, costs a producer one
 /// fence and one load per request and no system call.
+///
+/// A producer also rings after it takes a completion: the slot it frees may be what the loop's
+/// drain was waiting for, and the same fence pair keeps that wake-up from being lost.
 #[derive(Debug)]
 struct Doorbell {
     words: Box<[Word]>,
@@ -156,10 +167,10 @@ struct Doorbell {
 }
 
 impl Doorbell {
-    /// Called by producer `index` after a push or its close.
+    /// Called by producer `index` after a push, after taking a completion, and on its close.
     fn ring(&self, index: usize) {
         fence(Ordering::SeqCst);
-        let word = &self.words[index].0;
+        let word = &self.words[index].waiting;
         if word.load(Ordering::Relaxed)
             && word.swap(false, Ordering::AcqRel)
             && let Some(thread) = self.thread.get()
@@ -170,14 +181,14 @@ impl Doorbell {
 
     fn arm(&self) {
         for word in &self.words {
-            word.0.store(true, Ordering::Relaxed);
+            word.waiting.store(true, Ordering::Relaxed);
         }
         fence(Ordering::SeqCst);
     }
 
     fn disarm(&self) {
         for word in &self.words {
-            word.0.store(false, Ordering::Relaxed);
+            word.waiting.store(false, Ordering::Relaxed);
         }
     }
 }
@@ -185,8 +196,9 @@ impl Doorbell {
 /// A producer's end of an I/O thread: requests in, completions out (RFC-0021 §1).
 ///
 /// `Send`, so it moves to the producer's thread. A producer posts a request and carries on; it
-/// finds the completion when it next polls ([`IoClient::poll`]), or waits on
-/// [`IoClient::completions`]. Dropping the client closes its request ring.
+/// finds the completion when it next polls ([`IoClient::poll`]), or waits for it
+/// ([`IoClient::wait`]). Every completion is taken through these two methods, which tell the
+/// loop a slot is free. Dropping the client closes its request ring.
 pub struct IoClient {
     /// `Some` until the client is dropped.
     requests: Option<Producer<IoOp>>,
@@ -219,13 +231,31 @@ impl IoClient {
     /// `Empty` when none is ready; `Closed` once the loop is gone and every completion has been
     /// taken.
     pub fn poll(&mut self) -> Result<ReadCompletion, PopError> {
-        self.completions.pop()
+        let completion = self.completions.pop()?;
+        self.took_one();
+        Ok(completion)
     }
 
-    /// The completion ring, for a producer that waits on it ([`Consumer::wait`]) or registers
-    /// its wake handle.
-    pub fn completions(&mut self) -> &mut Consumer<ReadCompletion> {
-        &mut self.completions
+    /// Waits for the next completion: spins for `spin`, then parks this thread until the loop
+    /// posts one ([`Consumer::wait`]). `None` once the loop is gone and every completion has been
+    /// taken.
+    ///
+    /// # Panics
+    ///
+    /// If this client has already waited on another thread, as [`Consumer::wait`] does.
+    pub fn wait(&mut self, spin: Duration) -> Option<ReadCompletion> {
+        let completion = self.completions.pop_wait(spin)?;
+        self.took_one();
+        Some(completion)
+    }
+
+    /// Counts a taken completion and rings the doorbell: the freed slot may let a parked loop
+    /// take more of this producer's requests.
+    fn took_one(&self) {
+        self.bell.words[self.index]
+            .popped
+            .fetch_add(1, Ordering::Release);
+        self.bell.ring(self.index);
     }
 
     /// This producer's index, as the loop numbers its rings.
@@ -268,6 +298,9 @@ struct Port {
     completions: Producer<ReadCompletion>,
     /// The producer's requests taken from its ring and not yet completed.
     outstanding: usize,
+    /// Completions posted on the producer's ring, ever. Less [`Word::popped`], the ones still in
+    /// the ring.
+    posted: u64,
     /// Whether the request ring may still deliver requests.
     open: bool,
 }
@@ -385,6 +418,7 @@ impl<E: IoEngine> IoLoop<E> {
                 requests: req_rx,
                 completions: done_tx,
                 outstanding: 0,
+                posted: 0,
                 open: true,
             });
             clients.push(IoClient {
@@ -477,15 +511,17 @@ impl<E: IoEngine> IoLoop<E> {
     pub fn poll_once(&mut self) -> Poll {
         self.drain();
         self.admit();
-        self.submit();
+        let accepted = self.submit();
         self.reap(Wait::None);
         let (in_flight, _) = self.engine.in_flight();
         let queued = !self.batch.is_empty() || self.queues.iter().any(|q| !q.is_empty());
         if in_flight == 0 && !queued {
             Poll::Idle
-        } else if queued && self.has_room(in_flight) {
+        } else if queued && accepted > 0 && self.has_room(in_flight) {
             Poll::Busy
         } else {
+            // Nothing more fits, or the engine accepted nothing this pass (its own queue may be
+            // full): wait in `reap` rather than spin.
             Poll::Blocked
         }
     }
@@ -532,17 +568,22 @@ impl<E: IoEngine> IoLoop<E> {
     /// different producer each time. Returns the requests taken plus the rings newly found
     /// closed.
     ///
-    /// Each ring is drained in one visit, up to the producer's completion-ring capacity, so the
-    /// rows a token needs, posted together, stay together and can coalesce (RFC-0021 §3.3).
+    /// Each ring is drained in one visit, until the producer's requests in the loop plus its
+    /// completions not yet taken fill its completion ring, so a completion always has a slot.
+    /// The rows a token needs, posted together, stay together and can coalesce (RFC-0021 §3.3).
     fn drain(&mut self) -> usize {
         let count = self.ports.len();
         let mut progress = 0;
         for k in 0..count {
             let p = (self.next_port + k) % count;
             loop {
+                // Completions posted and not yet taken still fill the producer's ring.
+                let popped = self.bell.words[p].popped.load(Ordering::Acquire);
                 let port = &mut self.ports[p];
+                let unpopped =
+                    usize::try_from(port.posted.wrapping_sub(popped)).unwrap_or(usize::MAX);
                 if !port.open
-                    || port.outstanding >= port.completions.capacity()
+                    || port.outstanding.saturating_add(unpopped) >= port.completions.capacity()
                     || self.free_reqs.is_empty()
                 {
                     break;
@@ -619,6 +660,7 @@ impl<E: IoEngine> IoLoop<E> {
                     }
                     Err((prev_dest, next_dest)) => {
                         // `can_coalesce` checked adjacency, so this does not happen; keep both.
+                        debug_assert!(false, "can_coalesce and IoDest::join disagree");
                         queue.push_back(Pending {
                             op: IoOp::Read(ReadRequest {
                                 dest: prev_dest,
@@ -717,12 +759,14 @@ impl<E: IoEngine> IoLoop<E> {
         }
     }
 
-    /// Submits the batch. What the engine does not accept stays for the next pass; on an
-    /// engine error, every operation left in the batch fails with it.
-    fn submit(&mut self) {
+    /// Submits the batch, returning how many operations left it. What the engine does not
+    /// accept stays for the next pass; on an engine error, every operation left in the batch
+    /// fails with it.
+    fn submit(&mut self) -> usize {
         if self.batch.is_empty() {
-            return;
+            return 0;
         }
+        let before = self.batch.len();
         if let Err(e) = self.engine.submit(&mut self.batch) {
             for i in 0..self.batch.len() {
                 let slot = self.batch.pending()[i].ticket().0;
@@ -730,6 +774,7 @@ impl<E: IoEngine> IoLoop<E> {
             }
             self.batch.clear();
         }
+        before - self.batch.len()
     }
 
     /// Reaps completions and settles each operation's requests.
@@ -795,10 +840,15 @@ impl<E: IoEngine> IoLoop<E> {
         let port = &mut self.ports[usize::from(req.port)];
         port.outstanding -= 1;
         match port.completions.push(completion) {
+            Ok(()) => port.posted += 1,
             // A producer that has gone no longer wants its completions.
-            Ok(()) | Err(PushError::Closed(_)) => {}
+            Err(PushError::Closed(_)) => {}
             Err(PushError::Full(_)) => {
-                unreachable!("a producer's outstanding requests never exceed its completion ring")
+                // `drain` takes a request only while the producer's requests in the loop plus
+                // its completions not yet taken leave a slot, and the producer can take a
+                // completion only through `IoClient`, which counts it. So this is a bug here,
+                // never something a producer can cause.
+                unreachable!("the loop held more requests than the completion ring has slots")
             }
         }
         self.free_reqs.push(r);
@@ -948,15 +998,19 @@ mod tests {
         };
         // Not armed: ringing changes nothing.
         bell.ring(0);
-        assert!(!bell.words[0].0.load(Ordering::Relaxed));
+        assert!(!bell.words[0].waiting.load(Ordering::Relaxed));
         bell.arm();
-        assert!(bell.words.iter().all(|w| w.0.load(Ordering::Relaxed)));
+        assert!(bell.words.iter().all(|w| w.waiting.load(Ordering::Relaxed)));
         // Ringing clears only the producer's own word; with no thread bound, nothing unparks.
         bell.ring(1);
-        assert!(bell.words[0].0.load(Ordering::Relaxed));
-        assert!(!bell.words[1].0.load(Ordering::Relaxed));
+        assert!(bell.words[0].waiting.load(Ordering::Relaxed));
+        assert!(!bell.words[1].waiting.load(Ordering::Relaxed));
         bell.disarm();
-        assert!(bell.words.iter().all(|w| !w.0.load(Ordering::Relaxed)));
+        assert!(
+            bell.words
+                .iter()
+                .all(|w| !w.waiting.load(Ordering::Relaxed))
+        );
         assert_eq!(std::mem::align_of::<Word>(), 128);
     }
 

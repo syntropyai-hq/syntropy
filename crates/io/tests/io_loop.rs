@@ -524,12 +524,70 @@ fn a_producer_that_does_not_take_its_completions_is_not_drained() {
             .submit(read(t, t * 65536, 4096, 0, t * 65536, IoPriority::Demand))
             .unwrap();
     }
-    settle(&mut io);
-    // Only two fit its completion ring, so only two were taken.
+    // A burst larger than the completion ring, and many passes before the producer takes
+    // anything: the loop takes only what its completion ring can answer, and never panics.
+    for _ in 0..50 {
+        io.poll_once();
+    }
     assert_eq!(io.engine().log.len(), 2);
-    assert_eq!(drain(&mut clients[0]).len(), 2);
+    assert_eq!(io.poll_once(), Poll::Idle);
+    // Taking one completion frees one slot, and the next pass takes one more request.
+    assert!(clients[0].poll().is_ok());
+    for _ in 0..50 {
+        io.poll_once();
+    }
+    assert_eq!(io.engine().log.len(), 3);
+    let mut got = 1 + drain(&mut clients[0]).len();
     settle(&mut io);
-    assert_eq!(drain(&mut clients[0]).len(), 2);
+    got += drain(&mut clients[0]).len();
+    assert_eq!(got, 4);
+    assert_eq!(io.engine().log.len(), 4);
+}
+
+/// A loop that parked because a producer's completion ring was full wakes when the producer
+/// takes a completion, and serves the rest of its requests.
+#[test]
+fn a_parked_loop_wakes_when_its_producer_takes_a_completion() {
+    let cfg = LoopConfig {
+        completion_ring: 2,
+        ..config(1, 1 << 20)
+    };
+    let (io, mut clients) = IoLoop::new(FakeEngine::new(8, 1), &cfg).unwrap();
+    let mut client = clients.pop().unwrap();
+    for t in 0..6u64 {
+        client
+            .submit(read(t, t * 65536, 4096, 0, t * 65536, IoPriority::Demand))
+            .unwrap();
+    }
+    let looper = thread::spawn(move || {
+        let mut io = io;
+        io.run();
+        io
+    });
+    // Let the loop answer two, find the ring full, and park with four requests waiting.
+    thread::sleep(Duration::from_millis(50));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut tickets = Vec::new();
+    while tickets.len() < 6 {
+        match client.poll() {
+            Ok(c) => tickets.push(c.ticket.0),
+            Err(_) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the loop stopped after {tickets:?}: taking a completion did not wake it"
+                );
+                thread::yield_now();
+            }
+        }
+    }
+    tickets.sort_unstable();
+    assert_eq!(tickets, [0, 1, 2, 3, 4, 5]);
+    drop(client);
+    let io = looper.join().unwrap();
+    assert!(
+        io.parks() > 0,
+        "the loop never parked, so the wake-up went untested"
+    );
 }
 
 /// One round of steady-state traffic: 16 coalescing rows and one chunked read.
@@ -602,10 +660,7 @@ fn a_parked_loop_wakes_on_the_doorbell_and_allocates_nothing() {
                             IoPriority::Demand,
                         ))
                         .unwrap();
-                    let c = client
-                        .completions()
-                        .pop_wait(Duration::ZERO)
-                        .expect("the loop answers");
+                    let c = client.wait(Duration::ZERO).expect("the loop answers");
                     assert_eq!((c.ticket, c.result), (IoTicket(t), Ok(Bytes(4096))));
                     // Now and then the loop runs dry and parks.
                     if t % 16 == 0 {
