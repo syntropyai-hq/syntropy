@@ -29,12 +29,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::PathBuf;
 
+use syntropy_core::policy::{
+    DeviceApi, DeviceSelector, Fraction, LayerRange, NodeSelector, Reserve, TierSelector,
+};
 use zeroize::Zeroize;
 
-use crate::value::{
-    ByteSize, DeviceApi, DeviceSelector, Duration, Fraction, LayerRange, ModelSelector,
-    NodeSelector, Rate, Regex, Reserve, Secret, SecretSource, TierSelector,
-};
+use crate::value::{ByteSize, Duration, ModelSelector, Rate, Regex, Secret, SecretSource};
 
 /// Whether values of this type can hold a secret anywhere inside them. Implement it with
 /// `#[derive(HoldsSecret)]` for a struct or enum: the derive ORs the flags of every field.
@@ -78,14 +78,15 @@ no_secret!(
     SocketAddrV6,
     ByteSize,
     Duration,
-    Fraction,
-    Reserve,
     Rate,
     Regex,
+    ModelSelector,
+    // `syntropy-core`'s policy value types, which keys read through `form`.
+    Fraction,
+    Reserve,
     DeviceApi,
     DeviceSelector,
     LayerRange,
-    ModelSelector,
     NodeSelector,
     TierSelector,
 );

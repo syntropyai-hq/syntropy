@@ -125,7 +125,16 @@ A compromised member (A5) or the holder of a used, leaked token (A8) can therefo
 - `syntropy-ns-v1`, `syntropy-term-tag`;
 - `syntropy-keyrotate-v1`, `syntropy-release-v1`, `syntropy-module-v1`, `syntropy-rdma-aead-v1`, `syntropy-fp-v1`;
 - `syntropy-session-wrap-v1` (§13);
-- `syntropy-admit-v1`, `syntropy-revoke-v1`, `syntropy-authority-v1` (the other authority events of §8.3), `syntropy-apikey-v1`.
+- `syntropy-admit-v1`, `syntropy-revoke-v1`, `syntropy-authority-v1` (the other authority events of §8.3), `syntropy-apikey-v1`;
+- `syntropy-tls-ca-v1` (R5: the node key's binding of its local TLS CA, RFC-0050 §11.1.1).
+
+*Note 2026-10-22 (PROD-E5-T03, revised from review): the local CA's binding.* R5 binds each node's local TLS CA to the node identity with a statement signed by the node key. This note fixes its bytes.
+- The node key signs, in context `syntropy-tls-ca-v1`, the bytes `0x01 ‖ the CA certificate, DER`. The leading byte is the statement's version.
+- The statement covers the whole certificate, not only its public key. The CA's name constraints are what stop a leaked CA key from impersonating public sites (RFC-0050 §11.1.1), so the binding vouches for them too. A certificate re-minted over the same key without them, or with any other change, fails the check.
+- A CA reissued over the same key would need a new binding. None is: every scope change, and every node-key change, generates a new CA key.
+- A client that knows the node key, from the node's admission certificate (§5), checks the binding over the exact certificate bytes it is about to trust. That is how `syntropy trust --cluster` (RFC-0050 §11.1.1) checks every member's CA.
+- The node holds its own stored CA to the same rule when it loads it. The binding must verify over the stored certificate. The certificate must be the CA key's own, self-signed, and carry exactly the extensions the node mints for its scope: the name constraints, path length 0 and the key usages. Anything else is refused.
+- The context is the 24th in the list above. Like the others, it is no prefix of another context string, and no other context's string is a prefix of it.
 
 *Note 2026-10-22 (DIST-E2-T04, from review):* strict verification also refuses a public key that is not of prime order, where `[ℓ]A ≠ identity`. Refusing small-order keys alone is not enough. A key `A + T`, with `T` a point of small order, verifies a signature made with `A`'s secret whenever `T`'s order divides the challenge `k`, so one secret could sign under up to eight public keys, and a `NodeId` would not name one key. Every honest key is `[a]B` and has prime order, so the check costs honest peers nothing. `net::crypto::verify` applies it after the canonical-encoding and small-order checks.
 
@@ -137,6 +146,7 @@ A compromised member (A5) or the holder of a used, leaked token (A8) can therefo
 | Cluster key (Ed25519; public half = `ClusterId`) | cluster bootstrap (RFC-0030 §6.1), or rotation (§8.2) | keyholders | `identity/cluster.key`, same protection | until rotated |
 | Runner key (Ed25519) | by the daemon at each runner spawn | that runner; passed in `Init` over the inherited IPC channel (RFC-0001 §3.5) | runner memory only | the runner's life |
 | API keys | `syntropy api-key create` | clients; the node stores only BLAKE3 hashes | node config, `api-keys.toml`, mode 0600 | until revoked |
+| Local TLS CA key (ECDSA P-256; added 2026-10-22, PROD-E5-T03) | the first non-loopback bind (RFC-0050 §11.1.1) | the daemon only; never sent to another node or the coordinator | `tls/ca.json` in the state directory, with the CA certificate, its scope and its node-key binding; mode 0600 in a 0700 directory. The OS keystore holds it from M3 (PROD-E5-T10) | until the node's names, served subnets or node key change |
 | Hub tokens | user input | the node that owns them | OS keystore, or a 0600 file; never logged, never sent to another node (ADR-0016) | user-managed |
 | Release root keys (public) | offline, in a key ceremony by the token custodians, each a maintainer or a recorded delegate (**Maintainer action**, §12.1) | embedded in the binary | — | rolled with releases (§12) |
 
@@ -439,6 +449,12 @@ On a keyholder node the action is signed directly, after its operator confirms. 
 - `body` is the command's canonical CBOR.
 
 That keyholder's operator approves or rejects the request. The keyholder's signature comes back in the `Approval` reply and is attached to the command, which is then submitted as usual. Until then, the submitting node shows the action as pending. A patch that mixes member-authority and keyholder-authority keys travels this path as a whole.
+
+*Note 2026-10-22 (#1698): when `KeyholderRequired` is raised.* An action on this path fails with `KeyholderRequired` (§15) when no keyholder can take it.
+- **Who is tried.** The submitting node is not a keyholder. It tries every member with a valid, non-revoked KEYHOLDER certificate (§5.4) that its membership view (RFC-0030 §5.1) does not show as `Failed`, `Left`, `Sleeping` or `Revoked`. So a keyholder that is `Probing` or `Suspect` after a lossy moment is still tried.
+- **When it is raised.** Only once none of those takes the request: each one can't be reached, or declines to queue it. It is not raised while a keyholder has the request and its operator has yet to answer; the action is pending then.
+- **A rejection is something else.** An operator who rejects the request is a different outcome, reported as that rejection, never as `KeyholderRequired`. No error code names the rejection yet. That gap is open, and outside #1698.
+- **Why 403, not 503.** RFC-0050 §12.1 maps `KeyholderRequired` to 403. The condition is about who may authorise the action: this node can't make the signature, and repeating the request changes nothing until a keyholder is online. A 5xx status would invite automatic retries, which would pile up as pending approvals once a keyholder returns.
 
 **Snapshots carry the same proof**. Every authority-derived field of `ClusterState` keeps the signed record that created it, and a node that loads a snapshot re-verifies all of them before adopting it (RFC-0032 §6.7):
 - members, with their `Approval`s and certificates;
