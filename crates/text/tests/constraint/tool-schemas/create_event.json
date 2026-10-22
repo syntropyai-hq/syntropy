@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "create_event",
+  "description": "Add an event to a calendar.",
+  "type": "object",
+  "properties": {
+    "title": { "type": "string", "maxLength": 60 },
+    "start": { "type": "string", "format": "date-time" },
+    "end": { "type": "string", "format": "date-time" },
+    "attendees": { "type": "array", "items": { "type": "string", "format": "email" }, "maxItems": 3 },
+    "recurrence": { "anyOf": [{ "type": "string", "enum": ["daily", "weekly", "monthly"] }, { "type": "null" }] },
+    "reminder_minutes": { "type": "integer", "minimum": 0, "maximum": 1440 }
+  },
+  "required": ["title", "start", "end"],
+  "additionalProperties": false
+}

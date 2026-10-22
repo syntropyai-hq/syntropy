@@ -1,0 +1,17 @@
+{
+  "title": "set_thermostat",
+  "type": "object",
+  "properties": {
+    "zone": { "type": "string", "enum": ["kitchen", "living room", "bedroom"] },
+    "target": { "type": "integer", "minimum": 10, "maximum": 30 },
+    "mode": { "oneOf": [{ "const": "heat" }, { "const": "cool" }, { "const": "auto" }] },
+    "schedule": {
+      "type": "array",
+      "prefixItems": [{ "type": "string", "format": "time" }, { "type": "string", "format": "time" }],
+      "items": false,
+      "minItems": 2
+    }
+  },
+  "required": ["zone", "target"],
+  "additionalProperties": false
+}

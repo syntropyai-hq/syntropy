@@ -183,7 +183,7 @@ pub mod __private {
 
     use crate::default::UnsetDeserializer;
     use crate::schema::{DefaultSpec, DefaultValue, KeyError, KeySchema};
-    use crate::value::{InRange, ValueError, ValueErrorKind, capture_kind};
+    use crate::value::{InRange, ValueError, ValueErrorKind, capture_kind, uncaptured_kind};
 
     /// The TOML value type the generated `check` functions take, so a crate that declares a
     /// section needs no `toml` dependency of its own.
@@ -203,13 +203,17 @@ pub mod __private {
         check_value_by(value, T::deserialize)
     }
 
-    /// Checks that `value` deserializes through `de`, the field's `serde(with)` path.
+    /// Checks that `value` deserializes through `de`, the field's `serde(with)` path. A
+    /// failure keeps the kind this crate's types recorded; one they did not record is
+    /// `out_of_range` for an integer outside the field's integer type and `wrong_type`
+    /// otherwise.
     pub fn check_value_by<T>(value: &toml::Value, de: FromToml<T>) -> Result<T, ValueError> {
         let (result, kind) = capture_kind(|| de(value.clone()));
         result.map_err(|e| {
+            let message = e.message();
             ValueError::new(
-                kind.unwrap_or(ValueErrorKind::WrongType),
-                e.message().to_owned(),
+                kind.unwrap_or_else(|| uncaptured_kind(message)),
+                message.to_owned(),
             )
         })
     }

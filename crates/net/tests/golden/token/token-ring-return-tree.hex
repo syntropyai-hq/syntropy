@@ -1,0 +1,25 @@
+# token-ring-return-tree: step 22's ring-return copy with DRAFT_TREE: a 4-node tree draft with a prompt-lookup node, a chain draft written as a tree, and an entry without a draft
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 02 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+16 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 d8 00 00 00 1d c9 4e cc 82 6d 97 e7  # 0030 header
+03 00 05 00 00 00 00 00 00 00 01 00 00 00 00 00  # 0040 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+08 07 06 05 04 03 02 01 02 00 00 00 4d 00 00 00  # 0080 payload
+41 06 00 00 01 00 00 00 00 00 00 00 00 00 00 00  # 0090 payload
+04 00 04 00 00 00 00 00 08 00 00 00 00 00 00 00  # 00a0 payload
+ea 03 00 00 0b 00 00 00 0c 00 00 00 0d 00 00 00  # 00b0 payload
+0e 00 00 00 ff ff 01 00 00 00 02 00 00 00 02 01  # 00c0 payload
+01 00 03 00 00 00 00 00 08 07 06 05 04 03 02 01  # 00d0 payload
+02 00 00 00 4e 00 00 00 2c 00 00 00 01 00 00 00  # 00e0 payload
+00 00 00 00 00 00 00 00 02 00 02 00 00 00 00 00  # 00f0 payload
+06 00 00 00 01 00 00 00 0f 00 00 00 10 00 00 00  # 0100 payload
+11 00 00 00 ff ff 01 00 00 00 02 00 00 00 00 00  # 0110 payload
+44 44 33 33 22 22 11 11 02 00 00 00 04 00 00 00  # 0120 payload
+08 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00  # 0130 payload
+00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0140 payload
+14 00 00 00 00 00 00 00                          # 0150 payload

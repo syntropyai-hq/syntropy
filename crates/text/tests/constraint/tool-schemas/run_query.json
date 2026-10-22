@@ -1,0 +1,11 @@
+{
+  "title": "run_query",
+  "type": "object",
+  "properties": {
+    "sql": { "type": "string", "minLength": 1 },
+    "params": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "integer" }, { "type": "number" }, { "type": "null" }] }, "maxItems": 4 },
+    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 }
+  },
+  "required": ["sql"],
+  "additionalProperties": false
+}
