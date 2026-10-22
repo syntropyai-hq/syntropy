@@ -600,3 +600,11 @@ The cross-review of #1663 (PROD-E1-T04) found two gaps with no owning task. `cor
 |---|---|---|---|
 | PROD-E1-T08 gains the digest helper and its golden digests | PROD-E1-T08 | Definition of done | PROD-E1-T08's criteria already need identical digests across nodes, and it is the first task to build an `InstancePolicy` in `config`. One helper keeps every caller on the same hash |
 | Added PROD-E1-T23 (M0b) → PROD-E1-T01, PROD-E1-T02, PROD-E1-T03, PROD-E1-T04; PROD-E1-T08 → PROD-E1-T23 | PROD-E1-T23, PROD-E1-T08 | R9 | PROD-E1-T08 resolves policy tables into `InstancePolicy`, whose fields are `core`'s types, so it needs `config` to parse into them. M0b, after PROD-E1-T04, because each key registered on `config`'s copies adds to the switch. PROD-E1-T23's own criteria use PROD-E1-T02's `show_resolved` and PROD-E1-T03's `Config` codes, so it depends on both; its output check is on the library call, not the binary, so it needs no CLI task. PROD-E1-T07 gets no edge: its criteria do not use the types, and PROD-E1-T23 moves whatever code uses the copies |
+
+## DIST-E18-T02's API mapping criterion (2026-10-22)
+
+DIST-E18-T02's criterion "every code maps to an API error shape in RFC-0050's table" could not be met: RFC-0050 §12.1 maps errors by class and condition, and 37 of the distributed codes had neither a whole-class shape nor a row (issue #1668). RFC-0050 §12.1 now gives a row to each code that can reach an API client, lists the codes that never leave the cluster as exempt, and says `DuplicateCommand` never appears in `Error::code`. RFC-0050 §12.3 adds `cluster_proposal_rejected` (code 35). These are plan corrections that take the recommended default, under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E18-T02's criterion becomes "every code maps to an RFC-0050 §12.1 shape or is on §12.1's exempt list", and its row cites RFC-0050 §12.1 | DIST-E18-T02 | R9 | a code raised only between nodes, or reported only as a node diagnostic, never meets an API client, so no shape can be tested for it; the exempt list names each such code, and §12.1 gives the one shape it would take if it ever escaped (503 `instance_unavailable`) |
