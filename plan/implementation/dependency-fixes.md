@@ -886,3 +886,11 @@ RFC-0033 §6.1 defines `ReplanReason`, and five tasks use it, the first at M1a, 
 | New DIST-E14-T21 (M1a): `ReplanReason`, `DriftTerm` (one variant per RFC-0010 §6.2 live estimator, `#[non_exhaustive]`) and `WorkloadTerm` in `core`, with serde; → PROD-E1-T04, PLC-E1-T01, PLC-E4-T17 | DIST-E14-T21 | R9 | the solver reads the reason in `SolveInput::reason` and cannot depend on `cluster`. M1a is the earliest user's milestone (PLC-E3-T07, PROD-E1-T11, TIER-E10-T01) |
 | PLC-E3-T07, PROD-E1-T11, TIER-E10-T01, DIST-E10-T06 and DIST-E14-T15 → DIST-E14-T21 | PLC-E3-T07, PROD-E1-T11, TIER-E10-T01, DIST-E10-T06, DIST-E14-T15 | R9 | each names a `ReplanReason` variant: `WorkloadDrift`, `Config` twice, `HealOrphans`, and `RecoveryStarted`'s `cause` |
 | PLC-E6-T04 builds the deferred re-plan for a demoted hop, with `DriftTerm::Hop` naming the planned transport, and a unit-test criterion; PLC-E6-T04 → DIST-E14-T21. DIST-E14-T15 raises it when it applies `EdgeDemoted`, with a test; DIST-E14-T15 → PLC-E6-T04 | PLC-E6-T04, DIST-E14-T15 | R9 | RFC-0001 §7.2 had no trigger for a demotion (RFC-0031 §3, §7.4). The coordinator first sees one through RFC-0033 §11's `EdgeDemoted` event, which DIST-E14-T15 adds at M3, so the wiring is there, and PLC-E6-T04 (M2), which owns deferred re-plans, builds the reason (standin-engine's review of #1811, B2) |
+
+## PLC-E8-T13's rejection criterion after the section builder (2026-10-23)
+
+#1792 builds `SchedSection` with `config`'s `InstanceSection` (PROD-E1-T24), as RFC-0054 §5.4's note of 2026-10-22 says every domain crate's section is built. It removes `SchedSection::from_policy`, which PLC-E8-T13's criterion named.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E8-T13's criterion names `config`'s `InstanceSection::<SchedSection>::from_policy` in place of `SchedSection::from_policy`, and PLC-E8-T13 → PROD-E1-T24 | PLC-E8-T13 | R9 | the criterion's wording had drifted from the code: the builder now rejects the invalid values, and PROD-E1-T24 produces it. Both tasks are M1a and done (#1656, #1772), so the edge adds no wait |
