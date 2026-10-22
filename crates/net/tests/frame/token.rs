@@ -800,6 +800,24 @@ fn a_token_frame_breaking_a_rule_is_refused_with_a_classified_error() {
             inconsistent("HAS_TRACE", 1, 0),
         ),
         case(
+            "a TRACE for no entry",
+            ring(),
+            |r| {
+                r.base_flags = 1;
+                r.tlvs = vec![(tlv::TRACE, 0xFFFF, vec![0; 26])];
+            },
+            field("TRACE span", 0xFFFF),
+        ),
+        case(
+            "a second TRACE for one entry",
+            ring(),
+            |r| {
+                r.base_flags = 1;
+                r.tlvs = vec![(tlv::TRACE, 1, vec![0; 26]), (tlv::TRACE, 1, vec![1; 26])];
+            },
+            field("second TRACE for entry", 1),
+        ),
+        case(
             "a TRACE without HAS_TRACE",
             ring(),
             |r| r.tlvs = vec![(tlv::TRACE, 1, vec![0; 26])],
@@ -983,6 +1001,36 @@ fn the_encoder_refuses_what_the_decoder_would() {
         .encode_to_vec(TokenCopy::Ingress { ingress: X }, &traced)
         .unwrap();
     assert!(!Frame::decode(&bytes).unwrap().header.spec.flags.has_trace());
+    // A step's `TRACE` names one entry, at most once: an unspanned one would reach every ingress
+    // copy (review-net N1).
+    let unspanned = Vec::leak(vec![Side {
+        span: None,
+        item: trace(1),
+    }]);
+    for copy in [
+        TokenCopy::RingReturn,
+        TokenCopy::Ingress { ingress: X },
+        TokenCopy::Ingress { ingress: Y },
+    ] {
+        assert_eq!(
+            step(entries, unspanned).encode_to_vec(copy, &spec),
+            Err(field("TRACE span", 0xFFFF))
+        );
+    }
+    let twice = Vec::leak(vec![
+        Side {
+            span: Some(1),
+            item: trace(1),
+        },
+        Side {
+            span: Some(1),
+            item: trace(2),
+        },
+    ]);
+    assert_eq!(
+        step(entries, twice).encode_to_vec(TokenCopy::RingReturn, &spec),
+        Err(field("second TRACE for entry", 1))
+    );
     // A decoded frame re-encodes only as it came.
     let token = Token {
         route: Route::RingReturn,

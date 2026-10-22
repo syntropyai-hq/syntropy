@@ -13,7 +13,8 @@
 //! The two copies of a step carry different things. The ring-return copy carries each entry's
 //! draft for the next window and the items for the head, and no tap block. The ingress copy
 //! carries the tap blocks, and no draft, and of the items only its entries' `TRACE`. Both carry
-//! a sampled step's `TRACE` items, so the return path appears as a hop span (RFC-0053 §3.2).
+//! a sampled step's `TRACE` items, one per traced entry and naming it, so the return path appears
+//! as a hop span (RFC-0053 §3.2).
 //! [`StepTokens::encode`] writes either copy from the tail's whole step, leaving out what that
 //! copy does not carry. [`Frame::token`] refuses a frame that carries one.
 //!
@@ -492,9 +493,22 @@ fn check_frame_fields(
             len: n_entries,
         });
     }
+    // One bit per entry index, on the stack: which entries already have a `TRACE`.
+    let mut traced = [0u64; (u16::MAX as usize).div_ceil(64)];
     for item in side.iter() {
         match item.item {
-            SideItem::Trace(_) => {}
+            // One sequence's trace context, never every entry's: an unspanned `TRACE` would go to
+            // every ingress copy, carrying one sequence's trace to other nodes.
+            SideItem::Trace(_) => {
+                let span = item.span.ok_or(bad("TRACE span", ABSENT))?;
+                if usize::from(span) < n_entries {
+                    let (word, bit) = (usize::from(span) / 64, 1u64 << (span % 64));
+                    if traced[word] & bit != 0 {
+                        return Err(bad("second TRACE for entry", span));
+                    }
+                    traced[word] |= bit;
+                }
+            }
             SideItem::Other { ty, value } if !(1..=7).contains(&ty) => {
                 if u32::try_from(value.len()).is_err() {
                     return Err(FrameError::TooLong {
@@ -576,8 +590,8 @@ impl Contents<'_, '_> {
     }
 
     /// Where `item` goes in this copy, with its span there: every item on the ring-return copy;
-    /// on an ingress copy, only `TRACE`, for every entry or for an entry it keeps, the span
-    /// counted among the kept entries.
+    /// on an ingress copy, only the `TRACE` of an entry it keeps, the span counted among the kept
+    /// entries. A `TRACE` names one entry; [`check_frame_fields`] refuses one that names none.
     fn place(&self, item: &Side<'_>) -> Option<Option<u16>> {
         if self.route == Route::RingReturn {
             return Some(item.span);
@@ -585,9 +599,7 @@ impl Contents<'_, '_> {
         if !matches!(item.item, SideItem::Trace(_)) {
             return None;
         }
-        let Some(span) = item.span else {
-            return Some(None);
-        };
+        let span = item.span?;
         let mut kept = 0u16;
         for (index, entry) in self.entries.iter().enumerate() {
             let keeps = self.keeps(&entry);
