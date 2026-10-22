@@ -3694,8 +3694,11 @@ name = "syntropy-ipc"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "postcard",
+ "proptest",
  "serde",
  "serde_json",
+ "smallvec",
  "syntropy-core",
  "syntropy-spsc",
  "windows-sys 0.61.2",
