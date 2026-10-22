@@ -10,8 +10,10 @@ use std::fmt::Write as _;
 
 use crate::discovery::{Locations, Mode, Scan};
 use crate::origin::Origin;
-use crate::resolve::{Problem, Rejected, ResolvedConfig};
+use crate::registry::Registry;
+use crate::resolve::ResolvedConfig;
 use crate::schema::Scope;
+use crate::validate::Checked;
 
 /// The exit status of a command that succeeded (RFC-0051 §2.2).
 pub const EXIT_OK: u8 = 0;
@@ -91,27 +93,22 @@ fn rows(out: &mut String, rows: &[(String, String)], width: usize) {
 /// What `config check` reports: the text, and the exit status.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckReport {
-    /// One line per error and warning, then a summary line.
+    /// Every error and warning in RFC-0054 §8's format, then a summary line.
     pub text: String,
     /// [`EXIT_OK`] when there is no error, else [`EXIT_INVALID`].
     pub exit: u8,
 }
 
-/// `config check`: the errors and warnings of one load, from [`crate::load`]. The validation
-/// phases of RFC-0054 §8 beyond layering (types, ranges, cross-field rules and the
-/// environment) add their findings to the same report when they land.
-pub fn check(outcome: &Result<ResolvedConfig, Rejected>) -> CheckReport {
-    let (errors, warnings, files): (&[Problem], &[Problem], usize) = match outcome {
-        Ok(config) => (&[], config.warnings(), config.files().len()),
-        Err(rejected) => (&rejected.errors, &rejected.warnings, 0),
-    };
-    let mut text = String::new();
-    for error in errors {
-        let _ = writeln!(text, "error: {error}");
-    }
-    for warning in warnings {
-        let _ = writeln!(text, "warning: {warning}");
-    }
+/// `config check`: every error and warning of one load and validation, from
+/// [`crate::load_and_validate`], rendered in RFC-0054 §8's format with their source lines, and
+/// never showing a secret.
+pub fn check(checked: &Checked, registry: &Registry) -> CheckReport {
+    let (errors, warnings) = (checked.errors(), checked.warnings());
+    let files = checked
+        .outcome
+        .as_ref()
+        .map_or(0, |config: &ResolvedConfig| config.files().len());
+    let mut text = checked.render(registry);
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     if errors.is_empty() {
         let _ = writeln!(

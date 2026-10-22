@@ -194,7 +194,7 @@ pub mod never {
         deserializer: D,
     ) -> Result<Option<Duration>, D::Error> {
         let s = String::deserialize(deserializer)?;
-        parse(&s).map_err(serde::de::Error::custom)
+        parse(&s).map_err(crate::value::serde_error)
     }
 
     /// Parses `"never"` as `None` and anything else as a duration.
