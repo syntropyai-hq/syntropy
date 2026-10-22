@@ -27,6 +27,7 @@ pub struct LeafNames {
 }
 
 impl LeafNames {
+    /// The set of `dns_names` and `addresses`, normalised as the type says.
     pub fn new<'n>(
         dns_names: impl IntoIterator<Item = &'n str>,
         addresses: impl IntoIterator<Item = IpAddr>,
@@ -46,14 +47,17 @@ impl LeafNames {
         }
     }
 
+    /// The DNS names, lowercase and sorted.
     pub fn dns_names(&self) -> &[String] {
         &self.dns_names
     }
 
+    /// The addresses, canonical and sorted.
     pub fn addresses(&self) -> &[IpAddr] {
         &self.addresses
     }
 
+    /// Whether there is neither a name nor an address.
     pub fn is_empty(&self) -> bool {
         self.dns_names.is_empty() && self.addresses.is_empty()
     }
@@ -73,10 +77,12 @@ impl Leaf {
     }
 
     /// The leaf certificate.
+    /// The leaf certificate, DER: the first certificate of the chain it is served with.
     pub fn certificate_der(&self) -> &CertificateDer<'static> {
         &self.certified.cert[0]
     }
 
+    /// The names and addresses it carries.
     pub fn names(&self) -> &LeafNames {
         &self.names
     }
@@ -111,6 +117,7 @@ pub struct LeafResolver {
 }
 
 impl LeafResolver {
+    /// A resolver that serves `leaf` until it is rotated.
     pub fn new(leaf: &Leaf) -> LeafResolver {
         LeafResolver {
             current: RwLock::new(leaf.certified_key()),

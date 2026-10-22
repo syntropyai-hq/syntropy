@@ -60,13 +60,26 @@ pub enum TlsError {
     /// A leaf was asked for no names at all.
     NoNames,
     /// A file could not be read or written.
-    Io { path: PathBuf, error: io::Error },
+    Io {
+        /// The file or directory.
+        path: PathBuf,
+        /// What the OS said.
+        error: io::Error,
+    },
     /// The CA's file is not one this build wrote, or its parts disagree. It is left as it is:
     /// no key is overwritten without a reason the user can see.
-    Corrupt { path: PathBuf, what: &'static str },
+    Corrupt {
+        /// The CA's file.
+        path: PathBuf,
+        /// Which part is wrong, for the user.
+        what: &'static str,
+    },
     /// [`CA_FILE`] no longer holds this CA: another [`LocalCa::open`] replaced it. Open the CA
     /// again to issue from the current one.
-    Superseded { path: PathBuf },
+    Superseded {
+        /// The CA's file.
+        path: PathBuf,
+    },
     /// The certificate library refused the certificate.
     Certificate(rcgen::Error),
     /// rustls refused the leaf's key.
@@ -166,6 +179,7 @@ impl CaBinding {
         &self.node_key
     }
 
+    /// The node key's Ed25519 signature over [`CaBinding::statement`].
     pub fn signature(&self) -> &[u8; SIGNATURE_LEN] {
         &self.signature
     }
@@ -196,9 +210,11 @@ pub enum ReplaceReason {
 pub struct CaReplacement {
     /// When, in seconds since the Unix epoch.
     pub replaced_at: u64,
+    /// Why the old CA no longer fit.
     pub reason: ReplaceReason,
-    /// The old and new CAs' [`LocalCa::fingerprint`], in hex.
+    /// The old CA's [`LocalCa::fingerprint`], in hex.
     pub old_fingerprint: String,
+    /// The new CA's [`LocalCa::fingerprint`], in hex.
     pub new_fingerprint: String,
 }
 
@@ -687,10 +703,12 @@ impl LocalCa {
         crypto::hash(Context::Fingerprint, &self.spki)
     }
 
+    /// What the CA may issue for: the names and subnets its name constraints carry.
     pub fn scope(&self) -> &CaScope {
         &self.scope
     }
 
+    /// The node key's binding of the CA certificate, which `trust --cluster` checks.
     pub fn binding(&self) -> &CaBinding {
         &self.binding
     }
