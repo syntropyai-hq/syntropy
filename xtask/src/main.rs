@@ -33,6 +33,7 @@ mod contrib;
 mod dep_diff;
 mod instructions;
 mod licences;
+mod properties;
 mod registry;
 mod repo_settings;
 mod roster;

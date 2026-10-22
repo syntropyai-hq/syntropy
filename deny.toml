@@ -7,9 +7,20 @@
 # A change to this file needs a maintainer's approval: it is CI configuration (AGENTS.md, "Gates").
 
 [graph]
-# Resolve with every feature on and for every platform, so an optional or platform-specific
-# dependency is checked too, as `cargo xtask check-deps` does.
+# Resolve with every feature on, so an optional dependency is checked too, as `cargo xtask
+# check-deps` does, for every target Syntropy ships: the ADR-0020 tiers, as RFC-0062 §4.1's table
+# lists them. A dependency that links only on another target, such as iroh-relay's wasm32-only
+# browser WebSocket crates, reaches no artefact, so the licence, ban, advisory and source checks
+# skip it (revised 2026-10-22, DIST-E7-T23).
 all-features = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "aarch64-linux-android",
+    "aarch64-apple-ios",
+]
 
 [advisories]
 # RustSec, fetched into `$CARGO_HOME/advisory-dbs`. Without network access the fetch fails and the
@@ -23,7 +34,10 @@ all-features = true
 #       # https://github.com/syntropyai-hq/syntropy/issues/<n>, expires 2027-01-31
 #       { id = "RUSTSEC-0000-0000", reason = "why the advisory does not apply" },
 #   ]
-ignore = []
+ignore = [
+    # https://github.com/syntropyai-hq/syntropy/issues/1700, expires 2027-01-22
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained: a build-time proc-macro reached only through iroh's netlink stack (netlink-packet-core); no known vulnerability" },
+]
 # An unmaintained crate anywhere in the graph fails (cargo-deny's default, stated so a change to
 # it shows in review), and so does a yanked version.
 unmaintained = "all"
@@ -56,7 +70,12 @@ confidence-threshold = 0.93
 # `{ allow = ["MPL-2.0"], crate = "uniffi@0.31.0" }`. "Unmodified" means the crate comes from
 # crates.io as published: `[sources]` below rejects git and unknown registries, and
 # `cargo xtask notices` fails on an MPL-2.0 package from any other source.
-exceptions = []
+exceptions = [
+    # iroh's default `portmapper` feature (UPnP and NAT-PMP port mapping) reaches it through
+    # `igd-next`. Port mapping raises the share of direct paths behind home routers, which the field
+    # probe measures (DIST-E7-T23). Pinned to the version reviewed, so a bump comes back here.
+    { allow = ["MPL-2.0"], crate = "attohttpc@0.30.1" },
+]
 # The allow list is the policy, not an inventory, so a licence no dependency uses yet is fine.
 unused-allowed-license = "allow"
 

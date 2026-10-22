@@ -1,0 +1,33 @@
+# The named properties of RFC-0060 §3.2 that have tests (QUAL-E3-T05).
+#
+# One `[[property]]` table per property, with three keys:
+#
+#   id = "P-core-1"         # its stable ID in RFC-0060 §3.2's table
+#   crate = "core"          # the crate, by its directory under crates/, whose tests hold it
+#   owner = "QUAL-E3-T05"   # the task that owns it
+#
+# A property's tests are the test functions in its crate whose names start with its ID in snake
+# case: `p_core_1_` for P-core-1. They run on proptest's default configuration, so the case count
+# comes from `PROPTEST_CASES` (256 when it is unset, as on every PR), and a failing case's seed is
+# saved to a committed `proptest-regressions/` file. `cargo xtask test properties --cases <n>`
+# runs every property listed here at n cases; nightly uses 16384.
+#
+# The `properties` step of `cargo xtask ci lint` checks this file against the code and RFC-0060.
+# Removing an entry needs a reason in the PR description, on a line of its own:
+# `Removes P-core-1: <reason>` (RFC-0060 §3.2). The `properties-removal` check in `pr-meta.yml`
+# enforces it, from the base branch and again whenever the description is edited.
+
+[[property]]
+id = "P-bench-1"
+crate = "bench"
+owner = "QUAL-E12-T01"
+
+[[property]]
+id = "P-bench-2"
+crate = "bench"
+owner = "QUAL-E12-T01"
+
+[[property]]
+id = "P-core-1"
+crate = "core"
+owner = "QUAL-E3-T05"

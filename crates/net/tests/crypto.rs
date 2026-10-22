@@ -100,8 +100,34 @@ fn the_registry_holds_rfc_0034_section_3s_strings() {
             "syntropy-revoke-v1",
             "syntropy-authority-v1",
             "syntropy-apikey-v1",
+            "syntropy-tls-ca-v1",
         ]
     );
+}
+
+/// The local CA's binding context (RFC-0034 §3, revised 2026-10-22) shares no string with another
+/// context, is no prefix of one and has none as its prefix. So a node-key signature over a CA's
+/// statement verifies in no other context, and no other signature verifies as a CA binding.
+#[test]
+fn the_tls_ca_context_is_distinct_from_every_other() {
+    let key = golden_key();
+    let tls = Context::TlsCa.as_str();
+    for other in Context::ALL.into_iter().filter(|c| *c != Context::TlsCa) {
+        let name = other.as_str();
+        assert_ne!(tls, name);
+        assert!(!tls.starts_with(name) && !name.starts_with(tls), "{name}");
+        let statement = b"\x01 a CA's SubjectPublicKeyInfo";
+        let binding = key.sign(Context::TlsCa, statement);
+        assert!(
+            crypto::verify(&key.public_key(), other, statement, &binding).is_err(),
+            "{name}"
+        );
+        let foreign = key.sign(other, statement);
+        assert!(
+            crypto::verify(&key.public_key(), Context::TlsCa, statement, &foreign).is_err(),
+            "{name}"
+        );
+    }
 }
 
 /// ℓ, the order of the base point, little-endian.

@@ -195,6 +195,9 @@ fn fixed(buf: u16, offset: u64, len: u64) -> IoDest {
 fn config(producers: usize, chunk: u64) -> LoopConfig {
     LoopConfig {
         chunk: Bytes(chunk),
+        // The fake engine names no real memory, so its buffers keep the 4 KiB floor of
+        // RFC-0021 §6 on every host, including 16 KiB-page ones.
+        page: Bytes(4096),
         spin: Duration::ZERO,
         ..LoopConfig::new(producers)
     }

@@ -10,3 +10,4 @@ publish.workspace = true
 blake3.workspace = true
 chacha20.workspace = true
 syntropy-core = { path = "../core" }
+syntropy-graph = { path = "../graph" }

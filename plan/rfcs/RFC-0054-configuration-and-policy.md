@@ -460,11 +460,11 @@ Each crate declares its own config section (RFC-0001 §11.2), and the domain RFC
 | `io.*` | 0021 | node | |
 | `kv.*` | 0022 | instance, node | `kv.prefix_cache`, `kv.autosave`, `kv.session_retention` replace the `sessions.*` names an earlier draft of this RFC used |
 | `experts.*` | 0023 | instance | |
-| `cluster.*`, `discovery.*`, `swim.*`, `membership.*`, `invite.*`, `pairing.*`, `power.*`, `net.relay_mode`, `net.relays`, `net.bulk_on_metered`, `net.listen_port`, `members.*` | 0030 | cluster, node | `cluster.lan_admission` (default `confirm`, ADR-0302) |
+| `cluster.*`, `discovery.*`, `swim.*`, `membership.*`, `invite.*`, `pairing.*`, `power.*`, `net.relay_mode`, `net.relays`, `net.bulk_on_metered`, `net.listen_port`, `members.*` | 0030 | cluster, node | `cluster.lan_admission` (default `confirm`, ADR-0302). `invite.require_confirm` is RFC-0034's, carved out of `invite.*` |
 | `link.*`, `quic.*`, `rdma.*`, `shm.*`, other `net.*` | 0031 | node | |
-| `log.*`, `coordinator.*`, `ring.*`, `tp.*`, `actions.*` | 0032 | cluster; node for `log.group_commit`, `log.follower_queue`; instance for `ring.max_inflight_steps` | |
-| `runner.*`, `recovery.*`, `straggler.*` | 0033 (RFC-0001 §3.4 names the `runner.*` keys) | node; instance for `recovery.history`, `recovery.drain_deadline`; cluster for `recovery.confirm_after` | |
-| `security.*`, `integrity.*`, `rdma.encrypt_untrusted` | 0034 | node, cluster | `security.trusted_fabric` is the interface list ADR-0011 calls `trusted_fabric` |
+| `log.*`, `coordinator.*`, `ring.*`, `tp.*`, `actions.*`, `orphan.*` | 0032 | cluster; node for `log.group_commit`, `log.follower_queue`; instance for `ring.max_inflight_steps` | |
+| `runner.*`, `recovery.*`, `straggler.*`, `standby` | 0033 (RFC-0001 §3.4 names the `runner.*` keys) | node; instance for `recovery.history`, `recovery.drain_deadline` and `standby`; cluster for `recovery.confirm_after` | `standby` is a top-level instance key (RFC-0033 §9.3), listed in §5.4 |
+| `security.*`, `integrity.*`, `rdma.encrypt_untrusted`, `invite.require_confirm` | 0034 | node, cluster | `security.trusted_fabric` is the interface list ADR-0011 calls `trusted_fabric`. `rdma.encrypt_untrusted` and `invite.require_confirm` are carved out of RFC-0031's `rdma.*` and RFC-0030's `invite.*` |
 | `kernels.*`, `features.disable` | 0040 | node | `kernels.module_dir` defaults to the running version's `modules/` directory (RFC-0052 §4.3); `<store>/modules` is a development override |
 | `store.*`, `hub.*`, `p2p.*`, `pack.*`, `offline` | 0041 | node | this RFC adopts RFC-0041's defaults as final: `store.max_bytes` 90% of the volume, `store.pack_max_bytes` 25% of `store.max_bytes`, `store.min_free_bytes` 20 GiB, `store.standby_max_bytes` 10% of the node's writable volumes by total size [target] (the per-node cap on second-copy chunks for repair, RFC-0033 §9.3; 0 turns second copies off; a copy is admitted only if the volume keeps 2 × `store.min_free_bytes` free, RFC-0041 §4.4) |
 | `numerics.*` | 0042 | node, instance | |
@@ -506,6 +506,7 @@ Recommended default: (a). Nothing yet checks a shared section's keys against thi
   - `orphan.*` (RFC-0032 §9's `orphan.adopt_deadline`) has no row. It is registered under RFC-0032.
   - RFC-0034's `invite.require_confirm` is a carve-out inside RFC-0030's `invite.*` that the table does not list, so PROD-E1-T16's carve-out check would flag its shared section.
   - The top-level instance key `standby` (RFC-0033 §9.3, §12) appears nowhere in this RFC, neither here nor in §5.4.
+  - *Resolved 2026-10-22 (#1679):* the table above now lists `orphan.*` under RFC-0032, the `invite.require_confirm` carve-out under RFC-0034 (and in RFC-0030's row), and `standby` under RFC-0033; §5.4 lists `standby`.
 
 #### 5.2 Node keys owned by the product RFCs
 
@@ -608,6 +609,7 @@ These keys build an `InstancePolicy` (§4.5). In addition, every instance-scope 
 | `preload` | bool | `false` | hot | — | 0050 |
 | `nodes.include`, `nodes.exclude` | [NodeSelector] | `["*"]`, `[]` | instance | — | 0011 |
 | `resources.<field>` | any `ResourcePolicy` field (§4.3) | unset: each node's own policy | instance | — | 0020 |
+| `standby` | `"none"` \| `"replica"` \| `{ warm = { nodes = [...] } }`, node names (RFC-0033 §9.3) | `"none"` | instance | — | 0033 |
 | `pin` | array of tables (§6.2) | `[]` | instance | — | 0011 |
 | `tensor_override` | array of tables (§6.3) | `[]` | instance | — | 0011 |
 | `fidelity` | `exact` \| `approximate` | `exact` (D3) | instance | narrows only (§7) | 0042 |
