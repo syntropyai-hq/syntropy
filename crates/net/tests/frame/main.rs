@@ -11,6 +11,8 @@
 //! `SYNTROPY_BLESS_GOLDEN=1` rewrites the files from [`spec`]. A changed golden frame changes the
 //! wire format, which needs a wire-minor bump (ADR-0307 item 1).
 
+mod activation;
+mod collective;
 mod spec;
 
 use std::collections::BTreeSet;
@@ -214,7 +216,7 @@ fn goldens() -> Vec<Golden> {
                 limit_seq: 64,
                 slot_size: 1 << 20,
                 recv_slots: 64,
-                cred_kind: CredKind::DataPlaneCredential,
+                cred_kind: Some(CredKind::DataPlaneCredential),
             },
             credential: leak(cred),
         }),

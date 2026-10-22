@@ -102,9 +102,20 @@ fn plan_epoch() -> impl Strategy<Value = PlanEpoch> {
 fn objective() -> impl Strategy<Value = Objective> {
     prop_oneof![
         Just(Objective::Latency),
-        f32s().prop_map(|per_sequence_floor_tps| Objective::Throughput {
-            per_sequence_floor_tps
-        }),
+        (
+            f32s(),
+            proptest::option::of(any::<u16>()),
+            proptest::option::of(any::<u64>().prop_map(Nanos))
+        )
+            .prop_map(
+                |(per_sequence_floor_tps, target_concurrency, ttft_ceiling)| {
+                    Objective::Throughput {
+                        per_sequence_floor_tps,
+                        target_concurrency,
+                        ttft_ceiling,
+                    }
+                }
+            ),
     ]
 }
 
@@ -112,7 +123,8 @@ fn exactness() -> impl Strategy<Value = ExactnessPolicy> {
     prop_oneof![
         Just(ExactnessPolicy::Exact),
         any::<u32>().prop_map(|bits| ExactnessPolicy::Approximate {
-            knobs: ApproxKnobs::from_bits_truncate(bits)
+            knobs: ApproxKnobs::from_bits_truncate(bits),
+            params: ApproxParams::default(),
         }),
     ]
 }
@@ -137,15 +149,39 @@ fn wire_dtype() -> impl Strategy<Value = WireDType> {
     ]
 }
 
-fn hop_plan() -> impl Strategy<Value = HopPlan> {
-    (link_id(), transport(), wire_dtype(), nanos()).prop_map(
-        |(link, transport, wire, predicted)| HopPlan {
-            link,
+fn relay_via() -> impl Strategy<Value = RelayVia> {
+    (node_id(), link_id(), link_id(), transport()).prop_map(|(node, first, second, transport)| {
+        RelayVia {
+            node,
+            first,
+            second,
             transport,
-            wire,
-            predicted,
-        },
+        }
+    })
+}
+
+fn hop_plan() -> impl Strategy<Value = HopPlan> {
+    (
+        (link_id(), transport(), wire_dtype(), nanos()),
+        (
+            prop::option::of((link_id(), transport())),
+            prop::option::of(relay_via()),
+            nanos(),
+        ),
     )
+        .prop_map(
+            |((link, transport, wire, predicted), (prefill_transport, relay, predicted_p99))| {
+                HopPlan {
+                    link,
+                    transport,
+                    wire,
+                    predicted,
+                    prefill_transport,
+                    relay,
+                    predicted_p99,
+                }
+            },
+        )
 }
 
 fn tp_split() -> impl Strategy<Value = TpSplit> {
@@ -535,6 +571,7 @@ round_trip_tests! {
     rt_stage_assignment: stage_assignment();
     rt_parallelism_mode: parallelism_mode();
     rt_hop_plan: hop_plan();
+    rt_relay_via: relay_via();
     rt_tier_assignment: tier_assignment();
     rt_expert_cache_budget: expert_cache_budget();
     rt_kv_budget: kv_budget();
@@ -624,6 +661,103 @@ fn kv_budget_without_spill_compute_defaults_to_gpu_stream() {
         },
         back
     );
+}
+
+fn sample_link(node: u8, path: u8) -> LinkId {
+    LinkId {
+        src: Endpoint::Device(DeviceId {
+            node: NodeId([node; 32]),
+            ordinal: 0,
+        }),
+        dst: Endpoint::Device(DeviceId {
+            node: NodeId([node.wrapping_add(1); 32]),
+            ordinal: 0,
+        }),
+        kind: LinkKind::Network(NetMedium::Rdma(RdmaKind::Thunderbolt5)),
+        path,
+    }
+}
+
+#[test]
+fn hop_with_the_rfc_0032_fields_round_trips() {
+    let hop = HopPlan {
+        link: sample_link(1, 0),
+        transport: TransportKind::Quic,
+        wire: WireDType::F32,
+        predicted: Nanos(150_000),
+        prefill_transport: Some((
+            sample_link(1, 1),
+            TransportKind::Rdma(RdmaKind::Thunderbolt5),
+        )),
+        relay: Some(RelayVia {
+            node: NodeId([9; 32]),
+            first: sample_link(3, 0),
+            second: sample_link(9, 0),
+            transport: TransportKind::Rdma(RdmaKind::Thunderbolt5),
+        }),
+        predicted_p99: Nanos(275_000),
+    };
+    round_trip(&hop);
+}
+
+#[test]
+fn hop_without_the_rfc_0032_fields_decodes_with_defaults() {
+    let hop = HopPlan {
+        link: sample_link(1, 0),
+        transport: TransportKind::Tcp,
+        wire: WireDType::F32,
+        predicted: Nanos(150_000),
+        prefill_transport: Some((sample_link(1, 1), TransportKind::Quic)),
+        relay: Some(RelayVia {
+            node: NodeId([9; 32]),
+            first: sample_link(3, 0),
+            second: sample_link(9, 0),
+            transport: TransportKind::Quic,
+        }),
+        predicted_p99: Nanos(275_000),
+    };
+    let mut json = serde_json::to_value(hop).expect("serialize");
+    let record = json.as_object_mut().expect("a record");
+    for field in ["prefill_transport", "relay", "predicted_p99"] {
+        record.remove(field).expect("the field was written");
+    }
+    let back: HopPlan = serde_json::from_value(json).expect("decode");
+    assert_eq!(back.prefill_transport, None);
+    assert_eq!(back.relay, None);
+    assert_eq!(back.predicted_p99, Nanos(0));
+    assert_eq!(
+        HopPlan {
+            prefill_transport: None,
+            relay: None,
+            predicted_p99: Nanos(0),
+            ..hop
+        },
+        back
+    );
+}
+
+#[test]
+fn relay_via_carries_the_node_both_links_and_the_transport() {
+    let relay = RelayVia {
+        node: NodeId([2; 32]),
+        first: sample_link(3, 0),
+        second: sample_link(2, 0),
+        transport: TransportKind::Rdma(RdmaKind::Thunderbolt5),
+    };
+    let json = serde_json::to_value(relay).expect("serialize");
+    let mut fields: Vec<&str> = json
+        .as_object()
+        .expect("a record")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["first", "node", "second", "transport"]);
+    assert_eq!(relay.node, NodeId([2; 32]));
+    assert_eq!(relay.first, sample_link(3, 0));
+    assert_eq!(relay.second, sample_link(2, 0));
+    assert_eq!(relay.transport, TransportKind::Rdma(RdmaKind::Thunderbolt5));
+    assert_ne!(relay.first, relay.second);
 }
 
 #[test]

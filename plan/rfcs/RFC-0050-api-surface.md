@@ -846,9 +846,28 @@ Errors become the request shape's own error body:
 | stage, link or device failure not recovered before the first token, after one re-route (§4.2) | `Link`, `Device` | 503 + `Retry-After: 1` | `server_error` / `instance_unavailable` | `overloaded_error` (529) |
 | no instance passes its canary | `Correctness` | 503 | `server_error` / `no_conforming_instance` | `api_error` (500) |
 | constraint compile failure | `InvalidRequest` or `Unsupported` | 400 | `invalid_request_error` / `constraint_invalid`, `constraint_unsupported` | `invalid_request_error` |
+| the only instances of the model are unroutable, or recovery found no feasible repair (`InstanceNotRoutable`, RFC-0032 §10; `NoRepairCapacity`, RFC-0033 §13) | `Capacity` | 503 + `Retry-After` | `server_error` / `instance_unavailable` | `overloaded_error` (529) |
+| `POST /v1/syntropy/cluster/join` with a malformed invite token (`TokenMalformed`, RFC-0030 §10) | `InvalidRequest` | 400 | — (native route only) | — (native route only) |
+| a join the keyholder or the joining node refuses: invite token expired or used up, pairing denied, clocks more than 10 min apart, or a node key made on other hardware (`TokenExpired`, `TokenExhausted`, `PairDenied`, `ClockSkew`, `IdentityHostMismatch`; RFC-0030 §6.7, §10) | `Auth` | 403 | — (native route only) | — (native route only) |
+| a join refused because the two nodes' protocol majors differ (`ProtoMismatch`, RFC-0030 §10) | `Unsupported` | 400 | — (native route only) | — (native route only) |
+| an operator action that needs a keyholder signature with no keyholder reachable (`KeyholderRequired`, RFC-0034 §8.3, §15) | `Auth` | 403 | — (native route only) | — (native route only) |
+| a cluster configuration proposal rejected: the key changed since the patch's base, or it sits above the cluster's feature level (`ConfigConflict`, `FeatureLevelTooLow`; RFC-0032 §10, RFC-0054 §2.3), reported as `cluster_proposal_rejected` | `InvalidRequest`, `Unsupported` | 409 | — (native route only) | — (native route only) |
 | `Internal` | `Internal` | 500 | `server_error` / `internal_error` | `api_error` |
 
 `Integrity`, `Drift` and `Transient` never reach clients directly: the store, the coordinator or the retrying layer handles them (RFC-0001 §10.1). If one escapes, it maps to 503 `instance_unavailable`.
+
+**Distributed error codes** (note 2026-10-22, issue #1668). The `Cluster`, `Net`, `Dist`, `Recovery` and `Security` domains (RFC-0030 §10, RFC-0031 §12, RFC-0032 §10, RFC-0033 §13, RFC-0034 §15) follow two rules:
+- **A code that can reach an API client has a row above.** The cluster rows are native routes only (`/v1/syntropy/cluster…`, `/v1/syntropy/nodes…`, `/v1/syntropy/config…`; §1.2), which the OpenAI and Anthropic shapes never serve. Their body is the native error, which names the domain code.
+- **A code that never leaves the cluster is exempt.** These are raised between nodes during peer-to-peer protocol, handshakes and admission, or reported as node diagnostics through `syntropy doctor` and the dashboard, never as the error of a request:
+  - `Cluster`: 0x0102 `NodeConflict`, 0x010A `LocalNetworkDenied`, 0x010B `NetworkProfilePublic`;
+  - `Net`: 0x0201 `ProtoMajorMismatch`, 0x0202 `CredentialInvalid`, 0x0203 `NotANeighbour`, 0x0204 `UnknownFrameType`, 0x020D `RdmaNotEnabled`, 0x020E `RdmaOsBuildMismatch`, 0x020F `ShmUserMismatch`, 0x0212 `ProtoRangeDisjoint`;
+  - `Dist`: 0x030E `EntryRejected`;
+  - `Recovery`: 0x0407 `HistoryDropped`;
+  - `Security`: 0x0501 `CertInvalidSignature`, 0x0502 `CertExpired`, 0x0503 `CertRevoked`, 0x0504 `CertWrongCluster`, 0x0505 `RoleInsufficient`, 0x0506 `CredentialExpired`, 0x0508 `RotationWindowClosed`, 0x0510 `UntrustedFabric`, 0x0511 `AuthorityInvalid`, 0x0512 `RotationChainInvalid`, 0x0513 `NotCoordinatorEligible`.
+
+  If an exempt code ever reaches an API response, it renders as the server-side shape, 503 `instance_unavailable`, whatever its class, because from the client's view the cluster could not serve the request. It never takes a client-side shape (400, 401 or 403) and never a new ad-hoc shape.
+- **`DuplicateCommand` (0x0305) never appears in `Error::code`.** The coordinator answers a command whose `CommandId` it has seen with the original result (RFC-0032 §6.3), so the code names the dedup, not an error a caller receives.
+- Every other code in these domains maps through a whole-class row above (`Link`, `Device`, `Timeout`, `Correctness`, `Internal`), or through the rule just above for `Integrity`, `Drift` and `Transient`. The one `Cancelled` code, `IngressLost` (0x0404), has no response to carry it, because the client's connection is already gone (RFC-0033 §13).
 
 The Anthropic shape uses 529 for overload, as the published API does, because Anthropic SDKs retry it. The OpenAI shape uses 429 and 503, which OpenAI SDKs retry.
 
@@ -889,6 +908,7 @@ In every shape the in-stream error body carries the error `code` and, for retrya
 | 29 | reserved | 30 | `internal_error` |
 | 31 | `debug_api_disabled` | 32 | `api_tls_or_keys_missing` (startup) |
 | 33 | `token_id_out_of_range` | 34 | `local_auth_required` |
+| 35 | `cluster_proposal_rejected` (the native error for `ConfigConflict` and `FeatureLevelTooLow`; RFC-0054's `Config` code 13 names the same condition) | | |
 
 ### 13. Native API
 

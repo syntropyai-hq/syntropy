@@ -9,7 +9,7 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use syntropy_core::Bytes;
 
-use super::{ValueError, split_decimal, split_number};
+use super::{ValueError, serde_error, split_decimal, split_number};
 
 const KIB: u64 = 1 << 10;
 const MIB: u64 = 1 << 20;
@@ -208,13 +208,15 @@ impl Visitor<'_> for ByteSizeVisitor {
     }
 
     fn visit_i64<E: de::Error>(self, n: i64) -> Result<ByteSize, E> {
-        u64::try_from(n)
-            .map(ByteSize::b)
-            .map_err(|_| E::custom(format!("a size cannot be negative: {n}")))
+        u64::try_from(n).map(ByteSize::b).map_err(|_| {
+            serde_error(ValueError::out_of_range(format!(
+                "a size cannot be negative: {n}"
+            )))
+        })
     }
 
     fn visit_str<E: de::Error>(self, s: &str) -> Result<ByteSize, E> {
-        s.parse().map_err(E::custom)
+        s.parse().map_err(serde_error)
     }
 }
 

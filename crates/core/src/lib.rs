@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod budget;
+pub mod canon;
 pub mod clock;
 pub mod det_hash;
 pub mod dtype;
@@ -39,7 +41,10 @@ pub use measured::{DerivedFrom, MeasureSource, Measured};
 pub use numerics::{AccumKind, ActQuant, Numerics};
 pub use parity::{ForceMode, LogitTap, ParityTapSpec, TapMode, TapRow, TapValues, TeacherStreamId};
 pub use plan::{PlacementPlan, PlanDelta, PlanDigest, PlanEpoch, PlanViolation};
-pub use policy::{ApproxKnobs, ExactnessPolicy, Objective};
+pub use policy::{
+    ApproxFlags, ApproxKnobs, ApproxParams, ExactnessPolicy, Fidelity, InstancePolicy,
+    NetworkScope, Objective, ResourceOverlay, ResourcePolicy,
+};
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
 pub use session::{ParseSessionIdError, SequenceId, SessionId};

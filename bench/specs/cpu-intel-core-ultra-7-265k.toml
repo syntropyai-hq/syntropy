@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# A spec record (RFC-0061 §5.3): `crates/bench/src/specs.rs` documents the format. Intel
+# documents no fabric read limit narrower than DRAM for this part, so the record has none.
+
+kind = "cpu"
+models = ["Intel Core Ultra 7 265K"]
+
+[memory_type]
+value = "DDR5"
+source = "https://www.intel.com/content/www/us/en/products/sku/241060/intel-core-ultra-7-processor-265k-36m-cache-up-to-5-50-ghz/specifications.html"
+where = "Memory Specifications: Memory Types, Up to DDR5 6400 MT/s"
+checked = "2026-10-22"
+
+[memory_channels]
+value = 2
+source = "https://www.intel.com/content/www/us/en/products/sku/241060/intel-core-ultra-7-processor-265k-36m-cache-up-to-5-50-ghz/specifications.html"
+where = "Memory Specifications: Max # of Memory Channels, 2"
+checked = "2026-10-22"

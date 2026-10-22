@@ -7,6 +7,7 @@
 //! back to the same value, so any value `config show` prints can be pasted back into a file
 //! (§3, last paragraph). Secrets are the exception: they never print.
 
+use std::cell::Cell;
 use std::fmt;
 
 mod bytes;
@@ -110,6 +111,33 @@ impl fmt::Display for ValueError {
 
 impl std::error::Error for ValueError {}
 
+thread_local! {
+    /// The kind of the first [`ValueError`] turned into a serde error since [`capture_kind`]
+    /// began, on this thread.
+    static KIND: Cell<Option<ValueErrorKind>> = const { Cell::new(None) };
+}
+
+/// Turns `error` into a serde error and records its kind for [`capture_kind`]. Serde errors
+/// carry only a message, so phase 3 (RFC-0054 §8) would otherwise report every rejected value
+/// as `wrong_type`, not `bad_unit` or `bad_selector`.
+pub(crate) fn serde_error<E: serde::de::Error>(error: ValueError) -> E {
+    KIND.with(|kind| {
+        if kind.get().is_none() {
+            kind.set(Some(error.kind()));
+        }
+    });
+    E::custom(error)
+}
+
+/// Runs `f` and returns what it returned, with the kind of the first `ValueError` it turned
+/// into a serde error, if any. Nested calls each see only their own errors.
+pub(crate) fn capture_kind<T>(f: impl FnOnce() -> T) -> (T, Option<ValueErrorKind>) {
+    let outer = KIND.with(|kind| kind.replace(None));
+    let result = f();
+    let inner = KIND.with(|kind| kind.replace(outer));
+    (result, inner)
+}
+
 /// Implements `Deserialize` for a type through its `FromStr`, accepting only a string, and
 /// `Serialize` through its `Display`.
 macro_rules! serde_via_str {
@@ -129,7 +157,7 @@ macro_rules! serde_via_str {
                         f.write_str($expecting)
                     }
                     fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<$ty, E> {
-                        s.parse().map_err(E::custom)
+                        s.parse().map_err($crate::value::serde_error)
                     }
                 }
                 deserializer.deserialize_str(V)
