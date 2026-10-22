@@ -4,7 +4,7 @@
 //! the situations it names, so those properties are not vacuously true; every property is
 //! checked in every scenario.
 
-use crate::check::{COMMANDS_SURVIVE, TWO_AT_ONE_TERM};
+use crate::check::TWO_AT_ONE_TERM;
 use crate::model::{Config, seen, side};
 
 fn base(name: &'static str, n: u8) -> Config {
@@ -24,6 +24,7 @@ fn base(name: &'static str, n: u8) -> Config {
         crashable: Vec::new(),
         crash_budget: 0,
         restart: false,
+        originator_ack_counts: false,
         commands: Vec::new(),
         revocation: None,
         forge_budget: 0,
@@ -192,13 +193,12 @@ pub fn commands_crash(n: u8) -> Config {
     }
 }
 
-/// As [`commands_crash`], but a crash loses the node and its disk for good. The originator's
-/// own ack can make a reply `replicated = true` (RFC-0032 §6.3), so losing the coordinator and
-/// the originator loses an acknowledged command: an expected counterexample, pending OQ-NET-33.
+/// As [`commands_crash`], but a crash loses the node and its disk for good. Under the reply rule
+/// before OQ-NET-33, where the originator's own ack counted, this scenario lost acknowledged
+/// commands; under the rule as revised it must not.
 pub fn commands_lost(n: u8) -> Config {
     Config {
         restart: false,
-        expected_failure: Some(COMMANDS_SURVIVE),
         ..commands_crash(n)
     }
     .renamed("commands-lost")
@@ -307,9 +307,9 @@ impl Config {
 }
 
 /// The coordinator holds a command its originator acked when a split cuts the coordinator off;
-/// the other side elects, then loses the originator with its disk, and the network heals. The
-/// coordinator's branch loses the heal, so the acknowledged command is gone: an expected
-/// counterexample, pending OQ-NET-33.
+/// the other side elects, then loses the originator with its disk, and the network heals, and
+/// the coordinator's branch loses the heal. Under the reply rule before OQ-NET-33 the command
+/// had been acknowledged `replicated = true` and was lost; under the rule as revised it never is.
 pub fn stale_heal(n: u8) -> Config {
     Config {
         splits: vec![side(n, &[0])],
@@ -317,7 +317,6 @@ pub fn stale_heal(n: u8) -> Config {
         commands: vec![(1, n - 1)],
         crashable: vec![n - 1],
         crash_budget: 1,
-        expected_failure: Some(COMMANDS_SURVIVE),
         must_reach: seen::HEALED_AFTER_SPLIT_ELECTION | seen::REPLICATED_ACK,
         ..base("stale-heal", n)
     }

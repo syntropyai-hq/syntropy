@@ -114,16 +114,13 @@ fn every_property_of_the_testing_row_is_a_named_case() {
     }
 }
 
-/// The shortest counterexample to "every command acknowledged with `replicated = true` …
-/// appears in the converged log" when nodes are lost with their disks (OQ-NET-33): the
-/// originator's own ack makes the reply `replicated = true`, then the coordinator and the
-/// originator are both lost.
-const ORIGINATOR_ACK_TRACE: [&str; 11] = [
+/// An 8-step counterexample to "every command acknowledged with `replicated = true` … appears in
+/// the converged log" under the reply rule before OQ-NET-33, when nodes are lost with
+/// their disks: the originator's own ack made the reply `replicated = true`, then the coordinator
+/// and the originator were both lost.
+const ORIGINATOR_ACK_TRACE: [&str; 8] = [
     "Deliver(Command { from: 2, to: 0, id: 1 })",
     "Replicate(0, 2)",
-    "Expire(2)",
-    "Claim(2)",
-    "Deliver(Claim { from: 2, to: 1, term: Term { counter: 2, tag: 12 } })",
     "Deliver(Append { from: 0, to: 2, term: Term { counter: 1, tag: 10 }, log: [Elected { node: 0, \
      term: Term { counter: 1, tag: 10 } }, Command { id: 1 }], proof: Proof { node: 0, term: Term \
      { counter: 1, tag: 10 }, sig_ok: true, support: 6 } })",
@@ -134,11 +131,11 @@ const ORIGINATOR_ACK_TRACE: [&str; 11] = [
     "Win(1)",
 ];
 
-#[test]
-fn the_originators_own_ack_loses_a_replicated_command_with_both_disks() {
-    let model = ElectionModel {
-        cfg: scenarios::commands_lost(3),
-    };
+/// Replays [`ORIGINATOR_ACK_TRACE`] and returns the model and its final state.
+fn replay_originator_ack_trace(originator_ack_counts: bool) -> (ElectionModel, model::State) {
+    let mut cfg = scenarios::commands_lost(3);
+    cfg.originator_ack_counts = originator_ack_counts;
+    let model = ElectionModel { cfg };
     let mut state = model.initial();
     for step in ORIGINATOR_ACK_TRACE {
         let mut actions = Vec::new();
@@ -151,13 +148,25 @@ fn the_originators_own_ack_loses_a_replicated_command_with_both_disks() {
             .next_state(&state, action)
             .expect("a step changes the state");
     }
-    // Node 0 replied `replicated = true` on node 2's ack; nodes 0 and 2 are gone; node 1 leads
-    // a settled cluster whose log lacks the command.
-    assert!(state.acked_replicated.contains(&1));
+    // Nodes 0 and 2 are gone, and node 1 leads a settled cluster whose log lacks the command.
     assert!(!state.nodes[0].alive && !state.nodes[2].alive);
     assert!(check::settled(&model, &state));
     assert_eq!(check::converged(&model, &state), Some(1));
     assert!(!state.nodes[1].has_command(1));
+    (model, state)
+}
+
+/// Why OQ-NET-33 chose option (a). Under the old rule the originator's own ack made the reply
+/// `replicated = true`, and the command was lost with the coordinator's and the originator's
+/// disks. Under the rule as revised, the same steps never answer `replicated = true`, so nothing
+/// acknowledged is lost.
+#[test]
+fn the_originators_own_ack_no_longer_makes_a_command_replicated() {
     let (name, holds) = check::PROPERTIES[12];
-    assert!(!holds(&model, &state), "{name}");
+    let (old_rule, state) = replay_originator_ack_trace(true);
+    assert!(state.acked_replicated.contains(&1));
+    assert!(!holds(&old_rule, &state), "old rule: {name}");
+    let (new_rule, state) = replay_originator_ack_trace(false);
+    assert!(state.acked_replicated.is_empty());
+    assert!(holds(&new_rule, &state), "revised rule: {name}");
 }

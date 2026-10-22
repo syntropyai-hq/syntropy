@@ -101,8 +101,8 @@ pub const PROPERTIES: [(&str, Condition); 13] = [
 /// followed the other switches within that term: the tag-collision scenario expects it to fail.
 pub const TWO_AT_ONE_TERM: &str = "no two coordinators accepted by one node at the same term";
 
-/// The 13th property, which a scenario that loses nodes with their disks is expected to fail
-/// (OQ-NET-33).
+/// The 13th property. It held only under crash-recover until OQ-NET-33 stopped the
+/// originator's own ack counting toward `replicated = true` (RFC-0032 §6.3, revised 2026-10-22).
 pub const COMMANDS_SURVIVE: &str = "every command acknowledged with replicated = true, or kept in a live originator's journal, appears in the converged log";
 
 /// Honest nodes, by index.

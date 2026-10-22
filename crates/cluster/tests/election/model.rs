@@ -352,6 +352,9 @@ pub struct Config {
     /// A crashed node restarts with its disk: its log, journal, deny list and signed records
     /// survive (crash-recover). Otherwise a crash is the loss of the node and its disk.
     pub restart: bool,
+    /// The reply rule before OQ-NET-33: the originator's own ack also counts toward
+    /// `replicated = true`. Only the regression test that shows why the rule changed sets it.
+    pub originator_ack_counts: bool,
     /// Commands, as `(id, originator)`.
     pub commands: Vec<(u8, Ix)>,
     /// `(keyholder, node)` the keyholder revokes.
@@ -958,19 +961,26 @@ impl ElectionModel {
             if endorse && let Some(p) = coordinator.proof.as_mut() {
                 p.support |= bit(f);
             }
-            // The first ack from another `COORDINATOR`-eligible member that holds a waiting
-            // command's entry answers it with `replicated = true`. A command that never gets one
-            // is answered `replicated = false` at `log.ack_timeout`, which changes nothing here
-            // (§6.3).
+            // The first ack that holds a waiting command's entry, from a `COORDINATOR`-eligible
+            // member other than the coordinator and the command's originator, answers it with
+            // `replicated = true` (§6.3, revised 2026-10-22, OQ-NET-33). A command that never
+            // gets one is answered `replicated = false` at `log.ack_timeout`, which changes
+            // nothing here.
             if !self.cfg.role[f as usize] {
                 return;
             }
-
+            let originated_by_f = |id: u8| {
+                self.cfg
+                    .commands
+                    .iter()
+                    .any(|&(i, origin)| i == id && origin == f)
+            };
             let log = coordinator.log.clone();
             let covered: Vec<u8> = coordinator
                 .pending
                 .iter()
                 .copied()
+                .filter(|&id| self.cfg.originator_ack_counts || !originated_by_f(id))
                 .filter(|&id| {
                     log.iter()
                         .position(|e| *e == Entry::Command { id })
