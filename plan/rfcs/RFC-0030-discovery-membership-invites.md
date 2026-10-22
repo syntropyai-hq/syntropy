@@ -849,6 +849,19 @@ The daemon assembles its interface list at start and on every OS interface-chang
 
 Wi-Fi is classified even when the OS calls it Ethernet. Some USB Wi-Fi bridges report Ethernet, which is why RFC-0010's measured p99 is what the solver uses. The classification feeds the defaults: Wi-Fi edges are costed at p99 in latency mode (RFC-0011), and a metered edge carries no bulk transfer unless the user allows it (`net.bulk_on_metered = false`).
 
+*Note 2026-10-22 (DIST-E6-T01): the sources, as built.* `syntropy_net::iface` reads the same facts as the table's APIs, from sources that need no FFI and no `unsafe`:
+- **Linux:** sysfs as the table says; `/proc/net/if_inet6` for IPv6 addresses; `ip -o -4 addr show` for IPv4 addresses, which sysfs does not hold; `/proc/net/route` and `/proc/net/ipv6_route` for the default route; `nmcli` for NetworkManager's `Metered`. No netlink socket is opened. DIST-E6-T03's change notifications may add one.
+- **macOS:** `networksetup -listallhardwareports` for the hardware port names that SystemConfiguration holds, `ifconfig -a` for flags, MTU, addresses, link rate and bridge members, and `route -n get` for the default route.
+- **Windows:** one PowerShell run of `Get-NetAdapter` (the `IfType`, description, status, MTU and speed that `GetAdaptersAddresses` reports), `Get-PnpDeviceProperty` for the PnP parent, `Get-NetIPAddress` and `Get-NetRoute`.
+- **Metered** is read on Linux only. On macOS and Windows `METERED` stays unset until DIST-E6-T08 adds Network.framework's `NWPath` and `INetworkCostManager`. Until then a metered link on those systems is not kept from bulk transfer.
+
+Rules the table leaves open:
+- A loopback interface is listed, as `Loopback`.
+- On Linux, an interface whose `type` is neither `ARPHRD_ETHER` nor loopback is a tunnel (`tun`, `sit`, `gre`, `ipip`), so an overlay.
+- On macOS, every tunnel interface (`utun*`, `gif*`, `stf*`, `ipsec*`) is an overlay, with or without a tailnet address, and Apple's Wi-Fi peer-to-peer interfaces (`awdl*`, `llw*`) are Wi-Fi.
+- On Windows, `IfType` 53 and 131 are overlays, every other non-Wi-Fi adapter is Ethernet, and `MULTICAST` is set for Ethernet, Wi-Fi and Thunderbolt IP, since `Get-NetAdapter` reports no multicast flag.
+- Flagging an "Ethernet" interface that behaves as Wi-Fi by its measured p99 is DIST-E6-T07's.
+
 #### 7.3 Thunderbolt topology and the bridge
 
 macOS joins every Thunderbolt port into a "Thunderbolt Bridge" (`bridge0`) by default. With three or more Macs cabled in a loop, a bridged loop with no spanning tree causes a broadcast storm. Apple's RDMA-over-Thunderbolt guidance also says to disable the bridge when the cables form a loop (TN3205, cited in ADR-0011).

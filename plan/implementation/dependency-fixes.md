@@ -619,3 +619,13 @@ DIST-E9-T01 could not be finished as written. Its last criterion needs every aut
 | DIST-E9-T01's first criterion becomes "`apply` is total over arbitrary sequences of well-formed base events, a superset of every log `decide` can produce" | DIST-E9-T01 | R9 | `decide()` is DIST-E9-T02's, which depends on DIST-E9-T01. A property test over every well-formed event sequence covers every log `decide` can produce, and needs no `decide` |
 | DIST-E9-T01 holds the cluster key's 32-byte public half, which RFC-0034 §4 calls the `ClusterId`, in `ClusterState.cluster` and the chain's index-0 input; DIST-E9-T16 swaps in DIST-E2-T06's `ClusterId` and keeps DIST-E9-T01's golden chain vectors | DIST-E9-T01, DIST-E9-T16 | R9 | the chain needs a cluster identity at index 0, and an edge to DIST-E2-T06 would hold the event log behind the OS keystore work. The chain hashes the same 32 bytes either way, so the swap changes no vector |
 | DIST-E9-T07 → DIST-E9-T16 | DIST-E9-T07 | R9 | its criterion refuses a crafted snapshot with "a member with no valid signed record", which needs the records in the state. DIST-E9-T01's ten direct dependents use only `LogEntry`, `ClusterState`, `apply` or the base events, and keep their edge |
+
+## DIST-E6-T01's p99 criterion and the metered gap (2026-10-22)
+
+DIST-E6-T01 enumerates and classifies interfaces. One of its criteria needed measured link probes, and the agreed sources leave metered unread on two systems.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "A USB Wi-Fi bridge reporting Ethernet is flagged by measured p99" moves from DIST-E6-T01 to the new DIST-E6-T07 (M2) → DIST-E6-T01, PLC-E2-T11 | DIST-E6-T01, DIST-E6-T07 | R9 | the criterion uses PLC-E2-T11's L1 probes. DIST-E6-T01 → PLC-E2-T11 would be a cycle, since PLC-E2-T11 depends on PLC-E1-T10, which depends on DIST-E6-T01. A task in this epic takes the criterion, so PLC-E2-T11's row stays as it is |
+| Added DIST-E6-T08 (M2) → DIST-E6-T01 | DIST-E6-T08 | Definition of done | DIST-E6-T01 reads metered on Linux through NetworkManager. macOS's `NWPath` and Windows's `INetworkCostManager` need FFI, so that gap has its own task rather than a note |
+| DIST-E6-T01 gains hosted criteria: the classifier over every row of RFC-0030 §7.2 from synthetic fixtures, and enumeration with stable ordinals on hosted CI | DIST-E6-T01 | Definition of done | only the rig criterion could fail before. Hosted runners have virtual NICs, so these are what CI can show |
