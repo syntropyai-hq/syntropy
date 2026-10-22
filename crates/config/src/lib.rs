@@ -22,7 +22,10 @@
 //!   while any key is on, and the predicate for a manifest signed by the CI test key;
 //! - the validation of RFC-0054 §8 (PROD-E1-T03): [`load_and_validate`] runs phases 1–5 and keeps
 //!   every error, each a [`Problem`] with its [`Code`], and [`diagnostic::render`] prints them in
-//!   §8's format without ever showing a secret.
+//!   §8's format without ever showing a secret;
+//! - per-request overrides (§7, PROD-E1-T10): [`RequestOverrides`] and [`resolve_request`], which
+//!   resolves a request against one candidate instance's policy, enforcing D3: approximate only
+//!   when the request, the instance and the cluster all opt in.
 //!
 //! The cluster and instance scopes, and reload, come in later tasks.
 //!
@@ -128,6 +131,7 @@ mod holds_secret;
 mod origin;
 mod registry;
 mod render;
+mod request;
 mod resolve;
 mod schema;
 mod text;
@@ -145,6 +149,10 @@ pub use env::{API_KEY_VAR, Env, HF_TOKEN_VAR, HOST_VAR, OTHER_KNOWN, path_for, v
 pub use holds_secret::HoldsSecret;
 pub use origin::Origin;
 pub use registry::{Registry, RegistryError};
+pub use request::{
+    BenchControls, EffectiveRequestPolicy, RequestError, RequestOverrides, RequestWarning,
+    SessionBinding, knob_names, priority_for_service_tier, resolve_request,
+};
 pub use resolve::{
     ConfigFile, Flags, Layers, Proposal, Rejected, Resolved, ResolvedConfig, SectionError,
     SharedConfig, load,
