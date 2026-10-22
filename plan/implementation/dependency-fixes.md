@@ -617,7 +617,7 @@ DIST-E9-T01 could not be finished as written. Its last criterion needs every aut
 |---|---|---|---|
 | Added DIST-E9-T16 (signed records in `ClusterState`) → DIST-E9-T01, DIST-E9-T12, DIST-E5-T07, DIST-E5-T13, DIST-E5-T15, DIST-E17-T14, COMP-E12-T06, DIST-E2-T06; DIST-E9-T01's signed-record invariant, its last criterion and its RFC-0034 §8.3 citation move there | DIST-E9-T01, DIST-E9-T16 | R2, R9 | each listed task produces one kind of record the criterion checks: approvals and certificates, the keyholder chain, invites and keyholder-signed configuration (DIST-E5-T13), revocations (DIST-E5-T07), rotation statements (DIST-E5-T15; the M3 rotation of DIST-E5-T11 adds no new record type), API-key records (DIST-E17-T14) and chunk evidence (COMP-E12-T06), and DIST-E9-T12 verifies them. All are M2, so no criterion moves milestone |
 | DIST-E9-T01's first criterion becomes "`apply` is total over arbitrary sequences of well-formed base events, a superset of every log `decide` can produce" | DIST-E9-T01 | R9 | `decide()` is DIST-E9-T02's, which depends on DIST-E9-T01. A property test over every well-formed event sequence covers every log `decide` can produce, and needs no `decide` |
-| DIST-E9-T01 holds the cluster key's 32-byte public half, which RFC-0034 §4 calls the `ClusterId`, in `ClusterState.cluster` and the chain's index-0 input; DIST-E9-T16 swaps in DIST-E2-T06's `ClusterId` and keeps DIST-E9-T01's golden chain vectors | DIST-E9-T01, DIST-E9-T16 | R9 | the chain needs a cluster identity at index 0, and an edge to DIST-E2-T06 would hold the event log behind the OS keystore work. The chain hashes the same 32 bytes either way, so the swap changes no vector |
+| DIST-E9-T01 holds the cluster key's 32-byte public half, which RFC-0034 §4 calls the `ClusterId`, in `ClusterState.cluster` and the chain's index-0 input; DIST-E9-T16 swaps in DIST-E2-T06's `ClusterId` and keeps DIST-E9-T01's golden chain vectors | DIST-E9-T01, DIST-E9-T16 | R9 | the chain needs a cluster identity at index 0, and an edge to DIST-E2-T06 would hold the event log behind the OS keystore work. The chain hashes the same 32 bytes either way, so the swap changes no chain vector. DIST-E9-T16 does change DIST-E9-T01's state-hash vector, because its records join `ClusterState` |
 | DIST-E9-T07 → DIST-E9-T16 | DIST-E9-T07 | R9 | its criterion refuses a crafted snapshot with "a member with no valid signed record", which needs the records in the state. DIST-E9-T01's ten direct dependents use only `LogEntry`, `ClusterState`, `apply` or the base events, and keep their edge |
 
 ## COMP-E13-T05 split (2026-10-22)
@@ -667,6 +667,38 @@ DIST-E10-T08's model check found that a supported older proof can depose a lone 
 |---|---|---|---|
 | Added DIST-E10-T10 (M2) → DIST-E10-T08 | DIST-E10-T10 | Definition of done (a spike closes an open question) | the spike checks OQ-NET-34's recommended heal rule in DIST-E10-T08's model, in every bounded and full scenario, and settles the question in RFC-0032 §7.5 |
 | DIST-E10-T05 → DIST-E10-T10, and `gate: OQ-NET-34` on DIST-E10-T05 | DIST-E10-T05 | R9 | DIST-E10-T05 builds the heal comparison and adoption that the answer changes. The gate holds it until the question closes; the edge names the task that closes it |
+
+## PROD-E5-T02: the bind plan's server-side criteria (2026-10-22)
+
+PROD-E5-T02 could not meet two of its criteria as written: "a LAN bind without a key refuses to start" and "a wildcard bind is served with TLS" need a running server, a key store and a certificate, and PROD-E5-T02 depends only on PROD-E1-T03. The HTTP server is PROD-E2-T01, which is M0a, so it can't depend on this M1a task (R6). PROD-E5-T02 now meets both at the policy level, through the bind plan the daemon runs at start (`syntropy_api::bind::plan_binds`), and the end-to-end checks move to the M1a tasks that own what they need. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E5-T02's refusal and wildcard criteria are checked on the bind plan; PROD-E5-T01 gains "the daemon applies the bind plan at start: with a LAN bind and no key it does not start and prints the plan's message, and once a key exists it starts", and PROD-E5-T01 → PROD-E5-T02 | PROD-E5-T02, PROD-E5-T01 | R9 | PROD-E5-T01 owns the key store and already reaches the server (PROD-E2-T01) through its dependencies; M1a → M1a, and PROD-E5-T02 does not depend on PROD-E5-T01, so the edge adds no cycle |
+| PROD-E5-T03 gains "a wildcard bind with `api.tls = "auto"` is served with TLS from a local CA leaf, as the bind plan gives it", and PROD-E5-T03 → PROD-E5-T02 | PROD-E5-T03, PROD-E5-T02 | R9 | the local CA is what `"auto"` serves on LAN binds (RFC-0050 §11.1); M1a → M1a, no cycle |
+| PROD-E5-T02 declares the `[api]` section's `bind`, `tls` and `allow_plaintext_lan` keys, and PROD-E2-T01 reuses the section for its `api.bind` default | PROD-E5-T02, PROD-E2-T01 | — | RFC-0054 §5.1 gives `api.*` to RFC-0050, and no task registered it; the rules need the real keys to run. PROD-E2-T01's default criterion is unchanged |
+
+Open, for the owning tasks (not changed here): PROD-E5-T03's "leaf rotation under 100 open streams drops none" and PROD-E5-T06's "replacing the certificate files switches new connections to the new certificate without restart" need a running HTTP server, and neither task reaches PROD-E2-T01 through its dependencies.
+
+## QUAL-E17-T15's nested-field case (2026-10-22)
+
+The post-merge reviews of #1658 found that a serde default keeps an added field compatible only in CBOR. Over the postcard IPC, a field added to any type under `PlacementPlan` or `PlanDelta` changes the message layout, and a new enum variant cannot be decoded by an older peer. RFC-0001 §5 gains a dated note that either addition is an `ipc_protocol` change (RFC-0001 §18.20, issues #1675 and #1660).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E17-T15's fingerprint criterion gains a nested field (a `HopPlan` field inside `AssignPlan`'s `PlacementPlan`) and a new `PlanDelta` variant, each failing `compat` without an `ipc_protocol` bump; its IPC golden vectors include `PlacementPlan`, `StagePlan` and `PlanDelta`; no edge | QUAL-E17-T15 | Definition of done | only a ring-record change was covered. A fingerprint that missed nested fields or variants, or vectors without the plan types, would let such an addition break adoption across builds |
+
+## DIST-E9-T01's payload types (2026-10-22)
+
+The review of #1694 found that DIST-E9-T01's base events and entries carry types from tasks it does not reach: `NodeInfo` (PLC-E1-T09), `ChunkEvidence` (COMP-E12-T06, which depends on DIST-E9-T01 through DIST-E9-T15 and DIST-E9-T02), `CommandId` (credited to DIST-E9-T02 by DIST-E8-T17 and DIST-E4-T01), and `WorkloadReport` and `ConfigPatch`, which no task named. It also found DIST-E9-T12's text relying on approvals kept in `ClusterState`, which DIST-E9-T16 now keeps and which comes after it. These are plan corrections under R9, approved by the lead running DIST-E9-T01.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E9-T01 defines `CommandId`, `RunnerStateKind`, `ManifestDigest`, `PlanBody`, `PlanSummary`, `WorkloadReport` and `ConfigPatch` in `cluster`, and keeps `UnroutableReason`, `ChunkSetDigest`, `ProposalOrigin` and `WorkloadReport`'s parts as opaque CBOR values | DIST-E9-T01 | R9 | no task had built them, and its events and entries carry them. An opaque value settles none of the fields its owner RFC has yet to fix, and an owner's type that encodes the same CBOR decodes in its place. `RunnerStateKind` copies RFC-0001 §5.11's enum, which no task has added to `core` |
+| `CommandId` moves from DIST-E9-T02 to DIST-E9-T01 in DIST-E8-T17's and DIST-E4-T01's dependency cells | DIST-E8-T17, DIST-E4-T01 | R9 | `LogEntry.cause` is a `CommandId`. Both tasks already depend on DIST-E9-T01, and DIST-E9-T02 keeps the deduplication |
+| DIST-E9-T01 holds a `NodeInfo` stand-in with the node ID; DIST-E9-T03 replaces it with RFC-0001 §5.2's type and gains DIST-E9-T03 → PLC-E1-T09 | DIST-E9-T01, DIST-E9-T03 | R9 | `apply` reads only the ID, and an edge to PLC-E1-T09, whose field types are still TBD (#1524), would hold the event log behind it. DIST-E9-T03 wires admission, which reads the rest of `NodeInfo` |
+| `ChunkIdsCommitted` is not one of DIST-E9-T01's events; DIST-E9-T03 already wires it with COMP-E12-T06 | DIST-E9-T01 | R9 | its evidence is a signed record (DIST-E9-T16) whose type COMP-E12-T06 defines, after DIST-E9-T01 |
+| DIST-E9-T12 checks an invite's single use against earlier `InviteConsumed` entries, and a `CoordinatorElected`'s certificate as carried with it and against applied `NodeRevoked` entries | DIST-E9-T12 | R9 | its old text read approvals and certificates kept in `ClusterState`, which DIST-E9-T16 keeps after DIST-E9-T12. The log's own events give the same verdicts |
 
 ## DIST-E7-T01's conformance criterion and buffer types (2026-10-22)
 

@@ -6,9 +6,11 @@
 //! the control frames, the `Activation` frame and their CRC32C (RFC-0031 §6); [`crypto`]: the
 //! cryptographic helpers of RFC-0034 §3; [`words`]: the fingerprint and recovery-code word list
 //! of RFC-0034 §6.5; [`fingerprint`]: the six-word identity fingerprints of RFC-0034 §6.5; the
-//! control plane's envelope ([`ctl::envelope`], RFC-0031 §9.1); and [`transport`]: the
-//! `Transport` trait, `Channel`, their buffer types and the channel-conformance suite of
-//! RFC-0031 §2, with no backend yet. [`Error`] is what its fallible calls return.
+//! control plane's envelope ([`ctl::envelope`], RFC-0031 §9.1); [`endpoint`], a minimal iroh
+//! endpoint that reports a connection's path kind and round-trip time (DIST-E7-T23); and
+//! [`transport`]: the `Transport` trait, `Channel`, their buffer types and the
+//! channel-conformance suite of RFC-0031 §2, with no backend yet. [`Error`] is what its
+//! fallible calls return.
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
@@ -18,6 +20,7 @@
 pub mod config;
 pub mod crypto;
 pub mod ctl;
+pub mod endpoint;
 pub mod error;
 pub mod fingerprint;
 pub mod frame;

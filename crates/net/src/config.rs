@@ -25,7 +25,8 @@
 //! [`CountInWindow`], [`Backoff`] and [`Switch`] are shared with `cluster`'s sections.
 
 use serde::Deserialize;
-use syntropy_config::{ByteSize, ConfigSection, Duration, Fraction, HoldsSecret};
+use syntropy_config::{ByteSize, ConfigSection, Duration, HoldsSecret};
+use syntropy_core::policy::Fraction;
 
 /// "`count` events within `window`": a threshold over a sliding window, such as RFC-0031's
 /// `link.demote_after` ("3 faults in 60 s"). Written `{ count = 3, window = "60s" }`.
@@ -85,6 +86,7 @@ pub struct NetSection {
     pub bulk_p99_ratio: f64,
     /// The share of the link's β bulk transfers always keep (RFC-0031 §7.5).
     #[config(reload = Hot, default = 0.05, scope = Cluster, introduced_at = FEATURE_LEVEL_V1)]
+    #[serde(with = "syntropy_config::form")]
     pub bulk_floor: Fraction,
 }
 
