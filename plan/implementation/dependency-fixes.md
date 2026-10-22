@@ -687,3 +687,11 @@ The post-merge reviews of #1658 found that a serde default keeps an added field 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | QUAL-E17-T15's fingerprint criterion gains a nested field (a `HopPlan` field inside `AssignPlan`'s `PlacementPlan`) and a new `PlanDelta` variant, each failing `compat` without an `ipc_protocol` bump; its IPC golden vectors include `PlacementPlan`, `StagePlan` and `PlanDelta`; no edge | QUAL-E17-T15 | Definition of done | only a ring-record change was covered. A fingerprint that missed nested fields or variants, or vectors without the plan types, would let such an addition break adoption across builds |
+
+## PLC-E6-T04's `max_defer` deadline before RFC-0033 lands (2026-10-22)
+
+RFC-0011 §12.2 now applies a deferred plan at the `replan.max_defer` deadline through RFC-0033 §5.1's per-sequence choice, as RFC-0033 §10 does (#1748). DIST-E14-T10 builds that choice in M3, a milestone after PLC-E6-T04's adoption rule, so an M2 build had no defined behaviour at the deadline. Until DIST-E14-T10 lands, live sequences are re-prefilled at the deadline, the path PLC-E6-T04 already uses for a node loss. This was approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E6-T04 re-prefills live sequences at the latency-mode `max_defer` deadline until DIST-E14-T10's per-sequence choice lands, and gains the criterion "in latency mode, an adopted deferred plan on an instance whose session never goes idle is applied at `max_defer`, with its live sequences re-prefilled"; no edge | PLC-E6-T04 | R9 | the criterion uses the re-prefill path that PLC-E6-T04's node-loss criterion already reaches through its dependencies. an edge to DIST-E14-T10 would point from M2 to M3, which R3 rules out, so the M3 choice stays with DIST-E14-T10 and DIST-E15-T03 |

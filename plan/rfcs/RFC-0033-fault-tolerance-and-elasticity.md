@@ -600,10 +600,12 @@ pub enum Standby {
   - predicted `t_tok` improves by at least `replan.min_gain` (20 %), or 10 % from a degraded plan;
   - its moved bytes divided by measured link rates are recovered within `replan.payback_horizon`.
 - **In latency mode** the adoption waits for an idle window (no live sequences) for up to `replan.max_defer` (10 min).
-  - A long agent session may never go idle. When the deadline passes, live sequences are moved at step boundaries by the per-sequence rule of §5.1, usually KV migration under make-before-break when memory allows, otherwise replay.
+  - A long agent session may never go idle. When the deadline passes, each live sequence takes the per-sequence choice of §5.1. A sequence that fits `recovery.drain_deadline` finishes on the retiring epoch. The others move at step boundaries, usually by KV migration under make-before-break when memory allows, otherwise by replay or re-prefill (revised 2026-10-22, note below).
   - Persisted sessions are re-homed by RFC-0022.
 - **In throughput mode** the plan is adopted by make-before-break when capacity allows. Otherwise it waits for the instance's load to fall below half its admission limit.
 - A returning node that held the lost stage of a degraded plan usually still has its pack. If so, `Replace` back onto it costs only `t_load + t_warm + t_replay`, and the solver's move cost reflects that through `ChunksAnnounced`.
+
+*Note 2026-10-22 (#1748):* the deadline bullet said live sequences "are moved at step boundaries by the per-sequence rule of §5.1, usually KV migration under make-before-break when memory allows, otherwise replay". That left out §5.1's `finish`, which wins whenever a sequence fits the drain deadline, and re-prefill, which is always feasible. RFC-0011 §12.2 now refers to this section for the deadline; before, it waited for the next idle window with no bound.
 
 ### 11. Commands, events and types added
 
