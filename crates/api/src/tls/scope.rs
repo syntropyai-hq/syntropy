@@ -178,6 +178,11 @@ pub(super) fn host_name(name: &str) -> Result<String, ScopeError> {
 /// constrained to `box.local` may issue for `x.box.local` too. That is why single-label names are
 /// left out: a node named `box` would otherwise get a CA for the whole `.box` top-level domain.
 /// The leaves this crate issues carry the scope's names exactly.
+///
+/// A limit: a name of two labels can still cover a public zone. A node name or
+/// `api.server_names` entry that is a public suffix (`co.uk`) or a bare registrable domain
+/// (`example.com`) gives the CA that whole zone, so `api.server_names` should hold the node's own
+/// host names only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaScope {
     dns_names: Vec<String>,

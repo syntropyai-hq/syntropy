@@ -12,9 +12,10 @@
 //!   certificate, name constraints and all, is the one the node minted. The node holds its own
 //!   stored CA to the same check, and to the constraints it mints, when it loads it.
 //! - **Constrained.** Critical X.509 name constraints limit the CA to the node's DNS names and to
-//!   the private subnets it serves ([`CaScope`]), so a leaked key impersonates neither public
-//!   sites nor other private hosts. A changed scope replaces the CA and records it for
-//!   `doctor` SEC-006.
+//!   the private subnets it serves ([`CaScope`]), so a leaked key cannot impersonate public
+//!   sites, nor a private host outside those subnets. Inside them it can: the CA covers each
+//!   served /24 or /64 whole. A changed scope replaces the CA and records it for `doctor`
+//!   SEC-006.
 //! - **Leaves.** 30-day certificates for the node's current names and addresses
 //!   ([`LocalCa::issue_leaf`]), served through [`LeafResolver`], which swaps in a new leaf
 //!   without dropping a connection.
