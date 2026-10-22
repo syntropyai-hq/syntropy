@@ -796,7 +796,7 @@ These are plan corrections under R9 and R6, approved by the lead running the tas
 
 ## PROD-E8-T07: an incoming trace-flags byte (2026-10-22)
 
-W3C Trace Context Level 2 gives trace-flags bit 1 to `random-trace-id`, and RFC-0053 §3.2's `TraceContext::flags` uses bit 1 for full trace. So a conformant client's `traceparent` would switch on full tracing (#1766). RFC-0053 §3.2 gains a dated note: ingress keeps only bit 0 of an incoming flags byte, and sets a returned `traceparent`'s flags itself, with bit 0 set, bit 1 kept with the trace-id as W3C requires, and never the full-trace bit. PROD-E8-T07, which builds `traceparent` in and out, gains the criterion, and PROD-E9-T08, which exports spans over OTLP, gains its own. This is #1766's recommended option, taken by the lead running the task under the maintainer's standing instruction.
+W3C Trace Context Level 2 gives trace-flags bit 1 to `random-trace-id`, and RFC-0053 §3.2's `TraceContext::flags` uses bit 1 for full trace. So a Level 2 client's `traceparent` for a random trace-id would switch on full tracing (#1766). RFC-0053 §3.2 gains a dated note: ingress keeps only bit 0 of an incoming flags byte, and sets a returned `traceparent`'s flags itself, with bit 0 set, bit 1 kept with the trace-id as W3C requires, and never the full-trace bit. PROD-E8-T07, which builds `traceparent` in and out, gains the criterion, and PROD-E9-T08, which exports spans over OTLP, gains its own. This is #1766's recommended option, taken by the lead running the task under the maintainer's standing instruction.
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
