@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use syntropy_testkit::sim::presets::{
-    self, DRIVE_KEYS, Figure, FigureError, Label, MemoryTier, Preset, PresetError, PresetKind,
+    self, DevicePreset, Figure, FigureError, Label, MemoryTier, PresetError, PresetKind,
 };
 
 #[test]
@@ -51,7 +51,7 @@ fn every_preset_loads_with_the_names_rfc_0060s_example_uses() {
     }
 }
 
-fn known(preset: &Preset, figure: &str) -> (Option<f64>, Option<[f64; 2]>, Label) {
+fn known(preset: &DevicePreset, figure: &str) -> (Option<f64>, Option<[f64; 2]>, Label) {
     match &preset.figures[figure] {
         Figure::Known(known) => (known.value, known.range, known.label),
         Figure::Unknown { unknown } => panic!("{figure} is unknown: {unknown}"),
@@ -171,7 +171,12 @@ fn every_preset_has_its_kinds_keys() {
     );
     for preset in all.values() {
         if preset.kind == PresetKind::Nvme {
-            assert_eq!(preset.required_keys(), DRIVE_KEYS, "{}", preset.name);
+            assert_eq!(
+                preset.required_keys(),
+                presets::figure_keys().drive,
+                "{}",
+                preset.name
+            );
         }
         for key in preset.required_keys() {
             assert!(preset.figures.contains_key(&key), "{} {key}", preset.name);
@@ -219,7 +224,7 @@ fn a_missing_key_a_stray_w_eff_key_or_a_wrong_memory_tier_does_not_load() {
     );
     let (preset, figure) = at("f_eff");
     assert_eq!(
-        Preset::from_toml("gpu.test.toml", &missing).unwrap_err(),
+        DevicePreset::from_toml("gpu.test.toml", &missing).unwrap_err(),
         PresetError::MissingFigure { preset, figure }
     );
     for stray in [
@@ -230,12 +235,12 @@ fn a_missing_key_a_stray_w_eff_key_or_a_wrong_memory_tier_does_not_load() {
         let text = format!("{GOOD}\n[figures.{stray}]\nunknown = \"none\"\n");
         let (preset, figure) = at(stray.trim_matches('"'));
         assert_eq!(
-            Preset::from_toml("gpu.test.toml", &text).unwrap_err(),
+            DevicePreset::from_toml("gpu.test.toml", &text).unwrap_err(),
             PresetError::NotAKey { preset, figure }
         );
     }
     assert_eq!(
-        Preset::from_toml(
+        DevicePreset::from_toml(
             "gpu.test.toml",
             &GOOD.replace("memory_tier = \"unified\"\n", "")
         )
@@ -249,12 +254,12 @@ fn a_missing_key_a_stray_w_eff_key_or_a_wrong_memory_tier_does_not_load() {
     let extra = format!(
         "{GOOD}\n[figures.memory_peak_bw]\nvalue = 1\nunit = \"GB/s\"\nlabel = \"published\"\nsource = \"S1\"\n"
     );
-    assert!(Preset::from_toml("gpu.test.toml", &extra).is_ok());
+    assert!(DevicePreset::from_toml("gpu.test.toml", &extra).is_ok());
 }
 
 #[test]
 fn a_preset_without_sources_or_with_an_unsourced_figure_does_not_load() {
-    assert!(Preset::from_toml("gpu.test.toml", GOOD).is_ok());
+    assert!(DevicePreset::from_toml("gpu.test.toml", GOOD).is_ok());
     let cases = [
         (
             GOOD.replace(r#"sources = ["research §2.1 [S10]"]"#, "sources = []"),
@@ -293,7 +298,10 @@ fn a_preset_without_sources_or_with_an_unsourced_figure_does_not_load() {
         ),
     ];
     for (text, want) in cases {
-        assert_eq!(Preset::from_toml("gpu.test.toml", &text).unwrap_err(), want);
+        assert_eq!(
+            DevicePreset::from_toml("gpu.test.toml", &text).unwrap_err(),
+            want
+        );
     }
     // A figure with no label, or a label outside the four, is not a figure.
     for text in [
@@ -301,12 +309,12 @@ fn a_preset_without_sources_or_with_an_unsourced_figure_does_not_load() {
         GOOD.replace(r#"label = "published""#, r#"label = "verified""#),
     ] {
         assert!(matches!(
-            Preset::from_toml("gpu.test.toml", &text).unwrap_err(),
+            DevicePreset::from_toml("gpu.test.toml", &text).unwrap_err(),
             PresetError::Parse { .. }
         ));
     }
     assert_eq!(
-        Preset::from_toml("test.toml", GOOD).unwrap_err(),
+        DevicePreset::from_toml("test.toml", GOOD).unwrap_err(),
         PresetError::FileName {
             file: "test.toml".into(),
             expected: "gpu.test.toml".into()
@@ -348,4 +356,27 @@ fn figure_refuses_an_unknown_or_absent_figure() {
             );
         }
     }
+}
+
+/// The figure-key table parses, and is the one `crates/testkit/sim/figure-keys.toml` holds, which
+/// the `sim-presets` lint reads.
+#[test]
+fn the_figure_key_table_parses() {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("sim/figure-keys.toml");
+    assert_eq!(
+        std::fs::read_to_string(file).unwrap(),
+        presets::FIGURE_KEYS_FILE
+    );
+    let keys = presets::figure_keys();
+    assert_eq!(keys.device, ["memory", "f_eff", "t_fixed", "sigma_dev"]);
+    assert_eq!(keys.discrete_gpu, ["host_link_pinned_h2d"]);
+    assert_eq!(keys.kernel_classes, ["dense_gemv", "expert_gemv"]);
+    assert_eq!(keys.drive.len(), 7);
+    assert_eq!(keys.tiers.gpu_vram, ["vram", "host_pinned"]);
+    assert_eq!(keys.tiers.gpu_unified, ["unified"]);
+    assert_eq!(keys.tiers.cpu, ["host_pinned", "host_pageable"]);
+    // Every key some kind requires, each W_eff key once per tier and class.
+    let all = presets::all_keys();
+    assert_eq!(all.len(), 4 + 7 + 1 + 4 * 2);
+    assert!(all.contains(&"w_eff.host_pageable.expert_gemv".to_owned()));
 }
