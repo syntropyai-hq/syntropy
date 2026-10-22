@@ -8,3 +8,4 @@ publish.workspace = true
 [dependencies]
 chacha20.workspace = true
 syntropy-core = { path = "../core" }
+syntropy-graph = { path = "../graph" }
