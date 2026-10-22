@@ -1110,7 +1110,7 @@ Op selection per device (RFC-0040 §6, ADR-0401). For each op in a stage's step 
 
 ### 5.8 `Transport`, frames and sequence control (`net`)
 
-*Note 2026-10-22 (DIST-E1-T13): these types live in `core`.* `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame` and `TokenEntry` below, and `TraceContext`, are defined in `core`. `net` encodes them on the wire (RFC-0031 §6.3, §6.5, §6.6) without defining them, as RFC-0060 §5.5's note does for `ParityTapSpec`. Rule 3 (§4.2) keeps `exec` and `sched` off `net`, yet the head's and tail's step loops read these types from the M0 rings: PLC-E8-T01, PLC-E9-T02, PLC-E9-T03 and PLC-E9-T16. The `Transport` trait, `Channel` and `ActivationFrame` stay in `net`. §5.13 and §18.22 record the move, for the maintainers to confirm.
+*Note 2026-10-22 (DIST-E1-T14): these types live in `core`.* `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame` and `TokenEntry` below, and `TraceContext`, are defined in `core`. `net` encodes them on the wire (RFC-0031 §6.3, §6.5, §6.6) without defining them, as RFC-0060 §5.5's note does for `ParityTapSpec`. Rule 3 (§4.2) keeps `exec` and `sched` off `net`, yet the head's and tail's step loops read these types from the M0 rings: PLC-E8-T01, PLC-E9-T02, PLC-E9-T03 and PLC-E9-T16. The `Transport` trait, `Channel` and `ActivationFrame` stay in `net`. §5.13 and §18.22 record the move, for the maintainers to confirm.
 
 ```rust
 /// A data-plane transport backend (ADR-0011). The solver picks one per hop from measured α
@@ -2780,4 +2780,4 @@ COMP-E3-T01 found that the detection macro named for SME2 does not compile on th
 
 | Change | Sections touched | Reason |
 |---|---|---|
-| `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame`, `TokenEntry` and `TraceContext` live in `core`, not `net`; `net` encodes them without defining them | §5.8 (dated note), §5.13; RFC-0053 §3.2 (dated note) | rule 3 (§4.2) keeps `exec` and `sched` off `net`, and the head's and tail's step loops read these types from the M0 rings (DIST-E1-T13, which defines them). For the maintainers to confirm |
+| `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame`, `TokenEntry` and `TraceContext` live in `core`, not `net`; `net` encodes them without defining them | §5.8 (dated note), §5.13; RFC-0053 §3.2 (dated note) | rule 3 (§4.2) keeps `exec` and `sched` off `net`, and the head's and tail's step loops read these types from the M0 rings (DIST-E1-T14, which defines them). For the maintainers to confirm |

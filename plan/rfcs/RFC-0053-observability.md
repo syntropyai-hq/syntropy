@@ -306,7 +306,7 @@ pub struct TraceContext {
 
 `TokenFrame` carries the same context on sampled steps (RFC-0001 §13), so the return path from the tail to the head and to ingress appears as a `syntropy.net.hop` span.
 
-*Note 2026-10-22 (DIST-E1-T13): one `TraceContext`, 26 bytes.* The block above has 25 bytes because it leaves out W3C traceparent's version byte. RFC-0031 §6.3's `TRACE` item, which owns the layout, carries all 26: version, trace-id (16 bytes), parent span id (8) and flags. The one `TraceContext` is defined in `core` with that shape (RFC-0001 §5.8, note of the same date), and `net` encodes it. Its `flags` keep this section's bits: bit 0 sampled, as W3C's trace-flags, and bit 1 full trace.
+*Note 2026-10-22 (DIST-E1-T14): one `TraceContext`, 26 bytes.* The block above has 25 bytes because it leaves out W3C traceparent's version byte. RFC-0031 §6.3's `TRACE` item, which owns the layout, carries all 26: version, trace-id (16 bytes), parent span id (8) and flags. The one `TraceContext` is defined in `core` with that shape (RFC-0001 §5.8, note of the same date), and `net` encodes it. Its `flags` keep this section's bits: bit 0 sampled, as W3C's trace-flags, and bit 1 full trace.
 
 #### 3.3 Sampling
 
