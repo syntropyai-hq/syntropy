@@ -310,6 +310,7 @@ pub struct TraceContext {
 
 *Note 2026-10-22 (#1766): an incoming flags byte keeps only bit 0.* W3C Trace Context Level 2 gives trace-flags bit 1 to `random-trace-id`, which conformant clients set, while `TraceContext::flags` uses bit 1 for full trace. A client's flags byte copied as it is would switch on full tracing, which costs every stage work and records more per-request detail than the client asked for.
 - **In.** Ingress keeps only bit 0 (`sampled`) of an incoming `traceparent`'s flags. The HTTP rule above then decides whether that bit forces full tracing.
+- **Where it stays.** The kept bit 0 stays at ingress, with the incoming header in the request's `ClientMeta` (RFC-0050 §2.1), as the HTTP rule's input. The `TraceContext` ingress puts in `SequenceOpen` takes its flags from Syntropy's policy alone, so a client's bit 0 never makes the head sample every step. The head still decides per step (§3.3).
 - **Syntropy's own bits**, bit 1 among them, are set only by Syntropy's policy: `syntropy.trace = true`, `Syntropy-Trace: 1`, or a sampled flag honoured under `obs.trace.honor_remote_sampled`.
 - **Out.** Ingress sets a returned `traceparent`'s flags itself and never copies `TraceContext::flags`:
   - bit 0 is 1, Syntropy's recording decision, since the root spans are always recorded (§3.3);
