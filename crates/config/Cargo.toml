@@ -6,10 +6,13 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 regex.workspace = true
 serde.workspace = true
 syntropy-config-derive = { path = "../config-derive" }
 syntropy-core = { path = "../core" }
+# Reading the config files and the environment and flag values (RFC-0054 §1, §2.4).
+toml.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

@@ -10,6 +10,7 @@ members = [
     "crates/kernels-metal",
     "crates/manifest",
     "crates/solver",
+    "crates/testkit",
     "crates/text",
 ]
 

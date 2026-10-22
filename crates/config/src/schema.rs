@@ -181,7 +181,7 @@ impl fmt::Display for DefaultValue {
 }
 
 /// Writes a TOML basic string, escaping what TOML requires.
-fn write_toml_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
+pub(crate) fn write_toml_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
     f.write_str("\"")?;
     for c in s.chars() {
         match c {
@@ -198,7 +198,7 @@ fn write_toml_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 }
 
 /// Whether TOML accepts `key` unquoted.
-fn is_bare_key(key: &str) -> bool {
+pub(crate) fn is_bare_key(key: &str) -> bool {
     !key.is_empty()
         && key
             .bytes()
@@ -238,6 +238,11 @@ pub struct KeySchema {
     /// The environment variable that sets a node key, such as
     /// `SYNTROPY_RESOURCE__RAM_HEADROOM` (RFC-0054 §2.4). `None` for other scopes.
     pub env: Option<&'static str>,
+    /// Whether the key's type holds a secret anywhere inside it: `<T as HoldsSecret>::HOLDS_SECRET`
+    /// ([`HoldsSecret`](crate::HoldsSecret)), through options, maps, arrays and nested structs.
+    /// `config show`, flag handling and the diagnostics redact by this flag, never by the
+    /// type's name (RFC-0054 §10.1).
+    pub holds_secret: bool,
 }
 
 /// One section, as `#[derive(ConfigSection)]` records it.

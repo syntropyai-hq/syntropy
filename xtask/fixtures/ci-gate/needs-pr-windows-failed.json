@@ -1,0 +1,28 @@
+{
+  "changes": {
+    "result": "success",
+    "outputs": {
+      "jobs": "[\"lint\",\"build\",\"hosted-test\"]"
+    }
+  },
+  "lint": {
+    "result": "success",
+    "outputs": {}
+  },
+  "build": {
+    "result": "failure",
+    "outputs": {}
+  },
+  "hosted-test": {
+    "result": "failure",
+    "outputs": {}
+  },
+  "hosted-l3": {
+    "result": "skipped",
+    "outputs": {}
+  },
+  "hosted-parity-nano": {
+    "result": "skipped",
+    "outputs": {}
+  }
+}

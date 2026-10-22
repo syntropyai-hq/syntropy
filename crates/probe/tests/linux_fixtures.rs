@@ -11,8 +11,8 @@ use syntropy_core::ids::{DeviceId, NodeId, TierId};
 use syntropy_core::resource::caps::PowerSource;
 use syntropy_core::resource::ordinal::{DeviceCandidate, Enumerated, HostDomain};
 use syntropy_core::resource::{
-    CpuArch, CpuSet, CpuTopology, DeviceClass, DeviceFeatures, DeviceInfo, DeviceInfoExt,
-    DeviceKind, HostMemInfo, IsaFlags, IsaLevel,
+    CpuArch, CpuIsa, CpuSet, CpuTopology, DeviceClass, DeviceFeatures, DeviceInfo, DeviceInfoExt,
+    DeviceKind, HostMemInfo, IsaFlags,
 };
 use syntropy_core::units::Bytes;
 use syntropy_probe::DirFs;
@@ -81,10 +81,7 @@ fn desktop_hybrid() {
             id: dev(0),
             kind: DeviceKind::Cpu,
             name: NAME.into(),
-            class: DeviceClass::Cpu {
-                arch: CpuArch::X86_64,
-                level: IsaLevel::X86_64V3,
-            },
+            class: DeviceClass::Cpu { isa: CpuIsa::X86V3 },
             backends: smallvec![],
             features: DeviceFeatures::AVX2 | DeviceFeatures::AVX_VNNI,
             local_tiers: smallvec![tier(0), tier(1)],
@@ -182,10 +179,7 @@ fn dual_socket_two_numa_domains() {
         id: dev(numa),
         kind: DeviceKind::Cpu,
         name: NAME.into(),
-        class: DeviceClass::Cpu {
-            arch: CpuArch::X86_64,
-            level: IsaLevel::X86_64V4,
-        },
+        class: DeviceClass::Cpu { isa: CpuIsa::X86V4 },
         backends: smallvec![],
         features,
         local_tiers: smallvec![tier(tiers[0]), tier(tiers[1])],
@@ -280,10 +274,7 @@ fn wsl2() {
             id: dev(0),
             kind: DeviceKind::Cpu,
             name: "AMD Ryzen 7 7800X3D 8-Core Processor".into(),
-            class: DeviceClass::Cpu {
-                arch: CpuArch::X86_64,
-                level: IsaLevel::X86_64V4,
-            },
+            class: DeviceClass::Cpu { isa: CpuIsa::X86V4 },
             backends: smallvec![],
             features: DeviceFeatures::AVX2
                 | DeviceFeatures::AVX512
@@ -364,10 +355,7 @@ fn docker_cgroup_v2_limit() {
             id: dev(0),
             kind: DeviceKind::Cpu,
             name: "AMD Ryzen 9 5950X 16-Core Processor".into(),
-            class: DeviceClass::Cpu {
-                arch: CpuArch::X86_64,
-                level: IsaLevel::X86_64V3,
-            },
+            class: DeviceClass::Cpu { isa: CpuIsa::X86V3 },
             backends: smallvec![],
             features: DeviceFeatures::AVX2,
             local_tiers: smallvec![tier(0), tier(1)],
@@ -443,8 +431,7 @@ fn raspberry_pi_5() {
             kind: DeviceKind::Cpu,
             name: "ARM Cortex-A76".into(),
             class: DeviceClass::Cpu {
-                arch: CpuArch::Aarch64,
-                level: IsaLevel::Aarch64V8_2Dotprod,
+                isa: CpuIsa::Arm82Dot,
             },
             backends: smallvec![],
             features: DeviceFeatures::NEON_DOTPROD | DeviceFeatures::NEON_FP16,

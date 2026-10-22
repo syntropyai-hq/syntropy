@@ -21,7 +21,7 @@ pub struct DeviceInfo {
     pub kind: DeviceKind,
     /// The name the driver reports.
     pub name: String,
-    /// Backend plus architecture generation, e.g. CUDA sm_120, Metal Apple9, x86-64-v4.
+    /// Backend plus architecture generation, e.g. CUDA sm_120, Metal Apple9, `X86V4`.
     /// Part of `PackKey` (RFC-0001 §5.6).
     pub class: DeviceClass,
     /// Providers able to drive this device, in preference order (RFC-0040).
@@ -176,12 +176,22 @@ bitflags! {
     }
 }
 
-/// The pair that decides which kernels and pack layouts apply (RFC-0010 §1.2). RFC-0001
-/// declares it as a `PackKey` component: two devices with equal `DeviceClass` share packs.
+/// A device's class: backend plus architecture generation (RFC-0040 §2.2; ADR-0405). Part of
+/// `PackKey` (RFC-0001 §5.6), `OpCert` and the selection key, so two devices with equal
+/// classes accept the same pack and the same kernel objects. Owner: RFC-0040; RFC-0010
+/// contributes `Npu`.
+///
+/// This is the one `DeviceClass` (ADR-0405 decision 1): `syntropy-kernels` re-exports it and
+/// defines none of its own. A field belongs here only when a change in it can change the pack
+/// layout or the set of kernel objects the providers load (decision 2). Each provider decides
+/// the class at `enumerate`, from the device's reported properties, the OS facts, the AMX
+/// permission result and `features.disable` (decision 3). Facts that change neither the pack
+/// nor the kernels live in [`DeviceInfoExt::gpu_cores`], [`DeviceInfoExt::api_ids`] and
+/// [`DriverInfo::vk_driver`] (decision 4).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DeviceClass {
-    /// An NVIDIA GPU by compute capability: 75, 86, 89, 90, 100, 120, 121, ...
+    /// An NVIDIA GPU by compute capability: 75, 80, 86, 89, 90, 100, 120, 121, ...
     Cuda {
         /// Compute capability, major × 10 + minor.
         sm: u16,
@@ -191,36 +201,65 @@ pub enum DeviceClass {
         /// The `gfx` target number.
         gfx: u32,
     },
-    /// An Apple GPU.
+    /// An Apple GPU. RFC-0040 names the family type `AppleFamily`; ADR-0405 keeps `core`'s
+    /// [`AppleGpuFamily`].
     Metal {
         /// The Metal GPU family.
         family: AppleGpuFamily,
-        /// GPU core count.
-        cores: u16,
+        /// Whether the provider loads the Metal 4 library: from the family check, the OS
+        /// version and `features.disable` (RFC-0040 §7.2).
+        metal4: bool,
     },
     /// A GPU driven through Vulkan.
     Vulkan {
-        /// PCI vendor ID.
+        /// The vendor ID.
         vendor: u32,
-        /// PCI device ID.
-        device: u32,
-        /// The Vulkan driver.
-        driver: VkDriverId,
+        /// Whether the provider loads the cooperative-matrix variant set.
+        coopmat: bool,
+        /// The subgroup size of the shader variant set the provider loads, 32 or 64 (ADR-0405
+        /// decision 3's tie-break: 32 when the device can run it).
+        subgroup: u8,
     },
     /// The CPU cores of one NUMA domain.
     Cpu {
-        /// Instruction set architecture.
-        arch: CpuArch,
-        /// Microarchitecture level.
-        level: IsaLevel,
+        /// The ISA level the CPU provider dispatches to (RFC-0040 §7.3).
+        isa: CpuIsa,
     },
-    /// A neural processing unit.
+    /// A neural processing unit (RFC-0010). No provider produces it in v1, so no pack or
+    /// certificate is keyed by it; it lets an enumerated NPU with
+    /// [`DeviceProblem::NoProvider`] have a class.
     Npu {
         /// Vendor ID.
         vendor: u32,
         /// Model ID.
         model: u32,
     },
+}
+
+/// The CPU provider's ISA levels (RFC-0040 §7.3; ADR-0405 decision 3). Owner: RFC-0040.
+///
+/// Each level's requirements are RFC-0040 §7.3's table. Detection is the CPU provider's, at
+/// `enumerate` (COMP-E3-T01); the probe's E1 may compute a provisional level from
+/// `/proc/cpuinfo` and the platform equivalents, which E5 replaces (RFC-0010 §2.1).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CpuIsa {
+    /// SSE4.2 and POPCNT: the correctness floor.
+    X86V2,
+    /// AVX2, FMA and F16C; AVX-VNNI used when present.
+    X86V3,
+    /// AVX-512 F, BW, VL and DQ; VNNI, BF16 and FP16 used when present.
+    X86V4,
+    /// `X86V4` plus AMX-TILE and AMX-INT8, with the OS's tile permission granted.
+    X86V4Amx,
+    /// NEON.
+    Arm80,
+    /// NEON with SDOT/UDOT and FP16 arithmetic.
+    Arm82Dot,
+    /// `Arm82Dot` plus I8MM and BF16.
+    Arm86I8mm,
+    /// `Arm86I8mm` plus SME2.
+    Arm92Sme2,
 }
 
 /// The Metal GPU family of an Apple GPU. RFC-0010 §1.2 names the type without variants;
@@ -239,11 +278,13 @@ pub enum AppleGpuFamily {
 }
 
 /// A Vulkan `VkDriverId` value, as `VkPhysicalDeviceDriverProperties::driverID` reports it.
+/// Recorded in [`DriverInfo::vk_driver`]; not part of the class (ADR-0405 decision 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct VkDriverId(pub u32);
 
 /// A CPU instruction set architecture. RFC-0010 §1.2 names the type without variants.
+/// `NodeInfo::arch` uses it (RFC-0001 §5.2); the CPU device's class carries a [`CpuIsa`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CpuArch {
@@ -251,25 +292,6 @@ pub enum CpuArch {
     X86_64,
     /// AArch64.
     Aarch64,
-}
-
-/// A CPU microarchitecture level (RFC-0010 §1.2: x86-64-v2/v3/v4, aarch64-v8.0,
-/// v8.2-dotprod, v9-sve2).
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum IsaLevel {
-    /// x86-64-v2.
-    X86_64V2,
-    /// x86-64-v3.
-    X86_64V3,
-    /// x86-64-v4.
-    X86_64V4,
-    /// AArch64 v8.0.
-    Aarch64V8_0,
-    /// AArch64 v8.2 with the dot-product extension.
-    Aarch64V8_2Dotprod,
-    /// AArch64 v9 with SVE2.
-    Aarch64V9Sve2,
 }
 
 /// RFC-0010 §1.2's additions to [`DeviceInfo`]. Every field has a serde default.
@@ -290,9 +312,33 @@ pub struct DeviceInfoExt {
     pub power: Option<PowerInfo>,
     /// Why a present device is unusable or degraded.
     pub problems: SmallVec<[DeviceProblem; 2]>,
+    /// Apple GPU core count, from IOKit `gpu-core-count` (ADR-0405 decision 4). One chip name
+    /// ships with several core counts, and Apple GPUs have no `PciInfo`.
+    pub gpu_cores: Option<u16>,
+    /// The vendor and device IDs as the graphics API reports them (ADR-0405 decision 4).
+    /// When `pci` is also present the two must agree; `pci` wins, a disagreement is recorded
+    /// as [`DeviceProblem::ApiIdsMismatch`] and this field is then ignored.
+    pub api_ids: Option<ApiIds>,
 }
 
-/// A device's driver stack. RFC-0010 §1.2 names the type and its three parts.
+/// The vendor and device IDs as the graphics API reports them: Vulkan's `vendorID` and
+/// `deviceID` (RFC-0010 §1.2; ADR-0405 decision 4). [`PciInfo`] holds them only for PCI
+/// devices, and many integrated and mobile Vulkan GPUs have none. They serve diagnostics and
+/// the Vulkan certificate rule (RFC-0060 §6.4); neither is in any pack key.
+///
+/// Both fields are required when decoding and there is no `Default`: an absent value is
+/// `DeviceInfoExt::api_ids: None`, never IDs 0 and 0, which a check against `PciInfo` would
+/// read as a mismatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ApiIds {
+    /// The vendor ID.
+    pub vendor: u32,
+    /// The device ID.
+    pub device: u32,
+}
+
+/// A device's driver stack (RFC-0010 §1.2): the driver, runtime and loader, and the Vulkan
+/// driver ID where there is one.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DriverInfo {
@@ -302,6 +348,9 @@ pub struct DriverInfo {
     pub runtime: Option<String>,
     /// The library the driver was loaded from, where one was.
     pub loader: Option<PathBuf>,
+    /// `VkPhysicalDeviceDriverProperties::driverID`, for devices driven through Vulkan
+    /// (ADR-0405 decision 4).
+    pub vk_driver: Option<VkDriverId>,
 }
 
 /// A PCI function's identity and link (RFC-0010 §1.2).
@@ -524,6 +573,12 @@ pub enum DeviceProblem {
     Excluded {
         /// What excluded it.
         by: ExclusionSource,
+    },
+    /// The graphics API's IDs disagree with `PciInfo`; `PciInfo` wins and
+    /// [`DeviceInfoExt::api_ids`] is ignored (ADR-0405 decision 4).
+    ApiIdsMismatch {
+        /// The IDs the graphics API reported.
+        api: ApiIds,
     },
 }
 

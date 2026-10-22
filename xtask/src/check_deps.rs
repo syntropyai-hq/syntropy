@@ -26,7 +26,10 @@
 //!   no vendor runtime symbol. Linux only: QUAL-E1-T28 adds the Windows import table and the
 //!   macOS load commands.
 //! - **Rule 8**: every lib and bin crate root outside the `unsafe` allow-list sets
-//!   `#![forbid(unsafe_code)]`.
+//!   `#![forbid(unsafe_code)]`. `testkit` holds the one module-scoped exception: its root sets
+//!   `#![deny(unsafe_code)]`, and its only `unsafe` is the `GlobalAlloc` impl in `src/guards.rs`,
+//!   under its one `#[allow(unsafe_code)]`. No `#[path]`, `include!`, local `macro_rules!` or
+//!   build script may bring in a file the check does not read ([`unsafe_scope`]).
 //! - **Rule 9**: no production crate has a normal or build edge to a dev-only crate (`testkit`,
 //!   `bench`).
 //! - **Rule 10**: the features `cargo tree` resolves for each release crate's own build (normal and
@@ -46,6 +49,7 @@ pub(crate) mod layers;
 pub(crate) mod policy;
 mod release;
 mod rules;
+mod unsafe_scope;
 
 use std::fmt;
 use std::io::{self, Write};

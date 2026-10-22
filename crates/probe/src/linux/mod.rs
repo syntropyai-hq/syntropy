@@ -133,10 +133,9 @@ pub fn enumerate(fs: &dyn HostFs, isa: IsaSource, node: NodeId) -> Result<LinuxH
             id: *id,
             kind: DeviceKind::Cpu,
             name: cand.name.clone(),
-            class: DeviceClass::Cpu {
-                arch: cpu.arch,
-                level: cpu.isa.level,
-            },
+            // E1's provisional class; E5 replaces it with the CPU provider's (ADR-0405
+            // decision 3).
+            class: DeviceClass::Cpu { isa: cpu.isa.level },
             // E5 fills the providers when the CPU provider opens the device.
             backends: SmallVec::new(),
             features: cpu.isa.features,
