@@ -566,7 +566,9 @@ fn suggests_the_closest_key() {
     );
 }
 
-/// A key whose type is too long for one line of the compiler's token printer.
+/// A key whose type is too long for one line of the compiler's token printer. The type is
+/// written out, since an alias would record the alias's short name and test nothing.
+#[allow(clippy::type_complexity)]
 #[derive(Debug, Deserialize, ConfigSection)]
 #[config(section = "long_type", scope = Node, owner = "RFC-0054")]
 struct LongTypeSection {
