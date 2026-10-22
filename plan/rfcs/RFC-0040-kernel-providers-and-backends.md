@@ -158,8 +158,8 @@ pub trait KernelProvider: Send + Sync {
 #### 2.2 Supporting types
 
 ```rust
-pub struct ProviderId(pub &'static str);           // "cuda", "metal", "cpu", "hip", "vulkan", "ggml-cuda", …
-pub struct ProviderBuild { pub version: u32, pub module: Option<Blake3>, pub toolchain: SmallVec<[(&'static str, String); 3]>, pub driver: Option<String> }
+pub struct ProviderId(pub Cow<'static, str>);      // "cuda", "metal", "cpu", "hip", "vulkan", "ggml-cuda", …
+pub struct ProviderBuild { pub version: u32, pub module: Option<Blake3>, pub toolchain: SmallVec<[(Cow<'static, str>, String); 3]>, pub driver: Option<String> }
 pub enum MemoryDomain { Cuda, Hip, Metal, Vulkan, Host, Ggml(GgmlBackend) }
 
 /// One device as a provider sees it. The probe (RFC-0010) merges records from several
@@ -254,6 +254,8 @@ bitflags! { pub struct HostRegFlags: u8 { const DMA = 1; const MAPPED = 2; } }  
 pub struct Segment { pub reservation: u64, pub offset: Bytes, pub bytes: Bytes, pub handle: u64 }
 ```
 
+*Note 2026-10-23 (#1525):* `ProviderId` and the toolchain names in `ProviderBuild` were `&'static str`. §6.5 postcard-encodes `SelectionKey` and `SelectionEntry`, which hold them, to `<state>/kernels/selection.v1`. Decoding a `&'static str` needs a buffer that lives for the whole program, so every cache load would have leaked one. `Cow<'static, str>` decodes owned, and a provider still names itself with a literal without allocating. A `Cow` cannot be `Copy`, because its owned form holds a `String`, so `ProviderId` departs from RFC-0001 §5's default that IDs are `Copy`: it is `Clone` only. RFC-0001 §5.12 makes the same change to `Error::context` (RFC-0001 §18.32). COMP-E13-T15 makes the change in code.
+
 *Revised 2026-10-22 (ADR-0405):* `DeviceClass`, `CpuIsa` and `DeviceFeatures` live in `syntropy-core`, and `kernels` re-exports them (PLC-E1-T16). RFC-0010 §1.2 had its own `DeviceClass` with other variants, and now points here. `AppleFamily` is renamed `AppleGpuFamily`, the name `core` already uses. `Npu` comes from RFC-0010. `ProviderDevice` is unchanged.
 
 #### 2.3 Memory domains and device ownership
@@ -297,7 +299,7 @@ pub enum OpKind {
     AttnPrefill(AttnKind),        // causal chunk against paged KV; for Bidirectional, the whole input with no mask
     AttnPartial(AttnKind),        // attention over a subset of pages, returning (o, m, l) unnormalised (§3.6; RFC-0022's attention_partial)
     AttnMerge,                    // exact log-sum-exp merge of partials in a fixed order (§3.6)
-    AttnIndex(IndexKind),         // indexer scores and top-k block or token selection
+    AttnIndex(IndexKind),         // indexer scores and top-k block, token or compressed-entry selection
     KvWrite(AttnKind),            // append K/V or latents into KV pages, RoPE applied where the family says
     ScanDecode(ScanKind),         // one-token recurrent state update
     ScanPrefill(ScanKind),        // chunked parallel scan over a prefill chunk
@@ -322,7 +324,8 @@ pub enum OpKind {
     TapGather,                    // parity taps: candidate log-probs at reference top-K ids, logsumexp, argmax, margin (§3.8)
     HiddenTap,                    // parity variant only: copies tapped rows' residual stream at a layer boundary (§3.8)
 }
-pub enum AttnKind { Gqa, Mla, SlidingGqa { sinks: bool }, BlockSparse, TopKSparse, Compressed,
+pub enum AttnKind { Gqa, Mla, SlidingGqa { sinks: bool }, BlockSparse, TopKSparse,
+                    Compressed { sinks: bool },  // DeepSeek-V4-class: raw window plus compressed entries, one softmax (revised 2026-10-23)
                     Bidirectional }       // encoder-only models: every row sees every key of its sequence (RFC-0043 §5.4)
 pub enum PoolKind { Mean, Cls, LastToken }
 pub enum IndexKind { BlockTopK, TokenTopK, CompressedTopK }
@@ -330,6 +333,10 @@ pub enum ScanKind { GatedDeltaNet, Kda, Mamba2 }
 ```
 
 The list is closed per release. A family module (RFC-0043) may only use registered kinds; adding a kind needs a reference implementation, a ggml mapping or an explicit "native only" mark, and parity tests (§11.4). The 2026-10-20 additions follow that rule: `AttnKind::Bidirectional` and `Pool` serve the encoder-only embedding family from M2, with CPU and CUDA kernels; `EmbedInject` is reserved for multimodal input after 1.0 and has only its `kernels::reference` semantics in v1, which no provider is asked to implement. `OpKind` lines up with RFC-0001's `KernelClass` for profiling: `Gemv`, `GateUpAct` and `Logits` profile as `DenseGemv`; `MoeGrouped` as `ExpertGemv`; `AttnDecode` as `Attention(kind)`; `RowGather` as `RowGather`; `Convert`, `GatherRows` and `ScatterRows` as `Copy`.
+
+*Revised 2026-10-23 (COMP-E16-T18; OQ-MF-16 (a)–(c)): compressed attention.* `Compressed` follows DeepSeek-V4's reference code, `inference/model.py` and `inference/kernel.py` in `deepseek-ai/DeepSeek-V4-Pro` at revision `b5968e9190ef611bbf34a7229255be88a0e937c1`, which COMP-E16-T15 read into RFC-0043 open question 2.
+- **The sink.** `AttnKind::Compressed { sinks }` carries a sink flag, as `SlidingGqa { sinks }` does. With it set, a learned per-head logit sits inside the one softmax over the raw window and the entries the layer reads (`kernel.py` line 346). Every published V4 layer sets it.
+- **The indexer.** `AttnIndex(CompressedTopK)` scores formed compressed entries, not tokens, and runs only on layers whose ratio has an indexer: r = 4 in the published configurations. A layer with r = 128 reads every formed entry and has no indexer. A layer with r = 0 forms no entries and reads its raw window alone. RFC-0043 §3.1 gives each layer kind's lowering.
 
 #### 3.2 Shapes and buckets
 

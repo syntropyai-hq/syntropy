@@ -27,6 +27,14 @@
 //! - **Support.** A proof's `Ack`s and `Endorse`s count whoever gave them; §7.5's rule that a
 //!   revoked member's endorsement no longer counts is not modelled. No scenario revokes a node
 //!   that endorsed another's election.
+//! - **Heal standing** (§7.5 as revised by DIST-E10-T10, OQ-NET-34): a node compares its
+//!   standing, the strongest supported election in its chain and then its coordinator's proof,
+//!   with the other side's. A chain's support comes from each `SignedElection`'s `acks`, the
+//!   elections the node itself endorsed, and its coordinator's proof. A proof's support only grows,
+//!   a node endorses each election it accepts once, and a fencing reply carries the sender's
+//!   strongest supported election. `proof_only_heal` restores §7.5's proof comparison from
+//!   before, and `own_endorsement_counts = false` the reading of `acks` alone, for the tests that
+//!   show why each changed. Neither turns off the support merge or endorse-once.
 //! - **Planned handover** (§7.7) is not modelled; DIST-E10-T04 builds it.
 //!
 //! Ghost state, which no node reads, records what really happened: the elections nodes actually
@@ -78,11 +86,43 @@ impl Proof {
     }
 }
 
+/// A proof's place in the heal order (§7.5).
+pub type HealKey = (bool, u8, u8, std::cmp::Reverse<Ix>);
+
+/// The strongest supported election a node's chain holds: the supported `CoordinatorElected`
+/// entries of its log, whose support is read from the `SignedElection`'s `acks` (§7.3), and its
+/// coordinator's proof when that is supported, endorsements included. `None` if none is supported.
+pub fn chain_support(log: &[Entry], proof: Option<&Proof>) -> Option<Proof> {
+    log.iter()
+        .filter_map(|e| match *e {
+            Entry::Elected { node, term, acks } => Some(Proof {
+                node,
+                term,
+                sig_ok: true,
+                support: acks,
+            }),
+            _ => None,
+        })
+        .chain(proof.copied())
+        .filter(Proof::supported)
+        .max_by_key(Proof::heal_key)
+}
+
+/// A node's standing at heal under OQ-NET-34's option (a): the strongest supported election in its
+/// chain first, then its coordinator's proof. A lone survivor whose chain holds a supported
+/// election newer than an incoming proof's is not deposed by it, even though its own election is
+/// unsupported. The order stays total: the second key decides between different coordinators.
+pub fn standing(chain: Option<&Proof>, proof: &Proof) -> (Option<HealKey>, HealKey) {
+    (chain.map(Proof::heal_key), proof.heal_key())
+}
+
 /// A log entry, reduced to what election, replication and authority need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Entry {
-    /// `CoordinatorElected`, a signed election.
-    Elected { node: Ix, term: Term },
+    /// `CoordinatorElected`, a signed election. Its `SignedElection` carries the claim's signed
+    /// `acks` (§7.3), so a reader of the log knows whether the election was supported when it was
+    /// won. Endorsements given later are not in the log.
+    Elected { node: Ix, term: Term, acks: u8 },
     /// The effect of a journalled command, by `CommandId`.
     Command { id: u8 },
     /// A keyholder-signed authority entry (`ApiKeyCreated`, `KeyholderChanged`, …). A forged one
@@ -106,7 +146,7 @@ pub fn last_counter(log: &[Entry]) -> u8 {
 /// The last `CoordinatorElected` in `log`.
 pub fn last_elected(log: &[Entry]) -> Option<(Ix, Term)> {
     log.iter().rev().find_map(|e| match e {
-        Entry::Elected { node, term } => Some((*node, *term)),
+        Entry::Elected { node, term, .. } => Some((*node, *term)),
         _ => None,
     })
 }
@@ -143,11 +183,14 @@ pub enum Msg {
         log: Vec<Entry>,
         proof: Proof,
     },
-    /// A fencing reply: the sender's coordinator's proof, or `None` for a bare term.
+    /// A fencing reply: the sender's coordinator's proof, or `None` for a bare term, and the
+    /// strongest supported election in the sender's chain (its `SignedElection`), so a coordinator
+    /// whose election has a supported successor there learns of it (OQ-NET-34).
     Fence {
         from: Ix,
         to: Ix,
         proof: Option<Proof>,
+        chain: Option<Proof>,
     },
     /// A command sent to the coordinator.
     Command {
@@ -210,6 +253,9 @@ pub struct Node {
     pub pending: BTreeSet<u8>,
     /// Keyholder only: the revocation it signed, kept and re-submitted for good.
     pub kh_revoked: Option<Ix>,
+    /// The elections it endorsed, kept on disk with the journal. It knows each was supported,
+    /// because it supported it, even when the `SignedElection` carries no `acks` (DIST-E10-T10).
+    pub endorsed: BTreeSet<(Ix, Term)>,
 }
 
 impl Node {
@@ -229,6 +275,7 @@ impl Node {
             refused: BTreeSet::new(),
             pending: BTreeSet::new(),
             kh_revoked: None,
+            endorsed: BTreeSet::new(),
         }
     }
 
@@ -376,6 +423,15 @@ pub struct Config {
     /// The reply rule before OQ-NET-33: the originator's own ack also counts toward
     /// `replicated = true`. Only the regression test that shows why the rule changed sets it.
     pub originator_ack_counts: bool,
+    /// RFC-0032 §7.5's heal comparison from before OQ-NET-34: an incoming proof is compared with
+    /// the receiver's coordinator's proof alone. Otherwise each side's standing ([`standing`]) is
+    /// compared. Only the comparison changes: the support merge and endorse-once stay on. Only
+    /// the regression test of the rollback sets it.
+    pub proof_only_heal: bool,
+    /// A node counts its own `Endorse` of an election in its chain as support. Otherwise a past
+    /// election's support is read from its `SignedElection`'s `acks` alone, which misses support
+    /// given after the win. Only the probe test that shows why it is needed clears it.
+    pub own_endorsement_counts: bool,
     /// Commands, as `(id, originator)`.
     pub commands: Vec<(u8, Ix)>,
     /// `(keyholder, node)` the keyholder revokes.
@@ -476,6 +532,48 @@ impl ElectionModel {
             && last_elected(log) == Some((proof.node, proof.term))
     }
 
+    /// Whether a verified proof `p`, from a side whose chain's strongest supported election is
+    /// `p_chain`, wins against a node whose chain support is `mine_chain` and whose coordinator's
+    /// proof is `mine` (§7.5; OQ-NET-34's option (a) unless `proof_only_heal`).
+    pub fn heal_wins(
+        &self,
+        p: &Proof,
+        p_chain: Option<&Proof>,
+        mine: &Proof,
+        mine_chain: Option<&Proof>,
+    ) -> bool {
+        if self.cfg.proof_only_heal {
+            p.beats(mine)
+        } else {
+            standing(p_chain, p) > standing(mine_chain, mine)
+        }
+    }
+
+    /// Node `i`'s own chain support: [`chain_support`] over its log, with each election it endorsed
+    /// counted as supported by it, and its coordinator's proof `proof`.
+    pub fn own_chain(&self, s: &State, i: Ix, proof: Option<&Proof>) -> Option<Proof> {
+        let node = &s.nodes[i as usize];
+        let log: Vec<Entry> = node
+            .log
+            .iter()
+            .map(|e| match *e {
+                Entry::Elected {
+                    node: y,
+                    term,
+                    acks,
+                } if self.cfg.own_endorsement_counts && node.endorsed.contains(&(y, term)) => {
+                    Entry::Elected {
+                        node: y,
+                        term,
+                        acks: acks | bit(i),
+                    }
+                }
+                other => other,
+            })
+            .collect();
+        chain_support(&log, proof)
+    }
+
     /// The term a claimant would claim at now.
     pub fn next_term(&self, s: &State, node: Ix) -> Term {
         Term {
@@ -550,11 +648,19 @@ impl ElectionModel {
                 support,
             };
             for (i, node) in nodes.iter_mut().enumerate() {
-                node.log = vec![Entry::Elected { node: 0, term }];
+                node.log = vec![Entry::Elected {
+                    node: 0,
+                    term,
+                    acks: support,
+                }];
                 node.coordinator = Some(0);
                 node.term = Some(term);
                 node.proof = Some(proof);
                 node.lease_live = true;
+                if i != 0 {
+                    // The followers acked the starting election's claim and endorsed it.
+                    node.endorsed.insert((0, term));
+                }
                 accepted[i].insert(term, 0);
             }
             elections.insert((0, term));
@@ -765,7 +871,11 @@ impl ElectionModel {
         }
         let me = &mut s.nodes[y as usize];
         me.log = best;
-        me.log.push(Entry::Elected { node: y, term });
+        me.log.push(Entry::Elected {
+            node: y,
+            term,
+            acks,
+        });
         let proof = Proof {
             node: y,
             term,
@@ -846,7 +956,16 @@ impl ElectionModel {
             node.log = log;
             node.coordinator = Some(c);
             node.term = Some(proof.term);
-            node.proof = Some(proof);
+            // An election's support only grows: its `Ack`s and `Endorse`s are signed evidence.
+            // A copy of the same proof that arrives late, from an append sent before a later
+            // endorsement, keeps what this node already held (DIST-E10-T10).
+            node.proof = Some(match node.proof {
+                Some(held) if (held.node, held.term) == (proof.node, proof.term) => Proof {
+                    support: held.support | proof.support,
+                    ..proof
+                },
+                _ => proof,
+            });
             node.lease_live = true;
             node.claim = None;
             node.pending.clear();
@@ -911,7 +1030,12 @@ impl ElectionModel {
                 log,
                 proof,
             } => self.on_append(s, to, from, term, log, proof),
-            Msg::Fence { from: _, to, proof } => self.on_fence(s, to, proof),
+            Msg::Fence {
+                from: _,
+                to,
+                proof,
+                chain,
+            } => self.on_fence(s, to, proof, chain),
             Msg::Command { from: _, to, id } => {
                 if s.nodes[to as usize].is_coordinator(to) {
                     self.coordinator_append_command(s, to, id);
@@ -1031,12 +1155,14 @@ impl ElectionModel {
         let my_proof = node.proof;
         let fence = |s: &mut State| {
             if let Some(p) = s.nodes[f as usize].proof {
+                let chain = self.own_chain(s, f, Some(&p));
                 self.send(
                     s,
                     Msg::Fence {
                         from: f,
                         to: c,
                         proof: Some(p),
+                        chain,
                     },
                 );
             }
@@ -1072,8 +1198,14 @@ impl ElectionModel {
                 return;
             }
             let len = log.len() as u8;
+            // A node that stepped down on a fencing reply follows the winner before it has
+            // endorsed it; its first ack then carries the `Endorse` (§7.5).
+            let endorse = !s.nodes[f as usize].endorsed.contains(&(c, term));
+            if endorse {
+                s.nodes[f as usize].endorsed.insert((c, term));
+            }
             self.follow(s, f, c, log, proof);
-            self.log_ack(s, f, c, term, len, false);
+            self.log_ack(s, f, c, term, len, endorse);
             return;
         }
         // A new election, or a heal: an election that extends this node's log at the next
@@ -1088,7 +1220,16 @@ impl ElectionModel {
             && last_elected(&log) == Some((c, term))
             && (current.is_none() || !node.lease_live)
             && !am_coordinator;
-        let heal_switch = current.is_none_or(|p| proof.beats(&p)) && !following;
+        // The sender's chain is the log it sent; this node's is its own. A chain's support counts
+        // only elections that verify for this node, as a proof's does.
+        let theirs = chain_support(&log, Some(&proof)).filter(|q| self.verifies(s, f, q));
+        let ours = current.and_then(|p| {
+            self.own_chain(s, f, Some(&p))
+                .filter(|q| self.verifies(s, f, q))
+        });
+        let heal_switch = current
+            .is_none_or(|p| self.heal_wins(&proof, theirs.as_ref(), &p, ours.as_ref()))
+            && !following;
         let resync = following && !extends;
         if !(normal_election || heal_switch || resync) {
             if current.is_some_and(|p| p.supported() && !proof.supported() && proof.term > p.term) {
@@ -1113,12 +1254,18 @@ impl ElectionModel {
             return;
         }
         let len = log.len() as u8;
-        let endorse = !following;
+        // Every node endorses an election it accepts, once, whichever path brought it there: a new
+        // election, a heal switch, or a snapshot adopted after a fencing reply (§7.5: "it then
+        // endorses the winner's election").
+        let endorse = !s.nodes[f as usize].endorsed.contains(&(c, term));
+        if endorse {
+            s.nodes[f as usize].endorsed.insert((c, term));
+        }
         self.follow(s, f, c, log, proof);
         self.log_ack(s, f, c, term, len, endorse);
     }
 
-    fn on_fence(&self, s: &mut State, c: Ix, proof: Option<Proof>) {
+    fn on_fence(&self, s: &mut State, c: Ix, proof: Option<Proof>, chain: Option<Proof>) {
         let node = &s.nodes[c as usize];
         if !node.is_coordinator(c) || !self.honest(c) {
             return;
@@ -1135,18 +1282,30 @@ impl ElectionModel {
             s.reached |= seen::FORGED_TERM_IGNORED;
             return;
         }
+        // The sender's chain support counts only if it verifies and is supported.
+        let theirs = chain.filter(|q| q.supported() && self.verifies(s, c, q));
+        let ours = self
+            .own_chain(s, c, Some(&mine))
+            .filter(|q| self.verifies(s, c, q));
         // Its own earlier election never deposes it: it cannot step down to follow itself.
-        if mine.beats(&p) || p == mine || p.node == c {
+        if !self.heal_wins(&p, theirs.as_ref(), &mine, ours.as_ref()) || p == mine || p.node == c {
             if mine.supported() && !p.supported() && p.term.counter > mine.term.counter {
                 s.reached |= seen::SUPPORTED_BEAT_UNSUPPORTED;
             }
             return;
         }
-        // A verified winning proof: step down, follow the winner and sync with it.
+        // A verified winning proof: step down, follow the winner and sync with it. When the
+        // fence's chain names the same election, its support is merged in: evidence only grows.
         let n = &mut s.nodes[c as usize];
         n.coordinator = Some(p.node);
         n.term = Some(p.term);
-        n.proof = Some(p);
+        n.proof = Some(match theirs {
+            Some(q) if (q.node, q.term) == (p.node, p.term) => Proof {
+                support: p.support | q.support,
+                ..p
+            },
+            _ => p,
+        });
         n.lease_live = false;
         n.pending.clear();
         self.record_accept(s, c, p.term, p.node);
@@ -1343,6 +1502,7 @@ impl ElectionModel {
                             from: b,
                             to,
                             proof: Some(forged),
+                            chain: None,
                         },
                     );
                 } else {
@@ -1352,6 +1512,7 @@ impl ElectionModel {
                             from: b,
                             to,
                             proof: None,
+                            chain: None,
                         },
                     );
                 }

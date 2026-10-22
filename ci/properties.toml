@@ -28,6 +28,11 @@ crate = "bench"
 owner = "QUAL-E12-T01"
 
 [[property]]
+id = "P-config-2"
+crate = "config"
+owner = "PROD-E1-T10"
+
+[[property]]
 id = "P-core-1"
 crate = "core"
 owner = "QUAL-E3-T05"
