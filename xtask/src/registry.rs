@@ -24,8 +24,8 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    changes, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom, properties,
-    repo_settings, sim_presets, toolchain,
+    changes, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom, plan_tools,
+    properties, repo_settings, sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -312,6 +312,16 @@ pub const JOBS: &[Entry] = &[
                     shown: "ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its \
                             expected jobs, and covers pr.yml's jobs",
                     run: changes::goldens_step,
+                },
+            },
+            // The task-graph check, so a plan-only diff, which runs `lint` alone, is checked
+            // (RFC-0062 §2.2, note 2026-10-23).
+            Step {
+                name: "plan",
+                action: Action::Builtin {
+                    shown: "the plan tools: every task row parses, the task graph checks, and \
+                            the generated sections are current",
+                    run: plan_tools::step,
                 },
             },
         ],
@@ -878,6 +888,8 @@ mod tests {
                  figure",
                 "xtask: ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its expected \
                  jobs, and covers pr.yml's jobs",
+                "xtask: the plan tools: every task row parses, the task graph checks, and the \
+                 generated sections are current",
             ]
         );
     }
