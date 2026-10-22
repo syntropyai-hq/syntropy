@@ -15,7 +15,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:e33d3e3797b93150"
+jobs_toml = "fnv1a:9be2053efbb833d6"
 
 [[golden]]
 name = "plan only"
@@ -403,7 +403,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 [[golden]]
 name = "vendored ggml and the CUDA image"
 source = "constructed: neither exists yet"
-paths = ["third_party/ggml/src/ggml.c", "ci/images/cuda-12/Dockerfile"]
+paths = ["third_party/ggml/src/ggml.c", "third_party/ggml.lock", "ci/images/cuda-12/Dockerfile"]
 jobs = ["build", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]

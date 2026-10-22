@@ -42,6 +42,7 @@ no_crate = [
 "third_party/bip39/**" = ["net"]
 "third_party/blake3/**" = ["net"]
 "third_party/ggml/**" = ["kernels-ggml"]
+"third_party/ggml.lock" = ["kernels-ggml"]
 "third_party/licences.toml" = ["xtask"]
 "bench/**" = ["bench"]
 "ci/**" = ["xtask"]
@@ -114,7 +115,10 @@ paths = [
     # The tolerance tables `kernels` embeds, which the op conformance checks run against
     # (ADR-0019).
     "numerics/**",
+    # The vendored ggml tree, and the lock file that records its upstream commit (§4.2): a ggml
+    # bump changes both.
     "third_party/ggml/**",
+    "third_party/ggml.lock",
     "ci/images/cuda*/**",
     "rust-toolchain.toml",
 ]
