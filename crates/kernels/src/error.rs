@@ -23,6 +23,9 @@ pub struct ErrorCode(pub u16);
 impl ErrorCode {
     /// `OpUnsupported` (RFC-0040 §13 code 1): what [`unsupported`] carries.
     pub const OP_UNSUPPORTED: Self = Self(1);
+    /// `AmxDenied` (RFC-0040 §13 code 13): the OS refused AMX tile permission to a process
+    /// opening a device whose class is `X86V4Amx` (RFC-0040 §7.3; ADR-0405 decision 3).
+    pub const AMX_DENIED: Self = Self(13);
     /// `WorkspaceExceeded` (RFC-0040 §13 code 14): a prepared op asks for more workspace than
     /// `query` declared ([`PreparedOp::check_workspace`](crate::PreparedOp::check_workspace)).
     pub const WORKSPACE_EXCEEDED: Self = Self(14);

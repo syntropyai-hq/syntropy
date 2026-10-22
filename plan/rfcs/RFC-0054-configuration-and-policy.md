@@ -412,6 +412,14 @@ impl InstancePolicy {
 
 The instance's `resources` overlay is applied on each stage node to that node's own `ResourcePolicy`, and may only narrow it. The solver checks each node against the stricter of the two: more headroom, a lower pinned fraction, a narrower network scope.
 
+*Note 2026-10-22 (PROD-E1-T04): the canonical serialisation and who hashes it.* `core` links no hasher: RFC-0001 §4.2 rule 1 keeps the `blake3` crate out of it, and `core` holds the `Blake3` type only (RFC-0001 §5.1; the `PlanDigest` note in `core`). The digest is therefore split in two:
+- `InstancePolicy::canonical_bytes() -> Vec<u8>` is the contract, in `core` (`syntropy_core::canon`): a tagged binary encoding over serde, with integers widened to 64 bits little-endian, floats by bit pattern with one NaN and -0.0 as +0.0, structs and enum variants by field and variant name with fields sorted by name, maps sorted by encoded key, and fields that serde skips left out. Golden vectors are pinned on these bytes.
+- `InstancePolicy::digest_with(&self, hash: impl FnOnce(&[u8]) -> Blake3) -> Blake3` replaces `digest()`. The digest is still BLAKE3 over the canonical bytes, computed by the crate that links BLAKE3 (`config` or `api`, when it parses policies) and passes the hash in.
+
+`ResourceOverlay`, `ApproxParams` and the optional `Objective` fields skip unset values, so only explicitly set fields enter the bytes, and a field added later as an unset `Option` leaves earlier digests unchanged. RFC-0001 §18.16 records the change.
+
+Open, for the maintainers: should `digest()` live in `core` with its own hasher (a vendored or hand-written BLAKE3, or an amendment to rule 1), so that no caller can pass a different hash?
+
 **Node independence of the digest**.
 - `digest()` covers only what the policy tables and the explicit `EnsureInstance` set. It never covers node-computed defaults. That is why `resources` is an overlay of options, and why `"self"` is rejected in cluster-scope tables.
 - A property test builds the policy for one model on two simulated nodes with different hardware and `resource.mode`, and requires equal digests.
@@ -478,6 +486,20 @@ Options:
 - (c) no carve-outs: the carved-out keys move under their owners' prefixes, which renames keys this table fixes.
 
 Recommended default: (a). Nothing yet checks a shared section's keys against this table, so a shared section could add a key inside another owner's subtree, such as `security.x` inside RFC-0034's `security.*`. Under (a), PROD-E1-T16's CI check should compare every shared section's keys with the carve-outs this table lists.
+
+*Note 2026-10-22 (DIST-E18-T01, as built; open, for the maintainers): the distributed areas' keys.* DIST-E18-T01 registers the keys of RFC-0030 §9, RFC-0031 §11, RFC-0032 §9, RFC-0033 §12 (with §8.2's `runner.*`) and RFC-0034 §14: 100 keys in 29 sections, in `syntropy_net::config` (RFC-0031) and `syntropy_cluster::config` (the rest). Those RFCs give names, scopes and defaults, but no reload classes and, for several keys, no value syntax. The choices below fix user-facing syntax, so they are recorded here:
+- **Reload classes** (§9.1). `node` for a value read once when the daemon builds a long-lived component: `cluster.namespace`, `discovery.port`, `discovery.mechanisms`, `net.listen_port`, `net.max_frame`, `net.blob_frame`, `quic.*`, `rdma.*` (with `rdma.encrypt_untrusted`), `shm.enable`, `security.keystore` and `security.trusted_fabric`. `instance` for a value that changes an instance's plan or runtime layout: `ring.max_inflight_steps`, `ring.allow_token_relay`, `tp.oneshot_max`, `tp.local_router`, `recovery.history`, `recovery.state_checkpoint_tokens`, `recovery.drain_deadline` and `standby`. `hot` for every other key. The test `reload_classes_follow_the_stated_rule` in `crates/cluster/tests/config.rs` pins the list.
+- **Feature level.** Every cluster-scope key has `introduced_at = FEATURE_LEVEL_V1`, which is 1. RFC-0032 §6.4 gives no initial level; one shared constant should replace it once `ClusterState::feature_level` exists.
+- **Conditional defaults** are `computed` defaults on `Option` keys, with the RFC's rule as the text: `link.connect_timeout` and `link.failover_timeout` (LAN or WAN), `link.p99_weight`, `ring.max_inflight_steps`, `recovery.drain_deadline`, `recovery.confirm_after` (2 × `link.failover_timeout`), `runner.load_stall`, `power.inhibit_idle_sleep` (on battery), `cluster.name` and `discovery.ignore_interfaces`. An operator's value applies in every case, for example to LAN and WAN links alike.
+- **Compound values** are tables with these field names: `{ count, window }` for `link.demote_after`, `membership.flap_threshold` and `runner.restart_budget`; `{ initial, max }` for `membership.flap_backoff` and `runner.restart_backoff`; `{ count, window, initial, max }` for `coordinator.backoff`; `{ entries, interval }` for `log.snapshot_every`; and `{ for, joins, include_wifi }` for `pairing.window_default`, after `syntropy cluster open`'s flags. `recovery.history_ram`, "min(2 GiB, 5 % of RAM)", is a `Reserve`: `{ fraction = 0.05, max = "2GiB" }`.
+- **`coordinator.lease_ms` and `coordinator.wan_lease_ms` are `Duration`s** (`"4s"`, `"12s"`). §3 accepts no bare integer where a unit is meant, so `lease_ms = 4000`, which the name and RFC-0032's "4,000" invite, is rejected. Renaming the keys to `lease` and `wan_lease` would remove the mismatch.
+- **Node names, not `NodeId`s.** `coordinator.prefer` and the nodes of `standby = { warm = { nodes = [...] } }` (RFC-0033 §9.3's `Standby::Warm { nodes: SmallVec<[NodeId; 2]> }`) are lists of node names.
+- **Values the RFCs leave open.** `rdma.poller_thread`, `rdma.gpudirect` and `shm.enable` name only `auto`; each also takes `off`, as `rdma.enable` does. `runner.device_reprobe` ("on `Device` class failures") is an enum with the one value `on_device_failure`. `standby` takes `"none"`, `"replica"` or the `warm` table.
+- **`replan.*` is split.** The table above gives `replan.*` to RFC-0011 "with 0033". RFC-0011's key table declares `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer`, so the PLC lane registers them, and RFC-0033's shared `replan` section claims only `replan.degraded_min_gain`. RFC-0011 gives `replan.max_defer` a default of 5 min and RFC-0033 §12 gives 10 min. That conflict is open, and no default is chosen here.
+- **Gaps in the table above** that these keys expose:
+  - `orphan.*` (RFC-0032 §9's `orphan.adopt_deadline`) has no row. It is registered under RFC-0032.
+  - RFC-0034's `invite.require_confirm` is a carve-out inside RFC-0030's `invite.*` that the table does not list, so PROD-E1-T16's carve-out check would flag its shared section.
+  - The top-level instance key `standby` (RFC-0033 §9.3, §12) appears nowhere in this RFC, neither here nor in §5.4.
 
 #### 5.2 Node keys owned by the product RFCs
 
@@ -652,6 +674,11 @@ pub enum PinKind {
 pub struct GroupSelector { pub class: ClassSel, pub layers: Option<Range<LayerIx>>, pub experts: Option<Range<ExpertIx>> }
 ```
 
+*Note 2026-10-22 (PROD-E1-T04): pins and overrides as data in `core`.* PROD-E1-T04 holds pins and tensor overrides in `core` as the policy tables write them, for PROD-E1-T09 to compile:
+- `PinKind::Layers::layers` and `GroupSelector::layers` are `LayerRange` (start and end each optional, §3), not `Range<LayerIx>`, so a table can name `"40.."` before the model's layer count is known. `GroupSelector::experts` stays `Option<Range<ExpertIx>>`.
+- `ExcludeTarget`, which the struct above names but does not define, is `Node(NodeSelector) | Device(DeviceSelector)`.
+- §6.3's override is `TensorOverride { pattern: String, layers: Option<LayerRange>, experts: Option<Range<ExpertIx>>, tier: TierSelector, compute: Option<DeviceSelector> }`. The TOML key `match` is the field `pattern`, because `match` is a Rust keyword. The pattern is its source text (OQ-PRD-27), and `config` keeps the compiled regex.
+
 Before solving, the solver front end checks pins against the census and the resource graph. Selectors that match nothing, tier kinds a node does not have, and pairs of `require` pins that contradict each other are reported before any MILP runs. An infeasible pin set is an error naming the smallest conflicting subset the front end found (RFC-0011 owns the search; the API surfaces it as `placement_infeasible`, RFC-0050 §12).
 
 #### 6.3 Regex tensor overrides
@@ -788,9 +815,21 @@ Validation runs in six phases. Phases 1–5 run on every load and reload; phase 
 error[config/0003]: unknown key `resource.ram_headroon`
   --> /home/u/.config/syntropy/config.toml:14:1
    |
-14 | ram_headroon = "16GiB"
+14 | ram_headroon = [redacted]
    | ^^^^^^^^^^^^ did you mean `ram_headroom`?
 ```
+
+*Note 2026-10-22:* a rendered error or warning never contains a secret's value (G7, §3, §10.1). PROD-E1-T03 chooses the mechanism; this is the property it must hold:
+- **Every line or source that holds a secret-typed value is withheld, whichever key the error is on.**
+  - An error on a sibling key in the same inline table withholds the secret on that line, as with a type error on `endpoint` in `otlp = { endpoint = "x", headers = { authorization = "Bearer …" } }`.
+  - So does an error on another key of the same `[[…]]` entry, or on a continuation line of a multi-line value.
+- **Secret-typed** means a key whose type contains `Secret<…>` or `SecretSource` at any depth: through tables, arrays, arrays of tables and struct fields, as `obs.otlp.headers` does. Every key under such a key is secret-typed too.
+- **Unknown keys.** An `unknown_key` error never prints the value. The value is not needed to fix a key name, and a mistyped secret key, such as `header` for `headers`, is the likeliest way a secret reaches an error.
+- **Every source.** A value from `--set` or a `SYNTROPY_*` variable is withheld the same way. So is the value in the warning for an unknown `SYNTROPY_*` variable, which may be a misspelt secret variable.
+- **Every phase.** A phase 1 syntax error has no parsed value, as with an unquoted `api_key = sk-…`, so withholding keys off the key path in the schema, not off a parsed value. Where the renderer cannot tell which key a line sets, it withholds the line whenever a secret-typed value could sit there.
+- **Never the library's text.** The renderer never prints the TOML library's rendered error, which appends the source line in every phase. It renders from the error's span and message.
+- **Drop-ins.** Lines are attributed one file at a time, since a table header never carries over from one file to the next.
+- **Tests.** PROD-E1-T03's golden tests plant a marker token in every secret-typed value, and in the value of every unknown key and unknown `SYNTROPY_*` variable, and check that no rendered output, for any error code, contains it. The `config/0003` example above shows the unknown key's value withheld.
 
 **Startup.** `syntropy serve` refuses to start on any phase 1–4 error and prints every error, not only the first. `syntropy config check [--file <path>] [--strict]` runs phases 1–5 without a daemon; `--strict` turns phase 5 warnings and empty override matches into errors for CI use.
 

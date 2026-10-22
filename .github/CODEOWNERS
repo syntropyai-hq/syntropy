@@ -13,9 +13,13 @@
 # enforced by labels (QUAL-E1-T18), and a new crate dependency by the dep-diff check
 # (QUAL-E1-T19).
 
-# CI and release configuration
+# CI and release configuration. `xtask/` holds the steps every CI job runs, `lint`'s policy checks
+# among them, and `.cargo/` configures every cargo run from the root (maintainer decision,
+# 2026-10-22).
 /.github/                       @devdaviddr @xunholy
 /ci/                            @devdaviddr @xunholy
+/xtask/                         @devdaviddr @xunholy
+/.cargo/                        @devdaviddr @xunholy
 /release-please-config.json     @devdaviddr @xunholy
 /.release-please-manifest.json  @devdaviddr @xunholy
 /version.txt                    @devdaviddr @xunholy
