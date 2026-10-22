@@ -317,6 +317,7 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 7. **CPU and Metal providers are built into the core; other GPU providers ship as backend modules** (ADR-0507, RFC-0040 §10.4, RFC-0052 §4). The CPU provider, the Metal provider on macOS, and on iOS and Android every provider the platform uses, are linked statically into the core binary. The CUDA, HIP and Vulkan providers, and the ggml SYCL backend, are provider libraries in separately loaded, signed backend modules: directories beside the core binary of the same version, verified by hash, signature and build ID before loading (ADR-0316), and loaded by absolute path only by runner and probe processes. The boundary is a versioned C ABI generated from the `KernelProvider` trait, with one exported entry symbol and a lockstep build-ID check. The core binary therefore carries no vendor GPU runtime on Linux and Windows, and one core binary runs on hosts with and without each vendor stack (ADR-0014). The `cuda13` module carries Syntropy code only: `setup` fetches NVIDIA's redistributable libraries from NVIDIA and checks each against a hash pinned in the signed module manifest (RFC-0040 §10.3, RFC-0052 §4.4). A build or host without any GPU module runs CPU-only.
 8. **`unsafe` is confined** to `kernels-*` (including `kernels-loader`: the provider-library loader and the census), `io`, `tier` (arenas), `net` (RDMA, shared memory), `ipc` (shared memory) and `spsc` (the ring's slots, added 2026-10-22). Every other crate sets `#![forbid(unsafe_code)]`.
    - *Note 2026-10-22 (amendment, §18.9):* OS system calls that need `unsafe` go in `io`, behind safe functions that `probe`, `cluster` and `daemon` call (OQ-PRC-26): E1's host enumeration on Windows and macOS, the AMX and io_uring checks, E3's volume queries and the state directory's DACL. E2's management APIs (NVML, DXGI, IOKit) run in the runner's probe mode, in `kernels-loader`, which rules 4 and 6 already let load them, and the daemon merges the records (RFC-0010 §2.1).
+   - *Note 2026-10-22 (amendment, §18.18):* `spsc`'s `unsafe` covers the ring's slots and its wake handle's OS calls: an eventfd on Linux and Android, a kqueue user event on Apple platforms and an event handle on Windows (ADR-0012 item 4; §4.1's row gives `spsc` the wake handles). `spsc` depends on no workspace crate, so it cannot call `io`'s OS functions. The note above that sends OS calls to `io` is for the crates that forbid `unsafe`. `spsc` links `libc` and `windows-sys` for these calls, at the versions `io` uses. Neither is one of rule 6's external systems.
    - *Note 2026-10-22 (amendment, §18.13):* one module-scoped exception. `testkit`'s `guards` module holds exactly one `unsafe impl GlobalAlloc`, the counting allocator of RFC-0060 §3.5, which delegates to `std::alloc::System`. `testkit` sets `#![deny(unsafe_code)]` instead of `forbid`, with a single `#[allow(unsafe_code)]` on that impl. The `check-deps` placement check refuses any other `unsafe`, and any other lint level for it, anywhere in `testkit`, and still requires `forbid` in every other crate outside the list. Because `deny` can be overridden where `forbid` cannot, the check reads every `.rs` file under the root directory of each of `testkit`'s library and bin targets, and refuses every way to compile a file it does not read: a `path` in an attribute (`#[path]`, also inside `cfg_attr`), an attribute built from a macro metavariable, the identifier `include` anywhere, a `macro_rules!` definition, which could assemble either from tokens taken anywhere in the crate, and a build script. It also refuses a file that opens with a shebang (`#!` not directly followed by `[`) or a frontmatter block (`---`), which rustc reads differently from the check; a file whose extension is `rs` only in another case, which a case-insensitive file system lets `mod` load; and any level but a plain `deny` or `forbid` for `unsafe_code` among the crate root's leading attributes. A macro exported by another crate can still emit either from tokens that name neither, the same limit as `unsafe` from another crate's macro.
 9. **`testkit` is a dev-dependency only.** No production crate depends on it.
    - *Note 2026-10-21:* the same holds for `bench`, the other crate on §4.1's dev-only row ("—").
@@ -843,6 +844,8 @@ pub struct HopPlan {
     /// family's passed precision need ExactnessPolicy::Approximate with WIRE_COMPRESS.
     pub wire: WireDType,
     pub predicted: Nanos,                       // α + S/β at batch 1
+    // Added by RFC-0032 §3.3, serde defaults: prefill_transport, relay (with its RelayVia)
+    // and predicted_p99.
 }
 
 /// Where a tensor group lives and which device computes it.
@@ -1538,6 +1541,7 @@ pub enum ErrorClass {
 | `BuildId` | core (type); value built in `cli` | 0062 | 0052 |
 | `DeviceId`, `TierId`, `LinkId`, `DeviceKind`, `Measured` | core | 0010 | 0031 (network `LinkKind`s) |
 | `TierKind` | core | 0020 | 0010 |
+| The host budget rule (`budget::host_budget`, `HostBudget`, `HostBudgetPolicy`, `HostPoolInfo` construction, `IoFixedLedger`) | core | 0020 (§5) | 0010 (probe inputs), 0011 (the joint host rows) |
 | `DeviceClass`, `CpuIsa`, `DeviceFeatures` | core | 0040 | 0010 (`Npu`, ADR-0405 decision 4's fields, the provider-record merge) |
 | `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
 | `BufferView`, `ViewKind` | core | 0020 | 0040 (`OpArgs::weights`) |
@@ -1561,7 +1565,8 @@ pub enum ErrorClass {
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
 | `Error`, `ErrorClass` | core | 0001 | every RFC (codes) |
-| Policy objects (`Objective`, `ExactnessPolicy`, `ResourcePolicy`, `ResourceOverlay`, `InstancePolicy`) | core | 0054 | 0011, 0012, 0042 |
+| Policy objects (`Objective`, `ExactnessPolicy`, `ResourcePolicy`, `ResourceOverlay`, `InstancePolicy`), and the plain-data field types `config` parses into (`Fidelity`, `ApproxParams`, `NetworkScope`, `Reserve`, `Fraction`, the selectors, `PlacementPin`, `TensorOverride`, `KeyPath`, `ConfigValue`; OQ-PRD-27) | core | 0054 | 0011, 0012, 0042 |
+| Canonical encoding (`canon::to_bytes`), behind `InstancePolicy::canonical_bytes` and `digest_with` | core | 0054 (§4.5) | |
 | `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore`, `Outbox` | core | 0060 | 0030, 0032, 0033 (the protocol cores) |
 | `ConformanceManifest` and its certificates | core | 0060 | 0040 (`OpCert` selection), 0011 (`WireCert`, `PathCert`), 0042 |
 | `TelemetryRecord`, `StepRecord`, `LogRecord`, `CostTerm` | obs | 0053 | 0012, 0011, 0061 |
@@ -2094,12 +2099,14 @@ pub struct ResourcePolicy {
 /// explicitly in the policy tables or in EnsureInstance. Each stage node applies it to its
 /// own ResourcePolicy and it may only narrow it. Because node-computed defaults never enter
 /// it, InstancePolicy::digest() is the same on every ingress node (RFC-0054 §4.5).
+/// (Revised 2026-10-22, §18.16: canonical_bytes() and digest_with(hash) in place of digest().)
 pub struct ResourceOverlay { /* Option of each ResourcePolicy field, plus headroom,
                                 reserved cores and GPU filter: RFC-0054 §4.5 */ }
 
 /// Carried by EnsureInstance; the instance-scoped bundle. EnsureInstance is idempotent by
 /// (ModelId, InstancePolicy::digest()). Owner: RFC-0054 §4.5, which adds context, node
 /// filter, keep-alive, preload, deterministic and dense-on-NVMe fields.
+/// (Revised 2026-10-22, §18.16: canonical_bytes() and digest_with(hash) in place of digest().)
 pub struct InstancePolicy {
     pub objective: Objective,
     pub exactness: ExactnessPolicy,            // the knobs this instance allows
@@ -2731,3 +2738,36 @@ COMP-E1-T05 binds `BufferView` in `kernels`' `OpArgs::weights`. RFC-0020 §3 had
 | Change | Sections touched | Reason |
 |---|---|---|
 | rule 8 gains one module-scoped exception: `testkit::guards` holds the single `unsafe impl GlobalAlloc`, which delegates to `std::alloc::System`, and `testkit` moves from `forbid(unsafe_code)` to `deny(unsafe_code)` with one `allow` on that impl | §4.2 rule 8 | a `#[global_allocator]` must implement `GlobalAlloc`, which is an `unsafe` trait, and RFC-0060 §3.5 places `CountingAlloc` in `testkit::guards`. The maintainers chose this over a new allocator crate or a third-party allocator (QUAL-E3-T25, issue #1530) |
+
+### 18.14 SME2 detection on Linux (2026-10-22)
+
+COMP-E3-T01 found that the detection macro named for SME2 does not compile on the pinned toolchain.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| On Linux and Android the CPU provider detects SME2 from `AT_HWCAP2` (`HWCAP2_SME2`, bit 37) through `getauxval`, not `is_aarch64_feature_detected!("sme2")`; macOS keeps `hw.optional.arm.FEAT_SME2` | RFC-0040 §7.3 and ADR-0402 item 3 (dated notes) | on 1.99.1 the macro's `sme` and `sme2` names are unstable (E0658), and release builds use stable only (ADR-0001 decision 1). `AT_HWCAP2` is what ADR-0014's SME2 row names and what the macro reads, so the result is the same and the provider can switch to the macro once it is stable |
+
+### 18.15 The host budget rule in core (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| RFC-0020 §5's host budget rule is `syntropy_core::budget`: `host_budget(&HostBudgetInputs, &HostBudgetPolicy) -> HostBudget`, `host_pool`, `numa_available` and `IoFixedLedger`, not RFC-0010 A5's `host_usable(&HostMemInfo, &ResourcePolicy)`; WSL2 is `HostOs::Linux` with `HostMemInfo::wsl2`; Linux `lockable` adds back `own_locked`; Windows falls back to `windows_lockable` before H5 | §5.13 | `ResourcePolicy` is not in `core` yet and `HostMemInfo` lacks `own`, the OS kind, the macOS working-set limit and the user's `locked_vm`; `probe`, `solver` and `tier` all call the rule (TIER-E2-T01; RFC-0020 §5, note of 2026-10-22; RFC-0010 A5) |
+
+### 18.16 Policy objects in core, and the policy digest (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| The policy objects and their plain-data field types are in `core` (`syntropy_core::policy`), with `syntropy_core::canon`, a canonical encoding over serde. `InstancePolicy::digest()` becomes `canonical_bytes() -> Vec<u8>` and `digest_with(&self, hash: impl FnOnce(&[u8]) -> Blake3) -> Blake3`: the digest is still BLAKE3 over the canonical bytes, computed by the crate that links BLAKE3 | §5.13, §11.3; RFC-0054 §4.5 | rule 1 (§4.2) keeps `blake3` out of `core`, and `core` holds the `Blake3` type only; OQ-PRD-27 puts the field types in `core` (PROD-E1-T04; RFC-0054 §4.5, note of 2026-10-22) |
+
+### 18.17 Code owners for the task runner and the cargo configuration (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `xtask/` and `.cargo/` join RFC-0062 §12.3's CI and release configuration, so `CODEOWNERS` makes a maintainer a required reviewer for both | RFC-0062 §12.3, §12.6 (dated notes); `.github/CODEOWNERS`; `xtask/src/codeowners.rs` | `lint` runs the PR's own `xtask`, whose steps hold the policy checks, such as the determinism lints (QUAL-E3-T03), and `.cargo/config.toml` reaches every cargo run from the root. Without an owner, a PR could weaken a check, or change how cargo runs clippy, with only the review agent's approval. Maintainer decision, 2026-10-22 |
+
+### 18.18 The SPSC ring's `unsafe` and its parker (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `spsc`'s `unsafe` covers its wake handle's OS calls as well as the ring's slots: an eventfd, a kqueue user event and an event handle. `spsc` links `libc` and `windows-sys` for them | §4.2 rule 8 (dated note) | §4.1 gives `spsc` the wake handles (ADR-0012 item 4), and their OS calls need `unsafe` FFI. `spsc` depends on no workspace crate, so it cannot call `io`'s OS functions, and neither binding crate is one of rule 6's external systems (DIST-E1-T01). Maintainer decision, 2026-10-22 |
+| On Apple platforms, ADR-0012 item 5's park is std's kernel wait on a dispatch semaphore, not an address wait | ADR-0012 (dated revision) | std's thread parker waits on an address on Linux, Android and Windows, but not on Apple platforms, where the address-wait calls are private API. `os_sync_wait_on_address` (macOS 14.4) is a later option. Maintainer decision, 2026-10-22 |

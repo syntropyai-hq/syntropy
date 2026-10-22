@@ -124,6 +124,11 @@ pub struct ExpertOwnerMap {
 
 /// A stage's outbound hop (RFC-0001 §5.4). Owner: RFC-0032, which adds its §3.3 fields with
 /// serde defaults.
+///
+/// A self-describing format such as JSON decodes a hop written without the §3.3 fields: both
+/// options come back `None` and `predicted_p99` comes back 0. The IPC channel's encoding,
+/// `postcard`, is positional (RFC-0001 §3.5), so there the added fields are an `ipc_protocol`
+/// change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HopPlan {
     /// The link the hop uses.
@@ -135,6 +140,34 @@ pub struct HopPlan {
     pub wire: WireDType,
     /// α + S/β at batch 1.
     pub predicted: Nanos,
+    /// The (link, transport) of the prefill lane (RFC-0032 §3.2), when its cost at S_pf beats
+    /// the decode transport by more than 2× (RFC-0031 §3). Decode never moves to it. `None`:
+    /// the prefill lane uses the decode lane's transport.
+    #[serde(default)]
+    pub prefill_transport: Option<(LinkId, TransportKind)>,
+    /// Token-return hops only: forward through an intermediate node's runner (RFC-0032 §3.4).
+    #[serde(default)]
+    pub relay: Option<RelayVia>,
+    /// Predicted p99 of α + S/β at batch 1; the drift detector compares the measured p99 with
+    /// it. 0, the serde default, means the plan carries no tail prediction for the hop: a plan
+    /// written before this field existed has none, and inventing one from `predicted` would
+    /// claim a tail the solver never costed.
+    #[serde(default)]
+    pub predicted_p99: Nanos,
+}
+
+/// The intermediate node a relayed token-return hop forwards through (RFC-0032 §3.3, §3.4).
+/// Owner: RFC-0032.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RelayVia {
+    /// The node whose runner copies each frame across.
+    pub node: NodeId,
+    /// The link from the sending stage to `node`.
+    pub first: LinkId,
+    /// The link from `node` to the receiving stage.
+    pub second: LinkId,
+    /// The transport on both links.
+    pub transport: TransportKind,
 }
 
 /// Activation dtype on the wire (RFC-0031 §6.4, which gives each its frame code). Owner:

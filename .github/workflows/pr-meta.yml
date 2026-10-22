@@ -5,7 +5,9 @@
 # labels, comments and manifests, so the PR must not be able to change
 # how it is judged. Each job checks out the base branch, never the PR, and runs the base branch's
 # `cargo xtask` with the base branch's `governance/maintainers.toml` and `version.txt`. It restores
-# no cache, so nothing the PR ran elsewhere reaches the build.
+# no cache, so nothing the PR ran elsewhere reaches the build. A job that compares the PR's files
+# with the base's, such as `dep-diff`, takes the base as the first parent of the merge commit it
+# reads the PR from, so both sides share one main commit (issue #1702).
 #
 # They are a workflow of their own because they run again when a label is added or removed and
 # when the title or body is edited. Run in `pr.yml`, such an event would also post a `ci-gate` with
@@ -138,20 +140,41 @@ jobs:
       - name: Pass on a merge group
         if: github.event_name == 'merge_group'
         run: echo "dep-diff is required on each member PR's head (RFC-0062 §12.3)"
-      - name: Check out the base branch, not the PR
+      # The base and the head must share one main commit (issue #1702). The head is the PR merged
+      # into main, `github.sha`, and the base is that merge commit's first parent: the main commit
+      # it was built on. `pull_request.base.sha` can be older, and then whatever main gained since
+      # would be charged to the PR. The root holds the base, so check out the merge commit two
+      # commits deep and move to its first parent before anything runs. None of the PR's code runs.
+      - name: Check out the merge commit, two commits deep
         if: github.event_name != 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
-      # The PR merged into its base, read as data: `cargo metadata --no-deps` on its manifests,
-      # and its licence manifest. None of its code runs.
+      - name: Move to the base, the merge commit's first parent
+        if: github.event_name != 'merge_group'
+        run: git checkout --detach --quiet HEAD^1
+      # The PR merged into main, read as data: `cargo metadata --no-deps` on its manifests, and its
+      # licence manifest. None of its code runs.
       - name: Check out the PR's manifests, as data
         if: github.event_name != 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           path: pr
           persist-credentials: false
+      - name: Check that the base is the head's first parent
+        if: github.event_name != 'merge_group'
+        run: test "$(git -C pr rev-parse HEAD^1)" = "$(git rev-parse HEAD)"
+      # And that the head is this PR's merge: its second parent is the PR's head commit. A merge
+      # commit without a second parent fails here too.
+      - name: Check that the head's second parent is the PR's head commit
+        if: github.event_name != 'merge_group'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git -C pr rev-parse HEAD^2)" = "$HEAD_SHA"
       # No cache, as in `dco`.
       - if: github.event_name != 'merge_group'
         uses: ./.github/actions/setup-rust

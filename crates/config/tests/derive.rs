@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use syntropy_config::{
-    Authority, ByteSize, ConfigSection, DefaultSpec, DefaultValue, Duration, Fraction, Rate,
-    Registry, Reload, Reserve, Scope, ValueErrorKind, never,
+    Authority, ByteSize, ConfigSection, DefaultSpec, DefaultValue, Deprecated, Duration, Fraction,
+    Rate, Registry, Reload, Reserve, Scope, ValueErrorKind, never,
 };
 
 /// Example node settings.
@@ -394,4 +394,207 @@ fn registry_lookups() {
     );
     assert!(REGISTRY.key("net.unknown").is_none());
     assert_eq!(REGISTRY.keys().count(), 22);
+}
+
+/// Keys of every value kind, for the phase-3 check.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "checked", scope = Node, owner = "RFC-0054", deprecated = CHECKED_DEPRECATED)]
+struct CheckedSection {
+    /// A size.
+    #[config(reload = Hot, default = "1GiB", min = "1MiB")]
+    size: ByteSize,
+    /// A span that may be `"never"`.
+    #[config(reload = Hot, default = "never")]
+    #[serde(with = "never", default)]
+    keep: Option<Duration>,
+    /// A node.
+    #[config(reload = Hot, default = "*")]
+    node: syntropy_config::NodeSelector,
+    /// A pattern.
+    #[config(reload = Hot, default = "blk\\..*")]
+    pattern: syntropy_config::Regex,
+    /// A count.
+    #[config(reload = Hot, default = 4, max = 8)]
+    count: u32,
+}
+
+/// Keys the checked section renamed or removed.
+const CHECKED_DEPRECATED: &[Deprecated] = &[
+    Deprecated {
+        path: "checked.old_size",
+        replacement: Some("checked.size"),
+        since: "0.3",
+    },
+    Deprecated {
+        path: "checked.gone",
+        replacement: None,
+        since: "1.2",
+    },
+];
+
+/// The checked section's phase-3 result for `key` given `value`, as TOML.
+fn check(key: &str, value: &str) -> Result<(), ValueErrorKind> {
+    let table: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
+    let schema = CheckedSection::SCHEMA.key(key).unwrap();
+    (schema.check)(&table["v"]).map_err(|e| e.kind())
+}
+
+#[test]
+fn check_accepts_what_the_section_accepts() {
+    assert_eq!(CheckedSection::check_defaults(), vec![]);
+    assert_eq!(check("size", "\"16GiB\""), Ok(()));
+    assert_eq!(check("size", "1048576"), Ok(()), "an integer is bytes");
+    assert_eq!(check("keep", "\"never\""), Ok(()), "through `serde(with)`");
+    assert_eq!(check("keep", "\"2m\""), Ok(()));
+    assert_eq!(check("node", "\"label:gpu=rtx4090\""), Ok(()));
+    assert_eq!(check("pattern", "'blk\\.(\\d+)\\..*'"), Ok(()));
+    assert_eq!(check("count", "8"), Ok(()));
+}
+
+#[test]
+fn check_reports_each_kind() {
+    assert_eq!(check("size", "\"16XB\""), Err(ValueErrorKind::BadUnit));
+    assert_eq!(check("size", "\"512KiB\""), Err(ValueErrorKind::OutOfRange));
+    assert_eq!(check("size", "-4"), Err(ValueErrorKind::OutOfRange));
+    assert_eq!(check("size", "true"), Err(ValueErrorKind::WrongType));
+    assert_eq!(check("keep", "\"soon\""), Err(ValueErrorKind::BadUnit));
+    assert_eq!(check("node", "\"id:12\""), Err(ValueErrorKind::BadSelector));
+    assert_eq!(check("pattern", "'a)|(b'"), Err(ValueErrorKind::BadRegex));
+    assert_eq!(check("count", "9"), Err(ValueErrorKind::OutOfRange));
+    assert_eq!(check("count", "\"four\""), Err(ValueErrorKind::WrongType));
+}
+
+#[test]
+fn deprecated_keys_are_recorded() {
+    static WITH_CHECKED: Registry = Registry::new(&[&CheckedSection::SCHEMA]);
+    let old = WITH_CHECKED.deprecated("checked.old_size").unwrap();
+    assert_eq!(old.replacement, Some("checked.size"));
+    assert_eq!(
+        old.closes_in(),
+        Some((0, 4)),
+        "one minor release before 1.0"
+    );
+    assert!(
+        old.warning().contains("use `checked.size`"),
+        "{}",
+        old.warning()
+    );
+    let gone = WITH_CHECKED.deprecated("checked.gone").unwrap();
+    assert_eq!(
+        gone.closes_in(),
+        Some((2, 0)),
+        "one major release after 1.0"
+    );
+    assert!(
+        gone.warning().contains("has no effect"),
+        "{}",
+        gone.warning()
+    );
+    assert!(WITH_CHECKED.deprecated("checked.size").is_none());
+    assert_eq!(WITH_CHECKED.check(), vec![]);
+}
+
+/// Deprecation records that contradict the registry.
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "bad_deprecations", scope = Node, owner = "RFC-0054")]
+#[config(deprecated = BAD_DEPRECATED)]
+struct BadDeprecations {
+    /// A live key.
+    #[config(reload = Hot, default = 1)]
+    live: u32,
+}
+
+const BAD_DEPRECATED: &[Deprecated] = &[
+    Deprecated {
+        path: "bad_deprecations.live",
+        replacement: Some("bad_deprecations.live"),
+        since: "0.1",
+    },
+    Deprecated {
+        path: "bad_deprecations.old",
+        replacement: Some("bad_deprecations.missing"),
+        since: "0.1",
+    },
+    Deprecated {
+        path: "Bad.Path",
+        replacement: None,
+        since: "soon",
+    },
+];
+
+#[test]
+fn registry_check_rejects_contradicting_deprecations() {
+    use syntropy_config::RegistryError;
+    static BAD: Registry = Registry::new(&[&BadDeprecations::SCHEMA]);
+    assert_eq!(
+        BAD.check(),
+        vec![
+            RegistryError::DeprecatedIsLive {
+                key: "bad_deprecations.live"
+            },
+            RegistryError::ReplacementUnknown {
+                deprecated: "bad_deprecations.old",
+                replacement: "bad_deprecations.missing"
+            },
+            RegistryError::DeprecatedMalformed { key: "Bad.Path" },
+        ]
+    );
+}
+
+#[test]
+fn suggests_the_closest_key() {
+    use syntropy_config::suggest;
+    assert_eq!(suggest(&REGISTRY, "example.sise"), Some("example.size"));
+    assert_eq!(
+        suggest(&REGISTRY, "example.threds"),
+        Some("example.threads")
+    );
+    assert_eq!(
+        suggest(&REGISTRY, "security.polcy"),
+        Some("security.policy")
+    );
+    assert_eq!(suggest(&REGISTRY, "nothing.like.this"), None);
+    assert_eq!(
+        suggest(&REGISTRY, "example.zzzz"),
+        None,
+        "a different word is not a typo"
+    );
+    assert_eq!(
+        suggest(&REGISTRY, "example.size"),
+        None,
+        "an exact key needs no suggestion"
+    );
+}
+
+/// A key whose type is too long for one line of the compiler's token printer. The type is
+/// written out, since an alias would record the alias's short name and test nothing.
+#[allow(clippy::type_complexity)]
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "long_type", scope = Node, owner = "RFC-0054")]
+struct LongTypeSection {
+    /// Nested maps with a long type name.
+    #[config(reload = Hot, default = {})]
+    nested: std::collections::BTreeMap<
+        std::string::String,
+        std::collections::BTreeMap<
+            std::string::String,
+            std::vec::Vec<
+                std::option::Option<std::collections::BTreeMap<std::string::String, u64>>,
+            >,
+        >,
+    >,
+}
+
+/// A key's recorded type is one line however long it is, since messages quote it
+/// (`does not fit its type, …`), and a line break there would split an error's header.
+#[test]
+fn a_long_type_is_recorded_on_one_line() {
+    let key = &LongTypeSection::SCHEMA.keys[0];
+    assert!(!key.ty.contains('\n'), "{:?}", key.ty);
+    assert!(!key.ty.contains("  "), "{:?}", key.ty);
+    assert_eq!(
+        key.ty,
+        "std::collections::BTreeMap<std::string::String, std::collections::BTreeMap<std::string::String, \
+         std::vec::Vec<std::option::Option<std::collections::BTreeMap<std::string::String, u64>>>>>"
+    );
 }

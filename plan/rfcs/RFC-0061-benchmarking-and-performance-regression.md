@@ -5,7 +5,7 @@
 - Depends on: RFC-0001 (§13, §14, §16), RFC-0060, RFC-0010, RFC-0053; ADR-0004, ADR-0008, ADR-0013, ADR-0017, ADR-0019, ADR-0020; ADR-0610, ADR-0611, ADR-0612
 - Expanded by: RFC-0062 (when and where benchmark jobs run), every domain RFC (its microbenchmarks, §9)
 - Date: 2026-10-19
-- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2); 2026-10-22 (§4.3's ADR-0017 row names loaded draft heads, as ADR-0017's revised item 7 does)
+- Revised: 2026-10-20 (the hardware test matrix, the agent GPU pool, the field-test cohort, the M1-exit thesis checkpoint, baseline naming and publication timing); 2026-10-21 (the `trust` field and the result record as built, §2.2); 2026-10-22 (§4.3's ADR-0017 row names loaded draft heads, as ADR-0017's revised item 7 does; the grid at RC, the two ID forms, model references and the version check, §4.1; the success-criteria table generated from `bench/sc-map.toml`, §4.2; the spec database as built, §5.3)
 
 ## Summary
 
@@ -280,44 +280,62 @@ Scenario IDs are `<class>.<mode>.<model>.<quant>[.<variant>]`, for example `deco
 | Speculative | Off; Auto | both nightly; PR† uses the plan's default |
 | Thermal | `Cold`; `Sustained` for NVMe and tiered MoE | nightly; RC |
 
+**The grid at RC, ID forms and model references** (revised 2026-10-22). At RC the grid runs the nightly points. A `Sustained` scenario runs nightly and at RC only.
+
+§4.2 and §9 also use IDs with no model or quant segment, such as `life.probe`, `cluster.rejoin` and `kern.gemv.dense.<backend>.<quant>`. So an ID takes one of two forms:
+- A scenario that names a model uses the form above, and its `<quant>` segment equals the file's `quant`.
+- A scenario that runs no model, and a §9 microbenchmark, has 2 to 6 segments.
+
+Every segment is lowercase letters, digits and `_`. The first is one of the classes `syntropy-bench` lists: §4.2's scenario classes, §9's prefixes, and §4.3's `feat` and `compare`.
+
+A scenario names its model by its `fixtures.toml` checkpoint ID (RFC-0060 §12.3), because `BenchKey.model` is a `ModelId` content digest that only the census computes. The runner resolves the ID when it loads the checkpoint. A scenario that runs no model has no value for `BenchKey`'s required `model` and `quant` fields; that gap in QUAL-E12-T01's schema is open (issue #1559).
+
+`syntropy-bench scenarios check`, which the `lint` job runs, checks each file against these rules and against the rig IDs of §6.2. It also checks the version rule against a base commit: `git merge-base HEAD origin/main`, unless `--base` names another. A file absent at the base that the base's history once held, such as a retired scenario added back, is checked against its last version in that history, so a re-added scenario can't reuse a version with a different definition. The check fails when it can't find the base, or when a shallow clone hides the history a re-added file needs.
+
 #### 4.2 Success criteria
 
 Rig IDs refer to §6.2. "Sim" means the RFC-0060 simulator and "prop" an RFC-0060 property. All thresholds are the **[target]** values of `00-vision-and-scope.md` §7.
 
-| SC | Scenario(s) | Rig(s) | Measured | Pass |
-|---|---|---|---|---|
-| SC-1 | `kern.gemv.dense.*`, `kern.moe.grouped.*`, `kern.cpu.eip.*` (§9) | R-ADA (AVX2 host), R-BW (AVX-512 host), R-WIN, R-MACF, R-ULTRA-A, R-HALO | η = W_ach / W_peak per kernel class; CPU: W_ach / probe all-core read | ≥ 0.80 dense on `Vram`/`Unified`; ≥ 0.63 grouped MoE; ≥ 0.75 CPU in place |
-| SC-2 | `decode.single.llama1b`, `.llama8b`, `.llama70b` at Q4 on each rig; intercept of `t_tok` against bytes | every Tier 1 GPU rig | fitted `t_fixed`; telemetry `t_fixed_ach` | `t_fixed ≤ 0.2 · 3.79 GB / W_probe` |
-| SC-3 | every `decode.single.*` scenario | all | `t_tok` against `t_model` (§5.1) | `t_tok ≤ 1.05 · t_model` |
-| SC-4 | `decode.single.llama70b.q4km.cap64g` (scenario a); `.llama70b.q4km` and `tiered.single.dsv3.4bit` on R-ULTRA-A | R-ADA, R-ULTRA-A | decode rate against `t_peak` (§5.1) | ≥ 0.67 (split across `Vram` and DRAM); ≥ 0.76 (one tier); ≥ 0.60 (MoE in `Vram`/`Unified`) |
-| SC-5 | `tiered.single.dsv3.q4km.sustained` (scenario b2) | R-ADA (128 GB) | `t_tok`, measured h | `t_tok ≤ 1.10 · t_overlap(h)` |
-| SC-6 | `prefill.nstar.sweep`: chunk n ∈ {1, 2, 4, …, 64} on a RAM-homed layer range | R-ADA, R-BW | chosen path per n; time of both paths, forced by pins | the chosen path is the faster one at every n, except within ±1 chunk of the measured crossover |
-| SC-7 | `io.nvme.expert.*` (§9); telemetry of b2 | R-ADA, R-BW (Gen5) | expert-read GB/s | ≥ 0.85 × probe sustained rate at the same size and queue depth |
-| SC-8 | b2 telemetry | R-ADA | share of NVMe misses issued before their layer's router ran | ≥ 50% |
-| SC-9 | `cache.policy.trace.*`: offline replay of RFC-0060 routing traces | any CPU host | hit rate per policy and capacity | ≥ max(cache fraction, LRU at equal capacity) on every trace |
-| SC-10 | `prefill.single.llama70b.q4km.cap64g` at 4K and 32K prompts | R-ADA, R-BW | H2D GB/s during streamed prefill; micro-batch size | ≥ 0.90 × probe pinned rate; micro-batch ≥ `n_hide` where VRAM allows |
-| SC-11 | every scenario (peak bytes per tier); the RFC-0060 matrix (OOM kills) | all | predicted against measured peak per tier per node | within 5%; zero OOM kills |
-| SC-12 | `net.hop.*` (§9), runner to runner through the real rings | R-PAIR10, the S2 cluster, R-TB5 pair | added time per hop | ≤ `α_probe + S/β_probe + 2 · t_switch(probe)` |
-| SC-13 | `pipeline.single.llama70b.q4km.s2` (scenario c1) | S2 cluster on 2.5 GbE | `t_tok` against `Σ_s t_s + D · t_hop` | ≤ 1.05× |
-| SC-14 | prop P-solver-3; `pipeline.vs.single.*`: forced single-node plans against the chosen plan | sim; S2 cluster | predicted and measured `t_tok` | chosen ≤ best single-node, both predicted and measured |
-| SC-15 | `throughput.pipeline.llama70b.q4km.s2` at concurrency 1–8 (scenario c2) | S2 cluster | aggregate rate | ≥ 0.85 × `min(M, D) / (Σ_s t_s + D · t_hop)`, capped at `1 / max_s t_s` |
-| SC-16 | prop P-solver-4; the probe's `α_eff` on each lab link | sim; R-TB5 pair, R-PAIR10, R-ROCE | TP/EP chosen only when the gate holds | gate formula holds for every committed plan |
-| SC-17 | `net.collective.allreduce.tb5` (§9) | R-TB5 pair | `α_eff` per collective | ≤ `α_wire + 2 · t_switch` |
-| SC-18 | `prefill.single.llama70b.q4km.cap64g` at 4K (scenario a step 4) | R-ADA | TTFT | ≤ 1.15 × the formula + queueing |
-| SC-19 | `agent.session.restore.*` | R-ADA, R-ULTRA-A | resumed TTFT | ≤ `1.25 · KV_bytes / W_read(tier) + t_prefill(new tokens)` |
-| SC-20 | `agent.prefix.*` | R-ADA, R-ULTRA-A | tokens prefilled per turn | exactly the tokens after the longest cached-prefix match |
-| SC-21 | `spec.*` pairs (Off against Auto): dense 70B with draft model; DeepSeek-class with MTP | R-ADA, R-ULTRA-A | realised speedup against the predicted, with measured `a` | ≥ 0.85 × predicted; speculation off whenever predicted < 1 |
-| SC-22 | `life.probe` | every rig | quick-probe time | ≤ 15 s |
-| SC-23 | `life.packload.llama70b.q4km` | R-ADA (Gen4), R-BW (Gen5) | `t_pack + t_load` | ≤ `1.25 · (2S/W_read + S/W_write)` |
-| SC-24 | `life.install.clean` on clean VM images per Tier 1 OS (RFC-0052 owns the script) | hosted VMs; R-MACF | steps, typed inputs, time to first token | one command, one model choice, no config file, no typed address |
-| SC-25 | `cluster.rejoin`, `cluster.newjoin` (scripted pairing approval), `cluster.detect`; sim checker | S2 cluster; sim | heartbeats to admit (from probe for a rejoin, from approval for a new node) and to detect | ≤ 2; ≤ 3 |
-| SC-26 | `cluster.invite.offlan` (RFC-0060 L7 with timing) | lab + an off-site node through a relay | join success, time | joins with one token, no port forwarding |
-| SC-27 | RFC-0060 chaos F-03 | lab; sim | failed in-flight requests | 0 |
-| SC-28 | RFC-0060 chaos F-01, F-02 with timing | lab | resume time against the RFC-0033 formula | within the formula; no client-visible error |
-| SC-29 | RFC-0060 parity, every release | Tier 1 | parity verdicts | all pass; approximate settings visible in API, CLI and dashboard |
-| SC-30 | every `decode.single.*`, `pipeline.*`, `tiered.*` scenario | reference rigs | `|t_pred − t_meas| / t_meas` | ≤ 0.15 |
-| SC-31 | `solver.regress.*` (§9) | any CPU host | slow-solve time (≤ 8 nodes), routing time, DP feasibility | ≤ 2 s; ≤ 1 ms; feasible whenever one exists |
-| SC-32 | the release gate (§8.4); publishing rules (§11) | Tier 1 rigs | per-scenario deltas against the previous release | no reference benchmark outside its noise band; every published number fully keyed |
+The table is generated from `bench/sc-map.toml` (revised 2026-10-22). To change it, edit the map and run `syntropy-bench scenarios render --write`. The Status column names every task that delivers each row's measurement or meets its target, in milestone order: each task whose acceptance criteria in `plan/implementation/epics/` name the criterion, and the scenario task that measures it. `syntropy-bench` derives that list from the epics when it renders the table. The map records only the scenario tasks the acceptance criteria don't show (`added_owners`) and the citations that are not ownership, each with its reason (`[[not_owner]]`). When an epic edit changes which tasks cite a criterion, `scenarios check` names the row and the task until the table is rendered again. The column also says from the files in `bench/scenarios/` whether the row's scenarios exist yet:
+- *pending*: no scenario file matches the row yet;
+- *not a scenario file*: an RFC-0060 property, chaos or parity result, or the release gate, measures the criterion.
+
+<!-- BEGIN GENERATED: sc-table -->
+| SC | Scenario(s) | Rig(s) | Measured | Pass | Status |
+|---|---|---|---|---|---|
+| SC-1 | `kern.gemv.dense.*`, `kern.moe.grouped.*`, `kern.cpu.eip.*` (§9) | R-ADA (AVX2 host), R-BW (AVX-512 host), R-WIN, R-MACF, R-ULTRA-A, R-HALO | η = W_ach / W_peak per kernel class; CPU: W_ach / probe all-core read | ≥ 0.80 dense on `Vram`/`Unified`; ≥ 0.63 grouped MoE; ≥ 0.75 CPU in place | pending; QUAL-E13-T02, COMP-E2-T09, QUAL-E13-T03, COMP-E2-T22, QUAL-E13-T20 |
+| SC-2 | `decode.single.llama1b`, `.llama8b`, `.llama70b` at Q4 on each rig; intercept of `t_tok` against bytes | every Tier 1 GPU rig | fitted `t_fixed`; telemetry `t_fixed_ach` | `t_fixed ≤ 0.2 · 3.79 GB / W_probe` | pending; COMP-E5-T24, PLC-E2-T04, PLC-E7-T20, QUAL-E13-T02, COMP-E2-T10, PLC-E7-T23, QUAL-E13-T03, PLC-E7-T06, QUAL-E13-T20 |
+| SC-3 | every `decode.single.*` scenario | all | `t_tok` against `t_model` (§5.1) | `t_tok ≤ 1.05 · t_model` | pending; QUAL-E12-T09, QUAL-E12-T10, QUAL-E13-T02, PROD-E8-T08, QUAL-E13-T03, QUAL-E13-T20 |
+| SC-4 | `decode.single.llama70b.q4km.cap64g` (scenario a); `.llama70b.q4km` and `tiered.single.dsv3.4bit` on R-ULTRA-A | R-ADA, R-ULTRA-A | decode rate against `t_peak` (§5.1) | ≥ 0.67 (split across `Vram` and DRAM); ≥ 0.76 (one tier); ≥ 0.60 (MoE in `Vram`/`Unified`) | pending; COMP-E5-T24, QUAL-E12-T10, QUAL-E13-T02, COMP-E3-T17, PLC-E7-T23, QUAL-E13-T03, COMP-E6-T11, QUAL-E13-T20 |
+| SC-5 | `tiered.single.dsv3.q4km.sustained` (scenario b2) | R-ADA (128 GB) | `t_tok`, measured h | `t_tok ≤ 1.10 · t_overlap(h)` | pending; PLC-E5-T12, QUAL-E12-T17, QUAL-E13-T03, TIER-E9-T07 |
+| SC-6 | `prefill.nstar.sweep`: chunk n ∈ {1, 2, 4, …, 64} on a RAM-homed layer range | R-ADA, R-BW | chosen path per n; time of both paths, forced by pins | the chosen path is the faster one at every n, except within ±1 chunk of the measured crossover | pending; QUAL-E13-T03, TIER-E3-T06 |
+| SC-7 | `io.nvme.expert.*` (§9); telemetry of b2 | R-ADA, R-BW (Gen5) | expert-read GB/s | ≥ 0.85 × probe sustained rate at the same size and queue depth | pending; QUAL-E13-T03, TIER-E5-T18, QUAL-E9-T06, TIER-E5-T22 |
+| SC-8 | b2 telemetry | R-ADA | share of NVMe misses issued before their layer's router ran | ≥ 50% | pending; QUAL-E13-T03 |
+| SC-9 | `cache.policy.trace.*`: offline replay of RFC-0060 routing traces | any CPU host | hit rate per policy and capacity | ≥ max(cache fraction, LRU at equal capacity) on every trace | pending; QUAL-E13-T03, TIER-E8-T06 |
+| SC-10 | `prefill.single.llama70b.q4km.cap64g` at 4K and 32K prompts | R-ADA, R-BW | H2D GB/s during streamed prefill; micro-batch size | ≥ 0.90 × probe pinned rate; micro-batch ≥ `n_hide` where VRAM allows | pending; PLC-E6-T02, QUAL-E13-T03 |
+| SC-11 | every scenario (peak bytes per tier); the RFC-0060 matrix (OOM kills) | all | predicted against measured peak per tier per node | within 5%; zero OOM kills | pending; QUAL-E11-T03, QUAL-E11-T11, QUAL-E13-T03, TIER-E2-T07, TIER-E4-T09, QUAL-E13-T20, QUAL-E9-T07 |
+| SC-12 | `net.hop.*` (§9), runner to runner through the real rings | R-PAIR10, the S2 cluster, R-TB5 pair | added time per hop | ≤ `α_probe + S/β_probe + 2 · t_switch(probe)` | pending; DIST-E11-T15, QUAL-E13-T06, QUAL-E13-T10 |
+| SC-13 | `pipeline.single.llama70b.q4km.s2` (scenario c1) | S2 cluster on 2.5 GbE | `t_tok` against `Σ_s t_s + D · t_hop` | ≤ 1.05× | pending; DIST-E11-T15, QUAL-E13-T06 |
+| SC-14 | prop P-solver-3; `pipeline.vs.single.*`: forced single-node plans against the chosen plan | sim; S2 cluster | predicted and measured `t_tok` | chosen ≤ best single-node, both predicted and measured | pending; PLC-E5-T08, QUAL-E13-T06 |
+| SC-15 | `throughput.pipeline.llama70b.q4km.s2` at concurrency 1–8 (scenario c2) | S2 cluster | aggregate rate | ≥ 0.85 × `min(M, D) / (Σ_s t_s + D · t_hop)`, capped at `1 / max_s t_s` | pending; DIST-E11-T08, QUAL-E13-T16 |
+| SC-16 | prop P-solver-4; the probe's `α_eff` on each lab link | sim; R-TB5 pair, R-PAIR10, R-ROCE | TP/EP chosen only when the gate holds | gate formula holds for every committed plan | not a scenario file; DIST-E13-T09, PLC-E2-T12, QUAL-E13-T07 |
+| SC-17 | `net.collective.allreduce.tb5` (§9) | R-TB5 pair | `α_eff` per collective | ≤ `α_wire + 2 · t_switch` | pending; DIST-E7-T20, DIST-E7-T15, DIST-E13-T09, PLC-E2-T12, QUAL-E13-T07, QUAL-E13-T18 |
+| SC-18 | `prefill.single.llama70b.q4km.cap64g` at 4K (scenario a step 4) | R-ADA | TTFT | ≤ 1.15 × the formula + queueing | pending; QUAL-E13-T03, QUAL-E13-T06 |
+| SC-19 | `agent.session.restore.*` | R-ADA, R-ULTRA-A | resumed TTFT | ≤ `1.25 · KV_bytes / W_read(tier) + t_prefill(new tokens)` | pending; QUAL-E13-T03, TIER-E4-T06, QUAL-E13-T20, TIER-E7-T12 |
+| SC-20 | `agent.prefix.*` | R-ADA, R-ULTRA-A | tokens prefilled per turn | exactly the tokens after the longest cached-prefix match | pending; PLC-E8-T02, QUAL-E3-T08, QUAL-E13-T03, TIER-E7-T03, QUAL-E13-T20, PROD-E2-T14, PROD-E4-T07 |
+| SC-21 | `spec.*` pairs (Off against Auto): dense 70B with draft model; DeepSeek-class with MTP | R-ADA, R-ULTRA-A | realised speedup against the predicted, with measured `a` | ≥ 0.85 × predicted; speculation off whenever predicted < 1 | pending; QUAL-E13-T03, QUAL-E13-T20, QUAL-E13-T21 |
+| SC-22 | `life.probe` | every rig | quick-probe time | ≤ 15 s | pending; QUAL-E13-T03, PLC-E2-T21, QUAL-E13-T20, QUAL-E13-T06 |
+| SC-23 | `life.packload.llama70b.q4km` | R-ADA (Gen4), R-BW (Gen5) | `t_pack + t_load` | ≤ `1.25 · (2S/W_read + S/W_write)` | pending; QUAL-E13-T03, QUAL-E13-T20, PLC-E4-T14, QUAL-E13-T06 |
+| SC-24 | `life.install.clean` on clean VM images per Tier 1 OS (RFC-0052 owns the script) | hosted VMs; R-MACF | steps, typed inputs, time to first token | one command, one model choice, no config file, no typed address | pending; PROD-E6-T07, PROD-E6-T18, PROD-E10-T06, PROD-E10-T19, QUAL-E13-T04, DIST-E3-T11, DIST-E5-T03, QUAL-E13-T06 |
+| SC-25 | `cluster.rejoin`, `cluster.newjoin` (scripted pairing approval), `cluster.detect`; sim checker | S2 cluster; sim | heartbeats to admit (from probe for a rejoin, from approval for a new node) and to detect | ≤ 2; ≤ 3 | pending; DIST-E4-T03, DIST-E4-T12, DIST-E5-T03, DIST-E5-T06, QUAL-E13-T06 |
+| SC-26 | `cluster.invite.offlan` (RFC-0060 L7 with timing) | lab + an off-site node through a relay | join success, time | joins with one token, no port forwarding | pending; DIST-E5-T09, QUAL-E13-T07 |
+| SC-27 | RFC-0060 chaos F-03 | lab; sim | failed in-flight requests | 0 | not a scenario file; DIST-E10-T07, PROD-E2-T13, QUAL-E13-T06, DIST-E16-T02 |
+| SC-28 | RFC-0060 chaos F-01, F-02 with timing | lab | resume time against the RFC-0033 formula | within the formula; no client-visible error | not a scenario file; DIST-E14-T14, DIST-E16-T02, PROD-E2-T18, QUAL-E9-T08, QUAL-E13-T07 |
+| SC-29 | RFC-0060 parity, every release | Tier 1 | parity verdicts | all pass; approximate settings visible in API, CLI and dashboard | not a scenario file; PROD-E6-T03, QUAL-E5-T10, PROD-E4-T03, PROD-E1-T20 |
+| SC-30 | every `decode.single.*`, `pipeline.*`, `tiered.*` scenario | reference rigs | `\|t_pred − t_meas\| / t_meas` | ≤ 0.15 | pending; PLC-E5-T12, QUAL-E12-T17, QUAL-E13-T05 |
+| SC-31 | `solver.regress.*` (§9) | any CPU host | slow-solve time (≤ 8 nodes), routing time, DP feasibility | ≤ 2 s; ≤ 1 ms; feasible whenever one exists | pending; QUAL-E13-T05, DIST-E12-T03, QUAL-E13-T15, PLC-E6-T11 |
+| SC-32 | the release gate (§8.4); publishing rules (§11) | Tier 1 rigs | per-scenario deltas against the previous release | no reference benchmark outside its noise band; every published number fully keyed | not a scenario file; QUAL-E14-T05, PLC-E8-T14 |
+<!-- END GENERATED -->
 
 #### 4.3 Benchmarks that foundation ADRs depend on
 
@@ -378,6 +396,22 @@ The harness emits this table for every result and flags each row where measured 
 - vendor-documented fabric limits where they are narrower than DRAM, for example per-CCD read bandwidth on AM5 parts. Here the SC conventions take the narrowest element as `W_peak`.
 
 The records reuse the verified figures in `hardware-and-performance-model.md` §2, and add rows only from vendor documentation. A spec record never comes from a measurement. A probe result below 50% of its spec record flags the rig as misconfigured (`00-vision-and-scope.md` §9, principle 2), and the run is marked `dirty`.
+
+*Note 2026-10-22 (QUAL-E12-T11, the database as built):*
+- **Records.** Each record is `bench/specs/<kind>-<name>.toml`, of kind `gpu`, `cpu`, `dram`, `pcie` or `nvme`, and names the exact inventory `models` it covers. Each figure is `{ value, source, where, checked }`: an `https://` URL to the vendor or standards document, where in it the figure is, and the date it was checked. `syntropy-bench specs check`, a `lint` step, fails a figure without them. The crate's `specs` module documents the format.
+- **Paths.** `W_peak` is computed per path, as the narrowest element along it:
+  - a GPU reading its own memory (`Vram`): the GPU record;
+  - the CPU reading host memory in place (`HostPinned`, `HostPageable`): DRAM, then any fabric limit the CPU record documents;
+  - a GPU reading host memory (`HostPinned`): DRAM, then the GPU's negotiated PCIe link;
+  - a drive (`Nvme`): the drive, then its link.
+
+  DRAM's channel count is the CPU's, capped by the number of DIMMs fitted, and runs at the slowest DIMM's speed, which the inventory records as the speed the module runs at. A chipset-attached drive has no peak until the chipset uplink has a record, and the rig's other paths keep theirs.
+- **Sources.** Where the research note cites a third-party measurement rather than a vendor or standards document, the record cites a vendor or standards document for the same figure instead:
+  - the DRAM formula's inputs: the CPU vendor's channel count, and a DDR5 module datasheet's 64-bit data width;
+  - PCIe 4.0: PCI-SIG's 16.0 GT/s and 128b/130b encoding.
+
+  R-ADA's figures match the research's: 1008 GB/s (cited), 96.0 GB/s (derived: 2 channels × 8 B × 6000 MT/s), 31.5 GB/s (derived: 16 GT/s × 16 lanes × 128/130 ÷ 8, per direction) and 7.45 GB/s (cited).
+- **Sanity.** A probe figure below 50% of its path's `W_peak` sets `EnvCapture.dirty` to `misconfigured`. A run already dirty for another reason keeps that reason. A probe of a path with no peak is reported as unchecked, a gap in the database rather than in the rig, and leaves the run as it is.
 
 #### 5.4 Roofline views
 

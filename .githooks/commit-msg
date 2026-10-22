@@ -33,6 +33,15 @@ note() {
     printf 'commit-msg: %s\n' "$*"
 }
 
+# Whether a subject is git's own for a merge commit: "Merge branch ...", "Merge remote-tracking
+# branch ...", "Merge commit ...", "Merge tag ...", "Merge pull request ...".
+is_merge_subject() {
+    case $1 in
+    'Merge '*) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
 # The message as git records it: carriage returns removed, since an editor on Windows may save
 # the message with CRLF endings; the part below a `git commit -v` scissors line dropped; then
 # comment lines and surplus blank lines stripped.
@@ -49,6 +58,12 @@ case $subject in
 *)
     if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
         note "subject: skipped for a merge commit"
+    elif is_merge_subject "$subject" && git rev-parse -q --verify 'HEAD^2' >/dev/null; then
+        # `git commit --amend` on a merge commit leaves no MERGE_HEAD, but HEAD, the commit being
+        # amended, has a second parent. Only squash-merge titles must be conventional (pr-title),
+        # so a branch merge keeps git's "Merge ..." subject. A new commit made on top of a merge
+        # with a "Merge ..." subject is skipped too: the hook cannot tell it from an amend.
+        note "subject: skipped for an amended merge commit"
     elif ! printf '%s\n' "$subject" |
         grep -Eq '^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)(\([^()]+\))?!?: [^ ]'; then
         note "subject: FAIL: write 'type(scope): subject', with type one of feat, fix, perf, refactor, docs, test, build, ci, chore or revert"
