@@ -772,6 +772,8 @@ fn check_snapshot(name: &str, expected: &str) {
         std::fs::write(path, &actual).unwrap();
         return;
     }
+    // A CRLF checkout (Git for Windows) must not fail an unchanged lowering.
+    let expected = expected.replace("\r\n", "\n");
     assert_eq!(
         actual, expected,
         "snapshot {name} differs; the actual lowering is:\n{actual}"
