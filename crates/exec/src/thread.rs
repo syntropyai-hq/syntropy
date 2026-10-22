@@ -57,7 +57,8 @@ impl Cores {
         Cores { free: topology }
     }
 
-    /// The cores this process may run on ([`os::cpu_topology`]).
+    /// The cores this process may run on ([`os::cpu_topology`]). On Linux that is the main
+    /// thread's mask, so detect before pinning the main thread, if it is ever pinned.
     ///
     /// # Errors
     ///

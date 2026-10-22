@@ -68,6 +68,9 @@ pub enum Priority {
 
 /// The cores this process may run on, in core order, each with its NUMA node.
 ///
+/// On Linux the process's mask is its main thread's, so call this before pinning the main
+/// thread, if it is ever pinned.
+///
 /// # Errors
 ///
 /// If the OS cannot report the process's affinity mask.
