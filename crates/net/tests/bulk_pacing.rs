@@ -41,6 +41,10 @@ const BULK_FRAME: u32 = 4 * 1024;
 /// The idle phase that measures the data channel's idle p99 [target].
 const IDLE: u64 = 3_000_000_000;
 
+/// The most simulated time a run may take after the idle phase: ten minutes, beyond any of the
+/// transfers here [target].
+const LIMIT: u64 = 600_000_000_000;
+
 fn link(from: NodeId, to: NodeId) -> LinkId {
     LinkId {
         src: Endpoint::Nic {
@@ -207,8 +211,18 @@ fn run(seed: u64, bulk: u64, idle_scale: f64) -> Run {
     let mut bulk_acked = 0u64;
     loop {
         iterations += 1;
-        assert!(iterations < 50_000_000, "no progress");
         let t = now(&clock);
+        // Bounded by simulated time: a run that stops making progress fails, at most this far
+        // in. The iteration cap catches one that stops the clock.
+        assert!(
+            t < IDLE + LIMIT,
+            "no progress by {} s simulated",
+            t / 1_000_000_000
+        );
+        assert!(
+            iterations < 50_000_000,
+            "no progress: the clock stopped at {t} ns"
+        );
         // The data channel: a frame every period, when it has credit.
         if t >= next_data {
             if data.credit() > 0 {
