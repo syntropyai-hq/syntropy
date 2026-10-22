@@ -41,7 +41,11 @@ fn the_vectors_file_matches_the_spec() {
     if std::env::var("SYNTROPY_BLESS_GOLDEN").as_deref() == Ok("1") {
         std::fs::write(&path, &text).unwrap();
     }
-    let committed = std::fs::read_to_string(&path).unwrap();
+    // `.gitattributes` keeps the file LF everywhere; a checkout that converts it anyway must
+    // not fail the comparison.
+    let committed = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .replace("\r\n", "\n");
     assert_eq!(committed, text, "{} is stale", path.display());
 }
 

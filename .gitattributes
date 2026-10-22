@@ -1,2 +1,5 @@
 # Hooks are shell scripts, which a CRLF checkout would break in Git for Windows.
 /.githooks/** text eol=lf
+# Golden vectors are compared with what a test renders; a CRLF checkout would change their bytes.
+/crates/cluster/tests/log/vectors.txt text eol=lf
+/crates/cluster/tests/pairing/vectors.txt text eol=lf
