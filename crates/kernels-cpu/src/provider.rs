@@ -632,6 +632,9 @@ impl KernelProvider for CpuProvider {
 
     /// Pushes the captured op list onto `s` again. Each record and wait takes its generation
     /// now. No allocation: the items go onto the preallocated ring.
+    ///
+    /// All or nothing: every item is checked before any is pushed, so a replay that fails, on a
+    /// buffer freed since the capture or a ring without room, queues nothing.
     fn replay(&self, ctx: &DeviceCtx, s: &Stream, g: &CapturedGraph) -> Result<(), Error> {
         let device = self.live(ctx)?;
         let graphs = device.graphs.borrow();
@@ -639,6 +642,7 @@ impl KernelProvider for CpuProvider {
             .ok()
             .and_then(|i| graphs.get(i))
             .ok_or_else(|| internal(format!("no captured graph {} on this device", g.handle)))?;
+        device.check_replay(s.handle, list)?;
         for item in list {
             device.push(s.handle, item.clone())?;
         }

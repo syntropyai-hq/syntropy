@@ -279,6 +279,78 @@ fn a_replay_after_its_buffer_is_freed_fails_instead_of_writing() {
     );
 }
 
+/// A replay is all or nothing: one freed buffer, or a ring without room for the list, fails
+/// it before any item is queued (review of #1829, N4).
+#[test]
+fn a_failed_replay_queues_nothing() {
+    let provider = CpuProvider::new(KillSwitches::NONE);
+    let ctx = open(&provider);
+    let s = provider.stream(&ctx, StreamPriority::Compute).unwrap();
+    let bells = provider.doorbells(&ctx).unwrap();
+    let flag = bells.flag_at(0);
+    let mut src = vec![1u8; 64];
+    let a = import(&provider, &ctx, &mut src);
+    let request = AllocRequest {
+        bytes: Bytes(64),
+        kind: MemKind::HostMapped,
+        align: Bytes(64),
+        reserve_only: false,
+    };
+    let dst = provider.alloc(&ctx, request).unwrap();
+    provider.begin_capture(&ctx, &s).unwrap();
+    provider.signal_host(&ctx, &s, flag, 1).unwrap();
+    provider
+        .copy(&ctx, &s, slice(a, 0, 64), slice(dst.handle, 0, 64))
+        .unwrap();
+    let graph = provider.end_capture(&ctx, &s).unwrap();
+    provider.free(&ctx, dst);
+    assert!(provider.replay(&ctx, &s, &graph).is_err());
+    assert_eq!(provider.run(&ctx, &s).unwrap(), Run::Idle);
+    assert_eq!(
+        bells.flag(flag).unwrap().load(Ordering::Acquire),
+        0,
+        "the signal before the copy was not queued"
+    );
+
+    // A list longer than the ring's room is refused before any of it is queued.
+    let t = provider.stream(&ctx, StreamPriority::CopyIn).unwrap();
+    provider.begin_capture(&ctx, &t).unwrap();
+    for _ in 0..3 {
+        provider.signal_host(&ctx, &t, flag, 1).unwrap();
+    }
+    let three = provider.end_capture(&ctx, &t).unwrap();
+    for _ in 0..STREAM_CAPACITY - 2 {
+        provider.signal_host(&ctx, &t, bells.flag_at(1), 1).unwrap();
+    }
+    let error = provider.replay(&ctx, &t, &three).unwrap_err();
+    assert!(error.message.contains("room for 2"), "{error}");
+    assert_eq!(provider.run(&ctx, &t).unwrap(), Run::Idle);
+    assert_eq!(bells.flag(flag).unwrap().load(Ordering::Acquire), 0);
+}
+
+/// An event recorded on two streams never moves back when the earlier record runs last
+/// (review of #1829, N2).
+#[test]
+fn an_event_recorded_on_two_streams_never_moves_back() {
+    let provider = CpuProvider::new(KillSwitches::NONE);
+    let ctx = open(&provider);
+    let (s1, s2) = (
+        provider.stream(&ctx, StreamPriority::Compute).unwrap(),
+        provider.stream(&ctx, StreamPriority::CopyIn).unwrap(),
+    );
+    let e = provider.event(&ctx).unwrap();
+    provider.record(&ctx, &s1, &e).unwrap();
+    provider.record(&ctx, &s2, &e).unwrap();
+    // The later record runs first, then the earlier one.
+    assert_eq!(provider.run(&ctx, &s2).unwrap(), Run::Idle);
+    assert!(provider.poll(&ctx, &e).unwrap());
+    assert_eq!(provider.run(&ctx, &s1).unwrap(), Run::Idle);
+    assert!(
+        provider.poll(&ctx, &e).unwrap(),
+        "the earlier record moved the event back"
+    );
+}
+
 #[test]
 fn events_are_atomics_that_streams_record_and_wait_on() {
     let provider = CpuProvider::new(KillSwitches::NONE);

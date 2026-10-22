@@ -192,6 +192,37 @@ impl CpuDevice {
         }
     }
 
+    /// Checks, before a replay pushes anything, that `list` can go onto stream `index` whole:
+    /// every captured copy's buffers still exist and cover it, and the ring has room for every
+    /// item. Allocation-free. The room is counted conservatively: an item a runner has taken
+    /// but not finished still counts as queued.
+    pub(crate) fn check_replay(&self, index: u64, list: &[Item]) -> Result<(), Error> {
+        for item in list {
+            if let Item::CopyRef { src, dst } = item {
+                self.range(src.buffer, src.offset, src.bytes)?;
+                self.range(dst.buffer, dst.offset, dst.bytes)?;
+            }
+        }
+        let streams = self.streams.borrow();
+        let stream = usize::try_from(index)
+            .ok()
+            .and_then(|i| streams.get(i))
+            .ok_or_else(|| internal(format!("no stream {index} on this device")))?;
+        if stream.capture.is_none() {
+            let queued = stream
+                .pushed
+                .saturating_sub(stream.shared.completed.load(Ordering::Acquire));
+            let room = (STREAM_CAPACITY as u64).saturating_sub(queued);
+            if list.len() as u64 > room {
+                return Err(internal(format!(
+                    "stream {index}'s ring has room for {room} items, and the replay is {}",
+                    list.len()
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Whether every item pushed onto stream `index` has run.
     pub(crate) fn drained(&self, index: usize) -> bool {
         self.streams
