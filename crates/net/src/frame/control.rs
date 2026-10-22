@@ -371,28 +371,19 @@ impl<'a> Control<'a> {
                 wire_dtype_code(hello.wire_dtype)?;
             }
             Control::HelloAck { ack, credential } => {
-                // An acceptance shows the acceptor's credential. A refusal may come before the
-                // acceptor has one to show.
-                match ack.cred_kind {
-                    None if ack.status == code::OK => {
+                // An acceptance shows the acceptor's credential. A refusal's status is the
+                // message: its `cred_kind` and payload are not checked, so the reason is always
+                // readable (RFC-0031 §6.9, note of 2026-10-22).
+                if ack.status == code::OK {
+                    let Some(kind) = ack.cred_kind else {
                         return Err(bad(ftype, "cred_kind", 0u64));
-                    }
-                    None if !credential.is_empty() => {
-                        return Err(FrameError::CredentialLength {
-                            kind: 0,
-                            len: credential.len(),
-                        });
-                    }
-                    Some(kind)
-                        if credential.len() != kind.credential_len()
-                            && !(ack.status != code::OK && credential.is_empty()) =>
-                    {
+                    };
+                    if credential.len() != kind.credential_len() {
                         return Err(FrameError::CredentialLength {
                             kind: kind as u16,
                             len: credential.len(),
                         });
                     }
-                    _ => {}
                 }
             }
             Control::Close { reason, .. } => {
@@ -871,6 +862,23 @@ mod tests {
             ack,
             credential: &[],
         });
+        // Nor its payload: a refusal that still carries a credential, of any length, under a
+        // `cred_kind` that is 0, known, or unknown, keeps its status readable.
+        for (cred, kind) in [(0u16, None), (2, Some(CredKind::AdmissionCert)), (9, None)] {
+            ext[30..32].copy_from_slice(&cred.to_le_bytes());
+            for payload in [&[5u8; 168][..], &[5u8; 3][..]] {
+                let parsed = Control::parse(FrameType::HelloAck, &ext, payload)
+                    .unwrap_or_else(|e| panic!("cred_kind {cred}, {} bytes: {e}", payload.len()));
+                let Control::HelloAck { ack, credential } = parsed else {
+                    panic!("not a HelloAck");
+                };
+                assert_eq!(ack.status, code::PROTO_MAJOR_MISMATCH);
+                assert_eq!(ack.cred_kind, kind, "cred_kind {cred}");
+                assert_eq!(credential, payload);
+                round_trip(Control::HelloAck { ack, credential });
+            }
+        }
+        ext[30..32].copy_from_slice(&0u16.to_le_bytes());
         // An acceptance must name its credential's kind.
         ext[..2].copy_from_slice(&code::OK.to_le_bytes());
         assert!(matches!(
