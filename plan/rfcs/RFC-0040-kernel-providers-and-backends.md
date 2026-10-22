@@ -158,8 +158,8 @@ pub trait KernelProvider: Send + Sync {
 #### 2.2 Supporting types
 
 ```rust
-pub struct ProviderId(pub &'static str);           // "cuda", "metal", "cpu", "hip", "vulkan", "ggml-cuda", …
-pub struct ProviderBuild { pub version: u32, pub module: Option<Blake3>, pub toolchain: SmallVec<[(&'static str, String); 3]>, pub driver: Option<String> }
+pub struct ProviderId(pub Cow<'static, str>);      // "cuda", "metal", "cpu", "hip", "vulkan", "ggml-cuda", …
+pub struct ProviderBuild { pub version: u32, pub module: Option<Blake3>, pub toolchain: SmallVec<[(Cow<'static, str>, String); 3]>, pub driver: Option<String> }
 pub enum MemoryDomain { Cuda, Hip, Metal, Vulkan, Host, Ggml(GgmlBackend) }
 
 /// One device as a provider sees it. The probe (RFC-0010) merges records from several
@@ -253,6 +253,8 @@ pub trait HostRegistrar: Send {
 bitflags! { pub struct HostRegFlags: u8 { const DMA = 1; const MAPPED = 2; } }   // the tier manager maps its Registrations onto these
 pub struct Segment { pub reservation: u64, pub offset: Bytes, pub bytes: Bytes, pub handle: u64 }
 ```
+
+*Note 2026-10-23 (#1525):* `ProviderId` and the toolchain names in `ProviderBuild` were `&'static str`. §6.5 postcard-encodes `SelectionKey` and `SelectionEntry`, which hold them, to `<state>/kernels/selection.v1`. Decoding a `&'static str` needs a buffer that lives for the whole program, so every cache load would have leaked one. `Cow<'static, str>` decodes owned, and a provider still names itself with a literal without allocating. A `Cow` cannot be `Copy`, because its owned form holds a `String`, so `ProviderId` departs from RFC-0001 §5's default that IDs are `Copy`: it is `Clone` only. RFC-0001 §5.12 makes the same change to `Error::context` (RFC-0001 §18.32). COMP-E13-T15 makes the change in code.
 
 *Revised 2026-10-22 (ADR-0405):* `DeviceClass`, `CpuIsa` and `DeviceFeatures` live in `syntropy-core`, and `kernels` re-exports them (PLC-E1-T16). RFC-0010 §1.2 had its own `DeviceClass` with other variants, and now points here. `AppleFamily` is renamed `AppleGpuFamily`, the name `core` already uses. `Npu` comes from RFC-0010. `ProviderDevice` is unchanged.
 
@@ -982,7 +984,7 @@ ADR-0002 gives the ggml provider two jobs: coverage on every backend ggml suppor
 
 #### 8.1 What is linked, and how
 
-- **Only the tensor library.** `vendor/ggml` holds ggml's `ggml/` tree (ggml-base, the CPU backend and the GPU backends) at the commit in `third_party/ggml.lock` (RFC-0062 §4.2). Its model library is never vendored or linked (ADR-0002).
+- **Only the tensor library.** `third_party/ggml/` holds ggml's `ggml/` tree (ggml-base, the CPU backend and the GPU backends) at the commit in `third_party/ggml.lock` (RFC-0062 §4.2). Its model library is never vendored or linked (ADR-0002). *Note 2026-10-23:* this bullet said `vendor/ggml`; RFC-0062 §4.2, the CI path rules and the repository use `third_party/ggml/`, which is the path.
 - **Statically, with one backend per artefact.** ggml is built without its dynamic-backend loader. Each artefact links its own static copy of ggml-base together with the backends it serves:
   - the core: the CPU backend, plus the Metal backend on macOS;
   - each provider library: that module's GPU backend (CUDA, HIP, Vulkan or SYCL);
