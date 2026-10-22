@@ -89,19 +89,40 @@ fn sample(version: u32) -> Synth {
         .tensor("output_norm.weight", &[64], GgmlType::F32)
 }
 
+/// A tensor's fields, owned: name, `ne`, type, offset, start, bytes, file.
+type Owned = (String, Vec<u64>, GgmlType, u64, u64, u64, u16);
+
+fn owned(t: GgufTensor<'_>) -> Owned {
+    (
+        t.name.to_owned(),
+        t.ne().to_vec(),
+        t.ggml_type,
+        t.offset,
+        t.start,
+        t.bytes,
+        t.file,
+    )
+}
+
+fn tensors_of(h: &GgufHeader) -> Vec<Owned> {
+    h.tensors().map(owned).collect()
+}
+
 /// What the reader must report for `s`'s tensors, given the data section's start.
-fn expected_tensors(s: &Synth, data_start: u64, file: u16) -> Vec<GgufTensor> {
+fn expected_tensors(s: &Synth, data_start: u64, file: u16) -> Vec<Owned> {
     s.tensors
         .iter()
         .zip(s.layout())
-        .map(|(t, (offset, bytes))| GgufTensor {
-            name: t.name.clone(),
-            ne: t.ne.clone(),
-            ggml_type: t.ggml_type,
-            offset,
-            start: data_start + offset,
-            bytes,
-            file,
+        .map(|(t, (offset, bytes))| {
+            (
+                t.name.clone(),
+                t.ne.clone(),
+                t.ggml_type,
+                offset,
+                data_start + offset,
+                bytes,
+                file,
+            )
         })
         .collect()
 }
@@ -112,11 +133,11 @@ fn check_matches(s: &Synth, h: &GgufHeader) {
     let header_len = s.header().len() as u64;
     assert_eq!(h.header_bytes, header_len);
     assert_eq!(h.data_start, pad(header_len, s.alignment()).unwrap());
-    assert_eq!(h.tensors, expected_tensors(s, h.data_start, 0));
+    assert_eq!(tensors_of(h), expected_tensors(s, h.data_start, 0));
     let kvs: Vec<(String, Value)> = h
         .metadata
         .iter()
-        .map(|(k, v)| (k.to_owned(), v.clone()))
+        .map(|(k, v)| (k.to_owned(), v.to_value()))
         .collect();
     assert_eq!(kvs, s.kvs);
 }
@@ -130,9 +151,12 @@ fn v2_and_v3_files_parse() {
         let h = parse(s.build()).unwrap();
         check_matches(&s, &h);
         assert_eq!(h.alignment, DEFAULT_ALIGNMENT);
-        assert_eq!(h.tensors[1].scheme(), QuantScheme::Ggml(GgmlType::Q4_K));
-        assert_eq!(h.tensors[1].bytes, 4 * 144);
-        assert_eq!(h.tensors[2].elements(), 32 * 2 * 4);
+        assert_eq!(
+            h.tensor(1).unwrap().scheme(),
+            QuantScheme::Ggml(GgmlType::Q4_K)
+        );
+        assert_eq!(h.tensor(1).unwrap().bytes, 4 * 144);
+        assert_eq!(h.tensor(2).unwrap().elements(), 32 * 2 * 4);
     }
 }
 
@@ -413,7 +437,10 @@ fn general_alignment_sets_the_data_start_and_tensor_offsets() {
         check_matches(&s, &h);
         assert_eq!(h.alignment, u64::from(align));
         assert_eq!(h.data_start % u64::from(align), 0);
-        assert_eq!(h.tensors[1].offset, pad(12, u64::from(align)).unwrap());
+        assert_eq!(
+            h.tensor(1).unwrap().offset,
+            pad(12, u64::from(align)).unwrap()
+        );
     }
 }
 
@@ -444,7 +471,7 @@ fn every_ggml_type_maps_to_its_scheme_with_its_size() {
     }
     let h = parse(s.build()).unwrap();
     check_matches(&s, &h);
-    for (t, want) in h.tensors.iter().zip(GgmlType::ALL) {
+    for (t, want) in h.tensors().zip(GgmlType::ALL) {
         assert_eq!(t.scheme(), QuantScheme::Ggml(want));
         assert_eq!(t.bytes, block_geometry(want).unwrap().1 * 2 * 3);
     }
@@ -685,7 +712,10 @@ fn meta_view_accessors_widen_exactly_and_refuse_mismatches() {
     assert!(h.metadata.u32("big").is_err());
     assert_eq!(h.metadata.u64("big").unwrap(), Some(u64::MAX));
     assert!(h.metadata.str("bad").is_err());
-    assert_eq!(h.metadata.get("bad"), Some(&Value::Str(b"\xff"[..].into())));
+    assert_eq!(
+        h.metadata.get("bad").map(|v| v.to_value()),
+        Some(Value::Str(b"\xff"[..].into()))
+    );
 }
 
 // ---- Split files -----------------------------------------------------------------------------
@@ -753,11 +783,11 @@ fn a_split_set_reads_every_header_and_tags_each_tensor_with_its_file() {
     let m = GgufModel::read(set.iter().map(|s| Mem(s.build())), &Limits::DEFAULT).unwrap();
     assert_eq!(m.files().len(), 3);
     assert_eq!(m.metadata().architecture().unwrap(), Some("fixture"));
-    let tensors: Vec<&GgufTensor> = m.tensors().collect();
+    let tensors: Vec<GgufTensor<'_>> = m.tensors().collect();
     assert_eq!(tensors.len(), 6);
     for (i, (s, h)) in set.iter().zip(m.files()).enumerate() {
         let want = expected_tensors(s, h.data_start, i as u16);
-        assert_eq!(h.tensors, want);
+        assert_eq!(tensors_of(h), want);
     }
 
     // A single file without split keys is a set of one.
@@ -1088,8 +1118,8 @@ fn dump(bytes: &[u8]) -> String {
     match parse(bytes.to_vec()) {
         Ok(h) => {
             out.push_str("OK\n");
-            for t in &h.tensors {
-                let mut ne = t.ne.clone();
+            for t in h.tensors() {
+                let mut ne = t.ne().to_vec();
                 ne.resize(4, 1);
                 out.push_str(&format!(
                     "{} {} {} {} {} {} {}\n",

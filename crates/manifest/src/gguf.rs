@@ -27,6 +27,11 @@
 //!   other ID is `UnknownQuant` (4) naming it.
 //! - **Metadata.** Key-value pairs in file order, with typed accessors ([`MetaView`]). Keys
 //!   and tensor names are UTF-8 and unique; arrays are not nested; a bool is 0 or 1.
+//! - **Memory.** The header keeps the metadata and tensor-info bytes as the file has them,
+//!   copied once, with a 4-byte position per entry and a 4-byte sort index, and decodes on
+//!   access ([`MetaView`], [`GgufHeader::tensors`]). Nothing is allocated per entry or per
+//!   string, so a parse's peak heap use, with the header-read prefix, stays within 4× its input
+//!   (`tests/gguf_alloc.rs` measures the worst shapes).
 //! - **Split files** ([`GgufModel`], [`SplitName`]): every split's header is read, `split.no`
 //!   and `split.count` must match the set, `split.tensors.count` the total, and names are
 //!   unique across splits. Each tensor carries its file index.
@@ -37,7 +42,6 @@
 //! it. On every file both readers accept, they agree on each tensor's name, type, shape and
 //! offset (the differential corpus in the tests).
 
-use std::collections::BTreeSet;
 use std::fmt;
 
 use syntropy_core::{ErrorClass, GgmlType, QuantScheme};
@@ -53,7 +57,7 @@ pub(crate) mod synth;
 #[cfg(test)]
 mod tests;
 
-pub use meta::{Array, MetaError, MetaView, StrArray, Value, ValueType};
+pub use meta::{Array, ArrayRef, MetaError, MetaView, StrArray, Value, ValueRef, ValueType};
 pub use split::{GgufModel, SPLIT_COUNT, SPLIT_NO, SPLIT_TENSORS_COUNT, SplitName};
 pub use types::{block_geometry, ggml_type_from_id, ggml_type_id, ggml_type_name};
 
@@ -271,13 +275,13 @@ impl fmt::Display for GgufError {
 
 impl std::error::Error for GgufError {}
 
-/// One tensor's entry in the tensor-info table.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GgufTensor {
+/// One tensor's entry in the tensor-info table, decoded from the header bytes on access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GgufTensor<'a> {
     /// Its name.
-    pub name: String,
-    /// Its dimensions in ggml's order: `ne[0]` is the innermost (contiguous) one.
-    pub ne: Vec<u64>,
+    pub name: &'a str,
+    ne: [u64; MAX_DIMS as usize],
+    n_dims: u8,
     /// Its ggml type.
     pub ggml_type: GgmlType,
     /// Its offset from the start of the data section, as stored.
@@ -291,7 +295,13 @@ pub struct GgufTensor {
     pub file: u16,
 }
 
-impl GgufTensor {
+impl GgufTensor<'_> {
+    /// Its dimensions in ggml's order: `ne[0]` is the innermost (contiguous) one.
+    #[must_use]
+    pub fn ne(&self) -> &[u64] {
+        &self.ne[..usize::from(self.n_dims)]
+    }
+
     /// Its quantization scheme (RFC-0041 §2.1 "Types").
     #[must_use]
     pub fn scheme(&self) -> QuantScheme {
@@ -301,11 +311,26 @@ impl GgufTensor {
     /// Its element count.
     #[must_use]
     pub fn elements(&self) -> u64 {
-        self.ne.iter().product()
+        self.ne().iter().product()
     }
 }
 
+/// A tensor's byte length from its type and shape; `None` when it is not a whole number of
+/// blocks or overflows.
+fn tensor_bytes(t: GgmlType, ne: &[u64]) -> Option<(u64, u64)> {
+    let (block, block_bytes) = block_geometry(t)?;
+    let elements = ne
+        .iter()
+        .try_fold(1u64, |acc, &d| acc.checked_mul(d))
+        .filter(|&n| n <= i64::MAX as u64)?;
+    Some((elements, (elements / block).checked_mul(block_bytes)?))
+}
+
 /// A parsed GGUF header.
+///
+/// It keeps the tensor-info table's bytes as the file has them, validated, with one position
+/// per tensor: 4 bytes per tensor beyond the input, against at least 25 input bytes per entry.
+/// [`tensors`](Self::tensors) decodes each entry on access.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GgufHeader {
     /// 2 or 3.
@@ -314,14 +339,18 @@ pub struct GgufHeader {
     pub alignment: u64,
     /// The key-value metadata.
     pub metadata: MetaView,
-    /// The tensor-info table, in file order.
-    pub tensors: Vec<GgufTensor>,
     /// The end of the tensor-info table: the header's length in bytes.
     pub header_bytes: u64,
     /// The start of the data section: `header_bytes` rounded up to the alignment.
     pub data_start: u64,
     /// The file's length.
     pub file_len: u64,
+    /// The tensor-info table's bytes.
+    info: Vec<u8>,
+    /// Each entry's position in `info`, in file order.
+    info_pos: Vec<u32>,
+    /// The file's index in a split set.
+    file: u16,
 }
 
 impl GgufHeader {
@@ -351,6 +380,88 @@ impl GgufHeader {
         }
         .header()
     }
+
+    /// The number of tensors.
+    #[must_use]
+    pub fn tensor_count(&self) -> usize {
+        self.info_pos.len()
+    }
+
+    /// Tensor `i`, in file order.
+    #[must_use]
+    pub fn tensor(&self, i: usize) -> Option<GgufTensor<'_>> {
+        let at = *self.info_pos.get(i)? as usize;
+        Some(self.decode(at))
+    }
+
+    /// The tensors in file order.
+    pub fn tensors(&self) -> impl ExactSizeIterator<Item = GgufTensor<'_>> {
+        self.info_pos.iter().map(|&p| self.decode(p as usize))
+    }
+
+    /// The heap bytes it holds beyond the metadata: its buffers' capacities.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        self.metadata.heap_bytes() + self.info.capacity() + 4 * self.info_pos.capacity()
+    }
+
+    pub(crate) fn set_file(&mut self, file: u16) {
+        self.file = file;
+    }
+
+    fn name_at(&self, at: usize) -> &str {
+        let len = rd_len(&self.info, at);
+        let s = self
+            .info
+            .get(at.saturating_add(8)..at.saturating_add(8).saturating_add(len))
+            .unwrap_or(&[]);
+        std::str::from_utf8(s).unwrap_or("")
+    }
+
+    /// Decodes the entry at `at`, which the reader validated.
+    fn decode(&self, at: usize) -> GgufTensor<'_> {
+        let name = self.name_at(at);
+        let mut p = at + 8 + name.len();
+        let n_dims = rd_u32(&self.info, p).min(MAX_DIMS);
+        p += 4;
+        let mut ne = [1u64; MAX_DIMS as usize];
+        for d in ne.iter_mut().take(n_dims as usize) {
+            *d = rd_u64(&self.info, p);
+            p += 8;
+        }
+        let ggml_type = ggml_type_from_id(rd_u32(&self.info, p)).unwrap_or(GgmlType::F32);
+        let offset = rd_u64(&self.info, p + 4);
+        let n_dims = n_dims as u8;
+        let bytes = tensor_bytes(ggml_type, &ne[..usize::from(n_dims)]).map_or(0, |b| b.1);
+        GgufTensor {
+            name,
+            ne,
+            n_dims,
+            ggml_type,
+            offset,
+            start: self.data_start.saturating_add(offset),
+            bytes,
+            file: self.file,
+        }
+    }
+}
+
+fn field<const N: usize>(buf: &[u8], at: usize) -> [u8; N] {
+    buf.get(at..at.saturating_add(N))
+        .and_then(|b| b.try_into().ok())
+        .unwrap_or([0; N])
+}
+
+fn rd_u32(buf: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(field(buf, at))
+}
+
+fn rd_u64(buf: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(field(buf, at))
+}
+
+fn rd_len(buf: &[u8], at: usize) -> usize {
+    usize::try_from(rd_u64(buf, at)).unwrap_or(usize::MAX)
 }
 
 /// Rounds `n` up to a multiple of `align`, a power of two.
@@ -358,21 +469,16 @@ fn pad(n: u64, align: u64) -> Option<u64> {
     n.checked_add(align - 1).map(|x| x & !(align - 1))
 }
 
+/// The fewest bytes a key-value pair takes: an empty key's length, a type and a one-byte value.
+const MIN_KV_BYTES: u64 = 13;
+/// The fewest bytes a tensor-info entry takes: an empty name's length, `n_dims` of 0, a type
+/// and an offset.
+const MIN_TENSOR_BYTES: u64 = 24;
+
 struct Parser<'a, S> {
     reader: &'a mut HeaderReader<S>,
     at: u64,
     limits: &'a Limits,
-}
-
-macro_rules! read_le {
-    ($name:ident, $t:ty) => {
-        fn $name(&mut self) -> Result<$t, GgufError> {
-            let b = self.bytes(std::mem::size_of::<$t>() as u64)?;
-            let mut a = [0u8; std::mem::size_of::<$t>()];
-            a.copy_from_slice(b);
-            Ok(<$t>::from_le_bytes(a))
-        }
-    };
 }
 
 impl<S: RangeSource> Parser<'_, S> {
@@ -394,22 +500,48 @@ impl<S: RangeSource> Parser<'_, S> {
         self.reader.read(at, n).map_err(GgufError::from_range)
     }
 
-    read_le!(u8, u8);
-    read_le!(i8, i8);
-    read_le!(u16, u16);
-    read_le!(i16, i16);
-    read_le!(u32, u32);
-    read_le!(i32, i32);
-    read_le!(u64, u64);
-    read_le!(i64, i64);
-    read_le!(f32, f32);
-    read_le!(f64, f64);
+    fn u8(&mut self) -> Result<u8, GgufError> {
+        Ok(self.bytes(1)?[0])
+    }
 
-    fn bool(&mut self) -> Result<bool, GgufError> {
+    fn u32(&mut self) -> Result<u32, GgufError> {
+        let b = self.bytes(4)?;
+        Ok(rd_u32(b, 0))
+    }
+
+    fn u64(&mut self) -> Result<u64, GgufError> {
+        let b = self.bytes(8)?;
+        Ok(rd_u64(b, 0))
+    }
+
+    /// The bytes left before the header must end: the source's end or the cap.
+    fn remaining(&self) -> u64 {
+        self.reader
+            .source()
+            .len()
+            .min(self.limits.header_bytes)
+            .saturating_sub(self.at)
+    }
+
+    /// A capacity for `n` entries of at least `min_bytes` each: no more than the bytes left
+    /// could hold, whatever `n` claims.
+    fn capacity(&self, n: u64, min_bytes: u64) -> usize {
+        usize::try_from(n.min(self.remaining() / min_bytes)).unwrap_or(0)
+    }
+
+    /// A position inside a region starting at `start`, as the `u32` the indexes hold.
+    fn position(&self, start: u64) -> Result<u32, GgufError> {
+        u32::try_from(self.at - start).map_err(|_| GgufError::HeaderLimit {
+            limit: Limit::HeaderBytes,
+            value: self.at,
+            max: u64::from(u32::MAX),
+        })
+    }
+
+    fn bool(&mut self) -> Result<(), GgufError> {
         let at = self.at;
         match self.u8()? {
-            0 => Ok(false),
-            1 => Ok(true),
+            0 | 1 => Ok(()),
             b => Err(GgufError::invalid(
                 at,
                 format!("bool holds {b}, not 0 or 1"),
@@ -429,16 +561,21 @@ impl<S: RangeSource> Parser<'_, S> {
         Ok(n)
     }
 
-    fn string(&mut self) -> Result<Box<[u8]>, GgufError> {
+    /// Checks a string and steps over it; returns its length.
+    fn string(&mut self) -> Result<u64, GgufError> {
         let n = self.count(Limit::StringBytes, self.limits.string_bytes)?;
-        Ok(self.bytes(n)?.into())
+        self.bytes(n)?;
+        Ok(n)
     }
 
-    fn utf8(&mut self, what: &str) -> Result<String, GgufError> {
+    /// Checks a UTF-8 string and steps over it.
+    fn utf8(&mut self, what: &str) -> Result<(), GgufError> {
         let at = self.at;
-        let s = self.string()?;
-        String::from_utf8(s.into_vec())
-            .map_err(|_| GgufError::invalid(at, format!("{what} is not UTF-8")))
+        let n = self.count(Limit::StringBytes, self.limits.string_bytes)?;
+        if std::str::from_utf8(self.bytes(n)?).is_err() {
+            return Err(GgufError::invalid(at, format!("{what} is not UTF-8")));
+        }
+        Ok(())
     }
 
     fn value_type(&mut self) -> Result<ValueType, GgufError> {
@@ -448,97 +585,49 @@ impl<S: RangeSource> Parser<'_, S> {
             .ok_or_else(|| GgufError::invalid(at, format!("unknown value type {id}")))
     }
 
-    fn value(&mut self, ty: ValueType) -> Result<Value, GgufError> {
-        Ok(match ty {
-            ValueType::U8 => Value::U8(self.u8()?),
-            ValueType::I8 => Value::I8(self.i8()?),
-            ValueType::U16 => Value::U16(self.u16()?),
-            ValueType::I16 => Value::I16(self.i16()?),
-            ValueType::U32 => Value::U32(self.u32()?),
-            ValueType::I32 => Value::I32(self.i32()?),
-            ValueType::F32 => Value::F32(self.f32()?),
-            ValueType::Bool => Value::Bool(self.bool()?),
-            ValueType::Str => Value::Str(self.string()?),
-            ValueType::Array => Value::Array(self.array()?),
-            ValueType::U64 => Value::U64(self.u64()?),
-            ValueType::I64 => Value::I64(self.i64()?),
-            ValueType::F64 => Value::F64(self.f64()?),
-        })
+    /// Checks a value of type `ty` and steps over it. Nothing is allocated.
+    fn value(&mut self, ty: ValueType) -> Result<(), GgufError> {
+        match ty {
+            ValueType::Bool => self.bool(),
+            ValueType::Str => self.string().map(drop),
+            ValueType::Array => self.array(),
+            fixed => {
+                self.bytes(fixed.fixed_size().unwrap_or(0))?;
+                Ok(())
+            }
+        }
     }
 
-    /// Reads `n` fixed-size elements in one read and decodes each with `f`.
-    fn fixed<T, const N: usize>(
-        &mut self,
-        n: u64,
-        f: impl Fn([u8; N]) -> T,
-    ) -> Result<Vec<T>, GgufError> {
-        // n ≤ the array limit (2²⁴ by default) and N ≤ 8, so this cannot overflow; the read
-        // is bounded by the header cap before anything is allocated.
-        let total = n.saturating_mul(N as u64);
-        let b = self.bytes(total)?;
-        Ok(b.as_chunks::<N>().0.iter().map(|c| f(*c)).collect())
-    }
-
-    fn array(&mut self) -> Result<Array, GgufError> {
+    fn array(&mut self) -> Result<(), GgufError> {
         let at = self.at;
         let ty = self.value_type()?;
         let n = self.count(Limit::ArrayLen, self.limits.array_len)?;
-        Ok(match ty {
-            ValueType::U8 => Array::U8(self.fixed(n, u8::from_le_bytes)?),
-            ValueType::I8 => Array::I8(self.fixed(n, i8::from_le_bytes)?),
-            ValueType::U16 => Array::U16(self.fixed(n, u16::from_le_bytes)?),
-            ValueType::I16 => Array::I16(self.fixed(n, i16::from_le_bytes)?),
-            ValueType::U32 => Array::U32(self.fixed(n, u32::from_le_bytes)?),
-            ValueType::I32 => Array::I32(self.fixed(n, i32::from_le_bytes)?),
-            ValueType::F32 => Array::F32(self.fixed(n, f32::from_le_bytes)?),
-            ValueType::U64 => Array::U64(self.fixed(n, u64::from_le_bytes)?),
-            ValueType::I64 => Array::I64(self.fixed(n, i64::from_le_bytes)?),
-            ValueType::F64 => Array::F64(self.fixed(n, f64::from_le_bytes)?),
+        match ty {
+            ValueType::Array => Err(GgufError::invalid(at, "nested arrays")),
+            ValueType::Str => {
+                for _ in 0..n {
+                    self.string()?;
+                }
+                Ok(())
+            }
             ValueType::Bool => {
                 let start = self.at;
-                let raw = self.fixed(n, |[b]: [u8; 1]| b)?;
-                let mut out = Vec::with_capacity(raw.len());
-                for (i, b) in raw.into_iter().enumerate() {
-                    match b {
-                        0 => out.push(false),
-                        1 => out.push(true),
-                        _ => {
-                            return Err(GgufError::invalid(
-                                start + i as u64,
-                                format!("bool holds {b}, not 0 or 1"),
-                            ));
-                        }
-                    }
+                let bad = self.bytes(n)?.iter().position(|&b| b > 1);
+                match bad {
+                    None => Ok(()),
+                    Some(i) => Err(GgufError::invalid(
+                        start + i as u64,
+                        "bool holds a value other than 0 or 1",
+                    )),
                 }
-                Array::Bool(out)
             }
-            ValueType::Str => Array::Str(self.str_array(n)?),
-            ValueType::Array => return Err(GgufError::invalid(at, "nested arrays")),
-        })
-    }
-
-    /// Reads `n` strings into one packed [`StrArray`]. A first pass reads only the lengths,
-    /// checking each against the string limit and the source, so the second pass allocates
-    /// exactly: at most the array's own bytes in the file, whatever `n` claims.
-    fn str_array(&mut self, n: u64) -> Result<StrArray, GgufError> {
-        let start = self.at;
-        let mut total = 0u64;
-        for _ in 0..n {
-            let len = self.count(Limit::StringBytes, self.limits.string_bytes)?;
-            self.bytes(len)?;
-            total += len;
+            fixed => {
+                // n ≤ the array limit and the size ≤ 8; the read is bounded by the source
+                // and the header cap.
+                self.bytes(n.saturating_mul(fixed.fixed_size().unwrap_or(0)))?;
+                Ok(())
+            }
         }
-        // Every element was read, so `n` and `total` fit in memory already.
-        let mut out = StrArray::with_capacity(
-            usize::try_from(n).unwrap_or(usize::MAX),
-            usize::try_from(total).unwrap_or(usize::MAX),
-        );
-        self.at = start;
-        for _ in 0..n {
-            let len = self.u64()?;
-            out.push(self.bytes(len)?);
-        }
-        Ok(out)
     }
 
     fn version(&mut self) -> Result<u32, GgufError> {
@@ -561,26 +650,38 @@ impl<S: RangeSource> Parser<'_, S> {
         }
     }
 
+    /// The bytes `[start, self.at)`, copied once into an exactly sized buffer.
+    fn region(&mut self, start: u64) -> Result<Vec<u8>, GgufError> {
+        let end = self.at;
+        self.at = start;
+        let out = self.bytes(end - start)?.to_vec();
+        self.at = end;
+        Ok(out)
+    }
+
     fn header(mut self) -> Result<GgufHeader, GgufError> {
         let version = self.version()?;
         let n_tensors = self.count(Limit::Tensors, self.limits.tensors)?;
         let n_kv = self.count(Limit::KvPairs, self.limits.kv_pairs)?;
 
-        let mut metadata = MetaView::new();
+        // Pass over the key-value pairs, checking each and recording its position; then keep
+        // their bytes, copied once.
+        let kv_start = self.at;
+        let mut kv_pos = Vec::with_capacity(self.capacity(n_kv, MIN_KV_BYTES));
         for _ in 0..n_kv {
-            let at = self.at;
-            let key = self.utf8("a metadata key")?;
+            kv_pos.push(self.position(kv_start)?);
+            self.utf8("a metadata key")?;
             let ty = self.value_type()?;
-            let value = self.value(ty)?;
-            if metadata.contains(&key) {
-                return Err(GgufError::invalid(at, format!("duplicate key `{key}`")));
-            }
-            metadata.insert(key, value);
+            self.value(ty)?;
         }
+        let kv_buf = self.region(kv_start)?;
+        let metadata = MetaView::from_parts(kv_buf, kv_pos).map_err(|pos| {
+            GgufError::invalid(kv_start + u64::from(pos), "duplicate key".to_owned())
+        })?;
 
         let alignment = match metadata.get(ALIGNMENT_KEY) {
             None => DEFAULT_ALIGNMENT,
-            Some(Value::U32(a)) if a.is_power_of_two() => u64::from(*a),
+            Some(ValueRef::U32(a)) if a.is_power_of_two() => u64::from(a),
             Some(v) => {
                 return Err(GgufError::invalid(
                     self.at,
@@ -589,105 +690,126 @@ impl<S: RangeSource> Parser<'_, S> {
             }
         };
 
-        let mut tensors = Vec::new();
-        let mut names = BTreeSet::new();
+        let info_start = self.at;
+        let mut info_pos = Vec::with_capacity(self.capacity(n_tensors, MIN_TENSOR_BYTES));
         let mut expected = 0u64;
         for _ in 0..n_tensors {
             let at = self.at;
-            let t = self.tensor_info(alignment)?;
-            if !names.insert(t.name.clone()) {
-                return Err(GgufError::invalid(
-                    at,
-                    format!("duplicate tensor `{}`", t.name),
-                ));
-            }
-            if t.offset != expected {
+            info_pos.push(self.position(info_start)?);
+            let (offset, bytes) = self.tensor_info(alignment)?;
+            if offset != expected {
                 return Err(GgufError::invalid(
                     at,
                     format!(
-                        "tensor `{}` is at data offset {}, expected {expected}: tensors must follow each other in table order, each at the aligned end of the one before",
-                        t.name, t.offset
+                        "a tensor is at data offset {offset}, expected {expected}: tensors must follow each other in table order, each at the aligned end of the one before"
                     ),
                 ));
             }
-            expected = t
-                .offset
-                .checked_add(t.bytes)
+            expected = offset
+                .checked_add(bytes)
                 .and_then(|end| pad(end, alignment))
                 .ok_or_else(|| GgufError::invalid(at, "tensor data passes 2⁶⁴ bytes"))?;
-            tensors.push(t);
         }
-
         let header_bytes = self.at;
+        let info = self.region(info_start)?;
         let data_start = pad(header_bytes, alignment)
             .ok_or_else(|| GgufError::invalid(header_bytes, "data section passes 2⁶⁴ bytes"))?;
         let file_len = self.reader.source().len();
-        for t in &mut tensors {
-            let end = data_start
-                .checked_add(t.offset)
-                .and_then(|s| s.checked_add(t.bytes).map(|e| (s, e)));
-            match end {
-                Some((start, end)) if end <= file_len => t.start = start,
-                _ => {
-                    return Err(GgufError::invalid(
-                        header_bytes,
-                        format!(
-                            "tensor `{}` ({} bytes at data offset {}) passes the file's end at {file_len}",
-                            t.name, t.bytes, t.offset
-                        ),
-                    ));
-                }
-            }
-        }
 
-        Ok(GgufHeader {
+        let header = GgufHeader {
             version,
             alignment,
             metadata,
-            tensors,
             header_bytes,
             data_start,
             file_len,
-        })
+            info,
+            info_pos,
+            file: 0,
+        };
+
+        // Names are unique: sort the entries by name and compare neighbours.
+        let mut by_name: Vec<u32> =
+            (0..u32::try_from(header.tensor_count()).unwrap_or(0)).collect();
+        let name = |i: u32| header.name_at(header.info_pos[i as usize] as usize);
+        by_name.sort_unstable_by(|&a, &b| name(a).cmp(name(b)).then(a.cmp(&b)));
+        if let Some(w) = by_name.windows(2).find(|w| name(w[0]) == name(w[1])) {
+            let pos = u64::from(header.info_pos[w[1] as usize]);
+            return Err(GgufError::invalid(
+                info_start + pos,
+                format!("duplicate tensor `{}`", name(w[1])),
+            ));
+        }
+        drop(by_name);
+
+        // The tensors are contiguous, so the last one ends the data: every tensor's bytes are
+        // inside the file when its bytes are.
+        if let Some(last) = header.tensors().last() {
+            let end = data_start
+                .checked_add(last.offset)
+                .and_then(|s| s.checked_add(last.bytes));
+            if !end.is_some_and(|e| e <= file_len) {
+                return Err(GgufError::invalid(
+                    header_bytes,
+                    format!(
+                        "tensor `{}` ({} bytes at data offset {}) passes the file's end at {file_len}",
+                        last.name, last.bytes, last.offset
+                    ),
+                ));
+            }
+        }
+        Ok(header)
     }
 
-    fn tensor_info(&mut self, alignment: u64) -> Result<GgufTensor, GgufError> {
+    /// Checks one tensor-info entry and steps over it; returns its offset and byte length.
+    fn tensor_info(&mut self, alignment: u64) -> Result<(u64, u64), GgufError> {
         let at = self.at;
-        let name = self.utf8("a tensor name")?;
+        self.utf8("a tensor name")?;
+        let name_end = self.at;
+        let name = |p: &mut Self| -> String {
+            let len = name_end - at - 8;
+            p.reader
+                .read(at + 8, len)
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default()
+        };
         let n_dims = self.u32()?;
         if n_dims > MAX_DIMS {
+            let name = name(self);
             return Err(GgufError::invalid(
                 at,
                 format!("tensor `{name}` has {n_dims} dimensions, more than {MAX_DIMS}"),
             ));
         }
-        let mut ne = Vec::with_capacity(n_dims as usize);
-        for _ in 0..n_dims {
-            let d = self.u64()?;
-            if d > i64::MAX as u64 {
+        let mut ne = [1u64; MAX_DIMS as usize];
+        for d in ne.iter_mut().take(n_dims as usize) {
+            *d = self.u64()?;
+            if *d > i64::MAX as u64 {
+                let name = name(self);
                 return Err(GgufError::invalid(
                     at,
                     format!("tensor `{name}` has a negative dimension"),
                 ));
             }
-            ne.push(d);
         }
+        let ne = &ne[..n_dims as usize];
         let type_id = self.u32()?;
         let offset = self.u64()?;
         let Some(ggml_type) = ggml_type_from_id(type_id) else {
             return Err(GgufError::UnknownQuant {
-                tensor: name,
+                tensor: name(self),
                 type_id,
             });
         };
-        let Some((block, block_bytes)) = block_geometry(ggml_type) else {
+        let Some((block, _)) = block_geometry(ggml_type) else {
             return Err(GgufError::UnknownQuant {
-                tensor: name,
+                tensor: name(self),
                 type_id,
             });
         };
         let ne0 = ne.first().copied().unwrap_or(1);
         if ne0 % block != 0 {
+            let name = name(self);
             return Err(GgufError::invalid(
                 at,
                 format!(
@@ -695,17 +817,15 @@ impl<S: RangeSource> Parser<'_, S> {
                 ),
             ));
         }
-        let elements = ne
-            .iter()
-            .try_fold(1u64, |acc, &d| acc.checked_mul(d))
-            .filter(|&n| n <= i64::MAX as u64)
-            .ok_or_else(|| {
-                GgufError::invalid(at, format!("tensor `{name}`'s element count passes 2⁶³"))
-            })?;
-        let bytes = (elements / block)
-            .checked_mul(block_bytes)
-            .ok_or_else(|| GgufError::invalid(at, format!("tensor `{name}`'s size passes 2⁶⁴")))?;
+        let Some((_, bytes)) = tensor_bytes(ggml_type, ne) else {
+            let name = name(self);
+            return Err(GgufError::invalid(
+                at,
+                format!("tensor `{name}`'s element count or size overflows"),
+            ));
+        };
         if offset % alignment != 0 {
+            let name = name(self);
             return Err(GgufError::invalid(
                 at,
                 format!(
@@ -713,14 +833,6 @@ impl<S: RangeSource> Parser<'_, S> {
                 ),
             ));
         }
-        Ok(GgufTensor {
-            name,
-            ne,
-            ggml_type,
-            offset,
-            start: 0,
-            bytes,
-            file: 0,
-        })
+        Ok((offset, bytes))
     }
 }

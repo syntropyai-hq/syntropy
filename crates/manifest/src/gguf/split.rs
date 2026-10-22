@@ -7,8 +7,6 @@
 //! and carries `split.no` (counting from 0), `split.count` and `split.tensors.count`.
 //! [`GgufModel`] reads every split's header and checks that they form one set.
 
-use std::collections::BTreeSet;
-
 use super::{GgufError, GgufHeader, GgufTensor, Limits, MetaView};
 use crate::range::{HeaderReader, RangeSource};
 
@@ -134,7 +132,6 @@ impl GgufModel {
         };
 
         let mut files = Vec::with_capacity(n);
-        let mut names = BTreeSet::new();
         let mut total = 0u64;
         for (i, reader) in (0u16..).zip(readers.iter_mut()) {
             let mut h = GgufHeader::read_from(reader, limits).map_err(|e| wrap(i, e))?;
@@ -153,17 +150,32 @@ impl GgufModel {
                     ));
                 }
             }
-            for t in &mut h.tensors {
-                t.file = i;
-                if !names.insert(t.name.clone()) {
-                    return Err(wrap(
-                        i,
-                        invalid(format!("tensor `{}` is in more than one split", t.name)),
-                    ));
-                }
-            }
-            total += h.tensors.len() as u64;
+            h.set_file(i);
+            total += h.tensor_count() as u64;
             files.push(h);
+        }
+        // Names are unique across the set (each file's own are checked already): sort every
+        // (file, entry) pair by name, 8 bytes per tensor, and compare neighbours.
+        if n > 1 {
+            let mut all: Vec<(u16, u32)> = Vec::with_capacity(usize::try_from(total).unwrap_or(0));
+            for (i, h) in (0u16..).zip(&files) {
+                all.extend((0..u32::try_from(h.tensor_count()).unwrap_or(0)).map(|j| (i, j)));
+            }
+            let name = |&(f, j): &(u16, u32)| {
+                files[usize::from(f)]
+                    .tensor(j as usize)
+                    .map_or("", |t| t.name)
+            };
+            all.sort_unstable_by(|a, b| name(a).cmp(name(b)).then(a.cmp(b)));
+            if let Some(w) = all.windows(2).find(|w| name(&w[0]) == name(&w[1])) {
+                return Err(wrap(
+                    w[1].0,
+                    invalid(format!(
+                        "tensor `{}` is in more than one split",
+                        name(&w[1])
+                    )),
+                ));
+            }
         }
         for (i, h) in (0u16..).zip(&files) {
             let declared = h
@@ -191,7 +203,7 @@ impl GgufModel {
     }
 
     /// Every tensor of every file, in split order and then file order.
-    pub fn tensors(&self) -> impl Iterator<Item = &GgufTensor> {
-        self.files.iter().flat_map(|h| h.tensors.iter())
+    pub fn tensors(&self) -> impl Iterator<Item = GgufTensor<'_>> {
+        self.files.iter().flat_map(GgufHeader::tensors)
     }
 }

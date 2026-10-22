@@ -112,3 +112,35 @@ fn zeroed_allocations_and_growth_count_too() {
     assert_eq!(after_growth - after_zeroed, 2);
     assert_eq!(after_drop, after_growth, "freeing memory is not counted");
 }
+
+#[test]
+fn peak_bytes_track_the_largest_live_total_in_a_window() {
+    use syntropy_testkit::guards::{
+        live_bytes_this_thread, peak_bytes_this_thread, reset_peak_bytes_this_thread,
+    };
+    const MIB: i64 = 1 << 20;
+
+    let base = live_bytes_this_thread();
+    reset_peak_bytes_this_thread();
+    assert_eq!(peak_bytes_this_thread(), base);
+
+    let a = black_box(vec![0u8; 1 << 20]);
+    let b = black_box(vec![0u8; 2 << 20]);
+    assert_eq!(live_bytes_this_thread() - base, 3 * MIB);
+    drop(a);
+    drop(b);
+    let c = black_box(vec![0u8; 1 << 20]);
+    drop(c);
+
+    assert_eq!(live_bytes_this_thread(), base);
+    assert_eq!(peak_bytes_this_thread() - base, 3 * MIB);
+
+    // A grown vector counts its reallocations: the peak is the largest capacity live at once.
+    reset_peak_bytes_this_thread();
+    let mut v: Vec<u8> = Vec::with_capacity(1 << 20);
+    v.extend(std::iter::repeat_n(1u8, 1 << 20));
+    v.reserve_exact(1 << 20);
+    assert!(peak_bytes_this_thread() - base >= 2 * MIB);
+    drop(black_box(v));
+    assert_eq!(live_bytes_this_thread(), base);
+}
