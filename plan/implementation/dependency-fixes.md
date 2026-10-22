@@ -753,3 +753,12 @@ RFC-0031 §6.5 splits a `Token` step that is larger than the channel's slot into
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | Added QUAL-E1-T31 (M0a) → QUAL-E1-T02, QUAL-E1-T06 | QUAL-E1-T31 | Definition of done | the step is a `lint` addition, so it needs `xtask`'s job framework and `pr.yml`'s `lint` job, both M0a. It is a new row and not part of QUAL-E1-T09, whose scope is workflow security. It must land after #1743, #1666's fix, or it fails on `main` |
+
+## DIST-E7-T02's foreign frames and DIST-E7-T12's stale descriptors (2026-10-22)
+
+The independent review of #1737 (DIST-E7-T01) found two RFC-0031 rules that no task's criteria cover. First, RFC-0031 §2's rule that a frame whose `(instance, epoch)` is not the channel key's is dropped and counted is in no DIST-E7 row. DIST-E11-T02 and PLC-E7-T11 handle epochs a runner no longer serves at the step level, not the channel's drop and count. Second, buffer descriptors carry no generation, so a descriptor kept past its slot's reuse would lease the new bytes.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T02's property test gains foreign `(instance, epoch)` frames: dropped before the `chan_seq` check, never surfaced or NACKed, counted in `stats()`, and the channel's own frames still delivered exactly once; its Implements cell adds RFC-0031 §2 and §6.1; no edge | DIST-E7-T02 | Definition of done | the channel core is sans-I/O and checks the channel key before `chan_seq` continuity (RFC-0031 §6.1), so its property test can feed it such frames directly; the conformance suite needs no new `Fabric` hook |
+| DIST-E7-T12 gains the stale-descriptor refusal: a slot generation that advances when the slot is freed, carried by `PayloadSlice` and `ExtBuf`, and a descriptor of an earlier generation refused with `SendError::Invalid`; RFC-0031 §8 gains a dated note; no edge | DIST-E7-T12 | Definition of done | DIST-E7-T12 builds the lock-free slot handout, where a slot is freed and handed out again. Without a generation the rule "hold a reader until `try_send` returns" is enforced by nothing |
