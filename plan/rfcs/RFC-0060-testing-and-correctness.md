@@ -1069,6 +1069,7 @@ pub enum Dist {
 - **What changed.** Before, each message on a link got the link's whole β whatever else was on it, so a bulk transfer could not delay a data channel beside it, and RFC-0031 §7.5's pacing had nothing to act on.
   - Now each directed link has one serialisation queue. A message starts going out when the link has finished what it was given before, by send time; equal times go in the order of the sends, which the run fixes.
   - Datagrams join the same queue.
+  - A link that goes down drops what it was sending, its queue with it, so after a heal a message does not wait behind bytes that never went out.
   - A message on an idle link is timed as before.
 - **What moved.** Back-to-back messages on one link now go out one after another. In `SimTransport`'s replay test (`wifi6_home`, loss 0.05, 60 frames), seed 7's last delivery moves from 1,566,418,047 ns to 1,566,503,327 ns, and seed 8's from 1,958,764,363 ns to 1,958,901,483 ns, with the same retransmits [estimate]. No other simulator test's expected figure moved; no trace hash depends on the fabric yet.
 - **Bulk frames in a simulation.** A real QUIC connection interleaves at packet granularity, about 1.5 KB. A scenario that runs bulk beside a data channel sends it in small frames, 4 KiB [target], which take about 14 µs on 2.5 GbE [estimate].

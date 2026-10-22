@@ -300,14 +300,16 @@ impl SimFabric {
         self.links.get(link).is_some_and(|state| state.model.up)
     }
 
-    /// Marks `link` up or down. Going down drops every message in flight on it. Returns whether
-    /// the link exists.
+    /// Marks `link` up or down. Going down drops every message in flight on it, and empties its
+    /// serialisation queue. Returns whether the link exists.
     pub fn set_up(&mut self, link: &LinkId, up: bool) -> bool {
         let Some(state) = self.links.get_mut(link) else {
             return false;
         };
         if state.model.up && !up {
             state.generation += 1;
+            // What it was sending is dropped, so it is no longer busy sending it.
+            state.busy_until = MonoTime(0);
         }
         state.model.up = up;
         true

@@ -225,6 +225,28 @@ fn streams_on_one_link_share_its_beta_in_send_order() {
     assert_eq!(later.at, MonoTime(5 * MS + 1_000 + 100 * US));
 }
 
+/// A link that goes down drops what it was sending, so after it comes back up a message does not
+/// queue behind bytes that never went out.
+#[test]
+fn a_downed_link_forgets_its_queue() {
+    let mut fabric = SimFabric::new();
+    let ab = link(1, 2);
+    fabric.add_link(ab, plain(Nanos(100 * US)));
+    let entropy = SimEntropy::new(1);
+    // A 1 MB frame would keep the link busy for 1 ms.
+    let bulk = fabric
+        .send_reliable(ab, 1, MonoTime(0), 1_000_000, &entropy)
+        .unwrap();
+    assert!(fabric.set_up(&ab, false));
+    assert!(fabric.set_up(&ab, true));
+    assert!(!fabric.arrives(&bulk), "dropped by the outage");
+    // A 1 KB frame 10 µs later goes out at once.
+    let data = fabric
+        .send_reliable(ab, 2, MonoTime(10 * US), 1_000, &entropy)
+        .unwrap();
+    assert_eq!(data.at, MonoTime(10 * US + 1_000 + 100 * US));
+}
+
 #[test]
 fn a_lost_packet_delays_its_frame_by_exactly_one_pto() {
     let mut fabric = SimFabric::new();
