@@ -188,7 +188,7 @@ Semantics, all binding on every backend:
   - Until `core` has RFC-0001 §5.12's `Error`, `net::Error` stands in: a class, a message and an optional §12 code. The code is optional because §12 gives some refusals none.
   - `StageIx::INGRESS` is `net::transport::INGRESS` (0xFFFF) until `core` adds it.
   - `RemoteEndpoint`'s `rdma` and `shm` fields come with the tasks that define their types: DIST-E7-T07 and T06. Its `relay` is DIST-E7-T23's `endpoint::RelayUrl`.
-  - DIST-E7-T23's `PathKind` converts to `TransportKind` (`Direct` → `Quic`, `Relay` → `QuicRelay`), and its `EndpointError` to `net::Error`. A failed connect is `ConnectTimeout`. The other errors have no §12 code and keep a class: `InvalidRequest` for bad input or configuration, `Link` for a failed bind or accept, and `Cancelled` for an endpoint this node closed.
+  - DIST-E7-T23's `PathKind` converts to `TransportKind` (`Direct` → `Quic`, `Relay` → `QuicRelay`), and its `EndpointError` to `net::Error`. None of its errors has a §12 code, so each keeps a class: `InvalidRequest` for bad input or configuration, `Link` for a failed connect, bind or accept, and `Cancelled` for an endpoint this node closed. `EndpointError::Connect` covers every connect failure, a refused ALPN as well as a timeout, so it is not `ConnectTimeout` (0x020A). Telling a timeout from a refusal, and giving only the timeout 0x020A, is DIST-E7-T03's.
 - **Conformance.** `net::transport::conformance` checks the binding semantics above on any backend through a `Fabric`. It is the suite DIST-E7-T03, T05 to T08 and QUAL-E8-T04 run.
 
 ### 3. Link selection

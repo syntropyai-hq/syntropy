@@ -162,9 +162,11 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// An endpoint's error as `net`'s (DIST-E7-T23's `net::endpoint`). A failed connect is RFC-0031
-/// §12's `ConnectTimeout`, the one code §12 has for it. The rest have no §12 code, so they keep a
-/// class:
+/// An endpoint's error as `net`'s (DIST-E7-T23's `net::endpoint`). None has an RFC-0031 §12 code,
+/// so each keeps a class:
+/// - a failed connect is `Link`. `EndpointError::Connect` wraps every connect failure, a refusal
+///   such as an unaccepted ALPN as well as a timeout, so it does not get §12's `ConnectTimeout`
+///   (0x020A); telling the two apart is the QUIC backend's (DIST-E7-T03);
 /// - a node ID or relay URL that does not parse, and a configuration with neither relays nor
 ///   direct paths, are the caller's input: `InvalidRequest`;
 /// - a failed bind or accept is `Link`;
@@ -174,11 +176,10 @@ impl From<EndpointError> for Error {
     fn from(error: EndpointError) -> Error {
         let message = error.to_string();
         match error {
-            EndpointError::Connect(_) => Error::new(ErrorCode::CONNECT_TIMEOUT, message),
             EndpointError::InvalidNodeId
             | EndpointError::InvalidRelayUrl(_)
             | EndpointError::NoTransport => Error::uncoded(ErrorClass::InvalidRequest, message),
-            EndpointError::Bind(_) | EndpointError::Accept(_) => {
+            EndpointError::Connect(_) | EndpointError::Bind(_) | EndpointError::Accept(_) => {
                 Error::uncoded(ErrorClass::Link, message)
             }
             EndpointError::Closed => Error::uncoded(ErrorClass::Cancelled, message),
@@ -239,7 +240,13 @@ mod tests {
             (
                 EndpointError::Connect("timed out".into()),
                 ErrorClass::Link,
-                Some(ErrorCode::CONNECT_TIMEOUT),
+                None,
+            ),
+            // A refusal is not a timeout, so no failed connect is labelled 0x020A.
+            (
+                EndpointError::Connect("peer refused the ALPN".into()),
+                ErrorClass::Link,
+                None,
             ),
             (
                 EndpointError::InvalidNodeId,
@@ -267,8 +274,8 @@ mod tests {
             assert_eq!(error.message, message);
         }
         assert_eq!(
-            Error::from(EndpointError::Connect("timed out".into())).to_string(),
-            "cannot connect: timed out (Link, Net 0x020a)"
+            Error::from(EndpointError::Connect("peer refused the ALPN".into())).to_string(),
+            "cannot connect: peer refused the ALPN (Link)"
         );
     }
 
