@@ -531,7 +531,10 @@ name = "syntropy-cluster"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "serde",
+ "syntropy-config",
  "syntropy-core",
+ "syntropy-net",
 ]
 
 [[package]]
@@ -657,8 +660,10 @@ dependencies = [
  "crc32c",
  "ed25519-dalek",
  "proptest",
+ "serde",
  "serde_json",
  "subtle",
+ "syntropy-config",
  "syntropy-core",
 ]
 

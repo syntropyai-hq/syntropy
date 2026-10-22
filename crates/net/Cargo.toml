@@ -11,7 +11,9 @@ syntropy-core = { path = "../core" }
 crc32c.workspace = true
 blake3.workspace = true
 ed25519-dalek.workspace = true
+serde.workspace = true
 subtle.workspace = true
+syntropy-config = { path = "../config" }
 
 [dev-dependencies]
 # `hazmat` signs with a chosen public key in the challenge, and `digest` exports its SHA-512, to
