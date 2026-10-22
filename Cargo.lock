@@ -3620,7 +3620,7 @@ dependencies = [
  "syntropy-core",
  "syntropy-spsc",
  "syntropy-testkit",
- "windows-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
