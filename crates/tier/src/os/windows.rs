@@ -19,6 +19,10 @@
 //!   limits as [`MemSnapshot::cgroup`], and the low-memory resource notification as
 //!   [`MemSnapshot::os_level`].
 //!
+//! This module owns the process's working-set quota: no other code in the process may call
+//! `SetProcessWorkingSetSizeEx`, because the minimum is computed from the bytes locked here and
+//! restored to the values read before the first lock.
+//!
 //! The workspace has no Windows bindings crate, so the kernel32 functions and structures are
 //! declared here, with layout checks in the tests. Every range goes through the shared
 //! registry, as on Linux: calls act only on a live range with the same base, length and
@@ -319,7 +323,7 @@ struct WorkingSet {
     original: Option<(usize, usize, u32)>,
     /// Bytes locked through any adapter.
     locked: u64,
-    /// Whether the last working-set request succeeded.
+    /// Whether the last raise of the hard minimum succeeded.
     hard_min_ok: bool,
 }
 
@@ -361,7 +365,7 @@ fn set_working_set_size(min: usize, max: usize, flags: u32) -> Result<(), i32> {
 /// maximum soft. With nothing locked, the original minimum, maximum and flags come back, so a
 /// process that has given its locked memory back holds no raised minimum.
 fn fit_working_set(ws: &mut WorkingSet, locked: u64) -> Result<(), i32> {
-    let out = if locked == 0 {
+    if locked == 0 {
         match ws.original.take() {
             Some((min, max, flags)) => set_working_set_size(min, max, flags),
             None => Ok(()),
@@ -378,7 +382,14 @@ fn fit_working_set(ws: &mut WorkingSet, locked: u64) -> Result<(), i32> {
             max,
             sys::QUOTA_LIMITS_HARDWS_MIN_ENABLE | sys::QUOTA_LIMITS_HARDWS_MAX_DISABLE,
         )
-    };
+    }
+}
+
+/// Raises the working set to cover `locked` bytes and records the outcome in `hard_min_ok`.
+/// Only a raise is recorded: a rollback or restore through [`fit_working_set`] never clears a
+/// refusal, so `limits().ws_hard_min_ok` keeps showing it.
+fn raise_working_set(ws: &mut WorkingSet, locked: u64) -> Result<(), i32> {
+    let out = fit_working_set(ws, locked);
     ws.hard_min_ok = out.is_ok();
     out
 }
@@ -602,7 +613,7 @@ impl OsMemory for WindowsMemory {
                     }))
                 };
                 let want = ws.locked + len as u64;
-                if let Err(errno) = fit_working_set(&mut ws, want) {
+                if let Err(errno) = raise_working_set(&mut ws, want) {
                     let held = ws.locked;
                     let _ = fit_working_set(&mut ws, held);
                     return refuse(errno);
@@ -695,6 +706,24 @@ mod tests {
             std::mem::offset_of!(sys::JobExtendedLimit, process_memory_limit),
             112
         );
+    }
+
+    /// A refused raise stays visible: the rollback and the restore that follow do not clear
+    /// `hard_min_ok`. The raise asks for a minimum no process can have, so it is refused
+    /// without any privilege; the state is a local one, not the process-wide `WORKING_SET`.
+    #[test]
+    fn a_refused_raise_stays_recorded() {
+        let mut ws = WorkingSet {
+            original: None,
+            locked: 0,
+            hard_min_ok: true,
+        };
+        assert!(raise_working_set(&mut ws, u64::MAX / 4).is_err());
+        assert!(!ws.hard_min_ok);
+        // Roll back to nothing locked: the original values come back, the refusal stays.
+        assert_eq!(fit_working_set(&mut ws, 0), Ok(()));
+        assert!(ws.original.is_none());
+        assert!(!ws.hard_min_ok);
     }
 
     #[test]
