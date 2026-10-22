@@ -15,7 +15,9 @@ use syntropy_io::os::OsEntropy;
 use syntropy_net::endpoint::{Config, Endpoint, Relays};
 use syntropy_netprobe::platform::{Detect, Platform};
 use syntropy_netprobe::probe::{self, RunOptions};
-use syntropy_netprobe::report::{Outcome, RelayChoice, Report, Setting};
+use syntropy_netprobe::report::{
+    MAX_DURATION_S, Outcome, RelayChoice, Report, Setting, check_text,
+};
 use syntropy_netprobe::wire::ALPN;
 use syntropy_netprobe::{scan, ticket};
 
@@ -34,11 +36,14 @@ so an interrupted run leaves a report.
 To check a report before you submit it:
     syntropy-netprobe check <file>
 
-    --relay      public (the default): iroh's public relays, for alpha testing only. none: no
-                 relay, so the machines must reach each other directly. Or a relay URL.
+    --relay      public (the default): iroh's public relays and n0's address lookup service,
+                 for alpha testing only. Both see this machine's node ID and IP address. none: no
+                 relay and no lookup, so the machines must reach each other directly. Or a relay
+                 URL, with no lookup.
     --no-direct  no direct paths: every packet goes through the relay.
     --off-lan    say that this run is a test join, with one machine moved to another network.
-    --duration   how long to measure: a number with s, m or h, such as 90s, 30m or 24h.
+    --duration   how long to measure: a number with s, m or h, such as 90s, 30m or 24h; at
+                 most 7 days.
 
 The ticket holds this machine's addresses, so share it only between your own machines. The report
 holds no IP address, MAC address or network name: `check` scans for them.
@@ -168,8 +173,10 @@ fn parse_duration(text: &str) -> Option<Duration> {
         (at, 'h') => (&text[..at], 3_600),
         _ => (text, 1),
     };
-    let seconds: u64 = number.parse().ok()?;
-    (seconds > 0).then(|| Duration::from_secs(seconds * unit))
+    let seconds = number.parse::<u64>().ok()?.checked_mul(unit)?;
+    (1..=MAX_DURATION_S)
+        .contains(&seconds)
+        .then(|| Duration::from_secs(seconds))
 }
 
 async fn run(args: &[String]) -> Result<(), Failure> {
@@ -309,18 +316,11 @@ fn check(args: &[String]) -> Result<(), Failure> {
     };
     let text = std::fs::read_to_string(path)
         .map_err(|error| Failure::Run(format!("cannot read {path}: {error}")))?;
-    let report: Report = serde_json::from_str(&text)
-        .map_err(|error| Failure::Run(format!("not a version 1 report: {error}")))?;
-    let mut failed = false;
-    for problem in report.check() {
-        println!("schema: {problem}");
-        failed = true;
-    }
-    for finding in scan::scan(&text) {
-        println!("identifier: {:?} at byte {}", finding.kind, finding.offset);
-        failed = true;
-    }
-    if failed {
+    // The problems name places and rules only, never what the report holds.
+    if let Err(problems) = check_text(&text) {
+        for problem in problems {
+            println!("{problem}");
+        }
         return Err(Failure::Run(format!("{path} failed its checks")));
     }
     println!("{path}: passes the schema test and the identifier scan");

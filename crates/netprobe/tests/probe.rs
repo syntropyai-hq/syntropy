@@ -250,5 +250,24 @@ fn the_binary_listens_runs_and_checks_its_report() {
         .unwrap();
     assert!(!check.status.success());
     assert!(!String::from_utf8_lossy(&check.stdout).contains("192.0.2.9"));
+
+    // An address read as an integer, 0xC0A80001, in a time field: refused, and not repeated.
+    let text = std::fs::read_to_string(&out).unwrap();
+    let at = text.find("\"elapsed_ms\": ").unwrap() + "\"elapsed_ms\": ".len();
+    let end = at + text[at..].find(|c: char| !c.is_ascii_digit()).unwrap();
+    std::fs::write(
+        &tampered,
+        format!("{}3232235521{}", &text[..at], &text[end..]),
+    )
+    .unwrap();
+    let check = Command::new(binary)
+        .arg("check")
+        .arg(&tampered)
+        .output()
+        .unwrap();
+    assert!(!check.status.success());
+    let shown = String::from_utf8_lossy(&check.stdout);
+    assert!(shown.contains("settings.elapsed_ms"), "{shown}");
+    assert!(!shown.contains("3232235521"), "{shown}");
     std::fs::remove_dir_all(&dir).unwrap();
 }

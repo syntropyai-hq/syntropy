@@ -7,8 +7,9 @@
 //! # Format, version 1
 //!
 //! Every object refuses unknown keys, and every string is one of the enum values listed here, or
-//! the probe's version (digits and dots). So the report has no free text in which an SSID, a host
-//! name or an address could appear, and [`crate::scan`] checks the numbers too. Times are
+//! the probe's version (three numbers joined by dots). So the report has no free text in which an
+//! SSID, a host name or an address could appear, and [`crate::scan`] checks the text too. Every
+//! number is bounded by what it measures (see "Bounds" below). Times are
 //! milliseconds (`_ms`) or microseconds (`_us`) from the moment the probe started connecting.
 //!
 //! - `format`: `"syntropy-netprobe-report"`. `version`: `1`. `probe_version`: the binary's version.
@@ -46,6 +47,28 @@
 //!   `fail_after_ms`, `would_suspect`, `would_fail` and `events`, one per gap that reached
 //!   `suspect_after_ms`: `{ "at_ms", "silence_ms", "outcome" }`, with `outcome` `"suspect"` or
 //!   `"fail"`.
+//!
+//! ## Bounds
+//!
+//! [`Report::check`] holds every number to its physical range, so that a number cannot carry an
+//! IPv4 address read as an integer. Every address from 1.0.0.0 up is at least 2^24 (16,777,216).
+//!
+//! - **RTTs** (`rtt_us`, the RTT summaries) are at most `timeout_ms`, which is at most 10 s
+//!   ([`MAX_TIMEOUT_MS`]), so at most 10,000,000 µs: under 2^24.
+//! - **Settings** are the probe's own values: `period_ms` 10 to 1,000, `payload_bytes` the
+//!   version's 128, `timeout_ms` 1 to 10,000, `duration_s` up to 7 days. The detector timings and
+//!   `stalls.min_gap_ms` must equal the values they are derived from, and the histogram bounds the
+//!   fixed ones.
+//! - **Counts** (`beats`, `lost`, `samples`, histogram counts, the detector's counts) must add up
+//!   to the trace, so none exceeds the number of requests the trace holds.
+//! - **Times.** `connect_ms` is at most 120 s and `trace.start_ms` at most 120 s later.
+//!   `elapsed_ms` is at most the time the trace's requests take plus the timeout and 60 s. Every
+//!   other time is at most `elapsed_ms`. A run longer than 4.66 hours has times above 2^24 ms, so
+//!   such a time can equal some address read as an integer. But it is then a plausible time in
+//!   this run, bounded by the trace's length, and not a field that can carry anything else.
+//!
+//! `check`'s output names a field and a rule, never a value from the report: a parse error is
+//! given as the field's path, with any key the format does not have shown as `?`.
 //!
 //! ## The trace section
 //!
@@ -455,93 +478,138 @@ impl Report {
     /// found is a line in the result; an empty result is a pass.
     pub fn check(&self) -> Vec<String> {
         let mut problems = Vec::new();
-        let mut fail = |problem: String| problems.push(problem);
-        if self.version != VERSION {
-            fail(format!(
-                "version is {}, and this probe reads {VERSION}",
-                self.version
-            ));
-        }
-        if self.probe_version.is_empty()
-            || self.probe_version.len() > 32
-            || !self
-                .probe_version
-                .chars()
-                .all(|c| c.is_ascii_digit() || c == '.')
-        {
-            fail("probe_version is not digits and dots".to_owned());
-        }
+        let mut fail = |problem: &str| problems.push(problem.to_owned());
         let settings = &self.settings;
-        if !(10..=10_000).contains(&settings.period_ms) {
-            fail(format!(
-                "period_ms {} is outside 10..=10000",
-                settings.period_ms
-            ));
+        let trace = &self.trace;
+        let traced = trace.rtt_us.len() as u64;
+        let max_rtt_us = u64::from(settings.timeout_ms) * 1_000;
+
+        if self.version != VERSION {
+            fail("version: not 1");
         }
-        if settings.payload_bytes as usize > crate::wire::MAX_PAYLOAD {
-            fail(format!(
-                "payload_bytes {} exceeds {}",
-                settings.payload_bytes,
-                crate::wire::MAX_PAYLOAD
-            ));
+        let parts: Vec<&str> = self.probe_version.split('.').collect();
+        if parts.len() != 3
+            || parts.iter().any(|part| {
+                part.is_empty() || part.len() > 3 || !part.bytes().all(|b| b.is_ascii_digit())
+            })
+        {
+            fail("probe_version: not three numbers joined by dots");
+        }
+
+        // Settings: the values the probe itself can write.
+        if !(MIN_PERIOD_MS..=MAX_PERIOD_MS).contains(&settings.period_ms) {
+            fail("settings.period_ms: outside 10 to 1000");
+        }
+        if settings.payload_bytes as usize != crate::wire::PAYLOAD_BYTES {
+            fail("settings.payload_bytes: not the version's request size");
+        }
+        if !(1..=MAX_TIMEOUT_MS).contains(&settings.timeout_ms) {
+            fail("settings.timeout_ms: outside 1 to 10000");
+        }
+        if !(1..=MAX_DURATION_S).contains(&settings.duration_s) {
+            fail("settings.duration_s: outside 1 s to 7 days");
         }
         if !settings.direct_paths && settings.relays == RelayChoice::Disabled {
-            fail("no relay and no direct paths".to_owned());
+            fail("settings: no relay and no direct paths");
         }
-        if self.trace.period_ms != settings.period_ms
-            || self.trace.timeout_ms != settings.timeout_ms
+
+        // Times: the connection opens within the connect bound, request 0 leaves soon after, and
+        // the run ends within a margin of its last request. Every other time is inside the run.
+        let join = &self.join;
+        if join.connect_ms > MAX_CONNECT_MS {
+            fail("join.connect_ms: longer than a connection attempt");
+        }
+        if traced > 0
+            && !(join.connect_ms..=join.connect_ms.saturating_add(MAX_START_MS))
+                .contains(&trace.start_ms)
         {
-            fail("trace's period or timeout differs from settings'".to_owned());
+            fail("trace.start_ms: not soon after the connection opened");
         }
-        if !self.trace.rtt_us.is_empty() && self.trace.start_ms < self.join.connect_ms {
-            fail("request 0 left before the connection opened".to_owned());
+        let period = u64::from(settings.period_ms);
+        if traced.saturating_sub(1) * period > settings.duration_s.saturating_mul(1_000) {
+            fail("trace.rtt_us: more requests than the duration holds");
         }
-        for end in std::iter::once(&self.ends.local).chain(&self.ends.remote) {
-            check_end(end, &mut fail);
+        let latest_end = trace
+            .start_ms
+            .saturating_add(traced * period)
+            .saturating_add(u64::from(settings.timeout_ms) + END_MARGIN_MS);
+        if settings.elapsed_ms > latest_end {
+            fail("settings.elapsed_ms: later than the last request allows");
         }
-        if let Some(rtt) = &self.join.relayed_rtt_us {
-            check_summary("join.relayed_rtt_us", rtt, &mut fail);
+        let elapsed = settings.elapsed_ms;
+        let inside = |ms: u64| ms <= elapsed;
+        if !inside(join.connect_ms) || join.first_direct_ms.is_some_and(|ms| !inside(ms)) {
+            fail("join: a time after the end of the run");
+        }
+        if trace.period_ms != settings.period_ms || trace.timeout_ms != settings.timeout_ms {
+            fail("trace: period or timeout differs from settings");
+        }
+        if trace
+            .rtt_us
+            .iter()
+            .flatten()
+            .any(|&rtt| u64::from(rtt) > max_rtt_us)
+        {
+            fail("trace.rtt_us: an RTT longer than the timeout");
+        }
+
+        for (index, end) in std::iter::once(&self.ends.local)
+            .chain(&self.ends.remote)
+            .enumerate()
+        {
+            check_end(
+                if index == 0 {
+                    "ends.local"
+                } else {
+                    "ends.remote"
+                },
+                end,
+                &mut fail,
+            );
+        }
+        if let Some(rtt) = &join.relayed_rtt_us {
+            check_summary("join.relayed_rtt_us", rtt, traced, max_rtt_us, &mut fail);
         }
 
         // Hops add up to the trace.
-        let beats: u64 = self.hops.iter().map(|hop| hop.beats).sum();
-        let lost: u64 = self.hops.iter().map(|hop| hop.lost).sum();
-        let traced = self.trace.rtt_us.len() as u64;
-        let traced_lost = self.trace.rtt_us.iter().filter(|rtt| rtt.is_none()).count() as u64;
+        let beats: u64 = self.hops.iter().map(|hop| hop.beats.min(traced + 1)).sum();
+        let lost: u64 = self.hops.iter().map(|hop| hop.lost.min(traced + 1)).sum();
+        let traced_lost = trace.rtt_us.iter().filter(|rtt| rtt.is_none()).count() as u64;
         if beats != traced || lost != traced_lost {
-            fail(format!(
-                "hops count {beats} requests and {lost} lost; the trace has {traced} and \
-                 {traced_lost}"
-            ));
+            fail("hops: requests or losses differ from the trace");
         }
         let mut seen = std::collections::BTreeSet::new();
-        for hop in &self.hops {
-            let key = (hop.local_medium, hop.remote_medium, hop.path);
-            if !seen.insert(key) {
-                fail(format!("two hops for {key:?}"));
+        for (index, hop) in self.hops.iter().enumerate() {
+            let at = format!("hops[{index}]");
+            let mut fail_at = |rule: &str| fail(&format!("{at}: {rule}"));
+            if !seen.insert((hop.local_medium, hop.remote_medium, hop.path)) {
+                fail_at("a second entry for the same media and path");
             }
-            if hop.lost > hop.beats {
-                fail(format!("{key:?}: more lost than sent"));
+            if hop.beats > traced || hop.lost > hop.beats {
+                fail_at("more requests or losses than the trace has");
             }
             if hop.path == Path::None && hop.lost != hop.beats {
-                fail(format!("{key:?}: an echo with no connection"));
+                fail_at("an echo with no connection");
             }
             let bounds: Vec<u32> = hop.histogram.iter().map(|bucket| bucket.le_us).collect();
             if bounds != BUCKETS_US {
-                fail(format!("{key:?}: histogram bounds are not the fixed ones"));
+                fail_at("histogram bounds are not the fixed ones");
             }
-            let counted: u64 = hop.histogram.iter().map(|bucket| bucket.count).sum();
+            let counted = hop
+                .histogram
+                .iter()
+                .map(|bucket| bucket.count.min(traced + 1))
+                .sum::<u64>();
             match &hop.rtt_us {
                 Some(rtt) => {
-                    check_summary(&format!("{key:?}"), rtt, &mut fail);
-                    if rtt.samples != hop.beats - hop.lost.min(hop.beats) || counted != rtt.samples
-                    {
-                        fail(format!("{key:?}: samples, histogram and losses disagree"));
+                    check_summary(&format!("{at}.rtt_us"), rtt, traced, max_rtt_us, &mut fail);
+                    if rtt.samples != hop.beats.saturating_sub(hop.lost) || counted != rtt.samples {
+                        fail(&format!("{at}: samples, histogram and losses disagree"));
                     }
                 }
                 None => {
                     if hop.lost != hop.beats || counted != 0 {
-                        fail(format!("{key:?}: RTTs counted but no summary"));
+                        fail(&format!("{at}: RTTs counted but no summary"));
                     }
                 }
             }
@@ -549,49 +617,102 @@ impl Report {
 
         // Changes are in order and inside the trace.
         let mut last = None;
-        for change in &self.trace.changes {
+        for (index, change) in trace.changes.iter().enumerate() {
             if change.beat >= traced.max(1) || last.is_some_and(|last| change.beat < last) {
-                fail(format!("change at request {} is out of order", change.beat));
+                fail(&format!(
+                    "trace.changes[{index}]: out of order or past the trace"
+                ));
             }
             last = Some(change.beat);
             if let ChangeKind::Local(end) | ChangeKind::Remote(end) = &change.change {
-                check_end(end, &mut fail);
+                check_end(&format!("trace.changes[{index}]"), end, &mut fail);
             }
         }
 
-        for stall in &self.stalls.log {
-            if stall.gap_ms < self.stalls.min_gap_ms {
-                fail(format!(
-                    "a stall of {} ms is under the minimum",
-                    stall.gap_ms
+        if self.stalls.min_gap_ms != period + 1_000 {
+            fail("stalls.min_gap_ms: not the period plus 1 s");
+        }
+        for (index, stall) in self.stalls.log.iter().enumerate() {
+            if stall.gap_ms < self.stalls.min_gap_ms
+                || !inside(stall.start_ms)
+                || !inside(stall.gap_ms)
+            {
+                fail(&format!(
+                    "stalls.log[{index}]: under the minimum or outside the run"
                 ));
             }
         }
-        for detector in [&self.timings.lan, &self.timings.wan] {
-            check_detector(detector, &mut fail);
+        for (name, detector, timing) in [
+            ("timings.lan", &self.timings.lan, crate::detector::LAN),
+            ("timings.wan", &self.timings.wan, crate::detector::WAN),
+        ] {
+            check_detector(name, detector, timing, elapsed, &mut fail);
         }
         problems
     }
 }
 
-fn check_end(end: &EndInfo, fail: &mut impl FnMut(String)) {
+/// The shortest period the probe runs at.
+pub const MIN_PERIOD_MS: u32 = 10;
+/// The longest: RFC-0030 §5.4's LAN heartbeat period.
+pub const MAX_PERIOD_MS: u32 = 1_000;
+/// The longest echo timeout. An RTT is at most this, so at most 10,000,000 µs, under 2^24: no RTT
+/// field can hold an IPv4 address read as an integer (any address from 1.0.0.0 up is at least
+/// 2^24).
+pub const MAX_TIMEOUT_MS: u32 = 10_000;
+/// The longest run: 7 days.
+pub const MAX_DURATION_S: u64 = 7 * 86_400;
+/// The longest a first connection can take: the probe gives up after 60 s, with margin.
+pub const MAX_CONNECT_MS: u64 = 120_000;
+/// From the connection to request 0: finding the local end, whose tools time out after 15 s each.
+pub const MAX_START_MS: u64 = 120_000;
+/// After the last request: waiting for its echo, with margin.
+pub const END_MARGIN_MS: u64 = 60_000;
+
+fn check_end(at: &str, end: &EndInfo, fail: &mut impl FnMut(&str)) {
     if end.wifi.is_some() != (end.medium == Medium::Wifi) {
-        fail(format!(
-            "{:?} has Wi-Fi details {:?}; only a Wi-Fi medium has them",
-            end.medium, end.wifi
+        fail(&format!(
+            "{at}: Wi-Fi details on a medium that is not Wi-Fi, or none on Wi-Fi"
         ));
     }
 }
 
-fn check_summary(what: &str, rtt: &RttSummary, fail: &mut impl FnMut(String)) {
+fn check_summary(
+    at: &str,
+    rtt: &RttSummary,
+    traced: u64,
+    max_rtt_us: u64,
+    fail: &mut impl FnMut(&str),
+) {
     if rtt.samples == 0
+        || rtt.samples > traced
         || !(rtt.min <= rtt.p50 && rtt.p50 <= rtt.p99 && rtt.p99 <= rtt.p999 && rtt.p999 <= rtt.max)
+        || u64::from(rtt.max) > max_rtt_us
     {
-        fail(format!("{what}: the RTT summary is not ordered: {rtt:?}"));
+        fail(&format!(
+            "{at}: not an ordered RTT summary within the timeout and the trace"
+        ));
     }
 }
 
-fn check_detector(detector: &Detector, fail: &mut impl FnMut(String)) {
+fn check_detector(
+    at: &str,
+    detector: &Detector,
+    timing: crate::detector::Timing,
+    elapsed_ms: u64,
+    fail: &mut impl FnMut(&str),
+) {
+    if (
+        detector.period_ms,
+        detector.suspect_after_ms,
+        detector.fail_after_ms,
+    ) != (
+        timing.period_ms,
+        timing.suspect_after_ms,
+        timing.fail_after_ms,
+    ) {
+        fail(&format!("{at}: not RFC-0030 §5.4's timings"));
+    }
     let suspected = detector.events.len() as u64;
     let failed = detector
         .events
@@ -599,18 +720,396 @@ fn check_detector(detector: &Detector, fail: &mut impl FnMut(String)) {
         .filter(|event| event.outcome == Verdict::Fail)
         .count() as u64;
     if detector.would_suspect != suspected || detector.would_fail != failed {
-        fail("a detector's counts differ from its events".to_owned());
+        fail(&format!("{at}: counts differ from the events"));
     }
-    for event in &detector.events {
+    for (index, event) in detector.events.iter().enumerate() {
         let expected = if event.silence_ms >= detector.fail_after_ms {
             Verdict::Fail
         } else {
             Verdict::Suspect
         };
-        if event.silence_ms < detector.suspect_after_ms || event.outcome != expected {
-            fail(format!(
-                "a detector event does not fit its timings: {event:?}"
+        if event.silence_ms < detector.suspect_after_ms
+            || event.outcome != expected
+            || event.at_ms > elapsed_ms
+            || event.silence_ms > elapsed_ms
+        {
+            fail(&format!(
+                "{at}.events[{index}]: does not fit the timings or the run"
             ));
         }
+    }
+}
+
+/// Every object key the format has, so that an error can name a field without repeating a key
+/// that the format does not have.
+const KEYS: &[&str] = &[
+    "format",
+    "version",
+    "probe_version",
+    "outcome",
+    "settings",
+    "ends",
+    "join",
+    "hops",
+    "stalls",
+    "timings",
+    "trace",
+    "setting",
+    "relays",
+    "direct_paths",
+    "period_ms",
+    "payload_bytes",
+    "timeout_ms",
+    "duration_s",
+    "elapsed_ms",
+    "local",
+    "remote",
+    "os",
+    "medium",
+    "wifi",
+    "generation",
+    "band",
+    "connect_ms",
+    "path_at_connect",
+    "first_direct_ms",
+    "relayed_rtt_us",
+    "samples",
+    "min",
+    "p50",
+    "p99",
+    "p999",
+    "max",
+    "local_medium",
+    "remote_medium",
+    "path",
+    "beats",
+    "lost",
+    "rtt_us",
+    "histogram",
+    "le_us",
+    "count",
+    "min_gap_ms",
+    "log",
+    "start_ms",
+    "gap_ms",
+    "open",
+    "lan",
+    "wan",
+    "suspect_after_ms",
+    "fail_after_ms",
+    "would_suspect",
+    "would_fail",
+    "events",
+    "at_ms",
+    "silence_ms",
+    "changes",
+    "beat",
+    "change",
+];
+
+/// The `check` command: the identifier scan of `text`, then the format and [`Report::check`].
+/// Each problem is a line that names a place in the report and a rule, and never repeats
+/// anything the report holds: a parse error is given as the field's path, with keys the format
+/// does not have shown as `?`, and a fixed kind of error.
+pub fn check_text(text: &str) -> Result<Report, Vec<String>> {
+    let mut problems: Vec<String> = crate::scan::scan(text)
+        .into_iter()
+        .map(|finding| format!("identifier: {:?} at byte {}", finding.kind, finding.offset))
+        .collect();
+    match serde_json::from_str::<Report>(text) {
+        Ok(report) => {
+            problems.extend(report.check());
+            if problems.is_empty() {
+                return Ok(report);
+            }
+        }
+        Err(error) => problems.push(describe_parse_error(text, &error)),
+    }
+    Err(problems)
+}
+
+/// A parse error as its place and kind, without serde's message, which quotes the input.
+fn describe_parse_error(text: &str, error: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+    let kind = match error.classify() {
+        Category::Io => "cannot be read",
+        Category::Eof => "the file ends early",
+        Category::Syntax => "not well-formed JSON",
+        Category::Data => {
+            // serde's data errors start with one of these fixed phrases; what follows quotes the
+            // input, so only the phrase is used.
+            let message = error.to_string();
+            [
+                ("invalid type", "a value of the wrong type"),
+                ("invalid value", "a value out of range"),
+                ("invalid length", "a list of the wrong length"),
+                ("unknown variant", "a value the field does not allow"),
+                ("unknown field", "a field the format does not have"),
+                ("missing field", "a field is missing"),
+                ("duplicate field", "a field given twice"),
+            ]
+            .into_iter()
+            .find(|(phrase, _)| message.starts_with(phrase))
+            .map_or("a value the format does not accept", |(_, kind)| kind)
+        }
+    };
+    let offset = text
+        .split_inclusive('\n')
+        .take(error.line().saturating_sub(1))
+        .map(str::len)
+        .sum::<usize>()
+        + error.column().saturating_sub(1);
+    format!("format: {kind}, at {}", path_at(text, offset))
+}
+
+/// The JSON path at byte `offset` of `text`, from the root: keys the format has, `?` for any
+/// other key, and array indices.
+fn path_at(text: &str, offset: usize) -> String {
+    enum Frame {
+        Object {
+            key: Option<String>,
+            expecting_key: bool,
+        },
+        Array {
+            index: usize,
+        },
+    }
+    let bytes = text.as_bytes();
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() && at < offset {
+        match bytes[at] {
+            b'"' => {
+                let start = at + 1;
+                at += 1;
+                while at < bytes.len() && bytes[at] != b'"' {
+                    if bytes[at] == b'\\' {
+                        at += 1;
+                    }
+                    at += 1;
+                }
+                if let Some(Frame::Object { key, expecting_key }) = stack.last_mut()
+                    && *expecting_key
+                {
+                    *key = text.get(start..at.min(bytes.len())).map(str::to_owned);
+                    *expecting_key = false;
+                }
+            }
+            b'{' => stack.push(Frame::Object {
+                key: None,
+                expecting_key: true,
+            }),
+            b'[' => stack.push(Frame::Array { index: 0 }),
+            b'}' | b']' => {
+                stack.pop();
+            }
+            b',' => match stack.last_mut() {
+                Some(Frame::Object { expecting_key, .. }) => *expecting_key = true,
+                Some(Frame::Array { index }) => *index += 1,
+                None => {}
+            },
+            _ => {}
+        }
+        at += 1;
+    }
+    let mut path = String::new();
+    for frame in &stack {
+        match frame {
+            Frame::Object { key: Some(key), .. } => {
+                if !path.is_empty() {
+                    path.push('.');
+                }
+                path.push_str(if KEYS.contains(&key.as_str()) {
+                    key
+                } else {
+                    "?"
+                });
+            }
+            Frame::Object { key: None, .. } => {}
+            Frame::Array { index } => path.push_str(&format!("[{index}]")),
+        }
+    }
+    if path.is_empty() {
+        "the top level".to_owned()
+    } else {
+        path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use serde_json::Value;
+
+    use super::*;
+    use crate::probe::{Recorder, RunOptions};
+
+    const S: u64 = 1_000_000;
+
+    /// A report with every optional part present: both ends (one on Wi-Fi), a relayed then direct
+    /// path, a lost run of requests (a stall and a LAN suspicion), and changes of each kind.
+    fn rich() -> Report {
+        let wifi = EndInfo {
+            os: Os::Macos,
+            medium: Medium::Wifi,
+            wifi: Some(Wifi {
+                generation: WifiGeneration::Wifi6,
+                band: WifiBand::Ghz5,
+            }),
+        };
+        let wired = EndInfo {
+            os: Os::Linux,
+            medium: Medium::Ethernet,
+            wifi: None,
+        };
+        let mut options = RunOptions::new(Setting::OffLan, RelayChoice::Public, true);
+        options.duration = Duration::from_secs(60);
+        let mut recorder = Recorder::new(options, 200_000, Path::Relay);
+        for seq in 0..12u64 {
+            let at = (seq + 1) * S;
+            let path = if seq < 3 { Path::Relay } else { Path::Direct };
+            let local = if seq < 8 { wifi } else { wired };
+            recorder.sent(at, path, local);
+            if !(5..=8).contains(&seq) {
+                recorder.echoed(seq, at + 2_000, if seq < 9 { wired } else { wifi });
+            }
+        }
+        let report = recorder.report(12 * S + 500_000, wired, Outcome::Completed);
+        assert_eq!(report.check(), Vec::<String>::new());
+        assert!(!report.stalls.log.is_empty() && !report.timings.lan.events.is_empty());
+        report
+    }
+
+    /// The JSON pointer of every leaf of `value` that `pick` selects, and of every object.
+    fn pointers(value: &Value, at: String, out: &mut Vec<(String, bool)>) {
+        match value {
+            Value::Object(map) => {
+                out.push((at.clone(), true));
+                for (key, item) in map {
+                    pointers(item, format!("{at}/{key}"), out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    pointers(item, format!("{at}/{index}"), out);
+                }
+            }
+            _ => out.push((at, false)),
+        }
+    }
+
+    /// `check_text` refuses `text`, and its output repeats none of `plants`.
+    fn refused_quietly(text: &str, plants: &[&str], what: &str) {
+        let problems = check_text(text).expect_err(what);
+        let shown = problems.join("\n");
+        for plant in plants {
+            assert!(
+                !shown.contains(plant),
+                "{what}: the output repeats {plant}: {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_keys_list_covers_the_format() {
+        let mut leaves = Vec::new();
+        pointers(
+            &serde_json::to_value(rich()).unwrap(),
+            String::new(),
+            &mut leaves,
+        );
+        for (pointer, _) in leaves {
+            for key in pointer
+                .split('/')
+                .filter(|part| part.parse::<usize>().is_err())
+            {
+                assert!(
+                    key.is_empty() || KEYS.contains(&key),
+                    "{key} is not in KEYS"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_planted_identifier_is_refused_and_never_repeated() {
+        // 0xC0A80001 is 192.168.0.1 read as an integer.
+        const AS_NUMBER: u64 = 0xC0A8_0001;
+        let plants = [
+            "3232235521",
+            "192.168.0.1",
+            "192.0.2.77",
+            "02:00:00:aa:bb:cc",
+            "home-net",
+        ];
+        let base = serde_json::to_value(rich()).unwrap();
+        let mut places = Vec::new();
+        pointers(&base, String::new(), &mut places);
+        let mut planted = 0;
+        for (pointer, is_object) in &places {
+            let mut variants = Vec::new();
+            if *is_object {
+                // A key the format does not have, holding an address.
+                let mut value = base.clone();
+                let target = if pointer.is_empty() {
+                    &mut value
+                } else {
+                    value.pointer_mut(pointer).unwrap()
+                };
+                target
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("home-net".to_owned(), Value::from("192.0.2.77"));
+                variants.push(value);
+            } else {
+                for plant in [
+                    Value::from(AS_NUMBER),
+                    Value::from("192.0.2.77"),
+                    Value::from("02:00:00:aa:bb:cc"),
+                    Value::from("home-net"),
+                ] {
+                    let mut value = base.clone();
+                    *value.pointer_mut(pointer).unwrap() = plant;
+                    variants.push(value);
+                }
+            }
+            for value in variants {
+                let text = serde_json::to_string_pretty(&value).unwrap();
+                refused_quietly(&text, &plants, pointer);
+                planted += 1;
+            }
+        }
+        assert!(planted > 1_000, "{planted} plants");
+
+        // Text that is not well-formed, with an address inside it.
+        let text = serde_json::to_string_pretty(&base).unwrap();
+        refused_quietly(
+            &text.replacen("\"lan\"", "\"192.0.2.77", 1),
+            &plants,
+            "an unterminated string",
+        );
+        refused_quietly(&text[..text.len() / 2], &plants, "a truncated file");
+    }
+
+    #[test]
+    fn a_parse_error_names_the_field_by_its_path() {
+        let text =
+            serde_json::to_string_pretty(&rich())
+                .unwrap()
+                .replacen("\"wifi6\"", "\"home-net\"", 1);
+        assert_eq!(
+            check_text(&text).unwrap_err(),
+            ["format: a value the field does not allow, at ends.remote.wifi.generation"]
+        );
+        let text = serde_json::to_string_pretty(&rich()).unwrap().replacen(
+            "\"beats\"",
+            "\"home-net\": 1, \"beats\"",
+            1,
+        );
+        assert_eq!(
+            check_text(&text).unwrap_err(),
+            ["format: a field the format does not have, at hops[0].?"]
+        );
     }
 }
