@@ -36,6 +36,7 @@ mod determinism;
 mod instructions;
 mod licences;
 mod loom;
+mod plan_tools;
 mod properties;
 mod registry;
 mod repo_settings;

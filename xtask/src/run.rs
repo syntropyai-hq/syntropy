@@ -308,6 +308,7 @@ mod tests {
                 "scenarios",
                 "sim-presets",
                 "jobs",
+                "plan",
             ]
         );
         for pending in lint.pending {
