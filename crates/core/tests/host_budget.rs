@@ -27,6 +27,7 @@ fn inputs(os: HostOs, mem: &HostMemInfo) -> HostBudgetInputs<'_> {
         os,
         mem,
         own: Bytes(0),
+        own_locked: Bytes(0),
         working_set: None,
         user_locked_vm: Bytes(0),
     }
@@ -92,6 +93,26 @@ fn linux_registration_not_charged() {
             Some(6_291_456)
         )
     );
+}
+
+/// A runner that already pins 6 GiB under an 8 GiB memlock limit: `VmLck` is 6 GiB, and so is
+/// what the node's runners hold. Re-evaluated before the next pinning step, the rule adds the
+/// runners' own locked bytes back, so `lockable` is the whole 8 GiB, not the 2 GiB left over,
+/// and the running plan does not fail its own `pin_limit`.
+#[test]
+fn linux_own_locked_is_not_counted_against_itself() {
+    let mut m = mem(64 * GIB, 30 * GIB);
+    m.memlock_limit = Some(Bytes(8 * GIB));
+    m.lock = charged(6 * GIB, Some(true));
+    let mut i = inputs(HostOs::Linux, &m);
+    i.own = Bytes(6 * GIB);
+    i.own_locked = Bytes(6 * GIB);
+    // host_usable = 30 GiB + 6 GiB − 6871947673 = 31782757991
+    // pin_limit = min(31782757991, 58411555225, 8 GiB + 6 GiB − 6 GiB)
+    assert_eq!(pin_limit(&i, &DEFAULT), Bytes(8 * GIB));
+    // Without the add-back the runner's own 6 GiB would count against it.
+    i.own_locked = Bytes(0);
+    assert_eq!(pin_limit(&i, &DEFAULT), Bytes(2 * GIB));
 }
 
 /// Registration charged, with 1 MiB already locked: `lockable = RLIMIT_MEMLOCK − VmLck`.
@@ -211,9 +232,35 @@ fn wsl2_uses_the_vm_total_and_its_fraction() {
     // pin_limit = min(27917287424, 0.75 · 34359738368 = 25769803776)
     // io_fixed = 8 MiB
     assert_eq!(
-        host_budget(&inputs(HostOs::Wsl2, &m), &DEFAULT),
+        host_budget(&inputs(HostOs::Linux, &m), &DEFAULT),
         budget(4 * GIB, 27_917_287_424, 25_769_803_776, Some(8_388_608))
     );
+}
+
+/// WSL2 is recorded once, in `HostMemInfo::wsl2`: the same VM with the flag clear takes the
+/// Linux 0.85 default, so a caller that maps `cfg(target_os)` to `HostOs::Linux` inside WSL2
+/// still gets WSL2's fraction.
+#[test]
+fn wsl2_flag_selects_the_wsl2_fraction() {
+    let mut m = mem(32 * GIB, 30 * GIB);
+    m.wsl2 = true;
+    let policy = HostBudgetPolicy {
+        ram_headroom: Some(Bytes(0)),
+        ..DEFAULT
+    };
+    // host_usable = 30 GiB; pin_limit = min(30 GiB, 0.75 · 32 GiB = 25769803776)
+    assert_eq!(
+        pin_limit(&inputs(HostOs::Linux, &m), &policy),
+        Bytes(25_769_803_776)
+    );
+    m.wsl2 = false;
+    // pin_limit = min(32212254720, 0.85 · 34359738368 = 29205777612)
+    assert_eq!(
+        pin_limit(&inputs(HostOs::Linux, &m), &policy),
+        Bytes(29_205_777_612)
+    );
+    assert_eq!(HostOs::Linux.default_max_pinned_fraction(true), Some(0.75));
+    assert_eq!(HostOs::Linux.default_max_pinned_fraction(false), Some(0.85));
 }
 
 // ---- Windows ----------------------------------------------------------------------------
@@ -239,11 +286,32 @@ fn windows_lockable_measured_binds() {
 /// Before H5 measures the lock ceiling, the fraction is the cap.
 #[test]
 fn windows_before_lockable_is_measured() {
-    let m = mem(128 * GIB, 100 * GIB);
+    // A 64 GiB host whose unprivileged working-set ceiling is 2 GiB, before H5 has run: the
+    // static estimate binds, not 0.50 · 64 GiB = 32 GiB.
+    let mut m = mem(64 * GIB, 60 * GIB);
+    m.windows_lockable = Some(Bytes(2 * GIB));
     assert_eq!(
         pin_limit(&inputs(HostOs::Windows, &m), &DEFAULT),
-        Bytes(68_719_476_736)
+        Bytes(2 * GIB)
     );
+    // H5's measurement replaces the estimate once it exists.
+    m.lock = Some(LockAccounting {
+        lockable_measured: Some(Bytes(20 * GIB)),
+        ..LockAccounting::default()
+    });
+    assert_eq!(
+        pin_limit(&inputs(HostOs::Windows, &m), &DEFAULT),
+        Bytes(20 * GIB)
+    );
+}
+
+/// With neither a measurement nor an estimate, Windows assumes no lock budget.
+#[test]
+fn windows_without_any_lock_figure_pins_nothing() {
+    let m = mem(128 * GIB, 100 * GIB);
+    let b = host_budget(&inputs(HostOs::Windows, &m), &DEFAULT);
+    assert_eq!(b.pin_limit, Bytes(0));
+    assert_eq!(b.host_usable, Bytes(93_630_287_053));
 }
 
 /// A job object limit of 40 GiB with 8 GiB in use binds both `usable` and `pin_limit`.
@@ -251,6 +319,7 @@ fn windows_before_lockable_is_measured() {
 fn windows_job_object_limit() {
     let mut m = mem(128 * GIB, 100 * GIB);
     m.cgroup_limit = Some(Bytes(32 * GIB));
+    m.windows_lockable = Some(Bytes(60 * GIB));
     let mut i = inputs(HostOs::Windows, &m);
     i.own = Bytes(GIB);
     // host_usable = min(100 GiB + 1 GiB − 13743895347, 32 GiB + 1 GiB)

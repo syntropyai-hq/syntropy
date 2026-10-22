@@ -33,11 +33,10 @@ pub const DEFAULT_NUMA_RESERVE: Bytes = Bytes(GIB);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HostOs {
     /// Linux on bare metal or in a container; the cgroup limit, v1 or v2, arrives in
-    /// [`HostMemInfo::cgroup_limit`].
+    /// [`HostMemInfo::cgroup_limit`]. Inside WSL2 as well: [`HostMemInfo::wsl2`] is the one
+    /// record of that, and selects WSL2's `max_pinned_fraction` default, the Linux rule
+    /// otherwise applying to the VM's `MemTotal`.
     Linux,
-    /// Linux inside WSL2: the Linux rule applied to the VM's `MemTotal`, with its own
-    /// `max_pinned_fraction` default.
-    Wsl2,
     /// Windows. [`HostMemInfo::cgroup_limit`] carries the job object's limit − usage.
     Windows,
     /// macOS on Apple silicon: one `Unified` tier, no `HostPinned` tier.
@@ -47,13 +46,13 @@ pub enum HostOs {
 }
 
 impl HostOs {
-    /// RFC-0020 §5's per-OS `max_pinned_fraction` default: 0.85 on Linux, 0.75 on WSL2, 0.50 on
-    /// Windows [target]. `None` on macOS, where it does not apply unless the user sets it, and
-    /// on Tier 3, where `pin_limit` is 0.
-    pub fn default_max_pinned_fraction(self) -> Option<f32> {
+    /// RFC-0020 §5's per-OS `max_pinned_fraction` default: 0.85 on Linux, 0.75 on WSL2 (Linux
+    /// with `wsl2` set), 0.50 on Windows [target]. `None` on macOS, where it does not apply
+    /// unless the user sets it, and on Tier 3, where `pin_limit` is 0.
+    pub fn default_max_pinned_fraction(self, wsl2: bool) -> Option<f32> {
         match self {
+            HostOs::Linux if wsl2 => Some(0.75),
             HostOs::Linux => Some(0.85),
-            HostOs::Wsl2 => Some(0.75),
             HostOs::Windows => Some(0.50),
             HostOs::MacOs | HostOs::Mobile => None,
         }
@@ -87,24 +86,32 @@ impl HostBudgetPolicy {
         self.numa_reserve.unwrap_or(DEFAULT_NUMA_RESERVE)
     }
 
-    fn max_pinned_fraction(&self, os: HostOs) -> Option<f32> {
+    fn max_pinned_fraction(&self, os: HostOs, wsl2: bool) -> Option<f32> {
         self.max_pinned_fraction
-            .or_else(|| os.default_max_pinned_fraction())
+            .or_else(|| os.default_max_pinned_fraction(wsl2))
     }
 }
 
 /// What the rule reads besides the policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostBudgetInputs<'a> {
-    /// Which rule applies.
+    /// Which rule applies. WSL2 is not an `os` of its own: it is [`HostOs::Linux`] with
+    /// [`HostMemInfo::wsl2`] set.
     pub os: HostOs,
     /// The OS facts.
     pub mem: &'a HostMemInfo,
     /// `own`: the bytes this node's runners already hold in host RAM, so a re-plan of a running
     /// instance does not count its own memory against itself (RFC-0020 §5). 0 at first probe.
     pub own: Bytes,
+    /// Linux: the bytes this node's runners already hold locked that
+    /// [`LockAccounting::vmlck_before`](crate::resource::LockAccounting::vmlck_before) counts.
+    /// They are added back to `lockable`, the `own` convention, so a re-evaluation before a
+    /// pinning step does not count a running plan's locked memory against itself. 0 at first
+    /// probe. Unused elsewhere.
+    pub own_locked: Bytes,
     /// macOS: `recommendedMaxWorkingSetSize`, read in the probe runner (RFC-0010 §2.2). `None`
-    /// leaves the term out, and the two RAM terms still hold the reserve.
+    /// leaves the term out, and the two RAM terms still hold the reserve (RFC-0020 §5, note of
+    /// 2026-10-22).
     pub working_set: Option<Bytes>,
     /// Linux: the user's `locked_vm`, less what this node's runners hold under the
     /// [`IoFixedLedger`] (the `own` convention). Unused elsewhere.
@@ -145,7 +152,7 @@ pub fn host_usable(inputs: &HostBudgetInputs<'_>, policy: &HostBudgetPolicy) -> 
     let headroom = policy.headroom(mem.total);
     let avail = sub(add(mem.available, inputs.own), headroom);
     match inputs.os {
-        HostOs::Linux | HostOs::Wsl2 | HostOs::Windows => match mem.cgroup_limit {
+        HostOs::Linux | HostOs::Windows => match mem.cgroup_limit {
             Some(limit) => avail.min(add(limit, inputs.own)),
             None => avail,
         },
@@ -167,30 +174,37 @@ pub fn host_usable(inputs: &HostBudgetInputs<'_>, policy: &HostBudgetPolicy) -> 
 ///
 /// - Linux, WSL2: `min(host_usable, max_pinned_fraction · MemTotal, lockable)`, where
 ///   `lockable` is unlimited with `CAP_IPC_LOCK` or no `RLIMIT_MEMLOCK`, or when the probe
-///   showed provider registration is not charged to it, and `RLIMIT_MEMLOCK − VmLck`
-///   otherwise. An untested charge (`None`) counts as charged.
-/// - Windows: `min(host_usable, max_pinned_fraction · ullTotalPhys, lockable_measured)`; until
-///   the probe measures `lockable_measured`, the fraction is the only cap besides
-///   `host_usable`.
+///   showed provider registration is not charged to it, and `RLIMIT_MEMLOCK − VmLck +
+///   own_locked` otherwise. An untested charge (`None`) counts as charged.
+/// - Windows: `min(host_usable, max_pinned_fraction · ullTotalPhys, lockable_measured)`. Until
+///   H5 measures `lockable_measured`, the static estimate is
+///   [`HostMemInfo::windows_lockable`], the working-set ceiling obtainable without privilege
+///   (RFC-0010 §3.2). With neither, `pin_limit` is 0: the rule never assumes a lock budget it
+///   was not given.
 /// - macOS, Tier 3: 0.
 pub fn pin_limit(inputs: &HostBudgetInputs<'_>, policy: &HostBudgetPolicy) -> Bytes {
     let mem = inputs.mem;
     let lock = mem.lock.as_ref();
     let lockable = match inputs.os {
-        HostOs::Linux | HostOs::Wsl2 => {
+        HostOs::Linux => {
             let uncharged = lock.and_then(|l| l.registration_charged) == Some(false);
             match mem.memlock_limit {
                 Some(limit) if !uncharged => {
-                    Some(sub(limit, lock.map(|l| l.vmlck_before).unwrap_or_default()))
+                    let vmlck = lock.map(|l| l.vmlck_before).unwrap_or_default();
+                    Some(sub(add(limit, inputs.own_locked), vmlck))
                 }
                 _ => None,
             }
         }
-        HostOs::Windows => lock.and_then(|l| l.lockable_measured),
+        HostOs::Windows => Some(
+            lock.and_then(|l| l.lockable_measured)
+                .or(mem.windows_lockable)
+                .unwrap_or(Bytes(0)),
+        ),
         HostOs::MacOs | HostOs::Mobile => return Bytes(0),
     };
     let mut limit = host_usable(inputs, policy);
-    if let Some(f) = policy.max_pinned_fraction(inputs.os) {
+    if let Some(f) = policy.max_pinned_fraction(inputs.os, mem.wsl2) {
         limit = limit.min(fraction_of(mem.total, f));
     }
     if let Some(l) = lockable {
@@ -204,10 +218,10 @@ pub fn pin_limit(inputs: &HostBudgetInputs<'_>, policy: &HostBudgetPolicy) -> By
 ///
 /// RFC-0020 §5 defines `io_fixed` for Linux only. Elsewhere this returns `Some(0)`: no
 /// fixed-buffer budget is granted, and RFC-0021 uses unregistered reads, which loses
-/// efficiency, not correctness.
+/// efficiency, not correctness (RFC-0020 §5, note of 2026-10-22).
 pub fn io_fixed(inputs: &HostBudgetInputs<'_>) -> Option<Bytes> {
     match inputs.os {
-        HostOs::Linux | HostOs::Wsl2 => inputs
+        HostOs::Linux => inputs
             .mem
             .memlock_limit
             .map(|limit| sub(limit, inputs.user_locked_vm)),
@@ -281,6 +295,11 @@ pub fn host_pool(
 ///
 /// io_uring charges registered buffers to the user's `locked_vm`, not the process's, so the
 /// runners share one budget. The sum of the grants never exceeds the limit.
+///
+/// The limit is fixed at [`IoFixedLedger::new`]. To re-evaluate `io_fixed`, build a new ledger
+/// over the new limit and replay the runners' current grants into it with
+/// [`IoFixedLedger::grant`]; dropping the old ledger without replaying forgets bytes the runners
+/// still hold registered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IoFixedLedger {
     limit: Option<Bytes>,
