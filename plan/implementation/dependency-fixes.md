@@ -821,3 +821,11 @@ DIST-E1-T02 (M0a) builds the shared-memory region. Its criterion "the daemon unl
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E1-T02's criterion becomes the creating side's unlink after the runner process exits, shown by its cross-process test; "the daemon calls `Region::unlink` when a runner exits" moves to DIST-E1-T04 | DIST-E1-T02, DIST-E1-T04 | R9 | DIST-E1-T04 spawns runners and sees them exit. DIST-E1-T02's test plays both processes, so it can show the unlink itself. On Linux a memfd has no name, and on Windows a mapping's name goes with its last handle, so the test checks each OS's own form of "no name left" |
+
+## OQ-NET-34 settled (2026-10-23)
+
+DIST-E10-T10 model-checked OQ-NET-34's option (a) and settled it in RFC-0032 §7.5, §6.3 and Testing, under the maintainers' standing instruction. The check needed two parts more than the open question named: a node's own `Endorse`s count as support, because a `SignedElection`'s `acks` miss support given after the win; and two heal-path rules, that a held proof's support only grows and that every accepted election is endorsed once. DIST-E10-T05 builds the heal, so it takes them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E10-T05's task and criteria take the settled rule: the standing comparison, the endorsement record, support that only grows, endorsing once, and fencing replies with the sender's strongest supported election; its `gate: OQ-NET-34` is removed, and its edge to DIST-E10-T10 stays | DIST-E10-T05 | Definition of done (the spike closed the question) | DIST-E10-T05 builds the heal comparison, the fencing replies and the endorsement the answer changes. Its new criteria replay DIST-E10-T08's two pinned traces in the simulator, which DIST-E10-T05's existing simulator criterion already uses |

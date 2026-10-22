@@ -314,7 +314,7 @@ No GAPs.
 | RFC-0032 | §3 | Pipeline ring execution | 20: PLC-E6-T21–T22, DIST-E1-T14, DIST-E8-T05, DIST-E11-T02–T10, DIST-E11-T14–T19, DIST-E17-T15 | ok |
 | RFC-0032 | §4 | Plan transitions on the data plane | 3: DIST-E11-T11–T13 | ok |
 | RFC-0032 | §5 | Tensor and expert parallelism | 13: DIST-E13-T01–T13 | ok |
-| RFC-0032 | §6 | The cluster event log | 17: DIST-E9-T01–T13, DIST-E9-T15–T16, DIST-E10-T10, DIST-E18-T03 | ok |
+| RFC-0032 | §6 | The cluster event log | 18: DIST-E9-T01–T13, DIST-E9-T15–T16, DIST-E10-T05, DIST-E10-T10, DIST-E18-T03 | ok |
 | RFC-0032 | §7 | Coordinator election and leases | 10: DIST-E9-T13, DIST-E10-T01–T08, DIST-E10-T10 | ok |
 | RFC-0032 | §8 | Two-phase scheduling | 7: DIST-E9-T08–T09, DIST-E10-T06, DIST-E11-T03, DIST-E12-T01–T03 | ok |
 | RFC-0032 | §9 | Configuration | 1: DIST-E18-T01 | ok |
