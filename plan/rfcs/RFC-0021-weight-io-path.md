@@ -126,6 +126,7 @@ pub struct DioAlign { pub mem: u32, pub offset: u32 }
 4. `Wait::Until(Nanos)` is a relative timeout: block until a completion arrives or that much time passes.
 5. `BufIndex` is 16 bits, the narrower of the native indexes (io_uring's `buf_index`; I/O rings take 32), so every value is valid on every engine.
 6. `CancelOutcome::Cancelled` still produces a completion, carrying `IO_CANCELLED`. `TooLate` completes normally and the I/O thread discards it as stale.
+7. *(2026-10-22, TIER-E5-T02.)* Two safe methods let the I/O thread chunk and coalesce without new `unsafe`. `IoDest::split_at(at)` gives two disjoint halves of the range. `IoDest::join(next)` joins two `Fixed` ranges of one buffer when `next` starts where the first ends. Each result names only bytes its inputs already vouched for. `Raw` ranges never join, because two adjacent ones may lie in different allocations.
 
 ### 3. Threads, rings, priorities and queue depth
 
@@ -147,6 +148,14 @@ loop:
 ```
 
 Producers signal a parked I/O thread through one doorbell word per ring (ADR-0012 item 5). A dispatcher never waits for the I/O thread: it posts a request and carries on, and finds the completion when it next polls its ring.
+
+*Note 2026-10-22 (TIER-E5-T02, as built):* `syntropy_io::IoLoop` runs this loop, and each producer holds an `IoClient`. The details below are choices this section leaves open:
+- **Doorbells.** Each request ring has a doorbell word of its own, on its own cache line. To park, the loop sets every word, issues a sequentially consistent fence and drains the rings once more. A producer issues the same fence after its push and unparks the loop if its word is set. `syntropy-spsc`'s own wait parks a consumer on one ring, so the many-ring park lives in `io`.
+- **Draining.** Each visit drains one producer's ring in full, starting at a different producer each pass. That keeps the rows a token needs, posted together, adjacent in their queue, so they can coalesce. A producer's requests in the loop never exceed its completion ring's capacity, so a completion always has a slot. A producer that doesn't take its completions is not drained.
+- **Coalescing.** A read joins the read at the back of its queue when the file bytes and the `Fixed` destination bytes both continue that read, and the destination of the read already queued is exactly as long as its extent. A coalesced read holds at most the chunk size and 16 requests. A short transfer credits the requests in extent order.
+- **Writes** are submitted whole, never chunked or coalesced, because their `SyncMode` covers the whole extent.
+- **An extent longer than its destination** completes at intake with `IO_MISALIGNED` and never reaches the engine. §16 gives that producer bug no code of its own (open, for the maintainers).
+- Not in this task: §3.2's depth rules beyond "highest class first", and the `useful_until` drops, are TIER-E5-T07. The one retry of a short transfer is TIER-E5-T15, so a short transfer completes with `IO_SHORT_READ` for now.
 
 #### 3.2 Depth and priority rules
 
