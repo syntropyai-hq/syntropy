@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The affected-job rules of RFC-0062 §2.2 (ADR-0620 decision 3; QUAL-E1-T07). `cargo xtask ci
+# changes` applies them to a change. It lists the hosted jobs of `pr.yml` to run, and the
+# hardware jobs whose `hw/<job>` statuses `ci-gate` waits for. `xtask/src/changes.rs` says how
+# each table is read.
+#
+# The base branch's copy decides: `pr.yml` runs `changes` and `ci-gate` from a checkout of the
+# base, so a change here takes effect when it merges. `lint` checks this file against the golden
+# suite in `ci/jobs-goldens.toml`, which records this file's digest. A change here needs a change
+# there: a golden for each new rule or pattern, and the new digest.
+
+[paths]
+# A path every crate builds or runs with. A change to one counts as a change to every crate.
+# `xtask` defines every job's steps, which `pr.yml` and the composite actions run.
+workspace = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    ".cargo/**",
+    "xtask/**",
+    ".github/workflows/pr.yml",
+    ".github/actions/**",
+]
+# A path no crate's build or tests read, beyond what a `lint` step also checks. A change only to
+# these runs `lint` alone. Hosted tests read some plan files, and `lint` checks the same facts:
+# `check-deps` checks RFC-0001 §4.1's table, `properties` checks RFC-0060 §3.2 and the epics,
+# `scenarios` checks the vision's §7, RFC-0061 §4.2 and the epics, and `plan` checks the task
+# graph and the generated sections.
+no_crate = [
+    "docs/**",
+    "plan/**",
+    "**/*.md",
+    ".githooks/**",
+]
+
+# A path outside every crate that some crates read, with those crates. A change to one counts as
+# a change to them.
+[inputs]
+"numerics/**" = ["kernels"]
+"testdata/**" = ["testkit"]
+"third_party/bip39/**" = ["net"]
+"third_party/blake3/**" = ["net"]
+"third_party/ggml/**" = ["kernels-ggml"]
+"third_party/licences.toml" = ["xtask"]
+"bench/**" = ["bench"]
+"ci/**" = ["xtask"]
+"governance/**" = ["xtask"]
+# The workflows: `xtask` checks them, and `testkit` checks that no release build names it.
+".github/**" = ["xtask", "testkit"]
+"deny.toml" = ["xtask"]
+"LICENSE-*" = ["xtask"]
+"version.txt" = ["xtask", "bench"]
+
+[hardware]
+# The accounts whose `hw/<job>` statuses `ci-gate` accepts: the lab dispatcher's GitHub App,
+# which QUAL-E2-T01 creates and names here. Until then no status counts.
+status_creators = []
+
+# `lint`: the L0 static checks, on every change.
+[job.lint]
+runner = "hosted"
+when = "always"
+
+# `build-<os>`: the PR build on each Tier 1 OS.
+[job.build]
+runner = "hosted"
+when = "closure"
+
+# `hosted-test-<os>`: L1 and L2, the unit, property and simulator tests.
+[job.hosted-test]
+runner = "hosted"
+when = "closure"
+
+# L3: the loom models now (QUAL-E3-T09), and Miri and the sanitizer builds with QUAL-E3-T10
+# (RFC-0060 §3.4).
+[job.hosted-l3]
+runner = "hosted"
+when = "closure"
+crates = ["ipc", "tier", "exec", "io", "net"]
+
+# L5 nano parity smoke on the CPU provider (RFC-0060 §5).
+[job.hosted-parity-nano]
+runner = "hosted"
+when = "closure"
+planned = "QUAL-E5-T06"
+
+# Op conformance, parity smoke and the `pr-quick` bench on R-ADA (RFC-0062 §2.3). The paths are
+# RFC-0062 §2.2's, from ADR-0019 §9 and ADR-0020. QUAL-E2-T08 adds the other Tier 1 rigs' jobs
+# with their own rules.
+[job.hw-cuda-ada]
+runner = "lab"
+when = "direct"
+paths = [
+    "crates/kernels/**",
+    "crates/kernels-*/**",
+    "crates/exec/**",
+    "crates/sched/**",
+    "crates/tier/**",
+    "crates/io/**",
+    "crates/net/**",
+    "crates/graph/**",
+    # A module is `<name>.rs`, `<name>/` or both, so each names both.
+    "crates/manifest/src/census.rs",
+    "crates/manifest/src/census/**",
+    "crates/manifest/src/kv.rs",
+    "crates/manifest/src/kv/**",
+    "crates/testkit/src/refexec.rs",
+    "crates/testkit/src/refexec/**",
+    "crates/testkit/src/parity.rs",
+    "crates/testkit/src/parity/**",
+    "crates/testkit/src/conformance.rs",
+    "crates/testkit/src/conformance/**",
+    "third_party/ggml/**",
+    "ci/images/cuda*/**",
+    "rust-toolchain.toml",
+]
+# The CUDA and ggml bindings crates, once they exist: a `Cargo.lock` change to one also
+# requires the job.
+lock_deps = []
+planned = "QUAL-E2-T02"

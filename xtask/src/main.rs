@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 mod build;
+mod changes;
 mod check_deps;
 mod ci_gate;
 mod cli;
