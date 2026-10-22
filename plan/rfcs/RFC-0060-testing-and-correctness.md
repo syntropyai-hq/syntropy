@@ -183,7 +183,15 @@ pub struct DeviceClockSync { pub device_ts: u64, pub host_ticks: u64, pub device
     - the TSC when CPUID reports it invariant and, on Linux and Android, the kernel's current clocksource is `tsc`;
     - CNTVCT_EL0 on arm64, at the rate CNTFRQ_EL0 reports;
     - otherwise the OS monotonic counter through `std::time::Instant`, at 1 GHz.
-  - **Calibration.** The TSC's rate is calibrated over 20 ms against the OS monotonic counter (`std::time::Instant`), with each end bracketed between two clock reads. It is not calibrated against `SystemClock`, because on Windows that clock advances only at the timer interrupt, up to 15.625 ms at a time, and a 20 ms calibration against it was off by 5% on a hosted run. Suspend-awareness does not matter over 20 ms.
+  - **Calibration.** The TSC's rate is calibrated over 20 ms against a clock that nothing adjusts, with each end bracketed between two reads of it:
+    - `CLOCK_MONOTONIC_RAW` on Linux and Android;
+    - `mach_absolute_time` on macOS and iOS;
+    - `QueryPerformanceCounter`, through `std::time::Instant`, on Windows.
+  - **Why those clocks.**
+    - **Not `CLOCK_MONOTONIC`,** which `adjtimex` slews by up to 10%. The process keeps the calibration window's slew for life: the review of #1762 measured rates up to 8.5% off on a slewing host.
+    - **Not `SystemClock`,** whose Windows clock advances only at the timer interrupt, up to 15.625 ms at a time. A 20 ms calibration against it was 5% off on a hosted run.
+    - **Suspend-awareness** does not matter over 20 ms.
+  - **When it calibrates.** The first use of `SystemTicks` in a process calibrates, so a binary does it at startup, before a hot thread's first step. `SystemTicks::new` is a `const fn` on a type with a private field, so a determinism lint can name its one constructor (#1763).
   - **`now`** reads `SystemClock`, so it is on the `Clock` timeline exactly and counts suspended time. Deriving it from ticks, through an offset re-sampled after every resume, is QUAL-E3-T16's.
   - **The test source** is `SimTicks` in `testkit`, which counts a `SimClock`'s virtual time at a rate the test chooses. The device timelines of §8.4 are QUAL-E3-T16's.
 
