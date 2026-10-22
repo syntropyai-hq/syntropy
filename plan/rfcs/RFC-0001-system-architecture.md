@@ -597,6 +597,7 @@ pub struct DeviceCaps {
     pub usable: Vec<(TierId, Bytes)>,
 }
 /// `AttnKind` includes `Bidirectional`, for encoder-only embedding families (RFC-0040 §3.1).
+/// `AttnKind::Compressed` carries a sink flag, `Compressed { sinks }` (RFC-0040 §3.1, revised 2026-10-23).
 pub enum KernelClass { DenseGemv, ExpertGemv, Attention(AttnKind), RowGather, Copy }
 
 pub struct StorageCaps {
@@ -1319,6 +1320,7 @@ The head forwards `SequenceOpen` metadata (`SequenceMeta`: every field except th
 - **`SequenceLimits`** holds `max_tokens`, `stop_tokens` (the request's stop token IDs, which the tail checks beside the model's end-of-sequence token and end-of-turn set, RFC-0012 §8.4), `deadline` (time from the open to the request's deadline) and amendment A5's `embed`.
 - **`CancelReason`** is `ClientGone`, `ClientRequest`, `StopString`, `Deadline` or `Error { domain, code }`, a sequence-scoped error (§10.4). A sequence whose ingress is lost, or whose detach grace runs out, ends with `finish = Cancelled` and a `Release` instead (RFC-0033 §9.2), so neither is a reason.
 - **`FinishReason::Error`** and `CancelReason::Error` carry §10's `ErrorCode` in the wire's numeric form, a domain and a code, until `core` has the `Domain` type (DIST-E18-T02).
+- **`TokenEntry::rng_counter`** has no serde default, unlike the other additions: a counter read as 0 would restart a resumed sequence's random stream (RFC-0031 §6.5's note of the same date).
 - **`LogprobBlock`** follows RFC-0031 §6.5's layout: per token, the chosen logprob and `k` (id, logprob) pairs. `k = 0` is the chosen tokens' logprobs alone, OpenAI's `top_logprobs = 0`, which the in-process path (PROD-E2-T06) carries. The wire's `logprob_k = 0` means no logprobs, so `net` refuses a `k = 0` block with a classified `Unsupported` error until OQ-NET-35 gives it a form.
 - **`TokenEntry`** also carries `draft` and `draft_tree`, the tail-side drafter's draft for the next window (RFC-0032 §3.5), which RFC-0031 §6.5 carries on the ring-return copy. A tree node is `DraftNode { parent, depth, flags }`, which `net` re-exports as `TreeNode`.
 - **`SequenceMeta`** holds every `SequenceOpen` field but the prompt, `trace` and `prefix_scope` included, which RFC-0032 §3.6's listing leaves out.
@@ -2868,6 +2870,12 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 | The OS calls that place hot threads (`cpu_topology`, `pin_current_thread`, `raise_current_thread_priority`, `current_core`) are `syntropy_io::os` functions, and `exec` keeps `forbid(unsafe_code)` | §4.2 rule 8 (its note of 2026-10-22 already places OS calls that need `unsafe` in `io`) | PLC-E7-T01 pins its dispatchers, and pinning, priority and NUMA queries need `unsafe` FFI |
 | `/debug/state` lists each runner's hot-thread placement records | RFC-0050 §13.6 (dated note) | PLC-E7-T01's criterion: dispatchers report their pinned core and NUMA node in the debug state |
 
+### 18.27 Compressed attention follows DeepSeek-V4's reference code (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `AttnKind::Compressed` becomes `Compressed { sinks: bool }`, so `KernelClass::Attention` carries the sink flag. `AttnIndex(CompressedTopK)` runs only on layers whose ratio has an indexer (r = 4), r = 128 layers read every formed entry, and r = 0 layers read the raw window alone. `deepseek4` lists `AttnIndex(CompressedTopK)` as its indexer and no longer lists `SparseIndexed` or a separate `SlidingGqa` | §5.2 (`KernelClass` doc); RFC-0040 §3.1 (dated note); RFC-0043 §3.1, §5.5, open question 2; ADR-0003 (revision note, decision 1 unchanged). In code, `core`'s `AttnKind::Compressed` is still a unit variant, and COMP-E1-T10 moves it, changing its serde form and the IPC schema fingerprint | COMP-E16-T18 settles OQ-MF-16 (a)–(c) from the reference code COMP-E16-T15 read (`deepseek-ai/DeepSeek-V4-Pro` revision `b5968e9190ef611bbf34a7229255be88a0e937c1`). For the maintainers to confirm |
+
 ### 18.28 Types the IPC carries live in `core`, and their messages arrive with them (2026-10-23)
 
 | Change | Sections touched | Reason |
@@ -2876,3 +2884,9 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 | RFC-0001 §3.5's messages arrive with the tasks that own their field types, each with an `ipc_protocol` bump; DIST-E1-T03 builds the channel and the messages whose types exist at M0a, and the new DIST-E1-T15 the lifecycle types and messages that no task owned | §3.5 (dated note) | the full set needs types built in M1a and M2, and two of their owners (PROD-E1-T07, TIER-E1-T09) depend on DIST-E1-T03. One task holding every message would wait on M2 or form a cycle. `ProbeResult` and `ErrorReport` have no owning task yet. For the maintainers to confirm |
 | The rule covers the types a moved type holds: `RunnerState`'s (`Degradation` among them), `ResidencySummary`'s eleven (`Purpose` among them), `ProbeSuite`'s `ModelShapes`, and `ProviderName` (COMP-E2-T13), each listed under the task that defines it in `core`. `RunnerConfig` is `ResourcePolicy` plus resolved `KeyPath → ConfigValue` values, not the typed sections. A field that holds transport state or a `kernels` type travels in a form `core` holds: `RemoteEndpoint` as `net`-encoded bytes beside its `NodeId`, and `DegradeDetail::Fallback`'s op and provider as owned text | §3.5 (dated note) | a type in `core` can hold only layer-0 types. Listing each type under its owner keeps the RFC-0020, RFC-0022, RFC-0023 and RFC-0033 definitions unchanged; a narrower core-level summary would redesign them. Only these two fields reach past plain data |
 | `Deadline { within: Nanos }` is a duration counted from receipt, and `RunnerState::Draining` carries it for `deadline_ms`. `Drain` loses `successor`, which `DrainReason::Replan` already carries. `StopReason` is defined: `Drained(DrainReason)` or `Fatal(ErrorClass)`. `SequenceOutcome` gets its variants, and `FetchPriority` RFC-0041 §7's, with RFC-0031 §6.10 mapping them to blob-plane classes | §3.5, §5.11; RFC-0031 §6.10 (dated note) | an absolute instant cannot cross machines, and RFC-0011 §13 already passes `Option<Deadline>` between nodes. One source for the successor epoch. §3.3 stops a runner from `Draining` or from `Failed`, and the only `StopReason` in the RFCs was the API's completion reason. RFC-0041 §7 defines what `FetchShard`'s priority does |
+
+### 18.30 The sequence types' field types in `core` (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `PrefixRef` and its `PrefixKey` and `TailId`, and `GrammarRef`, are `core` types in `core::sequence`. `TailId` was one of TIER-E6-T02's supporting types, listed in RFC-0022's KV listing; TIER-E6-T02 and TIER-E7-T01 now use `core`'s, and PROD-E3-T05 uses `core`'s `GrammarRef`. `LogprobBlock { k: 0 }` is the chosen tokens' logprobs alone, which `net` cannot encode until OQ-NET-35 settles. `TokenEntry::rng_counter` has no serde default | §5.8 (dated notes of 2026-10-23), §5.13; RFC-0022 §7.1, §7.2; RFC-0031 §6.5 (dated notes); RFC-0050 §3.1 (dated note) | DIST-E1-T14 builds `SequenceOpen` and `SamplingParams`, which hold these types, and `core` cannot name a type of `tier` or `api` (review-1493's N5 on #1780). For the maintainers to confirm |

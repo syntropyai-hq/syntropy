@@ -3776,13 +3776,16 @@ dependencies = [
  "ed25519-dalek",
  "iroh",
  "proptest",
+ "rustls",
  "serde",
  "serde_json",
+ "socket2",
  "subtle",
  "syntropy-config",
  "syntropy-core",
  "syntropy-testkit",
  "tokio",
+ "tokio-rustls",
  "zstd",
 ]
 

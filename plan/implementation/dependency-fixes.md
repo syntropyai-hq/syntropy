@@ -956,3 +956,11 @@ QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | QUAL-E3-T09's and QUAL-E3-T22's criteria name the `hosted-l3` job in place of `hosted-test-linux`; no edge | QUAL-E3-T09, QUAL-E3-T22 | Definition of done | RFC-0060 §1.1 runs loom in L3, which RFC-0062 §2.3 gives to `hosted-l3`. The unit suite's job is not where loom models run, and T22's models are L3 too |
+
+## OQ-NET-35: the chosen-only logprobs form (2026-10-23)
+
+#1780 let `core`'s `LogprobBlock { k: 0 }` hold the chosen tokens' logprobs alone, which OpenAI's `top_logprobs = 0` asks for and the in-process path carries. RFC-0031 §6.5's `logprob_k = 0` means no logprobs, so `net` refuses such a block until the entry has a form for it. review-1493's N1 on #1780 found the question cited but not recorded. It is now OQ-NET-35, with `logprob_k = 0x80` recommended, and a new task settles it. Until then RFC-0050 §3.1's note has ingress ask a remote tail for one alternative and drop it (standin-engine's N3 on #1780). These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec behind capability bit 16, with RFC-0050 §3.1's rewrite kept towards peers without the bit | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
