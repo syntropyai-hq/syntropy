@@ -784,7 +784,8 @@ pub enum JoinMsg {
     JoinRequest   { token_id: [u8; 16], secret: [u8; 16], info: NodeInfo },
     JoinAccepted  { grant: JoinGrant },
     Rejected      { reason: JoinReject },     // Expired | Exhausted | Revoked | Denied | ProtoMismatch
-                                              // | NamespaceMismatch | RateLimited | CoordinatorUnreachable
+                                              // | NamespaceMismatch | RateLimited | ClockSkew
+                                              // | CoordinatorUnreachable
 }
 pub struct JoinGrant {
     pub cert: AdmissionCert,
@@ -1058,6 +1059,9 @@ Error codes, `Domain::Cluster`, range 0x0100–0x01FF:
 | 0x010C | `ClockSkew` | `Auth` |
 | 0x010D | `DiscoverySilent` | `Link` |
 | 0x010E | `RateLimited` | `Transient` |
+| 0x010F | `TokenRevoked` | `Auth` |
+
+*Note 2026-10-22 (#1698):* `TokenRevoked` is the code of `Rejected { reason: JoinReject::Revoked }` (§6.7): a join with an invite token that a keyholder revoked before it was used (`RevokeInvite`, §8.1). It was one of two join refusals with no code. The other, `NamespaceMismatch`, still has none: that gap is open, and outside #1698. The full list of `JoinReject` reasons is in the comment above, which now includes `ClockSkew` (0x010C). Like `TokenExpired` and `TokenExhausted`, `TokenRevoked` is `Auth`, and RFC-0050 §12.1 maps it with them, to 403 on the native route.
 
 ## Performance model and budgets
 

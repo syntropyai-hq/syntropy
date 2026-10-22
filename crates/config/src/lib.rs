@@ -8,15 +8,18 @@
 //!   declare its section, and the [`SectionSchema`] and [`KeySchema`] it records;
 //! - the section [`Registry`], whose construction fails the build when two sections claim one
 //!   prefix (§5.1);
-//! - the value types of §3: [`ByteSize`], [`Duration`], [`Fraction`], [`Reserve`], [`Rate`],
-//!   the node, device, tier, layer and model selectors, [`Regex`] and [`Secret`];
+//! - the value types of §3: [`ByteSize`], [`Duration`], [`Rate`], the model selector,
+//!   [`Regex`] and [`Secret`], and, for `syntropy-core`'s `Fraction`, `Reserve` and node,
+//!   device, tier and layer selectors, their forms ([`form`]; OQ-PRD-27 (a));
 //! - node-key layering (§1, §2.2 Rule 1, §2.4): the config files per OS ([`locate`],
 //!   [`Locations::scan`]), the environment ([`Env`]) and command-line ([`Flags`]) layers, and
 //!   [`ResolvedConfig`], an immutable snapshot whose every value carries its [`Origin`], held
 //!   for readers by [`SharedConfig`];
 //! - the text of `config show --resolved`, `config check` and `config path`
-//!   ([`command`]).
-//!
+//!   ([`command`]);
+//! - the debug-key gates of §7.1 ([`DebugSection`]): the three `debug.*` keys, the loopback
+//!   predicate the API applies to the debug endpoints, the warning a [`ResolvedConfig`] carries
+//!   while any key is on, and the predicate for a manifest signed by the CI test key;
 //! - the validation of RFC-0054 §8 (PROD-E1-T03): [`load_and_validate`] runs phases 1–5 and keeps
 //!   every error, each a [`Problem`] with its [`Code`], and [`diagnostic::render`] prints them in
 //!   §8's format without ever showing a secret.
@@ -59,7 +62,8 @@
 //!
 //! ```
 //! use serde::Deserialize;
-//! use syntropy_config::{ConfigSection, Duration, Reserve};
+//! use syntropy_config::{ConfigSection, Duration};
+//! use syntropy_core::policy::Reserve;
 //!
 //! /// Resource settings.
 //! #[derive(Deserialize, ConfigSection)]
@@ -68,6 +72,7 @@
 //!     /// RAM never pinned or allocated by Syntropy.
 //!     #[config(reload = Hot, default = computed("by mode: max(6GiB, 10% of RAM) for personal"),
 //!              min = "1GiB")]
+//!     #[serde(with = "syntropy_config::form")]
 //!     ram_headroom: Reserve,
 //!     /// How long a probe waits.
 //!     #[config(reload = Node, default = "7s")]
@@ -102,7 +107,10 @@
 //! reserves for keyholders: cluster keys under `security.*`, `invite.*`, `coordinator.*`,
 //! `swim.*` and `update.*`, `cluster.lan_admission`, `cluster_aliases`, `network_scope` and
 //! `allow_approximate`, and the instance keys `fidelity`, `default_fidelity`, `pin`,
-//! `tensor_override` and `approximate.*`.
+//! `tensor_override` and `approximate.*`. So is a key of `syntropy-core`'s `Fraction`,
+//! `Reserve`, `NodeSelector`, `DeviceSelector`, `TierSelector` or `LayerRange`, or an `Option`
+//! or `Vec` of one, without `#[serde(with = "syntropy_config::form")]`: their own serde form is
+//! the record encoding, which reads none of §3's text forms.
 
 #![forbid(unsafe_code)]
 
@@ -111,6 +119,7 @@ extern crate self as syntropy_config;
 
 mod code;
 pub mod command;
+mod debug;
 mod default;
 pub mod diagnostic;
 mod discovery;
@@ -126,6 +135,7 @@ mod validate;
 pub mod value;
 
 pub use code::{Code, suggest};
+pub use debug::{DebugApi, DebugSection, ManifestSignerNotAllowed, Peer, is_loopback};
 pub use diagnostic::{Problem, Severity};
 pub use discovery::{
     CONFIG_FLAG, CONFIG_VAR, Dirs, Explicit, HOME_VAR, Locations, Mode, Os, Runtime, Scan, locate,
@@ -154,9 +164,8 @@ pub use validate::{
     Rule, RuleInput, config_version_problem, load_and_validate, validate,
 };
 pub use value::{
-    ByteSize, DeviceApi, DeviceSelector, Duration, Fraction, InRange, LayerRange, ModelSelector,
-    NodeSelector, Rate, Regex, Reserve, Secret, SecretSource, TierSelector, ValueError,
-    ValueErrorKind, never,
+    ByteSize, Duration, InRange, ModelSelector, Rate, Regex, Secret, SecretSource, ValueError,
+    ValueErrorKind, check_node_scope, form, never,
 };
 
 /// Items the derive's generated code calls. Not a public interface.

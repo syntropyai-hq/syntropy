@@ -1,0 +1,19 @@
+# collective-attn-allreduce: one-shot attention partial of member 1 of 2: 2 rows of hidden 16 in F32
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 08 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+1e 00 00 00 00 00 00 00 07 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 80 00 00 00 de 0d 69 2a bb 4c 0e aa  # 0030 header
+1e 00 00 00 00 00 00 00 05 00 00 00 01 00 02 00  # 0040 extension
+00 00 01 00 20 00 00 00 00 00 00 00 02 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+00 00 7a 44 00 40 7a 44 00 80 7a 44 00 c0 7a 44  # 0080 payload
+00 00 7b 44 00 40 7b 44 00 80 7b 44 00 c0 7b 44  # 0090 payload
+00 00 7c 44 00 40 7c 44 00 80 7c 44 00 c0 7c 44  # 00a0 payload
+00 00 7d 44 00 40 7d 44 00 80 7d 44 00 c0 7d 44  # 00b0 payload
+00 00 7e 44 00 40 7e 44 00 80 7e 44 00 c0 7e 44  # 00c0 payload
+00 00 7f 44 00 40 7f 44 00 80 7f 44 00 c0 7f 44  # 00d0 payload
+00 00 80 44 00 20 80 44 00 40 80 44 00 60 80 44  # 00e0 payload
+00 80 80 44 00 a0 80 44 00 c0 80 44 00 e0 80 44  # 00f0 payload
