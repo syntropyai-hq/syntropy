@@ -621,6 +621,8 @@ unknown-git = "deny"
 allow-git = []              # every git dependency is listed with a pinned revision
 ```
 
+*Note 2026-10-22 (DIST-E7-T23):* the checks resolve every feature for the targets of §4.1's table, the ADR-0020 tiers, through `[graph] targets`. A crate that links only on another target, such as iroh-relay's wasm32-only browser WebSocket crates, reaches no artefact and is not checked. Every crate linked into a shipped artefact still is, so the licence, ban, advisory and source checks lose nothing ADR-0018 §3 covers. The first per-crate MPL-2.0 exception is `attohttpc@0.30.1`, which iroh's port mapping brings in.
+
 #### 11.3 Vendored non-Rust code
 
 - **ggml** is vendored as a source tree under `third_party/ggml/`. `third_party/ggml.lock` records the upstream commit and a BLAKE3 of the tree. `cargo xtask vendor ggml <commit>` updates both. A Renovate custom manager watches upstream and opens update PRs, which never auto-merge.

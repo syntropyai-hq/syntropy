@@ -74,6 +74,16 @@ crc32c = "0.6.8"
 # key types use, so the two share one implementation. Pinned exactly: which keys and signatures
 # it accepts is part of the protocol, so a new version is a reviewed change.
 ed25519-dalek = "=3.0.0"
+# iroh, ADR-0011's transport library, linked only by `syntropy-net` (RFC-0001 §4.2 rule 6). Pinned
+# exactly because this is the version the daemon builds on: DIST-E7-T23's endpoint and the field
+# probe now, DIST-E7-T03's QUIC backend later, so a bump is a reviewed change. rust-version 1.91,
+# below the toolchain pin. Its default features stay on:
+# - `tls-ring` makes ring the TLS crypto provider (Apache-2.0 AND ISC, on ADR-0018's allow-list);
+#   the aws-lc-rs provider is not built;
+# - `portmapper` keeps UPnP and NAT-PMP port mapping, which raises the share of direct paths
+#   behind home routers that the field probe measures; it brings `attohttpc` under MPL-2.0, a
+#   per-crate exception in `deny.toml`.
+iroh = "=1.4.1"
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
@@ -84,6 +94,9 @@ smallvec = { version = "1", features = ["serde"] }
 # Constant-time comparison of secrets (RFC-0034 §3), `syntropy-net` only.
 subtle = "2.6.1"
 syn = { version = "3.0.9", default-features = false, features = ["derive", "parsing", "printing", "proc-macro"] }
+# Test runtime for `syntropy-net`'s endpoint tests, since iroh's API is async on tokio. A
+# dev-dependency only: `net` itself names no tokio type (DIST-E7-T23).
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 # TOML reading only (no writer): the RFC-0042 tolerance tables, `numerics/tolerances-v<N>.toml`,
 # and the rig inventory `bench/lab/rigs.toml` (RFC-0061 §6.3).
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
