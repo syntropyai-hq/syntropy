@@ -55,6 +55,19 @@ enum Fault {
     BlockReap,
     /// Blocks for good when dropped.
     BlockDrop,
+    /// Never completes the operation, and blocks for good in `in_flight` while it holds it.
+    BlockInFlight(u64),
+    /// Blocks for good in `file_dio`.
+    BlockFileDio,
+    /// Blocks for good in `caps`.
+    BlockCaps,
+}
+
+/// Parks this thread for good: a call that never returns.
+fn block() -> ! {
+    loop {
+        std::thread::park();
+    }
 }
 
 /// An engine that performs each operation with positional `std::fs` calls when it is submitted
@@ -128,7 +141,7 @@ impl StdEngine {
         if self.fault == Fault::Drop(nth) {
             return None;
         }
-        if self.fault == Fault::Hold(nth) {
+        if self.fault == Fault::Hold(nth) || self.fault == Fault::BlockInFlight(nth) {
             self.held += 1;
             return None;
         }
@@ -231,6 +244,9 @@ impl IoEngine for StdEngine {
     }
 
     fn caps(&self) -> EngineCaps {
+        if self.fault == Fault::BlockCaps {
+            block();
+        }
         EngineCaps {
             fixed_buffers: false,
             fixed_files: false,
@@ -305,9 +321,7 @@ impl IoEngine for StdEngine {
 
     fn reap(&mut self, out: &mut CompletionBuf, _wait: Wait) -> u32 {
         if self.fault == Fault::BlockReap {
-            loop {
-                std::thread::park();
-            }
+            block();
         }
         let n = out.remaining().min(self.done.len());
         for c in self.done.drain(..n) {
@@ -320,7 +334,17 @@ impl IoEngine for StdEngine {
         CancelOutcome::NotFound
     }
 
+    fn file_dio(&self, _file: FileIx) -> Option<DioAlign> {
+        if self.fault == Fault::BlockFileDio {
+            block();
+        }
+        None
+    }
+
     fn in_flight(&self) -> (u32, Bytes) {
+        if self.held > 0 && matches!(self.fault, Fault::BlockInFlight(_)) {
+            block();
+        }
         let bytes = self.done.iter().map(|c| c.result.map_or(0, |b| b.0)).sum();
         let phantom = u32::from(self.fault == Fault::PhantomInFlight);
         (
@@ -336,9 +360,7 @@ struct DropGuard(bool);
 impl Drop for DropGuard {
     fn drop(&mut self) {
         if self.0 {
-            loop {
-                std::thread::park();
-            }
+            block();
         }
     }
 }
@@ -808,4 +830,49 @@ fn the_engine_is_built_and_driven_on_one_thread_not_the_callers() {
     assert!(threads.len() > 1, "built, then submitted at least once");
     assert!(threads.iter().all(|t| *t == threads[0]), "{threads:?}");
     assert_ne!(threads[0], std::thread::current().id());
+}
+
+/// A run of `fault`, with a 1 s timeout, that must end in `Hung`; returns the failure.
+fn hung_run(name: &str, fault: Fault) -> conformance::Failure {
+    let files = Files::new(name, FILE_LEN);
+    let opts = Options {
+        timeout: Duration::from_secs(1),
+        ..Options::new(0xfa17)
+    };
+    let failure = conformance::check(
+        move || StdEngine::with_fault(fault),
+        &files.file,
+        &files.scratch,
+        &opts,
+    )
+    .expect_err("the blocked call is caught");
+    assert!(
+        matches!(failure.problem, Problem::Hung { after, .. } if after == opts.timeout),
+        "{failure}"
+    );
+    failure
+}
+
+#[test]
+fn an_engine_whose_in_flight_blocks_fails_as_hung() {
+    // Operation 3 never completes, and `in_flight` blocks while it is held: the call is made
+    // waiting for operation 3.
+    let failure = hung_run("in-flight-hung", Fault::BlockInFlight(3));
+    let Problem::Hung { op: Some(op), .. } = failure.problem else {
+        panic!("{failure}");
+    };
+    assert_eq!(op.ticket, IoTicket(4));
+}
+
+#[test]
+fn an_engine_whose_file_dio_blocks_fails_as_hung() {
+    let failure = hung_run("file-dio-hung", Fault::BlockFileDio);
+    assert_eq!(failure.engine, Some(EngineKind::PreadPool));
+}
+
+#[test]
+fn an_engine_whose_caps_block_fails_as_hung() {
+    // `caps` is asked right after the engine is built, before the run knows what it is.
+    let failure = hung_run("caps-hung", Fault::BlockCaps);
+    assert_eq!(failure.engine, None);
 }

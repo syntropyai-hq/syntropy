@@ -79,7 +79,8 @@ pub struct Options {
     /// Fixes the extents, destinations and data.
     pub seed: u64,
     /// Rounds of random reads. Each round submits [`Options::extents`] reads together. One more
-    /// round follows, of reads that each have a different length.
+    /// round follows, of reads that each have a different length: up to 32 of them, one of each
+    /// length from 1 unit.
     pub rounds: u32,
     /// Reads per round, and the number of writes.
     pub extents: u32,
@@ -97,8 +98,9 @@ impl Options {
     /// of 1 to 32 units, then 32 writes of 1 to 4 units. A unit is at least 16 KiB (macOS's
     /// alignment, which covers 4 KiB elsewhere). 60 s a round or a call.
     ///
-    /// The registered (fixed) region is `extents / 2` slots of `max(max_units, extents) + 2`
-    /// units: 16 × 34 × 16 KiB = 8.5 MiB with these values. An engine that pins registered memory
+    /// The registered (fixed) region is `extents / 2` slots of `max(max_units, min(extents, 32))
+    /// + 2` units: 16 × 34 × 16 KiB = 8.5 MiB with these values, and linear in `extents` beyond
+    /// them. An engine that pins registered memory
     /// under a small locked-memory limit, as `UringDirect` does under the default `RLIMIT_MEMLOCK`
     /// (TIER-E5-T06), needs smaller `extents` and `max_units`.
     #[must_use]
@@ -468,7 +470,8 @@ where
             .name("io-conformance".into())
             .spawn(move || {
                 let engine = watched(&watch, None, make);
-                let (kind, writes) = (engine.kind(), engine.caps().writes);
+                let kind = watched(&watch, None, || engine.kind());
+                let writes = watched(&watch, None, || engine.caps().writes);
                 let _ = events.send(Event::Built { kind, writes });
                 let scratch = writes.then_some(scratch.as_path());
                 let result = run(engine, &file, scratch, &opts, &watch);
@@ -705,7 +708,9 @@ fn layout<'p, E: IoEngine>(
         .into_iter()
         .flatten()
         .map(|f| {
-            let dio = engine.file_dio(f).unwrap_or(engine.caps().dio);
+            let dio = watched(watch, None, || {
+                engine.file_dio(f).unwrap_or_else(|| engine.caps().dio)
+            });
             u64::from(dio.mem.max(dio.offset))
         })
         .fold(opts.unit.max(1), u64::max)
@@ -723,18 +728,45 @@ fn layout<'p, E: IoEngine>(
             unit,
         });
     }
-    let max_units = u64::from(opts.max_units.max(1)).min(file_units);
-    let distinct = u64::from(opts.extents).min(file_units);
+    let sizes = Sizes::of(opts, file_units);
     Ok(Layout {
         file,
         out,
         unit,
         file_units,
-        max_units,
-        distinct,
-        stride: (max_units.max(distinct) + 2) * unit,
-        slots: u64::from(opts.extents).div_ceil(2).max(1),
+        max_units: sizes.max_units,
+        distinct: sizes.distinct,
+        stride: sizes.stride_units * unit,
+        slots: sizes.slots,
     })
+}
+
+/// The most operations of the distinct-length round. Every slot is sized for that round's
+/// longest operation, so without a cap the harness's memory would grow with the square of
+/// [`Options::extents`]; with it, memory grows linearly, and the default run (32 extents) is
+/// unchanged.
+const DISTINCT_MAX: u64 = 32;
+
+/// A run's sizes in units, from its options and the file's length in units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Sizes {
+    max_units: u64,
+    distinct: u64,
+    stride_units: u64,
+    slots: u64,
+}
+
+impl Sizes {
+    fn of(opts: &Options, file_units: u64) -> Self {
+        let max_units = u64::from(opts.max_units.max(1)).min(file_units);
+        let distinct = u64::from(opts.extents).min(DISTINCT_MAX).min(file_units);
+        Sizes {
+            max_units,
+            distinct,
+            stride_units: max_units.max(distinct) + 2,
+            slots: u64::from(opts.extents).div_ceil(2).max(1),
+        }
+    }
 }
 
 /// Registers the fixed region, reads every round, and writes.
@@ -1111,11 +1143,10 @@ impl<E: IoEngine> Rig<'_, E> {
             }
             let missing = ops[done.iter().position(|d| !d).unwrap_or(0)];
             // Three quiet polls in a row with nothing in flight: what is left will never come.
-            idle = if reaped == 0 && batch.is_empty() && self.engine.in_flight().0 == 0 {
-                idle + 1
-            } else {
-                0
-            };
+            let quiet = reaped == 0
+                && batch.is_empty()
+                && watched(watch, Some(missing), || self.engine.in_flight()).0 == 0;
+            idle = if quiet { idle + 1 } else { 0 };
             if idle >= 3 {
                 return Err(match stray {
                     Some(found) => Problem::WrongTicket { found, missing },
@@ -1145,7 +1176,7 @@ impl<E: IoEngine> Rig<'_, E> {
                 None => Problem::UnknownTicket(c.ticket),
             });
         }
-        match self.engine.in_flight() {
+        match watched(watch, None, || self.engine.in_flight()) {
             (0, _) => Ok(()),
             (ops, bytes) => Err(Problem::InFlight { ops, bytes }),
         }
@@ -1307,6 +1338,35 @@ mod tests {
         assert_eq!(draw(Stream::Reads), draw(Stream::Reads));
         assert_ne!(draw(Stream::Reads), draw(Stream::Writes));
         assert_ne!(draw(Stream::Writes), draw(Stream::File));
+    }
+
+    #[test]
+    fn memory_grows_linearly_with_extents() {
+        let sizes = |extents| {
+            Sizes::of(
+                &Options {
+                    extents,
+                    ..Options::new(0)
+                },
+                1 << 20,
+            )
+        };
+        // The default run: 16 slots of 34 units a kind, 8.5 MiB at 16 KiB units.
+        let default = sizes(32);
+        assert_eq!(
+            (default.distinct, default.stride_units, default.slots),
+            (32, 34, 16)
+        );
+        // More extents add slots, not slot size: the distinct round stays at 32 operations.
+        let large = sizes(1024);
+        assert_eq!(
+            (large.distinct, large.stride_units, large.slots),
+            (32, 34, 512)
+        );
+        // Fewer extents than the cap, or a file shorter than it, shrink the round.
+        assert_eq!(sizes(8).distinct, 8);
+        let short_file = Sizes::of(&Options::new(0), 20);
+        assert_eq!((short_file.distinct, short_file.stride_units), (20, 22));
     }
 
     #[test]
