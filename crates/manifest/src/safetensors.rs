@@ -6,9 +6,10 @@
 //!   little-endian header length (at most [`HEADER_MAX`], 100 MiB), then the JSON header, by
 //!   the shared [`HeaderReader`]: two requests, the first 8 bytes and then the header
 //!   (RFC-0041 §7.2). No byte past the header is read.
-//! - It checks every tensor: its `dtype` is one this reader supports, its `shape` is a list of
-//!   non-negative integers, its `data_offsets` lie inside the file's data section, its length
-//!   is `numel × element size`, and no two tensors share a byte. Any failure is
+//! - It checks every tensor: its `dtype` is one of RFC-0041 §2.2's ([`SafetensorsDtype`]), its
+//!   `shape` is a list of non-negative integers, its `data_offsets` lie inside the file's data
+//!   section, its length is the dtype's [`SafetensorsDtype::byte_len`] of the shape
+//!   (`numel × element size`, with sub-byte rows rounded up), and no two tensors share a byte. Any failure is
 //!   [`SafetensorsError::HeaderInvalid`] (`(Formats, 6)`), except an unknown or unsupported
 //!   dtype, which is [`SafetensorsError::UnsupportedContainer`] (`(Formats, 2)`), and a header
 //!   past the limit, which is [`SafetensorsError::HeaderLimit`] (`(Formats, 5)`).
@@ -17,17 +18,20 @@
 //! - [`side`] names the side files (`config.json`, `generation_config.json`, the tokenizer
 //!   files) and gives each its source-file role.
 //!
-//! This task supports `F32`, `F16` and `BF16`. The other dtypes of RFC-0041 §2.2 are
-//! COMP-E10-T10; until then a tensor in one of them is `UnsupportedContainer` naming the dtype.
+//! Every dtype RFC-0041 §2.2 lists is read: `F32`, `F16` and `BF16` (COMP-E10-T04), and `F8_E4M3`,
+//! `F8_E5M2`, `F8_E8M0`, `F4`, `F6_E2M3`, `F6_E3M2`, `I8`, `U8`, `I16`, `I32`, `I64` and `BOOL`
+//! (COMP-E10-T10), in [`dtype`]. Any other dtype, `F64` included, is `UnsupportedContainer`
+//! naming it.
 //! The JSON is parsed by `serde_json` into a strict value that refuses repeated keys
 //! ([`json`]). Everything here is safe Rust (ADR-0001 decision 4).
 
 use std::fmt;
 
-use syntropy_core::{DType, ErrorClass};
+use syntropy_core::ErrorClass;
 
 use crate::range::{HEADER_MAX_BYTES_DEFAULT, HeaderReader, RangeError, RangeSource};
 
+pub mod dtype;
 pub mod index;
 mod json;
 pub mod side;
@@ -35,6 +39,7 @@ pub mod side;
 #[cfg(test)]
 mod tests;
 
+pub use dtype::SafetensorsDtype;
 use json::Json;
 
 /// The largest header length the reader accepts: 100 MiB (RFC-0041 §2.2).
@@ -118,7 +123,7 @@ impl fmt::Display for SafetensorsError {
             Self::UnsupportedContainer { tensor, dtype } => write!(
                 f,
                 "UnsupportedContainer (Formats 2): tensor {tensor:?} has dtype {dtype:?}, which \
-                 this reader does not read (it reads F32, F16 and BF16)"
+                 this reader does not read (it reads the dtypes of RFC-0041 §2.2)"
             ),
             Self::HeaderLimit { len, cap } => write!(
                 f,
@@ -132,20 +137,10 @@ impl fmt::Display for SafetensorsError {
 
 impl std::error::Error for SafetensorsError {}
 
-/// The dtype a header names, for the dtypes this reader supports.
+/// The dtype a header names, or `None` for one this reader does not read.
 #[must_use]
-pub fn dtype_of(name: &str) -> Option<DType> {
-    match name {
-        "F32" => Some(DType::F32),
-        "F16" => Some(DType::F16),
-        "BF16" => Some(DType::BF16),
-        _ => None,
-    }
-}
-
-/// The bytes one element of `dtype` takes, for the whole-byte dtypes this reader supports.
-fn element_bytes(dtype: DType) -> u64 {
-    u64::from(dtype.bits() / 8)
+pub fn dtype_of(name: &str) -> Option<SafetensorsDtype> {
+    SafetensorsDtype::from_name(name)
 }
 
 /// One tensor of a safetensors file, validated.
@@ -153,14 +148,14 @@ fn element_bytes(dtype: DType) -> u64 {
 pub struct SafetensorsTensor {
     /// The name as the header spells it.
     pub name: String,
-    /// The element type.
-    pub dtype: DType,
+    /// The dtype as the header names it; [`SafetensorsDtype::dtype`] gives the element type.
+    pub dtype: SafetensorsDtype,
     /// The shape, outermost dimension first; empty for a scalar.
     pub shape: Vec<u64>,
     /// The first byte, as an offset into the file (the header's `data_offsets[0]` plus the data
     /// section's start).
     pub offset: u64,
-    /// The length in bytes: `numel × element size`.
+    /// The length in bytes: [`SafetensorsDtype::byte_len`] of the shape.
     pub len: u64,
 }
 
@@ -269,20 +264,15 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<SafetensorsHeader, Sa
                  {data_len} bytes"
             )));
         }
-        let numel = shape
-            .iter()
-            .try_fold(1u64, |acc, d| acc.checked_mul(*d))
-            .ok_or_else(|| {
-                SafetensorsError::invalid(format!("tensor {name:?}: the element count overflows"))
-            })?;
-        let expect = numel.checked_mul(element_bytes(dtype)).ok_or_else(|| {
+        let expect = dtype.byte_len(&shape).ok_or_else(|| {
             SafetensorsError::invalid(format!("tensor {name:?}: the byte length overflows"))
         })?;
         if end - begin != expect {
             return Err(SafetensorsError::invalid(format!(
-                "tensor {name:?}: data_offsets hold {} bytes, but shape {shape:?} of {dtype:?} \
+                "tensor {name:?}: data_offsets hold {} bytes, but shape {shape:?} of {} \
                  needs {expect}",
-                end - begin
+                end - begin,
+                dtype.name()
             )));
         }
         spans.push((begin, end, tensors.len()));
@@ -336,7 +326,10 @@ fn parse_metadata(value: Json) -> Result<Vec<(String, String)>, SafetensorsError
 }
 
 /// One tensor entry: its dtype, shape and the two data offsets.
-fn parse_entry(name: &str, value: Json) -> Result<(DType, Vec<u64>, u64, u64), SafetensorsError> {
+fn parse_entry(
+    name: &str,
+    value: Json,
+) -> Result<(SafetensorsDtype, Vec<u64>, u64, u64), SafetensorsError> {
     let bad = |what: &str| SafetensorsError::invalid(format!("tensor {name:?}: {what}"));
     let Json::Object(fields) = value else {
         return Err(bad(&format!(

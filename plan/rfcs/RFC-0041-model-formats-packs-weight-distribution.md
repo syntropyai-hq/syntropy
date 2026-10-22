@@ -107,6 +107,8 @@ The file is never written. Local GGUFs are indexed in place (§4.3).
 | Side files | `config.json` (architecture, hyperparameters, `quantization_config`), `generation_config.json`, `tokenizer.json`, `tokenizer_config.json` (chat template), `special_tokens_map.json`; each is a source file with its own `FileDigest` |
 | dtypes | `F32`, `F16`, `BF16`, `F8_E4M3`, `F8_E5M2`, `F8_E8M0`, `F4` (E2M1, two per byte), `F6_E2M3`, `F6_E3M2`, `I8`, `U8`, `I16`, `I32`, `I64`, `BOOL`. F6 tensors are readable but have no kernels; they get an exact widened copy in the pack (RFC-0042 §3) |
 
+*Note 2026-10-22 (COMP-E10-T10, as built):* `syntropy_manifest::safetensors::SafetensorsDtype` reads every dtype above, and nothing else (`F64` is `UnsupportedContainer`). Each variant is named as `syntropy_core::DType` names its format (`F4` is `F4E2M1`). "Round up per row" is read this way: `F4` and `F6_*` elements are packed along the innermost dimension, and each row takes `⌈row_len × bits / 8⌉` bytes. A scalar is one row of one element, and a tensor with a zero dimension takes no bytes. A tensor whose `data_offsets` length differs from that is `HeaderInvalid`. `BOOL` is one byte per element and has no `DType`, because RFC-0042 §1.1 lists no boolean element type, so `SafetensorsDtype::dtype` returns `None` for it.
+
 `quantization_config` maps to `QuantScheme` with no conversion (ADR-0413):
 
 | `quant_method` / `format` | Tensors involved | `QuantScheme` |
