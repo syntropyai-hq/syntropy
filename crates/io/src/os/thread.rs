@@ -127,13 +127,15 @@ mod platform {
 
     use super::{Core, CoreId, PinError, Priority, parse_cpulist};
 
-    /// The process's affinity mask.
+    /// The process's affinity mask: its main thread's, read by process id. Pid 0 would read the
+    /// calling thread's, which is one core once that thread is pinned.
     fn affinity() -> io::Result<Vec<u32>> {
+        let pid = libc::pid_t::try_from(std::process::id()).map_err(io::Error::other)?;
         let mut set = MaybeUninit::<libc::cpu_set_t>::zeroed();
         // SAFETY: `set` is a zeroed, writable `cpu_set_t` of the size passed, valid for the call,
-        // and `sched_getaffinity` writes only through it. Pid 0 is the calling thread.
+        // and `sched_getaffinity` writes only through it.
         let rc =
-            unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), set.as_mut_ptr()) };
+            unsafe { libc::sched_getaffinity(pid, size_of::<libc::cpu_set_t>(), set.as_mut_ptr()) };
         if rc != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -422,6 +424,20 @@ mod tests {
         } else {
             assert_eq!(seen, Some(true));
         }
+    }
+
+    /// The topology is the process's, so a pinned thread asking for it still sees every core.
+    #[test]
+    fn a_pinned_thread_still_sees_the_whole_topology() {
+        let outside = cpu_topology().unwrap();
+        let target = outside[0].id;
+        let (pinned, inside) = std::thread::spawn(move || {
+            let pinned = pin_current_thread(target).is_ok();
+            (pinned, cpu_topology().unwrap())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(inside, outside, "pinned: {pinned}");
     }
 
     #[test]
