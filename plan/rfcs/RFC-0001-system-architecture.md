@@ -577,6 +577,7 @@ pub struct DeviceCaps {
     pub usable: Vec<(TierId, Bytes)>,
 }
 /// `AttnKind` includes `Bidirectional`, for encoder-only embedding families (RFC-0040 §3.1).
+/// `AttnKind::Compressed` carries a sink flag, `Compressed { sinks }` (RFC-0040 §3.1, revised 2026-10-23).
 pub enum KernelClass { DenseGemv, ExpertGemv, Attention(AttnKind), RowGather, Copy }
 
 pub struct StorageCaps {
@@ -2816,3 +2817,9 @@ RFC-0060 §5.5 (amendment A4) defines the teacher-forced tap types that §5.8's 
 | Change | Sections touched | Reason |
 |---|---|---|
 | `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame`, `TokenEntry`, `FinishReason` and `TraceContext` live in `core`, not `net`; `net` encodes them without defining them, and keeps its zero-copy views under names of their own (`Token<'a>`, `TokenEntryView<'a>`) | §5.8 (dated note), §5.13; RFC-0053 §3.2 (dated note) | rule 3 (§4.2) keeps `exec` and `sched` off `net`, and the head's and tail's step loops read these types from the M0 rings (DIST-E1-T14, which defines them). For the maintainers to confirm |
+
+### 18.27 Compressed attention follows DeepSeek-V4's reference code (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `AttnKind::Compressed` becomes `Compressed { sinks: bool }`, so `KernelClass::Attention` carries the sink flag. `AttnIndex(CompressedTopK)` runs only on layers whose ratio has an indexer (r = 4), r = 128 layers read every formed entry, and r = 0 layers read the raw window alone. `deepseek4` lists `AttnIndex(CompressedTopK)` as its indexer and no longer lists `SparseIndexed` or a separate `SlidingGqa` | §5.2 (`KernelClass` doc); RFC-0040 §3.1 (dated note); RFC-0043 §3.1, §5.5, open question 2; ADR-0003 (revision note, decision 1 unchanged) | COMP-E16-T18 settles OQ-MF-16 (a)–(c) from the reference code COMP-E16-T15 read (`deepseek-ai/DeepSeek-V4-Pro` revision `b5968e9190ef611bbf34a7229255be88a0e937c1`). For the maintainers to confirm |
