@@ -243,7 +243,7 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
   - **Forwarding.** The daemon forwards it as RFC-0033 §11's `ReportEdgeDemoted { edge, from, to, cause }`, as it forwards `StateChanged` as `ReportRunner`.
   - **No second report.** `EdgeDemoted`'s `cost` is the "`Drift` with the new hop cost" of the runtime-fallback paragraph above. The daemon shows it, and no separate drift report is sent. The coordinator's solver costs the new transport from the resource graph (RFC-0033 §11's `EdgeDemoted` event).
 - **The flag.** DIST-E14-T13 sets `Ready { degraded }` with `TRANSPORT_DEMOTED` from the `Demotion`.
-- **A re-plan's reason.** If the coordinator re-plans for the demotion, the reason is RFC-0033 §6.1's `ReplanReason::Drift { node, term: DriftTerm }`, with a `Hop { link, transport }` term. No task builds `ReplanReason` yet (RFC-0001 §18.31).
+- **A re-plan's reason.** If the coordinator re-plans for the demotion, the reason is RFC-0033 §6.1's `ReplanReason::Drift { node, term: DriftTerm }`, with a `Hop { link, transport }` term. DIST-E14-T21 builds `ReplanReason` and `DriftTerm` in `core` (RFC-0033 §6.1's note of 2026-10-23).
 
 ### 4. QUIC backend (iroh)
 
