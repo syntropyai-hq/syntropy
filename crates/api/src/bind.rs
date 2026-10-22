@@ -43,10 +43,12 @@ pub enum BindClass {
 /// The class of a bind address (RFC-0050 §11.1).
 #[must_use]
 pub fn classify(ip: IpAddr) -> BindClass {
-    let ip = ip.to_canonical();
-    if ip.is_loopback() {
+    // The same loopback test as the debug endpoints' (`syntropy_config::is_loopback`), so the
+    // two can't drift: `127.0.0.0/8` and `::1`, IPv4-mapped forms included.
+    if syntropy_config::is_loopback(ip) {
         return BindClass::Loopback;
     }
+    let ip = ip.to_canonical();
     if ip.is_unspecified() {
         return BindClass::Lan;
     }
@@ -85,8 +87,8 @@ pub enum Certificate {
 /// How a listener serves.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Transport {
-    /// Plain HTTP: loopback, or a LAN bind with `api.allow_plaintext_lan = true`, which the
-    /// dashboard and SEC-005 flag (PROD-E5-T06).
+    /// Plain HTTP: loopback, or a specific LAN address with `api.allow_plaintext_lan = true`,
+    /// which the dashboard and SEC-005 flag (PROD-E5-T06). Never a wildcard.
     Plain,
     /// TLS 1.3.
     Tls(Certificate),

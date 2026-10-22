@@ -84,7 +84,7 @@ fn tls_none_allowed(input: &RuleInput<'_>, findings: &mut Findings) {
                 origin.clone(),
                 "api.tls",
                 format!(
-                    "`api.tls = \"none\"` would serve plain HTTP on the LAN bind `{addr}`, which \
+                    "`api.tls = \"none\"` would serve plain HTTP on the LAN address `{addr}`, which \
                      needs `api.allow_plaintext_lan = true` (RFC-0050 §11.1)"
                 ),
                 "use `api.tls = \"auto\"` for the local CA, or set `api.allow_plaintext_lan = \

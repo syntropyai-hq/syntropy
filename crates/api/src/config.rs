@@ -23,11 +23,14 @@ pub struct ApiSection {
     pub bind: Vec<SocketAddr>,
     /// Where non-loopback listeners get their certificate: `"auto"` (the local CA on LAN
     /// binds), `"local_ca"`, `{ cert = path, key = path }` (your own files) or `"none"`, which
-    /// is allowed only on LAN binds with `api.allow_plaintext_lan = true` (RFC-0050 §11.1).
+    /// is allowed only on a specific LAN address with `api.allow_plaintext_lan = true`. A
+    /// wildcard (`0.0.0.0`, `::`) listens on every interface, so it is always served with TLS
+    /// (RFC-0050 §11.1).
     #[config(reload = Hot, default = "auto")]
     pub tls: TlsSource,
-    /// Allows `api.tls = "none"` on LAN binds. The dashboard and doctor check SEC-005 flag it
-    /// as insecure for as long as it is set (RFC-0001 §12).
+    /// Allows `api.tls = "none"` on binds to a specific LAN address. A wildcard (`0.0.0.0`,
+    /// `::`) is served with TLS even with this set. The dashboard and doctor check SEC-005 flag
+    /// it as insecure for as long as it is set (RFC-0001 §12).
     #[config(reload = Hot, default = false)]
     pub allow_plaintext_lan: bool,
 }
@@ -52,8 +55,8 @@ pub enum TlsSource {
         /// The certificate's private key.
         key: PathBuf,
     },
-    /// No TLS. Valid on LAN binds only with `api.allow_plaintext_lan = true`, and never on a
-    /// public address ([`crate::rules`]).
+    /// No TLS. Valid only on a specific LAN address with `api.allow_plaintext_lan = true`, and
+    /// never on a wildcard or a public address ([`crate::rules`]).
     None,
 }
 
