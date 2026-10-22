@@ -87,6 +87,12 @@ ed25519-dalek = "=3.0.0"
 #   behind home routers that the field probe measures; it brings `attohttpc` under MPL-2.0, a
 #   per-crate exception in `deny.toml`.
 iroh = "=1.4.1"
+# The QUIC stack under iroh, named by `syntropy-net` alone for its congestion controllers: iroh
+# re-exports the `Controller` traits but not `CubicConfig` or `Bbr3Config`, whose initial window
+# `quic.lan_initial_window` sets (RFC-0031 §4.3, note of 2026-10-23; DIST-E7-T03). Pinned to the
+# version iroh 1.4.1 pins, so `net` and iroh share one build of it, and with iroh's own features:
+# none by default. MIT OR Apache-2.0.
+noq-proto = { version = "=1.4.0", default-features = false }
 # The constraint engine behind `syntropy-text`'s `ConstraintEngine` (RFC-0050 §7.2, ADR-0504;
 # PROD-E3-T04), with `lark` only. Its defaults are off because they pull `borrow-or-share`, which
 # is MIT-0 and outside ADR-0018's allow list, and a `rayon` thread pool and `getrandom`;
@@ -134,9 +140,11 @@ subtle = "2.6.1"
 syn = { version = "3.0.9", default-features = false, features = ["derive", "parsing", "printing", "proc-macro"] }
 # Certificate validity times, the type rcgen takes (PROD-E5-T03).
 time = { version = "0.3.55", default-features = false, features = ["std"] }
-# The `net` domain's runtime (RFC-0031 §4.4): `syntropy-net`'s TCP fallback runs its listener and
-# each channel's driver on it (DIST-E7-T05), and its endpoint tests drive iroh, whose API is async
-# on tokio. No compute crate depends on it (RFC-0001 §4.2 rule 3, which `check-deps` enforces).
+# The `net` domain's runtime (RFC-0031 §4.4): `syntropy-net` runs its QUIC data plane on a
+# single-threaded tokio runtime of its own (DIST-E7-T03, ADR-0012), and its TCP fallback runs its
+# listener and each channel's driver on it (DIST-E7-T05); its endpoint tests drive iroh, whose API
+# is async on tokio. No compute crate depends on it (RFC-0001 §4.2 rule 3, which `check-deps`
+# enforces).
 tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 # The TCP fallback's async TLS (RFC-0031 §5.3, DIST-E7-T05), `syntropy-net` only: rustls on ring,
 # as above, with no `aws_lc_rs` and no TLS 1.2. The lock file already held this version, through
