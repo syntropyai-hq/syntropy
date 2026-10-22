@@ -1,0 +1,11 @@
+{
+  "title": "get_weather",
+  "description": "Current weather for a place.",
+  "type": "object",
+  "properties": {
+    "location": { "type": "string", "description": "City and country, such as Lyon, France", "minLength": 1, "maxLength": 80 },
+    "unit": { "type": "string", "enum": ["celsius", "fahrenheit"], "default": "celsius" }
+  },
+  "required": ["location"],
+  "additionalProperties": false
+}
