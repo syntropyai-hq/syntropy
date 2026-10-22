@@ -856,3 +856,24 @@ Building DIST-E1-T14 found three field types that no row defined, though its own
 | TIER-E7-T01 computes its page keys as `core`'s `PrefixKey`; its existing edge to DIST-E1-T14 now names `PrefixKey` too | TIER-E7-T01 | R9 | the key is what `PrefixRef::Cached` carries |
 | PROD-E3-T05 uses `core`'s `GrammarRef` and `SamplingParams`; PROD-E3-T05 → DIST-E1-T14 | PROD-E3-T05 | R9 | its criterion ships each grammar hash to a tail once, inside `SamplingParams`. M1a → M0a, no cycle |
 | DIST-E1-T14's view conversion covers every field but the tap block, and refuses a non-empty one either way with a classified error; DIST-E8-T06 gains "`net`'s `TokenEntryView` converts a tap block to and from `core`'s `LogitTap` in both tap modes, with the golden frames unchanged"; no edge | DIST-E1-T14, DIST-E8-T06 | R9 | `core`'s `TokenEntry::tap` is a typed `LogitTap`, while `net` carries the block as bytes until DIST-E8-T06 builds its codec, and the `Token` goldens' tap blocks are fill bytes. DIST-E8-T06 already depends on DIST-E8-T03, whose view it extends. M0's taps travel in-process (PLC-E9-T16) |
+
+## DIST-E1-T03's message set, by owner (2026-10-23)
+
+DIST-E1-T03 (M0a) could not be finished as written. "The full RFC-0001 §3.5 message set plus `PeerRevoked` and `DataPlaneGrant`" needs about 16 field types that do not exist:
+- **Built later:** `DataPlaneCredential` (DIST-E2-T05, M2), `PackKey` (COMP-E10-T11, M1a), `RunnerConfig` (PROD-E1-T07, M1a) and `ResidencySummary` (TIER-E1-T09, M1a). The last two tasks depend on DIST-E1-T03 themselves.
+- **Owned by no task:** `Deadline`, `DrainReason`, `SequenceOutcome` and `FetchPriority`.
+- **In a crate `ipc` cannot name:** several sit in `manifest`, `kernels`, `tier` or the probe, and `ipc` is layer 1, which rule 2 (RFC-0001 §4.2) limits to layer 0.
+
+Its fuzz criterion also needs QUAL-E10-T01's harness (M0b), which it did not depend on. The maintainers chose to have each owner add its messages, under the standing instruction (RFC-0001 §18.28).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T03 keeps the channel and the messages whose field types exist at M0a (`Hello`, `Ping`, `Pong`, `PeerRevoked`, `ShardProgress`, `AssignPlan`, `ApplyPlanDelta`, `StateChanged`, and `Init` without `config` and `grant`); its fuzz criterion becomes "decode is total over arbitrary bytes", which QUAL-E10-T03's `ipc_msgs` target wraps | DIST-E1-T03 | R9 | the rest of the set needs types from later milestones or from tasks that depend on DIST-E1-T03, and the fuzz registry is QUAL-E10-T01's; the same fix as DIST-E8-T12's fuzz criterion above |
+| Added DIST-E1-T15 (M0a) → DIST-E1-T03: `Deadline`, `DrainReason`, `SequenceOutcome` and `FetchPriority` in `core`, `PressureLevel` moved from `tier` to `core`, and the `Drain`, `Shutdown`, `MemoryPressure` and `SequenceEnded` messages | DIST-E1-T15 | R9 | no task owned these types. TIER-E1-T01, which built `PressureLevel` in `tier`, is done, so it takes no edge; the move is the new task's, with `tier` re-exporting the type |
+| DIST-E1-T04 → DIST-E1-T15; a `TBD` segment for the task that defines `CapabilityProfile` (#1524) | DIST-E1-T04 | R9 | its runner drains and shuts down on `Drain` and `Shutdown`, and its probe-mode criterion returns `ProbeResult`, whose `CapabilityProfile` no task defines yet |
+| PROD-E1-T07 adds `Init`'s `config` and `ConfigChanged`; TIER-E1-T09 adds `ResidencyDigest`, with `ResidencySummary` in `core`; no new edge | PROD-E1-T07, TIER-E1-T09 | R1 | each owns the message's field type and already depends on DIST-E1-T03 |
+| DIST-E7-T04 → DIST-E1-T03, adding `Init`'s `grant` and `DataPlaneGrant`; DIST-E2-T05's `DataPlaneCredential` becomes plain data in `core` | DIST-E7-T04, DIST-E2-T05 | R1, R9 | DIST-E7-T04 builds the runner's data-plane grant, and `ipc` can carry the credential only from layer 0. Signing and verification stay in the crate with the signature scheme |
+| DIST-E1-T14 → DIST-E1-T03, adding `CancelSequence` | DIST-E1-T14 | R1, R9 | it defines `CancelReason` |
+| PLC-E2-T01 → DIST-E1-T03, adding `ProbeRequest` with `ProbeSuite` in `core` | PLC-E2-T01 | R1, R9 | it owns `ProbeSuite`; it already reached DIST-E1-T03 through PLC-E1-T07, and the edge names it |
+| COMP-E10-T11 → DIST-E1-T03, DIST-E1-T15, adding `FetchShard` and `PackCommitted`, with `ShardSpec`, `PackKey`, `ChunkId` and `LayoutVersion` in `core` | COMP-E10-T11 | R1, R9 | it builds `ShardSpec::digest` and `PackKey`; `FetchShard` carries DIST-E1-T15's `FetchPriority` |
+| `ErrorReport` has no owner | — | — | it carries RFC-0001 §5.12's `Error`, which no task row builds; recorded in RFC-0001 §3.5's note for the maintainers |
