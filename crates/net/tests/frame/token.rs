@@ -1471,3 +1471,30 @@ fn net_defines_none_of_the_sequence_types_core_owns() {
     };
     assert!(trace.sampled() && node.prompt_lookup());
 }
+
+/// The refusal on a named golden: `token-ingress-x` carries tap blocks, which no codec decodes
+/// before DIST-E8-T06, so each of its entries with one is refused with `TapNotDecoded`, an
+/// `Unsupported` refusal, and its bytes are untouched.
+#[test]
+fn token_ingress_x_entries_with_a_tap_block_are_refused_conversion() {
+    let bytes = read_golden("token-ingress-x");
+    let frame = Frame::decode(&bytes).unwrap();
+    let token = frame.token().unwrap();
+    let mut refused = 0;
+    for view in token.entries.iter() {
+        if view.tap.is_empty() {
+            continue;
+        }
+        let error = view.to_entry().unwrap_err();
+        assert_eq!(
+            error,
+            FrameError::TapNotDecoded {
+                len: view.tap.len()
+            }
+        );
+        assert_eq!(error.class(), ErrorClass::Unsupported);
+        refused += 1;
+    }
+    assert!(refused >= 1, "token-ingress-x carries a tap block");
+    assert_eq!(read_golden("token-ingress-x"), bytes);
+}
