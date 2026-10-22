@@ -738,6 +738,14 @@ A post-merge review of #1658 found that `HopPlan::predicted_p99` decodes as 0 fr
 |---|---|---|---|
 | DIST-E11-T10 gains the criterion: a hop with `predicted_p99 = 0` has no tail prediction, so the drift detector makes no tail comparison for it and `validate()` accepts it; a hop whose measured p99 exceeds a nonzero `predicted_p99` by more than `replan.drift_threshold`, sustained past `replan.drift_window`, raises drift; DIST-E11-T10 → PLC-E3-T07 | DIST-E11-T10 | R9 | both drift cases run the hop through PLC-E3-T07's drift detector, which DIST-E11-T10 did not reach. The positive case keeps the zero case from passing on a detector that never compares tails. PLC-E3-T07 is M1a, so the edge points to an earlier milestone |
 
+## DIST-E8-T03's `Token` parts (2026-10-22)
+
+RFC-0031 §6.5 splits a `Token` step that is larger than the channel's slot into parts. A step splits at entry boundaries, and a single entry larger than a slot splits its tap block across parts. DIST-E8-T03's row covers only the part fields, which it reads, writes and checks, and no task built the split. Splitting a tap block needs its layout, which DIST-E8-T06 reads, so the split joins that row instead of a new task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E8-T06 gains the `Token` step split: parts at entry boundaries, one entry's tap block across parts, capability bit 15 `TOKEN_PARTS` (RFC-0031 §6.5, §10). It also gains a round-trip criterion across parts and the refusal of malformed parts | DIST-E8-T03, DIST-E8-T06 | R9 | DIST-E8-T03 builds the part fields, and the split needs the tap block's layout, which DIST-E8-T06 owns. DIST-E8-T06 already depends on DIST-E8-T03, so no edge changes |
+
 ## DIST-E7-T01's conformance criterion and buffer types (2026-10-22)
 
 DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-conformance suite", could not be met by DIST-E7-T01: `SimTransport` is QUAL-E8-T04, which depends on DIST-E7-T01 and DIST-E7-T02, and no task row built the suite itself, though DIST-E7-T03, T05, T06 and T08 and QUAL-E8-T04 all run it. RFC-0001 §5.8 and RFC-0031 §2 also name six buffer types without defining them (`BufferPool`, `PoolRegistration`, `PayloadSlice`, `PayloadRef`, `ExtBuf`, `ExtRef`), and DIST-E7-T01's signatures need them. These are plan corrections that take the recommended default, under the maintainer's standing instruction; RFC-0031 §2's note of 2026-10-22 records the definitions.

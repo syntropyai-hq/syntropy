@@ -286,6 +286,7 @@ Items that other RFCs place "on the side channel" (RFC-0001 §5.8) travel in `Ac
 - **Freshness.** A headroom value is at most one ring traversal old when it reaches the head. When the ring is idle, no frames refresh it. The head then uses its last list, plus the gossiped load digests (RFC-0030 §5.6), and refreshes it on the next frame. An entry that is copied forward without having been refreshed carries `STALE`.
 - **Idle relays.** An item that must move while no step is due, such as `PREFIX_EVICT` on an idle ring or a pending `PREFIX_DROPPED`, rides an empty-payload `Activation` frame (`n_rows = 0`). That is the same mechanism as `SEQ_CTRL` (§3.1). The tail answers it with an empty ring-return `Token` frame when it carries items for the head.
 - **Capability gating.** Prefix items and headroom are sent only on channels that negotiated `PREFIX_ITEMS` and `KV_HEADROOM` (RFC-0031 §10).
+- **Revision note, 2026-10-22 (DIST-E8-T03): `TRACE` on the return path.** The table's `TRACE` row covers the head's item moving downstream. On a sampled step the tail also writes `TRACE` on both `Token` copies, one per sampled entry, for the return hop's span (RFC-0031 §6.5, RFC-0053 §3.2). The head and the ingress node consume it, and nothing relays it.
 
 ### 4. Plan transitions on the data plane
 
