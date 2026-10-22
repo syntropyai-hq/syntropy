@@ -843,6 +843,8 @@ pub struct HopPlan {
     /// family's passed precision need ExactnessPolicy::Approximate with WIRE_COMPRESS.
     pub wire: WireDType,
     pub predicted: Nanos,                       // α + S/β at batch 1
+    // Added by RFC-0032 §3.3, serde defaults: prefill_transport, relay (with its RelayVia)
+    // and predicted_p99.
 }
 
 /// Where a tensor group lives and which device computes it.
