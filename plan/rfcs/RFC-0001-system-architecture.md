@@ -2758,3 +2758,9 @@ COMP-E3-T01 found that the detection macro named for SME2 does not compile on th
 | Change | Sections touched | Reason |
 |---|---|---|
 | The policy objects and their plain-data field types are in `core` (`syntropy_core::policy`), with `syntropy_core::canon`, a canonical encoding over serde. `InstancePolicy::digest()` becomes `canonical_bytes() -> Vec<u8>` and `digest_with(&self, hash: impl FnOnce(&[u8]) -> Blake3) -> Blake3`: the digest is still BLAKE3 over the canonical bytes, computed by the crate that links BLAKE3 | §5.13, §11.3; RFC-0054 §4.5 | rule 1 (§4.2) keeps `blake3` out of `core`, and `core` holds the `Blake3` type only; OQ-PRD-27 puts the field types in `core` (PROD-E1-T04; RFC-0054 §4.5, note of 2026-10-22) |
+
+### 18.17 Code owners for the task runner and the cargo configuration (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `xtask/` and `.cargo/` join RFC-0062 §12.3's CI and release configuration, so `CODEOWNERS` makes a maintainer a required reviewer for both | RFC-0062 §12.3, §12.6 (dated notes); `.github/CODEOWNERS`; `xtask/src/codeowners.rs` | `lint` runs the PR's own `xtask`, whose steps hold the policy checks, such as the determinism lints (QUAL-E3-T03), and `.cargo/config.toml` reaches every cargo run from the root. Without an owner, a PR could weaken a check, or change how cargo runs clippy, with only the review agent's approval. Maintainer decision, 2026-10-22 |
