@@ -155,7 +155,8 @@ fn rows() -> Vec<Row> {
             ),
             kill: NONE,
             isa: CpuIsa::X86V2,
-            features: F::AVX2,
+            // AVX2 belongs to `X86V3`, which this CPU does not reach.
+            features: F::empty(),
         },
         Row {
             name: "AVX-512 without the X86V3 set",
@@ -305,7 +306,7 @@ fn rows() -> Vec<Row> {
             inputs: linux_arm(true, false, false, false, 0),
             kill: NONE,
             isa: CpuIsa::Arm80,
-            features: F::NEON_DOTPROD,
+            features: F::empty(),
         },
         Row {
             name: "Linux, dotprod and FP16",
@@ -319,7 +320,7 @@ fn rows() -> Vec<Row> {
             inputs: linux_arm(true, true, true, false, 0),
             kill: NONE,
             isa: CpuIsa::Arm82Dot,
-            features: F::NEON_DOTPROD | F::NEON_FP16 | F::NEON_I8MM,
+            features: F::NEON_DOTPROD | F::NEON_FP16,
         },
         Row {
             name: "Linux, I8MM and BF16, SVE2",
@@ -333,7 +334,8 @@ fn rows() -> Vec<Row> {
             }),
             kill: NONE,
             isa: CpuIsa::Arm86I8mm,
-            features: F::NEON_DOTPROD | F::NEON_FP16 | F::NEON_I8MM | F::NEON_BF16 | F::SVE2,
+            // SVE2 belongs to no level, so it is never reported.
+            features: F::NEON_DOTPROD | F::NEON_FP16 | F::NEON_I8MM | F::NEON_BF16,
         },
         Row {
             name: "Linux, HWCAP2_SME2",
@@ -408,7 +410,7 @@ fn rows() -> Vec<Row> {
             inputs: mac(y, n, y, y, y),
             kill: NONE,
             isa: CpuIsa::Arm80,
-            features: F::NEON_DOTPROD | F::NEON_I8MM | F::NEON_BF16,
+            features: F::empty(),
         },
     ]
 }
@@ -439,6 +441,61 @@ fn recorded_inputs_select_the_expected_level() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The level each bit belongs to, written out here apart from `FEATURE_LEVELS`.
+fn bit_level(f: F) -> Option<CpuIsa> {
+    let levels = [
+        (F::AVX2 | F::AVX_VNNI, CpuIsa::X86V3),
+        (
+            F::AVX512 | F::AVX512_VNNI | F::AVX512_BF16 | F::AVX512_FP16,
+            CpuIsa::X86V4,
+        ),
+        (F::AMX_INT8 | F::AMX_BF16, CpuIsa::X86V4Amx),
+        (F::NEON_DOTPROD | F::NEON_FP16, CpuIsa::Arm82Dot),
+        (F::NEON_I8MM | F::NEON_BF16, CpuIsa::Arm86I8mm),
+        (F::SME2, CpuIsa::Arm92Sme2),
+    ];
+    levels.iter().find(|(s, _)| s.contains(f)).map(|(_, l)| *l)
+}
+
+/// The levels the selected level covers: itself and those below it in its chain.
+fn covered(isa: CpuIsa) -> &'static [CpuIsa] {
+    use CpuIsa::*;
+    const X86: [CpuIsa; 4] = [X86V2, X86V3, X86V4, X86V4Amx];
+    const ARM: [CpuIsa; 4] = [Arm80, Arm82Dot, Arm86I8mm, Arm92Sme2];
+    for chain in [&X86, &ARM] {
+        if let Some(i) = chain.iter().position(|l| *l == isa) {
+            return &chain[..=i];
+        }
+    }
+    &[]
+}
+
+#[test]
+fn no_bit_belongs_to_a_level_above_the_selected_one() {
+    let kills = [NONE, NO_AVX512, NO_AMX, NO_SME2];
+    for row in rows() {
+        for kill in kills {
+            let d = select(&row.inputs, &kill).unwrap();
+            for f in d.features.iter() {
+                let level = bit_level(f);
+                assert!(
+                    level.is_some_and(|l| covered(d.isa).contains(&l)),
+                    "{} with {kill:?}: {f:?} ({level:?}) above {:?}",
+                    row.name,
+                    d.isa
+                );
+            }
+            // A kill switch only ever removes bits.
+            let all = select(&row.inputs, &NONE).unwrap();
+            assert!(all.features.contains(d.features), "{}: {kill:?}", row.name);
+        }
+    }
+    // `FEATURE_LEVELS` agrees with the list above.
+    for (f, level) in FEATURE_LEVELS {
+        assert_eq!(bit_level(f), Some(level), "{f:?}");
+    }
 }
 
 #[test]

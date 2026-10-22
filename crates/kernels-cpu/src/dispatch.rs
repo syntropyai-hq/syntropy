@@ -19,7 +19,10 @@ pub type KernelFn = fn(&OpArgs<'_>) -> Result<(), Error>;
 ///
 /// Today no kernel exists, so every level's table is empty. COMP-E3-T03 and the later kernel
 /// tasks add their entries in [`DispatchTable::for_level`], one arm per level.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// It has no `PartialEq`: function-pointer equality is not reliable across codegen units.
+/// Compare tables by [`isa`](Self::isa) and [`len`](Self::len).
+#[derive(Clone, Debug)]
 pub struct DispatchTable {
     isa: CpuIsa,
     ops: BTreeMap<OpKind, KernelFn>,

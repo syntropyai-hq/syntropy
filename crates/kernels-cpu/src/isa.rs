@@ -10,9 +10,13 @@
 //! on every machine. `enumerate` reports the selected level as the device's class; `open`
 //! detects again and [`table_for_class`] checks the class before it hands out a table.
 //!
-//! Each level's requirements are RFC-0040 §7.3's table. Feature bits follow the same rule as
-//! the probe's provisional level (RFC-0010 §2.1): a bit that gates kernels is set only when
-//! the level that runs those kernels is selected.
+//! Each level's requirements are RFC-0040 §7.3's table. Every feature bit this provider
+//! reports belongs to one level ([`FEATURE_LEVELS`]), and a bit is set only when that level
+//! or one above it in the same chain is selected. No bit then advertises a feature above the
+//! class, whose packs and certificates are the only ones that apply (RFC-0040 §2.1: `open`
+//! never loads a variant set or table the class does not name). A kill switch that lowers
+//! the level drops the bits with it. A bit that belongs to no level, such as `SVE2` (no SVE2
+//! kernels in v1, ADR-0402 item 4), is never reported.
 
 use syntropy_core::ErrorClass;
 use syntropy_kernels::{CpuIsa, DeviceFeatures, Error, ErrorCode};
@@ -194,7 +198,7 @@ pub struct ArmInputs {
     pub i8mm: bool,
     /// BF16 (`FEAT_BF16`).
     pub bf16: bool,
-    /// SVE2. No level needs it (ADR-0402 item 4); it is reported as a feature bit.
+    /// SVE2. No level needs it (ADR-0402 item 4), so it is recorded but never reported.
     pub sve2: bool,
     /// SME2 (`FEAT_SME2`).
     pub sme2: bool,
@@ -351,33 +355,28 @@ fn select_x86(x: &X86Inputs, kill: &KillSwitches) -> Option<Detection> {
         CpuIsa::X86V2
     };
 
-    let mut features = DeviceFeatures::empty();
+    // What the CPU has, before the level gate.
+    let mut present = DeviceFeatures::empty();
     let mut set = |cond: bool, f: DeviceFeatures| {
         if cond {
-            features |= f;
+            present |= f;
         }
     };
     set(d.has(X86Feature::Avx2), DeviceFeatures::AVX2);
     set(d.has(X86Feature::Avxvnni), DeviceFeatures::AVX_VNNI);
-    // VNNI, BF16 and FP16 are "used when present" on top of `X86V4`, so they need its gate.
-    set(v4, DeviceFeatures::AVX512);
+    set(d.all(&X86V4), DeviceFeatures::AVX512);
+    set(d.has(X86Feature::Avx512vnni), DeviceFeatures::AVX512_VNNI);
+    set(d.has(X86Feature::Avx512bf16), DeviceFeatures::AVX512_BF16);
+    set(d.has(X86Feature::Avx512fp16), DeviceFeatures::AVX512_FP16);
     set(
-        v4 && d.has(X86Feature::Avx512vnni),
-        DeviceFeatures::AVX512_VNNI,
+        x.cpuid7_edx & CPUID7_EDX_AMX_INT8 != 0,
+        DeviceFeatures::AMX_INT8,
     );
     set(
-        v4 && d.has(X86Feature::Avx512bf16),
-        DeviceFeatures::AVX512_BF16,
-    );
-    set(
-        v4 && d.has(X86Feature::Avx512fp16),
-        DeviceFeatures::AVX512_FP16,
-    );
-    set(amx, DeviceFeatures::AMX_INT8);
-    set(
-        amx && x.cpuid7_edx & CPUID7_EDX_AMX_BF16 != 0,
+        x.cpuid7_edx & CPUID7_EDX_AMX_BF16 != 0,
         DeviceFeatures::AMX_BF16,
     );
+    let features = gate(present, isa);
     Some(Detection {
         isa,
         features,
@@ -400,24 +399,59 @@ fn select_arm(a: &ArmInputs, kill: &KillSwitches) -> Detection {
         CpuIsa::Arm80
     };
 
-    let mut features = DeviceFeatures::empty();
+    let mut present = DeviceFeatures::empty();
     let mut set = |cond: bool, f: DeviceFeatures| {
         if cond {
-            features |= f;
+            present |= f;
         }
     };
     set(a.dotprod, DeviceFeatures::NEON_DOTPROD);
     set(a.fp16, DeviceFeatures::NEON_FP16);
     set(a.i8mm, DeviceFeatures::NEON_I8MM);
     set(a.bf16, DeviceFeatures::NEON_BF16);
-    set(a.sve2, DeviceFeatures::SVE2);
     // The SME2 routines are called only under `Arm92Sme2` (ADR-0402 item 3).
-    set(sme2, DeviceFeatures::SME2);
+    set(a.sme2, DeviceFeatures::SME2);
+    let features = gate(present, isa);
     Detection {
         isa,
         features,
         amx: AmxPermission::NotRequested,
     }
+}
+
+/// The level each reported feature bit belongs to: the lowest level whose kernels may use
+/// it (RFC-0040 §7.3's table; "used when present" features belong to the level that lists
+/// them). A bit not listed is never reported.
+pub const FEATURE_LEVELS: [(DeviceFeatures, CpuIsa); 13] = [
+    (DeviceFeatures::AVX2, CpuIsa::X86V3),
+    (DeviceFeatures::AVX_VNNI, CpuIsa::X86V3),
+    (DeviceFeatures::AVX512, CpuIsa::X86V4),
+    (DeviceFeatures::AVX512_VNNI, CpuIsa::X86V4),
+    (DeviceFeatures::AVX512_BF16, CpuIsa::X86V4),
+    (DeviceFeatures::AVX512_FP16, CpuIsa::X86V4),
+    (DeviceFeatures::AMX_INT8, CpuIsa::X86V4Amx),
+    (DeviceFeatures::AMX_BF16, CpuIsa::X86V4Amx),
+    (DeviceFeatures::NEON_DOTPROD, CpuIsa::Arm82Dot),
+    (DeviceFeatures::NEON_FP16, CpuIsa::Arm82Dot),
+    (DeviceFeatures::NEON_I8MM, CpuIsa::Arm86I8mm),
+    (DeviceFeatures::NEON_BF16, CpuIsa::Arm86I8mm),
+    (DeviceFeatures::SME2, CpuIsa::Arm92Sme2),
+];
+
+/// Whether `isa` is `level` or above it in the same chain.
+fn covers(isa: CpuIsa, level: CpuIsa) -> bool {
+    matches!(
+        (rank(isa), rank(level)),
+        (Some((a, i)), Some((b, l))) if a == b && l <= i
+    )
+}
+
+/// The bits of `present` whose level `isa` covers.
+fn gate(present: DeviceFeatures, isa: CpuIsa) -> DeviceFeatures {
+    FEATURE_LEVELS
+        .iter()
+        .filter(|(f, level)| present.contains(*f) && covers(isa, *level))
+        .fold(DeviceFeatures::empty(), |acc, (f, _)| acc | *f)
 }
 
 /// A level's architecture and its place in that architecture's chain.
@@ -466,11 +500,10 @@ pub fn table_for_class(class: CpuIsa, detected: &Detection) -> Result<DispatchTa
             ),
         });
     }
-    match (rank(class), rank(detected.isa)) {
-        (Some((c_x86, c)), Some((d_x86, d))) if c_x86 == d_x86 && c <= d => {
-            Ok(DispatchTable::for_level(class))
-        }
-        _ => Err(Error {
+    if covers(detected.isa, class) {
+        Ok(DispatchTable::for_level(class))
+    } else {
+        Err(Error {
             class: ErrorClass::Unsupported,
             code: ErrorCode::OP_UNSUPPORTED,
             message: format!(
@@ -478,6 +511,6 @@ pub fn table_for_class(class: CpuIsa, detected: &Detection) -> Result<DispatchTa
                  re-probe the node",
                 detected.isa
             ),
-        }),
+        })
     }
 }
