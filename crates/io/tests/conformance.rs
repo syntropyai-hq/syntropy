@@ -55,8 +55,8 @@ enum Fault {
     BlockReap,
     /// Blocks for good when dropped.
     BlockDrop,
-    /// Never completes the operation, and blocks for good in `in_flight` while it holds it.
-    BlockInFlight(u64),
+    /// Never completes the operation, and sleeps 3 s in `in_flight` while it holds it.
+    SlowInFlight(u64),
     /// Blocks for good in `file_dio`.
     BlockFileDio,
     /// Blocks for good in `caps`.
@@ -141,7 +141,7 @@ impl StdEngine {
         if self.fault == Fault::Drop(nth) {
             return None;
         }
-        if self.fault == Fault::Hold(nth) || self.fault == Fault::BlockInFlight(nth) {
+        if self.fault == Fault::Hold(nth) || self.fault == Fault::SlowInFlight(nth) {
             self.held += 1;
             return None;
         }
@@ -342,8 +342,8 @@ impl IoEngine for StdEngine {
     }
 
     fn in_flight(&self) -> (u32, Bytes) {
-        if self.held > 0 && matches!(self.fault, Fault::BlockInFlight(_)) {
-            block();
+        if self.held > 0 && matches!(self.fault, Fault::SlowInFlight(_)) {
+            std::thread::sleep(Duration::from_secs(3));
         }
         let bytes = self.done.iter().map(|c| c.result.map_or(0, |b| b.0)).sum();
         let phantom = u32::from(self.fault == Fault::PhantomInFlight);
@@ -832,20 +832,25 @@ fn the_engine_is_built_and_driven_on_one_thread_not_the_callers() {
     assert_ne!(threads[0], std::thread::current().id());
 }
 
-/// A run of `fault`, with a 1 s timeout, that must end in `Hung`; returns the failure.
-fn hung_run(name: &str, fault: Fault) -> conformance::Failure {
+/// A run of the engine `make` builds, with a 1 s timeout, that must end in `Hung` before 2.5 s
+/// have passed; returns the failure.
+fn hung_run_of<F>(name: &str, make: F) -> conformance::Failure
+where
+    F: FnOnce() -> StdEngine + Send + 'static,
+{
     let files = Files::new(name, FILE_LEN);
     let opts = Options {
         timeout: Duration::from_secs(1),
         ..Options::new(0xfa17)
     };
-    let failure = conformance::check(
-        move || StdEngine::with_fault(fault),
-        &files.file,
-        &files.scratch,
-        &opts,
-    )
-    .expect_err("the blocked call is caught");
+    let start = std::time::Instant::now();
+    let failure = conformance::check(make, &files.file, &files.scratch, &opts)
+        .expect_err("the blocked call is caught");
+    let took = start.elapsed();
+    assert!(
+        took < Duration::from_millis(2500),
+        "returned after {took:?}"
+    );
     assert!(
         matches!(failure.problem, Problem::Hung { after, .. } if after == opts.timeout),
         "{failure}"
@@ -853,11 +858,16 @@ fn hung_run(name: &str, fault: Fault) -> conformance::Failure {
     failure
 }
 
+/// [`hung_run_of`] for a [`StdEngine`] with `fault`.
+fn hung_run(name: &str, fault: Fault) -> conformance::Failure {
+    hung_run_of(name, move || StdEngine::with_fault(fault))
+}
+
 #[test]
 fn an_engine_whose_in_flight_blocks_fails_as_hung() {
-    // Operation 3 never completes, and `in_flight` blocks while it is held: the call is made
-    // waiting for operation 3.
-    let failure = hung_run("in-flight-hung", Fault::BlockInFlight(3));
+    // Operation 3 never completes, and `in_flight` sleeps 3 s while it is held: the run returns
+    // `Hung` after the 1 s timeout, before the sleep ends, naming operation 3.
+    let failure = hung_run("in-flight-hung", Fault::SlowInFlight(3));
     let Problem::Hung { op: Some(op), .. } = failure.problem else {
         panic!("{failure}");
     };
@@ -875,4 +885,18 @@ fn an_engine_whose_caps_block_fails_as_hung() {
     // `caps` is asked right after the engine is built, before the run knows what it is.
     let failure = hung_run("caps-hung", Fault::BlockCaps);
     assert_eq!(failure.engine, None);
+}
+
+#[test]
+fn a_constructor_that_never_returns_fails_as_hung() {
+    // No engine is ever built, so the run does not know what it was checking.
+    let failure = hung_run_of("make-hung", || -> StdEngine { block() });
+    assert_eq!(failure.engine, None);
+    assert_eq!(
+        failure.problem,
+        Problem::Hung {
+            op: None,
+            after: Duration::from_secs(1)
+        }
+    );
 }
