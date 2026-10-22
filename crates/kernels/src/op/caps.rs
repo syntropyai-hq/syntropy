@@ -38,19 +38,34 @@ pub struct OpCaps {
 /// An op made ready to launch on one device at one shape (RFC-0001 §5.7).
 ///
 /// RFC-0001 names the type without fields. It carries the workspace the prepared op asks
-/// for, which [`PreparedOp::check_workspace`] holds to what `query` declared.
+/// for, which [`PreparedOp::check_workspace`] holds to what `query` declared, and the
+/// provider's handle for what it prepared, as other provider objects do ([`memory`]).
+///
+/// [`memory`]: crate::memory
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedOp {
     /// Scratch the prepared op asks for.
     pub workspace: Bytes,
+    /// The provider's handle for the prepared op, meaningful only to the provider that issued
+    /// it: the CPU provider's kernel entry, for example. 0 when the provider needs none.
+    pub handle: u64,
 }
 
 impl PreparedOp {
-    /// A prepared op that asks for `workspace` bytes of scratch.
+    /// A prepared op that asks for `workspace` bytes of scratch, with no provider handle.
     #[must_use]
     pub fn new(workspace: Bytes) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            handle: 0,
+        }
+    }
+
+    /// A prepared op that asks for `workspace` bytes of scratch, with the provider's `handle`.
+    #[must_use]
+    pub fn with_handle(workspace: Bytes, handle: u64) -> Self {
+        Self { workspace, handle }
     }
 
     /// Checks that the prepared op asks for no more workspace than `caps` declared for the
