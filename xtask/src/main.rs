@@ -40,6 +40,7 @@ mod registry;
 mod repo_settings;
 mod roster;
 mod run;
+mod sim_presets;
 mod toolchain;
 
 use std::ffi::OsString;
