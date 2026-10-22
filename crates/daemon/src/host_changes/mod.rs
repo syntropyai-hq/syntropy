@@ -1234,6 +1234,10 @@ mod tests {
     fn concurrent_writers_lose_nothing() {
         const WRITERS: u32 = 4;
         const EACH: u32 = 12;
+        // This test measures lost entries and repeated IDs, not how long the lock takes. A
+        // loaded machine running the whole suite can keep a writer waiting past `LOCK_WAIT`, so
+        // each writer here waits far longer, and any error a writer gets is printed.
+        const WAIT: Duration = Duration::from_secs(300);
         let state = temp_state();
         let threads: Vec<_> = (0..WRITERS)
             .map(|w| {
@@ -1241,18 +1245,23 @@ mod tests {
                 std::thread::spawn(move || {
                     let mut ids = Vec::new();
                     for i in 0..EACH {
-                        let mut ledger = HostChangeLedger::open(&state).unwrap();
+                        let fail = |what: &str, e: LedgerError| -> ! {
+                            panic!("writer {w}, change {i}: {what} failed: {e}")
+                        };
+                        let mut ledger = HostChangeLedger::open(&state)
+                            .unwrap_or_else(|e| fail("open", e))
+                            .with_lock_wait(WAIT);
                         let path = state.join(format!("w{w}-{i}.conf"));
                         let id = if i % 2 == 0 {
                             let id = ledger
                                 .begin(HostChangeKind::FileWritten { path }, None, None, 0, "v")
-                                .unwrap();
-                            ledger.applied(id).unwrap();
+                                .unwrap_or_else(|e| fail("begin", e));
+                            ledger.applied(id).unwrap_or_else(|e| fail("applied", e));
                             id
                         } else {
                             ledger
                                 .write_file(&path, format!("{w}-{i}\n").as_bytes(), 0, "v")
-                                .unwrap()
+                                .unwrap_or_else(|e| fail("write_file", e))
                         };
                         ids.push((id, w, i));
                     }
