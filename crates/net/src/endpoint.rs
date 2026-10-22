@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! A minimal iroh endpoint (DIST-E7-T23, ADR-0011): bind with a node key the caller supplies,
-//! connect to a node ID, and report the kind and round-trip time of the path a connection uses.
+//! connect to a node ID with an application protocol, and report the kind and round-trip time of
+//! the path a connection uses.
 //!
 //! This is what the M1a field probe (DIST-E4-T15) needs, on the iroh version the daemon will use.
 //! DIST-E7-T03's QUIC backend builds on the same pin. `net` is the only crate that links iroh
-//! (RFC-0001 §4.2 rule 6), so no iroh type appears in this module's public API.
+//! (RFC-0001 §4.2 rule 6), so no iroh type appears in this module's public API. Nothing here
+//! creates a runtime: every `async` function runs in the caller's tokio context.
 //!
 //! Relays are one of three choices ([`Relays`]):
 //!
 //! - [`Relays::Public`]: iroh's public relays, with iroh's online address lookup, so a bare node
 //!   ID resolves. These are for internal and alpha builds only, until DIST-E7-T22's built-in set
 //!   ships: no public release points at them (RFC-0030 §6.4).
-//! - [`Relays::Url`]: one relay at a given URL, with no online lookup.
+//! - [`Relays::Url`]: one relay at a given [`RelayUrl`], with no online lookup.
 //! - [`Relays::Disabled`]: no relay.
 //!
 //! [`Config::direct_paths`] set to `false` removes the endpoint's direct (IP) transports, so every
@@ -24,7 +26,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use iroh::endpoint::{Builder, presets};
-use iroh::{EndpointAddr, PublicKey, RelayMode, RelayUrl, SecretKey};
+use iroh::{EndpointAddr, PublicKey, RelayMode, SecretKey};
 
 /// The kind of path a connection's packets take (RFC-0030 §5, `PathKind`): `Direct` or `Relay`,
 /// as iroh reports the selected path. DIST-E4-T01's membership core and DIST-E7-T03's backend use
@@ -37,19 +39,42 @@ pub enum PathKind {
     Relay,
 }
 
+/// The URL of a relay server, such as `https://relay.example.net`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RelayUrl(iroh::RelayUrl);
+
+impl FromStr for RelayUrl {
+    type Err = EndpointError;
+
+    fn from_str(url: &str) -> Result<Self, Self::Err> {
+        iroh::RelayUrl::from_str(url)
+            .map(Self)
+            .map_err(|error| EndpointError::InvalidRelayUrl(error.to_string()))
+    }
+}
+
+impl fmt::Display for RelayUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Which relays an endpoint uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Relays {
     /// iroh's public relays, with iroh's online address lookup. Internal and alpha builds only,
     /// until DIST-E7-T22's built-in relay set ships (RFC-0030 §6.4).
     Public,
-    /// One relay at this URL, such as `https://relay.example.net`, with no online address lookup.
-    Url(String),
+    /// One relay, with no online address lookup.
+    Url(RelayUrl),
     /// No relay: direct paths only.
     Disabled,
 }
 
-/// How to bind an [`Endpoint`].
+/// How to bind an [`Endpoint`]. Start from [`Config::default`], which has no relay, direct paths
+/// on and no accepted protocol, so it connects but accepts nothing, and set fields with the
+/// builder methods. New fields come with defaults, so a caller is unaffected when one is added.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     /// The relays the endpoint uses.
@@ -57,9 +82,45 @@ pub struct Config {
     /// Whether the endpoint has direct (IP) transports. With `false`, every connection goes
     /// through a relay.
     pub direct_paths: bool,
-    /// The application protocol both sides speak, offered when connecting and accepted when
-    /// listening.
-    pub alpn: Vec<u8>,
+    /// The application protocols (ALPNs) the endpoint accepts on incoming connections, preferred
+    /// first. Outgoing connections name theirs in [`Endpoint::connect`].
+    pub accept_alpns: Vec<Vec<u8>>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            relays: Relays::Disabled,
+            direct_paths: true,
+            accept_alpns: Vec::new(),
+        }
+    }
+}
+
+impl Config {
+    /// Sets the relays.
+    pub fn relays(mut self, relays: Relays) -> Self {
+        self.relays = relays;
+        self
+    }
+
+    /// Sets whether the endpoint has direct (IP) transports.
+    pub fn direct_paths(mut self, direct_paths: bool) -> Self {
+        self.direct_paths = direct_paths;
+        self
+    }
+
+    /// Adds one accepted application protocol, after any already set.
+    pub fn accept_alpn(mut self, alpn: impl Into<Vec<u8>>) -> Self {
+        self.accept_alpns.push(alpn.into());
+        self
+    }
+
+    /// Replaces the accepted application protocols.
+    pub fn accept_alpns(mut self, alpns: Vec<Vec<u8>>) -> Self {
+        self.accept_alpns = alpns;
+        self
+    }
 }
 
 /// Why an endpoint operation failed. The message comes from iroh and names no secret.
@@ -86,10 +147,12 @@ impl fmt::Display for EndpointError {
         match self {
             Self::InvalidNodeId => write!(f, "not a valid node ID"),
             Self::InvalidRelayUrl(error) => write!(f, "invalid relay URL: {error}"),
-            Self::NoTransport => write!(
-                f,
-                "no relay and no direct paths: the endpoint has no transport"
-            ),
+            Self::NoTransport => {
+                write!(
+                    f,
+                    "no relay and no direct paths: the endpoint has no transport"
+                )
+            }
             Self::Bind(error) => write!(f, "cannot bind the endpoint: {error}"),
             Self::Connect(error) => write!(f, "cannot connect: {error}"),
             Self::Accept(error) => write!(f, "cannot accept a connection: {error}"),
@@ -100,7 +163,7 @@ impl fmt::Display for EndpointError {
 
 impl std::error::Error for EndpointError {}
 
-/// Where to reach a node: its ID, and optionally a relay URL and direct socket addresses. With
+/// Where to reach a node: its ID, and optionally relay URLs and direct socket addresses. With
 /// neither, only [`Relays::Public`]'s online lookup can find the node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeAddr {
@@ -117,10 +180,10 @@ impl NodeAddr {
     }
 
     /// This address with a relay the node is reachable through.
-    pub fn with_relay_url(self, url: &str) -> Result<Self, EndpointError> {
-        Ok(Self {
-            inner: self.inner.with_relay_url(parse_relay_url(url)?),
-        })
+    pub fn with_relay_url(self, url: RelayUrl) -> Self {
+        Self {
+            inner: self.inner.with_relay_url(url.0),
+        }
     }
 
     /// This address with a direct socket address of the node.
@@ -141,20 +204,15 @@ impl NodeAddr {
     }
 
     /// The relay URLs in this address.
-    pub fn relay_urls(&self) -> Vec<String> {
-        self.inner.relay_urls().map(ToString::to_string).collect()
+    pub fn relay_urls(&self) -> Vec<RelayUrl> {
+        self.inner.relay_urls().cloned().map(RelayUrl).collect()
     }
-}
-
-fn parse_relay_url(url: &str) -> Result<RelayUrl, EndpointError> {
-    RelayUrl::from_str(url).map_err(|error| EndpointError::InvalidRelayUrl(error.to_string()))
 }
 
 /// A bound iroh endpoint.
 #[derive(Debug)]
 pub struct Endpoint {
     inner: iroh::Endpoint,
-    alpn: Vec<u8>,
 }
 
 impl Endpoint {
@@ -171,10 +229,11 @@ impl Endpoint {
         config: Config,
         last: impl FnOnce(Builder) -> Builder,
     ) -> Result<Self, EndpointError> {
-        let mut builder = match &config.relays {
+        let mut builder = match config.relays {
             Relays::Public => iroh::Endpoint::builder(presets::N0),
-            Relays::Url(url) => iroh::Endpoint::builder(presets::Minimal)
-                .relay_mode(RelayMode::custom([parse_relay_url(url)?])),
+            Relays::Url(url) => {
+                iroh::Endpoint::builder(presets::Minimal).relay_mode(RelayMode::custom([url.0]))
+            }
             Relays::Disabled => {
                 if !config.direct_paths {
                     return Err(EndpointError::NoTransport);
@@ -187,15 +246,12 @@ impl Endpoint {
         }
         let builder = builder
             .secret_key(SecretKey::from_bytes(&secret_key))
-            .alpns(vec![config.alpn.clone()]);
+            .alpns(config.accept_alpns);
         let inner = last(builder)
             .bind()
             .await
             .map_err(|error| EndpointError::Bind(error.to_string()))?;
-        Ok(Self {
-            inner,
-            alpn: config.alpn,
-        })
+        Ok(Self { inner })
     }
 
     /// This endpoint's node ID.
@@ -221,17 +277,18 @@ impl Endpoint {
         self.inner.online().await;
     }
 
-    /// Connects to `peer` with this endpoint's protocol.
-    pub async fn connect(&self, peer: NodeAddr) -> Result<Connection, EndpointError> {
+    /// Connects to `peer` with the application protocol `alpn`, which the peer must accept.
+    pub async fn connect(&self, peer: NodeAddr, alpn: &[u8]) -> Result<Connection, EndpointError> {
         let inner = self
             .inner
-            .connect(peer.inner, &self.alpn)
+            .connect(peer.inner, alpn)
             .await
             .map_err(|error| EndpointError::Connect(error.to_string()))?;
         Ok(Connection { inner })
     }
 
-    /// Accepts the next incoming connection.
+    /// Accepts the next incoming connection, on any of the endpoint's accepted protocols;
+    /// [`Connection::alpn`] says which.
     pub async fn accept(&self) -> Result<Connection, EndpointError> {
         let incoming = self.inner.accept().await.ok_or(EndpointError::Closed)?;
         let inner = incoming
@@ -249,7 +306,8 @@ impl Endpoint {
 /// An open connection to a peer.
 #[derive(Clone, Debug)]
 pub struct Connection {
-    inner: iroh::endpoint::Connection,
+    /// The iroh connection, for the transport code in this crate (DIST-E7-T03) to open streams on.
+    pub(crate) inner: iroh::endpoint::Connection,
 }
 
 impl Connection {
@@ -258,8 +316,13 @@ impl Connection {
         *self.inner.remote_id().as_bytes()
     }
 
+    /// The application protocol the connection speaks.
+    pub fn alpn(&self) -> Vec<u8> {
+        self.inner.alpn().to_vec()
+    }
+
     /// The kind of the path the connection currently sends on, or `None` if it has no selected
-    /// path.
+    /// path. It is read at each call, so it follows a move from a relay to a direct path.
     pub fn path_kind(&self) -> Option<PathKind> {
         let paths = self.inner.paths();
         let selected = paths.iter().find(|path| path.is_selected())?;
@@ -292,18 +355,11 @@ mod tests {
 
     use super::*;
 
-    const ALPN: &[u8] = b"syntropy/test-endpoint/0";
+    const DATA: &[u8] = b"syntropy/test-data/0";
+    const CTL: &[u8] = b"syntropy/test-ctl/0";
 
     fn key(byte: u8) -> [u8; 32] {
         [byte; 32]
-    }
-
-    fn config(relays: Relays, direct_paths: bool) -> Config {
-        Config {
-            relays,
-            direct_paths,
-            alpn: ALPN.to_vec(),
-        }
     }
 
     /// A bound socket as a peer on this host dials it: an unspecified IP becomes loopback.
@@ -319,14 +375,31 @@ mod tests {
         }
     }
 
-    /// Accepts one connection and holds it open until the client closes it.
-    fn serve(server: Endpoint) -> tokio::task::JoinHandle<Result<[u8; 32], EndpointError>> {
+    /// The server's address as a client on this host dials it directly.
+    fn direct_addr(server: &Endpoint) -> NodeAddr {
+        let mut peer = NodeAddr::new(server.node_id()).unwrap();
+        for addr in server.bound_addrs() {
+            peer = peer.with_direct_addr(local(addr));
+        }
+        assert!(!peer.direct_addrs().is_empty());
+        peer
+    }
+
+    /// Each accepted connection's peer node ID and protocol, once the server task ends.
+    type Served = tokio::task::JoinHandle<Result<Vec<([u8; 32], Vec<u8>)>, EndpointError>>;
+
+    /// Accepts `count` connections, holds each until its client closes it, and returns each
+    /// one's peer and protocol.
+    fn serve(server: Endpoint, count: usize) -> Served {
         tokio::spawn(async move {
-            let conn = server.accept().await?;
-            let peer = conn.remote_node_id();
-            conn.inner.closed().await;
+            let mut seen = Vec::new();
+            for _ in 0..count {
+                let conn = server.accept().await?;
+                seen.push((conn.remote_node_id(), conn.alpn()));
+                conn.inner.closed().await;
+            }
             server.close().await;
-            Ok(peer)
+            Ok(seen)
         })
     }
 
@@ -334,25 +407,20 @@ mod tests {
     async fn two_endpoints_on_one_host_connect_by_node_id_on_a_direct_path() {
         // No relay and no online lookup: the test hands the client the server's direct address,
         // so it needs no network beyond loopback.
-        let server = Endpoint::bind(key(1), config(Relays::Disabled, true))
+        let server = Endpoint::bind(key(1), Config::default().accept_alpn(DATA))
             .await
             .unwrap();
-        let mut peer = NodeAddr::new(server.node_id()).unwrap();
-        for addr in server.bound_addrs() {
-            peer = peer.with_direct_addr(local(addr));
-        }
-        assert!(!peer.direct_addrs().is_empty());
+        let peer = direct_addr(&server);
         let server_id = server.node_id();
-        let served = serve(server);
+        let served = serve(server, 1);
 
-        let client = Endpoint::bind(key(2), config(Relays::Disabled, true))
-            .await
-            .unwrap();
-        let conn = tokio::time::timeout(Duration::from_secs(30), client.connect(peer))
+        let client = Endpoint::bind(key(2), Config::default()).await.unwrap();
+        let conn = tokio::time::timeout(Duration::from_secs(30), client.connect(peer, DATA))
             .await
             .expect("connects within 30 s")
             .unwrap();
         assert_eq!(conn.remote_node_id(), server_id);
+        assert_eq!(conn.alpn(), DATA);
         assert_eq!(conn.path_kind(), Some(PathKind::Direct));
         let samples: Vec<Duration> = (0..3).filter_map(|_| conn.rtt()).collect();
         assert_eq!(samples.len(), 3, "an RTT sample per read");
@@ -360,7 +428,68 @@ mod tests {
 
         conn.close();
         client.close().await;
-        assert_eq!(served.await.unwrap().unwrap(), client.node_id());
+        assert_eq!(
+            served.await.unwrap().unwrap(),
+            [(client.node_id(), DATA.to_vec())]
+        );
+    }
+
+    #[tokio::test]
+    async fn one_endpoint_accepts_each_protocol_and_reports_which() {
+        // Two accepted protocols on one server; a client connects with each in turn.
+        let server = Endpoint::bind(key(7), Config::default().accept_alpn(CTL).accept_alpn(DATA))
+            .await
+            .unwrap();
+        let peer = direct_addr(&server);
+        let served = serve(server, 2);
+
+        let client = Endpoint::bind(key(8), Config::default()).await.unwrap();
+        for alpn in [CTL, DATA] {
+            let conn = client.connect(peer.clone(), alpn).await.unwrap();
+            assert_eq!(conn.alpn(), alpn);
+            conn.close();
+        }
+        client.close().await;
+        let seen: Vec<Vec<u8>> = served
+            .await
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(seen, [CTL.to_vec(), DATA.to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn a_protocol_the_peer_does_not_accept_fails_to_connect() {
+        // The server accepts only DATA. Its accept loop runs, so the handshake reaches it and the
+        // protocol mismatch is refused on both sides.
+        let server = Endpoint::bind(key(9), Config::default().accept_alpn(DATA))
+            .await
+            .unwrap();
+        let peer = direct_addr(&server);
+        let accepting = tokio::spawn(async move {
+            let result = server.accept().await.map(|conn| conn.alpn());
+            server.close().await;
+            result
+        });
+        let client = Endpoint::bind(key(10), Config::default()).await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(30), client.connect(peer, CTL))
+            .await
+            .expect("fails within 30 s");
+        assert!(
+            matches!(result, Err(EndpointError::Connect(_))),
+            "{result:?}"
+        );
+        let accepted = tokio::time::timeout(Duration::from_secs(30), accepting)
+            .await
+            .expect("the server's accept ends within 30 s")
+            .unwrap();
+        assert!(
+            matches!(accepted, Err(EndpointError::Accept(_))),
+            "{accepted:?}"
+        );
+        client.close().await;
     }
 
     #[tokio::test]
@@ -368,10 +497,13 @@ mod tests {
         // A relay server on this host, with direct paths disabled on both endpoints, so the only
         // path is through the relay. The test relay's certificate is self-signed.
         let (_map, relay_url, _relay) = iroh::test_utils::run_relay_server().await.unwrap();
-        let url = relay_url.to_string();
+        let url: RelayUrl = relay_url.to_string().parse().unwrap();
         let trust = |builder: Builder| builder.ca_tls_config(CaTlsConfig::insecure_skip_verify());
+        let relayed = Config::default()
+            .relays(Relays::Url(url.clone()))
+            .direct_paths(false);
 
-        let server = Endpoint::bind_with(key(3), config(Relays::Url(url.clone()), false), trust)
+        let server = Endpoint::bind_with(key(3), relayed.clone().accept_alpn(DATA), trust)
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(30), server.online())
@@ -381,17 +513,12 @@ mod tests {
             server.bound_addrs().is_empty(),
             "no direct transport is bound"
         );
-        let peer = NodeAddr::new(server.node_id())
-            .unwrap()
-            .with_relay_url(&url)
-            .unwrap();
+        let peer = NodeAddr::new(server.node_id()).unwrap().with_relay_url(url);
         assert!(peer.direct_addrs().is_empty());
-        let served = serve(server);
+        let served = serve(server, 1);
 
-        let client = Endpoint::bind_with(key(4), config(Relays::Url(url), false), trust)
-            .await
-            .unwrap();
-        let conn = tokio::time::timeout(Duration::from_secs(30), client.connect(peer))
+        let client = Endpoint::bind_with(key(4), relayed, trust).await.unwrap();
+        let conn = tokio::time::timeout(Duration::from_secs(30), client.connect(peer, DATA))
             .await
             .expect("connects through the relay within 30 s")
             .unwrap();
@@ -405,30 +532,39 @@ mod tests {
 
     #[tokio::test]
     async fn no_relay_and_no_direct_paths_is_refused() {
-        let error = Endpoint::bind(key(5), config(Relays::Disabled, false))
+        let error = Endpoint::bind(key(5), Config::default().direct_paths(false))
             .await
             .unwrap_err();
         assert_eq!(error, EndpointError::NoTransport);
     }
 
     #[test]
-    fn addresses_validate_their_parts() {
+    fn the_default_config_connects_directly_and_accepts_nothing() {
+        let config = Config::default();
+        assert_eq!(config.relays, Relays::Disabled);
+        assert!(config.direct_paths);
+        assert!(config.accept_alpns.is_empty());
+        let config = config.accept_alpn(DATA).accept_alpns(vec![CTL.to_vec()]);
+        assert_eq!(config.accept_alpns, [CTL.to_vec()]);
+    }
+
+    #[test]
+    fn addresses_and_relay_urls_validate_their_parts() {
         let node = SecretKey::from_bytes(&key(6)).public();
+        let url: RelayUrl = "https://relay.example.net".parse().unwrap();
         let addr = NodeAddr::new(*node.as_bytes())
             .unwrap()
-            .with_relay_url("https://relay.example.net")
-            .unwrap()
+            .with_relay_url(url.clone())
             .with_direct_addr("192.0.2.1:7777".parse().unwrap());
         assert_eq!(addr.node_id(), *node.as_bytes());
         assert_eq!(
             addr.direct_addrs(),
             ["192.0.2.1:7777".parse::<SocketAddr>().unwrap()]
         );
-        assert_eq!(addr.relay_urls().len(), 1);
+        assert_eq!(addr.relay_urls(), std::slice::from_ref(&url));
+        assert_eq!(url.to_string().parse::<RelayUrl>().unwrap(), url);
         assert!(matches!(
-            NodeAddr::new(*node.as_bytes())
-                .unwrap()
-                .with_relay_url("not a url"),
+            "not a url".parse::<RelayUrl>(),
             Err(EndpointError::InvalidRelayUrl(_))
         ));
     }
