@@ -6,4 +6,4 @@
 2 = ["graph", "solver", "text", "kernels-metal"]
 
 [outside]
-dev-only = ["bench"]
+dev-only = ["bench", "testkit"]

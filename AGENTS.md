@@ -45,7 +45,7 @@ The workspace, from [RFC-0001 §4](plan/rfcs/RFC-0001-system-architecture.md#4-c
 | 6 | `cli` (the single `syntropy` binary) |
 | dev only | `testkit` (simulator, reference executor, parity harness), `bench` |
 
-Rules that will shape most changes: compute crates never depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`; the daemon never links a GPU provider or opens a GPU context; `unsafe` is confined to `kernels-*`, `io`, `tier`, `net`, `ipc` and `spsc`; each external system (iroh, io_uring, HiGHS, ggml, each vendor GPU runtime) is linked by exactly one crate. Packaging lives in `packaging/` and CI in `.github/`, outside the crate graph.
+Rules that will shape most changes: compute crates never depend on `net`, `cluster`, `store`, `api`, `daemon` or `tokio`; the daemon never links a GPU provider or opens a GPU context; `unsafe` is confined to `kernels-*`, `io`, `tier`, `net`, `ipc` and `spsc`, plus the one `GlobalAlloc` impl in `testkit::guards`; each external system (iroh, io_uring, HiGHS, ggml, each vendor GPU runtime) is linked by exactly one crate. Packaging lives in `packaging/` and CI in `.github/`, outside the crate graph.
 
 ## Picking and executing a task
 
