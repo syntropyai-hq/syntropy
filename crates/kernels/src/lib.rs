@@ -17,10 +17,11 @@
 //! This crate declares, and never implements or calls, three `unsafe` trait methods:
 //! [`KernelProvider::register_host`], [`KernelProvider::import`] and
 //! [`HostRegistrar::register`]. Each takes a host range the provider then reads and writes by
-//! address, so its caller must prove the range is valid. That is RFC-0001 §4.2 rule 8's one
-//! exception for `kernels` (note of 2026-10-23). The root denies `unsafe_code` rather than
-//! forbidding it, and each declaration carries the only `#[allow(unsafe_code)]`.
-//! `cargo xtask check-deps` refuses any other `unsafe` in the crate's sources.
+//! address, so its caller must prove the range is valid. That needs an exception to RFC-0001
+//! §4.2 rule 8, which §18.36 records for the maintainers to decide. The root denies
+//! `unsafe_code` rather than forbidding it, and each declaration carries the only
+//! `#[allow(unsafe_code)]`. `cargo xtask check-deps` refuses any other `unsafe` in the crate's
+//! sources.
 
 #![deny(unsafe_code)]
 

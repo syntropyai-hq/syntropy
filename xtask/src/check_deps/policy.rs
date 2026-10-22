@@ -332,7 +332,7 @@ pub fn is_system_library(needed: &str) -> bool {
 /// 2026-10-22 (RFC-0001 §4.2 rule 8).
 pub const UNSAFE_ALLOWED: &[&str] = &["io", "tier", "net", "ipc", "spsc"];
 
-/// Rule 8's scoped exception (RFC-0001 §4.2 rule 8, notes of 2026-10-22 and 2026-10-23): a
+/// Rule 8's scoped exception (RFC-0001 §4.2 rule 8, note of 2026-10-22; §18.36): a
 /// crate that sets `#![deny(unsafe_code)]` at its root instead of `forbid`, and whose only
 /// `unsafe` is of the one shape [`UnsafeShape`] names.
 pub struct UnsafeModule {
@@ -365,8 +365,8 @@ pub enum UnsafeShape {
 /// - `testkit::guards` holds the counting allocator, a `GlobalAlloc` that delegates to
 ///   `std::alloc::System` (RFC-0060 §3.5).
 /// - `kernels` declares the three trait methods that take a host range the provider then reads
-///   and writes by address, so that their callers must prove the range valid (RFC-0040 §2.1,
-///   note of 2026-10-23).
+///   and writes by address, so that their callers must prove the range valid (RFC-0001
+///   §18.36; RFC-0040 §2.1, note of 2026-10-23).
 pub const UNSAFE_MODULES: &[UnsafeModule] = &[
     UnsafeModule {
         krate: "testkit",

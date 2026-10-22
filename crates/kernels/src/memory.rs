@@ -3,8 +3,8 @@
 //! Memory a provider allocates, maps, registers or imports for the tier manager
 //! (RFC-0001 §5.7; RFC-0040 §2.2, §5.1, §5.2; RFC-0020 §4.1, §6).
 //!
-//! `kernels` forbids `unsafe` (RFC-0040 §1; RFC-0001 §4.2 rule 8), so nothing here holds a
-//! raw pointer. Device and host addresses are `u64` values and provider objects are `u64`
+//! `kernels` uses no `unsafe` code beyond declaring three `unsafe` methods (see the crate
+//! docs), so nothing here holds a raw pointer. Device and host addresses are `u64` values and provider objects are `u64`
 //! handles, both meaningful only to the provider that issued them. The provider crates
 //! (`kernels-*`), which may use `unsafe`, turn them back into driver objects.
 

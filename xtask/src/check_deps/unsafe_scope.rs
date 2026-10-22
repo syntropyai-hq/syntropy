@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Rule 8's scoped exceptions (RFC-0001 §4.2 rule 8, notes of 2026-10-22 and 2026-10-23).
+//! Rule 8's scoped exceptions (RFC-0001 §4.2 rule 8, note of 2026-10-22; §18.36).
 //!
 //! A crate in [`policy::UNSAFE_MODULES`](super::policy::UNSAFE_MODULES) may hold `unsafe` of one
 //! [`UnsafeShape`] only:
