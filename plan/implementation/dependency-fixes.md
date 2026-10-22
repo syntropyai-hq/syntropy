@@ -679,3 +679,11 @@ PROD-E5-T02 could not meet two of its criteria as written: "a LAN bind without a
 | PROD-E5-T02 declares the `[api]` section's `bind`, `tls` and `allow_plaintext_lan` keys, and PROD-E2-T01 reuses the section for its `api.bind` default | PROD-E5-T02, PROD-E2-T01 | — | RFC-0054 §5.1 gives `api.*` to RFC-0050, and no task registered it; the rules need the real keys to run. PROD-E2-T01's default criterion is unchanged |
 
 Open, for the owning tasks (not changed here): PROD-E5-T03's "leaf rotation under 100 open streams drops none" and PROD-E5-T06's "replacing the certificate files switches new connections to the new certificate without restart" need a running HTTP server, and neither task reaches PROD-E2-T01 through its dependencies.
+
+## QUAL-E17-T15's nested-field case (2026-10-22)
+
+The post-merge reviews of #1658 found that a serde default keeps an added field compatible only in CBOR. Over the postcard IPC, a field added to any type under `PlacementPlan` or `PlanDelta` changes the message layout, and a new enum variant cannot be decoded by an older peer. RFC-0001 §5 gains a dated note that either addition is an `ipc_protocol` change (RFC-0001 §18.20, issues #1675 and #1660).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E17-T15's fingerprint criterion gains a nested field (a `HopPlan` field inside `AssignPlan`'s `PlacementPlan`) and a new `PlanDelta` variant, each failing `compat` without an `ipc_protocol` bump; its IPC golden vectors include `PlacementPlan`, `StagePlan` and `PlanDelta`; no edge | QUAL-E17-T15 | Definition of done | only a ring-record change was covered. A fingerprint that missed nested fields or variants, or vectors without the plan types, would let such an addition break adoption across builds |
