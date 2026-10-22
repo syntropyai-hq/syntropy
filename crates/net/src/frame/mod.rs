@@ -66,6 +66,6 @@ pub use route::{
     route_row_len,
 };
 pub use token::{
-    ENTRY_HEADER_LEN, Entries, Finish, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,
-    TokenEntry, TokenSpec, token_flags,
+    ENTRY_HEADER_LEN, Entries, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,
+    TokenEntryBytes, TokenEntryView, TokenSpec, token_flags,
 };
