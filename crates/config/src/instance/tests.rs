@@ -132,14 +132,13 @@ fn a_policy_sets_every_key_as_the_hand_written_parser_does() {
 }
 
 /// The cases of the scheduler's `invalid_values_are_rejected_with_their_code` (#1656), with
-/// its codes: 2 `wrong_type`, 3 `unknown_key`, 4 `out_of_range`, 5 `bad_unit`. Three differ:
-/// an integer outside a `u32` (`-1`, `4294967296`) is 4 in the hand-written parser and 2 here,
-/// because the builder uses each key's own check, as a node file's `[policy."…"]` table is
-/// checked at load ([`the_builder_gives_the_codes_a_policy_table_gets_at_load`]).
+/// its codes: 2 `wrong_type`, 3 `unknown_key`, 4 `out_of_range`, 5 `bad_unit`. The builder
+/// uses each key's own check, as a node file's `[policy."…"]` table is checked at load
+/// ([`the_builder_gives_the_codes_a_policy_table_gets_at_load`]), so all three agree.
 const CASES: &[(&str, &str, u16)] = &[
     ("latency_decode_rows = 0", "sched.latency_decode_rows", 4),
     ("latency_decode_rows = 5", "sched.latency_decode_rows", 4),
-    ("latency_decode_rows = -1", "sched.latency_decode_rows", 2),
+    ("latency_decode_rows = -1", "sched.latency_decode_rows", 4),
     (
         "latency_decode_rows = \"4\"",
         "sched.latency_decode_rows",
@@ -148,8 +147,8 @@ const CASES: &[(&str, &str, u16)] = &[
     ("latency_decode_rows = 4.0", "sched.latency_decode_rows", 2),
     ("prefill_inflight = 0", "sched.prefill_inflight", 4),
     ("prefill_share = 0", "sched.prefill_share", 4),
-    ("max_queued = -1", "sched.max_queued", 2),
-    ("max_queued = 4294967296", "sched.max_queued", 2),
+    ("max_queued = -1", "sched.max_queued", 4),
+    ("max_queued = 4294967296", "sched.max_queued", 4),
     ("max_queued = true", "sched.max_queued", 2),
     ("spin_us = 50", "sched.spin_us", 2),
     ("spin_us = \"50\"", "sched.spin_us", 5),
@@ -220,10 +219,10 @@ fn the_builder_gives_the_codes_a_policy_table_gets_at_load() {
 #[test]
 fn every_problem_in_a_policy_is_reported() {
     assert_eq!(
-        rejections("spin_us = 50\nmax_queued = 0.5\ntypo = 1\nmax_pause = \"30\"\n"),
+        rejections("spin_us = 50\nmax_queued = -1\ntypo = 1\nmax_pause = \"30\"\n"),
         [
             ("sched.max_pause".to_owned(), 5),
-            ("sched.max_queued".to_owned(), 2),
+            ("sched.max_queued".to_owned(), 4),
             ("sched.spin_us".to_owned(), 2),
             ("sched.typo".to_owned(), 3),
         ]
