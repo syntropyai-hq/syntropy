@@ -20,6 +20,9 @@
 //!   it just left every few seconds, and each probe window puts enough samples over the bound
 //!   that the data channel's p99 over a long transfer exceeds it; a heavier data load still
 //!   lowers the ceiling through further halvings (RFC-0031 §7.5, note of 2026-10-23).
+//! - **A window with no sample,** when no data channel is live, also resets the ceiling to β and
+//!   the re-probe wait to [`REPROBE_AFTER`]: with nothing to protect, an old breach no longer holds
+//!   the rate down.
 //!
 //! Rates and tokens are whole bytes and nanoseconds, so a run paces the same on every host.
 
@@ -264,6 +267,14 @@ impl BulkPacer {
         self.stats.windows += 1;
         self.stats.last_p99 = p99.map(Nanos);
         let rate = self.rate();
+        if p99.is_none() {
+            // No data channel is live: nothing to protect, so the last breach no longer bounds
+            // the rate.
+            self.ceiling = self.beta.max(self.floor);
+            self.reprobe_after = REPROBE_AFTER;
+            self.quiet = 0;
+            self.probed = false;
+        }
         let next = if p99.is_some_and(|p99| p99 > self.bound) {
             self.stats.halvings += 1;
             self.ceiling = rate
@@ -479,6 +490,46 @@ mod tests {
         assert_eq!(pacer.ceiling(), 65 * MB);
         close(&mut pacer, 1_000_000);
         assert_eq!(pacer.ceiling(), 70 * MB);
+    }
+
+    /// A window with no sample, when no data channel is live, resets the ceiling to β and the
+    /// re-probe wait to 64, so after breaches the rate climbs back to β a step a window.
+    #[test]
+    fn a_window_with_no_data_channel_resets_the_ceiling() {
+        let mut pacer = BulkPacer::new(config(), MonoTime(0));
+        let step = 5 * MB;
+        let mut window = 0u64;
+        let mut close = |pacer: &mut BulkPacer, sample: Option<u64>| {
+            window += 1;
+            if let Some(sample) = sample {
+                pacer.on_alpha(Nanos(sample), MonoTime(window * WINDOW.0 - 1));
+            }
+            pacer.on_tick(MonoTime(window * WINDOW.0));
+        };
+        // Climb to 60 MB/s and breach: the ceiling is 50 MB/s.
+        while pacer.rate() < 60 * MB {
+            close(&mut pacer, Some(1_000_000));
+        }
+        close(&mut pacer, Some(2_000_000));
+        assert_eq!(pacer.ceiling(), 60 * MB - 2 * step);
+        // The data channel goes away: one window with no sample resets the ceiling, and the rate
+        // climbs past the old ceiling a step a window, to β.
+        close(&mut pacer, None);
+        assert_eq!(pacer.ceiling(), 100 * MB);
+        while pacer.rate() < 100 * MB {
+            let before = pacer.rate();
+            close(&mut pacer, None);
+            assert_eq!(pacer.rate(), (before + step).min(100 * MB));
+        }
+        // A breach after that starts the re-probe wait at 64 again, not at its doubled value.
+        close(&mut pacer, Some(2_000_000));
+        assert_eq!(pacer.ceiling(), 90 * MB);
+        for _ in 0..63 {
+            close(&mut pacer, Some(1_000_000));
+        }
+        assert_eq!(pacer.ceiling(), 90 * MB);
+        close(&mut pacer, Some(1_000_000));
+        assert_eq!(pacer.ceiling(), 95 * MB);
     }
 
     /// A window with no sample, when no data channel is live, counts as within the bound; and
