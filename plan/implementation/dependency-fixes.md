@@ -856,3 +856,11 @@ Building DIST-E1-T14 found three field types that no row defined, though its own
 | TIER-E7-T01 computes its page keys as `core`'s `PrefixKey`; its existing edge to DIST-E1-T14 now names `PrefixKey` too | TIER-E7-T01 | R9 | the key is what `PrefixRef::Cached` carries |
 | PROD-E3-T05 uses `core`'s `GrammarRef` and `SamplingParams`; PROD-E3-T05 → DIST-E1-T14 | PROD-E3-T05 | R9 | its criterion ships each grammar hash to a tail once, inside `SamplingParams`. M1a → M0a, no cycle |
 | DIST-E1-T14's view conversion covers every field but the tap block, and refuses a non-empty one either way with a classified error; DIST-E8-T06 gains "`net`'s `TokenEntryView` converts a tap block to and from `core`'s `LogitTap` in both tap modes, with the golden frames unchanged"; no edge | DIST-E1-T14, DIST-E8-T06 | R9 | `core`'s `TokenEntry::tap` is a typed `LogitTap`, while `net` carries the block as bytes until DIST-E8-T06 builds its codec, and the `Token` goldens' tap blocks are fill bytes. DIST-E8-T06 already depends on DIST-E8-T03, whose view it extends. M0's taps travel in-process (PLC-E9-T16) |
+
+## OQ-NET-35: the chosen-only logprobs form (2026-10-23)
+
+#1780 let `core`'s `LogprobBlock { k: 0 }` hold the chosen tokens' logprobs alone, which OpenAI's `top_logprobs = 0` asks for and the in-process path carries. RFC-0031 §6.5's `logprob_k = 0` means no logprobs, so `net` refuses such a block until the entry has a form for it. review-1493's N1 on #1780 found the question cited but not recorded. It is now OQ-NET-35, with `logprob_k = 0x80` recommended, and a new task settles it. Until then RFC-0050 §3.1's note has ingress ask a remote tail for one alternative and drop it (standin-engine's N3 on #1780). These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |

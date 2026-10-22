@@ -616,6 +616,8 @@ Tokens travel tail → head (ring return, all of the step's sequences) and tail 
         padding to 8
 ```
 
+- *Note 2026-10-23 (DIST-E1-T14, as built; review-1493's N2 on #1780):* `core`'s `TokenEntry::rng_counter` has no serde default, though the item below calls it an addition with a default. A missing counter defaulting to 0 would restart a resumed sequence's random stream (RFC-0032 §3.7), so a later step's tokens would differ from the reference, which breaks exact mode (D3). The binary entry always carries it at offset 40, and `core`'s type is new, so no older encoding exists to need a default. A serde encoding without it is refused rather than read as 0. `draft`, `draft_tree` and `tap` keep their defaults.
+- *Note 2026-10-23:* `logprob_k = 0` means no logprobs, so the entry has no form for the chosen tokens' logprobs without alternatives. OQ-NET-35 tracks it, with `logprob_k = 0x80` recommended, and DIST-E8-T18 settles it.
 - `TokenEntry::draft`, `rng_counter` and `tap` are additions to RFC-0001's `TokenEntry`, made under the extension rules as fields with defaults. `tap` is RFC-0060 amendment A4's `TokenEntry::tap: Option<LogitTap>`.
 - The draft travels only on the ring-return frame. The ingress copy omits it (`n_draft = 0`).
 - The tap block travels only on the ingress copy, which goes to the parity driver.

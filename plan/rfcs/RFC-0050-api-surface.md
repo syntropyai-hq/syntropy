@@ -240,6 +240,8 @@ The response is the standard `chat.completion` object. Fields with Syntropy-spec
 - The `syntropy` extension object is described in §10.
 - `finish_reason`: `stop` for end of turn and stop strings, `length`, `tool_calls`.
 
+*Note 2026-10-23 (OQ-NET-35): `top_logprobs = 0`.* `logprobs: true` without `top_logprobs` asks for the chosen tokens' logprobs alone: `SamplingParams::logprobs = Some(0)` (RFC-0001 §5.8). An instance whose tail runs in the ingress's process carries it as is. RFC-0031 §6.5's `Token` entry has no form for it yet, so on an instance whose tail is on another node, ingress asks the tail for `Some(1)` and drops the alternative before encoding the response. The chosen token's logprob is the same value either way, so the response stays exact. DIST-E8-T18 withdraws the rewrite once the entry carries the form OQ-NET-35 settles.
+
 #### 3.2 OpenAI Responses (`POST /v1/responses`)
 
 The front end ships in two halves. **Stateless Responses in M1**: every request is served from its own `input`, and nothing is kept after the stream ends. This is what coding-agent clients that speak only Responses need to connect. **Stored Responses in M3**: `store`, `previous_response_id`, `background` and the retrieval routes, with records on the ingress node only (§9.2).
