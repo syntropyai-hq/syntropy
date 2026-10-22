@@ -488,7 +488,7 @@ impl HostChangeLedger {
 
     /// Creates the copies directory, owner-only (0700 on Unix), and returns it. A link in its
     /// place is refused, never followed or given new permissions.
-    fn copies_dir(&self) -> Result<PathBuf, LedgerError> {
+    pub(crate) fn copies_dir(&self) -> Result<PathBuf, LedgerError> {
         let dir = self.state_dir.join(COPIES_DIR);
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
@@ -616,7 +616,7 @@ fn write_copy(path: &Path, bytes: &[u8], original: Option<u32>) -> Result<(), Le
 
 /// Creates `path` as a new file, owner-only (0600 on Unix) before any byte is written. Whatever
 /// was at `path`, a stale file or a link someone planted, is removed first rather than opened.
-fn new_private_file(path: &Path) -> Result<File, LedgerError> {
+pub(crate) fn new_private_file(path: &Path) -> Result<File, LedgerError> {
     match fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -664,16 +664,21 @@ pub(crate) fn replace_atomically(path: &Path, bytes: &[u8]) -> Result<(), Ledger
 mod tests {
     use super::*;
 
+    /// A new state directory per call. Tests run in parallel and the clock can repeat between
+    /// two calls (Windows counts in 100 ns), so a counter keeps the names apart, and
+    /// `create_dir` fails rather than share a directory that already exists.
     fn temp_state() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "syntropy-ledger-{}-{}",
+            "syntropy-ledger-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir(&dir).unwrap();
         dir
     }
 

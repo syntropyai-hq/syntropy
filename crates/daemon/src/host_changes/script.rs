@@ -570,16 +570,21 @@ pub fn write_revert_script(
 mod tests {
     use super::*;
 
+    /// A new state directory per call. Tests run in parallel and the clock can repeat between
+    /// two calls (Windows counts in 100 ns), so a counter keeps the names apart, and
+    /// `create_dir` fails rather than share a directory that already exists.
     fn temp_state() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "syntropy-script-{}-{}",
+            "syntropy-script-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir(&dir).unwrap();
         dir
     }
 

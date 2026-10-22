@@ -312,14 +312,12 @@ fn close(ledger: &mut HostChangeLedger, id: u32, state: ChangeState) -> Result<(
         _ => ledger.reverted(id)?,
     }
     ledger.delete_copies(id)?;
+    // The marker sits with the copies, under the same rules: the directory owner-only and never
+    // a link, the marker a new owner-only file.
+    ledger.copies_dir()?;
     let marker = ledger.revert_marker(id);
-    if let Some(dir) = marker.parent() {
-        fs::create_dir_all(dir).map_err(|source| LedgerError::Io {
-            path: dir.to_owned(),
-            source,
-        })?;
-    }
-    fs::write(&marker, b"").map_err(|source| LedgerError::Io {
+    let file = super::new_private_file(&marker)?;
+    file.sync_all().map_err(|source| LedgerError::Io {
         path: marker,
         source,
     })
@@ -690,16 +688,21 @@ mod tests {
     }
 
     /// A private state directory, as a real one is (0700).
+    /// A new state directory per call. Tests run in parallel and the clock can repeat between
+    /// two calls (Windows counts in 100 ns), so a counter keeps the names apart, and
+    /// `create_dir` fails rather than share a directory that already exists.
     fn temp_state() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "syntropy-revert-{}-{}",
+            "syntropy-revert-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir(&dir).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
