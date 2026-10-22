@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Every file agents load as instructions or configuration (RFC-0062 §12.3, ADR-0624 decisions 3
+# and 5). A change to any of them changes how every later change is written or reviewed, so it
+# needs a maintainer's approval, and `.github/CODEOWNERS` gives each one a maintainer as owner.
+#
+# `cargo xtask ci lint` checks this file in its `agent-instructions` step:
+# - each entry has a root-relative `path` (a directory ends in `/`), a `kind` of `instructions`
+#   or `configuration`, and an `about`;
+# - each entry exists, unless `planned` names the task that will add it;
+# - this file lists itself;
+# - CODEOWNERS gives every entry an owner who is a maintainer.
+#
+# Agent tooling loads instructions only through `cargo xtask instructions --show <path>`, which
+# refuses a path this list does not cover. With `--ref <rev>`, the list and the file both come
+# from that commit, so a run that trusts `main` reads `main`'s copies.
+#
+# Entries the plan adds later, each with its own task: the review agent's instructions
+# (QUAL-E1-T16) and the agent sandbox definition (QUAL-E2-T11). The task that writes them adds
+# them here, with a CODEOWNERS rule.
+
+[[file]]
+path = "AGENTS.md"
+kind = "instructions"
+about = "the rules every agent follows: tasks, lanes, gates, naming, commits and writing style"
+
+[[file]]
+path = "plan/implementation/README.md"
+kind = "instructions"
+about = "the task procedure agents follow: picking up a task and the definition of done"
+
+[[file]]
+path = ".githooks/"
+kind = "configuration"
+about = "the opt-in git hooks agents are told to turn on, which run at commit time"
+
+[[file]]
+path = "ci/agent-instructions.toml"
+kind = "configuration"
+about = "this list"
+
+[[file]]
+path = "ci/agent-tooling.lock"
+kind = "configuration"
+about = "the agent runtime, plug-ins and tool servers, pinned by version and digest"
+planned = "QUAL-E1-T24"

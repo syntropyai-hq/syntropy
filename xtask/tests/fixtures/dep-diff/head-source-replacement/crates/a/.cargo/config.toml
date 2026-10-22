@@ -1,0 +1,6 @@
+# Reads every crates.io crate from another index when cargo runs in this directory.
+[source.crates-io]
+replace-with = "mirror"
+
+[source.mirror]
+registry = "https://example.invalid/index"
