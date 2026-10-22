@@ -204,6 +204,7 @@ fn run(seed: u64, bulk: u64, idle_scale: f64) -> Run {
     let mut last_window = 0u64;
     let mut last_bytes = 0u64;
     let mut iterations = 0u64;
+    let mut bulk_acked = 0u64;
     loop {
         iterations += 1;
         assert!(iterations < 50_000_000, "no progress");
@@ -259,7 +260,9 @@ fn run(seed: u64, bulk: u64, idle_scale: f64) -> Run {
         while data_rx.try_recv().is_some() {}
         while bulk_rx.try_recv().is_some() {}
         while data.completed().is_some() {}
-        while bulk_tx.completed().is_some() {}
+        while bulk_tx.completed().is_some() {
+            bulk_acked += 1;
+        }
         // Each window's bulk rate, from the pacer's byte count.
         if let Some(pacer) = net.pacer(A, B)
             && t >= last_window + WINDOW.0
@@ -269,8 +272,10 @@ fn run(seed: u64, bulk: u64, idle_scale: f64) -> Run {
             last_bytes = bytes;
             last_window += WINDOW.0;
         }
-        let done = bulk_sent >= bulk && bulk_tx.stats().frames_sent == bulk_tx_acked(&bulk_tx);
-        if done {
+        // Done when every bulk frame is sent and acknowledged. Not when the credit is whole again:
+        // a `Bulk` channel's credits are batched (RFC-0031 §7.1), so the last slots released may
+        // never be credited once nothing more is sent.
+        if bulk_sent >= bulk && bulk_acked == bulk_tx.stats().frames_sent {
             break;
         }
         // The next event: the network's, the data channel's period, or the pacer.
@@ -317,18 +322,6 @@ fn run(seed: u64, bulk: u64, idle_scale: f64) -> Run {
         halvings: stats.halvings,
         increases: stats.increases,
         rates,
-    }
-}
-
-/// Whether every bulk frame sent is acknowledged: the tickets came back.
-fn bulk_tx_acked(channel: &Channel) -> u64 {
-    // `completed` has been drained each step, so acked frames are those no longer credited
-    // against: the sent count once the credit window is whole again.
-    let stats = channel.stats();
-    if channel.credit() == 64 {
-        stats.frames_sent
-    } else {
-        u64::MAX
     }
 }
 
