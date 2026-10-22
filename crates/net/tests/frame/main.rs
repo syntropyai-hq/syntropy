@@ -11,6 +11,7 @@
 //! `SYNTROPY_BLESS_GOLDEN=1` rewrites the files from [`spec`]. A changed golden frame changes the
 //! wire format, which needs a wire-minor bump (ADR-0307 item 1).
 
+mod activation;
 mod spec;
 
 use std::collections::BTreeSet;

@@ -326,22 +326,61 @@ pub fn encode(
     out: &mut [u8],
 ) -> Result<usize, FrameError> {
     let ext_len = ext.len().next_multiple_of(ALIGN);
-    let ext_len32 = u32::try_from(ext_len).map_err(|_| FrameError::TooLong {
+    let total = check_frame(spec, ext_len, ext.len(), payload.len(), out.len())?;
+    out[HEADER_LEN..HEADER_LEN + ext.len()].copy_from_slice(ext);
+    out[HEADER_LEN + ext.len()..HEADER_LEN + ext_len].fill(0);
+    finish(spec, ext_len, payload, &mut out[..total]);
+    Ok(total)
+}
+
+/// [`encode`] for a frame whose extension the caller has already written at
+/// `out[64..64 + ext_len]`, padding included, as a typed codec does to build it in place. Writes
+/// the header and the payload and computes both CRCs; the extension bytes are not copied.
+pub fn encode_in_place(
+    spec: &FrameSpec,
+    ext_len: usize,
+    payload: &[u8],
+    out: &mut [u8],
+) -> Result<usize, FrameError> {
+    let total = check_frame(spec, ext_len, ext_len, payload.len(), out.len())?;
+    if !ext_len.is_multiple_of(ALIGN) {
+        return Err(FrameError::ExtLenUnaligned(ext_len as u32));
+    }
+    finish(spec, ext_len, payload, &mut out[..total]);
+    Ok(total)
+}
+
+/// The checks [`encode`] makes before writing: the lengths fit their fields, the header fields
+/// keep the decoder's rules, and `out` holds the frame. Returns the frame's length.
+fn check_frame(
+    spec: &FrameSpec,
+    ext_len: usize,
+    ext_given: usize,
+    payload_len: usize,
+    available: usize,
+) -> Result<usize, FrameError> {
+    u32::try_from(ext_len).map_err(|_| FrameError::TooLong {
         what: "extension",
-        len: ext.len(),
+        len: ext_given,
     })?;
-    let payload_len32 = u32::try_from(payload.len()).map_err(|_| FrameError::TooLong {
+    u32::try_from(payload_len).map_err(|_| FrameError::TooLong {
         what: "payload",
-        len: payload.len(),
+        len: payload_len,
     })?;
-    check_spec(spec, payload.len())?;
-    let total = HEADER_LEN + ext_len + payload.len();
-    if out.len() < total {
+    check_spec(spec, payload_len)?;
+    let total = HEADER_LEN + ext_len + payload_len;
+    if available < total {
         return Err(FrameError::BufferTooSmall {
             needed: total,
-            available: out.len(),
+            available,
         });
     }
+    Ok(total)
+}
+
+/// Writes the header and the payload around an extension already at `out[64..64 + ext_len]`,
+/// then both CRCs. `out` is exactly the frame; [`check_frame`] has passed.
+fn finish(spec: &FrameSpec, ext_len: usize, payload: &[u8], out: &mut [u8]) {
     let payload_crc = if payload.is_empty() {
         0
     } else {
@@ -357,16 +396,13 @@ pub fn encode(
     h[24..32].copy_from_slice(&spec.epoch.seq.to_le_bytes());
     h[32..40].copy_from_slice(&spec.step.to_le_bytes());
     h[40..48].copy_from_slice(&spec.chan_seq.to_le_bytes());
-    h[48..52].copy_from_slice(&ext_len32.to_le_bytes());
-    h[52..56].copy_from_slice(&payload_len32.to_le_bytes());
+    h[48..52].copy_from_slice(&(ext_len as u32).to_le_bytes());
+    h[52..56].copy_from_slice(&(payload.len() as u32).to_le_bytes());
     h[56..60].copy_from_slice(&payload_crc.to_le_bytes());
     let ext_end = HEADER_LEN + ext_len;
-    out[HEADER_LEN..HEADER_LEN + ext.len()].copy_from_slice(ext);
-    out[HEADER_LEN + ext.len()..ext_end].fill(0);
-    out[ext_end..total].copy_from_slice(payload);
+    out[ext_end..].copy_from_slice(payload);
     let header_crc = crc32c_append(crc32c(&out[..60]), &out[HEADER_LEN..ext_end]);
     out[60..64].copy_from_slice(&header_crc.to_le_bytes());
-    Ok(total)
 }
 
 /// [`encode`] into a new vector of exactly the frame's length.
