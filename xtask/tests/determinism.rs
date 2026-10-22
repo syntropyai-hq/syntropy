@@ -222,7 +222,9 @@ fn every_banned_item_fails_clippy_in_a_covered_crate_only() {
         .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("cargo runs");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Clippy prints paths with the host's separator, `\` on Windows; the reports below are
+    // matched with `/`.
+    let stderr = String::from_utf8_lossy(&output.stderr).replace('\\', "/");
     assert!(!output.status.success(), "clippy passed:\n{stderr}");
 
     let reports: Vec<&str> = stderr
