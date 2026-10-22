@@ -443,7 +443,15 @@ planned = ["hosted-parity-nano"]
 [[golden]]
 name = "kernels"
 source = "constructed"
-paths = ["crates/kernels/src/lib.rs", "crates/kernels-cuda/src/lib.rs", "numerics/t.toml"]
+paths = ["crates/kernels/src/lib.rs", "numerics/t.toml"]
+jobs = ["lint", "hosted-test"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "kernels-cuda"
+source = "constructed"
+paths = ["crates/kernels-cuda/src/lib.rs"]
 jobs = ["lint", "hosted-test"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
@@ -489,6 +497,45 @@ fn editing_the_rules_without_the_goldens_fails() {
 }
 
 #[test]
+fn each_part_of_a_rule_needs_a_golden_that_depends_on_it_alone() {
+    let (_tree, workspace) = workspace();
+    // One golden meets both hardware patterns, so either could be dropped unseen.
+    let goldens = passing_goldens(RULES).replace(
+        "paths = [\"crates/kernels-cuda/src/lib.rs\"]",
+        "paths = [\"crates/kernels-cuda/src/lib.rs\", \"crates/kernels/src/x.rs\"]",
+    );
+    let goldens = goldens.replace(
+        "paths = [\"crates/kernels/src/lib.rs\", \"numerics/t.toml\"]",
+        "paths = [\"numerics/t.toml\"]",
+    );
+    let goldens = goldens.replace(
+        "name = \"kernels\"\nsource = \"constructed\"\npaths = [\"numerics/t.toml\"]\njobs = [\"lint\", \"hosted-test\"]\nhw_required = [\"hw-cuda-ada\"]\nplanned = [\"hosted-parity-nano\", \"hw-cuda-ada\"]",
+        "name = \"kernels\"\nsource = \"constructed\"\npaths = [\"numerics/t.toml\"]\njobs = [\"lint\", \"hosted-test\"]\nhw_required = []\nplanned = [\"hosted-parity-nano\"]",
+    );
+    assert_eq!(
+        check(RULES, &goldens, &workspace, WORKFLOW_TEXT),
+        [
+            "ci/jobs-goldens.toml: no golden meets `crates/kernels-*/**` alone among \
+             `hw-cuda-ada`'s patterns, so dropping it would go unseen",
+            "ci/jobs-goldens.toml: no golden meets `crates/kernels/**` alone among \
+             `hw-cuda-ada`'s patterns, so dropping it would go unseen",
+        ]
+    );
+    // A lock dependency changed beside a hardware path is not pinned either.
+    let goldens = passing_goldens(RULES).replace(
+        "paths = [\"Cargo.lock\", \"xtask/src/main.rs\", \".gitattributes\"]",
+        "paths = [\"Cargo.lock\", \"xtask/src/main.rs\", \".gitattributes\", \"crates/kernels/src/y.rs\"]",
+    );
+    assert_eq!(
+        check(RULES, &goldens, &workspace, WORKFLOW_TEXT),
+        [
+            "ci/jobs-goldens.toml: no golden changes `cuda-bindings` alone among `hw-cuda-ada`'s \
+             lock dependencies and paths, so dropping it would go unseen"
+        ]
+    );
+}
+
+#[test]
 fn the_golden_check_names_each_gap() {
     let (_tree, workspace) = workspace();
     // A new pattern with no golden, and a golden whose sets the rules no longer give.
@@ -506,8 +553,8 @@ fn the_golden_check_names_each_gap() {
         [
             "ci/jobs-goldens.toml: golden `docs`: jobs is [\"lint\"], expected [\"hosted-test\", \
              \"lint\"]",
-            "ci/jobs-goldens.toml: no golden has a path that `third_party/ggml/**` (job \
-             `hw-cuda-ada`) matches",
+            "ci/jobs-goldens.toml: no golden meets `third_party/ggml/**` alone among \
+             `hw-cuda-ada`'s patterns, so dropping it would go unseen",
         ]
     );
     // A workflow job with no rule, and a rule for a job the workflow lacks.

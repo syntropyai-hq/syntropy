@@ -3,9 +3,12 @@
 # The golden suite of the affected-job rules in `ci/jobs.toml` (RFC-0062 §2.2; QUAL-E1-T07).
 # `lint`'s `jobs` step applies the rules to each golden's paths and fails unless they give exactly
 # its `jobs` (the hosted jobs listed), `hw_required` (the hardware jobs required) and `planned`
-# (the planned jobs whose rule matched). It also fails unless every job, pattern and lock
-# dependency in the rules is met by some golden, some golden has a path no rule knows, and
-# `jobs_toml` is the digest of the `ci/jobs.toml` the goldens were last checked against.
+# (the planned jobs whose rule matched). It also fails unless:
+# - every job and pattern in the rules is met by some golden;
+# - each pattern and lock dependency of a direct rule has a golden that it alone of its job's
+#   patterns and lock dependencies meets, so dropping it changes that golden;
+# - some golden has a path no rule knows;
+# - `jobs_toml` is the digest of the `ci/jobs.toml` the goldens were last checked against.
 #
 # Most goldens are commits on `main`, with the paths `git show --no-renames --name-only` lists
 # and, where `Cargo.lock` changed, the packages whose entries changed. The rest are constructed,
@@ -382,33 +385,6 @@ hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
 [[golden]]
-name = "manifest and testkit modules"
-source = "constructed: both forms of each module the direct rule names; census, kv, parity and conformance do not exist yet"
-paths = [
-    "crates/manifest/src/census.rs",
-    "crates/manifest/src/census/scan.rs",
-    "crates/manifest/src/kv.rs",
-    "crates/manifest/src/kv/formula.rs",
-    "crates/testkit/src/refexec.rs",
-    "crates/testkit/src/refexec/run.rs",
-    "crates/testkit/src/parity.rs",
-    "crates/testkit/src/parity/report.rs",
-    "crates/testkit/src/conformance.rs",
-    "crates/testkit/src/conformance/cases.rs",
-]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
-hw_required = ["hw-cuda-ada"]
-planned = ["hosted-parity-nano", "hw-cuda-ada"]
-
-[[golden]]
-name = "vendored ggml and the CUDA image"
-source = "constructed: neither exists yet"
-paths = ["third_party/ggml/src/ggml.c", "third_party/ggml.lock", "ci/images/cuda-12/Dockerfile"]
-jobs = ["build", "hosted-test", "lint"]
-hw_required = ["hw-cuda-ada"]
-planned = ["hosted-parity-nano", "hw-cuda-ada"]
-
-[[golden]]
 name = "toolchain pin"
 source = "constructed: a toolchain bump alone"
 paths = ["rust-toolchain.toml"]
@@ -450,6 +426,132 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "CPU provider only"
 source = "constructed: a change to the CPU provider alone, which RFC-0060 §3.4 builds with the sanitizers"
 paths = ["crates/kernels-cpu/src/lib.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "kernels only"
+source = "2f4fba40 on main, \"feat(kernels): add the Numerics static check and the accumulation detector (#1696)\": the commit's paths, from `git show --no-renames --name-only`"
+paths = [
+    "crates/kernels/src/lib.rs",
+    "crates/kernels/src/numerics.rs",
+    "crates/kernels/src/numerics/tests.rs",
+    "crates/kernels/src/op.rs",
+    "crates/kernels/src/op/tests.rs",
+]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "census module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/manifest/src/census.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "census module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/manifest/src/census/scan.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "kv module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/manifest/src/kv.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "kv module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/manifest/src/kv/formula.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "refexec module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/refexec.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "refexec module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/refexec/run.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "parity module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/parity.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "parity module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/parity/report.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "conformance module file"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/conformance.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "conformance module directory"
+source = "constructed: one form of a module the direct rule names, alone"
+paths = ["crates/testkit/src/conformance/cases.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "vendored ggml tree"
+source = "constructed: the vendored tree alone; it does not exist yet"
+paths = ["third_party/ggml/src/ggml.c"]
+jobs = ["build", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "ggml lock file"
+source = "constructed: the lock file alone, as a ggml bump's commit record changes; it does not exist yet"
+paths = ["third_party/ggml.lock"]
+jobs = ["build", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "CUDA image"
+source = "constructed: a CUDA toolchain image alone; none exists yet"
+paths = ["ci/images/cuda-12/Dockerfile"]
+jobs = ["build", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "exec only"
+source = "constructed: a change to `exec` alone; no commit has touched only `exec`"
+paths = ["crates/exec/src/lib.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]

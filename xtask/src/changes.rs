@@ -1129,9 +1129,8 @@ pub fn check(
         unclassified |= got.paths.iter().any(|(_, c)| *c == Class::Unclassified);
     }
 
-    // One diff per rule: every job, pattern and lock dependency is met by some golden.
+    // One diff per rule: every job and every pattern is met by some golden.
     let all_paths: Vec<&String> = file.golden.iter().flat_map(|g| &g.paths).collect();
-    let all_lock: BTreeSet<&String> = file.golden.iter().flat_map(|g| &g.lock).collect();
     let mut uncovered = |glob: &Glob, what: &str| {
         if !all_paths.iter().any(|path| glob.matches(path)) {
             problems.push(format!(
@@ -1149,13 +1148,8 @@ pub fn check(
     for (glob, _) in &config.inputs {
         uncovered(glob, "inputs");
     }
-    for job in &config.jobs {
-        if let When::Direct { paths, .. } = &job.when {
-            for glob in paths {
-                uncovered(glob, &format!("job `{}`", job.name));
-            }
-        }
-    }
+    // A direct job's patterns, and its lock dependencies, are held to more below: each needs a
+    // golden that depends on it alone.
     for job in &config.jobs {
         if !seen_jobs.contains(&job.name) {
             problems.push(format!(
@@ -1163,20 +1157,59 @@ pub fn check(
                 job.name
             ));
         }
-        if let When::Direct { lock_deps, .. } = &job.when {
-            for package in lock_deps.iter().filter(|p| !all_lock.contains(p)) {
-                problems.push(format!(
-                    "{GOLDENS}: no golden changes `{package}` in Cargo.lock, a lock dependency \
-                     of `{}`",
-                    job.name
-                ));
-            }
-        }
     }
     if !unclassified {
         problems.push(format!(
             "{GOLDENS}: no golden has a path no rule knows, so failing closed is untested"
         ));
+    }
+
+    // Each part of a rule is pinned: some golden depends on it alone, so dropping it from
+    // `ci/jobs.toml` changes that golden's sets. A golden met by two of a job's patterns would
+    // still require the job with either one gone.
+    for job in &config.jobs {
+        if let When::Direct { paths, lock_deps } = &job.when {
+            // The indices of the job's patterns the golden meets, and its lock dependencies.
+            let met = |golden: &Golden| -> (Vec<usize>, Vec<String>) {
+                let globs = (0..paths.len())
+                    .filter(|&i| golden.paths.iter().any(|path| paths[i].matches(path)))
+                    .collect();
+                let locks = golden
+                    .lock
+                    .iter()
+                    .filter(|p| lock_deps.contains(*p))
+                    .cloned()
+                    .collect();
+                (globs, locks)
+            };
+            for (i, glob) in paths.iter().enumerate() {
+                let pinned = file.golden.iter().any(|golden| {
+                    let (globs, locks) = met(golden);
+                    globs == [i] && locks.is_empty()
+                });
+                if !pinned {
+                    problems.push(format!(
+                        "{GOLDENS}: no golden meets `{}` alone among `{}`'s patterns, so \
+                         dropping it would go unseen",
+                        glob.as_str(),
+                        job.name
+                    ));
+                }
+            }
+            for package in lock_deps {
+                let pinned = file.golden.iter().any(|golden| {
+                    let (globs, locks) = met(golden);
+                    globs.is_empty() && locks == [package.clone()]
+                });
+                if !pinned {
+                    problems.push(format!(
+                        "{GOLDENS}: no golden changes `{package}` alone among `{}`'s lock \
+                         dependencies and paths, so dropping it would go unseen",
+                        job.name
+                    ));
+                }
+            }
+        }
     }
 
     // The hosted rules and `pr.yml`'s jobs name the same jobs.
