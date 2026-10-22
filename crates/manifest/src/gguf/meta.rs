@@ -186,8 +186,8 @@ pub enum Array {
     F32(Vec<f32>),
     /// `bool` elements.
     Bool(Vec<bool>),
-    /// String elements, as bytes.
-    Str(Vec<Box<[u8]>>),
+    /// String elements, as bytes, packed into one buffer.
+    Str(StrArray),
     /// `u64` elements.
     U64(Vec<u64>),
     /// `i64` elements.
@@ -239,6 +239,78 @@ impl Array {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// The elements of a string array, packed: every string's bytes in one buffer, and each
+/// string's end offset.
+///
+/// A vocabulary is an array of up to 2²⁴ strings, often of a few bytes each. Packing keeps the
+/// reader's memory proportional to its input: two allocations per array, sized exactly, at
+/// most the array's own bytes in the file (each element there also carries an 8-byte length,
+/// which the end offset replaces). One allocation per string would cost far more than the
+/// input for short strings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StrArray {
+    bytes: Vec<u8>,
+    ends: Vec<usize>,
+}
+
+impl StrArray {
+    /// An empty array with room for `n` strings of `bytes` bytes in total.
+    #[must_use]
+    pub fn with_capacity(n: usize, bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(bytes),
+            ends: Vec::with_capacity(n),
+        }
+    }
+
+    /// Appends a string.
+    pub fn push(&mut self, s: &[u8]) {
+        self.bytes.extend_from_slice(s);
+        self.ends.push(self.bytes.len());
+    }
+
+    /// The number of strings.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    /// Whether there are no strings.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ends.is_empty()
+    }
+
+    /// String `i`'s bytes.
+    #[must_use]
+    pub fn get(&self, i: usize) -> Option<&[u8]> {
+        let end = *self.ends.get(i)?;
+        let start = if i == 0 { 0 } else { self.ends[i - 1] };
+        self.bytes.get(start..end)
+    }
+
+    /// The strings in order.
+    pub fn iter(&self) -> impl Iterator<Item = &[u8]> {
+        (0..self.len()).filter_map(|i| self.get(i))
+    }
+
+    /// The heap bytes it holds: its buffers' capacities.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        self.bytes.capacity() + self.ends.capacity() * std::mem::size_of::<usize>()
+    }
+}
+
+impl<'a> FromIterator<&'a [u8]> for StrArray {
+    fn from_iter<I: IntoIterator<Item = &'a [u8]>>(iter: I) -> Self {
+        let mut out = Self::default();
+        for s in iter {
+            out.push(s);
+        }
+        out
     }
 }
 

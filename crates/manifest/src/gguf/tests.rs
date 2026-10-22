@@ -66,11 +66,9 @@ fn sample(version: u32) -> Synth {
         .kv("fixture.i64", Value::I64(-7_000_000_000))
         .kv(
             "tokenizer.ggml.tokens",
-            Value::Array(Array::Str(vec![
-                b"<s>"[..].into(),
-                b"</s>"[..].into(),
-                b"\xff"[..].into(),
-            ])),
+            Value::Array(Array::Str(
+                [&b"<s>"[..], b"</s>", b"\xff"].into_iter().collect(),
+            )),
         )
         .kv(
             "tokenizer.ggml.scores",
@@ -325,7 +323,10 @@ fn limits_admit_their_bound_and_refuse_one_more() {
     assert_eq!(
         limit_of(parse_with(
             base()
-                .kv("a", Value::Array(Array::Str(vec![b"x"[..].into(); 4])))
+                .kv(
+                    "a",
+                    Value::Array(Array::Str([&b"x"[..]; 4].into_iter().collect()))
+                )
                 .build(),
             &tight
         ))
@@ -945,7 +946,7 @@ fn value_strategy() -> impl Strategy<Value = Value> {
         proptest::collection::vec(finite32(), n()).prop_map(|v| Value::Array(Array::F32(v))),
         proptest::collection::vec(any::<bool>(), n()).prop_map(|v| Value::Array(Array::Bool(v))),
         proptest::collection::vec(bytes(), n())
-            .prop_map(|v| Value::Array(Array::Str(v.into_iter().map(Into::into).collect()))),
+            .prop_map(|v| Value::Array(Array::Str(v.iter().map(Vec::as_slice).collect()))),
         proptest::collection::vec(any::<i64>(), n()).prop_map(|v| Value::Array(Array::I64(v))),
         proptest::collection::vec(finite64(), n()).prop_map(|v| Value::Array(Array::F64(v))),
     ]

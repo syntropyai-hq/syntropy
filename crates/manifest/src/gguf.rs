@@ -53,7 +53,7 @@ pub(crate) mod synth;
 #[cfg(test)]
 mod tests;
 
-pub use meta::{Array, MetaError, MetaView, Value, ValueType};
+pub use meta::{Array, MetaError, MetaView, StrArray, Value, ValueType};
 pub use split::{GgufModel, SPLIT_COUNT, SPLIT_NO, SPLIT_TENSORS_COUNT, SplitName};
 pub use types::{block_geometry, ggml_type_from_id, ggml_type_id, ggml_type_name};
 
@@ -512,15 +512,33 @@ impl<S: RangeSource> Parser<'_, S> {
                 }
                 Array::Bool(out)
             }
-            ValueType::Str => {
-                let mut out = Vec::new();
-                for _ in 0..n {
-                    out.push(self.string()?);
-                }
-                Array::Str(out)
-            }
+            ValueType::Str => Array::Str(self.str_array(n)?),
             ValueType::Array => return Err(GgufError::invalid(at, "nested arrays")),
         })
+    }
+
+    /// Reads `n` strings into one packed [`StrArray`]. A first pass reads only the lengths,
+    /// checking each against the string limit and the source, so the second pass allocates
+    /// exactly: at most the array's own bytes in the file, whatever `n` claims.
+    fn str_array(&mut self, n: u64) -> Result<StrArray, GgufError> {
+        let start = self.at;
+        let mut total = 0u64;
+        for _ in 0..n {
+            let len = self.count(Limit::StringBytes, self.limits.string_bytes)?;
+            self.bytes(len)?;
+            total += len;
+        }
+        // Every element was read, so `n` and `total` fit in memory already.
+        let mut out = StrArray::with_capacity(
+            usize::try_from(n).unwrap_or(usize::MAX),
+            usize::try_from(total).unwrap_or(usize::MAX),
+        );
+        self.at = start;
+        for _ in 0..n {
+            let len = self.u64()?;
+            out.push(self.bytes(len)?);
+        }
+        Ok(out)
     }
 
     fn version(&mut self) -> Result<u32, GgufError> {

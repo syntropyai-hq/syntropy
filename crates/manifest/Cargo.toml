@@ -12,3 +12,4 @@ syntropy-core = { path = "../core" }
 
 [dev-dependencies]
 proptest.workspace = true
+syntropy-testkit = { path = "../testkit" }

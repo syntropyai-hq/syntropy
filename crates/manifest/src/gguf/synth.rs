@@ -112,7 +112,7 @@ impl W {
                         }
                     }
                     Array::Str(v) => {
-                        for x in v {
+                        for x in v.iter() {
                             self.str(x);
                         }
                     }
