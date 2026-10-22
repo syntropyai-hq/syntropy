@@ -222,20 +222,23 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
 
 **Runtime fallback.** If the planned transport cannot connect within `link.connect_timeout` (2 s LAN, 10 s WAN), the runner connects on the next candidate by measured cost, marks the stage `Ready { degraded: TransportDemoted }`, and reports `Drift` with the new hop cost. The coordinator decides whether to re-plan (RFC-0001 §7.2). Demotion during operation is in §7.4.
 
-*Note 2026-10-23 (DIST-E7-T11; RFC-0001 §18.30): what `cost_t` is for, its defaults, and what the fallback returns.*
+*Note 2026-10-23 (DIST-E7-T11; RFC-0001 §18.31): what `cost_t` is for, its defaults, and what the fallback returns.*
 - **Selection, not the objective.** `cost_t` ranks the transports of one edge. It picks `HopPlan::transport` at `S_dec`, and `prefill_transport` at `S_pf`. The solver's hop term in the objective stays RFC-0011 §5's `α^plan + S/β`, which since 2026-10-20 costs a wireless hop at its mean and bounds its tail with C14's stall rate. So λ = 1.0 on Wi-Fi weighs the tail when choosing between that edge's transports. It does not enter the plan's predicted time.
 - **Where it lives.** RFC-0001 §5.2's `LinkCaps` and `link_cost(caps, size, objective, λ) -> Nanos` are in `core::resource::link`, so the solver computes `cost_t` without depending on `net`. `Transport::cost` (§2) delegates to it.
 - **λ** is `link.p99_weight` (§11): in latency mode 1.0 on `WiFi` links and on `QuicRelay`, and 0.25 otherwise; 0 in throughput mode [target].
-- **z before an L2 probe.** Until `alpha_eff` exists, `z_t` is a per-transport constant at the upper end of §Performance's range for a 32 KiB F32 decode frame [estimate]:
-  - 25 µs on IP paths: `Quic`, `Tcp` and `QuicRelay` (§Performance gives ≈15–25 µs with polling);
-  - 20 µs on `Rdma` (≈12–20 µs);
-  - 20 µs on `SharedMemory`, whose software path has RDMA's steps and no decrypt copy.
+- **z before an L2 probe.** Until `alpha_eff` exists, `z_t` is a per-transport constant for a 32 KiB F32 decode frame [estimate]:
+  - 25 µs on IP paths: `Quic`, `Tcp` and `QuicRelay`, the upper end of §Performance's ≈15–25 µs with polling;
+  - 20 µs on `Rdma`, the upper end of its ≈12–20 µs;
+  - 2 µs on `SharedMemory`. §Performance gives no z for it, so it comes from the per-hop table instead: the shared-memory hop of ≈5–10 µs, less its α of ≈1–5 µs and S/β of ≈3 µs, leaves ≈1–2 µs. The same subtraction on the RDMA and 10 GbE rows gives ≈12–22 µs and ≈17–22 µs, which matches their z ranges.
 
   The constant does not scale with S. A prefill-sized frame's CRC is in the measured `alpha_eff` once it exists.
 - **What the fallback returns.** It returns a `Demotion { edge: LinkId, from: TransportKind, to: TransportKind }`, plain data in `core` and the data `DegradeDetail::Demoted` (RFC-0033 §7.1) carries, together with the new transport's `cost_t` at `S_dec`.
-  - The runner sends both as the R→D message `LinkDemoted` (RFC-0001 §3.5).
-  - DIST-E14-T13 sets `Ready { degraded }` with `TRANSPORT_DEMOTED` from the `Demotion`.
-  - On the coordinator the report is a hardware drift term. RFC-0033 §6.1's `ReplanReason::Drift { node, term: DriftTerm }` needs a `Hop { link, transport }` term, and no task yet builds `ReplanReason` (RFC-0001 §18.30).
+- **How the runner reports it.**
+  - **The message.** It sends the R→D message `EdgeDemoted { demotion, cause, cost }` (RFC-0001 §3.5), whose `cause` is a `DemotionCause` in `core`: `ConnectFailed` for this fallback, and `RepeatedFaults` for §7.4's demotion after 3 faults in 60 s. The one message serves both paths. DIST-E7-T11 adds it, and DIST-E7-T10 sends it from §7.4.
+  - **Forwarding.** The daemon forwards it as RFC-0033 §11's `ReportEdgeDemoted { edge, from, to, cause }`, as it forwards `StateChanged` as `ReportRunner`.
+  - **No second report.** `EdgeDemoted`'s `cost` is the "`Drift` with the new hop cost" of the runtime-fallback paragraph above. The daemon shows it, and no separate drift report is sent. The coordinator's solver costs the new transport from the resource graph (RFC-0033 §11's `EdgeDemoted` event).
+- **The flag.** DIST-E14-T13 sets `Ready { degraded }` with `TRANSPORT_DEMOTED` from the `Demotion`.
+- **A re-plan's reason.** If the coordinator re-plans for the demotion, the reason is RFC-0033 §6.1's `ReplanReason::Drift { node, term: DriftTerm }`, with a `Hop { link, transport }` term. No task builds `ReplanReason` yet (RFC-0001 §18.31).
 
 ### 4. QUIC backend (iroh)
 
