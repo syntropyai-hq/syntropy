@@ -263,6 +263,19 @@ fn cgroup_v2_high_of_max_changes_nothing() {
     );
 }
 
+/// Usage above `memory.high` (the kernel is throttling the cgroup) leaves no headroom: the
+/// subtraction saturates to 0, not to a wrapped value or no limit.
+#[test]
+fn cgroup_v2_usage_above_high_leaves_zero() {
+    let mut fs = MemFs::fixture("docker");
+    fs.set("sys/fs/cgroup/memory.high", &(2 * GIB).to_string())
+        .set("sys/fs/cgroup/memory.current", &(3 * GIB).to_string());
+    assert_eq!(
+        fs.run().unwrap().host_mem[0].mem.cgroup_limit,
+        Some(Bytes(0))
+    );
+}
+
 #[test]
 fn cgroup_v2_without_high_changes_nothing() {
     let host = MemFs::fixture("docker")
