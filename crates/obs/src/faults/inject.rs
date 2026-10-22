@@ -244,6 +244,8 @@ pub struct PointCounts {
 struct Installed {
     plan: FaultPlan,
     clock: Arc<dyn Clock>,
+    /// What a `Delay` effect calls: `std::thread::sleep`, or a test's recorder.
+    sleep: fn(Duration),
     /// Matching hits so far, per rule.
     matched: Vec<u64>,
 }
@@ -276,12 +278,23 @@ fn state() -> MutexGuard<'static, State> {
 /// [`PlanError::Rule`] when [`FaultPlan::validate`] rejects the plan; the plan installed before
 /// stays.
 pub fn install(plan: FaultPlan, clock: Arc<dyn Clock>) -> Result<(), PlanError> {
+    install_with_sleep(plan, clock, std::thread::sleep)
+}
+
+/// [`install`], with `sleep` in place of `std::thread::sleep` for `Delay` effects, so a test can
+/// record the delay a point asked for instead of timing it.
+pub(super) fn install_with_sleep(
+    plan: FaultPlan,
+    clock: Arc<dyn Clock>,
+    sleep: fn(Duration),
+) -> Result<(), PlanError> {
     plan.validate()?;
     let mut state = state();
     state.installed = Some(Installed {
         matched: vec![0; plan.rules.len()],
         plan,
         clock,
+        sleep,
     });
     state.generation += 1;
     RELEASE.notify_all();
@@ -447,7 +460,7 @@ fn fires(when: Trigger, point: &str, hit: u64, now: impl FnOnce() -> MonoTime) -
 /// an effect is applied.
 #[inline(never)]
 pub fn check(point: &'static str, ctx: &Ctx) -> FaultEffect {
-    let (effect, generation) = {
+    let (effect, generation, sleep) = {
         let mut state = state();
         let State {
             installed,
@@ -457,6 +470,7 @@ pub fn check(point: &'static str, ctx: &Ctx) -> FaultEffect {
         let Some(Installed {
             plan,
             clock,
+            sleep,
             matched,
         }) = installed.as_mut()
         else {
@@ -482,10 +496,10 @@ pub fn check(point: &'static str, ctx: &Ctx) -> FaultEffect {
         if effect.is_some() {
             counts.fires += 1;
         }
-        (effect.unwrap_or_default(), *generation)
+        (effect.unwrap_or_default(), *generation, *sleep)
     };
     match effect {
-        FaultEffect::Delay(nanos) => std::thread::sleep(Duration::from_nanos(nanos.0)),
+        FaultEffect::Delay(nanos) => sleep(Duration::from_nanos(nanos.0)),
         FaultEffect::Panic => panic!("fault point `{point}` fired: an injected panic"),
         FaultEffect::Hang => {
             let mut state = state();

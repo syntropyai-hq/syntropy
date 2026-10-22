@@ -63,7 +63,7 @@ mod injected {
         SequenceId,
     };
 
-    use super::super::inject::{draw, load_from_var};
+    use super::super::inject::{draw, install_with_sleep, load_from_var};
     use super::super::*;
 
     /// Holds the process-wide plan for one test, starting with no plan and zero counters.
@@ -324,25 +324,62 @@ mod injected {
         panic!("the point never fired");
     }
 
-    /// The point's thread reports when the point returns: not within half the delay, and then
-    /// with the `Delay` effect. `thread::sleep` never returns early, so the first wait times out.
+    /// The delays a `Delay` effect asked the recording sleep for, in order.
+    static SLEPT: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
+
+    fn record_sleep(delay: Duration) {
+        SLEPT
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(delay);
+    }
+
+    /// The point sleeps for exactly the rule's delay, through the sleep it was installed with,
+    /// then returns the effect. Recording the request keeps the test free of timing.
     #[test]
-    fn delay_sleeps_then_returns() {
+    fn delay_sleeps_for_the_rules_duration_then_returns() {
         let _serial = serial();
+        SLEPT.lock().unwrap_or_else(PoisonError::into_inner).clear();
         let delay = Nanos(200_000_000);
+        install_with_sleep(
+            FaultPlan {
+                rules: vec![rule(
+                    "obs.test.delay",
+                    Trigger::Always,
+                    FaultEffect::Delay(delay),
+                )],
+            },
+            ManualClock::at(0),
+            record_sleep,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::fault_point!("obs.test.delay"),
+            FaultEffect::Delay(delay)
+        );
+        crate::fault_point!("obs.test.delay");
+        assert_eq!(
+            *SLEPT.lock().unwrap_or_else(PoisonError::into_inner),
+            [Duration::from_nanos(delay.0); 2]
+        );
+    }
+
+    /// With the real sleep, a delayed point returns its effect. Only an upper bound is checked:
+    /// how long the OS sleeps past the delay varies, so there is no "not yet" check.
+    #[test]
+    fn a_real_delay_returns_within_a_generous_bound() {
+        let _serial = serial();
+        let delay = Nanos(10_000_000);
         run(vec![rule(
-            "obs.test.delay",
+            "obs.test.delay-real",
             Trigger::Always,
             FaultEffect::Delay(delay),
         )]);
         let (sent, received) = mpsc::channel();
         let thread = std::thread::spawn(move || {
-            sent.send(crate::fault_point!("obs.test.delay")).unwrap();
+            sent.send(crate::fault_point!("obs.test.delay-real"))
+                .unwrap();
         });
-        assert_eq!(
-            received.recv_timeout(Duration::from_nanos(delay.0 / 2)),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        );
         assert_eq!(
             received.recv_timeout(Duration::from_secs(10)),
             Ok(FaultEffect::Delay(delay))
