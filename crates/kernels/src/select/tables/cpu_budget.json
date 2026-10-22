@@ -1,0 +1,41 @@
+{
+  "name": "cpu_budget",
+  "note": "Hand-written in the recorded-table format; the times are chosen to exercise each rule, not measured on hardware. The benchmark budget ran out before Gemv and Gemm, so their offers carry the providers' own estimates only.",
+  "vendor": "Cpu",
+  "deterministic": true,
+  "terms": { "t_submit": 0, "t_fence": 0 },
+  "programs": [
+    {
+      "domain": "Host",
+      "ops": [
+        {
+          "op": "RmsNorm", "predicted": 9000,
+          "offers": [
+            { "provider": "cpu", "backend": "Cpu", "domain": "Host", "ns": 1000 },
+            { "provider": "ggml-cpu", "backend": "GgmlCpu", "domain": "Host", "ns": 980 }
+          ],
+          "expect": "cpu#0"
+        },
+        {
+          "op": "Gemv", "predicted": 5000,
+          "offers": [
+            { "provider": "cpu", "backend": "Cpu", "domain": "Host", "est": 5000 },
+            { "provider": "ggml-cpu", "backend": "GgmlCpu", "domain": "Host", "est": 4000, "ns": 3000 }
+          ],
+          "expect": "ggml-cpu#0"
+        },
+        {
+          "op": "Gemm", "predicted": 4000,
+          "offers": [
+            { "provider": "ggml-cpu", "backend": "GgmlCpu", "domain": "Host" },
+            { "provider": "cpu", "backend": "Cpu", "domain": "Host" }
+          ],
+          "expect": "cpu#0"
+        }
+      ],
+      "expect_step": 1000
+    }
+  ],
+  "opened": ["Host"],
+  "expect_domain": "Host"
+}
