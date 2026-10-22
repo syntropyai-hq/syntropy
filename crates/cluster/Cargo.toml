@@ -12,3 +12,6 @@ serde.workspace = true
 syntropy-config = { path = "../config" }
 syntropy-core = { path = "../core" }
 syntropy-net = { path = "../net" }
+
+[dev-dependencies]
+stateright.workspace = true

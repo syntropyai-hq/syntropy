@@ -68,6 +68,8 @@ The surveyed bully election re-ran on every connection change, with a 3 s campai
 1. **Rank tie-break** (OQ-NET-25). Decision 2's `rank_key` becomes `(operator preference, capability class, hosts_no_stage, node ID ascending)`, where `hosts_no_stage` is true for a node that hosts no stage of any instance in the committed plan state at the moment the lease expires. A coordinator that also hosts a stage makes that stage's recovery wait for an election, and the tie-break avoids that whenever a capability class offers a choice. Only nodes holding a `COORDINATOR` certificate are ranked (ADR-0009, revised 2026-10-20).
 2. **The model check comes first** (OQ-NET-08, correctness part). Heal correctness is an M2 risk, so the explicit-state model of lease, pre-vote, signed proofs and heal order is checked at the start of M2, before the election code is written, with every RT-DIST scenario as a named case (DIST-E10-T08). An optional quorum mode for clusters of three or more always-on nodes stays an M4 question, taken up only if the checker or the simulator finds a heal that cannot be repaired.
 
+**Clarified 2026-10-22 (DIST-E10-T08):** "Every RT-DIST scenario" in item 2 of the 2026-10-20 revision means each property in RFC-0032 Testing's "Election safety and liveness" row. Each is a named case of the model check. The decision is unchanged. The model runs in a bounded 3-node configuration in the default tests, and in full on 3–4 nodes with partitions and message loss as the `election-model` suite. DIST-E10-T09 runs that suite on every change to `cluster`, once QUAL-E1-T07's change detection exists.
+
 ## Consequences
 
 - Positive:

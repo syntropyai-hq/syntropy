@@ -1,0 +1,17 @@
+# collective-ffn-ring-rs: ring reduce-scatter step 1 of member 2 of 4: a 24-element F32 slice at offset 24
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 08 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+1e 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 60 00 00 00 19 af 18 70 1f 78 12 c1  # 0030 header
+1e 00 00 00 00 00 00 00 05 00 01 01 02 00 04 00  # 0040 extension
+01 00 01 00 18 00 00 00 18 00 00 00 03 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+00 00 fd 44 00 20 fd 44 00 40 fd 44 00 60 fd 44  # 0080 payload
+00 80 fd 44 00 a0 fd 44 00 c0 fd 44 00 e0 fd 44  # 0090 payload
+00 00 fe 44 00 20 fe 44 00 40 fe 44 00 60 fe 44  # 00a0 payload
+00 80 fe 44 00 a0 fe 44 00 c0 fe 44 00 e0 fe 44  # 00b0 payload
+00 00 ff 44 00 20 ff 44 00 40 ff 44 00 60 ff 44  # 00c0 payload
+00 80 ff 44 00 a0 ff 44 00 c0 ff 44 00 e0 ff 44  # 00d0 payload

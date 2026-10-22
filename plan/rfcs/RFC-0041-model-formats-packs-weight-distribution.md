@@ -123,6 +123,13 @@ The file is never written. Local GGUFs are indexed in place (§4.3).
 
 Modules on the config's `ignore` list stay in their stored dtype. Scale, zero-point and global-scale tensors are bound to their weight as **auxiliary extents** of one logical `TensorRecord` (field `aux`, added with a serde default), so a group always carries everything its kernel needs and a shard never holds a weight without its scales. Stacked expert tensors (expert index in dimension 0) are sliced as in §2.1; per-expert tensors (`…experts.E.gate_proj.weight`) are taken as they are.
 
+*Note 2026-10-22 (COMP-E10-T04, the container reader as built):* `syntropy_manifest::safetensors` reads the container, the sharded index and the side-file roles. It supports `F32`, `F16` and `BF16`; any other dtype is `UnsupportedContainer` (2) naming it until COMP-E10-T10. The choices this section leaves open:
+- **Reads.** The first 8 bytes, then the header, through the shared header-read routine: two requests, no byte of the data section. A declared length above 100 MiB, or past `store.header_max_bytes`, is `HeaderLimit` (5); a header past the file's end is `HeaderInvalid` (6).
+- **Strict JSON.** The header must start with `{`, may be padded with trailing whitespace, and must not repeat a key at any level, so a tensor named twice or given two `data_offsets` is `HeaderInvalid`. A tensor entry has exactly `dtype`, `shape` and `data_offsets`; another field is `HeaderInvalid`. `__metadata__` must map strings to strings. Nesting is bounded by the JSON parser's recursion limit (128).
+- **Offsets.** Each tensor's `[begin, end]` must satisfy `begin ≤ end ≤` the data section's length, and `end − begin = numel × element size`, with overflow checked. Tensors with bytes must not overlap; an empty tensor holds no byte, so it overlaps nothing. Gaps between tensors are allowed.
+- **Index.** `model.safetensors.index.json` is read whole, bounded like a header. It may hold only `metadata` (whose `total_size` is recorded, not checked) and `weight_map`. Every shard name must be a plain file name: no path separator, `:`, NUL, `.` or `..`. The index and the shards must agree exactly: every indexed tensor in its shard, every shard tensor indexed to that shard, no tensor in two shards.
+- **Side files.** `side::classify` gives each file name its role; `SourceRole::in_model_id` is true for weights, the index, `config.json` and `generation_config.json`, as §1's formula lists. Reading and hashing them are COMP-E10-T06 and COMP-E10-T07.
+
 ### 3. The census builder
 
 `manifest::census::build(sources) -> Result<ModelManifest, Error>` runs on the requesting daemon (RFC-0001 §7.1) and reads headers only.
