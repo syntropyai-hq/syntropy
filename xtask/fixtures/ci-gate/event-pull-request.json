@@ -1,0 +1,30 @@
+{
+  "action": "synchronize",
+  "number": 4243,
+  "pull_request": {
+    "number": 4243,
+    "state": "open",
+    "title": "docs(plan): fixture same-repository PR",
+    "head": {
+      "label": "syntropyai-hq:docs/fixture",
+      "ref": "docs/fixture",
+      "sha": "5d2e1f6a3b4c5d6e7f8091a2b3c4d5e6f708192a",
+      "repo": {
+        "full_name": "syntropyai-hq/syntropy",
+        "fork": false
+      }
+    },
+    "base": {
+      "label": "syntropyai-hq:main",
+      "ref": "main",
+      "sha": "59db6f7c0000000000000000000000000000000a",
+      "repo": {
+        "full_name": "syntropyai-hq/syntropy",
+        "fork": false
+      }
+    }
+  },
+  "repository": {
+    "full_name": "syntropyai-hq/syntropy"
+  }
+}

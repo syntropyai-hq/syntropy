@@ -67,6 +67,7 @@ use crate::frame::{
     Control, ControlSpec, CredKind, Flags, Frame, HEADER_LEN, Hello, HelloAck, WIRE_MINOR, code,
 };
 use crate::transport::core::{ACK_TIMEOUTS_TO_FAULT, CRC_STORM_COUNT, MAX_CONTROL_FRAME, Transmit};
+use crate::transport::registration::RegistrationTable;
 
 /// The protocol major every `Hello` carries (RFC-0031 §10).
 pub const PROTO_MAJOR: u16 = 1;
@@ -207,7 +208,7 @@ struct Inner {
     /// This endpoint's public key.
     key: [u8; 32],
     allowed: AllowedKeys,
-    pools: Mutex<Vec<BufferPool>>,
+    pools: RegistrationTable,
     rendezvous: Mutex<Rendezvous>,
     /// One permit per handshake in progress, [`MAX_HANDSHAKES`] in all.
     handshakes: Arc<Semaphore>,
@@ -286,7 +287,7 @@ impl TcpTransport {
             config,
             key,
             allowed,
-            pools: Mutex::new(Vec::new()),
+            pools: RegistrationTable::new(),
             rendezvous: Mutex::new(Rendezvous::default()),
             handshakes: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
             per_address: Mutex::new(Vec::new()),
@@ -323,19 +324,15 @@ impl TcpTransport {
 
     /// The pool `registration` names, if it was registered here.
     fn pool(&self, registration: PoolRegistration) -> Result<BufferPool, Error> {
-        lock(&self.inner.pools)
-            .iter()
-            .find(|pool| pool.id() == registration.pool)
-            .cloned()
-            .ok_or_else(|| {
-                Error::uncoded(
-                    ErrorClass::InvalidRequest,
-                    format!(
-                        "pool {:?} is not registered with this transport",
-                        registration.pool
-                    ),
-                )
-            })
+        self.inner.pools.resolve(registration).ok_or_else(|| {
+            Error::uncoded(
+                ErrorClass::InvalidRequest,
+                format!(
+                    "pool {:?} is not registered with this transport",
+                    registration.pool
+                ),
+            )
+        })
     }
 
     /// Opens the channel `spec.key` to `remote` over the first of its addresses that connects.
@@ -511,7 +508,7 @@ impl TcpTransport {
             Arc::clone(&wake),
             clock,
         ));
-        let pools = lock(&self.inner.pools).clone();
+        let pools = self.inner.pools.pools();
         Ok(Channel::new(
             spec.key,
             Box::new(TcpChannel {
@@ -551,7 +548,8 @@ fn control_spec(spec: &ChannelSpec) -> ControlSpec {
 
 /// The largest `SO_SNDBUF` and `SO_RCVBUF` an unprivileged process may ask for: Linux's
 /// `net.core.wmem_max` and `net.core.rmem_max`, read once. `None` where the cap is not known,
-/// so the request is made as asked.
+/// so the request is made as asked. The values differ between hosts: hosted CI runners do not
+/// all keep the 212 992-byte default.
 fn buffer_caps() -> (Option<usize>, Option<usize>) {
     #[cfg(target_os = "linux")]
     {
@@ -970,15 +968,9 @@ impl Transport for TcpTransport {
     /// Records the pool, so a channel's frames may name it. TCP needs no registration with the
     /// OS, so the handle is 0. Register every pool before opening the channels that use it.
     fn register(&self, pool: &BufferPool) -> Result<PoolRegistration, Error> {
-        let mut pools = lock(&self.inner.pools);
-        if !pools.iter().any(|known| known.same_pool(pool)) {
-            pools.push(pool.clone());
-        }
-        Ok(PoolRegistration {
-            pool: pool.id(),
-            transport: TransportKind::Tcp,
-            handle: 0,
-        })
+        self.inner
+            .pools
+            .register_transport(pool, TransportKind::Tcp, 0)
     }
 
     /// Dials `remote`'s addresses in turn and opens the channel on the first that completes the
@@ -1312,8 +1304,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_slot_over_the_linux_cap_is_left_to_autotuning() {
-        let (send_cap, recv_cap) = buffer_caps();
-        let (send_cap, recv_cap) = (send_cap.unwrap(), recv_cap.unwrap());
+        // Linux always exposes the caps, on hosted runners too, so this test never skips: the
+        // backend must read the same values as this test, and a reader that returns `None`
+        // fails here.
+        let read = |name: &str| -> usize {
+            std::fs::read_to_string(format!("/proc/sys/net/core/{name}"))
+                .unwrap_or_else(|error| panic!("net.core.{name}: {error}"))
+                .trim()
+                .parse()
+                .unwrap_or_else(|error| panic!("net.core.{name}: {error}"))
+        };
+        let (send_cap, recv_cap) = (read("wmem_max"), read("rmem_max"));
+        assert_eq!(buffer_caps(), (Some(send_cap), Some(recv_cap)));
         let large = Bytes(u64::try_from(send_cap.max(recv_cap)).unwrap());
         let (send, recv, autotuned) = buffer_plan(large);
         assert_eq!((send, recv, autotuned), (None, None, true));

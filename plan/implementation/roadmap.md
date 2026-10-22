@@ -25,35 +25,35 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 | # | Task | Milestone | What | Depends on | Step | Direct dependents | Unblocks (transitive, M0a–M4) |
 |---|---|---|---|---|---|---|---|
 | 1 | QUAL-E1-T01 | M0a | Workspace skeleton: one Cargo workspace with every crate of RFC-0001 §4.1 as a stub (`lib.rs` with… | none | 1 | 28 | 1429 |
-| 2 | QUAL-E1-T02 | M0a | `xtask` framework: `cargo xtask ci <job>`, `cargo xtask test <suite>` and a registry of job and… | QUAL-E1-T01 | 2 | 11 | 1340 |
+| 2 | QUAL-E1-T02 | M0a | `xtask` framework: `cargo xtask ci <job>`, `cargo xtask test <suite>` and a registry of job and… | QUAL-E1-T01 | 2 | 11 | 1343 |
 | 3 | QUAL-E1-T03 | M0a | `cargo xtask check-deps`: RFC-0001 §4.2 rules 1–9 and the release-feature rule over… | QUAL-E1-T02 | 3 | 10 | 1271 |
-| 4 | QUAL-E1-T05 | M0a | Contribution checks: `dco` (every commit signed off, matching author), `pr-title` (conventional… | QUAL-E1-T02 | 3 | 4 | 1170 |
-| 5 | QUAL-E1-T06 | M0a | `pr.yml` skeleton: `changes`, `lint`, `build-<os>` (the `pr` profile, plus a Linux `test-release`… | QUAL-E1-T02, QUAL-E1-T05 | 4 | 25 | 1169 |
+| 4 | QUAL-E1-T05 | M0a | Contribution checks: `dco` (every commit signed off, matching author), `pr-title` (conventional… | QUAL-E1-T02 | 3 | 4 | 1178 |
+| 5 | QUAL-E1-T06 | M0a | `pr.yml` skeleton: `changes`, `lint`, `build-<os>` (the `pr` profile, plus a Linux `test-release`… | QUAL-E1-T02, QUAL-E1-T05 | 4 | 25 | 1177 |
 | 6 | COMP-E1-T01 | M0a | `syntropy-kernels` crate: the `KernelProvider` trait with RFC-0001 §5.7's methods and RFC-0040… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 16 | 1113 |
 | 7 | COMP-E13-T01 | M0a | Types in `core`: the extended `DType`, `QuantScheme`, `ScaleGranularity`, `CtScheme`, `ActQuant`… | QUAL-E1-T01 | 2 | 6 | 1087 |
 | 8 | COMP-E1-T02 | M0a | Op registry: the closed `OpKind` list of §3.1 (including `AttnPartial`, `AttnMerge`… | COMP-E1-T01, COMP-E13-T01 | 5 | 16 | 1077 |
-| 9 | QUAL-E3-T01 | M0a | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 12 | 1034 |
-| 10 | QUAL-E3-T25 | M0a | `CountingAlloc` and `alloc_count_this_thread` in `testkit::guards` (split from QUAL-E3-T11, so M0a… | QUAL-E1-T01 | 2 | 10 | 1008 |
-| 11 | QUAL-E12-T01 | M0a | `syntropy-bench` schemas: `BenchKey` (including `expert_cache: CacheStart`), `RigFingerprint`… | QUAL-E1-T01 | 2 | 4 | 999 |
-| 12 | QUAL-E15-T01 | M0a | Inventory schema and fingerprints: the `bench/lab/rigs.toml` record (CPU and microcode, DIMMs, GPU… | QUAL-E12-T01 | 3 | 6 | 997 |
-| 13 | QUAL-E15-T02 | M0a | R-ADA online (ADR-0610): an Ada-class 24 GB GPU (`sm_89`), an AVX2-only desktop CPU, 2 × 64 GB… | QUAL-E15-T01 | 4 | 22 | 996 |
-| 14 | DIST-E1-T12 | M0a | The `spsc` crate (OQ-IO-29): the layer-1 crate that holds the lock-free SPSC ring `io`, `net` and… | QUAL-E1-T03 | 4 | 1 | 990 |
-| 15 | DIST-E1-T01 | M0a | Lock-free SPSC ring library in `spsc` (OQ-IO-29): power-of-two capacity, cache-line-padded indices… | DIST-E1-T12, QUAL-E1-T01, QUAL-E3-T25 | 5 | 6 | 989 |
-| 16 | PLC-E9-T26 | M0a | `SequenceId` and `SessionId` in `core` (RFC-0001 §5.9): `SequenceId { ingress, boot, n }` from the… | QUAL-E1-T01 | 2 | 6 | 960 |
-| 17 | PROD-E1-T01 | M0a | `syntropy-config` crate | QUAL-E1-T01 | 2 | 19 | 954 |
-| 18 | TIER-E1-T13 | M0a | `LedgerGrant` in `core` (OQ-IO-27): the per-tier granted bytes that RFC-0020 §3 and §12 check an… | QUAL-E1-T01 | 2 | 2 | 954 |
-| 19 | QUAL-E15-T17 | M0a | The rest of the M0 rigs (ADR-0610 decision 1): R-BW (RTX 5090, AVX-512 dual-CCD CPU, 128 GB, Gen5… | QUAL-E15-T01–T02 | 5 | 18 | 947 |
-| 20 | PROD-E1-T04 | M0a | Policy objects in `core`: `Objective` (with `target_concurrency`, `ttft_ceiling`)… | PROD-E1-T01 | 3 | 7 | 936 |
-| 21 | QUAL-E5-T19 | M0a | `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId` and `LogitTap` (the per-entry block of… | QUAL-E3-T01 | 5 | 6 | 933 |
-| 22 | DIST-E1-T14 | M0a | Sequence control and token types in `core` (RFC-0001 §5.8; RFC-0032 §3.6), in one module… | PLC-E9-T26, PROD-E1-T04, QUAL-E5-T19 | 6 | 16 | 931 |
-| 23 | PLC-E1-T01 | M0a | Core graph types: `DeviceId`/`TierId`/`LinkId` ordinal rules, `Measured<T>` with… | QUAL-E1-T01 | 2 | 11 | 927 |
-| 24 | QUAL-E3-T02 | M0a | `testkit` deterministic clock and entropy: `SimClock` (advanced only by its owner), `SimEntropy`… | QUAL-E3-T01 | 5 | 8 | 923 |
-| 25 | DIST-E1-T02 | M0a | Shared-memory region: header (magic, build ID, heartbeat, step counter, `RunnerState` discriminant)… | DIST-E1-T01 | 6 | 4 | 915 |
-| 26 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request IDs, `Hello`… | TIER-E1-T13, DIST-E1-T02, DIST-E1-T14 | 7 | 23 | 913 |
-| 27 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01, QUAL-E1-T06 | 5 | 6 | 902 |
-| 28 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 6 | 890 |
-| 29 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and recorded-fixture replay implementations: coalescing, the… | QUAL-E1-T01 | 2 | 3 | 888 |
-| 30 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver through `cudarc`, driver ≥ 580 check… | COMP-E1-T01, COMP-E9-T04, QUAL-E15-T02, QUAL-E15-T17 | 6 | 7 | 884 |
+| 9 | QUAL-E3-T01 | M0a | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 12 | 1038 |
+| 10 | QUAL-E3-T25 | M0a | `CountingAlloc` and `alloc_count_this_thread` in `testkit::guards` (split from QUAL-E3-T11, so M0a… | QUAL-E1-T01 | 2 | 10 | 1014 |
+| 11 | QUAL-E12-T01 | M0a | `syntropy-bench` schemas: `BenchKey` (including `expert_cache: CacheStart`), `RigFingerprint`… | QUAL-E1-T01 | 2 | 4 | 1002 |
+| 12 | QUAL-E15-T01 | M0a | Inventory schema and fingerprints: the `bench/lab/rigs.toml` record (CPU and microcode, DIMMs, GPU… | QUAL-E12-T01 | 3 | 6 | 1000 |
+| 13 | QUAL-E15-T02 | M0a | R-ADA online (ADR-0610): an Ada-class 24 GB GPU (`sm_89`), an AVX2-only desktop CPU, 2 × 64 GB… | QUAL-E15-T01 | 4 | 22 | 999 |
+| 14 | DIST-E1-T12 | M0a | The `spsc` crate (OQ-IO-29): the layer-1 crate that holds the lock-free SPSC ring `io`, `net` and… | QUAL-E1-T03 | 4 | 1 | 996 |
+| 15 | DIST-E1-T01 | M0a | Lock-free SPSC ring library in `spsc` (OQ-IO-29): power-of-two capacity, cache-line-padded indices… | DIST-E1-T12, QUAL-E1-T01, QUAL-E3-T25 | 5 | 6 | 995 |
+| 16 | QUAL-E1-T07 | M0a | Affected-job rules engine `cargo xtask ci changes`, run like `ci-gate` from the base branch's… | QUAL-E1-T06 | 5 | 13 | 976 |
+| 17 | PLC-E9-T26 | M0a | `SequenceId` and `SessionId` in `core` (RFC-0001 §5.9): `SequenceId { ingress, boot, n }` from the… | QUAL-E1-T01 | 2 | 6 | 965 |
+| 18 | PROD-E1-T01 | M0a | `syntropy-config` crate | QUAL-E1-T01 | 2 | 19 | 959 |
+| 19 | TIER-E1-T13 | M0a | `LedgerGrant` in `core` (OQ-IO-27): the per-tier granted bytes that RFC-0020 §3 and §12 check an… | QUAL-E1-T01 | 2 | 2 | 959 |
+| 20 | QUAL-E15-T17 | M0a | The rest of the M0 rigs (ADR-0610 decision 1): R-BW (RTX 5090, AVX-512 dual-CCD CPU, 128 GB, Gen5… | QUAL-E15-T01–T02 | 5 | 18 | 950 |
+| 21 | PROD-E1-T04 | M0a | Policy objects in `core`: `Objective` (with `target_concurrency`, `ttft_ceiling`)… | PROD-E1-T01 | 3 | 7 | 941 |
+| 22 | QUAL-E5-T19 | M0a | `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId` and `LogitTap` (the per-entry block of… | QUAL-E3-T01 | 5 | 6 | 938 |
+| 23 | DIST-E1-T14 | M0a | Sequence control and token types in `core` (RFC-0001 §5.8; RFC-0032 §3.6), in one module… | PLC-E9-T26, PROD-E1-T04, QUAL-E5-T19 | 6 | 16 | 936 |
+| 24 | PLC-E1-T01 | M0a | Core graph types: `DeviceId`/`TierId`/`LinkId` ordinal rules, `Measured<T>` with… | QUAL-E1-T01 | 2 | 11 | 931 |
+| 25 | QUAL-E3-T02 | M0a | `testkit` deterministic clock and entropy: `SimClock` (advanced only by its owner), `SimEntropy`… | QUAL-E3-T01 | 5 | 8 | 927 |
+| 26 | DIST-E1-T02 | M0a | Shared-memory region: header (magic, build ID, heartbeat, step counter, `RunnerState` discriminant)… | DIST-E1-T01 | 6 | 4 | 920 |
+| 27 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request IDs, `Hello`… | TIER-E1-T13, DIST-E1-T02, DIST-E1-T14 | 7 | 23 | 918 |
+| 28 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01, QUAL-E1-T06 | 5 | 6 | 905 |
+| 29 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 6 | 894 |
+| 30 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and recorded-fixture replay implementations: coalescing, the… | QUAL-E1-T01 | 2 | 3 | 892 |
 <!-- END GENERATED -->
 
 ## Overview
@@ -61,7 +61,7 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 ### Tasks per milestone and area
 
 <!-- BEGIN GENERATED: roadmap-counts -->
-Generated by `tools/roadmap.py` from 1446 tasks and 3933 dependency edges. Every task sits in exactly one milestone.
+Generated by `tools/roadmap.py` from 1446 tasks and 3947 dependency edges. Every task sits in exactly one milestone.
 
 | Milestone | PLC | TIER | DIST | COMP | PROD | QUAL | Total |
 |---|---|---|---|---|---|---|---|
@@ -80,7 +80,7 @@ Generated by `tools/roadmap.py` from 1446 tasks and 3933 dependency edges. Every
 <!-- BEGIN GENERATED: roadmap-summary -->
 | Milestone | Tasks | Critical path inside (tasks) | Longest chain from project start (tasks) | Zero-slack tasks | Ready at step 1 |
 |---|---|---|---|---|---|
-| M0a | 187 | 26 | 26 | 27 | 3 |
+| M0a | 187 | 26 | 26 | 31 | 3 |
 | M0b | 130 | 7 | 28 | 7 | 67 |
 | M1a | 480 | 19 | 42 | 21 | 107 |
 | M1b | 92 | 7 | 39 | 7 | 24 |
@@ -170,15 +170,15 @@ Success criteria first required at this exit: none.
 <!-- BEGIN GENERATED: roadmap-m0a -->
 **Tasks:** 187 (PLC 22, TIER 8, DIST 9, COMP 61, PROD 18, QUAL 69).
 
-**Critical path inside M0a:** 26 tasks, assuming every earlier milestone is done. 27 M0a tasks lie on a chain of that length (no slack); the chain below is one of them.
+**Critical path inside M0a:** 26 tasks, assuming every earlier milestone is done. 31 M0a tasks lie on a chain of that length (no slack); the chain below is one of them.
 
 | Step | Task | What |
 |---|---|---|
 | 1 | QUAL-E1-T01 | Workspace skeleton: one Cargo workspace with every crate of RFC-0001 §4.1 as a stub (`lib.rs` with the SPDX header and… |
-| 2 | QUAL-E12-T01 | `syntropy-bench` schemas: `BenchKey` (including `expert_cache: CacheStart`), `RigFingerprint`, `BenchResult`… |
-| 3 | QUAL-E15-T01 | Inventory schema and fingerprints: the `bench/lab/rigs.toml` record (CPU and microcode, DIMMs, GPU, VBIOS and driver… |
-| 4 | QUAL-E15-T02 | R-ADA online (ADR-0610): an Ada-class 24 GB GPU (`sm_89`), an AVX2-only desktop CPU, 2 × 64 GB DDR5-6000 in 2 channels… |
-| 5 | QUAL-E12-T04 | Lab agent: §3.5 cleanliness checks (power source, governor or power plan, foreign processes, paged-out memory… |
+| 2 | QUAL-E1-T02 | `xtask` framework: `cargo xtask ci <job>`, `cargo xtask test <suite>` and a registry of job and suite names; composite… |
+| 3 | QUAL-E1-T05 | Contribution checks: `dco` (every commit signed off, matching author), `pr-title` (conventional commit, allowed types… |
+| 4 | QUAL-E1-T06 | `pr.yml` skeleton: `changes`, `lint`, `build-<os>` (the `pr` profile, plus a Linux `test-release` build for L4)… |
+| 5 | QUAL-E1-T07 | Affected-job rules engine `cargo xtask ci changes`, run like `ci-gate` from the base branch's `xtask` with no cache… |
 | 6 | QUAL-E2-T01 | Lab dispatcher, core, built and tested against GitHub's current rules: `lab.yml` on `main` plus the organisation-owned… |
 | 7 | QUAL-E2-T04 | `lab-trusted` environment: the gated-model Hub credential (read-only) and the results-store write credential… |
 | 8 | QUAL-E2-T11 | Agent sandbox for untrusted content: agent runs that process fork PRs, issues or contributed files use a sandbox… |
@@ -201,9 +201,9 @@ Success criteria first required at this exit: none.
 | 25 | COMP-E16-T02 | `FamilyCert` gating: `graph`'s build script computes each family's code hash over its module and shared blocks… |
 | 26 | COMP-E16-T14 | The oracle as a gate (RFC-0043 §9.2): `RefExecutor` in `F32Fixed`, with declared activation quantisation off, against… |
 
-Zero-slack tasks by area: PLC 9, COMP 2, PROD 1, QUAL 15.
+Zero-slack tasks by area: PLC 9, COMP 2, PROD 1, QUAL 19.
 
-**Longest chain from project start to an M0a task:** 26 tasks: QUAL-E1-T01 (M0a) → QUAL-E12-T01 → QUAL-E15-T01 → QUAL-E15-T02 → QUAL-E12-T04 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14.
+**Longest chain from project start to an M0a task:** 26 tasks: QUAL-E1-T01 (M0a) → QUAL-E1-T02 → QUAL-E1-T05 → QUAL-E1-T06 → QUAL-E1-T07 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14.
 
 **Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 3, 2: 11, 3: 12, 4: 11, 5: 19, 6: 17, 7: 14, 8: 15, 9: 18, 10: 14, 11: 7, 12: 9, 13: 8, 14: 5, 15: 2, 16: 4, 17: 3, 18: 2, 19: 1, 20: 3, 21: 2, 22: 2, 23: 2, 24: 1, 25: 1, 26: 1. 3 tasks can start as soon as M0a opens.
 
@@ -225,7 +225,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | COMP-E1 | Kernel provider core | 5 | 4 | 8 | COMP-E13, QUAL-E1 |
 | COMP-E2 | Op selection, certification, coverage and kernel targets | 1 | 7 | 7 | COMP-E1, COMP-E13 |
 | COMP-E3 | CPU provider | 9 | 6 | 11 | PLC-E1, PLC-E7, PLC-E9, COMP-E1, COMP-E7, COMP-E13, QUAL-E3, QUAL-E15 |
-| COMP-E4 | CUDA provider: runtime, memory, doorbells and capture | 5 | 6 | 9 | COMP-E1, COMP-E9, QUAL-E15 |
+| COMP-E4 | CUDA provider: runtime, memory, doorbells and capture | 5 | 6 | 9 | COMP-E1, COMP-E9, QUAL-E1, QUAL-E15 |
 | COMP-E5 | CUDA provider: kernels | 6 | 9 | 14 | PLC-E9, TIER-E8, COMP-E1, COMP-E4, COMP-E13, QUAL-E7, QUAL-E15 |
 | COMP-E7 | ggml provider | 4 | 6 | 12 | TIER-E1, COMP-E1, QUAL-E1, QUAL-E3, QUAL-E15, QUAL-E16 |
 | COMP-E9 | Kernel builds, provider libraries and the module ABI | 1 | 5 | 5 | COMP-E1, QUAL-E1 |
@@ -311,7 +311,7 @@ Success criteria first required at this exit: SC-4, SC-29.
 
 Zero-slack tasks by area: COMP 3, PROD 2, QUAL 2.
 
-**Longest chain from project start to an M0b task:** 28 tasks: QUAL-E1-T01 (M0a) → QUAL-E12-T01 → QUAL-E15-T01 → QUAL-E15-T02 → QUAL-E12-T04 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E5-T24 (M0b) → QUAL-E13-T02.
+**Longest chain from project start to an M0b task:** 28 tasks: QUAL-E1-T01 (M0a) → QUAL-E1-T02 → QUAL-E1-T05 → QUAL-E1-T06 → QUAL-E1-T07 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E5-T24 (M0b) → QUAL-E13-T02.
 
 **Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 67, 2: 28, 3: 13, 4: 9, 5: 9, 6: 3, 7: 1. 67 tasks can start as soon as M0b opens.
 
@@ -451,7 +451,7 @@ Success criteria first required at this exit: SC-1, SC-2, SC-3, SC-5, SC-6, SC-7
 
 Zero-slack tasks by area: PLC 10, TIER 4, COMP 5, PROD 1, QUAL 1.
 
-**Longest chain from project start to an M1a task:** 42 tasks: QUAL-E1-T01 (M0a) → QUAL-E12-T01 → QUAL-E15-T01 → QUAL-E15-T02 → QUAL-E12-T04 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T13 → TIER-E6-T15 → TIER-E6-T17 → PROD-E4-T03 → PLC-E8-T16 → PLC-E8-T20.
+**Longest chain from project start to an M1a task:** 42 tasks: QUAL-E1-T01 (M0a) → QUAL-E1-T02 → QUAL-E1-T05 → QUAL-E1-T06 → QUAL-E1-T07 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T13 → TIER-E6-T15 → TIER-E6-T17 → PROD-E4-T03 → PLC-E8-T16 → PLC-E8-T20.
 
 **Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 107, 2: 65, 3: 52, 4: 40, 5: 21, 6: 31, 7: 37, 8: 20, 9: 17, 10: 10, 11: 9, 12: 18, 13: 6, 14: 17, 15: 13, 16: 11, 17: 2, 18: 3, 19: 1. 107 tasks can start as soon as M1a opens.
 
@@ -601,7 +601,7 @@ Success criteria first required at this exit: none.
 
 Zero-slack tasks by area: PLC 1, COMP 5, QUAL 1.
 
-**Longest chain from project start to an M1b task:** 39 tasks: QUAL-E1-T01 (M0a) → QUAL-E12-T01 → QUAL-E15-T01 → QUAL-E15-T02 → QUAL-E12-T04 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T20 → QUAL-E13-T03 → QUAL-E13-T13 (M1b).
+**Longest chain from project start to an M1b task:** 39 tasks: QUAL-E1-T01 (M0a) → QUAL-E1-T02 → QUAL-E1-T05 → QUAL-E1-T06 → QUAL-E1-T07 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T20 → QUAL-E13-T03 → QUAL-E13-T13 (M1b).
 
 **Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 24, 2: 20, 3: 10, 4: 19, 5: 12, 6: 6, 7: 1. 24 tasks can start as soon as M1b opens.
 
@@ -715,7 +715,7 @@ Success criteria first required at this exit: SC-12, SC-13, SC-14, SC-22, SC-23,
 
 Zero-slack tasks by area: DIST 18, PROD 1, QUAL 5.
 
-**Longest chain from project start to an M2 task:** 45 tasks: QUAL-E1-T01 (M0a) → QUAL-E12-T01 → QUAL-E15-T01 → QUAL-E15-T02 → QUAL-E12-T04 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T19 → PROD-E2-T08 → PROD-E2-T13 (M2) → QUAL-E8-T08 → QUAL-E8-T09 → QUAL-E6-T08 → QUAL-E6-T11 → COMP-E14-T05 → COMP-E14-T17.
+**Longest chain from project start to an M2 task:** 45 tasks: QUAL-E1-T01 (M0a) → QUAL-E1-T02 → QUAL-E1-T05 → QUAL-E1-T06 → QUAL-E1-T07 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T19 → PROD-E2-T08 → PROD-E2-T13 (M2) → QUAL-E8-T08 → QUAL-E8-T09 → QUAL-E6-T08 → QUAL-E6-T11 → COMP-E14-T05 → COMP-E14-T17.
 
 **Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 47, 2: 43, 3: 22, 4: 23, 5: 17, 6: 25, 7: 17, 8: 15, 9: 12, 10: 20, 11: 14, 12: 10, 13: 16, 14: 7, 15: 4, 16: 4. 47 tasks can start as soon as M2 opens.
 
@@ -862,7 +862,7 @@ Success criteria first required at this exit: SC-15, SC-16, SC-17, SC-26, SC-28.
 
 Zero-slack tasks by area: TIER 5, DIST 12, COMP 1.
 
-**Longest chain from project start to an M3 task:** 47 tasks: QUAL-E1-T01 (M0a) → QUAL-E12-T01 → QUAL-E15-T01 → QUAL-E15-T02 → QUAL-E12-T04 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T19 → PROD-E2-T08 → PROD-E2-T13 (M2) → QUAL-E8-T08 → QUAL-E8-T09 → QUAL-E6-T08 → QUAL-E6-T11 → COMP-E14-T05 → COMP-E14-T19 (M3) → PROD-E1-T18 → PROD-E1-T20.
+**Longest chain from project start to an M3 task:** 47 tasks: QUAL-E1-T01 (M0a) → QUAL-E1-T02 → QUAL-E1-T05 → QUAL-E1-T06 → QUAL-E1-T07 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T19 → PROD-E2-T08 → PROD-E2-T13 (M2) → QUAL-E8-T08 → QUAL-E8-T09 → QUAL-E6-T08 → QUAL-E6-T11 → COMP-E14-T05 → COMP-E14-T19 (M3) → PROD-E1-T18 → PROD-E1-T20.
 
 **Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 62, 2: 36, 3: 36, 4: 22, 5: 12, 6: 18, 7: 17, 8: 5, 9: 2. 62 tasks can start as soon as M3 opens.
 
@@ -995,7 +995,7 @@ Success criteria first required at this exit: every SC not already required earl
 
 Zero-slack tasks by area: PLC 1, TIER 1, COMP 2, PROD 2.
 
-**Longest chain from project start to an M4 task:** 49 tasks: QUAL-E1-T01 (M0a) → QUAL-E12-T01 → QUAL-E15-T01 → QUAL-E15-T02 → QUAL-E12-T04 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T13 → TIER-E6-T15 → TIER-E6-T17 → PROD-E4-T03 → QUAL-E6-T16 → QUAL-E6-T23 (M2) → COMP-E8-T10 → QUAL-E13-T06 → QUAL-E13-T16 (M3) → QUAL-E13-T07 → QUAL-E14-T06 (M4) → QUAL-E17-T19 → QUAL-E17-T23.
+**Longest chain from project start to an M4 task:** 49 tasks: QUAL-E1-T01 (M0a) → QUAL-E1-T02 → QUAL-E1-T05 → QUAL-E1-T06 → QUAL-E1-T07 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T13 → TIER-E6-T15 → TIER-E6-T17 → PROD-E4-T03 → QUAL-E6-T16 → QUAL-E6-T23 (M2) → COMP-E8-T10 → QUAL-E13-T06 → QUAL-E13-T16 (M3) → QUAL-E13-T07 → QUAL-E14-T06 (M4) → QUAL-E17-T19 → QUAL-E17-T23.
 
 **Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 36, 2: 9, 3: 3, 4: 1, 5: 1, 6: 1. 36 tasks can start as soon as M4 opens.
 

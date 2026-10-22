@@ -1329,10 +1329,6 @@ The head forwards `SequenceOpen` metadata (`SequenceMeta`: every field except th
 - **`net`'s view and the tap block.** `net`'s `TokenEntryView` converts to and from `TokenEntry` for every field but `tap`. The tap block travels as bytes until its codec exists (DIST-E8-T06, M2), and `TokenEntry::tap` is the typed `LogitTap`, so `net` refuses a non-empty tap block either way with a classified `Unsupported` error. M0 loses nothing: PLC-E9-T16's parity taps travel in-process on the `local_tokens` ring as `core` types, never through `net`'s codec.
 - **Field types.** `TokenSlice` is the prompt's owned token IDs. `PrefixKey` and `TailId` are RFC-0022 §7.1's and §7.2's, as plain newtypes in `core`, since `core` cannot name a `tier` type. `GrammarRef` is the BLAKE3 of a compiled grammar. `PoolingMode` is `LastToken`, `Mean` or `Cls`. `PrefixScope` is amendment A7's.
 
-*Note 2026-10-23 (DIST-E8-T05): `Reconcile`, and the prompt's binary form.*
-- **`SequenceControl::Reconcile { seq, emitted: u32, rng_counter: u64, recent: SmallVec<[u32; 8]> }`** is the sixth variant, as RFC-0033 §11 lists it: ingress tells the head what the client has seen of a sequence during recovery (RFC-0033 §4.2). `recent` holds the last emitted tokens, up to 8, in the order they were emitted.
-- **`TokenSlice`'s serde form depends on the format.** A human-readable format such as JSON gets an array of the IDs. A binary one gets a byte string of the IDs as little-endian `u32`s, so a prompt takes 4 bytes a token whatever its IDs, as RFC-0031 §6.6 requires of the `SeqControl` body. That covers CBOR, the IPC's postcard and `canon`. A byte string whose length is not a multiple of 4 is refused. No canonical digest covers a prompt, so no digest changes.
-
 ### 5.9 Sessions, sequences and KV
 
 ```rust
@@ -2723,7 +2719,9 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | SC-17's bound is `α_wire + S/β + 2 · t_switch`; Goals item 3 and §5.3 still quote `α_wire + 2 · t_switch`. Done 2026-10-20 | DIST | RFC-0032 Goals, §5.3 |
 | RFC-0062 §12.1: row 1 checks `core`'s normal and build dependencies (rule 1's 2026-10-21 note), and row 7 is named for rule 7 as it now reads (GPU providers ship in backend modules) instead of "backends are cargo features resolved at runtime" | QUAL | RFC-0062 §12.1 |
 
-### 18.6 Core types for the I/O interface (2026-10-21)
+### 18.6a Core types for the I/O interface (2026-10-21)
+
+*Note 2026-10-23:* this entry was headed §18.6, a number §18.6 "Changes requested in other documents" already had. It is §18.6a, so the log keeps its date order without renumbering the entries after it. The two citations of §18.6, in this section's introduction and in §18.2's row on the b2 prefill figure, mean "Changes requested in other documents", and no text cited this entry by number.
 
 `syntropy-io`'s interface (RFC-0021 §2) needs types that other crates share. They are placed in `core`.
 
@@ -2933,3 +2931,10 @@ From issue #1525, the review of COMP-E1-T01.
 |---|---|---|
 | ADR-0009 item 7's "On heal, the higher epoch wins" is replaced by ADR-0304's heal order, now its standings comparison | ADR-0009 (revision of 2026-10-23, item 7 marked) | ADR-0304 has ranked support ahead of the counter since 2026-10-19 (item 3 of its "Revised 2026-10-19, second revision" block), so item 7 had contradicted it since then; RFC-0032 §7.5 and DIST-E10-T05 follow ADR-0304 (the review of #1783) |
 | `Failed → Stopped` on a spent restart budget carries `StopReason::Drained(DrainReason::RestartBudgetSpent)`; on a fatal error, `Fatal(class)` | §5.11 (`StopReason` doc); DIST-E1-T05 | §3.3's edge named both causes, and both variants could carry the first; the supervisor and the event log now name the same one (the review of #1789) |
+
+### 18.35 Hardware jobs before their rigs run (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A hardware job whose rig and `lab.yml` job do not exist yet is marked `planned` in `ci/jobs.toml`. `ci-gate` does not hold a same-repository PR for it, but still holds a fork PR. QUAL-E2-T02 ends the interim for `hw-cuda-ada`, and QUAL-E2-T08 adds the other Tier 1 rigs' jobs | ADR-0620 decision 3 (dated revision); RFC-0062 §2.5 (dated note) | QUAL-E1-T07 requires hardware for every PR touching the hardware paths, months before the first rig runs. Without the interim, most engine and networking PRs could not merge. Fork PRs keep ADR-0620 decision 4's rule. Taken under the maintainer's standing instruction, for the maintainers to confirm |
+| The direct hardware paths gain `numerics/`, the tolerance tables `kernels` embeds | ADR-0620 decision 3 (dated revision); RFC-0062 §2.2 (dated note) | the op conformance a hardware job runs checks against those tables, so a change to a ceiling alone changes what the rig judges. From the engine-lane review of #1830 |

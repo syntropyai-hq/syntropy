@@ -40,6 +40,14 @@ impl DispatchTable {
         }
     }
 
+    /// Adds `kernel` for `kind`, replacing any kernel the table had for it. The kernel tasks
+    /// add theirs in [`for_level`](Self::for_level). Until then a provider built with
+    /// [`CpuProvider::with_kernel`](crate::CpuProvider::with_kernel) adds stand-in kernels this
+    /// way, for tests.
+    pub fn insert(&mut self, kind: OpKind, kernel: KernelFn) {
+        self.ops.insert(kind, kernel);
+    }
+
     /// The level this table's kernels were selected for.
     #[must_use]
     pub fn isa(&self) -> CpuIsa {
