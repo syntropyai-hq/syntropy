@@ -700,6 +700,13 @@ pub enum HostChangeKind {
 
 After every change, `setup` regenerates `<state>/revert-host-changes.sh` (Unix) or `.ps1` (Windows) from the ledger. That script can undo everything even if the binary is already deleted.
 
+*Revised 2026-10-22 (PROD-E12-T01):* the ledger is `syntropy_daemon::host_changes`, in the lowest crate that every Rust writer reaches (`cli` depends on `daemon`).
+- **Copies.** For each `FileWritten` the ledger keeps the bytes it wrote, `<state>/host-changes/<id>.written`, and the content it replaced, `<id>.prior`, which is what `PriorState::SavedAt` points to. `fingerprint` is the BLAKE3 of the bytes written, and the binary checks against it. The revert scripts can't compute BLAKE3 with standard tools, so they compare the file with the `.written` copy instead: `cmp` on Unix, and `Get-FileHash` on both files on Windows.
+- **Copies are private and short-lived.** A written file can be a config or credential file. So `<state>/host-changes/` is owner-only (0700 on Unix), and each copy is created 0600, or with the original's mode where that is stricter. On Windows the copies inherit the state directory's owner-only ACL. Every written file is copied, whatever its size; RFC-0052 has no size limit for the fingerprint-only path. The files Syntropy writes outside its directories are units, plists, drop-ins and completions, a few kilobytes each, so the copies cost about twice those bytes while their changes stay open [estimate]. A copy is deleted when its change is reverted or abandoned, by the binary or by a script, and when closed changes are pruned from the ledger.
+- **Markers.** A script can't edit the JSON ledger, so after it undoes a change it writes `<state>/host-changes/<id>.reverted`, and it checks for that first. That makes a second run skip what the first undid. The binary writes the same marker when it closes a change, and it treats an existing marker as reverted.
+- **Pending changes.** A pending change may or may not have been made. A revert undoes it only if the host shows it as recorded; otherwise it is `Abandoned`.
+- **The binary's file-system host** reverts written files, symbolic links and shell start-up lines. The other kinds are reverted through the OS's tools, which the generated script calls.
+
 #### 11.2 `syntropy uninstall`
 
 ```text
