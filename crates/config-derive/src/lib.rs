@@ -596,10 +596,19 @@ fn key_attrs(attrs: &[Attribute], errors: &mut Errors) -> KeyAttrs {
 }
 
 /// The type as written, with token spacing tidied: `Option<Duration>`.
+/// The type as one line of text, for `KeySchema::ty` and the messages that quote it. The token
+/// printer can break a long type across lines and keeps a trailing comma, so every whitespace
+/// character goes, a comma before `>` or `)` goes, and each other comma gets one space after it.
 fn type_name(ty: &syn::Type) -> String {
-    ty.to_token_stream()
+    let compact: String = ty
+        .to_token_stream()
         .to_string()
-        .replace(' ', "")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    compact
+        .replace(",>", ">")
+        .replace(",)", ")")
         .replace(',', ", ")
 }
 
