@@ -345,6 +345,16 @@ Registration with the I/O engine (`IO_FIXED`) and with RDMA (`RDMA_MR`) is done 
 
 Registration failure is not fatal. A `DmaPinned` range whose registration fails stays resident as `Underpinned { have: Locked | Pageable }`, is costed as `HostPageable`, and is never used as a DMA source; the runner reports a `Capacity` drift with the registrable total it actually achieved, and RFC-0001 §7.2 decides whether to re-plan.
 
+*Note 2026-10-22 (TIER-E2-T02, the Linux adapter as built):* `syntropy_tier::os::linux::LinuxMemory` implements the Linux row above. The parts this section leaves open are settled as follows.
+- **The trait.** `OsMemory` returns `OsMemError`, because `core` has no `Error` type yet. `reserve` and `commit` failures are `TIER_HOST_RESERVE` (4). §3's `pressure()` arrives with the yield ladder (§11).
+- **NUMA binding.** A failed `mbind` is retried once. After the second failure, the range is returned with `HostRange::numa = None`, which is how the caller learns of `TIER_NUMA_BIND` (§15). Docker's default seccomp profile refuses `mbind` without `CAP_SYS_NICE`, so in such a container every arena is unbound.
+- **Commit.** `MADV_POPULATE_WRITE`, retried on `EINTR`. Where the kernel answers `EINVAL`, every page is touched by reading one byte and writing it back, which keeps the bytes already there.
+- **Lock.** `lock` checks `VmLck + len ≤ RLIMIT_MEMLOCK` (or `CAP_IPC_LOCK`) before calling `mlock`. A refusal is `OsMemError::LockRefused(PageableReason)`. `lock_or_pageable` turns that into `LockOutcome::Pageable(reason)`, the structured finding `syntropy doctor` renders (PROD-E9-T01).
+- **Snapshot.** `own_locked` is `VmLck`. `own_registered` is `VmPin`. The cgroup record is the level, the process's own cgroup or an ancestor, with the least `min(max, high) − current`. Event counts are deltas from the previous reading.
+- **`PinLimits::io_fixed_max`** is this process's view, `RLIMIT_MEMLOCK − VmPin`. It is an upper bound on the per-user `io_fixed`, which the daemon divides (§5).
+- **`tier.hugepages`** is not in the config schema yet (TIER-E1-T09), so callers pass `HugePages`.
+- **Range ownership.** The adapter records every range it reserves. `commit`, `lock`, `unlock` and `release` refuse a range with another base or length, because `HostRange`'s fields are public.
+
 #### 4.3 `Nvme`
 
 No arena. `plan_arenas` emits an `ExtentRef` per `Nvme`-homed group from the pack sidecar. Expert-cache and row-cache slots in faster tiers are filled from these extents by RFC-0021 reads. Session blobs and KV spill files on `Nvme` belong to the store and RFC-0022.

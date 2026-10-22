@@ -1,22 +1,33 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Host memory as the OS reports it (RFC-0020 §1, §3, §5, §6). This task defines
-//! [`MemSnapshot`], the fields the §6 pinning gate reads, and the live sources for two of them:
-//! the per-node available estimate ([`numa_available`]) and the direct-reclaim stall delta
-//! ([`ReclaimStalls`]). The `OsMemory` adapters that fill the rest come in TIER-E2-T02 (Linux),
-//! TIER-E2-T03 (Windows) and later tasks.
+//! Host memory as the OS reports it (RFC-0020 §1, §3, §4.2, §5, §6): [`MemSnapshot`], the
+//! fields the §6 pinning gate reads, the [`OsMemory`] trait every OS adapter implements, and
+//! the live sources the adapters share: the per-node available estimate ([`numa_available`])
+//! and the direct-reclaim stall delta ([`ReclaimStalls`]).
 //!
-//! This is one of the two modules where RFC-0020 §1 allows `unsafe`. It holds none yet, so it
-//! keeps the crate-level `deny(unsafe_code)`; every source here uses `std::fs` reads. The task
-//! that adds the first `unsafe` block lifts the deny here with a scoped `allow`.
+//! - [`procfs`] reads the Linux text interfaces (`/proc`, `/sys`) from any root directory, so
+//!   the snapshot is tested against fixture trees on every OS. It holds no `unsafe`.
+//! - [`linux`] is the Linux adapter (TIER-E2-T02): anonymous `mmap`, `mbind`, `madvise` and
+//!   `mlock`, declared here because the workspace has no C bindings crate. It is the one
+//!   place in this module with `unsafe`, under a scoped `allow`.
+//!
+//! The Windows adapter comes in TIER-E2-T03, WSL2 and macOS in TIER-E2-T04.
 
+pub mod procfs;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
+
+use std::fmt;
+use std::ops::Range;
 use std::path::Path;
 use std::time::Instant;
 
 use smallvec::SmallVec;
-use syntropy_core::Bytes;
 use syntropy_core::budget::{self, NodeMem};
+use syntropy_core::{Bytes, ErrorClass};
 
+use crate::arena::PinClass;
 use crate::pressure::PressureLevel;
 
 /// One reading of host memory, taken before every pinning step (RFC-0020 §3, §6).
@@ -262,6 +273,275 @@ pub fn read_numa_available(dir: &Path, numa_reserve: Bytes) -> SmallVec<[(u16, B
     out
 }
 
+// ---- OsMemory ------------------------------------------------------------------------------
+
+/// Everything OS-specific about host memory (RFC-0020 §3). One implementation per OS, plus a
+/// fake. RFC-0020 §3's `pressure()` source comes with the yield ladder (RFC-0020 §11).
+pub trait OsMemory: Send + Sync {
+    /// One reading of host memory, taken before every pinning step.
+    fn snapshot(&self) -> MemSnapshot;
+    /// The OS's pinning limits as of now.
+    fn limits(&self) -> PinLimits;
+    /// Reserves `bytes` of anonymous memory, never file-backed. With `numa`, the pages are
+    /// bound to that node before first touch; [`HostRange::numa`] is `None` when the bind
+    /// failed twice (`TIER_NUMA_BIND`, RFC-0020 §15) and the range was left unbound.
+    fn reserve(
+        &self,
+        bytes: Bytes,
+        numa: Option<u16>,
+        huge: HugePages,
+    ) -> Result<HostRange, OsMemError>;
+    /// Commits the pages of `sub` (byte offsets into `r`), so that later reads and writes do
+    /// not fault (RFC-0020 §6). The bytes already there are kept.
+    fn commit(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError>;
+    /// Locks `sub` against paging: `mlock`, `VirtualLock` or wiring. Refused with
+    /// [`OsMemError::LockRefused`] when the OS limit does not cover it; the range then stays
+    /// [`PinClass::Pageable`] (see [`lock_or_pageable`]).
+    fn lock(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError>;
+    /// Undoes [`OsMemory::lock`] on `sub`.
+    fn unlock(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError>;
+    /// Returns the range to the OS.
+    fn release(&self, r: HostRange);
+}
+
+/// Transparent huge pages for a host arena: the `tier.hugepages` key (RFC-0020 §14).
+///
+/// The key is not in the config schema yet (TIER-E1-T09 adds RFC-0020 §14's keys), so callers
+/// pass the setting as this value.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum HugePages {
+    /// Advise huge pages when the OS policy allows it without privilege (Linux THP `madvise`
+    /// or `always`). The default.
+    #[default]
+    Auto,
+    /// Never advise huge pages.
+    Off,
+}
+
+/// The OS's pinning limits (RFC-0020 §3, supporting types). Fields that do not apply to the
+/// OS are `None` or `false`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PinLimits {
+    /// `RLIMIT_MEMLOCK` soft limit; `None` = unlimited.
+    pub memlock: Option<Bytes>,
+    /// `CAP_IPC_LOCK` is in the effective set.
+    pub cap_ipc_lock: bool,
+    /// What io_uring or IoRing registration may still take. Linux: this process's view,
+    /// `RLIMIT_MEMLOCK − VmPin`, an upper bound on the per-user `io_fixed` the daemon divides
+    /// (RFC-0020 §5); `None` = unlimited.
+    pub io_fixed_max: Option<Bytes>,
+    /// Windows: the hard working-set minimum is allowed.
+    pub ws_hard_min_ok: bool,
+    /// Windows: the measured fraction of RAM lockable for GPU DMA.
+    pub lockable_fraction: Option<f32>,
+    /// Windows WDDM: the host registration cap for helper GPUs.
+    pub helper_gpu_cap: Option<Bytes>,
+    /// WSL2: the `cudaHostAlloc` cap, which forces the register path (TIER-E2-T04).
+    pub host_alloc_cap: Option<Bytes>,
+    /// macOS: `vm.user_wire_limit` / `vm.global_user_wire_limit`.
+    pub user_wire_limit: Option<Bytes>,
+    /// macOS: `recommendedMaxWorkingSetSize`.
+    pub gpu_wired_cap: Option<Bytes>,
+}
+
+/// Why a range was left [`PinClass::Pageable`] instead of locked: the structured finding that
+/// `syntropy doctor` renders (RFC-0020 §4.2; the doctor framework is PROD-E9-T01).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageableReason {
+    /// `RLIMIT_MEMLOCK` does not cover the range and `CAP_IPC_LOCK` is not held.
+    MemlockLimit {
+        /// The soft limit.
+        limit: Bytes,
+        /// What this process already holds locked (`VmLck`).
+        locked: Bytes,
+        /// The bytes the lock asked for.
+        requested: Bytes,
+    },
+    /// The limit allowed it, but the lock call itself failed.
+    LockFailed {
+        /// The OS error number.
+        errno: i32,
+    },
+}
+
+impl PageableReason {
+    /// A stable identifier for the finding, for logs, metrics and doctor's check.
+    pub fn id(&self) -> &'static str {
+        match self {
+            PageableReason::MemlockLimit { .. } => "memlock_limit",
+            PageableReason::LockFailed { .. } => "lock_failed",
+        }
+    }
+}
+
+impl fmt::Display for PageableReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PageableReason::MemlockLimit {
+                limit,
+                locked,
+                requested,
+            } => write!(
+                f,
+                "RLIMIT_MEMLOCK is {} bytes and {} are already locked, so {} more cannot be \
+                 locked; the range stays pageable. Raise LimitMEMLOCK for the service, or grant \
+                 CAP_IPC_LOCK",
+                limit.0, locked.0, requested.0
+            ),
+            PageableReason::LockFailed { errno } => write!(
+                f,
+                "the lock call failed with OS error {errno}; the range stays pageable"
+            ),
+        }
+    }
+}
+
+/// Whether locking `requested` more bytes is allowed: always with `CAP_IPC_LOCK` or no
+/// memlock limit, otherwise only when `locked + requested` fits the limit (RFC-0020 §4.2,
+/// Linux row). `locked` is the live `VmLck`.
+pub fn lock_allowed(
+    limits: &PinLimits,
+    locked: Bytes,
+    requested: Bytes,
+) -> Result<(), PageableReason> {
+    match limits.memlock {
+        Some(limit) if !limits.cap_ipc_lock => {
+            if locked
+                .0
+                .checked_add(requested.0)
+                .is_some_and(|sum| sum <= limit.0)
+            {
+                Ok(())
+            } else {
+                Err(PageableReason::MemlockLimit {
+                    limit,
+                    locked,
+                    requested,
+                })
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The outcome of asking to lock a range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockOutcome {
+    /// The range is locked.
+    Locked,
+    /// The range stays pageable, for this reason.
+    Pageable(PageableReason),
+}
+
+impl LockOutcome {
+    /// The pin class the range now has.
+    pub fn pin_class(&self) -> PinClass {
+        match self {
+            LockOutcome::Locked => PinClass::Locked,
+            LockOutcome::Pageable(_) => PinClass::Pageable,
+        }
+    }
+}
+
+/// [`OsMemory::lock`], with a refusal turned into [`LockOutcome::Pageable`]: a range that
+/// cannot be locked is not an error, it stays `Pageable` and the reason is kept (RFC-0020
+/// §4.2, ADR-0200 item 6). Other errors pass through.
+pub fn lock_or_pageable(
+    os: &dyn OsMemory,
+    r: &HostRange,
+    sub: Range<u64>,
+) -> Result<LockOutcome, OsMemError> {
+    match os.lock(r, sub) {
+        Ok(()) => Ok(LockOutcome::Locked),
+        Err(OsMemError::LockRefused(reason)) => Ok(LockOutcome::Pageable(reason)),
+        Err(e) => Err(e),
+    }
+}
+
+/// An [`OsMemory`] failure.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OsMemError {
+    /// Reserving or committing memory failed (`TIER_HOST_RESERVE`, code 4, `Capacity`).
+    HostReserve {
+        /// The call that failed.
+        op: &'static str,
+        /// The OS error number.
+        errno: i32,
+    },
+    /// The range could not be locked; it stays pageable.
+    LockRefused(PageableReason),
+    /// `munlock` or its equivalent failed.
+    Unlock {
+        /// The OS error number.
+        errno: i32,
+    },
+    /// The range is not one this adapter reserved and still holds: a caller bug.
+    UnknownRange,
+    /// A sub-range or size the range cannot hold: a caller bug.
+    OutOfRange {
+        /// The range's length.
+        len: Bytes,
+        /// The offsets asked for.
+        sub: Range<u64>,
+    },
+}
+
+impl OsMemError {
+    /// The error class (RFC-0001 §5.12).
+    pub fn class(&self) -> ErrorClass {
+        match self {
+            OsMemError::HostReserve { .. } | OsMemError::LockRefused(_) => ErrorClass::Capacity,
+            OsMemError::Unlock { .. }
+            | OsMemError::UnknownRange
+            | OsMemError::OutOfRange { .. } => ErrorClass::Internal,
+        }
+    }
+
+    /// The RFC-0020 §15 code, where the error has one.
+    pub fn tier_code(&self) -> Option<u16> {
+        match self {
+            OsMemError::HostReserve { .. } => Some(4),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for OsMemError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OsMemError::HostReserve { op, errno } => {
+                write!(f, "TIER_HOST_RESERVE: {op} failed with OS error {errno}")
+            }
+            OsMemError::LockRefused(reason) => reason.fmt(f),
+            OsMemError::Unlock { errno } => write!(f, "unlock failed with OS error {errno}"),
+            OsMemError::UnknownRange => write!(f, "the range was not reserved by this adapter"),
+            OsMemError::OutOfRange { len, sub } => write!(
+                f,
+                "offsets {}..{} are outside a range of {} bytes",
+                sub.start, sub.end, len.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OsMemError {}
+
+/// Checks that `sub` lies inside a range of `len` bytes and is not empty.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn check_sub(len: Bytes, sub: &Range<u64>) -> Result<(), OsMemError> {
+    if sub.start < sub.end && sub.end <= len.0 {
+        Ok(())
+    } else {
+        Err(OsMemError::OutOfRange {
+            len,
+            sub: sub.clone(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +724,136 @@ mod tests {
     fn read_numa_available_of_a_missing_dir_is_empty() {
         let missing = Path::new("/nonexistent/syntropy-tier-test/node");
         assert!(read_numa_available(missing, Bytes(GIB)).is_empty());
+    }
+
+    // ---- lock decision and the pageable finding ----
+
+    fn limits(memlock: Option<u64>, cap: bool) -> PinLimits {
+        PinLimits {
+            memlock: memlock.map(Bytes),
+            cap_ipc_lock: cap,
+            ..PinLimits::default()
+        }
+    }
+
+    #[test]
+    fn lock_allowed_only_within_memlock_or_with_the_capability() {
+        let mib = 1 << 20;
+        let eight = limits(Some(8 * mib), false);
+        assert_eq!(lock_allowed(&eight, Bytes(6 * mib), Bytes(2 * mib)), Ok(()));
+        assert_eq!(
+            lock_allowed(&eight, Bytes(6 * mib), Bytes(2 * mib + 1)),
+            Err(PageableReason::MemlockLimit {
+                limit: Bytes(8 * mib),
+                locked: Bytes(6 * mib),
+                requested: Bytes(2 * mib + 1),
+            })
+        );
+        assert!(lock_allowed(&eight, Bytes(u64::MAX), Bytes(1)).is_err());
+        assert_eq!(
+            lock_allowed(&limits(Some(0), true), Bytes(0), Bytes(GIB)),
+            Ok(())
+        );
+        assert_eq!(
+            lock_allowed(&limits(None, false), Bytes(0), Bytes(GIB)),
+            Ok(())
+        );
+    }
+
+    /// The finding `syntropy doctor` will render (PROD-E9-T01 builds doctor): a stable id and
+    /// a sentence that names the limit, what is held, what was asked and the fix.
+    #[test]
+    fn the_pageable_reason_says_why_and_how_to_fix_it() {
+        let r = PageableReason::MemlockLimit {
+            limit: Bytes(8 << 20),
+            locked: Bytes(0),
+            requested: Bytes(64 << 20),
+        };
+        assert_eq!(r.id(), "memlock_limit");
+        assert_eq!(
+            r.to_string(),
+            "RLIMIT_MEMLOCK is 8388608 bytes and 0 are already locked, so 67108864 more cannot \
+             be locked; the range stays pageable. Raise LimitMEMLOCK for the service, or grant \
+             CAP_IPC_LOCK"
+        );
+        let f = PageableReason::LockFailed { errno: 12 };
+        assert_eq!(f.id(), "lock_failed");
+        assert!(f.to_string().contains("OS error 12"));
+    }
+
+    /// A fake adapter whose `lock` follows [`lock_allowed`] over fixed limits.
+    struct FakeOs {
+        limits: PinLimits,
+        locked: Bytes,
+    }
+
+    impl OsMemory for FakeOs {
+        fn snapshot(&self) -> MemSnapshot {
+            unimplemented!()
+        }
+        fn limits(&self) -> PinLimits {
+            self.limits
+        }
+        fn reserve(&self, _: Bytes, _: Option<u16>, _: HugePages) -> Result<HostRange, OsMemError> {
+            unimplemented!()
+        }
+        fn commit(&self, _: &HostRange, _: Range<u64>) -> Result<(), OsMemError> {
+            Ok(())
+        }
+        fn lock(&self, r: &HostRange, sub: Range<u64>) -> Result<(), OsMemError> {
+            check_sub(r.len, &sub)?;
+            lock_allowed(&self.limits, self.locked, Bytes(sub.end - sub.start))
+                .map_err(OsMemError::LockRefused)
+        }
+        fn unlock(&self, _: &HostRange, _: Range<u64>) -> Result<(), OsMemError> {
+            Ok(())
+        }
+        fn release(&self, _: HostRange) {}
+    }
+
+    fn range(len: u64) -> HostRange {
+        HostRange {
+            base: std::ptr::null_mut(),
+            len: Bytes(len),
+            numa: None,
+            os_handle: 0,
+        }
+    }
+
+    #[test]
+    fn a_refused_lock_leaves_the_range_pageable_with_its_reason() {
+        let os = FakeOs {
+            limits: limits(Some(8 << 20), false),
+            locked: Bytes(0),
+        };
+        let r = range(64 << 20);
+        let out = lock_or_pageable(&os, &r, 0..64 << 20).unwrap();
+        assert_eq!(out.pin_class(), PinClass::Pageable);
+        assert!(matches!(
+            out,
+            LockOutcome::Pageable(PageableReason::MemlockLimit { .. })
+        ));
+        let ok = lock_or_pageable(&os, &r, 0..1 << 20).unwrap();
+        assert_eq!(
+            (ok, ok.pin_class()),
+            (LockOutcome::Locked, PinClass::Locked)
+        );
+        // Other errors are not turned into a pin class.
+        assert!(matches!(
+            lock_or_pageable(&os, &r, 0..(64 << 20) + 1),
+            Err(OsMemError::OutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn errors_carry_their_class_and_code() {
+        let e = OsMemError::HostReserve {
+            op: "mmap",
+            errno: 12,
+        };
+        assert_eq!((e.class(), e.tier_code()), (ErrorClass::Capacity, Some(4)));
+        assert!(e.to_string().starts_with("TIER_HOST_RESERVE"));
+        assert_eq!(OsMemError::UnknownRange.class(), ErrorClass::Internal);
+        assert_eq!(HugePages::default(), HugePages::Auto);
     }
 }
