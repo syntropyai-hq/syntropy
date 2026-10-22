@@ -3697,7 +3697,7 @@ dependencies = [
  "serde_json",
  "syntropy-core",
  "syntropy-spsc",
- "windows-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
