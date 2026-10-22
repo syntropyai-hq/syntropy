@@ -647,7 +647,7 @@ fn oracle(h: &SafetensorsHeader) {
     for t in &h.tensors {
         assert!(t.offset >= h.data_start);
         assert!(t.offset + t.len <= h.file_len);
-        assert_eq!(t.dtype.byte_len(&t.shape), Some(t.len));
+        assert_eq!(t.dtype.byte_len(&t.shape), Ok(t.len));
         if t.len > 0 {
             spans.push((t.offset, t.offset + t.len));
         }
@@ -688,7 +688,7 @@ prop_compose! {
         exact in any::<bool>(),
     ) -> (String, Vec<u64>, u64, u64) {
         let len = match SafetensorsDtype::from_name(dtype) {
-            Some(d) if exact => d.byte_len(&shape).unwrap(),
+            Some(d) if exact => d.byte_len(&shape).unwrap_or(len),
             _ => len,
         };
         (dtype.to_owned(), shape, begin, begin + len)
@@ -773,12 +773,30 @@ fn errors_from_reads_keep_their_class() {
 
 // ---- The dtypes beyond M0 (COMP-E10-T10) -------------------------------------------------------
 
+/// Each dtype's bytes for a [3, 4] tensor of 12 elements, written out rather than computed.
+const LEN_3X4: [(SafetensorsDtype, u64); 15] = [
+    (SafetensorsDtype::F32, 48),
+    (SafetensorsDtype::F16, 24),
+    (SafetensorsDtype::BF16, 24),
+    (SafetensorsDtype::F8E4M3, 12),
+    (SafetensorsDtype::F8E5M2, 12),
+    (SafetensorsDtype::F8E8M0, 12),
+    (SafetensorsDtype::F4E2M1, 6),
+    (SafetensorsDtype::F6E2M3, 9),
+    (SafetensorsDtype::F6E3M2, 9),
+    (SafetensorsDtype::I8, 12),
+    (SafetensorsDtype::U8, 12),
+    (SafetensorsDtype::I16, 24),
+    (SafetensorsDtype::I32, 48),
+    (SafetensorsDtype::I64, 96),
+    (SafetensorsDtype::Bool, 12),
+];
+
 #[test]
 fn every_dtype_parses_with_its_length_and_element_type() {
-    for d in SafetensorsDtype::ALL {
-        let shape = [3u64, 4];
-        let len = d.byte_len(&shape).unwrap();
-        let h = parse(file(&[("t", d.name(), &shape, [0, len])], &[], len)).unwrap();
+    assert_eq!(LEN_3X4.map(|(d, _)| d), SafetensorsDtype::ALL);
+    for (d, len) in LEN_3X4 {
+        let h = parse(file(&[("t", d.name(), &[3, 4], [0, len])], &[], len)).unwrap();
         let t = h.tensor("t").unwrap();
         assert_eq!((t.dtype, t.len), (d, len), "{}", d.name());
     }
@@ -786,11 +804,9 @@ fn every_dtype_parses_with_its_length_and_element_type() {
 
 #[test]
 fn a_length_that_misses_by_one_byte_is_header_invalid() {
-    for d in SafetensorsDtype::ALL {
-        let shape = [3u64, 4];
-        let len = d.byte_len(&shape).unwrap();
+    for (d, len) in LEN_3X4 {
         for wrong in [len - 1, len + 1] {
-            let e = parse(file(&[("t", d.name(), &shape, [0, wrong])], &[], len + 1)).unwrap_err();
+            let e = parse(file(&[("t", d.name(), &[3, 4], [0, wrong])], &[], len + 1)).unwrap_err();
             assert_eq!(e.code(), Some(6), "{} with {wrong} bytes", d.name());
             assert!(e.to_string().contains(d.name()), "{e}");
             assert!(e.to_string().contains(&format!("needs {len}")), "{e}");
@@ -799,33 +815,39 @@ fn a_length_that_misses_by_one_byte_is_header_invalid() {
 }
 
 #[test]
-fn sub_byte_dtypes_round_each_row_up() {
-    // F4 [3, 5]: each row of 5 takes 3 bytes, 9 in all; packing across rows would take 8.
-    let ok = file(&[("t", "F4", &[3, 5], [0, 9])], &[], 9);
-    assert_eq!(parse(ok).unwrap().tensors[0].len, 9);
-    assert_eq!(
-        code(parse(file(&[("t", "F4", &[3, 5], [0, 8])], &[], 9))),
-        Some(6)
-    );
-    // F6 [2, 3]: each row of 18 bits takes 3 bytes, 6 in all; packed, 36 bits would be 5.
+fn sub_byte_dtypes_pack_the_whole_tensor() {
+    // F6 [4, 2]: 8 elements, 48 bits, 6 bytes. Rounding each 12-bit row up would give 8.
     for d in ["F6_E2M3", "F6_E3M2"] {
-        let ok = file(&[("t", d, &[2, 3], [0, 6])], &[], 6);
+        let ok = file(&[("t", d, &[4, 2], [0, 6])], &[], 8);
         assert_eq!(parse(ok).unwrap().tensors[0].len, 6, "{d}");
         assert_eq!(
-            code(parse(file(&[("t", d, &[2, 3], [0, 5])], &[], 6))),
+            code(parse(file(&[("t", d, &[4, 2], [0, 8])], &[], 8))),
+            Some(6),
+            "{d}: per-row rounding is refused"
+        );
+    }
+    // F4 [2, 3]: 6 elements, 3 bytes; the two rows share a byte.
+    let ok = file(&[("t", "F4", &[2, 3], [0, 3])], &[], 4);
+    assert_eq!(parse(ok).unwrap().tensors[0].len, 3);
+    assert_eq!(
+        code(parse(file(&[("t", "F4", &[2, 3], [0, 4])], &[], 4))),
+        Some(6)
+    );
+    // F4 [3]: 12 bits end inside a byte, so no length is valid.
+    for len in [1, 2] {
+        let e = parse(file(&[("t", "F4", &[3], [0, len])], &[], 2)).unwrap_err();
+        assert_eq!(e.code(), Some(6), "F4 [3] with {len} bytes");
+        assert!(e.to_string().contains("12 bits"), "{e}");
+    }
+    // Sub-byte scalars end inside a byte too; empty tensors take none.
+    for d in ["F4", "F6_E2M3", "F6_E3M2"] {
+        assert_eq!(
+            code(parse(file(&[("s", d, &[], [0, 1])], &[], 1))),
             Some(6),
             "{d}"
         );
-    }
-    // Scalars take one byte; empty tensors none.
-    for d in ["F4", "F6_E2M3", "F6_E3M2"] {
-        let h = parse(file(
-            &[("s", d, &[], [0, 1]), ("e", d, &[4, 0], [1, 1])],
-            &[],
-            1,
-        ))
-        .unwrap();
-        assert_eq!((h.tensors[0].len, h.tensors[1].len), (1, 0), "{d}");
+        let h = parse(file(&[("e", d, &[4, 0], [0, 0])], &[], 0)).unwrap();
+        assert_eq!(h.tensors[0].len, 0, "{d}");
     }
 }
 
@@ -854,30 +876,30 @@ fn sub_byte_overflow_is_header_invalid() {
 
 const DTYPES: &str = "dtypes.safetensors";
 
-/// One tensor per dtype, with the element count each should report: rows of odd length for
-/// the sub-byte dtypes, a scalar, and an empty tensor. Synthetic.
+/// One tensor per dtype, with the element count each should report: sub-byte tensors whose
+/// rows share bytes, a scalar, and an empty tensor. Synthetic.
 fn dtype_fixture() -> (Vec<u8>, Vec<(String, SafetensorsDtype, u64)>) {
-    let shapes: [&[u64]; 15] = [
-        &[2, 3],
-        &[5],
-        &[3, 1],
-        &[4, 4],
-        &[7],
-        &[2, 2],
-        &[3, 5],
-        &[2, 3],
-        &[4, 7],
-        &[],
-        &[9],
-        &[3],
-        &[2, 2, 2],
-        &[0, 4],
-        &[2, 8],
+    // (shape, bytes), the bytes written out rather than computed.
+    let shapes: [(&[u64], u64); 15] = [
+        (&[2, 3], 24),
+        (&[5], 10),
+        (&[3, 1], 6),
+        (&[4, 4], 16),
+        (&[7], 7),
+        (&[2, 2], 4),
+        (&[3, 6], 9),
+        (&[2, 4], 6),
+        (&[4, 7], 21),
+        (&[], 1),
+        (&[9], 9),
+        (&[3], 6),
+        (&[2, 2, 2], 32),
+        (&[0, 4], 0),
+        (&[2, 8], 16),
     ];
     let mut owned = Vec::new();
     let mut at = 0;
-    for (d, shape) in SafetensorsDtype::ALL.into_iter().zip(shapes) {
-        let len = d.byte_len(shape).unwrap();
+    for (d, (shape, len)) in SafetensorsDtype::ALL.into_iter().zip(shapes) {
         owned.push((
             format!("t.{}", d.name().to_lowercase()),
             d,
@@ -940,7 +962,17 @@ proptest! {
         delta in -3i64..4,
     ) {
         let d = SafetensorsDtype::ALL[i];
-        let len = d.byte_len(&shape).unwrap();
+        // The oracle, computed apart from the reader: packed bits, whole bytes only.
+        let numel: u64 = shape.iter().product();
+        let bits = numel * u64::from(d.bits());
+        if !bits.is_multiple_of(8) {
+            // No length is valid for a tensor that ends inside a byte.
+            let given = (bits / 8).saturating_add_signed(delta);
+            let r = parse(file(&[("t", d.name(), &shape, [0, given])], &[], given + 4));
+            prop_assert_eq!(r.unwrap_err().code(), Some(6));
+            return Ok(());
+        }
+        let len = bits / 8;
         let Some(given) = len.checked_add_signed(delta) else { return Ok(()) };
         let r = parse(file(&[("t", d.name(), &shape, [0, given])], &[], len + 4));
         if delta == 0 {

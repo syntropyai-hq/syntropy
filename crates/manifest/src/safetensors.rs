@@ -9,7 +9,8 @@
 //! - It checks every tensor: its `dtype` is one of RFC-0041 §2.2's ([`SafetensorsDtype`]), its
 //!   `shape` is a list of non-negative integers, its `data_offsets` lie inside the file's data
 //!   section, its length is the dtype's [`SafetensorsDtype::byte_len`] of the shape
-//!   (`numel × element size`, with sub-byte rows rounded up), and no two tensors share a byte. Any failure is
+//!   (`numel × bits / 8`, refused when the bits do not fill whole bytes), and no two tensors
+//!   share a byte. Any failure is
 //!   [`SafetensorsError::HeaderInvalid`] (`(Formats, 6)`), except an unknown or unsupported
 //!   dtype, which is [`SafetensorsError::UnsupportedContainer`] (`(Formats, 2)`), and a header
 //!   past the limit, which is [`SafetensorsError::HeaderLimit`] (`(Formats, 5)`).
@@ -39,7 +40,7 @@ pub mod side;
 #[cfg(test)]
 mod tests;
 
-pub use dtype::SafetensorsDtype;
+pub use dtype::{ByteLenError, SafetensorsDtype};
 use json::Json;
 
 /// The largest header length the reader accepts: 100 MiB (RFC-0041 §2.2).
@@ -264,8 +265,11 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<SafetensorsHeader, Sa
                  {data_len} bytes"
             )));
         }
-        let expect = dtype.byte_len(&shape).ok_or_else(|| {
-            SafetensorsError::invalid(format!("tensor {name:?}: the byte length overflows"))
+        let expect = dtype.byte_len(&shape).map_err(|e| {
+            SafetensorsError::invalid(format!(
+                "tensor {name:?}: shape {shape:?} of {}: {e}",
+                dtype.name()
+            ))
         })?;
         if end - begin != expect {
             return Err(SafetensorsError::invalid(format!(

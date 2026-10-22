@@ -8,12 +8,14 @@
 //! [`SafetensorsDtype::dtype`]. `BOOL` has no `DType`: no kernel takes it, and RFC-0042 §1.1
 //! lists no boolean element type, so it stays a container dtype here.
 //!
-//! **Lengths.** A whole-byte dtype takes `numel × bits / 8` bytes. The sub-byte dtypes, `F4`
-//! (two elements per byte) and `F6_E2M3`/`F6_E3M2` (four elements per three bytes), are packed
-//! along each row, the innermost dimension, and each row is rounded up to whole bytes
-//! (RFC-0041 §2.2, "sub-byte types round up per row"): `rows × ⌈row_len × bits / 8⌉`, where
-//! `row_len` is the last dimension and `rows` the product of the others. A scalar is one row of
-//! one element. A tensor with a zero dimension takes no bytes.
+//! **Lengths.** A tensor's data holds its elements packed in order, with no padding: `numel ×
+//! bits` bits, as the format's reference reader computes it. That is `numel × bits / 8` bytes
+//! for the whole-byte dtypes. For the sub-byte dtypes, `F4` (two elements per byte) and
+//! `F6_E2M3`/`F6_E3M2` (four elements per three bytes), the whole tensor is packed, not each
+//! row, and a tensor whose bit count is not a whole number of bytes is refused
+//! ([`ByteLenError::PartialByte`]). `numel` is the product of the shape, 1 for a scalar; a
+//! product of the non-zero dimensions that overflows `u64` is refused even when another
+//! dimension is zero ([`ByteLenError::Overflow`]).
 
 use syntropy_core::DType;
 
@@ -142,25 +144,53 @@ impl SafetensorsDtype {
         self.bits() < 8
     }
 
-    /// The bytes a tensor of `shape` takes, per the rules in the [module](self) documentation,
-    /// or `None` if the count overflows `u64`.
-    #[must_use]
-    pub fn byte_len(self, shape: &[u64]) -> Option<u64> {
-        let bits = u64::from(self.bits());
-        if shape.contains(&0) {
-            return Some(0);
+    /// The bytes a tensor of `shape` takes, per the rules in the [module](self) documentation.
+    ///
+    /// # Errors
+    ///
+    /// [`ByteLenError::Overflow`] if the element or bit count overflows `u64`;
+    /// [`ByteLenError::PartialByte`] if the bit count is not a multiple of 8.
+    pub fn byte_len(self, shape: &[u64]) -> Result<u64, ByteLenError> {
+        // Multiply the non-zero dimensions first, so a zero cannot hide an overflow.
+        let nonzero = shape
+            .iter()
+            .filter(|d| **d != 0)
+            .try_fold(1u64, |acc, d| acc.checked_mul(*d))
+            .ok_or(ByteLenError::Overflow)?;
+        let numel = if shape.contains(&0) { 0 } else { nonzero };
+        let bits = numel
+            .checked_mul(u64::from(self.bits()))
+            .ok_or(ByteLenError::Overflow)?;
+        if !bits.is_multiple_of(8) {
+            return Err(ByteLenError::PartialByte { bits });
         }
-        if !self.is_sub_byte() {
-            let numel = shape.iter().try_fold(1u64, |acc, d| acc.checked_mul(*d))?;
-            return numel.checked_mul(bits / 8);
+        Ok(bits / 8)
+    }
+}
+
+/// Why [`SafetensorsDtype::byte_len`] has no length for a shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByteLenError {
+    /// The element or bit count overflows `u64`.
+    Overflow,
+    /// The packed elements end inside a byte: `bits` is not a multiple of 8.
+    PartialByte {
+        /// The tensor's bit count.
+        bits: u64,
+    },
+}
+
+impl std::fmt::Display for ByteLenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Overflow => f.write_str("the byte length overflows"),
+            Self::PartialByte { bits } => {
+                write!(
+                    f,
+                    "its {bits} bits of packed elements do not fill whole bytes"
+                )
+            }
         }
-        let (row_len, outer) = match shape.split_last() {
-            Some((last, outer)) => (*last, outer),
-            None => (1, &[][..]),
-        };
-        let rows = outer.iter().try_fold(1u64, |acc, d| acc.checked_mul(*d))?;
-        let row_bytes = row_len.checked_mul(bits)?.div_ceil(8);
-        rows.checked_mul(row_bytes)
     }
 }
 
@@ -198,50 +228,92 @@ mod tests {
 
     #[test]
     fn whole_byte_lengths_are_numel_times_size() {
-        let shape = [3, 5];
-        // F32 F16 BF16 F8E4M3 F8E5M2 F8E8M0 I8 U8 I16 I32 I64 BOOL.
-        let expect = [60, 30, 30, 15, 15, 15, 15, 15, 30, 60, 120, 15];
-        let whole = SafetensorsDtype::ALL
-            .into_iter()
-            .filter(|d| !d.is_sub_byte());
-        for (d, len) in whole.zip(expect) {
-            assert_eq!(d.byte_len(&shape), Some(len), "{d:?}");
-            assert_eq!(d.byte_len(&[]), Some(len / 15), "{d:?} scalar");
+        use SafetensorsDtype as D;
+        // [3, 5] holds 15 elements; the expected lengths are written out, not computed.
+        let expect = [
+            (D::F32, 60),
+            (D::F16, 30),
+            (D::BF16, 30),
+            (D::F8E4M3, 15),
+            (D::F8E5M2, 15),
+            (D::F8E8M0, 15),
+            (D::I8, 15),
+            (D::U8, 15),
+            (D::I16, 30),
+            (D::I32, 60),
+            (D::I64, 120),
+            (D::Bool, 15),
+        ];
+        for (d, len) in expect {
+            assert_eq!(d.byte_len(&[3, 5]), Ok(len), "{d:?}");
+        }
+        let scalar = [
+            (D::F32, 4),
+            (D::BF16, 2),
+            (D::F8E8M0, 1),
+            (D::I64, 8),
+            (D::Bool, 1),
+        ];
+        for (d, len) in scalar {
+            assert_eq!(d.byte_len(&[]), Ok(len), "{d:?} scalar");
         }
     }
 
     #[test]
-    fn sub_byte_rows_round_up() {
+    fn sub_byte_dtypes_pack_the_whole_tensor() {
         use SafetensorsDtype::{F4E2M1, F6E2M3, F6E3M2};
-        // F4: two per byte.
-        assert_eq!(F4E2M1.byte_len(&[4, 8]), Some(16));
+        // F4: two per byte, across rows.
+        assert_eq!(F4E2M1.byte_len(&[4, 8]), Ok(16));
+        assert_eq!(F4E2M1.byte_len(&[2, 3]), Ok(3), "rows of 3 share a byte");
         assert_eq!(
-            F4E2M1.byte_len(&[4, 7]),
-            Some(16),
-            "each 7-element row takes 4 bytes"
+            F4E2M1.byte_len(&[3]),
+            Err(ByteLenError::PartialByte { bits: 12 })
         );
-        assert_eq!(F4E2M1.byte_len(&[1]), Some(1));
-        assert_eq!(F4E2M1.byte_len(&[]), Some(1), "a scalar is one row of one");
-        // F6: four per three bytes.
+        assert_eq!(
+            F4E2M1.byte_len(&[]),
+            Err(ByteLenError::PartialByte { bits: 4 })
+        );
+        // F6: four per three bytes, across rows.
         for d in [F6E2M3, F6E3M2] {
-            assert_eq!(d.byte_len(&[2, 4]), Some(6), "{d:?}");
-            assert_eq!(d.byte_len(&[2, 5]), Some(8), "{d:?}: 30 bits round up to 4");
+            assert_eq!(d.byte_len(&[4, 2]), Ok(6), "{d:?}: 48 bits");
+            assert_eq!(d.byte_len(&[2, 2]), Ok(3), "{d:?}: 24 bits");
+            assert_eq!(d.byte_len(&[32]), Ok(24), "{d:?}");
             assert_eq!(
-                d.byte_len(&[3, 2, 1]),
-                Some(6),
-                "{d:?}: 6 bits round up to 1"
+                d.byte_len(&[2, 3]),
+                Err(ByteLenError::PartialByte { bits: 36 }),
+                "{d:?}"
             );
-            assert_eq!(d.byte_len(&[32]), Some(24), "{d:?}");
+            assert_eq!(d.byte_len(&[1]), Err(ByteLenError::PartialByte { bits: 6 }));
         }
     }
 
     #[test]
-    fn zero_dimensions_take_no_bytes_and_overflow_is_none() {
+    fn zero_dimensions_take_no_bytes_but_still_check_overflow() {
         for d in SafetensorsDtype::ALL {
-            assert_eq!(d.byte_len(&[0, u64::MAX]), Some(0), "{d:?}");
-            assert_eq!(d.byte_len(&[u64::MAX, 3]), None, "{d:?}");
+            assert_eq!(d.byte_len(&[0, 7]), Ok(0), "{d:?}");
+            assert_eq!(
+                d.byte_len(&[u64::MAX, 0]),
+                Ok(0),
+                "{d:?}: one big dimension fits"
+            );
+            assert_eq!(
+                d.byte_len(&[0, u64::MAX, 3]),
+                Err(ByteLenError::Overflow),
+                "{d:?}: the non-zero dimensions overflow"
+            );
+            assert_eq!(
+                d.byte_len(&[u64::MAX, 3]),
+                Err(ByteLenError::Overflow),
+                "{d:?}"
+            );
         }
-        assert_eq!(SafetensorsDtype::F4E2M1.byte_len(&[u64::MAX]), None);
-        assert_eq!(SafetensorsDtype::U8.byte_len(&[u64::MAX]), Some(u64::MAX));
+        assert_eq!(
+            SafetensorsDtype::F4E2M1.byte_len(&[u64::MAX]),
+            Err(ByteLenError::Overflow)
+        );
+        assert_eq!(
+            SafetensorsDtype::U8.byte_len(&[u64::MAX]),
+            Err(ByteLenError::Overflow)
+        );
     }
 }
