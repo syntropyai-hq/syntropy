@@ -386,7 +386,7 @@ No GAPs.
 | RFC-0043 | §3 | The block library | 24: COMP-E1-T04, COMP-E3-T11–T13, COMP-E3-T23–T25, COMP-E5-T03, COMP-E5-T06, COMP-E5-T19, COMP-E5-T27–T31, COMP-E6-T05–T07, COMP-E15-T02, COMP-E15-T04–T05, COMP-E15-T09, COMP-E15-T12, COMP-E16-T18 | ok |
 | RFC-0043 | §4 | Census classification | 2: COMP-E15-T11, COMP-E16-T01 | ok |
 | RFC-0043 | §5 | Family modules | 17: COMP-E1-T15, COMP-E3-T19, COMP-E5-T25, COMP-E5-T29, COMP-E15-T12, COMP-E16-T01, COMP-E16-T03–T10, COMP-E16-T16, COMP-E16-T18–T19 | ok |
-| RFC-0043 | §6 | Stage cut points, segments and tensor-parallel sharding | 4: COMP-E15-T06–T08, COMP-E15-T10 | ok |
+| RFC-0043 | §6 | Stage cut points, segments and tensor-parallel sharding | 5: PLC-E4-T10, COMP-E15-T06–T08, COMP-E15-T10 | ok |
 | RFC-0043 | §7 | Adding a family | 4: COMP-E16-T11, COMP-E16-T13, COMP-E16-T17, PROD-E13-T10 | ok |
 | RFC-0043 | §8 | Tokenizers and chat templates | 12: COMP-E17-T01–T05, COMP-E17-T07–T13 | ok |
 | RFC-0043 | §9 | The conformance gate per family | 8: COMP-E14-T24, COMP-E15-T08, COMP-E16-T02–T03, COMP-E16-T07, COMP-E16-T09, COMP-E16-T13–T14 | ok |
