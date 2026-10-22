@@ -27,7 +27,8 @@
           { "context": "ci-gate", "integration_id": 15368 },
           { "context": "dco", "integration_id": 15368 },
           { "context": "pr-title", "integration_id": 15368 },
-          { "context": "dep-diff", "integration_id": 15368 }
+          { "context": "dep-diff", "integration_id": 15368 },
+          { "context": "properties-removal", "integration_id": 15368 }
         ]
       }
     }

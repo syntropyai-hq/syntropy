@@ -23,7 +23,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::run::Context;
-use crate::{ci_gate, codeowners, contrib, dep_diff, instructions, repo_settings, toolchain};
+use crate::{
+    ci_gate, codeowners, contrib, dep_diff, determinism, instructions, properties, repo_settings,
+    toolchain,
+};
 
 /// A named job or suite: the steps it runs, in order.
 #[derive(Debug, PartialEq, Eq)]
@@ -157,8 +160,8 @@ pub fn cargo() -> OsString {
 pub const JOBS: &[Entry] = &[
     Entry {
         name: "lint",
-        summary: "the L0 static checks: rustfmt, clippy, the crate dependency rules, CODEOWNERS and \
-                  the licence policy",
+        summary: "the L0 static checks: rustfmt, clippy with the determinism lints, the crate \
+                  dependency rules, CODEOWNERS and the licence policy",
         defined_in: "RFC-0062 §2.3 and §12.4",
         params: &[],
         steps: &[
@@ -186,9 +189,27 @@ pub const JOBS: &[Entry] = &[
                     "warnings",
                 ]),
             },
+            // What clippy cannot check about the determinism lints of RFC-0060 §2.1 and §2.4,
+            // which the `clippy` step applies (QUAL-E3-T03).
+            Step {
+                name: "determinism",
+                action: Action::Builtin {
+                    shown: "the covered crates keep ci/clippy-determinism.toml and lift it only \
+                            where listed",
+                    run: determinism::step,
+                },
+            },
             Step {
                 name: "check-deps",
                 action: Action::Xtask(&["check-deps"]),
+            },
+            // The property registry of RFC-0060 §3.2 (QUAL-E3-T05).
+            Step {
+                name: "properties",
+                action: Action::Builtin {
+                    shown: "ci/properties.toml matches the property tests, RFC-0060 and the epics",
+                    run: properties::step,
+                },
             },
             Step {
                 name: "codeowners",
@@ -418,6 +439,41 @@ pub const JOBS: &[Entry] = &[
         ],
         pending: &[],
     },
+    // The removal half of the property registry (QUAL-E3-T05). It reads the PR description, so
+    // it runs in `pr-meta.yml` with the base branch's xtask, like `dco` and `pr-title`.
+    Entry {
+        name: "properties-removal",
+        summary: "a property removed from ci/properties.toml has a reason in the PR description",
+        defined_in: "RFC-0060 §3.2",
+        params: &[
+            Param {
+                name: "--base",
+                value: "<dir>",
+                help: "a checkout of the PR's base commit",
+                required: true,
+            },
+            Param {
+                name: "--head",
+                value: "<dir>",
+                help: "a checkout of the PR merged into its base",
+                required: true,
+            },
+            Param {
+                name: "--event",
+                value: "<file>",
+                help: "the pull_request event payload, or GET /repos/{owner}/{repo}/pulls/{n}",
+                required: true,
+            },
+        ],
+        steps: &[Step {
+            name: "properties-removal",
+            action: Action::Builtin {
+                shown: "each removed property has a `Removes <ID>: <reason>` line",
+                run: properties::removal_step,
+            },
+        }],
+        pending: &[],
+    },
     Entry {
         name: "build",
         summary: "`build-<os>` in `pr.yml`: the PR build of the workspace on each Tier 1 OS",
@@ -511,10 +567,26 @@ pub const SUITES: &[Entry] = &[
         summary: "L1: the crate-local unit tests and doctests of every workspace crate",
         defined_in: "RFC-0060 §1.1",
         params: &[],
-        steps: &[Step {
-            name: "test",
-            action: Action::Cargo(&["test", "--workspace", "--locked"]),
-        }],
+        steps: &[
+            Step {
+                name: "test",
+                action: Action::Cargo(&["test", "--workspace", "--locked"]),
+            },
+            // `--workspace` builds `obs` without its test-only feature, so the fault plans,
+            // triggers and counters of RFC-0060 §9.2 are tested in a build of their own
+            // (QUAL-E9-T01).
+            Step {
+                name: "fault-injection",
+                action: Action::Cargo(&[
+                    "test",
+                    "--package",
+                    "syntropy-obs",
+                    "--features",
+                    "fault-injection",
+                    "--locked",
+                ]),
+            },
+        ],
         pending: &[],
     },
     Entry {
@@ -568,6 +640,25 @@ pub const SUITES: &[Entry] = &[
                 "--ignored",
                 "--nocapture",
             ]),
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "properties",
+        summary: "L2: the named properties of ci/properties.toml at a given case count",
+        defined_in: "RFC-0060 §1.1 and §3.1",
+        params: &[Param {
+            name: "--cases",
+            value: "<n>",
+            help: "cases per property, as PROPTEST_CASES (default 256, a PR run; nightly 16384)",
+            required: false,
+        }],
+        steps: &[Step {
+            name: "properties",
+            action: Action::Builtin {
+                shown: "each listed property's tests with PROPTEST_CASES set",
+                run: properties::suite_step,
+            },
         }],
         pending: &[],
     },
@@ -677,7 +768,10 @@ mod tests {
                 "xtask: cargo and rustc are the release rust-toolchain.toml pins",
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
+                "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
+                 listed",
                 "cargo xtask check-deps",
+                "xtask: ci/properties.toml matches the property tests, RFC-0060 and the epics",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
                 "xtask: ci/agent-instructions.toml is well formed and CODEOWNERS owns every file it \
                  lists",
@@ -771,12 +865,19 @@ mod tests {
     }
 
     #[test]
-    fn unit_suite_tests_the_whole_workspace() {
+    fn unit_suite_tests_the_whole_workspace_then_the_fault_points() {
         let unit = find(SUITES, "unit").expect("unit is registered");
-        assert_eq!(unit.steps.len(), 1);
+        let steps: Vec<String> = unit
+            .steps
+            .iter()
+            .map(|step| step.action.display())
+            .collect();
         assert_eq!(
-            unit.steps[0].action.display(),
-            "cargo test --workspace --locked"
+            steps,
+            [
+                "cargo test --workspace --locked",
+                "cargo test --package syntropy-obs --features fault-injection --locked",
+            ]
         );
     }
 

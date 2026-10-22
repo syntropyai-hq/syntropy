@@ -7,7 +7,7 @@
 //! every indexed tensor is in its shard, every shard tensor is indexed to that shard, and no
 //! name is in two shards. A shard name must be a plain file name in the index's directory, so
 //! an index cannot point a reader at another path. The index is read whole, bounded by
-//! [`HEADER_MAX`](super::HEADER_MAX) like a header.
+//! [`HEADER_MAX`] like a header.
 
 use super::json::Json;
 use super::{HEADER_MAX, SafetensorsError, SafetensorsHeader, read_header};
@@ -153,7 +153,7 @@ pub fn parse_index(bytes: &[u8]) -> Result<ShardIndex, SafetensorsError> {
 ///
 /// # Errors
 ///
-/// As [`read_index`] and [`read_header`](super::read_header), `open`'s errors, and
+/// As [`read_index`] and [`read_header`], `open`'s errors, and
 /// [`SafetensorsError::HeaderInvalid`] when the index and the shards disagree.
 pub fn read_sharded<S, T, F>(
     index_source: S,
@@ -179,13 +179,14 @@ fn check_agreement(
     index: &ShardIndex,
     shards: &[(String, SafetensorsHeader)],
 ) -> Result<(), SafetensorsError> {
-    use std::collections::HashMap;
-    let indexed: HashMap<&str, &str> = index
+    // Ordered maps (RFC-0060 §2.4 rule T3), though only lookups and inserts read them.
+    use std::collections::BTreeMap;
+    let indexed: BTreeMap<&str, &str> = index
         .weight_map
         .iter()
         .map(|(t, f)| (t.as_str(), f.as_str()))
         .collect();
-    let mut holder: HashMap<&str, &str> = HashMap::new();
+    let mut holder: BTreeMap<&str, &str> = BTreeMap::new();
     for (file, header) in shards {
         for t in &header.tensors {
             if let Some(other) = holder.insert(t.name.as_str(), file.as_str()) {

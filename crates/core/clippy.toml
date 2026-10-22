@@ -1,0 +1,50 @@
+# The determinism lints of RFC-0060 §2.1 (rule T1) and §2.4 (rule T3), QUAL-E3-T03.
+#
+# The source is `ci/clippy-determinism.toml`. Each crate the lints cover holds an identical copy as
+# its own `clippy.toml`, because clippy reads the config from the crate's directory. The covered
+# crates, and the files that may lift a lint with a scoped `#[allow]`, are listed in
+# `xtask/src/determinism.rs`. The `determinism` step of `cargo xtask ci lint` fails when a copy
+# differs from this file, so edit this file and copy it to every covered crate.
+#
+# A path into a crate that is not in a crate's dependency graph is ignored for that crate, so the
+# `rand`, `getrandom` and `tokio` entries apply wherever those crates are reachable. A path that
+# does not resolve in a crate that is in the graph draws a warning, not an error, and these
+# entries carry `allow-invalid = true` to keep that warning out of every log:
+# - `rand`'s generator functions and `ThreadRng` exist only with its `thread_rng` feature, which
+#   the copy that proptest brings in leaves off;
+# - `rand::make_rng` and `getrandom::SysRng` do not exist in rand 0.9 and getrandom 0.3, which
+#   `stateright`, a dev-dependency of `cluster`, brings in;
+# - tokio's clock, `tokio::time::Instant::now` and `elapsed`, listed since tokio joined the
+#   workspace (#1711), exists only with tokio's `time` feature.
+# Timers such as `tokio::time::sleep` are not listed, as `std::thread::sleep` is not.
+# `xtask/tests/determinism.rs` proves every path: it lints a fixture that calls each item with
+# every feature on and fails unless each call is reported.
+
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "rule T3 (RFC-0060 §2.4): use BTreeMap, or syntropy_core::DetHashMap with its fixed-key hasher" },
+    { path = "std::collections::HashSet", reason = "rule T3 (RFC-0060 §2.4): use BTreeSet, or syntropy_core::DetHashSet with its fixed-key hasher" },
+    { path = "std::hash::RandomState", reason = "rule T3 (RFC-0060 §2.4): a hash seed drawn per process" },
+    { path = "rand::rngs::ThreadRng", reason = "rule T1 (RFC-0060 §2.1): read randomness through the Entropy you are given", allow-invalid = true },
+    { path = "getrandom::SysRng", reason = "rule T1 (RFC-0060 §2.1): read randomness through the Entropy you are given; key material comes from OsEntropy (rule T2)", allow-invalid = true },
+]
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "rule T1 (RFC-0060 §2.1): read time through the Clock you are given; exec and obs use a TickSource" },
+    { path = "std::time::Instant::elapsed", reason = "rule T1 (RFC-0060 §2.1): reads the clock; take the difference of two Clock readings" },
+    { path = "std::time::SystemTime::now", reason = "rule T1 (RFC-0060 §2.1): read the wall clock through Clock::unix_ms" },
+    { path = "std::time::SystemTime::elapsed", reason = "rule T1 (RFC-0060 §2.1): reads the wall clock; use Clock::unix_ms" },
+    { path = "tokio::time::Instant::now", reason = "rule T1 (RFC-0060 §2.1): read time through the Clock you are given", allow-invalid = true },
+    { path = "tokio::time::Instant::elapsed", reason = "rule T1 (RFC-0060 §2.1): reads the clock; take the difference of two Clock readings", allow-invalid = true },
+    { path = "rand::rng", reason = "rule T1 (RFC-0060 §2.1): an unseeded generator; read randomness through the Entropy you are given", allow-invalid = true },
+    { path = "rand::make_rng", reason = "rule T1 (RFC-0060 §2.1): seeds from the OS; read randomness through the Entropy you are given", allow-invalid = true },
+    { path = "rand::random", reason = "rule T1 (RFC-0060 §2.1): an unseeded generator; read randomness through the Entropy you are given", allow-invalid = true },
+    { path = "rand::random_iter", reason = "rule T1 (RFC-0060 §2.1): an unseeded generator; read randomness through the Entropy you are given", allow-invalid = true },
+    { path = "rand::random_range", reason = "rule T1 (RFC-0060 §2.1): an unseeded generator; read randomness through the Entropy you are given", allow-invalid = true },
+    { path = "rand::random_bool", reason = "rule T1 (RFC-0060 §2.1): an unseeded generator; read randomness through the Entropy you are given", allow-invalid = true },
+    { path = "rand::random_ratio", reason = "rule T1 (RFC-0060 §2.1): an unseeded generator; read randomness through the Entropy you are given", allow-invalid = true },
+    { path = "rand::fill", reason = "rule T1 (RFC-0060 §2.1): an unseeded generator; read randomness through the Entropy you are given", allow-invalid = true },
+    { path = "getrandom::fill", reason = "rule T1 (RFC-0060 §2.1): read randomness through the Entropy you are given; key material comes from OsEntropy (rule T2)" },
+    { path = "getrandom::fill_uninit", reason = "rule T1 (RFC-0060 §2.1): read randomness through the Entropy you are given; key material comes from OsEntropy (rule T2)" },
+    { path = "getrandom::u32", reason = "rule T1 (RFC-0060 §2.1): read randomness through the Entropy you are given; key material comes from OsEntropy (rule T2)" },
+    { path = "getrandom::u64", reason = "rule T1 (RFC-0060 §2.1): read randomness through the Entropy you are given; key material comes from OsEntropy (rule T2)" },
+]

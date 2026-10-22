@@ -77,12 +77,43 @@ crc32c = "0.6.8"
 # key types use, so the two share one implementation. Pinned exactly: which keys and signatures
 # it accepts is part of the protocol, so a new version is a reviewed change.
 ed25519-dalek = "=3.0.0"
+# iroh, ADR-0011's transport library, linked only by `syntropy-net` (RFC-0001 §4.2 rule 6). Pinned
+# exactly because this is the version the daemon builds on: DIST-E7-T23's endpoint and the field
+# probe now, DIST-E7-T03's QUIC backend later, so a bump is a reviewed change. rust-version 1.91,
+# below the toolchain pin. Its default features stay on:
+# - `tls-ring` makes ring the TLS crypto provider (Apache-2.0 AND ISC, on ADR-0018's allow-list);
+#   the aws-lc-rs provider is not built;
+# - `portmapper` keeps UPnP and NAT-PMP port mapping, which raises the share of direct paths
+#   behind home routers that the field probe measures; it brings `attohttpc` under MPL-2.0, a
+#   per-crate exception in `deny.toml`.
+iroh = "=1.4.1"
+# The constraint engine behind `syntropy-text`'s `ConstraintEngine` (RFC-0050 §7.2, ADR-0504;
+# PROD-E3-T04), with `lark` only. Its defaults are off because they pull `borrow-or-share`, which
+# is MIT-0 and outside ADR-0018's allow list, and a `rayon` thread pool and `getrandom`;
+# `deny.toml` bans every feature but `lark`. Without `referencing`, a schema's `$ref` resolves
+# only as a document-local `#/...` pointer.
+llguidance = { version = "1.9.1", default-features = false, features = ["lark"] }
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
+# The node's local TLS CA and its leaves (RFC-0050 §11.1.1, PROD-E5-T03), `syntropy-api` only. On
+# ring, the one TLS crypto provider (RFC-0034 §3), with no aws-lc build: `ring` implies its
+# `crypto` feature. `x509-parser` reads the stored CA back to sign with it, and `zeroize` clears
+# its key pairs. No `pem`: the CA encodes its one PEM block itself, from the bytes its binding
+# covers. Pinned exactly: what the CA writes into a certificate, its name constraints above all,
+# is part of the trust model, so a new version is a reviewed change.
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "x509-parser", "zeroize"] }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }
+# TLS 1.3 with the ring provider only (RFC-0034 §3), the build iroh links: `syntropy-api` serves
+# the local CA's leaves through its certificate resolver (PROD-E5-T03). No `aws_lc_rs` and no
+# TLS 1.2 here; the API's listener (PROD-E5-T06) decides the versions it offers.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
+# `preserve_order`: a JSON object keeps its document order. `llguidance` (the constraint engine in
+# `text`) turns it on, and cargo unifies features, so it is set here for every build: one `Map`
+# type everywhere, whatever else is in the build. Code whose output must not depend on document
+# order sorts at the boundary (RFC-0060 §2.4 rule T4).
+serde_json = { version = "1.0.145", features = ["preserve_order"] }
 smallvec = { version = "1", features = ["serde"] }
 # The explicit-state model check of election, lease, replication and heal (RFC-0032 Testing,
 # DIST-E10-T08). A dev-dependency of `cluster` only.
@@ -90,10 +121,18 @@ stateright = "0.31.0"
 # Constant-time comparison of secrets (RFC-0034 §3), `syntropy-net` only.
 subtle = "2.6.1"
 syn = { version = "3.0.9", default-features = false, features = ["derive", "parsing", "printing", "proc-macro"] }
+# Certificate validity times, the type rcgen takes (PROD-E5-T03).
+time = { version = "0.3.55", default-features = false, features = ["std"] }
+# Test runtime for `syntropy-net`'s endpoint tests, since iroh's API is async on tokio. A
+# dev-dependency only: `net` itself names no tokio type (DIST-E7-T23).
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 # TOML reading only (no writer): the RFC-0042 tolerance tables, `numerics/tolerances-v<N>.toml`,
-# and the rig inventory `bench/lab/rigs.toml` (RFC-0061 §6.3).
+# the rig inventory `bench/lab/rigs.toml` (RFC-0061 §6.3) and fault plans (RFC-0060 §9.2).
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 trybuild = "1.0.122"
+# Reads a stored CA certificate's public key and extensions, and checks its self-signature with
+# ring (`verify`) (PROD-E5-T03). rcgen links the same version for its `x509-parser` feature.
+x509-parser = { version = "0.18.1", default-features = false, features = ["verify"] }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 # zstd level 3 for control messages over 64 KiB (RFC-0031 §9.1), `syntropy-net` only. It builds
 # the bundled C library (BSD-3-Clause), so the build needs a C compiler.

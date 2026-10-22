@@ -166,6 +166,8 @@ paths = ["docs/**", "plan/**", "*.md"]
 - `ci-gate` runs the base branch's `cargo xtask ci ci-gate` (§2.2 note), which reads each job's result from the `needs` context. Beyond the row above, it fails when `changes` did not succeed, when a job `changes` listed was skipped, and when `changes` lists a job that `ci-gate` does not wait for. It runs even in a cancelled run, because a skipped `ci-gate` would report success. Its summary names the tasks that add the planned jobs' suites.
 - The hosted runners are pinned by label: `ubuntu-24.04`, `macos-26` and `windows-2025`.
 
+*Note, 2026-10-22 (QUAL-E1-T31).* `lint` will also run rustdoc over the workspace with `-D warnings` (`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`), so a broken or ambiguous intra-doc link fails a PR. Until then no gate checks the docs, which is how #1666's links broke unnoticed. QUAL-E1-T31 adds the step after #1666's fix lands, and keeps `lint` within its budget or moves the step to a job of its own.
+
 #### 2.4 Platform promises to jobs
 
 | ADR-0020 row | PR | Nightly | Weekly | RC |
@@ -621,6 +623,8 @@ unknown-git = "deny"
 allow-git = []              # every git dependency is listed with a pinned revision
 ```
 
+*Note 2026-10-22 (DIST-E7-T23):* the checks resolve every feature for the targets of §4.1's table, the ADR-0020 tiers, through `[graph] targets`. A crate that links only on another target, such as iroh-relay's wasm32-only browser WebSocket crates, reaches no artefact and is not checked. Every crate linked into a shipped artefact still is, so the licence, ban, advisory and source checks lose nothing ADR-0018 §3 covers. The first per-crate MPL-2.0 exception is `attohttpc@0.30.1`, which iroh's port mapping brings in.
+
 #### 11.3 Vendored non-Rust code
 
 - **ggml** is vendored as a source tree under `third_party/ggml/`. `third_party/ggml.lock` records the upstream commit and a BLAKE3 of the tree. `cargo xtask vendor ggml <commit>` updates both. A Renovate custom manager watches upstream and opens update PRs, which never auto-merge.
@@ -702,6 +706,13 @@ A new direct dependency also passes a registry check that reports its first-publ
     - A review approval is not required, and a label does not approve: a label carries no commit.
     - `dep-approval.yml`, on `issue_comment`, re-runs the latest `pr-meta` run's `dep-diff` job for the PR's head when a comment holding that line is posted, and when any PR comment is edited or deleted, since an edit may withdraw an approval.
     - The job reads the roster from the base branch's current tip through the API, not from its checkout, because a re-run replays the original event, whose base commit could predate a maintainer's removal. The comment's own run posts its checks on `main`, not on the PR. That workflow runs as defined on `main`, never checks out the PR, and holds only `actions: write`, to re-run the job.
+
+    *Note, 2026-10-22 (#1692).* A path dependency on a directory that is not a workspace member, such as one the workspace `exclude`s, is external code.
+    - It is new like a crate, as `path+<dir>`, when the base does not declare it.
+    - Its own `Cargo.toml` counts as a member's does: every dependency table, `[dev-dependencies]` and the `[target.*]` tables included, with path dependencies followed to further non-member crates. So a dependency added inside a directory that was approved earlier is new.
+    - The check reads that manifest as TOML rather than through `cargo metadata`. Cargo would look for the crate's workspace above it, and in CI the head checkout lies inside the base's.
+    - It fails closed where it cannot follow. A dependency inherited with `workspace = true` counts on every PR while it stays. So does a path crate outside the workspace root, or one with a symbolic link anywhere between the root and its `Cargo.toml`. The check does not read either, because a link in a PR's tree can point anywhere on the runner. A manifest it cannot parse is reported by line and column, never by quoting its text.
+    - A dependency of one platform shows its `cfg` or target triple after its kind.
   - **The bootstrap.** As for `ci-gate` (§2.2 note), a base whose `xtask` has no `dep-diff` job, which the exit code 2 shows, fails the check, except on #1590, the PR that adds the job, which is judged by its own evaluator once.
   - **The registry check** (§11.4, ADR-0624 decision 5) is `dep-diff`'s second step. For each new crates.io dependency, it prints the crate's first-publish date, the publisher of its first version (or the earliest one recorded, since older versions record none) and its owners, for the maintainer's review. It fails on a name that does not resolve, and when crates.io cannot be reached. A git dependency has no registry entry; its URL is printed for the maintainer instead.
 - **Delegations and the maintainer-action queue** (ADR-0021 decision 4). `governance/delegations.toml` records each delegation: the maintainer, the action it covers, and the dates it was granted and revoked, and changes only with a maintainer's approval. It records the key holders of §7.2, the organisation owners (§12.6) and the security deputy (§13). The checks that accept a maintainer (`/hw run`, the gate labels, `rc:start`, `promote`) read identities from it. `cargo xtask maintainer-actions` lists every task marked as a human-only action in the epics, with its state and evidence, as one queue.
