@@ -179,7 +179,11 @@ pub struct DeviceClockSync { pub device_ts: u64, pub host_ticks: u64, pub device
 - *Note, 2026-10-22 (QUAL-E3-T17): the `TickSource` parts, as built.*
   - **`core`** holds `TickSource` and `DeviceClockSync` as above, and `TickRate`: a counter's rate, with a fixed-point tick-to-nanosecond conversion that rounds to the nearest nanosecond and needs no division. `DeviceClockSync::to_ticks` maps a device timestamp onto a tick timeline of any rate, so every source implements `device_to_ticks` the same way.
   - **No `dyn`.** The trait requires `Clone`, so `dyn TickSource` does not compile in any crate, `exec` and `obs` included. A compile-fail doctest on the trait shows it.
-  - **The production source** is `SystemTicks` in `syntropy_io::os`, beside `SystemClock`, because reading the counter needs `unsafe`. It reads the TSC when CPUID reports it invariant, with its rate calibrated against `SystemClock` over 20 ms once per process; CNTVCT_EL0 on arm64, at the rate CNTFRQ_EL0 reports; otherwise the OS monotonic counter through `std::time::Instant`, at 1 GHz.
+  - **The production source** is `SystemTicks` in `syntropy_io::os`, beside `SystemClock`, because reading the counter needs `unsafe`. It picks its counter once per process:
+    - the TSC when CPUID reports it invariant and, on Linux and Android, the kernel's current clocksource is `tsc`;
+    - CNTVCT_EL0 on arm64, at the rate CNTFRQ_EL0 reports;
+    - otherwise the OS monotonic counter through `std::time::Instant`, at 1 GHz.
+  - **Calibration.** The TSC's rate is calibrated over 20 ms against the OS monotonic counter (`std::time::Instant`), with each end bracketed between two clock reads. It is not calibrated against `SystemClock`, because on Windows that clock advances only at the timer interrupt, up to 15.625 ms at a time, and a 20 ms calibration against it was off by 5% on a hosted run. Suspend-awareness does not matter over 20 ms.
   - **`now`** reads `SystemClock`, so it is on the `Clock` timeline exactly and counts suspended time. Deriving it from ticks, through an offset re-sampled after every resume, is QUAL-E3-T16's.
   - **The test source** is `SimTicks` in `testkit`, which counts a `SimClock`'s virtual time at a rate the test chooses. The device timelines of §8.4 are QUAL-E3-T16's.
 
