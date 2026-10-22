@@ -32,19 +32,19 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 | 6 | COMP-E1-T01 | M0a | `syntropy-kernels` crate: the `KernelProvider` trait with RFC-0001 §5.7's methods and RFC-0040… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 15 | 1108 |
 | 7 | COMP-E13-T01 | M0a | Types in `core`: the extended `DType`, `QuantScheme`, `ScaleGranularity`, `CtScheme`, `ActQuant`… | QUAL-E1-T01 | 2 | 6 | 1084 |
 | 8 | COMP-E1-T02 | M0a | Op registry: the closed `OpKind` list of §3.1 (including `AttnPartial`, `AttnMerge`… | COMP-E1-T01, COMP-E13-T01 | 5 | 16 | 1074 |
-| 9 | QUAL-E3-T25 | M0a | `CountingAlloc` and `alloc_count_this_thread` in `testkit::guards` (split from QUAL-E3-T11, so M0a… | QUAL-E1-T01 | 2 | 10 | 993 |
+| 9 | QUAL-E3-T25 | M0a | `CountingAlloc` and `alloc_count_this_thread` in `testkit::guards` (split from QUAL-E3-T11, so M0a… | QUAL-E1-T01 | 2 | 10 | 994 |
 | 10 | QUAL-E12-T01 | M0a | `syntropy-bench` schemas: `BenchKey` (including `expert_cache: CacheStart`), `RigFingerprint`… | QUAL-E1-T01 | 2 | 4 | 991 |
 | 11 | QUAL-E15-T01 | M0a | Inventory schema and fingerprints: the `bench/lab/rigs.toml` record (CPU and microcode, DIMMs, GPU… | QUAL-E12-T01 | 3 | 6 | 989 |
 | 12 | QUAL-E15-T02 | M0a | R-ADA online (ADR-0610): an Ada-class 24 GB GPU (`sm_89`), an AVX2-only desktop CPU, 2 × 64 GB… | QUAL-E15-T01 | 4 | 22 | 988 |
-| 13 | DIST-E1-T12 | M0a | The `spsc` crate (OQ-IO-29): the layer-1 crate that holds the lock-free SPSC ring `io`, `net` and… | QUAL-E1-T03 | 4 | 1 | 975 |
-| 14 | DIST-E1-T01 | M0a | Lock-free SPSC ring library in `spsc` (OQ-IO-29): power-of-two capacity, cache-line-padded indices… | DIST-E1-T12, QUAL-E1-T01, QUAL-E3-T25 | 5 | 6 | 974 |
+| 13 | DIST-E1-T12 | M0a | The `spsc` crate (OQ-IO-29): the layer-1 crate that holds the lock-free SPSC ring `io`, `net` and… | QUAL-E1-T03 | 4 | 1 | 976 |
+| 14 | DIST-E1-T01 | M0a | Lock-free SPSC ring library in `spsc` (OQ-IO-29): power-of-two capacity, cache-line-padded indices… | DIST-E1-T12, QUAL-E1-T01, QUAL-E3-T25 | 5 | 6 | 975 |
 | 15 | QUAL-E3-T01 | M0a | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 12 | 950 |
 | 16 | QUAL-E15-T17 | M0a | The rest of the M0 rigs (ADR-0610 decision 1): R-BW (RTX 5090, AVX-512 dual-CCD CPU, 128 GB, Gen5… | QUAL-E15-T01–T02 | 5 | 18 | 939 |
 | 17 | PLC-E1-T01 | M0a | Core graph types: `DeviceId`/`TierId`/`LinkId` ordinal rules, `Measured<T>` with… | QUAL-E1-T01 | 2 | 10 | 914 |
 | 18 | QUAL-E3-T02 | M0a | `testkit` deterministic clock and entropy: `SimClock` (advanced only by its owner), `SimEntropy`… | QUAL-E3-T01 | 5 | 8 | 900 |
 | 19 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01, QUAL-E1-T06 | 5 | 6 | 895 |
 | 20 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 6 | 885 |
-| 21 | TIER-E1-T13 | M0a | `LedgerGrant` in `core` (OQ-IO-27): the per-tier granted bytes that RFC-0020 §3 and §12 check an… | QUAL-E1-T01 | 2 | 2 | 884 |
+| 21 | TIER-E1-T13 | M0a | `LedgerGrant` in `core` (OQ-IO-27): the per-tier granted bytes that RFC-0020 §3 and §12 check an… | QUAL-E1-T01 | 2 | 2 | 885 |
 | 22 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver through `cudarc`, driver ≥ 580 check… | COMP-E1-T01, COMP-E9-T04, QUAL-E15-T02, QUAL-E15-T17 | 6 | 7 | 877 |
 | 23 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and HTTP range implementations: coalescing, the header-read cap… | QUAL-E1-T01 | 2 | 3 | 872 |
 | 24 | QUAL-E1-T04 | M0a | Licence policy: `deny.toml` (allowed licences including `CDLA-Permissive-2.0`, per-crate MPL-2.0… | QUAL-E1-T02 | 3 | 8 | 871 |
@@ -52,8 +52,8 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 | 26 | COMP-E10-T02 | M0a | GGUF reader: v2 and v3, little-endian only; limits on tensor count, KV pairs, string, array and… | COMP-E10-T01 | 3 | 7 | 858 |
 | 27 | COMP-E16-T01 | M0a | `Family` trait and static registry; `MetaView` over GGUF metadata and… | COMP-E10-T02, COMP-E15-T01 | 7 | 11 | 851 |
 | 28 | COMP-E7-T01 | M0a | Vendoring and the core's static build: ggml's tensor library at the `third_party/ggml.lock` commit… | QUAL-E1-T01, QUAL-E16-T24 | 6 | 8 | 850 |
-| 29 | DIST-E1-T02 | M0a | Shared-memory region: header (magic, build ID, heartbeat, step counter, `RunnerState` discriminant)… | DIST-E1-T01 | 6 | 4 | 847 |
-| 30 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request IDs, `Hello`… | TIER-E1-T13, DIST-E1-T02 | 7 | 19 | 844 |
+| 29 | DIST-E1-T02 | M0a | Shared-memory region: header (magic, build ID, heartbeat, step counter, `RunnerState` discriminant)… | DIST-E1-T01 | 6 | 4 | 848 |
+| 30 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request IDs, `Hello`… | TIER-E1-T13, DIST-E1-T02 | 7 | 19 | 845 |
 <!-- END GENERATED -->
 
 ## Overview
@@ -61,7 +61,7 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 ### Tasks per milestone and area
 
 <!-- BEGIN GENERATED: roadmap-counts -->
-Generated by `tools/roadmap.py` from 1429 tasks and 3818 dependency edges. Every task sits in exactly one milestone.
+Generated by `tools/roadmap.py` from 1429 tasks and 3819 dependency edges. Every task sits in exactly one milestone.
 
 | Milestone | PLC | TIER | DIST | COMP | PROD | QUAL | Total |
 |---|---|---|---|---|---|---|---|

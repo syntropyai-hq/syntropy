@@ -244,6 +244,23 @@ fn every_invalid_value_in_a_policy_is_reported() {
             ("sched.max_pause".to_owned(), 5),
         ]
     );
+    // A range error is reported beside parse errors in other keys, not instead of them.
+    assert_eq!(
+        rejections("prefill_inflight = 0\nmax_queued = \"x\"\n"),
+        [
+            ("sched.max_queued".to_owned(), 2),
+            ("sched.prefill_inflight".to_owned(), 4),
+        ]
+    );
+    assert_eq!(
+        rejections("latency_decode_rows = 5\nspin_us = \"50\"\nprefill_share = 0\nbogus = 1\n"),
+        [
+            ("sched.bogus".to_owned(), 3),
+            ("sched.spin_us".to_owned(), 5),
+            ("sched.prefill_share".to_owned(), 4),
+            ("sched.latency_decode_rows".to_owned(), 4),
+        ]
+    );
     let not_table = SchedSection::from_policy(&Value::Integer(1)).unwrap_err();
     assert_eq!(not_table.len(), 1);
     assert_eq!(

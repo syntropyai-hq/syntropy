@@ -102,53 +102,25 @@ impl SchedSection {
             table: values,
             rejected: &mut rejected,
         };
-        let spin_us = get.optional("spin_us", duration);
-        let prewake_us = get.required("prewake_us", duration);
-        let decode_stall_budget = get.optional("decode_stall_budget", duration);
-        let prefill_inflight = get.optional("prefill_inflight", count);
-        let prefill_share = get.optional("prefill_share", count);
-        let max_queued = get.required("max_queued", count);
-        let latency_decode_rows = get.required("latency_decode_rows", count);
-        let max_pause = get.required("max_pause", duration);
-        let (
-            Some(spin_us),
-            Some(prewake_us),
-            Some(decode_stall_budget),
-            Some(prefill_inflight),
-            Some(prefill_share),
-            Some(max_queued),
-            Some(latency_decode_rows),
-            Some(max_pause),
-        ) = (
-            spin_us,
-            prewake_us,
-            decode_stall_budget,
-            prefill_inflight,
-            prefill_share,
-            max_queued,
-            latency_decode_rows,
-            max_pause,
-        )
-        else {
-            return Err(rejected);
-        };
+        // A value that fails to parse is rejected here and stands in as its default below, so
+        // the range check still runs over every value that did parse: one `from_policy` call
+        // reports every invalid key, as `config check` does (RFC-0054 §8).
         let section = Self {
-            spin_us,
-            prewake_us,
-            decode_stall_budget,
-            prefill_inflight,
-            prefill_share,
-            max_queued,
-            latency_decode_rows,
-            max_pause,
+            spin_us: get.optional("spin_us", duration),
+            prewake_us: get.required("prewake_us", duration),
+            decode_stall_budget: get.optional("decode_stall_budget", duration),
+            prefill_inflight: get.optional("prefill_inflight", count),
+            prefill_share: get.optional("prefill_share", count),
+            max_queued: get.required("max_queued", count),
+            latency_decode_rows: get.required("latency_decode_rows", count),
+            max_pause: get.required("max_pause", duration),
         };
-        if rejected.is_empty() {
-            rejected.extend(
-                section
-                    .check_ranges()
-                    .into_iter()
-                    .map(|e| Rejection::value(e.key, e.error)),
-            );
+        for e in section.check_ranges() {
+            // A default is always in range, so only a parsed value can fail here; the guard
+            // keeps one error per key all the same.
+            if !rejected.iter().any(|r| r.key == e.key) {
+                rejected.push(Rejection::value(e.key, e.error));
+            }
         }
         if rejected.is_empty() {
             Ok(section)
@@ -180,24 +152,18 @@ impl Rejection {
     }
 }
 
-/// Reads the section's fields from the policy table, collecting rejections. Each read gives
-/// `None` for a rejected value; an optional key's read gives `Some(None)` when it is absent.
+/// Reads the section's fields from the policy table, collecting rejections. A key the table
+/// leaves out, or whose value is rejected, reads as its default: `None` for a computed default.
 struct Fields<'a> {
     table: &'a Value,
     rejected: &'a mut Vec<Rejection>,
 }
 
 impl Fields<'_> {
-    fn parse<T>(
-        &mut self,
-        name: &str,
-        parse: fn(&Value) -> Result<T, ValueError>,
-    ) -> Option<Option<T>> {
-        let Some(value) = self.table.get(name) else {
-            return Some(None);
-        };
-        match parse(value) {
-            Ok(v) => Some(Some(v)),
+    /// The value the table sets, or `None` when it sets none or the value is rejected.
+    fn parse<T>(&mut self, name: &str, parse: fn(&Value) -> Result<T, ValueError>) -> Option<T> {
+        match parse(self.table.get(name)?) {
+            Ok(v) => Some(v),
             Err(e) => {
                 self.rejected
                     .push(Rejection::value(format!("sched.{name}"), e));
@@ -206,36 +172,29 @@ impl Fields<'_> {
         }
     }
 
-    /// A key with a computed default: `None` inside when the table leaves it out.
-    fn optional<T>(
-        &mut self,
-        name: &str,
-        parse: fn(&Value) -> Result<T, ValueError>,
-    ) -> Option<Option<T>> {
+    /// A key with a computed default: `None` unless the table sets a valid value.
+    fn optional<T>(&mut self, name: &str, parse: fn(&Value) -> Result<T, ValueError>) -> Option<T> {
         self.parse(name, parse)
     }
 
-    /// A key with a fixed default, which the table may leave out.
+    /// A key with a fixed default: the table's valid value, else the default.
     fn required<T: serde::de::DeserializeOwned>(
         &mut self,
         name: &str,
         parse: fn(&Value) -> Result<T, ValueError>,
-    ) -> Option<T> {
-        match self.parse(name, parse)? {
-            Some(v) => Some(v),
-            None => {
-                let key = SchedSection::SCHEMA
-                    .key(name)
-                    .expect("every field is a key of the schema");
-                match key.default {
-                    DefaultSpec::Value(v) => Some(
-                        v.deserialize()
-                            .expect("`SchedSection::check_defaults` keeps every default valid"),
-                    ),
-                    DefaultSpec::Unset | DefaultSpec::Computed(_) => {
-                        unreachable!("a required field has a fixed default")
-                    }
-                }
+    ) -> T {
+        if let Some(v) = self.parse(name, parse) {
+            return v;
+        }
+        let key = SchedSection::SCHEMA
+            .key(name)
+            .expect("every field is a key of the schema");
+        match key.default {
+            DefaultSpec::Value(v) => v
+                .deserialize()
+                .expect("`SchedSection::check_defaults` keeps every default valid"),
+            DefaultSpec::Unset | DefaultSpec::Computed(_) => {
+                unreachable!("a required field has a fixed default")
             }
         }
     }
