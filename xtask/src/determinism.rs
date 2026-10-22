@@ -20,8 +20,8 @@
 //! - no covered crate's `[lints]` table, and not the workspace's, sets the lints;
 //! - the repository's cargo config (`.cargo/config.toml`, `.cargo/config`), parsed as TOML, holds
 //!   only the `cargo xtask` alias. Much else in it reaches clippy-driver: lint-level `rustflags`
-//!   (nothing in CI sets `RUSTFLAGS`), `[env]`, compiler wrappers, and an alias that shadows
-//!   `cargo clippy`;
+//!   (CI sets `RUSTFLAGS` only for the loom suite's own test build, never for clippy), `[env]`,
+//!   compiler wrappers, and an alias that shadows `cargo clippy`;
 //! - an attribute in a covered crate that sets a level below `deny` (`allow`, `expect`, `warn`,
 //!   `force_warn`) names one of the lints, a group that holds them (`warnings`, `clippy::all`,
 //!   `clippy::style`) or one of their old names only in a file of [`EXCEPTIONS`], and only for the

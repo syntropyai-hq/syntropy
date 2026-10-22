@@ -1,0 +1,12 @@
+# embedding-cls: a CLS-pooled, normalised 3-dimension vector for a 70,000-token prompt
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 12 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+20 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 0c 00 00 00 83 e7 4d 38 e0 a9 49 28  # 0030 header
+08 07 06 05 04 03 02 01 02 00 00 00 05 00 00 00  # 0040 extension
+03 00 00 00 01 03 01 00 70 11 01 00 00 00 01 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+00 00 80 3f 00 00 00 40 00 00 40 40              # 0080 payload

@@ -1,0 +1,5 @@
+# A preset in a file of the wrong name, with no figures.
+name = "cpu:named"
+kind = "cpu"
+describes = "a test CPU"
+sources = ["research §2.1"]

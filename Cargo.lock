@@ -3667,9 +3667,13 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "smallvec",
  "syntropy-core",
  "syntropy-io",
+ "syntropy-kernels",
+ "syntropy-kernels-cpu",
  "syntropy-spsc",
+ "syntropy-testkit",
 ]
 
 [[package]]
@@ -3701,6 +3705,7 @@ name = "syntropy-ipc"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "loom",
  "serde",
  "serde_json",
  "syntropy-core",
@@ -3725,8 +3730,12 @@ dependencies = [
 name = "syntropy-kernels-cpu"
 version = "0.0.0"
 dependencies = [
+ "smallvec",
  "syntropy-core",
+ "syntropy-io",
  "syntropy-kernels",
+ "syntropy-spsc",
+ "syntropy-testkit",
 ]
 
 [[package]]
@@ -3772,13 +3781,19 @@ dependencies = [
  "crc32c",
  "ed25519-dalek",
  "iroh",
+ "noq-proto",
  "proptest",
+ "rustls",
  "serde",
  "serde_json",
+ "socket2",
  "subtle",
  "syntropy-config",
  "syntropy-core",
+ "syntropy-spsc",
+ "syntropy-testkit",
  "tokio",
+ "tokio-rustls",
  "zstd",
 ]
 
@@ -3840,8 +3855,12 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "chacha20",
+ "serde",
+ "syntropy-config",
  "syntropy-core",
  "syntropy-graph",
+ "syntropy-net",
+ "toml",
 ]
 
 [[package]]

@@ -24,9 +24,12 @@
 //! | [`Rule::Stats`] | the counters match the frames, the bytes and the refused sends |
 //! | [`Rule::Nack`] | a NACK never hands the receiver a frame twice, and the channel goes on |
 //! | [`Rule::Close`] | frames sent before `close` arrive, and sends after it return `Closed` |
+//! | [`Rule::Registration`] | registering a pool the transport already holds returns its one registration, equal to the first (RFC-0031 §8) |
 //!
 //! [`Rule::CompletedAfterAck`] needs a fabric that can hold delivery ([`Fabric::hold_delivery`]),
-//! and is reported as skipped otherwise; [`Rule::Retention`] then checks a weaker form. The suite
+//! and is reported as skipped otherwise; [`Rule::Retention`] then checks a weaker form.
+//! [`Rule::Registration`] needs a fabric with a transport to register with
+//! ([`Fabric::register`]), and is skipped otherwise. The suite
 //! does not check what needs a fault injected on the wire (loss, corruption, a foreign epoch):
 //! the channel core's property tests do (DIST-E7-T02, RFC-0031 Testing).
 
@@ -36,8 +39,8 @@ use syntropy_core::plan::WireDType;
 use syntropy_core::{InstanceId, NodeId, PlanEpoch, SequenceId, StageIx};
 
 use super::{
-    BufferPool, Channel, ChannelKey, ChannelPurpose, CloseReason, InFrame, OutFrame, SendError,
-    SlotReader,
+    BufferPool, Channel, ChannelKey, ChannelPurpose, CloseReason, InFrame, OutFrame, PoolId,
+    PoolRegistration, SendError, SlotReader,
 };
 use crate::error::Error;
 use crate::frame::{
@@ -86,7 +89,18 @@ pub trait Fabric {
         let _ = hold;
         false
     }
+
+    /// Registers `pool` with the sending side's transport, as `Transport::register` does, and
+    /// returns what it returned; `None` if the fabric has no transport to register with.
+    fn register(&mut self, pool: &BufferPool) -> Option<Result<PoolRegistration, Error>> {
+        let _ = pool;
+        None
+    }
 }
+
+/// The pool [`Rule::Registration`]'s check registers: an id a fabric's own pools are unlikely to
+/// use.
+const REGISTRATION_POOL: PoolId = PoolId(u32::MAX - 0x0C);
 
 /// A rule of RFC-0031 §2 the suite checks; see the [module](self) table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -103,11 +117,12 @@ pub enum Rule {
     Stats,
     Nack,
     Close,
+    Registration,
 }
 
 impl Rule {
     /// Every rule, in the order [`run`] checks them.
-    pub const ALL: [Rule; 12] = [
+    pub const ALL: [Rule; 13] = [
         Rule::Key,
         Rule::ChanSeq,
         Rule::CreditLimit,
@@ -120,6 +135,7 @@ impl Rule {
         Rule::Stats,
         Rule::Nack,
         Rule::Close,
+        Rule::Registration,
     ];
 
     /// The lane of the channel the rule's check opens, so no two checks share a key.
@@ -149,7 +165,7 @@ impl fmt::Display for Failure {
 pub struct Report {
     pub failures: Vec<Failure>,
     /// Rules the fabric could not check: [`Rule::CompletedAfterAck`] without
-    /// [`Fabric::hold_delivery`].
+    /// [`Fabric::hold_delivery`], [`Rule::Registration`] without [`Fabric::register`].
     pub skipped: Vec<Rule>,
 }
 
@@ -216,6 +232,7 @@ pub fn check(rule: Rule, fabric: &mut dyn Fabric) -> Result<Outcome, String> {
         Rule::CreditReturn => check_credit_return(fabric, key),
         Rule::Nack => check_nack(fabric, key),
         Rule::Close => check_close(fabric, key),
+        Rule::Registration => check_registration(fabric),
         Rule::CompletedInOrder | Rule::InOrder | Rule::Intact | Rule::Stats => {
             exchange(fabric, key).and_then(|exchange| exchange.check(rule))
         }
@@ -711,6 +728,33 @@ fn check_close(fabric: &mut dyn Fabric, key: ChannelKey) -> Checked {
     }
     drop(frames);
     drain(fabric, &mut sender, &mut receiver);
+    Ok(())
+}
+
+/// RFC-0031 §8: each pool is registered once per transport, so registering a pool the transport
+/// already holds returns its one registration, equal to the first, and is not refused. A runner
+/// can then register its pools at each plan epoch without tracking which it already has.
+fn check_registration(fabric: &mut dyn Fabric) -> Checked {
+    let pool = BufferPool::heap(REGISTRATION_POOL, 64, 1)
+        .map_err(|error| Broken::Rule(format!("a pool for the check: {error}")))?;
+    let Some(first) = fabric.register(&pool) else {
+        return Err(Broken::Skipped);
+    };
+    let first =
+        first.map_err(|error| Broken::Rule(format!("registering a new pool failed: {error}")))?;
+    let again = fabric
+        .register(&pool)
+        .unwrap_or_else(|| Err(Error::unsupported()))
+        .map_err(|error| {
+            Broken::Rule(format!(
+                "registering the same pool again was refused: {error}"
+            ))
+        })?;
+    if again != first {
+        return fail(format!(
+            "registering the same pool again gave {again:?}, not the first registration {first:?}"
+        ));
+    }
     Ok(())
 }
 

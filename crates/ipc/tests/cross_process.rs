@@ -7,6 +7,10 @@
 //!   `local_sequences`. Each side checks every record arrives once and in order.
 //! - Both sides read the segment's permissions back as owner-only.
 //! - After the runner exits, the daemon unlinks the region, and no process can open it by name.
+//!
+//! Not built under `--cfg loom`: loom's atomics work only inside a loom model.
+
+#![cfg(not(loom))]
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
