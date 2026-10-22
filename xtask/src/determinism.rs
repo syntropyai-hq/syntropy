@@ -462,11 +462,62 @@ fn split_commas(stream: TokenStream) -> Vec<TokenStream> {
 }
 
 /// The only key the repository's cargo config may hold: the `cargo xtask` alias that every CI job
-/// calls (`.cargo/config.toml`). Its value must run this package; its other flags may change.
+/// calls (`.cargo/config.toml`). Its value is pinned by [`xtask_alias_problem`].
 const XTASK_ALIAS: &str = "xtask";
 
-/// What the `xtask` alias must run.
-const XTASK_PACKAGE: &str = "--package syntropy-xtask";
+/// Whether `value`, the `xtask` alias, is `run`, then `--package syntropy-xtask`, `--quiet`,
+/// `--locked` and `--target-dir <dir>` in any order, then `--` at the end, and nothing else.
+///
+/// Any other token could reach clippy through the runner: `--config env.RUSTFLAGS=...` or
+/// `--config env.CLIPPY_ARGS=...` set what the lint steps inherit, and `--manifest-path` or `-Z`
+/// change what runs. The `--target-dir` value is a plain relative path inside the checkout.
+fn xtask_alias_problem(value: &toml::Value) -> Option<String> {
+    let Some(text) = value.as_str() else {
+        return Some("is not a string".to_owned());
+    };
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let (Some(&"run"), Some(&"--")) = (tokens.first(), tokens.last()) else {
+        return Some("must start with `run` and end with `--`".to_owned());
+    };
+    let mut package = false;
+    let mut rest = tokens[1..tokens.len() - 1].iter();
+    while let Some(&token) = rest.next() {
+        match token {
+            "--quiet" | "--locked" => {}
+            "--package" => {
+                if package || rest.next() != Some(&"syntropy-xtask") {
+                    return Some("`--package` must name `syntropy-xtask`, once".to_owned());
+                }
+                package = true;
+            }
+            "--target-dir" => {
+                let plain = |dir: &str| {
+                    !dir.is_empty()
+                        && !dir.starts_with(['-', '/', '\\'])
+                        && !dir.contains("..")
+                        && !dir.contains(':')
+                        && dir
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-'))
+                };
+                if !rest.next().is_some_and(|&dir| plain(dir)) {
+                    return Some("`--target-dir` needs a plain relative path".to_owned());
+                }
+            }
+            other => {
+                return Some(format!(
+                    "passes `{other}`; only `--package syntropy-xtask`, `--quiet`, `--locked` \
+                     and `--target-dir <dir>` may come between `run` and `--`"
+                ));
+            }
+        }
+    }
+    if package {
+        None
+    } else {
+        Some("does not run `--package syntropy-xtask`".to_owned())
+    }
+}
 
 /// A repository cargo config file against an allowlist: the `xtask` alias and nothing else.
 ///
@@ -497,15 +548,12 @@ fn cargo_config_problems(file: &str, text: &str) -> Vec<String> {
         };
         for (name, command) in aliases {
             let full = format!("alias.{name}");
-            let runs_xtask = command
-                .as_str()
-                .is_some_and(|c| c.starts_with("run ") && c.contains(XTASK_PACKAGE));
             if name != XTASK_ALIAS {
                 problems.push(refuse(&full));
-            } else if !runs_xtask {
+            } else if let Some(problem) = xtask_alias_problem(command) {
                 problems.push(format!(
-                    "{file}: `{full}` must be a `run {XTASK_PACKAGE} ...` string; every CI job \
-                     reaches xtask through it"
+                    "{file}: `{full}` {problem}; every CI job reaches xtask through it, so its \
+                     flags are pinned"
                 ));
             }
         }
@@ -816,7 +864,36 @@ let s = "#[allow(warnings)]";
             ),
             (
                 "[alias]\nxtask = \"run --quiet --package other --\"\n",
-                "`alias.xtask` must be a `run --package syntropy-xtask ...` string",
+                "`alias.xtask` `--package` must name `syntropy-xtask`, once",
+            ),
+            (
+                "[alias]\nxtask = \"run --quiet --locked --package syntropy-xtask --target-dir \
+                 target/xtask --config env.RUSTFLAGS='-Aclippy::disallowed_methods' --\"\n",
+                "`alias.xtask` passes `--config`",
+            ),
+            (
+                "[alias]\nxtask = \"run --package syntropy-xtask --manifest-path o/Cargo.toml --\"\n",
+                "`alias.xtask` passes `--manifest-path`",
+            ),
+            (
+                "[alias]\nxtask = \"run --package syntropy-xtask -Zunstable-options --\"\n",
+                "`alias.xtask` passes `-Zunstable-options`",
+            ),
+            (
+                "[alias]\nxtask = \"run --package syntropy-xtask --target-dir ../elsewhere --\"\n",
+                "`--target-dir` needs a plain relative path",
+            ),
+            (
+                "[alias]\nxtask = \"run --package syntropy-xtask\"\n",
+                "must start with `run` and end with `--`",
+            ),
+            (
+                "[alias]\nxtask = \"run --quiet --locked --\"\n",
+                "does not run `--package syntropy-xtask`",
+            ),
+            (
+                "[alias]\nxtask = [\"run\", \"--package\", \"syntropy-xtask\", \"--\"]\n",
+                "`alias.xtask` is not a string",
             ),
             ("alias = \"x\"\n", "`alias` is outside the allowlist"),
             ("[build\nrustflags = 1\n", "does not parse as TOML"),
