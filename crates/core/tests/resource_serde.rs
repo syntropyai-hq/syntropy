@@ -760,14 +760,101 @@ fn transport_kind() -> impl Strategy<Value = TransportKind> {
     ]
 }
 
+fn ip_net() -> impl Strategy<Value = IpNet> {
+    prop_oneof![
+        (any::<[u8; 4]>(), 0..=32u8)
+            .prop_map(|(a, p)| IpNet::new(std::net::IpAddr::from(a), p).expect("valid")),
+        (
+            any::<[u8; 16]>(),
+            0..=128u8,
+            proptest::option::of(any::<u32>())
+        )
+            .prop_map(|(a, p, scope)| {
+                let net = IpNet::new(std::net::IpAddr::from(a), p).expect("valid");
+                match scope {
+                    Some(scope) => net.with_scope(scope),
+                    None => net,
+                }
+            }),
+    ]
+}
+
+fn iface_flags() -> impl Strategy<Value = IfaceFlags> {
+    any::<u32>().prop_map(IfaceFlags::from_bits_truncate)
+}
+
+fn rdma_link_layer() -> impl Strategy<Value = RdmaLinkLayer> {
+    prop_oneof![
+        Just(RdmaLinkLayer::Ethernet),
+        Just(RdmaLinkLayer::InfiniBand),
+        Just(RdmaLinkLayer::Thunderbolt),
+    ]
+}
+
+fn rdma_port_info() -> impl Strategy<Value = RdmaPortInfo> {
+    (
+        text(),
+        any::<u8>(),
+        rdma_kind(),
+        any::<u8>(),
+        any::<bool>(),
+        rdma_link_layer(),
+    )
+        .prop_map(
+            |(device, port, kind, gid_index, active, link_layer)| RdmaPortInfo {
+                device,
+                port,
+                kind,
+                gid_index,
+                active,
+                link_layer,
+            },
+        )
+}
+
+fn iface_info() -> impl Strategy<Value = IfaceInfo> {
+    (
+        (any::<u16>(), text(), net_medium(), small(ip_net())),
+        (
+            any::<u32>(),
+            proptest::option::of(any::<u32>()),
+            iface_flags(),
+            proptest::option::of(text()),
+            proptest::option::of(rdma_port_info()),
+            proptest::option::of(node_id()),
+        ),
+    )
+        .prop_map(
+            |((ordinal, name, medium, addrs), (mtu, speed_mbps, flags, bridge, rdma, tb_peer))| {
+                IfaceInfo {
+                    ordinal,
+                    name,
+                    medium,
+                    addrs,
+                    mtu,
+                    speed_mbps,
+                    flags,
+                    bridge,
+                    rdma,
+                    tb_peer,
+                }
+            },
+        )
+}
+
 fn link_info() -> impl Strategy<Value = LinkInfo> {
-    (link_id(), small(transport_kind()), any::<bool>()).prop_map(|(id, transports, metered)| {
-        LinkInfo {
+    (
+        link_id(),
+        small(transport_kind()),
+        proptest::option::of(iface_info()),
+        any::<bool>(),
+    )
+        .prop_map(|(id, transports, interface, metered)| LinkInfo {
             id,
             transports,
+            interface,
             metered,
-        }
-    })
+        })
 }
 
 fn node_inventory() -> impl Strategy<Value = NodeInventory> {
@@ -1276,6 +1363,10 @@ round_trip_tests! {
     rt_temp_source: temp_source();
     rt_host_pool_info: host_pool_info();
     rt_link_info: link_info();
+    rt_iface_info: iface_info();
+    rt_iface_flags: iface_flags();
+    rt_ip_net: ip_net();
+    rt_rdma_port_info: rdma_port_info();
     rt_transport_kind: transport_kind();
     rt_kernel_class: kernel_class();
     rt_attn_kind: attn_kind();
@@ -1364,6 +1455,8 @@ future_field_tests! {
     ff_device_info: device_info();
     ff_tier_info: tier_info();
     ff_link_info: link_info();
+    ff_iface_info: iface_info();
+    ff_rdma_port_info: rdma_port_info();
     ff_host_pool_info: host_pool_info();
     ff_node_inventory: node_inventory();
     ff_capability_profile_ext: capability_profile_ext();
@@ -1565,6 +1658,7 @@ fn link_info_metered_defaults() {
     let link = LinkInfo {
         id: sample_link_id(),
         transports: SmallVec::new(),
+        interface: None,
         metered: true,
     };
     let back = decode_without(&link, "metered");
@@ -1647,4 +1741,45 @@ fn cpu_isa_and_npu_encodings() {
         serde_json::to_value(&problem).unwrap(),
         serde_json::json!({ "ApiIdsMismatch": { "api": { "vendor": 0x1002, "device": 0x744c } } })
     );
+}
+
+/// A `LinkInfo` written before RFC-0030's `interface` field existed decodes with no interface,
+/// and an `IfaceInfo` with only its ordinal and name decodes with every other field at its
+/// default (RFC-0030 §7.1).
+#[test]
+fn records_without_interface_fields_decode() {
+    let iface = IfaceInfo {
+        ordinal: 2,
+        name: String::from("en0"),
+        medium: NetMedium::WiFi,
+        addrs: SmallVec::from_vec(vec![
+            IpNet::new("192.0.2.10".parse().unwrap(), 24).unwrap(),
+            IpNet::new("fe80::1".parse().unwrap(), 64)
+                .unwrap()
+                .with_scope(4),
+        ]),
+        mtu: 1500,
+        speed_mbps: Some(1200),
+        flags: IfaceFlags::UP | IfaceFlags::MULTICAST | IfaceFlags::DEFAULT_ROUTE,
+        bridge: None,
+        rdma: None,
+        tb_peer: None,
+    };
+    let link = LinkInfo {
+        id: sample_link_id(),
+        transports: SmallVec::new(),
+        interface: Some(iface.clone()),
+        metered: false,
+    };
+    let back = decode_without(&link, "interface");
+    assert_eq!(back.interface, None);
+    assert_eq!(back.id, link.id);
+
+    let bare: IfaceInfo = serde_json::from_str(r#"{"ordinal":2,"name":"en0"}"#).expect("decodes");
+    assert_eq!(bare.medium, NetMedium::Ethernet);
+    assert!(bare.addrs.is_empty());
+    assert_eq!((bare.mtu, bare.speed_mbps), (0, None));
+    assert_eq!(bare.flags, IfaceFlags::empty());
+    assert_eq!((bare.bridge, bare.rdma, bare.tb_peer), (None, None, None));
+    round_trip(&iface);
 }
