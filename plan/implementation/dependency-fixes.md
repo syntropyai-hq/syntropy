@@ -1001,6 +1001,24 @@ DIST-E7-T03 builds the QUIC backend's `net` domain, where channel tasks wait on 
 |---|---|---|---|
 | DIST-E7-T03 gains "keep-alive and idle timeout take the table's values per path, through `default_path_keep_alive_interval` and `default_path_max_idle_timeout`, as well as connection-wide through `keep_alive_interval` and `max_idle_timeout`, and a unit test reads all four back from the transport configuration `net` builds"; no edge | DIST-E7-T03 | Definition of done | with only the connection-wide values set, a dead path would be abandoned after iroh's 15 s per-path default, not within `link.failover_timeout` |
 
+## DIST-E18-T01 after #1673 (2026-10-22)
+
+The post-merge review of #1673 found the code right and the row wrong. The row depended on the schema registry alone, though its criteria use layering and validation, and it claimed every key of RFC-0033 §12, though three of them are RFC-0011's.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E18-T01 → PROD-E1-T02, PROD-E1-T03 | DIST-E18-T01 | R9 | its criteria are "`syntropy config show --resolved` lists every key with its default", which is PROD-E1-T02's `ResolvedConfig` and `show_resolved`, and "unknown or mis-scoped keys fail validation", which is PROD-E1-T03's `unknown_key` (3) and `scope_mismatch` (9). Both are earlier milestones than M2 |
+| DIST-E18-T01's task text leaves `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` to PLC-E6-T11 | DIST-E18-T01 | Definition of done | RFC-0054 §5.1 gives `replan.*` to RFC-0011, whose key table declares those three. RFC-0033's shared `replan` section holds only `replan.degraded_min_gain`, as RFC-0054 §5.1's note of 2026-10-22 records. PLC-E6-T11 registers "the cluster-scope `solver.*` and `replan.*` keys" |
+
+## QUAL-E1-T06's second-account checks split out (2026-10-23)
+
+QUAL-E1-T06 is the only blocker of QUAL-E1-T07, the affected-job rules engine. Until T07 lands, every plan-only PR runs the full three-OS build and test matrix. T06's agent work has merged (#1577, #1676), and `cargo xtask ci repo-settings` reports `PASS` against the repository (#133's comment of 2026-10-23). Two of its criteria need a second, non-admin GitHub account, which no agent has. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| T06's criteria "a fork contributor's workflows wait for approval on their first and on every later PR" and "a force-push to `main` from a test account is rejected" move to a new **Maintainer action** task, QUAL-E1-T32 (M0a), with QUAL-E1-T32 → QUAL-E1-T06 | QUAL-E1-T06, QUAL-E1-T32 | R9 | both need a second, non-admin account, while the settings they check are in force and checked by T06's settings check (`fork-pr-contributor-approval.json: matches`; `ruleset-main.json`'s rules in force). None of T06's 24 dependents uses either behaviour. QUAL-E1-T07's fork clauses are about `ci-gate`'s hardware statuses on recorded payloads, and the "branch protection test" clauses of QUAL-E1-T16, QUAL-E1-T17 and QUAL-E1-T19 are about required checks and reviews. So QUAL-E1-T32 has no dependents. M0a → M0a, no cycle |
+| T06's "a fixture workflow on a test branch shows `ci-gate` passing with skipped hosted jobs and failing with a failed or cancelled job" may be met by recorded runs of real PRs | QUAL-E1-T06 | — | the recorded runs exercise the real `pr.yml` and `ci-gate`, which a fixture branch would only imitate: #1773 at `e64665f` passes with `hosted-l3` and `hosted-parity-nano` skipped; #1712 at `17263a6` (run 39785121248) fails with every build, test and lint job failed; #1723's run 39786377605, cancelled by a second push, fails. `xtask/src/ci_gate.rs`'s unit tests cover the same three verdicts on demand (`every_listed_job_passing_and_the_rest_skipped_passes`, `a_failed_job_fails_the_gate`, `a_cancelled_job_fails_the_gate`), so the criterion is no weaker |
+
 ## DIST-E7-T12's channel slots and the control receives (2026-10-23)
 
 RFC-0031 §8's pool table counts "recv_slots + retention" slots per channel, and DIST-E7-T12's criterion said the same. But the channel core of DIST-E7-T02 takes a receive pool of `recv_slots + 4`: the four receives for control frames, which credit never counts (§7.1). A side that only receives keeps no retention, so with the table's count its pool would be four slots short.
