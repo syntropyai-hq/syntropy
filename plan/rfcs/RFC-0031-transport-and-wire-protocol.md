@@ -659,6 +659,19 @@ pad to 64
 
 The payload is `n_rows` hidden-state rows (dispatch), or `n_rows` rows of summed, weighted expert outputs (combine). A part's row limit counts the extension with the rows: the largest r with `64 + ⌈(24 + r · m_row) / 64⌉ · 64 + r · row_bytes ≤ max message`, where `m_row` is the per-row dispatch metadata. At hidden 7168 in F32 on Thunderbolt 5, that is 584 rows at `k_local = 1` (m_row = 12 B) and 583 at `k_local = 8` (m_row = 52 B), so prefill-sized dispatches travel in parts [derivation at k_local = 8: 583 rows take 64 + 30,400 + 16,715,776 = 16,746,240 B ≤ 16,773,120; 584 rows take 16,774,912 B].
 
+**Revision note, 2026-10-22 (DIST-E8-T08): how the codec reads the fields the tables leave open.**
+- **`Collective` payload.** Every phase but `ROUTER_BCAST` carries `elems` elements of `dtype`, packed with no row stride. A ring step's slice starts at element `elem_offset` of the vector, so it need not start on a row. `rows` is the token positions the whole vector covers.
+- **`ROUTER_BCAST`.** The primary, member 0 (RFC-0032 §5.1), sends it with `algo` ONE_SHOT and `elem_offset` 0.
+  - `rows` counts its rows, and `elems` the experts they name in all. A row may name none.
+  - The weights are F32 whatever `dtype` holds. `dtype` is still the channel's wire dtype, which every frame is checked against (§6.4).
+- **Members.** `n_members` is at least 2, `src_member` is below it, and a ONE_SHOT frame has `ring_step` 0.
+- **The step.** The `step` in these extensions equals the base header's. The frames carry no `TRACE`, so `HAS_TRACE` is clear.
+- **EP rows.** `EpDispatch` and `EpCombine` rows are `hidden` elements of `dtype` at the `Activation` payload's stride (§6.3), each row's bytes rounded up to 64.
+  - `hidden` is the stage's, from the plan, because neither extension carries it. At hidden 7168 in F32 the stride is the row, 28,672 B, as the derivation above uses.
+  - A message holds at least one row, and every dispatch row names at least one expert (`k_local ≥ 1`).
+- **EP parts.** Each part is a whole frame for its rows, with their routing rows, and holds as many rows as the row limit above allows. A combine part has no routing rows, so its `m_row` is 0.
+- **`StepDescriptor`.** The primary forwards the inbound frame's extension and payload byte for byte, under ftype 0x09 and the `Collective` channel's `chan_seq`. The base header keeps the minor, flags, instance, epoch and step.
+
 #### 6.9 `Hello`, `HelloAck`, `Close`
 
 `Hello` is the first frame on every channel and every blob stream. Like every control frame, it has `chan_seq = 0`:

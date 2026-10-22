@@ -65,6 +65,9 @@ bitflags = { version = "2", features = ["serde"] }
 # in `syntropy-net`. `pure` is the portable Rust code: no C or assembly to build, and the same
 # digest on every target.
 blake3 = { version = "1.8.7", default-features = false, features = ["pure"] }
+# `SimEntropy`'s seeded ChaCha20 stream in `testkit` (RFC-0060 §2.1 rule T2). `rng` alone: the
+# block generator over `rand_core`, without the cipher traits.
+chacha20 = { version = "0.10.2", default-features = false, features = ["rng"] }
 # Deterministic CBOR for the control envelope (RFC-0031 §9.1, ADR-0305), `syntropy-net` only.
 ciborium = "0.2.2"
 # CRC32C (Castagnoli) for frame headers and payloads (RFC-0031 §6.1), with SSE4.2 or Armv8 CRC
@@ -91,6 +94,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 # order sorts at the boundary (RFC-0060 §2.4 rule T4).
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
 smallvec = { version = "1", features = ["serde"] }
+# The explicit-state model check of election, lease, replication and heal (RFC-0032 Testing,
+# DIST-E10-T08). A dev-dependency of `cluster` only.
+stateright = "0.31.0"
 # Constant-time comparison of secrets (RFC-0034 §3), `syntropy-net` only.
 subtle = "2.6.1"
 syn = { version = "3.0.9", default-features = false, features = ["derive", "parsing", "printing", "proc-macro"] }

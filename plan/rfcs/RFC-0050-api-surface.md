@@ -750,6 +750,13 @@ RFC-0001 §12 zone Z3, as updated: any non-loopback bind requires an API key **a
   - `{ cert, key }`: the user's files, for example from their own CA or a certificate issued for a tailnet name. Reloaded on change.
   - `"none"`: valid only for overlay-restricted binds, or LAN binds with `api.allow_plaintext_lan = true`. Configuration validation rejects it anywhere else.
 
+*Note 2026-10-22 (PROD-E5-T02, as built; open, for the maintainers): which addresses are LAN addresses.* The table above allows plain HTTP, with the opt-in, on LAN addresses only, and sets them apart from public ones. `syntropy_api::bind::classify` reads them as:
+- IPv4 `10/8`, `172.16/12`, `192.168/16` and link-local `169.254/16`;
+- IPv6 unique local `fc00::/7` and link-local `fe80::/10`;
+- the wildcards `0.0.0.0` and `::`, as above. A wildcard counts as a LAN bind for the API key, but it listens on every interface, a public one included, so it is always served with TLS: `api.tls = "none"` on a wildcard is rejected even with the opt-in, and plain HTTP needs a specific LAN address.
+
+An IPv4-mapped IPv6 address takes its IPv4 address's class. Every other non-loopback address is public: TLS always, with no opt-in. That includes `100.64/10`, the shared range tailnets use, until PROD-E5-T09 classifies binds by RFC-0030's interface classes; until then a tailnet bind needs TLS. Loopback listeners serve plain HTTP whatever `api.tls` says, `"local_ca"` and `{ cert, key }` included.
+
 #### 11.1.1 The local CA
 
 TLS on a LAN is practical only if clients can trust the certificate without a public CA. Each node therefore runs a small certificate authority of its own.
@@ -858,7 +865,7 @@ Errors become the request shape's own error body:
 | constraint compile failure | `InvalidRequest` or `Unsupported` | 400 | `invalid_request_error` / `constraint_invalid`, `constraint_unsupported` | `invalid_request_error` |
 | the only instances of the model are unroutable, or recovery found no feasible repair (`InstanceNotRoutable`, RFC-0032 §10; `NoRepairCapacity`, RFC-0033 §13) | `Capacity` | 503 + `Retry-After` | `server_error` / `instance_unavailable` | `overloaded_error` (529) |
 | `POST /v1/syntropy/cluster/join` with a malformed invite token (`TokenMalformed`, RFC-0030 §10) | `InvalidRequest` | 400 | — (native route only) | — (native route only) |
-| a join the keyholder or the joining node refuses: invite token expired or used up, pairing denied, clocks more than 10 min apart, or a node key made on other hardware (`TokenExpired`, `TokenExhausted`, `PairDenied`, `ClockSkew`, `IdentityHostMismatch`; RFC-0030 §6.7, §10) | `Auth` | 403 | — (native route only) | — (native route only) |
+| a join the keyholder or the joining node refuses: invite token expired, used up or revoked, pairing denied, clocks more than 10 min apart, or a node key made on other hardware (`TokenExpired`, `TokenExhausted`, `TokenRevoked`, `PairDenied`, `ClockSkew`, `IdentityHostMismatch`; RFC-0030 §6.7, §10) | `Auth` | 403 | — (native route only) | — (native route only) |
 | a join refused because the two nodes' protocol majors differ (`ProtoMismatch`, RFC-0030 §10) | `Unsupported` | 400 | — (native route only) | — (native route only) |
 | an operator action that needs a keyholder signature with no keyholder reachable (`KeyholderRequired`, RFC-0034 §8.3, §15) | `Auth` | 403 | — (native route only) | — (native route only) |
 | a cluster configuration proposal rejected: the key changed since the patch's base, or it sits above the cluster's feature level (`ConfigConflict`, `FeatureLevelTooLow`; RFC-0032 §10, RFC-0054 §2.3), reported as `cluster_proposal_rejected` | `InvalidRequest`, `Unsupported` | 409 | — (native route only) | — (native route only) |
@@ -876,6 +883,7 @@ Errors become the request shape's own error body:
   - `Security`: 0x0501 `CertInvalidSignature`, 0x0502 `CertExpired`, 0x0503 `CertRevoked`, 0x0504 `CertWrongCluster`, 0x0505 `RoleInsufficient`, 0x0506 `CredentialExpired`, 0x0508 `RotationWindowClosed`, 0x0510 `UntrustedFabric`, 0x0511 `AuthorityInvalid`, 0x0512 `RotationChainInvalid`, 0x0513 `NotCoordinatorEligible`.
 
   If an exempt code ever reaches an API response, it renders as the server-side shape, 503 `instance_unavailable`, whatever its class, because from the client's view the cluster could not serve the request. It never takes a client-side shape (400, 401 or 403) and never a new ad-hoc shape.
+- *Note 2026-10-22 (#1698):* a join with a revoked invite token, `JoinReject::Revoked`, had neither a code nor a row. RFC-0030 §10 now gives it `TokenRevoked` (0x010F, `Auth`), and the join-refusal row above maps it with `TokenExpired` and `TokenExhausted`, to 403 on the native route. `KeyholderRequired`'s row rests on RFC-0034 §8.3's note of this date, which says when it is raised.
 - **`DuplicateCommand` (0x0305) never appears in `Error::code`.** The coordinator answers a command whose `CommandId` it has seen with the original result (RFC-0032 §6.3), so the code names the dedup, not an error a caller receives.
 - Every other code in these domains maps through a whole-class row above (`Link`, `Device`, `Timeout`, `Correctness`, `Internal`), or through the rule just above for `Integrity`, `Drift` and `Transient`. The one `Cancelled` code, `IngressLost` (0x0404), has no response to carry it, because the client's connection is already gone (RFC-0033 §13).
 

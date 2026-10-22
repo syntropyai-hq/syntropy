@@ -17,10 +17,11 @@ use proptest::prelude::*;
 use serde::Deserialize;
 use syntropy_config::{
     ByteSize, Checked, Code, ConfigFile, ConfigSection, Deprecated, Env, Environment, Findings,
-    Flags, HoldsSecret, HostEnvironment, Layers, NodeSelector, Origin, Os, PathUse, Phase, Problem,
-    Regex, Registry, ResolvedConfig, Rule, RuleInput, Secret, SecretSource, Severity, diagnostic,
+    Flags, HoldsSecret, HostEnvironment, Layers, Origin, Os, PathUse, Phase, Problem, Regex,
+    Registry, ResolvedConfig, Rule, RuleInput, Secret, SecretSource, Severity, diagnostic,
     validate,
 };
+use syntropy_core::policy::NodeSelector;
 
 /// Top-level node keys, with a secret.
 #[derive(Deserialize, ConfigSection)]
@@ -71,6 +72,7 @@ struct T {
     count: u32,
     /// A node.
     #[config(reload = Hot, default = "*")]
+    #[serde(with = "syntropy_config::form")]
     node: NodeSelector,
     /// A pattern.
     #[config(reload = Hot, default = ".*")]

@@ -5,12 +5,10 @@
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use super::iface::IfaceInfo;
 use crate::ids::{LinkId, RdmaKind};
 
 /// One directed link and the transports usable on it (RFC-0001 §5.2). Owner: RFC-0010.
-///
-/// RFC-0001's `interface: Option<IfaceInfo>` field is not here yet. RFC-0030 §7.1 owns
-/// `IfaceInfo`, and the task that builds it adds the field with a serde default.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkInfo {
     /// The link's identity.
@@ -18,6 +16,10 @@ pub struct LinkInfo {
     /// Transports usable on this link, best first.
     #[serde(default)]
     pub transports: SmallVec<[TransportKind; 3]>,
+    /// For a network link, the interface it leaves through: name, addresses, MTU
+    /// (RFC-0030 §7.1). `None` for other links.
+    #[serde(default)]
+    pub interface: Option<IfaceInfo>,
     /// The link is metered.
     #[serde(default)]
     pub metered: bool,

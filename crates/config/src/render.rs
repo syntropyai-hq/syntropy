@@ -894,8 +894,10 @@ garbage line
 
     use serde::Deserialize;
 
+    use syntropy_core::policy::Reserve;
+
+    use crate::ConfigSection;
     use crate::value::SecretSource;
-    use crate::{ConfigSection, Reserve};
 
     /// API settings with a secret.
     #[derive(Deserialize, crate::ConfigSection)]
@@ -924,6 +926,7 @@ garbage line
     struct Resource {
         /// RAM kept back.
         #[config(reload = Hot, default = "6GiB")]
+        #[serde(with = "crate::form")]
         ram_headroom: Reserve,
     }
 
