@@ -855,6 +855,11 @@ dependencies = [
 [[package]]
 name = "syntropy-api"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "syntropy-config",
+ "toml",
+]
 
 [[package]]
 name = "syntropy-bench"
