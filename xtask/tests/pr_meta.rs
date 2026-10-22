@@ -104,6 +104,17 @@ fn problems(job: &str) -> Vec<&'static str> {
             "does not move to the merge commit's first parent before a local action or cargo runs",
         ),
     }
+    // Nothing at all runs between the root's checkout of the merge commit and the move, so not
+    // even a `run:` step sees the PR's tree there.
+    let root_checkout = steps
+        .iter()
+        .position(|step| step.contains("ref: ${{ github.sha }}") && !step.contains("path:"));
+    match (root_checkout, moved) {
+        (Some(checkout), Some(moved)) if moved == checkout + 1 => {}
+        _ => problems.push(
+            "does not move to the first parent in the step straight after the root's checkout",
+        ),
+    }
     if !job.contains(r#"test "$(git -C pr rev-parse HEAD^1)" = "$(git rev-parse HEAD)""#) {
         problems.push("does not check that the base is the head's first parent");
     }
@@ -180,6 +191,27 @@ fn moving_to_the_base_after_a_local_action_is_caught() {
     assert!(
         problems(&job_of(&mutated)).contains(
             &"does not move to the merge commit's first parent before a local action or cargo runs"
+        ),
+        "{:?}",
+        problems(&job_of(&mutated))
+    );
+}
+
+#[test]
+fn a_step_between_the_root_checkout_and_the_move_is_caught() {
+    let steps = dep_diff_steps();
+    // A `run:` step that would see the PR's tree at the root: it is no local action and no cargo.
+    let mut mutated = steps.clone();
+    let moved = step_with(&steps, "run: git checkout --detach --quiet HEAD^1");
+    mutated.insert(
+        moved,
+        String::from(
+            "      - if: github.event_name != 'merge_group'\n        run: sh scripts/prepare.sh\n",
+        ),
+    );
+    assert!(
+        problems(&job_of(&mutated)).contains(
+            &"does not move to the first parent in the step straight after the root's checkout"
         ),
         "{:?}",
         problems(&job_of(&mutated))
