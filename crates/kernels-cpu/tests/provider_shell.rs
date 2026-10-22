@@ -242,6 +242,39 @@ fn a_buffer_freed_under_a_queued_copy_outlives_the_copy() {
     );
 }
 
+/// `poll` runs inside a step, so it never deallocates: deferred memory waits for the next
+/// between-step `free` or `synchronize` (RFC-0040 §2.4; review of #1829, N4).
+#[test]
+fn poll_never_releases_deferred_memory() {
+    let provider = CpuProvider::new(KillSwitches::NONE);
+    let ctx = open(&provider);
+    let s = provider.stream(&ctx, StreamPriority::Compute).unwrap();
+    let mut src = vec![2u8; 64];
+    let a = import(&provider, &ctx, &mut src);
+    let request = AllocRequest {
+        bytes: Bytes(64),
+        kind: MemKind::HostMapped,
+        align: Bytes(64),
+        reserve_only: false,
+    };
+    let dst = provider.alloc(&ctx, request).unwrap();
+    let e = provider.event(&ctx).unwrap();
+    provider
+        .copy(&ctx, &s, slice(a, 0, 64), slice(dst.handle, 0, 64))
+        .unwrap();
+    provider.record(&ctx, &s, &e).unwrap();
+    provider.free(&ctx, dst);
+    assert_eq!(provider.run(&ctx, &s).unwrap(), Run::Idle);
+    assert!(provider.poll(&ctx, &e).unwrap());
+    assert_eq!(
+        provider.deferred_frees(&ctx).unwrap(),
+        1,
+        "poll released memory"
+    );
+    provider.synchronize(&ctx, &s).unwrap();
+    assert_eq!(provider.deferred_frees(&ctx).unwrap(), 0);
+}
+
 /// A captured copy names its buffers, not their addresses, so a buffer freed after the capture
 /// fails the replay rather than being written (review of #1829).
 #[test]

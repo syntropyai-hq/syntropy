@@ -519,7 +519,6 @@ impl KernelProvider for CpuProvider {
 
     fn poll(&self, ctx: &DeviceCtx, e: &Event) -> Result<bool, Error> {
         let device = self.live(ctx)?;
-        device.release_deferred();
         Ok(Self::event_state(device, e)?.complete())
     }
 

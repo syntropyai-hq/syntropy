@@ -11,7 +11,7 @@ use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{Ordering, fence};
 use std::time::{Duration, Instant};
 
 use syntropy_core::{Bytes, ErrorClass};
@@ -94,8 +94,20 @@ impl CpuDevice {
     pub(crate) fn quiet(&self) -> bool {
         self.streams.borrow().iter().all(|s| {
             s.shared.completed.load(Ordering::Acquire) >= s.pushed
-                || (s.runner.is_none() && Arc::strong_count(&s.shared) == 1)
+                || (s.runner.is_none() && Self::runner_gone(&s.shared))
         })
+    }
+
+    /// Whether the thread that took a stream's runner has dropped it. `strong_count` is a
+    /// relaxed load, and `Arc`'s decrement is a release, so on seeing 1 an acquire fence
+    /// orders everything after it (the frees) after the runner's last writes, as `Arc`'s own
+    /// drop does before it frees.
+    fn runner_gone(shared: &Arc<StreamShared>) -> bool {
+        let gone = Arc::strong_count(shared) == 1;
+        if gone {
+            fence(Ordering::Acquire);
+        }
+        gone
     }
 
     /// Deallocates `addr` now if no queued item can touch it, else once every stream has
@@ -105,8 +117,9 @@ impl CpuDevice {
         self.release_deferred();
     }
 
-    /// Deallocates the deferred memory if every stream has drained. Called from `free`,
-    /// `synchronize` and `poll`; with nothing deferred it reads no stream.
+    /// Deallocates the deferred memory if every stream has drained. Called only between steps,
+    /// from `free` and `synchronize`, because a deallocation can take the allocator's lock or
+    /// unmap memory, which RFC-0040 §2.4 keeps out of a step's calls.
     pub(crate) fn release_deferred(&self) {
         if self.deferred.borrow().is_empty() || !self.quiet() {
             return;
@@ -259,11 +272,19 @@ impl Drop for CpuDevice {
         // Bounded, as the I/O engines' drop is: a runner that never drains or drops costs the
         // memory, not a hang.
         let deadline = Instant::now() + DROP_WAIT;
+        let mut round = 0u32;
         while !self.quiet() {
             if Instant::now() >= deadline {
                 return;
             }
-            std::hint::spin_loop();
+            // Back off: `pause` first, then yield the core, then sleep, so a long wait does not
+            // hold a core at full speed.
+            match round {
+                0..64 => std::hint::spin_loop(),
+                64..128 => std::thread::yield_now(),
+                _ => std::thread::sleep(Duration::from_millis(1)),
+            }
+            round = round.saturating_add(1);
         }
         for (addr, layout) in self.deferred.get_mut().drain(..) {
             // SAFETY: as in `release_deferred`: memory `free` deferred, deallocated once, with
