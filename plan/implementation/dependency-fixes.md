@@ -813,3 +813,14 @@ RFC-0011 §12.2 now applies a deferred plan at the `replan.max_defer` deadline t
 | PLC-E6-T04 → DIST-E11-T03 and PLC-E6-T04 → DIST-E8-T05 | PLC-E6-T04 | R9 | the M2 re-prefill reads the ingress transcript (DIST-E11-T03) and sends `SequenceOpen { resume }` (DIST-E8-T05). PLC-E6-T04 reached neither, and its node-loss criterion, which re-prefills the same way, had the same gap (the stand-in engine review of #1749). Both are M2, and neither reaches PLC-E6-T04, so the edges add no cycle and no `LATER` |
 | DIST-E14-T10's property "re-prefill always feasible" becomes "re-prefill feasible whenever the new epoch holds the sequence's context"; DIST-E15-T03 gains "a plan whose `context_length` the session exceeds is not applied until the session ends"; no edge | DIST-E14-T10, DIST-E15-T03 | Definition of done | RFC-0033 §5.1's `t_reprefill` now holds only when e′ holds `ctx(q)`, and §10 applies the plan at the deadline only if it holds every live sequence |
 | PLC-E6-T11 registers the `replan.*` keys except `replan.degraded_min_gain`, which RFC-0033 owns; no edge | PLC-E6-T11 | Definition of done | RFC-0054 §5.1 lists that key as RFC-0033's carve-out (#1742); registering it twice would make the schema registry refuse to build |
+
+## DIST-E8-T15: the `EmbeddingResult` frame without the embedding path (2026-10-23)
+
+DIST-E8-T15 could not be finished as written. Its first criterion, "an embedding request through a 2-stage instance returns the vector", needs two tasks it does not reach: the tail's pooling path, PLC-E9-T22 (M3), and the API path, PROD-E4-T09, which depends on DIST-E8-T15. PLC-E9-T22's row already sends the frame and already checks the vector through one- and two-stage instances, but it had no edge to DIST-E8-T15. These are plan corrections under R9, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E8-T15's criteria become: golden frames round-trip with `dims`, `pooling`, `normalised` and `prompt_tokens` recorded, a 4096-dimension vector among them in parts; hostile input is refused; the encoder refuses a channel without bit 14 `EMBEDDING`. The end-to-end criterion rests with PLC-E9-T22, which already states it | DIST-E8-T15, PLC-E9-T22 | R9 | the codec is what DIST-E8-T15 builds. "A peer without the capability never receives one" is kept as the encoder's refusal, which DIST-E8-T15 can check; negotiating the set is DIST-E8-T13's capability intersection |
+| PLC-E9-T22 → DIST-E8-T15 | PLC-E9-T22 | R9 | the tail sends the frame DIST-E8-T15 defines. DIST-E8-T15 is M2 and PLC-E9-T22 M3, so the edge adds no delay |
+| DIST-E8-T15 carries the frame's parts in the extension's `reserved[4]` (RFC-0031 §6.14, revised 2026-10-23) | DIST-E8-T15 | — | §6.14 sent a larger vector in `Token`'s parts, but its extension had no part fields; a 4096-dimension F32 vector does not fit a 16 KiB slot with its header |
+
