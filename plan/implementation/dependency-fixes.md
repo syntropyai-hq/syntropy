@@ -538,3 +538,13 @@ ADR-0022 (option 1a) puts `SystemClock` and `OsEntropy` in `io`, in `syntropy_io
 | DIST-E1-T06 → QUAL-E3-T24; DIST-E4-T05's "DIST-E1-T06 (clock helper)" becomes "DIST-E1-T06 (suspended-interval detector)" plus QUAL-E3-T24 | DIST-E1-T06, DIST-E4-T05 | R9, R8 | both rows built their own suspend-aware clock helper in the daemon, which forbids `unsafe` (RFC-0001 §4.2 rule 8). ADR-0022 decision 2 puts both clock readings in `syntropy_io::os` so the shell needs no OS call of its own. DIST-E1-T06 keeps the detector over the two readings, which DIST-E4-T05 still reuses. DIST-E4-T05 no longer supplies "the suspend-aware clock for the supervisor", which is `io`'s |
 | PROD-E5-T01 → QUAL-E3-T24 | PROD-E5-T01 | R9 | API keys are 32 random bytes (RFC-0050 §11.3), and the standard library has no stable random source, so key generation needs `OsEntropy`. The other key-material tasks (DIST-E5-T08, PROD-E4-T15, DIST-E17-T14, PROD-E5-T07) reach QUAL-E3-T24 through DIST-E2-T01 |
 | PROD-E10-T13 and PROD-E10-T16 gain a criterion for the Android and iOS suspend-aware clocks | PROD-E10-T13, PROD-E10-T16 | R9 | QUAL-E3-T24 covers the Tier 1 OSes only, and ADR-0022 names these tasks as the homes of `CLOCK_BOOTTIME` on Android and `mach_continuous_time` on iOS. Both already reach QUAL-E3-T24 through their dependencies, so no edge is added |
+
+
+## QUAL-E9-T01's IPC loading and release-artefact criterion (2026-10-22)
+
+QUAL-E9-T01 (M1a) builds the fault points in `syntropy-obs`. Two parts of its row need work from tasks it does not depend on: pushing a plan over IPC needs DIST-E1-T03's command channel and a message RFC-0001 §3.5 does not define, and a scan of a `release` artefact needs a job that builds one.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "over IPC" moved from QUAL-E9-T01 to DIST-E1-T13 (M1a, added) → DIST-E1-T03, QUAL-E9-T01 | QUAL-E9-T01, DIST-E1-T13 | R9 | RFC-0060 §9.2 pushes plans over IPC in tests, but RFC-0001 §3.5's message set has no fault-plan message and DIST-E1-T03, which builds the channel, is still open. DIST-E1-T13 proposes the message, and its handler calls QUAL-E9-T01's `install` |
+| QUAL-E9-T01's symbol check reads the core binary built in `lint` with the release build's features; the scan of the nightly `release` artefact moved to QUAL-E16-T15; QUAL-E16-T15 → QUAL-E9-T01 | QUAL-E9-T01, QUAL-E16-T15 | R9 | no M1a job builds a `release` artefact: the PR build is `dev` until QUAL-E16-T21's `pr` profile, and the `test-release` build turns `fault-injection` on by design. QUAL-E16-T15 builds and inspects the nightly `release` Linux core binary |
