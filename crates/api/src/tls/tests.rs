@@ -823,6 +823,24 @@ fn the_ca_key_never_prints() {
     }
 }
 
+/// Review probe N1 through `open`: a `tls` that is a link to a 0755 directory elsewhere is
+/// refused, and the directory it points at is neither narrowed nor written into.
+#[cfg(unix)]
+#[test]
+fn a_tls_directory_that_is_a_link_is_refused() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = Dir::new("link");
+    let elsewhere = dir.0.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&elsewhere, dir.path()).unwrap();
+    let result = LocalCa::open(&dir.path(), &scope(), &node_key(1), now());
+    assert!(matches!(result, Err(TlsError::Io { .. })), "{result:?}");
+    let mode = fs::metadata(&elsewhere).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o755);
+    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

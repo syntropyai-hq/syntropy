@@ -2,25 +2,61 @@
 
 //! The CA's files: an owner-only directory, and files replaced whole, never left half written.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::fs::{self, File, Metadata, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 /// Creates `dir`, and its parents, owner-only: 0700 on Unix. On Windows the state directory's
 /// owner-only DACL (DIST-E2-T01) is inherited.
+///
+/// An existing `dir` must be a directory itself. A link, even to a directory, or anything else
+/// is refused before anything is changed, so a link planted in the state directory cannot get
+/// another directory narrowed or written into.
 pub(super) fn private_dir(dir: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
+    match fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(dir)?;
+        }
+        Err(e) => return Err(e),
+        Ok(_) => {}
+    }
+    // `create` accepts a link to a directory, so look again, without following one.
+    let found = fs::symlink_metadata(dir)?;
+    if !found.is_dir() {
+        return Err(io::Error::other("a link or not a directory; refused"));
+    }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        builder.mode(0o700);
-        builder.create(dir)?;
-        // An existing directory keeps its mode under `create`, so narrow it.
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        use std::os::unix::fs::PermissionsExt;
+        // An existing directory keeps its mode under `create`, so narrow it, through a handle
+        // checked to be the directory just looked at: a link swapped in meanwhile is not
+        // followed.
+        let handle = File::open(dir)?;
+        same_file(&found, &handle.metadata()?)?;
+        handle.set_permissions(fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Refuses `opened` unless it is the file `found` described: a path swapped for a link between
+/// the look and the open. Windows has no inode to compare; there the look alone decides.
+fn same_file(found: &Metadata, opened: &Metadata) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (found.dev(), found.ino()) != (opened.dev(), opened.ino()) {
+            return Err(io::Error::other("replaced while being opened; refused"));
+        }
     }
     #[cfg(not(unix))]
-    builder.create(dir)?;
+    let _ = (found, opened);
     Ok(())
 }
 
@@ -72,13 +108,22 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The file at `path`, or `None` if there is none.
+/// The regular file at `path`, or `None` if there is none. A link, even to a regular file, or
+/// anything else is refused, not followed.
 pub(super) fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
+    let found = match fs::symlink_metadata(path) {
+        Ok(found) => found,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if !found.is_file() {
+        return Err(io::Error::other("a link or not a regular file; refused"));
     }
+    let mut file = File::open(path)?;
+    same_file(&found, &file.metadata()?)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
 }
 
 #[cfg(test)]
@@ -114,6 +159,38 @@ mod tests {
         }
         assert_eq!(read_optional(&dir.join("absent")).unwrap(), None);
         fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    /// Review probe N1: a `tls` that is a link to another directory, or not a directory, is
+    /// refused before anything is narrowed or written, and a file that is a link is not read.
+    #[cfg(unix)]
+    #[test]
+    fn links_and_other_kinds_of_file_are_refused_not_followed() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = scratch("links");
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o755)).unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let tls = root.join("tls");
+        symlink(&elsewhere, &tls).unwrap();
+        assert!(private_dir(&tls).is_err());
+        assert_eq!(mode(&elsewhere), 0o755, "the link's target was narrowed");
+        fs::remove_file(&tls).unwrap();
+        fs::write(&tls, b"a file").unwrap();
+        assert!(private_dir(&tls).is_err());
+        fs::remove_file(&tls).unwrap();
+        private_dir(&tls).unwrap();
+        assert_eq!(mode(&tls), 0o700);
+        let secret = elsewhere.join("secret");
+        fs::write(&secret, b"not the CA's").unwrap();
+        symlink(&secret, tls.join("ca.json")).unwrap();
+        assert!(read_optional(&tls.join("ca.json")).is_err());
+        assert!(
+            read_optional(&tls).is_err(),
+            "a directory is not a regular file"
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
