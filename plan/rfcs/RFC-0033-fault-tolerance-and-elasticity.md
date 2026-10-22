@@ -568,6 +568,8 @@ Only a link that stays down past `link.failover_timeout` *and* whose node is unr
 
 `InstancePolicy` gains `standby: Standby`. The default is `None`.
 
+*Note 2026-10-22 (review of #1740, after #1679): where `standby` lives.* `standby` is this RFC's instance key, so it travels in `InstancePolicy`'s `domain` map under its path, `standby`, as `recovery.history` does. It is not a typed field. RFC-0054 §4.5 keeps typed fields for the six RFC-0001 §11.3 names and for RFC-0054's own keys, and puts instance keys that domain RFCs own in `domain`. That map is covered by the policy digest, so nodes still agree on an instance's standby, and `EnsureInstance` stays idempotent. The `Standby` enum below is the value's shape. Its configuration form is `"none"`, `"replica"` or `{ warm = { nodes = [...] } }`, with node names (RFC-0054 §5.4; DIST-E18-T01 registers it as a top-level instance key). The sentence above, "`InstancePolicy` gains `standby: Standby`", is superseded by this note.
+
 ```rust
 pub enum Standby {
     None,
