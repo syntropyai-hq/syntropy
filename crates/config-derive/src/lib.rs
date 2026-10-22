@@ -38,6 +38,50 @@ pub fn derive_config_section(input: TokenStream) -> TokenStream {
         .into()
 }
 
+/// Implements `syntropy_config::HoldsSecret` for a struct or enum used as a config value: the
+/// type holds a secret when any field of it, in any variant, does (RFC-0054 §10.1). Each type
+/// parameter gains a `HoldsSecret` bound.
+#[proc_macro_derive(HoldsSecret)]
+pub fn derive_holds_secret(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    expand_holds_secret(&input)
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+fn expand_holds_secret(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let types: Vec<&syn::Type> = match &input.data {
+        Data::Struct(data) => data.fields.iter().map(|f| &f.ty).collect(),
+        Data::Enum(data) => data
+            .variants
+            .iter()
+            .flat_map(|v| v.fields.iter().map(|f| &f.ty))
+            .collect(),
+        Data::Union(_) => {
+            return Err(Error::new(
+                input.ident.span(),
+                "`HoldsSecret` is derived for structs and enums",
+            ));
+        }
+    };
+    let name = &input.ident;
+    let mut generics = input.generics.clone();
+    for param in generics.type_params_mut() {
+        param
+            .bounds
+            .push(syn::parse_quote!(::syntropy_config::HoldsSecret));
+    }
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    let flags = types.iter().map(|ty| {
+        quote_spanned! {ty.span()=> <#ty as ::syntropy_config::HoldsSecret>::HOLDS_SECRET }
+    });
+    Ok(quote! {
+        impl #impl_generics ::syntropy_config::HoldsSecret for #name #type_generics #where_clause {
+            const HOLDS_SECRET: bool = false #(|| #flags)*;
+        }
+    })
+}
+
 /// Collects every error, so one build reports all of them.
 #[derive(Default)]
 struct Errors(Option<Error>);
@@ -746,6 +790,11 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let ty = &field.ty;
         let ty_name = type_name(ty);
         let scope_tokens = scope.tokens();
+        // A key type that does not implement `HoldsSecret` fails to compile here, so no type
+        // reaches `config show` without saying whether it holds a secret.
+        let holds_secret = quote_spanned! {ty.span()=>
+            <#ty as ::syntropy_config::HoldsSecret>::HOLDS_SECRET
+        };
 
         key_tokens.push(quote! {
             ::syntropy_config::KeySchema {
@@ -762,6 +811,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 introduced_at: #introduced_at,
                 authority: #authority,
                 env: #env,
+                holds_secret: #holds_secret,
             }
         });
 
