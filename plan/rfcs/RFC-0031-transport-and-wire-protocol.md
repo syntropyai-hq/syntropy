@@ -229,10 +229,10 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
 - **z before an L2 probe.** Until `alpha_eff` exists, `z_t` is a per-transport constant for a 32 KiB F32 decode frame [estimate]:
   - 25 µs on IP paths: `Quic`, `Tcp` and `QuicRelay`, the upper end of §Performance's ≈15–25 µs with polling;
   - 20 µs on `Rdma`, the upper end of its ≈12–20 µs;
-  - 2 µs on `SharedMemory`. §Performance gives no z for it, so it comes from the per-hop table instead: the shared-memory hop of ≈5–10 µs, less its α of ≈1–5 µs and S/β of ≈3 µs, leaves ≈1–2 µs. The same subtraction on the RDMA and 10 GbE rows gives ≈12–22 µs and ≈17–22 µs, which matches their z ranges.
+  - 2 µs on `SharedMemory`. §Performance gives no z for it, so it comes from the per-hop table instead: the shared-memory hop of ≈5–10 µs, less its α of ≈1–5 µs and S/β of ≈3 µs, leaves ≈1–2 µs. The same subtraction on the RDMA and 10 GbE rows gives ≈12–22 µs and ≈17–22 µs, which matches their z ranges. The 2 µs assumes host-resident payloads, as the shared-memory row does. Activations that start and end in GPU memory add a device-to-host and a host-to-device copy, plus a doorbell at each end, which comes nearer RDMA's figure, so an L2 probe's `alpha_eff` replaces it on such a path.
 
   The constant does not scale with S. A prefill-sized frame's CRC is in the measured `alpha_eff` once it exists.
-- **What the fallback returns.** It returns a `Demotion { edge: LinkId, from: TransportKind, to: TransportKind }`, plain data in `core` and the data `DegradeDetail::Demoted` (RFC-0033 §7.1) carries, together with the new transport's `cost_t` at `S_dec`.
+- **What the fallback returns.** The fallback is `net::transport::connect_hop`. It returns a `Demotion { edge: LinkId, from: TransportKind, to: TransportKind }`, plain data in `core` and the data `DegradeDetail::Demoted` (RFC-0033 §7.1) carries, together with the new transport's `cost_t` at `S_dec`.
 - **How the runner reports it.**
   - **The message.** It sends the R→D message `EdgeDemoted { demotion, cause, cost }` (RFC-0001 §3.5), whose `cause` is a `DemotionCause` in `core`: `ConnectFailed` for this fallback, and `RepeatedFaults` for §7.4's demotion after 3 faults in 60 s. The one message serves both paths. DIST-E7-T11 adds it, and DIST-E7-T10 sends it from §7.4.
   - **Forwarding.** The daemon forwards it as RFC-0033 §11's `ReportEdgeDemoted { edge, from, to, cause }`, as it forwards `StateChanged` as `ReportRunner`.
