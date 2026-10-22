@@ -13,6 +13,7 @@ pub mod entropy;
 pub mod error;
 pub mod fidelity;
 pub mod ids;
+pub mod ledger;
 pub mod measured;
 pub mod numerics;
 pub mod plan;
