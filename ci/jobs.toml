@@ -74,7 +74,8 @@ runner = "hosted"
 when = "closure"
 
 # L3: the loom models now (QUAL-E3-T09), and Miri and the sanitizer builds with QUAL-E3-T10
-# (RFC-0060 §3.4).
+# (RFC-0060 §3.4), which widens `crates` to every crate those jobs build. `spsc`'s closure already
+# includes `ipc` and `io`.
 [job.hosted-l3]
 runner = "hosted"
 when = "closure"
@@ -122,7 +123,8 @@ paths = [
     "ci/images/cuda*/**",
     "rust-toolchain.toml",
 ]
-# The CUDA and ggml bindings crates, once they exist: a `Cargo.lock` change to one also
-# requires the job.
+# The CUDA bindings crate, once it exists: a `Cargo.lock` change to it also requires the job.
+# QUAL-E2-T02 names it when it removes the `planned` mark. ggml's bindings are generated inside
+# `kernels-ggml` (RFC-0040 §8.1), whose paths the rule already covers.
 lock_deps = []
 planned = "QUAL-E2-T02"

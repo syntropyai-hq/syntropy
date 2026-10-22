@@ -952,3 +952,15 @@ QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec behind capability bit 16, with RFC-0050 §3.1's rewrite kept towards peers without the bit | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
+
+## The follow-ups of QUAL-E1-T07's rules (2026-10-23)
+
+QUAL-E1-T07 puts the affected-job rules in `ci/jobs.toml` (RFC-0062 §2.2). Three later tasks must change that file, and their rows did not say so. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E2-T01 → QUAL-E1-T07; its criterion names the App's bot account in `hardware.status_creators` | QUAL-E2-T01 | R9 | `ci-gate` counts a `hw/<job>` status only from an account that list names, and the list is empty until the App exists (RFC-0062 §2.5, note 2026-10-23) |
+| QUAL-E2-T02's criterion removes `hw-cuda-ada`'s `planned` mark and names the CUDA bindings crate in its `lock_deps` | QUAL-E2-T02 | R9 | the interim of ADR-0620's revision of 2026-10-23 ends for `hw-cuda-ada` when its rig runs it, and a `Cargo.lock` change to the bindings crate then requires the rig. QUAL-E2-T02 already depends on QUAL-E1-T07 |
+| QUAL-E3-T10 → QUAL-E1-T07; its criterion widens `hosted-l3`'s rule to the crates its Miri and sanitizer jobs build | QUAL-E3-T10 | R9 | RFC-0060 §3.4's sanitizer builds cover the `unsafe` crates and the CPU provider. The rule lists the closure's `ipc`, `tier`, `exec`, `io` and `net`, so a change to the CPU provider alone would not run them. From the engine-lane review of #1830 |
+
+QUAL-E1-T07 and the three tasks are M0a, M0a, M0a and M1a, so no edge points later, and QUAL-E1-T07 depends only on QUAL-E1-T06, so there is no cycle.
