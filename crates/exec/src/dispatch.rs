@@ -164,6 +164,10 @@ pub trait StepScheduler {
     fn sent(&mut self, step: Self::Step, now: MonoTime);
 
     /// When the stage next wants a poll with nothing in flight, if it does (RFC-0012 §3.3).
+    ///
+    /// A time at or before `now` means no park. The loop spins for `sched.spin_us`, arms, finds
+    /// the wait already over, and polls again, so a time left in the past keeps the thread
+    /// spinning until a frame arrives. Drop or move a prediction once its frame is late.
     fn next_wake(&self, now: MonoTime) -> Option<MonoTime>;
 
     /// Starts a park on every inbound ring for the calling thread

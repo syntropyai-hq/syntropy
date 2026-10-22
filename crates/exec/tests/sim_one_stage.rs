@@ -471,6 +471,7 @@ struct Run {
     trace: syntropy_core::Blake3,
     polls: u64,
     overruns: u64,
+    longest: Nanos,
     pool_items: u64,
 }
 
@@ -513,6 +514,7 @@ fn run(seed: u64) -> Run {
         trace: world.trace_hash(),
         polls: stats.polls,
         overruns: stats.overruns,
+        longest: stats.longest,
         pool_items: model.pool.ran(),
     }
 }
@@ -551,9 +553,11 @@ fn one_stage_runs_on_one_thread_and_a_seed_replays_it_exactly() {
         first.records.iter().any(|record| record.sent > record.done),
         "no credit stall exercised"
     );
-    // The watchdog timed every pass on the simulator's virtual time.
     assert!(first.polls > first.records.len() as u64);
-    assert_eq!(first.overruns, 0);
+    // Every pass takes no virtual time here, because `SimTicks` moves only between events, so
+    // the watchdog cannot fire in the simulator: a pass that spun or parked would hang this one
+    // thread instead. `dispatch::tests::the_watchdog_counts_a_pass_over_its_budget` covers it.
+    assert_eq!((first.overruns, first.longest), (0, Nanos(0)));
 
     // The same seed: the same step records, tokens and trace.
     assert_eq!(run(7), first);

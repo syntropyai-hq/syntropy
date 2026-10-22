@@ -64,6 +64,11 @@ struct FakeScheduler {
     next_wake: Option<MonoTime>,
     /// How many times the loop armed every inbound ring and could park.
     parks: Arc<AtomicU32>,
+    /// The time of the first pass that returned `Idle`, which asks for `next_wake`.
+    first_idle: Arc<AtomicU64>,
+    /// The time of the first `arm_inbound`, on `clock`.
+    first_arm: Arc<AtomicU64>,
+    clock: Option<TestTicks>,
 }
 
 impl FakeScheduler {
@@ -77,6 +82,9 @@ impl FakeScheduler {
             sent: Vec::new(),
             next_wake: None,
             parks: Arc::default(),
+            first_idle: Arc::new(AtomicU64::new(u64::MAX)),
+            first_arm: Arc::new(AtomicU64::new(u64::MAX)),
+            clock: None,
         }
     }
 }
@@ -117,11 +125,15 @@ impl StepScheduler for FakeScheduler {
         self.sent.push(step);
     }
 
-    fn next_wake(&self, _now: MonoTime) -> Option<MonoTime> {
+    fn next_wake(&self, now: MonoTime) -> Option<MonoTime> {
+        self.first_idle.fetch_min(now.0, Ordering::SeqCst);
         self.next_wake
     }
 
     fn arm_inbound(&mut self) -> Arm {
+        if let Some(clock) = &self.clock {
+            self.first_arm.fetch_min(clock.now().0, Ordering::SeqCst);
+        }
         let armed = self.inbound.arm_thread();
         if armed == Arm::Waiting {
             self.parks.fetch_add(1, Ordering::SeqCst);
@@ -455,6 +467,9 @@ fn the_loop_parks_between_steps_and_a_frame_wakes_it() {
 #[derive(Default)]
 struct FakeWaiter {
     written: Arc<AtomicU32>,
+    /// The device writes its next flag as the waiter arms, before the park: the race the
+    /// loop's poll after arming covers. Otherwise the park writes it.
+    fire_on_arm: bool,
     arms: u32,
     parks: Vec<Duration>,
     disarms: u32,
@@ -464,12 +479,17 @@ impl WakeWaiter for FakeWaiter {
     fn arm(&mut self, waker: &HostWaker) -> bool {
         assert_eq!(waker.handle, 42);
         self.arms += 1;
+        if self.fire_on_arm {
+            self.written.fetch_add(1, Ordering::SeqCst);
+        }
         true
     }
 
     fn park(&mut self, _waker: &HostWaker, timeout: Duration) {
         self.parks.push(timeout);
-        self.written.fetch_add(1, Ordering::SeqCst);
+        if !self.fire_on_arm {
+            self.written.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     fn disarm(&mut self, _waker: &HostWaker) {
@@ -481,7 +501,12 @@ impl WakeWaiter for FakeWaiter {
 /// the waiter. With `device_writes`, this thread writes the device's flags, one per millisecond,
 /// for a loop that spins. Without it, only the waiter's parks move the device, so a loop that
 /// failed to park would never finish.
-fn one_step_in_the_loop(wake: WakeSource, gap: Nanos, device_writes: bool) -> FakeWaiter {
+fn one_step_in_the_loop(
+    wake: WakeSource,
+    gap: Nanos,
+    device_writes: bool,
+    fire_on_arm: bool,
+) -> FakeWaiter {
     let (mut to_stage, inbound) = syntropy_spsc::ring(4).unwrap();
     let (outbound, mut from_stage) = syntropy_spsc::ring(4).unwrap();
     let mut device = FakeDevice::new(2);
@@ -490,6 +515,7 @@ fn one_step_in_the_loop(wake: WakeSource, gap: Nanos, device_writes: bool) -> Fa
     let written = Arc::clone(&device.written);
     let mut waiter = FakeWaiter {
         written: Arc::clone(&written),
+        fire_on_arm,
         ..FakeWaiter::default()
     };
     let looping = thread::spawn(move || {
@@ -528,7 +554,7 @@ fn waker() -> HostWaker {
 #[test]
 fn the_loop_parks_inside_a_step_only_on_an_armed_device_wake() {
     // Only the parks move the device here: one for each doorbell and one for the done flag.
-    let waiter = one_step_in_the_loop(WakeSource::Device(waker()), Nanos(10_000_000), false);
+    let waiter = one_step_in_the_loop(WakeSource::Device(waker()), Nanos(10_000_000), false, false);
     assert_eq!((waiter.arms, waiter.parks.len(), waiter.disarms), (3, 3, 3));
     for timeout in &waiter.parks {
         // 10 ms less the 200 µs margin, less the few µs the stepping clock moved.
@@ -539,12 +565,53 @@ fn the_loop_parks_inside_a_step_only_on_an_armed_device_wake() {
     }
 
     // A gap under the threshold: the loop spins, and the waiter is never armed.
-    let waiter = one_step_in_the_loop(WakeSource::Device(waker()), Nanos(1_000_000), true);
+    let waiter = one_step_in_the_loop(WakeSource::Device(waker()), Nanos(1_000_000), true, false);
     assert_eq!((waiter.arms, waiter.parks.len()), (0, 0));
 
     // No device-triggered wake: the loop spins whatever the gap.
-    let waiter = one_step_in_the_loop(WakeSource::Spin, Nanos(10_000_000), true);
+    let waiter = one_step_in_the_loop(WakeSource::Spin, Nanos(10_000_000), true, false);
     assert_eq!((waiter.arms, waiter.parks.len()), (0, 0));
+}
+
+/// A doorbell that fires between the `Waiting` pass and the park is not slept through: the loop
+/// polls once more after arming, sees it, and does not park. Without that poll, each of the three
+/// writes would wait out its park.
+#[test]
+fn a_doorbell_that_fires_as_the_loop_arms_is_not_slept_through() {
+    let waiter = one_step_in_the_loop(WakeSource::Device(waker()), Nanos(10_000_000), false, true);
+    assert_eq!((waiter.arms, waiter.parks.len(), waiter.disarms), (3, 0, 3));
+}
+
+/// Between steps the loop spins for `sched.spin_us` before it arms the inbound rings to park
+/// (ADR-0012 item 5): on the stepping clock, at least 50 µs pass from the first `Idle` pass to
+/// the first arm.
+#[test]
+fn the_loop_spins_for_its_budget_before_it_parks() {
+    let (to_stage, inbound) = syntropy_spsc::ring::<u32>(4).unwrap();
+    let (outbound, _from_stage) = syntropy_spsc::ring(4).unwrap();
+    let ticks = stepping();
+    let mut scheduler = FakeScheduler::new(inbound, outbound);
+    scheduler.clock = Some(ticks.clone());
+    let (parks, first_idle, first_arm) = (
+        Arc::clone(&scheduler.parks),
+        Arc::clone(&scheduler.first_idle),
+        Arc::clone(&scheduler.first_arm),
+    );
+    let looping = thread::spawn(move || {
+        let mut d = Dispatcher::new(scheduler, FakeDevice::new(0), ticks);
+        d.run(&LoopConfig::MAINS, &mut NoDeviceWake)
+    });
+    eventually("the first park", || parks.load(Ordering::SeqCst) >= 1);
+    drop(to_stage);
+    assert_eq!(looping.join().unwrap(), Ok(()));
+    let (idle, armed) = (
+        first_idle.load(Ordering::SeqCst),
+        first_arm.load(Ordering::SeqCst),
+    );
+    assert!(
+        armed >= idle + 50_000,
+        "armed {armed} ns, idle from {idle} ns"
+    );
 }
 
 /// A fault ends the loop with that fault.
