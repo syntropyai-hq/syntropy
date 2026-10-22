@@ -599,7 +599,7 @@ impl ResolvedConfig {
 /// - if that still fails, a key that holds no secret is at fault, and its message is shown;
 /// - otherwise a secret-typed key is, and the message names the section's secret-typed keys
 ///   with no serde text.
-fn withhold_secrets<S: ConfigSection>(table: toml::Table, message: String) -> String {
+pub(crate) fn withhold_secrets<S: ConfigSection>(table: toml::Table, message: String) -> String {
     let secrets: Vec<&KeySchema> = S::SCHEMA.keys.iter().filter(|k| k.holds_secret).collect();
     if secrets.is_empty() {
         return message;
@@ -626,7 +626,7 @@ fn withhold_secrets<S: ConfigSection>(table: toml::Table, message: String) -> St
     }
 }
 
-fn deserialize<T: DeserializeOwned>(value: Value) -> Result<T, String> {
+pub(crate) fn deserialize<T: DeserializeOwned>(value: Value) -> Result<T, String> {
     value
         .try_into()
         .map_err(|e: toml::de::Error| e.message().to_owned())
@@ -649,7 +649,7 @@ fn default_of(
 }
 
 /// A schema default as a TOML value.
-fn to_value(value: &DefaultValue) -> Value {
+pub(crate) fn to_value(value: &DefaultValue) -> Value {
     match *value {
         DefaultValue::Bool(b) => Value::Boolean(b),
         DefaultValue::Int(i) => Value::Integer(i),
@@ -725,7 +725,8 @@ impl<'r> Resolution<'r> {
         if matches!(key.scope, Scope::Node | Scope::Cluster)
             && let Err(error) = (key.check)(&value)
         {
-            self.errors.push(value_problem(key, &error, origin.clone()));
+            self.errors
+                .push(value_problem(key, &error, Some(origin.clone())));
         }
         match key.scope {
             Scope::Node => {
@@ -1060,7 +1061,7 @@ impl Resolution<'_> {
                 Some(key) if key.scope == Scope::Instance => {
                     if let Err(error) = (key.check)(value) {
                         self.errors
-                            .push(value_problem(key, &error, at(segments)).about(&written));
+                            .push(value_problem(key, &error, Some(at(segments))).about(&written));
                     }
                 }
                 Some(key) => self.errors.push(
@@ -1119,7 +1120,11 @@ fn did_you_mean(registry: &Registry, path: &str) -> Option<String> {
 
 /// A value that failed phase 3. A secret-typed key's message is fixed, since an error about a
 /// value inside it could quote the value.
-fn value_problem(key: &'static KeySchema, error: &ValueError, origin: Origin) -> Problem {
+pub(crate) fn value_problem(
+    key: &'static KeySchema,
+    error: &ValueError,
+    origin: Option<Origin>,
+) -> Problem {
     let message = if text::is_secret(key) {
         format!(
             "`{}` does not fit its type, `{}`; the value is not shown, since the key holds a secret",
@@ -1128,7 +1133,7 @@ fn value_problem(key: &'static KeySchema, error: &ValueError, origin: Origin) ->
     } else {
         format!("`{}`: {}", key.path, error.message())
     };
-    Problem::new(Code::from(error.kind()), Some(origin), message).about(key.path)
+    Problem::new(Code::from(error.kind()), origin, message).about(key.path)
 }
 
 /// Why a key of `key.scope` cannot be set from a node's file, environment or flags.
