@@ -260,9 +260,11 @@ pub enum LedgerError {
         /// The lock file.
         path: PathBuf,
     },
-    /// A start-up line holds a line break. The sh script would read it as two lines and remove a
-    /// line of the user's that matches either half, so the ledger records only single lines.
-    LineBreak {
+    /// A start-up line holds a line break (`\n`, `\r`) or a NUL byte. The sh script would read a
+    /// line break as two lines, and can't carry a NUL byte (a shell string ends at one), so either
+    /// way its pattern would match a line of the user's that Syntropy never wrote. The ledger
+    /// records only single lines of text.
+    ControlCharacter {
         /// The line.
         line: String,
     },
@@ -311,9 +313,10 @@ impl std::fmt::Display for LedgerError {
                  has finished",
                 path.display()
             ),
-            LedgerError::LineBreak { line } => write!(
+            LedgerError::ControlCharacter { line } => write!(
                 f,
-                "a start-up line must be a single line, but {line:?} holds a line break"
+                "a start-up line must be a single line of text, but {line:?} holds a line break \
+                 or a NUL byte"
             ),
             LedgerError::ReadOnly { path } => write!(
                 f,
@@ -470,7 +473,7 @@ impl HostChangeLedger {
     /// # Errors
     ///
     /// [`LedgerError::Io`] if the ledger cannot be saved; then the change must not be made.
-    /// [`LedgerError::NotRooted`] if a path in `kind` is relative, and [`LedgerError::LineBreak`]
+    /// [`LedgerError::NotRooted`] if a path in `kind` is relative, and [`LedgerError::ControlCharacter`]
     /// if its start-up line holds a line break.
     pub fn begin(
         &mut self,
@@ -802,13 +805,13 @@ fn unix_mode(meta: &fs::Metadata) -> Option<u32> {
 }
 
 /// Refuses a change whose paths do not start at a root ([`LedgerError::NotRooted`]), or whose
-/// start-up line holds a line break ([`LedgerError::LineBreak`]). A symbolic link's target may be
+/// start-up line holds a line break or a NUL byte ([`LedgerError::ControlCharacter`]). A symbolic link's target may be
 /// relative: it is resolved from the link, not from where a script runs.
 fn check_rooted(kind: &HostChangeKind) -> Result<(), LedgerError> {
     if let HostChangeKind::PathEntry { line, .. } = kind
-        && line.contains(['\n', '\r'])
+        && line.contains(['\n', '\r', '\0'])
     {
-        return Err(LedgerError::LineBreak { line: line.clone() });
+        return Err(LedgerError::ControlCharacter { line: line.clone() });
     }
     let path = match kind {
         HostChangeKind::FileWritten { path } | HostChangeKind::Symlink { path, .. } => path,
@@ -1318,24 +1321,31 @@ mod tests {
         assert_eq!(fs::read(&kept).unwrap(), b"ours\n");
     }
 
-    /// A start-up line with a line break would reach the sh script as two lines, and could
-    /// remove a line of the user's that matches either half, so it is never recorded.
+    /// A start-up line with a line break would reach the sh script as two lines, and one with a
+    /// NUL byte would lose the byte there; either way the script's pattern could match a line of
+    /// the user's. Neither is ever recorded.
     #[test]
-    fn a_start_up_line_with_a_line_break_is_refused() {
+    fn a_start_up_line_with_a_line_break_or_a_nul_byte_is_refused() {
         let state = temp_state();
         let mut ledger = HostChangeLedger::open(&state).unwrap();
         for line in [
             "export A=1\nalias ll='ls -l'",
             "export A=1\r",
             "\nexport A=1",
+            // The sh script drops the NUL byte, so its pattern would be the user's `keep1`.
+            "keep1\0",
+            "export A=1\0keep1",
         ] {
             let kind = HostChangeKind::PathEntry {
                 shell_rc: Some(state.join("profile")),
                 line: line.into(),
             };
             let err = ledger.begin(kind, None, None, 0, "v").unwrap_err();
-            assert!(matches!(err, LedgerError::LineBreak { .. }), "{err}");
-            assert!(err.to_string().contains("line break"), "{err}");
+            assert!(matches!(err, LedgerError::ControlCharacter { .. }), "{err}");
+            assert!(
+                err.to_string().contains("line break or a NUL byte"),
+                "{err}"
+            );
         }
         assert!(ledger.changes().is_empty());
     }
