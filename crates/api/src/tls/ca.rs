@@ -64,6 +64,9 @@ pub enum TlsError {
     /// The CA's file is not one this build wrote, or its parts disagree. It is left as it is:
     /// no key is overwritten without a reason the user can see.
     Corrupt { path: PathBuf, what: &'static str },
+    /// [`CA_FILE`] no longer holds this CA: another [`LocalCa::open`] replaced it. Open the CA
+    /// again to issue from the current one.
+    Superseded { path: PathBuf },
     /// The certificate library refused the certificate.
     Certificate(rcgen::Error),
     /// rustls refused the leaf's key.
@@ -82,6 +85,11 @@ impl fmt::Display for TlsError {
             TlsError::NoNames => f.write_str("a leaf needs at least one name or address"),
             TlsError::Io { path, error } => write!(f, "{}: {error}", path.display()),
             TlsError::Corrupt { path, what } => write!(f, "{}: {what}", path.display()),
+            TlsError::Superseded { path } => write!(
+                f,
+                "{} holds another CA now; open the CA again",
+                path.display()
+            ),
             TlsError::Certificate(e) => write!(f, "certificate: {e}"),
             TlsError::Key(e) => write!(f, "leaf key: {e}"),
             TlsError::Time => f.write_str("a time no certificate can carry"),
@@ -690,6 +698,10 @@ impl LocalCa {
     /// Issues a 30-day leaf for `names`, at `now`. Every name must be one of the scope's names,
     /// exactly, and every address must lie in one of its subnets; anything else, a public DNS
     /// name or address above all, is refused before anything is signed.
+    ///
+    /// This CA must still be the one in [`CA_FILE`]. One that another [`LocalCa::open`] has
+    /// replaced is [`TlsError::Superseded`], since its leaves would chain to a CA that `doctor`
+    /// SEC-006 tells clients to drop. That costs one read of the file per leaf, every few weeks.
     pub fn issue_leaf(&self, names: &LeafNames, now: SystemTime) -> Result<Leaf, TlsError> {
         if names.is_empty() {
             return Err(TlsError::NoNames);
@@ -708,7 +720,31 @@ impl LocalCa {
         {
             return Err(TlsError::OutsideScope(ip.to_string()));
         }
+        self.check_current()?;
         self.sign_leaf(names, now)
+    }
+
+    /// Refuses unless [`CA_FILE`] still holds this CA's certificate.
+    fn check_current(&self) -> Result<(), TlsError> {
+        /// The one field of [`CaFile`] this reads; the others, the key among them, are skipped.
+        #[derive(Deserialize)]
+        struct Stored {
+            certificate: String,
+        }
+        let path = self.dir.join(CA_FILE);
+        let mut bytes = files::read_private(&path).map_err(io_error(&path))?;
+        let stored = bytes
+            .as_deref()
+            .and_then(|bytes| serde_json::from_slice::<Stored>(bytes).ok())
+            .and_then(|stored| unhex(&stored.certificate));
+        if let Some(bytes) = bytes.as_mut() {
+            bytes.zeroize();
+        }
+        if stored.as_deref() == Some(self.certificate.as_ref()) {
+            Ok(())
+        } else {
+            Err(TlsError::Superseded { path })
+        }
     }
 
     /// Signs a leaf for `names` without checking them against the scope. Only

@@ -524,6 +524,29 @@ fn a_new_scope_replaces_the_ca_and_records_it_for_sec_006() {
     ));
 }
 
+/// Review note N5: a `LocalCa` that a later `open` replaced issues nothing more, while the
+/// replacement does.
+#[test]
+fn a_replaced_ca_issues_no_more_leaves() {
+    let dir = Dir::new("superseded");
+    let key = node_key(1);
+    let (old, _) = LocalCa::open(&dir.path(), &scope(), &key, now()).unwrap();
+    let names = LeafNames::new(["box.local"], []);
+    old.issue_leaf(&names, now()).unwrap();
+    let (moved, _) = CaScope::new(["box.local"], &[ip("10.20.30.40")], &[]).unwrap();
+    let (new, _) = LocalCa::open(&dir.path(), &moved, &key, now()).unwrap();
+    assert!(matches!(
+        old.issue_leaf(&names, now()),
+        Err(TlsError::Superseded { .. })
+    ));
+    new.issue_leaf(&names, now()).unwrap();
+    fs::remove_file(dir.path().join(CA_FILE)).unwrap();
+    assert!(matches!(
+        new.issue_leaf(&names, now()),
+        Err(TlsError::Superseded { .. })
+    ));
+}
+
 #[test]
 fn a_new_node_key_replaces_the_ca() {
     let dir = Dir::new("rekey");
