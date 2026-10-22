@@ -27,6 +27,9 @@ use syntropy_io::{
 /// An engine that records what it is given and completes it in full, touching no memory.
 struct Recorder {
     dio: DioAlign,
+    /// What `open` reports for the file it opens, when set.
+    opened: Option<DioAlign>,
+    open_dio: Option<DioAlign>,
     log: Vec<(ExtentRef, IoDest)>,
     in_flight: Vec<(IoTicket, u64)>,
 }
@@ -35,6 +38,8 @@ impl Recorder {
     fn new(dio: DioAlign) -> Self {
         Self {
             dio,
+            opened: None,
+            open_dio: None,
             log: Vec::new(),
             in_flight: Vec::new(),
         }
@@ -59,7 +64,12 @@ impl IoEngine for Recorder {
     }
 
     fn open(&mut self, _: &Path, _: OpenMode) -> Result<FileIx, IoError> {
+        self.opened = self.open_dio;
         Ok(FileIx(0))
+    }
+
+    fn file_dio(&self, file: FileIx) -> Option<DioAlign> {
+        if file == FileIx(0) { self.opened } else { None }
     }
 
     unsafe fn register_buffers(&mut self, _: &[HostRegion]) -> Result<Vec<BufIndex>, IoError> {
@@ -205,7 +215,7 @@ proptest! {
             ..LoopConfig::new(1)
         };
         let (mut io, mut clients) = IoLoop::new(Recorder::new(dio), &config).unwrap();
-        let a = io.alignment();
+        let a = io.alignment(FileIx(0));
         let mut expect_bad = 0u64;
         let mut expect_bytes = 0u64;
         let mut want = Vec::new();
@@ -299,4 +309,59 @@ fn a_misaligned_read_is_rejected_and_counted() {
     assert_eq!(io.misaligned(), 1);
     assert_eq!(io.engine().log.len(), 1);
     assert_eq!(io.engine().log[0].0, ext(8192, 4096));
+}
+
+/// The alignment a file reports at `open`, after the loop is built, is the one its requests are
+/// checked against: an 8 KiB volume refuses a read at offset 4096, which the loop's 4 KiB
+/// default would pass, before the engine sees it.
+#[test]
+fn a_files_alignment_from_open_governs_its_requests() {
+    let config = LoopConfig {
+        page: Bytes(4096),
+        spin: Duration::ZERO,
+        ..LoopConfig::new(1)
+    };
+    let mut engine = Recorder::new(DioAlign { mem: 0, offset: 0 });
+    engine.open_dio = Some(DioAlign {
+        mem: 8192,
+        offset: 8192,
+    });
+    let (mut io, mut clients) = IoLoop::new(engine, &config).unwrap();
+    assert_eq!(io.alignment(FileIx(0)).offset(), 4096, "nothing opened yet");
+    let file = io
+        .engine_mut()
+        .open(Path::new("pack"), OpenMode::Read)
+        .unwrap();
+    assert_eq!(io.alignment(file).offset(), 8192);
+    assert_eq!(io.alignment(file).mem(), 8192);
+    for (t, offset) in [(1u64, 4096u64), (2, 16384)] {
+        clients[0]
+            .submit(IoOp::Read(ReadRequest {
+                ticket: IoTicket(t),
+                extent: ext(offset, 8192),
+                dest: fixed(0, 0, 8192),
+                priority: IoPriority::Demand,
+                useful_until: None,
+            }))
+            .unwrap();
+    }
+    while io.poll_once() != Poll::Idle {}
+    let mut got: Vec<_> = std::iter::from_fn(|| clients[0].poll().ok())
+        .map(|c| (c.ticket.0, c.result))
+        .collect();
+    got.sort_by_key(|g| g.0);
+    assert_eq!(
+        got,
+        [
+            (1, Err(IoError::new(IoErrorCode::Misaligned))),
+            (2, Ok(Bytes(8192)))
+        ]
+    );
+    assert_eq!(io.misaligned(), 1);
+    let seen: Vec<_> = io.engine().log.iter().map(|(e, _)| *e).collect();
+    assert_eq!(
+        seen,
+        [ext(16384, 8192)],
+        "the 4096-offset read never reached the engine"
+    );
 }

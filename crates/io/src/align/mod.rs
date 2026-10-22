@@ -527,6 +527,19 @@ mod tests {
         let file = File::open(&path).unwrap();
         let q = query(&file, &path);
         eprintln!("alignment query on {}: {q:?}", path.display());
+        // A broken FFI must not pass: on every OS with a query, a file on a real volume gets a
+        // concrete answer. `Unknown` is right only on Linux, for a file with no block device
+        // under it (tmpfs, ramfs) whose file system fills no `STATX_DIOALIGN`.
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        if q == DioQuery::Unknown {
+            assert!(
+                !linux::on_block_device(&file),
+                "Unknown for a file on a block device"
+            );
+        }
         let _ = std::fs::remove_file(&path);
         #[cfg(target_os = "macos")]
         assert_eq!(
@@ -539,7 +552,16 @@ mod tests {
                 source: DioSource::MacPage
             }
         );
+        #[cfg(windows)]
+        assert!(
+            matches!(q, DioQuery::Aligned { .. }),
+            "Windows reports sector sizes for every local volume: {q:?}"
+        );
         if let DioQuery::Aligned { dio, .. } = q {
+            assert!(
+                dio.offset > 0 || dio.mem > 0,
+                "an Aligned answer is non-zero"
+            );
             assert!(dio.offset == 0 || dio.offset.is_power_of_two());
             assert!(dio.mem == 0 || dio.mem.is_power_of_two());
         }

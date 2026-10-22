@@ -107,11 +107,7 @@ fn statx_dio(file: &File) -> Option<DioQuery> {
 
 /// The logical block size of the block device holding `file`, from sysfs.
 fn logical_block_size(file: &File) -> Option<u32> {
-    let dev = file.metadata().ok()?.dev();
-    // The C library's `major` and `minor` encoding of `dev_t`.
-    let major = ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff);
-    let minor = (dev & 0xff) | ((dev >> 12) & !0xff);
-    let base = format!("/sys/dev/block/{major}:{minor}");
+    let base = block_dir(file.metadata().ok()?.dev());
     // A whole device has `queue/`; a partition's is its parent's.
     [
         format!("{base}/queue/logical_block_size"),
@@ -123,6 +119,29 @@ fn logical_block_size(file: &File) -> Option<u32> {
     .filter(|&n| n > 0)
 }
 
+/// `dev_t`'s major number, as glibc's `gnu_dev_major` decodes it.
+const fn dev_major(dev: u64) -> u64 {
+    ((dev & 0x0000_0000_000f_ff00) >> 8) | ((dev & 0xffff_f000_0000_0000) >> 32)
+}
+
+/// `dev_t`'s minor number, as glibc's `gnu_dev_minor` decodes it.
+const fn dev_minor(dev: u64) -> u64 {
+    (dev & 0x0000_0000_0000_00ff) | ((dev & 0x0000_0fff_fff0_0000) >> 12)
+}
+
+/// The sysfs directory of the block device `dev`.
+fn block_dir(dev: u64) -> String {
+    format!("/sys/dev/block/{}:{}", dev_major(dev), dev_minor(dev))
+}
+
+/// Whether `file` sits on a block device. Without one (tmpfs, ramfs) and without
+/// `STATX_DIOALIGN`, the OS has nothing to report, and the query's `Unknown` is right.
+#[cfg(test)]
+pub(super) fn on_block_device(file: &File) -> bool {
+    file.metadata()
+        .is_ok_and(|m| std::path::Path::new(&block_dir(m.dev())).exists())
+}
+
 /// The page size, from `sysconf(_SC_PAGESIZE)`.
 pub(super) fn page_size() -> u64 {
     super::unix_page_size(sys::SC_PAGESIZE as c_int)
@@ -131,6 +150,32 @@ pub(super) fn page_size() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dev_t_decodes_as_glibc_does() {
+        // glibc's `gnu_dev_makedev(major, minor)` layout.
+        fn makedev(major: u64, minor: u64) -> u64 {
+            (minor & 0xff)
+                | ((major & 0xfff) << 8)
+                | ((minor & !0xff) << 12)
+                | ((major & !0xfff) << 32)
+        }
+        for (major, minor) in [
+            (8, 1),
+            (259, 3),
+            (0, 0),
+            (4095, 255),
+            (0xfffff, 0xfffff),
+            (1 << 31, 1 << 19),
+        ] {
+            let dev = makedev(major, minor);
+            assert_eq!(
+                (dev_major(dev), dev_minor(dev)),
+                (major, minor),
+                "{major}:{minor}"
+            );
+        }
+    }
 
     /// The fallback on its own, for the file system `TMPDIR` names: a power of two when a block
     /// device answers, `None` on file systems with no block device (tmpfs, overlay over one).
