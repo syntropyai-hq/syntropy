@@ -297,7 +297,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 
 *Note 2026-10-22 (amendment, §18.9):* `spsc` joins layer 1. `io` (its submission rings and RFC-0021 §3.1's rings to the I/O thread), `net` (its rings to the network task, §5.8) and `ipc` all need §8.3's ring, and all three are in layer 1, where rule 2 forbids edges between crates (OQ-IO-29). `spsc` holds the one implementation, with no workspace dependencies, so one set of loom models covers every ring.
 
-*Note 2026-10-22 (amendment, §18.22):* `netprobe` joins layer 2. DIST-E4-T15's probe is a binary that alpha testers run before the product ships, so it is neither a `cli` subcommand (`cli` is the product's single binary) nor a bin target in `net`, which would put a runtime's `main` in a layer-1 library. It reaches iroh only through `net` (rule 6), takes its node key from `io`'s `OsEntropy`, and no crate depends on it.
+*Note 2026-10-22 (amendment, §18.24):* `netprobe` joins layer 2. DIST-E4-T15's probe is a binary that alpha testers run before the product ships, so it is neither a `cli` subcommand (`cli` is the product's single binary) nor a bin target in `net`, which would put a runtime's `main` in a layer-1 library. It reaches iroh only through `net` (rule 6), takes its node key from `io`'s `OsEntropy`, and no crate depends on it.
 
 Packaging, installers, backend modules and update channels (RFC-0052) and CI (RFC-0062) live outside the crate graph, in `packaging/` and `.github/`. A backend module is a directory beside the core binary of the same version holding one provider library and its vendor redistributables (ADR-0507, RFC-0052 §4.3).
 
@@ -325,7 +325,7 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 9. **`testkit` is a dev-dependency only.** No production crate depends on it.
    - *Note 2026-10-21:* the same holds for `bench`, the other crate on §4.1's dev-only row ("—").
 10. **Test-only features never reach a release.** Any crate may declare the cargo features `fault-injection`, `debug-taps` and `guards`. Release artefacts are built without them, and the L0 `check-deps` job enforces it (RFC-0060 §3.6, RFC-0062 §12.1).
-   - *Note 2026-10-22 (amendment, §18.22):* `test-relay` is a fourth test-only feature, declared by `net` alone. It exposes iroh's test relay server and an endpoint that trusts its self-signed certificate (`net::endpoint::test_relay`), so the tests of crates above `net`, which rule 6 keeps from naming iroh, can force a relayed path. Only dev-dependencies turn it on, so no build profile of RFC-0062 §4.4 does, and those keep their three features. The `check-deps` checks refuse it in a release build and among a crate's default features, like the other three.
+   - *Note 2026-10-22 (amendment, §18.24):* `test-relay` is a fourth test-only feature, declared by `net` alone. It exposes iroh's test relay server and an endpoint that trusts its self-signed certificate (`net::endpoint::test_relay`), so the tests of crates above `net`, which rule 6 keeps from naming iroh, can force a relayed path. Only dev-dependencies turn it on, so no build profile of RFC-0062 §4.4 does, and those keep their three features. The `check-deps` checks refuse it in a release build and among a crate's default features, like the other three.
 
 ## 5. Core types and interfaces
 
@@ -1120,6 +1120,8 @@ Op selection per device (RFC-0040 §6, ADR-0401). For each op in a stage's step 
 
 ### 5.8 `Transport`, frames and sequence control (`net`)
 
+*Note 2026-10-22 (DIST-E1-T14): these types live in `core`.* `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame` and `TokenEntry` below, and `TraceContext`, are defined in `core`. `net` encodes them on the wire (RFC-0031 §6.3, §6.5, §6.6) without defining them, as RFC-0060 §5.5's note does for `ParityTapSpec`. Rule 3 (§4.2) keeps `exec` and `sched` off `net`, yet the head's and tail's step loops read these types from the M0 rings: PLC-E8-T01, PLC-E9-T02, PLC-E9-T03 and PLC-E9-T16. The `Transport` trait, `Channel` and `ActivationFrame` stay in `net`. So do its zero-copy codec views, under names of their own, since §5.13 gives each type one owner. `frame::Token<'a>` is a `Token` frame's view of a `TokenFrame`. `frame::TokenEntryView<'a>`, renamed from the `TokenEntry<'a>` DIST-E8-T03 built, is one entry's view: it converts to the owned `TokenEntry` and is encoded from one. `net`'s `Finish` becomes `core`'s `FinishReason`, whose `Error { domain, code }` is the wire's numeric form of §10's `ErrorCode`. The one `TraceContext` keeps `net`'s field names, `version`, `trace_id`, `span_id` and `flags`, where `span_id` is the sender's span, RFC-0053 §3.2's parent span. §5.13 and §18.23 record the move, for the maintainers to confirm.
+
 ```rust
 /// A data-plane transport backend (ADR-0011). The solver picks one per hop from measured α
 /// (HopPlan::transport). Owner: RFC-0031.
@@ -1570,8 +1572,10 @@ pub enum ErrorClass {
 | `SequenceId` and the sampler key | core | 0032 | 0012 (ADR-0107), 0050 |
 | `KernelProvider`, `OpKey` | kernels | 0040 | 0042 (numerics), 0012 (dispatch), 0020 (segments, registrar) |
 | `Transport`, `Channel` | net | 0031 | 0034 (encryption), 0032 |
-| `ActivationFrame`, `TokenFrame`, `EmbeddingResult` | net | 0031 (layout) | 0032, 0012 (semantics), 0022 and 0043 (side-channel items), 0050 (`EmbeddingResult`) |
-| `SequenceControl`, `SequenceOpen`, `SequenceMeta` | net | 0032 | 0011 (routing fields), 0050 (`SamplingParams`, `SequenceLimits`), 0060 (`parity`) |
+| `ActivationFrame`, `EmbeddingResult` | net | 0031 (layout) | 0032, 0012 (semantics), 0022 and 0043 (side-channel items), 0050 (`EmbeddingResult`) |
+| `TokenFrame`, `TokenEntry`, `FinishReason` | core (revised 2026-10-22, was net; §5.8's note); `net` keeps the borrowed views `Token<'a>` and `TokenEntryView<'a>` | 0031 (layout) | 0032, 0012 (semantics), 0022 (side-channel items) |
+| `SequenceControl`, `SequenceOpen`, `SequenceMeta` | core (revised 2026-10-22, was net; §5.8's note) | 0032 | 0011 (routing fields), 0050 (`SamplingParams`, `SequenceLimits`), 0060 (`parity`) |
+| `TraceContext` | core (added 2026-10-22; §5.8's note) | 0053 (semantics), 0031 (layout) | — |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
 | `Error`, `ErrorClass` | core | 0001 | every RFC (codes) |
@@ -1579,6 +1583,7 @@ pub enum ErrorClass {
 | Canonical encoding (`canon::to_bytes`), behind `InstancePolicy::canonical_bytes` and `digest_with` | core | 0054 (§4.5) | |
 | `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore`, `Outbox` | core | 0060 | 0030, 0032, 0033 (the protocol cores) |
 | `ConformanceManifest` and its certificates | core | 0060 | 0040 (`OpCert` selection), 0011 (`WireCert`, `PathCert`), 0042 |
+| `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId`, `LogitTap`, `TapRow`, `TapValues` | core | 0060 | 0012 (tail semantics), 0031 (wire layout), 0050 (parity endpoint) |
 | `TelemetryRecord`, `StepRecord`, `LogRecord`, `CostTerm` | obs | 0053 | 0012, 0011, 0061 |
 | `Figure<T>` | api | 0051 | 0050 |
 
@@ -2802,7 +2807,21 @@ DIST-E7-T23 pins iroh 1.4.1 in `net`. The maintainers decided on 2026-10-22 how 
 |---|---|---|
 | ADR-0018 §3's policy is checked for the targets of RFC-0062 §4.1, through `deny.toml`'s `[graph] targets`; the first per-crate MPL-2.0 exception is `attohttpc@0.30.1`; RUSTSEC-2024-0436 (`paste`, unmaintained) is ignored until 2027-01-22 (#1700) | ADR-0018 §3 (dated revision); RFC-0062 §11.2 (dated note) | iroh-relay's wasm32-only crates reach no shipped artefact; iroh's port mapping, which brings attohttpc, raises the share of direct paths; `paste` is a build-time proc-macro reached only through iroh's netlink stack, with no known vulnerability |
 
-### 18.22 The field probe's crate and the test relay feature (2026-10-22)
+### 18.22 Parity tap types in `core` (2026-10-22)
+
+RFC-0060 §5.5 (amendment A4) defines the teacher-forced tap types that §5.8's `SequenceOpen::parity` and `TokenEntry::tap` hold. QUAL-E5-T19 builds them in `core`.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ParityTapSpec`, `ForceMode`, `TapMode`, `TeacherStreamId`, `LogitTap`, `TapRow` and `TapValues` gain an ownership row: `core`, owned by RFC-0060 | §5.13; RFC-0060 §5.5 (dated note) | the tail in `exec`, the parity endpoint in `api` and the driver build against one definition, and rule 3 keeps `exec` off `net`; §5.8's `TokenEntry::tap: Option<LogitTap>` is unchanged, because `LogitTap` is the per-entry block of RFC-0031 §6.5 (a plan correction recorded in RFC-0060 §5.5 and RFC-0050 §13.6) |
+
+### 18.23 Sequence control and token types in `core` (2026-10-22)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame`, `TokenEntry`, `FinishReason` and `TraceContext` live in `core`, not `net`; `net` encodes them without defining them, and keeps its zero-copy views under names of their own (`Token<'a>`, `TokenEntryView<'a>`) | §5.8 (dated note), §5.13; RFC-0053 §3.2 (dated note) | rule 3 (§4.2) keeps `exec` and `sched` off `net`, and the head's and tail's step loops read these types from the M0 rings (DIST-E1-T14, which defines them). For the maintainers to confirm |
+
+### 18.24 The field probe's crate and the test relay feature (2026-10-22)
 
 DIST-E4-T15 builds the field network probe for alpha testers.
 
