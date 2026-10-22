@@ -2816,3 +2816,11 @@ RFC-0060 §5.5 (amendment A4) defines the teacher-forced tap types that §5.8's 
 | Change | Sections touched | Reason |
 |---|---|---|
 | `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame`, `TokenEntry`, `FinishReason` and `TraceContext` live in `core`, not `net`; `net` encodes them without defining them, and keeps its zero-copy views under names of their own (`Token<'a>`, `TokenEntryView<'a>`) | §5.8 (dated note), §5.13; RFC-0053 §3.2 (dated note) | rule 3 (§4.2) keeps `exec` and `sched` off `net`, and the head's and tail's step loops read these types from the M0 rings (DIST-E1-T14, which defines them). For the maintainers to confirm |
+
+### 18.26 Hot-thread placement on Apple platforms (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| On Apple platforms, ADR-0012 item 2's hot threads run unpinned at QoS `USER_INTERACTIVE`, and their placement report gives no core and NUMA node 0 | ADR-0012 (dated revision); RFC-0012 §1.1 (dated note) | macOS and iOS have no call that binds a thread to a core, and Apple silicon ignores the `THREAD_AFFINITY_POLICY` tags. The recommended option, taken under the maintainer's standing instruction, 2026-10-23 |
+| The OS calls that place hot threads (`cpu_topology`, `pin_current_thread`, `raise_current_thread_priority`, `current_core`) are `syntropy_io::os` functions, and `exec` keeps `forbid(unsafe_code)` | §4.2 rule 8 (its note of 2026-10-22 already places OS calls that need `unsafe` in `io`) | PLC-E7-T01 pins its dispatchers, and pinning, priority and NUMA queries need `unsafe` FFI |
+| `/debug/state` lists each runner's hot-thread placement records | RFC-0050 §13.6 (dated note) | PLC-E7-T01's criterion: dispatchers report their pinned core and NUMA node in the debug state |

@@ -19,11 +19,20 @@
 //! - [`SystemTicks`] is the production [`TickSource`] for hot-thread timing in `exec` and `obs`:
 //!   the invariant TSC on x86-64, CNTVCT_EL0 on arm64, or the OS monotonic counter where neither
 //!   is usable (RFC-0060 §2.1, note of 2026-10-22).
+//! - The `thread` functions place hot threads: [`cpu_topology`], [`pin_current_thread`],
+//!   [`raise_current_thread_priority`] and [`current_core`] (ADR-0012 item 2).
 //!
 //! Every `unsafe` block carries a `// SAFETY:` comment with its invariant (ADR-0001 item 4).
 
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+mod thread;
+
+pub use thread::{
+    Core, CoreId, PinError, Priority, cpu_topology, current_core, pin_current_thread,
+    raise_current_thread_priority,
+};
 
 use syntropy_core::{Clock, DeviceClockSync, Entropy, MonoTime, Nanos, TickRate, TickSource};
 
