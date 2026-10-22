@@ -68,7 +68,9 @@ pub enum FaultEffect {
     },
     /// The point panics.
     Panic,
-    /// The point blocks its thread forever.
+    /// The point blocks its thread until the plan is cleared or replaced, which only another
+    /// thread can do. So reach a `Hang` point only off the thread that will clear the plan: a test
+    /// that hits one on its own thread blocks for good.
     Hang,
 }
 

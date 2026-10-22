@@ -56,7 +56,7 @@ mod injected {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use syntropy_core::{
         Clock, DeviceId, Endpoint, Entropy, LinkId, LinkKind, MonoTime, NetMedium, NodeId,
@@ -312,21 +312,42 @@ mod injected {
         );
     }
 
+    /// Waits up to 10 s, in 1 ms sleeps, for some point to fire. The tests read no clock (RFC-0060
+    /// §2.1 rule T1), so the bound is a count of sleeps.
+    fn wait_for_a_fire() {
+        for _ in 0..10_000 {
+            if !fired().is_empty() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the point never fired");
+    }
+
+    /// The point's thread reports when the point returns: not within half the delay, and then
+    /// with the `Delay` effect. `thread::sleep` never returns early, so the first wait times out.
     #[test]
     fn delay_sleeps_then_returns() {
         let _serial = serial();
-        let delay = Nanos(20_000_000);
+        let delay = Nanos(200_000_000);
         run(vec![rule(
             "obs.test.delay",
             Trigger::Always,
             FaultEffect::Delay(delay),
         )]);
-        let start = Instant::now();
+        let (sent, received) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            sent.send(crate::fault_point!("obs.test.delay")).unwrap();
+        });
         assert_eq!(
-            crate::fault_point!("obs.test.delay"),
-            FaultEffect::Delay(delay)
+            received.recv_timeout(Duration::from_nanos(delay.0 / 2)),
+            Err(mpsc::RecvTimeoutError::Timeout)
         );
-        assert!(start.elapsed() >= Duration::from_nanos(delay.0));
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(10)),
+            Ok(FaultEffect::Delay(delay))
+        );
+        thread.join().unwrap();
     }
 
     #[test]
@@ -365,11 +386,7 @@ mod injected {
             sent.send(crate::fault_point!("obs.test.hang")).unwrap();
         });
         // The fire is counted before the thread blocks.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while fired().is_empty() {
-            assert!(Instant::now() < deadline, "the point never fired");
-            std::thread::yield_now();
-        }
+        wait_for_a_fire();
         assert_eq!(
             received.recv_timeout(Duration::from_millis(200)),
             Err(mpsc::RecvTimeoutError::Timeout)
@@ -392,11 +409,7 @@ mod injected {
             FaultEffect::Hang,
         )]);
         let thread = std::thread::spawn(|| crate::fault_point!("obs.test.hang-replace"));
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while fired().is_empty() {
-            assert!(Instant::now() < deadline, "the point never fired");
-            std::thread::yield_now();
-        }
+        wait_for_a_fire();
         run(Vec::new());
         assert_eq!(thread.join().unwrap(), FaultEffect::Hang);
     }

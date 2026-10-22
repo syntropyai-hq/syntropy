@@ -440,7 +440,7 @@ fn fires(when: Trigger, point: &str, hit: u64, now: impl FnOnce() -> MonoTime) -
 /// Then the effect is applied:
 /// - `Delay` sleeps the thread for its duration, then returns;
 /// - `Panic` panics, naming the point;
-/// - `Hang` blocks the thread until the plan is cleared or replaced, then returns;
+/// - `Hang` blocks the thread until another thread clears or replaces the plan, then returns;
 /// - `Error`, `Corrupt` and `None` return at once, for the call site to act on.
 ///
 /// The installed clock is read at most once per hit, and the lock on the plan is never held while
