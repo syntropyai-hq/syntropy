@@ -943,6 +943,8 @@ name = "syntropy-io"
 version = "0.0.0"
 dependencies = [
  "syntropy-core",
+ "syntropy-spsc",
+ "syntropy-testkit",
 ]
 
 [[package]]
@@ -997,6 +999,10 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-manifest"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "syntropy-core",
+]
 
 [[package]]
 name = "syntropy-net"

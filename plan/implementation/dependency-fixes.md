@@ -640,6 +640,16 @@ DIST-E2-T07's task text said fingerprints are "shown by `identity show`", but `i
 | Added DIST-E2-T09 (`identity show` prints the six-word fingerprints, M3) → DIST-E2-T01, DIST-E2-T07, DIST-E2-T06, PROD-E5-T03, PROD-E6-T08; DIST-E2-T07's task text drops "shown by `identity show`" | DIST-E2-T07, DIST-E2-T09 | R9 | DIST-E2-T07 builds the fingerprint; showing it needs the command (DIST-E2-T01, PROD-E6-T08) and the three keys it shows: the node key (DIST-E2-T01), `ClusterId` (DIST-E2-T06) and the local CA's certificate (PROD-E5-T03) |
 | PROD-E5-T10 → DIST-E2-T09 | PROD-E5-T10 | R9 | its criterion, "the fingerprint matches `syntropy identity show`", needs `identity show` to print the CA's fingerprint |
 
+## COMP-E10-T01's HTTP range source split out (2026-10-22)
+
+COMP-E10-T01 could not start: its HTTP range implementation needs an HTTPS client, which no maintainer has approved, and a ruling on which crate links it (issue #216). The trait, the local-file source, coalescing, the header cap and the replay of recorded Hub fixtures need neither, and COMP-E10-T02 and COMP-E10-T04 need only those.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T01 keeps the `RangeSource` trait, the local-file and recorded-fixture replay sources, coalescing and the header cap; its first criterion reads "from a recorded Hub fixture replayed through the replay source" | COMP-E10-T01 | R9 | the criterion compares bytes, which a recorded fixture gives without a live HTTP client |
+| Added COMP-E10-T14 (M0b), the HTTP range source → COMP-E10-T01; gate: OQ-MF-18 | COMP-E10-T14 | R9 | the client crate and its linking crate are a maintainer decision (AGENTS.md: new direct dependencies; RFC-0001 §4.2 rule 6). OQ-MF-18 lists the options and a recommended default, and leaves the choice to the maintainers |
+| COMP-E12-T02 → COMP-E10-T14 in place of COMP-E10-T01 | COMP-E12-T02 | R9 | the Hub client issues HTTP range requests, so it needs the HTTP source, not only the trait. COMP-E10-T02 and COMP-E10-T04 keep COMP-E10-T01: their criteria read recorded fixtures |
+
 ## DIST-E10-T08's named cases and CI wiring (2026-10-22)
 
 DIST-E10-T08 (M2) asked for "every RT-DIST scenario as a named case". No list of RT-DIST scenarios exists in the plan: the label appears only in that row, RFC-0032's M2 rollout row and ADR-0304's revision of 2026-10-20, all from the first plan commit. Its criterion "the job gates changes to `cluster`" also needs QUAL-E1-T07's affected-job rules, which DIST-E10-T08 did not depend on. QUAL-E1-T07 is M0a, so it cannot take the wiring without depending on M2 work. This pass names the cases and applies R9 to the wiring.
