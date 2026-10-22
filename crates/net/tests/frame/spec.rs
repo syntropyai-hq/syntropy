@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! An encoder written from RFC-0031's tables, independent of `syntropy_net::frame`: every field
-//! is put at the offset §6.1, §6.2, §6.3, §6.5, §6.7 and §6.9 give it, and CRC32C is computed
-//! bit by bit. The golden frames are generated with it, so the codec is checked against the tables, not
-//! against itself.
+//! is put at the offset §6.1, §6.2, §6.3, §6.5, §6.7, §6.8 and §6.9 give it, and CRC32C is computed
+//! bit by bit. The golden frames are generated with it, so the codec is checked against the
+//! tables, not against itself.
 
 /// CRC-32C (Castagnoli): reflected polynomial 0x82F63B78, initial value and final XOR all ones.
 pub fn crc32c(data: &[u8]) -> u32 {
@@ -361,6 +361,109 @@ pub fn token_entry(f: &EntryFields) -> Vec<u8> {
     b.extend(&f.tap); //                              tap block
     b.resize(b.len().next_multiple_of(8), 0); //      padding to 8
     b
+}
+
+/// The 32 bytes of fields of RFC-0031 §6.8's `Collective` extension.
+pub struct CollectiveFields {
+    pub step: u64,
+    pub layer: u16,
+    pub phase: u8,
+    pub algo: u8,
+    pub src_member: u16,
+    pub n_members: u16,
+    pub ring_step: u16,
+    pub dtype: u8,
+    pub elems: u32,
+    pub elem_offset: u32,
+    pub rows: u32,
+}
+
+/// The `Collective` extension: the fields, padded to 64.
+pub fn collective_ext(c: &CollectiveFields) -> Vec<u8> {
+    let mut e = vec![0u8; 64];
+    put(&mut e, 0, 8, c.step); //                    0  step
+    put(&mut e, 8, 2, c.layer.into()); //            8  layer
+    e[10] = c.phase; //                              10 phase
+    e[11] = c.algo; //                               11 algo
+    put(&mut e, 12, 2, c.src_member.into()); //     12 src_member
+    put(&mut e, 14, 2, c.n_members.into()); //      14 n_members
+    put(&mut e, 16, 2, c.ring_step.into()); //      16 ring_step
+    e[18] = c.dtype; //                              18 dtype; 19 reserved
+    put(&mut e, 20, 4, c.elems.into()); //          20 elems
+    put(&mut e, 24, 4, c.elem_offset.into()); //    24 elem_offset
+    put(&mut e, 28, 4, c.rows.into()); //           28 rows; 32..64 padding
+    e
+}
+
+/// The weights, then the expert IDs, of one routing row, padded to 4 (RFC-0031 §6.8).
+fn route_tail(weights: &[f32], experts: &[u16]) -> Vec<u8> {
+    assert_eq!(weights.len(), experts.len());
+    let mut b = Vec::new();
+    for w in weights {
+        b.extend(w.to_le_bytes()); //                k × weight f32
+    }
+    for e in experts {
+        b.extend(e.to_le_bytes()); //                k × expert u16
+    }
+    b.resize(b.len().next_multiple_of(4), 0); //     pad to 4
+    b
+}
+
+/// A `ROUTER_BCAST` payload: per row `k: u8, pad[3]`, then `k` weights, then `k` expert IDs,
+/// padded to 4.
+pub fn router_payload(rows: &[(Vec<f32>, Vec<u16>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (weights, experts) in rows {
+        out.push(weights.len() as u8); //            k
+        out.extend([0, 0, 0]); //                    pad[3]
+        out.extend(route_tail(weights, experts));
+    }
+    out
+}
+
+/// The 24 bytes of fields of RFC-0031 §6.8's `EpDispatch` and `EpCombine` extension.
+pub struct EpFields {
+    pub step: u64,
+    pub layer: u16,
+    pub n_rows: u16,
+    pub dtype: u8,
+    pub part_index: u16,
+    pub part_count: u16,
+}
+
+/// The `EpDispatch` or `EpCombine` extension: the fields, then per row (dispatch only) `row u16,
+/// k_local u8, pad u8`, `k_local` weights, `k_local` expert IDs, padded to 4; the whole padded
+/// to 64.
+pub fn ep_ext(f: &EpFields, rows: &[(u16, Vec<f32>, Vec<u16>)]) -> Vec<u8> {
+    let mut e = vec![0u8; 24];
+    put(&mut e, 0, 8, f.step); //                    0  step
+    put(&mut e, 8, 2, f.layer.into()); //            8  layer
+    put(&mut e, 10, 2, f.n_rows.into()); //         10 n_rows
+    e[12] = f.dtype; //                              12 dtype; 13 reserved
+    put(&mut e, 14, 2, f.part_index.into()); //     14 part_index
+    put(&mut e, 16, 2, f.part_count.into()); //     16 part_count; 18..24 reserved
+    for (row, weights, experts) in rows {
+        e.extend(row.to_le_bytes()); //              row u16
+        e.push(weights.len() as u8); //              k_local u8
+        e.push(0); //                                pad u8
+        e.extend(route_tail(weights, experts));
+    }
+    e.resize(e.len().next_multiple_of(64), 0);
+    e
+}
+
+/// `n` packed F32 values, value `i` holding `first + i`.
+pub fn f32_elems(n: usize, first: usize) -> Vec<u8> {
+    (0..n)
+        .flat_map(|i| ((first + i) as f32).to_le_bytes())
+        .collect()
+}
+
+/// The values of [`f32_elems`] as packed BF16 bit patterns, the high 16 bits of each F32.
+pub fn bf16_elems(n: usize, first: usize) -> Vec<u8> {
+    (0..n)
+        .flat_map(|i| (((first + i) as f32).to_bits() >> 16).to_le_bytes()[..2].to_vec())
+        .collect()
 }
 
 /// `rows` rows of `elements` F32 values each, row `r` element `i` holding `r · 1000 + i`, at a

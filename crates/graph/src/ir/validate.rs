@@ -553,7 +553,7 @@ pub fn check(
 }
 
 /// Every program in execution order: encoders, prologue, layers, epilogue, MTP modules.
-fn programs(g: &ModelGraph) -> Vec<(ProgramId, &Program)> {
+pub(crate) fn programs(g: &ModelGraph) -> Vec<(ProgramId, &Program)> {
     let mut all = Vec::with_capacity(g.encoders.len() + g.layers.len() + g.mtp.len() + 2);
     all.extend(
         g.encoders
@@ -887,43 +887,13 @@ fn check_boundaries(g: &ModelGraph, programs: &[(ProgramId, &Program)]) -> Resul
         }
     }
 
-    // Liveness by program position: a value crosses the cut after position `c` when it is
-    // defined at or before `c` and read after it. The step defines token IDs at -1.
-    let mut def: Vec<Option<i64>> = g
-        .values
-        .iter()
-        .map(|v| (v.kind == ValueKind::TokenIds).then_some(-1))
-        .collect();
-    let mut last_use: Vec<Option<i64>> = vec![None; g.values.len()];
-    for (pos, &(_, body)) in programs.iter().enumerate() {
-        let pos = i64::try_from(pos).unwrap_or(i64::MAX);
-        let reads = body
-            .inputs
-            .iter()
-            .chain(body.nodes.iter().flat_map(|n| &n.inputs));
-        for &v in reads {
-            if let Some(i) = index(g, v) {
-                last_use[i] = Some(last_use[i].map_or(pos, |u| u.max(pos)));
-            }
-        }
-        for &v in body.nodes.iter().flat_map(|n| &n.outputs) {
-            if let Some(i) = index(g, v) {
-                def[i].get_or_insert(pos);
-            }
-        }
-    }
-    let prologue = i64::try_from(g.encoders.len()).unwrap_or(i64::MAX);
+    let live = Liveness::of(g, programs);
     for (boundary, side) in b.side.iter().enumerate() {
         if !b.legal[boundary] {
             continue;
         }
-        // Boundary `b` is the cut after layer `b − 1`, or after the prologue for `b = 0`.
-        let cut = prologue + i64::try_from(boundary).unwrap_or(i64::MAX);
         for (i, v) in g.values.iter().enumerate() {
-            let (Some(d), Some(u)) = (def[i], last_use[i]) else {
-                continue;
-            };
-            if !(d <= cut && cut < u) {
+            if !live.crosses(i, live.cut(boundary)) {
                 continue;
             }
             let value = ValueId(u32::try_from(i).unwrap_or(u32::MAX));
@@ -942,6 +912,67 @@ fn check_boundaries(g: &ModelGraph, programs: &[(ProgramId, &Program)]) -> Resul
         }
     }
     Ok(())
+}
+
+/// Value liveness by program position (RFC-0043 §6.1), shared by rule 4 and
+/// [`boundary`](crate::boundary): a value crosses the cut after position `c` when it is
+/// defined at or before `c` and read after it. The step defines token IDs at −1.
+pub(crate) struct Liveness {
+    def: Vec<Option<i64>>,
+    last_use: Vec<Option<i64>>,
+    prologue: i64,
+}
+
+impl Liveness {
+    /// The liveness of every value of `g`, whose programs in order are `programs`.
+    pub(crate) fn of(g: &ModelGraph, programs: &[(ProgramId, &Program)]) -> Self {
+        let mut def: Vec<Option<i64>> = g
+            .values
+            .iter()
+            .map(|v| (v.kind == ValueKind::TokenIds).then_some(-1))
+            .collect();
+        let mut last_use: Vec<Option<i64>> = vec![None; g.values.len()];
+        for (pos, &(_, body)) in programs.iter().enumerate() {
+            let pos = i64::try_from(pos).unwrap_or(i64::MAX);
+            let reads = body
+                .inputs
+                .iter()
+                .chain(body.nodes.iter().flat_map(|n| &n.inputs));
+            for &v in reads {
+                if let Some(i) = index(g, v) {
+                    last_use[i] = Some(last_use[i].map_or(pos, |u| u.max(pos)));
+                }
+            }
+            for &v in body.nodes.iter().flat_map(|n| &n.outputs) {
+                if let Some(i) = index(g, v) {
+                    def[i].get_or_insert(pos);
+                }
+            }
+        }
+        Self {
+            def,
+            last_use,
+            prologue: i64::try_from(g.encoders.len()).unwrap_or(i64::MAX),
+        }
+    }
+
+    /// The program position boundary `boundary` cuts after: layer `boundary − 1`, or the
+    /// prologue for boundary 0.
+    pub(crate) fn cut(&self, boundary: usize) -> i64 {
+        self.prologue
+            .saturating_add(i64::try_from(boundary).unwrap_or(i64::MAX))
+    }
+
+    /// Whether value `i` is live across the cut after position `cut`.
+    pub(crate) fn crosses(&self, i: usize, cut: i64) -> bool {
+        match (
+            self.def.get(i).copied().flatten(),
+            self.last_use.get(i).copied().flatten(),
+        ) {
+            (Some(d), Some(u)) => d <= cut && cut < u,
+            _ => false,
+        }
+    }
 }
 
 fn check_coverage(

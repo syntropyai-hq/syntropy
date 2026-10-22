@@ -10,9 +10,10 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use syntropy_config::{
-    Authority, ByteSize, ConfigSection, DefaultSpec, DefaultValue, Deprecated, Duration, Fraction,
-    Rate, Registry, Reload, Reserve, Scope, ValueErrorKind, never,
+    Authority, ByteSize, ConfigSection, DefaultSpec, DefaultValue, Deprecated, Duration, Rate,
+    Registry, Reload, Scope, ValueErrorKind, never,
 };
+use syntropy_core::policy::{Fraction, NodeSelector, Reserve};
 
 /// Example node settings.
 ///
@@ -34,6 +35,7 @@ struct ExampleSection {
     threads: u32,
     /// A share.
     #[config(reload = Hot, default = 0.015625)]
+    #[serde(with = "syntropy_config::form")]
     sample: Fraction,
     /// A switch.
     #[config(reload = Hot, default = false)]
@@ -49,6 +51,7 @@ struct ExampleSection {
     limit: Option<u32>,
     /// Memory kept back.
     #[config(reload = Hot, default = computed("max(6GiB, 10% of RAM)"), min = "1GiB")]
+    #[serde(with = "syntropy_config::form")]
     headroom: Reserve,
     /// A negative offset.
     #[config(reload = Hot, default = -3)]
@@ -409,7 +412,8 @@ struct CheckedSection {
     keep: Option<Duration>,
     /// A node.
     #[config(reload = Hot, default = "*")]
-    node: syntropy_config::NodeSelector,
+    #[serde(with = "syntropy_config::form")]
+    node: NodeSelector,
     /// A pattern.
     #[config(reload = Hot, default = "blk\\..*")]
     pattern: syntropy_config::Regex,

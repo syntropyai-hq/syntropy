@@ -12,6 +12,7 @@
 //! wire format, which needs a wire-minor bump (ADR-0307 item 1).
 
 mod activation;
+mod collective;
 mod spec;
 mod token;
 

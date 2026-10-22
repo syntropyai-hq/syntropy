@@ -941,7 +941,10 @@ impl<'a> Frame<'a> {
     pub fn token(&self) -> Result<Token<'a>, FrameError> {
         let ftype = self.header.spec.ftype;
         if ftype != FrameType::Token {
-            return Err(FrameError::NotToken(ftype));
+            return Err(FrameError::WrongType {
+                expected: FrameType::Token,
+                found: ftype,
+            });
         }
         let flags = self.header.spec.flags;
         if flags.encrypted() {

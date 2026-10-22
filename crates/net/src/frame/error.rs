@@ -42,8 +42,11 @@ pub enum FrameError {
     NotControl(FrameType),
     /// A typed `Activation` was asked of a frame of another type.
     NotActivation(FrameType),
-    /// A typed `Token` was asked of a frame of another type.
-    NotToken(FrameType),
+    /// A typed message of one frame type was asked of a frame of another.
+    WrongType {
+        expected: FrameType,
+        found: FrameType,
+    },
     /// A control frame's extension is shorter than its fields.
     ExtTooShort {
         ftype: FrameType,
@@ -130,6 +133,41 @@ impl FrameError {
         }
     }
 
+    /// The same refusal, naming `to` wherever it names `from`: a `StepDescriptor` is read with
+    /// the `Activation` codec, and its refusals name the `StepDescriptor`.
+    pub fn retyped(self, from: FrameType, to: FrameType) -> FrameError {
+        let swap = |ftype: FrameType| if ftype == from { to } else { ftype };
+        match self {
+            FrameError::Sealed(ftype) => FrameError::Sealed(swap(ftype)),
+            FrameError::ExtTooShort { ftype, len, needed } => FrameError::ExtTooShort {
+                ftype: swap(ftype),
+                len,
+                needed,
+            },
+            FrameError::BadField {
+                ftype,
+                field,
+                value,
+            } => FrameError::BadField {
+                ftype: swap(ftype),
+                field,
+                value,
+            },
+            FrameError::Inconsistent {
+                ftype,
+                field,
+                value,
+                expected,
+            } => FrameError::Inconsistent {
+                ftype: swap(ftype),
+                field,
+                value,
+                expected,
+            },
+            other => other,
+        }
+    }
+
     /// The RFC-0031 §12 code a receiver sends in `Close`, where one exists.
     pub fn code(&self) -> Option<u16> {
         match self {
@@ -195,7 +233,9 @@ impl fmt::Display for FrameError {
             FrameError::Sealed(ftype) => write!(f, "{ftype:?} is sealed; open it first"),
             FrameError::NotControl(ftype) => write!(f, "{ftype:?} is not a control frame"),
             FrameError::NotActivation(ftype) => write!(f, "{ftype:?} is not an Activation frame"),
-            FrameError::NotToken(ftype) => write!(f, "{ftype:?} is not a Token frame"),
+            FrameError::WrongType { expected, found } => {
+                write!(f, "{found:?} is not a {expected:?} frame")
+            }
             FrameError::ExtTooShort { ftype, len, needed } => {
                 write!(
                     f,

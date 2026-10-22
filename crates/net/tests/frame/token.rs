@@ -839,7 +839,10 @@ fn a_token_frame_breaking_a_rule_is_refused_with_a_classified_error() {
             "an Activation frame",
             ring(),
             |r| r.ftype = 0x01,
-            FrameError::NotToken(FrameType::Activation),
+            FrameError::WrongType {
+                expected: FrameType::Token,
+                found: FrameType::Activation,
+            },
         ),
     ];
     let raw = raw_ring();
