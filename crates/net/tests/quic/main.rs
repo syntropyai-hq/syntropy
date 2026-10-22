@@ -327,28 +327,50 @@ fn a_dial_that_outlasts_the_connect_timeout_is_connect_timeout() {
     drop(unused);
 }
 
+/// A channel `a` opens and `b` never accepts, with the same default settings on both sides, as a
+/// cluster runs: `b` refuses it with `NotANeighbour` (`Auth`) within `a`'s wait, so `a` learns
+/// that the plans disagree rather than timing out (`Link`) and reconnecting (review of #1826, B1).
 #[test]
 fn a_channel_nobody_accepts_is_refused_with_its_code_not_timed_out() {
-    let quick_refusal = QuicSettings {
-        connect_timeout: Some(Duration::from_millis(300)),
-        ..settings()
-    };
-    let mut pair = Pair::with(settings(), quick_refusal);
-    let (_, registration) = pair.pool(true, 4);
-    let spec = ChannelSpec {
-        key: key(ChannelPurpose::Activations, 7),
-        pool: registration,
-        slot_size: Bytes(SLOT as u64),
-        recv_slots: 0,
-        priority: ChannelPriority::Data,
-        wire: WireDType::F32,
-        retention: 4,
-    };
-    let remote = pair.remote_b();
-    let error = pair
-        .runtime
-        .block_on(pair.a.connect(&remote, spec))
-        .expect_err("b never accepts the channel");
-    assert_eq!(error.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{error}");
-    assert_eq!(error.class, ErrorClass::Auth);
+    // A dial to loopback addresses is a LAN link (2 s); one that also names an address outside
+    // the LAN is a WAN link (10 s), though the loopback path still connects. TEST-NET-3 is
+    // unroutable.
+    let wan_hint: SocketAddr = "203.0.113.1:9".parse().expect("an address");
+    for (class, extra, wait) in [
+        ("LAN", None, Duration::from_secs(2)),
+        ("WAN", Some(wan_hint), Duration::from_secs(10)),
+    ] {
+        let mut pair = Pair::with(QuicSettings::default(), QuicSettings::default());
+        let (_, registration) = pair.pool(true, 4);
+        let spec = ChannelSpec {
+            key: key(ChannelPurpose::Activations, 7),
+            pool: registration,
+            slot_size: Bytes(SLOT as u64),
+            recv_slots: 0,
+            priority: ChannelPriority::Data,
+            wire: WireDType::F32,
+            retention: 4,
+        };
+        let mut remote = pair.remote_b();
+        remote.addrs.extend(extra);
+        let started = std::time::Instant::now();
+        let error = pair
+            .runtime
+            .block_on(pair.a.connect(&remote, spec))
+            .expect_err("b never accepts the channel");
+        let took = started.elapsed();
+        assert_eq!(
+            error.code,
+            Some(ErrorCode::NOT_A_NEIGHBOUR),
+            "{class}: {error}"
+        );
+        assert_eq!(error.class, ErrorClass::Auth, "{class}");
+        // Refused after the hold, half the shorter connect timeout, and before the connector's
+        // own wait ran out.
+        let hold = QuicSettings::default().early_hold();
+        assert!(
+            took >= hold && took < wait,
+            "{class}: refused after {took:?}"
+        );
+    }
 }

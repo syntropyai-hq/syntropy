@@ -98,6 +98,16 @@ impl QuicSettings {
         self.connect_timeout.unwrap_or(default_timeout(class))
     }
 
+    /// How long an accepting side holds a stream whose `Hello` names a channel not yet accepted,
+    /// before it refuses it with `NotANeighbour`: half the shorter of the LAN and WAN connect
+    /// timeouts. A connector on the same settings waits at least the longer, from before its
+    /// `Hello` left, so it receives the refusal rather than timing out.
+    pub fn early_hold(&self) -> Duration {
+        self.connect_timeout(LinkClass::Lan)
+            .min(self.connect_timeout(LinkClass::Wan))
+            / 2
+    }
+
     /// `link.failover_timeout` on a link of class `class`: the idle timeout (RFC-0031 §4.3).
     pub fn failover_timeout(&self, class: LinkClass) -> Duration {
         self.failover_timeout.unwrap_or(default_timeout(class))
@@ -259,6 +269,20 @@ mod tests {
                 over_cap: true
             }
         );
+    }
+
+    #[test]
+    fn an_early_stream_is_refused_well_within_any_connectors_wait() {
+        let defaults = QuicSettings::default();
+        assert_eq!(defaults.early_hold(), Duration::from_secs(1));
+        for class in [LinkClass::Lan, LinkClass::Wan] {
+            assert!(defaults.early_hold() * 2 <= defaults.connect_timeout(class));
+        }
+        let configured = QuicSettings {
+            connect_timeout: Some(Duration::from_millis(700)),
+            ..QuicSettings::default()
+        };
+        assert_eq!(configured.early_hold(), Duration::from_millis(350));
     }
 
     #[test]

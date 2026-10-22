@@ -22,6 +22,10 @@
 //!   the credited bytes, `recv_slots × slot_size` plus room for control frames, over the channels
 //!   opened on it, set with `Connection::set_receive_window` before each channel's handshake.
 //!   [`QuicTransport::connection_windows`] shows each one.
+//! - **Early streams.** A stream whose `Hello` comes before its channel is accepted is held for
+//!   [`QuicSettings::early_hold`], half the shorter connect timeout, then refused with
+//!   `NotANeighbour`: within the connector's wait on the same settings, so it learns that the plans
+//!   disagree (`Auth`) rather than timing out (`Link`), which would make it reconnect.
 //! - **Timeouts.** A dial or a handshake that outlasts `link.connect_timeout` fails with
 //!   `ConnectTimeout` (0x020A). A refusal, such as an unaccepted ALPN or a `HelloAck` with a
 //!   §12 status, keeps its own error: a refusal is `Link` with no code, or the status's code.
@@ -493,6 +497,7 @@ impl Inner {
     async fn route(self: Arc<Self>, conn: Arc<Conn>, send: SendStream, recv: RecvStream) {
         let mut recv = recv;
         let timeout = self.settings.connect_timeout(LinkClass::Wan);
+        let hold = self.settings.early_hold();
         let hello = match tokio::time::timeout(timeout, stream::read_hello(&mut recv)).await {
             Ok(Ok(hello)) => hello,
             // A stream that never says `Hello`, or says something else, is dropped.
@@ -535,8 +540,9 @@ impl Inner {
             }
             Next::Refuse(early) => Some(early),
             Next::Hold => {
-                // Refuse the early stream if nobody accepts its channel in time.
-                tokio::time::sleep(timeout).await;
+                // Refuse the early stream if nobody accepts its channel in time: well within the
+                // connector's own wait, so it gets the refusal, not a timeout.
+                tokio::time::sleep(hold).await;
                 lock(&self.routes).early.remove(&key)
             }
         };
