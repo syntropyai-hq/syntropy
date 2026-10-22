@@ -71,24 +71,24 @@ fn ten_thousand_steady_state_steps_allocate_nothing() {
     let s = provider.stream(&ctx, StreamPriority::Compute).unwrap();
     let mut src: Vec<u8> = (0..=255).collect();
     let mut dst = vec![0u8; 256];
-    let a = provider
-        .import(
-            &ctx,
-            HostRegion {
-                addr: src.as_mut_ptr() as u64,
-                len: Bytes(256),
-            },
+    let (src_region, dst_region) = (
+        HostRegion {
+            addr: src.as_mut_ptr() as u64,
+            len: Bytes(256),
+        },
+        HostRegion {
+            addr: dst.as_mut_ptr() as u64,
+            len: Bytes(256),
+        },
+    );
+    // SAFETY: `src` and `dst` are the test's own 256-byte buffers, and they stay alive and in
+    // place until the test has run its last step and read them back.
+    let (a, b) = unsafe {
+        (
+            provider.import(&ctx, src_region).unwrap(),
+            provider.import(&ctx, dst_region).unwrap(),
         )
-        .unwrap();
-    let b = provider
-        .import(
-            &ctx,
-            HostRegion {
-                addr: dst.as_mut_ptr() as u64,
-                len: Bytes(256),
-            },
-        )
-        .unwrap();
+    };
     let bells = provider.doorbells(&ctx).unwrap();
     let flag = bells.flag_at(0);
     let e = provider.event(&ctx).unwrap();

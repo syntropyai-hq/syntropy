@@ -332,25 +332,60 @@ pub fn is_system_library(needed: &str) -> bool {
 /// 2026-10-22 (RFC-0001 §4.2 rule 8).
 pub const UNSAFE_ALLOWED: &[&str] = &["io", "tier", "net", "ipc", "spsc"];
 
-/// Rule 8's module-scoped exception (RFC-0001 §4.2 rule 8, note 2026-10-22): a crate that sets
-/// `#![deny(unsafe_code)]` at its root instead of `forbid`, and whose only `unsafe` is one
-/// `unsafe impl` of one trait, in one file, under the crate's one `#[allow(unsafe_code)]`.
+/// Rule 8's scoped exception (RFC-0001 §4.2 rule 8, notes of 2026-10-22 and 2026-10-23): a
+/// crate that sets `#![deny(unsafe_code)]` at its root instead of `forbid`, and whose only
+/// `unsafe` is of the one shape [`UnsafeShape`] names.
 pub struct UnsafeModule {
     /// The crate's short name, such as `testkit`.
     pub krate: &'static str,
-    /// The file that holds the impl, relative to the crate's directory.
-    pub file: &'static str,
-    /// The trait the impl implements.
-    pub implements: &'static str,
+    /// What its `unsafe` may be.
+    pub shape: UnsafeShape,
 }
 
-/// The crates that hold a module-scoped `unsafe` exception. `testkit::guards` holds the counting
-/// allocator, a `GlobalAlloc` that delegates to `std::alloc::System` (RFC-0060 §3.5).
-pub const UNSAFE_MODULES: &[UnsafeModule] = &[UnsafeModule {
-    krate: "testkit",
-    file: "src/guards.rs",
-    implements: "GlobalAlloc",
-}];
+/// The `unsafe` a scoped exception allows.
+pub enum UnsafeShape {
+    /// One `unsafe impl` of one trait, in one file, under the crate's one
+    /// `#[allow(unsafe_code)]`.
+    Impl {
+        /// The file that holds the impl, relative to the crate's directory.
+        file: &'static str,
+        /// The trait the impl implements.
+        implements: &'static str,
+    },
+    /// Declarations of `unsafe` trait methods, with no body, each under its own
+    /// `#[allow(unsafe_code)]`: the crate declares, and never implements or calls, `unsafe`
+    /// methods. No other `unsafe` token is allowed.
+    Declarations {
+        /// Each allowed declaration, as (file relative to the crate's directory, method name).
+        methods: &'static [(&'static str, &'static str)],
+    },
+}
+
+/// The crates that hold a scoped `unsafe` exception.
+/// - `testkit::guards` holds the counting allocator, a `GlobalAlloc` that delegates to
+///   `std::alloc::System` (RFC-0060 §3.5).
+/// - `kernels` declares the three trait methods that take a host range the provider then reads
+///   and writes by address, so that their callers must prove the range valid (RFC-0040 §2.1,
+///   note of 2026-10-23).
+pub const UNSAFE_MODULES: &[UnsafeModule] = &[
+    UnsafeModule {
+        krate: "testkit",
+        shape: UnsafeShape::Impl {
+            file: "src/guards.rs",
+            implements: "GlobalAlloc",
+        },
+    },
+    UnsafeModule {
+        krate: "kernels",
+        shape: UnsafeShape::Declarations {
+            methods: &[
+                ("src/provider.rs", "register_host"),
+                ("src/provider.rs", "import"),
+                ("src/memory.rs", "register"),
+            ],
+        },
+    },
+];
 
 /// Rule 8: the module-scoped exception `name` holds, if any.
 pub fn unsafe_module(name: &str) -> Option<&'static UnsafeModule> {
@@ -411,10 +446,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kernels_itself_is_compute_but_not_a_provider_and_has_no_unsafe() {
+    fn kernels_is_compute_but_not_a_provider_and_has_no_unsafe_code_except_trait_declarations() {
         assert!(is_compute("kernels"));
         assert!(!is_provider("kernels"));
         assert!(!allows_unsafe("kernels"));
+        let module = unsafe_module("kernels").expect("kernels has the declarations exception");
+        let UnsafeShape::Declarations { methods } = module.shape else {
+            panic!("kernels may only declare unsafe methods");
+        };
+        assert_eq!(
+            methods,
+            [
+                ("src/provider.rs", "register_host"),
+                ("src/provider.rs", "import"),
+                ("src/memory.rs", "register"),
+            ]
+        );
         for provider in ["kernels-cuda", "kernels-loader", "kernels-ggml"] {
             assert!(is_provider(provider) && is_compute(provider) && allows_unsafe(provider));
         }
@@ -429,17 +476,18 @@ mod tests {
     }
 
     #[test]
-    fn only_testkit_holds_a_module_scoped_unsafe_exception() {
+    fn only_testkit_and_kernels_hold_a_scoped_unsafe_exception() {
         let module = unsafe_module("testkit").expect("testkit has the exception");
-        assert_eq!(
-            (module.file, module.implements),
-            ("src/guards.rs", "GlobalAlloc")
-        );
-        // No other crate has one, and the exception does not put testkit on the allow-list.
-        for name in ["solver", "bench", "core", "cli", "kernels", "runner"] {
+        let UnsafeShape::Impl { file, implements } = module.shape else {
+            panic!("testkit's exception is its one impl");
+        };
+        assert_eq!((file, implements), ("src/guards.rs", "GlobalAlloc"));
+        // No other crate has one, and an exception does not put a crate on the allow-list.
+        for name in ["solver", "bench", "core", "cli", "runner"] {
             assert!(unsafe_module(name).is_none(), "{name}");
         }
         assert!(!allows_unsafe("testkit"));
+        assert!(!allows_unsafe("kernels"));
     }
 
     #[test]

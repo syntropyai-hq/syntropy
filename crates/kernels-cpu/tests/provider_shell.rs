@@ -63,12 +63,18 @@ fn shape() -> ShapeSig {
 }
 
 /// A host buffer the test owns, imported into the device.
+///
+/// Every test that calls it keeps `bytes` alive and in place until it has run every stream
+/// that names the buffer: each test runs its streams before its buffers go out of scope, and
+/// dropping a device runs nothing.
 fn import(provider: &CpuProvider, ctx: &DeviceCtx, bytes: &mut [u8]) -> u64 {
     let region = HostRegion {
         addr: bytes.as_mut_ptr() as u64,
         len: Bytes(bytes.len() as u64),
     };
-    provider.import(ctx, region).unwrap().handle
+    // SAFETY: `bytes` is the test's own buffer, valid for its length, and it outlives every
+    // use the device makes of it (above).
+    unsafe { provider.import(ctx, region) }.unwrap().handle
 }
 
 fn slice(buffer: u64, offset: u64, bytes: u64) -> BufferSlice {
@@ -157,9 +163,12 @@ fn host_memory_is_allocated_registered_and_imported_as_it_is() {
         addr: owned.as_mut_ptr() as u64,
         len: Bytes(128),
     };
-    let imported = provider.import(&ctx, region).unwrap();
+    // SAFETY: `owned` is the test's buffer, valid for its 128 bytes and alive past the `free`
+    // below; nothing is queued on it.
+    let imported = unsafe { provider.import(&ctx, region) }.unwrap();
     assert_eq!((imported.addr, imported.bytes), (region.addr, region.len));
-    let registration = provider.register_host(&ctx, region).unwrap();
+    // SAFETY: the same buffer; the CPU provider only records the region.
+    let registration = unsafe { provider.register_host(&ctx, region) }.unwrap();
     assert_eq!(registration.region, region);
     provider.free(&ctx, imported);
     provider.free(&ctx, buf);

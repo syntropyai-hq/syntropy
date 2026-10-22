@@ -155,6 +155,8 @@ pub trait KernelProvider: Send + Sync {
 
 **The device class is decided at `enumerate`** (ADR-0405 decision 3, 2026-10-22). `enumerate` returns `ProviderDevice::class`, so every field of the class is known before `open`. Each provider computes the class with one pure function of the device's reported properties, the OS facts, the AMX permission result and `features.disable`. `open` applies the same function to the same inputs and gets the same class. It never loads a different variant set or function table than the class names. If `open` cannot obtain what the class assumes, it fails with an error that names the mismatch, and the node re-probes.
 
+*Note 2026-10-23 (RFC-0001 §18.36): `register_host` and `import` are `unsafe fn`, and so is §2.2's `HostRegistrar::register`.* Each takes a `HostRegion` that the provider then reads and writes by address. The CPU provider copies through it (§7.3), and a GPU provider DMAs from it. The caller must prove the range valid, so each method has a `# Safety` section. The region must be host memory the caller owns, valid for reads and writes over its whole length. It must stay so until the registration is released (`unregister` for `HostRegistrar`), or the imported buffer is freed, and every operation queued on it has finished. Implementations in the `kernels-*` crates are `unsafe fn` too, and every call is an `unsafe` block with a `// SAFETY:` comment in a crate RFC-0001 §4.2 rule 8 lets use `unsafe`. The listings above keep the safe signatures. RFC-0001 §4.2 rule 8's note of 2026-10-23 lets `kernels` declare these three methods.
+
 #### 2.2 Supporting types
 
 ```rust

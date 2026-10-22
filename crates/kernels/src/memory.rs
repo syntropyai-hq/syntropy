@@ -143,7 +143,19 @@ bitflags! {
 /// `Ready`, and none is issued while steps run.
 pub trait HostRegistrar: Send {
     /// Registers `region` with the device.
-    fn register(&self, region: HostRegion, flags: HostRegFlags) -> Result<Registration, Error>;
+    ///
+    /// # Safety
+    ///
+    /// As for [`KernelProvider::register_host`](crate::KernelProvider::register_host):
+    /// `region` must be host memory the caller owns, valid for reads and writes over its whole
+    /// length. It must stay so until [`unregister`](Self::unregister) releases the
+    /// registration and every operation queued on the range has finished.
+    #[allow(unsafe_code)]
+    unsafe fn register(
+        &self,
+        region: HostRegion,
+        flags: HostRegFlags,
+    ) -> Result<Registration, Error>;
     /// Releases a registration.
     fn unregister(&self, reg: Registration) -> Result<(), Error>;
 }
