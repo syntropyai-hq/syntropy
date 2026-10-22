@@ -835,6 +835,39 @@ DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-confor
 | DIST-E7-T12's pools are over any `PoolMemory` (`HeapMemory` in its tests), not "from TIER's pinned network sub-arena"; its edge to TIER-E2-T21 is cut | DIST-E7-T12 | R8 | `net` cannot depend on `tier`, and none of DIST-E7-T12's criteria uses `NetPool`; a runner's `NetPool` reaches `net` through TIER-E2-T25 |
 | DIST-E11-T01 → TIER-E2-T25 | DIST-E11-T01 | R9 | DIST-E11-T01 opens the runner's data-plane channels, and each channel's `ChannelSpec::pool` names a `NetPool` registration that TIER-E2-T25 makes |
 
+## DIST-E6-T01's p99 criterion and the metered gap (2026-10-22)
+
+DIST-E6-T01 enumerates and classifies interfaces. One of its criteria needed measured link probes, and the agreed sources leave metered unread on two systems.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "A USB Wi-Fi bridge reporting Ethernet is flagged by measured p99" moves from DIST-E6-T01 to the new DIST-E6-T07 (M2) → DIST-E6-T01, PLC-E2-T11 | DIST-E6-T01, DIST-E6-T07 | R9 | the criterion uses PLC-E2-T11's L1 probes. DIST-E6-T01 → PLC-E2-T11 would be a cycle, since PLC-E2-T11 depends on PLC-E1-T10, which depends on DIST-E6-T01. A task in this epic takes the criterion, so PLC-E2-T11's row stays as it is |
+| Added DIST-E6-T08 (M2) → DIST-E6-T01 | DIST-E6-T08 | Definition of done | DIST-E6-T01 reads metered on Linux through NetworkManager. macOS's `NWPath` and Windows's `INetworkCostManager` need FFI, so that gap has its own task rather than a note |
+| DIST-E6-T01 gains hosted criteria: the classifier over every row of RFC-0030 §7.2 from synthetic fixtures, and enumeration with stable ordinals on hosted CI | DIST-E6-T01 | Definition of done | only the rig criterion could fail before. Hosted runners have virtual NICs, so these are what CI can show |
+
+## DIST-E1-T14: the field types `core` owns (2026-10-23)
+
+Building DIST-E1-T14 found three field types that no row defined, though its own types hold them: `PrefixRef` holds RFC-0022's `PrefixKey` and `TailId`, and `SamplingParams` holds RFC-0050's `GrammarRef`. `core` cannot name a type of `tier` or `api`, and every lane must be able to name these, so DIST-E1-T14 defines all three as plain newtypes in `core::sequence`, and the rows that use them build on its types. RFC-0001 §5.8 and §5.13 gain a dated note and rows. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T14 also defines `PrefixKey`, `TailId` and `GrammarRef` | DIST-E1-T14 | R9 | `PrefixRef` and `SamplingParams`, which it defines, hold them |
+| TIER-E6-T02's supporting types drop `TailId` and use `core`'s; TIER-E6-T02 → DIST-E1-T14 | TIER-E6-T02 | R9 | its prefix index's tail pool is named by `core`'s `TailId`. M0a → M0a; DIST-E1-T14's dependencies do not reach TIER-E6-T02, so no cycle, and the M0a critical path is unchanged |
+| TIER-E7-T01 computes its page keys as `core`'s `PrefixKey`; its existing edge to DIST-E1-T14 now names `PrefixKey` too | TIER-E7-T01 | R9 | the key is what `PrefixRef::Cached` carries |
+| PROD-E3-T05 uses `core`'s `GrammarRef` and `SamplingParams`; PROD-E3-T05 → DIST-E1-T14 | PROD-E3-T05 | R9 | its criterion ships each grammar hash to a tail once, inside `SamplingParams`. M1a → M0a, no cycle |
+| DIST-E1-T14's view conversion covers every field but the tap block, and refuses a non-empty one either way with a classified error; DIST-E8-T06 gains "`net`'s `TokenEntryView` converts a tap block to and from `core`'s `LogitTap` in both tap modes, with the golden frames unchanged"; no edge | DIST-E1-T14, DIST-E8-T06 | R9 | `core`'s `TokenEntry::tap` is a typed `LogitTap`, while `net` carries the block as bytes until DIST-E8-T06 builds its codec, and the `Token` goldens' tap blocks are fill bytes. DIST-E8-T06 already depends on DIST-E8-T03, whose view it extends. M0's taps travel in-process (PLC-E9-T16) |
+
+## TIER-E5-T08's conformance suite (2026-10-23)
+
+TIER-E5-T08 (M1b) builds `IoRingEngine` and `IocpEngine`, and its criterion is that the conformance suite passes. The suite is TIER-E5-T04, which TIER-E5-T08 does not reach, and TIER-E5-T04 waits on the nano fixture files and the fixture store. The engine-agnostic harness moves to a new task that needs only TIER-E5-T01's interface, and TIER-E5-T04 keeps the run over the fixture files on every engine the CI host has. These are plan corrections under R9, approved by the lead running TIER-E5-T08.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added TIER-E5-T33 (M0b) → TIER-E5-T01: the harness, which takes any `IoEngine` and a file, reads random aligned extents into fixed and raw destinations, compares them with buffered `std::fs` reads, and reads writes back; its own tests run it over a generated file | TIER-E5-T33 | R9 | an engine task can pass the harness without fixture files. The harness uses only TIER-E5-T01's types, and M0b → M0b keeps M0 closure |
+| TIER-E5-T04 becomes TIER-E5-T33's harness over the nano fixture files against every engine on the CI host, and TIER-E5-T04 → TIER-E5-T33 | TIER-E5-T04 | R9 | its criterion is unchanged. M0b → M0b |
+| TIER-E5-T08's criterion reads "TIER-E5-T33's conformance harness passes", and TIER-E5-T08 → TIER-E5-T33 | TIER-E5-T08 | R9 | M1b → M0b. TIER-E5-T33 reaches no TIER-E5 engine task, so the edge adds no cycle |
+| TIER-E5-T03's, TIER-E5-T06's and TIER-E5-T09's criteria read "TIER-E5-T33's conformance harness passes", TIER-E5-T22's "engines pass TIER-E5-T33's conformance harness on the Tier 2/3 CI targets", and each gains an edge to TIER-E5-T33 | TIER-E5-T03, TIER-E5-T06, TIER-E5-T09, TIER-E5-T22 | R9 | each criterion cited the suite, and none reached TIER-E5-T04. #1738, TIER-E5-T03's change, reports that criterion as not run for that reason. M0b, M1a, M1b and M4 → M0b, and TIER-E5-T33 reaches none of them, so the edges add no cycle and no `LATER` |
+
 ## PLC-E8-T13's rejection criterion after the section builder (2026-10-23)
 
 #1792 builds `SchedSection` with `config`'s `InstanceSection` (PROD-E1-T24), as RFC-0054 §5.4's note of 2026-10-22 says every domain crate's section is built. It removes `SchedSection::from_policy`, which PLC-E8-T13's criterion named.

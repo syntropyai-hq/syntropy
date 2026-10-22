@@ -328,7 +328,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M0b: parity, certification and the lab
 
-130 tasks in the epics (`implementation/roadmap.md`, M0b).
+131 tasks in the epics (`implementation/roadmap.md`, M0b).
 
 - [ ] `qwen_moe` (GQA with softmax top-k MoE, every expert resident in VRAM), its `FamilyCert` gated on golden logits from the publisher's F32 reference as in M0a (RFC-0043, RFC-0042 §7).
 - [ ] The other M0 schemes (Q4_0, BF16, F16) and captured execution on CUDA (RFC-0040, RFC-0012).
@@ -376,7 +376,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M2: multiple devices on a LAN
 
-290 tasks in the epics (`implementation/roadmap.md`, M2).
+292 tasks in the epics (`implementation/roadmap.md`, M2).
 
 - [ ] Discovery with blinded beacons sent only on networks where a member has been seen, SWIM membership, coordinator lease and event log, with the election and split-heal design model-checked before its code; admission with commit-then-reveal and number matching, and encryption (RFC-0034 core). Coordination is keyholders-only by default, offered with a second-keyholder grant at pairing, with an optional offline recovery code at bootstrap, a guard against removing the last keyholder, and re-founding (RFC-0030, RFC-0032, RFC-0034).
 - [ ] QUIC, TCP and shared-memory transports; RDMA over Thunderbolt 5 on macOS (RFC-0031).

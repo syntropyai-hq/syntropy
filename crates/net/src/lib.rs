@@ -8,9 +8,10 @@
 //! recovery-code word list of RFC-0034 §6.5; [`fingerprint`]: the six-word identity fingerprints
 //! of RFC-0034 §6.5; the control plane's envelope ([`ctl::envelope`], RFC-0031 §9.1);
 //! [`endpoint`], a minimal iroh endpoint that reports a connection's path kind and round-trip
-//! time (DIST-E7-T23); and [`transport`]: the `Transport` trait, `Channel`, their buffer types
-//! and the channel-conformance suite of RFC-0031 §2, with no backend yet. [`Error`] is what its
-//! fallible calls return.
+//! time (DIST-E7-T23); [`iface`]: interface enumeration and medium classification
+//! (RFC-0030 §7.1–§7.2); and [`transport`]: the `Transport` trait, `Channel`, their buffer types,
+//! the channel-conformance suite of RFC-0031 §2 and the channel core of §7, with no backend yet.
+//! [`Error`] is what its fallible calls return.
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
@@ -24,6 +25,7 @@ pub mod endpoint;
 pub mod error;
 pub mod fingerprint;
 pub mod frame;
+pub mod iface;
 pub mod transport;
 pub mod words;
 

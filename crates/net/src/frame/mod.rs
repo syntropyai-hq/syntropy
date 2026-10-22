@@ -58,14 +58,14 @@ pub use ep::{EP_FIXED_LEN, EpCombine, EpDispatch, EpHeader, EpParts};
 pub use error::FrameError;
 pub use header::{
     AEAD_TAG_LEN, ALIGN, Flags, Frame, FrameSpec, FrameType, HEADER_LEN, Header, MAGIC,
-    SEALED_EXT_PLAINTEXT, WIRE_MINOR, encode, encode_assembled, encode_in_place, encode_to_vec,
-    encoded_len,
+    SEALED_EXT_PLAINTEXT, WIRE_MINOR, encode, encode_assembled, encode_header, encode_in_place,
+    encode_to_vec, encoded_len,
 };
 pub use route::{
     EpRow, EpRows, Experts, MAX_ROUTE_K, ROUTE_HEAD_LEN, RouterRow, RouterRows, Weights,
     route_row_len,
 };
 pub use token::{
-    ENTRY_HEADER_LEN, Entries, Finish, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,
-    TokenEntry, TokenSpec, token_flags,
+    ENTRY_HEADER_LEN, Entries, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,
+    TokenEntryBytes, TokenEntryView, TokenSpec, token_flags,
 };

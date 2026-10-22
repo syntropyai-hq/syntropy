@@ -65,6 +65,10 @@ Decode time is spent in kernels, DMA, I/O and the data plane; everything between
 
 `sched` depends on `exec`, `tier`, `graph` and `text` only (RFC-0001 §4.1): no network crate, no tokio. Frames arrive and leave through SPSC rings to the runner's `net` domain (RFC-0001 §8.3).
 
+*Note 2026-10-23 (PLC-E7-T01):* how dispatcher threads are placed.
+- **Placement.** `syntropy_exec::thread` starts each dispatcher. `Cores` hands the runner's hot-thread cores out one per thread, a core on the device's NUMA node first. `spawn_dispatcher` pins the thread and raises its priority (ADR-0012 item 2) through `syntropy_io::os`, since `exec` holds no `unsafe`. Its `HotThreadReport` records the core, the core's NUMA node, whether that node is the device's, the priority granted, and the spin budget. The runner lists one per hot thread in the debug state (RFC-0050 §13.6, note of 2026-10-23).
+- **The spin budget.** It is `sched.spin_us`, which `sched` declares. `exec` sits below `sched`, so the runner reads the key and passes the value. A dispatcher's `DispatcherRings` are its SPSC rings from and to the `net` domain and its `IoClient` to an I/O thread. Between steps it spins for the budget, then parks on the inbound ring (§3.3).
+
 #### 1.2 Roles by stage position
 
 | Position | Receives | Decides | Sends |
