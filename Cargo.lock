@@ -4095,6 +4095,13 @@ dependencies = [
 [[package]]
 name = "syntropy-kernels-cuda"
 version = "0.0.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "syntropy-core",
+ "syntropy-kernels",
+ "toml",
+]
 
 [[package]]
 name = "syntropy-kernels-ggml"
