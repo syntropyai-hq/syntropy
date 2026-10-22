@@ -926,6 +926,17 @@ Defaults: Activations 4, or M + 2 in throughput mode; Tokens 4; prefill (the sam
 - Retention bounds memory exactly: `retention × slot_size` per channel, allocated at `Warming`.
 - On RC queue pairs, QUIC and TCP, the transport already retransmits lost packets, so Syntropy's retransmission fires only on CRC failures (memory or bus corruption) and after failover. On UC it is the reliability layer.
 
+**Note, 2026-10-23 (DIST-E7-T02): the channel core, as built, and the credit probe.** `net::transport::core::ChannelCore` is §7.1–§7.3 for one side of one channel, sans I/O: every backend wraps one per side, moves its frames and passes the time in. Where this section leaves a choice open, the core takes these:
+- **The credit probe, which amends §7.1's "control frames never trigger credits".**
+  - The gap it closes: a credit that only grants more, sent when the receiver's caller drops a frame, can be lost while the sender has nothing unacknowledged. No later credit follows, since no data arrives, and no ack timeout fires, since nothing is outstanding.
+  - So a sender whose `try_send` was refused for credit, with nothing unacknowledged, sends a `Ping` after one `ack_timeout`, then after 2, 4, … up to 64 `ack_timeout`s, until a credit lets it send. A data receiver answers a `Ping` with its reply and its current credit.
+  - Only a refused send arms the probe, so an idle channel sends nothing.
+- **The receive checks** run `magic`, the lengths, `header_crc`, then `wire_minor ≤ negotiated`, the channel key, `chan_seq` and `payload_crc`. §6.1 lists `wire_minor` before `header_crc`. Reading it after means a damaged minor byte counts as damage, which is NACKed, and does not close the channel; an intact frame gets the same verdict either way. A minor above the negotiated one closes the channel as `InvalidRequest`, with no code of its own.
+- **The credit granted** is `ack_seq + recv_slots −` the frames handed over or waiting to be, so it never shrinks and `limit_seq − ack_seq` is the data slots free. The receiver refuses a frame past the credit it granted as a protocol error. The sender also stops at `retention` unacknowledged frames, whatever credit the peer grants, so §7.3's memory bound holds against any peer.
+- **α samples** come from credit echoes and `Ping` replies. An echo of a frame sent more than once gives none, since its arrival cannot be matched to one send. The core's α p99 is the largest of its last 128 samples, or the link profile's before the first.
+- **Escalation.** Three ack timeouts in a row are `AckTimeout`, and an ack resets the count (§7.4's "ack timeout × 3"). Payload CRC failures of control frames count towards `CrcStorm` as data frames' do; a control frame is dropped and never NACKed.
+- **A stream backend** (QUIC, TCP) gives the core each frame's base header before reading its body. A data frame longer than the slot size, or a control frame longer than 512 bytes, is `FrameTooLarge` (§12), and the channel closes.
+
 #### 7.4 Link faults, reconnection and demotion (ADR-0011 item 7)
 
 ```text
@@ -1080,7 +1091,7 @@ Per-hop transport choice is not a knob. It comes from the plan. An operator who 
 | 0x0202 | `CredentialInvalid` (signature, expiry, wrong node, wrong instance or epoch) | `Auth` |
 | 0x0203 | `NotANeighbour` (credential valid, but the plan does not connect these stages) | `Auth` |
 | 0x0204 | `UnknownFrameType` | `Unsupported` (was `Internal`; see the revision note below) |
-| 0x0205 | `FrameTooLarge` | `Internal` |
+| 0x0205 | `FrameTooLarge` | `InvalidRequest` (was `Internal`; see the revision note of 2026-10-23 below) |
 | 0x0206 | `WireDTypeMismatch` | `Unsupported` (was `Internal`; see the revision note below) |
 | 0x0207 | `CrcStorm` (3 payload CRC failures in 10 s) | `Link` |
 | 0x0208 | `AckTimeout` | `Link` |
@@ -1099,6 +1110,12 @@ Per-hop transport choice is not a knob. It comes from the plan. An operator who 
 **Revision note, 2026-10-22 (DIST-E8-T01): the class of `UnknownFrameType`.** A receiver that refuses a frame because its `ftype` is not a type of the negotiated minor (§6.2) classes the refusal `Unsupported`, not `Internal`. RFC-0060 §10.2 requires a decoder of untrusted bytes to class every refusal `Integrity`, `InvalidRequest`, `Auth` or `Unsupported`, never `Internal`, and the fuzz targets assert it. The code is unchanged: the receiver still sends `Close { UnknownFrameType }` with 0x0204. The table now gives `Unsupported` for 0x0204, so the two RFCs agree.
 
 **Revision note, 2026-10-22 (DIST-E8-T02): the class of `WireDTypeMismatch`.** A receiver that refuses an `Activation` because its `dtype` is not the channel's `ChannelSpec::wire` (§6.4) classes the refusal `Unsupported`, not `Internal`, for the reason the note above gives. It is not `Integrity` either: the frame's CRCs passed, and a resend carries the same bytes (§7.3), so no NACK can repair it. The code is unchanged: the receiver reports 0x0206. A dtype container the build does not carry is refused as `Unsupported` too, with no code of its own. The table now gives `Unsupported` for 0x0206.
+
+**Revision note, 2026-10-23 (DIST-E7-T02): the class of `FrameTooLarge`.**
+- A receiver that refuses a frame longer than its channel's slot size classes the refusal `InvalidRequest`, not `Internal`, for the reason the note on 0x0204 gives: it refuses untrusted bytes, so RFC-0060 §10.2 rules out `Internal`.
+- It is not `Integrity`, since the frame's CRCs passed, nor `Unsupported`, since the frame type is one the channel carries. The peer broke the size the channel negotiated.
+- The code is unchanged: the receiver sends `Close { FrameTooLarge }` with 0x0205. A sender's own refusal is `SendError::TooLarge`. An encoder that cannot fit a part into a frame still reports `FrameError::TooLong`, which is `Internal` with this code, because it is the sender's failure and not a refusal of received bytes.
+- RFC-0050 §12.1 adds 0x0205 to its `Net` exempt list in the same change, so the code never takes a 400 shape.
 
 ## Performance model and budgets
 
