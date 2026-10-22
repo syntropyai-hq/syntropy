@@ -876,3 +876,17 @@ Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request 
 |---|---|---|---|
 | PROD-E1-T10 gains a criterion for that case | PROD-E1-T10 | Definition of done | the rule needs a check that can fail: a P-config-2 case shows that such a request never resolves to a knob set missing a plan knob, and that `fidelity_conflict` names exactly the missing ones |
 | The criterion also covers a knob bit this version cannot name: it counts as instance-wide, and a plan holding one serves no request | PROD-E1-T10 | Definition of done | `ApproxKnobs` keeps a bit it does not name, and RFC-0042 §10 reserves `1 << 8` for a later knob. The review of #1771 found that such a bit counted as neither scope, so an exact request could be served by a plan that applied it, and an approximate label could leave it out |
+
+## COMP-E13-T15: `core::Error`, and DIST-E18-T02 in M0a (2026-10-23)
+
+Issue #1525, from the review of COMP-E1-T01, found that no task builds RFC-0001 §5.12's `Error`. COMP-E1-T01 built a stand-in, `kernels::Error { class, code: u16, message }`, whose bare `u16` cannot hold another domain's code, as in `DeviceHealth::Sticky { code }`. PLC-E7-T17 (#1802) reports a closed ring as Kernels code 7, `CaptureFailed`, because `exec` has no codes. The issue also found that `ProviderId` and `ProviderBuild` decode only from a `'static` buffer, which the selection cache (RFC-0040 §6.5) would leak on every load. These are plan corrections under R9 and R6, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added COMP-E13-T15 (M0a) → DIST-E18-T02, COMP-E1-T01, PLC-E1-T01, PLC-E4-T17, PLC-E9-T26, PLC-E7-T17 | COMP-E13-T15 | R9 | `core::Error` on DIST-E18-T02's `ErrorCode` and `Domain`, with `ErrorScope` and `RetryHint`, whose fields use `SequenceId`, `StageIx`, `NodeId`, `LinkId` and `Nanos`. It folds in COMP-E1-T01's `kernels::Error` and changes its provider names to `Cow<'static, str>`, since COMP-E1-T01 is done. Its criterion moves PLC-E7-T17's closed-ring fault to an exec code |
+| COMP-E1-T08 → COMP-E13-T15; PLC-E7-T03 → COMP-E13-T15 | COMP-E1-T08, PLC-E7-T03 | R9 | COMP-E1-T08 raises the `(Kernels, n)` codes, and PLC-E7-T03, the stand-in's next consumer, handles step faults; both need `core::Error` and its domains |
+| COMP-E2-T05 → COMP-E13-T15 | COMP-E2-T05 | R9 | the selection cache decodes `ProviderId` and `ProviderBuild`, which must be owned to load without a leak |
+| DIST-E18-T02 M2 → M0a | DIST-E18-T02 | R6 | COMP-E13-T15 is M0a, because PLC-E7-T03 is, and it builds on DIST-E18-T02's `ErrorCode` and `Domain`. DIST-E18-T02's one dependency, QUAL-E1-T01, is M0a, and its PR (#1669) is already open |
+
+Not changed here: `Domain::Kernels`'s range, `Domain::Exec`'s range and exec's codes are for RFC-0040 §13 and RFC-0012 §13 to assign. COMP-E13-T15's criterion requires them before it lands, so no code is chosen here.
+
