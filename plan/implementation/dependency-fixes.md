@@ -822,6 +822,26 @@ DIST-E1-T02 (M0a) builds the shared-memory region. Its criterion "the daemon unl
 |---|---|---|---|
 | DIST-E1-T02's criterion becomes the creating side's unlink after the runner process exits, shown by its cross-process test; "the daemon calls `Region::unlink` when a runner exits" moves to DIST-E1-T04 | DIST-E1-T02, DIST-E1-T04 | R9 | DIST-E1-T04 spawns runners and sees them exit. DIST-E1-T02's test plays both processes, so it can show the unlink itself. On Linux a memfd has no name, and on Windows a mapping's name goes with its last handle, so the test checks each OS's own form of "no name left" |
 
+## Review follow-ups from merged PRs (2026-10-23)
+
+Three merged PRs left non-blocking review findings that tasks not yet started must act on. They are recorded here as criteria, so they live in the plan and not only in PR comments.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T06 and DIST-E4-T05 each gain "the stopped-clock reading reaches the supervisor (the detector) through a trait the wiring implements over `SystemClock::awake()`, or the file that holds the `SystemClock` is listed in `EXCEPTIONS` in `xtask/src/determinism.rs` with its reason; either way `cargo xtask ci lint` passes"; DIST-E1-T06 → QUAL-E3-T03 and DIST-E4-T05 → QUAL-E3-T03 | DIST-E1-T06, DIST-E4-T05 | R9 | #1769 bans `SystemClock` as a type in every crate the determinism lint covers, `daemon` and `cluster` among them. `awake()` is an inherent method, not part of `core::Clock`, so a covered file that holds a `SystemClock` to call it fails `lint` (the stand-in engine review's N2 on #1769, issuecomment-6342117596). Each task picks its path; the injected trait keeps the supervisor and the detector testable on virtual time. QUAL-E3-T03 (M0b) builds the lint and its `EXCEPTIONS` list |
+| DIST-E1-T04 gains "the runner reads `SystemTicks::rate()` once at start-up, before it starts a dispatcher or I/O thread, so the calibration never falls on a hot thread's first step", with a test that times the first `ticks()` read on a thread the runner starts; DIST-E1-T04 → QUAL-E3-T17 | DIST-E1-T04 | R9 | since #1762, `SystemTicks` calibrates at its first use, which can take `TSC_CALIBRATION` (20 ms), so a runner that skips the start-up call stalls its first hot step (review-1493's N1 on #1762, issuecomment-6342083856). DIST-E1-T04 starts the runner process, `__runner --ipc`, which is the runner's composition root. No daemon task takes the criterion, because the daemon runs no hot thread: RFC-0001 §13 puts hot-thread timing on the runner's dispatcher and I/O threads |
+| QUAL-E3-T17 moves from M0b to M0a | QUAL-E3-T17 | R6 | DIST-E1-T04, an M0a task, now reaches it. Its own dependencies (QUAL-E3-T01, QUAL-E3-T02, QUAL-E3-T24) are all M0a, and it has merged (#1762), so the move adds no M0a work. ADR-0022's list of affected tasks still names it as M0b, as it stood when that ADR was accepted |
+| PLC-E7-T17 → QUAL-E3-T17 | PLC-E7-T17 | R9 | PLC-E7-T17's dispatchers take a statically dispatched `TickSource`, which is QUAL-E3-T17's trait. QUAL-E3-T17 also provides the `SimClock`-backed source that a simulator run, as in PLC-E7-T17's criteria, can use. While QUAL-E3-T17 was M0b, the M0a task could not depend on it. With the move above the edge is legal, and it adds no cycle: QUAL-E3-T17 reaches only QUAL-E3-T01, QUAL-E3-T02 and QUAL-E3-T24 |
+| DIST-E1-T01's task cell records `crates/spsc/tests/safety_comments.rs` and the three shapes in which it asks for one more `// SAFETY:` comment than clippy does; no edge | DIST-E1-T01 | — | #1723 added the scan, because `lint` runs clippy on Linux only and the Apple and Windows wake handles' `unsafe` would otherwise go unchecked. Its module doc names two of the stricter shapes. The third, a second `unsafe` argument of one call under one comment above the statement, came from the stand-in engine review's N1 on #1723 (issuecomment-6342060373). Clippy 0.1.99 accepts that shape and the scan reports the second argument. That errs in the safe direction, and no current source has the shape |
+
+## OQ-NET-34 settled (2026-10-23)
+
+DIST-E10-T10 model-checked OQ-NET-34's option (a) and settled it in RFC-0032 §7.5, §6.3 and Testing, under the maintainers' standing instruction. The check needed two parts more than the open question named: a node's own `Endorse`s count as support, because a `SignedElection`'s `acks` miss support given after the win; and two heal-path rules, that a held proof's support only grows and that every accepted election is endorsed once. DIST-E10-T05 builds the heal, so it takes them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E10-T05's task and criteria take the settled rule: the standing comparison, the endorsement record, support that only grows, endorsing once, and fencing replies with the sender's strongest supported election; its `gate: OQ-NET-34` is removed, and its edge to DIST-E10-T10 stays | DIST-E10-T05 | Definition of done (the spike closed the question) | DIST-E10-T05 builds the heal comparison, the fencing replies and the endorsement the answer changes. Its new criteria replay the election model's two pinned traces in the simulator, DIST-E10-T08's `stale-heal` trace and DIST-E10-T10's `stale-heal-late-support` trace, which DIST-E10-T05's existing simulator criterion already uses |
+
 ## DIST-E7-T01's conformance criterion and buffer types (2026-10-22)
 
 DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-conformance suite", could not be met by DIST-E7-T01: `SimTransport` is QUAL-E8-T04, which depends on DIST-E7-T01 and DIST-E7-T02, and no task row built the suite itself, though DIST-E7-T03, T05, T06 and T08 and QUAL-E8-T04 all run it. RFC-0001 §5.8 and RFC-0031 §2 also name six buffer types without defining them (`BufferPool`, `PoolRegistration`, `PayloadSlice`, `PayloadRef`, `ExtBuf`, `ExtRef`), and DIST-E7-T01's signatures need them. These are plan corrections that take the recommended default, under the maintainer's standing instruction; RFC-0031 §2's note of 2026-10-22 records the definitions.
@@ -952,6 +972,60 @@ QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec behind capability bit 16, with RFC-0050 §3.1's rewrite kept towards peers without the bit | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
+
+## DIST-E7-T24: a Windows wake for the QUIC `net` domain (2026-10-23)
+
+DIST-E7-T03 builds the QUIC backend's `net` domain, where channel tasks wait on their rings' wake handles. On Windows the runtime cannot wait on a `syntropy-spsc` event handle, so DIST-E7-T03's parked tasks re-check their rings every 1 ms, as the lead approved. Its criteria run on Linux and loopback and do not see that delay. No task covered the bridge.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T24 (M2) → DIST-E7-T03, QUAL-E15-T05 | DIST-E7-T24 | Definition of done | the bridge needs DIST-E7-T03's domain, and its latency criterion needs the R-WIN rig, as DIST-E7-T19's does. It names `windows-sys`, the new direct dependency of `net` it brings, and pins the one lifetime hazard it creates: the callback runs on a pool thread, so the wait is unregistered before the ring's handle drops (review of #1826, N2) |
+
+## PLC-E8-T21: resumed sequences at the head and tail (2026-10-23)
+
+#1749 gave PLC-E6-T04 an M2 re-prefill: the ingress reopens each live sequence on the new epoch from its transcript with `SequenceOpen { resume }`. No task before M3's DIST-E14-T08 built the other side, where the head prefills the transcript, the tail emits from token `emitted + 1`, and the tail's state is rebuilt from the transcript (RFC-0033 §5.3, RFC-0012 §8.6). The stand-in engine review of #1749 asked for that as its own PLC-E8 row. These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added PLC-E8-T21 (M2) → PLC-E8-T01, PLC-E9-T01, PLC-E9-T02, PLC-E9-T18, DIST-E8-T05 | PLC-E8-T21 | R9 | the head and tail side of `SequenceOpen { resume }`, which PLC-E6-T04's M2 re-prefill uses |
+| PLC-E6-T04 → PLC-E8-T21; DIST-E14-T08 → PLC-E8-T21; DIST-E14-T10 → PLC-E8-T21 | PLC-E6-T04, DIST-E14-T08, DIST-E14-T10 | R9 | each reopens sequences with `resume`: the M2 re-prefill, head-loss recovery and re-prefill migration. M2 → M2 and M3 → M2, so no `LATER`, and no cycle |
+| PLC-E8-T21's greedy criterion is scoped to the same epoch and devices and judged by RFC-0060 §5.4's parity gate, which is tolerance-based; PLC-E9-T18's grammar-mask check runs once on a v1-size vocabulary; no edge | PLC-E8-T21, PLC-E9-T18 | Definition of done | re-prefill recomputes the emitted tokens' KV with prefill, not decode, so bit-identity can fail at near-ties without a fault; a mask check on a small vocabulary misses the cost and edge cases of a full one (the stand-in engine review of #1781, N1 and N2). Deterministic kernels are not named: they are M3 work (COMP-E5-T14, PLC-E9-T15), which PLC-E8-T21 does not reach (review-1474's B1) |
+| PLC-E8-T21 gains "a sequence constrained by a JSON grammar, cancelled and re-opened with `resume`, samples only grammar-valid tokens after the resume, and its whole output parses under the grammar"; no edge | PLC-E8-T21 | Definition of done | the end-to-end grammar resume had no M2 criterion (review-1474's N2). PLC-E8-T21 reaches the grammar masks (PLC-E9-T04, M1a) and the constraint engine (PROD-E3-T04, M1a) through PLC-E9-T18 |
+| PLC-E9-T18 M3 → M2. Its criterion "killing the tail mid-sequence and resuming elsewhere gives a token distribution matching an uninterrupted run (chi-square over many seeds) and valid grammar masks" moves to DIST-E14-T09. It keeps "fresh and resumed sequences give identical penalised logits" and gains "the state rebuilt from a transcript has the count tables, grammar mask and RNG counter of an uninterrupted run at the same position" | PLC-E9-T18, DIST-E14-T09 | R9 | PLC-E8-T21 needs the tail state in M2: without it, a re-prefilled sequence with penalties or a grammar would not continue as an uninterrupted one (D3). Every dependency of PLC-E9-T18 is M2 or earlier. Killing a tail and resuming elsewhere needs M3's tail-loss recovery, DIST-E14-T09, which depends on PLC-E9-T18, so that criterion moves to DIST-E14-T09 |
+
+## DIST-E7-T03's per-path keep-alive and idle timeout (2026-10-23)
+
+#1773 recorded RFC-0031 §4.3's transport knobs on iroh 1.4.1 (DIST-E7-T21). Its review found that the table's keep-alive (500 ms) and idle timeout (`link.failover_timeout`) also need iroh's per-path setters, whose defaults are 5 s and 15 s, because iroh abandons a path at its own idle timeout (review-plan3's N1, issuecomment-6342144851). RFC-0031 §4.3's note now says so, with the corrected line references.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T03 gains "keep-alive and idle timeout take the table's values per path, through `default_path_keep_alive_interval` and `default_path_max_idle_timeout`, as well as connection-wide through `keep_alive_interval` and `max_idle_timeout`, and a unit test reads all four back from the transport configuration `net` builds"; no edge | DIST-E7-T03 | Definition of done | with only the connection-wide values set, a dead path would be abandoned after iroh's 15 s per-path default, not within `link.failover_timeout` |
+
+## DIST-E18-T01 after #1673 (2026-10-22)
+
+The post-merge review of #1673 found the code right and the row wrong. The row depended on the schema registry alone, though its criteria use layering and validation, and it claimed every key of RFC-0033 §12, though three of them are RFC-0011's.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E18-T01 → PROD-E1-T02, PROD-E1-T03 | DIST-E18-T01 | R9 | its criteria are "`syntropy config show --resolved` lists every key with its default", which is PROD-E1-T02's `ResolvedConfig` and `show_resolved`, and "unknown or mis-scoped keys fail validation", which is PROD-E1-T03's `unknown_key` (3) and `scope_mismatch` (9). Both are earlier milestones than M2 |
+| DIST-E18-T01's task text leaves `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` to PLC-E6-T11 | DIST-E18-T01 | Definition of done | RFC-0054 §5.1 gives `replan.*` to RFC-0011, whose key table declares those three. RFC-0033's shared `replan` section holds only `replan.degraded_min_gain`, as RFC-0054 §5.1's note of 2026-10-22 records. PLC-E6-T11 registers "the cluster-scope `solver.*` and `replan.*` keys" |
+
+## QUAL-E1-T06's second-account checks split out (2026-10-23)
+
+QUAL-E1-T06 is the only blocker of QUAL-E1-T07, the affected-job rules engine. Until T07 lands, every plan-only PR runs the full three-OS build and test matrix. T06's agent work has merged (#1577, #1676), and `cargo xtask ci repo-settings` reports `PASS` against the repository (#133's comment of 2026-10-23). Two of its criteria need a second, non-admin GitHub account, which no agent has. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| T06's criteria "a fork contributor's workflows wait for approval on their first and on every later PR" and "a force-push to `main` from a test account is rejected" move to a new **Maintainer action** task, QUAL-E1-T32 (M0a), with QUAL-E1-T32 → QUAL-E1-T06 | QUAL-E1-T06, QUAL-E1-T32 | R9 | both need a second, non-admin account, while the settings they check are in force and checked by T06's settings check (`fork-pr-contributor-approval.json: matches`; `ruleset-main.json`'s rules in force). None of T06's 24 dependents uses either behaviour. QUAL-E1-T07's fork clauses are about `ci-gate`'s hardware statuses on recorded payloads, and the "branch protection test" clauses of QUAL-E1-T16, QUAL-E1-T17 and QUAL-E1-T19 are about required checks and reviews. So QUAL-E1-T32 has no dependents. M0a → M0a, no cycle |
+| T06's "a fixture workflow on a test branch shows `ci-gate` passing with skipped hosted jobs and failing with a failed or cancelled job" may be met by recorded runs of real PRs | QUAL-E1-T06 | — | the recorded runs exercise the real `pr.yml` and `ci-gate`, which a fixture branch would only imitate: #1773 at `e64665f` passes with `hosted-l3` and `hosted-parity-nano` skipped; #1712 at `17263a6` (run 39785121248) fails with every build, test and lint job failed; #1723's run 39786377605, cancelled by a second push, fails. `xtask/src/ci_gate.rs`'s unit tests cover the same three verdicts on demand (`every_listed_job_passing_and_the_rest_skipped_passes`, `a_failed_job_fails_the_gate`, `a_cancelled_job_fails_the_gate`), so the criterion is no weaker |
+
+## COMP-E3-T02's `Numeric`-mode criterion (2026-10-23)
+
+COMP-E3-T02 builds the CPU provider's shell. Its first criterion read "the fake provider's `Numeric` mode runs on these kernels (QUAL-E3-T12)". QUAL-E3-T12 needs COMP-E3-T09's deterministic kernels, which need COMP-E3-T03's GEMV, and none of the three is a dependency of COMP-E3-T02 or was built when the shell was. So the criterion used work no finished task produces (R9). The clause belongs with the fake, which runs on the shell.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T02's first criterion becomes RFC-0040 §2's contract checks over real host buffers with a stand-in op; QUAL-E3-T12 gains "the fake's `Numeric` mode runs on the CPU provider shell's streams, buffers and capture", and QUAL-E3-T12 → COMP-E3-T02 | COMP-E3-T02, QUAL-E3-T12 | R9 | M0a → M0a. COMP-E3-T02 reaches none of QUAL-E3-T12, COMP-E3-T09 or COMP-E3-T03, so the edge adds no cycle, and COMP-E3-T02 stays ready for its M0a dependents |
 
 ## The follow-ups of QUAL-E1-T07's rules (2026-10-23)
 

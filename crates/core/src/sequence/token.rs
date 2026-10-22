@@ -55,7 +55,8 @@ pub struct TokenEntry {
     pub draft_tree: Option<SmallVec<[DraftNode; 8]>>,
     /// The sequence's sampler draw counter after these tokens (RFC-0001 §5.9; RFC-0032 §3.7),
     /// stored by ingress in the transcript so recovery and migration continue the same random
-    /// stream.
+    /// stream. Required, with no serde default, unlike the other additions: a counter read as 0
+    /// would restart a resumed sequence's random stream (RFC-0031 §6.5, note of 2026-10-23).
     pub rng_counter: u64,
     /// Teacher-forced logit tap for parity runs (RFC-0060 §5.5), on the ingress copy only; `None`
     /// outside them.
