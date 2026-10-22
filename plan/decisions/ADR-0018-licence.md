@@ -54,6 +54,7 @@ The licences in the table above were read on crates.io on 2026-10-20.
 3. **Dependency policy for anything linked into `syntropy` or into a backend module, enforced by `cargo-deny` in CI** (RFC-0062):
    - Allowed: MIT, Apache-2.0 (including WITH LLVM-exception), BSD-2-Clause, BSD-3-Clause, ISC, Zlib, CC0-1.0, BSL-1.0, Unicode-3.0, and CDLA-Permissive-2.0 (added 2026-10-20: `webpki-roots` carries it for its root-certificate data, and iroh's relay client uses that crate).
    - Allowed for unmodified dependencies only: MPL-2.0.
+   - *Revised 2026-10-22:* "anything linked into `syntropy` or into a backend module" is checked for the targets Syntropy ships (RFC-0062 §4.1, the ADR-0020 tiers): `cargo-deny` resolves for those targets only, so a dependency that links only on another target, such as a wasm32-only crate, is outside the policy because nothing shipped links it (RFC-0062 §11.2, note of 2026-10-22).
    - Denied: GPL-*, LGPL-*, AGPL-*, SSPL, BUSL, and any licence with field-of-use or non-commercial restrictions.
    - Non-Rust code (vendored C/C++, kernel templates) is listed in a manifest and checked by the same CI job.
    - *Revised 2026-10-20:* the manifest lists vendored third-party files individually, each with its own licence. A vendored tree such as ggml's or HiGHS's gets one entry per third-party file it carries, never a single entry for the project ("ggml: MIT").
