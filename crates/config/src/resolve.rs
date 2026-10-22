@@ -1228,6 +1228,47 @@ pub fn load(
 mod tests {
     use super::*;
 
+    /// A map of secrets beside a plain key, for [`withhold_secrets`].
+    #[derive(Debug, serde::Deserialize, crate::ConfigSection)]
+    #[config(section = "p", scope = Node, owner = "RFC-0054")]
+    #[allow(dead_code)]
+    struct Mixed {
+        /// Headers, each a secret.
+        #[config(reload = Hot, default = {})]
+        headers: BTreeMap<String, crate::Secret<String>>,
+        /// A count.
+        #[config(reload = Hot, default = 1)]
+        count: u32,
+    }
+
+    /// `section()` withholds a wrong-shaped secret's value if one reaches it, though phase 3
+    /// rejects such a value at load: it reads the section again with each secret-typed key at
+    /// its default, and names those keys without serde's text. A fault in a plain key keeps
+    /// serde's message.
+    #[test]
+    fn a_wrong_shaped_secret_is_withheld_from_a_section_error() {
+        let table = |text: &str| -> toml::Table { text.parse().expect("a table") };
+        let bad = table("headers = \"canary-u1\"\ncount = 2\n");
+        let serde = deserialize::<Mixed>(Value::Table(bad.clone())).unwrap_err();
+        assert!(
+            serde.contains("canary-u1"),
+            "serde quotes the value: {serde}"
+        );
+        let message = withhold_secrets::<Mixed>(bad, serde);
+        assert!(!message.contains("canary"), "{message}");
+        assert!(message.contains("`p.headers`"), "{message}");
+        assert!(
+            message.contains("withheld because the key holds a secret"),
+            "{message}"
+        );
+
+        let plain = table("headers = {}\ncount = \"many\"\n");
+        let serde = deserialize::<Mixed>(Value::Table(plain.clone())).unwrap_err();
+        let message = withhold_secrets::<Mixed>(plain, serde);
+        assert!(message.contains("invalid type"), "{message}");
+        assert!(!message.contains("withheld"), "{message}");
+    }
+
     #[test]
     fn line_index_counts_lines_and_columns() {
         let index = LineIndex::new("a = 1\n\nb = \"é\"x\n");

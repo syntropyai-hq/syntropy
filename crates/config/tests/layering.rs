@@ -617,11 +617,13 @@ fn a_secret_in_a_policy_table_never_prints() {
     assert!(!format!("{rejected:?}").contains("canary"));
 }
 
-/// `section()` on a secret-typed key with a value of the wrong shape: serde's own error for a
-/// map, a list or a struct quotes the value (`invalid type: string "…"`), so the error must not
-/// carry it, from a file, `--set` or the environment.
+/// A secret-typed key given a value of the wrong shape: serde's own error for a map, a list or a
+/// struct quotes the value (`invalid type: string "…"`). Phase 3 rejects such a value at load
+/// (RFC-0054 §8), and neither the error nor its rendering carries it, from a file, `--set` or
+/// the environment. `section()`'s own fallback for a value that reaches it is tested in
+/// `resolve.rs`.
 #[test]
-fn a_wrong_shaped_secret_never_reaches_a_section_error() {
+fn a_wrong_shaped_secret_is_rejected_at_load_without_its_value() {
     let file = |text: &str| vec![ConfigFile::new("/c.toml", text)];
     let cases: Vec<(Vec<ConfigFile>, Env, Flags)> = vec![
         (
@@ -652,61 +654,31 @@ fn a_wrong_shaped_secret_never_reaches_a_section_error() {
         }),
     ];
     for (files, env, flags) in cases {
-        let resolved = resolve_secrets(&files, &env, &flags);
-        let errors = [
-            resolved
-                .section::<SecretMapSection>()
-                .err()
-                .map(|e| e.to_string()),
-            resolved
-                .section::<NestedSecretSection>()
-                .err()
-                .map(|e| e.to_string()),
-        ];
-        let errors: Vec<String> = errors.into_iter().flatten().collect();
-        assert!(
-            !errors.is_empty(),
-            "a wrong-shaped value must fail its section"
-        );
-        for error in errors {
-            assert!(!error.contains("canary"), "{error}");
-            assert!(
-                error.contains("withheld because the key holds a secret"),
-                "{error}"
-            );
-            assert!(
-                !error.contains('7') || !error.contains("integer"),
-                "{error}"
-            );
-        }
-    }
-    let resolved = resolve_secrets(
-        &file("p.headers = \"canary-s6\"\n"),
-        &Env::default(),
-        &Flags::new(),
-    );
-    let error = resolved
-        .section::<SecretMapSection>()
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("`p.headers`"), "{error}");
-
-    // A key that holds no secret, in a section that also holds one, keeps serde's message.
-    let files = [ConfigFile::new("/c.toml", "t.a = \"not-a-number\"\n")];
-    let resolved = ResolvedConfig::resolve_with(
-        &REGISTRY,
-        Layers {
+        let layers = Layers {
             os: Os::Linux,
             files: &files,
-            env: &Env::default(),
-            flags: &Flags::new(),
-        },
-        |_| Some(Value::Integer(8)),
-    )
-    .expect("resolves");
-    let error = resolved.section::<TSection>().unwrap_err().to_string();
-    assert!(error.contains("invalid type"), "{error}");
-    assert!(!error.contains("withheld"), "{error}");
+            env: &env,
+            flags: &flags,
+        };
+        let Err(rejected) = ResolvedConfig::resolve(&SECRET_MAP, layers) else {
+            panic!("a wrong-shaped secret is rejected at load");
+        };
+        let codes: Vec<Option<Code>> = rejected.errors.iter().map(|p| p.code).collect();
+        assert_eq!(codes, [Some(Code::WrongType)], "{:#?}", rejected.errors);
+        let message = &rejected.errors[0].message;
+        assert!(
+            message.contains("the value is not shown, since the key holds a secret"),
+            "{message}"
+        );
+        assert!(
+            !message.contains('7') || !message.contains("integer"),
+            "{message}"
+        );
+        let rendered =
+            diagnostic::render_all(&rejected.errors, &rejected.warnings, &files, &SECRET_MAP);
+        assert!(!rendered.contains("canary"), "{rendered}");
+        assert!(!format!("{rejected:?}").contains("canary"));
+    }
 }
 
 /// A malformed `--set` never echoes its value, whatever the separator.
