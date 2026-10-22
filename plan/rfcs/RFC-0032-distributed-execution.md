@@ -1107,6 +1107,23 @@ Chunking hides the 4090 stage and the hop behind the Strix's compute, which domi
 | No deadlock in collectives | randomised step-descriptor sequences (window sizes, trees, cancels mid-step) on a simulated 4-member island |
 | Performance | RFC-0061 gates: SC-13 on rig (c), SC-15 in throughput mode, SC-16/SC-17 on the two-Mac TB5 rig, routing ≤ 1 ms |
 
+**Revision note, 2026-10-22 (DIST-E10-T08): the model check, run.** An explicit-state model of election, the lease, replication and heal (`crates/cluster/tests/election/`, checked with stateright by depth-first search) checks each property of the "Election safety and liveness" row as a named case. It runs them in 14 scenarios on 3 nodes and 12 on 4:
+- splits that heal, with and without message loss;
+- elections at equal counters, and a 24-bit tag collision;
+- a partial partition, a lone survivor, and a claim aborted after an `Ack`;
+- a byzantine coordinator that forges an authority entry and omits its own revocation, forged terms, and a byzantine snapshot;
+- a claimant without `COORDINATOR`, and an isolated self-election;
+- commands under crash-recover, and under the loss of nodes with their disks.
+
+Splits, message loss, crashes, claims and elections are bounded per scenario, and each scenario must reach the situation it names. The default tests check a bounded 3-node configuration; `cargo xtask test election-model` runs the full one release-optimised, and DIST-E10-T09 runs it on every change to `cluster`.
+
+Two properties fail, each only in the scenarios that predict it:
+- "No two coordinators accepted by one node at the same term" fails when two 24-bit tags collide. Both sides of a split elect at one term, and at heal the lower node ID wins the tie, so a node switches coordinators within that term. §7.2 accepts this risk.
+- "Every command acknowledged with `replicated = true` … appears in the converged log" fails when nodes are lost with their disks. The originator's own ack can make a reply `replicated = true` (§6.3), so losing the coordinator and the originator loses the command. OQ-NET-33 holds the decision. Under crash-recover the property holds.
+
+The liveness properties are judged in quiescent states with the network whole, so the check finds a heal that stalls but not one that cycles for ever.
+
+
 ## Rollout / milestones
 
 | Milestone | Lands |
