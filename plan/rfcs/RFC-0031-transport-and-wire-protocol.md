@@ -172,6 +172,25 @@ Semantics, all binding on every backend:
 - A frame whose `(instance, epoch)` does not match the channel key is dropped and counted (RFC-0001 invariant 7). So is a frame whose epoch the runner no longer serves.
 - `stats()` returns α samples from ack echoes (§7.1), bytes, retransmits, NACKs and credit-stall time. It feeds the telemetry ring (RFC-0001 §13) and online link refinement (RFC-0010).
 
+**Note, 2026-10-22 (DIST-E7-T01): what the code above leaves open, as `net::transport` defines it.**
+- **Async methods.** `connect`, `accept` and `reconnect` return `impl Future<Output = …> + Send`, and implementations write them as `async fn`. The pinned toolchain does not allow `dyn` on a trait with `async fn`, so `Transport` is used through generics. A boxed wrapper for choosing a transport at run time is DIST-E7-T10's or T11's call. `cost` comes with link selection (DIST-E7-T11), which defines `LinkCaps`.
+- **`Channel` is concrete.** It wraps a `ChannelBackend`, which each backend implements, and so does the simulator's `SimTransport`, at one virtual call per frame. On demotion the channel's backend is replaced and its retained frames are sent again (ADR-0011 item 7).
+- **Buffers.** `BufferPool` divides memory into equal, 64-byte-aligned slots. It reaches the memory through an `unsafe trait PoolMemory`. `tier` cannot depend on `net` (RFC-0001 §4.2 rule 3), so its pinned `NetPool` arena hands out owned leases that meet the contract (TIER-E2-T21), and a `runner` newtype implements `PoolMemory` over a lease and registers it with the transports (TIER-E2-T25). The `unsafe impl` sits in the one `runner` module that RFC-0001 §4.2 rule 8's note of 2026-10-23 lets hold `unsafe`. The contract covers a dispatcher's device copies: whoever issues a copy into or out of a slot keeps the slot's writer or reader until the copy completes. Each slot is in one of three states: free, held by one writer, or held by readers.
+  - `PayloadSlice` and `ExtBuf` are `Copy` descriptors: pool, slot, offset and length, into a frozen slot. `ExtBuf`'s length includes padding.
+  - `PayloadRef` and `ExtRef` are leases on a slot; dropping the last one frees it. A sending channel holds such leases on every unacknowledged frame, and has released them by the time `completed` hands the ticket back.
+  - `PoolRegistration` holds the pool, the transport and the backend's handle.
+  - §8's header areas, registration tables and lock-free slot handout are DIST-E7-T12's.
+- **Small types.**
+  - `SendError`: `WouldBlock`, `TooLarge`, `Invalid`, `Closed` or `Link`.
+  - `CloseReason`: an optional §12 code and up to 256 bytes of text.
+  - `ChannelStats` counts, each way, the data frames and bytes `try_send` accepted and `try_recv` handed over. It also counts retransmits, NACKs sent, credit stalls and their time, α samples, CRC failures and stale frames.
+- **Placeholders.**
+  - Until `core` has RFC-0001 §5.12's `Error`, `net::Error` stands in: a class, a message and an optional §12 code. The code is optional because §12 gives some refusals none.
+  - `StageIx::INGRESS` is `net::transport::INGRESS` (0xFFFF) until `core` adds it.
+  - `RemoteEndpoint`'s `rdma` and `shm` fields come with the tasks that define their types: DIST-E7-T07 and T06. Its `relay` is DIST-E7-T23's `endpoint::RelayUrl`.
+  - DIST-E7-T23's `PathKind` converts to `TransportKind` (`Direct` → `Quic`, `Relay` → `QuicRelay`), and its `EndpointError` to `net::Error`. None of its errors has a §12 code, so each keeps a class: `InvalidRequest` for bad input or configuration, `Link` for a failed connect, bind or accept, and `Cancelled` for an endpoint this node closed. `EndpointError::Connect` covers every connect failure, a refused ALPN as well as a timeout, so it is not `ConnectTimeout` (0x020A). Telling a timeout from a refusal, and giving only the timeout 0x020A, is DIST-E7-T03's.
+- **Conformance.** `net::transport::conformance` checks the binding semantics above on any backend through a `Fabric`. It is the suite DIST-E7-T03, T05 to T08 and QUAL-E8-T04 run.
+
 ### 3. Link selection
 
 The solver (RFC-0011) picks one transport per hop and records it in `HopPlan::transport`. This section defines the cost function the solver uses, and what the runtime does when the planned transport is unavailable.
@@ -262,8 +281,16 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
   - On Apple, batched sends need `UdpSocketState::set_apple_fast_path` (`unix.rs:388`). iroh's default `fast-apple-datapath` feature compiles it in (`iroh Cargo.toml:70`, `74`), but nothing calls it: not iroh 1.4.1, not noq 1.4.0, and not netwatch 0.19.3, which owns the socket (`netwatch src/udp.rs:736`, `801`). iroh does not expose its sockets, so `net` cannot call it either.
   - No upstream issue tracks enabling it. Searches of the iroh and noq trackers on 2026-10-23 found noq #204, which exposed the feature, and none that enables it.
   - iroh #4555 (open) reports that existing connections keep sending GSO batches after noq-udp turns GSO off. That bears on a Linux host whose probe passes but whose driver drops the batches.
-- **Keep-alive and idle timeout** are reachable through `keep_alive_interval` (`quic.rs:366`; iroh's default is 5 s) and `max_idle_timeout` (`quic.rs:212`). iroh clamps a per-path idle timeout to 15 s and ignores a per-path keep-alive above 5 s (`iroh src/socket.rs:109`, `117`). The table's values lie inside those bounds.
+- **Keep-alive and idle timeout** are reachable through `keep_alive_interval` (`quic.rs:366`; iroh's default is 5 s) and `max_idle_timeout` (`quic.rs:212`). iroh clamps a per-path idle timeout to 15 s and ignores a per-path keep-alive above 5 s (`quic.rs:492`, `514`). Each path also has its own keep-alive and idle timeout, 5 s and 15 s by default (`quic.rs:157–159`), and iroh abandons a path when its own idle timeout expires. So `net` sets the table's values per path too, through `default_path_keep_alive_interval` (`quic.rs:514`) and `default_path_max_idle_timeout` (`quic.rs:492`), as well as connection-wide (added 2026-10-23 after #1773's review; the line references were `src/socket.rs:109`, `117`, which hold the constants). The table's values lie inside those bounds.
 - **Who does what.** `net`'s endpoint (DIST-E7-T23) sets none of these yet. DIST-E7-T03 sets them, and DIST-E7-T16 measures what the initial window and GSO gain, macOS included.
+
+*Note 2026-10-23 (DIST-E7-T03): what the backend sets, and the connection window's cap.* For the maintainers to confirm the first bullet.
+- **`quic.max_conn_window` defaults to 64 MiB.** The table above says 256 MiB; §11 and the registered key (`net::config::QuicSection`) say 64 MiB, and 64 MiB is the default. The row's other rule wins over the cap: the connection window is never smaller than the credited sum. When the sum passes the cap, the backend still raises the window to the sum, and reports it (`QuicTransport::connection_windows`, `over_cap`), because `net` has no logger until RFC-0053's lands. The cap is a sanity bound that shows a large credit, never one that stalls it.
+- **Stream receive window: `2 × net.max_frame`.** iroh sets one value for every stream of a connection when it is set up, so twice the largest slot any channel can have meets the row. A channel whose slot is larger than `net.max_frame` is refused at open.
+- **Connection receive window.** It starts at room for one channel's control frames, and is raised before each channel's handshake by that channel's `recv_slots × slot_size` plus four control frames (`CONTROL_RECEIVES × MAX_CONTROL_FRAME`).
+- **The LAN window's first sample.** noq-proto calls `on_ack` for each acknowledged packet before it updates the round-trip estimate with that acknowledgement, so the first `on_ack` sees the configured initial round trip. The wrapper takes the first estimate that differs from it as the path's first sample.
+- **Keep-alive and idle timeout.** These follow the table, connection-wide and per path. A dialled connection takes `link.*`'s LAN defaults when every address the peer gave is loopback, link-local or private, and the WAN defaults otherwise, a relay-only peer among them. An accepted connection takes the WAN idle timeout; QUIC uses the smaller of the two sides', so a LAN dialler brings its 2 s.
+- **Windows.** The runtime cannot wait on a `syntropy-spsc` ring's event handle, so a parked channel's task re-checks its rings every 1 ms. While live sequences exist it busy-polls, as on other platforms (§4.4). DIST-E7-T24 adds the wait bridge.
 
 #### 4.4 Hot-path integration
 
@@ -394,6 +421,12 @@ This backend is used when UDP is blocked, which shows up as QUIC dials to a peer
 - There is **one TCP connection per channel**, so channels never share a byte stream and suffer head-of-line blocking.
 - `TCP_NODELAY` is on. `SO_SNDBUF` and `SO_RCVBUF` are at least 2 × `slot_size`. On Linux, `TCP_QUICKACK` is re-armed after each read.
 - Framing is identical to QUIC streams (§6). Credits and acks are Syntropy's, as on every backend.
+
+*Note 2026-10-23 (DIST-E7-T05): the TCP fallback as built.* `syntropy_net::transport::tcp` is the backend, and the points this section leaves open are fixed as follows:
+- **Keys.** Each end presents its key as an Ed25519 raw public key (RFC 7250), which is iroh's form, and signs the handshake with it. Only the Ed25519 signature scheme and TLS 1.3 are offered. The connector accepts only `RemoteEndpoint::key`. The acceptor accepts only the keys its owner allowed, the plan's neighbours, which the runner keeps current. The ALPN is `syntropy/data/1` (§1).
+- **Channel opening.** The connector dials each of the endpoint's addresses in turn and sends `Hello` over TLS. The acceptor's listener checks the credential and holds the connection until `accept` names its channel key, then answers `HelloAck` (§6.9). The backend carries the credential's bytes and calls a check the owner supplies. Runner credentials and their verification are DIST-E7-T04's.
+- **The driver.** Each channel has a reading task and a writing task on the `net` domain's tokio runtime. They share the `ChannelCore` with the channel's synchronous methods under a mutex that is held only while the core runs, never across I/O. The mutex is never on a dispatcher's path. Dispatchers reach the runner only through SPSC rings, since `exec` and `sched` never depend on `net` (RFC-0001 §4.2 rule 3), and the channel's methods run on the `net` domain's single-threaded runtime (§4.4), which the tasks share. On that runtime the lock is never contended. A frame's body is read straight into a receive slot. The writer gathers the core's frames into one buffer before it writes them, which is one copy on the send side.
+- **Buffers.** The rule is: `SO_SNDBUF` and `SO_RCVBUF` are at least 2 × `slot_size` where the OS allows it, and otherwise autotuned. An unprivileged process gets at most the kernel's cap: on Linux `net.core.wmem_max` and `rmem_max`, 212 992 bytes by default [measured, `/proc/sys/net/core` on a WSL2 Linux host]. A larger request is clamped to the cap, and setting either buffer also turns off Linux's autotuning for the socket. That autotuning grows to `tcp_wmem` and `tcp_rmem`'s maximum, 4 MiB and 6 MiB on the same host [measured, `/proc/sys/net/ipv4`]. So the backend reads the two caps once and requests 2 × `slot_size` only where it fits. Here `slot_size` is the larger of the channel's two sides'. The connector sets its receive buffer before `connect`, from its own slot, since the SYN fixes the window scale, and sets its send buffer once `HelloAck` gives the peer's slot. Where it does not, the backend leaves the socket to autotuning and counts it in `TcpStats::buffers_autotuned`. Raising the sysctls restores the literal rule (RFC-0052 §2.4, note of 2026-10-23).
 
 #### 5.4 Relayed QUIC
 
@@ -597,6 +630,8 @@ Tokens travel tail → head (ring return, all of the step's sequences) and tail 
         padding to 8
 ```
 
+- *Note 2026-10-23 (DIST-E1-T14, as built; review-1493's N2 on #1780):* `core`'s `TokenEntry::rng_counter` has no serde default, though the item below calls it an addition with a default. A missing counter defaulting to 0 would restart a resumed sequence's random stream (RFC-0032 §3.7), so a later step's tokens would differ from the reference, which breaks exact mode (D3). The binary entry always carries it at offset 40, and `core`'s type is new, so no older encoding exists to need a default. A serde encoding without it is refused rather than read as 0. `draft`, `draft_tree` and `tap` keep their defaults.
+- *Note 2026-10-23:* `logprob_k = 0` means no logprobs, so the entry has no form for the chosen tokens' logprobs without alternatives. OQ-NET-35 tracks it, with `logprob_k = 0x80` recommended behind capability bit 16 `CHOSEN_LOGPROBS` (§10): a new value of an existing field is not additive, so it is sent only on channels whose two ends advertise the bit, and ingress asks for it only when both of the tail's channels the entry travels, to the ingress and to the head, have it (RFC-0050 §3.1's note). DIST-E8-T18 settles it.
 - `TokenEntry::draft`, `rng_counter` and `tap` are additions to RFC-0001's `TokenEntry`, made under the extension rules as fields with defaults. `tap` is RFC-0060 amendment A4's `TokenEntry::tap: Option<LogitTap>`.
 - The draft travels only on the ring-return frame. The ingress copy omits it (`n_draft = 0`).
 - The tap block travels only on the ingress copy, which goes to the parity driver.
@@ -765,6 +800,13 @@ Blob streams on `syntropy/blob/1` carry `Hello` (with `cred_kind = AdmissionCert
 80  8   len          bytes wanted; 0 = to the end
 ```
 
+*Note 2026-10-23 (RFC-0001 §18.28): a shard fetch's class.* A runner's `FetchShard` carries RFC-0041 §7's `FetchPriority`, and the store's chunk requests for it use these classes:
+- `Urgent`, recovery after a node loss, uses `replacement`, as RFC-0033 §6.3 runs a replacement's fetch.
+- `Normal`, a load, uses `demand`: a runner is `Fetching`.
+- `Background`, pre-staging a sibling or a replica, uses `background`.
+
+`prefetch` is RFC-0023's peer-to-local expert prefetch, which no shard fetch uses.
+
 The response is a sequence of `BlobData` frames with payloads of at most `net.blob_frame` (1 MiB). Their extension is `id[32], offset u64, total u64, flags u16` (bit0 `LAST`), followed by padding. Errors use `Close` with `NotFound`, `Busy` (with a `retry_after_ms` in the reason) or `Throttled`. The receiver writes data through the store's direct-I/O path and verifies the object's BLAKE3 when it completes (RFC-0041). A mismatch discards it and marks the source suspect for that model (ADR-0016).
 
 `TENSOR_GROUP` requests are served from a *runner's* resident tier, and daemons hold no model bytes (RFC-0001 §2.1). They therefore travel on a runner-to-runner `Bulk`-purpose data-plane channel, which carries the same `BlobRequest` and `BlobData` frames and is paced like the blob plane (§7.5). The bytes are verified against the group's tensor hashes from the manifest (RFC-0001 §5.3).
@@ -852,10 +894,12 @@ Extension:
 #### 6.14 `EmbeddingResult` frame
 
 This frame implements RFC-0050 amendment A5 for prefill-only embedding sequences (`SequenceOpen::limits.embed`, RFC-0032 §3.6).
-- **Channel.** The tail sends exactly one per sequence on its `Tokens` channel to the sequence's ingress, in place of tokens, after the last prefill chunk. No ring-return frame follows.
-- **Extension.** `seq[16]`, `dims: u32`, `dtype: u8` (1 = F32, always in v1), `pooling: u8` (1 last_token | 2 mean | 3 cls), `normalised: u8`, `reserved: u8`, `prompt_tokens: u32`, `reserved[4]`, padded to 64.
-- **Payload.** `dims × f32`. At a few tens of KiB this fits a token slot. Larger vectors use the `Token` part convention (§6.5).
-- **Capability.** Bit 14 `EMBEDDING` (§10).
+- **Channel.** The tail sends one result per sequence, in one or more parts, on its `Tokens` channel to the sequence's ingress, in place of tokens, after the last prefill chunk. No ring-return frame follows.
+- **Extension.** `seq[16]`, `dims: u32`, `dtype: u8` (1 = F32, always in v1), `pooling: u8` (1 last_token | 2 mean | 3 cls), `normalised: u8`, `reserved: u8`, `prompt_tokens: u32`, `part_index: u16`, `part_count: u16`, padded to 64.
+- **Payload.** This part's elements of the `dims × f32` vector, little-endian. A vector larger than the channel's slot is split at element boundaries, each part a whole frame holding as many elements as fit beside the header and extension. The receiver acts on the result only when every part has arrived, as with `Token` (§6.5).
+- **Capability.** Bit 14 `EMBEDDING` (§10). A sender never writes the frame on a channel that did not negotiate it.
+
+*Note 2026-10-23 (DIST-E8-T15):* the part fields took the extension's `reserved[4]` at offset 28. The text sent a larger vector in `Token`'s parts, but the extension had no part fields, and a 4096-dimension F32 vector (16 KiB) does not fit a 16 KiB `Tokens` slot with its header. `part_count = 0`, what those reserved bytes held, is refused, as `Token` refuses it: no sender ever wrote the reserved form, so nothing needs it read as one part. A result in several parts needs only bit 14 `EMBEDDING`; bit 15 `TOKEN_PARTS` gates `Token`'s parts alone. Recorded under the maintainers' standing instruction of 2026-10-22 on wire-format choices.
 
 ### 7. Flow control, acknowledgement, retransmission and failover
 
@@ -906,6 +950,20 @@ Defaults: Activations 4, or M + 2 in throughput mode; Tokens 4; prefill (the sam
 - If no credit advances `ack_seq` within `ack_timeout = max(4 · α_p99, 200 µs)` while frames are outstanding, it resends the oldest unacked frame once. Repeated timeouts escalate to §7.4.
 - Retention bounds memory exactly: `retention × slot_size` per channel, allocated at `Warming`.
 - On RC queue pairs, QUIC and TCP, the transport already retransmits lost packets, so Syntropy's retransmission fires only on CRC failures (memory or bus corruption) and after failover. On UC it is the reliability layer.
+
+**Note, 2026-10-23 (DIST-E7-T02): the channel core, as built, and the credit probe.** `net::transport::core::ChannelCore` is §7.1–§7.3 for one side of one channel, sans I/O: every backend wraps one per side, moves its frames and passes the time in. Where this section leaves a choice open, the core takes these:
+- **The credit probe, which amends §7.1's "control frames never trigger credits".**
+  - The gap it closes: a credit that only grants more, sent when the receiver's caller drops a frame, can be lost while the sender has nothing unacknowledged. No later credit follows, since no data arrives, and no ack timeout fires, since nothing is outstanding.
+  - So a sender whose `try_send` was refused for credit, with nothing unacknowledged, sends a `Ping` after one `ack_timeout`, then after 2, 4, … up to 64 `ack_timeout`s [target], until a credit lets it send. A data receiver answers a `Ping` with its reply and its current credit.
+  - Only a refused send arms the probe, so an idle channel sends nothing.
+- **The receive checks** run `magic`, the lengths and `header_crc`, then the channel key, then `wire_minor ≤ negotiated` and the frame rules (§6.2), then `chan_seq` and `payload_crc`. §6.1 lists `wire_minor` before `header_crc` and the key.
+  - Reading the minor after `header_crc` means a damaged minor byte counts as damage, which is NACKed, and does not close the channel.
+  - Reading it after the key means a frame of another instance or epoch is dropped and counted as stale whatever its minor or type, and never closes the channel.
+  - An intact frame of the channel gets the same verdict either way. A minor above the negotiated one closes the channel as `InvalidRequest`, with no code of its own.
+- **The credit granted** is `ack_seq + recv_slots −` the frames handed over or waiting to be, so it never shrinks and `limit_seq − ack_seq` is the data slots free. The receiver refuses a frame past the credit it granted as a protocol error. The sender takes no `limit_seq` above its `ack_seq` plus the peer's `recv_slots`, and stops at `retention` unacknowledged frames, so §7.3's memory bound holds against any peer.
+- **α samples** come from credit echoes and from replies to `Ping`s the core itself sent; a reply carrying any other `origin_ns` gives none, so a peer cannot raise α and with it the ack timeout. An echo of a frame sent more than once gives none, since its arrival cannot be matched to one send. The core's α p99 is the largest of its last 128 samples [target], or the link profile's before the first.
+- **Escalation.** Three ack timeouts in a row are `AckTimeout`, and an ack resets the count (§7.4's "ack timeout × 3"). Payload CRC failures of control frames count towards `CrcStorm` as data frames' do; a control frame is dropped and never NACKed.
+- **A stream backend** (QUIC, TCP) gives the core each frame's base header before reading its body. A data frame longer than the slot size, or a control frame longer than 512 bytes, is `FrameTooLarge` (§12), and the channel closes.
 
 #### 7.4 Link faults, reconnection and demotion (ADR-0011 item 7)
 
@@ -1019,7 +1077,7 @@ Blob streams use the data-plane frame layout (§6.10). Weight chunks are bulky a
 |---|---|---|
 | Protocol major | `1` in every ALPN; `proto_major` in beacons and `Hello` | incompatible changes bump it. Nodes of different majors never connect, and discovery lists them as incompatible (RFC-0030 §4.1). Upgrading across a major is cluster-wide (RFC-0052 drains and upgrades node by node; mixed-major nodes form separate clusters until all are upgraded) |
 | Data wire minor | `wire_minor` in every frame header and in `Hello` | additive only: new frame types, new TLV types, new flag bits, new trailing extension fields (receivers use `ext_len` to skip them). A channel runs at the lower of the two minors |
-| Capabilities | 64-bit set in `Hello`/`HelloAck` | bit0 VERIFY_TREE, bit1 Q8_WIRE, bit2 F8_WIRE, bit3 KV_CHUNK_V1, bit4 SACK, bit5 RDMA_AEAD, bit6 MULTI_STREAM, bit7 EP_FRAMES, bit8 RING_ALLREDUCE, bit9 RECOVER_V1, bit10 PREFIX_ITEMS (the RFC-0022 items, TLVs 9–15), bit11 KV_HEADROOM, bit12 TAP, bit13 TENSOR_GROUP, bit14 EMBEDDING, bit15 TOKEN_PARTS, bits 16–63 reserved. A frame or TLV type tied to a capability is sent only when both sides advertise it |
+| Capabilities | 64-bit set in `Hello`/`HelloAck` | bit0 VERIFY_TREE, bit1 Q8_WIRE, bit2 F8_WIRE, bit3 KV_CHUNK_V1, bit4 SACK, bit5 RDMA_AEAD, bit6 MULTI_STREAM, bit7 EP_FRAMES, bit8 RING_ALLREDUCE, bit9 RECOVER_V1, bit10 PREFIX_ITEMS (the RFC-0022 items, TLVs 9–15), bit11 KV_HEADROOM, bit12 TAP, bit13 TENSOR_GROUP, bit14 EMBEDDING, bit15 TOKEN_PARTS, bit16 CHOSEN_LOGPROBS (added 2026-10-23: the `Token` entry's `logprob_k = 0x80`, OQ-NET-35, DIST-E8-T18), bits 17–63 reserved. A frame or TLV type tied to a capability is sent only when both sides advertise it |
 | Control feature level | `feature_level: u32` in the control `Hello` | the coordinator emits event variants only up to the cluster minimum (RFC-0032 §6.4) |
 | Beacon version | `beacon_version` byte | a receiver ignores beacon versions it does not know, and still lists the node as "unknown beacon version" |
 
@@ -1061,7 +1119,7 @@ Per-hop transport choice is not a knob. It comes from the plan. An operator who 
 | 0x0202 | `CredentialInvalid` (signature, expiry, wrong node, wrong instance or epoch) | `Auth` |
 | 0x0203 | `NotANeighbour` (credential valid, but the plan does not connect these stages) | `Auth` |
 | 0x0204 | `UnknownFrameType` | `Unsupported` (was `Internal`; see the revision note below) |
-| 0x0205 | `FrameTooLarge` | `Internal` |
+| 0x0205 | `FrameTooLarge` | `InvalidRequest` (was `Internal`; see the revision note of 2026-10-23 below) |
 | 0x0206 | `WireDTypeMismatch` | `Unsupported` (was `Internal`; see the revision note below) |
 | 0x0207 | `CrcStorm` (3 payload CRC failures in 10 s) | `Link` |
 | 0x0208 | `AckTimeout` | `Link` |
@@ -1080,6 +1138,12 @@ Per-hop transport choice is not a knob. It comes from the plan. An operator who 
 **Revision note, 2026-10-22 (DIST-E8-T01): the class of `UnknownFrameType`.** A receiver that refuses a frame because its `ftype` is not a type of the negotiated minor (§6.2) classes the refusal `Unsupported`, not `Internal`. RFC-0060 §10.2 requires a decoder of untrusted bytes to class every refusal `Integrity`, `InvalidRequest`, `Auth` or `Unsupported`, never `Internal`, and the fuzz targets assert it. The code is unchanged: the receiver still sends `Close { UnknownFrameType }` with 0x0204. The table now gives `Unsupported` for 0x0204, so the two RFCs agree.
 
 **Revision note, 2026-10-22 (DIST-E8-T02): the class of `WireDTypeMismatch`.** A receiver that refuses an `Activation` because its `dtype` is not the channel's `ChannelSpec::wire` (§6.4) classes the refusal `Unsupported`, not `Internal`, for the reason the note above gives. It is not `Integrity` either: the frame's CRCs passed, and a resend carries the same bytes (§7.3), so no NACK can repair it. The code is unchanged: the receiver reports 0x0206. A dtype container the build does not carry is refused as `Unsupported` too, with no code of its own. The table now gives `Unsupported` for 0x0206.
+
+**Revision note, 2026-10-23 (DIST-E7-T02): the class of `FrameTooLarge`.**
+- A receiver that refuses a frame longer than its channel's slot size classes the refusal `InvalidRequest`, not `Internal`, for the reason the note on 0x0204 gives: it refuses untrusted bytes, so RFC-0060 §10.2 rules out `Internal`.
+- It is not `Integrity`, since the frame's CRCs passed, nor `Unsupported`, since the frame type is one the channel carries. The peer broke the size the channel negotiated.
+- The code is unchanged: the receiver sends `Close { FrameTooLarge }` with 0x0205. A sender's own refusal is `SendError::TooLarge`. An encoder that cannot fit a part into a frame still reports `FrameError::TooLong`, which is `Internal` with this code, because it is the sender's failure and not a refusal of received bytes.
+- RFC-0050 §12.1 adds 0x0205 to its `Net` exempt list in the same change, so the code never takes a 400 shape.
 
 ## Performance model and budgets
 

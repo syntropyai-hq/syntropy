@@ -25,6 +25,10 @@
 //! [`EpCombine`] carry an expert owner's rows and their weighted sums, split into parts by a
 //! row limit that counts the extension.
 //!
+//! [`EmbeddingResult`] reads and writes the `EmbeddingResult` frame (§6.14), the pooled vector of
+//! an embedding sequence, splits a vector larger than `max_frame` into parts and [`assemble`]s
+//! them, and is written only on a channel that negotiated [`capability::EMBEDDING`].
+//!
 //! The typed codecs of the other frame types (`SeqControl`, `KvChunk`, …) are later tasks; at this
 //! layer their extension and payload are bytes. So are a sealed frame's: the AEAD layer
 //! (ADR-0314) seals and opens them, and this layer carries the result, `ctl_seq` in `step` and
@@ -34,6 +38,7 @@ mod activation;
 mod collective;
 mod control;
 mod crc;
+mod embedding;
 mod ep;
 mod error;
 mod header;
@@ -54,18 +59,22 @@ pub use control::{
     MAX_REASON, Nacks, Ping, Purpose, code,
 };
 pub use crc::{crc32c, crc32c_append};
+pub use embedding::{
+    EMBEDDING_F32, EMBEDDING_FIXED_LEN, EmbeddingParts, EmbeddingResult, EmbeddingSpec, Pooling,
+    assemble, capability,
+};
 pub use ep::{EP_FIXED_LEN, EpCombine, EpDispatch, EpHeader, EpParts};
 pub use error::FrameError;
 pub use header::{
     AEAD_TAG_LEN, ALIGN, Flags, Frame, FrameSpec, FrameType, HEADER_LEN, Header, MAGIC,
-    SEALED_EXT_PLAINTEXT, WIRE_MINOR, encode, encode_assembled, encode_in_place, encode_to_vec,
-    encoded_len,
+    SEALED_EXT_PLAINTEXT, WIRE_MINOR, encode, encode_assembled, encode_header, encode_in_place,
+    encode_to_vec, encoded_len,
 };
 pub use route::{
     EpRow, EpRows, Experts, MAX_ROUTE_K, ROUTE_HEAD_LEN, RouterRow, RouterRows, Weights,
     route_row_len,
 };
 pub use token::{
-    ENTRY_HEADER_LEN, Entries, Finish, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,
-    TokenEntry, TokenSpec, token_flags,
+    ENTRY_HEADER_LEN, Entries, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,
+    TokenEntryBytes, TokenEntryView, TokenSpec, token_flags,
 };

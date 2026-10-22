@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 mod build;
+mod changes;
 mod check_deps;
 mod ci_gate;
 mod cli;
@@ -34,11 +35,14 @@ mod dep_diff;
 mod determinism;
 mod instructions;
 mod licences;
+mod loom;
+mod plan_tools;
 mod properties;
 mod registry;
 mod repo_settings;
 mod roster;
 mod run;
+mod sim_presets;
 mod toolchain;
 
 use std::ffi::OsString;

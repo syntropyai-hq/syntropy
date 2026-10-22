@@ -792,6 +792,31 @@ tools = ["xtask"]
         );
     }
 
+    /// PLC-E7-T01's criterion: the check fails if `exec` or `sched` depends on `tokio`
+    /// (ADR-0012 item 6), directly or through another package.
+    #[test]
+    fn rule_3_keeps_tokio_out_of_exec_and_sched() {
+        let found = run(
+            &["tokio", "shim"],
+            &[
+                ("exec", "tokio", "normal"),
+                ("sched", "shim", "normal"),
+                ("shim", "tokio", "normal"),
+            ],
+        );
+        assert_eq!(
+            found,
+            [
+                "rule 3: compute crate `exec` reaches `tokio` through normal dependencies: exec → \
+                 tokio; compute crates never depend on `net`, `cluster`, `store`, `api`, \
+                 `daemon` or `tokio` (and ADR-0012 §6)",
+                "rule 3: compute crate `sched` reaches `tokio` through normal dependencies: sched \
+                 → shim → tokio; compute crates never depend on `net`, `cluster`, `store`, \
+                 `api`, `daemon` or `tokio`",
+            ]
+        );
+    }
+
     #[test]
     fn rule_4_follows_normal_edges_from_the_daemon_to_any_provider() {
         let found = run(
