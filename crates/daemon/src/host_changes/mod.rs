@@ -260,6 +260,18 @@ pub enum LedgerError {
         /// The lock file.
         path: PathBuf,
     },
+    /// A start-up line holds a line break. The sh script would read it as two lines and remove a
+    /// line of the user's that matches either half, so the ledger records only single lines.
+    LineBreak {
+        /// The line.
+        line: String,
+    },
+    /// The file [`HostChangeLedger::write_file`] would replace is read-only. Its owner made it so,
+    /// and an in-place write would have been refused, so the replacement is refused too.
+    ReadOnly {
+        /// The file.
+        path: PathBuf,
+    },
     /// A path in a change does not start at a root. The revert scripts would resolve a relative
     /// path against whatever directory they are run from, so the ledger records only rooted paths.
     NotRooted {
@@ -297,6 +309,15 @@ impl std::fmt::Display for LedgerError {
                 f,
                 "another Syntropy command is changing this host ({} is locked); try again when it \
                  has finished",
+                path.display()
+            ),
+            LedgerError::LineBreak { line } => write!(
+                f,
+                "a start-up line must be a single line, but {line:?} holds a line break"
+            ),
+            LedgerError::ReadOnly { path } => write!(
+                f,
+                "{} is read-only; Syntropy does not replace a file its owner made read-only",
                 path.display()
             ),
             LedgerError::NotRooted { path } => write!(
@@ -449,7 +470,8 @@ impl HostChangeLedger {
     /// # Errors
     ///
     /// [`LedgerError::Io`] if the ledger cannot be saved; then the change must not be made.
-    /// [`LedgerError::NotRooted`] if a path in `kind` is relative.
+    /// [`LedgerError::NotRooted`] if a path in `kind` is relative, and [`LedgerError::LineBreak`]
+    /// if its start-up line holds a line break.
     pub fn begin(
         &mut self,
         kind: HostChangeKind,
@@ -554,7 +576,8 @@ impl HostChangeLedger {
     /// [`LedgerError::Io`] if a copy, the ledger or the file cannot be written. A failure after
     /// the change was recorded leaves it pending, which a revert resolves by checking the host.
     /// [`LedgerError::Insecure`] if something other than a regular file, such as a link or a
-    /// directory, is at `path`. [`LedgerError::NotRooted`] if `path` is relative.
+    /// directory, is at `path`. [`LedgerError::ReadOnly`] if the file there is read-only.
+    /// [`LedgerError::NotRooted`] if `path` is relative.
     pub fn write_file(
         &mut self,
         path: &Path,
@@ -574,6 +597,11 @@ impl HostChangeLedger {
         // a link someone left in its place, or over a directory.
         let old = match read_regular(path).map_err(io_error(path))? {
             Found::Nothing => None,
+            Found::File { meta, .. } if meta.permissions().readonly() => {
+                return Err(LedgerError::ReadOnly {
+                    path: path.to_owned(),
+                });
+            }
             Found::File { bytes, meta } => Some((bytes, meta)),
             Found::Other => {
                 return Err(LedgerError::Insecure {
@@ -773,9 +801,15 @@ fn unix_mode(meta: &fs::Metadata) -> Option<u32> {
     }
 }
 
-/// Refuses a change whose paths do not start at a root ([`LedgerError::NotRooted`]). A symbolic
-/// link's target may be relative: it is resolved from the link, not from where a script runs.
+/// Refuses a change whose paths do not start at a root ([`LedgerError::NotRooted`]), or whose
+/// start-up line holds a line break ([`LedgerError::LineBreak`]). A symbolic link's target may be
+/// relative: it is resolved from the link, not from where a script runs.
 fn check_rooted(kind: &HostChangeKind) -> Result<(), LedgerError> {
+    if let HostChangeKind::PathEntry { line, .. } = kind
+        && line.contains(['\n', '\r'])
+    {
+        return Err(LedgerError::LineBreak { line: line.clone() });
+    }
     let path = match kind {
         HostChangeKind::FileWritten { path } | HostChangeKind::Symlink { path, .. } => path,
         HostChangeKind::PathEntry {
@@ -1282,6 +1316,45 @@ mod tests {
         ledger.write_file(&kept, b"ours\n", 0, "v").unwrap();
         assert_eq!(mode(&kept), 0o640);
         assert_eq!(fs::read(&kept).unwrap(), b"ours\n");
+    }
+
+    /// A start-up line with a line break would reach the sh script as two lines, and could
+    /// remove a line of the user's that matches either half, so it is never recorded.
+    #[test]
+    fn a_start_up_line_with_a_line_break_is_refused() {
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        for line in [
+            "export A=1\nalias ll='ls -l'",
+            "export A=1\r",
+            "\nexport A=1",
+        ] {
+            let kind = HostChangeKind::PathEntry {
+                shell_rc: Some(state.join("profile")),
+                line: line.into(),
+            };
+            let err = ledger.begin(kind, None, None, 0, "v").unwrap_err();
+            assert!(matches!(err, LedgerError::LineBreak { .. }), "{err}");
+            assert!(err.to_string().contains("line break"), "{err}");
+        }
+        assert!(ledger.changes().is_empty());
+    }
+
+    /// A read-only file is not replaced: its owner made it so, and an in-place write would have
+    /// been refused.
+    #[test]
+    fn a_read_only_file_is_not_replaced() {
+        let state = temp_state();
+        let path = state.join("pinned.conf");
+        fs::write(&path, b"theirs\n").unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        let err = ledger.write_file(&path, b"ours\n", 0, "v").unwrap_err();
+        assert!(matches!(err, LedgerError::ReadOnly { .. }), "{err}");
+        assert_eq!(fs::read(&path).unwrap(), b"theirs\n");
+        assert!(ledger.changes().is_empty());
     }
 
     /// The scripts would resolve a relative path from wherever they run, so none is recorded.
