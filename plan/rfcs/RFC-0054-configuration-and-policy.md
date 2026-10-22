@@ -422,6 +422,8 @@ The instance's `resources` overlay is applied on each stage node to that node's 
 
 `ResourceOverlay`, `ApproxParams` and the optional `Objective` fields skip unset values, so only explicitly set fields enter the bytes, and a field added later as an unset `Option` leaves earlier digests unchanged. RFC-0001 §18.16 records the change.
 
+*Note 2026-10-23: skipping a field in the canonical bytes only.* `Objective::Throughput`'s two optional fields and `ApproxParams`' three skip an unset field with `canon::absent_if_none`, not `Option::is_none`. The predicate is true only while `canonical_bytes()` is encoding, so the canonical bytes, and every digest, are what they were, as the golden vectors show. Every other format writes the field, `null` in JSON. `PlacementPlan` carries both types over the IPC in postcard, which reads fields by position and cannot tell that one was skipped (RFC-0001 §3.5, §18.20). A type the IPC carries uses this predicate for any field it leaves out of the canonical bytes.
+
 *Note 2026-10-22 (#1672):* one function in `config` supplies the hash: BLAKE3 over `canonical_bytes()` through `digest_with`. PROD-E1-T08 builds it, with golden digests, and every caller uses it, so no two nodes hash a policy differently. The open question below still stands; if `digest()` moves into `core`, that function calls it.
 
 Open, for the maintainers: should `digest()` live in `core` with its own hasher (a vendored or hand-written BLAKE3, or an amendment to rule 1), so that no caller can pass a different hash?

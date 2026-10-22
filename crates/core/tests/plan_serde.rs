@@ -3,7 +3,8 @@
 //! Serde properties of the placement plan types (PLC-E4-T17, RFC-0001 §5.4, RFC-0011 §2).
 //!
 //! Every type round-trips through a serde format unchanged, and every record decodes when it
-//! carries fields this build does not know. JSON stands in for any self-describing format.
+//! carries fields this build does not know. JSON stands in for any self-describing format, and
+//! postcard, which the IPC uses, for the formats that are not.
 
 use std::fmt::Debug;
 
@@ -541,6 +542,11 @@ fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) {
     let json = serde_json::to_string(value).expect("serialize");
     let back: T = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(&back, value, "round trip through {json}");
+    // Postcard too: the IPC carries plans in it (RFC-0001 §3.5), and it reads fields by
+    // position, so a field skipped on the way out breaks it (RFC-0001 §18.20).
+    let bytes = postcard::to_allocvec(value).expect("serialize to postcard");
+    let back: T = postcard::from_bytes(&bytes).expect("deserialize from postcard");
+    assert_eq!(&back, value, "round trip through postcard");
 }
 
 macro_rules! round_trip_tests {
