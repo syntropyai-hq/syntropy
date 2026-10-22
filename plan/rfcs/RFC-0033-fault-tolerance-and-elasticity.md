@@ -448,7 +448,7 @@ sequenceDiagram
   S->>K: ReportEdgeDown (and the next stage too)
   K->>K: own probe fails → RecoveryStarted; solve repair (≤ 2 s)
   K-->>I: RecoveryStarted (log)
-  I->>H: Reconcile { emitted, rng_counter } per sequence
+  I->>H: Reconcile { emitted, rng_counter, recent } per sequence
   K->>K: NodeFailed, or confirm_after → commit repair plan (Relink, ExtendShard or new runner)
   R->>R: fetch missing chunks, pack, load, warm (canary)
   S->>R: channels for the new epoch (Relink)
