@@ -129,7 +129,7 @@ fn common(args: &[String]) -> Result<Common, Failure> {
 
 async fn bind(common: &Common, accept: bool) -> Result<Endpoint, Failure> {
     let mut key = [0u8; 32];
-    OsEntropy.fill(&mut key);
+    OsEntropy::new().fill(&mut key);
     let mut config = Config::default()
         .relays(common.relays.clone())
         .direct_paths(common.direct_paths);
