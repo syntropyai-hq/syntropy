@@ -205,6 +205,9 @@ pub fn revert_all(
     host: &mut impl Host,
 ) -> Result<Vec<Reverted>, LedgerError> {
     check_private(ledger)?;
+    // One writer at a time: the walk holds the ledger's lock, and starts from what is saved.
+    let _lock = ledger.lock()?;
+    ledger.reload()?;
     let mut report = Vec::new();
     let ids: Vec<u32> = ledger.changes().iter().rev().map(|c| c.id).collect();
     for id in ids {
@@ -213,7 +216,7 @@ pub fn revert_all(
         let open = matches!(change.state, ChangeState::Pending | ChangeState::Applied);
         if open && ledger.revert_marker(id).exists() {
             // A revert script already undid it.
-            ledger.reverted(id)?;
+            ledger.set_state_locked(id, ChangeState::Reverted)?;
             ledger.delete_copies(id)?;
             report.push(Reverted {
                 id,
@@ -341,8 +344,8 @@ fn check_private(ledger: &HostChangeLedger) -> Result<(), LedgerError> {
 /// a revert script generated earlier skips it too.
 fn close(ledger: &mut HostChangeLedger, id: u32, state: ChangeState) -> Result<(), LedgerError> {
     match state {
-        ChangeState::Abandoned => ledger.abandoned(id)?,
-        _ => ledger.reverted(id)?,
+        ChangeState::Abandoned => ledger.set_state_locked(id, ChangeState::Abandoned)?,
+        _ => ledger.set_state_locked(id, ChangeState::Reverted)?,
     }
     ledger.delete_copies(id)?;
     // The marker sits with the copies, under the same rules: the directory owner-only and never

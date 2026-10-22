@@ -185,11 +185,23 @@ private() {{
 private {state}
 [ -e {copies} ] || [ -L {copies} ] || mkdir -m 700 {copies}
 private {copies}
+# One writer at a time: the run holds the ledger's lock, as the binary does, where flock(1)
+# exists. Without it (macOS has none) the script says so and runs unlocked.
+lock={lock}
+if command -v flock >/dev/null 2>&1; then
+  exec 9>>\"$lock\" || {{ note \"refusing to run: cannot open $lock\"; exit 1; }}
+  if ! flock -n 9; then
+    note \"refusing to run: another Syntropy command is changing this host ($lock is locked)\"; exit 1
+  fi
+else
+  note \"warning: flock(1) is not installed, so this script cannot take the ledger lock; run it only while no other Syntropy command is running\"
+fi
 ",
         ledger = comment(&path_str(&ledger.state_dir().join(super::LEDGER_FILE))),
         version = comment(by_version),
         state = sh_quote(&path_str(ledger.state_dir())),
         copies = sh_quote(&path_str(&ledger.state_dir().join(super::COPIES_DIR))),
+        lock = sh_quote(&path_str(&ledger.state_dir().join(super::LOCK_FILE))),
     );
     for change in open_changes(ledger) {
         out.push_str(&format!(
@@ -464,12 +476,18 @@ function Private([string]$d) {{
 Private {state}
 if (-not (Test-Path -LiteralPath {copies})) {{ New-Item -ItemType Directory -Path {copies} | Out-Null }}
 Private {copies}
+# One writer at a time: the run holds the ledger's lock file open with no sharing, so the binary,
+# which locks the same file, waits for it or reports that this host is busy.
+$lockPath = {lock}
+try {{ $lockFile = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }}
+catch {{ Note \"refusing to run: another Syntropy command is changing this host ($lockPath is in use)\"; exit 1 }}
 ",
         ledger = comment(&path_str(&ledger.state_dir().join(super::LEDGER_FILE))),
         version = comment(by_version),
         bom = PS1_BOM,
         state = ps_quote(&path_str(ledger.state_dir())),
         copies = ps_quote(&path_str(&ledger.state_dir().join(super::COPIES_DIR))),
+        lock = ps_quote(&path_str(&ledger.state_dir().join(super::LOCK_FILE))),
     );
     for change in open_changes(ledger) {
         out.push_str(&format!(
@@ -485,7 +503,9 @@ Private {copies}
         out.push_str(&ps_block(ledger, change));
         out.push_str("}\n");
     }
-    out.push_str("\nif ($left -gt 0) { Note \"$left change(s) left in place; see above\" }\n");
+    out.push_str(
+        "\nif ($left -gt 0) { Note \"$left change(s) left in place; see above\" }\n$lockFile.Dispose()\n",
+    );
     out
 }
 
@@ -640,15 +660,19 @@ else {{ Gone \"system user $n\" }}
 ///
 /// # Errors
 ///
-/// [`LedgerError::Io`] if the script cannot be written.
+/// [`LedgerError::Io`] if the script cannot be written, and [`LedgerError::Busy`] if another
+/// writer holds the ledger's lock.
 pub fn write_revert_script(
     ledger: &HostChangeLedger,
     by_version: &str,
 ) -> Result<PathBuf, LedgerError> {
+    // Rendered from the ledger as saved, under its lock, so no writer changes it in between.
+    let _lock = ledger.lock()?;
+    let saved = HostChangeLedger::open(ledger.state_dir())?;
     #[cfg(windows)]
-    let (name, text) = (PS1_FILE, render_ps1(ledger, by_version));
+    let (name, text) = (PS1_FILE, render_ps1(&saved, by_version));
     #[cfg(not(windows))]
-    let (name, text) = (SH_FILE, render_sh(ledger, by_version));
+    let (name, text) = (SH_FILE, render_sh(&saved, by_version));
     let path = ledger.state_dir().join(name);
     replace_atomically(&path, text.as_bytes())?;
     #[cfg(unix)]
@@ -931,6 +955,59 @@ mod tests {
             "{ps1}"
         );
         assert!(!ps1.contains("Set-Content"), "{ps1}");
+    }
+
+    /// Both scripts take the ledger's lock for the whole run.
+    #[test]
+    fn both_scripts_take_the_ledger_lock() {
+        let ledger = ledger_with(vec![]);
+        let sh = render_sh(&ledger, "v");
+        assert!(sh.contains("flock -n 9"), "{sh}");
+        assert!(sh.contains("host-changes.lock"), "{sh}");
+        let ps1 = render_ps1(&ledger, "v");
+        assert!(ps1.contains("[IO.FileShare]::None"), "{ps1}");
+        assert!(ps1.contains("host-changes.lock"), "{ps1}");
+    }
+
+    /// Run for real: while the binary holds the ledger's lock, the sh script refuses to run, where
+    /// flock(1) exists.
+    #[cfg(unix)]
+    #[test]
+    fn the_sh_script_refuses_while_the_ledger_is_locked() {
+        let has_flock = std::process::Command::new("sh")
+            .args(["-c", "command -v flock"])
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !has_flock {
+            eprintln!("flock(1) is not installed here: the script runs unlocked, and says so");
+            return;
+        }
+        let ledger = ledger_with(vec![]);
+        let script = write_revert_script(&ledger, "v").unwrap();
+        let held = ledger.lock().unwrap();
+        let out = std::process::Command::new("sh")
+            .arg(&script)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(!out.status.success(), "{stdout}");
+        assert!(
+            stdout.contains("another Syntropy command is changing this host"),
+            "{stdout}"
+        );
+        drop(held);
+        let out = std::process::Command::new("sh")
+            .arg(&script)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
     }
 
     /// Run for real: a state directory others can write, and a link in place of the copies

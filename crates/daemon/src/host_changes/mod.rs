@@ -31,15 +31,15 @@
 //! skip what the first undid. The binary writes the same marker when it closes a change, and treats
 //! an existing marker as reverted.
 //!
-//! **One writer at a time: assumed, not enforced (open).** A [`HostChangeLedger`] reads the
-//! whole file when it is opened and rewrites the whole file on every save, through
-//! `host-changes.json.tmp` and a rename. The writers above are separate processes, and `trust`
-//! records a change on the client too (ADR-0505 item 6). Nothing serialises them yet. Two writers
-//! open at once each hold their own copy. Then the later save drops the entries the earlier one
-//! added, which leaves a change on the host with no entry for uninstall to revert. Or one writer
-//! removes the other's temporary file, and that save fails. An advisory lock on the state
-//! directory, held from open to the last save, would close this. It is not built here, pending
-//! review of PROD-E12-T01.
+//! **One writer at a time, by a lock.** The writers are separate processes: the installers,
+//! `setup`, `service`, `doctor --fix`, opt-in features, and `trust` on a client (ADR-0505 item 6).
+//! Every change to the ledger takes an exclusive lock on `<state>/host-changes.lock` ([`LOCK_FILE`]),
+//! re-reads the ledger under it, changes it and saves it, so no entry is lost and no ID, and so no
+//! pair of copies, is handed out twice. [`HostChangeLedger::write_file`] holds the lock from the
+//! choice of ID to `Applied`; a revert holds it for the whole walk, and the revert script is
+//! rendered under it. A writer that cannot get the lock within [`LOCK_WAIT`] gets
+//! [`LedgerError::Busy`], never a hang. The scripts take the same lock: the sh script with
+//! `flock(1)` where it exists, and the PowerShell script by opening the lock file with no sharing.
 
 pub mod revert;
 pub mod script;
@@ -47,6 +47,7 @@ pub mod script;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use syntropy_core::Blake3;
@@ -56,6 +57,14 @@ pub const LEDGER_FILE: &str = "host-changes.json";
 
 /// The directory, in the state directory, that holds the copies of written and replaced files.
 pub const COPIES_DIR: &str = "host-changes";
+
+/// The file whose exclusive lock every writer of the ledger holds, under the state directory.
+pub const LOCK_FILE: &str = "host-changes.lock";
+
+/// How long a writer waits for another to release the lock before it gives up with
+/// [`LedgerError::Busy`]: 10 s [target], a chosen budget, longer than any one change takes and
+/// short enough that a command never seems to hang.
+pub const LOCK_WAIT: Duration = Duration::from_secs(10);
 
 /// The ledger file's format version.
 pub const SCHEMA: u16 = 1;
@@ -246,6 +255,11 @@ pub enum LedgerError {
     },
     /// No change has this ID.
     UnknownId(u32),
+    /// Another process holds the ledger's lock, and did not release it within [`LOCK_WAIT`].
+    Busy {
+        /// The lock file.
+        path: PathBuf,
+    },
     /// A path in a change does not start at a root. The revert scripts would resolve a relative
     /// path against whatever directory they are run from, so the ledger records only rooted paths.
     NotRooted {
@@ -279,6 +293,12 @@ impl std::fmt::Display for LedgerError {
                 "the host-change ledger has format version {found}; this build reads {SCHEMA}"
             ),
             LedgerError::UnknownId(id) => write!(f, "no host change has ID {id}"),
+            LedgerError::Busy { path } => write!(
+                f,
+                "another Syntropy command is changing this host ({} is locked); try again when it \
+                 has finished",
+                path.display()
+            ),
             LedgerError::NotRooted { path } => write!(
                 f,
                 "{} is not an absolute path; the host-change ledger records only absolute paths",
@@ -319,6 +339,7 @@ pub fn fingerprint(bytes: &[u8]) -> Blake3 {
 pub struct HostChangeLedger {
     state_dir: PathBuf,
     file: LedgerFile,
+    lock_wait: Duration,
 }
 
 impl HostChangeLedger {
@@ -328,30 +349,57 @@ impl HostChangeLedger {
     ///
     /// [`LedgerError`] if the file exists and cannot be read or parsed.
     pub fn open(state_dir: &Path) -> Result<Self, LedgerError> {
-        let path = state_dir.join(LEDGER_FILE);
-        let file = match fs::read(&path) {
-            Ok(bytes) => {
-                let file: LedgerFile =
-                    serde_json::from_slice(&bytes).map_err(|source| LedgerError::Parse {
-                        path: path.clone(),
-                        source,
-                    })?;
-                if file.schema != SCHEMA {
-                    return Err(LedgerError::Schema { found: file.schema });
-                }
-                file
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => LedgerFile {
-                schema: SCHEMA,
-                next_id: 1,
-                changes: Vec::new(),
-            },
-            Err(e) => return Err(io_error(&path)(e)),
-        };
         Ok(Self {
             state_dir: state_dir.to_owned(),
-            file,
+            file: read_ledger(state_dir)?,
+            lock_wait: LOCK_WAIT,
         })
+    }
+
+    /// The same ledger with a shorter wait for the lock, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_lock_wait(mut self, wait: Duration) -> Self {
+        self.lock_wait = wait;
+        self
+    }
+
+    /// Takes the ledger's exclusive lock ([`LOCK_FILE`]), waiting up to [`LOCK_WAIT`] for another
+    /// writer to release it. The lock is released when the guard is dropped. A writer re-reads the
+    /// ledger under the lock ([`HostChangeLedger::reload`]) before it changes anything, so no
+    /// entry is lost and no ID is handed out twice.
+    pub(crate) fn lock(&self) -> Result<LedgerLock, LedgerError> {
+        fs::create_dir_all(&self.state_dir).map_err(io_error(&self.state_dir))?;
+        let path = self.state_dir.join(LOCK_FILE);
+        let started = Instant::now();
+        loop {
+            match open_lock_file(&path) {
+                Ok(file) => match file.try_lock() {
+                    Ok(()) => return Ok(LedgerLock { file }),
+                    Err(std::fs::TryLockError::WouldBlock) => {}
+                    Err(std::fs::TryLockError::Error(e)) => return Err(io_error(&path)(e)),
+                },
+                // The PowerShell revert script holds the file open with no sharing.
+                Err(e) if sharing_violation(&e) => {}
+                Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
+                    return Err(LedgerError::Insecure {
+                        path,
+                        why: "it is not a regular file".into(),
+                    });
+                }
+                Err(e) => return Err(io_error(&path)(e)),
+            }
+            if started.elapsed() >= self.lock_wait {
+                return Err(LedgerError::Busy { path });
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Reads the ledger again from disk, as another writer may have saved it since. Callers hold
+    /// the lock.
+    pub(crate) fn reload(&mut self) -> Result<(), LedgerError> {
+        self.file = read_ledger(&self.state_dir)?;
+        Ok(())
     }
 
     /// The state directory the ledger lives in.
@@ -410,6 +458,20 @@ impl HostChangeLedger {
         at: u64,
         by_version: &str,
     ) -> Result<u32, LedgerError> {
+        let _lock = self.lock()?;
+        self.reload()?;
+        self.begin_locked(kind, prior, fingerprint, at, by_version)
+    }
+
+    /// [`HostChangeLedger::begin`], for a caller that holds the lock and has re-read the ledger.
+    fn begin_locked(
+        &mut self,
+        kind: HostChangeKind,
+        prior: Option<PriorState>,
+        fingerprint: Option<Blake3>,
+        at: u64,
+        by_version: &str,
+    ) -> Result<u32, LedgerError> {
         check_rooted(&kind)?;
         let id = self.file.next_id;
         self.file.next_id += 1;
@@ -454,6 +516,18 @@ impl HostChangeLedger {
     }
 
     fn set_state(&mut self, id: u32, state: ChangeState) -> Result<(), LedgerError> {
+        let _lock = self.lock()?;
+        self.reload()?;
+        self.set_state_locked(id, state)
+    }
+
+    /// Sets change `id`'s state and saves, for a caller that holds the lock and has re-read the
+    /// ledger.
+    pub(crate) fn set_state_locked(
+        &mut self,
+        id: u32,
+        state: ChangeState,
+    ) -> Result<(), LedgerError> {
         let change = self
             .file
             .changes
@@ -492,6 +566,9 @@ impl HostChangeLedger {
             path: path.to_owned(),
         };
         check_rooted(&kind)?;
+        // The lock covers the ID, the copies written under it, the entry and the host write.
+        let _lock = self.lock()?;
+        self.reload()?;
         let id = self.file.next_id;
         // Syntropy replaces a regular file, or makes one where nothing is; it never writes through
         // a link someone left in its place, or over a directory.
@@ -517,11 +594,12 @@ impl HostChangeLedger {
             None => None,
         };
         write_copy(&self.written_copy(id), contents, mode)?;
-        let recorded = self.begin(kind, prior, Some(fingerprint(contents)), at, by_version)?;
+        let recorded =
+            self.begin_locked(kind, prior, Some(fingerprint(contents)), at, by_version)?;
         debug_assert_eq!(recorded, id);
         let like = old.as_ref().map(|(_, meta)| meta);
         replace_file(path, contents, like).map_err(io_error(path))?;
-        self.applied(id)?;
+        self.set_state_locked(id, ChangeState::Applied)?;
         Ok(id)
     }
 
@@ -583,6 +661,8 @@ impl HostChangeLedger {
     ///
     /// [`LedgerError::Io`] if a file cannot be deleted or the ledger cannot be saved.
     pub fn prune_closed(&mut self) -> Result<usize, LedgerError> {
+        let _lock = self.lock()?;
+        self.reload()?;
         let closed: Vec<u32> = self
             .file
             .changes
@@ -612,6 +692,71 @@ impl HostChangeLedger {
         json.push(b'\n');
         replace_atomically(&path, &json)
     }
+}
+
+/// The ledger in `state_dir`; a missing file is an empty ledger.
+fn read_ledger(state_dir: &Path) -> Result<LedgerFile, LedgerError> {
+    let path = state_dir.join(LEDGER_FILE);
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let file: LedgerFile =
+                serde_json::from_slice(&bytes).map_err(|source| LedgerError::Parse {
+                    path: path.clone(),
+                    source,
+                })?;
+            if file.schema != SCHEMA {
+                return Err(LedgerError::Schema { found: file.schema });
+            }
+            Ok(file)
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(LedgerFile {
+            schema: SCHEMA,
+            next_id: 1,
+            changes: Vec::new(),
+        }),
+        Err(e) => Err(io_error(&path)(e)),
+    }
+}
+
+/// The ledger's exclusive lock, held until dropped ([`HostChangeLedger::lock`]).
+#[derive(Debug)]
+pub(crate) struct LedgerLock {
+    file: File,
+}
+
+impl Drop for LedgerLock {
+    fn drop(&mut self) {
+        // Closing the file releases the lock too; unlocking first says so.
+        let _ = self.file.unlock();
+    }
+}
+
+/// Opens the lock file, creating it owner-only. It is never removed or replaced, since a writer
+/// that locked a replaced file would not exclude one that locked the new one. Anything but a
+/// regular file at its path is an [`io::ErrorKind::InvalidInput`] error.
+fn open_lock_file(path: &Path) -> io::Result<File> {
+    if let Ok(meta) = fs::symlink_metadata(path)
+        && !meta.file_type().is_file()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the ledger's lock file is not a regular file",
+        ));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+/// Whether `e` is Windows' sharing violation: another process holds the file open with no
+/// sharing, as the PowerShell revert script holds the lock file.
+fn sharing_violation(e: &io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error() == Some(32)
 }
 
 /// The permission bits of a file's metadata (Unix only).
@@ -978,6 +1123,97 @@ mod tests {
         assert_eq!(fs::read(&theirs).unwrap(), b"theirs\n");
         assert_eq!(mode(&state.join(LEDGER_FILE)), 0o600);
         assert_eq!(fs::read(&target).unwrap(), b"ours\n");
+    }
+
+    /// Several writers at once, each with its own ledger on one state directory, as separate
+    /// processes would be: every change survives, every ID is handed out once, and each change's
+    /// copy holds that change's bytes.
+    #[test]
+    fn concurrent_writers_lose_nothing() {
+        const WRITERS: u32 = 4;
+        const EACH: u32 = 12;
+        let state = temp_state();
+        let threads: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let state = state.clone();
+                std::thread::spawn(move || {
+                    let mut ids = Vec::new();
+                    for i in 0..EACH {
+                        let mut ledger = HostChangeLedger::open(&state).unwrap();
+                        let path = state.join(format!("w{w}-{i}.conf"));
+                        let id = if i % 2 == 0 {
+                            let id = ledger
+                                .begin(HostChangeKind::FileWritten { path }, None, None, 0, "v")
+                                .unwrap();
+                            ledger.applied(id).unwrap();
+                            id
+                        } else {
+                            ledger
+                                .write_file(&path, format!("{w}-{i}\n").as_bytes(), 0, "v")
+                                .unwrap()
+                        };
+                        ids.push((id, w, i));
+                    }
+                    ids
+                })
+            })
+            .collect();
+        let handed_out: Vec<(u32, u32, u32)> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        let ledger = HostChangeLedger::open(&state).unwrap();
+        assert_eq!(ledger.changes().len(), (WRITERS * EACH) as usize);
+        let mut ids: Vec<u32> = handed_out.iter().map(|(id, _, _)| *id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            (WRITERS * EACH) as usize,
+            "an ID was handed out twice"
+        );
+        for (id, w, i) in handed_out {
+            let change = ledger.get(id).unwrap();
+            assert_eq!(change.state, ChangeState::Applied);
+            assert_eq!(
+                change.kind,
+                HostChangeKind::FileWritten {
+                    path: state.join(format!("w{w}-{i}.conf"))
+                }
+            );
+            if i % 2 == 1 {
+                assert_eq!(
+                    fs::read(ledger.written_copy(id)).unwrap(),
+                    format!("{w}-{i}\n").as_bytes()
+                );
+            }
+        }
+    }
+
+    /// A writer that cannot get the lock within its wait gets a clear error, and gets on once
+    /// the lock is free.
+    #[test]
+    fn a_held_lock_gives_a_clear_error_not_a_hang() {
+        let state = temp_state();
+        let holder = HostChangeLedger::open(&state).unwrap();
+        let held = holder.lock().unwrap();
+        let mut ledger = HostChangeLedger::open(&state)
+            .unwrap()
+            .with_lock_wait(Duration::from_millis(100));
+        let kind = HostChangeKind::FileWritten {
+            path: state.join("a.conf"),
+        };
+        let started = Instant::now();
+        let err = ledger.begin(kind.clone(), None, None, 0, "v").unwrap_err();
+        assert!(matches!(err, LedgerError::Busy { .. }), "{err}");
+        assert!(
+            err.to_string()
+                .contains("another Syntropy command is changing this host"),
+            "{err}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(held);
+        ledger.begin(kind, None, None, 0, "v").unwrap();
     }
 
     /// `write_file` never writes in place, so a link swapped in after its check is replaced, not
