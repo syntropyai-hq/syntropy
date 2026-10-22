@@ -103,6 +103,9 @@ impl<T> Consumer<T> {
         if self.is_ready() {
             return;
         }
+        // The real clock, on purpose: the budget decides only when this thread stops spinning and
+        // parks, never which value is popped or in what order, so RFC-0060 §2.1's rule T1 does not
+        // apply. A count of spins would vary with CPU speed.
         let start = Instant::now();
         let mut spins: u32 = 0;
         loop {
