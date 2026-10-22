@@ -25,5 +25,7 @@ libc = "0.2.191"
 
 [target.'cfg(windows)'.dependencies]
 # `Win32_System_Threading`, `Win32_System_Kernel`, `Win32_System_SystemInformation` and
-# `Win32_Foundation` for hot-thread placement (`os::thread`).
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Kernel", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+# `Win32_Foundation` for hot-thread placement (`os::thread`). `Win32_Storage_FileSystem` and
+# `Win32_System_IO` for the IoRing and IOCP engines (`windows`, RFC-0021 §7), which also wait on
+# events through `Win32_System_Threading`.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Kernel", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
