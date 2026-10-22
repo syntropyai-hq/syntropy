@@ -1104,9 +1104,9 @@ pub trait KernelProvider: Send + Sync {
     /// Checks for sticky device errors. A sticky error fails the runner with class Device.
     fn health(&self, ctx: &DeviceCtx) -> DeviceHealth;
 
-    // Added by RFC-0040 §2.1, which gives their full signatures. All but `poll` and
-    // `synchronize` have default bodies (Unsupported, None or a no-op); those two have none,
-    // because every backend implements them.
+    // Added by RFC-0040 §2.1, which gives their full signatures. All but `build`, `domain`,
+    // `poll` and `synchronize` have default bodies (Unsupported, None or a no-op); those four
+    // have none, because every backend implements them (corrected 2026-10-23, §18.32).
     // build() -> ProviderBuild           build identity; part of every selection-cache key
     // domain() -> MemoryDomain           providers that share buffers, streams and events
     // memory_info(ctx)                   free and budgeted memory now; never on a hot path
@@ -1552,7 +1552,7 @@ pub struct Error {
     pub scope: ErrorScope,                      // Sequence(SequenceId) | Stage(StageIx) | Runner
                                                 // | Node(NodeId) | Link(LinkId) | Instance | Cluster
     pub retry: RetryHint,                       // Never | After(Nanos) | OnNewPlan | Backoff
-    pub context: SmallVec<[(&'static str, String); 4]>,
+    pub context: SmallVec<[(Cow<'static, str>, String); 4]>, // Cow since 2026-10-23 (§18.32)
     pub source: Option<Box<Error>>,
 }
 
@@ -2901,6 +2901,15 @@ DIST-E10-T10 model-checked OQ-NET-34's option (a), which was settled under the m
 | Change | Sections touched | Reason |
 |---|---|---|
 | `PrefixRef` and its `PrefixKey` and `TailId`, and `GrammarRef`, are `core` types in `core::sequence`. `TailId` was one of TIER-E6-T02's supporting types, listed in RFC-0022's KV listing; TIER-E6-T02 and TIER-E7-T01 now use `core`'s, and PROD-E3-T05 uses `core`'s `GrammarRef`. `LogprobBlock { k: 0 }` is the chosen tokens' logprobs alone, which `net` cannot encode until OQ-NET-35 settles. `TokenEntry::rng_counter` has no serde default | §5.8 (dated notes of 2026-10-23), §5.13; RFC-0022 §7.1, §7.2; RFC-0031 §6.5 (dated notes); RFC-0050 §3.1 (dated note) | DIST-E1-T14 builds `SequenceOpen` and `SamplingParams`, which hold these types, and `core` cannot name a type of `tier` or `api` (review-1493's N5 on #1780). For the maintainers to confirm |
+
+### 18.32 Default bodies in §5.7, and owned names in `Error` (2026-10-23)
+
+From issue #1525, the review of COMP-E1-T01.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| §5.7's comment says that `build`, `domain`, `poll` and `synchronize` have no default bodies | §5.7 | RFC-0040 §2.1, which §5.7 defers to, gives `build` and `domain` no body; the comment named only `poll` and `synchronize` |
+| `Error::context`'s keys are `Cow<'static, str>`, not `&'static str` | §5.12 | `Error` crosses the IPC in `ErrorReport` (§3.5), and decoding a `&'static str` needs a buffer that lives for the whole program, so every decode would leak one. Code still writes literal keys without allocating. RFC-0040 §2.2 makes the same change to `ProviderId` and `ProviderBuild` (note of the same date) |
 
 ### 18.35 Hardware jobs before their rigs run (2026-10-23)
 

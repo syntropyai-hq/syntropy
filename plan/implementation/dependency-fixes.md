@@ -1062,3 +1062,16 @@ COMP-E15-T08 gives `TpSharding` to the `llama`, `qwen_moe`, `deepseek3` and `gpt
 Nine are M0a or M1a and PLC-E4-T09 is M2, all before COMP-E15-T08's M3, so no edge points later. None of the ten reaches COMP-E15-T08, whose one dependent is DIST-E13-T01 (M3), so there is no cycle.
 
 Left for a follow-up: RFC-0011 §3.1's `Island(I, Tp)` and `Island(I, Ep)` rows do not state the family condition that its `IntraTp(n, G)` row and RFC-0043 §6.3 state. PLC-E4-T10's criterion cites RFC-0043 §6.3 for it until RFC-0011 says so too.
+## COMP-E13-T15: `core::Error`, and DIST-E18-T02 in M0a (2026-10-23)
+
+Issue #1525, from the review of COMP-E1-T01, found that no task builds RFC-0001 §5.12's `Error`. COMP-E1-T01 built a stand-in, `kernels::Error { class, code: u16, message }`, whose bare `u16` cannot hold another domain's code, as in `DeviceHealth::Sticky { code }`. PLC-E7-T17 (#1802) reports a closed ring as Kernels code 7, `CaptureFailed`, because `exec` has no codes. The issue also found that `ProviderId` and `ProviderBuild` decode only from a `'static` buffer, which the selection cache (RFC-0040 §6.5) would leak on every load. These are plan corrections under R9 and R6, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added COMP-E13-T15 (M0a) → DIST-E18-T02, COMP-E1-T01, PLC-E1-T01, PLC-E4-T17, PLC-E9-T26, PLC-E7-T17 | COMP-E13-T15 | R9 | `core::Error` on DIST-E18-T02's `ErrorCode` and `Domain`, with `ErrorScope` and `RetryHint`, whose fields use `SequenceId`, `StageIx`, `NodeId`, `LinkId` and `Nanos`. It folds in COMP-E1-T01's `kernels::Error` and changes its provider names to `Cow<'static, str>`, since COMP-E1-T01 is done. Its criterion moves PLC-E7-T17's closed-ring fault to an exec code |
+| COMP-E1-T08 → COMP-E13-T15; PLC-E7-T03 → COMP-E13-T15 | COMP-E1-T08, PLC-E7-T03 | R9 | COMP-E1-T08 raises the `(Kernels, n)` codes, and PLC-E7-T03, the stand-in's next consumer, handles step faults; both need `core::Error` and its domains |
+| COMP-E2-T05 → COMP-E13-T15 | COMP-E2-T05 | R9 | the selection cache decodes `ProviderId` and `ProviderBuild`, which must be owned to load without a leak |
+| DIST-E18-T02 M2 → M0a | DIST-E18-T02 | R6 | COMP-E13-T15 is M0a, because PLC-E7-T03 is, and it builds on DIST-E18-T02's `ErrorCode` and `Domain`. DIST-E18-T02's one dependency, QUAL-E1-T01, is M0a, and its PR (#1669) is already open |
+
+Not changed here: `Domain::Kernels`'s range, `Domain::Exec`'s range and exec's codes. RFC-0040 §13 numbers its codes but gives no range, and RFC-0012 §13 has no codes. COMP-E13-T15's PR assigns them in dated notes in those two sections: the two ranges, and the exec codes for a closed ring, the stall watchdog and the CPU pool's barrier deadline, with Kernels codes 1–17 unchanged. The engine lane's reviewer checks the assignment as the RFCs' owner. So the task that needs them owns the proposal, and this plan fix chooses none (review-plan3's B1 on #1810).
+
