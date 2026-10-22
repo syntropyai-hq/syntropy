@@ -1120,13 +1120,15 @@ Chunking hides the 4090 stage and the hop behind the Strix's compute, which domi
 - a claimant without `COORDINATOR`, and an isolated self-election;
 - commands under crash-recover, and under the loss of nodes with their disks.
 
-Splits, message loss, crashes, claims and elections are bounded per scenario, and each scenario must reach the situation it names. The default tests check a bounded 3-node configuration; `cargo xtask test election-model` runs the full one release-optimised, and DIST-E10-T09 runs it on every change to `cluster`.
+Splits, message loss, crashes, claims and elections are bounded per scenario. Each scenario must reach the situation it names, including a settled state wherever a liveness property is judged. The default tests check a bounded 3-node configuration, every scenario to exhaustion. `cargo xtask test election-model` runs the full configuration release-optimised and stops each scenario at 5 × 10⁷ generated states. Seventeen scenarios finish within that cap. Nine reach it, so for them the check explores up to the cap rather than exhaustively: `split-heal` on 3 and 4 nodes, `equal-counters` on 3 and 4, `tag-collision`, `stale-heal`, `byzantine-snapshot` on 4, and `commands-crash` on 3 and 4. The full run uses one thread, so a capped scenario explores the same states on every run. DIST-E10-T09 runs the suite on every change to `cluster`.
 
-Two properties fail, each only in the scenarios that predict it:
-- "No two coordinators accepted by one node at the same term" fails when two 24-bit tags collide. Both sides of a split elect at one term, and at heal the lower node ID wins the tie, so a node switches coordinators within that term. §7.2 accepts this risk.
-- "Every command acknowledged with `replicated = true` … appears in the converged log" fails when nodes are lost with their disks. The originator's own ack can make a reply `replicated = true` (§6.3), so losing the coordinator and the originator loses the command. OQ-NET-33 holds the decision. Under crash-recover the property holds.
+A scenario that expects a property to fail names the cause the plan predicts. A counterexample with any other cause fails the check. Two properties have expected failures:
+- "No two coordinators accepted by one node at the same term" fails in `tag-collision`, caused by a 24-bit tag collision. Both sides of a split elect at one term, and at heal the lower node ID wins the tie, so a node switches coordinators within that term. §7.2 accepts this risk.
+- "Every command acknowledged with `replicated = true` … appears in the converged log" fails in `stale-heal`, caused by a heal that rolls a node back past a command its own ack made `replicated = true`. A stale but supported proof deposes the node's unsupported self-election, though a supported election follows the stale one in the node's own chain (§7.5), and the command's originator, lost with its disk, cannot re-submit it. OQ-NET-34 holds the question, with the 15-step trace a default test replays, and DIST-E10-T10 model-checks the rule it recommends.
 
-The liveness properties are judged in quiescent states with the network whole, so the check finds a heal that stalls but not one that cycles for ever.
+The model found one other cause of lost commands, the originator's own ack, and §6.3's rule as revised by OQ-NET-33 removes it. A default test replays its 8-step trace against the old rule. Under crash-recover the command property shows no counterexample: exhaustively in the bounded `commands-crash`, and up to the cap in the full ones. In `commands-lost`, where nodes are lost with their disks but the network never splits, it holds exhaustively.
+
+The liveness properties are judged in quiescent states with the network whole, so the check finds a heal that stalls but not one that cycles for ever. Ties in the heal order would make a heal cycle, and they are checked directly.
 
 
 ## Rollout / milestones
