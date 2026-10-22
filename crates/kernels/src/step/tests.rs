@@ -35,7 +35,10 @@ fn mirror_is_generated_from_the_header() {
     if std::env::var_os("SYNTROPY_BLESS_GENERATED").is_some() {
         std::fs::write(&path, &generated).unwrap();
     }
-    let on_disk = std::fs::read_to_string(&path).unwrap();
+    // A CRLF checkout (Git for Windows) must not make an unchanged mirror stale.
+    let on_disk = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\r\n", "\n");
     assert!(
         on_disk == generated,
         "{} is stale: run `SYNTROPY_BLESS_GENERATED=1 cargo test -p syntropy-kernels step::`",
