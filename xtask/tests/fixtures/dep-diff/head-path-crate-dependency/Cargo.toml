@@ -1,0 +1,13 @@
+# A dep-diff fixture workspace (head-path-crate-dependency). xtask/tests/dep_diff.rs compares it with
+# head-path-excluded, where `vendor/fixture-vendored` is already declared.
+[workspace]
+resolver = "3"
+members = ["crates/a", "crates/b"]
+# The vendored copy is not a member, so a path dependency on it is external code.
+exclude = ["vendor"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
