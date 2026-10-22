@@ -179,13 +179,14 @@ fn check_agreement(
     index: &ShardIndex,
     shards: &[(String, SafetensorsHeader)],
 ) -> Result<(), SafetensorsError> {
-    use std::collections::HashMap;
-    let indexed: HashMap<&str, &str> = index
+    // Ordered maps (RFC-0060 §2.4 rule T3), though only lookups and inserts read them.
+    use std::collections::BTreeMap;
+    let indexed: BTreeMap<&str, &str> = index
         .weight_map
         .iter()
         .map(|(t, f)| (t.as_str(), f.as_str()))
         .collect();
-    let mut holder: HashMap<&str, &str> = HashMap::new();
+    let mut holder: BTreeMap<&str, &str> = BTreeMap::new();
     for (file, header) in shards {
         for t in &header.tensors {
             if let Some(other) = holder.insert(t.name.as_str(), file.as_str()) {
