@@ -39,7 +39,8 @@
 //! invariant (ADR-0001 item 4).
 //!
 //! Built with `RUSTFLAGS="--cfg loom"`, the ring uses loom's atomics and cells, so its tests run
-//! under loom's model checker. The waiting and wake-handle code is left out of that build.
+//! under loom's model checker, and so does the wait/wake handshake ([`Consumer::arm`] and the
+//! producer's side of it). Parking a thread and the wake handle are left out of that build.
 
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -48,7 +49,6 @@ mod pad;
 mod ring;
 pub mod shared;
 mod sync;
-#[cfg(not(loom))]
 mod wait;
 #[cfg(all(
     not(loom),
@@ -62,8 +62,9 @@ mod wait;
 mod wake;
 
 pub use ring::{CapacityError, Consumer, PopError, Producer, PushError, ring};
+pub use wait::Arm;
 #[cfg(not(loom))]
-pub use wait::{Arm, SPIN_DEFAULT, SPIN_ON_BATTERY};
+pub use wait::{SPIN_DEFAULT, SPIN_ON_BATTERY};
 #[cfg(all(
     not(loom),
     any(

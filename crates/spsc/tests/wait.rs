@@ -114,6 +114,32 @@ mod wake_handle {
         unsafe { WaitForSingleObject(handle.as_raw_handle().cast(), 0) == WAIT_OBJECT_0 }
     }
 
+    /// Blocks until the handle is signalled or `timeout_ms` passes, as a runtime's wait does:
+    /// `poll` for readability on Unix, `WaitForSingleObject` on Windows. Whether it was signalled.
+    #[cfg(unix)]
+    fn block_on(handle: &WakeHandle, timeout_ms: u32) -> bool {
+        use std::os::fd::AsRawFd;
+        let mut poll = libc::pollfd {
+            fd: handle.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
+        // SAFETY: one live `pollfd`; the timeout bounds the wait.
+        let ready = unsafe { libc::poll(&mut poll, 1, timeout) };
+        assert!(ready >= 0, "{}", std::io::Error::last_os_error());
+        ready == 1
+    }
+
+    #[cfg(windows)]
+    fn block_on(handle: &WakeHandle, timeout_ms: u32) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        // SAFETY: the live event's handle; the timeout bounds the wait.
+        unsafe { WaitForSingleObject(handle.as_raw_handle().cast(), timeout_ms) == WAIT_OBJECT_0 }
+    }
+
     #[test]
     fn a_push_signals_the_handle_only_while_the_consumer_is_armed() {
         let (mut tx, mut rx) = ring_with_wake::<u32>(8).unwrap();
@@ -151,26 +177,21 @@ mod wake_handle {
     }
 
     /// The consumer's loop from `Consumer::arm`'s docs, on a thread that blocks on the handle as
-    /// a runtime would: every value arrives, in order.
-    #[cfg(unix)]
+    /// a runtime would: every value arrives, in order. On every OS with a wake handle: an eventfd
+    /// or a kqueue polled on Unix, and an event waited on on Windows.
     #[test]
     fn a_consumer_blocking_on_the_handle_gets_every_value() {
-        use std::os::fd::AsRawFd;
         const COUNT: u32 = 20_000;
         let (mut tx, mut rx) = ring_with_wake::<u32>(16).unwrap();
         let consumer = thread::spawn(move || {
             let mut expected = 0;
             loop {
                 if rx.arm() == Arm::Waiting {
-                    let mut poll = libc::pollfd {
-                        fd: rx.wake_handle().unwrap().as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    // SAFETY: one live `pollfd`; the timeout bounds the wait if a wake-up were
-                    // lost.
-                    let ready = unsafe { libc::poll(&mut poll, 1, 10_000) };
-                    assert_eq!(ready, 1, "no wake-up within 10 s");
+                    // The timeout bounds the wait if a wake-up were lost.
+                    assert!(
+                        block_on(rx.wake_handle().unwrap(), 10_000),
+                        "no wake-up within 10 s"
+                    );
                     rx.wake_handle().unwrap().reset().unwrap();
                 }
                 loop {
