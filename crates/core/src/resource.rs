@@ -9,6 +9,7 @@
 
 pub mod caps;
 pub mod device;
+pub mod iface;
 pub mod inventory;
 pub mod link;
 pub mod ordinal;
@@ -16,6 +17,7 @@ pub mod tier;
 
 pub use caps::*;
 pub use device::*;
+pub use iface::*;
 pub use inventory::*;
 pub use link::*;
 pub use tier::*;
