@@ -426,4 +426,4 @@ pub struct SideData {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
