@@ -56,6 +56,10 @@ pub trait WakeWaiter {
     /// Announces that the calling thread is about to park for `waker`, so the device's signal
     /// will wake it. Returns `false` if this waiter cannot wait on that kind of waker, and the
     /// loop then spins.
+    ///
+    /// A signal that arrives after `arm` returns must make the next [`WakeWaiter::park`] return
+    /// at once. The loop polls once between `arm` and `park`, so a doorbell that fired before the
+    /// arm is seen by that poll, and one that fires after it wakes the park.
     fn arm(&mut self, waker: &HostWaker) -> bool;
 
     /// Parks until `waker` is signalled or `timeout` passes. It may return early.

@@ -559,8 +559,10 @@ fn one_stage_runs_on_one_thread_and_a_seed_replays_it_exactly() {
     );
     assert!(first.polls > first.records.len() as u64);
     // Every pass takes no virtual time here, because `SimTicks` moves only between events, so
-    // the watchdog cannot fire in the simulator: a pass that spun or parked would hang this one
-    // thread instead. `dispatch::tests::the_watchdog_counts_a_pass_over_its_budget` covers it.
+    // the watchdog cannot fire in the simulator. A pass that waited for an event would hang this
+    // one thread. A bounded wait inside a pass, such as a timed park, a sleep or a counted spin,
+    // goes unseen under test; PLC-E7-T18's hardware run, the first on a real `TickSource`, fails
+    // on it. `dispatch::tests::the_watchdog_counts_a_pass_over_its_budget` shows the count.
     assert_eq!((first.overruns, first.longest), (0, Nanos(0)));
 
     // The same seed: the same step records, tokens and trace.

@@ -230,10 +230,12 @@ fn device_error() -> Error {
     }
 }
 
+/// The test's error for a closed outbound ring. Its code is one no RFC lists, since `kernels`'
+/// `Error` carries a Kernels-domain code and none names this case.
 fn closed_error() -> Error {
     Error {
         class: ErrorClass::Link,
-        code: ErrorCode(7),
+        code: ErrorCode(u16::MAX),
         message: "the outbound ring has closed".to_owned(),
     }
 }
