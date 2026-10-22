@@ -285,3 +285,96 @@ fn a_channel_pool_holds_its_receives_control_receives_and_retention() {
     });
     assert!(core.is_ok(), "{core:?}");
 }
+
+/// Review of #1833, B1: every span of a frame carries `TOKEN_IDS`, `ROUTER_HINT` (k = 8),
+/// `SEQ_META` (10 B) and `TRUNCATE` (4 B), and the frame a `TRACE`. Over 1 to 512 spans of a
+/// 512-row frame, the codec's base header and extension fit the plan-sized area.
+#[test]
+fn every_frame_within_its_limits_fits_its_header_area_over_1_to_512_spans() {
+    use syntropy_net::frame::TraceContext;
+    const ROWS: u32 = 512;
+    let seq_meta = [0x5Au8; 10];
+    let token_ids = le32s(0..ROWS);
+    let experts: Vec<u8> = (0..ROWS * 8)
+        .flat_map(|i| (i as u16).to_le_bytes())
+        .collect();
+    let payload = rows(ROWS, 16);
+    let mut spans_tried = Vec::new();
+    for n_spans in [1u32, 2, 4, 8, 16, 32, 64, 128, 256, 512] {
+        let per = ROWS / n_spans;
+        let spans: Vec<Span> = (0..n_spans)
+            .map(|i| Span {
+                seq: SequenceId {
+                    ingress: 7,
+                    boot: 1,
+                    n: i,
+                },
+                first_position: 0,
+                n_positions: per,
+                row_offset: i * per,
+                tree: None,
+            })
+            .collect();
+        let mut side = Vec::new();
+        for i in 0..n_spans {
+            let rows = (i * per) as usize..((i + 1) * per) as usize;
+            let span = Some(i as u16);
+            side.push(Side {
+                span,
+                item: SideItem::TokenIds(&token_ids[rows.start * 4..rows.end * 4]),
+            });
+            side.push(Side {
+                span,
+                item: SideItem::RouterHint {
+                    layer: 1,
+                    k: 8,
+                    experts: &experts[rows.start * 16..rows.end * 16],
+                },
+            });
+            side.push(Side {
+                span,
+                item: SideItem::SeqMeta(&seq_meta),
+            });
+            side.push(Side {
+                span,
+                item: SideItem::Truncate { to: 3 },
+            });
+        }
+        side.push(Side {
+            span: None,
+            item: SideItem::Trace(TraceContext {
+                version: 0,
+                trace_id: [1; 16],
+                span_id: [2; 8],
+                flags: 1,
+            }),
+        });
+        let chunk = Activation {
+            header: header(ROWS, 16),
+            spans: Spans::new(&spans),
+            tree: TreeArea::new(&[]),
+            side: SideItems::new(&side),
+            payload: &payload,
+        };
+        let needed = HEADER_LEN + chunk.ext_len().expect("a valid chunk");
+        let area = header_area(&HeaderLimits {
+            max_rows: ROWS,
+            max_spans: n_spans,
+            token_ids: true,
+            router_k: Some(8),
+            // `SEQ_META` and `TRUNCATE`: 10 + 4 bytes of values.
+            items_per_span: 2,
+            item_bytes_per_span: 14,
+            // A `TRACE` is 26 bytes of value (RFC-0031 §6.3).
+            frame_items: 1,
+            frame_item_bytes: 26,
+            ..HeaderLimits::default()
+        });
+        assert!(
+            needed <= area,
+            "{n_spans} spans need {needed} B, the area is {area} B"
+        );
+        spans_tried.push((n_spans, needed, area));
+    }
+    assert_eq!(spans_tried.len(), 10);
+}

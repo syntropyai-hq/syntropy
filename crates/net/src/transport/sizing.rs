@@ -41,12 +41,6 @@ fn round(value: usize, to: usize) -> usize {
     value.next_multiple_of(to)
 }
 
-/// A side item of `value` bytes as the extension holds it: its TLV header, then the value padded
-/// to 8.
-fn tlv(value: usize) -> usize {
-    TLV_HEADER_LEN + round(value, 8)
-}
-
 /// What the plan allows in one `Activation` frame of a hop, for its header area.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeaderLimits {
@@ -61,14 +55,21 @@ pub struct HeaderLimits {
     pub token_ids: bool,
     /// The frames carry `ROUTER_HINT` at this k: k u16 expert ids per row.
     pub router_k: Option<u8>,
-    /// Further side items per span, such as `SEQ_META`, `SEQ_CTRL`, `TRACE` or EP row metadata,
-    /// as their values' bytes; each takes a TLV header of its own.
-    pub per_span_items: u32,
+    /// Further side items per span, such as `SEQ_META`, `SEQ_CTRL`, `TRUNCATE`, `TRACE` or EP
+    /// row metadata: how many. Each takes a TLV header of its own and pads its value to 8.
+    pub items_per_span: u32,
+    /// The bytes of those items' values, per span, all together.
+    pub item_bytes_per_span: u32,
+    /// Side items of the whole frame (`span` 0xFFFF), such as a frame's `TRACE`: how many.
+    pub frame_items: u32,
+    /// The bytes of those items' values, all together.
+    pub frame_item_bytes: u32,
 }
 
 /// The header area of RFC-0031 §8 for frames within `limits`: 64 B of base header plus the
-/// extension at the limits, rounded up to 64. Per-row items are counted once per span, so a
-/// frame whose rows spread over its spans still fits.
+/// extension at the limits, rounded up to 64. Every side item is counted with its own TLV header
+/// and up to 7 bytes of padding, and a per-row item once per span, so a frame whose rows spread
+/// over its spans still fits.
 pub fn header_area(limits: &HeaderLimits) -> usize {
     let rows = limits.max_rows as usize;
     let spans = (limits.max_spans as usize).max(1);
@@ -82,7 +83,10 @@ pub fn header_area(limits: &HeaderLimits) -> usize {
     if let Some(k) = limits.router_k {
         ext += per_row_item(ROUTER_HINT_HEAD + 2 * usize::from(k) * rows);
     }
-    ext += spans * tlv(limits.per_span_items as usize);
+    // Each item, per span or of the frame, has its header and up to 7 bytes of padding.
+    let items = |count: u32, bytes: u32| count as usize * (TLV_HEADER_LEN + 7) + bytes as usize;
+    ext += spans * items(limits.items_per_span, limits.item_bytes_per_span);
+    ext += items(limits.frame_items, limits.frame_item_bytes);
     HEADER_LEN + round(ext, ALIGN)
 }
 
@@ -184,6 +188,40 @@ mod tests {
         assert_eq!(header_area(&limits), 10_496);
         assert!(header_area(&limits) > 10 * 1024);
         assert_eq!(header_area(&limits) % 64, 0);
+    }
+
+    /// Review of #1833, B1: a span's items each take a TLV header. `SEQ_META` (10 B) and
+    /// `TRUNCATE` (4 B) in one span need 256 B with the codec (`tests/pools`), not 192.
+    #[test]
+    fn each_side_item_of_a_span_takes_its_own_header() {
+        let limits = HeaderLimits {
+            max_rows: 1,
+            max_spans: 1,
+            items_per_span: 2,
+            item_bytes_per_span: 14,
+            ..HeaderLimits::default()
+        };
+        // 64 + round64(64 + 32 + 2 × 15 + 14) = 64 + 192.
+        assert_eq!(header_area(&limits), 256);
+        let with_trace = HeaderLimits {
+            frame_items: 1,
+            frame_item_bytes: 26,
+            ..limits
+        };
+        // The frame's `TRACE` adds 8 + 7 + 26 bytes: 64 + round64(140 + 41).
+        assert_eq!(
+            header_area(&with_trace),
+            64 + (140usize + 41).next_multiple_of(64)
+        );
+        let two_traces = HeaderLimits {
+            frame_items: 4,
+            frame_item_bytes: 4 * 26,
+            ..limits
+        };
+        assert_eq!(
+            header_area(&two_traces),
+            64 + (140usize + 4 * 41).next_multiple_of(64)
+        );
     }
 
     #[test]
