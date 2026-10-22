@@ -879,7 +879,7 @@ Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request 
 
 ## `ReplanReason` gets a task (2026-10-23)
 
-RFC-0033 §6.1 defines `ReplanReason`, and five tasks use it, the first at M1a, but no task built it. Its `DriftTerm` was named and never defined. The review of #1803, which needs a `DriftTerm::Hop` for a demoted hop, found the gap. The answers were taken under the maintainers' standing instruction. RFC-0033 §6.1's note of 2026-10-23 and RFC-0001 §18.33 record them.
+RFC-0033 §6.1 defines `ReplanReason`, and nine tasks use it, the first at M1a, but no task built it. Its `DriftTerm` was named and never defined. The review of #1803, which needs a `DriftTerm::Hop` for a demoted hop, found the gap. The answers were taken under the maintainers' standing instruction. RFC-0033 §6.1's note of 2026-10-23 and RFC-0001 §18.33 record them.
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
@@ -894,3 +894,4 @@ RFC-0033 §6.1 defines `ReplanReason`, and five tasks use it, the first at M1a, 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | PLC-E8-T13's criterion names `config`'s `InstanceSection::<SchedSection>::from_policy` in place of `SchedSection::from_policy`, and PLC-E8-T13 → PROD-E1-T24 | PLC-E8-T13 | R9 | the criterion's wording had drifted from the code: the builder now rejects the invalid values, and PROD-E1-T24 produces it. Both tasks are M1a and done (#1656, #1772), so the edge adds no wait |
+| PLC-E9-T07, DIST-E14-T01, DIST-E15-T02 and DIST-E14-T13 → DIST-E14-T21; RFC-0011 §12.1 gains the demoted hop's row | PLC-E9-T07, DIST-E14-T01, DIST-E15-T02, DIST-E14-T13 | R9 | each names a variant too: `WorkloadDrift` (the SC-21 check), `RecoveryStarted`'s `cause` with its solve, `EdgeLost`'s repair, and `DegradedExit`. None is reachable from DIST-E14-T21, so the edges add no cycle (review-1474's review of #1811, B1 and N1) |
