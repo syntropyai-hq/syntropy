@@ -15,13 +15,18 @@
 //! - a key the head reads each step is `Hot` (RFC-0054 §9.1 lists queue limits as hot); a key
 //!   that changes the lane credits or the captured buckets is `Instance`.
 //!
-//! [`SchedSection::from_policy`] builds the section from the `sched` table of an instance's
-//! policy and rejects every invalid value with its RFC-0054 §8 code.
+//! The section is built from an instance's policy by `config`'s builder, as RFC-0054 §5.4
+//! says of every domain crate's section: [`InstanceSection::<SchedSection>::from_policy`]
+//! takes the `sched` table, and [`InstanceSection::from_domain`] the `sched.*` entries of
+//! `InstancePolicy::domain`. It rejects every invalid value with its RFC-0054 §8 code. A
+//! computed default stays `None` until the scheduler applies its rule, such as
+//! [`SchedSection::spin`]'s power source.
+//!
+//! [`InstanceSection::<SchedSection>::from_policy`]: syntropy_config::InstanceSection::from_policy
+//! [`InstanceSection::from_domain`]: syntropy_config::InstanceSection::from_domain
 
 use serde::Deserialize;
-use syntropy_config::{
-    Code, ConfigSection, DefaultSpec, Duration, Value, ValueError, ValueErrorKind,
-};
+use syntropy_config::{ConfigSection, Duration};
 
 /// Scheduler settings for one instance (RFC-0012 §12).
 #[derive(Clone, Debug, PartialEq, Deserialize, ConfigSection)]
@@ -51,7 +56,7 @@ pub struct SchedSection {
     pub max_queued: u32,
     /// Latency mode: the most sequences decoding in one step on dense and RAM-resident MoE
     /// instances; 1 forces serial decoding. NVMe-tiered MoE instances always use 1
-    /// (RFC-0012 §4.6). Default 4 [target]. The step uses the `Batch { rows }` bucket at 2 or 4
+    /// (RFC-0012 §4.6). Default 4 \[target\]. The step uses the `Batch { rows }` bucket at 2 or 4
     /// rows, so 4 is the largest value.
     #[config(reload = Instance, default = 4, min = 1, max = 4)]
     pub latency_decode_rows: u32,
@@ -60,9 +65,9 @@ pub struct SchedSection {
     pub max_pause: Duration,
 }
 
-/// `sched.spin_us` on mains power when no policy sets it: 50 µs [target] (ADR-0012 item 5).
+/// `sched.spin_us` on mains power when no policy sets it: 50 µs \[target\] (ADR-0012 item 5).
 pub const SPIN_MAINS: Duration = Duration::from_nanos(50_000);
-/// `sched.spin_us` on battery when no policy sets it: 10 µs [target] (ADR-0012 item 5).
+/// `sched.spin_us` on battery when no policy sets it: 10 µs \[target\] (ADR-0012 item 5).
 pub const SPIN_BATTERY: Duration = Duration::from_nanos(10_000);
 
 impl SchedSection {
@@ -71,159 +76,6 @@ impl SchedSection {
     pub fn spin(&self, on_battery: bool) -> Duration {
         self.spin_us
             .unwrap_or(if on_battery { SPIN_BATTERY } else { SPIN_MAINS })
-    }
-
-    /// Builds the section from `values`, the `sched` table of an instance's policy (RFC-0054
-    /// §5.4). A key the table leaves out takes its default; a computed default stays `None`.
-    ///
-    /// # Errors
-    ///
-    /// Every rejected key, each with its RFC-0054 §8 code: an unknown key, a value of the
-    /// wrong type, bad unit syntax, or a value outside the key's range. `values` that is not
-    /// a table is one `wrong_type` rejection for `sched`.
-    pub fn from_policy(values: &Value) -> Result<Self, Vec<Rejection>> {
-        let Value::Table(table) = values else {
-            return Err(vec![Rejection::value(
-                "sched",
-                ValueError::new(ValueErrorKind::WrongType, "`sched` must be a table"),
-            )]);
-        };
-        let mut rejected = Vec::new();
-        for name in table.keys() {
-            if Self::SCHEMA.key(name).is_none() {
-                rejected.push(Rejection {
-                    key: format!("sched.{name}"),
-                    code: Code::UnknownKey,
-                    message: format!("`sched.{name}` is not a scheduler key"),
-                });
-            }
-        }
-        let mut get = Fields {
-            table: values,
-            rejected: &mut rejected,
-        };
-        // A value that fails to parse is rejected here and stands in as its default below, so
-        // the range check still runs over every value that did parse: one `from_policy` call
-        // reports every invalid key, as `config check` does (RFC-0054 §8).
-        let section = Self {
-            spin_us: get.optional("spin_us", duration),
-            prewake_us: get.required("prewake_us", duration),
-            decode_stall_budget: get.optional("decode_stall_budget", duration),
-            prefill_inflight: get.optional("prefill_inflight", count),
-            prefill_share: get.optional("prefill_share", count),
-            max_queued: get.required("max_queued", count),
-            latency_decode_rows: get.required("latency_decode_rows", count),
-            max_pause: get.required("max_pause", duration),
-        };
-        for e in section.check_ranges() {
-            // A default is always in range, so only a parsed value can fail here; the guard
-            // keeps one error per key all the same.
-            if !rejected.iter().any(|r| r.key == e.key) {
-                rejected.push(Rejection::value(e.key, e.error));
-            }
-        }
-        if rejected.is_empty() {
-            Ok(section)
-        } else {
-            Err(rejected)
-        }
-    }
-}
-
-/// A rejected `sched.*` value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rejection {
-    /// The key's full path.
-    pub key: String,
-    /// The RFC-0054 §8 error code: `wrong_type`, `unknown_key`, `out_of_range` or `bad_unit`,
-    /// since no `sched.*` key is a selector, regex or secret.
-    pub code: Code,
-    /// What is wrong and what is accepted.
-    pub message: String,
-}
-
-impl Rejection {
-    fn value(key: impl Into<String>, error: ValueError) -> Self {
-        Self {
-            key: key.into(),
-            code: Code::from(error.kind()),
-            message: error.message().to_owned(),
-        }
-    }
-}
-
-/// Reads the section's fields from the policy table, collecting rejections. A key the table
-/// leaves out, or whose value is rejected, reads as its default: `None` for a computed default.
-struct Fields<'a> {
-    table: &'a Value,
-    rejected: &'a mut Vec<Rejection>,
-}
-
-impl Fields<'_> {
-    /// The value the table sets, or `None` when it sets none or the value is rejected.
-    fn parse<T>(&mut self, name: &str, parse: fn(&Value) -> Result<T, ValueError>) -> Option<T> {
-        match parse(self.table.get(name)?) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                self.rejected
-                    .push(Rejection::value(format!("sched.{name}"), e));
-                None
-            }
-        }
-    }
-
-    /// A key with a computed default: `None` unless the table sets a valid value.
-    fn optional<T>(&mut self, name: &str, parse: fn(&Value) -> Result<T, ValueError>) -> Option<T> {
-        self.parse(name, parse)
-    }
-
-    /// A key with a fixed default: the table's valid value, else the default.
-    fn required<T: serde::de::DeserializeOwned>(
-        &mut self,
-        name: &str,
-        parse: fn(&Value) -> Result<T, ValueError>,
-    ) -> T {
-        if let Some(v) = self.parse(name, parse) {
-            return v;
-        }
-        let key = SchedSection::SCHEMA
-            .key(name)
-            .expect("every field is a key of the schema");
-        match key.default {
-            DefaultSpec::Value(v) => v
-                .deserialize()
-                .expect("`SchedSection::check_defaults` keeps every default valid"),
-            DefaultSpec::Unset | DefaultSpec::Computed(_) => {
-                unreachable!("a required field has a fixed default")
-            }
-        }
-    }
-}
-
-/// A duration in RFC-0054 §3's syntax.
-fn duration(value: &Value) -> Result<Duration, ValueError> {
-    match value {
-        Value::String(s) => s.parse(),
-        _ => Err(ValueError::new(
-            ValueErrorKind::WrongType,
-            "expected a duration string, such as \"50us\" or \"30s\"",
-        )),
-    }
-}
-
-/// A non-negative count.
-fn count(value: &Value) -> Result<u32, ValueError> {
-    match value {
-        Value::Integer(i) => u32::try_from(*i).map_err(|_| {
-            ValueError::new(
-                ValueErrorKind::OutOfRange,
-                format!("{i} is outside 0..={}", u32::MAX),
-            )
-        }),
-        _ => Err(ValueError::new(
-            ValueErrorKind::WrongType,
-            "expected a whole number",
-        )),
     }
 }
 

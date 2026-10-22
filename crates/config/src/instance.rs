@@ -29,7 +29,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::hash::{BuildHasher, RandomState};
+use std::hash::{BuildHasher, Hasher, RandomState};
 use std::sync::OnceLock;
 
 use syntropy_core::policy::{ConfigValue, KeyPath};
@@ -38,7 +38,7 @@ use crate::Value;
 use crate::code::{Code, suggest_among};
 use crate::diagnostic::Problem;
 use crate::resolve::{SectionError, deserialize, to_value, value_problem, withhold_secrets};
-use crate::schema::{ConfigSection, DefaultSpec, KeySchema, Reload, Scope};
+use crate::schema::{ConfigSection, DefaultSpec, KeySchema, Reload, Scope, SectionSchema};
 
 /// Section `S` of one instance, with what each of its keys took.
 #[derive(Clone, PartialEq)]
@@ -73,10 +73,22 @@ impl Kept {
 
 /// A secret value's fingerprint: SipHash of its `Debug` form, keyed once per process. `Debug`
 /// rather than the TOML text, because `toml`'s `Display` is a feature `config` does not turn on.
+/// The form is fed to the hasher piece by piece as it is written, so no `String` copy of the
+/// secret is made.
 fn fingerprint(value: &Value) -> u64 {
+    /// Feeds formatted text straight to a hasher.
+    struct Feed<H>(H);
+    impl<H: Hasher> fmt::Write for Feed<H> {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            self.0.write(text.as_bytes());
+            Ok(())
+        }
+    }
     static KEY: OnceLock<RandomState> = OnceLock::new();
-    KEY.get_or_init(RandomState::new)
-        .hash_one(format!("{value:?}"))
+    let mut feed = Feed(KEY.get_or_init(RandomState::new).build_hasher());
+    // `Feed` never fails, and `Value`'s `Debug` only fails when its writer does.
+    let _ = fmt::Write::write_fmt(&mut feed, format_args!("{value:?}"));
+    feed.0.finish()
 }
 
 /// The section, and each key's value with a secret-typed key's written `[redacted]`.
@@ -167,18 +179,7 @@ impl<S: ConfigSection> InstanceSection<S> {
             match schema.key(name) {
                 // Another section owns the rest of a shared prefix.
                 None if schema.shared => {}
-                None => problems.push(
-                    Problem::new(
-                        Code::UnknownKey,
-                        None,
-                        format!("unknown key `{path}` in the `{}` section", schema.prefix),
-                    )
-                    .about(&path)
-                    .hint(
-                        suggest_among(schema.keys, &path)
-                            .map(|close| format!("did you mean `{close}`?")),
-                    ),
-                ),
+                None => problems.push(unknown_key(schema, &path)),
                 Some(key) if key.scope != Scope::Instance => problems.push(
                     Problem::new(
                         Code::ScopeMismatch,
@@ -214,22 +215,32 @@ impl<S: ConfigSection> InstanceSection<S> {
     /// # Errors
     ///
     /// As [`InstanceSection::from_policy`]. An entry deeper than one of the section's keys,
-    /// such as `sched.queue.max`, is an unknown key, and an entry at the prefix that is not a
-    /// table is the wrong type.
+    /// such as `sched.queue.max`, or `standby.x` under a top-level section's key `standby`, is
+    /// an unknown key, and an entry at the prefix that is not a table is the wrong type.
     pub fn from_domain(
         domain: &BTreeMap<KeyPath, ConfigValue>,
         computed: impl Fn(&'static KeySchema) -> Option<Value>,
     ) -> Result<Self, InstanceSectionError> {
-        let prefix = S::SCHEMA.prefix;
+        let schema = &S::SCHEMA;
+        let prefix = schema.prefix;
         let wrong_type = |path: &str, message: String| {
             InstanceSectionError::Rejected(vec![
                 Problem::new(Code::WrongType, None, message).about(path),
             ])
         };
         let mut table = toml::Table::new();
+        // Entries below one of a top-level section's keys. A top-level section shares the top
+        // level with every other, so `from_policy` would skip them as another section's.
+        let mut below_a_key = Vec::new();
         for (path, value) in domain {
             let path = path.as_str();
             let name = if prefix.is_empty() {
+                if let Some((first, _)) = path.split_once('.')
+                    && schema.key(first).is_some()
+                {
+                    below_a_key.push(unknown_key(schema, path));
+                    continue;
+                }
                 Some(path)
             } else if path == prefix {
                 None
@@ -259,7 +270,16 @@ impl<S: ConfigSection> InstanceSection<S> {
                 }
             }
         }
-        Self::from_policy(&Value::Table(table), computed)
+        if below_a_key.is_empty() {
+            return Self::from_policy(&Value::Table(table), computed);
+        }
+        // The policy's problems come before a computed default's, as in `from_policy`.
+        if let Err(InstanceSectionError::Rejected(more)) =
+            Self::from_policy(&Value::Table(table), computed)
+        {
+            below_a_key.extend(more);
+        }
+        Err(InstanceSectionError::Rejected(below_a_key))
     }
 
     /// The section from the values that passed, with every default filled in.
@@ -295,7 +315,11 @@ impl<S: ConfigSection> InstanceSection<S> {
                                     )));
                                 }
                             }
-                            None => unsupplied.push(key.path),
+                            // An `Option` key may stay unset, so only the others are listed.
+                            // The type is read as written: an `Option` under another name is
+                            // listed too, which says more than needed but never less.
+                            None if !key.ty.starts_with("Option<") => unsupplied.push(key.path),
+                            None => {}
                         }
                         value
                     }
@@ -348,11 +372,15 @@ impl<S: ConfigSection> InstanceSection<S> {
 
     /// The keys whose effective values differ between `self` and `newer`, in path order, each
     /// with its reload class (RFC-0054 §9.1). Identical builds give none.
+    ///
+    /// Values are compared as their key's type reads them ([`KeySchema::same`]), so `"300us"`
+    /// and `"300000ns"`, or `"1GiB"` and `"1024MiB"`, are no change and start no new plan epoch
+    /// (§9.1). A secret-typed key's values are compared as written, by fingerprint.
     pub fn changes(&self, newer: &Self) -> Vec<Change> {
         S::SCHEMA
             .keys
             .iter()
-            .filter(|key| self.values.get(key.path) != newer.values.get(key.path))
+            .filter(|key| differ(key, self.values.get(key.path), newer.values.get(key.path)))
             .map(|key| {
                 let change = Change {
                     key: key.path,
@@ -380,6 +408,27 @@ impl<S> std::ops::Deref for InstanceSection<S> {
     }
 }
 
+/// Whether a key's effective value differs between two builds: as the key's type reads the
+/// values where both builds set one, else whether one is set at all.
+fn differ(key: &KeySchema, old: Option<&Kept>, new: Option<&Kept>) -> bool {
+    match (old, new) {
+        (Some(Kept::Plain(Some(a))), Some(Kept::Plain(Some(b)))) => !(key.same)(a, b),
+        _ => old != new,
+    }
+}
+
+/// `path` is not a key of the section, with the closest key as a suggestion.
+fn unknown_key(schema: &SectionSchema, path: &str) -> Problem {
+    let message = if schema.prefix.is_empty() {
+        format!("unknown key `{path}`")
+    } else {
+        format!("unknown key `{path}` in the `{}` section", schema.prefix)
+    };
+    Problem::new(Code::UnknownKey, None, message)
+        .about(path)
+        .hint(suggest_among(schema.keys, path).map(|close| format!("did you mean `{close}`?")))
+}
+
 fn full_path(prefix: &str, name: &str) -> String {
     if prefix.is_empty() {
         name.to_owned()
@@ -389,8 +438,10 @@ fn full_path(prefix: &str, name: &str) -> String {
 }
 
 /// `value` as TOML, or `None` for a kind of value this build does not know. A date-time whose
-/// text does not parse becomes a string, which the key's own check then rejects as the wrong
-/// type.
+/// text does not parse becomes a string, which the key's own check then judges. A key of
+/// another type rejects it as the wrong type. A string-typed key, a secret one included,
+/// accepts the text as its value. `ConfigValue::Datetime` comes from parsed TOML, so in
+/// practice its text parses.
 fn toml_value(value: &ConfigValue) -> Option<Value> {
     Some(match value {
         ConfigValue::Bool(b) => Value::Boolean(*b),

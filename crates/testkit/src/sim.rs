@@ -11,12 +11,15 @@
 //! (QUAL-E3-T17). It also holds the world's core (QUAL-E8-T01): [`SimWorld`] and its event loop,
 //! the [`Checker`] trait, and the [`TraceHasher`]; and the simulated fabric (QUAL-E8-T02):
 //! [`SimFabric`], its [`LinkModel`]s and their [`Preset`]s, and the delay distributions
-//! [`Dist`]. The fakes and the cluster model are planned.
+//! [`Dist`]. The scenario file and its device and drive presets are [`scenario`] and [`presets`]
+//! (QUAL-E8-T03). The fakes and the cluster model are planned.
 
 mod clock;
 mod dist;
 mod entropy;
 mod fabric;
+pub mod presets;
+pub mod scenario;
 mod ticks;
 mod trace;
 mod world;

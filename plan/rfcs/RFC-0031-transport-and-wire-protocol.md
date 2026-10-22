@@ -786,6 +786,13 @@ Blob streams on `syntropy/blob/1` carry `Hello` (with `cred_kind = AdmissionCert
 80  8   len          bytes wanted; 0 = to the end
 ```
 
+*Note 2026-10-23 (RFC-0001 §18.28): a shard fetch's class.* A runner's `FetchShard` carries RFC-0041 §7's `FetchPriority`, and the store's chunk requests for it use these classes:
+- `Urgent`, recovery after a node loss, uses `replacement`, as RFC-0033 §6.3 runs a replacement's fetch.
+- `Normal`, a load, uses `demand`: a runner is `Fetching`.
+- `Background`, pre-staging a sibling or a replica, uses `background`.
+
+`prefetch` is RFC-0023's peer-to-local expert prefetch, which no shard fetch uses.
+
 The response is a sequence of `BlobData` frames with payloads of at most `net.blob_frame` (1 MiB). Their extension is `id[32], offset u64, total u64, flags u16` (bit0 `LAST`), followed by padding. Errors use `Close` with `NotFound`, `Busy` (with a `retry_after_ms` in the reason) or `Throttled`. The receiver writes data through the store's direct-I/O path and verifies the object's BLAKE3 when it completes (RFC-0041). A mismatch discards it and marks the source suspect for that model (ADR-0016).
 
 `TENSOR_GROUP` requests are served from a *runner's* resident tier, and daemons hold no model bytes (RFC-0001 §2.1). They therefore travel on a runner-to-runner `Bulk`-purpose data-plane channel, which carries the same `BlobRequest` and `BlobData` frames and is paced like the blob plane (§7.5). The bytes are verified against the group's tensor hashes from the manifest (RFC-0001 §5.3).
