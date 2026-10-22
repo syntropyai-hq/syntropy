@@ -395,6 +395,11 @@ pub trait RefSink {
 }
 ```
 
+*Note 2026-10-22 (QUAL-E4-T14, where the types live):* the code block above shows the types without crate paths.
+- `RefMode` and `RefDevice` live in `kernels::reference` (layer 1). `graph::reference` reads them, and so does the GPU reference in `kernels-cuda` (COMP-E14-T23); those two crates are peers in layer 2, so neither can hold them (RFC-0001 §4.2 rule 2).
+- `RefOptions`, the `WeightSource` and `RefSink` traits, `TapSpec` and `HiddenBlock` live in `graph::reference`, beside the interpreter that uses them. That interpreter is production code (the warm-up canary), and `testkit` is a dev-dependency only (rule 9). A `WeightSource` returns F32 values, dequantised with RFC-0042's reference dequantisers, for a `WeightKey`: a `graph::ir::WeightRef` and, for a routed expert, its index.
+- `RefExecutor`, `RefKv` and `RefStats` live in `testkit::refexec`, with the stub sources and sinks tests use.
+
 Reference semantics that matter for parity:
 - **Routing ties.** MoE top-k selection breaks score ties toward the lower expert index. RFC-0042 requires every provider to use the same rule, so a tie is never an inter-kernel divergence by construction. Near-ties are real numerics, and the metrics capture them.
 - **Attention** materialises full score rows per head. There is no tiled or online softmax in the reference.
