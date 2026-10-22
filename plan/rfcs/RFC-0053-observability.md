@@ -308,6 +308,12 @@ pub struct TraceContext {
 
 *Note 2026-10-22 (DIST-E1-T14): one `TraceContext`, 26 bytes.* The block above has 25 bytes because it leaves out W3C traceparent's version byte. RFC-0031 §6.3's `TRACE` item, which owns the layout, carries all 26: version, trace-id (16 bytes), parent span id (8) and flags. The one `TraceContext` is defined in `core` with that shape (RFC-0001 §5.8, note of the same date), and `net` encodes it. Its fields are `version`, `trace_id`, `span_id` and `flags`: `span_id` is the parent span above, the sender's span. Its `flags` keep this section's bits: bit 0 sampled, as W3C's trace-flags, and bit 1 full trace.
 
+*Note 2026-10-22 (#1766): an incoming flags byte keeps only bit 0.* W3C Trace Context Level 2 gives trace-flags bit 1 to `random-trace-id`, which conformant clients set, while `TraceContext::flags` uses bit 1 for full trace. A client's flags byte copied as it is would switch on full tracing, which costs every stage work and records more per-request detail than the client asked for.
+- **In.** Ingress keeps only bit 0 (`sampled`) of an incoming `traceparent`'s flags. The HTTP rule above then decides whether that bit forces full tracing.
+- **Syntropy's own bits**, bit 1 among them, are set only by Syntropy's policy: `syntropy.trace = true`, `Syntropy-Trace: 1`, or a sampled flag honoured under `obs.trace.honor_remote_sampled`.
+- **Out.** A `traceparent` the node returns carries bit 0 only, so no client reads Syntropy's bit 1 as `random-trace-id`.
+- **Not chosen:** moving full trace to another bit. W3C reserves the higher bits for later levels, so any of them could collide again.
+
 #### 3.3 Sampling
 
 | Spans | Recorded | Kept in |
