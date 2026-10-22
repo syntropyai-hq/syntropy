@@ -284,7 +284,7 @@ pub enum TierCommand {
 }
 ```
 
-**Where `BufferView` and `ViewKind` live** (revised 2026-10-22). Both are defined in `syntropy-core`, with serde derives, and `tier` re-exports them unchanged. `kernels` names `BufferView` in `TensorArg` (RFC-0040 §3.5), and `kernels` is in layer 1, below `tier` (RFC-0001 §4.1, §4.2 rule 2), so the type must sit in `core`, as `ExtentRef` does.
+**Where `BufferView` and `ViewKind` live** (revised 2026-10-22). Both are defined in `syntropy-core`, with serde derives, and `tier` re-exports them unchanged. `kernels` names `BufferView` in `OpArgs::weights` (RFC-0040 §3.5), and `kernels` is in layer 1, below `tier` (RFC-0001 §4.1, §4.2 rule 2), so the type must sit in `core`, as `ExtentRef` does.
 
 *Note 2026-10-22 (OQ-IO-27, OQ-IO-28):* `plan_arenas` takes the accepted layouts as an argument, `AcceptedLayouts`: a map from (op key, device) to the `LayoutVersion`s each op accepts, which the runner builds from `KernelProvider::query` before the call. `plan_arenas` stays pure and makes §7.3's check itself. `LedgerGrant` is plain data in `core` (RFC-0001 §3.5), and the ledger check is a separate pure check of an `ArenaPlan` against it in `Fetching` (§12).
 

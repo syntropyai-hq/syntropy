@@ -1538,7 +1538,7 @@ pub enum ErrorClass {
 | `TierKind` | core | 0020 | 0010 |
 | `DeviceClass`, `CpuIsa`, `DeviceFeatures` | core | 0040 | 0010 (`Npu`, ADR-0405 decision 4's fields, the provider-record merge) |
 | `ExtentRef`, `StepLayer`, `FileIx`, `HostRegion` | core | 0020 (`ExtentRef`, `StepLayer`), 0021 (`FileIx`, `HostRegion`) | 0040 (`HostRegion`) |
-| `BufferView`, `ViewKind` | core | 0020 | 0040 (`TensorArg`) |
+| `BufferView`, `ViewKind` | core | 0020 | 0040 (`OpArgs::weights`) |
 | `ResourceGraph`, `CapabilityProfile` | core | 0010 | 0011 (what the solver reads), 0021 (`StorageCaps` fields) |
 | `ModelManifest`, `ModelId`, `TensorCensus`, `TensorClass`, `ShardSpec`, `PackKey` | manifest (`ModelId`: core) | 0041 | 0043 (classification, `LayerSpec`, `TokenizerSpec`), 0042 (quant schemes) |
 | `DType`, `QuantScheme` | core | 0042 | 0040 |
@@ -2710,7 +2710,7 @@ ADR-0405, accepted 2026-10-22 (option A, with V1 for exactness on Vulkan), defin
 
 ### 18.12 Buffer views in core (2026-10-22)
 
-COMP-E1-T05 binds `BufferView` in `kernels`' `TensorArg`. RFC-0020 §3 had defined it in `tier`, a layer above `kernels`.
+COMP-E1-T05 binds `BufferView` in `kernels`' `OpArgs::weights`. RFC-0020 §3 had defined it in `tier`, a layer above `kernels`.
 
 | Change | Sections touched | Reason |
 |---|---|---|
