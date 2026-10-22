@@ -124,3 +124,42 @@ fn only_tune_spells_out_the_write() {
         [tune.canonicalize().unwrap()]
     );
 }
+
+/// Other ways to write the sysctl that a source could spell out (review of #1822, N1): the
+/// `sysctl` tool found on `PATH`, the MIB-form `sysctl()` or `sysctlnametomib()` calls, and the
+/// sysctl's name as a string. None may appear outside `tier/src/tune.rs`.
+#[test]
+fn no_other_write_form_appears() {
+    let tune = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/tune.rs")
+        .canonicalize()
+        .unwrap();
+    let mut found = Vec::new();
+    for path in production_sources() {
+        if path.canonicalize().unwrap() == tune {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for needle in ["Command::new(\"sysctl\")", "\"iogpu.wired_limit_mb"] {
+            if text.contains(needle) {
+                found.push(format!("{}: {needle}", path.display()));
+            }
+        }
+        for call in ["sysctl(", "sysctlnametomib("] {
+            for (at, _) in text.match_indices(call) {
+                let before = &text[..at];
+                let joined = before
+                    .chars()
+                    .last()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
+                if !joined && !before.trim_end().ends_with("fn") {
+                    found.push(format!("{}: a {call}…) call", path.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "sysctl write forms outside tune: {found:#?}"
+    );
+}
