@@ -463,6 +463,15 @@ impl ChannelCore {
         }
     }
 
+    /// A fault the backend sees itself, outside the core's own checks: a queue pair in its
+    /// error state, a lost QUIC connection or TCP reset, a link down past `link.failover_timeout`
+    /// (RFC-0031 §7.4). From now on sends return [`SendError::Link`], the next
+    /// [`poll_transmit`](Self::poll_transmit) gives a `Close` with the error's code, and nothing
+    /// more is received. The first fault is kept.
+    pub fn fail(&mut self, error: Error) {
+        self.raise(error);
+    }
+
     // ---- Sending ----
 
     /// Queues a data frame whose extension and payload sit in the given leases (`Channel::
