@@ -140,6 +140,12 @@ pub struct HopPlan {
 pub struct RelayVia { pub node: NodeId, pub first: LinkId, pub second: LinkId, pub transport: TransportKind }
 ```
 
+**Note, 2026-10-22 (#1661): a `predicted_p99` of 0 is no tail prediction.**
+- `predicted_p99` is `Nanos`, not `Option<Nanos>`. Its serde default is 0 (DIST-E11-T18), and 0 means the plan carries no tail prediction for the hop. A plan written before the field existed has none.
+- Plan assembly sets every hop's value from the link profile (PLC-E6-T22).
+- For a hop at 0, the drift detector makes no tail comparison, and `validate()` accepts the hop. So an older plan neither shows constant drift nor fails validation (DIST-E11-T10).
+- A nonzero value is a real prediction. A measured p99 above it by more than `replan.drift_threshold`, sustained past `replan.drift_window`, raises drift.
+
 #### 3.4 Relayed token-return hops
 
 Thunderbolt cables are point-to-point and unrouted (ADR-0011). With three Macs cabled in a chain A–B–C and stages A → B → C, the tail-to-head return C → A has no cable.
@@ -453,6 +459,7 @@ pub struct LogEntry {
 }
 ```
 
+- **The chain's bytes.** `index` and `term` are 8-byte little-endian integers, as everywhere on the wire (RFC-0031). `cause` is one byte `0` when there is none, else `1` followed by the origin's 32 bytes and its counter as 8 little-endian bytes. `event_bytes` come last, so they need no length. `cluster_id` is the cluster key's 32-byte public half (RFC-0034 §4). `crates/cluster/tests/log/vectors.txt` pins the result for a fixed log.
 - **Divergence check.** The chain makes divergence detectable in one comparison: two nodes agree on everything up to index i if and only if their `chain` values at i match. It is used in sync (§6.7), in split-brain heal (§7.5) and in the debug endpoint.
 - **Not a security mechanism.** Security comes from `validate()` (§6.3) and the keyholder signatures that authority events carry (RFC-0034 §8.3).
 

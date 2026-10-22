@@ -1,0 +1,17 @@
+error: a `Reserve` key reads RFC-0054 §3's forms through `#[serde(with = "syntropy_config::form")]`; without it, it would read `syntropy-core`'s record encoding
+  --> tests/ui/core_type_without_form.rs:14:19
+   |
+14 |     ram_headroom: Reserve,
+   |                   ^^^^^^^
+
+error: a `Fraction` key reads RFC-0054 §3's forms through `#[serde(with = "syntropy_config::form")]`; without it, it would read `syntropy-core`'s record encoding
+  --> tests/ui/core_type_without_form.rs:18:12
+   |
+18 |     share: Option<Fraction>,
+   |            ^^^^^^
+
+error: a `NodeSelector` key reads RFC-0054 §3's forms through `#[serde(with = "syntropy_config::form")]`; without it, it would read `syntropy-core`'s record encoding
+  --> tests/ui/core_type_without_form.rs:21:12
+   |
+21 |     nodes: Vec<syntropy_core::policy::NodeSelector>,
+   |            ^^^

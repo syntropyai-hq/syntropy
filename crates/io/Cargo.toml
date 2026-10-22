@@ -7,9 +7,21 @@ publish.workspace = true
 
 [dependencies]
 syntropy-core = { path = "../core" }
+# The OS CSPRNG behind `os::OsEntropy` (ADR-0022 decisions 3 and 4). RFC-0001 §4.2 rule 6 allows
+# it as a direct dependency of this crate only.
+getrandom = { version = "0.4.3", default-features = false }
 # The rings between producers and the I/O thread (RFC-0021 §3.1; ADR-0012 item 4).
 syntropy-spsc = { path = "../spsc" }
 
 [dev-dependencies]
+# Property tests of the alignment contract (RFC-0021 Testing, "Alignment (§6)").
+proptest.workspace = true
 # `CountingAlloc`, for the test that the I/O loop allocates nothing in steady state.
 syntropy-testkit = { path = "../testkit" }
+
+# The clocks of `os::SystemClock` (ADR-0022 decision 4: binding crates for the clock calls).
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_WindowsProgramming"] }

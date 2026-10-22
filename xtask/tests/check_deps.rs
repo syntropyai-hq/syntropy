@@ -335,18 +335,22 @@ fn rule_9_dev_only_crates_are_only_dev_dependencies() {
 fn rule_10_release_builds_carry_no_test_features() {
     // `testkit` turns on `obs/guards`, but only as a dev-dependency of `cli`, which no release
     // build includes. Its default feature turning on `obs/guards` is a finding all the same, and so
-    // is the `obs/fault-injection` it reaches through `obs`'s own `extra` (#1556).
-    fails_with(
-        "rule-10",
-        10,
-        &[
-            "the release build of `cli` enables `obs/fault-injection`",
-            "the release build of `kernels-vulkan` enables `obs/debug-taps`",
-            "`testkit` turns on `obs/guards` by default (default → helpers → syntropy-obs/guards)",
-            "`testkit` turns on `obs/fault-injection` by default (default → helpers → \
-             syntropy-obs/extra → fault-injection)",
-        ],
-    );
+    // is the `obs/fault-injection` it reaches through `obs`'s own `extra` (#1556). On Linux, the
+    // core binary's symbol table holds the fault point `cli` calls (QUAL-E9-T01).
+    let mut expected = vec![
+        "the release build of `cli` enables `obs/fault-injection`",
+        "the release build of `kernels-vulkan` enables `obs/debug-taps`",
+        "`testkit` turns on `obs/guards` by default (default → helpers → syntropy-obs/guards)",
+        "`testkit` turns on `obs/fault-injection` by default (default → helpers → \
+         syntropy-obs/extra → fault-injection)",
+    ];
+    if cfg!(target_os = "linux") {
+        expected.push(
+            "the core binary, built with its release features, holds 1 symbol of \
+             `syntropy_obs::faults::inject`, which only `fault-injection` compiles: ",
+        );
+    }
+    fails_with("rule-10", 10, &expected);
 }
 
 #[test]
