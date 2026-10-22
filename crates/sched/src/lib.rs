@@ -10,4 +10,4 @@
 
 pub mod config;
 
-pub use config::{Rejection, SchedSection};
+pub use config::SchedSection;

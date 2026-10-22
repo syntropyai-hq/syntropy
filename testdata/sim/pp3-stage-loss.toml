@@ -1,0 +1,23 @@
+# The example scenario of RFC-0060 §8.5, verbatim (QUAL-E8-T03).
+
+name = "pp3-stage-loss-mid-decode"
+numeric = "digest"                 # or "numeric" with a nano/micro fixture
+model = "fixture:deepseek-v3-class/full-shape"   # census and sizes of the real model, digest buffers
+seeds = { pr_cap = 64, nightly_cap = 4096 }   # counts are derived ("Simulator throughput") and recorded here by CI
+virtual_duration = "120s"
+
+nodes = [
+  { id = "pc",   devices = ["gpu:ada-24g", "cpu:ddr5-2ch-128g"], nvme = "gen4-990pro-class" },
+  { id = "mac",  devices = ["gpu:apple-max-128g-unified"],       nvme = "apple-internal" },
+  { id = "halo", devices = ["gpu:strix-halo-128g-unified"],      nvme = "gen4-generic" },
+]
+links = [ { between = ["pc", "mac", "halo"], preset = "lan_2_5g" } ]
+workload = { kind = "closed_loop", streams = 2, prompt = { dist = "uniform", lo = 256, hi = 4096 }, gen = 256 }
+faults = [
+  { at = "after:decode_tokens>=64", action = "kill_runner", target = "stage:1" },
+  { at = "t+30s", action = "link_flap", target = "pc<->halo", down = "2s" },
+]
+
+[expect]
+checkers = ["safety", "exactly_once_tokens", "sc28_resume", "no_approx_in_exact"]
+resume_within = "formula:sc28"     # t_detect + t_solve + S_delta/β_fetch + t_replay, from RFC-0033

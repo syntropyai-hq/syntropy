@@ -3650,6 +3650,7 @@ name = "syntropy-core"
 version = "0.0.0"
 dependencies = [
  "bitflags",
+ "postcard",
  "proptest",
  "serde",
  "serde_json",
@@ -3663,6 +3664,13 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-exec"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "syntropy-core",
+ "syntropy-io",
+ "syntropy-spsc",
+]
 
 [[package]]
 name = "syntropy-graph"
@@ -3832,8 +3840,11 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "chacha20",
+ "serde",
+ "syntropy-config",
  "syntropy-core",
  "syntropy-graph",
+ "toml",
 ]
 
 [[package]]

@@ -25,7 +25,7 @@ use std::process::Command;
 use crate::run::Context;
 use crate::{
     ci_gate, codeowners, contrib, dep_diff, determinism, instructions, properties, repo_settings,
-    toolchain,
+    sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -295,6 +295,15 @@ pub const JOBS: &[Entry] = &[
                     "scenarios",
                     "check",
                 ]),
+            },
+            // The simulator's device and drive presets cite their sources (QUAL-E8-T03, RFC-0060
+            // §8.5).
+            Step {
+                name: "sim-presets",
+                action: Action::Builtin {
+                    shown: "every simulator preset cites its sources, and labels and sources each figure",
+                    run: sim_presets::step,
+                },
             },
         ],
         // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
@@ -786,6 +795,8 @@ mod tests {
                 "cargo xtask notices",
                 "cargo run --locked --quiet --package syntropy-bench --bin syntropy-bench -- \
                  scenarios check",
+                "xtask: every simulator preset cites its sources, and labels and sources each \
+                 figure",
             ]
         );
     }
