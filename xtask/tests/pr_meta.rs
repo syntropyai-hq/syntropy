@@ -52,9 +52,16 @@ fn steps(job: &str) -> Vec<String> {
     steps
 }
 
-/// Whether a job compares the PR's files with the base's: it passes the PR checkout as `--head`.
+/// Whether a job compares the PR's files with the base's: it checks the PR out at `pr`, in block
+/// or flow style, or reads `$GITHUB_WORKSPACE/pr` however its arguments are spelled.
 fn compares_with_the_pr(job: &str) -> bool {
-    job.contains(r#"--head "$GITHUB_WORKSPACE/pr""#)
+    uncommented(job).lines().any(|line| {
+        let line = line.trim();
+        line == "path: pr"
+            || line.contains("path: pr,")
+            || line.contains("path: pr}")
+            || line.contains("GITHUB_WORKSPACE/pr")
+    })
 }
 
 /// A job's text without its comment lines. Only what runs counts: comments may name the old
@@ -202,6 +209,22 @@ fn a_pairing_step_without_the_merge_group_guard_is_caught() {
             problems(&job_of(&mutated))
         );
     }
+}
+
+#[test]
+fn a_job_is_found_by_its_pr_checkout_whatever_its_head_argument() {
+    let job = job_of(&dep_diff_steps());
+    assert!(compares_with_the_pr(&job));
+    // The PR checked out at `pr`, and its path passed to the tool in another spelling.
+    let respelled = job.replace(r#""$GITHUB_WORKSPACE/pr""#, "pr");
+    assert!(!respelled.contains("GITHUB_WORKSPACE/pr"));
+    assert!(compares_with_the_pr(&respelled));
+    // The same checkout written in flow style.
+    let flow = "    steps:\n      - uses: actions/checkout@v7\n        with: {ref: x, path: pr}\n";
+    assert!(compares_with_the_pr(flow));
+    assert!(!compares_with_the_pr(
+        &flow.replace("path: pr}", "path: prior}")
+    ));
 }
 
 #[test]
