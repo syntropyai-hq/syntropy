@@ -270,7 +270,8 @@ pub enum SideItem<'a> {
         k: u8,
         experts: &'a [u8],
     },
-    /// `SEQ_META`: the CBOR `SequenceMeta` of RFC-0032 §3.6, which DIST-E8-T05 decodes.
+    /// `SEQ_META`: the CBOR `SequenceMeta` of RFC-0032 §3.6, which
+    /// [`decode_seq_meta`](super::decode_seq_meta) reads.
     SeqMeta(&'a [u8]),
     /// `SEQ_CTRL`: sequence control riding the ring.
     SeqCtrl(SeqCtrl),
