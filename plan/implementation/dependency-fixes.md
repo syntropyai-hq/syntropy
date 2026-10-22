@@ -977,3 +977,17 @@ The post-merge review of #1673 found the code right and the row wrong. The row d
 |---|---|---|---|
 | DIST-E18-T01 → PROD-E1-T02, PROD-E1-T03 | DIST-E18-T01 | R9 | its criteria are "`syntropy config show --resolved` lists every key with its default", which is PROD-E1-T02's `ResolvedConfig` and `show_resolved`, and "unknown or mis-scoped keys fail validation", which is PROD-E1-T03's `unknown_key` (3) and `scope_mismatch` (9). Both are earlier milestones than M2 |
 | DIST-E18-T01's task text leaves `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` to PLC-E6-T11 | DIST-E18-T01 | Definition of done | RFC-0054 §5.1 gives `replan.*` to RFC-0011, whose key table declares those three. RFC-0033's shared `replan` section holds only `replan.degraded_min_gain`, as RFC-0054 §5.1's note of 2026-10-22 records. PLC-E6-T11 registers "the cluster-scope `solver.*` and `replan.*` keys" |
+
+## Held review follow-ups (2026-10-23)
+
+Non-blocking notes from the reviews of #1781, #1786, #1783 and #1789, which the lead collected for one plan PR. These are plan corrections under R9 and the Definition of done, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T03 gains "`link.failover_timeout` declares a maximum of 15 s, iroh's per-path idle cap, so a larger value is refused at load with RFC-0054's `out_of_range` rather than clamped"; RFC-0031 §11's key row and §4.3's note say the same; no edge | DIST-E7-T03 | Definition of done | iroh's `default_path_max_idle_timeout` clamps anything above 15 s with only a log warning, so a 30 s setting would give a 15 s per-path idle and an unchanged connection idle (review-1474's N1 on #1781) |
+| PLC-E8-T21 → QUAL-E5-T04 | PLC-E8-T21 | R9 | its greedy criterion passes RFC-0060 §5.4's parity gate, whose evaluator is QUAL-E5-T04 (M0a), which none of its prerequisites reached (#1781's review, N1) |
+| COMP-E5-T07 → COMP-E1-T10 | COMP-E5-T07 | R9 | its conformance check is against COMP-E1-T10's `kernels::reference` for the M3 ops, and it uses the `core` variant COMP-E1-T10 moves; COMP-E6-T07, the Metal side, already depends on it. M3 → M3 (#1786's review, N1) |
+| COMP-E1-T10's `core` change bumps `ipc_protocol`, not only the fingerprint; no edge | COMP-E1-T10 | Definition of done | `AttnKind` reaches the IPC through `KernelClass::Attention` in `QuantBw`, inside the `CapabilityProfile` that `ProbeResult` carries, so a variant gaining a field is an `ipc_protocol` change (RFC-0001 §18.20; #1786's review, N2) |
+| DIST-E1-T05's `StopReason` from `Failed`: `Drained(DrainReason::RestartBudgetSpent)` for a spent restart budget, `Fatal(ErrorClass)` for a fatal error; no edge | DIST-E1-T05 | Definition of done | RFC-0001 §3.3's `Failed → Stopped` edge names both causes, and either variant could carry the first (#1789's review, N3; RFC-0001 §18.34) |
+| DIST-E14-T06's `Reconcile` carries `recent`; no edge | DIST-E14-T06 | Definition of done | RFC-0033 §4.6's `HandshakeInput::Reconcile` left out `recent`, which §4.2 and §11's `SequenceControl::Reconcile` carry (note of 2026-10-23) |
+

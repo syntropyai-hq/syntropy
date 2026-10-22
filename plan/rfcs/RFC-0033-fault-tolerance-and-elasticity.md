@@ -298,7 +298,7 @@ pub enum RepairOutput {
 /// blocks a dispatcher.
 pub struct HandshakeCore { seqs: BTreeMap<SequenceId, SeqRecovery>, phase: Phase }
 pub enum HandshakeInput {
-    Reconcile { seq: SequenceId, emitted: u32, rng_counter: u64 },  // from ingress (§4.2)
+    Reconcile { seq: SequenceId, emitted: u32, rng_counter: u64, recent: SmallVec<[u32; 8]> },  // from ingress (§4.2)
     RecoverFrame(RecoverMsg),                                        // QUERY reports, DONE, from the ring return
     ReplayProgress { seq: SequenceId, through: u32 },
     TimerFired(HandshakeTimer),                                      // per-phase deadlines; re-run on loss
@@ -311,6 +311,8 @@ pub enum HandshakeOutput {
     SetTimer { timer: HandshakeTimer, at: MonoTime },
 }
 ```
+
+*Note 2026-10-23:* `HandshakeInput::Reconcile` gains `recent`, the last up to 8 emitted tokens, which §4.2 and §11's `SequenceControl::Reconcile` carry and this input had left out. It gives the head the last emitted tokens, among them the resume step's input when `emitted > 0` (§4.2). DIST-E14-T06 builds `HandshakeCore` with it.
 
 The choice rule of §5.1 and the strategy rule of §6.2 are pure functions that these cores call. The L6 property suites drive the public `Input` enums with random multi-stage losses, and the simulator's fault injection (RFC-0060 §9) checks the chaos-plan outcomes below.
 

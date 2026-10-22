@@ -1166,7 +1166,7 @@ The liveness properties are judged in quiescent states with the network whole, s
   - `stale-heal-one-claim`: under §7.5's proof comparison it fails the command property. The settled rule passes it exhaustively.
   - `stale-heal-late-support`: under the proof comparison, and under support read from `acks` alone, it fails the command property and "an aborted claim never deposes a live coordinator". The settled rule passes it up to the cap.
 
-  Both alternatives run with this change's two bookkeeping rules still on: support only grows, and each accepted election is endorsed once. Only the comparison differs. Without those rules, `stale-heal-late-support` failed under every comparison, the settled one included (§7.5's note, "What the model check found on the way").
+  Both alternatives run with this change's two bookkeeping rules still on: support only grows, and each accepted election is endorsed once. Only the comparison differs. Without those rules, a stale proof could roll a node back (§7.5's note, "What the model check found on the way").
 - **Run figures.** The full run visits 94 million states in 1061 s release-optimised on one checker thread, with a test-process peak of 171 MB. The bounded configuration visits 2.3 million states: 53 s in the dev profile and 8.1 s release-optimised [measured, 2026-10-23, DIST-E10-T10's model, AMD Ryzen 9 5950X under WSL2, toolchain 1.99.1, with other builds running].
 - **The restated property.** The row's "an unsupported self-election never deposes a supported coordinator" now ends "unless the deposing side's chain holds a supported election that beats that coordinator's". OQ-NET-34's 15-step trace forces it:
   1. a split cuts coordinator 0 off alone, before node 2 sends it a command;
