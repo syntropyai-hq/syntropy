@@ -26,6 +26,7 @@ use syntropy_net::frame::{
 };
 use syntropy_net::transport::core::{
     ACK_TIMEOUT_MIN, ACK_TIMEOUTS_TO_FAULT, CONTROL_RECEIVES, CRC_STORM_COUNT, MAX_CONTROL_FRAME,
+    PROBE_BACKOFF_MAX,
 };
 use syntropy_net::transport::{
     BufferPool, ChannelCore, ChannelKey, ChannelPurpose, CloseReason, CoreConfig, CreditCadence,
@@ -983,6 +984,30 @@ fn a_peer_granting_too_much_still_meets_the_retention_window() {
     assert_eq!(a.retained_bytes(), 4 * 1024);
 }
 
+/// A peer that grants more than its `recv_slots` past the ack gets no more than `recv_slots`
+/// of credit, even where the retention window would allow more (RFC-0031 §7.1): with
+/// `retention` 8 above `recv_slots` 4, only the `limit_seq` cap holds the sender at 4.
+#[test]
+fn the_limit_seq_cap_holds_where_retention_would_allow_more() {
+    let shape = Shape {
+        recv_slots: 4,
+        slot_size: 1024,
+        retention: 8,
+        cadence: CreditCadence::EveryFrame,
+    };
+    let pool = send_pool(16, 1024);
+    let mut a = sender(shape, ALPHA, RFC);
+    deliver(&mut a, &credit(0, u64::MAX, &[]), at(0));
+    assert_eq!(a.credit(), 4);
+    for step in 0..4 {
+        send(&mut a, &pool, step, &[1; 16], at(0)).unwrap();
+    }
+    assert_eq!(
+        send(&mut a, &pool, 4, &[1; 16], at(0)),
+        Err(SendError::WouldBlock)
+    );
+}
+
 /// A credit that only grants more is lost while the sender has nothing unacknowledged: the
 /// sender, refused for credit, probes with a `Ping` after an ack timeout, then after 2 and 4 ack
 /// timeouts, and the receiver answers with its current credit. A sender that was never refused
@@ -1019,10 +1044,11 @@ fn a_stalled_sender_probes_for_a_lost_credit() {
     drop(held);
     let lost = credits_in(&drain(&mut b, at(10_001)));
     assert_eq!(lost.iter().map(|c| c.limit_seq).collect::<Vec<_>>(), [8]);
-    // Probes after 1, then 2, then 4 ack timeouts; the first two answers are lost too.
+    // Probes after 1, 2, 4, … ack timeouts, the wait doubling up to its cap of
+    // PROBE_BACKOFF_MAX (64) ack timeouts; the first seven answers are lost too.
     let timeout = ACK_TIMEOUT_MIN.0 / 1_000;
     let mut probes = Vec::new();
-    for us in 10_000..10_000 + 8 * timeout {
+    for us in 10_000..10_000 + 256 * timeout {
         a.on_tick(at(us));
         for bytes in drain(&mut a, at(us)) {
             assert!(matches!(
@@ -1033,16 +1059,66 @@ fn a_stalled_sender_probes_for_a_lost_credit() {
             deliver(&mut b, &bytes, at(us));
             let answer = drain(&mut b, at(us));
             assert_eq!(credits_in(&answer).last().map(|c| c.limit_seq), Some(8));
-            if probes.len() == 3 {
+            if probes.len() == 8 {
                 for bytes in &answer {
                     deliver(&mut a, bytes, at(us));
                 }
             }
         }
     }
-    assert_eq!(probes, [timeout, 3 * timeout, 7 * timeout]);
+    // The gaps are 1, 2, 4, 8, 16, 32, then 64 and 64 again at the cap; no probe after the
+    // credit arrives.
+    let gaps: Vec<u64> = [0]
+        .iter()
+        .chain(&probes)
+        .zip(&probes)
+        .map(|(last, next)| (next - last) / timeout)
+        .collect();
+    assert_eq!(gaps, [1, 2, 4, 8, 16, 32, 64, 64]);
+    assert_eq!(probes.last(), Some(&(191 * timeout)));
+    assert_eq!(PROBE_BACKOFF_MAX, 64);
     assert_eq!(a.credit(), 4);
     assert_eq!(send(&mut a, &pool, 4, &[3; 16], at(20_000)), Ok(5));
+}
+
+/// `next_deadline` is when `on_tick` next has work: the oldest frame's ack timeout, then a
+/// stalled sender's probe; nothing after a fault. One nanosecond before it `on_tick` sends
+/// nothing; at it, the timer fires.
+#[test]
+fn next_deadline_is_when_the_next_timer_fires() {
+    let pool = send_pool(8, 1024);
+    let mut a = sender(Shape::SMALL, ALPHA, RFC);
+    assert_eq!(a.next_deadline(), None, "nothing sent, nothing due");
+    send(&mut a, &pool, 0, b"x", at(5)).unwrap();
+    assert_eq!(a.next_deadline(), None, "not yet on the wire");
+    drain(&mut a, at(10));
+    let due = a.next_deadline().expect("the ack timer");
+    assert_eq!(due, MonoTime(at(10).0 + ACK_TIMEOUT_MIN.0));
+    a.on_tick(MonoTime(due.0 - 1));
+    assert!(drain(&mut a, MonoTime(due.0 - 1)).is_empty());
+    a.on_tick(due);
+    assert_eq!(drain(&mut a, due).len(), 1, "the resend at the deadline");
+    // A sender with its whole window acknowledged and no more credit, refused: the probe's
+    // deadline, one ack timeout after the refusal.
+    let mut a = sender(Shape::SMALL, ALPHA, RFC);
+    for step in 0..4 {
+        send(&mut a, &pool, step, b"z", at(100)).unwrap();
+    }
+    drain(&mut a, at(100));
+    deliver(&mut a, &credit(4, 4, &[]), at(101));
+    assert_eq!(a.next_deadline(), None, "all acknowledged, nothing refused");
+    assert_eq!(
+        send(&mut a, &pool, 4, b"z", at(102)),
+        Err(SendError::WouldBlock)
+    );
+    let probe = a.next_deadline().expect("the probe");
+    assert_eq!(probe, MonoTime(at(102).0 + ACK_TIMEOUT_MIN.0));
+    a.on_tick(MonoTime(probe.0 - 1));
+    assert!(drain(&mut a, MonoTime(probe.0 - 1)).is_empty());
+    a.on_tick(probe);
+    assert_eq!(drain(&mut a, probe).len(), 1, "the probe at its deadline");
+    a.fail(syntropy_net::Error::uncoded(ErrorClass::Link, "gone"));
+    assert_eq!(a.next_deadline(), None);
 }
 
 /// RFC-0031 §7.3: three ack timeouts in a row are a link fault, `AckTimeout` (0x0208, `Link`).

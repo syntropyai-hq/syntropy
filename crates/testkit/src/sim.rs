@@ -12,7 +12,9 @@
 //! the [`Checker`] trait, and the [`TraceHasher`]; and the simulated fabric (QUAL-E8-T02):
 //! [`SimFabric`], its [`LinkModel`]s and their [`Preset`]s, and the delay distributions
 //! [`Dist`]. The scenario file and its device and drive presets are [`scenario`] and [`presets`]
-//! (QUAL-E8-T03). The fakes and the cluster model are planned.
+//! (QUAL-E8-T03). With the `transport` feature it holds `SimTransport` (QUAL-E8-T04): RFC-0031's
+//! `Transport` and `Channel` over the fabric, in a `SimNet`. The fakes and the cluster model are
+//! planned.
 
 mod clock;
 mod dist;
@@ -22,6 +24,8 @@ pub mod presets;
 pub mod scenario;
 mod ticks;
 mod trace;
+#[cfg(feature = "transport")]
+mod transport;
 mod world;
 
 pub use clock::{SIM_UNIX_MS_ORIGIN, SimClock, SimClockHandle};
@@ -33,4 +37,6 @@ pub use fabric::{
 };
 pub use ticks::SimTicks;
 pub use trace::{Hex, TraceEvent, TraceHasher};
+#[cfg(feature = "transport")]
+pub use transport::{FAILOVER_LAN, FAILOVER_WAN, MAX_FRAME, SimNet, SimTransport};
 pub use world::{Checker, Env, Found, Model, RunOutcome, Schedule, SimWorld, Violation};
