@@ -417,13 +417,16 @@ where
     ///
     /// The original kept in the record is the value before Syntropy first changed it. A second
     /// tune keeps the first original while the value is still the one Syntropy wrote. If someone
-    /// changed it by hand since, their value becomes the original.
+    /// changed it by hand since, their value becomes the original. A launchd job listed in a live
+    /// record (applied or pending) stays listed whatever the value, so a later revert still
+    /// removes it.
     ///
     /// # Errors
     ///
     /// - [`TuneError::AlreadyAt`] when the limit is already `limit_mb`.
-    /// - [`TuneError::Run`] when approval is refused or the command fails. The record is marked
-    ///   abandoned if the value did not change.
+    /// - [`TuneError::Run`] when approval is refused or the command fails. If the value did not
+    ///   change, the live record from before this call is put back, so its revert still works;
+    ///   with no earlier record, this one is marked abandoned.
     /// - [`TuneError::ReadBack`] when the value reads back as something else. The record stays
     ///   pending, and a revert sorts it out.
     /// - A read or record failure.
@@ -432,26 +435,36 @@ where
         if current == limit_mb {
             return Err(TuneError::AlreadyAt { mb: current });
         }
-        let earlier = self.store.load()?.filter(|record| {
-            matches!(record.state, RecordState::Applied | RecordState::Pending)
-                && record.new_mb == current
-        });
+        // The live record, if any: a change not yet reverted or abandoned.
+        let live = self
+            .store
+            .load()?
+            .filter(|record| matches!(record.state, RecordState::Applied | RecordState::Pending));
+        let original_mb = match &live {
+            Some(record) if record.new_mb == current => record.original_mb,
+            _ => current,
+        };
         let mut record = TuneRecord {
             schema: SCHEMA,
             sysctl: WIRED_LIMIT_SYSCTL.to_owned(),
-            original_mb: earlier.as_ref().map_or(current, |r| r.original_mb),
+            original_mb,
             new_mb: limit_mb,
             at_unix_ms: self.clock.unix_ms(),
             reason: reason.to_owned(),
             by_version: self.version.to_owned(),
             state: RecordState::Pending,
-            boot_job: earlier.and_then(|r| r.boot_job),
+            boot_job: live.as_ref().and_then(|r| r.boot_job.clone()),
         };
         self.store.save(&record)?;
         if let Err(error) = self.runner.run(&HostOp::SetWiredLimit { mb: limit_mb }) {
             if self.read()? == current {
-                record.state = RecordState::Abandoned;
-                self.store.save(&record)?;
+                match &live {
+                    Some(previous) => self.store.save(previous)?,
+                    None => {
+                        record.state = RecordState::Abandoned;
+                        self.store.save(&record)?;
+                    }
+                }
             }
             return Err(TuneError::Run(error.to_string()));
         }

@@ -329,6 +329,56 @@ fn a_refused_approval_abandons_the_change() {
     assert_eq!(f.tune().revert().unwrap(), Reverted::NothingRecorded);
 }
 
+/// A refused re-tune leaves the live record as it was, so its revert still restores the
+/// original and removes the job (review of #1822, B1 case a).
+#[test]
+fn a_refused_retune_keeps_the_live_record() {
+    let mut f = Fixture::new("refused-retune", 0);
+    f.tune().apply(400 * 1024, "plan f").unwrap();
+    f.host.borrow_mut().job_installed = true;
+    let live = f.tune().attach_boot_job(job()).unwrap();
+    f.host.borrow_mut().deny = true;
+    let error = f.tune().apply(500 * 1024, "plan g").unwrap_err();
+    assert!(matches!(error, TuneError::Run(_)), "{error:?}");
+    assert_eq!(f.tune().status().unwrap(), Some(live));
+
+    f.host.borrow_mut().deny = false;
+    assert_eq!(
+        f.tune().revert().unwrap(),
+        Reverted::Done {
+            value: ValueRevert::Restored { to_mb: 0 },
+            removed_job: Some(job())
+        }
+    );
+    assert_eq!(f.value(), 0);
+    assert!(!f.host.borrow().job_installed);
+}
+
+/// A re-tune after a hand edit takes the hand-set value as its original and keeps the launchd
+/// job listed, so a revert restores the hand-set value and removes the job (review of #1822,
+/// B1 case b).
+#[test]
+fn a_retune_after_a_hand_edit_keeps_the_job() {
+    let mut f = Fixture::new("hand-retune", 0);
+    f.tune().apply(400 * 1024, "plan h").unwrap();
+    f.host.borrow_mut().job_installed = true;
+    f.tune().attach_boot_job(job()).unwrap();
+    f.set_by_hand(300 * 1024);
+    let record = f.tune().apply(450 * 1024, "plan i").unwrap();
+    assert_eq!(
+        (record.original_mb, record.new_mb, record.boot_job),
+        (300 * 1024, 450 * 1024, Some(job()))
+    );
+    assert_eq!(
+        f.tune().revert().unwrap(),
+        Reverted::Done {
+            value: ValueRevert::Restored { to_mb: 300 * 1024 },
+            removed_job: Some(job())
+        }
+    );
+    assert!(!f.host.borrow().job_installed);
+}
+
 /// A pending record left by a crash before the write: the value is still the original, so a
 /// revert writes nothing and closes the record.
 #[test]
