@@ -8,7 +8,7 @@ use proptest::prelude::*;
 use serde::Deserialize;
 use smallvec::smallvec;
 use syntropy_core::resource::{AppleGpuFamily, CpuIsa};
-use syntropy_core::{Blake3, Bytes, DType, QuantScheme};
+use syntropy_core::{ActQuant, Blake3, Bytes, DType, QuantScheme};
 
 use super::*;
 use crate::numerics::rule;
@@ -67,6 +67,7 @@ fn slot(op: OpKind, offers: Vec<Offer>) -> OpSlot {
         predicted: Nanos(1),
         layout: Some(LayoutVersion::SOURCE),
         cached: None,
+        act: ActContext::default(),
         offers,
     }
 }
@@ -450,19 +451,25 @@ fn the_filter_applies_each_condition() {
     let k = key(OpKind::RmsNorm);
     let good = cand("cuda", Backend::Cuda, MemoryDomain::Cuda, caps(&k.op));
     let r = req(Some(LayoutVersion::SOURCE), true);
-    assert_eq!(admit(&k, &r, &good), Ok(caps(&k.op)));
+    assert_eq!(
+        admit(&k, &r, &ActContext::default(), &good),
+        Ok(caps(&k.op))
+    );
 
     let other = Candidate {
         domain: MemoryDomain::Vulkan,
         ..good
     };
     assert_eq!(
-        admit(&k, &r, &other),
+        admit(&k, &r, &ActContext::default(), &other),
         Err(Rejection::OtherDomain(MemoryDomain::Vulkan))
     );
 
     let none = Candidate { caps: None, ..good };
-    assert_eq!(admit(&k, &r, &none), Err(Rejection::NoQuery));
+    assert_eq!(
+        admit(&k, &r, &ActContext::default(), &none),
+        Err(Rejection::NoQuery)
+    );
 
     let mut bad = caps(&k.op);
     bad.numerics.out = DType::F16;
@@ -471,7 +478,7 @@ fn the_filter_applies_each_condition() {
         ..good
     };
     assert_eq!(
-        admit(&k, &r, &bad),
+        admit(&k, &r, &ActContext::default(), &bad),
         Err(Rejection::Numerics(NumericsViolation::Output(DType::F16)))
     );
 
@@ -482,14 +489,14 @@ fn the_filter_applies_each_condition() {
         ..good
     };
     assert_eq!(
-        admit(&k, &r, &repacked),
+        admit(&k, &r, &ActContext::default(), &repacked),
         Err(Rejection::Layout {
             wanted: LayoutVersion::SOURCE,
             offered: LayoutVersion(7)
         })
     );
     // The layout pass admits every layout.
-    assert!(admit(&k, &req(None, true), &repacked).is_ok());
+    assert!(admit(&k, &req(None, true), &ActContext::default(), &repacked).is_ok());
 
     let mut nondet = caps(&k.op);
     nondet.deterministic = false;
@@ -497,8 +504,19 @@ fn the_filter_applies_each_condition() {
         caps: Some(nondet),
         ..good
     };
-    assert_eq!(admit(&k, &r, &nondet), Err(Rejection::NotDeterministic));
-    assert!(admit(&k, &req(Some(LayoutVersion::SOURCE), false), &nondet).is_ok());
+    assert_eq!(
+        admit(&k, &r, &ActContext::default(), &nondet),
+        Err(Rejection::NotDeterministic)
+    );
+    assert!(
+        admit(
+            &k,
+            &req(Some(LayoutVersion::SOURCE), false),
+            &ActContext::default(),
+            &nondet
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -510,6 +528,7 @@ fn the_numerics_filter_is_the_static_check() {
         admit(
             &k,
             &req(None, false),
+            &ActContext::default(),
             &cand("cuda", Backend::Cuda, MemoryDomain::Cuda, c)
         )
         .is_ok()
@@ -519,9 +538,128 @@ fn the_numerics_filter_is_the_static_check() {
         admit(
             &k,
             &req(None, false),
+            &ActContext::default(),
             &cand("cuda", Backend::Cuda, MemoryDomain::Cuda, c)
         ),
         Err(Rejection::Numerics(NumericsViolation::SoftmaxNotF32))
+    );
+}
+
+// ---- Activation quantisation (RFC-0042 §4.3; COMP-E13-T03) --------------------------------
+
+/// A Gemm slot on `weights`, with a fast native kernel that applies `fast_act` (hash 1) and a
+/// slower native kernel that widens with F32 activations (hash 2).
+fn act_slot(weights: QuantScheme, fast_act: ActQuant, act: ActContext) -> OpSlot {
+    let k = OpKey {
+        schemes: smallvec![
+            weights,
+            QuantScheme::Plain(DType::F32),
+            QuantScheme::Plain(DType::F32)
+        ],
+        ..key(OpKind::Gemm)
+    };
+    let mut fast = caps(&k.op);
+    fast.numerics.act_in = fast_act;
+    fast.kernel_hash = Blake3([1; 32]);
+    let mut widen = caps(&k.op);
+    widen.kernel_hash = Blake3([2; 32]);
+    OpSlot {
+        key: k,
+        act,
+        offers: vec![
+            Offer {
+                candidate: Candidate {
+                    variant: 1,
+                    ..cand("cuda", Backend::Cuda, MemoryDomain::Cuda, fast)
+                },
+                measurement: measured(500),
+            },
+            Offer {
+                candidate: Candidate {
+                    variant: 2,
+                    ..cand("cuda", Backend::Cuda, MemoryDomain::Cuda, widen)
+                },
+                measurement: measured(1000),
+            },
+        ],
+        ..slot(OpKind::Gemm, Vec::new())
+    }
+}
+
+fn certified(hash: u8) -> ActContext {
+    ActContext {
+        certified: vec![Blake3([hash; 32])],
+        ..ActContext::default()
+    }
+}
+
+#[test]
+fn an_uncertified_undeclared_fp8_kernel_is_never_selected() {
+    let fp8 = QuantScheme::Fp8 {
+        format: DType::F8E4M3,
+        scale: syntropy_core::ScaleGranularity::Tensor,
+    };
+    let dynamic = ActQuant::Fp8Dynamic { group: 128 };
+    // Exact mode, nothing declared, no certificate: the slower widening kernel wins.
+    let op = act_slot(fp8, dynamic, ActContext::default());
+    assert_eq!(decide(&op).unwrap().variant, 2);
+    // With a certificate for the W8A8 kernel, it is a candidate and wins on cost.
+    let op = act_slot(fp8, dynamic, certified(1));
+    assert_eq!(decide(&op).unwrap().variant, 1);
+    // Alone and uncertified, it leaves the op unsupported, with the reason.
+    let mut alone = act_slot(fp8, dynamic, ActContext::default());
+    alone.offers.truncate(1);
+    assert_eq!(
+        decide(&alone).unwrap_err().rejections,
+        vec![(
+            ProviderId("cuda"),
+            1,
+            Rejection::Activation(ActViolation::Uncertified(dynamic))
+        )]
+    );
+}
+
+#[test]
+fn a_q8_kernel_on_a_non_transcribable_packed_int_needs_a_path_cert() {
+    let int4 = QuantScheme::CompressedTensors(syntropy_core::CtScheme::PackedInt {
+        bits: 4,
+        group: 32,
+        symmetric: false,
+        zero_point: true,
+    });
+    let op = act_slot(int4, ActQuant::Q8Block32, ActContext::default());
+    assert_eq!(decide(&op).unwrap().variant, 2);
+    let op = act_slot(int4, ActQuant::Q8Block32, certified(1));
+    assert_eq!(decide(&op).unwrap().variant, 1);
+}
+
+#[test]
+fn a_kernel_that_skips_declared_quantisation_is_never_selected() {
+    let fp8 = QuantScheme::Fp8 {
+        format: DType::F8E4M3,
+        scale: syntropy_core::ScaleGranularity::Tensor,
+    };
+    let dynamic = ActQuant::Fp8Dynamic { group: 128 };
+    let declared = ActContext {
+        declared: Some(dynamic),
+        ..certified(2)
+    };
+    // The W8A8 kernel applies what the checkpoint declares; the W8A16 widening kernel skips
+    // it, so even alone, and certified, it is not a candidate.
+    let op = act_slot(fp8, dynamic, declared.clone());
+    assert_eq!(decide(&op).unwrap().variant, 1);
+    let mut w8a16 = act_slot(fp8, dynamic, declared);
+    w8a16.offers.remove(0);
+    assert_eq!(
+        decide(&w8a16).unwrap_err().rejections,
+        vec![(
+            ProviderId("cuda"),
+            2,
+            Rejection::Activation(ActViolation::NotDeclared {
+                declared: dynamic,
+                applied: ActQuant::None
+            })
+        )]
     );
 }
 
@@ -945,7 +1083,7 @@ proptest! {
                 .find(|o| o.candidate.provider == choice.provider && o.candidate.variant == choice.variant)
                 .expect("chosen from the offers");
             let req = Requirements { domain: MemoryDomain::Cuda, layout: op.layout, deterministic };
-            prop_assert!(admit(&op.key, &req, &offer.candidate).is_ok());
+            prop_assert!(admit(&op.key, &req, &op.act, &offer.candidate).is_ok());
             if let Basis::Challenger { replaced } = choice.basis {
                 let inc = op.offers.iter().find(|o| (o.candidate.provider, o.candidate.variant) == replaced).unwrap();
                 let inc_cost = inc.measurement.unwrap().cost(inc.candidate.caps.unwrap().capture_safe, &terms);
