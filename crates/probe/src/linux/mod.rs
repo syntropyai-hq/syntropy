@@ -141,6 +141,7 @@ pub fn enumerate(fs: &dyn HostFs, isa: IsaSource, node: NodeId) -> Result<LinuxH
                 // Measured by step H5 (RFC-0010 §3.2), not E1.
                 lock: None,
             },
+            node_mem: d.node_mem,
         })
         .collect();
 

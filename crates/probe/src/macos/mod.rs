@@ -198,6 +198,8 @@ pub fn enumerate(api: &dyn MacApi, node: NodeId) -> Result<MacHost, EnumError> {
             // Measured by step H5 (RFC-0010 §3.2), not E1.
             lock: None,
         },
+        // One domain: the host-wide budget is the domain's.
+        node_mem: None,
     }];
 
     let power = power(api)?;
