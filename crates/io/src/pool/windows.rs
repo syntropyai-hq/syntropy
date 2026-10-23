@@ -22,6 +22,7 @@ use std::sync::Arc;
 use syntropy_core::resource::EngineKind;
 
 use super::{Backend, Opened, Pool, ProbeBuf, Seg, open_error, transfer_error};
+use crate::align;
 use crate::engine::OpenMode;
 use crate::error::{IoError, IoErrorCode};
 use crate::request::SyncMode;
@@ -166,6 +167,7 @@ impl Backend for Windows {
                         Some(IoError::with_os_error(IoErrorCode::DirectRefused, os))
                     }
                     _ => {
+                        let dio = align::query(&file, path).dio();
                         let mut handles = Vec::with_capacity(workers);
                         handles.push(Arc::new(WinFile { file }));
                         for _ in 1..workers {
@@ -177,6 +179,7 @@ impl Backend for Windows {
                         return Ok(Opened {
                             handles,
                             refused: None,
+                            dio,
                         });
                     }
                 }
@@ -193,7 +196,12 @@ impl Backend for Windows {
                 .map_err(|e| open_error(&e, &NO_SPACE))?;
             handles.push(Arc::new(WinFile { file }));
         }
-        Ok(Opened { handles, refused })
+        let dio = align::query(&handles[0].file, path).dio();
+        Ok(Opened {
+            handles,
+            refused,
+            dio,
+        })
     }
 
     unsafe fn read(&self, h: &WinFile, offset: u64, segs: &[Seg]) -> Result<u64, IoError> {

@@ -30,9 +30,12 @@
 //! allocate nothing (RFC-0021 goal 6). Opening a file and registering buffers happen at
 //! `Loading` and may allocate.
 //!
-//! Not here: the alignment query of RFC-0021 §6 (`statx(STATX_DIOALIGN)`, `FileStorageInfo`,
-//! the 16 KiB macOS page) is TIER-E5-T05, so [`EngineCaps::dio`] is zero and §6's 4096-byte
-//! floor applies; pinning the workers to the I/O core set is the runner's.
+//! **Alignment** (RFC-0021 §6). Each backend asks [`align::query`](crate::align::query) for a
+//! file's direct-I/O alignment when it opens it (`statx(STATX_DIOALIGN)`, `FileStorageInfo`, the
+//! 16 KiB macOS page), and [`IoEngine::file_dio`] reports it per file. [`EngineCaps::dio`] stays
+//! zero, §6's 4096-byte floor, because the alignment belongs to each file, not to the engine.
+//!
+//! Not here: pinning the workers to the I/O core set is the runner's.
 
 #[cfg(all(
     target_os = "linux",
@@ -113,6 +116,9 @@ pub(crate) struct Opened<H> {
     /// `None` for direct I/O; for the flagged buffered mode, the `IO_DIRECT_REFUSED` error that
     /// caused it (RFC-0021 §4.2, §16).
     pub refused: Option<IoError>,
+    /// The file's direct-I/O alignment from [`align::query`](crate::align::query), zero when
+    /// the OS reported none (RFC-0021 §6).
+    pub dio: DioAlign,
 }
 
 /// What one OS supplies to the pool.
@@ -305,7 +311,8 @@ pub(crate) struct Pool<B: Backend> {
     ops_cap: usize,
     in_flight: u32,
     in_flight_bytes: u64,
-    files: usize,
+    /// Each open file's direct-I/O alignment, by [`FileIx`].
+    files: Vec<DioAlign>,
     regions: Vec<HostRegion>,
     refused: Option<IoError>,
     next_worker: usize,
@@ -343,7 +350,7 @@ impl<B: Backend> Pool<B> {
             ops_cap: threads * MAX_SEGS,
             in_flight: 0,
             in_flight_bytes: 0,
-            files: 0,
+            files: Vec::new(),
             regions: Vec::new(),
             refused: None,
             next_worker: 0,
@@ -479,8 +486,8 @@ impl<B: Backend> IoEngine for Pool<B> {
     }
 
     fn open(&mut self, path: &Path, mode: OpenMode) -> Result<FileIx, IoError> {
-        let ix =
-            u16::try_from(self.files).map_err(|_| IoError::new(IoErrorCode::RegisterFailed))?;
+        let ix = u16::try_from(self.files.len())
+            .map_err(|_| IoError::new(IoErrorCode::RegisterFailed))?;
         let opened = self.backend.open(path, mode, self.workers.len())?;
         assert!(
             !opened.handles.is_empty(),
@@ -502,11 +509,15 @@ impl<B: Backend> IoEngine for Pool<B> {
                 }
             }
         }
-        self.files += 1;
+        self.files.push(opened.dio);
         if self.refused.is_none() {
             self.refused = opened.refused;
         }
         Ok(FileIx(ix))
+    }
+
+    fn file_dio(&self, file: FileIx) -> Option<DioAlign> {
+        self.files.get(usize::from(file.0)).copied()
     }
 
     unsafe fn register_buffers(
@@ -531,7 +542,7 @@ impl<B: Backend> IoEngine for Pool<B> {
             }
             let (ticket, extent) = (op.ticket(), op.extent());
             let len = extent.len.0;
-            if usize::from(extent.file.0) >= self.files {
+            if usize::from(extent.file.0) >= self.files.len() {
                 self.refuse(ticket, IoError::new(IoErrorCode::Misaligned));
                 batch.consume(1);
                 accepted += 1;
@@ -778,6 +789,12 @@ macro_rules! forward_engine {
                 mode: $crate::engine::OpenMode,
             ) -> Result<syntropy_core::FileIx, $crate::error::IoError> {
                 self.pool.open(path, mode)
+            }
+            fn file_dio(
+                &self,
+                file: syntropy_core::FileIx,
+            ) -> Option<syntropy_core::resource::DioAlign> {
+                self.pool.file_dio(file)
             }
             unsafe fn register_buffers(
                 &mut self,

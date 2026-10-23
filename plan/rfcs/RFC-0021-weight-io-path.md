@@ -212,7 +212,8 @@ In-flight I/O cannot be pre-empted, so the cap on prefetch bytes in flight is wh
 - **The flag.** A buffered file sets `EngineCaps::direct = false` for the engine, which the probe copies into `StorageCapsExt::buffered`; `buffered_reason()` returns the `IO_DIRECT_REFUSED` error with its OS error.
 - **Errors.** A transfer's `EINVAL` (`ERROR_INVALID_PARAMETER`) is `IO_MISALIGNED`, `ENOSPC`/`EDQUOT` (disk-full on Windows) `IO_NO_SPACE`, anything else `IO_SHORT_READ`. A file that cannot be opened has no code in §16; it is `IO_EXTENT_BAD` with the OS error (open, for the maintainers). A `Fixed` destination outside the registered buffers, or an unknown file index, completes with `IO_MISALIGNED` and is never touched.
 - **Cancellation** marks an operation no worker has started, which then completes with `IO_CANCELLED` and no system call; one a worker has started is `TooLate`.
-- Not in this task: the §6 alignment query (`EngineCaps::dio` is zero, so the 4096-byte floor applies) is TIER-E5-T05; pinning workers to the I/O cores is the runner's.
+- **Alignment.** Each backend calls TIER-E5-T05's `align::query` when it opens a file, and `IoEngine::file_dio` returns that file's alignment. `EngineCaps::dio` stays zero (the 4096-byte floor), since the alignment is per file (§6).
+- Not in this task: pinning workers to the I/O cores is the runner's.
 
 ### 5. macOS engines
 

@@ -27,6 +27,7 @@ use std::path::Path;
 use syntropy_core::resource::EngineKind;
 
 use super::{Backend, Opened, Pool, ProbeBuf, Seg, open_error, transfer_error};
+use crate::align;
 use crate::engine::OpenMode;
 use crate::error::{IoError, IoErrorCode};
 use crate::request::SyncMode;
@@ -166,12 +167,14 @@ impl Backend for Linux {
                         .map(|os| IoError::with_os_error(IoErrorCode::DirectRefused, os))
                 };
                 if refused.is_none() {
+                    let dio = align::query(&file, path).dio();
                     return Ok(Opened {
                         handles: vec![std::sync::Arc::new(PosixFile {
                             file,
                             buffered: false,
                         })],
                         refused: None,
+                        dio,
                     });
                 }
                 refused
@@ -186,12 +189,14 @@ impl Backend for Linux {
         let file = options(mode, true)
             .open(path)
             .map_err(|e| open_error(&e, &NO_SPACE))?;
+        let dio = align::query(&file, path).dio();
         Ok(Opened {
             handles: vec![std::sync::Arc::new(PosixFile {
                 file,
                 buffered: true,
             })],
             refused,
+            dio,
         })
     }
 

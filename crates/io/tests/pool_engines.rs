@@ -3,11 +3,14 @@
 //! The thread-pool engines against real files (RFC-0021 §4.2, §5, Testing): `PreadPool` on
 //! Linux and Windows, `MacNoCache` on macOS.
 //!
-//! Until the engine conformance suite of TIER-E5-T04 exists, these tests check its claim for the
-//! engine this host has: random aligned extents of a fixture file, read into fixed and raw
-//! destinations, match the bytes read through the page cache, and writes read back. They also
-//! check cancellation, refused destinations, the I/O loop driving the engine, and, on Linux, that
-//! a file on tmpfs selects the flagged buffered mode.
+//! The engine this host has runs through the engine conformance harness
+//! (`syntropy_io::conformance`, TIER-E5-T33) with one worker and with several, and on Linux also
+//! in the flagged buffered mode on tmpfs (TIER-E5-T03 criterion 1). The other tests check the
+//! same claim directly (random aligned extents of a fixture file, read into fixed and raw
+//! destinations, match the bytes read through the page cache, and writes read back), the
+//! per-file direct-I/O alignment the engine reports, cancellation, refused destinations, the I/O
+//! loop driving the engine, and, on Linux, that a file on tmpfs selects the flagged buffered
+//! mode.
 
 #![cfg(any(
     all(
@@ -21,6 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
+use syntropy_io::conformance::{self, Options, Report};
 use syntropy_io::{
     BufIndex, Bytes, CancelOutcome, CompletionBuf, ExtentRef, FileIx, HostRegion, IoClient, IoDest,
     IoEngine, IoErrorCode, IoLoop, IoOp, IoPriority, IoTicket, LoopConfig, Nanos, OpenMode, Poll,
@@ -463,6 +467,80 @@ fn report_the_mode_the_temp_directory_selects() {
         e.caps().direct,
         e.buffered_reason()
     );
+    drop(e);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The conformance harness (TIER-E5-T33) over a generated 8 MiB file in `dir`, on an engine with
+/// `threads` workers built on the harness's thread.
+fn conformance_in(dir: &Path, name: &str, threads: usize) -> Report {
+    let pid = std::process::id();
+    let file = dir.join(format!("syntropy-io-pool-conf-{name}-{pid}"));
+    let scratch = dir.join(format!("syntropy-io-pool-conf-{name}-{pid}.scratch"));
+    conformance::write_test_file(&file, 8 << 20, 0x7003).unwrap();
+    let seed = conformance::seed_from_env();
+    let result = conformance::check(
+        move || engine(threads),
+        &file,
+        &scratch,
+        &Options::new(seed),
+    );
+    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_file(&scratch);
+    let report = result.unwrap_or_else(|failure| panic!("{failure}"));
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!(report.engine, syntropy_io::EngineKind::PreadPool);
+    #[cfg(target_os = "macos")]
+    assert_eq!(report.engine, syntropy_io::EngineKind::MacNoCache);
+    assert!(report.reads > 0 && report.writes > 0, "{report:?}");
+    eprintln!(
+        "{name}: conformance passed ({:?}, seed {:#x}, {} reads, {} writes, {}-byte unit)",
+        report.engine, report.seed, report.reads, report.writes, report.unit
+    );
+    report
+}
+
+/// TIER-E5-T03 criterion 1, with a single worker: every operation runs in submission order.
+#[test]
+fn the_conformance_harness_passes_with_one_worker() {
+    conformance_in(&std::env::temp_dir(), "one", 1);
+}
+
+/// TIER-E5-T03 criterion 1, with several workers: operations complete out of order.
+#[test]
+fn the_conformance_harness_passes_with_several_workers() {
+    conformance_in(&std::env::temp_dir(), "several", 4);
+}
+
+/// TIER-E5-T03 criterion 1 in the flagged buffered mode: the harness passes on a tmpfs file,
+/// which the engine opens buffered (RFC-0021 §4.2). The directory is chosen as in
+/// `a_tmpfs_backed_run_selects_buffered_mode_and_flags_the_volume`.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_conformance_harness_passes_in_buffered_mode_on_tmpfs() {
+    let dir = std::env::var_os("SYNTROPY_TMPFS_DIR")
+        .map_or_else(|| PathBuf::from("/dev/shm"), PathBuf::from);
+    assert!(
+        dir.is_dir(),
+        "{} is missing; set SYNTROPY_TMPFS_DIR to a tmpfs mount",
+        dir.display()
+    );
+    conformance_in(&dir, "tmpfs", 4);
+}
+
+/// The engine reports each open file's direct-I/O alignment as `align::query` gives it
+/// (RFC-0021 §6, TIER-E5-T05's `IoEngine::file_dio`), and nothing for a file it never opened.
+#[test]
+fn file_dio_reports_what_the_os_gives_for_each_file() {
+    let (path, _) = fixture(&std::env::temp_dir(), "dio", BLOCK as usize);
+    let mut e = engine(1);
+    let file = e.open(&path, OpenMode::Read).unwrap();
+    let want = syntropy_io::align::query(&std::fs::File::open(&path).unwrap(), &path).dio();
+    assert_eq!(e.file_dio(file), Some(want));
+    assert_eq!(e.file_dio(FileIx(file.0 + 1)), None);
+    #[cfg(target_os = "macos")]
+    assert_eq!(want.mem, 16384);
+    eprintln!("{}: file_dio {want:?}", std::env::temp_dir().display());
     drop(e);
     let _ = std::fs::remove_file(&path);
 }

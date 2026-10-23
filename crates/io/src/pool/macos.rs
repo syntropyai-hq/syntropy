@@ -27,6 +27,7 @@ use std::sync::Arc;
 use syntropy_core::resource::EngineKind;
 
 use super::{Backend, MAX_SEGS, Opened, Pool, Seg, open_error, transfer_error};
+use crate::align;
 use crate::engine::OpenMode;
 use crate::error::{IoError, IoErrorCode};
 use crate::request::SyncMode;
@@ -176,9 +177,11 @@ impl<S: MacSys> Backend for Mac<S> {
             .err()
             .map(|os| IoError::with_os_error(IoErrorCode::DirectRefused, os));
         let _ = self.sys.fcntl(fd, sys::F_RDAHEAD, 0);
+        let dio = align::query(&file, path).dio();
         Ok(Opened {
             handles: vec![Arc::new(file)],
             refused,
+            dio,
         })
     }
 
