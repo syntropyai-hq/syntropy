@@ -7,7 +7,7 @@
 //! (`llama-like` and `sentencepiece-like` for `llama`, `qwen-moe-like` for `qwen_moe`). None
 //! comes from a real checkpoint.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use proptest::prelude::*;
 
@@ -146,7 +146,7 @@ fn tokenizer_id_changes_when_the_template_in_use_changes() {
         .clone()
         .with_template_source(TemplateSource::FamilyDefault("{{ messages }} ".into()));
     let none = shipped.clone().with_template_source(TemplateSource::None);
-    let ids: HashSet<TokenizerId> = [&shipped, &user, &family, &none]
+    let ids: BTreeSet<TokenizerId> = [&shipped, &user, &family, &none]
         .iter()
         .map(|s| s.id())
         .collect();
@@ -211,7 +211,7 @@ fn tokenizer_id_covers_model_specials_and_flags() {
         rebuild(&|_, _, b, _| *b = true),
         rebuild(&|_, _, _, e| *e = true),
     ];
-    let mut seen: HashSet<TokenizerId> = changed.iter().copied().collect();
+    let mut seen: BTreeSet<TokenizerId> = changed.iter().copied().collect();
     seen.insert(base.id());
     assert_eq!(seen.len(), changed.len() + 1);
 }
