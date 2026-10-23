@@ -6,7 +6,7 @@
 //! Nothing here changes from step to step. Values that do live in the step descriptor
 //! ([`crate::step`]), which `OpArgs::step` points at, so one captured graph serves every step.
 
-use syntropy_core::{BufferView, DType};
+use syntropy_core::{BufferView, Bytes, DType};
 
 use crate::memory::BufferSlice;
 
@@ -26,6 +26,27 @@ pub struct OpArgs<'a> {
     pub workspace: Option<BufferSlice>,
     /// Per-op constants fixed at `prepare`: eps, rope theta, scales.
     pub statics: &'a [Scalar],
+}
+
+impl OpArgs<'_> {
+    /// No bindings: empty operand, weight and constant lists, an empty step slice and no
+    /// workspace. A provider that replays a recorded launch, whose arguments were bound at
+    /// capture, passes it.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            inputs: &[],
+            outputs: &[],
+            weights: &[],
+            step: BufferSlice {
+                buffer: 0,
+                offset: Bytes(0),
+                bytes: Bytes(0),
+            },
+            workspace: None,
+            statics: &[],
+        }
+    }
 }
 
 /// One tensor operand (RFC-0040 §3.5).
