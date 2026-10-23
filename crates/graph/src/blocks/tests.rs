@@ -3,6 +3,8 @@
 //! Tests of the M0 blocks against RFC-0043 §3.1–§3.4.
 //!
 //! - **Rows.** Each block's op sequence is checked against its table row, transcribed below.
+//! - **Ops.** Each block, built alone in each form and configuration, emits only ops in its
+//!   own `ops()`, and its two forms together emit all of them.
 //! - **Snapshots.** Each block's full lowering (ops, classes, value types, weights, fusion
 //!   hints and attributes) is compared with checked-in text in `snapshots/`. To regenerate
 //!   after an intended change, run the tests with `SYNTROPY_UPDATE_SNAPSHOTS=1` and review the
@@ -521,6 +523,119 @@ fn embed_and_lm_head_lower_to_their_rows() {
     });
     assert_eq!(ops(&p), [OpKind::RmsNorm, OpKind::Logits]);
     assert_eq!(p.nodes[1].attrs.get("softcap"), Some(AttrValue::F32(30.0)));
+}
+
+/// Builds one block alone in each form and checks that every op it emits is in `declared`, its
+/// own `ops()`, and that the two forms together emit all of them.
+fn assert_emits_its_ops(
+    what: &str,
+    declared: &OpSet,
+    build: impl Fn(&mut Builder, &mut Program, Form, ValueId),
+) {
+    let mut both = OpSet::new();
+    for form in Form::ALL {
+        let (_, p) = one_block(|b, p, x| build(b, p, form, x));
+        let emitted: OpSet = ops(&p).into_iter().collect();
+        assert!(
+            emitted.is_subset(declared),
+            "{what} {form:?} emits {:?}, which its ops() leaves out",
+            emitted.difference(declared).collect::<Vec<_>>()
+        );
+        both.extend(emitted);
+    }
+    assert_eq!(
+        &both, declared,
+        "{what}: ops() lists an op neither form emits"
+    );
+}
+
+/// Every op a block emits is in that block's own `ops()`, for each block, each form and each
+/// configuration that changes the lowering.
+#[test]
+fn each_block_emits_only_its_own_ops() {
+    let layouts = [
+        QkvLayout::Fused,
+        QkvLayout::Separate { qk_norm: false },
+        QkvLayout::Separate { qk_norm: true },
+    ];
+    for qkv in layouts {
+        for bias in [false, true] {
+            for (scale, softcap) in [(None, None), (Some(0.125), Some(50.0))] {
+                let params = GqaParams {
+                    bias,
+                    scale,
+                    softcap,
+                    ..gqa_params(qkv)
+                };
+                assert_emits_its_ops(
+                    &format!("Gqa {qkv:?} bias={bias} scale={scale:?} softcap={softcap:?}"),
+                    &params.ops(),
+                    |b, p, form, x| {
+                        gqa(b, p, &params, form, G, x);
+                    },
+                );
+            }
+        }
+    }
+
+    for act in [GatedAct::Silu, GatedAct::Gelu, GatedAct::ClampedSilu] {
+        let params = DenseFfnParams {
+            act,
+            ..dense_params()
+        };
+        assert_emits_its_ops(
+            &format!("DenseFfn {act:?}"),
+            &params.ops(),
+            |b, p, form, x| {
+                dense_ffn(b, p, &params, form, G, x);
+            },
+        );
+    }
+
+    for renormalize in [true, false] {
+        let params = MoeParams {
+            renormalize,
+            ..moe_params()
+        };
+        assert_emits_its_ops(
+            &format!("Moe renormalize={renormalize}"),
+            &params.ops(),
+            |b, p, form, x| {
+                moe(b, p, &params, form, G, LayerIx(0), x);
+            },
+        );
+    }
+
+    for scale in [None, Some(8.0)] {
+        let params = EmbedParams {
+            hidden: HIDDEN,
+            vocab: VOCAB,
+            scale,
+        };
+        assert_emits_its_ops(
+            &format!("Embed scale={scale:?}"),
+            &params.ops(),
+            |b, p, _, _| {
+                let t = b.value(DType::I32, &[Dim::Rows], ValueKind::TokenIds);
+                embed(b, p, &params, G, t);
+            },
+        );
+    }
+
+    for softcap in [None, Some(30.0)] {
+        let params = LmHeadParams {
+            vocab: VOCAB,
+            softcap,
+            eps: EPS,
+        };
+        assert_emits_its_ops(
+            &format!("LmHead softcap={softcap:?}"),
+            &params.ops(),
+            |b, p, _, x| {
+                lm_head(b, p, &params, G, x);
+            },
+        );
+    }
 }
 
 #[test]
