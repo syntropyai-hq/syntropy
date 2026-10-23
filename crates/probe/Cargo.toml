@@ -8,3 +8,6 @@ publish.workspace = true
 [dependencies]
 smallvec.workspace = true
 syntropy-core = { path = "../core" }
+# The macOS and Windows system calls E1 makes (`syntropy_io::os::{macos_host, windows_host}`;
+# RFC-0001 §4.2 rule 8, OQ-PRC-26).
+syntropy-io = { path = "../io" }
