@@ -30,6 +30,9 @@
 //! rule 6 allows here only, and on `libc` (Linux and Android) and `windows-sys` (Windows) for the
 //! clock calls.
 //!
+//! The [`os`] module also holds OS system calls that crates without `unsafe` need, behind safe
+//! functions: so far E1's AMX permission and io_uring checks ([`os::checks`]).
+//!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
 

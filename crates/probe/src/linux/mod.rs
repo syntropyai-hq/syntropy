@@ -7,8 +7,10 @@
 //! Everything here reads world-readable files under `/proc` and `/sys` (plus `/dev/dxg`,
 //! `/.dockerenv` and `/run/.containerenv` for existence only) through a [`HostFs`], so the
 //! same code runs on the live `/` and on recorded fixture trees, and no step needs root.
-//! The facts that need a system call are not read here: the AMX tile-data permission
-//! request and the `io_uring_setup` check (PLC-E1-T14). Their fields say so.
+//! The two facts that need a system call, the AMX tile-data permission request and the
+//! `io_uring_setup` check (PLC-E1-T14), go through a [`Syscalls`] value, whose live
+//! implementation is in `syntropy_io::os::checks` (RFC-0001 §4.2 rule 8, OQ-PRC-26). Neither
+//! needs root or a capability.
 
 mod cpu;
 mod env;
@@ -20,8 +22,11 @@ use smallvec::SmallVec;
 use syntropy_core::Blake3;
 use syntropy_core::ids::NodeId;
 use syntropy_core::resource::ordinal::{self, DeviceCandidate, Enumerated, HostDomain, TierSlot};
-use syntropy_core::resource::{DeviceClass, DeviceInfo, DeviceInfoExt, DeviceKind, HostMemInfo};
+use syntropy_core::resource::{
+    DeviceClass, DeviceInfo, DeviceInfoExt, DeviceKind, HostMemInfo, IsaFlags,
+};
 use syntropy_core::units::Bytes;
+use syntropy_io::os::checks;
 
 use crate::error::EnumError;
 use crate::fs::HostFs;
@@ -29,6 +34,7 @@ pub use crate::host::{NodeFacts, NumaHostMem};
 
 pub use env::{CgroupVersion, ContainerKind, HostEnv, IoUringSysctl};
 pub use isa::IsaSource;
+pub use syntropy_io::os::checks::{LiveSyscalls, RawCall, SysCheck, Syscalls};
 
 /// What E1 found on one Linux host.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,12 +60,29 @@ pub struct LinuxHost {
     pub candidates: Enumerated,
 }
 
-/// Enumerates the host behind `fs`. `node` fills the IDs; the ordinals are those of a node
-/// with only these CPU devices and host tiers (see [`LinuxHost::candidates`]).
-pub fn enumerate(fs: &dyn HostFs, isa: IsaSource, node: NodeId) -> Result<LinuxHost, EnumError> {
+/// Enumerates the host behind `fs`, making E1's two system-call checks through `sys`. `node`
+/// fills the IDs; the ordinals are those of a node with only these CPU devices and host tiers
+/// (see [`LinuxHost::candidates`]).
+///
+/// The AMX tile-data permission is requested only when the CPU reports AMX; otherwise
+/// `amx_permitted` is false and [`HostEnv::amx_permission`] is `None`. The `io_uring_setup`
+/// check always runs.
+pub fn enumerate(
+    fs: &dyn HostFs,
+    isa: IsaSource,
+    sys: &dyn Syscalls,
+    node: NodeId,
+) -> Result<LinuxHost, EnumError> {
     let cpu = cpu::facts(fs, isa)?;
     let mem = mem::facts(fs)?;
     let env = env::facts(fs)?;
+    let amx_permission = cpu
+        .isa
+        .flags
+        .intersects(IsaFlags::AMX_BF16 | IsaFlags::AMX_INT8)
+        .then(|| checks::amx_tile_permission(sys));
+    let amx_permitted = amx_permission.is_some_and(SysCheck::granted);
+    let io_uring_setup = checks::io_uring_setup(sys);
     let power = env::power(fs)?;
     let kernel_release = read(fs, "proc/sys/kernel/osrelease")?.trim().to_owned();
 
@@ -91,7 +114,7 @@ pub fn enumerate(fs: &dyn HostFs, isa: IsaSource, node: NodeId) -> Result<LinuxH
         let Some(d) = domains.iter().find(|d| d.numa == numa) else {
             continue;
         };
-        let topo = cpu::topology(fs, d, &cpu)?;
+        let topo = cpu::topology(fs, d, &cpu, amx_permitted)?;
         let local_tiers = ords
             .tiers
             .iter()
@@ -156,17 +179,24 @@ pub fn enumerate(fs: &dyn HostFs, isa: IsaSource, node: NodeId) -> Result<LinuxH
         env: HostEnv {
             cgroup: mem.cgroup,
             cap_ipc_lock: mem.cap_ipc_lock,
+            amx_permission,
+            io_uring_setup,
             ..env
         },
         candidates,
     })
 }
 
-/// Enumerates the live host as the current user, reading `/` and using runtime ISA
-/// detection.
+/// Enumerates the live host as the current user, reading `/`, using runtime ISA detection and
+/// making the real system calls.
 #[cfg(target_os = "linux")]
 pub fn enumerate_live(node: NodeId) -> Result<LinuxHost, EnumError> {
-    enumerate(&crate::fs::DirFs::new("/"), IsaSource::Runtime, node)
+    enumerate(
+        &crate::fs::DirFs::new("/"),
+        IsaSource::Runtime,
+        &LiveSyscalls,
+        node,
+    )
 }
 
 /// Enumerates the live host. This module covers Linux only.
