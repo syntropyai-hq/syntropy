@@ -12,22 +12,20 @@
 
 mod cpu;
 mod env;
-mod isa;
+pub(crate) mod isa;
 mod mem;
 mod parse;
 
 use smallvec::SmallVec;
 use syntropy_core::Blake3;
 use syntropy_core::ids::NodeId;
-use syntropy_core::resource::caps::PowerSource;
 use syntropy_core::resource::ordinal::{self, DeviceCandidate, Enumerated, HostDomain, TierSlot};
-use syntropy_core::resource::{
-    CpuArch, DeviceClass, DeviceInfo, DeviceInfoExt, DeviceKind, HostMemInfo,
-};
+use syntropy_core::resource::{DeviceClass, DeviceInfo, DeviceInfoExt, DeviceKind, HostMemInfo};
 use syntropy_core::units::Bytes;
 
 use crate::error::EnumError;
 use crate::fs::HostFs;
+pub use crate::host::{NodeFacts, NumaHostMem};
 
 pub use env::{CgroupVersion, ContainerKind, HostEnv, IoUringSysctl};
 pub use isa::IsaSource;
@@ -54,33 +52,6 @@ pub struct LinuxHost {
     /// The graph builder adds the GPUs, volumes and NPUs E2–E5 find and assigns the final
     /// ordinals from the whole set.
     pub candidates: Enumerated,
-}
-
-/// The `NodeInfo` fields (RFC-0001 §5.2) whose values E1 reads. The record itself, with
-/// identity, build, protocol, labels, roles and install fields owned by other RFCs, is
-/// assembled by PLC-E1-T09; its field types have no owner yet (#1524 item 1).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeFacts {
-    /// `NodeInfo::arch`.
-    pub arch: CpuArch,
-    /// `NodeInfo::power`.
-    pub power: PowerSource,
-    /// The host has a system battery (RFC-0010 §1.3 `CapabilityProfileExt::battery_present`).
-    pub battery_present: bool,
-    /// `/proc/sys/kernel/osrelease`: part of the profile key (RFC-0010 §5.1).
-    pub kernel_release: String,
-}
-
-/// One NUMA domain's host memory inputs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NumaHostMem {
-    /// The NUMA domain.
-    pub numa: u16,
-    /// The domain's own RAM, from its `meminfo`.
-    pub node_total: Bytes,
-    /// The inputs RFC-0020's `budget::host_usable` reads. `total` and `available` are
-    /// host-wide; `numa_free` is this domain's.
-    pub mem: HostMemInfo,
 }
 
 /// Enumerates the host behind `fs`. `node` fills the IDs; the ordinals are those of a node

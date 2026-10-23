@@ -3813,6 +3813,7 @@ version = "0.0.0"
 dependencies = [
  "smallvec",
  "syntropy-core",
+ "syntropy-io",
 ]
 
 [[package]]

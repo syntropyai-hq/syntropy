@@ -21,13 +21,21 @@
 //!   is usable (RFC-0060 §2.1, note of 2026-10-22).
 //! - The `thread` functions place hot threads: [`cpu_topology`], [`pin_current_thread`],
 //!   [`raise_current_thread_priority`] and [`current_core`] (ADR-0012 item 2).
+//! - `macos_host` and `windows_host` hold the system calls of E1 host enumeration that
+//!   `probe` makes through safe functions (RFC-0010 §2.2; OQ-PRC-26): sysctl reads,
+//!   `host_statistics64` and IOKit power sources on macOS; processor, memory, NUMA, power,
+//!   working-set and version calls on Windows.
 //!
 //! Every `unsafe` block carries a `// SAFETY:` comment with its invariant (ADR-0001 item 4).
 
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "macos")]
+pub mod macos_host;
 mod thread;
+#[cfg(windows)]
+pub mod windows_host;
 
 pub use thread::{
     Core, CoreId, PinError, Priority, cpu_topology, current_core, pin_current_thread,

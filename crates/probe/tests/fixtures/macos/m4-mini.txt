@@ -1,0 +1,32 @@
+# Recorded on an Apple M4 Mac mini (16 GB, macOS 26.4.1) on 2026-10-23 with sysctl(8),
+# vm_stat(1), ulimit -l and pmset -g ps, which read the same sysctlbyname,
+# host_statistics64 and IOKit power-source interfaces E1 calls. Format: src/macos/record.rs.
+# vm free_count is vm_stat's "Pages free" plus "Pages speculative"; vm_stat prints
+# free_count - speculative_count as "Pages free".
+sysctl hw.optional.arm64 u32 1
+sysctl machdep.cpu.brand_string str Apple M4
+sysctl hw.optional.arm.AdvSIMD u32 1
+sysctl hw.optional.arm.FEAT_DotProd u32 1
+sysctl hw.optional.arm.FEAT_FP16 u32 1
+sysctl hw.optional.arm.FEAT_I8MM u32 1
+sysctl hw.optional.arm.FEAT_BF16 u32 1
+sysctl hw.optional.arm.FEAT_SVE2 absent
+sysctl hw.optional.arm.FEAT_SME2 u32 1
+sysctl hw.nperflevels u32 2
+sysctl hw.perflevel0.physicalcpu u32 4
+sysctl hw.perflevel0.l3cachesize absent
+sysctl hw.perflevel0.l2cachesize u32 16777216
+sysctl hw.perflevel0.cpusperl2 u32 4
+sysctl hw.perflevel1.physicalcpu u32 6
+sysctl hw.perflevel1.l3cachesize absent
+sysctl hw.perflevel1.l2cachesize u32 4194304
+sysctl hw.perflevel1.cpusperl2 u32 6
+sysctl hw.physicalcpu u32 10
+sysctl hw.logicalcpu u32 10
+sysctl hw.memsize u64 17179869184
+sysctl iogpu.wired_limit_mb u32 0
+sysctl kern.osrelease str 25.4.0
+sysctl kern.osproductversion str 26.4.1
+vm page_size=16384 free=28015 active=340750 inactive=319984 wired=115138 purgeable=1476 speculative=22556 compressor=210161
+memlock unlimited
+power providing AC Power
