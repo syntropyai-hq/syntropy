@@ -9,18 +9,17 @@
 //! - [`shape`] holds [`ShapeSig`], [`ShapeClass`] and RFC-0012 §2's bucket set.
 //! - [`caps`] holds [`OpCaps`] and [`PreparedOp`], with the workspace check of RFC-0040 §5.3.
 //! - [`registry`] holds [`OpRegistry`].
-//!
-//! The argument types are COMP-E1-T05's; [`OpArgs`] is a placeholder until then, declared
-//! here so that the trait has its final signature.
+//! - [`args`] holds what a launch binds: [`OpArgs`], [`TensorArg`] and [`Scalar`]
+//!   (RFC-0040 §3.5).
 
-use std::marker::PhantomData;
-
+pub mod args;
 pub mod caps;
 pub mod key;
 pub mod kind;
 pub mod registry;
 pub mod shape;
 
+pub use args::{OpArgs, Scalar, TensorArg};
 pub use caps::{OpCaps, PreparedOp};
 pub use key::{Fusions, LayoutVersion, OpKey};
 pub use kind::{
@@ -28,25 +27,6 @@ pub use kind::{
 };
 pub use registry::{OpRegistry, RegistryError};
 pub use shape::{PREFILL_LADDER, ShapeClass, ShapeSig, bucket_set};
-
-/// The buffers and constants one launch binds (RFC-0040 §3.5). Placeholder for
-/// COMP-E1-T05.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct OpArgs<'a> {
-    _borrows: PhantomData<&'a ()>,
-}
-
-impl OpArgs<'_> {
-    /// The placeholder's one value: no bindings. A provider that replays a recorded launch
-    /// passes it, until COMP-E1-T05 gives launches their real arguments.
-    #[must_use]
-    pub fn none() -> Self {
-        Self {
-            _borrows: PhantomData,
-        }
-    }
-}
 
 #[cfg(test)]
 pub(crate) mod tests;
