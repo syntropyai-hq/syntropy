@@ -8,9 +8,9 @@
 //!
 //! Layer 1 in RFC-0001 §4.1, designed in RFC-0040, with the numerics of RFC-0042. Its only
 //! workspace dependency is `core`. It holds the op registry and the op types ([`op`],
-//! RFC-0040 §3.1, §3.2), and the reference numerics' modes ([`reference`](mod@reference),
-//! RFC-0060 §4.1). Per-device op selection, the argument types and the F32 reference semantics of
-//! every op come with later tasks.
+//! RFC-0040 §3.1, §3.2), the selection engine ([`select`], RFC-0040 §6.2, §6.4), and the
+//! reference numerics' modes ([`reference`](mod@reference), RFC-0060 §4.1). The argument types
+//! and the F32 reference semantics of every op come with later tasks.
 
 #![forbid(unsafe_code)]
 
@@ -21,6 +21,7 @@ pub mod numerics;
 pub mod op;
 pub mod provider;
 pub mod reference;
+pub mod select;
 pub mod stream;
 pub mod tolerances;
 
