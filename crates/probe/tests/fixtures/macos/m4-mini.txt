@@ -30,3 +30,4 @@ sysctl kern.osproductversion str 26.4.1
 vm page_size=16384 free=28015 active=340750 inactive=319984 wired=115138 purgeable=1476 speculative=22556 compressor=210161
 memlock unlimited
 power providing AC Power
+sysctl hw.l2cachesize u32 4194304

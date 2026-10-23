@@ -272,6 +272,15 @@ fn failures() {
         .unwrap();
     assert_eq!((t.perf_cores, t.efficiency_cores, t.ccds), (10, 0, 1));
     assert_eq!(t.llc, Bytes(16 * MIB));
+    // ...and one that reports its L2 only host-wide, as a virtual machine may.
+    f.set_sysctl_invalid("hw.perflevel0.l2cachesize");
+    f.set_sysctl("hw.perflevel0.cpusperl2", None);
+    let t = enumerate(&f, NODE).unwrap().cpus[0]
+        .ext
+        .cpu
+        .clone()
+        .unwrap();
+    assert_eq!((t.ccds, t.llc), (1, Bytes(4 * MIB)));
 
     // An empty value, as macOS virtual machines report for `l3cachesize`, is no value.
     let mut f = fixture("m4-mini");
@@ -281,6 +290,26 @@ fn failures() {
     assert_eq!(host.cpus, vec![cpu()]);
     let again = MacFixture::parse(&rec.fixture()).unwrap();
     assert_eq!(enumerate(&again, NODE).unwrap(), host);
+
+    // `EINVAL` on an optional name, as the macos-26 runner returns for `l3cachesize`, is no
+    // value; on a name E1 needs it is a missing value.
+    let mut f = fixture("m4-mini");
+    f.set_sysctl_invalid("hw.perflevel0.l3cachesize");
+    let rec = MacRecorder::new(f);
+    let host = enumerate(&rec, NODE).unwrap();
+    assert_eq!(host.cpus, vec![cpu()]);
+    assert!(
+        rec.fixture()
+            .contains("sysctl hw.perflevel0.l3cachesize einval")
+    );
+    let again = MacFixture::parse(&rec.fixture()).unwrap();
+    assert_eq!(enumerate(&again, NODE).unwrap(), host);
+    let mut f = fixture("m4-mini");
+    f.set_sysctl_invalid("hw.memsize");
+    assert!(matches!(
+        enumerate(&f, NODE),
+        Err(EnumError::BadResponse { .. })
+    ));
 
     // No SME2: the level drops to `Arm86I8mm`.
     let mut f = fixture("m4-mini");

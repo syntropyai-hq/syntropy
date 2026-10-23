@@ -7,7 +7,7 @@
 //! The fixture format is one call per line; `#` starts a comment.
 //!
 //! ```text
-//! sysctl <name> u32 <n> | u64 <n> | str <text> | hex <bytes> | absent
+//! sysctl <name> u32 <n> | u64 <n> | str <text> | hex <bytes> | absent | einval
 //! vm page_size=<n> free=<n> active=<n> inactive=<n> wired=<n> purgeable=<n> speculative=<n> compressor=<n>
 //! memlock unlimited | memlock <bytes>
 //! power providing <text> | power providing none
@@ -37,6 +37,11 @@ pub enum MacCall {
         new: Option<Vec<u8>>,
         /// The value returned.
         value: Option<Vec<u8>>,
+    },
+    /// `sysctlbyname` read that failed with `EINVAL`.
+    SysctlInvalid {
+        /// The name.
+        name: String,
     },
     /// `host_statistics64`.
     VmStatistics(VmStats),
@@ -111,6 +116,11 @@ impl<A: MacApi> MacRecorder<A> {
                     }
                 }
                 MacCall::Sysctl { new: Some(_), .. } => {}
+                MacCall::SysctlInvalid { name } => {
+                    if seen.insert(name.clone()) {
+                        let _ = writeln!(out, "sysctl {name} einval");
+                    }
+                }
                 MacCall::VmStatistics(v) => {
                     let _ = writeln!(
                         out,
@@ -170,12 +180,16 @@ impl<A: MacApi> MacRecorder<A> {
 impl<A: MacApi> MacApi for MacRecorder<A> {
     fn sysctl(&self, name: &str, new: Option<&[u8]>) -> io::Result<Option<Vec<u8>>> {
         let r = self.inner.sysctl(name, new);
-        if new.is_some() || r.is_ok() {
-            self.push(MacCall::Sysctl {
+        match &r {
+            Err(e) if new.is_none() && e.kind() == io::ErrorKind::InvalidInput => {
+                self.push(MacCall::SysctlInvalid { name: name.into() });
+            }
+            _ if new.is_some() || r.is_ok() => self.push(MacCall::Sysctl {
                 name: name.into(),
                 new: new.map(<[u8]>::to_vec),
                 value: r.as_ref().ok().cloned().flatten(),
-            });
+            }),
+            _ => {}
         }
         r
     }
@@ -239,6 +253,8 @@ fn render_value(v: Option<&[u8]>) -> String {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MacFixture {
     sysctls: BTreeMap<String, Option<Vec<u8>>>,
+    /// Names whose read fails with `EINVAL`.
+    invalid: std::collections::BTreeSet<String>,
     vm: Option<VmStats>,
     memlock: Option<Option<u64>>,
     power: Option<PowerSources>,
@@ -267,6 +283,10 @@ impl MacFixture {
                     let val = parts.next().unwrap_or("").trim();
                     let bytes = match kind {
                         "absent" => None,
+                        "einval" => {
+                            f.invalid.insert(name.into());
+                            continue;
+                        }
                         "u32" => Some(
                             val.parse::<u32>()
                                 .map_err(|_| bad("u32"))?
@@ -355,7 +375,15 @@ impl MacFixture {
 
     /// Replaces or adds a sysctl's recorded value (`None`: the name does not exist).
     pub fn set_sysctl(&mut self, name: &str, value: Option<Vec<u8>>) -> &mut Self {
+        self.invalid.remove(name);
         self.sysctls.insert(name.into(), value);
+        self
+    }
+
+    /// Makes reads of `name` fail with `EINVAL`, as some do in macOS virtual machines.
+    pub fn set_sysctl_invalid(&mut self, name: &str) -> &mut Self {
+        self.sysctls.remove(name);
+        self.invalid.insert(name.into());
         self
     }
 
@@ -383,6 +411,9 @@ impl MacApi for MacFixture {
     fn sysctl(&self, name: &str, new: Option<&[u8]>) -> io::Result<Option<Vec<u8>>> {
         if new.is_some() {
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
+        if self.invalid.contains(name) {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
         }
         // A name the recording never asked for is one the host does not have.
         Ok(self.sysctls.get(name).cloned().flatten())

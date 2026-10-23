@@ -240,7 +240,8 @@ pub fn enumerate(api: &dyn MacApi, node: NodeId) -> Result<MacHost, EnumError> {
 /// (`l3cachesize` where a level reports one, `l2cachesize` otherwise); a cluster is
 /// `cpusperl2` (or `cpusperl3`) cores. Apple's system-level cache is not reported by any
 /// sysctl, so it is not counted. `ccds` counts those clusters: the core complexes that share
-/// a last-level cache.
+/// a last-level cache. A one-level part without `hw.perflevel0.l2cachesize` uses
+/// `hw.l2cachesize`, and a level without `cpusperl2` is one cluster.
 fn topology(
     api: &dyn MacApi,
     isa: syntropy_core::resource::IsaFlags,
@@ -260,10 +261,15 @@ fn topology(
         let physical = need_int(api, &key("physicalcpu"))?;
         let (size, per) = match sysctl_int(api, &key("l3cachesize"))? {
             Some(s) if s > 0 => (s, sysctl_int(api, &key("cpusperl3"))?),
-            _ => (
-                need_int(api, &key("l2cachesize"))?,
-                sysctl_int(api, &key("cpusperl2"))?,
-            ),
+            _ => {
+                // A one-level part (a virtual machine) may report the L2 only host-wide.
+                let size = match sysctl_int(api, &key("l2cachesize"))? {
+                    Some(s) => s,
+                    None if levels == 1 => need_int(api, "hw.l2cachesize")?,
+                    None => need_int(api, &key("l2cachesize"))?,
+                };
+                (size, sysctl_int(api, &key("cpusperl2"))?)
+            }
         };
         let per = per.filter(|p| *p > 0).unwrap_or(physical.max(1));
         let n = physical.div_ceil(per);
@@ -323,9 +329,15 @@ fn power(api: &dyn MacApi) -> Result<(PowerSource, bool), EnumError> {
     Ok((source, battery.is_some()))
 }
 
+/// Reads a sysctl. `EINVAL` counts as absent: in macOS virtual machines some names exist
+/// but have no value on the host (the `macos-26` runner reports `hw.perflevel0.l3cachesize`
+/// so). A name E1 needs then fails as missing; an optional one is left out.
 fn read(api: &dyn MacApi, name: &str) -> Result<Option<Vec<u8>>, EnumError> {
-    api.sysctl(name, None)
-        .map_err(|e| EnumError::os(format!("sysctl {name}"), &e))
+    match api.sysctl(name, None) {
+        Ok(v) => Ok(v),
+        Err(e) if e.kind() == io::ErrorKind::InvalidInput => Ok(None),
+        Err(e) => Err(EnumError::os(format!("sysctl {name}"), &e)),
+    }
 }
 
 /// An integer sysctl: 4 or 8 native-endian bytes.
