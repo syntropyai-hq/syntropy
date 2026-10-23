@@ -17,9 +17,13 @@
 //!
 //! **Working-set ceiling.** `HostMemInfo::windows_lockable` is the largest working-set
 //! minimum this process can set without privilege (RFC-0020 §5, "Windows before H5"). The
-//! probe raises the minimum by binary search in 64 MiB steps up to `ullTotalPhys` and puts
-//! the original limits back. Raising the minimum allocates nothing; Windows refuses a
-//! minimum it cannot guarantee.
+//! probe raises the (soft) minimum by binary search in 64 MiB steps up to `ullAvailPhys` and
+//! puts the original limits back, retrying once. Raising the minimum allocates nothing;
+//! Windows refuses a minimum it cannot guarantee. The value is an upper bound on what a lock
+//! can reach, not a lock budget: step H5's `lockable_measured` replaces it.
+//!
+//! **Job objects.** `HostMemInfo::cgroup_limit` is the headroom the process's job leaves
+//! ([`job_headroom`]), `None` when it is in no job or the job sets no memory limit.
 
 mod glpi;
 mod record;
@@ -85,12 +89,28 @@ pub trait WinApi {
     fn proximity_node(&self, proximity: u32) -> Option<u16>;
     /// `GetSystemPowerStatus`.
     fn power_status(&self) -> io::Result<WinPower>;
-    /// The working-set ceiling probe's result, with `upper` the highest minimum it tries.
+    /// The working-set ceiling probe's result, with `upper` (`ullAvailPhys`) the highest
+    /// minimum it tries.
     fn working_set_ceiling(&self, upper: u64) -> io::Result<u64>;
     /// `RtlGetVersion`: (major, minor, build).
     fn version(&self) -> io::Result<(u32, u32, u32)>;
     /// The CPU's identification and ISA flags.
     fn cpu(&self) -> io::Result<WinCpu>;
+    /// The memory limits of this process's job object; `None` when it is in no job.
+    fn job_memory(&self) -> io::Result<Option<WinJob>>;
+}
+
+/// A job object's memory limits, from `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WinJob {
+    /// `JobMemoryLimit`, when the job sets one.
+    pub job_limit: Option<u64>,
+    /// `ProcessMemoryLimit`, when the job sets one.
+    pub process_limit: Option<u64>,
+    /// `PeakJobMemoryUsed`.
+    pub peak_job: u64,
+    /// `PeakProcessMemoryUsed`.
+    pub peak_process: u64,
 }
 
 /// Windows environment facts.
@@ -125,7 +145,8 @@ pub fn enumerate(api: &dyn WinApi, node: NodeId) -> Result<WindowsHost, EnumErro
     let cpu = api.cpu().map_err(|e| EnumError::os("CPUID", &e))?;
     let arch = match cpu.arch.as_str() {
         "x86_64" => CpuArch::X86_64,
-        "aarch64" => CpuArch::Aarch64,
+        // Windows on Arm is not an ADR-0020 platform: its ISA would need
+        // `IsProcessorFeaturePresent`, which E1 does not read.
         other => {
             return Err(EnumError::UnsupportedArch {
                 found: other.to_owned(),
@@ -147,12 +168,16 @@ pub fn enumerate(api: &dyn WinApi, node: NodeId) -> Result<WindowsHost, EnumErro
         .memory_status()
         .map_err(|e| EnumError::os("GlobalMemoryStatusEx", &e))?;
     let lockable = api
-        .working_set_ceiling(mem.total)
+        .working_set_ceiling(mem.available)
         .map_err(|e| EnumError::os("SetProcessWorkingSetSizeEx", &e))?;
 
     let mut nodes: Vec<&glpi::Node> = procs.nodes.iter().collect();
     nodes.sort_by_key(|n| n.number);
     let totals = node_totals(api, &nodes, mem.total)?;
+    let job = api
+        .job_memory()
+        .map_err(|e| EnumError::os("QueryInformationJobObject", &e))?;
+    let cgroup_limit = job.and_then(job_headroom).map(Bytes);
 
     let mut cpus = Vec::new();
     let mut domains = Vec::new();
@@ -180,10 +205,9 @@ pub fn enumerate(api: &dyn WinApi, node: NodeId) -> Result<WindowsHost, EnumErro
                 total: Bytes(mem.total),
                 available: Bytes(mem.available),
                 numa_free: Some(Bytes(free)),
-                // RFC-0020 §5's Windows term for this field is a job object's memory limit
-                // less its usage. E1 does not read job objects yet, so `None` here means "not
-                // read", not "no limit".
-                cgroup_limit: None,
+                // RFC-0020 §5's Windows term: the job object's memory limit less its use.
+                // `None`: the process is in no job, or its job sets no memory limit.
+                cgroup_limit,
                 // `RLIMIT_MEMLOCK` is a POSIX limit; Windows bounds locking by the working
                 // set, which `windows_lockable` carries.
                 memlock_limit: None,
@@ -310,10 +334,31 @@ fn topology(
     }
 }
 
+/// The headroom a job's memory limits leave: the tighter of `JobMemoryLimit − PeakJobMemoryUsed`
+/// and `ProcessMemoryLimit − PeakProcessMemoryUsed`. Windows reports only peak commit, which is
+/// at least the current one, so this never overstates the headroom. `None` when the job sets
+/// no memory limit.
+pub fn job_headroom(j: WinJob) -> Option<u64> {
+    let job = j.job_limit.map(|l| l.saturating_sub(j.peak_job));
+    let process = j.process_limit.map(|l| l.saturating_sub(j.peak_process));
+    match (job, process) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// The power source and whether there is a system battery. On battery only when the AC line
-/// is offline; an unknown line status counts as mains, as Linux counts a host with no supply.
+/// is offline. `GetSystemPowerStatus` marks an unknown line status or battery state with 255,
+/// which is an error here, not a guess.
 fn power(p: WinPower) -> Result<(PowerSource, bool), EnumError> {
-    let battery_present = p.battery_flag != 128 && p.battery_flag != 255;
+    const CALL: &str = "GetSystemPowerStatus";
+    if p.ac_line == 255 {
+        return Err(EnumError::bad(CALL, "AC line status unknown (255)"));
+    }
+    if p.battery_flag == 255 {
+        return Err(EnumError::bad(CALL, "battery status unknown (255)"));
+    }
+    let battery_present = p.battery_flag != 128;
     let source = if p.ac_line == 0 {
         if p.battery_percent > 100 {
             return Err(EnumError::bad(
@@ -400,8 +445,30 @@ impl WinApi for LiveWindows {
             set_process_working_set(min, min.max(orig.max)).is_ok()
         });
         // Put the original limits back; the probe must leave the process as it found it.
-        set_process_working_set(orig.min, orig.max)?;
+        // One retry, then an error naming the limits that could not be restored.
+        if set_process_working_set(orig.min, orig.max).is_err()
+            && let Err(e) = set_process_working_set(orig.min, orig.max)
+        {
+            return Err(io::Error::new(
+                e.kind(),
+                format!(
+                    "could not restore the working-set limits min {} max {}: {e}",
+                    orig.min, orig.max
+                ),
+            ));
+        }
         Ok(found)
+    }
+
+    fn job_memory(&self) -> io::Result<Option<WinJob>> {
+        Ok(
+            syntropy_io::os::windows_host::job_memory()?.map(|j| WinJob {
+                job_limit: j.job_limit,
+                process_limit: j.process_limit,
+                peak_job: j.peak_job,
+                peak_process: j.peak_process,
+            }),
+        )
     }
 
     fn version(&self) -> io::Result<(u32, u32, u32)> {
@@ -515,6 +582,31 @@ mod tests {
     }
 
     #[test]
+    fn job_headroom_rules() {
+        let none = WinJob {
+            peak_job: 5,
+            peak_process: 3,
+            ..WinJob::default()
+        };
+        assert_eq!(job_headroom(none), None);
+        let job = WinJob {
+            job_limit: Some(100),
+            ..none
+        };
+        assert_eq!(job_headroom(job), Some(95));
+        let both = WinJob {
+            process_limit: Some(50),
+            ..job
+        };
+        assert_eq!(job_headroom(both), Some(47));
+        let over = WinJob {
+            job_limit: Some(4),
+            ..none
+        };
+        assert_eq!(job_headroom(over), Some(0));
+    }
+
+    #[test]
     fn power_rules() {
         let desk = WinPower {
             ac_line: 1,
@@ -522,12 +614,15 @@ mod tests {
             battery_percent: 255,
         };
         assert_eq!(power(desk).unwrap(), (PowerSource::Mains, false));
-        let unknown = WinPower {
-            ac_line: 255,
-            battery_flag: 255,
-            battery_percent: 255,
-        };
-        assert_eq!(power(unknown).unwrap(), (PowerSource::Mains, false));
+        // 255 is "unknown": an error, not a value.
+        for (ac_line, battery_flag) in [(255, 128), (1, 255), (255, 255)] {
+            let p = WinPower {
+                ac_line,
+                battery_flag,
+                battery_percent: 255,
+            };
+            assert!(power(p).is_err(), "{p:?}");
+        }
         let laptop = WinPower {
             ac_line: 0,
             battery_flag: 0,

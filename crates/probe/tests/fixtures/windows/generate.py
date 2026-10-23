@@ -88,6 +88,7 @@ def write(name, header, cpu, glpi, memory, numa, srat_table, proximity, power, c
         lines += f"proximity {pd} {n}\n"
     lines += f"power ac={power[0]} flag={power[1]} percent={power[2]}\n"
     lines += f"working-set-ceiling {ceiling}\nversion {version[0]} {version[1]} {version[2]}\n"
+    lines += "job none\n"
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, name), "w") as f:
         f.write(lines)

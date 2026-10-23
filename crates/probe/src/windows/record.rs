@@ -6,7 +6,7 @@
 //! The fixture format is one call per line; `#` starts a comment.
 //!
 //! ```text
-//! cpu arch <x86_64|aarch64>
+//! cpu arch <x86_64|...>       # anything but x86_64 is refused
 //! cpu name <text>
 //! cpu flags <name> <name> ...
 //! glpi <hex>                    # repeated lines concatenate
@@ -17,6 +17,7 @@
 //! power ac=<n> flag=<n> percent=<n>
 //! working-set-ceiling <bytes>
 //! version <major> <minor> <build>
+//! job none | job job_limit=<n|none> process_limit=<n|none> peak_job=<n> peak_process=<n>
 //! ```
 
 use std::cell::RefCell;
@@ -24,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io;
 
-use super::{WinApi, WinCpu, WinMemory, WinPower};
+use super::{WinApi, WinCpu, WinJob, WinMemory, WinPower};
 use crate::host::parse_hex;
 
 /// The responses seen so far.
@@ -39,6 +40,7 @@ struct Seen {
     power: Option<WinPower>,
     ceiling: Option<u64>,
     version: Option<(u32, u32, u32)>,
+    job: Option<Option<WinJob>>,
 }
 
 /// A [`WinApi`] that passes each call to `inner` and records the response.
@@ -95,6 +97,21 @@ impl<A: WinApi> WinRecorder<A> {
         }
         if let Some((a, b, c)) = s.version {
             let _ = writeln!(out, "version {a} {b} {c}");
+        }
+        match s.job {
+            Some(None) => out.push_str("job none\n"),
+            Some(Some(j)) => {
+                let opt = |v: Option<u64>| v.map_or("none".to_owned(), |n| n.to_string());
+                let _ = writeln!(
+                    out,
+                    "job job_limit={} process_limit={} peak_job={} peak_process={}",
+                    opt(j.job_limit),
+                    opt(j.process_limit),
+                    j.peak_job,
+                    j.peak_process
+                );
+            }
+            None => {}
         }
         out
     }
@@ -162,6 +179,12 @@ impl<A: WinApi> WinApi for WinRecorder<A> {
     fn cpu(&self) -> io::Result<WinCpu> {
         let r = self.inner.cpu()?;
         self.seen.borrow_mut().cpu = Some(r.clone());
+        Ok(r)
+    }
+
+    fn job_memory(&self) -> io::Result<Option<WinJob>> {
+        let r = self.inner.job_memory()?;
+        self.seen.borrow_mut().job = Some(r);
         Ok(r)
     }
 }
@@ -250,6 +273,27 @@ impl WinFixture {
                     s.power = Some(p);
                 }
                 "working-set-ceiling" => s.ceiling = Some(num(rest)?),
+                "job" if rest == "none" => s.job = Some(None),
+                "job" => {
+                    let mut j = WinJob::default();
+                    let opt = |v: &str| -> Result<Option<u64>, String> {
+                        if v == "none" {
+                            Ok(None)
+                        } else {
+                            num(v).map(Some)
+                        }
+                    };
+                    for kv in &words {
+                        match kv.split_once('=') {
+                            Some(("job_limit", v)) => j.job_limit = opt(v)?,
+                            Some(("process_limit", v)) => j.process_limit = opt(v)?,
+                            Some(("peak_job", v)) => j.peak_job = num(v)?,
+                            Some(("peak_process", v)) => j.peak_process = num(v)?,
+                            _ => return Err(bad("job field")),
+                        }
+                    }
+                    s.job = Some(Some(j));
+                }
                 "version" => {
                     let [a, b, c] = words[..] else {
                         return Err(bad("version <major> <minor> <build>"));
@@ -272,6 +316,20 @@ impl WinFixture {
     /// Replaces the recorded power status.
     pub fn set_power(&mut self, p: WinPower) -> &mut Self {
         self.0.power = Some(p);
+        self
+    }
+
+    /// Replaces the recorded job-object limits (`None`: the process is in no job).
+    pub fn set_job(&mut self, j: Option<WinJob>) -> &mut Self {
+        self.0.job = Some(j);
+        self
+    }
+
+    /// Replaces the recorded CPU architecture.
+    pub fn set_cpu_arch(&mut self, arch: &str) -> &mut Self {
+        if let Some(c) = &mut self.0.cpu {
+            c.arch = arch.into();
+        }
         self
     }
 
@@ -336,5 +394,9 @@ impl WinApi for WinFixture {
 
     fn cpu(&self) -> io::Result<WinCpu> {
         self.0.cpu.clone().ok_or_else(|| missing("cpu"))
+    }
+
+    fn job_memory(&self) -> io::Result<Option<WinJob>> {
+        self.0.job.ok_or_else(|| missing("job"))
     }
 }

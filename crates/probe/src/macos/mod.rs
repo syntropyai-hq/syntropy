@@ -259,16 +259,16 @@ fn topology(
     for l in 0..levels {
         let key = |k: &str| format!("hw.perflevel{l}.{k}");
         let physical = need_int(api, &key("physicalcpu"))?;
-        let (size, per) = match sysctl_int(api, &key("l3cachesize"))? {
-            Some(s) if s > 0 => (s, sysctl_int(api, &key("cpusperl3"))?),
+        let (size, per) = match cache_int(api, &key("l3cachesize"))? {
+            Some(s) if s > 0 => (s, cache_int(api, &key("cpusperl3"))?),
             _ => {
                 // A one-level part (a virtual machine) may report the L2 only host-wide.
-                let size = match sysctl_int(api, &key("l2cachesize"))? {
+                let size = match cache_int(api, &key("l2cachesize"))? {
                     Some(s) => s,
                     None if levels == 1 => need_int(api, "hw.l2cachesize")?,
                     None => need_int(api, &key("l2cachesize"))?,
                 };
-                (size, sysctl_int(api, &key("cpusperl2"))?)
+                (size, cache_int(api, &key("cpusperl2"))?)
             }
         };
         let per = per.filter(|p| *p > 0).unwrap_or(physical.max(1));
@@ -329,29 +329,41 @@ fn power(api: &dyn MacApi) -> Result<(PowerSource, bool), EnumError> {
     Ok((source, battery.is_some()))
 }
 
-/// Reads a sysctl. `EINVAL` counts as absent: in macOS virtual machines some names exist
-/// but have no value on the host (the `macos-26` runner reports `hw.perflevel0.l3cachesize`
-/// so). A name E1 needs then fails as missing; an optional one is left out.
+/// Reads a sysctl. Every error, `EINVAL` included, is an error; only `ENOENT` (`Ok(None)`)
+/// means the name is absent.
 fn read(api: &dyn MacApi, name: &str) -> Result<Option<Vec<u8>>, EnumError> {
+    api.sysctl(name, None)
+        .map_err(|e| EnumError::os(format!("sysctl {name}"), &e))
+}
+
+/// A per-level cache sysctl (`hw.perflevel<N>.l2cachesize`, `l3cachesize`, `cpusperl2`,
+/// `cpusperl3`). These alone may also be absent by failing with `EINVAL` or by holding an
+/// empty value: macOS virtual machines report them so (the `macos-26` runner fails
+/// `hw.perflevel0.l3cachesize` with `EINVAL`). [`topology`] then falls back as it documents.
+fn cache_int(api: &dyn MacApi, name: &str) -> Result<Option<u64>, EnumError> {
     match api.sysctl(name, None) {
-        Ok(v) => Ok(v),
         Err(e) if e.kind() == io::ErrorKind::InvalidInput => Ok(None),
         Err(e) => Err(EnumError::os(format!("sysctl {name}"), &e)),
+        Ok(None) => Ok(None),
+        Ok(Some(b)) if b.is_empty() => Ok(None),
+        Ok(Some(b)) => int_of(name, &b).map(Some),
     }
+}
+
+fn int_of(name: &str, b: &[u8]) -> Result<u64, EnumError> {
+    decode_int(b).ok_or_else(|| {
+        EnumError::bad(
+            format!("sysctl {name}"),
+            format!("{} bytes is not an integer", b.len()),
+        )
+    })
 }
 
 /// An integer sysctl: 4 or 8 native-endian bytes.
 fn sysctl_int(api: &dyn MacApi, name: &str) -> Result<Option<u64>, EnumError> {
     match read(api, name)? {
-        // An empty value (seen in macOS virtual machines) is no value.
         None => Ok(None),
-        Some(b) if b.is_empty() => Ok(None),
-        Some(b) => decode_int(&b).map(Some).ok_or_else(|| {
-            EnumError::bad(
-                format!("sysctl {name}"),
-                format!("{} bytes is not an integer", b.len()),
-            )
-        }),
+        Some(b) => int_of(name, &b).map(Some),
     }
 }
 

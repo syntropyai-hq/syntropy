@@ -13,6 +13,7 @@
 //! | [`power_status`] | `GetSystemPowerStatus` |
 //! | [`process_working_set`], [`set_process_working_set`] | `GetProcessWorkingSetSizeEx`, `SetProcessWorkingSetSizeEx` on this process, for the working-set ceiling probe |
 //! | [`os_version`] | `RtlGetVersion`, which reports the real version whatever the manifest says |
+//! | [`job_memory`] | `IsProcessInJob` and `QueryInformationJobObject(JobObjectExtendedLimitInformation)` on this process's job |
 //!
 //! The processor buffer is returned as bytes and parsed in `probe`, so the parser has no
 //! `unsafe` and runs on recorded buffers.
@@ -24,6 +25,11 @@ use std::ptr;
 
 use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+use windows_sys::Win32::System::JobObjects::{
+    IsProcessInJob, JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    QueryInformationJobObject,
+};
 use windows_sys::Win32::System::Memory::{GetProcessWorkingSetSizeEx, SetProcessWorkingSetSizeEx};
 use windows_sys::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows_sys::Win32::System::SystemInformation::{
@@ -302,6 +308,66 @@ pub fn os_version() -> io::Result<OsVersion> {
     })
 }
 
+/// The memory limits of the job object this process runs in, from
+/// `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JobMemory {
+    /// `JobMemoryLimit`, when `JOB_OBJECT_LIMIT_JOB_MEMORY` is set: the commit limit of all
+    /// the job's processes together.
+    pub job_limit: Option<u64>,
+    /// `ProcessMemoryLimit`, when `JOB_OBJECT_LIMIT_PROCESS_MEMORY` is set: each process's
+    /// commit limit.
+    pub process_limit: Option<u64>,
+    /// `PeakJobMemoryUsed`: the most the job's processes have committed together.
+    pub peak_job: u64,
+    /// `PeakProcessMemoryUsed`: the most any one of its processes has committed.
+    pub peak_process: u64,
+}
+
+/// The memory limits of this process's job; `Ok(None)` when the process is in no job.
+/// (Windows offers no public query of a job's current commit, only its peak.)
+///
+/// # Errors
+///
+/// When either call fails.
+pub fn job_memory() -> io::Result<Option<JobMemory>> {
+    let mut in_job = 0;
+    // SAFETY: the pseudo-handle of this process, a null job handle (any job), and a writable
+    // `BOOL` for the result, which the call writes only through.
+    if unsafe { IsProcessInJob(GetCurrentProcess(), ptr::null_mut(), &mut in_job) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if in_job == 0 {
+        return Ok(None);
+    }
+    // SAFETY: `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` is plain C data, for which all-zero bytes
+    // are a valid value.
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    let mut got = 0u32;
+    // SAFETY: a null job handle means this process's job. `info` is writable for the size
+    // passed, and the call writes at most that many bytes and the count to `got`.
+    let ok = unsafe {
+        QueryInformationJobObject(
+            ptr::null_mut(),
+            JobObjectExtendedLimitInformation,
+            (&raw mut info).cast(),
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            &mut got,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let flags = info.BasicLimitInformation.LimitFlags;
+    Ok(Some(JobMemory {
+        job_limit: (flags & JOB_OBJECT_LIMIT_JOB_MEMORY != 0).then_some(info.JobMemoryLimit as u64),
+        process_limit: (flags & JOB_OBJECT_LIMIT_PROCESS_MEMORY != 0)
+            .then_some(info.ProcessMemoryLimit as u64),
+        peak_job: info.PeakJobMemoryUsed as u64,
+        peak_process: info.PeakProcessMemoryUsed as u64,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +394,7 @@ mod tests {
         assert!(numa_available_memory(0).unwrap() > 0);
         assert!(os_version().unwrap().major >= 10);
         power_status().unwrap();
+        job_memory().unwrap();
     }
 
     #[test]

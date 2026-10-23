@@ -131,3 +131,4 @@ proximity 1 1
 power ac=1 flag=128 percent=255
 working-set-ceiling 214748364800
 version 10 0 26100
+job none

@@ -19,4 +19,6 @@ layouts the calls return: the `GetLogicalProcessorInformationEx(RelationAll)` bu
 
 `windows-2025-runner.txt` is captured: the responses `WinRecorder` recorded on a GitHub-hosted
 `windows-2025` runner during `live_host_has_no_unknown_fields`, copied from the job log. Its
-header names the job, run and commit.
+header names the job, run and commit. It predates the job-object read, so it records no `job`
+response; `windows_fixtures.rs` supplies "in no job" in the test rather than add a response the
+runner never gave. The live test's log carries the full current response set.

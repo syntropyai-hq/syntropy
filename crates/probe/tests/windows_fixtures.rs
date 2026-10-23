@@ -24,7 +24,7 @@ use syntropy_core::units::Bytes;
 use syntropy_probe::EnumError;
 use syntropy_probe::host::{NodeFacts, NumaHostMem};
 use syntropy_probe::windows::{
-    WinFixture, WinPower, WinRecorder, WindowsEnv, WindowsHost, enumerate,
+    WinFixture, WinJob, WinPower, WinRecorder, WindowsEnv, WindowsHost, enumerate,
 };
 
 const NODE: NodeId = NodeId([7; 32]);
@@ -37,7 +37,13 @@ fn fixture(name: &str) -> WinFixture {
         env!("CARGO_MANIFEST_DIR")
     );
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    WinFixture::parse(&text).unwrap_or_else(|e| panic!("{path}: {e}"))
+    let mut f = WinFixture::parse(&text).unwrap_or_else(|e| panic!("{path}: {e}"));
+    if name == "windows-2025-runner" {
+        // The capture predates the job-object read, so it records no `job` response. Supply
+        // "in no job" here, in the test, rather than add a response the runner never gave.
+        f.set_job(None);
+    }
+    f
 }
 
 fn run(name: &str) -> WindowsHost {
@@ -302,8 +308,67 @@ fn recorded_responses_round_trip() {
     }
 }
 
+/// `cgroup_limit` is the job object's headroom, and `None` only when there is no limit.
+#[test]
+fn job_object_limits() {
+    let limit = |f: &WinFixture| enumerate(f, NODE).unwrap().host_mem[0].mem.cgroup_limit;
+    // Not in a job (the fixture's `job none`).
+    let mut f = fixture("desktop");
+    assert_eq!(limit(&f), None);
+    // In a job that sets no memory limit.
+    f.set_job(Some(WinJob {
+        peak_job: 3 * GIB,
+        peak_process: 2 * GIB,
+        ..WinJob::default()
+    }));
+    assert_eq!(limit(&f), None);
+    // A job limit of 8 GiB with a 3 GiB peak, and a 4 GiB per-process limit with a 2 GiB peak.
+    f.set_job(Some(WinJob {
+        job_limit: Some(8 * GIB),
+        process_limit: None,
+        peak_job: 3 * GIB,
+        peak_process: 2 * GIB,
+    }));
+    assert_eq!(limit(&f), Some(Bytes(5 * GIB)));
+    f.set_job(Some(WinJob {
+        job_limit: Some(8 * GIB),
+        process_limit: Some(4 * GIB),
+        peak_job: 3 * GIB,
+        peak_process: 2 * GIB,
+    }));
+    assert_eq!(limit(&f), Some(Bytes(2 * GIB)));
+    let rec = WinRecorder::new(f.clone());
+    let first = enumerate(&rec, NODE).unwrap();
+    assert!(
+        rec.fixture()
+            .contains("job job_limit=8589934592 process_limit=4294967296")
+    );
+    let again = WinFixture::parse(&rec.fixture()).unwrap();
+    assert_eq!(enumerate(&again, NODE).unwrap(), first);
+}
+
 #[test]
 fn failures() {
+    // Windows on Arm is not an ADR-0020 platform.
+    let mut f = fixture("desktop");
+    f.set_cpu_arch("aarch64");
+    assert_eq!(
+        enumerate(&f, NODE).unwrap_err(),
+        EnumError::UnsupportedArch {
+            found: "aarch64".into()
+        }
+    );
+    // An unknown power status is an error, not a value.
+    let mut f = fixture("desktop");
+    f.set_power(WinPower {
+        ac_line: 255,
+        battery_flag: 128,
+        battery_percent: 255,
+    });
+    assert!(matches!(
+        enumerate(&f, NODE),
+        Err(EnumError::BadResponse { .. })
+    ));
     // A multi-node host without an SRAT has no per-node total: an error, not a guess.
     let mut f = fixture("dual-socket");
     f.set_srat(None);

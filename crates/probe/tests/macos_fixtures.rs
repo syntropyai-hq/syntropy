@@ -173,6 +173,19 @@ fn wired_limit_is_read_and_never_written() {
     }
 }
 
+/// A failed read of the wired limit is an error, never "the default cap" (ADR-0014).
+#[test]
+fn wired_limit_einval_is_an_error() {
+    let rec = MacRecorder::new(fixture("wired-limit-einval"));
+    let err = enumerate(&rec, NODE).unwrap_err();
+    assert!(
+        matches!(&err, EnumError::Os { call, kind, .. }
+            if call == "sysctl iogpu.wired_limit_mb" && *kind == std::io::ErrorKind::InvalidInput),
+        "{err:?}"
+    );
+    assert!(rec.sysctl_writes().is_empty());
+}
+
 /// The recording fake does see a write, so the test above would catch one.
 #[test]
 fn the_recorder_sees_writes() {
@@ -304,8 +317,19 @@ fn failures() {
     );
     let again = MacFixture::parse(&rec.fixture()).unwrap();
     assert_eq!(enumerate(&again, NODE).unwrap(), host);
+    // Any other name that fails with `EINVAL` is an error, the wired limit and the names E1
+    // needs included: a failed read is never a default.
+    for name in [WIRED_LIMIT, "hw.memsize", "hw.optional.arm.FEAT_SME2"] {
+        let mut f = fixture("m4-mini");
+        f.set_sysctl_invalid(name);
+        assert!(
+            matches!(enumerate(&f, NODE), Err(EnumError::Os { ref call, .. }) if call == &format!("sysctl {name}")),
+            "{name}"
+        );
+    }
+    // An empty value outside the cache names is a bad response, not "absent".
     let mut f = fixture("m4-mini");
-    f.set_sysctl_invalid("hw.memsize");
+    f.set_sysctl(WIRED_LIMIT, Some(vec![]));
     assert!(matches!(
         enumerate(&f, NODE),
         Err(EnumError::BadResponse { .. })

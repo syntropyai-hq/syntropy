@@ -32,4 +32,4 @@ libc = "0.2.191"
 # events through `Win32_System_Threading`. `Win32_System_Memory`, `Win32_System_Power` and
 # `Wdk_System_SystemServices` (for `RtlGetVersion`) for E1 host enumeration (`os::windows_host`,
 # PLC-E1-T03).
-windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Power", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Power", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }

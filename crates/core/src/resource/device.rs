@@ -436,7 +436,11 @@ pub struct CpuTopology {
     pub efficiency_cores: u16,
     /// Last-level cache per domain, summed over CCDs.
     pub llc: Bytes,
-    /// Core complexes sharing one fabric link (0 = unknown).
+    /// Core complexes: the groups of cores that share one last-level cache in this domain
+    /// (an L3 slice, or an Apple core cluster's L2), counted from the OS's cache topology
+    /// (RFC-0010 §2.2, note of 2026-10-23). Where one complex sits behind one fabric link, as
+    /// on chiplet parts with one L3 per die, this is also the number of fabric links.
+    /// 0 = unknown: Linux E1 does not derive it.
     pub ccds: u8,
     /// Instruction set extensions.
     pub isa: IsaFlags,

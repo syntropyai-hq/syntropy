@@ -28,9 +28,12 @@ use std::ptr;
 ///
 /// # Errors
 ///
-/// When `name` holds a NUL byte, or the call fails for any reason but `ENOENT`.
+/// `InvalidData` when `name` holds a NUL byte; otherwise the OS error when the call fails for
+/// any reason but `ENOENT` (`EINVAL` maps to `InvalidInput`).
 pub fn sysctl(name: &str) -> io::Result<Option<Vec<u8>>> {
-    let c_name = CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // A name with a NUL is the caller's mistake, not the kernel's `EINVAL`: a distinct kind.
+    let c_name = CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "a sysctl name holds a NUL"))?;
     // A value may grow between the size query and the read (a string sysctl being set), so
     // retry a few times on ENOMEM.
     for _ in 0..4 {
@@ -403,7 +406,11 @@ mod tests {
         let brand = sysctl("machdep.cpu.brand_string").unwrap().unwrap();
         assert_eq!(brand.last(), Some(&0));
         assert_eq!(sysctl("hw.no_such_sysctl_name").unwrap(), None);
-        assert!(sysctl("bad\0name").is_err());
+        // A NUL in the name is the caller's error, distinct from the kernel's EINVAL.
+        assert_eq!(
+            sysctl("bad\0name").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
