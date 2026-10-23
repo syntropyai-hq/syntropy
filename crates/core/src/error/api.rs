@@ -25,6 +25,11 @@
 //!    their class, so they are no class rule: every distributed code of those classes is in
 //!    step 1 or step 2.
 //!
+//! A code's own domain RFC can say more about where it surfaces: RFC-0031 §12 calls
+//! `EdgeDemoted` and `QpBudgetExhausted` informational, and RFC-0033 §13's "Client sees"
+//! column gives each recovery code's visible outcome. The shape here is what a response
+//! carries if the code reaches one.
+//!
 //! **Retry hints.** The [`ApiError::retry_after`] of a shape is the row's default. The
 //! error's own retry hint (`Error::retry`, RFC-0001 §5.12) overrides it. When the hint is
 //! `Never`, the response carries `x-should-retry: false` and no `Retry-After` (RFC-0050
@@ -214,6 +219,11 @@ const PER_CODE: &[(ErrorCode, ApiMapping, &str)] = &[
         "RFC-0050 §12.1: a join the keyholder or the joining node refuses",
     ),
     (
+        cluster::TOKEN_REVOKED,
+        JOIN_REFUSED,
+        "RFC-0050 §12.1: a join the keyholder or the joining node refuses",
+    ),
+    (
         dist::FEATURE_LEVEL_TOO_LOW,
         PROPOSAL_REJECTED,
         "RFC-0050 §12.1: a cluster configuration proposal rejected",
@@ -259,6 +269,8 @@ const EXEMPT: &[ErrorCode] = &[
     net::CREDENTIAL_INVALID,
     net::NOT_A_NEIGHBOUR,
     net::UNKNOWN_FRAME_TYPE,
+    net::FRAME_TOO_LARGE,
+    net::WIRE_DTYPE_MISMATCH,
     net::RDMA_NOT_ENABLED,
     net::RDMA_OS_BUILD_MISMATCH,
     net::SHM_USER_MISMATCH,

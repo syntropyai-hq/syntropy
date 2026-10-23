@@ -34,16 +34,17 @@ macro_rules! class {
 }
 
 /// Declares a domain's module: one constant per code and its `TABLE`. A row is
-/// `CONST = number, [names], class;`, where `-` is "no class".
+/// `CONST = number, [names], class;`, where `-` is "no class". The module takes doc comments
+/// only, so no lint attribute can pass through the macro (RFC-0060 §2.4).
 macro_rules! domain_codes {
     (
-        $(#[$meta:meta])*
+        $(#[doc = $doc:literal])*
         $module:ident: $domain:ident {
             $($konst:ident = $num:literal, [$first:literal $(, $alias:literal)*], $class:tt;)*
         }
         $($extra:item)*
     ) => {
-        $(#[$meta])*
+        $(#[doc = $doc])*
         pub mod $module {
             use super::{CodeInfo, Domain, ErrorClass, ErrorCode};
 
@@ -84,6 +85,7 @@ domain_codes! {
         CLOCK_SKEW = 0x010C, ["ClockSkew"], Auth;
         DISCOVERY_SILENT = 0x010D, ["DiscoverySilent"], Link;
         RATE_LIMITED = 0x010E, ["RateLimited"], Transient;
+        TOKEN_REVOKED = 0x010F, ["TokenRevoked"], Auth;
     }
 }
 
@@ -95,8 +97,8 @@ domain_codes! {
         CREDENTIAL_INVALID = 0x0202, ["CredentialInvalid"], Auth;
         NOT_A_NEIGHBOUR = 0x0203, ["NotANeighbour"], Auth;
         UNKNOWN_FRAME_TYPE = 0x0204, ["UnknownFrameType"], Unsupported;
-        FRAME_TOO_LARGE = 0x0205, ["FrameTooLarge"], Internal;
-        WIRE_DTYPE_MISMATCH = 0x0206, ["WireDTypeMismatch"], Internal;
+        FRAME_TOO_LARGE = 0x0205, ["FrameTooLarge"], InvalidRequest;
+        WIRE_DTYPE_MISMATCH = 0x0206, ["WireDTypeMismatch"], Unsupported;
         CRC_STORM = 0x0207, ["CrcStorm"], Link;
         ACK_TIMEOUT = 0x0208, ["AckTimeout"], Link;
         QP_ERROR = 0x0209, ["QpError"], Link;

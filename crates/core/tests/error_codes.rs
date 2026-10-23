@@ -41,13 +41,14 @@ const PINNED: &[(Domain, u16, &[&str], Option<ErrorClass>)] = &[
     (Cluster, 0x010C, &["ClockSkew"], Some(Auth)),
     (Cluster, 0x010D, &["DiscoverySilent"], Some(Link)),
     (Cluster, 0x010E, &["RateLimited"], Some(Transient)),
+    (Cluster, 0x010F, &["TokenRevoked"], Some(Auth)),
     // RFC-0031 §12
     (Net, 0x0201, &["ProtoMajorMismatch"], Some(Unsupported)),
     (Net, 0x0202, &["CredentialInvalid"], Some(Auth)),
     (Net, 0x0203, &["NotANeighbour"], Some(Auth)),
     (Net, 0x0204, &["UnknownFrameType"], Some(Unsupported)),
-    (Net, 0x0205, &["FrameTooLarge"], Some(Internal)),
-    (Net, 0x0206, &["WireDTypeMismatch"], Some(Internal)),
+    (Net, 0x0205, &["FrameTooLarge"], Some(InvalidRequest)),
+    (Net, 0x0206, &["WireDTypeMismatch"], Some(Unsupported)),
     (Net, 0x0207, &["CrcStorm"], Some(Link)),
     (Net, 0x0208, &["AckTimeout"], Some(Link)),
     (Net, 0x0209, &["QpError"], Some(Link)),
@@ -164,9 +165,9 @@ const NATIVE_409: ApiMapping = ApiMapping::Native(NativeError {
     api_code: Some("cluster_proposal_rejected"),
 });
 
-/// The codes RFC-0050 §12.1 (as merged in #1684) names one by one, with words its text uses
-/// for them: twelve table rows, plus `DuplicateCommand` and `IngressLost` from the note below
-/// the table. `pinned_tables_match_the_rfc_text` checks this table against the RFC.
+/// The codes RFC-0050 §12.1 names one by one, with words its text uses for them: the 13 codes
+/// its table rows name, plus `DuplicateCommand` and `IngressLost` from the notes below the
+/// table. `pinned_tables_match_the_rfc_text` checks this table against the RFC.
 const PINNED_ROWS: &[(Domain, u16, ApiMapping, &str)] = &[
     (
         Cluster,
@@ -207,6 +208,12 @@ const PINNED_ROWS: &[(Domain, u16, ApiMapping, &str)] = &[
     (
         Cluster,
         0x010C,
+        NATIVE_403,
+        "a join the keyholder or the joining node refuses",
+    ),
+    (
+        Cluster,
+        0x010F,
         NATIVE_403,
         "a join the keyholder or the joining node refuses",
     ),
@@ -263,6 +270,8 @@ const PINNED_EXEMPT: &[(Domain, u16)] = &[
     (Net, 0x0202),
     (Net, 0x0203),
     (Net, 0x0204),
+    (Net, 0x0205),
+    (Net, 0x0206),
     (Net, 0x020D),
     (Net, 0x020E),
     (Net, 0x020F),
@@ -311,6 +320,23 @@ fn is_note(mapping: ApiMapping) -> bool {
 }
 
 const DOMAINS: [Domain; 5] = [Cluster, Net, Dist, Recovery, Security];
+
+/// Every `ErrorClass` of RFC-0001 §5.12.
+const CLASSES: [ErrorClass; 13] = [
+    Link,
+    Device,
+    Integrity,
+    Drift,
+    Transient,
+    Timeout,
+    Correctness,
+    Internal,
+    Cancelled,
+    Auth,
+    Capacity,
+    InvalidRequest,
+    Unsupported,
+];
 
 fn registry() -> Vec<&'static CodeInfo> {
     codes::all().collect()
@@ -490,38 +516,94 @@ fn every_code_maps_to_an_rfc_0050_shape_or_is_exempt() {
         );
     }
     assert_eq!(api::for_code(ErrorCode::new(Security, 0x0509)), None);
-    // 12 table rows plus `DuplicateCommand` and `IngressLost`; 24 exempt; the rest by class.
-    assert_eq!((by_row, exempt.len(), by_class), (14, 24, 35));
+    // 13 codes by table rows plus `DuplicateCommand` and `IngressLost`; 26 exempt; the rest
+    // by class.
+    assert_eq!((by_row, exempt.len(), by_class), (15, 26, 33));
 }
 
 #[test]
 fn class_rows_match_rfc_0050() {
-    for class in [
-        Link,
-        Device,
-        Integrity,
-        Drift,
-        Transient,
-        Timeout,
-        Correctness,
-        Internal,
-        Cancelled,
-        Auth,
-        Capacity,
-        InvalidRequest,
-        Unsupported,
-    ] {
+    for class in CLASSES {
         assert_eq!(api::for_class(class), class_row(class), "{class:?}");
     }
 }
 
+/// An RFC's text, read from the plan.
+fn rfc(file: &str) -> String {
+    let path = format!("{}/../../plan/rfcs/{file}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// The file of the RFC that publishes `domain`'s codes (`Domain::source`).
+fn code_table_rfc(domain: Domain) -> &'static str {
+    match domain {
+        Cluster => "RFC-0030-discovery-membership-invites.md",
+        Net => "RFC-0031-transport-and-wire-protocol.md",
+        Dist => "RFC-0032-distributed-execution.md",
+        Recovery => "RFC-0033-fault-tolerance-and-elasticity.md",
+        Security => "RFC-0034-security-and-trust.md",
+        other => panic!("{other:?} is a domain this test predates"),
+    }
+}
+
+/// Whether `word` is one CamelCase identifier, such as a code's or a class's name.
+fn is_camel_case(word: &str) -> bool {
+    word.starts_with(|c: char| c.is_ascii_uppercase())
+        && word.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Reads every code row, `| 0x0NNN | \`Name\`… | \`Class\`… |`, out of the five domain RFCs'
+/// tables and checks the registry against them, so a code an RFC adds, renames or reclasses
+/// fails here even when `PINNED` was not updated.
+#[test]
+fn registry_matches_the_rfc_code_tables() {
+    let mut from_rfcs = Vec::new();
+    for domain in DOMAINS {
+        let text = rfc(code_table_rfc(domain));
+        for line in text.lines().filter(|l| l.starts_with("| 0x0")) {
+            let cells: Vec<_> = line.trim_matches('|').split(" | ").map(str::trim).collect();
+            let Ok(number) = u16::from_str_radix(cells[0].trim_start_matches("0x"), 16) else {
+                continue; // a range such as the reserved 0x0509–0x050B
+            };
+            if !domain.range().contains(&number) {
+                continue;
+            }
+            // The names: each backticked word that starts a CamelCase identifier, so a field
+            // list (`FeatureLevelTooLow { needed, cluster }`) keeps only its name.
+            let names: Vec<_> = backticked(cells[1])
+                .filter_map(|w| w.split_whitespace().next())
+                .filter(|w| is_camel_case(w))
+                .map(str::to_owned)
+                .collect();
+            // The class: the first backticked word of the cell; "—" is no class.
+            let class = backticked(cells[2]).next().map(|name| {
+                *CLASSES
+                    .iter()
+                    .find(|c| format!("{c:?}") == name)
+                    .unwrap_or_else(|| panic!("{domain:?} {number:#06X}: class {name:?}"))
+            });
+            from_rfcs.push((ErrorCode::new(domain, number), names, class));
+        }
+    }
+    let registry: Vec<_> = registry()
+        .into_iter()
+        .map(|i| {
+            (
+                i.code,
+                i.names.iter().map(|n| n.to_string()).collect(),
+                i.class,
+            )
+        })
+        .collect();
+    assert_eq!(
+        registry, from_rfcs,
+        "the registry and the RFC tables differ"
+    );
+}
+
 /// RFC-0050 §12.1, read from the plan.
 fn rfc_0050_section_12_1() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../plan/rfcs/RFC-0050-api-surface.md"
-    );
-    let text = std::fs::read_to_string(path).expect("RFC-0050 is in the repository");
+    let text = rfc("RFC-0050-api-surface.md");
     let start = text.find("#### 12.1").expect("§12.1");
     let end = start + text[start..].find("#### 12.2").expect("§12.2");
     text[start..end].to_owned()
@@ -544,6 +626,27 @@ fn code_named(name: &str) -> Option<ErrorCode> {
 #[test]
 fn pinned_tables_match_the_rfc_text() {
     let section = rfc_0050_section_12_1();
+
+    // Every CamelCase name the section puts in backticks is a published code, a class, a
+    // domain or one of a few other types it names. A code the RFC adds to a row or to the
+    // exempt list without a registry entry fails here.
+    const OTHER_TYPES: [&str; 6] = [
+        "BenchControls",
+        "Close",
+        "CommandId",
+        "Error",
+        "ErrorClass",
+        "Never",
+    ];
+    for name in backticked(&section).filter(|w| is_camel_case(w)) {
+        assert!(
+            code_named(name).is_some()
+                || CLASSES.iter().any(|c| format!("{c:?}") == name)
+                || DOMAINS.iter().any(|d| format!("{d:?}") == name)
+                || OTHER_TYPES.contains(&name),
+            "RFC-0050 §12.1 names `{name}`, which is no published code"
+        );
+    }
 
     // Every code a table row names in its condition cell.
     let mut named = BTreeSet::new();
