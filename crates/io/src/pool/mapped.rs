@@ -19,8 +19,10 @@
 //! - **Reads past the end of the file are short.** The mapping covers the file's length when it
 //!   is opened. A read from or past that end returns 0 bytes, and one that crosses it returns
 //!   the bytes before it, as `pread` does. A pack file does not change once it is committed
-//!   (RFC-0041), so the length holds. A file truncated while it is mapped raises `SIGBUS` on the
-//!   pages it lost.
+//!   (RFC-0041), so the length holds. If a file is truncated while it is mapped, `mincore`
+//!   reports the lost pages absent, the wait times out, and the `pread` after it returns a short
+//!   count or 0. Only a truncation in the window between a `mincore` that saw the pages and the
+//!   copy raises `SIGBUS`.
 //! - **Writes go through `F_NOCACHE`,** as in `MacNoCache` (RFC-0021 §13: writes use the same
 //!   engines and never the page cache). A file opened for writing is not mapped, because it
 //!   grows while it is written; its reads are `pread`s on the `F_NOCACHE` handle too. An empty
@@ -378,8 +380,10 @@ mod tests {
     //! mapping is still advised in, and the completion reports only the bytes in the slot.
 
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::pool::macos::sys;
     use crate::{
         Bytes, CompletionBuf, ExtentRef, IoDest, IoEngine, IoOp, IoPriority, IoTicket, Nanos,
         ReadRequest, SubmitBatch, Wait, WriteRequest,
@@ -403,12 +407,43 @@ mod tests {
 
     /// Forwards to [`RealMap`] and records each call, in order. `refuse_map` makes `mmap` fail
     /// with `ENODEV` without calling the OS; `never_resident` reports every page absent, so each
-    /// wait times out.
+    /// wait times out. The pool built from it also counts the `pread`s on the file in `preads`,
+    /// and `refuse_nocache` makes `F_NOCACHE` fail there (see [`Files`]).
     #[derive(Default)]
     struct Recorder {
         calls: Arc<Mutex<Vec<Call>>>,
         refuse_map: bool,
         never_resident: bool,
+        preads: Arc<AtomicUsize>,
+        refuse_nocache: bool,
+    }
+
+    /// Forwards `MacNoCache`'s file calls to [`RealSys`], counting each `pread` or `preadv`, so a
+    /// test can tell a copy from the mapping from a read of the file. `refuse_nocache` makes
+    /// `F_NOCACHE` fail with `EINVAL` without calling the OS.
+    struct Files {
+        preads: Arc<AtomicUsize>,
+        refuse_nocache: bool,
+    }
+
+    impl MacSys for Files {
+        fn fcntl(&self, fd: c_int, cmd: c_int, arg: c_int) -> Result<(), i32> {
+            if self.refuse_nocache && cmd == sys::F_NOCACHE {
+                return Err(sys::EINVAL);
+            }
+            RealSys.fcntl(fd, cmd, arg)
+        }
+
+        unsafe fn read(&self, fd: c_int, offset: i64, segs: &[Seg]) -> Result<u64, i32> {
+            self.preads.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: the caller's guarantee, passed on unchanged.
+            unsafe { RealSys.read(fd, offset, segs) }
+        }
+
+        unsafe fn write(&self, fd: c_int, offset: i64, seg: Seg) -> Result<u64, i32> {
+            // SAFETY: the caller's guarantee, passed on unchanged.
+            unsafe { RealSys.write(fd, offset, seg) }
+        }
     }
 
     const ENODEV: i32 = 19;
@@ -442,12 +477,16 @@ mod tests {
         }
     }
 
-    type TestPool = Pool<Mapped<Recorder, RealSys>>;
+    type TestPool = Pool<Mapped<Recorder, Files>>;
 
     fn pool(threads: usize, rec: Recorder) -> TestPool {
+        let files = Files {
+            preads: Arc::clone(&rec.preads),
+            refuse_nocache: rec.refuse_nocache,
+        };
         let backend = Mapped {
             map: rec,
-            nocache: Mac { sys: RealSys },
+            nocache: Mac { sys: files },
             page: align::os_page_size(),
         };
         Pool::new(backend, threads).unwrap()
@@ -555,6 +594,7 @@ mod tests {
         let page = align::os_page_size();
         let (path, bytes) = fixture("order", 8 * page as usize);
         let (rec, calls) = recorder();
+        let preads = Arc::clone(&rec.preads);
         let mut pool = pool(1, rec);
         pool.open(&path, OpenMode::Read).unwrap();
         calls.lock().unwrap().clear();
@@ -566,6 +606,8 @@ mod tests {
         let p = page as usize;
         assert!(contents(&blocks)[..2 * p] == bytes[3 * p..5 * p]);
         drop(pool);
+        // The bytes came from the mapping: the file was never read.
+        assert_eq!(preads.load(Ordering::SeqCst), 0);
 
         let calls = calls.lock().unwrap().clone();
         let Some(Call::Advise { addr, len, advice }) = calls.first().copied() else {
@@ -602,6 +644,7 @@ mod tests {
         let page = align::os_page_size();
         let (path, bytes) = fixture("residency", 64 * page as usize);
         let (rec, calls) = recorder();
+        let preads = Arc::clone(&rec.preads);
         let mut pool = pool(4, rec);
         pool.open(&path, OpenMode::Read).unwrap();
         calls.lock().unwrap().clear();
@@ -622,6 +665,8 @@ mod tests {
             assert!(blocks[i].0[..] == bytes[off..off + 16384]);
         }
         drop(pool);
+        // Every byte was copied from the mapping, none read from the file.
+        assert_eq!(preads.load(Ordering::SeqCst), 0);
         let calls = calls.lock().unwrap().clone();
         let mut willneed = advised(&calls, libc::MADV_WILLNEED);
         let mut dontneed = advised(&calls, libc::MADV_DONTNEED);
@@ -641,6 +686,7 @@ mod tests {
             ..Recorder::default()
         };
         let calls = Arc::clone(&rec.calls);
+        let preads = Arc::clone(&rec.preads);
         let mut pool = pool(1, rec);
         pool.open(&path, OpenMode::Read).unwrap();
         let mut blocks = vec![Block([0; 16384]); 1];
@@ -652,6 +698,7 @@ mod tests {
         let p = page as usize;
         assert!(contents(&blocks)[..16384] == bytes[p..p + 16384]);
         drop(pool);
+        assert_eq!(preads.load(Ordering::SeqCst), 1, "one pread after the wait");
         let calls = calls.lock().unwrap().clone();
         let polls = calls
             .iter()
@@ -714,6 +761,68 @@ mod tests {
         assert!(got[..3].iter().chain(&got[5_003..]).all(|&b| b == 0));
         drop(pool);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file truncated while it is mapped: `mincore` reports the lost pages absent, so the wait
+    /// times out and the `pread` after it returns what the file still holds, here nothing. No
+    /// copy touches the lost pages, so no `SIGBUS`.
+    #[test]
+    fn a_read_of_pages_truncated_away_while_mapped_is_short() {
+        let page = align::os_page_size();
+        let (path, _) = fixture("truncated", 8 * page as usize);
+        let (rec, _) = recorder();
+        let preads = Arc::clone(&rec.preads);
+        let mut pool = pool(1, rec);
+        pool.open(&path, OpenMode::Read).unwrap();
+        let mut blocks = vec![Block([0; 16384]); 2];
+        let base = blocks.as_mut_ptr() as u64;
+        let len = 2 * page.min(16384);
+        let done = run(&mut pool, vec![read_op(1, 4 * page, len, base)]);
+        assert_eq!(done[0].result, Ok(Bytes(len)));
+        assert_eq!(preads.load(Ordering::SeqCst), 0);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(page)
+            .unwrap();
+        let done = run(&mut pool, vec![read_op(2, 4 * page, len, base)]);
+        assert_eq!(done[0].result, Ok(Bytes(0)));
+        assert_eq!(
+            preads.load(Ordering::SeqCst),
+            1,
+            "the wait timed out to a pread"
+        );
+        drop(pool);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A refused `F_NOCACHE` does not flag a mapped file buffered, since its reads go through
+    /// the mapping; it does flag a file opened for writing, as in `MacNoCache`.
+    #[test]
+    fn a_refused_f_nocache_flags_only_a_file_opened_for_writing() {
+        let (path, _) = fixture("nocache", 16384);
+        let rec = Recorder {
+            refuse_nocache: true,
+            ..Recorder::default()
+        };
+        let mut pool = pool(1, rec);
+        pool.open(&path, OpenMode::Read).unwrap();
+        assert!(pool.caps().direct);
+        assert_eq!(pool.buffered_reason(), None);
+        let scratch = path.with_extension("w");
+        pool.open(&scratch, OpenMode::Create).unwrap();
+        assert!(!pool.caps().direct);
+        assert_eq!(
+            pool.buffered_reason(),
+            Some(IoError::with_os_error(
+                IoErrorCode::DirectRefused,
+                sys::EINVAL
+            ))
+        );
+        drop(pool);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&scratch);
     }
 
     #[test]
