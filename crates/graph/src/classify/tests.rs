@@ -349,41 +349,47 @@ fn a_matching_name_with_the_wrong_shape_is_unknown() {
     }
 
     // Two rules whose patterns both match one name: the first decides, and when its checks
-    // fail the tensor is `Unknown`. The later rule, which the shape (or the layer) would fit,
-    // is never tried (RFC-0043 §4.1, "`Unknown`, not a guess").
-    const FIRST_THEN_LOOSE: &[ClassRule] = &[
-        rule(
-            "blk.{L}.attn_q.weight",
-            BlockSel::Layer(Block::Gqa),
-            TensorRole::Q,
-            ClassSel::DenseEveryToken,
-            &[Hp("hidden"), Mul("n_heads", "d_head")],
-        ),
+    // fail the tensor is `Unknown`. The later rule, whose shape fits every case below, is
+    // never tried (RFC-0043 §4.1, "`Unknown`, not a guess").
+    const FIRST: ClassRule = rule(
+        "blk.{L}.attn_q.weight",
+        BlockSel::Layer(Block::Gqa),
+        TensorRole::Q,
+        ClassSel::DenseEveryToken,
+        &[Hp("hidden"), Mul("n_heads", "d_head")],
+    );
+    const fn loose(shape: &'static [ShapeDim]) -> ClassRule {
         rule(
             "blk.{N}.attn_q.weight",
             BlockSel::Encoder,
             TensorRole::Q,
             TOWER,
-            &[Any, Any],
-        ),
+            shape,
+        )
+    }
+    const RANK_2: &[ClassRule] = &[FIRST, loose(&[Any, Any])];
+    const RANK_3: &[ClassRule] = &[FIRST, loose(&[Any, Any, Any])];
+    let cases: [(&[ClassRule], &str, &[u64]); 3] = [
+        // A wrong size, which the later rank-2 rule fits.
+        (RANK_2, "blk.0.attn_q.weight", &[64, 63]),
+        // A wrong rank, which the later rank-3 rule fits.
+        (RANK_3, "blk.0.attn_q.weight", &[64, 64, 1]),
+        // An out-of-range layer, which the later rule's `{N}` matches.
+        (RANK_2, "blk.7.attn_q.weight", &[64, 64]),
     ];
-    let both = Matcher::new(&[RuleTable {
-        order: DimOrder::InnermostFirst,
-        rules: FIRST_THEN_LOOSE,
-    }])
-    .unwrap();
-    assert!(
-        matches!(
-            both.classify("blk.0.attn_q.weight", &[64, 64], &hp),
-            Classification::Classified { .. }
-        ),
-        "the first rule classifies a tensor that fits it"
-    );
-    for (name, shape) in [
-        ("blk.0.attn_q.weight", &[64u64, 63][..]),
-        ("blk.0.attn_q.weight", &[64, 64, 1][..]),
-        ("blk.7.attn_q.weight", &[64, 64][..]),
-    ] {
+    for (rules, name, shape) in cases {
+        let both = Matcher::new(&[RuleTable {
+            order: DimOrder::InnermostFirst,
+            rules,
+        }])
+        .unwrap();
+        assert!(
+            matches!(
+                both.classify("blk.0.attn_q.weight", &[64, 64], &hp),
+                Classification::Classified { .. }
+            ),
+            "the first rule classifies a tensor that fits it"
+        );
         assert_eq!(
             both.classify(name, shape, &hp),
             Classification::Unknown,
