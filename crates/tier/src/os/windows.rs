@@ -484,6 +484,13 @@ impl WindowsMemory {
 }
 
 impl OsMemory for WindowsMemory {
+    // `MemSnapshot::at` is a `std::time::Instant` (RFC-0020 §3), stamped here on the OS side of
+    // the tier manager, not in its policy (RFC-0060 §2.1 rule T1). A listed exception to the
+    // determinism lints (`xtask/src/determinism.rs`).
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "stamps the OS reading's `MemSnapshot::at`, a std `Instant`"
+    )]
     fn snapshot(&self) -> MemSnapshot {
         let m = memory_status().unwrap_or_default();
         let nodes = self.numa_nodes();

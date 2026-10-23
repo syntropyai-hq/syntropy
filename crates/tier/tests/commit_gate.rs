@@ -54,6 +54,12 @@ impl ScriptedOs {
 }
 
 impl OsMemory for ScriptedOs {
+    // `MemSnapshot::at` is a `std::time::Instant` (RFC-0020 §3), and `Instant::now` is the only
+    // way to make one. A listed exception to the determinism lints (`xtask/src/determinism.rs`).
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "builds the `Instant` that `MemSnapshot::at` holds"
+    )]
     fn snapshot(&self) -> MemSnapshot {
         let mut s = self.state.lock().unwrap();
         let i = s.snapshots.min(s.others.len() - 1);
