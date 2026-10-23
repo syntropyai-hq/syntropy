@@ -354,6 +354,9 @@ impl<S: RangeSource> HeaderReader<S> {
                 cap: self.cap,
             })?;
             let start = self.prefix.len();
+            // Exactly the target: the doubling above already sets the growth, and an amortised
+            // reserve on top could hold up to twice the source's length.
+            self.prefix.reserve_exact(extra);
             self.prefix.resize(start + extra, 0);
             if let Err(e) = self.source.read_at(have, &mut self.prefix[start..]) {
                 self.prefix.truncate(start);
