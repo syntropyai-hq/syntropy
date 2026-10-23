@@ -130,6 +130,12 @@ pub const EXCEPTIONS: &[Exception] = &[
         lints: &["clippy::disallowed_methods"],
         why: "an integration test that waits in real time for the OS to free a file lock",
     },
+    Exception {
+        file: "crates/tier/src/os/macos.rs",
+        lints: &["clippy::disallowed_methods"],
+        why: "the macOS adapter, on the OS side of tier, not its policy: it stamps \
+              `MemSnapshot::at`, a std `Instant` (RFC-0020 §3)",
+    },
 ];
 
 /// The names that turn the determinism lints off when a lowering attribute ([`LOWERING`]) names
