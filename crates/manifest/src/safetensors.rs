@@ -34,7 +34,7 @@ use crate::range::{HEADER_MAX_BYTES_DEFAULT, HeaderReader, RangeError, RangeSour
 
 pub mod dtype;
 pub mod index;
-mod json;
+pub(crate) mod json;
 pub mod side;
 
 #[cfg(test)]
