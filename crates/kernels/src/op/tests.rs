@@ -665,3 +665,23 @@ fn op_args_bind_weights_step_and_statics() {
     assert_eq!(args.weights[0].len, Bytes(4096));
     assert_eq!(args.statics[0], Scalar::F32(1e-6));
 }
+
+#[test]
+fn op_args_none_binds_nothing() {
+    // Usable in a const context, as a replaying provider's default arguments.
+    const NONE: OpArgs<'static> = OpArgs::none();
+    assert!(NONE.inputs.is_empty());
+    assert!(NONE.outputs.is_empty());
+    assert!(NONE.weights.is_empty());
+    assert!(NONE.statics.is_empty());
+    assert_eq!(NONE.workspace, None);
+    assert_eq!(
+        NONE.step,
+        crate::BufferSlice {
+            buffer: 0,
+            offset: Bytes(0),
+            bytes: Bytes(0),
+        }
+    );
+    assert_eq!(OpArgs::none(), NONE);
+}
