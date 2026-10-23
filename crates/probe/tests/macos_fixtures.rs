@@ -273,6 +273,15 @@ fn failures() {
     assert_eq!((t.perf_cores, t.efficiency_cores, t.ccds), (10, 0, 1));
     assert_eq!(t.llc, Bytes(16 * MIB));
 
+    // An empty value, as macOS virtual machines report for `l3cachesize`, is no value.
+    let mut f = fixture("m4-mini");
+    f.set_sysctl("hw.perflevel0.l3cachesize", Some(vec![]));
+    let rec = MacRecorder::new(f);
+    let host = enumerate(&rec, NODE).unwrap();
+    assert_eq!(host.cpus, vec![cpu()]);
+    let again = MacFixture::parse(&rec.fixture()).unwrap();
+    assert_eq!(enumerate(&again, NODE).unwrap(), host);
+
     // No SME2: the level drops to `Arm86I8mm`.
     let mut f = fixture("m4-mini");
     f.set_sysctl(
@@ -293,7 +302,13 @@ fn failures() {
 #[test]
 fn live_host_has_no_unknown_fields() {
     let rec = MacRecorder::new(syntropy_probe::macos::LiveMac);
-    let host = enumerate(&rec, NODE).unwrap_or_else(|e| panic!("live enumeration: {e}"));
+    let host = enumerate(&rec, NODE).unwrap_or_else(|e| {
+        common::evidence(&format!(
+            "\n=== PLC-E1-T03 live macOS responses before the failure ===\n{}=== end ===\n",
+            rec.fixture()
+        ));
+        panic!("live enumeration: {e}")
+    });
     common::evidence(&format!(
         "\n=== PLC-E1-T03 live macOS E1 records ===\n{host:#?}\n=== recorded responses (fixture format) ===\n{}=== end ===\n",
         rec.fixture()

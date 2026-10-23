@@ -17,5 +17,6 @@ layouts the calls return: the `GetLogicalProcessorInformationEx(RelationAll)` bu
 - `dual-socket.txt`: two 16-core sockets with SMT in one processor group, each socket one NUMA
   node with two 32 MiB L3 caches; the SRAT gives each node 128 GiB, in two ranges for node 0.
 
-Responses captured on a live host have a header naming the host and the run; see
-`windows-2025-runner.txt` once it is recorded.
+`windows-2025-runner.txt` is captured: the responses `WinRecorder` recorded on a GitHub-hosted
+`windows-2025` runner during `live_host_has_no_unknown_fields`, copied from the job log. Its
+header names the job, run and commit.

@@ -20,7 +20,8 @@ use std::io;
 use std::ptr;
 
 /// Reads the sysctl `name` with `sysctlbyname`, passing no new value, so the call cannot
-/// change it. `Ok(None)` when the kernel has no such name (`ENOENT`).
+/// change it. `Ok(None)` when the kernel has no such name (`ENOENT`); an empty vector when the
+/// name exists with an empty value.
 ///
 /// The bytes are the value as the kernel returns it: an integer in native byte order (4 or 8
 /// bytes) or a NUL-terminated string. The caller knows which a name holds.
@@ -52,6 +53,11 @@ pub fn sysctl(name: &str) -> io::Result<Option<Vec<u8>>> {
                 Some(libc::ENOENT) => Ok(None),
                 _ => Err(err),
             };
+        }
+        // A name whose value is empty (some sysctls in a virtual machine) has nothing to
+        // read; a second call with a zero-length buffer would fail with EINVAL.
+        if len == 0 {
+            return Ok(Some(Vec::new()));
         }
         let mut buf = vec![0u8; len];
         let mut got = len;

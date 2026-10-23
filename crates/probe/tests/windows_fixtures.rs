@@ -210,6 +210,67 @@ fn dual_socket_two_numa_nodes() {
     assert!(unknown.is_empty(), "{unknown:?}");
 }
 
+/// The responses captured on a GitHub-hosted `windows-2025` runner (see the fixture's header).
+#[test]
+fn windows_2025_runner_capture() {
+    const NAME: &str = "AMD EPYC 7763 64-Core Processor";
+    let host = run("windows-2025-runner");
+    assert_eq!(
+        host.node,
+        NodeFacts {
+            arch: CpuArch::X86_64,
+            power: PowerSource::Mains,
+            battery_present: false,
+            kernel_release: "10.0.26100".into(),
+        }
+    );
+    assert_eq!(
+        host.cpus,
+        vec![DeviceInfo {
+            id: dev(0),
+            kind: DeviceKind::Cpu,
+            name: NAME.into(),
+            class: DeviceClass::Cpu { isa: CpuIsa::X86V3 },
+            backends: smallvec![],
+            features: DeviceFeatures::AVX2,
+            local_tiers: smallvec![tier(0), tier(1)],
+            numa: Some(0),
+            fingerprint: Blake3::default(),
+            ext: DeviceInfoExt {
+                cpu: Some(CpuTopology {
+                    numa: 0,
+                    physical_cores: 2,
+                    logical_cpus: 4,
+                    perf_cores: 2,
+                    efficiency_cores: 0,
+                    llc: Bytes(32 * MIB),
+                    ccds: 1,
+                    isa: IsaFlags::AVX2,
+                    amx_permitted: false,
+                    reserved_cpus: CpuSet::default(),
+                }),
+                ..DeviceInfoExt::default()
+            },
+        }]
+    );
+    assert_eq!(
+        host.host_mem,
+        vec![NumaHostMem {
+            numa: 0,
+            node_total: Bytes(17_174_360_064),
+            mem: mem(
+                17_174_360_064,
+                14_141_550_592,
+                14_142_144_512,
+                16_106_332_160
+            ),
+        }]
+    );
+    assert_eq!(host.env, WindowsEnv { build: 26100 });
+    let unknown = common::unknown_fields(&host.node, &host.cpus, &host.host_mem, true);
+    assert!(unknown.is_empty(), "{unknown:?}");
+}
+
 #[test]
 fn laptop_power() {
     let mut f = fixture("desktop");
@@ -233,7 +294,7 @@ fn laptop_power() {
 
 #[test]
 fn recorded_responses_round_trip() {
-    for name in ["desktop", "dual-socket"] {
+    for name in ["desktop", "dual-socket", "windows-2025-runner"] {
         let rec = WinRecorder::new(fixture(name));
         let first = enumerate(&rec, NODE).unwrap();
         let again = WinFixture::parse(&rec.fixture()).unwrap();
@@ -273,7 +334,13 @@ fn failures() {
 fn live_host_has_no_unknown_fields() {
     let before = syntropy_io::os::windows_host::process_working_set().unwrap();
     let rec = WinRecorder::new(syntropy_probe::windows::LiveWindows);
-    let host = enumerate(&rec, NODE).unwrap_or_else(|e| panic!("live enumeration: {e}"));
+    let host = enumerate(&rec, NODE).unwrap_or_else(|e| {
+        common::evidence(&format!(
+            "\n=== PLC-E1-T03 live Windows responses before the failure ===\n{}=== end ===\n",
+            rec.fixture()
+        ));
+        panic!("live enumeration: {e}")
+    });
     // The working-set probe put the original limits back.
     assert_eq!(
         syntropy_io::os::windows_host::process_working_set().unwrap(),

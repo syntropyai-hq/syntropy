@@ -331,7 +331,9 @@ fn read(api: &dyn MacApi, name: &str) -> Result<Option<Vec<u8>>, EnumError> {
 /// An integer sysctl: 4 or 8 native-endian bytes.
 fn sysctl_int(api: &dyn MacApi, name: &str) -> Result<Option<u64>, EnumError> {
     match read(api, name)? {
+        // An empty value (seen in macOS virtual machines) is no value.
         None => Ok(None),
+        Some(b) if b.is_empty() => Ok(None),
         Some(b) => decode_int(&b).map(Some).ok_or_else(|| {
             EnumError::bad(
                 format!("sysctl {name}"),

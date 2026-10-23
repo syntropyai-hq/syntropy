@@ -203,6 +203,9 @@ fn render_value(v: Option<&[u8]>) -> String {
     let Some(b) = v else {
         return "absent".into();
     };
+    if b.is_empty() {
+        return "hex".into();
+    }
     if let Some(text) = b.strip_suffix(&[0])
         && !text.contains(&0)
         && let Ok(s) = std::str::from_utf8(text)
