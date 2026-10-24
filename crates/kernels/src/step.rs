@@ -32,6 +32,6 @@ pub use mirror::{SamplerState, StepDesc};
 pub use parity::{HandshakeError, Parity, ParityFlags, ParityHandshake};
 
 #[cfg(test)]
-mod cgen;
+pub(crate) mod cgen;
 #[cfg(test)]
 mod tests;
