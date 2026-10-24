@@ -19,6 +19,9 @@
 //! `cargo xtask deny`, `spdx`, `third-party` and `notices` apply the licence policy of ADR-0018
 //! ([`licences`]).
 //!
+//! `cargo xtask kgen` writes the CUDA provider's generated files (RFC-0040 §10.2 rule 2) by
+//! running `syntropy-kernels-cuda`'s `syntropy-kgen` binary, which lives beside the sources it reads.
+//!
 //! The tool sits outside the crate graph of RFC-0001 §4.1: no crate depends on it, and it depends
 //! on none. `ci/layers.toml` lists it as a tool, and `check-deps` holds it to that.
 
@@ -217,6 +220,17 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
             let pass = licences::manifest::run(&checkout, &root, &mut io::stderr())?;
             Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
         }
+        Command::Kgen { check } => {
+            let checkout = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            Ok(if kgen(&checkout, check)? {
+                EXIT_PASS
+            } else {
+                EXIT_FAIL
+            })
+        }
         Command::Notices { manifest_path, out } => {
             let checkout = match checkout() {
                 Ok(root) => root,
@@ -229,6 +243,27 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
             Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
         }
     }
+}
+
+/// `kgen`: runs the generator, which lives with the sources it generates from in
+/// `syntropy-kernels-cuda` (xtask depends on no workspace crate), as `cargo run`.
+fn kgen(checkout: &std::path::Path, check: bool) -> io::Result<bool> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = std::process::Command::new(cargo);
+    command.current_dir(checkout).args([
+        "run",
+        "--quiet",
+        "--locked",
+        "--package",
+        "syntropy-kernels-cuda",
+        "--bin",
+        "syntropy-kgen",
+        "--",
+    ]);
+    if check {
+        command.arg("--check");
+    }
+    Ok(command.status()?.success())
 }
 
 /// The root of the checkout xtask runs in, or the exit code for a usage error after printing it.

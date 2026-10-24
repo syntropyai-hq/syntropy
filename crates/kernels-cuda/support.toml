@@ -1,0 +1,87 @@
+# The ops the CUDA provider implements, and the instantiations each needs (RFC-0040 §10.2 rule 2).
+#
+# Each [[op]] is one OpKey in its serde form: `op` (an OpKind), `schemes` (the weight scheme, the
+# activation dtype, the output dtype), `layout` (0 for the source layout) and `variant` (the
+# fusion bits). `tiles` are the tile parameters the kernels are instantiated at: the provider's
+# own tuning choices, never part of the key (RFC-0040 §3.1). For GEMV it is the rows per call
+# (decode, verify windows and small batches, rows ≤ 16).
+#
+# `cargo xtask kgen` reads this table and the unit table in `src/kgen/units.rs`, and writes each
+# unit's explicit instantiation list to `csrc/instantiate/<unit>.inc`. A key must belong to
+# exactly one unit. The kernels themselves arrive with the COMP-E5 tasks, which extend this
+# table; this first version lists the M0 hot ops of RFC-0040 §7.1.
+
+# ---- GEMV over k-quants, legacy quants and floats ----
+
+[[op]]
+key = { op = "Gemv", schemes = [{ Ggml = "Q4_K" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+tiles = [1, 2, 4, 8, 16]
+
+[[op]]
+key = { op = "Gemv", schemes = [{ Ggml = "Q6_K" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+tiles = [1, 2, 4, 8, 16]
+
+[[op]]
+key = { op = "Gemv", schemes = [{ Ggml = "Q8_0" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+tiles = [1, 2, 4, 8, 16]
+
+[[op]]
+key = { op = "Gemv", schemes = [{ Ggml = "Q4_0" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+tiles = [1, 2, 4, 8, 16]
+
+[[op]]
+key = { op = "Gemv", schemes = [{ Plain = "F16" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+tiles = [1, 2, 4, 8, 16]
+
+[[op]]
+key = { op = { GateUpAct = { act = "Silu" } }, schemes = [{ Ggml = "Q4_K" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+tiles = [1, 2, 4, 8, 16]
+
+[[op]]
+key = { op = "Logits", schemes = [{ Ggml = "Q6_K" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+tiles = [1, 2, 4, 8, 16]
+
+# ---- Attention ----
+
+[[op]]
+key = { op = { AttnDecode = "Gqa" }, schemes = [{ Plain = "F16" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+tiles = [64, 128]
+
+[[op]]
+key = { op = { KvWrite = "Gqa" }, schemes = [{ Plain = "F16" }, { Plain = "F32" }, { Plain = "F16" }], layout = 0, variant = 8 }
+
+# ---- Normalisation and elementwise ----
+
+[[op]]
+key = { op = "RmsNorm", schemes = [{ Plain = "F32" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+
+[[op]]
+key = { op = { Rope = "Plain" }, schemes = [{ Plain = "F32" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+
+[[op]]
+key = { op = "Add", schemes = [{ Plain = "F32" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+
+# ---- Tables, head and sampling ----
+
+[[op]]
+key = { op = "RowGather", schemes = [{ Ggml = "Q4_K" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+
+[[op]]
+key = { op = "Argmax", schemes = [{ Plain = "F32" }, { Plain = "F32" }, { Plain = "I32" }], layout = 0, variant = 0 }
+
+[[op]]
+key = { op = "SampleSeeded", schemes = [{ Plain = "F32" }, { Plain = "F32" }, { Plain = "I32" }], layout = 0, variant = 0 }
+
+# ---- Data movement (bit-exact class) ----
+
+[[op]]
+key = { op = "Convert", schemes = [{ Ggml = "Q4_K" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+
+[[op]]
+key = { op = "Convert", schemes = [{ Ggml = "Q8_0" }, { Plain = "F32" }, { Plain = "F32" }], layout = 0, variant = 0 }
+
+[[op]]
+key = { op = "KvPack", schemes = [{ Plain = "F16" }, { Plain = "F16" }, { Plain = "F16" }], layout = 0, variant = 0 }
+
+[[op]]
+key = { op = "KvUnpack", schemes = [{ Plain = "F16" }, { Plain = "F16" }, { Plain = "F16" }], layout = 0, variant = 0 }
