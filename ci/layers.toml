@@ -34,6 +34,7 @@
     "text",
     "probe",
     "store",
+    "netprobe",
 ]
 3 = ["exec", "cluster"]
 4 = ["sched", "api"]

@@ -32,6 +32,8 @@ members = [
     "crates/text",
     "crates/probe",
     "crates/store",
+    # The field network probe for alpha testers (DIST-E4-T15), a standalone binary
+    "crates/netprobe",
     # Layer 3
     "crates/exec",
     "crates/cluster",
