@@ -39,7 +39,9 @@ reference does with them.
 ## Regenerating
 
 The inputs are downloaded third-party code: keep them in their own empty directory, outside the
-repository, and build with explicit paths. ggml needs no configure step for these files.
+repository, and build with explicit paths. ggml needs no configure step for these files. Run the
+commands under `sh` or `bash`, from the repository root: they rely on `$FLAGS` being split into
+words, which zsh, the default macOS shell, does not do.
 
 ```sh
 SRC=/path/to/empty/dir          # the ggml checkout
@@ -64,5 +66,7 @@ cc -Wl,-dead_strip "$OUT"/gen.o "$OUT"/ggml.o "$OUT"/quants.o "$OUT"/cpu-quants.
 ```
 
 `-ffp-contract=off` matches the core's ggml build (RFC-0040 §8.1). On an x86 host with AVX2,
-add `-mavx2 -mf16c` to `FLAGS` and set `ISA=x86`; the file then records `host x86-avx`, and the
-test checks the `cpu` lines against `Q8Path::X86Avx`. No x86 vectors are committed yet.
+add `-mavx2 -mfma -mf16c` to `FLAGS` and set `ISA=x86`; the file then records `host x86-avx`,
+and the test checks the `cpu` lines against `Q8Path::X86Avx`. No x86 vectors are committed yet.
+Until they are, the AVX path is checked against ggml's output only on the tie cases, where its
+inverse scale equals the NEON path's and it must give the recorded NEON bytes.

@@ -203,3 +203,43 @@ fn the_tie_cases_tell_the_paths_apart() {
     assert_ne!(q8_0_bytes(x, cpu), recorded("ref"));
     assert_ne!(q8_0_bytes(x, Q8Path::Reference), recorded("cpu"));
 }
+
+/// On the tie cases every block's maximum is `127 · 2^k`, so `127/amax` and `1/d` are the same
+/// power of two and ggml's AVX and NEON quantizers do the same arithmetic: both round ties to
+/// even. The AVX path must therefore give the recorded NEON bytes there. No x86 vectors are
+/// committed yet (`data/act_quant/README.md`), so this is the AVX path's only check against
+/// ggml's output.
+#[test]
+fn the_avx_path_gives_the_neon_bytes_on_the_tie_cases() {
+    let (_, host, cases) = parse();
+    if host_path(&host) != Q8Path::Arm64Neon {
+        return;
+    }
+    let mut checked = 0;
+    for name in ["ties_scale_0", "ties_scale_1", "ties_scale_2"] {
+        let case = cases
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("the {name} case"));
+        let x = &case.input;
+        for block in x.chunks(32) {
+            let amax = block.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert_eq!(127.0 / amax, 1.0 / (amax / 127.0), "{name}: inexact scale");
+        }
+        for (ty, path, want) in &case.outputs {
+            let got = match (ty.as_str(), path.as_str()) {
+                ("q8_0", "cpu") => q8_0_bytes(x, Q8Path::X86Avx),
+                ("q8_1", "cpu") => q8_1_bytes(x, Q8Path::X86Avx),
+                _ => continue,
+            };
+            if let Some(i) = first_difference(&got, want) {
+                panic!(
+                    "case {name} {ty} on the AVX path: first difference at byte {i} of {}",
+                    want.len()
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 6);
+}

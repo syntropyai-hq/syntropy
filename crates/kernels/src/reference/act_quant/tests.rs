@@ -311,6 +311,24 @@ fn the_avx_path_is_the_neon_path_when_the_inverse_scales_agree() {
     assert!(same > 0 && differ > 0, "same {same}, differ {differ}");
 }
 
+/// From the source: the AVX path multiplies by `127/amax`, the NEON path by `1/(amax/127)`.
+/// Here the two inverse scales differ by one ulp, and that moves the second element across a
+/// rounding boundary: 1.4999999 on the AVX path, 1.5 on the NEON path.
+#[test]
+fn the_avx_path_multiplies_by_127_over_amax() {
+    let amax = f32::from_bits(0x3F80_000F);
+    let v = f32::from_bits(0x3C41_831C);
+    assert_ne!(127.0 / amax, 1.0 / (amax / 127.0));
+    let mut x = [0.0f32; 32];
+    x[0] = amax;
+    x[1] = v;
+    let avx = &quantize_q8_0(&x, Q8Path::X86Avx).expect("one block")[0];
+    let neon = &quantize_q8_0(&x, Q8Path::Arm64Neon).expect("one block")[0];
+    assert_eq!(avx.d, neon.d);
+    assert_eq!((avx.qs[0], avx.qs[1]), (127, 1));
+    assert_eq!((neon.qs[0], neon.qs[1]), (127, 2));
+}
+
 // ---- The fake-quant step -------------------------------------------------------------------
 
 #[test]
