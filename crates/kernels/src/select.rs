@@ -22,8 +22,10 @@
 //!
 //! **Candidates** ([`admit`], RFC-0040 §6.2 conditions 1–4). A candidate is in the device's
 //! domain, its `query` answered `Some`, its `Numerics` passes the RFC-0042 §4 accumulation
-//! contract ([`numerics::check_caps`]), its layout is the layout the reader reads, and it is
-//! deterministic when the runner was opened deterministic. Conditions 5 (a certificate in the
+//! contract ([`numerics::check_caps`]) and, for a matrix product, the activation quantisation
+//! rule of RFC-0042 §4.3 for the op's weight tensor ([`act::check_act`], with the tensor's
+//! [`OpSlot::act`]), its layout is the layout the reader reads, and it is deterministic when
+//! the runner was opened deterministic. Conditions 5 (a certificate in the
 //! `ConformanceManifest`) and 6 (the runtime spot check) come with COMP-E2-T02 and the spot
 //! check; until then every candidate that passes 1–4 is admitted.
 //!
@@ -47,6 +49,7 @@ use syntropy_core::{ErrorClass, Nanos};
 
 use crate::device::{MemoryDomain, ProviderId};
 use crate::error::{Error, ErrorCode};
+use crate::numerics::act::{self, ActContext, ActViolation};
 use crate::numerics::{self, NumericsViolation};
 use crate::op::{LayoutVersion, OpCaps, OpKey, ShapeSig};
 
@@ -306,6 +309,9 @@ pub enum Rejection {
     NoQuery,
     /// `caps.numerics` breaks the accumulation contract (condition 2, RFC-0042 §4).
     Numerics(NumericsViolation),
+    /// `caps.numerics.act_in` breaks the activation quantisation rule for the op's weight
+    /// tensor (condition 2, RFC-0042 §4.3).
+    Activation(ActViolation),
     /// `caps.layout` is not the layout the reader reads (condition 3).
     Layout {
         /// The layout the reader reads.
@@ -323,6 +329,7 @@ impl fmt::Display for Rejection {
             Self::OtherDomain(d) => write!(f, "in memory domain {d:?}, not the device's"),
             Self::NoQuery => write!(f, "query returned None"),
             Self::Numerics(v) => write!(f, "numerics: {v}"),
+            Self::Activation(v) => write!(f, "activation quantisation: {v}"),
             Self::Layout { wanted, offered } => {
                 write!(
                     f,
@@ -336,17 +343,24 @@ impl fmt::Display for Rejection {
 }
 
 /// Holds `candidate` to RFC-0040 §6.2 conditions 1–4 for `key`, in that order, after the
-/// domain check.
+/// domain check. `act` describes the op's weight tensor for the activation rule of
+/// condition 2.
 ///
 /// # Errors
 ///
 /// The first [`Rejection`] found.
-pub fn admit(key: &OpKey, req: &Requirements, candidate: &Candidate) -> Result<OpCaps, Rejection> {
+pub fn admit(
+    key: &OpKey,
+    req: &Requirements,
+    act: &ActContext,
+    candidate: &Candidate,
+) -> Result<OpCaps, Rejection> {
     if candidate.domain != req.domain {
         return Err(Rejection::OtherDomain(candidate.domain));
     }
     let caps = candidate.caps.ok_or(Rejection::NoQuery)?;
     numerics::check_caps(key, &caps).map_err(Rejection::Numerics)?;
+    act::check_act(key, &caps, act).map_err(Rejection::Activation)?;
     if let Some(wanted) = req.layout
         && caps.layout != wanted
     {
@@ -424,6 +438,10 @@ pub struct OpSlot {
     pub predicted: Nanos,
     /// The layout this reader reads; `None` in the layout pass.
     pub layout: Option<LayoutVersion>,
+    /// What RFC-0042 §4.3's activation rule needs to know about the op's weight tensor:
+    /// the declared activation quantisation, the census's transcription and the
+    /// certificates. The default is nothing declared, no transcription and no certificate.
+    pub act: ActContext,
     /// The cached choice from the selection cache (RFC-0040 §6.5), if any.
     pub cached: Option<(ProviderId, u32)>,
     /// Every candidate offered.
@@ -552,7 +570,7 @@ pub fn decide_op(
     let mut rejections = Vec::new();
     for offer in &op.offers {
         let c = &offer.candidate;
-        match admit(&op.key, &req, c) {
+        match admit(&op.key, &req, &op.act, c) {
             Ok(caps) => admitted.push((c, caps, offer.measurement)),
             Err(why) => rejections.push((c.provider, c.variant, why)),
         }
