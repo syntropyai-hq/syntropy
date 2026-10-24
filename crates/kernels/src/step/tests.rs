@@ -226,7 +226,7 @@ fn generator_lays_out_by_the_c_rules() {
 fn generator_rejects_what_it_cannot_lay_out() {
     for (text, why) in [
         (
-            "struct syn_x {\n    uint16_t a;\n};\n",
+            "struct syn_x {\n    int16_t a;\n};\n",
             "unsupported member type",
         ),
         ("struct syn_x {\n    uint32_t a[4];\n};\n", "no arrays"),
