@@ -10,7 +10,7 @@
 //! the I/O thread loop of RFC-0021 §3.1 ([`IoLoop`], with an [`IoClient`] per producer). The
 //! Windows engines are in the `windows` module, built on Windows only, which holds IoRing and
 //! IOCP (RFC-0021 §7). The thread-pool engines of RFC-0021 §4.2 and §5 are in `pool`:
-//! `PreadPool` on Linux and Windows, `MacNoCache` on macOS.
+//! `PreadPool` on Linux and Windows, `MacNoCache` and `MacMapped` on macOS.
 //!
 //! The [`conformance`] module is the harness every engine's tests run (RFC-0021 Testing, "Every
 //! engine returns the right bytes"): it checks any [`IoEngine`] against `std::fs` reads of the
