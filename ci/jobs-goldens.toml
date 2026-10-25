@@ -605,3 +605,11 @@ paths = ["ci/nightly-toolchain.toml"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "ThreadSanitizer suppressions"
+source = "constructed: a change to the suppressions alone (QUAL-E3-T10); the file is new"
+paths = ["ci/tsan-suppressions.txt"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]

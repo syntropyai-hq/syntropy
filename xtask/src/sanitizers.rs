@@ -13,6 +13,11 @@
 //!   too, which ThreadSanitizer needs to see its synchronisation; that takes an explicit
 //!   `--target`, the host's. Each kind builds into `asan/` or `tsan/` under the target directory.
 //!   A report makes the instrumented test binary fail, and the step with it.
+//! - **What each kind leaves out.** [`SKIPS`] lists the tests that cannot pass under any
+//!   sanitizer, each with its reason. AddressSanitizer runs with `detect_leaks=0`: leak checking
+//!   is not in RFC-0060 §3.4, and `net`'s frame tests leak their fixtures on purpose to borrow
+//!   them for `'static`. ThreadSanitizer reads [`TSAN_SUPPRESSIONS`], which says why each entry
+//!   is there. The caller's `ASAN_OPTIONS` and `TSAN_OPTIONS` are kept, with these added.
 //! - **The planted bug** (`asan` only). Last, `tier` is built with `--cfg syntropy_planted` into
 //!   `asan/planted/`, and the step passes only when AddressSanitizer reports the read past the
 //!   arena's end as a heap buffer overflow.
@@ -31,6 +36,16 @@ pub const PACKAGES: &[&str] = &[
     "syntropy-spsc",
     "syntropy-tier",
 ];
+
+/// Tests left out of both sanitizer runs, by name, with why.
+pub const SKIPS: &[(&str, &str)] = &[(
+    "a_lock_within_memlock_is_taken_and_released",
+    "the sanitizer runtimes replace mlock and munlock with no-ops, so the locked size it checks \
+     in /proc/self/status never moves",
+)];
+
+/// ThreadSanitizer's suppressions, relative to the workspace root.
+pub const TSAN_SUPPRESSIONS: &str = "ci/tsan-suppressions.txt";
 
 /// A sanitizer the suites build with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +70,32 @@ impl Sanitizer {
             Sanitizer::Thread => "tsan",
         }
     }
+
+    /// The runtime's options variable.
+    pub fn options_var(self) -> &'static str {
+        match self {
+            Sanitizer::Address => "ASAN_OPTIONS",
+            Sanitizer::Thread => "TSAN_OPTIONS",
+        }
+    }
+
+    /// The runtime options the suite adds, for a workspace at `root`.
+    pub fn options(self, root: &Path) -> String {
+        match self {
+            Sanitizer::Address => "detect_leaks=0".to_owned(),
+            Sanitizer::Thread => {
+                format!("suppressions={}", root.join(TSAN_SUPPRESSIONS).display())
+            }
+        }
+    }
+}
+
+/// The caller's runtime options, if any, with `ours` after them, so ours win.
+pub fn combined(callers: Option<String>, ours: &str) -> String {
+    match callers {
+        Some(callers) if !callers.trim().is_empty() => format!("{}:{ours}", callers.trim()),
+        _ => ours.to_owned(),
+    }
 }
 
 /// The arguments after `cargo` that build and test `packages` for `host`.
@@ -77,6 +118,9 @@ pub fn args(host: &str, packages: &[&str]) -> Vec<String> {
         ]
         .map(str::to_owned),
     );
+    for (test, _) in SKIPS {
+        args.extend(["--skip".to_owned(), (*test).to_owned()]);
+    }
     args
 }
 
@@ -92,8 +136,13 @@ fn cargo(
     extra.extend(cfg);
     let (flags, value) = nightly::flags(var, &extra);
     let mut command = nightly::command(pin, "cargo");
+    let options = combined(
+        std::env::var(sanitizer.options_var()).ok(),
+        &sanitizer.options(root),
+    );
     command
         .env(flags, value)
+        .env(sanitizer.options_var(), options)
         .env("CARGO_TARGET_DIR", nightly::target_dir(root, var, target))
         .env("CARGO_TERM_COLOR", "never")
         .current_dir(root);
@@ -216,10 +265,46 @@ mod tests {
                 "--",
                 "--color",
                 "never",
+                "--skip",
+                "a_lock_within_memlock_is_taken_and_released",
             ]
         );
         assert_eq!(Sanitizer::Address.flag(), "-Zsanitizer=address");
         assert_eq!(Sanitizer::Thread.flag(), "-Zsanitizer=thread");
         assert_ne!(Sanitizer::Address.name(), Sanitizer::Thread.name());
+    }
+
+    #[test]
+    fn runtime_options_keep_the_callers_and_add_the_suites() {
+        let root = Path::new("/w");
+        assert_eq!(Sanitizer::Address.options(root), "detect_leaks=0");
+        assert_eq!(
+            Sanitizer::Thread.options(root),
+            "suppressions=/w/ci/tsan-suppressions.txt"
+        );
+        assert_eq!(combined(None, "a=1"), "a=1");
+        assert_eq!(combined(Some(" ".to_owned()), "a=1"), "a=1");
+        assert_eq!(
+            combined(Some("verbosity=1".to_owned()), "a=1"),
+            "verbosity=1:a=1"
+        );
+    }
+
+    /// Every suppression says why it is there, and suppresses races only.
+    #[test]
+    fn each_tsan_suppression_has_a_reason() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let text = std::fs::read_to_string(root.join(TSAN_SUPPRESSIONS)).unwrap();
+        let mut entries = 0;
+        let mut previous = "";
+        for line in text.lines() {
+            if !line.is_empty() && !line.starts_with('#') {
+                entries += 1;
+                assert!(line.starts_with("race:"), "{line}");
+                assert!(previous.starts_with('#'), "{line} has no reason above it");
+            }
+            previous = line;
+        }
+        assert!(entries > 0);
     }
 }

@@ -47,9 +47,11 @@ no_crate = [
 "third_party/ggml.lock" = ["kernels-ggml"]
 "third_party/licences.toml" = ["xtask"]
 "bench/**" = ["bench"]
-# The test nightly that Miri and the sanitizer suites build these crates with (QUAL-E3-T10), so
-# a bump runs `hosted-l3`.
+# The test nightly that Miri and the sanitizer suites build these crates with, and the
+# ThreadSanitizer suppressions their `tsan` run reads (QUAL-E3-T10), so a change to either runs
+# `hosted-l3`.
 "ci/nightly-toolchain.toml" = ["io", "ipc", "kernels-cpu", "net", "spsc", "tier"]
+"ci/tsan-suppressions.txt" = ["io", "ipc", "kernels-cpu", "net", "spsc", "tier"]
 "ci/**" = ["xtask"]
 "governance/**" = ["xtask"]
 # The workflows: `xtask` checks them, and `testkit` checks that no release build names it.
