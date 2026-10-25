@@ -4168,6 +4168,9 @@ dependencies = [
  "smallvec",
  "syntropy-core",
  "syntropy-io",
+ "syntropy-kernels",
+ "syntropy-spsc",
+ "syntropy-testkit",
 ]
 
 [[package]]
