@@ -304,6 +304,34 @@ fn svg_css_and_file_types_are_checked_too() {
     assert!(problems[0].contains("xlink:href"));
     let css = "body { background: url('https://x.example/a.png'); } p { background: url(a.png) }";
     assert_eq!(origins::check_file("style.css", css.as_bytes()).len(), 1);
+    // Escapes, comments and `image-set()` strings are read as a browser reads them.
+    for (css, expected) in [
+        (
+            "p { background: u\\72l(https://x.example/a.png) }",
+            "url(https://x.example/a.png)",
+        ),
+        (
+            "p { background: ur\\00006C (//x.example/a.png) }",
+            "url(//x.example/a.png)",
+        ),
+        ("@\\69mport 'a.css';", "@import"),
+        ("@im/* x */port 'a.css';", "@import"),
+        (
+            "p { background: image-set(\"a.png\" 1x, \"https://x.example/b.png\" 2x) }",
+            "image-set(\"https://x.example/b.png\")",
+        ),
+    ] {
+        let problems = origins::check_file("style.css", css.as_bytes());
+        assert!(
+            problems.iter().any(|p| p.contains(expected)),
+            "`{css}` gave {problems:?}, not `{expected}`"
+        );
+    }
+    let local = "p { background: image-set(\"a.png\" 1x, url(b.png) 2x); content: \"\\201C\" }";
+    assert_eq!(
+        origins::check_file("style.css", local.as_bytes()),
+        Vec::<String>::new()
+    );
     for file in ["app.js", "font.woff2", "data.json"] {
         let problems = origins::check_file(file, b"x");
         assert!(

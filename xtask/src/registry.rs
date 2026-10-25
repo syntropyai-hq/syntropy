@@ -634,7 +634,8 @@ pub const JOBS: &[Entry] = &[
         ],
         pending: &[Pending {
             check: "a headless-browser load of every page that records no request to another \
-                    origin; needs a browser on the runner, which a maintainer approves",
+                    origin; needs a browser on the runner, which a maintainer approves, and keeps \
+                    PROD-E13-T01 (#1300) open",
             task: "PROD-E13-T01",
         }],
     },

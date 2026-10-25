@@ -184,7 +184,35 @@ pub fn check_markup(relative: &str, scan: &Scan) -> Vec<String> {
 /// Every problem with a stylesheet's text.
 pub fn check_css(relative: &str, place: &str, css: &str) -> Vec<String> {
     let mut problems = Vec::new();
-    let lower = css.to_ascii_lowercase();
+    // Comments and escapes are removed first, so `u\72l(` and `@\69mport` read as the browser
+    // reads them.
+    let lower = css_unescape(&strip_css_comments(css)).to_ascii_lowercase();
+    // `image-set()` takes bare strings as URLs, as well as `url()`.
+    let mut rest = lower.as_str();
+    while let Some(at) = rest.find("image-set(") {
+        let after = &rest[at + "image-set(".len()..];
+        let mut depth = 1;
+        let end = after
+            .char_indices()
+            .find(|(_, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            })
+            .map_or(after.len(), |(i, _)| i);
+        for (i, part) in after[..end].split(['"', '\'']).enumerate() {
+            if i % 2 == 1 && is_remote(part) {
+                problems.push(format!(
+                    "{relative}: {place} has image-set(\"{part}\"), which fetches from another \
+                     origin"
+                ));
+            }
+        }
+        rest = &after[end..];
+    }
     if lower.contains("@import") {
         problems.push(format!(
             "{relative}: {place} has an @import; the site's CSS is one file"
@@ -208,6 +236,52 @@ pub fn check_css(relative: &str, place: &str, css: &str) -> Vec<String> {
         rest = &after[end..];
     }
     problems
+}
+
+/// `css` without its `/* … */` comments.
+fn strip_css_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(at) = rest.find("/*") {
+        out.push_str(&rest[..at]);
+        rest = rest[at + 2..]
+            .find("*/")
+            .map_or("", |end| &rest[at + 2 + end + 2..]);
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `css` with its escapes decoded: `\` and one to six hex digits (and one following space) is
+/// that code point; `\` and any other character is that character.
+fn css_unescape(css: &str) -> String {
+    let chars: Vec<char> = css.chars().collect();
+    let mut out = String::with_capacity(css.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '\\' || i + 1 >= chars.len() {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let hex: String = chars[i + 1..]
+            .iter()
+            .take(6)
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
+        if hex.is_empty() {
+            out.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        let code = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
+        out.push(code.unwrap_or('\u{fffd}'));
+        i += 1 + hex.len();
+        if chars.get(i).is_some_and(|c| c.is_whitespace()) {
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Whether a URL leaves the page's origin: it has a scheme other than `data:`, or it is
