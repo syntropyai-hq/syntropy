@@ -269,6 +269,30 @@ jobs:
           cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
       - run: cargo xtask test loom
 
+  # The docs site (PROD-E13-T01; RFC-0051 §4 rule 8, ADR-0510), when a change touches the pages,
+  # what they link to, or the generator (`ci/jobs.toml`). The build reads only the checkout:
+  # cargo runs offline once the dependencies are fetched, and the build itself opens no network
+  # connection.
+  docs:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'docs')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: docs
+          cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
+      - name: Fetch the dependencies
+        run: cargo fetch --locked
+      - name: cargo xtask ci docs, offline
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo xtask ci docs
+
   # L5 nano parity smoke on the CPU provider (RFC-0060 §5). Planned: QUAL-E5-T06. `changes` does
   # not list it until it has a suite, so it shows as skipped, and `ci-gate` names the task.
   # Listed before then, it fails rather than passing on nothing.
@@ -341,7 +365,7 @@ jobs:
   # The verdict comes from the base branch's `xtask`, built with no cache, as in `pr-meta.yml`,
   # so a PR cannot change how its own jobs are judged (RFC-0062 §2.2, note 2026-10-22).
   ci-gate:
-    needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano, toolchains-linux, toolchains-windows, toolchains-macos]
+    needs: [changes, lint, build, hosted-test, hosted-l3, docs, hosted-parity-nano, toolchains-linux, toolchains-windows, toolchains-macos]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15

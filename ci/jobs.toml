@@ -84,6 +84,20 @@ runner = "hosted"
 when = "closure"
 crates = ["ipc", "tier", "exec", "io", "net", "spsc", "kernels-cpu"]
 
+# The docs site (PROD-E13-T01; RFC-0062 §2.2's `docs` rule): the pages under `docs/`, what they
+# link to (the plan and the top-level Markdown files), and the generator. A task that adds a
+# generated reference (PROD-E13-T07) adds the paths its generator reads.
+[job.docs]
+runner = "hosted"
+when = "direct"
+paths = [
+    "docs/**",
+    "plan/**",
+    "*.md",
+    "xtask/src/docs.rs",
+    "xtask/src/docs/**",
+]
+
 # L5 nano parity smoke on the CPU provider (RFC-0060 §5).
 [job.hosted-parity-nano]
 runner = "hosted"

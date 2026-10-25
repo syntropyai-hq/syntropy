@@ -35,6 +35,7 @@ mod codeowners;
 mod contrib;
 mod dep_diff;
 mod determinism;
+mod docs;
 mod fixtures;
 mod hot_threads;
 mod instructions;
@@ -216,6 +217,29 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
                 Ok(()) => Ok(EXIT_PASS),
                 Err(error) => {
                     eprintln!("fixtures: {error}");
+                    Ok(EXIT_FAIL)
+                }
+            }
+        }
+        Command::DocsGenerate => {
+            let root = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            match docs::write_generated(&root, docs::generated::GENERATORS) {
+                Ok(changed) => {
+                    for page in &changed {
+                        eprintln!("docs-generate: rewrote {page}");
+                    }
+                    if changed.is_empty() {
+                        eprintln!("docs-generate: every generated section is current");
+                    }
+                    Ok(EXIT_PASS)
+                }
+                Err(problems) => {
+                    for problem in problems {
+                        eprintln!("docs-generate: {problem}");
+                    }
                     Ok(EXIT_FAIL)
                 }
             }
