@@ -28,14 +28,17 @@
 //! per-provider checks: the fast-math flag audit and the bit-exact list of RFC-0042 §6.4.
 //!
 //! The rule for a matrix product's `act_in` depends on the checkpoint and the weight scheme
-//! (RFC-0042 §4.3 rules a–c), not on the op alone, so COMP-E13-T03 checks it at selection.
-//! Here an op that is not a matrix product must not quantise its input at all.
+//! (RFC-0042 §4.3 rules a–c), not on the op alone, so [`act::check_act`] checks it at
+//! selection with what it needs to know about the tensor. Here an op that is not a matrix
+//! product must not quantise its input at all.
 
 use std::fmt;
 
 use syntropy_core::{AccumKind, ActQuant, DType, Numerics};
 
 use crate::op::{OpCaps, OpKey, OpKind, OpRegistry, RouteNorm};
+
+pub mod act;
 
 /// The longest scale block an integer dot product may sum in I32 (RFC-0042 §4.1 rule 2).
 ///
