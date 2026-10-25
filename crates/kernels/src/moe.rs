@@ -8,9 +8,11 @@
 //!   one definition, with the codes [`assign`] writes.
 //! - [`doorbell`] sizes a doorbell layer for the epoch's `MAX_UNION` and `MAX_PRED`
 //!   ([`DoorbellLayout`]) and writes and reads whole layers in its bytes ([`DoorbellLayer`]).
-//! - [`assign`] is the split rule every site evaluates from the same doorbell. Its Rust version
-//!   and its C version, `include/syntropy/moe_assign.h`, are printed from one specification,
-//!   and the tests check that both are current and that they give identical output.
+//! - [`assign`] is the split rule every site evaluates from the same doorbell. Its Rust version,
+//!   its C version, `include/syntropy/moe_assign.h`, and its MSL version for the Metal
+//!   provider, `crates/kernels-metal/shaders/moe_assign.metal`, are printed from one
+//!   specification. These tests check that all three are current and that the C version gives
+//!   identical output; the `syntropy-kernels-metal` tests run the MSL version on the GPU.
 //! - [`tables`] holds the per-cache tables the kernels read (`slot_of`, `slot_addr`,
 //!   `copy_eligible`), the dispatcher's `copy_src`, the step's balance block, the host mirror of
 //!   `copy_eligible` that the host sites hold at exactly the step's `delta_head`, and the gate

@@ -4,3 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dev-dependencies]
+# The Rust version of the split rule the MSL version is compared with (COMP-E1-T11).
+syntropy-kernels = { path = "../kernels" }
