@@ -36,6 +36,7 @@ mod contrib;
 mod dep_diff;
 mod determinism;
 mod fixtures;
+mod flake;
 mod hot_threads;
 mod instructions;
 mod licences;
@@ -43,6 +44,7 @@ mod loom;
 mod orphan_rule;
 mod plan_tools;
 mod properties;
+mod quarantine;
 mod registry;
 mod repo_settings;
 mod roster;
@@ -61,12 +63,9 @@ use std::process::ExitCode;
 use cli::{Command, Kind, USAGE};
 use run::Verdict;
 
-/// Every step passed, or help or a list was printed.
-const EXIT_PASS: u8 = 0;
-/// A step failed, or xtask could not write its log.
-const EXIT_FAIL: u8 = 1;
-/// The command line was not understood, or xtask was not started by `cargo xtask`.
-const EXIT_USAGE: u8 = 2;
+/// The exit codes, which [`flake`] defines so a runner can tell an `infra` failure from a `test`
+/// failure without reading the log (RFC-0060 §13).
+use flake::{EXIT_INFRA, EXIT_PASS, EXIT_TEST as EXIT_FAIL, EXIT_USAGE};
 
 fn main() -> ExitCode {
     let args: Result<Vec<String>, _> = std::env::args_os()
@@ -282,6 +281,7 @@ fn exit_code(verdict: &Verdict) -> u8 {
     match verdict {
         Verdict::Pass => EXIT_PASS,
         Verdict::Fail(_) => EXIT_FAIL,
+        Verdict::Infra(_) => EXIT_INFRA,
     }
 }
 
@@ -326,6 +326,21 @@ mod tests {
     fn a_pass_exits_zero_and_a_failure_exits_one() {
         assert_eq!(exit_code(&Verdict::Pass), 0);
         assert_eq!(exit_code(&Verdict::Fail(vec!["fmt"])), 1);
+    }
+
+    #[test]
+    fn an_infra_failure_exits_three_and_classifies_as_infra() {
+        let code = exit_code(&Verdict::Infra(vec!["deny"]));
+        assert_eq!(code, 3);
+        assert_eq!(
+            flake::classify(flake::End::Exited(i32::from(code))),
+            flake::Outcome::Fail(flake::Class::Infra)
+        );
+        let code = exit_code(&Verdict::Fail(vec!["fmt"]));
+        assert_eq!(
+            flake::classify(flake::End::Exited(i32::from(code))),
+            flake::Outcome::Fail(flake::Class::Test)
+        );
     }
 
     /// A directory under the system temp directory, removed when dropped.

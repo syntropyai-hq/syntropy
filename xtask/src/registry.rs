@@ -24,9 +24,9 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
-    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
-    runner_build_id, sim_presets, toolchain, toolchains,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, flake,
+    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, quarantine,
+    repo_settings, runner_build_id, sim_presets, toolchain, toolchains,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -411,6 +411,25 @@ pub const JOBS: &[Entry] = &[
                     run: changes::goldens_step,
                 },
             },
+            // The flake policy of RFC-0060 §13 (QUAL-E3-T14): no retry configured for any suite,
+            // and the quarantine file's entries.
+            Step {
+                name: "retries",
+                action: Action::Builtin {
+                    shown: "every suite states whether it is deterministic, and no workflow or \
+                            test runner configuration retries one",
+                    run: flake::step,
+                },
+            },
+            Step {
+                name: "quarantine",
+                action: Action::Builtin {
+                    shown: "every ci/quarantine.toml entry is an L7 or L8 test with a tracking \
+                            issue, a maintainer's approval and an unexpired date at most 14 days \
+                            out, and no parity gate or SC checker",
+                    run: quarantine::step,
+                },
+            },
             // The task-graph check, so a plan-only diff, which runs `lint` alone, is checked
             // (RFC-0062 §2.2, note 2026-10-23).
             Step {
@@ -761,6 +780,23 @@ pub const JOBS: &[Entry] = &[
         }],
         pending: &[],
     },
+    // The release checklist's quarantine lines (RFC-0060 §13). QUAL-E17-T05's `cargo xtask
+    // release check` takes them from `quarantine::checklist`.
+    Entry {
+        name: "quarantine",
+        summary: "check ci/quarantine.toml as `lint` does, then print the quarantined tests for \
+                  the release checklist and release notes",
+        defined_in: "RFC-0060 §13",
+        params: &[],
+        steps: &[Step {
+            name: "quarantine",
+            action: Action::Builtin {
+                shown: "the tests in quarantine today, one line each",
+                run: quarantine::report_step,
+            },
+        }],
+        pending: &[],
+    },
 ];
 
 /// The test suites, called by `cargo xtask test <suite>`. RFC-0060 §1.1 defines the layers.
@@ -1068,6 +1104,11 @@ mod tests {
                  pins are in the build image's Dockerfile",
                 "xtask: ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its expected \
                  jobs, and covers pr.yml's jobs",
+                "xtask: every suite states whether it is deterministic, and no workflow or test \
+                 runner configuration retries one",
+                "xtask: every ci/quarantine.toml entry is an L7 or L8 test with a tracking issue, a \
+                 maintainer's approval and an unexpired date at most 14 days out, and no parity \
+                 gate or SC checker",
                 "xtask: the plan tools: every task row parses, the task graph checks, and the \
                  generated sections are current",
             ]
