@@ -316,6 +316,16 @@ fn svg_css_and_file_types_are_checked_too() {
         ),
         ("@\\69mport 'a.css';", "@import"),
         ("@im/* x */port 'a.css';", "@import"),
+        // A `/*` inside a string starts no comment, so the URL after it is still seen.
+        (
+            "p { content: \"/*\" } q { background: url(https://x.example/a.png) } r { content: \"*/\" }",
+            "url(https://x.example/a.png)",
+        ),
+        // A `*/` inside a string does not end a real comment early: the comment hides nothing.
+        (
+            "p { content: '*/\\'' } /* note */ q { background: url(//x.example/b.png) }",
+            "url(//x.example/b.png)",
+        ),
         (
             "p { background: image-set(\"a.png\" 1x, \"https://x.example/b.png\" 2x) }",
             "image-set(\"https://x.example/b.png\")",

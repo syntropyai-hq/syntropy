@@ -238,17 +238,42 @@ pub fn check_css(relative: &str, place: &str, css: &str) -> Vec<String> {
     problems
 }
 
-/// `css` without its `/* … */` comments.
+/// `css` without its `/* … */` comments. A quoted string is kept whole, escapes included, so
+/// `/*` or `*/` inside a string neither starts nor ends a comment.
 fn strip_css_comments(css: &str) -> String {
+    let chars: Vec<char> = css.chars().collect();
     let mut out = String::with_capacity(css.len());
-    let mut rest = css;
-    while let Some(at) = rest.find("/*") {
-        out.push_str(&rest[..at]);
-        rest = rest[at + 2..]
-            .find("*/")
-            .map_or("", |end| &rest[at + 2 + end + 2..]);
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            quote @ ('"' | '\'') => {
+                out.push(quote);
+                i += 1;
+                while i < chars.len() {
+                    let c = chars[i];
+                    out.push(c);
+                    i += 1;
+                    if c == '\\' && i < chars.len() {
+                        out.push(chars[i]);
+                        i += 1;
+                    } else if c == quote || c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.get(i + 1) == Some(&'*') => {
+                i += 2;
+                while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                    i += 1;
+                }
+                i += 2;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
     }
-    out.push_str(rest);
     out
 }
 
