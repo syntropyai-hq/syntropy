@@ -604,9 +604,11 @@ proptest! {
     }
 }
 
-/// `C_DRIVER` reads the seed and the case count from its arguments, draws the same cases as
-/// [`Case::draw`], runs the generated `syn_moe_assign` and writes, per case, the input digest
-/// and an FNV-1a digest of the codes, both little-endian.
+/// `C_DRIVER` reads the seed, the case count and an output path from its arguments, draws the
+/// same cases as [`Case::draw`], runs the generated `syn_moe_assign` and writes, per case, the
+/// input digest and an FNV-1a digest of the codes, both little-endian. It writes to a file
+/// opened with `"wb"`, not to `stdout`: on Windows `stdout` is a text stream, and the C runtime
+/// turns every 0x0A byte of the digests into 0x0D 0x0A.
 const C_DRIVER: &str = r#"
 #include <stdio.h>
 #include <stdlib.h>
@@ -622,10 +624,11 @@ static uint64_t next(void) {
 }
 static uint64_t below(uint64_t n) { return next() % n; }
 static uint64_t fnv(uint64_t h, uint64_t v) { return (h ^ v) * 0x00000100000001B3ull; }
+static FILE *sink;
 static void put64(uint64_t v) {
     unsigned char b[8];
     for (int i = 0; i < 8; i++) b[i] = (unsigned char)(v >> (8 * i));
-    fwrite(b, 1, 8, stdout);
+    if (fwrite(b, 1, 8, sink) != 8) exit(3);
 }
 
 static struct syn_route_slot route[300];
@@ -633,7 +636,9 @@ static uint32_t words[2048];
 static uint32_t out[300];
 
 int main(int argc, char **argv) {
-    if (argc != 3) return 2;
+    if (argc != 4) return 2;
+    sink = fopen(argv[3], "wb");
+    if (sink == NULL) return 3;
     state = strtoull(argv[1], NULL, 10);
     uint64_t cases = strtoull(argv[2], NULL, 10);
     for (uint64_t k = 0; k < cases; k++) {
@@ -691,7 +696,7 @@ int main(int argc, char **argv) {
         for (uint32_t i = 0; i < n; i++) o = fnv(o, out[i]);
         put64(o);
     }
-    return 0;
+    return fclose(sink) == 0 ? 0 : 3;
 }
 "#;
 
@@ -720,17 +725,20 @@ fn c_version_matches_rust_on_a_million_inputs() {
         "{cc} rejected the driver:\n{}",
         String::from_utf8_lossy(&built.stderr)
     );
+    let digests = dir.join("digests.bin");
     let run = Command::new(&exe)
         .arg(SEED.to_string())
         .arg(CASES.to_string())
+        .arg(&digests)
         .output()
         .unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(run.status.success(), "the driver failed: {:?}", run.status);
-    assert_eq!(run.stdout.len() as u64, CASES * 16);
+    let out = std::fs::read(&digests).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out.len() as u64, CASES * 16);
     let mut rng = Rng(SEED);
     let mut codes = Vec::new();
-    for (case, rec) in run.stdout.as_chunks::<16>().0.iter().enumerate() {
+    for (case, rec) in out.as_chunks::<16>().0.iter().enumerate() {
         let c = Case::draw(&mut rng);
         let word = |i: usize| u64::from_le_bytes(rec[i..i + 8].try_into().unwrap());
         assert_eq!(word(0), c.digest(), "case {case}: the generators drifted");
