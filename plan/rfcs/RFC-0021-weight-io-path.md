@@ -225,6 +225,15 @@ ADR-0013 defines two engines and chooses between them per volume by measurement 
 
 **`MacMapped`.** The pack file is mapped read-only (`mmap(PROT_READ, MAP_SHARED)`) with `madvise(MADV_RANDOM)`. A read is `madvise(MADV_WILLNEED)` on the extent when it is requested, followed by a copy from the mapping into the destination slot by a pool thread once the pages are resident (`mincore` polled at 50 µs). After the copy, the mapping's range is released with `madvise(MADV_DONTNEED)`; the clean file pages that remain belong to the OS's cache, are reclaimable without compression, and are never counted as residency. This keeps residency owned by the tier manager (ADR-0007 item 6): `MacMapped` is a read mechanism, not a cache. Its extra cost is one memory copy per byte read, which the A/B includes.
 
+*Note 2026-10-23 (TIER-E5-T09, as built):* `syntropy_io::pool::MacMapped` runs on the pool of §4.2 with `io.pool_threads_macos` workers. Choices this section leaves open:
+- **The mapping.** `open` for reading maps the whole file at its length then, and marks it `MADV_RANDOM`. A read covers the pages of its extent: `MADV_WILLNEED`, `mincore` polled every 50 µs, the copy, then `MADV_DONTNEED` on the same pages, which may include a page a concurrent read shares at an edge. That read faults the page in again; its bytes stay right.
+- **The wait is bounded** at 20 ms [target] (`RESIDENT_WAIT_MAX`, a chosen budget). Past it, or if `mincore` fails, the read is a `pread` of the file, which returns an I/O error as §16 expects. A copy that faults a page in and meets an I/O error raises `SIGBUS` instead.
+- **Ends of file.** A read from or past the mapped length returns 0 bytes; one that crosses it returns the bytes before it, as `pread` does. Committed packs do not change (RFC-0041), so the length holds. If a file is truncated while mapped, `mincore` reports the lost pages absent, the wait times out, and the `pread` after it returns a short count or 0. Only a truncation between a `mincore` that saw the pages and the copy raises `SIGBUS`.
+- **Writes** go through `F_NOCACHE` as in `MacNoCache` (§13). A file opened for writing is not mapped, since it grows, and is read with `pread` on that handle. An empty file is not mapped either, and reads of it return 0 bytes.
+- **A refused `mmap`** fails `open` with `IO_ENGINE_UNAVAILABLE` and the OS error, so `MacNoCache` reads that file. A mapped file is never the flagged buffered mode: `EngineCaps::direct` changes only for a file opened for writing whose `F_NOCACHE` is refused.
+- **Residency.** A completion reports only the bytes copied into the slot, and the engine has no other report. RFC-0020 §3 keys a home's `Loading` state to the read's `IoTicket`, so the residency map (TIER-E1-T04) learns of a read only from its completion and never records a mapped page. The unit check is the engine's half: every range advised in is released once its read completes.
+- Contiguous reads are not gathered, since the copy costs the same per byte at any size.
+
 ### 6. Alignment rules and the pack contract
 
 **Volume alignment.** Per open file, the engine determines `DioAlign { mem, offset }`:

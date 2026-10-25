@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The thread-pool engines: [`PreadPool`] on Linux and Windows (RFC-0021 §4.2; ADR-0013
-//! item 3) and [`MacNoCache`] on macOS (RFC-0021 §5; ADR-0013 item 5).
+//! item 3), and [`MacNoCache`] and [`MacMapped`] on macOS (RFC-0021 §5; ADR-0013 item 5).
 //!
-//! Both are one pool: the I/O thread keeps its queues and depth rules (RFC-0021 §3) and hands
+//! All are one pool: the I/O thread keeps its queues and depth rules (RFC-0021 §3) and hands
 //! each operation to one of `threads` blocking worker threads over that worker's own SPSC ring.
 //! The worker runs the positional read or write and posts the result on its own SPSC ring back.
 //! No multi-producer queue is used. The thread count is the engine's depth
@@ -11,12 +11,12 @@
 //! outstanding.
 //!
 //! What differs per OS sits behind the crate-private `Backend` trait: how a file is opened
-//! (`O_DIRECT`, `FILE_FLAG_NO_BUFFERING`, or `F_NOCACHE` and `F_RDAHEAD`), how a read and a
-//! write are issued, and what a buffered fallback does after a read (`POSIX_FADV_DONTNEED` on
+//! (`O_DIRECT`, `FILE_FLAG_NO_BUFFERING`, or `F_NOCACHE` and `F_RDAHEAD`, and for `MacMapped` a
+//! read-only mapping), how a read and a write are issued, and what a buffered fallback does after a read (`POSIX_FADV_DONTNEED` on
 //! Linux). A file whose direct open or first aligned read is refused is opened buffered, and the
 //! engine reports [`EngineCaps::direct`] `false`: the `buffered` volume flag of RFC-0021 §4.2,
-//! which the probe copies into `StorageCapsExt::buffered`. [`PreadPool::buffered_reason`] and
-//! [`MacNoCache::buffered_reason`] say why.
+//! which the probe copies into `StorageCapsExt::buffered`. [`PreadPool::buffered_reason`],
+//! [`MacNoCache::buffered_reason`] and [`MacMapped::buffered_reason`] say why.
 //!
 //! **Cancellation** (RFC-0021 §4.2) removes an operation a worker has not started: it completes
 //! with `IO_CANCELLED` and no system call. An operation already in the kernel completes
@@ -44,6 +44,8 @@
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod mapped;
 #[cfg(windows)]
 mod windows;
 
@@ -54,6 +56,8 @@ mod windows;
 pub use linux::PreadPool;
 #[cfg(target_os = "macos")]
 pub use macos::MacNoCache;
+#[cfg(target_os = "macos")]
+pub use mapped::{MacMapped, RESIDENT_POLL, RESIDENT_WAIT_MAX};
 #[cfg(windows)]
 pub use windows::PreadPool;
 

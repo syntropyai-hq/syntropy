@@ -21,7 +21,8 @@ syntropy-testkit = { path = "../testkit" }
 
 # The clocks of `os::SystemClock` (ADR-0022 decision 4: binding crates for the clock calls), and
 # on macOS the `sysctlbyname`, `host_statistics64` and `getrlimit` calls of `os::macos_host`
-# (E1 host enumeration, PLC-E1-T03; OQ-PRC-26).
+# (E1 host enumeration, PLC-E1-T03; OQ-PRC-26) and the `mmap`, `madvise` and `mincore` calls of
+# `MacMapped` (RFC-0021 §5).
 [target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))'.dependencies]
 libc = "0.2.191"
 
