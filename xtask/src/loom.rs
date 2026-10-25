@@ -65,7 +65,7 @@ pub fn environment(root: &Path, var: impl Fn(&str) -> Option<String>) -> Environ
 }
 
 /// The test paths in `stdout` that passed, from libtest's `test <path> ... ok` lines.
-fn passed(stdout: &str) -> Vec<&str> {
+pub fn passed(stdout: &str) -> Vec<&str> {
     stdout
         .lines()
         .filter_map(|line| line.strip_prefix("test ")?.strip_suffix(" ... ok"))

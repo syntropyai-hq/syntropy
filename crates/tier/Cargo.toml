@@ -21,3 +21,8 @@ proptest.workspace = true
 serde_json.workspace = true
 # `CountingAlloc`, for the test that the statistics ring allocates nothing in steady state.
 syntropy-testkit = { path = "../testkit" }
+
+# `syntropy_planted` compiles the planted out-of-bounds read in `arena`'s tests, which only the
+# planted steps of `cargo xtask test miri` and `cargo xtask test asan` turn on (QUAL-E3-T10).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(syntropy_planted)"] }

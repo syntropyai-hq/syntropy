@@ -344,6 +344,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "starts a tokio runtime, whose I/O driver calls the OS (FFI)"
+    )]
     fn a_channel_spins_while_live_within_the_budget_and_after_a_prewake() {
         let domain = NetDomain::start("syntropy-net-test").expect("a domain");
         let state = Arc::clone(&domain.handle().state);
@@ -363,6 +367,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "starts a tokio runtime, whose I/O driver calls the OS (FFI)"
+    )]
     fn a_prewake_wakes_a_parked_task() {
         let domain = NetDomain::start("syntropy-net-test").expect("a domain");
         let state = Arc::clone(&domain.handle().state);

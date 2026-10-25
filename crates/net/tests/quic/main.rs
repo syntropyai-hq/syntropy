@@ -401,10 +401,12 @@ fn closing_a_channel_lowers_the_receive_window_again() {
     let mut pair = Pair::new();
     let per_channel = 4 * SLOT as u64 + u64::from(CONTROL_RECEIVES) * MAX_CONTROL_FRAME as u64;
     let floor = QuicSettings::receive_window_floor();
-    let wait_for = |pair: &Pair, channels: usize| {
+    // Each side gives its share back when its own connection task sees the channel close, so
+    // each side is polled: under a sanitizer's slowdown the dialling side can lag the other.
+    let wait_for = |transport: &QuicTransport, channels: usize| {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let windows = Pair::windows(&pair.b);
+            let windows = Pair::windows(transport);
             if windows.len() == 1 && windows[0].channels == channels {
                 return windows[0];
             }
@@ -419,14 +421,14 @@ fn closing_a_channel_lowers_the_receive_window_again() {
         let channels = pair
             .open(key(ChannelPurpose::Activations, round), 4)
             .expect("open");
-        let open = wait_for(&pair, 1);
+        let open = wait_for(&pair.b, 1);
         assert_eq!(
             (open.credited, open.window),
             (per_channel, per_channel),
             "round {round}"
         );
         drop(channels);
-        let closed = wait_for(&pair, 0);
+        let closed = wait_for(&pair.b, 0);
         assert_eq!(
             (closed.credited, closed.window),
             (0, floor),
@@ -434,9 +436,7 @@ fn closing_a_channel_lowers_the_receive_window_again() {
         );
     }
     // The opening side gives its share back too.
-    let dialled = Pair::windows(&pair.a);
-    assert_eq!(dialled.len(), 1);
-    assert_eq!(dialled[0].channels, 0, "{dialled:#?}");
+    wait_for(&pair.a, 0);
 }
 
 /// A third endpoint in a `net` domain of its own, for the tests that need a second peer of `b`.

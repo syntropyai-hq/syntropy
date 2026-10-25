@@ -331,6 +331,14 @@ Each stateful component listed below has a **reference model**: a deliberately s
 - **The planted bug is a twin, not a one-off edit.** Each ring has a test-only twin whose publishing store is relaxed, and a test runs the cross-thread model on it in a child process and expects loom's causality violation. A child process, because loom may abort instead of unwinding.
 - **Slot bytes are invisible to loom.** The shared ring's slots are plain memory that loom cannot see, so a loom-only cell per slot records each write and read, and loom checks those are ordered.
 
+*Note 2026-10-25 (QUAL-E3-T10):* `cargo xtask test miri`, `asan` and `tsan` run Miri and the two sanitizers in `hosted-l3` (RFC-0062 §2.3), on a dated nightly pinned in `ci/nightly-toolchain.toml` that only these suites use.
+- **Miri's scope.** It runs the unit tests of `tier` and `ipc` whole, and `net`'s `frame::` and `transport::` tests without the QUIC and TCP transports, which run a tokio runtime over sockets. Miri runs with its default isolation.
+- **FFI stubbed.** Under `cfg(miri)`, `ipc`'s segment is a zeroed, page-aligned heap allocation shared by every open of its handle, in place of the memfd, POSIX or Windows segment. The region's header, layout checks and rings run unchanged on it.
+- **Tests Miri skips.** Each carries `#[cfg_attr(miri, ignore = "<why>")]` where it is written: two `tier::os::linux` tests that call `mmap` and `mbind`, three `tier::os` tests that read or write files, and two `net::transport::domain` tests that start a tokio runtime. `net`'s pool test across six threads runs 200 rounds per thread under Miri instead of 20,000.
+- **Sanitizers.** The library and integration tests of `io`, `ipc`, `kernels-cpu`, `net`, `spsc` and `tier` run with `-Zsanitizer=address` or `-Zsanitizer=thread` and `-Zbuild-std`. The other `kernels-*` crates are empty stubs today, so they are not built. Each joins when it has code that builds on a hosted runner.
+- **The planted bug.** A test that reads one byte past a ring arena's end sits in `tier::arena` behind `--cfg syntropy_planted`, which no other build sets. The `miri` and `asan` suites each end by running it with the cfg on, and pass only when Miri reports undefined behaviour and AddressSanitizer reports a heap buffer overflow.
+- **Releases stay stable.** `cargo xtask build --profile release` reads the `rustc -vV` that cargo recorded in the target directory's `.rustc_info.json`, and fails unless it is the stable release `rust-toolchain.toml` pins (ADR-0001 item 1).
+
 #### 3.5 Hot-path guards
 
 `syntropy-testkit::guards` provides the instrumentation that turns ADR-0012's invariants into assertions:

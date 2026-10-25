@@ -1046,12 +1046,15 @@ mod tests {
     #[test]
     fn concurrent_takers_never_share_a_slot() {
         let pool = BufferPool::heap(PoolId(1), 64, 8).unwrap();
+        // Miri interprets each step, so it runs fewer rounds; it explores thread interleavings
+        // of its own instead (QUAL-E3-T10).
+        let rounds = if cfg!(miri) { 200 } else { 20_000 };
         let threads: Vec<_> = (0u8..6)
             .map(|mark| {
                 let pool = pool.clone();
                 std::thread::spawn(move || {
                     let mut taken = 0;
-                    for _ in 0..20_000 {
+                    for _ in 0..rounds {
                         let Some(mut writer) = pool.take() else {
                             continue;
                         };

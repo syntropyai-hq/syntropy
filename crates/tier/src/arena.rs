@@ -190,6 +190,34 @@ pub struct TierBudgetLine {
     pub headroom: Bytes,
 }
 
+/// The planted bug of QUAL-E3-T10 (RFC-0060 §3.4): a slot read one byte past the end of a ring
+/// arena. It compiles only with `--cfg syntropy_planted`, which no build sets but the planted
+/// steps of `cargo xtask test miri` and `cargo xtask test asan`. Each runs it and passes only when
+/// its checker reports the read, so a checker that stopped seeing out-of-bounds reads fails its
+/// suite.
+#[cfg(all(test, syntropy_planted))]
+#[allow(unsafe_code)]
+mod planted {
+    use super::*;
+
+    #[test]
+    fn a_slot_read_past_the_arena_end_is_reported() {
+        let geometry = SlotGeometry::Ring {
+            slot: Bytes(64),
+            count: 4,
+        };
+        let SlotGeometry::Ring { slot, count } = geometry else {
+            unreachable!()
+        };
+        let len = usize::try_from(slot.0 * u64::from(count)).unwrap();
+        let arena = vec![0u8; len].into_boxed_slice();
+        // The planted bug: the end of the last slot is one past the arena's last byte.
+        // SAFETY: none; this read is out of bounds on purpose, and the checker must report it.
+        let byte = unsafe { arena.as_ptr().add(len).read_volatile() };
+        std::hint::black_box(byte);
+    }
+}
+
 /// Names one arena: the shard (the owning device's ordinal) and the arena's index in it
 /// (RFC-0020 §3, supporting types).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

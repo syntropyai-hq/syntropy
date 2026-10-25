@@ -336,6 +336,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reserves through mmap with flags Miri does not model (FFI)"
+    )]
     fn touch_keeps_the_bytes() {
         let os = LinuxMemory::new(Bytes(0));
         let page = os.page;
@@ -352,6 +356,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls mmap and mbind, which Miri does not model (FFI)")]
     fn bind_to_a_node_that_does_not_exist_fails() {
         let os = LinuxMemory::new(Bytes(0));
         let r = os.reserve(Bytes(os.page), None, HugePages::Off).unwrap();

@@ -597,3 +597,11 @@ paths = ["ci/images/cuda-12/Dockerfile"]
 jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "test nightly pin"
+source = "constructed: a bump of the test nightly alone (QUAL-E3-T10); the file is new"
+paths = ["ci/nightly-toolchain.toml"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
