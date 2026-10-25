@@ -24,6 +24,10 @@
 //! A record is 16 bytes plus 4 bytes per routed expert. A one-token pass of a top-8 layer is
 //! 48 bytes, so 61 such layers take 2,928 bytes per step [estimate: 61 × (16 + 8 × 4)].
 //! Records follow each other to the end of the file, with `step` never decreasing.
+//! The reserved field is 0. Each record lists an expert at most once, and each entry's
+//! `tokens` is from 1 to the pass's `tokens` (RFC-0023 §2). The entries' counts sum to the
+//! pass's tokens times `k`, so the sum is not bounded by the pass's count. The reader refuses a
+//! trace that breaks any of these rules.
 //!
 //! **What a trace leaves out.** A `RouteSlot`'s `cache_slot` belongs to the run that recorded
 //! it, so the trace does not keep it, and the reader returns `MOE_MISS` there. The doorbell's
@@ -33,6 +37,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Read, Write};
 
@@ -61,6 +66,20 @@ pub enum TraceError {
     BadMagic,
     /// A version this reader does not know.
     UnsupportedVersion(u32),
+    /// The header's reserved field is not zero.
+    BadReserved(u32),
+    /// A record's route breaks RFC-0023 §2: an entry with zero tokens, an expert listed
+    /// twice, or an entry with more tokens than the pass has.
+    BadRoute {
+        /// The record's step.
+        step: u64,
+        /// The record's layer.
+        layer: LayerIx,
+        /// The entry's expert.
+        expert: u16,
+        /// What is wrong with it.
+        fault: RouteFault,
+    },
     /// The input ends inside the header or a record.
     Truncated,
     /// A record's step is below the one before it.
@@ -81,6 +100,22 @@ pub enum TraceError {
     TooManyRoutes(usize),
 }
 
+/// What is wrong with a route entry ([`TraceError::BadRoute`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RouteFault {
+    /// `tokens` is 0; a selected expert has at least one token.
+    ZeroTokens,
+    /// The expert appears earlier in the same record; the route lists each expert once.
+    Duplicate,
+    /// `tokens` is above the pass's token count.
+    AbovePass {
+        /// The entry's `tokens`.
+        tokens: u16,
+        /// The pass's token count.
+        pass: u32,
+    },
+}
+
 impl fmt::Display for TraceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -88,6 +123,24 @@ impl fmt::Display for TraceError {
             Self::BadMagic => f.write_str("not a routing trace"),
             Self::UnsupportedVersion(v) => {
                 write!(f, "routing trace version {v}; this reader knows {VERSION}")
+            }
+            Self::BadReserved(v) => {
+                write!(f, "routing trace header's reserved field is {v}, not 0")
+            }
+            Self::BadRoute {
+                step,
+                layer,
+                expert,
+                fault,
+            } => {
+                write!(f, "step {step} layer {} expert {expert}: ", layer.0)?;
+                match fault {
+                    RouteFault::ZeroTokens => f.write_str("zero tokens"),
+                    RouteFault::Duplicate => f.write_str("listed twice"),
+                    RouteFault::AbovePass { tokens, pass } => {
+                        write!(f, "{tokens} tokens in a pass of {pass}")
+                    }
+                }
             }
             Self::Truncated => f.write_str("routing trace ends inside a record"),
             Self::OutOfOrder { previous, step } => {
@@ -151,8 +204,10 @@ impl<W: Write> TraceWriter<W> {
     /// # Errors
     ///
     /// [`TraceError::OutOfOrder`] when `step` is below the last record's,
-    /// [`TraceError::TooManyRoutes`] when `route` has more than 65,535 entries, and
-    /// [`TraceError::Io`]. Nothing is written then.
+    /// [`TraceError::TooManyRoutes`] when `route` has more than 65,535 entries; nothing is
+    /// written then. [`TraceError::Io`] when the writer fails, which may leave part of the
+    /// record written, so the trace ends there: its reader reports
+    /// [`TraceError::Truncated`].
     pub fn write_pass(
         &mut self,
         step: u64,
@@ -223,8 +278,8 @@ impl<R: Read> TraceReader<R> {
     ///
     /// # Errors
     ///
-    /// [`TraceError::BadMagic`], [`TraceError::UnsupportedVersion`], [`TraceError::Truncated`]
-    /// or [`TraceError::Io`].
+    /// [`TraceError::BadMagic`], [`TraceError::UnsupportedVersion`],
+    /// [`TraceError::BadReserved`], [`TraceError::Truncated`] or [`TraceError::Io`].
     pub fn new(mut input: R) -> Result<Self, TraceError> {
         let mut header = [0u8; HEADER_LEN];
         if read_full(&mut input, &mut header)? < HEADER_LEN {
@@ -236,6 +291,10 @@ impl<R: Read> TraceReader<R> {
         let version = u32::from_le_bytes(header[8..12].try_into().expect("4 bytes"));
         if version != VERSION {
             return Err(TraceError::UnsupportedVersion(version));
+        }
+        let reserved = u32::from_le_bytes(header[12..16].try_into().expect("4 bytes"));
+        if reserved != 0 {
+            return Err(TraceError::BadReserved(reserved));
         }
         Ok(Self {
             input,
@@ -251,7 +310,8 @@ impl<R: Read> TraceReader<R> {
     /// # Errors
     ///
     /// [`TraceError::Truncated`] when the input ends inside a record,
-    /// [`TraceError::OutOfOrder`] when a step decreases, and [`TraceError::Io`].
+    /// [`TraceError::OutOfOrder`] when a step decreases, [`TraceError::BadRoute`] when an
+    /// entry breaks RFC-0023 §2, and [`TraceError::Io`].
     pub fn next_record(&mut self) -> Result<Option<RouteRecord>, TraceError> {
         if self.done {
             return Ok(None);
@@ -279,7 +339,7 @@ impl<R: Read> TraceReader<R> {
             return Err(TraceError::Truncated);
         }
         let (entries, _) = entries.as_chunks::<ENTRY_LEN>();
-        let route = entries
+        let route: Vec<RouteSlot> = entries
             .iter()
             .map(|e| RouteSlot {
                 expert: u16::from_le_bytes([e[0], e[1]]),
@@ -287,11 +347,35 @@ impl<R: Read> TraceReader<R> {
                 cache_slot: MOE_MISS,
             })
             .collect();
+        let layer = LayerIx(layer);
+        let mut seen = BTreeSet::new();
+        for slot in &route {
+            let fault = if slot.tokens == 0 {
+                Some(RouteFault::ZeroTokens)
+            } else if u32::from(slot.tokens) > tokens {
+                Some(RouteFault::AbovePass {
+                    tokens: slot.tokens,
+                    pass: tokens,
+                })
+            } else if !seen.insert(slot.expert) {
+                Some(RouteFault::Duplicate)
+            } else {
+                None
+            };
+            if let Some(fault) = fault {
+                return Err(TraceError::BadRoute {
+                    step,
+                    layer,
+                    expert: slot.expert,
+                    fault,
+                });
+            }
+        }
         self.last_step = Some(step);
         Ok(Some(RouteRecord {
             step,
             seq: step as u32,
-            layer: LayerIx(layer),
+            layer,
             tokens,
             route,
         }))
@@ -403,6 +487,64 @@ mod tests {
         ));
         // Only the first record was written.
         assert_eq!(read_all(&w.finish().unwrap()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_reader_refuses_a_non_zero_reserved_field() {
+        let mut bytes = TraceWriter::new(Vec::new()).unwrap().finish().unwrap();
+        bytes[12] = 1;
+        assert!(matches!(read_all(&bytes), Err(TraceError::BadReserved(1))));
+    }
+
+    /// One record of a 2-token pass with `route`, read back.
+    fn read_route(route: &[RouteSlot]) -> Result<Vec<RouteRecord>, TraceError> {
+        let mut w = TraceWriter::new(Vec::new()).unwrap();
+        w.write_pass(3, LayerIx(4), 2, route).unwrap();
+        read_all(&w.finish().unwrap())
+    }
+
+    fn fault_of(r: Result<Vec<RouteRecord>, TraceError>) -> (u16, RouteFault) {
+        match r {
+            Err(TraceError::BadRoute {
+                step: 3,
+                layer: LayerIx(4),
+                expert,
+                fault,
+            }) => (expert, fault),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_reader_refuses_an_entry_with_zero_tokens() {
+        assert_eq!(
+            fault_of(read_route(&[slot(1, 1), slot(2, 0)])),
+            (2, RouteFault::ZeroTokens)
+        );
+    }
+
+    #[test]
+    fn the_reader_refuses_an_expert_listed_twice() {
+        assert_eq!(
+            fault_of(read_route(&[slot(1, 1), slot(2, 1), slot(1, 1)])),
+            (1, RouteFault::Duplicate)
+        );
+    }
+
+    #[test]
+    fn the_reader_refuses_an_entry_above_the_pass() {
+        // Every entry at most the pass's 2 tokens: accepted. The counts sum to tokens × k,
+        // which is above the pass's count for k > 1, so only each entry is bounded.
+        assert_eq!(
+            read_route(&[slot(1, 2), slot(2, 2), slot(3, 1)])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            fault_of(read_route(&[slot(1, 1), slot(2, 3)])),
+            (2, RouteFault::AbovePass { tokens: 3, pass: 2 })
+        );
     }
 
     #[test]

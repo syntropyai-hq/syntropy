@@ -23,4 +23,4 @@ pub mod trace;
 
 pub use sizing::{MoeRouting, SizingError, doorbell_layout, largest_pass, lookahead, plan_layout};
 pub use stats::{RouteRecord, StatDrop, StatRecord, StatsConsumer, StatsProducer, stats_ring};
-pub use trace::{TraceError, TraceReader, TraceWriter};
+pub use trace::{RouteFault, TraceError, TraceReader, TraceWriter};

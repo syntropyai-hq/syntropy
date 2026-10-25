@@ -47,6 +47,12 @@ pub enum SizingError {
         /// The lookahead asked for.
         lookahead: u16,
     },
+    /// `P_max` above 65,535: a `RouteSlot`'s `tokens` is a `u16`, so one expert's count in
+    /// such a pass could wrap.
+    PassTooLarge {
+        /// `P_max` as given.
+        largest_pass: u32,
+    },
     /// `MAX_PRED` above 65,535: the header's `n_pred` is a `u16`.
     PredTooLarge {
         /// `MAX_PRED` as computed.
@@ -61,6 +67,12 @@ impl fmt::Display for SizingError {
                 write!(
                     f,
                     "lookahead of {lookahead} layers; a prediction's `ahead` holds at most 255"
+                )
+            }
+            Self::PassTooLarge { largest_pass } => {
+                write!(
+                    f,
+                    "a pass of {largest_pass} tokens; a route entry counts at most 65535"
                 )
             }
             Self::PredTooLarge { max_pred } => {
@@ -81,7 +93,7 @@ impl std::error::Error for SizingError {}
 ///
 /// # Errors
 ///
-/// [`SizingError`] when `d_max` or `MAX_PRED` does not fit the doorbell's fields.
+/// [`SizingError`] when `P_max`, `d_max` or `MAX_PRED` does not fit the doorbell's fields.
 /// `MAX_UNION` always fits, since it is at most `E`.
 pub fn doorbell_layout(
     moe: MoeRouting,
@@ -90,6 +102,9 @@ pub fn doorbell_layout(
 ) -> Result<DoorbellLayout, SizingError> {
     if lookahead > u16::from(u8::MAX) {
         return Err(SizingError::LookaheadTooDeep { lookahead });
+    }
+    if largest_pass > u32::from(u16::MAX) {
+        return Err(SizingError::PassTooLarge { largest_pass });
     }
     let e = u64::from(moe.experts);
     let p = u64::from(largest_pass);
@@ -268,15 +283,32 @@ mod tests {
             predict_extra: 4,
         };
         assert_eq!(
-            doorbell_layout(wide, 1 << 20, 2),
+            doorbell_layout(wide, 65_535, 2),
             Err(SizingError::PredTooLarge {
                 max_pred: 2 * u64::from(u16::MAX)
             })
         );
         assert_eq!(
-            doorbell_layout(wide, 1 << 20, 1).unwrap().max_union(),
+            doorbell_layout(wide, 65_535, 1).unwrap().max_union(),
             u16::MAX
         );
+    }
+
+    /// A `RouteSlot` counts a pass's tokens in a `u16`: 65,535 fits, 65,536 would wrap.
+    #[test]
+    fn a_pass_above_a_route_entrys_count_is_refused() {
+        let l = doorbell_layout(QWEN, 65_535, 2).unwrap();
+        assert_eq!((l.max_union(), l.max_pred()), (128, 256));
+        assert_eq!(
+            doorbell_layout(QWEN, 65_536, 2),
+            Err(SizingError::PassTooLarge {
+                largest_pass: 65_536
+            })
+        );
+        let mut plan_batching = batching(65_536, &[64], 1);
+        assert_eq!(largest_pass(&plan_batching, None), 65_536);
+        plan_batching.prefill_chunk = 65_535;
+        assert_eq!(largest_pass(&plan_batching, None), 65_535);
     }
 
     #[test]
