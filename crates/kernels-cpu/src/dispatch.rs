@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 use syntropy_kernels::{CpuIsa, Error, OpArgs, OpKind};
 
+use crate::sme2::Sme2;
+
 /// One CPU kernel entry point. It runs the op on the calling thread over the buffers `args`
 /// binds. The argument types are COMP-E1-T05's, so the signature follows [`OpArgs`].
 pub type KernelFn = fn(&OpArgs<'_>) -> Result<(), Error>;
@@ -26,6 +28,7 @@ pub type KernelFn = fn(&OpArgs<'_>) -> Result<(), Error>;
 pub struct DispatchTable {
     isa: CpuIsa,
     ops: BTreeMap<OpKind, KernelFn>,
+    sme2: Option<Sme2>,
 }
 
 impl DispatchTable {
@@ -37,6 +40,7 @@ impl DispatchTable {
         Self {
             isa,
             ops: BTreeMap::new(),
+            sme2: Sme2::for_level(isa),
         }
     }
 
@@ -52,6 +56,14 @@ impl DispatchTable {
     #[must_use]
     pub fn isa(&self) -> CpuIsa {
         self.isa
+    }
+
+    /// The token for the SME2 routines ([`crate::sme2`]): `Some` only in an `Arm92Sme2` table on
+    /// a host that reports SME2. A kill switch or a host without SME2 gives a lower level's
+    /// table, which has none, so its kernels never reach the routines (ADR-0402 item 3).
+    #[must_use]
+    pub fn sme2(&self) -> Option<Sme2> {
+        self.sme2
     }
 
     /// The kernel for `kind`, if this level has one.

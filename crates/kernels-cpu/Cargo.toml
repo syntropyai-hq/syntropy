@@ -14,6 +14,10 @@ syntropy-kernels = { path = "../kernels" }
 # A stream's work queue: the preallocated, lock-free ring (RFC-0001 §8.3).
 syntropy-spsc = { path = "../spsc" }
 
+[build-dependencies]
+# Assembles the SME2 unit `src/sme2/*.S` on AArch64 macOS, Linux and Android (ADR-0402 item 3).
+cc.workspace = true
+
 [dev-dependencies]
 # `CountingAlloc`, for the test that steady-state steps allocate nothing (RFC-0060 §3.5).
 syntropy-testkit = { path = "../testkit" }
