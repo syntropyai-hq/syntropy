@@ -20,18 +20,18 @@ How to read the figures:
 Begin with the workspace and CI skeleton, the merge gates and the core types every area compiles against. The list is generated: it is one valid order of M0, M0a first, that keeps unblocking the largest amount of later work. With several agents working in parallel, each takes the next task from the top whose dependencies are done, and the zero-slack tasks of M0a go first. Tasks marked **Maintainer action** are queued for the maintainers (ADR-0021).
 
 <!-- BEGIN GENERATED: roadmap-start -->
-324 M0 tasks in a dependency order that unblocks the most first. M0a's tasks come before M0b's. Each task comes after everything it depends on; among the tasks that are ready, the one with the most transitive dependents across M0a–M4 goes first, then the one with the most direct dependents. "Step" is the earliest position a task can take in its milestone (1 + its longest chain of prerequisites in the same milestone). 8 M0 tasks have no dependencies: DIST-E17-T13, COMP-E13-T09, COMP-E16-T15, PROD-E1-T06, PROD-E10-T02, QUAL-E1-T01, QUAL-E1-T30, QUAL-E5-T01. The first 30 follow.
+325 M0 tasks in a dependency order that unblocks the most first. M0a's tasks come before M0b's. Each task comes after everything it depends on; among the tasks that are ready, the one with the most transitive dependents across M0a–M4 goes first, then the one with the most direct dependents. "Step" is the earliest position a task can take in its milestone (1 + its longest chain of prerequisites in the same milestone). 8 M0 tasks have no dependencies: DIST-E17-T13, COMP-E13-T09, COMP-E16-T15, PROD-E1-T06, PROD-E10-T02, QUAL-E1-T01, QUAL-E1-T30, QUAL-E5-T01. The first 30 follow.
 
 | # | Task | Milestone | What | Depends on | Step | Direct dependents | Unblocks (transitive, M0a–M4) |
 |---|---|---|---|---|---|---|---|
-| 1 | QUAL-E1-T01 | M0a | Workspace skeleton: one Cargo workspace with every crate of RFC-0001 §4.1 as a stub (`lib.rs` with… | none | 1 | 28 | 1440 |
-| 2 | QUAL-E1-T02 | M0a | `xtask` framework: `cargo xtask ci <job>`, `cargo xtask test <suite>` and a registry of job and… | QUAL-E1-T01 | 2 | 11 | 1356 |
-| 3 | QUAL-E1-T03 | M0a | `cargo xtask check-deps`: RFC-0001 §4.2 rules 1–9 and the release-feature rule over… | QUAL-E1-T02 | 3 | 10 | 1281 |
-| 4 | QUAL-E1-T05 | M0a | Contribution checks: `dco` (every commit signed off, matching author), `pr-title` (conventional… | QUAL-E1-T02 | 3 | 4 | 1184 |
-| 5 | QUAL-E1-T06 | M0a | `pr.yml` skeleton: `changes`, `lint`, `build-<os>` (the `pr` profile, plus a Linux `test-release`… | QUAL-E1-T02, QUAL-E1-T05 | 4 | 25 | 1183 |
-| 6 | COMP-E1-T01 | M0a | `syntropy-kernels` crate: the `KernelProvider` trait with RFC-0001 §5.7's methods and RFC-0040… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 16 | 1120 |
-| 7 | COMP-E13-T01 | M0a | Types in `core`: the extended `DType`, `QuantScheme`, `ScaleGranularity`, `CtScheme`, `ActQuant`… | QUAL-E1-T01 | 2 | 6 | 1094 |
-| 8 | COMP-E1-T02 | M0a | Op registry: the closed `OpKind` list of §3.1 (including `AttnPartial`, `AttnMerge`… | COMP-E1-T01, COMP-E13-T01 | 5 | 16 | 1084 |
+| 1 | QUAL-E1-T01 | M0a | Workspace skeleton: one Cargo workspace with every crate of RFC-0001 §4.1 as a stub (`lib.rs` with… | none | 1 | 28 | 1441 |
+| 2 | QUAL-E1-T02 | M0a | `xtask` framework: `cargo xtask ci <job>`, `cargo xtask test <suite>` and a registry of job and… | QUAL-E1-T01 | 2 | 11 | 1357 |
+| 3 | QUAL-E1-T03 | M0a | `cargo xtask check-deps`: RFC-0001 §4.2 rules 1–9 and the release-feature rule over… | QUAL-E1-T02 | 3 | 10 | 1282 |
+| 4 | QUAL-E1-T05 | M0a | Contribution checks: `dco` (every commit signed off, matching author), `pr-title` (conventional… | QUAL-E1-T02 | 3 | 4 | 1185 |
+| 5 | QUAL-E1-T06 | M0a | `pr.yml` skeleton: `changes`, `lint`, `build-<os>` (the `pr` profile, plus a Linux `test-release`… | QUAL-E1-T02, QUAL-E1-T05 | 4 | 25 | 1184 |
+| 6 | COMP-E1-T01 | M0a | `syntropy-kernels` crate: the `KernelProvider` trait with RFC-0001 §5.7's methods and RFC-0040… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 16 | 1121 |
+| 7 | COMP-E13-T01 | M0a | Types in `core`: the extended `DType`, `QuantScheme`, `ScaleGranularity`, `CtScheme`, `ActQuant`… | QUAL-E1-T01 | 2 | 6 | 1095 |
+| 8 | COMP-E1-T02 | M0a | Op registry: the closed `OpKind` list of §3.1 (including `AttnPartial`, `AttnMerge`… | COMP-E1-T01, COMP-E13-T01 | 5 | 16 | 1085 |
 | 9 | QUAL-E3-T01 | M0a | `syntropy-core` determinism types: `MonoTime`, `Clock`, `Entropy`, `ProtocolCore`, `Outbox`… | QUAL-E1-T01, QUAL-E1-T03 | 4 | 12 | 1044 |
 | 10 | QUAL-E3-T25 | M0a | `CountingAlloc` and `alloc_count_this_thread` in `testkit::guards` (split from QUAL-E3-T11, so M0a… | QUAL-E1-T01 | 2 | 10 | 1021 |
 | 11 | QUAL-E12-T01 | M0a | `syntropy-bench` schemas: `BenchKey` (including `expert_cache: CacheStart`), `RigFingerprint`… | QUAL-E1-T01 | 2 | 4 | 1009 |
@@ -53,7 +53,7 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 | 27 | DIST-E1-T03 | M0a | IPC command channel: length-prefixed postcard frames over a UDS or named pipe, request IDs, `Hello`… | TIER-E1-T13, DIST-E1-T02, DIST-E1-T14 | 7 | 23 | 922 |
 | 28 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01, QUAL-E1-T06 | 5 | 6 | 909 |
 | 29 | QUAL-E7-T05 | M0a | Fixture store: an S3-compatible bucket with prefixes `fixtures/`, `refs/`, `kcache/`, `results/`… | QUAL-E1-T02 | 3 | 14 | 905 |
-| 30 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 7 | 899 |
+| 30 | QUAL-E16-T24 | M0a | Build images and toolchain pins (split from QUAL-E16-T01 so kernel build scripts depend on the… | QUAL-E1-T06 | 5 | 7 | 900 |
 <!-- END GENERATED -->
 
 ## Overview
@@ -61,18 +61,18 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 ### Tasks per milestone and area
 
 <!-- BEGIN GENERATED: roadmap-counts -->
-Generated by `tools/roadmap.py` from 1457 tasks and 3986 dependency edges. Every task sits in exactly one milestone.
+Generated by `tools/roadmap.py` from 1458 tasks and 3988 dependency edges. Every task sits in exactly one milestone.
 
 | Milestone | PLC | TIER | DIST | COMP | PROD | QUAL | Total |
 |---|---|---|---|---|---|---|---|
 | M0a | 22 | 8 | 9 | 64 | 18 | 69 | 190 |
-| M0b | 16 | 14 | 2 | 37 | 16 | 49 | 134 |
+| M0b | 16 | 14 | 2 | 38 | 16 | 49 | 135 |
 | M1a | 75 | 100 | 12 | 102 | 97 | 94 | 480 |
 | M1b | 11 | 23 | 2 | 23 | 16 | 21 | 96 |
 | M2 | 39 | 13 | 128 | 27 | 34 | 55 | 296 |
 | M3 | 22 | 23 | 65 | 46 | 27 | 27 | 210 |
 | M4 | 3 | 4 | 13 | 10 | 11 | 10 | 51 |
-| Total | 188 | 185 | 231 | 309 | 219 | 325 | 1457 |
+| Total | 188 | 185 | 231 | 310 | 219 | 325 | 1458 |
 <!-- END GENERATED -->
 
 ### Critical paths
@@ -81,7 +81,7 @@ Generated by `tools/roadmap.py` from 1457 tasks and 3986 dependency edges. Every
 | Milestone | Tasks | Critical path inside (tasks) | Longest chain from project start (tasks) | Zero-slack tasks | Ready at step 1 |
 |---|---|---|---|---|---|
 | M0a | 190 | 26 | 26 | 31 | 3 |
-| M0b | 134 | 7 | 28 | 7 | 67 |
+| M0b | 135 | 7 | 28 | 7 | 68 |
 | M1a | 480 | 19 | 42 | 21 | 107 |
 | M1b | 96 | 7 | 39 | 7 | 24 |
 | M2 | 296 | 16 | 45 | 24 | 47 |
@@ -295,7 +295,7 @@ Success criteria first required at this exit: SC-4, SC-29.
 ### Plan
 
 <!-- BEGIN GENERATED: roadmap-m0b -->
-**Tasks:** 134 (PLC 16, TIER 14, DIST 2, COMP 37, PROD 16, QUAL 49).
+**Tasks:** 135 (PLC 16, TIER 14, DIST 2, COMP 38, PROD 16, QUAL 49).
 
 **Critical path inside M0b:** 7 tasks, assuming every earlier milestone is done. 7 M0b tasks lie on a chain of that length (no slack); the chain below is one of them.
 
@@ -313,7 +313,7 @@ Zero-slack tasks by area: COMP 3, PROD 2, QUAL 2.
 
 **Longest chain from project start to an M0b task:** 28 tasks: QUAL-E1-T01 (M0a) → QUAL-E1-T02 → QUAL-E1-T05 → QUAL-E1-T06 → QUAL-E1-T07 → QUAL-E2-T01 → QUAL-E2-T04 → QUAL-E2-T11 → QUAL-E15-T16 → PLC-E1-T04 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E5-T24 (M0b) → QUAL-E13-T02.
 
-**Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 67, 2: 29, 3: 14, 4: 10, 5: 9, 6: 4, 7: 1. 67 tasks can start as soon as M0b opens.
+**Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 68, 2: 29, 3: 14, 4: 10, 5: 9, 6: 4, 7: 1. 68 tasks can start as soon as M0b opens.
 
 Work streams are the epics with tasks in this milestone. "First step" and "last step" are the steps of the stream's earliest and latest tasks. Streams whose step ranges overlap, and that do not wait on each other, can run in parallel.
 
@@ -339,7 +339,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | COMP-E10 | Model readers, identities and the census | 2 | 1 | 3 | QUAL-E10 |
 | COMP-E11 | Model store and packs | 1 | 1 | 1 | – |
 | COMP-E12 | Weight distribution: Hub, chunk tables and peer-to-peer transfer | 1 | 2 | 2 | COMP-E10, COMP-E11 |
-| COMP-E13 | Numerics: types, dequantisation, widening and accumulation rules | 4 | 1 | 4 | COMP-E7, COMP-E9 |
+| COMP-E13 | Numerics: types, dequantisation, widening and accumulation rules | 5 | 1 | 4 | COMP-E7, COMP-E9 |
 | COMP-E14 | The exactness contract: tolerances, wire, canary, knobs and requantization | 5 | 1 | 5 | QUAL-E4, QUAL-E5, QUAL-E7, QUAL-E16 |
 | COMP-E15 | Graph IR, blocks, segments and tensor-parallel sharding | 1 | 1 | 1 | – |
 | COMP-E16 | Family modules, classification and certification | 1 | 1 | 1 | – |
