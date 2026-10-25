@@ -356,6 +356,57 @@ fn bad_shapes_are_refused_before_any_call() {
     assert_eq!(calls(), before);
 }
 
+/// Strides and dimensions whose element counts overflow `usize` are refused, never wrapped
+/// into a small need that passes the bounds check. Runs in release builds too, where
+/// arithmetic wraps silently.
+#[test]
+fn overflowing_strides_and_dimensions_are_refused() {
+    let Some(t) = host_token("overflowing_strides_and_dimensions_are_refused") else {
+        return;
+    };
+    let before = calls();
+    let a = [0.0_f32; 8];
+    let b = [0.0_f32; 8];
+    let mut c = [1.5_f32; 8];
+    let huge = usize::MAX;
+    // C stride: (m - 1) · ldc + n wraps for m = 2 and ldc = usize::MAX.
+    assert!(t.f32_tile(&a, &b, &mut c, 1, 2, 1, 1, huge).is_err());
+    assert!(
+        t.f32_tile(&a, &b, &mut c, 1, 2, 1, 1, huge / 2 + 1)
+            .is_err()
+    );
+    // B stride: (k - 1) · ldb + n wraps.
+    assert!(t.f32_tile(&a, &b, &mut c, 2, 1, 1, huge, 1).is_err());
+    assert!(
+        t.f32_tile(&a, &b, &mut c, 3, 1, 1, huge / 2 + 1, 1)
+            .is_err()
+    );
+    // k · m wraps.
+    assert!(
+        t.f32_tile(&a, &b, &mut c, huge / 2 + 1, 2, 1, 1, 1)
+            .is_err()
+    );
+    assert!(t.f32_tile(&a, &b, &mut c, huge, 1, 1, 1, 1).is_err());
+    // The i8 tile's strides.
+    let mut ci = [7_i32; 8];
+    assert!(
+        t.i8_tile(&[0; 8], &[0; 8], &mut ci, 1, 2, 1, 4, huge)
+            .is_err()
+    );
+    assert!(
+        t.i8_tile(&[0; 8], &[0; 8], &mut ci, 2, 1, 1, huge, 1)
+            .is_err()
+    );
+    // Whole products whose m · n wraps to 0, matching empty slices when k = 0.
+    assert!(t.gemm_f32(&[], &[], &mut [], 1 << 63, 2, 0).is_err());
+    let mut ce: [i32; 0] = [];
+    assert!(t.gemm_i8(&[], &[], &mut ce, 1 << 63, 2, 0).is_err());
+    // Nothing was called, and nothing outside the tile was written.
+    assert_eq!(calls(), before);
+    assert!(c.iter().all(|v| *v == 1.5));
+    assert!(ci.iter().all(|v| *v == 7));
+}
+
 // ---- The callee-saved register harness -----------------------------------------------------
 
 #[cfg(syntropy_sme2)]

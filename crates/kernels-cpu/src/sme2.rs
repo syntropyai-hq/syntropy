@@ -96,7 +96,8 @@ impl Sme2 {
         ldc: usize,
     ) -> Result<(), Error> {
         let shape = TileShape { k, m, n, ldb, ldc };
-        self.check(&shape, a.len(), k * m, b.len(), c.len())?;
+        let a_need = k.checked_mul(m).ok_or_else(|| overflow(&shape))?;
+        self.check(&shape, a.len(), a_need, b.len(), c.len())?;
         if m == 0 || n == 0 {
             return Ok(());
         }
@@ -137,10 +138,20 @@ impl Sme2 {
             ldb,
             ldc,
         };
-        // In bytes, B's rows are 4n wide; check the stride against that.
-        let bytes = TileShape { n: 4 * n, ..shape };
-        self.check_bounds(&bytes, a.len(), groups * 4 * m, b.len())?;
+        // The tile size first: it bounds n and m, so the byte counts below cannot overflow;
+        // they are checked anyway.
         self.check_tile(&shape)?;
+        // In bytes, B's rows are 4n wide; check the stride against that.
+        let n_bytes = n.checked_mul(4).ok_or_else(|| overflow(&shape))?;
+        let a_need = groups
+            .checked_mul(4)
+            .and_then(|v| v.checked_mul(m))
+            .ok_or_else(|| overflow(&shape))?;
+        let bytes = TileShape {
+            n: n_bytes,
+            ..shape
+        };
+        self.check_bounds(&bytes, a.len(), a_need, b.len())?;
         check_c(&shape, c.len())?;
         if m == 0 || n == 0 {
             return Ok(());
@@ -289,10 +300,12 @@ impl Sme2 {
                 s.ldb, s.n
             )));
         }
+        // Checked: a huge stride or k must be refused, never wrap to a small need.
         let b_need = match s.k {
-            0 => 0,
-            k => (k - 1) * s.ldb + s.n,
-        };
+            0 => Some(0),
+            k => (k - 1).checked_mul(s.ldb).and_then(|v| v.checked_add(s.n)),
+        }
+        .ok_or_else(|| overflow(s))?;
         if a_len < a_need || b_len < b_need {
             return Err(internal(format!(
                 "an SME2 tile needs {a_need} A and {b_need} B elements but has {a_len} and \
@@ -322,10 +335,12 @@ fn check_c(s: &TileShape, c_len: usize) -> Result<(), Error> {
             s.ldc, s.n
         )));
     }
+    // Checked: a huge stride must be refused, never wrap to a small need.
     let c_need = match s.m {
-        0 => 0,
-        m => (m - 1) * s.ldc + s.n,
-    };
+        0 => Some(0),
+        m => (m - 1).checked_mul(s.ldc).and_then(|v| v.checked_add(s.n)),
+    }
+    .ok_or_else(|| overflow(s))?;
     if c_len < c_need {
         return Err(internal(format!(
             "an SME2 tile needs {c_need} C elements but has {c_len}"
@@ -334,8 +349,17 @@ fn check_c(s: &TileShape, c_len: usize) -> Result<(), Error> {
     Ok(())
 }
 
+/// The error for a shape whose element counts overflow `usize`.
+fn overflow(s: &TileShape) -> Error {
+    internal(format!(
+        "an SME2 tile's element counts overflow: k {}, m {}, n {}, ldb {}, ldc {}",
+        s.k, s.m, s.n, s.ldb, s.ldc
+    ))
+}
+
 fn check_gemm(a: usize, b: usize, c: usize, m: usize, n: usize, k: usize) -> Result<(), Error> {
-    if a != m * k || b != k * n || c != m * n {
+    // Checked: a product that overflows matches no slice length.
+    if m.checked_mul(k) != Some(a) || k.checked_mul(n) != Some(b) || m.checked_mul(n) != Some(c) {
         return Err(internal(format!(
             "an SME2 product of {m} × {k} by {k} × {n} got slices of {a}, {b} and {c} elements"
         )));
