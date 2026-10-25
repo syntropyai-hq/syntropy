@@ -19,6 +19,7 @@
 pub mod device;
 pub mod error;
 pub mod memory;
+pub mod moe;
 pub mod numerics;
 pub mod op;
 pub mod provider;
@@ -36,6 +37,10 @@ pub use error::{Error, ErrorCode, unsupported};
 pub use memory::{
     AllocRequest, BufferSlice, DeviceBuffer, HostRegFlags, HostRegion, HostRegistrar, MemKind,
     Registration, Segment,
+};
+pub use moe::{
+    Assignment, DoorbellHeader, DoorbellLayer, DoorbellLayout, EligibilityMirror, LayerSplit,
+    PredSlot, RetireGate, RouteSlot,
 };
 pub use op::{
     ActKind, AttnKind, Fusions, GatedAct, IndexKind, LayoutVersion, OpArgs, OpCaps, OpKey, OpKind,

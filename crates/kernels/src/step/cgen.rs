@@ -2,7 +2,9 @@
 
 //! The generator of [`mirror`](super::mirror): it reads `include/syntropy/step_desc.h`, lays
 //! its structs out by the C rules, and writes the Rust mirror (RFC-0040 §1, "kernel argument
-//! structs have one source of truth").
+//! structs have one source of truth"). The MoE doorbell's mirror
+//! ([`moe::mirror`](crate::moe::mirror)) comes from `include/syntropy/moe_doorbell.h` the
+//! same way ([`MOE_DOORBELL`]).
 //!
 //! It reads only the subset of C the header's comment names and fails closed: a preprocessor
 //! directive it does not know (`#pragma pack` among them), any directive inside a struct, a
@@ -17,74 +19,122 @@ pub(super) const HEADER_PATH: &str = "include/syntropy/step_desc.h";
 /// The generated mirror, relative to the crate root.
 pub(super) const MIRROR_PATH: &str = "src/step/mirror.rs";
 
+/// One header and the mirror generated from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Target {
+    /// The header, relative to the crate root.
+    pub(crate) header: &'static str,
+    /// The header as a translation unit includes it.
+    pub(crate) include: &'static str,
+    /// The generated mirror, relative to the crate root.
+    pub(crate) mirror: &'static str,
+    /// The sections the mirror's module documentation cites.
+    pub(crate) cites: &'static str,
+    /// The test filter the bless instruction names.
+    pub(crate) filter: &'static str,
+    /// The path of this module as the mirror names it.
+    pub(crate) cgen: &'static str,
+}
+
+/// The step descriptor's header and mirror (RFC-0040 §3.5).
+pub(crate) const STEP_DESC: Target = Target {
+    header: HEADER_PATH,
+    include: "syntropy/step_desc.h",
+    mirror: MIRROR_PATH,
+    cites: "RFC-0040 §1, §3.5",
+    filter: "step::",
+    cgen: "super::cgen",
+};
+
+/// The MoE doorbell's header and mirror (RFC-0023 §2; RFC-0040 §3.4).
+pub(crate) const MOE_DOORBELL: Target = Target {
+    header: "include/syntropy/moe_doorbell.h",
+    include: "syntropy/moe_doorbell.h",
+    mirror: "src/moe/mirror.rs",
+    cites: "RFC-0023 §2; RFC-0040 §1, §3.4",
+    filter: "moe::",
+    cgen: "crate::step::cgen",
+};
+
 /// A member type the generator knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CType {
+pub(crate) enum CType {
+    U8,
+    U16,
     U32,
     I32,
     U64,
+    F32,
 }
 
 impl CType {
     fn parse(word: &str) -> Option<Self> {
         match word {
+            "uint8_t" => Some(Self::U8),
+            "uint16_t" => Some(Self::U16),
             "uint32_t" => Some(Self::U32),
             "int32_t" => Some(Self::I32),
             "uint64_t" => Some(Self::U64),
+            "float" => Some(Self::F32),
             _ => None,
         }
     }
 
     /// Size and alignment, which are equal for these types on every target Syntropy builds.
-    pub(super) fn size(self) -> usize {
+    pub(crate) fn size(self) -> usize {
         match self {
-            Self::U32 | Self::I32 => 4,
+            Self::U8 => 1,
+            Self::U16 => 2,
+            Self::U32 | Self::I32 | Self::F32 => 4,
             Self::U64 => 8,
         }
     }
 
     fn rust(self) -> &'static str {
         match self {
+            Self::U8 => "u8",
+            Self::U16 => "u16",
             Self::U32 => "u32",
             Self::I32 => "i32",
             Self::U64 => "u64",
+            Self::F32 => "f32",
         }
     }
 }
 
 /// `#define NAME value` with `NAME` starting `SYN_` and a value the generator can read.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Define {
-    pub(super) docs: Vec<String>,
-    pub(super) name: String,
+pub(crate) struct Define {
+    pub(crate) docs: Vec<String>,
+    pub(crate) name: String,
     /// The value as a Rust expression.
-    pub(super) expr: String,
-    pub(super) value: u64,
+    pub(crate) expr: String,
+    pub(crate) value: u64,
 }
 
 /// One struct member, with the offset C gives it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Field {
-    pub(super) docs: Vec<String>,
-    pub(super) name: String,
-    pub(super) ty: CType,
-    pub(super) offset: usize,
+pub(crate) struct Field {
+    pub(crate) docs: Vec<String>,
+    pub(crate) name: String,
+    pub(crate) ty: CType,
+    pub(crate) offset: usize,
 }
 
 /// One struct, laid out.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CStruct {
-    pub(super) docs: Vec<String>,
+pub(crate) struct CStruct {
+    pub(crate) docs: Vec<String>,
     /// The C tag, `syn_step_desc`.
-    pub(super) c_name: String,
-    pub(super) fields: Vec<Field>,
-    pub(super) size: usize,
-    pub(super) align: usize,
+    pub(crate) c_name: String,
+    pub(crate) fields: Vec<Field>,
+    pub(crate) size: usize,
+    pub(crate) align: usize,
 }
 
 impl CStruct {
     /// The Rust name: the tag without `syn_`, in upper camel case.
-    pub(super) fn rust_name(&self) -> String {
+    pub(crate) fn rust_name(&self) -> String {
         let bare = self.c_name.strip_prefix("syn_").unwrap_or(&self.c_name);
         bare.split('_')
             .map(|w| {
@@ -99,20 +149,20 @@ impl CStruct {
 
 /// A mirror's layout as the Rust compiler gives it: what the generated `LAYOUTS` lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct MirrorLayout {
+pub(crate) struct MirrorLayout {
     /// The C tag.
-    pub(super) tag: &'static str,
-    pub(super) size: usize,
-    pub(super) align: usize,
+    pub(crate) tag: &'static str,
+    pub(crate) size: usize,
+    pub(crate) align: usize,
     /// Each member's name and offset, in declaration order.
-    pub(super) fields: &'static [(&'static str, usize)],
+    pub(crate) fields: &'static [(&'static str, usize)],
 }
 
 /// What the header declares.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Header {
-    pub(super) defines: Vec<Define>,
-    pub(super) structs: Vec<CStruct>,
+pub(crate) struct Header {
+    pub(crate) defines: Vec<Define>,
+    pub(crate) structs: Vec<CStruct>,
 }
 
 /// Reads a `#define` value: a decimal literal with an optional `u` suffix, or `(1u << n)`.
@@ -128,10 +178,15 @@ fn parse_value(text: &str) -> Option<(String, u64)> {
     Some((value.to_string(), value))
 }
 
-/// Parses the header and lays its structs out: each member at the next multiple of its
-/// alignment (raised by `SYN_ALIGNAS`), the struct's alignment the largest of its members',
-/// its size rounded up to that alignment.
+/// Parses the step descriptor's header: [`parse_named`] with its path.
 pub(super) fn parse(text: &str) -> Result<Header, String> {
+    parse_named(HEADER_PATH, text)
+}
+
+/// Parses a header and lays its structs out: each member at the next multiple of its
+/// alignment (raised by `SYN_ALIGNAS`), the struct's alignment the largest of its members',
+/// its size rounded up to that alignment. `path` names the header in errors.
+pub(crate) fn parse_named(path: &str, text: &str) -> Result<Header, String> {
     let mut defines = Vec::new();
     let mut structs = Vec::new();
     let mut docs: Vec<String> = Vec::new();
@@ -142,7 +197,7 @@ pub(super) fn parse(text: &str) -> Result<Header, String> {
 
     for (ix, raw) in text.lines().enumerate() {
         let line = raw.trim();
-        let at = |msg: &str| format!("{HEADER_PATH}:{}: {msg}: `{line}`", ix + 1);
+        let at = |msg: &str| format!("{path}:{}: {msg}: `{line}`", ix + 1);
         // Block comments must fill their lines: code before `/*` or after `*/` on the same
         // line would otherwise be skipped with the comment.
         if in_block_comment {
@@ -206,6 +261,10 @@ pub(super) fn parse(text: &str) -> Result<Header, String> {
                             expr,
                             value,
                         });
+                    } else {
+                        // A function-like or foreign macro is not read; its comment
+                        // documents it, not the next item.
+                        docs.clear();
                     }
                 }
                 _ => return Err(at("a preprocessor directive the generator does not read")),
@@ -272,13 +331,13 @@ pub(super) fn parse(text: &str) -> Result<Header, String> {
         return Err(at("outside the subset the generator reads"));
     }
     if open.is_some() {
-        return Err(format!("{HEADER_PATH}: unterminated struct"));
+        return Err(format!("{path}: unterminated struct"));
     }
     if in_block_comment {
-        return Err(format!("{HEADER_PATH}: unterminated block comment"));
+        return Err(format!("{path}: unterminated block comment"));
     }
     if depth != 0 {
-        return Err(format!("{HEADER_PATH}: unbalanced #if"));
+        return Err(format!("{path}: unbalanced #if"));
     }
     Ok(Header { defines, structs })
 }
@@ -293,16 +352,29 @@ fn push_docs(out: &mut String, indent: &str, docs: &[String]) {
     }
 }
 
-/// The Rust mirror of `header`, formatted as rustfmt leaves it.
+/// The step descriptor's mirror: [`generate_for`] with [`STEP_DESC`].
 pub(super) fn generate(header: &Header) -> String {
+    generate_for(header, &STEP_DESC)
+}
+
+/// The Rust mirror of `header`, the header of `target`, formatted as rustfmt leaves it.
+pub(crate) fn generate_for(header: &Header, target: &Target) -> String {
+    let Target {
+        header: path,
+        cites,
+        filter,
+        cgen,
+        ..
+    } = *target;
     let mut out = String::new();
-    out.push_str(
+    let _ = write!(
+        out,
         "// SPDX-License-Identifier: MIT OR Apache-2.0\n\
-         // @generated from `include/syntropy/step_desc.h` by the `syntropy-kernels` tests. Do not\n\
+         // @generated from `{path}` by the `syntropy-kernels` tests. Do not\n\
          // edit: change the header and run `SYNTROPY_BLESS_GENERATED=1 cargo test -p\n\
-         // syntropy-kernels step::`.\n\
+         // syntropy-kernels {filter}`.\n\
          \n\
-         //! The `#[repr(C)]` mirrors of `include/syntropy/step_desc.h` (RFC-0040 §1, §3.5), with\n\
+         //! The `#[repr(C)]` mirrors of `{path}` ({cites}), with\n\
          //! compile-time checks of the layout the generator computed from the header.\n",
     );
     for d in &header.defines {
@@ -316,7 +388,12 @@ pub(super) fn generate(header: &Header) -> String {
         out.push('\n');
         push_docs(&mut out, "", &s.docs);
         let _ = writeln!(out, "#[repr(C, align({}))]", s.align);
-        out.push_str("#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]\n");
+        // A float member has no total equality.
+        if s.fields.iter().any(|f| f.ty == CType::F32) {
+            out.push_str("#[derive(Clone, Copy, Debug, Default, PartialEq)]\n");
+        } else {
+            out.push_str("#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]\n");
+        }
         let _ = writeln!(out, "pub struct {name} {{");
         for f in &s.fields {
             push_docs(&mut out, "    ", &f.docs);
@@ -338,15 +415,16 @@ pub(super) fn generate(header: &Header) -> String {
         }
     }
     out.push_str("};\n");
-    out.push_str(
+    let _ = write!(
+        out,
         "\n/// Each mirror's C tag, size, alignment and member offsets as the Rust compiler lays\n\
          /// them out, for the tests that compare them with the header and with a C compiler.\n\
          #[cfg(test)]\n\
-         pub(super) const LAYOUTS: &[super::cgen::MirrorLayout] = &[\n",
+         pub(super) const LAYOUTS: &[{cgen}::MirrorLayout] = &[\n",
     );
     for s in &header.structs {
         let name = s.rust_name();
-        let _ = writeln!(out, "    super::cgen::MirrorLayout {{");
+        let _ = writeln!(out, "    {cgen}::MirrorLayout {{");
         let _ = writeln!(out, "        tag: \"{}\",", s.c_name);
         let _ = writeln!(out, "        size: size_of::<{name}>(),");
         let _ = writeln!(out, "        align: align_of::<{name}>(),");
@@ -368,8 +446,13 @@ pub(super) fn generate(header: &Header) -> String {
 /// A C translation unit that includes the header and asserts, with `_Static_assert`, the
 /// layout in `layouts` (the Rust compiler's): what a C compiler checks when one is present.
 pub(super) fn c_layout_check(layouts: &[MirrorLayout]) -> String {
-    let mut out = String::from(
-        "#include <stddef.h>\n#include \"syntropy/step_desc.h\"\n#if defined(__cplusplus)\n\
+    c_layout_check_for(STEP_DESC.include, layouts)
+}
+
+/// [`c_layout_check`] for the header a translation unit includes as `include`.
+pub(crate) fn c_layout_check_for(include: &str, layouts: &[MirrorLayout]) -> String {
+    let mut out = format!(
+        "#include <stddef.h>\n#include \"{include}\"\n#if defined(__cplusplus)\n\
          #define SYN_ASSERT static_assert\n#define SYN_ALIGNOF alignof\n#else\n\
          #define SYN_ASSERT _Static_assert\n#define SYN_ALIGNOF _Alignof\n#endif\n",
     );
