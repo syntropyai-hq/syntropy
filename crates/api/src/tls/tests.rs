@@ -1008,6 +1008,12 @@ fn a_client_refuses_anything_but_one_constrained_ca() {
             vec![v6_all()],
             "the CA may issue for any IPv4 address",
         ),
+        // Addresses only: every DNS name unconstrained.
+        (
+            vec![v4([192, 168, 1, 0], 24)],
+            vec![v6_all()],
+            "the CA may issue for any DNS name",
+        ),
         // A single label covers a whole top-level domain.
         (
             vec![dns("box")],
@@ -1017,7 +1023,7 @@ fn a_client_refuses_anything_but_one_constrained_ca() {
         (
             vec![],
             vec![v4_all(), v6_all()],
-            "the certificate's name constraints permit no subtree",
+            "the CA may issue for any DNS name",
         ),
     ] {
         assert_eq!(refused(&constrained(permitted, excluded)), why);

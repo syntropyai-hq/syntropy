@@ -245,26 +245,29 @@ fn subtree(name: &GeneralName<'_>) -> Result<Subtree, CaRefused> {
 /// permitted subtrees for display.
 /// - Every permitted subtree is a DNS name of two or more labels, or a subnet that lies whole
 ///   inside one local block: a mask such as `10.0.0.0/0` is refused, not read as `10/8`.
+/// - At least one DNS name is permitted, as every node's scope has one; otherwise DNS names
+///   would be unconstrained.
 /// - Each address family is constrained: some subnet of it is permitted, or the whole family is
 ///   excluded, as a node with no subnet of that family excludes it. Otherwise the CA could issue
 ///   for any address of that family.
 fn checked_permitted(constraints: &NameConstraints<'_>) -> Result<Vec<String>, CaRefused> {
     let mut shown = Vec::new();
-    let (mut v4, mut v6) = (false, false);
+    let (mut dns, mut v4, mut v6) = (false, false, false);
     for entry in constraints
         .permitted_subtrees
         .as_deref()
         .unwrap_or_default()
     {
         match subtree(&entry.base)? {
-            Subtree::Dns(dns) => {
-                let name = dns.trim_start_matches('.');
+            Subtree::Dns(text) => {
+                let name = text.trim_start_matches('.');
                 if !name.contains('.') || name.split('.').any(str::is_empty) {
                     return Err(CaRefused(
                         "the CA may issue for a whole top-level domain, or a malformed name",
                     ));
                 }
-                shown.push(dns);
+                shown.push(name.to_owned());
+                dns = true;
             }
             Subtree::V4(network, prefix) => {
                 if !inside(network, prefix, &LOCAL_V4, 32) {
@@ -294,10 +297,10 @@ fn checked_permitted(constraints: &NameConstraints<'_>) -> Result<Vec<String>, C
             _ => {}
         }
     }
-    if shown.is_empty() {
-        return Err(CaRefused(
-            "the certificate's name constraints permit no subtree",
-        ));
+    // Every node's scope has a DNS name (`ScopeError::NoNames`). Without a permitted one, DNS
+    // names would be unconstrained.
+    if !dns {
+        return Err(CaRefused("the CA may issue for any DNS name"));
     }
     if !v4 {
         return Err(CaRefused("the CA may issue for any IPv4 address"));
