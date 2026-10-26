@@ -1,0 +1,13 @@
+{
+  "lab_hours": [
+    {"rig": "R-ADA", "class": "nightly", "hours": 5.5},
+    {"rig": "R-ADA", "class": "pr", "hours": 1.25}
+  ],
+  "cache": [
+    {"name": "kcache", "hits": 900, "misses": 100}
+  ],
+  "storage": [
+    {"bucket": "artefacts", "bytes": 450000000000},
+    {"bucket": "results", "bytes": 120000000000}
+  ]
+}

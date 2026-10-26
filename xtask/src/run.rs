@@ -301,6 +301,7 @@ mod tests {
                 "properties",
                 "codeowners",
                 "agent-instructions",
+                "cost",
                 "rigs",
                 "specs",
                 "deny",
