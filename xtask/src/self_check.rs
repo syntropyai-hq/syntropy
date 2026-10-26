@@ -59,6 +59,14 @@ fn owners(config: &Config, workspace: &Workspace, path: &str) -> BTreeSet<String
 
 /// Applies the check to the tracked `files` of a checkout.
 pub fn check(config: &Config, workspace: &Workspace, files: &[String]) -> Outcome {
+    check_with(config, workspace, files, &changes::affected)
+}
+
+/// The rules engine as the check calls it: [`changes::affected`], or a stand-in in tests.
+type Rules = dyn Fn(&Config, &Workspace, &[String], &BTreeSet<String>) -> changes::Affected;
+
+/// [`check`] over the rules engine `apply`.
+fn check_with(config: &Config, workspace: &Workspace, files: &[String], apply: &Rules) -> Outcome {
     let mut out = Outcome::default();
     let mut required = BTreeSet::new();
     let mut picked = BTreeSet::new();
@@ -78,7 +86,7 @@ pub fn check(config: &Config, workspace: &Workspace, files: &[String]) -> Outcom
                 continue;
             };
             met = true;
-            let alone = changes::affected(
+            let alone = apply(
                 config,
                 workspace,
                 std::slice::from_ref(file),
@@ -101,7 +109,7 @@ pub fn check(config: &Config, workspace: &Workspace, files: &[String]) -> Outcom
     }
 
     let paths: Vec<String> = picked.into_iter().collect();
-    let combined = changes::affected(config, workspace, &paths, &BTreeSet::new());
+    let combined = apply(config, workspace, &paths, &BTreeSet::new());
     let got: BTreeSet<String> = combined.hw_required.iter().cloned().collect();
     for name in required.difference(&got) {
         out.problems.push(format!(
