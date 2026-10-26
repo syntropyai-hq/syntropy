@@ -496,7 +496,13 @@ macro_rules! __abi_export {
             #[unsafe(no_mangle)]
             pub extern "C" fn syntropy_provider_entry_v1(host: *const SynHostApi) -> *const SynModule {
                 static MODULE: ::std::sync::OnceLock<usize> = ::std::sync::OnceLock::new();
+                // Two racing first calls must not both build the providers.
+                static BUILDING: ::std::sync::Mutex<()> = ::std::sync::Mutex::new(());
                 let built = ::std::panic::catch_unwind(|| {
+                    if let Some(addr) = MODULE.get() {
+                        return Some(*addr);
+                    }
+                    let _guard = BUILDING.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(addr) = MODULE.get() {
                         return Some(*addr);
                     }

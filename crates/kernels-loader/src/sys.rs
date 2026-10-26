@@ -35,11 +35,11 @@ mod imp {
     }
 
     const RTLD_NOW: c_int = 0x2;
-    // `RTLD_LOCAL` is 0 on Linux and 0x4 on the BSDs and macOS; `RTLD_LOCAL` keeps the module's
+    // `RTLD_LOCAL` is 0 on Linux and FreeBSD and 0x4 on macOS; `RTLD_LOCAL` keeps the module's
     // symbols out of the core's lookup scope.
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     const RTLD_LOCAL: c_int = 0x4;
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     const RTLD_LOCAL: c_int = 0;
 
     fn last_error() -> String {
