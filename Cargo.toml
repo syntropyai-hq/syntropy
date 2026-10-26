@@ -140,6 +140,13 @@ subtle = "2.6.1"
 syn = { version = "3.0.9", default-features = false, features = ["derive", "parsing", "printing", "proc-macro"] }
 # Certificate validity times, the type rcgen takes (PROD-E5-T03).
 time = { version = "0.3.55", default-features = false, features = ["std"] }
+# The tokenizer engine of `syntropy-text` (RFC-0043 §8.2, ADR-0431 decision 1; COMP-E17-T02),
+# Apache-2.0. Default features off: `onig` links the Oniguruma C regex library, `esaxx_fast` builds
+# C++ through `cc`, and `progressbar` serves training only. `fancy-regex` is its pure-Rust regex
+# backend, so the engine builds for every ADR-0020 target without a C toolchain. Pinned exactly:
+# a new version can change tokens, so a bump is a reviewed change that reruns the tokenizer
+# conformance suite (COMP-E17-T06).
+tokenizers = { version = "=0.23.2", default-features = false, features = ["fancy-regex"] }
 # The `net` domain's runtime (RFC-0031 §4.4): `syntropy-net` runs its QUIC data plane on a
 # single-threaded tokio runtime of its own (DIST-E7-T03, ADR-0012), and its TCP fallback runs its
 # listener and each channel's driver on it (DIST-E7-T05); its endpoint tests drive iroh, whose API

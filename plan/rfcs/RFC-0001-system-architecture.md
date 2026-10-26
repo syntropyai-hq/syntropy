@@ -1616,7 +1616,7 @@ pub enum ErrorClass {
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
 | `ReplanReason`, `DriftTerm`, `WorkloadTerm` | core (added 2026-10-23, §18.33) | 0033 | 0010 (the terms), 0031 (`DriftTerm::Hop`), 0054 (`Config { keys }`) |
-| `Error`, `ErrorClass` | core | 0001 | every RFC (codes) |
+| `Error`, `ErrorClass`, `ErrorCode`, `Domain` | core | 0001 | every RFC (codes in its domain; the `Domain` variant and range come with its table), 0050 (the API shape per code) |
 | Policy objects (`Objective`, `ExactnessPolicy`, `ResourcePolicy`, `ResourceOverlay`, `InstancePolicy`), and the plain-data field types `config` parses into (`Fidelity`, `ApproxParams`, `NetworkScope`, `Reserve`, `Fraction`, the selectors, `PlacementPin`, `TensorOverride`, `KeyPath`, `ConfigValue`; OQ-PRD-27) | core | 0054 | 0011, 0012, 0042 |
 | Canonical encoding (`canon::to_bytes`), behind `InstancePolicy::canonical_bytes` and `digest_with` | core | 0054 (§4.5) | |
 | `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore`, `Outbox` | core | 0060 | 0030, 0032, 0033 (the protocol cores) |

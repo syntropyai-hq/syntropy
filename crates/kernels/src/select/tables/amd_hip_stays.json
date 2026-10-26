@@ -1,0 +1,53 @@
+{
+  "name": "amd_hip_stays",
+  "note": "Hand-written in the recorded-table format; the times are chosen to exercise each rule, not measured on hardware. Vulkan predicts a step 4.0 % faster than HIP, inside the 5 % domain margin, so HIP stays.",
+  "vendor": "Amd",
+  "deterministic": false,
+  "terms": { "t_submit": 3000, "t_fence": 800 },
+  "programs": [
+    {
+      "domain": "Hip",
+      "ops": [
+        {
+          "op": "Gemv", "predicted": 100000,
+          "offers": [
+            { "provider": "hip", "backend": "Hip", "domain": "Hip", "ns": 100000 },
+            { "provider": "ggml-hip", "backend": "GgmlHip", "domain": "Hip", "ns": 101000 }
+          ],
+          "expect": "hip#0"
+        },
+        {
+          "op": "Gemm", "predicted": 50000,
+          "offers": [
+            { "provider": "hip", "backend": "Hip", "domain": "Hip", "ns": 50000 }
+          ],
+          "expect": "hip#0"
+        }
+      ],
+      "expect_step": 150000
+    },
+    {
+      "domain": "Vulkan",
+      "ops": [
+        {
+          "op": "Gemv", "predicted": 100000,
+          "offers": [
+            { "provider": "vulkan", "backend": "Vulkan", "domain": "Vulkan", "ns": 95000 },
+            { "provider": "ggml-vulkan", "backend": "GgmlVulkan", "domain": "Vulkan", "ns": 90000 }
+          ],
+          "expect": "ggml-vulkan#0"
+        },
+        {
+          "op": "Gemm", "predicted": 50000,
+          "offers": [
+            { "provider": "vulkan", "backend": "Vulkan", "domain": "Vulkan", "ns": 54000 }
+          ],
+          "expect": "vulkan#0"
+        }
+      ],
+      "expect_step": 144000
+    }
+  ],
+  "opened": ["Vulkan", "Hip"],
+  "expect_domain": "Hip"
+}
