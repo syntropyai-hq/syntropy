@@ -5,7 +5,7 @@
 //! from `GlobalMemoryStatusEx` and per node from `GetNumaAvailableMemoryNodeEx`, the
 //! working-set ceiling obtainable without privilege, the power status, and the OS build.
 //!
-//! The calls go through a [`WinApi`], so the same code runs on the live host ([`LiveWindows`],
+//! The calls go through a [`WinApi`], so the same code runs on the live host (`LiveWindows`,
 //! Windows only, which calls `syntropy_io::os::windows_host`) and on recorded responses
 //! ([`WinFixture`]).
 //!
