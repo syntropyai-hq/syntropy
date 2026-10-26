@@ -536,3 +536,96 @@ fn a_docker_actions_image_is_pinned() {
     assert!(check_action("a/action.yml", &action(&digest)).is_empty());
     assert!(check_action("a/action.yml", &action("Dockerfile")).is_empty());
 }
+
+/// Review triggers, and any trigger not known to check out the repository's own code, count as a
+/// pull request's.
+#[test]
+fn only_known_triggers_make_a_default_checkout_safe() {
+    let secret_env = "    env:\n      TOKEN: ${{ secrets.NPM_TOKEN }}\n";
+    let checkout = format!("- uses: actions/checkout@{SHA}");
+    for on in [
+        "  pull_request_review:\n",
+        "  pull_request_review_comment:\n",
+        "  some_future_event:\n",
+    ] {
+        let source = pr_checkout_job(secret_env, &checkout).replace("  pull_request:\n", on);
+        assert_one(
+            "w.yml",
+            &source,
+            "jobs.build.steps[0]",
+            "checks out a PR ref",
+        );
+    }
+    for on in ["  push:\n", "  issue_comment:\n", "  workflow_run:\n"] {
+        let source = pr_checkout_job(secret_env, &checkout).replace("  pull_request:\n", on);
+        assert_clean("w.yml", &source);
+    }
+}
+
+/// A checkout of another repository counts, whatever its ref: the `workflow_run` fork case.
+#[test]
+fn a_checkout_of_another_repository_counts() {
+    let secret_env = "    env:\n      TOKEN: ${{ secrets.NPM_TOKEN }}\n";
+    let with = |repository: &str| {
+        format!(
+            "- uses: actions/checkout@{SHA}\n        with:\n          repository: {repository}\n          ref: main"
+        )
+    };
+    for repository in [
+        "${{ github.event.workflow_run.head_repository.full_name }}",
+        "someone/fork",
+    ] {
+        let source = pr_checkout_job(secret_env, &with(repository))
+            .replace("  pull_request:\n", "  push:\n");
+        assert_one(
+            "w.yml",
+            &source,
+            "jobs.build.steps[0]",
+            "checks out a PR ref",
+        );
+    }
+    for repository in ["${{ github.repository }}", "SyntropyAI-HQ/syntropy"] {
+        let source = pr_checkout_job(secret_env, &with(repository))
+            .replace("  pull_request:\n", "  push:\n");
+        assert_clean("w.yml", &source);
+    }
+}
+
+/// git and gh options between the program and its subcommand do not hide a PR fetch.
+#[test]
+fn git_options_do_not_hide_a_pr_fetch() {
+    let secret_env = "    env:\n      TOKEN: ${{ secrets.NPM_TOKEN }}\n";
+    for step in [
+        "- run: git -c protocol.version=2 fetch origin pull/7/head",
+        "- run: git -C repo --no-pager fetch origin pull/7/head",
+        "- run: gh -R owner/repo pr checkout 7",
+    ] {
+        let source =
+            pr_checkout_job(secret_env, step).replace("  pull_request:\n", "  issue_comment:\n");
+        assert_one(
+            "w.yml",
+            &source,
+            "jobs.build.steps[0]",
+            "checks out a PR ref",
+        );
+    }
+}
+
+/// A `}}` inside a quoted string does not end the expression.
+#[test]
+fn a_quoted_closing_brace_does_not_hide_a_secret() {
+    let checkout = format!("- uses: actions/checkout@{SHA}");
+    let env = "    env:\n      KEY: ${{ format('}}{0}', secrets.NPM_TOKEN) }}\n";
+    assert_one(
+        "w.yml",
+        &pr_checkout_job(env, &checkout),
+        "jobs.build.steps[0]",
+        "it reads `secrets.NPM_TOKEN`",
+    );
+    let mut ends = Vec::new();
+    expressions(
+        &Yaml::String("${{ 'it''s }}' }} tail".to_owned()),
+        &mut ends,
+    );
+    assert_eq!(ends, [" 'it''s }}' ".to_owned()]);
+}

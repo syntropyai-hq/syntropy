@@ -27,14 +27,18 @@
 //! - an expression naming the base: `github.event.pull_request.base.sha` or `.base.ref`,
 //!   `github.base_ref`, `github.event.merge_group.base_sha`, or
 //!   `github.event.repository.default_branch`;
-//! - unset, empty, `github.sha` or `github.ref`, but only when the workflow is not triggered by
-//!   `pull_request`, `pull_request_target`, `merge_group` or `workflow_call`. Under those, these
-//!   name code the PR controls. A called workflow cannot see what calls it, so `workflow_call`
-//!   counts.
+//! - unset, empty, `github.sha` or `github.ref`, but only when every trigger of the workflow is
+//!   one that checks out the repository's own code by default (`push`, `schedule`,
+//!   `workflow_dispatch`, `issue_comment`, `workflow_run` and the like). Any other trigger, the
+//!   pull request and review triggers and `workflow_call` among them, counts as a pull request's.
+//!
+//! A checkout whose `repository:` input names anything but this repository
+//! (`${{ github.repository }}` or its name) checks out another repository's code, a fork's
+//! included, so it counts whatever its ref.
 //!
 //! Any other expression counts as a PR checkout on every trigger. A `run` script that names
-//! `refs/pull/`, runs `gh pr checkout`, or runs `git fetch`, `checkout`, `pull`, `switch` or
-//! `worktree` with `pull/` in it counts too. So does a step that uses a local composite action
+//! `refs/pull/`, runs `gh … pr … checkout`, or runs git or gh with `pull/` anywhere in it counts
+//! too. So does a step that uses a local composite action
 //! one of whose steps counts.
 //!
 //! **Secrets.** A job holds a secret when any expression in it, or in the workflow's `env`, uses
@@ -71,15 +75,41 @@ const LAB_PREFIXES: &[&str] = &[
     "lab-", "r-", "cuda-", "metal-", "hip-", "vulkan-", "rdma-", "nvme-",
 ];
 
-/// Triggers under which a checkout with no `ref`, or `github.sha` or `github.ref`, gets code a
-/// pull request controls. A called workflow (`workflow_call`) cannot see its caller's trigger, so
-/// it counts.
-const PR_TRIGGERS: &[&str] = &[
-    "pull_request",
-    "pull_request_target",
-    "merge_group",
-    "workflow_call",
+/// Triggers under which a checkout with no `ref`, or `github.sha` or `github.ref`, gets the
+/// repository's own code: a pushed commit, or the default branch. Every other trigger counts as a
+/// pull request's, the review triggers and `workflow_call` among them (a called workflow cannot
+/// see its caller's trigger), so a trigger GitHub adds later is not trusted by default.
+const OWN_CODE_TRIGGERS: &[&str] = &[
+    "push",
+    "schedule",
+    "workflow_dispatch",
+    "repository_dispatch",
+    "release",
+    "create",
+    "delete",
+    "issues",
+    "issue_comment",
+    "workflow_run",
+    "label",
+    "milestone",
+    "discussion",
+    "discussion_comment",
+    "check_run",
+    "check_suite",
+    "deployment",
+    "deployment_status",
+    "status",
+    "watch",
+    "fork",
+    "gollum",
+    "page_build",
+    "public",
+    "registry_package",
+    "branch_protection_rule",
 ];
+
+/// This repository, the one `actions/checkout`'s `repository:` input may name.
+const REPOSITORY: &str = "syntropyai-hq/syntropy";
 
 /// Checkout refs, as expressions without whitespace and in lower case, that name the base
 /// branch or the repository's own code under any trigger.
@@ -348,18 +378,16 @@ fn is_checkout(uses: &str) -> bool {
 fn checks_out_pr(step: &Yaml, pr_event: bool) -> bool {
     if let Some(run) = get(step, "run").and_then(text) {
         let run = run.to_ascii_lowercase();
-        let git = [
-            "git fetch",
-            "git checkout",
-            "git pull",
-            "git switch",
-            "git worktree",
-        ]
-        .iter()
-        .any(|command| run.contains(command));
+        // Any script that names `pull/` and runs git or gh at all counts, whatever options come
+        // between the program and its subcommand (`git -c … fetch`, `gh -R … pr checkout`).
+        let runs = |program: &str| {
+            run.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .any(|word| word == program)
+        };
+        let gh_checkout = runs("gh") && run.contains(" pr ") && run.contains("checkout");
         if run.contains("refs/pull/")
-            || run.contains("gh pr checkout")
-            || (git && run.contains("pull/"))
+            || gh_checkout
+            || ((runs("git") || runs("gh")) && run.contains("pull/"))
         {
             return true;
         }
@@ -369,6 +397,22 @@ fn checks_out_pr(step: &Yaml, pr_event: bool) -> bool {
     };
     if !is_checkout(&uses) {
         return false;
+    }
+    // Another repository's code, such as a fork's named by `workflow_run.head_repository`, is
+    // never the repository's own.
+    let repository: String = get(step, "with")
+        .and_then(|with| get(with, "repository"))
+        .and_then(text)
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if !(repository.is_empty()
+        || repository == "${{github.repository}}"
+        || repository == REPOSITORY)
+    {
+        return true;
     }
     let reference: String = get(step, "with")
         .and_then(|with| get(with, "ref"))
@@ -438,12 +482,29 @@ fn expressions(node: &Yaml, out: &mut Vec<String>) {
             let mut rest = scalar.as_str();
             while let Some(open) = rest.find("${{") {
                 let inside = &rest[open + 3..];
-                let close = inside.find("}}").unwrap_or(inside.len());
+                let close = expression_end(inside);
                 out.push(inside[..close].to_owned());
                 rest = &inside[close..];
             }
         }
     }
+}
+
+/// Where the expression that `inside` starts ends: the first `}}` outside a single-quoted string
+/// (in which `''` is a quote), or the end of the text.
+fn expression_end(inside: &str) -> usize {
+    let bytes = inside.as_bytes();
+    let mut quoted = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'\'' => quoted = !quoted,
+            b'}' if !quoted && bytes.get(at + 1) == Some(&b'}') => return at,
+            _ => {}
+        }
+        at += 1;
+    }
+    bytes.len()
 }
 
 /// The first use of the `secrets` context in `expression` other than `GITHUB_TOKEN`, in any case
@@ -559,7 +620,9 @@ pub fn check_workflow(
             "the workflow uses `pull_request_target`, which RFC-0062 §12.4 forbids",
         );
     }
-    let pr_event = on.iter().any(|event| PR_TRIGGERS.contains(&event.as_str()));
+    let pr_event = on
+        .iter()
+        .any(|event| !OWN_CODE_TRIGGERS.contains(&event.as_str()));
     let workflow_env = get(&workflow, "env");
     let lab = name == LAB_WORKFLOW;
 
