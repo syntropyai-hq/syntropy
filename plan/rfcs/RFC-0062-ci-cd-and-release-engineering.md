@@ -203,6 +203,8 @@ paths = ["docs/**", "plan/**", "*.md"]
 
 *Note, 2026-10-23 (QUAL-E1-T07).* `changes` now builds the base's `xtask` with no cache before it decides, as `ci-gate` does. Its budget of < 1 min [target] is checked against the first hosted runs.
 
+*Note, 2026-10-27 (QUAL-E1-T28).* `build-<target>` also runs rule 7 of RFC-0001 §4.2 on the core binary of its own OS, as the step `rule-7` of `cargo xtask ci build`, after the `dev` build (§12.1).
+
 #### 2.4 Platform promises to jobs
 
 | ADR-0020 row | PR | Nightly | Weekly | RC |
@@ -707,6 +709,7 @@ A new direct dependency also passes a registry check that reports its first-publ
 | RFC-0060 A6: no test features in `release` | the resolved feature set of the release build excludes `fault-injection`, `debug-taps` and `guards` |
 
 - *Revised 2026-10-22 (ADR-0022):* rule 6's allow-list gains `getrandom` → `io`. The other entries match a binding reached through any chain of external packages. `getrandom` is matched on a member's own normal and build dependencies only, because most crates reach it through the TLS stack and test crates such as `proptest`, and RFC-0001 §4.2 rule 6's note limits the rule to direct dependencies for it.
+- *Revised 2026-10-27 (QUAL-E1-T28):* rule 7 reads the core binary of each Tier 1 OS, not only Linux's. The binary is built with no default features, and every library it makes the loader load must be on that format's allow-list of system libraries, so a vendor library no list names still fails. On Linux that is the ELF `DT_NEEDED` entries. On Windows it is the PE import and delay-load directories, against the DLLs the binary imports on the hosted `windows-2025` runner and the Universal CRT's API sets. On macOS it is the `LC_LOAD_DYLIB`, `LC_LOAD_WEAK_DYLIB`, `LC_REEXPORT_DYLIB`, `LC_LAZY_LOAD_DYLIB` and `LC_LOAD_UPWARD_DYLIB` commands of every architecture of a universal file, against `libSystem`, which is what the binary loads on the hosted `macos-26` runner, and what the Metal provider links: `Metal.framework`, the frameworks beneath its binding and the Objective-C runtime, because that provider is linked into the core (RFC-0001 §4.2 rule 7). The symbol check reads `.dynsym`, the PE import name tables and the Mach-O undefined symbols. `lint` runs rule 7 with the other rules on Linux, and `build-<target>` runs it alone on each OS as the step `rule-7` of `cargo xtask ci build`. Libraries `kernels-loader` opens at run time are rule 6's, and no load command names them.
 
 #### 12.2 Licences and notices
 
