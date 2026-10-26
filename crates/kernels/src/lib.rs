@@ -10,12 +10,14 @@
 //! workspace dependency is `core`. It holds the op registry, the op types and the argument
 //! types ([`op`], RFC-0040 §3.1, §3.2, §3.5), the selection engine ([`select`], RFC-0040 §6.2,
 //! §6.4), the step descriptor with its C header, its Rust mirrors and the parity handshake
-//! ([`step`], RFC-0040 §3.5, §4.2), and the reference numerics' modes
-//! ([`reference`](mod@reference), RFC-0060 §4.1). The F32 reference semantics of every op come
+//! ([`step`], RFC-0040 §3.5, §4.2), the reference numerics' modes
+//! ([`reference`](mod@reference), RFC-0060 §4.1), and the module side of the provider-library
+//! ABI with its `export!` macro ([`abi`], RFC-0040 §10.4). The F32 reference semantics of every op come
 //! with later tasks.
 
 #![forbid(unsafe_code)]
 
+pub mod abi;
 pub mod delta_ring;
 pub mod device;
 pub mod error;

@@ -4031,6 +4031,11 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-kernels-loader"
 version = "0.0.0"
+dependencies = [
+ "smallvec",
+ "syntropy-core",
+ "syntropy-kernels",
+]
 
 [[package]]
 name = "syntropy-kernels-metal"
