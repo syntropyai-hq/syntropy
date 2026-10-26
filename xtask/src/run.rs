@@ -293,6 +293,7 @@ mod tests {
                 "toolchain",
                 "fmt",
                 "clippy",
+                "rustdoc",
                 "determinism",
                 "check-deps",
                 "properties",

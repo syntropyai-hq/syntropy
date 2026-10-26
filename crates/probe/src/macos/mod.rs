@@ -6,7 +6,7 @@
 //! `RLIMIT_MEMLOCK`, and the power source from IOKit.
 //!
 //! The calls go through a [`MacApi`], so the same code runs on the live host
-//! ([`LiveMac`], macOS only, which calls `syntropy_io::os::macos_host`) and on recorded
+//! (`LiveMac`, macOS only, which calls `syntropy_io::os::macos_host`) and on recorded
 //! responses ([`MacFixture`]). [`MacApi::sysctl`] has `sysctlbyname`'s shape, an optional new
 //! value included, so a recording fake can show that enumeration never passes one
 //! (ADR-0014: Syntropy never raises the wired limit silently).
@@ -80,7 +80,7 @@ pub struct PowerSources {
 pub trait MacApi {
     /// `sysctlbyname(name, old, new)`: returns the value's bytes (native-endian integer or
     /// NUL-terminated string), `None` for a name the kernel does not have. `new` is the value
-    /// to write; E1 always passes `None`, and [`LiveMac`] refuses anything else.
+    /// to write; E1 always passes `None`, and `LiveMac` refuses anything else.
     fn sysctl(&self, name: &str, new: Option<&[u8]>) -> io::Result<Option<Vec<u8>>>;
     /// `host_statistics64(HOST_VM_INFO64)`.
     fn vm_statistics(&self) -> io::Result<VmStats>;
