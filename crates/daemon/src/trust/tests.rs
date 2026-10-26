@@ -120,6 +120,9 @@ impl Prompt for Answers {
             .push(format!("fingerprint {node} {}", ca.fingerprint_words()));
         !self.refuse_fingerprint
     }
+    fn notice(&mut self, text: &str) {
+        self.asked.push(format!("notice {text}"));
+    }
     fn confirm_sudo(&mut self, what: &str) -> bool {
         self.asked.push(format!("sudo {what}"));
         !self.refuse_sudo
@@ -469,6 +472,51 @@ fn the_variables_are_printed_for_each_shell() {
     );
     assert!(ps.starts_with("$env:SSL_CERT_FILE = 'C:\\Users\\o''neil\\trust\\box.local.pem'\n"));
     assert_eq!(ps.lines().count(), 3);
+}
+
+/// `syntropy trust` leaves the OS's own confirmation to the user and says so first: on macOS and
+/// Windows a notice precedes each add and each removal; the stores that ask nothing get none.
+#[test]
+fn the_user_is_told_before_the_os_asks() {
+    let mut f = Fixture::new();
+    f.plan.user_stores = vec![
+        Target {
+            store: TrustStore::MacosLoginKeychain,
+            location: f.root.join("login.keychain-db"),
+        },
+        Target {
+            store: TrustStore::WindowsCurrentUserRoot,
+            location: PathBuf::from(WINDOWS_ROOT_STORE),
+        },
+        Target {
+            store: TrustStore::LinuxUserNss,
+            location: f.root.join(".pki/nssdb"),
+        },
+    ];
+    f.install("box.local", false, &ca_pem(15)).unwrap();
+    f.trust().remove("box.local").unwrap();
+    let notices: Vec<&String> = f
+        .answers
+        .asked
+        .iter()
+        .filter(|a| a.starts_with("notice"))
+        .collect();
+    assert_eq!(notices.len(), 4, "{notices:?}");
+    assert!(
+        notices[0].contains("macOS will ask you to confirm"),
+        "{notices:?}"
+    );
+    assert!(
+        notices[1].contains("Windows will ask you to confirm installing"),
+        "{notices:?}"
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|n| n.contains("Windows will ask you to confirm removing"))
+    );
+    assert_eq!(os_confirmation(TrustStore::LinuxUserNss, true), None);
+    assert_eq!(os_confirmation(TrustStore::LinuxSystemCaTrust, false), None);
 }
 
 #[test]

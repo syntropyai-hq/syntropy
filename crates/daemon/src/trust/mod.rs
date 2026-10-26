@@ -67,6 +67,35 @@ pub trait Prompt {
     /// Asks whether to run `sudo` for `what`, a change to the system store. `false` stops before
     /// anything changes.
     fn confirm_sudo(&mut self, what: &str) -> bool;
+
+    /// Tells the user something before a store change, such as that the OS is about to ask them
+    /// to confirm it ([`os_confirmation`]).
+    fn notice(&mut self, text: &str);
+}
+
+/// What the OS asks the user before `store` changes, for [`Prompt::notice`]: macOS asks to
+/// confirm a change to the user's trust settings, and Windows asks to confirm adding a root
+/// to, or removing one from, the current user's Root store. `syntropy trust` never answers
+/// these itself: the confirmation is the user's. `None` for the stores that ask nothing.
+#[must_use]
+pub fn os_confirmation(store: TrustStore, adding: bool) -> Option<&'static str> {
+    match (store, adding) {
+        (TrustStore::MacosLoginKeychain, true) => Some(
+            "macOS will ask you to confirm adding this CA to your trust settings, with your \
+             password or Touch ID",
+        ),
+        (TrustStore::MacosLoginKeychain, false) => {
+            Some("macOS may ask you to confirm removing this CA from your trust settings")
+        }
+        (TrustStore::WindowsCurrentUserRoot, true) => Some(
+            "Windows will ask you to confirm installing this CA in your Root store; check that \
+             the thumbprint it shows belongs to this certificate, then choose Yes",
+        ),
+        (TrustStore::WindowsCurrentUserRoot, false) => Some(
+            "Windows will ask you to confirm removing this CA from your Root store; choose Yes",
+        ),
+        _ => None,
+    }
 }
 
 /// A trust store on this host, and where in it.
@@ -561,6 +590,9 @@ impl<T: StoreTool, P: Prompt> Trust<'_, T, P> {
             Observed::Absent | Observed::AsPrior => {}
         }
         let id = self.ledger.begin(kind, None, None, at, self.by_version)?;
+        if let Some(text) = os_confirmation(anchor.store, true) {
+            self.prompt.notice(text);
+        }
         match self.tool.add(anchor, pem_file) {
             Ok(()) => {
                 self.ledger.applied(id)?;
@@ -602,6 +634,18 @@ impl<T: StoreTool, P: Prompt> Trust<'_, T, P> {
             ))
         {
             return Err(TrustError::SudoDeclined);
+        }
+        let mut told = Vec::new();
+        for change in self.ledger.changes() {
+            if let Some(anchor) = Anchor::of(&change.kind)
+                && is_open(change)
+                && belongs(change, &node, &pem_file)
+                && !told.contains(&anchor.store)
+                && let Some(text) = os_confirmation(anchor.store, false)
+            {
+                told.push(anchor.store);
+                self.prompt.notice(text);
+            }
         }
         let reverted = revert_where(self.ledger, &mut TrustHost::new(self.tool), |c| {
             is_open(c) && belongs(c, &node, &pem_file)
