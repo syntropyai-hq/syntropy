@@ -14,7 +14,11 @@
 //!   ([`doorbell`]), the device-triggered wake ([`wake`]), op-list capture and replay, and
 //!   health. The private `device` module holds an open device's state.
 //!
-//! The kernels come with later tasks, starting with COMP-E3-T03.
+//! - [`sme2`]: the SME2 assembly unit (COMP-E3-T07): outer-product GEMM tiles in
+//!   `src/sme2/*.S`, reachable only through an [`Sme2`] token that an `Arm92Sme2` table on an
+//!   SME2 host holds (ADR-0402 item 3).
+//!
+//! The other kernels come with later tasks, starting with COMP-E3-T03.
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
@@ -26,6 +30,7 @@ pub mod dispatch;
 pub mod doorbell;
 pub mod isa;
 pub mod provider;
+pub mod sme2;
 pub mod stream;
 pub mod wake;
 
@@ -36,5 +41,6 @@ pub use isa::{
     X86Features, X86Inputs, detect, inputs, select, table_for_class,
 };
 pub use provider::CpuProvider;
+pub use sme2::Sme2;
 pub use stream::{Parks, Run, STREAM_CAPACITY, StreamRunner};
 pub use wake::{CpuWaker, Parked};

@@ -4007,6 +4007,7 @@ dependencies = [
 name = "syntropy-kernels-cpu"
 version = "0.0.0"
 dependencies = [
+ "cc",
  "smallvec",
  "syntropy-core",
  "syntropy-io",
