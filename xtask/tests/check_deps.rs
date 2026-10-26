@@ -7,7 +7,9 @@
 //! `rule-N` breaks rule N only, and must fail with exactly that rule's findings. The fixtures
 //! depend on stand-ins in `fixtures/externals/` for external crates, and carry their own
 //! `Cargo.lock` and `ci/layers.toml`, so they resolve offline. A fixture with a core binary is
-//! built into its own directory under cargo's temporary target directory.
+//! built into its own directory under cargo's temporary target directory. Rule 7 reads the core
+//! binary of the host, so its fixtures are per OS: `rule-7`, `rule-7-cufft` and `rule-7-nccl` run
+//! on Linux, `rule-7-windows-*` on Windows and `rule-7-macos-*` on macOS (QUAL-E1-T28).
 
 use std::path::Path;
 use std::process::Command;
@@ -79,15 +81,20 @@ fn the_pass_fixture_passes() {
     assert_eq!(code, Some(0), "{lines:#?}");
     assert_eq!(findings(&lines), Vec::<&str>::new());
     let verdict = lines.iter().find(|line| line.starts_with("PASS: "));
-    if cfg!(target_os = "linux") {
-        assert_eq!(
-            verdict.map(String::as_str),
-            Some("PASS: the layer table and rules 1-10 of RFC-0001 §4.2"),
-            "{lines:#?}"
-        );
+    // Rule 7 runs on every OS (QUAL-E1-T28). Rule 10's symbol-table half reads ELF, so it runs on
+    // Linux only.
+    let expected = if cfg!(target_os = "linux") {
+        "PASS: the layer table and rules 1-10 of RFC-0001 §4.2"
     } else {
-        assert!(verdict.is_some(), "{lines:#?}");
-    }
+        "PASS: the layer table and rules 1-10 of RFC-0001 §4.2, except rule 10"
+    };
+    assert_eq!(verdict.map(String::as_str), Some(expected), "{lines:#?}");
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("rule 7 not run: ")),
+        "{lines:#?}"
+    );
 }
 
 #[test]
@@ -200,18 +207,78 @@ fn rule_7_rejects_vendor_libraries_by_allow_list() {
     );
 }
 
-#[cfg(not(target_os = "linux"))]
+/// On Windows, a DLL in the import directory that is not a system DLL fails rule 7.
+#[cfg(windows)]
 #[test]
-fn rule_7_is_reported_as_not_run_off_linux() {
-    for fixture in ["rule-7", "rule-7-cufft", "rule-7-nccl"] {
-        let (code, lines) = check(fixture);
-        assert_eq!(code, Some(0), "{fixture}: {lines:#?}");
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.starts_with("rule 7 not run: ")),
-            "{fixture}: {lines:#?}"
-        );
+fn rule_7_on_windows_an_imported_vendor_dll_fails() {
+    fails_with(
+        "rule-7-windows-import",
+        7,
+        &[
+            "imports `nvcuda.dll` from the CUDA runtime",
+            "CUDA runtime symbols in its import name tables: cuInit;",
+        ],
+    );
+}
+
+/// On Windows, a DLL in the delay-load directory counts as an import does.
+#[cfg(windows)]
+#[test]
+fn rule_7_on_windows_a_delay_loaded_vendor_dll_fails() {
+    fails_with(
+        "rule-7-windows-delay",
+        7,
+        &[
+            "delay-loads `vulkan-1.dll` from the Vulkan runtime",
+            "Vulkan runtime symbols in its import name tables: vkCreateInstance;",
+        ],
+    );
+}
+
+/// On macOS, a library outside the system ones fails rule 7.
+#[cfg(target_os = "macos")]
+#[test]
+fn rule_7_on_macos_a_vendor_dylib_fails() {
+    fails_with(
+        "rule-7-macos-vulkan",
+        7,
+        &[
+            "loads `@rpath/libvulkan.1.dylib` from the Vulkan runtime",
+            "Vulkan runtime symbols in its undefined symbols: vkCreateInstance;",
+        ],
+    );
+}
+
+/// On macOS, the Metal provider is linked into the core, so `Metal.framework` and the system
+/// frameworks beneath its binding pass rule 7.
+#[cfg(target_os = "macos")]
+#[test]
+fn rule_7_on_macos_metal_and_system_frameworks_pass() {
+    let (code, lines) = check("rule-7-macos-metal");
+    assert_eq!(code, Some(0), "{lines:#?}");
+    assert_eq!(findings(&lines), Vec::<&str>::new());
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("rule 7 not run: ")),
+        "{lines:#?}"
+    );
+}
+
+/// Each fixture that builds for one OS only names that OS in its manifest's first line, and has
+/// a test above that runs it there.
+#[test]
+fn each_os_fixture_of_rule_7_names_its_os() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for (fixture, os) in [
+        ("rule-7-windows-import", "Windows"),
+        ("rule-7-windows-delay", "Windows"),
+        ("rule-7-macos-vulkan", "macOS"),
+        ("rule-7-macos-metal", "macOS"),
+    ] {
+        let manifest = std::fs::read_to_string(fixtures.join(fixture).join("Cargo.toml")).unwrap();
+        let first = manifest.lines().next().unwrap_or_default();
+        assert!(first.contains(&format!("on {os},")), "{fixture}: {first}");
     }
 }
 

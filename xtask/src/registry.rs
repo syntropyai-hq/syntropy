@@ -24,8 +24,8 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    changes, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom, plan_tools,
-    properties, repo_settings, sim_presets, toolchain,
+    changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom,
+    plan_tools, properties, repo_settings, sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -569,10 +569,22 @@ pub const JOBS: &[Entry] = &[
         params: &[],
         // Until the `pr` profile exists, the PR build is the `dev` profile, which the hosted
         // tests use too.
-        steps: &[Step {
-            name: "dev",
-            action: Action::Xtask(&["build", "--profile", "dev"]),
-        }],
+        steps: &[
+            Step {
+                name: "dev",
+                action: Action::Xtask(&["build", "--profile", "dev"]),
+            },
+            // Rule 7 on this OS's core binary, built with no default features (RFC-0062 §12.1,
+            // QUAL-E1-T28). `lint` runs it with the other rules, on Linux only.
+            Step {
+                name: "rule-7",
+                action: Action::Builtin {
+                    shown: "rule 7 of RFC-0001 §4.2: the core binary, built with no default \
+                            features, loads only system libraries",
+                    run: check_deps::rule_7_step,
+                },
+            },
+        ],
         pending: &[Pending {
             check: "the `pr` profile build, in place of the `dev` build",
             task: "QUAL-E16-T21",
@@ -999,8 +1011,8 @@ mod tests {
             let entry = find(JOBS, job).expect("the build jobs are registered");
             let commands: Vec<String> = entry.steps.iter().map(|s| s.action.display()).collect();
             assert_eq!(
-                commands,
-                [format!("cargo xtask build --profile {profile}")],
+                commands[0],
+                format!("cargo xtask build --profile {profile}"),
                 "{job}"
             );
             assert!(
@@ -1008,8 +1020,13 @@ mod tests {
                 "{job}: no profile `{profile}`"
             );
         }
-        // `build` names the profile that replaces `dev`.
+        let release = find(JOBS, "build-test-release").unwrap();
+        assert_eq!(release.steps.len(), 1);
+        // `build-<os>` checks rule 7 on each OS's core binary (QUAL-E1-T28).
         let build = find(JOBS, "build").unwrap();
+        let steps: Vec<&str> = build.steps.iter().map(|s| s.name).collect();
+        assert_eq!(steps, ["dev", "rule-7"]);
+        // `build` names the profile that replaces `dev`.
         let tasks: Vec<&str> = build.pending.iter().map(|p| p.task).collect();
         assert_eq!(tasks, ["QUAL-E16-T21"]);
     }
