@@ -208,7 +208,14 @@ pub fn check(toolchains: &str, dockerfile: &str, arch_sets: &str) -> Vec<String>
                 ("cmake.sha256".into(), t.linux.cmake.sha256.clone()),
                 (
                     "cuda.release".into(),
-                    format!("CUDA {}", t.linux.cuda.release),
+                    format!(
+                        "CUDA_PATH=/usr/local/cuda-{}",
+                        t.linux
+                            .cuda
+                            .release
+                            .rsplit_once('.')
+                            .map_or("", |(minor, _)| minor)
+                    ),
                 ),
             ];
             for c in &t.linux.cuda.component {
@@ -218,14 +225,22 @@ pub fn check(toolchains: &str, dockerfile: &str, arch_sets: &str) -> Vec<String>
                     format!("-{}-archive", c.version),
                 ));
             }
+            // Only the Dockerfile's instructions and its syntax line count: a pin named in a comment is
+            // not applied.
+            let instructions: String = dockerfile
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('#') || l.starts_with("# syntax="))
+                .collect::<Vec<_>>()
+                .join("\n");
             for (what, text) in wants {
-                if !dockerfile.contains(&text) {
+                if !instructions.contains(&text) {
                     problems.push(format!(
                         "{}: does not carry the pin `{what}` ({text})",
                         i.dockerfile
                     ));
                 }
             }
+            // The base's Ubuntu release fixes the glibc; the header comment names the floor.
             if !dockerfile.contains(&format!("glibc {}", i.glibc)) {
                 problems.push(format!("{}: does not name glibc {}", i.dockerfile, i.glibc));
             }
@@ -278,6 +293,69 @@ pub fn step(context: &Context) -> Result<(), String> {
     } else {
         Err(problems.join("\n"))
     }
+}
+
+/// The problems in `printed`, the output of `nvcc --version`, then the first lines of `cmake
+/// --version`, `g++ --version` and `ldd --version`, against `pins`: each pinned version must be
+/// in the line of its tool.
+fn version_problems(printed: &str, pins: &Toolchains) -> Vec<String> {
+    let nvcc = pins
+        .linux
+        .cuda
+        .component
+        .iter()
+        .find(|c| c.name == "cuda_nvcc")
+        .map(|c| c.version.as_str());
+    let wants = [
+        (
+            "nvcc",
+            "Cuda compilation tools",
+            nvcc.map(|v| format!(", V{v}")),
+        ),
+        (
+            "cmake",
+            "cmake version",
+            Some(format!("cmake version {}", pins.linux.cmake.version)),
+        ),
+        (
+            "g++",
+            "g++ (",
+            Some(format!(
+                ") {}",
+                pins.linux.compiler.gxx.split('-').next().unwrap_or("")
+            )),
+        ),
+        (
+            "glibc",
+            "ldd (",
+            Some(format!(") {}", pins.linux.image.glibc)),
+        ),
+    ];
+    let mut problems = Vec::new();
+    for (tool, marker, want) in wants {
+        let Some(want) = want else {
+            problems.push(format!(
+                "{TOOLCHAINS}: no `cuda_nvcc` component to check `{tool}` against"
+            ));
+            continue;
+        };
+        match printed.lines().find(|l| l.contains(marker)) {
+            None => problems.push(format!("`{tool}` printed no version line")),
+            Some(line) if !line.contains(&want) => {
+                problems.push(format!(
+                    "`{tool}` prints `{line}`, but the pin needs `{want}`"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    if let Some(line) = printed.lines().find(|l| l.contains("g++ (")) {
+        let full = &pins.linux.compiler.gxx;
+        if !line.contains(full) {
+            problems.push(format!("`g++` prints `{line}`, but the pin needs `{full}`"));
+        }
+    }
+    problems
 }
 
 /// The build, twice, and the tools it must carry: `cargo xtask ci toolchains-linux`.
@@ -346,18 +424,33 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
         tag,
         &dir.display().to_string(),
     ])?;
-    docker(&[
-        "run",
-        "--rm",
-        "--platform",
-        "linux/amd64",
-        tag,
-        "sh",
-        "-c",
-        "nvcc --version && cmake --version | head -1 && g++ --version | head -1 && ldd --version | head -1",
-    ])?;
+    let run = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--platform",
+            "linux/amd64",
+            tag,
+            "sh",
+            "-c",
+            "nvcc --version && cmake --version | head -1 && g++ --version | head -1 && ldd --version | head -1",
+        ])
+        .output()
+        .map_err(|e| format!("could not start `docker run`: {e}"))?;
+    if !run.status.success() {
+        return Err(format!("the version print failed: {}", run.status));
+    }
+    let printed = String::from_utf8_lossy(&run.stdout);
+    eprintln!("{printed}");
     fs::remove_dir_all(&work).ok();
-    Ok(())
+    docker(&["image", "rm", tag]).ok();
+    let problems = version_problems(&printed, &pins);
+    if problems.is_empty() {
+        eprintln!("toolchains-linux: nvcc, cmake, g++ and glibc match ci/toolchains.toml");
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
 }
 
 #[cfg(test)]
@@ -374,6 +467,51 @@ mod tests {
         )
     }
 
+    /// What the image printed on 2026-10-26 (the `toolchains-linux` run in the PR description).
+    const PRINTED: &str = "nvcc: NVIDIA (R) Cuda compiler driver
+Cuda compilation tools, release 13.4, V13.4.92
+Build cuda_13.4.r13.4/compiler.38855100_0
+cmake version 4.4.4
+g++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+ldd (Ubuntu GLIBC 2.35-0ubuntu3.15) 2.35
+";
+
+    fn pins() -> Toolchains {
+        toml::from_str(&real().0).expect("pins parse")
+    }
+
+    #[test]
+    fn the_printed_versions_match_the_pins() {
+        assert_eq!(version_problems(PRINTED, &pins()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_version_that_differs_from_its_pin_is_named() {
+        let cmake = PRINTED.replace("cmake version 4.4.4", "cmake version 4.4.3");
+        let problems = version_problems(&cmake, &pins());
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("cmake"), "{problems:?}");
+        let nvcc = PRINTED.replace("V13.4.92", "V13.4.91");
+        assert!(version_problems(&nvcc, &pins())[0].contains("nvcc"));
+        let gxx = PRINTED.replace("22.04.3", "22.04.2");
+        assert!(
+            version_problems(&gxx, &pins())
+                .iter()
+                .any(|p| p.contains("g++"))
+        );
+        let glibc = PRINTED.replace(" 2.35\n", " 2.39\n");
+        assert!(version_problems(&glibc, &pins())[0].contains("glibc"));
+    }
+
+    #[test]
+    fn a_tool_that_printed_nothing_is_named() {
+        let none = PRINTED.replace("cmake version 4.4.4\n", "");
+        assert_eq!(
+            version_problems(&none, &pins()),
+            ["`cmake` printed no version line"]
+        );
+    }
+
     #[test]
     fn the_checked_in_files_agree() {
         let (t, d, a) = real();
@@ -386,6 +524,21 @@ mod tests {
         let problems = check(&t, &d.replace("20261020T000000Z", "20261021T000000Z"), &a);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("apt_snapshot"), "{problems:?}");
+    }
+
+    #[test]
+    fn a_pin_named_only_in_a_comment_is_not_applied() {
+        let (t, d, a) = real();
+        let line = d
+            .lines()
+            .find(|l| l.contains("ARG APT_SNAPSHOT="))
+            .expect("snapshot line");
+        let commented = d.replace(line, &format!("# {line}"));
+        let problems = check(&t, &commented, &a);
+        assert!(
+            problems.iter().any(|p| p.contains("apt_snapshot")),
+            "{problems:?}"
+        );
     }
 
     #[test]
