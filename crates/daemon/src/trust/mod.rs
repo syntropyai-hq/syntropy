@@ -455,9 +455,14 @@ impl<T: StoreTool, P: Prompt> Trust<'_, T, P> {
             return Err(TrustError::SudoDeclined);
         }
 
-        let superseded = revert_where(self.ledger, &mut TrustHost::new(self.tool), |c| {
+        let superseded_by = |c: &HostChange| {
             is_open(c) && belongs(c, &node, &pem_file) && stale(c, &ca, pem.as_bytes())
-        })?;
+        };
+        let superseded = if self.ledger.changes().iter().any(superseded_by) {
+            revert_where(self.ledger, &mut TrustHost::new(self.tool), superseded_by)?
+        } else {
+            Vec::new()
+        };
 
         self.write_pem(&pem_file, pem.as_bytes(), at)?;
 
