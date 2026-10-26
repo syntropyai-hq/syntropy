@@ -459,6 +459,149 @@ fn no_transport_connecting_reports_every_attempt() {
         ]
     );
     assert_eq!(tcp.tries(), 0, "no connect without a spec");
+    assert_eq!(
+        error.class(),
+        ErrorClass::Link,
+        "every candidate failed: the edge is down"
+    );
+}
+
+/// An `Auth` refusal or a cancellation ends the fallback, from the connect or from building the
+/// spec: no other transport is tried, and the error keeps the class (RFC-0001 §10.1 never
+/// retries `Auth` automatically).
+#[test]
+fn an_auth_refusal_or_a_cancellation_ends_the_fallback() {
+    let candidates = candidates();
+    for error in [
+        Error::new(ErrorCode::CREDENTIAL_INVALID, "bad credential"),
+        Error::new(ErrorCode::NOT_A_NEIGHBOUR, "not a neighbour"),
+        Error::uncoded(ErrorClass::Cancelled, "the caller left"),
+    ] {
+        let rdma = TestTransport::new(TB5, Connect::Refuse(error.clone()));
+        let quic = TestTransport::new(TransportKind::Quic, Connect::Accept);
+        let clock = Clock::new();
+        let failure = run(connect_hop(
+            &choice(&candidates),
+            &[&rdma, &quic],
+            &remote(),
+            spec_for,
+            clock.sleep(),
+        ))
+        .err()
+        .expect("the fallback stops");
+        assert_eq!(
+            failure.attempts,
+            [(TB5, AttemptFailure::Failed(error.clone()))]
+        );
+        assert_eq!(failure.class(), error.class);
+        assert_eq!(quic.tries(), 0, "no other transport is tried");
+
+        let rdma = TestTransport::new(TB5, Connect::Accept);
+        let quic = TestTransport::new(TransportKind::Quic, Connect::Accept);
+        let refused = |t: &dyn AnyTransport| {
+            if t.kind() == TB5 {
+                Err(error.clone())
+            } else {
+                spec_for(t)
+            }
+        };
+        let failure = run(connect_hop(
+            &choice(&candidates),
+            &[&rdma, &quic],
+            &remote(),
+            refused,
+            clock.sleep(),
+        ))
+        .err()
+        .expect("the fallback stops");
+        assert_eq!(
+            failure.attempts,
+            [(TB5, AttemptFailure::Failed(error.clone()))]
+        );
+        assert_eq!(failure.class(), error.class);
+        assert_eq!((rdma.tries(), quic.tries()), (0, 0));
+    }
+}
+
+/// The planned transport goes first even when another candidate costs less: a plan naming QUIC
+/// on a hop that also has Thunderbolt 5 RDMA keeps QUIC when it connects, and moves to RDMA, the
+/// cheapest other candidate, only when QUIC fails.
+#[test]
+fn the_planned_transport_goes_first_even_when_another_costs_less() {
+    let candidates = candidates();
+    let quic_planned = HopChoice {
+        link: link(NetMedium::Ethernet),
+        planned: TransportKind::Quic,
+        ..choice(&candidates)
+    };
+    let rdma = TestTransport::new(TB5, Connect::Accept);
+    let quic = TestTransport::new(TransportKind::Quic, Connect::Accept);
+    let clock = Clock::new();
+    let hop = run(connect_hop(
+        &quic_planned,
+        &[&rdma, &quic],
+        &remote(),
+        spec_for,
+        clock.sleep(),
+    ))
+    .unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(hop.transport, TransportKind::Quic);
+    assert_eq!(hop.demoted, None);
+    assert_eq!((quic.tries(), rdma.tries()), (1, 0));
+
+    let rdma = TestTransport::new(TB5, Connect::Accept);
+    let quic = TestTransport::new(
+        TransportKind::Quic,
+        Connect::Refuse(Error::new(ErrorCode::CONNECT_TIMEOUT, "no route")),
+    );
+    let hop = run(connect_hop(
+        &quic_planned,
+        &[&rdma, &quic],
+        &remote(),
+        spec_for,
+        clock.sleep(),
+    ))
+    .unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(hop.transport, TB5);
+    assert_eq!(
+        hop.demoted.map(|(d, _)| (d.from, d.to)),
+        Some((TransportKind::Quic, TB5))
+    );
+    assert_eq!((quic.tries(), rdma.tries()), (1, 1));
+}
+
+/// A configured `link.p99_weight` ranks the candidates and prices the demotion: with no weight on
+/// the tail, TCP's lower median puts it before QUIC; at the default, its long tail puts it after.
+#[test]
+fn a_configured_p99_weight_ranks_the_candidates_and_prices_the_demotion() {
+    let mut candidates = candidates();
+    candidates[2].alpha = measured(Nanos(140_000), Nanos(900_000), MeasureSource::Startup);
+    let (quic_caps, tcp_caps) = (candidates[1].clone(), candidates[2].clone());
+    let cost = |c: &LinkCaps, weight| link_cost(c, DECODE, &Objective::Latency, weight);
+    assert!(cost(&tcp_caps, Some(0.0)) < cost(&quic_caps, Some(0.0)));
+    assert!(cost(&quic_caps, None) < cost(&tcp_caps, None));
+    for (weight, expected, caps) in [
+        (Some(0.0), TransportKind::Tcp, &tcp_caps),
+        (None, TransportKind::Quic, &quic_caps),
+    ] {
+        let quic = TestTransport::new(TransportKind::Quic, Connect::Accept);
+        let tcp = TestTransport::new(TransportKind::Tcp, Connect::Accept);
+        let clock = Clock::new();
+        let weighted = HopChoice {
+            p99_weight: weight,
+            ..choice(&candidates)
+        };
+        let hop = run(connect_hop(
+            &weighted,
+            &[&quic, &tcp],
+            &remote(),
+            spec_for,
+            clock.sleep(),
+        ))
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(hop.transport, expected, "p99_weight {weight:?}");
+        assert_eq!(hop.demoted.map(|(_, c)| c), Some(cost(caps, weight)));
+    }
 }
 
 /// `Transport::cost` is `core`'s `link_cost` at `link.p99_weight`'s default.

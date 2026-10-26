@@ -16,7 +16,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use syntropy_core::resource::{Demotion, LinkCaps, TransportKind, candidate_order, link_cost};
-use syntropy_core::{Bytes, LinkId, Nanos, Objective};
+use syntropy_core::{Bytes, ErrorClass, LinkId, Nanos, Objective};
 
 use super::{Channel, ChannelSpec, RemoteEndpoint, Transport};
 use crate::error::Error;
@@ -103,12 +103,35 @@ pub struct HopError {
     pub attempts: Vec<(TransportKind, AttemptFailure)>,
 }
 
+impl HopError {
+    /// The class RFC-0001 §10.1 handles the failure as. When an attempt ended the fallback, which
+    /// is then the last attempt, it is that error's class: `Auth` or `Cancelled`. Otherwise every
+    /// candidate failed, so the hop's edge is down: `Link`, which `net` and then the coordinator
+    /// handle, re-planning once `link.failover_timeout` has passed.
+    pub fn class(&self) -> ErrorClass {
+        match self.attempts.last() {
+            Some((_, AttemptFailure::Failed(error))) if ends_fallback(error) => error.class,
+            _ => ErrorClass::Link,
+        }
+    }
+}
+
+/// Whether a failure ends the fallback, with no other transport tried. RFC-0001 §10.1 never
+/// retries `Auth` automatically, and connecting the same peer over another transport would be
+/// such a retry. `Cancelled` means the caller stopped waiting. Every other class is a fault of
+/// the one transport, or of the spec built for it (a slot larger than its frame limit, say),
+/// which the declared transport degrade path (RFC-0001 §10.2) exists for.
+fn ends_fallback(error: &Error) -> bool {
+    matches!(error.class, ErrorClass::Auth | ErrorClass::Cancelled)
+}
+
 /// Connects one hop (RFC-0031 §3, runtime fallback).
 ///
 /// The planned transport goes first. If this host has no backend for it, or it fails, or it does
 /// not connect within `link.connect_timeout`, the other candidates follow in [`candidate_order`]:
 /// the measured ones by `cost_t` at the decode frame size, then the unmeasured ones by rank. Each
-/// transport kind is tried once. `transports` are this host's backends; `spec_for` builds the
+/// transport kind is tried once. An `Auth` or `Cancelled` failure ends the fallback at once
+/// ([`HopError::class`] says which). `transports` are this host's backends; `spec_for` builds the
 /// channel spec for one of them, registering the hop's pool with it; `sleep` is the clock, a
 /// future that completes after the duration.
 pub async fn connect_hop<S, F>(
@@ -143,14 +166,24 @@ where
         let spec = match spec_for(transport) {
             Ok(spec) => spec,
             Err(error) => {
+                let stop = ends_fallback(&error);
                 attempts.push((kind, AttemptFailure::Failed(error)));
+                if stop {
+                    return Err(HopError { attempts });
+                }
                 continue;
             }
         };
         let connect = transport.connect_boxed(remote, spec);
         match within(connect, sleep(choice.connect_timeout)).await {
             None => attempts.push((kind, AttemptFailure::TimedOut)),
-            Some(Err(error)) => attempts.push((kind, AttemptFailure::Failed(error))),
+            Some(Err(error)) => {
+                let stop = ends_fallback(&error);
+                attempts.push((kind, AttemptFailure::Failed(error)));
+                if stop {
+                    return Err(HopError { attempts });
+                }
+            }
             Some(Ok(channel)) => {
                 let demoted = (kind != choice.planned).then(|| demotion(choice, kind));
                 return Ok(HopConnection {
