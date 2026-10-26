@@ -218,7 +218,8 @@ pub(crate) fn check(key: &Key, bytes: u64, actual: &str, len: u64) -> Result<(),
 
 /// Publishes `file` under its BLAKE3 with `licence_file` beside it, returning the hash and
 /// length. A missing or empty licence file is refused before anything is written. The licence
-/// goes in first, so an object is never visible without its licence.
+/// goes in first, so an object is never visible without its licence. An object already in the
+/// store under that hash is kept as it is, not read again; `verify` is what checks the store.
 pub fn publish(
     store: &dyn Store,
     prefix: Prefix,

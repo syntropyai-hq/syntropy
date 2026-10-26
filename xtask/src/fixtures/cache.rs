@@ -16,6 +16,9 @@ use std::time::{Duration, SystemTime};
 use super::hash_file;
 use super::store::{Error, Key, Store, check};
 
+/// One process uses a cache directory at a time; concurrent runners need separate directories.
+/// Eviction happens before a download is verified, so a fetch that fails the integrity check can
+/// leave the cache emptier than it was.
 pub struct Cache {
     dir: PathBuf,
     cap: u64,
