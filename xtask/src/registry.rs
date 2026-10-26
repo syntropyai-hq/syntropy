@@ -127,6 +127,15 @@ impl Action {
             }
             Action::CargoWith { env, args } => {
                 let mut command = Command::new(cargo());
+                // Cargo prefers `CARGO_ENCODED_RUSTFLAGS` and `CARGO_ENCODED_RUSTDOCFLAGS` to the
+                // plain variables, even when they are empty, so an inherited one would replace the
+                // flags this step sets (`-D warnings` for rustdoc). Clear the encoded form of each
+                // flags variable the step sets.
+                for (name, _) in *env {
+                    if *name == "RUSTFLAGS" || *name == "RUSTDOCFLAGS" {
+                        command.env_remove(format!("CARGO_ENCODED_{name}"));
+                    }
+                }
                 command.envs(env.iter().copied()).args(*args);
                 Some(command)
             }
@@ -228,8 +237,8 @@ pub const JOBS: &[Entry] = &[
                 ]),
             },
             // Rustdoc with every warning an error, so a broken or ambiguous intra-doc link fails
-            // a PR (RFC-0062 §2.3, note 2026-10-22; QUAL-E1-T31). After clippy, whose check
-            // builds of the dependencies it reuses.
+            // a PR (RFC-0062 §2.3, note 2026-10-22; QUAL-E1-T31). It rebuilds the dependencies'
+            // metadata for rustdoc rather than reusing clippy's, about 30 s on a hosted runner.
             Step {
                 name: "rustdoc",
                 action: RUSTDOC,
@@ -1098,16 +1107,29 @@ mod tests {
         let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
         assert_eq!(
             env,
-            [(
-                std::ffi::OsStr::new("RUSTDOCFLAGS"),
-                Some(std::ffi::OsStr::new("-D warnings"))
-            )]
+            [
+                (std::ffi::OsStr::new("CARGO_ENCODED_RUSTDOCFLAGS"), None),
+                (
+                    std::ffi::OsStr::new("RUSTDOCFLAGS"),
+                    Some(std::ffi::OsStr::new("-D warnings"))
+                )
+            ]
         );
         let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
         assert_eq!(args, ["doc", "--workspace", "--no-deps", "--locked"]);
         assert_eq!(
             RUSTDOC.display(),
             "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps --locked"
+        );
+    }
+
+    #[test]
+    fn the_rustdoc_step_clears_an_inherited_encoded_flags_variable() {
+        let command = RUSTDOC.command().unwrap();
+        let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        assert!(
+            env.contains(&(std::ffi::OsStr::new("CARGO_ENCODED_RUSTDOCFLAGS"), None)),
+            "{env:?}"
         );
     }
 
