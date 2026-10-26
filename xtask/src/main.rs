@@ -44,6 +44,7 @@ mod roster;
 mod run;
 mod sim_presets;
 mod toolchain;
+mod toolchains;
 
 use std::ffi::OsString;
 use std::io::{self, Write};

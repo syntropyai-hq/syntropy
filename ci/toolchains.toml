@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The pinned build toolchains of RFC-0062 §4.2 for the Linux build image and the Tier 1 hosted
+# environments (QUAL-E16-T24). Rust is pinned in `rust-toolchain.toml`, not here.
+#
+# `lint`'s `toolchains` step checks this file's schema, and that the Linux pins appear in
+# `ci/images/cuda-13/Dockerfile`, so the two cannot drift apart. A checksum is the SHA-256 the
+# publisher lists: NVIDIA's `redistrib_13.4.3.json` and Kitware's `cmake-4.4.4-SHA-256.txt`.
+#
+# A pin whose value cannot be known before the environment runs carries `verified = false` and no
+# value: the Windows MSVC toolset and the macOS Xcode and Metal compiler come with the hosted
+# runner image. The version-print job reports what each runner has (RFC-0062 §4.1); a later change
+# pins it from that report.
+
+format = 1
+
+[linux.image]
+dockerfile = "ci/images/cuda-13/Dockerfile"
+base = "ubuntu:jammy-20260930@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956"
+syntax = "docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e"
+apt_snapshot = "20261020T000000Z"
+# 2026-10-20T00:00:00Z, the snapshot's own time.
+source_date_epoch = 1792454400
+# ADR-0020's floor.
+glibc = "2.35"
+
+[linux.compiler]
+gxx = "11.4.0-1ubuntu1~22.04.3"
+
+[linux.cmake]
+version = "4.4.4"
+sha256 = "e5bb807f7728cb60cd8b27ebc97a2edb469b68655f21e844a600c3575b76f5bb"
+
+[linux.cuda]
+release = "13.4.3"
+
+[[linux.cuda.component]]
+name = "cuda_nvcc"
+version = "13.4.92"
+sha256 = "60998f40cc9df5826b2a846e2dcc328133fbc5ef539398ce0a21cf5dcac7193d"
+
+[[linux.cuda.component]]
+name = "cuda_crt"
+version = "13.4.92"
+sha256 = "c969e61ded12dbf0cf20ace72867f1622ec0e8ea1e1d305e27761012025f7aaa"
+
+[[linux.cuda.component]]
+name = "libnvvm"
+version = "13.4.92"
+sha256 = "0e619cf3d5b27f7c812665599ca9761fc296e56129b24a85d822a5d8a1a3bd75"
+
+[[linux.cuda.component]]
+name = "cuda_cudart"
+version = "13.4.92"
+sha256 = "0ac5dbc538d04e9983bc493b410cce4b459e1ee9f5f6654b6464ef7b3e14a8b5"
+
+[[linux.cuda.component]]
+name = "cccl"
+version = "13.3.4.3.1"
+sha256 = "6b7516074f42f80dd3feb9c11318c8e1c5ab56cdd9f18fff4c5ace2e7e0a8209"
+
+[windows.cmake]
+version = "4.4.4"
+sha256 = "bace36e94b31c68ab6fa295f26dfa11219e0701cf7c94b0284a7d1cb13dac536"
+
+[windows.cuda]
+release = "13.4.3"
+
+[[windows.cuda.component]]
+name = "cuda_nvcc"
+version = "13.4.92"
+sha256 = "23950047aa5405993129a982a99924b4e6d5eb9bc312300030f3afd9b3b49ea4"
+
+[[windows.cuda.component]]
+name = "cuda_crt"
+version = "13.4.92"
+sha256 = "a38e3aa75e259128a1c7fb46e706182e4babca407cd3f3c447d21ab7fb14c7fd"
+
+[[windows.cuda.component]]
+name = "libnvvm"
+version = "13.4.92"
+sha256 = "64fa39ad6332d6c40a02115d64827272f6befbc86e50568254f44d37d924e10b"
+
+[[windows.cuda.component]]
+name = "cuda_cudart"
+version = "13.4.92"
+sha256 = "621a70c4778287b1abf8c27c61b841d797fda2aeff01033374dd19624bcfa249"
+
+[[windows.cuda.component]]
+name = "cccl"
+version = "13.3.4.3.1"
+sha256 = "17d0ca1592c0dfc974a5fc39f470a6b7bae40da239e3e19bd0752017735acbca"
+
+[windows.msvc]
+verified = false
+
+[macos.cmake]
+version = "4.4.4"
+sha256 = "4b7b73704b1db9b374e5c9ab8e17ac6148b817b6396ee75cd94a852cbac9d305"
+
+[macos.xcode]
+verified = false
+
+[macos.metal]
+verified = false

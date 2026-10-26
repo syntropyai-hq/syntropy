@@ -308,6 +308,7 @@ mod tests {
                 "notices",
                 "scenarios",
                 "sim-presets",
+                "toolchains",
                 "jobs",
                 "plan",
             ]

@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:fb6411af5533ff8e"
+jobs_toml = "fnv1a:f4ffe4ce911147ae"
 
 [[golden]]
 name = "plan only"
@@ -559,9 +559,17 @@ hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
 [[golden]]
+name = "toolchain pins"
+source = "constructed: the pins file alone, as a CUDA bump edits it (QUAL-E16-T24)"
+paths = ["ci/toolchains.toml"]
+jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
 name = "CUDA image"
 source = "constructed: a CUDA toolchain image alone; none exists yet"
 paths = ["ci/images/cuda-12/Dockerfile"]
-jobs = ["build", "hosted-test", "lint"]
+jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
