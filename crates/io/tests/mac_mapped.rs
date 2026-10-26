@@ -23,12 +23,12 @@ const BLOCK: u64 = 16384;
 #[derive(Clone)]
 struct Block([u8; BLOCK as usize]);
 
-/// The conformance harness over a generated 8 MiB file, on an engine with `threads` workers
-/// built on the harness's thread.
 /// How long a test waits for completions before it fails [target]. A wait ends as soon as the
 /// completions arrive, so the budget costs nothing when they do.
 const DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The conformance harness over a generated 8 MiB file, on an engine with `threads` workers
+/// built on the harness's thread.
 fn conformance_run(name: &str, threads: usize) -> Report {
     let dir = std::env::temp_dir();
     let pid = std::process::id();
