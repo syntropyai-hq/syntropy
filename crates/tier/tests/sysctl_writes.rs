@@ -45,23 +45,60 @@ fn production_sources() -> Vec<PathBuf> {
     files
 }
 
-/// `text` up to its unit-test module: everything from a top-level `#[cfg(test)]` that opens a
-/// `mod` is test code, which is no code path in the sense of RFC-0020 §9.1. The daemon's host-change
-/// ledger, for one, names the sysctl only in its tests' fixtures.
-fn production_part(text: &str) -> &str {
-    let mut at = 0;
-    while let Some(found) = text[at..].find("\n#[cfg(test)]\n") {
-        let start = at + found + 1;
-        let after = text[start + "#[cfg(test)]\n".len()..].trim_start();
-        if after.starts_with("mod ")
-            || after.starts_with("pub mod ")
-            || after.starts_with("pub(crate) mod ")
-        {
-            return &text[..start];
+/// `code` (already through [`code_only`]) with every `#[cfg(test)]` module left out: a
+/// `mod x;` declaration up to its `;`, and a `mod x { … }` up to its matching brace. Test modules
+/// are no code path in the sense of RFC-0020 §9.1 (the daemon's host-change ledger, for one, names
+/// the sysctl only in its tests' fixtures); everything around them is still scanned, and a
+/// `#[cfg(test)]` function or constant is not a module, so it stays.
+fn without_test_modules(code: &str) -> String {
+    let b = code.as_bytes();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    while let Some(found) = code[i..].find("#[cfg(test)]") {
+        let attr = i + found;
+        let after = attr + "#[cfg(test)]".len();
+        let item = code[after..].trim_start();
+        let item_at = code.len() - item.len();
+        let is_mod = ["mod ", "pub mod ", "pub(crate) mod ", "pub(super) mod "]
+            .iter()
+            .any(|p| item.starts_with(p));
+        if !is_mod {
+            out.push_str(&code[i..after]);
+            i = after;
+            continue;
         }
-        at = start + 1;
+        out.push_str(&code[i..attr]);
+        // The item ends at the first `;` or at the brace matching its first `{`.
+        let mut j = item_at;
+        let mut depth = 0usize;
+        while j < b.len() {
+            match b[j] {
+                b'"' => {
+                    j += 1;
+                    while j < b.len() && b[j] != b'"' {
+                        j += if b[j] == b'\\' { 2 } else { 1 };
+                    }
+                }
+                b';' if depth == 0 => {
+                    j += 1;
+                    break;
+                }
+                b'{' => depth += 1,
+                b'}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        j += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        i = j.min(b.len());
     }
-    text
+    out.push_str(&code[i..]);
+    out
 }
 
 /// `text` with every comment blanked out, string and char literals kept, so a call or a name
@@ -155,7 +192,7 @@ fn call_args(text: &str, open: usize) -> Vec<String> {
 fn every_sysctlbyname_call_only_reads() {
     let mut calls = 0;
     for path in production_sources() {
-        let text = code_only(production_part(&std::fs::read_to_string(&path).unwrap()));
+        let text = without_test_modules(&code_only(&std::fs::read_to_string(&path).unwrap()));
         for (at, _) in text.match_indices("sysctlbyname(") {
             let before = &text[..at];
             // The declaration, not a call.
@@ -269,7 +306,7 @@ fn no_other_write_form_appears() {
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        let text = code_only(production_part(&std::fs::read_to_string(&path).unwrap()));
+        let text = without_test_modules(&code_only(&std::fs::read_to_string(&path).unwrap()));
         found.extend(write_forms(&shown, &text));
     }
     assert!(
@@ -346,16 +383,28 @@ fn each_rule_finds_its_planted_form() {
     );
 }
 
-/// A file's unit-test module is cut off before the scan, and a `#[cfg(test)]` item that is not a
-/// module, such as one function, is not.
+/// A file's test modules are left out of the scan, and nothing else is: code after a `mod tests;`
+/// declaration, after a closed inline test module and after a `#[cfg(test)]` helper module is
+/// still scanned, and a `#[cfg(test)]` item that is not a module stays (review of #1822, B1).
 #[test]
-fn test_modules_are_not_production_code() {
-    let file = "fn real() {}\n#[cfg(test)]\nfn helper() {}\nconst X: u8 = 1;\n#[cfg(test)]\nmod tests {\n    const N: &str = \"iogpu.wired_limit_mb\";\n}\n";
-    let part = production_part(file);
+fn only_test_modules_are_left_out() {
+    let file = "#[cfg(test)]\nmod tests;\nfn a() { libc::sysctl(m) }\n\
+                #[cfg(test)]\nmod inline {\n    const N: &str = \"iogpu.wired_limit_mb}\";\n    fn f() { if x { y } }\n}\n\
+                fn b() { libc::sysctl(n) }\n\
+                #[cfg(test)]\npub(crate) mod build { fn g() {} }\nfn c() { libc::sysctl(o) }\n\
+                #[cfg(test)]\nfn helper() {}\n";
+    let kept = without_test_modules(&code_only(file));
+    for still in ["fn a()", "fn b()", "fn c()", "fn helper()"] {
+        assert!(kept.contains(still), "{still} dropped: {kept}");
+    }
     assert!(
-        part.contains("fn helper()") && part.contains("const X"),
-        "{part}"
+        !kept.contains("iogpu") && !kept.contains("fn f()") && !kept.contains("fn g()"),
+        "{kept}"
     );
-    assert!(!part.contains("iogpu"), "{part}");
-    assert_eq!(production_part("fn a() {}\n"), "fn a() {}\n");
+    assert_eq!(write_forms("x/src/lib.rs", &kept).len(), 3, "{kept}");
+    // A test module only a comment mentions starts no skip.
+    let commented = without_test_modules(&code_only(
+        "// #[cfg(test)] mod t {\nfn d() { libc::sysctl(p) }\n",
+    ));
+    assert!(commented.contains("fn d()"), "{commented}");
 }
