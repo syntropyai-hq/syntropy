@@ -1,0 +1,13 @@
+# Completion records for the tasks marked **Maintainer action** in the epic files
+# (ADR-0021 decision 4). `cargo xtask maintainer-actions` shows each task as open until it has a
+# record here, and `cargo xtask ci lint` refuses a record without evidence.
+#
+# One table per completed task:
+#
+#   [[completed]]
+#   task = "QUAL-E1-T26"
+#   by = "alice"                  # a login in governance/maintainers.toml
+#   date = "2026-11-02"           # YYYY-MM-DD
+#   evidence = "..."              # a ceremony record, a rig inventory entry or a link
+#
+# Only a maintainer adds a record: `governance/` is code-owned.
