@@ -4,7 +4,12 @@
 //! and its delay-load directory, and the names it imports from them.
 //!
 //! It reads PE32 and PE32+ files through the section table. Every offset is bounds-checked, so a
-//! truncated or malformed file is an error, never a panic.
+//! truncated or malformed file is an error, never a panic. The work is linear in the file's size:
+//! lookup-table entries and name bytes are read against budgets that a real binary, whose tables
+//! and names do not overlap, stays well inside, so a crafted file whose tables all point at the
+//! same entries is an error, not quadratic time and memory.
+
+use std::cell::Cell;
 
 /// What the Windows loader sees of a binary.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -29,6 +34,9 @@ const IMPORT_ENTRY: u64 = 20;
 const DELAY_ENTRY: u64 = 32;
 /// A delay-load entry whose `Attributes` lack this bit holds virtual addresses, not RVAs.
 const DELAY_RVA_BASED: u32 = 1;
+/// The name bytes a file may make the reader copy, beyond its own size: room for a linker that
+/// shares the tail of one name with another.
+const NAME_SLACK: u64 = 1 << 20;
 
 /// Reads the import and delay-load directories of the PE file `bytes`. A file without them gives
 /// an empty [`Imports`].
@@ -80,6 +88,11 @@ struct Pe<'a> {
     directories: u64,
     directory_count: u32,
     sections: Vec<Section>,
+    /// The lookup-table entries still to be read: one per 4 bytes of file, since the tables of a
+    /// real binary do not overlap.
+    entries_left: Cell<u64>,
+    /// The name bytes still to be copied: twice the file's size plus [`NAME_SLACK`].
+    name_bytes_left: Cell<u64>,
 }
 
 struct Section {
@@ -101,6 +114,8 @@ impl<'a> Pe<'a> {
             directories: 0,
             directory_count: 0,
             sections: Vec::new(),
+            entries_left: Cell::new(bytes.len() as u64 / 4 + 64),
+            name_bytes_left: Cell::new(2 * bytes.len() as u64 + NAME_SLACK),
         };
         let header = u64::from(pe.u32(0x3c)?);
         if pe.bytes_at::<4>(header)? != *b"PE\0\0" {
@@ -159,14 +174,15 @@ impl<'a> Pe<'a> {
         self.bytes_at(at).map(u64::from_le_bytes)
     }
 
-    /// The RVA of data directory `index`, or `None` when the binary has none.
+    /// The RVA of data directory `index`, or `None` when the binary has none. Only the address
+    /// counts: the loader walks the import tables to their terminating entry and does not read the
+    /// size, so a directory with an address and a size of 0 is still read.
     fn directory(&self, index: u32) -> Result<Option<u32>, String> {
         if index >= self.directory_count {
             return Ok(None);
         }
-        let at = self.directories + u64::from(index) * 8;
-        let (address, size) = (self.u32(at)?, self.u32(at + 4)?);
-        Ok((address != 0 && size != 0).then_some(address))
+        let address = self.u32(self.directories + u64::from(index) * 8)?;
+        Ok((address != 0).then_some(address))
     }
 
     /// An upper bound on the entries of a table, so a table with no terminating entry ends.
@@ -217,6 +233,11 @@ impl<'a> Pe<'a> {
             .iter()
             .position(|byte| *byte == 0)
             .ok_or("a name has no terminating NUL")?;
+        let left = self.name_bytes_left.get();
+        let Some(left) = left.checked_sub(length as u64 + 1) else {
+            return Err("the import names overlap more than a linked binary's can".to_owned());
+        };
+        self.name_bytes_left.set(left);
         String::from_utf8(tail[..length].to_vec()).map_err(|_| "a name is not UTF-8".to_owned())
     }
 
@@ -226,6 +247,12 @@ impl<'a> Pe<'a> {
         let entry: u64 = if self.wide { 8 } else { 4 };
         let table = self.offset(rva)?;
         for index in 0..self.max_entries(entry) {
+            let Some(left) = self.entries_left.get().checked_sub(1) else {
+                return Err(
+                    "the import lookup tables overlap more than a linked binary's can".into(),
+                );
+            };
+            self.entries_left.set(left);
             let at = table.saturating_add(index * entry);
             let (value, by_ordinal) = if self.wide {
                 let value = self.u64(at)?;
@@ -467,6 +494,54 @@ mod tests {
                 let _ = read(&corrupted);
             }
         }
+    }
+
+    /// A crafted file whose import entries all share one long lookup table would take quadratic
+    /// time and memory; the entry budget makes it an error, at once.
+    #[test]
+    fn import_tables_that_all_share_one_table_are_an_error() {
+        let many: Vec<String> = (0..1000).map(|i| format!("f{i}")).collect();
+        let many: Vec<Option<&str>> = many.iter().map(|name| Some(name.as_str())).collect();
+        let names: Vec<String> = (0..300).map(|i| format!("d{i}.dll")).collect();
+        let mut dlls = vec![Dll {
+            name: "a.dll",
+            imports: &many,
+        }];
+        dlls.extend(names.iter().map(|name| Dll {
+            name,
+            imports: &[Some("g")],
+        }));
+        let mut file = build(true, &dlls, &[], true);
+        assert_eq!(read(&file).unwrap().symbols.len(), 1300);
+        // Point every entry's lookup table at the first DLL's.
+        let pe = Pe::new(&file).unwrap();
+        let table = pe
+            .offset(pe.directory(IMPORT_DIRECTORY).unwrap().unwrap())
+            .unwrap() as usize;
+        let first: [u8; 4] = file[table..table + 4].try_into().unwrap();
+        for index in 1..dlls.len() {
+            let at = table + index * IMPORT_ENTRY as usize;
+            file[at..at + 4].copy_from_slice(&first);
+        }
+        let started = std::time::Instant::now();
+        let error = read(&file).unwrap_err();
+        assert!(error.contains("overlap"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// The loader reads an import directory by its address alone, so a size of 0 must not hide
+    /// the DLLs it names.
+    #[test]
+    fn an_import_directory_with_a_size_of_0_is_still_read() {
+        let mut file = build(true, &[kernel32(), nvcuda()], &[vulkan()], true);
+        let directories = Pe::new(&file).unwrap().directories;
+        for index in [IMPORT_DIRECTORY, DELAY_IMPORT_DIRECTORY] {
+            let size = (directories + u64::from(index) * 8 + 4) as usize;
+            file[size..size + 4].copy_from_slice(&[0; 4]);
+        }
+        let imports = read(&file).unwrap();
+        assert_eq!(imports.dlls, ["KERNEL32.dll", "nvcuda.dll"]);
+        assert_eq!(imports.delayed, ["vulkan-1.dll"]);
     }
 
     /// The test binary itself is a PE file on Windows, and imports the Windows kernel.

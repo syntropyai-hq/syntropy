@@ -6,7 +6,12 @@
 //!
 //! It reads 32- and 64-bit files of either byte order, and universal ("fat") files, whose
 //! architectures it reads in turn. Every offset is bounds-checked, so a truncated or malformed
-//! file is an error, never a panic.
+//! file is an error, never a panic. The work is linear in the file's size: names are deduplicated
+//! through sets, and the string bytes copied are held to a budget that a real binary, whose names
+//! do not overlap, stays well inside.
+
+use std::cell::Cell;
+use std::collections::BTreeSet;
 
 /// What the dynamic loader sees of a binary, over every architecture of a universal file.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -84,6 +89,16 @@ pub fn is_mach_o(bytes: &[u8]) -> bool {
         || [MH_MAGIC, MH_MAGIC_64, FAT_MAGIC, FAT_MAGIC_64].contains(&big)
 }
 
+/// The string bytes a file may make the reader copy, beyond twice its own size.
+const NAME_SLACK: u64 = 1 << 20;
+
+/// What a read has already listed, so each library and symbol is listed once in linear time.
+#[derive(Default)]
+struct Seen {
+    dylibs: BTreeSet<(String, &'static str)>,
+    symbols: BTreeSet<String>,
+}
+
 /// Reads the load commands and undefined symbols of the Mach-O file `bytes`.
 pub fn read(bytes: &[u8]) -> Result<Loads, String> {
     let magic = bytes
@@ -92,10 +107,14 @@ pub fn read(bytes: &[u8]) -> Result<Loads, String> {
         .map(u32::from_be_bytes)
         .ok_or("not a Mach-O file")?;
     let mut loads = Loads::default();
+    let mut seen = Seen::default();
+    // The string bytes the read may still copy.
+    let budget = Cell::new(2 * bytes.len() as u64 + NAME_SLACK);
     if magic == FAT_MAGIC || magic == FAT_MAGIC_64 {
         let fat = Reader {
             bytes,
             little: false,
+            name_bytes_left: &budget,
         };
         let count = fat.u32(4)?;
         if count > MAX_ARCHITECTURES {
@@ -115,16 +134,22 @@ pub fn read(bytes: &[u8]) -> Result<Loads, String> {
                     bytes.get(usize::try_from(offset).ok()?..usize::try_from(end).ok()?)
                 })
                 .ok_or_else(|| format!("architecture {index} lies outside the file"))?;
-            thin(slice, &mut loads).map_err(|error| format!("architecture {index}: {error}"))?;
+            thin(slice, &mut loads, &mut seen, &budget)
+                .map_err(|error| format!("architecture {index}: {error}"))?;
         }
     } else {
-        thin(bytes, &mut loads)?;
+        thin(bytes, &mut loads, &mut seen, &budget)?;
     }
     Ok(loads)
 }
 
 /// Reads one architecture's file into `loads`.
-fn thin(bytes: &[u8], loads: &mut Loads) -> Result<(), String> {
+fn thin(
+    bytes: &[u8],
+    loads: &mut Loads,
+    seen: &mut Seen,
+    budget: &Cell<u64>,
+) -> Result<(), String> {
     let raw: [u8; 4] = bytes
         .get(..4)
         .and_then(|raw| raw.try_into().ok())
@@ -136,7 +161,11 @@ fn thin(bytes: &[u8], loads: &mut Loads) -> Result<(), String> {
         (_, MH_MAGIC_64) => (true, false),
         _ => return Err("not a Mach-O file".to_owned()),
     };
-    let file = Reader { bytes, little };
+    let file = Reader {
+        bytes,
+        little,
+        name_bytes_left: budget,
+    };
     let count = file.u32(16)?;
     let size = u64::from(file.u32(20)?);
     let start: u64 = if wide { 32 } else { 28 };
@@ -157,20 +186,26 @@ fn thin(bytes: &[u8], loads: &mut Loads) -> Result<(), String> {
                 return Err(format!("a {} names no library", command.name()));
             }
             let name = file.string(at + offset, at + cmdsize)?;
-            let dylib = Dylib { name, command };
-            if !loads.dylibs.contains(&dylib) {
-                loads.dylibs.push(dylib);
+            if seen.dylibs.insert((name.clone(), command.name())) {
+                loads.dylibs.push(Dylib { name, command });
             }
         } else if cmd == LC_SYMTAB {
-            symbols(&file, at, wide, &mut loads.symbols)?;
+            symbols(&file, at, wide, &mut loads.symbols, &mut seen.symbols)?;
         }
         at += cmdsize;
     }
     Ok(())
 }
 
-/// Appends the undefined external symbols of the `LC_SYMTAB` command at `at` to `names`.
-fn symbols(file: &Reader, at: u64, wide: bool, names: &mut Vec<String>) -> Result<(), String> {
+/// Appends the undefined external symbols of the `LC_SYMTAB` command at `at` to `names`, each one
+/// not yet in `seen`.
+fn symbols(
+    file: &Reader,
+    at: u64,
+    wide: bool,
+    names: &mut Vec<String>,
+    seen: &mut BTreeSet<String>,
+) -> Result<(), String> {
     let table = u64::from(file.u32(at + 8)?);
     let count = u64::from(file.u32(at + 12)?);
     let strings = u64::from(file.u32(at + 16)?);
@@ -190,7 +225,7 @@ fn symbols(file: &Reader, at: u64, wide: bool, names: &mut Vec<String>) -> Resul
         }
         let name = file.string(start, strings_end)?;
         let name = name.strip_prefix('_').map(str::to_owned).unwrap_or(name);
-        if !name.is_empty() && !names.contains(&name) {
+        if !name.is_empty() && seen.insert(name.clone()) {
             names.push(name);
         }
     }
@@ -200,6 +235,8 @@ fn symbols(file: &Reader, at: u64, wide: bool, names: &mut Vec<String>) -> Resul
 struct Reader<'a> {
     bytes: &'a [u8],
     little: bool,
+    /// The string bytes the read may still copy, shared by every architecture.
+    name_bytes_left: &'a Cell<u64>,
 }
 
 impl Reader<'_> {
@@ -240,6 +277,10 @@ impl Reader<'_> {
             .iter()
             .position(|byte| *byte == 0)
             .unwrap_or(range.len());
+        let Some(left) = self.name_bytes_left.get().checked_sub(length as u64 + 1) else {
+            return Err("the names overlap more than a linked binary's can".to_owned());
+        };
+        self.name_bytes_left.set(left);
         String::from_utf8(range[..length].to_vec()).map_err(|_| "a name is not UTF-8".to_owned())
     }
 }
@@ -441,6 +482,30 @@ mod tests {
             read(&nested).unwrap_err(),
             "architecture 0 lies outside the file"
         );
+    }
+
+    /// A crafted file whose symbols all name one long string would copy it once per symbol; the
+    /// string budget makes that an error, at once.
+    #[test]
+    fn symbols_that_all_name_one_long_string_are_an_error() {
+        let long = "x".repeat(50_000);
+        let short: Vec<String> = (0..2000).map(|i| format!("s{i}")).collect();
+        let undefined: Vec<&str> = std::iter::once(long.as_str())
+            .chain(short.iter().map(String::as_str))
+            .collect();
+        let mut file = executable(true, true, &[], &undefined);
+        assert_eq!(read(&file).unwrap().symbols.len(), 2001);
+        // The symbol table follows the header and the one `LC_SYMTAB` command; the long name's
+        // string starts at offset 2 of the string table.
+        let symtab = 32 + 24;
+        for index in 0..undefined.len() {
+            let at = symtab + index * 16;
+            file[at..at + 4].copy_from_slice(&2u32.to_le_bytes());
+        }
+        let started = std::time::Instant::now();
+        let error = read(&file).unwrap_err();
+        assert!(error.contains("overlap"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

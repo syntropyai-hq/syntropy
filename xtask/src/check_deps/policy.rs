@@ -213,8 +213,8 @@ pub const LOADER_PREFIX: &str = "ld-linux";
 /// The list is what the core binary, built with no default features for `x86_64-pc-windows-msvc`,
 /// imports on the hosted `windows-2025` runner (QUAL-E1-T28): the Windows kernel (`kernel32`,
 /// `ntdll`, and the API set of the wait-on-address calls the standard library's locks use) and the
-/// Visual C++ runtime. Rule 7 rejects every other DLL but the Universal CRT's API sets
-/// ([`WINDOWS_CRT_API_SETS`]). A DLL added here must ship with every supported Windows, or with
+/// Visual C++ runtime. Rule 7 rejects every other DLL but the Universal CRT's API sets on
+/// [`WINDOWS_CRT_API_SETS`]. A DLL added here must ship with every supported Windows, or with
 /// the Visual C++ runtime, never a vendor GPU runtime (ADR-0018 decision 5), and the change needs a
 /// maintainer's review.
 pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
@@ -224,17 +224,27 @@ pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
     "vcruntime140.dll",
 ];
 
-/// Rule 7: the prefix of the Universal CRT's API sets, such as
-/// `api-ms-win-crt-runtime-l1-1-0.dll`. Which of them a binary imports follows from the C runtime
-/// functions it calls, and every one ships with Windows 10 and later, so the prefix is allowed
-/// rather than each name.
-pub const WINDOWS_CRT_API_SETS: &str = "api-ms-win-crt-";
+/// Rule 7: the Universal CRT's API sets the core binary may import, compared without case. The
+/// list is the six the core binary imports on the hosted `windows-2025` runner (QUAL-E1-T28,
+/// `llvm-readobj --coff-imports`). Every Universal CRT set ships with Windows 10 and later, but
+/// only these are allowed, so a dependency that pulls in another one, such as `time`, fails rule 7
+/// until a maintainer adds it here, as for [`WINDOWS_SYSTEM_LIBRARIES`].
+pub const WINDOWS_CRT_API_SETS: &[&str] = &[
+    "api-ms-win-crt-heap-l1-1-0.dll",
+    "api-ms-win-crt-locale-l1-1-0.dll",
+    "api-ms-win-crt-math-l1-1-0.dll",
+    "api-ms-win-crt-runtime-l1-1-0.dll",
+    "api-ms-win-crt-stdio-l1-1-0.dll",
+    "api-ms-win-crt-string-l1-1-0.dll",
+];
 
 /// Rule 7: the libraries the core binary may load on macOS, by install name. `libSystem` is what
 /// the core binary, built with no default features, loads on the hosted `macos-26` runner
-/// (QUAL-E1-T28). `libobjc` is the Objective-C runtime, which the Metal provider's binding
-/// (`objc2-metal`, RFC-0040 §7.2) calls; that provider is linked into the core (RFC-0001 §4.2
-/// rule 7). Rule 7 rejects every other library but [`MACOS_FRAMEWORKS`]. A library added here must
+/// (QUAL-E1-T28). `libobjc` is the Objective-C runtime, which the Metal provider's planned
+/// Objective-C binding (`objc2-metal`, RFC-0040 §7.2) calls; that provider is linked into the core
+/// (RFC-0001 §4.2 rule 7). No Metal provider is built yet, so `libobjc` and [`MACOS_FRAMEWORKS`]
+/// are a forecast from that binding, not a measurement: re-derive both from the real binary when
+/// COMP-E6-T01 lands it, and drop any entry it does not load. Rule 7 rejects every other library but [`MACOS_FRAMEWORKS`]. A library added here must
 /// ship with every supported macOS, never a vendor GPU runtime (ADR-0018 decision 5), and the
 /// change needs a maintainer's review.
 pub const MACOS_SYSTEM_LIBRARIES: &[&str] =
@@ -242,9 +252,11 @@ pub const MACOS_SYSTEM_LIBRARIES: &[&str] =
 
 /// Rule 7: the system frameworks the core binary may load on macOS, by name: `Metal` matches
 /// `/System/Library/Frameworks/Metal.framework/Versions/A/Metal`. The Metal provider is linked into
-/// the core, and its binding needs `Metal`, `Foundation` and `CoreFoundation` beneath it, and
-/// `CoreGraphics`, without which `MTLCreateSystemDefaultDevice` finds no device on macOS
-/// (RFC-0040 §7.2). The same review rule as [`MACOS_SYSTEM_LIBRARIES`] applies.
+/// the core, and its binding calls `MTLCreateSystemDefaultDevice` from `Metal` (RFC-0040 §7.2).
+/// `Foundation` and `CoreFoundation` are the frameworks an Objective-C binding's object types
+/// come from, and `CoreGraphics` is the one `MTLCreateSystemDefaultDevice` needs linked to find a
+/// device on macOS. RFC-0040 names only the binding and that call, so the three are a forecast, as
+/// [`MACOS_SYSTEM_LIBRARIES`] says. The same review rule applies.
 pub const MACOS_FRAMEWORKS: &[&str] = &["Metal", "Foundation", "CoreFoundation", "CoreGraphics"];
 
 /// Where the system frameworks live.
@@ -421,10 +433,7 @@ pub fn is_dll(dll: &str, stem: &str) -> bool {
 pub fn is_windows_system_library(dll: &str) -> bool {
     let lower = dll.to_ascii_lowercase();
     WINDOWS_SYSTEM_LIBRARIES.contains(&lower.as_str())
-        || lower
-            .strip_prefix(WINDOWS_CRT_API_SETS)
-            .and_then(|rest| rest.strip_suffix(".dll"))
-            .is_some_and(|set| !set.is_empty())
+        || WINDOWS_CRT_API_SETS.contains(&lower.as_str())
 }
 
 /// Whether the install name `name` is the dynamic library with stem `stem`: its last path
@@ -629,6 +638,8 @@ mod tests {
             "kernel32.dll.evil.dll",
             "kernel32",
             "api-ms-win-crt-.dll",
+            "api-ms-win-crt-evil-l1-1-0.dll",
+            "api-ms-win-crt-time-l1-1-0.dll",
             "api-ms-win-core-file-l1-1-0.dll",
             "bcryptprimitives.dll",
             "libc.so.6",

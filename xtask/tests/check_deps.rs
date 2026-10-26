@@ -263,6 +263,25 @@ fn rule_7_on_macos_metal_and_system_frameworks_pass() {
             .any(|line| line.starts_with("rule 7 not run: ")),
         "{lines:#?}"
     );
+    // The pass means something only if the binary really loads what the allow-list allows.
+    let binary =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join("check-deps/rule-7-macos-metal/debug/syntropy");
+    let output = Command::new("otool")
+        .arg("-L")
+        .arg(&binary)
+        .output()
+        .expect("otool runs");
+    let loads = String::from_utf8(output.stdout).expect("UTF-8 output");
+    for library in [
+        "/System/Library/Frameworks/Metal.framework/",
+        "/System/Library/Frameworks/Foundation.framework/",
+        "/System/Library/Frameworks/CoreFoundation.framework/",
+        "/System/Library/Frameworks/CoreGraphics.framework/",
+        "/usr/lib/libobjc.A.dylib",
+        "/usr/lib/libSystem.B.dylib",
+    ] {
+        assert!(loads.contains(library), "{library} not in:\n{loads}");
+    }
 }
 
 /// Each fixture that builds for one OS only names that OS in its manifest's first line, and has
