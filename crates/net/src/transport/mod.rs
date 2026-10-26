@@ -31,6 +31,7 @@ pub mod conformance;
 pub mod core;
 pub mod domain;
 pub mod landing;
+pub mod pacing;
 pub mod quic;
 pub mod registration;
 pub mod select;

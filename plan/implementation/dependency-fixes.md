@@ -1150,3 +1150,14 @@ The review of #1811 (review-1474's N2) found that DIST-E14-T15 (M3) builds the c
 | DIST-E7-T10 gains "a demotion of either cause, `RepeatedFaults` from this task's fault count or `ConnectFailed` from DIST-E7-T11's `connect_hop`, reaches the coordinator as `ReportEdgeDemoted` and is applied as `EdgeDemoted`"; no new edge | DIST-E7-T10 | Definition of done | nothing showed a `ConnectFailed` demotion reaching the coordinator. DIST-E7-T10 already depends on DIST-E7-T11 and DIST-E14-T22, so its test can raise both causes and check both arrive (review-plan3's N2 on #1832) |
 | DIST-E4-T13 → DIST-E14-T01 | DIST-E4-T13 | R9 | its criterion asserts that a planned restart raises no `RecoveryStarted`, which DIST-E14-T01 raises. M3 → M2, with no cycle (review-plan3's N1 on #1832) |
 | `DriftTerm::Bandwidth` gains `scheme: QuantScheme`, and DIST-E14-T21 → COMP-E13-T01 | DIST-E14-T21 | R9 | RFC-0010 §7.2's rule runs per observed quantity, and §6.2's W_eff estimator is keyed by (device, tier, class, scheme), so the term names the scheme that drifted. `QuantScheme` is COMP-E13-T01's (M0a), which DIST-E14-T21 did not reach |
+
+## DIST-E7-T25: bulk pacing in the real backends, and the rig check moved there (2026-10-23)
+
+DIST-E7-T13 builds the bulk pacer (`net::transport::pacing`) and paces the simulator's bulk sends. Nothing in it paces a real transport, so its rig criterion could not run even on a rig. Its independent review (issuecomment-6352911884) found that no row paced the TCP fallback's bulk channels either, and that QUAL-E13-T10, which measures the data hop under bulk, reached the pacing only through COMP-E12-T05. These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T25 (M2) → DIST-E7-T13, DIST-E7-T03, DIST-E7-T05 | DIST-E7-T25 | R9 | the pacer in the QUIC backend's bulk connection and the TCP fallback, each with a loopback test; it needs the pacer and both backends |
+| DIST-E7-T13's rig criterion, "a 10 GB blob transfer on the same 2.5 GbE edge as a live ring keeps the hop's p99 within 1.2 × its idle p99", moves to DIST-E7-T25; DIST-E7-T13 keeps simulator criteria | DIST-E7-T13, DIST-E7-T25 | R9 | the rig run needs pacing in a real backend, which DIST-E7-T25 is the first task to build |
+| DIST-E11-T13 → DIST-E7-T25; COMP-E12-T05 → DIST-E7-T25; QUAL-E13-T10 → DIST-E7-T25 | DIST-E11-T13, COMP-E12-T05, QUAL-E13-T10 | R9 | each sends bulk on, or measures the data hop under bulk on, a real transport: KV migration, peer chunk serving, and `net.hop.p99_under_bulk`. QUAL-E13-T10's edge, once reached only through COMP-E12-T05, is now explicit. M3 → M2 and M2 → M2, so no `LATER` and no cycle |
+
