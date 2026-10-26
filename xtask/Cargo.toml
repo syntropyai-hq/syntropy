@@ -20,3 +20,6 @@ proc-macro2 = { workspace = true, features = ["span-locations"] }
 # TOML: the repository's cargo config, which the `determinism` step reads, and the manifests of
 # non-member path crates, which `dep-diff` reads itself (#1692).
 toml.workspace = true
+# BLAKE3 for the fixture store: every object is addressed and verified by it (QUAL-E7-T05,
+# RFC-0060 §12.3). The workspace's version and features.
+blake3.workspace = true
