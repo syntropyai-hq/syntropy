@@ -7,10 +7,12 @@
 //! | Tag | Record |
 //! |---|---|
 //! | `0x01` | data: the payload is accepted as is |
-//! | `0x02` | a declared size: a 4-byte little-endian size, at most [`MAX_DECLARED`], which the parser allocates, as a format with a size field does |
+//! | `0x02` | a declared size: a 4-byte little-endian size of the data that follows the record, which the parser allocates, as a format with a size field does |
 //!
-//! [`parse`] is the correct parser: a truncated record is `Integrity`, an unknown tag or an
-//! oversized declaration is `InvalidRequest`. [`parse_planted`] is the same parser with three
+//! [`parse`] is the correct parser. It checks a declared size against the bytes that follow
+//! before it allocates (RFC-0060 §10.2), so a size larger than them is `Integrity`, and it
+//! accepts one declaration per input: a second is `InvalidRequest`. A truncated record is
+//! `Integrity`, and an unknown tag is `InvalidRequest`. [`parse_planted`] is the same parser with three
 //! planted defects, each set off by its own tag, so a test can show the harness reports each:
 //! `0xF0` panics, `0xF1` holds 8 MiB it never declares, and `0xF2` rejects the input as
 //! `Internal`.
@@ -25,8 +27,6 @@ use super::Accepted;
 pub const DATA: u8 = 0x01;
 /// The declared-size record's tag.
 pub const DECLARE: u8 = 0x02;
-/// The largest size a declaration may give.
-pub const MAX_DECLARED: u32 = 64 << 20;
 /// The planted panic's tag.
 pub const PLANTED_PANIC: u8 = 0xF0;
 /// The planted over-allocation's tag.
@@ -60,13 +60,17 @@ fn parse_with(input: &[u8], planted: bool) -> Result<Accepted, ErrorClass> {
         match *tag {
             DATA => {}
             DECLARE => {
-                let size: [u8; 4] = payload.try_into().map_err(|_| ErrorClass::Integrity)?;
-                let size = u32::from_le_bytes(size);
-                if size > MAX_DECLARED {
+                if declared.is_some() {
                     return Err(ErrorClass::InvalidRequest);
                 }
+                let size: [u8; 4] = payload.try_into().map_err(|_| ErrorClass::Integrity)?;
+                let size = u64::from(u32::from_le_bytes(size));
+                // Checked against what follows before anything is allocated.
+                if size > next.len() as u64 {
+                    return Err(ErrorClass::Integrity);
+                }
                 held.push(vec![0u8; size as usize]);
-                declared = Some(u64::from(size));
+                declared = Some(size);
             }
             PLANTED_PANIC if planted => panic!("planted panic in the fixture parser"),
             PLANTED_OVER_ALLOCATION if planted => held.push(vec![1u8; PLANTED_BYTES]),

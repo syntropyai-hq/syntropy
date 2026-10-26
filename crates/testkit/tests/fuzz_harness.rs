@@ -81,18 +81,79 @@ fn the_planted_internal_rejection_is_reported() {
     );
 }
 
-/// A size the format declares raises the bound: the same 8 MiB that fails undeclared passes
-/// when a record declares it, bookkeeping included.
+/// A size the format declares, checked against the input, raises the bound: a parse that holds
+/// that much beyond the default allowance passes when it declares it and fails when it does not.
 #[test]
 fn a_declared_size_raises_the_bound() {
-    let input = record(DECLARE, &(PLANTED_BYTES as u32).to_le_bytes());
-    assert_eq!(Properties::default().check(&input, fixture::parse), Ok(()));
-    // The clean parser treats a planted tag as unknown, so it passes as InvalidRequest.
-    let planted = record(fixture::PLANTED_OVER_ALLOCATION, &[]);
+    let input = vec![0u8; 1 << 20];
+    let default = Properties::default().allocation_bound(input.len(), None) as usize;
+    let holds = |declared: Option<u64>| {
+        move |input: &[u8]| {
+            let held = vec![1u8; default + input.len() / 2];
+            std::hint::black_box(&held);
+            Ok(Accepted { declared })
+        }
+    };
+    let half = (input.len() / 2) as u64 + 4096;
     assert_eq!(
-        Properties::default().check(&planted, fixture::parse),
+        Properties::default().check(&input, holds(Some(half))),
         Ok(())
     );
+    let undeclared = Properties::default()
+        .check(&input, holds(None))
+        .unwrap_err();
+    assert!(
+        matches!(&undeclared[..], [Violation::OverAllocation { .. }]),
+        "{undeclared:?}"
+    );
+}
+
+/// A declared size larger than the input is reported: the parser trusted a size field it never
+/// checked (review of #1886, B2).
+#[test]
+fn a_declared_size_larger_than_the_input_is_reported() {
+    let violations = Properties::default()
+        .check(b"x", |_| Ok(Accepted::declaring(u64::MAX)))
+        .unwrap_err();
+    assert_eq!(
+        violations,
+        [Violation::UncheckedDeclaredSize {
+            declared: u64::MAX,
+            len: 1
+        }]
+    );
+}
+
+/// The correct fixture parser keeps every property on inputs that once made it over-allocate:
+/// two declarations, a declaration then an unknown tag, and a declaration then a lone byte
+/// (review of #1886, B1). A declaration larger than what follows is rejected before it allocates.
+#[test]
+fn the_correct_parser_checks_declarations_before_allocating() {
+    let size = |n: u32| n.to_le_bytes();
+    let mut two = record(DECLARE, &size(64 << 20));
+    two.extend(record(DECLARE, &size(64 << 20)));
+    let mut unknown = record(DECLARE, &size(64 << 20));
+    unknown.extend([0x7f, 0]);
+    let mut lone = record(DECLARE, &size(64 << 20));
+    lone.push(DATA);
+    for input in [two, unknown, lone] {
+        assert_eq!(
+            Properties::default().check(&input, fixture::parse),
+            Ok(()),
+            "{input:?}"
+        );
+        assert_eq!(
+            fixture::parse(&input),
+            Err(ErrorClass::Integrity),
+            "{input:?}"
+        );
+    }
+    let mut fits = record(DECLARE, &size(3));
+    fits.extend(record(DATA, b"a"));
+    assert_eq!(fixture::parse(&fits), Ok(Accepted::declaring(3)));
+    let mut second = record(DECLARE, &size(0));
+    second.extend(record(DECLARE, &size(0)));
+    assert_eq!(fixture::parse(&second), Err(ErrorClass::InvalidRequest));
 }
 
 #[test]

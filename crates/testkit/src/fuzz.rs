@@ -10,7 +10,9 @@
 //!   most 4 × the input's length + 1 MiB, plus the size the format declares, if it declares one
 //!   ([`Accepted::declared`]). The declared size is added to the allowance rather than replacing
 //!   it, because a parser that allocates exactly what its format declares still needs a little
-//!   for its own structures. §10.2's "total allocation" is read as that peak: the bytes live at
+//!   for its own structures. A declared size larger than the input is itself a violation: §10.2
+//!   has declared sizes checked against the input before anything is allocated, so a parser that
+//!   reports one has trusted an unchecked size field; §10.2's "total allocation" is read as that peak: the bytes live at
 //!   once beyond what was live when the parse began, as [`CountingAlloc`] tracks them
 //!   ([`peak_bytes_this_thread`]). A parser that frees as it goes is held to what it keeps;
 //! - **bounded time:** a parse that returns after more than 1 s is reported. A parse that never
@@ -85,6 +87,9 @@ pub enum Violation {
     TooSlow { elapsed: Duration, limit: Duration },
     /// The parse rejected the input with a class §10.2 does not allow.
     Rejection { class: ErrorClass },
+    /// The parse accepted a declared size larger than the input: §10.2 has declared sizes checked
+    /// against the actual input or file length before anything is allocated.
+    UncheckedDeclaredSize { declared: u64, len: u64 },
 }
 
 impl fmt::Display for Violation {
@@ -100,6 +105,11 @@ impl fmt::Display for Violation {
                 "the parse took {} ms, over its limit of {} ms",
                 elapsed.as_millis(),
                 limit.as_millis()
+            ),
+            Violation::UncheckedDeclaredSize { declared, len } => write!(
+                f,
+                "the parse accepted a declared size of {declared} bytes from a {len}-byte input; \
+                 a declared size is checked against the input before it is allocated"
             ),
             Violation::Rejection { class } => write!(
                 f,
@@ -156,7 +166,20 @@ impl Properties {
 
         let mut violations = Vec::new();
         let declared = match outcome {
-            Ok(Ok(accepted)) => accepted.declared,
+            Ok(Ok(accepted)) => {
+                // A declared size no larger than the input is one the parser checked; a larger one
+                // is a size field it trusted, which is what this property exists to catch.
+                match accepted.declared {
+                    Some(declared) if declared > input.len() as u64 => {
+                        violations.push(Violation::UncheckedDeclaredSize {
+                            declared,
+                            len: input.len() as u64,
+                        });
+                        None
+                    }
+                    declared => declared,
+                }
+            }
             Ok(Err(class)) => {
                 if !ALLOWED_CLASSES.contains(&class) {
                     violations.push(Violation::Rejection { class });
