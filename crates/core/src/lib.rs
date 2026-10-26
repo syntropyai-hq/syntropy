@@ -34,7 +34,7 @@ pub use clock::{Clock, MonoTime};
 pub use det_hash::{DetHashMap, DetHashSet, DetHasher, DetState};
 pub use dtype::{DType, GgmlType};
 pub use entropy::Entropy;
-pub use error::ErrorClass;
+pub use error::{Domain, ErrorClass, ErrorCode};
 pub use ids::{
     Blake3, DeviceId, Endpoint, ExpertIx, GraphVersion, InstanceId, LayerIx, LinkId, LinkKind,
     ModelId, NetMedium, NodeId, RdmaKind, StageIx, TensorGroupId, TierId,

@@ -312,7 +312,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 <!-- BEGIN GENERATED: vision-milestones -->
 ### M0a: walking skeleton
 
-187 tasks in the epics (`implementation/roadmap.md`, M0a).
+190 tasks in the epics (`implementation/roadmap.md`, M0a).
 
 - [ ] The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062).
 - [ ] The merge gates of ADR-0021 decision 5 run from the first commit: build, lint and tests; the DCO, licence and dependency checks; the workflow security lint; the independent review-agent job; and the sandbox in which agent runs read untrusted content. The repository's security baseline, the private vulnerability-reporting channel and the agent trust tiers are in place from the first commit too (RFC-0062 §12.5, §12.6, §13; ADR-0021; ADR-0624).
@@ -328,7 +328,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M0b: parity, certification and the lab
 
-130 tasks in the epics (`implementation/roadmap.md`, M0b).
+135 tasks in the epics (`implementation/roadmap.md`, M0b).
 
 - [ ] `qwen_moe` (GQA with softmax top-k MoE, every expert resident in VRAM), its `FamilyCert` gated on golden logits from the publisher's F32 reference as in M0a (RFC-0043, RFC-0042 §7).
 - [ ] The other M0 schemes (Q4_0, BF16, F16) and captured execution on CUDA (RFC-0040, RFC-0012).
@@ -363,7 +363,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M1b: Windows and Apple silicon
 
-92 tasks in the epics (`implementation/roadmap.md`, M1b).
+96 tasks in the epics (`implementation/roadmap.md`, M1b).
 
 - [ ] The Metal native provider and the Metal probes; `Unified` arenas, the wired limit and the macOS I/O engines (`F_NOCACHE` with `preadv`, and mapped reads); the NEON and SME2 CPU paths (RFC-0040, RFC-0020, RFC-0021).
 - [ ] Windows: working-set locking, the IoRing and IOCP engines, and the WDDM and WSL2 specifics (RFC-0020, RFC-0021, RFC-0040).
@@ -411,7 +411,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M4: hardening and 1.0
 
-51 tasks in the epics (`implementation/roadmap.md`, M4).
+52 tasks in the epics (`implementation/roadmap.md`, M4).
 
 - [ ] Tier 2 and Tier 3 platforms per ADR-0020; signed installers and update channels for every Tier 1 OS (RFC-0052, RFC-0062).
 - [ ] Performance regression gates on every Tier 1 rig; published benchmarks tied to commits, comparisons with other engines included (RFC-0061).

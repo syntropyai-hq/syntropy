@@ -9,6 +9,6 @@ mod transport;
 pub use congestion::{LAN_RTT, LanWindow, LanWindowFactory};
 pub use settings::{ConnectionWindow, KEEP_ALIVE, LinkClass, QuicSettings};
 pub use transport::{
-    DATA_ALPN, INITIAL_ALPHA_P99, QuicConfig, QuicTransport, Role, WindowReport, link_class,
-    stream_priority,
+    DATA_ALPN, INITIAL_ALPHA_P99, MAX_EARLY_PER_PEER, QuicConfig, QuicTransport, Role,
+    WindowReport, link_class, stream_priority,
 };
