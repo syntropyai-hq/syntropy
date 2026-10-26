@@ -8,11 +8,18 @@
 //!   is dropped, as a `DROP` rule drops it. A QUIC dial from A to B then fails, and A opens its
 //!   channel to B over TCP; B does the same back to A. Both directions of the ring pass the suite.
 //! - **Identity.** A connector that pins the wrong key, and a connector whose key the acceptor
-//!   does not allow, are both refused with an `Auth` error; so is a credential the check refuses.
+//!   does not allow, are both refused with an `Auth` error. A credential the acceptor's check
+//!   refuses is reported with the check's code: at once when it fails on arrival, and on both
+//!   sides when it stops passing before `accept`.
+//! - **Early connections.** A connection nobody accepts is refused with `NotANeighbour` after
+//!   [`TcpConfig::early_hold`], within the connector's own wait. A second connection for a held
+//!   key replaces the first if it comes from the same peer, and is refused otherwise. One peer
+//!   holds at most `MAX_EARLY_PER_PEER` early connections. An `accept` whose caller stopped
+//!   waiting can be called again.
 
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use syntropy_core::plan::WireDType;
 use syntropy_core::{Bytes, ErrorClass, InstanceId, Nanos, NodeId, PlanEpoch, SequenceId, StageIx};
@@ -20,14 +27,15 @@ use syntropy_net::Error;
 use syntropy_net::endpoint::{self, Endpoint, NodeAddr};
 use syntropy_net::error::ErrorCode;
 use syntropy_net::frame::{
-    Activation, ActivationHeader, ActivationKind, Flags, FrameType, RowLayout, SideItems, Span,
-    Spans, TreeArea,
+    Activation, ActivationHeader, ActivationKind, CredKind, Flags, FrameType, RowLayout, SideItems,
+    Span, Spans, TreeArea,
 };
-use syntropy_net::frame::{CredKind, Hello, HelloAck};
 use syntropy_net::transport::conformance::{self, Fabric, MAX_FRAME, Rule, SEND_SLOT, SEND_SLOTS};
 use syntropy_net::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
+use syntropy_net::transport::domain::NetDomain;
+use syntropy_net::transport::stream::ChannelAuth;
 use syntropy_net::transport::tcp::{
-    Credential, CredentialCheck, MAX_HANDSHAKES_PER_ADDRESS, TLS_TIMEOUT, TcpConfig, TcpTransport,
+    MAX_EARLY_PER_PEER, MAX_HANDSHAKES_PER_ADDRESS, TLS_TIMEOUT, TcpConfig, TcpTransport,
 };
 use syntropy_net::transport::{
     BufferPool, Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, OutFrame,
@@ -35,36 +43,47 @@ use syntropy_net::transport::{
 };
 use tokio::io::AsyncReadExt;
 
-/// A check that admits every credential, or refuses each with `refuse`: runner credentials and
-/// their checks are DIST-E7-T04's, so these tests stand in for them.
-struct StubCheck {
-    refuse: Option<ErrorCode>,
+/// Credentials that admit every peer, or refuse each with `refuse`: runner credentials and their
+/// checks are DIST-E7-T04's, so these tests stand in for them.
+struct StubAuth {
+    seed: u8,
+    /// The code each check refuses with, which a test may change while a connection waits.
+    refuse: Mutex<Option<ErrorCode>>,
 }
 
-impl CredentialCheck for StubCheck {
-    fn hello(&self, _: &Hello, _: CredKind, _: &[u8], _: &[u8; 32]) -> Result<(), ErrorCode> {
-        self.refuse.map_or(Ok(()), Err)
+impl StubAuth {
+    fn new(seed: u8, refuse: Option<ErrorCode>) -> Arc<StubAuth> {
+        Arc::new(StubAuth {
+            seed,
+            refuse: Mutex::new(refuse),
+        })
     }
 
-    fn hello_ack(
-        &self,
-        _: &HelloAck,
-        _: CredKind,
-        _: &[u8],
-        _: &[u8; 32],
-    ) -> Result<(), ErrorCode> {
-        Ok(())
+    fn refuse(&self, code: Option<ErrorCode>) {
+        *self.refuse.lock().unwrap() = code;
+    }
+}
+
+impl ChannelAuth for StubAuth {
+    fn credential(&self, _: &ChannelKey) -> (CredKind, Vec<u8>) {
+        let kind = CredKind::DataPlaneCredential;
+        (kind, vec![self.seed; kind.credential_len()])
+    }
+
+    fn check(&self, _: &[u8; 32], _: &ChannelKey, _: CredKind, _: &[u8]) -> Result<(), ErrorCode> {
+        self.refuse.lock().unwrap().map_or(Ok(()), Err)
     }
 }
 
 fn config(seed: u8, refuse: Option<ErrorCode>) -> TcpConfig {
+    config_with_auth(seed, StubAuth::new(seed, refuse))
+}
+
+fn config_with_auth(seed: u8, auth: Arc<StubAuth>) -> TcpConfig {
     TcpConfig {
         seed: [seed; 32],
-        credential: Credential {
-            kind: CredKind::DataPlaneCredential,
-            bytes: vec![seed; CredKind::DataPlaneCredential.credential_len()],
-        },
-        check: Arc::new(StubCheck { refuse }),
+        auth,
+        capabilities: 0,
         alpha_p99: Nanos(1_000_000),
         handshake_timeout: Duration::from_secs(5),
     }
@@ -78,16 +97,38 @@ fn runtime() -> tokio::runtime::Runtime {
         .expect("a runtime")
 }
 
-fn bind(rt: &tokio::runtime::Runtime, seed: u8, refuse: Option<ErrorCode>) -> TcpTransport {
+/// A transport, and the `net` domain it runs in.
+struct Node {
+    transport: TcpTransport,
+    // Dropped after the transport, which runs in it.
+    _domain: NetDomain,
+}
+
+impl std::ops::Deref for Node {
+    type Target = TcpTransport;
+
+    fn deref(&self) -> &TcpTransport {
+        &self.transport
+    }
+}
+
+fn bind(rt: &tokio::runtime::Runtime, seed: u8, refuse: Option<ErrorCode>) -> Node {
     bind_with(rt, config(seed, refuse))
 }
 
-fn bind_with(rt: &tokio::runtime::Runtime, config: TcpConfig) -> TcpTransport {
-    rt.block_on(TcpTransport::bind(
-        config,
-        SocketAddr::from(([127, 0, 0, 1], 0)),
-    ))
-    .expect("a listener on loopback")
+fn bind_with(rt: &tokio::runtime::Runtime, config: TcpConfig) -> Node {
+    let domain = NetDomain::start("syntropy-net-tcp").expect("a net domain");
+    let transport = rt
+        .block_on(TcpTransport::bind(
+            domain.handle(),
+            config,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+        ))
+        .expect("a listener on loopback");
+    Node {
+        transport,
+        _domain: domain,
+    }
 }
 
 fn remote(to: &TcpTransport) -> RemoteEndpoint {
@@ -321,21 +362,286 @@ fn an_acceptor_refuses_a_key_it_did_not_allow() {
     assert_eq!(*receiver.unwrap().key(), key(0, 2));
 }
 
-/// A credential the acceptor's check refuses is answered with a refusing `HelloAck`, whose code
-/// the connector reports.
+/// A credential the acceptor's check refuses on arrival is answered at once with a refusing
+/// `HelloAck`, whose code the connector reports, with no `accept` and well before the early hold
+/// ends. The code is one the early-hold refusal never sends, so only the check can have sent it.
 #[test]
 fn a_refused_credential_is_reported_with_its_code() {
     let rt = runtime();
     let a = bind(&rt, 7, None);
-    let b = bind(&rt, 8, Some(ErrorCode::NOT_A_NEIGHBOUR));
+    let b = bind(&rt, 8, Some(ErrorCode::EPOCH_NOT_SERVED));
     b.allowed().allow(a.public_key());
     let mut fabric = Tcp::new(&rt, &a, &b, 500);
     let pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let started = Instant::now();
     let error = rt
         .block_on(a.connect(&remote(&b), spec(key(0, 1), &a, &pool, 0)))
         .unwrap_err();
-    assert_eq!(error.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{error}");
-    assert_eq!(error.class, ErrorClass::Auth);
+    assert_eq!(error.code, Some(ErrorCode::EPOCH_NOT_SERVED), "{error}");
+    assert_eq!(error.class, ErrorClass::Transient);
+    assert!(
+        started.elapsed() < config(8, None).early_hold(),
+        "the refusal waited for the early hold: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A credential that passed on arrival but stops passing while its connection waits is refused
+/// at `accept`, which checks it again: both sides report the check's code.
+#[test]
+fn a_credential_that_stops_passing_while_its_connection_waits_is_refused() {
+    let rt = runtime();
+    let a = bind(&rt, 22, None);
+    let auth = StubAuth::new(23, None);
+    let b = bind_with(&rt, config_with_auth(23, Arc::clone(&auth)));
+    b.allowed().allow(a.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 1000);
+    let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let receiver_pool = fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8);
+    let to_b = remote(&b);
+    let (sender, receiver) = rt.block_on(async {
+        tokio::join!(
+            a.connect(&to_b, spec(key(8, 9), &a, &sender_pool, 0)),
+            async {
+                // The Hello has arrived and passed by now, and waits for this accept.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                auth.refuse(Some(ErrorCode::EPOCH_NOT_SERVED));
+                b.accept(spec(key(8, 9), &b, &receiver_pool, 4)).await
+            }
+        )
+    });
+    let refused = receiver.unwrap_err();
+    assert_eq!(refused.code, Some(ErrorCode::EPOCH_NOT_SERVED), "{refused}");
+    let error = sender.unwrap_err();
+    assert_eq!(error.code, Some(ErrorCode::EPOCH_NOT_SERVED), "{error}");
+}
+
+/// An `accept` whose caller stopped waiting, here on its own timeout, leaves nothing registered:
+/// the same channel can be accepted again, and opens.
+#[test]
+fn an_accept_whose_caller_stopped_waiting_can_be_called_again() {
+    let rt = runtime();
+    let a = bind(&rt, 24, None);
+    let b = bind(&rt, 25, None);
+    b.allowed().allow(a.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 1100);
+    let sender_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let receiver_pool = fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8);
+    let gave_up = rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            b.accept(spec(key(9, 10), &b, &receiver_pool, 4)),
+        )
+        .await
+    });
+    assert!(gave_up.is_err(), "an accept with no peer returned");
+    let to_b = remote(&b);
+    let (sender, receiver) = rt.block_on(async {
+        tokio::join!(
+            a.connect(&to_b, spec(key(9, 10), &a, &sender_pool, 0)),
+            b.accept(spec(key(9, 10), &b, &receiver_pool, 4))
+        )
+    });
+    assert_eq!(*sender.unwrap().key(), key(9, 10));
+    assert_eq!(*receiver.unwrap().key(), key(9, 10));
+}
+
+/// A second connection for a channel whose first connection is still held replaces it, as a
+/// reconnect would: `accept` opens the channel on the second, and the first connector's
+/// connection is closed, a link failure rather than a refusal.
+#[test]
+fn a_second_connection_for_a_held_key_replaces_the_first() {
+    let rt = runtime();
+    let a = bind(&rt, 26, None);
+    let b = bind(&rt, 27, None);
+    b.allowed().allow(a.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 1200);
+    let first_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let second_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let receiver_pool = fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8);
+    let to_b = remote(&b);
+    let (first, second, receiver) = rt.block_on(async {
+        tokio::join!(
+            a.connect(&to_b, spec(key(10, 11), &a, &first_pool, 0)),
+            async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                a.connect(&to_b, spec(key(10, 11), &a, &second_pool, 0))
+                    .await
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                b.accept(spec(key(10, 11), &b, &receiver_pool, 4)).await
+            }
+        )
+    });
+    let error = first.unwrap_err();
+    assert_eq!(error.class, ErrorClass::Link, "{error}");
+    assert_eq!(*second.unwrap().key(), key(10, 11));
+    assert_eq!(*receiver.unwrap().key(), key(10, 11));
+}
+
+/// Polls every future in `futures` to completion on the calling task, and returns their outputs
+/// in order.
+async fn join_all<F: std::future::Future>(futures: Vec<F>) -> Vec<F::Output> {
+    use std::task::Poll;
+    let mut futures: Vec<_> = futures.into_iter().map(Box::pin).collect();
+    let mut outputs: Vec<Option<F::Output>> = futures.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (future, output) in futures.iter_mut().zip(outputs.iter_mut()) {
+            if output.is_none() {
+                match future.as_mut().poll(cx) {
+                    Poll::Ready(value) => *output = Some(value),
+                    Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
+    outputs
+        .into_iter()
+        .map(|output| output.expect("polled to completion"))
+        .collect()
+}
+
+/// The channel `key(from, to)` on `lane`.
+fn on_lane(from: u16, to: u16, lane: u8) -> ChannelKey {
+    ChannelKey {
+        lane,
+        ..key(from, to)
+    }
+}
+
+/// One peer holds at most `MAX_EARLY_PER_PEER` early connections. Its next is closed at once
+/// without a `HelloAck`, a link failure the connector may retry, not `NotANeighbour`, which
+/// nothing retries (RFC-0001 §10). Another peer's early connection is still held for its
+/// `accept`. Once the acceptor accepts one of the held connections, the same channel retried is
+/// held, and opens. The one peer's connections start 20 ms apart, so they stay under the
+/// per-source handshake cap, since every connection here comes from 127.0.0.1.
+#[test]
+fn one_peer_cannot_take_every_early_slot() {
+    let rt = runtime();
+    let a = bind(&rt, 28, None);
+    let c = bind(&rt, 29, None);
+    let b = bind(&rt, 30, None);
+    b.allowed().allow(a.public_key());
+    b.allowed().allow(c.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 1300);
+    let a_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let retry_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let c_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let [c_at_b, freed_at_b, retried_at_b] =
+        [(); 3].map(|()| fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8));
+    let to_b = remote(&b);
+    let lanes = u8::try_from(MAX_EARLY_PER_PEER).unwrap();
+    let early_hold = config(30, None).early_hold();
+    let (held, (over, took), (sent, received), (freed, retried, retried_received)) =
+        rt.block_on(async {
+            let held = join_all(
+                (0..lanes)
+                    .map(|lane| {
+                        let channel = spec(on_lane(12, 13, lane), &a, &a_pool, 0);
+                        let to_b = &to_b;
+                        let a = &a;
+                        async move {
+                            tokio::time::sleep(Duration::from_millis(20) * u32::from(lane)).await;
+                            a.connect(to_b, channel).await
+                        }
+                    })
+                    .collect(),
+            );
+            let over = async {
+                // Every one of a's connections is held by now.
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                let started = Instant::now();
+                let closed = a
+                    .connect(&to_b, spec(on_lane(12, 13, lanes), &a, &a_pool, 0))
+                    .await;
+                (closed, started.elapsed())
+            };
+            let other = async {
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                tokio::join!(c.connect(&to_b, spec(key(14, 15), &c, &c_pool, 0)), async {
+                    // c's connection is held by now, beside a's.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    b.accept(spec(key(14, 15), &b, &c_at_b, 4)).await
+                })
+            };
+            let retry = async {
+                // After the connection over the cap was closed, and well within the others' hold.
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                let freed = b.accept(spec(on_lane(12, 13, 0), &b, &freed_at_b, 4)).await;
+                let (retried, retried_received) = tokio::join!(
+                    a.connect(&to_b, spec(on_lane(12, 13, lanes), &a, &retry_pool, 0)),
+                    async {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        b.accept(spec(on_lane(12, 13, lanes), &b, &retried_at_b, 4))
+                            .await
+                    }
+                );
+                (freed, retried, retried_received)
+            };
+            tokio::join!(held, over, other, retry)
+        });
+    let closed = over.unwrap_err();
+    assert_eq!(closed.class, ErrorClass::Link, "{closed}");
+    assert_eq!(closed.code, None, "{closed}");
+    assert!(
+        took < early_hold,
+        "the connection over the cap was held: {took:?}"
+    );
+    assert_eq!(*sent.unwrap().key(), key(14, 15));
+    assert_eq!(*received.unwrap().key(), key(14, 15));
+    // The accept for lane 0 freed a slot, and the retried channel opened in it.
+    assert_eq!(*freed.unwrap().key(), on_lane(12, 13, 0));
+    assert_eq!(*retried.unwrap().key(), on_lane(12, 13, lanes));
+    assert_eq!(*retried_received.unwrap().key(), on_lane(12, 13, lanes));
+    // Lane 0 opened; nobody accepted the others, so each was refused once its hold ended.
+    let mut held = held.into_iter();
+    assert_eq!(*held.next().unwrap().unwrap().key(), on_lane(12, 13, 0));
+    for result in held {
+        let error = result.unwrap_err();
+        assert_eq!(error.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{error}");
+    }
+}
+
+/// A connection for a held key from another peer is refused at once, and leaves the held one in
+/// place: only a reconnect by the same peer replaces it.
+#[test]
+fn a_held_connection_is_replaced_only_by_its_own_peer() {
+    let rt = runtime();
+    let a = bind(&rt, 31, None);
+    let c = bind(&rt, 32, None);
+    let b = bind(&rt, 33, None);
+    b.allowed().allow(a.public_key());
+    b.allowed().allow(c.public_key());
+    let mut fabric = Tcp::new(&rt, &a, &b, 1400);
+    let a_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let c_pool = fabric.pool(MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES));
+    let receiver_pool = fabric.pool(slot_size().max(MAX_CONTROL_FRAME), 8);
+    let to_b = remote(&b);
+    let (first, other, receiver) = rt.block_on(async {
+        tokio::join!(
+            a.connect(&to_b, spec(key(16, 17), &a, &a_pool, 0)),
+            async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                c.connect(&to_b, spec(key(16, 17), &c, &c_pool, 0)).await
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                b.accept(spec(key(16, 17), &b, &receiver_pool, 4)).await
+            }
+        )
+    });
+    let refused = other.unwrap_err();
+    assert_eq!(refused.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{refused}");
+    assert_eq!(*first.unwrap().key(), key(16, 17));
+    assert_eq!(*receiver.unwrap().key(), key(16, 17));
 }
 
 /// A connector tries each of the endpoint's addresses in turn: a dead first address does not stop
@@ -402,10 +708,12 @@ fn a_key_forbidden_while_its_connection_waits_is_refused() {
     assert_eq!(error.class, ErrorClass::Auth);
 }
 
-/// A connection whose `accept` does not come within the handshake timeout is dropped, so a peer
-/// cannot leave connections parked indefinitely.
+/// A connection whose `accept` does not come within [`TcpConfig::early_hold`], half the handshake
+/// timeout, is refused with `NotANeighbour`, so a peer cannot leave connections held
+/// indefinitely, and the connector learns that the plans disagree instead of timing out. An
+/// `accept` after that finds nothing.
 #[test]
-fn a_connection_left_waiting_past_the_handshake_timeout_is_dropped() {
+fn a_connection_nobody_accepts_is_refused_after_the_early_hold() {
     let rt = runtime();
     let a = bind(&rt, 13, None);
     let b = bind_with(
@@ -435,10 +743,11 @@ fn a_connection_left_waiting_past_the_handshake_timeout_is_dropped() {
     });
     assert!(
         receiver.is_err(),
-        "an accept found a connection past its timeout"
+        "an accept found a connection past its early hold"
     );
     let error = sender.unwrap_err();
-    assert_eq!(error.class, ErrorClass::Link, "{error}");
+    assert_eq!(error.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{error}");
+    assert_eq!(error.class, ErrorClass::Auth);
 }
 
 /// One source address holds at most `MAX_HANDSHAKES_PER_ADDRESS` handshakes: a connection past
@@ -592,6 +901,47 @@ fn a_connection_without_the_data_alpn_opens_no_channel() {
         });
         assert!(dropped, "a connection offering {alpn:?} was kept");
     }
+}
+
+/// The connector requires the data ALPN too: a listener that holds the key the connector pins but
+/// agrees no ALPN completes TLS, and the connector refuses it with `PROTO_MAJOR_MISMATCH` instead
+/// of sending its `Hello`.
+#[test]
+fn a_connector_refuses_a_listener_without_the_data_alpn() {
+    use syntropy_net::transport::tcp::tls;
+    let rt = runtime();
+    let a = bind(&rt, 34, None);
+    let listener_seed = [35u8; 32];
+    let listener_key = bind(&rt, 35, None).public_key();
+    let allowed = tls::AllowedKeys::default();
+    allowed.allow(a.public_key());
+    let mut config = tls::server_config(&listener_seed, allowed).unwrap();
+    config.alpn_protocols.clear();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = rt.spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let session = acceptor.accept(tcp).await;
+        // Keep the session open, so only the connector's own check can end it.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        drop(session);
+    });
+    let pool = BufferPool::heap(PoolId(1500), MAX_CONTROL_FRAME, u32::from(CONTROL_RECEIVES))
+        .expect("a pool");
+    let to = RemoteEndpoint {
+        node: NodeId(listener_key),
+        key: listener_key,
+        addrs: vec![addr],
+        relay: None,
+    };
+    let error = rt
+        .block_on(a.connect(&to, spec(key(18, 19), &a, &pool, 0)))
+        .unwrap_err();
+    assert_eq!(error.code, Some(ErrorCode::PROTO_MAJOR_MISMATCH), "{error}");
+    served.abort();
 }
 
 /// A one-row `Activation` frame in a free slot of `pool`: its extension at offset 0, then its

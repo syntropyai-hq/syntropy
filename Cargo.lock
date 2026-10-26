@@ -4007,6 +4007,7 @@ dependencies = [
 name = "syntropy-kernels-cpu"
 version = "0.0.0"
 dependencies = [
+ "cc",
  "smallvec",
  "syntropy-core",
  "syntropy-io",
@@ -4034,6 +4035,9 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-kernels-metal"
 version = "0.0.0"
+dependencies = [
+ "syntropy-kernels",
+]
 
 [[package]]
 name = "syntropy-kernels-vulkan"
