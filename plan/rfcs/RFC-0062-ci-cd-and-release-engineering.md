@@ -309,6 +309,8 @@ GitHub Actions has no job priorities and cannot reserve several runners at once.
   - Each rig's nightly budget is the sum of all its roles: own parity, own benchmarks and its composite slot. RFC-0061 §6.4 lists it for every composite member.
 - **Fallback.** If the dispatcher is down, lab jobs do not run, `ci-gate` reports "hardware run pending" (§2.5), and nothing reaches a rig through any other path.
 
+*Note, 2026-10-27 (QUAL-E1-T08).* `nightly.yml` and `weekly.yml` exist as skeletons: a schedule (02:00 UTC daily; 08:00 UTC on Sundays) and `workflow_dispatch`, one concurrency group each with `cancel-in-progress: false`, so a newer run replaces a pending one and a running one finishes, and one hosted placeholder job until the suites land. `cargo xtask workflows`, in `lint`, fails any job on a lab label whose `timeout-minutes` is missing, not a whole number from 1 to 60, or computed by an expression, which enforces the 60-minute chunk above.
+
 ### 4. Build matrix per platform tier
 
 #### 4.1 Artefacts

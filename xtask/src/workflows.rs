@@ -11,6 +11,7 @@
 //! | No `pull_request_target` | a workflow triggered by it, in any form of `on:` |
 //! | No lab label | a job outside `lab.yml` whose `runs-on` names a lab label (§3.2) |
 //! | No PR checkout beside a secret | a job that checks out a PR ref and holds a secret, an environment or a write token |
+//! | Lab jobs in chunks | a job on a lab label without a `timeout-minutes` from 1 to 60, or with one an expression computes (§3.4) |
 //!
 //! **Lab labels.** A label is a lab label, compared without case, when it is `self-hosted` or
 //! `syntropy-lab`; starts with `lab-` (the per-run `lab-run-<uuid>`), or `r-` (a rig ID such as
@@ -578,6 +579,36 @@ fn holds_secret(job: &Yaml, workflow_env: Option<&Yaml>) -> Option<String> {
         .map(|named| format!("it reads `{named}`"))
 }
 
+/// The longest a lab job may run, in minutes (RFC-0062 §3.4).
+pub const LAB_JOB_MAX_MINUTES: i64 = 60;
+
+/// A lab job must set `timeout-minutes` to a whole number from 1 to [`LAB_JOB_MAX_MINUTES`]; an
+/// expression fails, because the limit it yields cannot be checked.
+fn check_lab_timeout(report: &mut Report<'_>, at: &str, job: &Yaml) {
+    let field = format!("{at}.timeout-minutes");
+    match get(job, "timeout-minutes") {
+        None => report.add(
+            &field,
+            format!(
+                "a lab job sets no `timeout-minutes`; set one of at most {LAB_JOB_MAX_MINUTES} \
+                 (RFC-0062 §3.4)"
+            ),
+        ),
+        Some(Yaml::Integer(n)) if (1..=LAB_JOB_MAX_MINUTES).contains(n) => {}
+        Some(Yaml::Integer(n)) => report.add(
+            &field,
+            format!("is {n}; a lab job runs for 1 to {LAB_JOB_MAX_MINUTES} minutes (RFC-0062 §3.4)"),
+        ),
+        Some(other) => report.add(
+            &field,
+            format!(
+                "must be a whole number of minutes, at most {LAB_JOB_MAX_MINUTES}, and is {other:?} \
+                 (RFC-0062 §3.4)"
+            ),
+        ),
+    }
+}
+
 /// Checks one workflow file, named `name` (its file name). `actions` reads a local action by its
 /// `uses:` path (`./…`), so a job's composite actions are followed when looking for a PR checkout.
 pub fn check_workflow(
@@ -685,6 +716,11 @@ pub fn check_workflow(
                         ),
                     );
                 }
+            }
+            // A lab job is a chunk of at most an hour, so a PR's hardware job waits behind at
+            // most one (RFC-0062 §3.4; QUAL-E1-T08).
+            if labels.iter().any(|l| is_lab_label(l)) {
+                check_lab_timeout(&mut report, &at, job);
             }
         }
 
