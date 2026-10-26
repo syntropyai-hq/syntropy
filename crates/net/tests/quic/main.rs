@@ -848,10 +848,14 @@ fn a_frame_lands_in_a_registered_receive_slot_after_one_host_copy() {
     // The sender sent from its slot and kept it leased until the peer acknowledged the frame:
     // the conformance suite's `Retention` rule holds the frame back to check that, which a live
     // link cannot. Here the slot is free once the ticket is back.
+    // The wait has its own deadline: the frame's arrival may have used up the first one under a
+    // sanitizer. The receiver is polled as the conformance waits poll it; it holds nothing more.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let completed = loop {
         if let Some(done) = sender.completed() {
             break done;
         }
+        assert!(receiver.try_recv().is_none(), "a second frame arrived");
         assert!(std::time::Instant::now() < deadline, "no ticket");
         std::thread::sleep(Duration::from_millis(1));
     };

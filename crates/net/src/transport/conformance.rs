@@ -807,7 +807,12 @@ fn exchange(fabric: &mut dyn Fabric, key: ChannelKey) -> Result<Exchange, Broken
     let mut tickets = Vec::new();
     let mut would_block = 0;
     let mut next = 0;
-    for _ in 0..PUMPS {
+    let start = std::time::Instant::now();
+    let patience = fabric.patience();
+    let mut pumps = 0;
+    // The count first, then the fabric's patience, as in `pump_until`.
+    while pumps < PUMPS || start.elapsed() < patience {
+        pumps += 1;
         while next < FRAMES {
             let Some(attempt) = send(&pool, &mut sender, next)? else {
                 break;
