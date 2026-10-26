@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# The weekly workflow (RFC-0062 §2.1). This is its skeleton (QUAL-E1-T08): the trigger, the
+# concurrency rule and the conventions its jobs follow. The suites arrive with the tasks that build
+# them: the Tier 2 hardware suites, `chaos-lab`, the A/A and planted-regression runs, the
+# planted-defect job and AMX cloud parity. Until then its one job is a placeholder that costs a
+# few seconds of a hosted runner.
+#
+# Concurrency. One group, `weekly`, never cancelled in progress: a run that starts while another is
+# running waits as pending, a newer run replaces a pending one, and the running one finishes.
+#
+# Lab work never runs here. A weekly suite on a rig is a request to the lab dispatcher, which runs
+# it as `lab.yml` jobs on `main` (RFC-0062 §3.2), each a chunk of at most 60 minutes (§3.4).
+# `cargo xtask ci lint` fails any lab job without a `timeout-minutes` of at most 60.
+#
+# The same rules as `pr.yml` hold: read-only permissions, actions pinned by SHA, hosted runners
+# only, no `pull_request_target`.
+
+name: weekly
+
+on:
+  schedule:
+    # Sunday at 08:00 UTC, after the nightly window: the nightly run starts at 02:00 with a
+    # 6-hour per-rig budget [target] (RFC-0062, Performance model and budgets). It is the lab
+    # dispatcher's queue (§3.4), not the clock, that keeps the two from sharing a rig.
+    - cron: "0 8 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Weekly suites
+        run: |
+          echo "weekly: skeleton (QUAL-E1-T08). The weekly suites of RFC-0062 §2.1 land with"
+          echo "the tasks that build them; lab work goes through the lab dispatcher (§3.2)."

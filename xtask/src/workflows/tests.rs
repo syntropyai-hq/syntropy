@@ -171,7 +171,11 @@ fn lab_labels_are_refused_outside_lab_yml() {
         "{ group: syntropy-lab }",
         "{ labels: [rdma-tb5] }",
     ] {
-        let source = base.replace("runs-on: ubuntu-24.04", &format!("runs-on: {runs_on}"));
+        // A lab job also needs its timeout (RFC-0062 §3.4), so this one sets 30 minutes.
+        let source = base.replace(
+            "runs-on: ubuntu-24.04",
+            &format!("runs-on: {runs_on}\n    timeout-minutes: 30"),
+        );
         let findings = found("pr.yml", &source);
         assert!(
             !findings.is_empty()
@@ -202,7 +206,10 @@ fn a_matrix_runs_on_is_read_through_the_matrix() {
     let job = |matrix: &str| {
         clean().replace(
             "    runs-on: ubuntu-24.04\n",
-            &format!("    strategy:\n      matrix:\n{matrix}    runs-on: ${{{{ matrix.os }}}}\n"),
+            &format!(
+                "    strategy:\n      matrix:\n{matrix}    runs-on: ${{{{ matrix.os }}}}\n    \
+                 timeout-minutes: 30\n"
+            ),
         )
     };
     let hosted = job("        os: [ubuntu-24.04, macos-26, windows-2025]\n");
@@ -668,6 +675,76 @@ fn a_script_that_names_pr_code_in_an_expression_counts() {
         let source = pr_checkout_job(secret_env, step).replace("  pull_request:\n", "  push:\n");
         assert_clean("w.yml", &source);
     }
+}
+
+/// A lab job is a chunk of at most 60 minutes (RFC-0062 §3.4; QUAL-E1-T08): the task's criterion,
+/// a lab job template without a `timeout-minutes` of at most 60, fails.
+#[test]
+fn a_lab_job_needs_a_timeout_of_at_most_an_hour() {
+    let lab_job = |timeout: &str| {
+        clean()
+            .replace(
+                "runs-on: ubuntu-24.04",
+                "runs-on: [self-hosted, syntropy-lab]",
+            )
+            .replace("    steps:\n", &format!("{timeout}    steps:\n"))
+    };
+    assert_one(
+        "lab.yml",
+        &lab_job(""),
+        "jobs.build.timeout-minutes",
+        "sets no `timeout-minutes`",
+    );
+    assert_one(
+        "lab.yml",
+        &lab_job("    timeout-minutes: 61\n"),
+        "jobs.build.timeout-minutes",
+        "is 61",
+    );
+    assert_one(
+        "lab.yml",
+        &lab_job("    timeout-minutes: ${{ inputs.minutes }}\n"),
+        "jobs.build.timeout-minutes",
+        "must be a whole number",
+    );
+    assert_one(
+        "lab.yml",
+        &lab_job("    timeout-minutes: 0\n"),
+        "jobs.build.timeout-minutes",
+        "is 0",
+    );
+    assert_clean("lab.yml", &lab_job("    timeout-minutes: 60\n"));
+    assert_clean("lab.yml", &lab_job("    timeout-minutes: 5\n"));
+    // Every job in lab.yml needs one, whatever runner it names, and a hosted job elsewhere does
+    // not (review of #1885, B1 and N1).
+    for runs_on in [
+        "[linux, x64]",
+        "[macos, arm64]",
+        "windows",
+        "{ group: rigs }",
+        "ubuntu-24.04",
+    ] {
+        let job = clean().replace("runs-on: ubuntu-24.04", &format!("runs-on: {runs_on}"));
+        assert_one(
+            "lab.yml",
+            &job,
+            "jobs.build.timeout-minutes",
+            "sets no `timeout-minutes`",
+        );
+    }
+    assert_clean("w.yml", &clean());
+    // The OS and architecture labels are lab labels outside lab.yml too.
+    let elsewhere = clean().replace(
+        "runs-on: ubuntu-24.04",
+        "runs-on: [linux, x64]\n    timeout-minutes: 30",
+    );
+    let findings = found("pr.yml", &elsewhere);
+    assert_eq!(findings.len(), 2, "{findings:#?}");
+    assert!(
+        findings
+            .iter()
+            .all(|(at, m)| at == "jobs.build.runs-on" && m.contains("lab label"))
+    );
 }
 
 /// A script that names the PR's head counts whatever program it runs (#1872 N11), and `github.sha`
