@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 mod actionlint;
+mod agent_tooling;
 mod build;
 mod cache_hit;
 mod changes;
