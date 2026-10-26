@@ -8,8 +8,14 @@ publish.workspace = true
 [dependencies]
 syntropy-core = { path = "../core" }
 # `Figure`, the labelled form of every number `doctor` reports as evidence (RFC-0001 §5.16).
+# Also `syntropy trust`, which checks a node's CA certificate and computes its fingerprint as the
+# node does (RFC-0050 §11.1.1, PROD-E5-T04).
 syntropy-api = { path = "../api" }
 # The host-change ledger (RFC-0052 §11.1): its JSON file and the BLAKE3 fingerprints of written files.
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# The node key that signs a test CA's binding, for `trust`'s tests.
+syntropy-net = { path = "../net" }

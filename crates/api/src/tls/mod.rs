@@ -20,12 +20,17 @@
 //!   ([`LocalCa::issue_leaf`]), served through [`LeafResolver`], which swaps in a new leaf
 //!   without dropping a connection.
 //!
+//! - **The client's check.** [`CaCertificate`] is the certificate as `syntropy trust` receives
+//!   it: one PEM block, a self-signed CA with critical name constraints, refused otherwise, with
+//!   the same fingerprint as [`LocalCa::fingerprint`] (PROD-E5-T04).
+//!
 //! The listener that serves these leaves, and the `GET /v1/syntropy/tls/ca` route that returns
 //! [`LocalCa::certificate_pem`], are PROD-E5-T06's. The OS keystore for the CA key is
 //! PROD-E5-T10's (M3), and so is the fingerprint's six-word form. The state directory and the
 //! node key come from the caller: DIST-E2-T01 creates them.
 
 mod ca;
+mod client;
 mod files;
 mod leaf;
 mod scope;
@@ -36,5 +41,6 @@ pub use ca::{
     CA_FILE, CA_VALIDITY, CaBinding, CaOpen, CaReplacement, LocalCa, REPLACED_FILE, ReplaceReason,
     TlsError,
 };
+pub use client::{CaCertificate, CaRefused};
 pub use leaf::{LEAF_VALIDITY, Leaf, LeafNames, LeafResolver, REISSUE_BEFORE};
 pub use scope::{CaScope, LeftOut, ScopeError, Subnet, is_local};

@@ -190,6 +190,16 @@ pub fn describe(kind: &HostChangeKind) -> String {
         HostChangeKind::RegistryKey { hive, key } => format!("registry key {hive}\\{key}"),
         HostChangeKind::SystemUser { name } => format!("system user {name}"),
         HostChangeKind::BootTimeSetting { name } => format!("boot-time setting {name}"),
+        HostChangeKind::TrustAnchor {
+            store,
+            location,
+            label,
+            node,
+            ..
+        } => format!(
+            "{store:?} trust anchor {label} for node {node} in {}",
+            location.display()
+        ),
     }
 }
 
@@ -204,12 +214,33 @@ pub fn revert_all(
     ledger: &mut HostChangeLedger,
     host: &mut impl Host,
 ) -> Result<Vec<Reverted>, LedgerError> {
+    revert_where(ledger, host, |_| true)
+}
+
+/// [`revert_all`] for only the changes `select` picks, newest first, under the same rules:
+/// `syntropy trust --remove <node>` reverts that node's changes and leaves every other entry as
+/// it is. `select` sees each change as the ledger holds it under the lock.
+///
+/// # Errors
+///
+/// As [`revert_all`].
+pub fn revert_where(
+    ledger: &mut HostChangeLedger,
+    host: &mut impl Host,
+    select: impl Fn(&HostChange) -> bool,
+) -> Result<Vec<Reverted>, LedgerError> {
     check_private(ledger)?;
     // One writer at a time: the walk holds the ledger's lock, and starts from what is saved.
     let _lock = ledger.lock()?;
     ledger.reload()?;
     let mut report = Vec::new();
-    let ids: Vec<u32> = ledger.changes().iter().rev().map(|c| c.id).collect();
+    let ids: Vec<u32> = ledger
+        .changes()
+        .iter()
+        .rev()
+        .filter(|c| select(c))
+        .map(|c| c.id)
+        .collect();
     for id in ids {
         let change = ledger.get(id).expect("the ID came from the ledger").clone();
         let what = describe(&change.kind);
@@ -559,6 +590,13 @@ mod tests {
             HostChangeKind::BootTimeSetting {
                 name: "iogpu.wired_limit_mb".into(),
             },
+            HostChangeKind::TrustAnchor {
+                store: super::super::TrustStore::LinuxUserNss,
+                location: "/u/.pki/nssdb".into(),
+                label: "Syntropy CA box.local 0123456789abcdef".into(),
+                node: "box.local".into(),
+                certificate: "MIIBhjCCASygAwIBAgIU".into(),
+            },
         ]
     }
 
@@ -715,9 +753,9 @@ mod tests {
         };
         let report = revert_all(&mut ledger, &mut host).unwrap();
         let ids: Vec<u32> = report.iter().map(|r| r.id).collect();
-        assert_eq!(ids, (1..=10).rev().collect::<Vec<_>>());
+        assert_eq!(ids, (1..=11).rev().collect::<Vec<_>>());
         assert!(report.iter().all(|r| r.outcome == Outcome::Reverted));
-        assert_eq!(host.did.len(), 10);
+        assert_eq!(host.did.len(), 11);
         let saved = HostChangeLedger::open(&state).unwrap();
         assert!(
             saved

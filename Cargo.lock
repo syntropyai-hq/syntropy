@@ -3958,6 +3958,7 @@ dependencies = [
  "serde_json",
  "syntropy-api",
  "syntropy-core",
+ "syntropy-net",
 ]
 
 [[package]]

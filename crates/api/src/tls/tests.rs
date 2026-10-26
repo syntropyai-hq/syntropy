@@ -896,3 +896,100 @@ fn a_tls_directory_that_is_a_link_is_refused() {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+
+/// PROD-E5-T04: the certificate a client receives parses to the node's own fingerprint, comes
+/// back out as the same PEM, and lists what the CA may issue for.
+#[test]
+fn a_client_reads_the_served_ca_with_the_nodes_fingerprint() {
+    let dir = Dir::new("client-read");
+    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    let got = CaCertificate::from_pem(ca.certificate_pem()).unwrap();
+    assert_eq!(got.fingerprint(), ca.fingerprint());
+    assert_eq!(got.fingerprint_hex(), hex(&ca.fingerprint()));
+    assert_eq!(got.pem(), ca.certificate_pem());
+    assert_eq!(got.der(), ca.certificate_der().as_ref());
+    assert_eq!(
+        got.fingerprint_words(),
+        syntropy_net::fingerprint::fingerprint(ca.spki_der())
+    );
+    assert_eq!(got.fingerprint_words().split('-').count(), 6);
+    assert!(got.subject().starts_with("Syntropy local CA "), "{got:?}");
+    for want in [
+        "box.local",
+        "llm.home.arpa",
+        "192.168.1.0/24",
+        "100.101.102.103/32",
+    ] {
+        assert!(
+            got.permitted().iter().any(|p| p == want),
+            "{:?}",
+            got.permitted()
+        );
+    }
+    // White space and CRLF line ends around and inside the block are accepted.
+    let crlf = format!("\n\n{}\n", ca.certificate_pem().replace('\n', "\r\n"));
+    assert_eq!(CaCertificate::from_pem(&crlf).unwrap(), got);
+    // The one-line base64 is the DER.
+    let b64 = got.base64();
+    assert!(!b64.contains('\n'));
+    assert!(ca.certificate_pem().replace('\n', "").contains(&b64));
+}
+
+/// PROD-E5-T04: anything but one constrained CA certificate is refused before the user is asked
+/// anything: an unconstrained CA, a leaf, two blocks, a key beside the certificate, and text that
+/// is not PEM.
+#[test]
+fn a_client_refuses_anything_but_one_constrained_ca() {
+    let dir = Dir::new("client-refuse");
+    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    let refused = |text: &str| CaCertificate::from_pem(text).unwrap_err().0;
+
+    // A CA without name constraints: a grant over every name.
+    let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+    let open_ca = params.self_signed(&key).unwrap();
+    assert_eq!(
+        refused(&super::ca::certificate_pem(open_ca.der())),
+        "the certificate has no name constraints"
+    );
+
+    // A constrained CA that permits a public subnet.
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.name_constraints = Some(rcgen::NameConstraints {
+        permitted_subtrees: vec![rcgen::GeneralSubtree::IpAddress(
+            rcgen::CidrSubnet::from_v4_prefix([8, 8, 8, 0], 24),
+        )],
+        excluded_subtrees: vec![],
+    });
+    let public = params.self_signed(&key).unwrap();
+    assert_eq!(
+        refused(&super::ca::certificate_pem(public.der())),
+        "the CA may issue for a public address"
+    );
+
+    // A leaf the CA issued.
+    let names = LeafNames::new(["box.local"], [ip("192.168.1.37")]);
+    let leaf = ca.issue_leaf(&names, now()).unwrap();
+    let leaf_pem = super::ca::certificate_pem(leaf.certificate_der());
+    assert_eq!(refused(&leaf_pem), "the certificate is not self-signed");
+
+    let two = format!("{}{}", ca.certificate_pem(), ca.certificate_pem());
+    assert_eq!(refused(&two), "the text is not exactly one PEM certificate");
+    let with_key = format!(
+        "{}-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+        ca.certificate_pem()
+    );
+    assert_eq!(
+        refused(&with_key),
+        "the text is not exactly one PEM certificate"
+    );
+    assert_eq!(
+        refused("<html>not found</html>"),
+        "the text is not exactly one PEM certificate"
+    );
+    let mangled = ca.certificate_pem().replacen("MII", "MIJ", 1);
+    assert!(CaCertificate::from_pem(&mangled).is_err());
+}
