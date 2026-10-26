@@ -177,6 +177,46 @@ fn only_tune_spells_out_the_write() {
     );
 }
 
+/// The sysctl write forms in `text`, the code of the source file `shown` (see
+/// [`no_other_write_form_appears`]).
+fn write_forms(shown: &str, text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    if text.contains("Command::new(\"sysctl\")") {
+        found.push(format!("{shown}: runs the sysctl tool"));
+    }
+    if text.contains("\"iogpu.wired_limit_mb") && !READERS.contains(&shown) {
+        found.push(format!("{shown}: names iogpu.wired_limit_mb"));
+    }
+    // `libc::sysctl` named at all, not only called: a `use libc::sysctl;` (or `as s`) makes every
+    // later bare `sysctl(…)` the MIB-form call (review of #1822, N1).
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    for (at, m) in text.match_indices("libc::sysctl") {
+        if !text[at + m.len()..].chars().next().is_some_and(word) {
+            found.push(format!("{shown}: names libc::sysctl"));
+        }
+    }
+    // `sysctl` inside a `libc::{…}` import.
+    for (at, _) in text.match_indices("libc::{") {
+        let list = &text[at..text[at..].find('}').map_or(text.len(), |end| at + end)];
+        if list.split(|c: char| !word(c)).any(|name| name == "sysctl") {
+            found.push(format!("{shown}: imports libc::sysctl"));
+        }
+    }
+    if text.contains("sysctlnametomib(") {
+        found.push(format!("{shown}: a sysctlnametomib(…) call"));
+    }
+    // A raw-pointer declaration of the MIB-form `sysctl`: its calls would read as a bare
+    // `sysctl(…)`, which no other rule sees. `sysctlbyname` declarations are fine, because
+    // `every_sysctlbyname_call_only_reads` checks every call however it is declared.
+    for (at, _) in text.match_indices("fn sysctl(") {
+        let args = call_args(text, at + "fn sysctl(".len() - 1).join(",");
+        if args.contains("*mut") || args.contains("*const") {
+            found.push(format!("{shown}: an FFI declaration of fn sysctl(…)"));
+        }
+    }
+    found
+}
+
 /// Where production code may name `iogpu.wired_limit_mb` to read it (RFC-0020 §9.1: the probe
 /// reads the limit). Every read reaches the kernel through `syntropy_io::os::macos_host`, whose
 /// `sysctlbyname` calls `every_sysctlbyname_call_only_reads` checks.
@@ -211,28 +251,7 @@ fn no_other_write_form_appears() {
             .to_string_lossy()
             .replace('\\', "/");
         let text = code_only(&std::fs::read_to_string(&path).unwrap());
-        if text.contains("Command::new(\"sysctl\")") {
-            found.push(format!("{shown}: runs the sysctl tool"));
-        }
-        if text.contains("\"iogpu.wired_limit_mb") && !READERS.contains(&shown.as_str()) {
-            found.push(format!("{shown}: names iogpu.wired_limit_mb"));
-        }
-        for call in ["libc::sysctl(", "sysctlnametomib("] {
-            if text.contains(call) {
-                found.push(format!("{shown}: a {call}…) call"));
-            }
-        }
-        // A raw-pointer declaration of the MIB-form `sysctl`: its calls would read as a bare
-        // `sysctl(…)`, which no other rule sees. `sysctlbyname` declarations are fine, because
-        // `every_sysctlbyname_call_only_reads` checks every call however it is declared.
-        for decl in ["fn sysctl("] {
-            for (at, _) in text.match_indices(decl) {
-                let args = call_args(&text, at + decl.len() - 1).join(",");
-                if args.contains("*mut") || args.contains("*const") {
-                    found.push(format!("{shown}: an FFI declaration of {decl}…)"));
-                }
-            }
-        }
+        found.extend(write_forms(&shown, &text));
     }
     assert!(
         found.is_empty(),
@@ -255,5 +274,55 @@ fn the_scan_catches_each_write_form() {
         call_args(&ffi, at + "fn sysctl".len())
             .join(",")
             .contains("*mut")
+    );
+}
+
+/// Each rule finds its planted form in code and ignores it in a comment (review of #1822, N2).
+#[test]
+fn each_rule_finds_its_planted_form() {
+    for (plant, expect) in [
+        (
+            "libc::sysctl(mib.as_ptr(), 2, old, len, new, n)",
+            "names libc::sysctl",
+        ),
+        ("use libc::sysctl;", "names libc::sysctl"),
+        ("use libc::sysctl as s;", "names libc::sysctl"),
+        ("use libc::{c_int, sysctl};", "imports libc::sysctl"),
+        (
+            "libc::sysctlnametomib(name, mib, len)",
+            "a sysctlnametomib(…) call",
+        ),
+        (
+            "unsafe extern \"C\" { fn sysctl(name: *mut c_int, n: u32) -> c_int; }",
+            "an FFI declaration",
+        ),
+        ("Command::new(\"sysctl\")", "runs the sysctl tool"),
+        (
+            "let n = \"iogpu.wired_limit_mb\";",
+            "names iogpu.wired_limit_mb",
+        ),
+    ] {
+        let found = write_forms("x/src/lib.rs", &code_only(plant));
+        assert!(
+            found.iter().any(|f| f.contains(expect)),
+            "{plant}: {found:?}"
+        );
+        let commented = write_forms("x/src/lib.rs", &code_only(&format!("// {plant}")));
+        assert!(commented.is_empty(), "{plant} in a comment: {commented:?}");
+    }
+    // Neither the read-only sysctlbyname nor a name that merely starts with sysctl counts.
+    assert!(
+        write_forms(
+            "x/src/lib.rs",
+            "libc::sysctlbyname(n, o, l, ptr::null_mut(), 0)"
+        )
+        .is_empty()
+    );
+    assert!(
+        write_forms(
+            "probe/src/macos/mod.rs",
+            "const W: &str = \"iogpu.wired_limit_mb\";"
+        )
+        .is_empty()
     );
 }
