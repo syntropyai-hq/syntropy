@@ -548,7 +548,23 @@ mod imp {
         }
 
         pub(crate) fn new() -> io::Result<OwnerOnly> {
-            let sddl = wide(&format!("D:P(A;;GA;;;{})", UserSid::current()?.text()?));
+            OwnerOnly::from_sddl(&format!("D:P(A;;GA;;;{})", UserSid::current()?.text()?))
+        }
+
+        /// Test only, and not owner-only: all access for the current user, and read and write
+        /// for every authenticated user, so a test can reach the IPC peer check from another
+        /// account (`cmd`'s `other_user` test).
+        #[cfg(test)]
+        pub(crate) fn open_to_authenticated_users() -> io::Result<OwnerOnly> {
+            OwnerOnly::from_sddl(&format!(
+                "D:P(A;;GA;;;{})(A;;GRGW;;;AU)",
+                UserSid::current()?.text()?
+            ))
+        }
+
+        /// The descriptor that the SDDL text `sddl` describes.
+        fn from_sddl(sddl: &str) -> io::Result<OwnerOnly> {
+            let sddl = wide(sddl);
             let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
             // SAFETY: a NUL-terminated SDDL string and a live output pointer; on success the
             // descriptor is `LocalAlloc`ed, and `drop` frees it.

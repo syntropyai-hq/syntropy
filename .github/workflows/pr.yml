@@ -176,8 +176,7 @@ jobs:
       - if: matrix.os == 'linux'
         uses: ./.github/actions/install-cargo-deny
       # The second OS account that `syntropy-ipc`'s peer test connects from (DIST-E1-T03,
-      # RFC-0034 §6.4). On Linux and macOS in CI the test fails without it. The Windows job
-      # creates none yet, so there the refusal of another user is not tested in CI.
+      # RFC-0034 §6.4). In CI the test fails without it.
       - if: matrix.os == 'linux'
         name: Add a second OS account for the IPC peer test
         run: |
@@ -195,6 +194,27 @@ jobs:
           sudo dscl . -create /Users/syntropy-peer NFSHomeDirectory /var/empty
           id syntropy-peer
           echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
+      # On Windows the test starts its copy with `CreateProcessWithLogonW`, so it needs the
+      # account's password: a random one, made here, masked in the log and never printed.
+      - if: matrix.os == 'windows'
+        name: Add a second OS account for the IPC peer test
+        # Windows PowerShell, whose LocalAccounts module loads natively.
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bytes = New-Object byte[] 24
+          [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+          $password = [Convert]::ToBase64String($bytes) + 'aA1!'
+          Write-Output "::add-mask::$password"
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name syntropy-peer -Password $secure -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          # BUILTIN\Users, which may log on locally.
+          if (-not (Get-LocalGroupMember -SID S-1-5-32-545 -Member syntropy-peer -ErrorAction SilentlyContinue)) {
+            Add-LocalGroupMember -SID S-1-5-32-545 -Member syntropy-peer
+          }
+          Get-LocalUser -Name syntropy-peer | Format-List Name, Enabled, SID
+          Add-Content -Path $env:GITHUB_ENV -Value "SYNTROPY_IPC_PEER_USER=syntropy-peer"
+          Add-Content -Path $env:GITHUB_ENV -Value "SYNTROPY_IPC_PEER_PASSWORD=$password"
       - run: cargo xtask test unit
 
   # L3: loom models, Miri and the sanitizer builds (RFC-0060 §3.4), when `changes` lists it. The

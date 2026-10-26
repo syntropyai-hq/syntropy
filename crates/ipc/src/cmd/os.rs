@@ -196,6 +196,16 @@ impl Listener {
             endpoint: Endpoint::Socket(path),
         }
     }
+
+    /// A listener on a pipe whose DACL also lets every authenticated user open it, so a test
+    /// can reach the peer check from another user's process.
+    #[cfg(all(test, windows))]
+    pub(super) fn open_to_authenticated_users(endpoint: &Endpoint) -> io::Result<Listener> {
+        Ok(Listener {
+            inner: imp::Listener::open_to_authenticated_users(endpoint)?,
+            endpoint: endpoint.clone(),
+        })
+    }
 }
 
 /// Connects to the daemon at `endpoint`.
@@ -471,8 +481,17 @@ mod imp {
 
     impl Listener {
         pub(super) fn bind(endpoint: &Endpoint) -> io::Result<Listener> {
+            Listener::with_descriptor(endpoint, OwnerOnly::new()?)
+        }
+
+        #[cfg(test)]
+        pub(super) fn open_to_authenticated_users(endpoint: &Endpoint) -> io::Result<Listener> {
+            Listener::with_descriptor(endpoint, OwnerOnly::open_to_authenticated_users()?)
+        }
+
+        /// Listens on `endpoint`, creating each instance with `descriptor`.
+        fn with_descriptor(endpoint: &Endpoint, descriptor: OwnerOnly) -> io::Result<Listener> {
             let path = pipe_path(endpoint)?;
-            let descriptor = OwnerOnly::new()?;
             let user = UserSid::current()?;
             let pending = instance(&path, &descriptor, true)?;
             Ok(Listener {

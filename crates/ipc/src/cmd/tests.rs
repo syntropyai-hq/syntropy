@@ -32,6 +32,9 @@ use crate::shm::{IpcProtocol, RingRole, RingSpec, ShmLayout};
 mod fixtures;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod other_user;
+#[cfg(windows)]
+#[path = "tests/other_user_windows.rs"]
+mod other_user;
 mod skips;
 
 const BUILD: [u8; 32] = [0x5a; 32];
