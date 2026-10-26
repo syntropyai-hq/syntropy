@@ -182,6 +182,10 @@ cases! {
         reserve_only: false,
     }).map(drop));
     map_segment: "map_segment", |fx| Some(fx.p.map_segment(&fx.ctx, &fx.buf, Bytes(0), Bytes(8)).map(drop));
+    unmap_segment: "unmap_segment", |fx| {
+        let seg = fx.p.map_segment(&fx.ctx, &fx.buf, Bytes(0), Bytes(8)).expect("map_segment");
+        Some(fx.p.unmap_segment(&fx.ctx, seg))
+    };
     register_host: "register_host", |fx| Some(fx.p.register_host(&fx.ctx, HostRegion { addr: 1, len: Bytes(8) }).map(drop));
     import: "import", |fx| Some(fx.p.import(&fx.ctx, HostRegion { addr: 1, len: Bytes(8) }).map(drop));
     set_resident: "set_resident", |fx| Some(fx.p.set_resident(&fx.ctx, &[&fx.buf], true));
@@ -289,4 +293,25 @@ fn a_sticky_provider_still_frees_what_it_holds() {
     // `free` ran on the sticky provider and did not fail.
     assert_eq!(p.fault().expect("the panic").code, PANICKED);
     assert_eq!(p.fault().expect("the panic").class, ErrorClass::Internal);
+}
+
+#[test]
+fn dropping_a_registrar_whose_destructor_panics_makes_the_provider_sticky() {
+    common::install_services();
+    let dir = common::TempDir::new("registrar_close");
+    let Fixture {
+        p,
+        witness,
+        registrar,
+        ..
+    } = fixture(&dir);
+    common::set("panic_in", "registrar_close");
+    drop(registrar);
+    common::clear("panic_in");
+    expect_internal("registrar_close", &p.fault().expect("a recorded fault"));
+    assert_eq!(p.health(&witness), DeviceHealth::Sticky { code: PANICKED });
+    let later = p
+        .event(&witness)
+        .expect_err("a sticky provider refuses calls");
+    assert_eq!(later.code, ErrorCode::DEVICE_STICKY);
 }

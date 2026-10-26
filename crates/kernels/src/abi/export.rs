@@ -241,16 +241,18 @@ macro_rules! __abi_export {
                 }
             }
 
-            extern "C" fn registrar_close<P: KernelProvider + 'static>(slf: *mut c_void) {
-                if slf.is_null() {
-                    return;
-                }
-                // The registrar's destructor is provider code, so it runs under the guard too.
-                let _ = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+            extern "C" fn registrar_close<P: KernelProvider + 'static>(slf: *mut c_void) -> SynStatus {
+                let Some(inst) = registrar::<P>(slf).map(|st| st.inst) else {
+                    return status_of_error(&null_pointer());
+                };
+                // The registrar's destructor is provider code, so it runs under the guard too: a
+                // panic in it makes the provider sticky.
+                g::call(Some(inst), "registrar_close", |_| {
                     // SAFETY: `slf` came from `Box::into_raw` in `host_registrar`, and the core
                     // calls `close` once, so this is the only owner.
                     drop(unsafe { Box::from_raw(slf.cast::<g::RegistrarState<P>>()) });
-                }));
+                    Ok(())
+                })
             }
 
             extern "C" fn import<P: KernelProvider>(slf: *mut c_void, ctx: u64, region: SynHostRegion, out: *mut SynBuffer) -> SynStatus {

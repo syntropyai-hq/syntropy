@@ -425,7 +425,9 @@ impl KernelProvider for ModuleProvider {
         extern "C" fn unset_unregister(_: *mut c_void, _: *const SynRegistration) -> SynStatus {
             SynStatus::OK
         }
-        extern "C" fn unset_close(_: *mut c_void) {}
+        extern "C" fn unset_close(_: *mut c_void) -> SynStatus {
+            SynStatus::OK
+        }
         let mut vtbl = SynRegistrarVtbl {
             struct_size: 0,
             register: unset_register,
@@ -846,6 +848,7 @@ impl HostRegistrar for ModuleRegistrar {
 
 impl Drop for ModuleRegistrar {
     fn drop(&mut self) {
-        (self.vtbl.close)(self.vtbl.slf);
+        let status = (self.vtbl.close)(self.vtbl.slf);
+        let _ = self.check(status);
     }
 }

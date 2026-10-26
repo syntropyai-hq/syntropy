@@ -182,8 +182,8 @@ impl<P: KernelProvider> Instance<P> {
 }
 
 /// The calls that still run on a sticky provider: the runner needs `health` to see the state,
-/// and `free` and `close_ctx` release what the module still holds.
-const ALLOWED_WHEN_STICKY: [&str; 3] = ["health", "free", "close_ctx"];
+/// and `free`, `close_ctx` and `registrar_close` release what the module still holds.
+const ALLOWED_WHEN_STICKY: [&str; 4] = ["health", "free", "close_ctx", "registrar_close"];
 
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     payload

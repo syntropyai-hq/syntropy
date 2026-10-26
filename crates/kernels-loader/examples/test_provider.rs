@@ -109,6 +109,14 @@ struct Registrar {
     host: HostApi,
 }
 
+impl Drop for Registrar {
+    fn drop(&mut self) {
+        if self.host.config("fixture.panic_in").as_deref() == Some("registrar_close") {
+            panic!("injected panic in registrar_close");
+        }
+    }
+}
+
 impl HostRegistrar for Registrar {
     fn register(&self, region: HostRegion, flags: HostRegFlags) -> Result<Registration, Error> {
         if self.host.config("fixture.panic_in").as_deref() == Some("registrar_register") {

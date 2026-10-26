@@ -316,8 +316,9 @@ pub struct SynRegistrarVtbl {
     ) -> SynStatus,
     /// `unregister(reg)`.
     pub unregister: extern "C" fn(slf: *mut c_void, reg: *const SynRegistration) -> SynStatus,
-    /// Frees the registrar. Called once, by the side that holds it last.
-    pub close: extern "C" fn(slf: *mut c_void),
+    /// Frees the registrar. Called once, by the side that holds it last. A destructor that
+    /// panics makes the provider sticky, and the status says so.
+    pub close: extern "C" fn(slf: *mut c_void) -> SynStatus,
     /// The registrar's state.
     pub slf: *mut c_void,
 }
