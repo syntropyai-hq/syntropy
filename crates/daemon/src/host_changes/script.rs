@@ -1342,6 +1342,111 @@ mod tests {
         assert!(ps1.contains("$st.Remove($c)"), "{ps1}");
     }
 
+    /// The values a `TrustAnchor` gives the scripts, each with a payload that would run if it
+    /// escaped its quoting in either shell. Every payload appears only in the comment line and
+    /// inside the field's own single-quoted literal, in both scripts and for every store.
+    fn hostile_anchor(store: TrustStore, dir: &Path) -> HostChangeKind {
+        HostChangeKind::TrustAnchor {
+            store,
+            location: dir.join("it's $(touch PWN-L) `touch PWN-L` \u{2019}; touch PWN-L; \u{2019}"),
+            label: "CA' \"$(touch PWN-N)\" `touch PWN-N` ; touch PWN-N; '".into(),
+            node: "box'$(touch PWN-O)\u{2018}; touch PWN-O".into(),
+            certificate: "QUJD".into(),
+        }
+    }
+
+    #[test]
+    fn trust_anchor_values_cannot_escape_their_quoting() {
+        let stores = [
+            TrustStore::LinuxUserNss,
+            TrustStore::MacosLoginKeychain,
+            TrustStore::LinuxSystemCaCertificates,
+            TrustStore::LinuxSystemCaTrust,
+            TrustStore::WindowsCurrentUserRoot,
+        ];
+        for store in stores {
+            let state = temp_state();
+            let kind = hostile_anchor(store, &state);
+            let mut ledger = HostChangeLedger::open(&state).unwrap();
+            let id = ledger.begin(kind.clone(), None, None, 0, "v").unwrap();
+            ledger.applied(id).unwrap();
+            let HostChangeKind::TrustAnchor {
+                location, label, ..
+            } = &kind
+            else {
+                unreachable!()
+            };
+            let location = path_str(location);
+            for (script, quote) in [
+                (render_sh(&ledger, "v"), sh_quote as fn(&str) -> String),
+                (render_ps1(&ledger, "v"), ps_quote as fn(&str) -> String),
+            ] {
+                let comment_line = script
+                    .lines()
+                    .find(|l| l.starts_with("# change 1"))
+                    .unwrap();
+                for (marker, field) in [("PWN-L", &location), ("PWN-N", label)] {
+                    let literal = quote(field);
+                    let per_value = field.matches(marker).count();
+                    let expected = comment_line.matches(marker).count()
+                        + script.matches(literal.as_str()).count() * per_value;
+                    assert_eq!(
+                        script.matches(marker).count(),
+                        expected,
+                        "{store:?}: {marker} outside its quoting\n{script}"
+                    );
+                }
+                // The node is never passed to a command, only described in the comment.
+                assert_eq!(
+                    script.matches("PWN-O").count(),
+                    comment_line.matches("PWN-O").count(),
+                    "{store:?}\n{script}"
+                );
+            }
+        }
+    }
+
+    /// Run for real: the sh script over hostile trust-store values runs none of their payloads.
+    /// Every store's tool is absent or finds nothing here, so each entry is reported gone, and
+    /// no command reaches sudo.
+    #[cfg(unix)]
+    #[test]
+    fn the_sh_script_runs_no_trust_anchor_payload() {
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        for store in [
+            TrustStore::LinuxUserNss,
+            TrustStore::MacosLoginKeychain,
+            TrustStore::LinuxSystemCaCertificates,
+            TrustStore::WindowsCurrentUserRoot,
+        ] {
+            let id = ledger
+                .begin(hostile_anchor(store, &state), None, None, 0, "v")
+                .unwrap();
+            ledger.applied(id).unwrap();
+        }
+        let script = write_revert_script(&ledger, "v").unwrap();
+        let out = std::process::Command::new("sh")
+            .arg(&script)
+            .current_dir(&state)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let made: Vec<_> = std::fs::read_dir(&state)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("PWN"))
+            .collect();
+        assert!(made.is_empty(), "a payload ran: {made:?}\n{stdout}");
+        assert!(!stdout.contains("sudo"), "{stdout}");
+    }
+
     #[test]
     fn the_other_service_managers_and_firewalls_render() {
         for (manager, in_sh, in_ps1) in [
