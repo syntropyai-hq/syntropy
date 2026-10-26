@@ -4034,6 +4034,9 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-kernels-metal"
 version = "0.0.0"
+dependencies = [
+ "syntropy-kernels",
+]
 
 [[package]]
 name = "syntropy-kernels-vulkan"
