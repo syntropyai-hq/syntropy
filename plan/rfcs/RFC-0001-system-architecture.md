@@ -1615,6 +1615,7 @@ pub enum ErrorClass {
 | `GrammarRef` | core (added 2026-10-23; §5.8's note) | 0050 | 0012 (masks) |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
+| `ReplanReason`, `DriftTerm`, `WorkloadTerm` | core (added 2026-10-23, §18.33) | 0033 | 0010 (the terms), 0031 (`DriftTerm::Hop`), 0054 (`Config { keys }`) |
 | `Error`, `ErrorClass`, `ErrorCode`, `Domain` | core | 0001 | every RFC (codes in its domain; the `Domain` variant and range come with its table), 0050 (the API shape per code) |
 | Policy objects (`Objective`, `ExactnessPolicy`, `ResourcePolicy`, `ResourceOverlay`, `InstancePolicy`), and the plain-data field types `config` parses into (`Fidelity`, `ApproxParams`, `NetworkScope`, `Reserve`, `Fraction`, the selectors, `PlacementPin`, `TensorOverride`, `KeyPath`, `ConfigValue`; OQ-PRD-27) | core | 0054 | 0011, 0012, 0042 |
 | Canonical encoding (`canon::to_bytes`), behind `InstancePolicy::canonical_bytes` and `digest_with` | core | 0054 (§4.5) | |
@@ -1873,6 +1874,7 @@ sequenceDiagram
 | `NodeAdmitted` | deferred | solve in the background; adopt only when the predicted gain passes the hysteresis threshold and the move pays back (below) |
 | Capability drift: a measured term more than `replan.drift_threshold` (default 20%) off the profile for longer than `replan.drift_window` | deferred | `ReportProfile`, `GraphUpdated`, then as for `NodeAdmitted`. The 10% drift event of §7.4 is telemetry only |
 | Workload drift: hit curves, acceptance or context lengths off what the plan assumed (`WorkloadUpdated`, RFC-0010 §7) | deferred | delta solve over budgets only (RFC-0011 §12.3); a delta that improves predicted `t_tok` by at least 2% is adopted in place, since nothing moves; otherwise as for `NodeAdmitted` |
+| A hop demoted to another transport (RFC-0031 §3, §7.4), applied as RFC-0033 §11's `EdgeDemoted` event | deferred | the next solve costs the new transport; solve in the background and adopt as for `NodeAdmitted`, with `ReplanReason::Drift { term: DriftTerm::Hop { link, transport } }`, `transport` the planned one (RFC-0033 §6.1, note of 2026-10-23) |
 | Sustained memory pressure (§10.3) | deferred | first degrade locally; re-plan only when the ladder is exhausted or pressure outlasts `replan.pressure_window` |
 | User: load, unload, policy change; a cluster or `hot` node key the solver reads (headroom, labels, GPU filters) | as requested | new epoch (`ReplanReason::Config`) |
 
@@ -2924,6 +2926,13 @@ From issue #1525, the review of COMP-E1-T01.
 |---|---|---|
 | §5.7's comment says that `build`, `domain`, `poll` and `synchronize` have no default bodies | §5.7 | RFC-0040 §2.1, which §5.7 defers to, gives `build` and `domain` no body; the comment named only `poll` and `synchronize` |
 | `Error::context`'s keys are `Cow<'static, str>`, not `&'static str` | §5.12 | `Error` crosses the IPC in `ErrorReport` (§3.5), and decoding a `&'static str` needs a buffer that lives for the whole program, so every decode would leak one. Code still writes literal keys without allocating. RFC-0040 §2.2 makes the same change to `ProviderId` and `ProviderBuild` (note of the same date) |
+
+### 18.33 `ReplanReason` in `core`, with its term types (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ReplanReason` (RFC-0033 §6.1) is plain data in `core`, built by a new task, DIST-E14-T21, at M1a; `DriftTerm` gets one variant per RFC-0010 §6.2 live estimator (`Bandwidth`, `FixedTime`, `Storage`, `HostLink`, `Hop`) and is `#[non_exhaustive]`; `WorkloadTerm` gets RFC-0010 §7.1's | §5.13; RFC-0033 §6.1 (dated note) | ten tasks, the first at M1a, use it and no task built it; the solver reads it in `SolveInput::reason` and cannot depend on `cluster`. `DriftTerm` was named but never defined. For the maintainers to confirm |
+| A hop demoted to another transport is a deferred trigger, solved in the background and adopted as for `NodeAdmitted`, with `DriftTerm::Hop` naming the planned transport; DIST-E14-T15, which applies RFC-0033 §11's `EdgeDemoted` event, raises it | §7.2; RFC-0011 §12.1 (the matching row) | §7.2 had no row for the demotion, which RFC-0031 §3 and §7.4 raise and RFC-0033 §11 records |
 
 ### 18.34 The split heal in ADR-0009, and the stop reason of a spent restart budget (2026-10-23)
 

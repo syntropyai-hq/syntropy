@@ -685,6 +685,7 @@ If rounding produced a violation, a repair loop moves the group with the lowest 
 | Restart budget spent on a runner | `solve_repair` with the faulty devices removed from the candidates | repair | as above |
 | `NodeAdmitted` | the current plan, re-evaluated (the new node unused, so still feasible) | normal | hysteresis and payback (§12.2) |
 | `GraphUpdated { cause: Drift }` | current plan re-evaluated on the new graph | normal | §12.2 |
+| `EdgeDemoted`: a hop moved to another transport (RFC-0033 §11; RFC-0001 §7.2, row of 2026-10-23) | current plan re-evaluated with the demoted hop on its new transport | normal | §12.2 |
 | `RequestReplan { WorkloadDrift }` | delta solve first (§12.3); a full solve only if the delta solve cannot recover half the predicted loss | delta, then normal | delta: in place; full: §12.2 |
 | `WorkloadDrift { ExpertTierShortfall { tier } }`: a cache tier's measured hit rate falls short of its curve past RFC-0010 §7.1's thresholds. The comparison points are fixed: the VRAM tier's hit rate is compared with `H(y)`, and the RAM tier's hit rate *conditional on a VRAM miss* with `(H(u + y) − H(y)) / (1 − H(y))`, per layer, from `WorkloadStats::tier_hit` | delta solve with that tier's curve capped at the measured hit rate at its budget, so the solver stops crediting hits the tier cannot deliver (for example under throttled admission, RFC-0021 §8); the cap is lifted when the shortfall clears | delta | in place |
 | Policy change, pins, load or unload | DP | normal | as requested |
