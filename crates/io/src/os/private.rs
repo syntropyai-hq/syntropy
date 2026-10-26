@@ -33,7 +33,7 @@
 //! Links are never followed, so a path swapped for a link cannot redirect a check or a change.
 //! [`private_dir`] refuses a symbolic link, or on Windows any reparse point such as a junction,
 //! with [`io::ErrorKind::InvalidInput`]; [`is_owner_only`] reads one as not owner-only; and
-//! [`create_private_file`] refuses one as an existing file. [`private_dir`] checks and changes an
+//! [`create_private_file`] refuses one as an existing name. [`private_dir`] checks and changes an
 //! existing directory through one descriptor or handle opened without following a link, so the
 //! object it checks is the object it changes.
 //!
@@ -85,7 +85,9 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
 /// # Errors
 ///
 /// [`io::ErrorKind::AlreadyExists`] when `path` exists, and the OS error from creating, writing
-/// or syncing it otherwise.
+/// or syncing it otherwise. On Windows an existing directory at `path`, a junction or directory
+/// symbolic link among them, fails with [`io::ErrorKind::PermissionDenied`] instead, which is how
+/// `CreateFileW` reports one.
 pub fn create_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     imp::create_private_file(path, bytes)
 }
@@ -1237,9 +1239,19 @@ mod tests {
             assert!(is_owner_only(&target).expect("is_owner_only"));
             assert!(!is_owner_only(&link).expect("is_owner_only on the junction"));
 
-            // `create_private_file` refuses the junction's name as an existing file.
+            // `create_private_file` refuses the junction's name. `CreateFileW` reports an existing
+            // directory name, a junction among them, as access denied rather than as existing.
             let error = create_private_file(&link, b"seed").expect_err("the name exists");
-            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "{error}"
+            );
+            assert_eq!(
+                std::fs::read_dir(&target).expect("read_dir").count(),
+                0,
+                "nothing was created through the junction"
+            );
         }
     }
 }
