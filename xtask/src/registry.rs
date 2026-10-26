@@ -26,7 +26,7 @@ use crate::run::Context;
 use crate::{
     cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
     hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
-    runner_build_id, sim_presets, toolchain, toolchains,
+    runner_build_id, self_check, sim_presets, toolchain, toolchains,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -664,6 +664,21 @@ pub const JOBS: &[Entry] = &[
             action: Action::Builtin {
                 shown: "the affected-job set of the change from --base to --head",
                 run: changes::step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "self-check",
+        summary: "the weekly self-check: a file under each pattern of each direct rule of \
+                  ci/jobs.toml gives exactly the expected jobs, and no pattern lost its files",
+        defined_in: "RFC-0062 \"Testing and validation\" item 2 and §2.2",
+        params: &[],
+        steps: &[Step {
+            name: "self-check",
+            action: Action::Builtin {
+                shown: "one tracked file per direct-rule pattern requires exactly the expected jobs",
+                run: self_check::step,
             },
         }],
         pending: &[],
