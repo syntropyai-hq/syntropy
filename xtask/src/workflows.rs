@@ -414,8 +414,15 @@ fn checks_out_pr(step: &Yaml, pr_event: bool) -> bool {
             "github.head_ref",
         ];
         if named.iter().any(|e| {
-            let compact: String = e.chars().filter(|c| !c.is_whitespace()).collect();
-            head.iter().any(|h| compact.contains(h))
+            // Index syntax names the same property, `github.event['pull_request']['head']`, and
+            // expressions ignore case (review of #1884, N1).
+            let compact: String = e
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+                .to_ascii_lowercase();
+            let dotted = dotted_index(&compact);
+            head.iter().any(|h| dotted.contains(h))
         }) {
             return true;
         }
@@ -479,6 +486,37 @@ fn checks_out_pr(step: &Yaml, pr_event: bool) -> bool {
         return pr_event || !own;
     }
     reference.contains("pull/")
+}
+
+/// `expression` with each `['name']` or `["name"]` index written as `.name`, so both spellings of
+/// a property path compare equal.
+fn dotted_index(expression: &str) -> String {
+    let mut out = String::with_capacity(expression.len());
+    let mut rest = expression;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let inside = &rest[open + 1..];
+        let quote = inside.chars().next();
+        match quote {
+            Some(q @ ('\'' | '"')) => match inside[1..].find(q) {
+                Some(end) if inside[1 + end + 1..].starts_with(']') => {
+                    out.push('.');
+                    out.push_str(&inside[1..1 + end]);
+                    rest = &inside[1 + end + 2..];
+                }
+                _ => {
+                    out.push('[');
+                    rest = inside;
+                }
+            },
+            _ => {
+                out.push('[');
+                rest = inside;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Whether a step checks out a PR ref, itself or through the local composite action it uses,

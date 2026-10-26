@@ -198,7 +198,12 @@ pub fn cargo() -> OsString {
 /// `lint`'s `rustdoc` step: the workspace's own crates documented with every rustdoc warning an
 /// error, a broken or ambiguous intra-doc link among them.
 pub const RUSTDOC: Action = Action::CargoWith {
-    env: &[("RUSTDOCFLAGS", "-D warnings")],
+    // `-F` (forbid) on the link lint, so a crate cannot lift it with `#![allow(…)]` or a
+    // manifest `[lints]` entry: rustdoc then fails with E0453 (review of #1884, N4).
+    env: &[(
+        "RUSTDOCFLAGS",
+        "-D warnings -F rustdoc::broken_intra_doc_links",
+    )],
     args: &["doc", "--workspace", "--no-deps", "--locked"],
 };
 
@@ -238,7 +243,8 @@ pub const JOBS: &[Entry] = &[
             },
             // Rustdoc with every warning an error, so a broken or ambiguous intra-doc link fails
             // a PR (RFC-0062 §2.3, note 2026-10-22; QUAL-E1-T31). It rebuilds the dependencies'
-            // metadata for rustdoc rather than reusing clippy's, about 30 s on a hosted runner.
+            // metadata for rustdoc rather than reusing clippy's: 31.8 s on #1869's cold-cache hosted run
+            // [measured, lint job at 1f96829e].
             Step {
                 name: "rustdoc",
                 action: RUSTDOC,
@@ -926,7 +932,7 @@ mod tests {
                 "xtask: cargo and rustc are the release rust-toolchain.toml pins",
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
-                "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps --locked",
+                "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked",
                 "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
                  listed",
                 "cargo xtask check-deps",
@@ -1111,7 +1117,9 @@ mod tests {
                 (std::ffi::OsStr::new("CARGO_ENCODED_RUSTDOCFLAGS"), None),
                 (
                     std::ffi::OsStr::new("RUSTDOCFLAGS"),
-                    Some(std::ffi::OsStr::new("-D warnings"))
+                    Some(std::ffi::OsStr::new(
+                        "-D warnings -F rustdoc::broken_intra_doc_links"
+                    ))
                 )
             ]
         );
@@ -1119,7 +1127,7 @@ mod tests {
         assert_eq!(args, ["doc", "--workspace", "--no-deps", "--locked"]);
         assert_eq!(
             RUSTDOC.display(),
-            "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps --locked"
+            "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked"
         );
     }
 
