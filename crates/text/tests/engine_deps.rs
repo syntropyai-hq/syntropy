@@ -3,12 +3,17 @@
 //! Criterion 2 of COMP-E17-T02: the tokenizer engine builds for every desktop target with no C
 //! regex dependency (RFC-0043 §8.2, ADR-0431 decision 1).
 //!
-//! For each desktop triple of RFC-0062 §4.1 it reads `cargo metadata` for that platform and walks
-//! the normal and build dependencies of `syntropy-text`. The Oniguruma bindings must be absent,
-//! `tokenizers` must resolve with its pure-Rust regex backend and none of its C or C++ features,
-//! and nothing it reaches may be a native build tool (`cc`, `cmake`, `pkg-config`, `bindgen`).
+//! Criterion 1 of COMP-E17-T07: the engine also resolves for the two mobile targets with no C
+//! regex dependency (RFC-0043 §8.2).
+//!
+//! For each desktop and mobile triple of RFC-0062 §4.1 it reads `cargo metadata` for that
+//! platform and walks the normal and build dependencies of `syntropy-text`. The Oniguruma
+//! bindings must be absent, `tokenizers` must resolve with its pure-Rust regex backend and none
+//! of its C or C++ features, and nothing it reaches may be a native build tool (`cc`, `cmake`,
+//! `pkg-config`, `bindgen`).
 //! Features are read from the resolved graph, so a feature another workspace crate turns on is
-//! caught too.
+//! caught too. `cargo metadata` needs no installed target, so this proves the dependency graph
+//! only: not a cross-compile of a mobile artefact and not a run on a device.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -23,6 +28,9 @@ const DESKTOP_TARGETS: [&str; 4] = [
     "x86_64-pc-windows-msvc",
     "aarch64-apple-darwin",
 ];
+
+/// The mobile artefacts of RFC-0062 §4.1, the Tier 3 targets of ADR-0020.
+const MOBILE_TARGETS: [&str; 2] = ["aarch64-linux-android", "aarch64-apple-ios"];
 
 /// The Oniguruma bindings, the C regex library `tokenizers` links under its `onig` feature.
 const C_REGEX_CRATES: [&str; 2] = ["onig", "onig_sys"];
@@ -125,55 +133,67 @@ impl Resolved {
     }
 }
 
+/// Every target assertion for one platform triple.
+fn check_target(target: &str) {
+    let resolved = resolve(target);
+    let text = resolved
+        .names
+        .iter()
+        .find(|(_, name)| *name == "syntropy-text")
+        .map(|(id, _)| id.as_str())
+        .expect("syntropy-text is in the workspace");
+    let reachable = resolved.reachable(text);
+
+    for name in C_REGEX_CRATES {
+        assert!(
+            !reachable.contains_key(name),
+            "{target}: syntropy-text reaches the C regex crate {name}"
+        );
+    }
+
+    let engine_id = reachable
+        .get("tokenizers")
+        .unwrap_or_else(|| panic!("{target}: syntropy-text does not reach tokenizers"));
+    let engine = &resolved.features[engine_id];
+    assert!(
+        engine.contains("fancy-regex"),
+        "{target}: tokenizers lacks its pure-Rust regex feature: {engine:?}"
+    );
+    for feature in BANNED_ENGINE_FEATURES {
+        assert!(
+            !engine.contains(feature),
+            "{target}: tokenizers resolves with `{feature}`: {engine:?}"
+        );
+    }
+
+    // The suffix-array crate the Unigram trainer uses; its `cpp` feature builds C++.
+    if let Some(id) = reachable.get("esaxx-rs") {
+        assert!(
+            !resolved.features[id].contains("cpp"),
+            "{target}: esaxx-rs builds its C++ code"
+        );
+    }
+
+    // `blake3` lists `cc` as a build dependency even in its `pure` build, so the native-code
+    // check covers the engine's own graph, not the whole crate's.
+    for name in resolved.reachable(engine_id).keys() {
+        assert!(
+            !NATIVE_BUILD_CRATES.contains(&name.as_str()),
+            "{target}: tokenizers reaches the native build crate {name}"
+        );
+    }
+}
+
 #[test]
 fn no_c_regex_dependency_on_any_desktop_target() {
     for target in DESKTOP_TARGETS {
-        let resolved = resolve(target);
-        let text = resolved
-            .names
-            .iter()
-            .find(|(_, name)| *name == "syntropy-text")
-            .map(|(id, _)| id.as_str())
-            .expect("syntropy-text is in the workspace");
-        let reachable = resolved.reachable(text);
+        check_target(target);
+    }
+}
 
-        for name in C_REGEX_CRATES {
-            assert!(
-                !reachable.contains_key(name),
-                "{target}: syntropy-text reaches the C regex crate {name}"
-            );
-        }
-
-        let engine_id = reachable
-            .get("tokenizers")
-            .unwrap_or_else(|| panic!("{target}: syntropy-text does not reach tokenizers"));
-        let engine = &resolved.features[engine_id];
-        assert!(
-            engine.contains("fancy-regex"),
-            "{target}: tokenizers lacks its pure-Rust regex feature: {engine:?}"
-        );
-        for feature in BANNED_ENGINE_FEATURES {
-            assert!(
-                !engine.contains(feature),
-                "{target}: tokenizers resolves with `{feature}`: {engine:?}"
-            );
-        }
-
-        // The suffix-array crate the Unigram trainer uses; its `cpp` feature builds C++.
-        if let Some(id) = reachable.get("esaxx-rs") {
-            assert!(
-                !resolved.features[id].contains("cpp"),
-                "{target}: esaxx-rs builds its C++ code"
-            );
-        }
-
-        // `blake3` lists `cc` as a build dependency even in its `pure` build, so the native-code
-        // check covers the engine's own graph, not the whole crate's.
-        for name in resolved.reachable(engine_id).keys() {
-            assert!(
-                !NATIVE_BUILD_CRATES.contains(&name.as_str()),
-                "{target}: tokenizers reaches the native build crate {name}"
-            );
-        }
+#[test]
+fn no_c_regex_dependency_on_any_mobile_target() {
+    for target in MOBILE_TARGETS {
+        check_target(target);
     }
 }
