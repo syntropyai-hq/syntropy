@@ -17,8 +17,12 @@
 //! On Unix, "only the current user" means owned by the effective uid with no group or other mode
 //! bits. A Linux POSIX ACL needs no separate check: with an extended ACL the group mode bits are
 //! the ACL mask, and a zero mask makes every named entry ineffective. macOS extended ACLs do not
-//! show in the mode, so [`is_owner_only`] also reads the file's extended ACL there and refuses
-//! any entry that is not a deny entry.
+//! show in the mode, and macOS evaluates them before the mode bits, so a new object that inherits
+//! an allow entry from its parent is readable by others even at mode 0600. On macOS
+//! [`private_dir`] and [`create_private_file`] therefore clear the extended ACL through the
+//! descriptor they hold, check that no allow entry is left, and fail with
+//! [`io::ErrorKind::PermissionDenied`] if one is; [`is_owner_only`] reads the extended ACL too and
+//! refuses any entry that is not a deny entry.
 //!
 //! On Windows, the objects these functions create carry the current user's SID as owner and a
 //! protected DACL with one entry: full control for that SID, inherited by objects and containers
@@ -30,24 +34,36 @@
 //! still a grant this module did not make, and the check stays strict: it reports what the DACL
 //! grants, not what a privileged account could take.
 //!
-//! Links are never followed, so a path swapped for a link cannot redirect a check or a change.
-//! [`private_dir`] refuses a symbolic link, or on Windows any reparse point such as a junction,
-//! with [`io::ErrorKind::InvalidInput`]; [`is_owner_only`] reads one as not owner-only; and
+//! A link in the final component of a path is never followed. [`private_dir`] refuses a symbolic
+//! link there, or on Windows any reparse point such as a junction, with
+//! [`io::ErrorKind::InvalidInput`]; [`is_owner_only`] reads one as not owner-only; and
 //! [`create_private_file`] refuses one as an existing name. [`private_dir`] checks and changes an
-//! existing directory through one descriptor or handle opened without following a link, so the
-//! object it checks is the object it changes.
+//! existing directory through one descriptor or handle opened without following a link in the
+//! final component, so the object it checks is the object it changes.
+//!
+//! Links in the parent directories of a path are followed, as every path lookup follows them, and
+//! each call resolves its path afresh. **The parent directories must be trusted:** owned by the
+//! current user or by root (an administrator on Windows), and writable by no one else. Anyone who
+//! can write to a parent can swap it for a link, and so redirect where [`private_dir`] and
+//! [`create_private_file`] create their objects, between two calls or before them. The default
+//! per-user state directories of RFC-0030 §2.1 sit in the user's own home or profile directory,
+//! which meets this.
+//!
+//! Tightening an existing directory changes only the directory itself. If it was writable by
+//! others before, whatever they left in it is still there, owned by them; a caller must check each
+//! file it later trusts through the descriptor it reads it with.
 //!
 //! Other targets return [`io::ErrorKind::Unsupported`] from every function.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 
 /// Creates the directory at `path`, so only the current user can use it.
 ///
 /// Missing parents are created first with default permissions. On Unix the directory is created
-/// mode 0700; if it already exists, it is opened with `O_DIRECTORY | O_NOFOLLOW`, its owner is
-/// checked with `fstat`, and its mode is set to exactly 0700 with `fchmod`, all on that one
-/// descriptor. On Windows it is created with the owner-only descriptor the module documentation
+/// mode 0700; then, whether it is new or already existed, it is opened with
+/// `O_DIRECTORY | O_NOFOLLOW`, its owner is checked with `fstat`, its mode is set to exactly 0700
+/// with `fchmod`, and on macOS its extended ACL is cleared, all on that one descriptor. On Windows it is created with the owner-only descriptor the module documentation
 /// describes; if it already exists, it is opened with `FILE_FLAG_BACKUP_SEMANTICS |
 /// FILE_FLAG_OPEN_REPARSE_POINT`, and on that one handle its attributes are checked, its owner is
 /// read with `GetSecurityInfo`, and its DACL is replaced with the owner-only one with
@@ -57,9 +73,12 @@ use std::path::Path;
 ///
 /// [`io::ErrorKind::PermissionDenied`] when the directory exists and another user owns it;
 /// [`io::ErrorKind::InvalidInput`] when `path` is a symbolic link or, on Windows, another reparse
-/// point; [`io::ErrorKind::NotADirectory`] when `path` exists and is not a directory; otherwise the OS
-/// error from creating, opening or changing it. On macOS an existing extended ACL is left in place,
-/// and [`is_owner_only`] reports it.
+/// point; [`io::ErrorKind::NotADirectory`] when `path` exists and is not a directory;
+/// [`io::ErrorKind::PermissionDenied`] on macOS when an extended ACL allow entry cannot be
+/// cleared; otherwise the OS error from creating, opening or changing it.
+///
+/// Only the final component of `path` is opened without following a link; see the module
+/// documentation for why the parent directories must be trusted.
 pub fn private_dir(path: &Path) -> io::Result<()> {
     if let Some(parent) = path
         .parent()
@@ -73,11 +92,18 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
 /// Creates the file at `path`, which must not exist, owner-only, writes all of `bytes` and
 /// fsyncs it.
 ///
-/// On Unix the file is opened with `O_CREAT | O_EXCL` and mode 0600, and the mode is then set to
-/// exactly 0600 through the descriptor, since the umask can only have cleared bits. On Windows it
-/// is created with `CREATE_NEW` and the owner-only descriptor set at creation. `O_EXCL` and
-/// `CREATE_NEW` also refuse a symbolic link at `path`, even one whose target does not exist. If writing or syncing fails, the file is
-/// removed, so a failed call never leaves a truncated file behind.
+/// On Unix the file is opened with `O_CREAT | O_EXCL | O_NOFOLLOW` and mode 0600, the mode is then
+/// set to exactly 0600 through the descriptor, since the umask can only have cleared bits, and on
+/// macOS the extended ACL it inherited is cleared through the descriptor, all before any byte is
+/// written. On Windows it is created with `CREATE_NEW` and the owner-only descriptor set at
+/// creation. `O_EXCL` and `CREATE_NEW` also refuse a symbolic link at `path`, even one whose target
+/// does not exist. Only the final component is opened without following a link; see the module
+/// documentation for why the parent directories must be trusted.
+///
+/// If writing or syncing fails and the call returns an error, the file is removed, as far as the
+/// removal succeeds. A crash or power loss between creating the file and syncing it can still leave
+/// a short or empty file, which a later call then refuses as existing: a reader must check the
+/// length and contents of what it reads, and treat a short file as damaged.
 ///
 /// The file's directory entry is durable only once the directory is synced too: call [`sync_dir`]
 /// on the parent afterwards (RFC-0030 §2.2).
@@ -87,9 +113,29 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
 /// [`io::ErrorKind::AlreadyExists`] when `path` exists, and the OS error from creating, writing
 /// or syncing it otherwise. On Windows an existing directory at `path`, a junction or directory
 /// symbolic link among them, fails with [`io::ErrorKind::PermissionDenied`] instead, which is how
-/// `CreateFileW` reports one.
+/// `CreateFileW` reports one. On macOS, [`io::ErrorKind::PermissionDenied`] also when an inherited
+/// extended ACL allow entry cannot be cleared; the file is removed then too.
 pub fn create_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    imp::create_private_file(path, bytes)
+    create_new_then(path, |file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    })
+}
+
+/// Creates the owner-only file at `path` with [`imp::create_new`], then runs `fill` on it. If
+/// `fill` fails, the file is closed and removed, and `fill`'s error is returned.
+fn create_new_then(
+    path: &Path,
+    fill: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut file = imp::create_new(path)?;
+    let filled = fill(&mut file);
+    if filled.is_err() {
+        drop(file);
+        // The file is this call's own, created above; the fill's error is the one to report.
+        let _ = std::fs::remove_file(path);
+    }
+    filled
 }
 
 /// Flushes the directory at `path` to stable storage, so entries just created or removed in it
@@ -163,7 +209,9 @@ fn foreign_owner(path: &Path) -> io::Error {
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 mod imp {
     use std::fs::{File, OpenOptions, Permissions};
-    use std::io::{self, Write};
+    use std::io;
+    #[cfg(target_os = "macos")]
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::Path;
 
@@ -195,8 +243,9 @@ mod imp {
             Err(error) => return Err(error),
         }
         // Check and change the directory through one descriptor, also when it was just created:
-        // the umask may have cleared bits of 0700. `O_NOFOLLOW` refuses a link at `path`, so the
-        // descriptor is the directory itself.
+        // the umask may have cleared bits of 0700, and on macOS it may have inherited ACL
+        // entries. `O_NOFOLLOW` refuses a link in the final component, so the descriptor is the
+        // directory itself.
         let dir = match OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
@@ -218,27 +267,33 @@ mod imp {
         if metadata.mode() & 0o7777 != DIR_MODE {
             dir.set_permissions(Permissions::from_mode(DIR_MODE))?;
         }
+        #[cfg(target_os = "macos")]
+        acl::clear(dir.as_raw_fd())?;
         Ok(())
     }
 
-    pub(super) fn create_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-        let mut file = OpenOptions::new()
+    pub(super) fn create_new(path: &Path) -> io::Result<File> {
+        let file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(FILE_MODE)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
-        let written = (|| {
+        let private = (|| {
             file.set_permissions(Permissions::from_mode(FILE_MODE))?;
-            file.write_all(bytes)?;
-            file.sync_all()
+            #[cfg(target_os = "macos")]
+            acl::clear(file.as_raw_fd())?;
+            Ok(())
         })();
-        if written.is_err() {
-            drop(file);
-            // The file is this call's own, created above; the write's error is the one to report.
-            let _ = std::fs::remove_file(path);
+        match private {
+            Ok(()) => Ok(file),
+            Err(error) => {
+                drop(file);
+                // The file is this call's own, created above and still empty.
+                let _ = std::fs::remove_file(path);
+                Err(error)
+            }
         }
-        written
     }
 
     pub(super) fn sync_dir(path: &Path) -> io::Result<()> {
@@ -254,8 +309,19 @@ mod imp {
             return Ok(false);
         }
         #[cfg(target_os = "macos")]
-        if acl::grants_access(path)? {
-            return Ok(false);
+        {
+            if acl::path_grants_access(path)? {
+                return Ok(false);
+            }
+            // The ACL was read by a second lookup of the path, which reports a missing object as
+            // "no ACL". Look the path up again: the answer stands only if it still names the same
+            // object, not a link.
+            let again = std::fs::symlink_metadata(path)?;
+            if again.file_type().is_symlink()
+                || (again.dev(), again.ino()) != (metadata.dev(), metadata.ino())
+            {
+                return Ok(false);
+            }
         }
         Ok(true)
     }
@@ -278,58 +344,126 @@ mod imp {
 
         // The `acl(3)` functions of libSystem, which the `libc` crate does not declare on macOS.
         unsafe extern "C" {
+            fn acl_init(count: c_int) -> *mut c_void;
             fn acl_get_link_np(path: *const c_char, kind: c_int) -> *mut c_void;
+            fn acl_get_fd_np(fd: c_int, kind: c_int) -> *mut c_void;
+            fn acl_set_fd_np(fd: c_int, acl: *mut c_void, kind: c_int) -> c_int;
             fn acl_get_entry(acl: *mut c_void, entry_id: c_int, entry: *mut *mut c_void) -> c_int;
             fn acl_get_tag_type(entry: *mut c_void, tag: *mut c_int) -> c_int;
             fn acl_free(object: *mut c_void) -> c_int;
         }
 
-        /// An ACL from `acl_get_link_np`, freed on drop.
+        /// An ACL from `acl_init`, `acl_get_link_np` or `acl_get_fd_np`, freed on drop.
         struct Acl(*mut c_void);
 
         impl Drop for Acl {
             fn drop(&mut self) {
-                // SAFETY: the pointer came from `acl_get_link_np`, and only this frees it.
+                // SAFETY: the pointer came from one of the `acl(3)` allocating calls, and only
+                // this frees it.
                 unsafe { acl_free(self.0) };
             }
         }
 
-        /// Whether the extended ACL of `path` has an entry other than a deny entry. The `_link_np`
-        /// form reads a link's own ACL rather than following it.
-        pub(super) fn grants_access(path: &Path) -> io::Result<bool> {
-            let name = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "the path holds a NUL byte")
-            })?;
-            // SAFETY: a NUL-terminated path that outlives the call; the result is an ACL that
-            // `Acl` frees, or null with errno set.
-            let acl = unsafe { acl_get_link_np(name.as_ptr(), ACL_TYPE_EXTENDED) };
+        /// What an ACL holds.
+        struct Summary {
+            /// Whether it has any entry at all.
+            any: bool,
+            /// Whether it has an entry other than a deny entry.
+            grants: bool,
+        }
+
+        /// The ACL a `acl_get_*_np` call returned, or `None` for an object with no extended ACL
+        /// (null with `ENOENT`).
+        fn wrap(acl: *mut c_void) -> io::Result<Option<Acl>> {
             if acl.is_null() {
                 let error = io::Error::last_os_error();
-                // ENOENT for an object that exists means it has no extended ACL.
                 return match error.raw_os_error() {
-                    Some(libc::ENOENT) => Ok(false),
+                    Some(libc::ENOENT) => Ok(None),
                     _ => Err(error),
                 };
             }
-            let acl = Acl(acl);
+            Ok(Some(Acl(acl)))
+        }
+
+        /// Walks every entry. `acl_get_entry` reports the end of the list as `EINVAL`; any other
+        /// failure is an error, never read as the end.
+        fn summarize(acl: Option<&Acl>) -> io::Result<Summary> {
+            let mut summary = Summary {
+                any: false,
+                grants: false,
+            };
+            let Some(acl) = acl else {
+                return Ok(summary);
+            };
             let mut which = ACL_FIRST_ENTRY;
             loop {
                 let mut entry: *mut c_void = std::ptr::null_mut();
                 // SAFETY: a live ACL and a live output; on success `entry` points into the ACL.
                 if unsafe { acl_get_entry(acl.0, which, &mut entry) } != 0 {
-                    // Past the last entry.
-                    return Ok(false);
+                    let error = io::Error::last_os_error();
+                    return match error.raw_os_error() {
+                        Some(libc::EINVAL) => Ok(summary),
+                        _ => Err(error),
+                    };
                 }
                 which = ACL_NEXT_ENTRY;
+                summary.any = true;
                 let mut tag: c_int = 0;
                 // SAFETY: an entry of the live ACL and a live output.
                 if unsafe { acl_get_tag_type(entry, &mut tag) } != 0 {
                     return Err(io::Error::last_os_error());
                 }
                 if tag != ACL_EXTENDED_DENY {
-                    return Ok(true);
+                    summary.grants = true;
                 }
             }
+        }
+
+        /// The extended ACL of the open descriptor `fd`.
+        fn of_fd(fd: c_int) -> io::Result<Summary> {
+            // SAFETY: an open descriptor; the result is an ACL that `Acl` frees, or null with
+            // errno set.
+            let acl = wrap(unsafe { acl_get_fd_np(fd, ACL_TYPE_EXTENDED) })?;
+            summarize(acl.as_ref())
+        }
+
+        /// Whether the extended ACL of `path` has an entry other than a deny entry. The `_link_np`
+        /// form reads a link's own ACL rather than following it.
+        pub(super) fn path_grants_access(path: &Path) -> io::Result<bool> {
+            let name = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "the path holds a NUL byte")
+            })?;
+            // SAFETY: a NUL-terminated path that outlives the call; the result is an ACL that
+            // `Acl` frees, or null with errno set.
+            let acl = wrap(unsafe { acl_get_link_np(name.as_ptr(), ACL_TYPE_EXTENDED) })?;
+            Ok(summarize(acl.as_ref())?.grants)
+        }
+
+        /// Removes every extended ACL entry of the open descriptor `fd`, such as one inherited
+        /// from the parent directory, then checks that no allow entry is left. An object with no
+        /// entries is left alone.
+        pub(super) fn clear(fd: c_int) -> io::Result<()> {
+            if !of_fd(fd)?.any {
+                return Ok(());
+            }
+            // SAFETY: `acl_init` takes a count and returns a new, empty ACL that `Acl` frees, or
+            // null with errno set.
+            let empty = unsafe { acl_init(0) };
+            if empty.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let empty = Acl(empty);
+            // SAFETY: an open descriptor and a live, empty ACL, which the call only reads.
+            if unsafe { acl_set_fd_np(fd, empty.0, ACL_TYPE_EXTENDED) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if of_fd(fd)?.grants {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "an extended ACL entry that allows access remains after clearing the ACL",
+                ));
+            }
+            Ok(())
         }
     }
 }
@@ -337,7 +471,7 @@ mod imp {
 #[cfg(windows)]
 mod imp {
     use std::fs::{File, OpenOptions};
-    use std::io::{self, Write};
+    use std::io;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -770,7 +904,7 @@ mod imp {
         )
     }
 
-    pub(super) fn create_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    pub(super) fn create_new(path: &Path) -> io::Result<File> {
         let name = wide(path)?;
         let descriptor = Descriptor::private_file(&UserSid::current()?)?;
         let attributes = descriptor.attributes();
@@ -792,14 +926,7 @@ mod imp {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: `handle` is the valid file handle `CreateFileW` just returned, owned only here.
-        let mut file = unsafe { File::from_raw_handle(handle.cast()) };
-        let written = file.write_all(bytes).and_then(|()| file.sync_all());
-        if written.is_err() {
-            drop(file);
-            // The file is this call's own, created above; the write's error is the one to report.
-            let _ = std::fs::remove_file(path);
-        }
-        written
+        Ok(unsafe { File::from_raw_handle(handle.cast()) })
     }
 
     pub(super) fn sync_dir(path: &Path) -> io::Result<()> {
@@ -832,6 +959,14 @@ mod imp {
         let handle = open(&wide(path)?, READ_CONTROL | WRITE_DAC | WRITE_OWNER)?;
         Descriptor::from_sddl(sddl)?.set(&handle, info)
     }
+
+    /// For the tests: whether the DACL of `path` is protected from inheritance.
+    #[cfg(test)]
+    pub(super) fn is_protected(path: &Path) -> io::Result<bool> {
+        Security::read(&open(&wide(path)?, READ_CONTROL)?)?
+            .descriptor
+            .is_protected()
+    }
 }
 
 #[cfg(not(any(
@@ -855,7 +990,7 @@ mod imp {
         Err(unsupported())
     }
 
-    pub(super) fn create_private_file(_path: &Path, _bytes: &[u8]) -> io::Result<()> {
+    pub(super) fn create_new(_path: &Path) -> io::Result<std::fs::File> {
         Err(unsupported())
     }
 
@@ -939,6 +1074,27 @@ mod tests {
             [7u8; 32],
             "the existing file is left as it was"
         );
+    }
+
+    #[test]
+    fn a_failed_write_removes_the_partial_file() {
+        use std::io::Write;
+        let scratch = Scratch::new("partial");
+        private_dir(scratch.path()).expect("private_dir");
+        let key = scratch.path().join("node.key");
+        let error = super::create_new_then(&key, |file| {
+            file.write_all(b"half a seed")?;
+            Err(io::Error::other("injected write failure"))
+        })
+        .expect_err("the fill fails");
+        assert_eq!(
+            error.to_string(),
+            "injected write failure",
+            "the fill's error comes back"
+        );
+        assert!(!key.exists(), "the partial file is removed");
+        // The name is free again, so a retry can create the file.
+        create_private_file(&key, b"seed").expect("create_private_file after the failure");
     }
 
     #[test]
@@ -1075,6 +1231,54 @@ mod tests {
             assert!(!absent.exists(), "nothing was created through the link");
         }
 
+        /// A parent's inheritable allow entry reaches new objects in it, and macOS evaluates it
+        /// before the mode bits, so the create paths clear it.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn an_inherited_macos_acl_entry_is_cleared_from_the_dir_and_the_key() {
+            let scratch = Scratch::new("aclinherit");
+            std::fs::create_dir_all(scratch.path()).expect("mkdir");
+            let status = std::process::Command::new("/bin/chmod")
+                .arg("+a")
+                .arg("everyone allow read,file_inherit,directory_inherit")
+                .arg(scratch.path())
+                .status()
+                .expect("run chmod");
+            assert!(status.success(), "chmod +a on the parent");
+
+            // Without the clearing, a plain child shows what would leak.
+            let plain = scratch.path().join("plain");
+            std::fs::create_dir(&plain).expect("mkdir");
+            std::fs::set_permissions(&plain, Permissions::from_mode(0o700)).expect("chmod");
+            assert!(
+                !is_owner_only(&plain).expect("is_owner_only"),
+                "a plain 0700 child inherits the allow entry"
+            );
+
+            let state = scratch.path().join("state");
+            private_dir(&state).expect("private_dir");
+            assert!(
+                is_owner_only(&state).expect("is_owner_only"),
+                "the directory"
+            );
+            let key = state.join("node.key");
+            create_private_file(&key, b"seed").expect("create_private_file");
+            assert!(is_owner_only(&key).expect("is_owner_only"), "the key");
+            // A key straight under the parent, which carries the entry itself.
+            let direct = scratch.path().join("direct.key");
+            create_private_file(&direct, b"seed").expect("create_private_file");
+            assert!(
+                is_owner_only(&direct).expect("is_owner_only"),
+                "the direct key"
+            );
+            // And `private_dir` clears the entry from the existing plain child.
+            private_dir(&plain).expect("private_dir on the plain child");
+            assert!(
+                is_owner_only(&plain).expect("is_owner_only"),
+                "the tightened child"
+            );
+        }
+
         /// macOS extended ACLs do not show in the mode bits, so the check reads them.
         #[cfg(target_os = "macos")]
         #[test]
@@ -1110,7 +1314,7 @@ mod tests {
             PROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_DACL_SECURITY_INFORMATION,
         };
 
-        use super::super::imp::{UserSid, set_security};
+        use super::super::imp::{UserSid, is_protected, set_security};
         use super::super::{create_private_file, is_owner_only, private_dir};
         use super::Scratch;
 
@@ -1207,6 +1411,55 @@ mod tests {
             assert!(
                 error.to_string().contains("owned by another user"),
                 "refused by the owner check, before any change: {error}"
+            );
+        }
+
+        #[test]
+        fn an_inheritable_grant_on_the_parent_does_not_reach_the_dir_or_the_key() {
+            let scratch = Scratch::new("wininherit");
+            // The parent grants Everyone full control, inherited by objects and containers.
+            loose_dir(scratch.path());
+            let state = scratch.path().join("state");
+            private_dir(&state).expect("private_dir");
+            assert!(
+                is_owner_only(&state).expect("is_owner_only"),
+                "the directory"
+            );
+            let key = state.join("node.key");
+            create_private_file(&key, b"seed").expect("create_private_file");
+            assert!(is_owner_only(&key).expect("is_owner_only"), "the key");
+            let direct = scratch.path().join("direct.key");
+            create_private_file(&direct, b"seed").expect("create_private_file");
+            assert!(
+                is_owner_only(&direct).expect("is_owner_only"),
+                "the direct key"
+            );
+        }
+
+        #[test]
+        fn private_dir_protects_an_owner_only_dacl_that_is_not_protected() {
+            let scratch = Scratch::new("winunprotected");
+            private_dir(scratch.path()).expect("private_dir");
+            // A child made the ordinary way inherits only the user's entry, unprotected. Its
+            // owner is set to the user, since an elevated token's default owner is the
+            // Administrators group.
+            let child = scratch.path().join("child");
+            std::fs::create_dir(&child).expect("mkdir");
+            set_security(&child, &format!("O:{}", sid()), OWNER_SECURITY_INFORMATION)
+                .expect("set the owner");
+            assert!(
+                is_owner_only(&child).expect("is_owner_only"),
+                "owner-only already"
+            );
+            assert!(
+                !is_protected(&child).expect("is_protected"),
+                "but not protected"
+            );
+            private_dir(&child).expect("private_dir");
+            assert!(is_owner_only(&child).expect("is_owner_only"));
+            assert!(
+                is_protected(&child).expect("is_protected"),
+                "private_dir protects the DACL from later inheritance"
             );
         }
 
