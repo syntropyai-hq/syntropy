@@ -128,7 +128,7 @@ pub trait Transport: Send + Sync {
 
     /// RFC-0031 §3's cost of one frame of `size` bytes on `edge`, this transport's probed costs
     /// on one link, at `link.p99_weight`'s default: `core`'s
-    /// [`link_cost`](syntropy_core::resource::link_cost), which the solver and
+    /// [`link_cost`], which the solver and
     /// [`connect_hop`] call with the configured weight.
     fn cost(&self, edge: &LinkCaps, size: Bytes, objective: Objective) -> Nanos {
         debug_assert_eq!(

@@ -168,6 +168,9 @@ trybuild = "1.0.122"
 # Reads a stored CA certificate's public key and extensions, and checks its self-signature with
 # ring (`verify`) (PROD-E5-T03). rcgen links the same version for its `x509-parser` feature.
 x509-parser = { version = "0.18.1", default-features = false, features = ["verify"] }
+# YAML 1.2 reading for `cargo xtask workflows`, the workflow security lint of RFC-0062 §12.4
+# (QUAL-E1-T09), xtask only. No `encoding` feature: the workflows are UTF-8.
+yaml-rust2 = { version = "0.13.0", default-features = false }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 # zstd level 3 for control messages over 64 KiB (RFC-0031 §9.1), `syntropy-net` only. It builds
 # the bundled C library (BSD-3-Clause), so the build needs a C compiler.
