@@ -74,6 +74,12 @@ pub enum Action {
     /// `cargo <args>`, with the cargo that started xtask (`$CARGO`), so the toolchain pinned in
     /// `rust-toolchain.toml` runs every step.
     Cargo(&'static [&'static str]),
+    /// `cargo <args>` as [`Action::Cargo`] runs it, with environment variables set for the
+    /// child, replacing any it would inherit: the `rustdoc` step's `RUSTDOCFLAGS`.
+    CargoWith {
+        env: &'static [(&'static str, &'static str)],
+        args: &'static [&'static str],
+    },
     /// `cargo xtask <args>`: this binary again, as a child process, for a check that lives in
     /// xtask. It inherits the environment, so it checks the same checkout.
     Xtask(&'static [&'static str]),
@@ -90,6 +96,9 @@ impl PartialEq for Action {
     fn eq(&self, other: &Action) -> bool {
         match (self, other) {
             (Action::Cargo(a), Action::Cargo(b)) => a == b,
+            (Action::CargoWith { env: a, args: b }, Action::CargoWith { env: c, args: d }) => {
+                a == c && b == d
+            }
             (Action::Xtask(a), Action::Xtask(b)) => a == b,
             (Action::Builtin { shown: a, .. }, Action::Builtin { shown: b, .. }) => a == b,
             _ => false,
@@ -116,6 +125,11 @@ impl Action {
                 command.args(*args);
                 Some(command)
             }
+            Action::CargoWith { env, args } => {
+                let mut command = Command::new(cargo());
+                command.envs(env.iter().copied()).args(*args);
+                Some(command)
+            }
             Action::Xtask(args) => {
                 // If the path is unknown, the step fails with "could not start".
                 let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("xtask"));
@@ -132,6 +146,22 @@ impl Action {
         match self {
             Action::Cargo(args) => {
                 let mut line = String::from("cargo");
+                for arg in *args {
+                    line.push(' ');
+                    line.push_str(arg);
+                }
+                line
+            }
+            Action::CargoWith { env, args } => {
+                let mut line = String::new();
+                for (name, value) in *env {
+                    if value.contains(' ') {
+                        line.push_str(&format!("{name}=\"{value}\" "));
+                    } else {
+                        line.push_str(&format!("{name}={value} "));
+                    }
+                }
+                line.push_str("cargo");
                 for arg in *args {
                     line.push(' ');
                     line.push_str(arg);
@@ -156,12 +186,19 @@ pub fn cargo() -> OsString {
     std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
+/// `lint`'s `rustdoc` step: the workspace's own crates documented with every rustdoc warning an
+/// error, a broken or ambiguous intra-doc link among them.
+pub const RUSTDOC: Action = Action::CargoWith {
+    env: &[("RUSTDOCFLAGS", "-D warnings")],
+    args: &["doc", "--workspace", "--no-deps", "--locked"],
+};
+
 /// The CI jobs, called by `cargo xtask ci <job>`. RFC-0062 §2.3 lists the jobs the plan expects.
 pub const JOBS: &[Entry] = &[
     Entry {
         name: "lint",
-        summary: "the L0 static checks: rustfmt, clippy with the determinism lints, the crate \
-                  dependency rules, CODEOWNERS and the licence policy",
+        summary: "the L0 static checks: rustfmt, clippy with the determinism lints, rustdoc, the \
+                  crate dependency rules, CODEOWNERS and the licence policy",
         defined_in: "RFC-0062 §2.3 and §12.4",
         params: &[],
         steps: &[
@@ -188,6 +225,13 @@ pub const JOBS: &[Entry] = &[
                     "-D",
                     "warnings",
                 ]),
+            },
+            // Rustdoc with every warning an error, so a broken or ambiguous intra-doc link fails
+            // a PR (RFC-0062 §2.3, note 2026-10-22; QUAL-E1-T31). After clippy, whose check
+            // builds of the dependencies it reuses.
+            Step {
+                name: "rustdoc",
+                action: RUSTDOC,
             },
             // What clippy cannot check about the determinism lints of RFC-0060 §2.1 and §2.4,
             // which the `clippy` step applies (QUAL-E3-T03).
@@ -866,6 +910,7 @@ mod tests {
                 "xtask: cargo and rustc are the release rust-toolchain.toml pins",
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
+                "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps --locked",
                 "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
                  listed",
                 "cargo xtask check-deps",
@@ -1036,6 +1081,77 @@ mod tests {
     #[test]
     fn names_keeps_registry_order() {
         assert_eq!(names(JOBS), JOBS.iter().map(|e| e.name).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn cargo_with_action_sets_its_environment_and_shows_it() {
+        let command = RUSTDOC.command().unwrap();
+        let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        assert_eq!(
+            env,
+            [(
+                std::ffi::OsStr::new("RUSTDOCFLAGS"),
+                Some(std::ffi::OsStr::new("-D warnings"))
+            )]
+        );
+        let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+        assert_eq!(args, ["doc", "--workspace", "--no-deps", "--locked"]);
+        assert_eq!(
+            RUSTDOC.display(),
+            "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps --locked"
+        );
+    }
+
+    /// `lint`'s `rustdoc` step, run on the fixture crate `tests/fixtures/rustdoc/<fixture>` with
+    /// a target directory of its own: whether it passed, and what cargo and rustdoc printed.
+    fn rustdoc_on(fixture: &str) -> (bool, String) {
+        let lint = find(JOBS, "lint").expect("lint is registered");
+        let step = lint
+            .steps
+            .iter()
+            .find(|s| s.name == "rustdoc")
+            .expect("lint has a rustdoc step");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/rustdoc")
+            .join(fixture);
+        let target = std::env::temp_dir().join(format!(
+            "syntropy-xtask-rustdoc-{}-{fixture}",
+            std::process::id()
+        ));
+        let output = step
+            .action
+            .command()
+            .expect("the step starts cargo")
+            .current_dir(&dir)
+            .env("CARGO_TARGET_DIR", &target)
+            .output()
+            .expect("cargo runs");
+        let _ = std::fs::remove_dir_all(&target);
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    #[test]
+    fn the_rustdoc_step_fails_an_unresolved_intra_doc_link() {
+        let (passed, log) = rustdoc_on("unresolved");
+        assert!(!passed, "{log}");
+        assert!(log.contains("unresolved link to `Missing`"), "{log}");
+    }
+
+    #[test]
+    fn the_rustdoc_step_fails_an_ambiguous_intra_doc_link() {
+        let (passed, log) = rustdoc_on("ambiguous");
+        assert!(!passed, "{log}");
+        assert!(log.contains("`thing` is both a"), "{log}");
+        assert!(log.contains("ambiguous link"), "{log}");
+    }
+
+    #[test]
+    fn the_rustdoc_step_passes_the_crate_with_its_links_fixed() {
+        let (passed, log) = rustdoc_on("fixed");
+        assert!(passed, "{log}");
     }
 
     #[test]
