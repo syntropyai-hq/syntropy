@@ -9,16 +9,16 @@
 //!   root directory, as RFC-0010's probe does for `HostMemInfo::wsl2`.
 //! - **The register-only DMA path.** The pinned allocation call (`cudaHostAlloc`, which a
 //!   provider serves as `alloc(MemKind::HostMapped)`) is capped at about 1 GiB under WSL2, so a
-//!   buffer a GPU reads by DMA is always anonymous memory from [`OsMemory::reserve`]
-//!   registered with `register_host` (`cudaHostRegister`). [`dma_route`] returns
-//!   [`DmaRoute::Register`] whenever [`PinLimits::host_alloc_cap`] is set, and
-//!   [`host_alloc_allowed`] refuses any pinned allocation above that cap, which is
-//!   [`WSL2_HOST_ALLOC_CAP`] (512 MiB) under WSL2.
+//!   buffer a GPU reads by DMA is always anonymous memory from
+//!   [`OsMemory::reserve`](super::OsMemory::reserve) registered with `register_host`
+//!   (`cudaHostRegister`). [`dma_route`] returns [`DmaRoute::Register`] whenever
+//!   [`PinLimits::host_alloc_cap`] is set, and [`host_alloc_allowed`] refuses any pinned
+//!   allocation above that cap, which is [`WSL2_HOST_ALLOC_CAP`] (512 MiB) under WSL2.
 //!
 //! This crate links no GPU runtime: the routes are the decision the pinning loop
 //! (TIER-E2-T07) passes to the provider, not provider calls.
 //!
-//! On Linux (x86-64 and AArch64), [`Wsl2Memory`] is the Linux adapter with the cap recorded in
+//! On Linux (x86-64 and AArch64), `Wsl2Memory` is the Linux adapter with the cap recorded in
 //! its [`PinLimits`]. Everything else here is portable and tested on every OS.
 
 #![forbid(unsafe_code)]
@@ -33,7 +33,7 @@ use super::PinLimits;
 pub const DXG_DEVICE: &str = "dev/dxg";
 
 /// The largest pinned allocation (`cudaHostAlloc`) anything may make under WSL2: 512 MiB
-/// [target], RFC-0020 §5's "nothing uses it for more than 512 MiB", half the ≈1 GiB cap of
+/// \[target\], RFC-0020 §5's "nothing uses it for more than 512 MiB", half the ≈1 GiB cap of
 /// RFC-0020 §4.2.
 pub const WSL2_HOST_ALLOC_CAP: Bytes = Bytes(512 << 20);
 

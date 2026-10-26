@@ -18,7 +18,7 @@
 //! - [`sysctl_u64`] and [`SysctlWiredLimit`]: the sysctl reads `syntropy tune`'s tier side
 //!   needs (RFC-0020 §9.1; TIER-E2-T13).
 //!
-//! Every `sysctlbyname` call goes through one function, [`MacMemory::sysctl_read`], which
+//! Every `sysctlbyname` call goes through one function, `MacMemory::sysctl_read`, which
 //! passes a null `newp` and a zero `newlen`: this crate never writes a sysctl. Only
 //! `syntropy tune` changes `iogpu.wired_limit_mb` (RFC-0020 §9.1), through
 //! [`HostOp::SetWiredLimit`](crate::tune::HostOp::SetWiredLimit), which the caller's
@@ -27,7 +27,7 @@
 //!
 //! The workspace has no C bindings crate, so the C functions and constants are declared here,
 //! with the values of macOS on AArch64, the macOS target ADR-0020 supports. Live ranges are
-//! kept in the shared [`Registry`], as on the other adapters.
+//! kept in the shared `Registry`, as on the other adapters.
 
 #![allow(unsafe_code)]
 
