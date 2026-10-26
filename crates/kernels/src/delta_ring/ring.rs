@@ -218,11 +218,18 @@ impl DeltaRingLayout {
     /// # Errors
     ///
     /// [`RingError::BufferTooSmall`], or [`RingError::BadRange`] when `from` is past `to`, when
-    /// `to` is past the head, or when the range is longer than the capacity.
+    /// `to` is past the head, when the range is longer than the capacity, or when `from` is
+    /// older than the `capacity` entries the ring still holds: the producer has already
+    /// overwritten those positions.
     pub fn read(&self, buf: &[u8], from: u64, to: u64) -> Result<Vec<TableDelta>, RingError> {
         self.check(buf.len())?;
         let head = DeltaRingHeader::read_from(buf).head;
-        if from > to || to > head || to - from > u64::from(self.capacity) {
+        // Before the first wrap every posted position is still in the ring; after it the
+        // producer has overwritten everything older than the last `capacity` positions.
+        let overwritten = head
+            .checked_sub(u64::from(self.capacity))
+            .is_some_and(|oldest| from < oldest);
+        if from > to || to > head || to - from > u64::from(self.capacity) || overwritten {
             return Err(RingError::BadRange {
                 from,
                 to,
@@ -250,15 +257,14 @@ impl DeltaRingLayout {
 }
 
 /// The capacity a plan gives a device's ring for an epoch (RFC-0023 §5.4 "Capacity and the KV
-/// block tables"): the next power of two at or above
-/// `2 · (max_live_sequences · page_classes · (⌈t_max / page_size⌉ + 1) + max_replace · caches)`,
-/// never below [`TABLE_DELTA_RING_MIN_CAPACITY`].
+/// block tables"): the ring carries only incremental changes of running sequences and
+/// expert-cache replacements, so its capacity is fixed per epoch at the next power of two ≥
+/// `2 · (max_live_sequences · page_classes · (⌈T_max / P⌉ + 1) + max_replace · caches)`,
+/// minimum 4,096 ([`TABLE_DELTA_RING_MIN_CAPACITY`]).
 ///
-/// A running sequence writes at most one entry per KV page of its window (`t_max` tokens of it,
-/// in `page_size`-sized pages, of `page_classes` different kinds), plus one for the page a
-/// newly attached or restored sequence first fills; `max_replace` cache replacements per `caches`
-/// caches add one each. Block tables of a sequence that has not run yet are written by a direct
-/// copy, not through the ring, so they do not count here.
+/// Block tables of a sequence that has not yet run (a new sequence, an attached prefix, a
+/// restored session) are written with a direct copy on the copy stream before the sequence's
+/// first step, ordered by that step's fence, not through the ring.
 ///
 /// With that sizing an overflow is a bug, not a policy outcome: posting then reports
 /// [`RingError::Full`], the code name `EXPERT_DELTA_RING_FULL`, class `Internal`.

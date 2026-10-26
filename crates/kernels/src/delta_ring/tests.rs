@@ -153,7 +153,8 @@ fn c_macro_check(capacities: &[u32]) -> String {
 fn c_compiler_agrees_when_present() {
     let layout = cgen::c_layout_check_for(TABLE_DELTA_RING.include, mirror::LAYOUTS);
     let mut ran = compile_syntax("layout", &layout);
-    // A capacity of 1, the epoch minimum, and a large one [target: RFC-0023 §5.4].
+    // A capacity of 1, which the layout accepts even though an epoch never gives a ring less
+    // than [`mirror::TABLE_DELTA_RING_MIN_CAPACITY`], and a large one [target: RFC-0023 §5.4].
     ran += compile_syntax("macros", &c_macro_check(&[1, 4096, 1 << 20]));
     eprintln!("C layout checks run: {ran}");
 }
@@ -329,12 +330,22 @@ fn post_writes_entries_before_moving_the_head_and_wraps() {
     assert_eq!(applied(&buf), Ok((2, 7)));
     assert_eq!(layout.post(&mut buf, &second), Ok(5));
     assert_eq!(layout.read(&buf, 2, 5), Ok(second.to_vec()));
+    // After the wrap the last `capacity` positions are exactly what the ring holds.
     assert_eq!(
         layout.read(&buf, 1, 5),
         Ok(vec![first[1], second[0], second[1], second[2]])
     );
-    // Position 4 lands in slot 0, so the entry the ring held at position 0 is gone.
-    assert_eq!(layout.read(&buf, 0, 1), Ok(vec![second[2]]));
+    // Position 4 lands in slot 0, so the entry the ring held at position 0 is gone: reading it
+    // is a range the ring does not hold.
+    assert_eq!(
+        layout.read(&buf, 0, 1),
+        Err(RingError::BadRange {
+            from: 0,
+            to: 1,
+            head: 5,
+            capacity: 4,
+        })
+    );
     assert_eq!(head(&buf), Ok(5));
     assert_eq!(applied(&buf), Ok((2, 7)));
 }
