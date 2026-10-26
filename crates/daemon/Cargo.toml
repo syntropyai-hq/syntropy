@@ -4,3 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+syntropy-core = { path = "../core" }
+# The host-change ledger (RFC-0052 §11.1): its JSON file and the BLAKE3 fingerprints of written files.
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
