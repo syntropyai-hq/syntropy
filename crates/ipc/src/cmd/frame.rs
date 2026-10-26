@@ -106,7 +106,7 @@ pub fn encode_frame<M: Serialize>(envelope: &Envelope<M>) -> Result<Vec<u8>, Enc
 /// The one decoder: [`Channel::recv`](super::Channel::recv) calls it on each frame it reads, and
 /// the `ipc_msgs` fuzz target (QUAL-E10-T03) calls it on arbitrary input. It is total: any input
 /// gives an envelope or a [`FrameError`]. A declared sequence length reserves nothing before the
-/// elements decode (see [`NoPrealloc`]), so a forged length costs no memory.
+/// elements decode (see the private `NoPrealloc`), so a forged length costs no memory.
 pub fn decode_frame<M: DeserializeOwned>(input: &[u8]) -> Result<(Envelope<M>, usize), FrameError> {
     let Some(header) = input.first_chunk::<HEADER>() else {
         return Err(FrameError::Incomplete {

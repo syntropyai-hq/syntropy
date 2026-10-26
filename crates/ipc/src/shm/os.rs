@@ -534,7 +534,8 @@ mod imp {
         }
     }
 
-    /// A security descriptor whose protected DACL has one entry: all access for the current user.
+    /// A security descriptor with a protected DACL: in production one entry, all access for the
+    /// current user; the test-only descriptor adds connect access for authenticated users.
     pub(crate) struct OwnerOnly(PSECURITY_DESCRIPTOR);
 
     // SAFETY: the descriptor is `LocalAlloc`ed memory that only this value refers to; any thread

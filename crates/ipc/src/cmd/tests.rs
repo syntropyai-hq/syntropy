@@ -30,9 +30,11 @@ use super::*;
 use crate::shm::{IpcProtocol, RingRole, RingSpec, ShmLayout};
 
 mod fixtures;
-#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+// Not under loom: `cargo xtask test loom` runs this crate's unit tests in a job with no second
+// account, and the test needs real processes and sockets, which loom does not model.
+#[cfg(all(not(loom), any(target_os = "linux", target_vendor = "apple")))]
 mod other_user;
-#[cfg(windows)]
+#[cfg(all(not(loom), windows))]
 #[path = "tests/other_user_windows.rs"]
 mod other_user;
 mod skips;
