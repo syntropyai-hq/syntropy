@@ -306,6 +306,8 @@ mod tests {
                 "spdx",
                 "third-party",
                 "notices",
+                "workflows",
+                "actionlint",
                 "scenarios",
                 "sim-presets",
                 "jobs",
