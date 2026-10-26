@@ -873,6 +873,7 @@ fn a_json_run_that_cannot_write_the_revert_script_still_reports_its_fixes_as_jso
         "{}",
         v["error"]
     );
+    assert_eq!(v["schema"], JSON_SCHEMA);
 }
 
 #[test]
@@ -883,7 +884,9 @@ fn the_prompt_escapes_invisible_characters_and_every_line_it_prints() {
             automatic: Some(AutoFix {
                 edits: vec![HostEdit::WriteFile {
                     path,
-                    contents: "x\u{202E}fdp.exe\u{200B}\u{2028}y\n".as_bytes().to_vec(),
+                    contents: "x\u{202E}fdp.exe\u{200B}\u{2028}y\u{E0041}\u{FFF9}\u{034F}\n"
+                        .as_bytes()
+                        .to_vec(),
                 }],
             }),
             ..Fix::manual("write \u{1b}[1Ahidden")
@@ -895,16 +898,24 @@ fn the_prompt_escapes_invisible_characters_and_every_line_it_prints() {
     let mut prompt = Prompt::new(Cursor::new(b"n\n".to_vec()), &mut asked);
     doctor_fix(&r, &dir, &mut prompt, false);
     let asked = String::from_utf8(asked).unwrap();
-    for c in ['\u{1b}', '\u{202E}', '\u{200B}', '\u{2028}'] {
+    for c in [
+        '\u{1b}',
+        '\u{202E}',
+        '\u{200B}',
+        '\u{2028}',
+        '\u{E0041}',
+        '\u{FFF9}',
+        '\u{034F}',
+    ] {
         assert!(!asked.contains(c), "{c:?} in {asked:?}");
     }
     assert!(
         asked.contains("OS-001: write \\u{1b}[1Ahidden\n"),
         "{asked:?}"
     );
-    assert!(asked.contains("a\\u{1b}[2Kb.conf (19 bytes)"), "{asked:?}");
+    assert!(asked.contains("a\\u{1b}[2Kb.conf (28 bytes)"), "{asked:?}");
     assert!(
-        asked.contains("    | x\\u{202e}fdp.exe\\u{200b}\\u{2028}y\n"),
+        asked.contains("    | x\\u{202e}fdp.exe\\u{200b}\\u{2028}y\\u{e0041}\\u{fff9}\\u{34f}\n"),
         "{asked:?}"
     );
 }

@@ -125,8 +125,9 @@ fn printable(line: &str) -> String {
 }
 
 /// Whether `c` is a Unicode character that changes how the text around it shows without showing
-/// itself: zero-width characters, the bidirectional controls, which can reverse the text after
-/// them, the line and paragraph separators, and the byte-order mark.
+/// itself: zero-width characters and joiners, the bidirectional controls, which can reverse the
+/// text after them, the line and paragraph separators, the byte-order mark, the interlinear
+/// annotation characters and the tag characters.
 fn invisible(c: char) -> bool {
     matches!(
         c,
@@ -137,6 +138,9 @@ fn invisible(c: char) -> bool {
             | '\u{2028}'..='\u{202E}'
             | '\u{2060}'..='\u{2069}'
             | '\u{FEFF}'
+            | '\u{034F}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0000}'..='\u{E007F}'
     )
 }
 
