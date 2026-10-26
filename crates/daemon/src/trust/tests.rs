@@ -563,9 +563,9 @@ fn real_store_round_trip() {
     let pem = ca_pem(13);
     let ca = CaCertificate::from_pem(&pem).unwrap();
     let snap = |tool: &os::OsStoreTool| -> Vec<(String, Observed)> {
+        // The user stores, by their entry for this CA; the system store by its listing below.
         plan.user_stores
             .iter()
-            .chain(plan.system_store.as_ref())
             .map(|t| {
                 let anchor = Anchor {
                     store: t.store,
@@ -581,6 +581,8 @@ fn real_store_round_trip() {
             .collect()
     };
     let system_before = system_store_listing(&plan);
+    let listing_before = user_store_listing(&plan);
+    println!("store listing before:\n{listing_before}");
     let before = snap(&tool);
     println!("before: {before:?}");
     let mut ledger = HostChangeLedger::open(&state).unwrap();
@@ -601,15 +603,7 @@ fn real_store_round_trip() {
     let during = snap(&tool);
     println!("during: {during:?}");
     for (store, observed) in &during {
-        assert_eq!(
-            *observed,
-            if store.contains("LinuxSystem") {
-                Observed::Absent
-            } else {
-                Observed::AsRecorded
-            },
-            "{store}"
-        );
+        assert_eq!(*observed, Observed::AsRecorded, "{store}");
     }
     assert_eq!(
         system_store_listing(&plan),
@@ -635,8 +629,73 @@ fn real_store_round_trip() {
     let after = snap(&tool);
     println!("after: {after:?}");
     assert_eq!(after, before);
+    let listing_after = user_store_listing(&plan);
+    assert_eq!(
+        listing_after, listing_before,
+        "the user store's listing changed"
+    );
     assert_eq!(system_store_listing(&plan), system_before);
     println!("PASS: the trust store snapshot is unchanged after install then remove");
+}
+
+/// Every entry of the user's stores, as the OS's tools list them: the NSS database's nicknames
+/// and trust flags, the login keychain's certificate hashes and the user trust settings, or the
+/// Windows Root store's thumbprints. The snapshot the per-OS criterion compares.
+fn user_store_listing(plan: &Plan) -> String {
+    let run = |program: &str, args: &[&str]| -> String {
+        match std::process::Command::new(program).args(args).output() {
+            Ok(o) => format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            Err(e) => format!("{program}: {e}"),
+        }
+    };
+    let mut listing = String::new();
+    for target in &plan.user_stores {
+        let location = target.location.display().to_string();
+        let mut lines: Vec<String> = match target.store {
+            TrustStore::LinuxUserNss => run("certutil", &["-d", &format!("sql:{location}"), "-L"])
+                .lines()
+                .map(str::to_owned)
+                .collect(),
+            TrustStore::MacosLoginKeychain => {
+                run("security", &["find-certificate", "-a", "-Z", &location])
+                    .lines()
+                    .filter(|l| l.starts_with("SHA-1 hash:"))
+                    .map(str::to_owned)
+                    .chain(
+                        run("security", &["dump-trust-settings"])
+                            .lines()
+                            .map(str::to_owned),
+                    )
+                    .collect()
+            }
+            TrustStore::WindowsCurrentUserRoot => run(
+                "powershell.exe",
+                &[
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Get-ChildItem Cert:\\CurrentUser\\Root | ForEach-Object { $_.Thumbprint }",
+                ],
+            )
+            .lines()
+            .map(str::to_owned)
+            .collect(),
+            _ => Vec::new(),
+        };
+        lines.sort();
+        listing.push_str(&format!(
+            "{:?} {location}: {} entries\n",
+            target.store,
+            lines.len()
+        ));
+        listing.push_str(&lines.join("\n"));
+        listing.push('\n');
+    }
+    listing
 }
 
 /// The Linux system store's anchor directory and bundle, by name and bytes; empty elsewhere.
