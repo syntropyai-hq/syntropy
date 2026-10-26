@@ -45,6 +45,25 @@ fn production_sources() -> Vec<PathBuf> {
     files
 }
 
+/// `text` up to its unit-test module: everything from a top-level `#[cfg(test)]` that opens a
+/// `mod` is test code, which is no code path in the sense of RFC-0020 §9.1. The daemon's host-change
+/// ledger, for one, names the sysctl only in its tests' fixtures.
+fn production_part(text: &str) -> &str {
+    let mut at = 0;
+    while let Some(found) = text[at..].find("\n#[cfg(test)]\n") {
+        let start = at + found + 1;
+        let after = text[start + "#[cfg(test)]\n".len()..].trim_start();
+        if after.starts_with("mod ")
+            || after.starts_with("pub mod ")
+            || after.starts_with("pub(crate) mod ")
+        {
+            return &text[..start];
+        }
+        at = start + 1;
+    }
+    text
+}
+
 /// `text` with every comment blanked out, string and char literals kept, so a call or a name
 /// that only a comment mentions is not counted. Raw strings (`r"…"`, `r#"…"#`) are kept too.
 fn code_only(text: &str) -> String {
@@ -136,7 +155,7 @@ fn call_args(text: &str, open: usize) -> Vec<String> {
 fn every_sysctlbyname_call_only_reads() {
     let mut calls = 0;
     for path in production_sources() {
-        let text = code_only(&std::fs::read_to_string(&path).unwrap());
+        let text = code_only(production_part(&std::fs::read_to_string(&path).unwrap()));
         for (at, _) in text.match_indices("sysctlbyname(") {
             let before = &text[..at];
             // The declaration, not a call.
@@ -250,7 +269,7 @@ fn no_other_write_form_appears() {
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        let text = code_only(&std::fs::read_to_string(&path).unwrap());
+        let text = code_only(production_part(&std::fs::read_to_string(&path).unwrap()));
         found.extend(write_forms(&shown, &text));
     }
     assert!(
@@ -325,4 +344,18 @@ fn each_rule_finds_its_planted_form() {
         )
         .is_empty()
     );
+}
+
+/// A file's unit-test module is cut off before the scan, and a `#[cfg(test)]` item that is not a
+/// module, such as one function, is not.
+#[test]
+fn test_modules_are_not_production_code() {
+    let file = "fn real() {}\n#[cfg(test)]\nfn helper() {}\nconst X: u8 = 1;\n#[cfg(test)]\nmod tests {\n    const N: &str = \"iogpu.wired_limit_mb\";\n}\n";
+    let part = production_part(file);
+    assert!(
+        part.contains("fn helper()") && part.contains("const X"),
+        "{part}"
+    );
+    assert!(!part.contains("iogpu"), "{part}");
+    assert_eq!(production_part("fn a() {}\n"), "fn a() {}\n");
 }
