@@ -30,6 +30,13 @@
 //! still a grant this module did not make, and the check stays strict: it reports what the DACL
 //! grants, not what a privileged account could take.
 //!
+//! Links are never followed, so a path swapped for a link cannot redirect a check or a change.
+//! [`private_dir`] refuses a symbolic link, or on Windows any reparse point such as a junction,
+//! with [`io::ErrorKind::InvalidInput`]; [`is_owner_only`] reads one as not owner-only; and
+//! [`create_private_file`] refuses one as an existing file. [`private_dir`] checks and changes an
+//! existing directory through one descriptor or handle opened without following a link, so the
+//! object it checks is the object it changes.
+//!
 //! Other targets return [`io::ErrorKind::Unsupported`] from every function.
 
 use std::io;
@@ -38,17 +45,19 @@ use std::path::Path;
 /// Creates the directory at `path`, so only the current user can use it.
 ///
 /// Missing parents are created first with default permissions. On Unix the directory is created
-/// mode 0700; if it already exists and this user owns it, its mode is set to exactly 0700, through
-/// a descriptor opened on it, so a rename between the check and the change cannot redirect the
-/// change. On Windows it is created with the owner-only descriptor the module documentation
-/// describes; if it already exists and this user owns it, its DACL is replaced with the owner-only
-/// one through `SetNamedSecurityInfoW`, unless it is already owner-only and protected. A symbolic
-/// link at `path` is followed, and the checks apply to its target.
+/// mode 0700; if it already exists, it is opened with `O_DIRECTORY | O_NOFOLLOW`, its owner is
+/// checked with `fstat`, and its mode is set to exactly 0700 with `fchmod`, all on that one
+/// descriptor. On Windows it is created with the owner-only descriptor the module documentation
+/// describes; if it already exists, it is opened with `FILE_FLAG_BACKUP_SEMANTICS |
+/// FILE_FLAG_OPEN_REPARSE_POINT`, and on that one handle its attributes are checked, its owner is
+/// read with `GetSecurityInfo`, and its DACL is replaced with the owner-only one with
+/// `SetSecurityInfo`, unless it is already owner-only and protected.
 ///
 /// # Errors
 ///
 /// [`io::ErrorKind::PermissionDenied`] when the directory exists and another user owns it;
-/// [`io::ErrorKind::NotADirectory`] when `path` exists and is not a directory; otherwise the OS
+/// [`io::ErrorKind::InvalidInput`] when `path` is a symbolic link or, on Windows, another reparse
+/// point; [`io::ErrorKind::NotADirectory`] when `path` exists and is not a directory; otherwise the OS
 /// error from creating, opening or changing it. On macOS an existing extended ACL is left in place,
 /// and [`is_owner_only`] reports it.
 pub fn private_dir(path: &Path) -> io::Result<()> {
@@ -67,7 +76,7 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
 /// On Unix the file is opened with `O_CREAT | O_EXCL` and mode 0600, and the mode is then set to
 /// exactly 0600 through the descriptor, since the umask can only have cleared bits. On Windows it
 /// is created with `CREATE_NEW` and the owner-only descriptor set at creation. `O_EXCL` and
-/// `CREATE_NEW` also refuse a symbolic link at `path`. If writing or syncing fails, the file is
+/// `CREATE_NEW` also refuse a symbolic link at `path`, even one whose target does not exist. If writing or syncing fails, the file is
 /// removed, so a failed call never leaves a truncated file behind.
 ///
 /// The file's directory entry is durable only once the directory is synced too: call [`sync_dir`]
@@ -86,7 +95,8 @@ pub fn create_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 ///
 /// On Unix the directory is opened and synced with `sync_all` (`fsync`, or `F_FULLFSYNC` on
 /// macOS). On Windows it is opened for writing with `FILE_FLAG_BACKUP_SEMANTICS`, which opening a
-/// directory needs, and flushed with `FlushFileBuffers`.
+/// directory needs, and flushed with `FlushFileBuffers`. A link at `path` is followed: syncing a
+/// directory reads or changes nothing in it.
 ///
 /// # Errors
 ///
@@ -96,7 +106,15 @@ pub fn sync_dir(path: &Path) -> io::Result<()> {
 }
 
 /// Whether only the current user can access the file or directory at `path`, by the rules in the
-/// module documentation. A symbolic link at `path` is followed.
+/// module documentation. A symbolic link or other reparse point at `path` is not followed, and
+/// reads as not owner-only.
+///
+/// On Unix the check reads the object with `lstat`, not through a descriptor, because opening a
+/// file needs read access, which an owner-only file need not grant even to its owner. On Windows
+/// it opens a handle with `READ_CONTROL` and `FILE_FLAG_OPEN_REPARSE_POINT`, which the owner
+/// always holds, and reads the attributes and security descriptor through it. Either way the
+/// answer is about the object at `path` when the call ran; a caller that then opens the path
+/// again should treat a rename in between as possible.
 ///
 /// # Errors
 ///
@@ -104,6 +122,23 @@ pub fn sync_dir(path: &Path) -> io::Result<()> {
 /// [`io::ErrorKind::NotFound`].
 pub fn is_owner_only(path: &Path) -> io::Result<bool> {
     imp::is_owner_only(path)
+}
+
+/// The error for a link where a directory was expected.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    windows
+))]
+fn link_refused(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "{} is a link, which is not followed for an owner-only directory",
+            path.display()
+        ),
+    )
 }
 
 /// The error for a directory another user owns.
@@ -130,7 +165,7 @@ mod imp {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::Path;
 
-    use super::foreign_owner;
+    use super::{foreign_owner, link_refused};
 
     /// The mode of a private directory.
     const DIR_MODE: u32 = 0o700;
@@ -158,8 +193,22 @@ mod imp {
             Err(error) => return Err(error),
         }
         // Check and change the directory through one descriptor, also when it was just created:
-        // the umask may have cleared bits of 0700.
-        let dir = open_dir(path)?;
+        // the umask may have cleared bits of 0700. `O_NOFOLLOW` refuses a link at `path`, so the
+        // descriptor is the directory itself.
+        let dir = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(path)
+        {
+            Ok(dir) => dir,
+            Err(error) => {
+                // `ELOOP`, or `ENOTDIR` with `O_DIRECTORY`, for a link: say which. This reads the
+                // path only to word the error; nothing is changed after it.
+                let is_link = std::fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink());
+                return Err(if is_link { link_refused(path) } else { error });
+            }
+        };
         let metadata = dir.metadata()?;
         if metadata.uid() != euid() {
             return Err(foreign_owner(path));
@@ -175,6 +224,7 @@ mod imp {
             .write(true)
             .create_new(true)
             .mode(FILE_MODE)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
         let written = (|| {
             file.set_permissions(Permissions::from_mode(FILE_MODE))?;
@@ -194,8 +244,11 @@ mod imp {
     }
 
     pub(super) fn is_owner_only(path: &Path) -> io::Result<bool> {
-        let metadata = std::fs::metadata(path)?;
-        if metadata.uid() != euid() || metadata.mode() & 0o077 != 0 {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink()
+            || metadata.uid() != euid()
+            || metadata.mode() & 0o077 != 0
+        {
             return Ok(false);
         }
         #[cfg(target_os = "macos")]
@@ -223,30 +276,31 @@ mod imp {
 
         // The `acl(3)` functions of libSystem, which the `libc` crate does not declare on macOS.
         unsafe extern "C" {
-            fn acl_get_file(path: *const c_char, kind: c_int) -> *mut c_void;
+            fn acl_get_link_np(path: *const c_char, kind: c_int) -> *mut c_void;
             fn acl_get_entry(acl: *mut c_void, entry_id: c_int, entry: *mut *mut c_void) -> c_int;
             fn acl_get_tag_type(entry: *mut c_void, tag: *mut c_int) -> c_int;
             fn acl_free(object: *mut c_void) -> c_int;
         }
 
-        /// An ACL from `acl_get_file`, freed on drop.
+        /// An ACL from `acl_get_link_np`, freed on drop.
         struct Acl(*mut c_void);
 
         impl Drop for Acl {
             fn drop(&mut self) {
-                // SAFETY: the pointer came from `acl_get_file`, and only this frees it.
+                // SAFETY: the pointer came from `acl_get_link_np`, and only this frees it.
                 unsafe { acl_free(self.0) };
             }
         }
 
-        /// Whether the extended ACL of `path` has an entry other than a deny entry.
+        /// Whether the extended ACL of `path` has an entry other than a deny entry. The `_link_np`
+        /// form reads a link's own ACL rather than following it.
         pub(super) fn grants_access(path: &Path) -> io::Result<bool> {
             let name = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "the path holds a NUL byte")
             })?;
             // SAFETY: a NUL-terminated path that outlives the call; the result is an ACL that
             // `Acl` frees, or null with errno set.
-            let acl = unsafe { acl_get_file(name.as_ptr(), ACL_TYPE_EXTENDED) };
+            let acl = unsafe { acl_get_link_np(name.as_ptr(), ACL_TYPE_EXTENDED) };
             if acl.is_null() {
                 let error = io::Error::last_os_error();
                 // ENOENT for an object that exists means it has no extended ACL.
@@ -288,11 +342,11 @@ mod imp {
     use std::path::Path;
 
     use windows_sys::Win32::Foundation::{
-        GENERIC_WRITE, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
+        ERROR_ACCESS_DENIED, GENERIC_WRITE, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+        GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
     };
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
@@ -303,12 +357,15 @@ mod imp {
         SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL,
-        FILE_FLAG_BACKUP_SEMANTICS,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL,
+        WRITE_DAC,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    use super::foreign_owner;
+    use super::{foreign_owner, link_refused};
 
     /// `path` as a NUL-terminated UTF-16 string.
     fn wide(path: &Path) -> io::Result<Vec<u16>> {
@@ -489,11 +546,12 @@ mod imp {
             }
         }
 
-        /// Writes the parts of this descriptor that `info` names onto the file or directory
-        /// `name`, with `SetNamedSecurityInfoW`.
-        pub(super) fn apply(
+        /// Writes the parts of this descriptor that `info` names onto the object behind
+        /// `handle`, with `SetSecurityInfo`. The handle needs `WRITE_DAC` to change the DACL and
+        /// `WRITE_OWNER` to change the owner.
+        pub(super) fn set(
             &self,
-            name: &[u16],
+            handle: &OwnedHandle,
             info: OBJECT_SECURITY_INFORMATION,
         ) -> io::Result<()> {
             let mut owner: PSID = std::ptr::null_mut();
@@ -505,11 +563,11 @@ mod imp {
                 }
             }
             let dacl = self.dacl()?;
-            // SAFETY: a NUL-terminated path; the owner and DACL point into this live descriptor,
-            // and the call reads only the parts `info` names; no group or SACL.
+            // SAFETY: a live handle; the owner and DACL point into this live descriptor, and the
+            // call reads only the parts `info` names; no group or SACL.
             let status = unsafe {
-                SetNamedSecurityInfoW(
-                    name.as_ptr(),
+                SetSecurityInfo(
+                    handle.as_raw_handle().cast(),
                     SE_FILE_OBJECT,
                     info,
                     owner,
@@ -532,7 +590,45 @@ mod imp {
         }
     }
 
-    /// The owner and DACL of a file or directory, as `GetNamedSecurityInfoW` reads them.
+    /// Opens the existing file or directory `name` with `access`, without following a reparse
+    /// point: `FILE_FLAG_OPEN_REPARSE_POINT` opens a symbolic link or junction itself.
+    /// `FILE_FLAG_BACKUP_SEMANTICS` lets the call open a directory. Every sharing mode is allowed,
+    /// so the open never conflicts with another user of the object.
+    fn open(name: &[u16], access: u32) -> io::Result<OwnedHandle> {
+        // SAFETY: a NUL-terminated path, no security attributes (nothing is created), and no
+        // template file.
+        let handle = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `handle` is the valid handle `CreateFileW` just returned, owned only here.
+        Ok(unsafe { OwnedHandle::from_raw_handle(handle.cast()) })
+    }
+
+    /// The file attributes of the object behind `handle`.
+    fn attributes(handle: &OwnedHandle) -> io::Result<u32> {
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        // SAFETY: a live handle and a live output of the struct's size.
+        if unsafe { GetFileInformationByHandle(handle.as_raw_handle().cast(), info.as_mut_ptr()) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the call succeeded, so it filled the whole struct.
+        Ok(unsafe { info.assume_init() }.dwFileAttributes)
+    }
+
+    /// The owner and DACL of a file or directory, as `GetSecurityInfo` reads them.
     struct Security {
         descriptor: Descriptor,
         owner: PSID,
@@ -540,16 +636,17 @@ mod imp {
     }
 
     impl Security {
-        fn read(name: &[u16]) -> io::Result<Security> {
+        /// Reads the owner and DACL through `handle`, which needs `READ_CONTROL`.
+        fn read(handle: &OwnedHandle) -> io::Result<Security> {
             let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
             let mut owner: PSID = std::ptr::null_mut();
             let mut dacl: *mut ACL = std::ptr::null_mut();
-            // SAFETY: a NUL-terminated path; live owner, DACL and descriptor outputs, and null
-            // group and SACL outputs. On success the descriptor is `LocalAlloc`ed, and the owner
-            // and DACL point into it.
+            // SAFETY: a live handle; live owner, DACL and descriptor outputs, and null group and
+            // SACL outputs. On success the descriptor is `LocalAlloc`ed, and the owner and DACL
+            // point into it.
             let status = unsafe {
-                GetNamedSecurityInfoW(
-                    name.as_ptr(),
+                GetSecurityInfo(
+                    handle.as_raw_handle().cast(),
                     SE_FILE_OBJECT,
                     OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
                     &mut owner,
@@ -624,30 +721,49 @@ mod imp {
         let name = wide(path)?;
         let user = UserSid::current()?;
         let descriptor = Descriptor::private_dir(&user)?;
-        let attributes = descriptor.attributes();
+        let attributes_in = descriptor.attributes();
         // SAFETY: a NUL-terminated path, and attributes whose descriptor `descriptor` keeps alive.
-        if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } != 0 {
+        if unsafe { CreateDirectoryW(name.as_ptr(), &attributes_in) } != 0 {
             return Ok(());
         }
         let error = io::Error::last_os_error();
         if error.kind() != io::ErrorKind::AlreadyExists {
             return Err(error);
         }
-        if !std::fs::metadata(path)?.is_dir() {
+        // Check and change the existing object through this one handle, so the object checked is
+        // the object changed. The owner always holds `READ_CONTROL` and `WRITE_DAC`.
+        let dir = match open(&name, READ_CONTROL | WRITE_DAC) {
+            Ok(dir) => dir,
+            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+                // Refused `WRITE_DAC`, so most likely another user owns it: read the owner
+                // through a handle with `READ_CONTROL` alone to say so. Nothing is changed
+                // after this.
+                let foreign = open(&name, READ_CONTROL)
+                    .and_then(|handle| Security::read(&handle))
+                    .is_ok_and(|security| !user.is(security.owner));
+                return Err(if foreign { foreign_owner(path) } else { error });
+            }
+            Err(error) => return Err(error),
+        };
+        let attributes = attributes(&dir)?;
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(link_refused(path));
+        }
+        if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::NotADirectory,
                 format!("{} exists and is not a directory", path.display()),
             ));
         }
-        let current = Security::read(&name)?;
+        let current = Security::read(&dir)?;
         if !user.is(current.owner) {
             return Err(foreign_owner(path));
         }
         if current.is_owner_only(&user)? && current.descriptor.is_protected()? {
             return Ok(());
         }
-        descriptor.apply(
-            &name,
+        descriptor.set(
+            &dir,
             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
         )
     }
@@ -657,7 +773,8 @@ mod imp {
         let descriptor = Descriptor::private_file(&UserSid::current()?)?;
         let attributes = descriptor.attributes();
         // SAFETY: a NUL-terminated path, attributes whose descriptor `descriptor` keeps alive, no
-        // sharing, and no template file.
+        // sharing, and no template file. `CREATE_NEW` fails on any existing name, a link among
+        // them, and `FILE_FLAG_OPEN_REPARSE_POINT` keeps a link from being followed regardless.
         let handle = unsafe {
             CreateFileW(
                 name.as_ptr(),
@@ -665,7 +782,7 @@ mod imp {
                 0,
                 &attributes,
                 CREATE_NEW,
-                FILE_ATTRIBUTE_NORMAL,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                 std::ptr::null_mut(),
             )
         };
@@ -693,15 +810,25 @@ mod imp {
     }
 
     pub(super) fn is_owner_only(path: &Path) -> io::Result<bool> {
-        let name = wide(path)?;
         let user = UserSid::current()?;
-        Security::read(&name)?.is_owner_only(&user)
+        let handle = open(&wide(path)?, READ_CONTROL)?;
+        if attributes(&handle)? & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Ok(false);
+        }
+        Security::read(&handle)?.is_owner_only(&user)
     }
 
-    /// For the tests: the path as the wide string [`Descriptor::apply`] takes.
+    /// For the tests: writes the parts of the SDDL descriptor `sddl` that `info` names onto
+    /// `path`, through a handle opened without following a link.
     #[cfg(test)]
-    pub(super) fn wide_path(path: &Path) -> Vec<u16> {
-        wide(path).expect("a test path has no NUL")
+    pub(super) fn set_security(
+        path: &Path,
+        sddl: &str,
+        info: OBJECT_SECURITY_INFORMATION,
+    ) -> io::Result<()> {
+        use windows_sys::Win32::Storage::FileSystem::WRITE_OWNER;
+        let handle = open(&wide(path)?, READ_CONTROL | WRITE_DAC | WRITE_OWNER)?;
+        Descriptor::from_sddl(sddl)?.set(&handle, info)
     }
 }
 
@@ -915,6 +1042,37 @@ mod tests {
             );
         }
 
+        #[test]
+        fn a_symlink_is_refused_not_followed() {
+            let scratch = Scratch::new("symlink");
+            private_dir(scratch.path()).expect("private_dir");
+            let target = scratch.path().join("target");
+            std::fs::create_dir(&target).expect("mkdir");
+            std::fs::set_permissions(&target, Permissions::from_mode(0o755)).expect("chmod");
+            let link = scratch.path().join("link");
+            std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+            let error = private_dir(&link).expect_err("a symlink is refused");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+            assert_eq!(mode(&target), 0o755, "the link's target is left as it was");
+
+            // A symlink reads as not owner-only even when its target is.
+            private_dir(&target).expect("private_dir on the target");
+            assert!(is_owner_only(&target).expect("is_owner_only"));
+            assert!(!is_owner_only(&link).expect("is_owner_only on the link"));
+
+            // `create_private_file` refuses a link, even a dangling one, and writes nothing
+            // through it.
+            let error = create_private_file(&link, b"seed").expect_err("the name exists");
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            let dangling = scratch.path().join("dangling");
+            let absent = scratch.path().join("absent");
+            std::os::unix::fs::symlink(&absent, &dangling).expect("symlink");
+            let error = create_private_file(&dangling, b"seed").expect_err("the name exists");
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            assert!(!absent.exists(), "nothing was created through the link");
+        }
+
         /// macOS extended ACLs do not show in the mode bits, so the check reads them.
         #[cfg(target_os = "macos")]
         #[test]
@@ -950,7 +1108,7 @@ mod tests {
             PROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_DACL_SECURITY_INFORMATION,
         };
 
-        use super::super::imp::{Descriptor, UserSid, wide_path};
+        use super::super::imp::{UserSid, set_security};
         use super::super::{create_private_file, is_owner_only, private_dir};
         use super::Scratch;
 
@@ -963,13 +1121,29 @@ mod tests {
 
         /// Sets the DACL `dacl`, in SDDL, on `path`, protected from inheritance.
         fn set_dacl(path: &std::path::Path, dacl: &str) {
-            Descriptor::from_sddl(dacl)
-                .expect("SDDL")
-                .apply(
-                    &wide_path(path),
-                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                )
-                .expect("SetNamedSecurityInfoW");
+            set_security(
+                path,
+                dacl,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            )
+            .expect("SetSecurityInfo");
+        }
+
+        /// Makes `path` an existing directory the user owns whose DACL grants Everyone full
+        /// control, inherited and unprotected. The owner is set explicitly, since an elevated
+        /// token's default owner is the Administrators group.
+        fn loose_dir(path: &std::path::Path) {
+            std::fs::create_dir_all(path).expect("mkdir");
+            let me = sid();
+            set_security(
+                path,
+                &format!("O:{me}D:(A;OICI;FA;;;WD)(A;OICI;FA;;;{me})"),
+                OWNER_SECURITY_INFORMATION
+                    | DACL_SECURITY_INFORMATION
+                    | UNPROTECTED_DACL_SECURITY_INFORMATION,
+            )
+            .expect("loosen");
+            assert!(!is_owner_only(path).expect("is_owner_only"));
         }
 
         #[test]
@@ -1016,20 +1190,7 @@ mod tests {
         #[test]
         fn private_dir_tightens_an_existing_loose_directory() {
             let scratch = Scratch::new("winloosedir");
-            std::fs::create_dir_all(scratch.path()).expect("mkdir");
-            let me = sid();
-            // Make the user the owner, since an elevated token's default owner is the
-            // Administrators group, and grant Everyone full control, inherited, unprotected.
-            Descriptor::from_sddl(&format!("O:{me}D:(A;OICI;FA;;;WD)(A;OICI;FA;;;{me})"))
-                .expect("SDDL")
-                .apply(
-                    &wide_path(scratch.path()),
-                    OWNER_SECURITY_INFORMATION
-                        | DACL_SECURITY_INFORMATION
-                        | UNPROTECTED_DACL_SECURITY_INFORMATION,
-                )
-                .expect("loosen");
-            assert!(!is_owner_only(scratch.path()).expect("is_owner_only"));
+            loose_dir(scratch.path());
             private_dir(scratch.path()).expect("private_dir");
             assert!(is_owner_only(scratch.path()).expect("is_owner_only"));
         }
@@ -1045,6 +1206,40 @@ mod tests {
                 error.to_string().contains("owned by another user"),
                 "refused by the owner check, before any change: {error}"
             );
+        }
+
+        #[test]
+        fn a_junction_is_refused_not_followed() {
+            let scratch = Scratch::new("winjunction");
+            let target = scratch.path().join("target");
+            loose_dir(&target);
+            let link = scratch.path().join("link");
+            // `mklink /J` makes a junction, a directory reparse point, without a privilege.
+            let made = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(&link)
+                .arg(&target)
+                .output()
+                .expect("run mklink");
+            assert!(made.status.success(), "mklink /J: {made:?}");
+
+            let error = private_dir(&link).expect_err("a junction is refused");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+            assert!(
+                !is_owner_only(&target).expect("is_owner_only"),
+                "the junction's target is left as it was"
+            );
+
+            // A junction reads as not owner-only even when its target is.
+            private_dir(&target).expect("private_dir on the target");
+            assert!(is_owner_only(&target).expect("is_owner_only"));
+            assert!(!is_owner_only(&link).expect("is_owner_only on the junction"));
+
+            // `create_private_file` refuses the junction's name as an existing file.
+            let error = create_private_file(&link, b"seed").expect_err("the name exists");
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         }
     }
 }
