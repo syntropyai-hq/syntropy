@@ -274,7 +274,7 @@ pub fn provenance(lock: &[Tool]) -> String {
 }
 
 /// Whether `message` names the tool together with its pinned version: the name, then any of
-/// ` @-_:=/v`, then the version, which does not run on into more version characters. A plain
+/// ` @-_:=/`, then the version, with or without a `v`, which does not run on into more version characters. A plain
 /// version number, or a name alone, does not match.
 fn names_with_version(message: &str, name: &str, version: &str) -> bool {
     let lower = message.to_ascii_lowercase();
@@ -289,11 +289,14 @@ fn names_with_version(message: &str, name: &str, version: &str) -> bool {
         if start > 0 && word(bytes[start - 1]) {
             continue;
         }
-        let rest = lower[end..].trim_start_matches(|c| " @-_:=/v".contains(c));
+        let rest = lower[end..].trim_start_matches(|c| " @-_:=/".contains(c));
         if rest.len() == lower.len() - end {
             continue;
         }
-        if let Some(after) = rest.strip_prefix(&version) {
+        // A `v` before the number is the same version, whether or not the pin spells it.
+        let bare = version.strip_prefix('v').unwrap_or(&version);
+        let tail = rest.strip_prefix('v').unwrap_or(rest);
+        if let Some(after) = tail.strip_prefix(bare) {
             // A closing full stop ends a sentence; `.0` or `-rc1` makes it another version.
             let sentence_end = after.strip_prefix('.').is_some_and(|rest| {
                 !rest
@@ -317,7 +320,8 @@ pub fn commit_problems(lock: &[Tool], commits: &[Commit]) -> Vec<String> {
         for tool in lock {
             let Some(pin) = &tool.pin else { continue };
             let digest = pin.digest.to_ascii_lowercase();
-            if commit.message.to_ascii_lowercase().contains(&digest)
+            let hex = digest.strip_prefix("sha256:").unwrap_or(&digest);
+            if commit.message.to_ascii_lowercase().contains(hex)
                 || names_with_version(&commit.message, &tool.name, &pin.version)
             {
                 problems.push(format!(
@@ -372,6 +376,13 @@ pub fn record_step(context: &Context) -> Result<(), String> {
     let Some(path) = context.args.get("--provenance") else {
         return Ok(());
     };
+    // The record is of what the run has, so it needs the run's own list; the lock alone would
+    // record tooling nobody observed.
+    if context.args.get("--observed").is_none() {
+        return Err(
+            "`--provenance` needs `--observed`: the record is of the observed tooling".to_owned(),
+        );
+    }
     // A run that would be refused records nothing.
     verify_step(context)?;
     let lock = load(context)?;

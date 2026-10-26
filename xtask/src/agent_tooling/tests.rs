@@ -149,3 +149,43 @@ fn a_plain_version_number_or_a_bare_name_passes() {
         );
     }
 }
+
+#[test]
+fn a_v_prefixed_pin_is_matched_with_or_without_the_v() {
+    let lock = parse(&format!(
+        "[[tool]]\nname = \"fixture-server\"\nkind = \"toolserver\"\nversion = \"v1.2.3\"\n\
+         digest = \"{DIGEST_A}\"\nabout = \"a\"\n"
+    ))
+    .unwrap();
+    for message in [
+        "bump fixture-server v1.2.3",
+        "bump fixture-server 1.2.3",
+        "fixture-server@v1.2.3",
+    ] {
+        assert_eq!(
+            commit_problems(&lock, &[commit(message)]).len(),
+            1,
+            "{message}"
+        );
+    }
+    assert!(commit_problems(&lock, &[commit("bump fixture-server v1.2.30")]).is_empty());
+}
+
+#[test]
+fn a_bare_hex_digest_in_a_message_fails() {
+    let hex = DIGEST_A.strip_prefix("sha256:").unwrap();
+    assert_eq!(
+        commit_problems(&lock(), &[commit(&format!("pin {hex}"))]).len(),
+        1
+    );
+}
+
+#[test]
+fn a_provenance_record_needs_the_observed_tooling() {
+    let context = Context {
+        root: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."),
+        args: crate::cli::Args::from_pairs(&[("--provenance", "unused")]),
+    };
+    let error = record_step(&context).unwrap_err();
+    assert!(error.contains("needs `--observed`"), "{error}");
+}
