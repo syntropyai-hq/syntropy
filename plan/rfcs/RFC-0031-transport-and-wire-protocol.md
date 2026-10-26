@@ -222,6 +222,29 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
 
 **Runtime fallback.** If the planned transport cannot connect within `link.connect_timeout` (2 s LAN, 10 s WAN), the runner connects on the next candidate by measured cost, marks the stage `Ready { degraded: TransportDemoted }`, and reports `Drift` with the new hop cost. The coordinator decides whether to re-plan (RFC-0001 §7.2). Demotion during operation is in §7.4.
 
+*Note 2026-10-23 (DIST-E7-T11; RFC-0001 §18.31): what `cost_t` is for, its defaults, and what the fallback returns.*
+- **Selection, not the objective.** `cost_t` ranks the transports of one edge. It picks `HopPlan::transport` at `S_dec`, and `prefill_transport` at `S_pf`. The solver's hop term in the objective stays RFC-0011 §5's `α^plan + S/β`, which since 2026-10-20 costs a wireless hop at its mean and bounds its tail with C14's stall rate. So λ = 1.0 on Wi-Fi weighs the tail when choosing between that edge's transports. It does not enter the plan's predicted time.
+- **Where it lives.** RFC-0001 §5.2's `LinkCaps` and `link_cost(caps, size, objective, λ) -> Nanos` are in `core::resource::link`, so the solver computes `cost_t` without depending on `net`. `Transport::cost` (§2) delegates to it.
+- **λ** is `link.p99_weight` (§11).
+  - **Defaults, in latency mode:** 1.0 on `WiFi` and `Overlay` links and on `QuicRelay`, and 0.25 otherwise [target]. Overlay links join Wi-Fi because RFC-0011's C14 groups the two as wireless-like hops.
+  - **Throughput mode:** 0.
+  - **A configured value** is one number that replaces both defaults.
+  - **Bounds:** validation keeps it within 0–10 [target: a chosen bound; 1.0 already prices a hop at its p99], so NaN and infinity are refused.
+- **Measured means both α and β.** A transport counts as measured only when both its α and its β come from a probe. Startup probes β on the best-ranked transport only (RFC-0010 §3), so until the background probe reaches the others, a transport with α alone ranks with the unmeasured ones, in the rank order above.
+- **z before an L2 probe.** Until `alpha_eff` exists, `z_t` is a per-transport constant for a 32 KiB F32 decode frame [estimate]:
+  - 25 µs on IP paths: `Quic`, `Tcp` and `QuicRelay`, the upper end of §Performance's ≈15–25 µs with polling;
+  - 20 µs on `Rdma`, the upper end of its ≈12–20 µs;
+  - 2 µs on `SharedMemory`. §Performance gives no z for it, so it comes from the per-hop table instead: the shared-memory hop of ≈5–10 µs, less its α of ≈1–5 µs and S/β of ≈3 µs, leaves ≈1–2 µs. The same subtraction on the RDMA and 10 GbE rows gives ≈12–22 µs and ≈17–22 µs, which matches their z ranges. The 2 µs assumes host-resident payloads, as the shared-memory row does. Activations that start and end in GPU memory add a device-to-host and a host-to-device copy, plus a doorbell at each end, which comes nearer RDMA's figure, so an L2 probe's `alpha_eff` replaces it on such a path.
+
+  The constant does not scale with S. A prefill-sized frame's CRC is in the measured `alpha_eff` once it exists.
+- **What the fallback returns.** The fallback is `net::transport::connect_hop`. It returns a `Demotion { edge: LinkId, from: TransportKind, to: TransportKind }`, plain data in `core` and the data `DegradeDetail::Demoted` (RFC-0033 §7.1) carries, together with the new transport's `cost_t` at `S_dec`.
+- **How the runner reports it.**
+  - **The message.** It sends the R→D message `EdgeDemoted { demotion, cause, cost }` (RFC-0001 §3.5), whose `cause` is a `DemotionCause` in `core`: `ConnectFailed` for this fallback, and `RepeatedFaults` for §7.4's demotion after 3 faults in 60 s. The one message serves both paths. DIST-E7-T11 adds it, and DIST-E7-T10 sends it from §7.4.
+  - **Forwarding.** The daemon forwards it as RFC-0033 §11's `ReportEdgeDemoted { edge, from, to, cause }`, as it forwards `StateChanged` as `ReportRunner`.
+  - **No second report.** `EdgeDemoted`'s `cost` is the "`Drift` with the new hop cost" of the runtime-fallback paragraph above. The daemon shows it, and no separate drift report is sent. The coordinator's solver costs the new transport from the resource graph (RFC-0033 §11's `EdgeDemoted` event).
+- **The flag.** DIST-E14-T13 sets `Ready { degraded }` with `TRANSPORT_DEMOTED` from the `Demotion`.
+- **A re-plan's reason.** If the coordinator re-plans for the demotion, the reason is RFC-0033 §6.1's `ReplanReason::Drift { node, term: DriftTerm }`, with a `Hop { link, transport }` term. No task builds `ReplanReason` yet (RFC-0001 §18.31).
+
 ### 4. QUIC backend (iroh)
 
 #### 4.1 Endpoints and paths
@@ -281,7 +304,7 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
   - On Apple, batched sends need `UdpSocketState::set_apple_fast_path` (`unix.rs:388`). iroh's default `fast-apple-datapath` feature compiles it in (`iroh Cargo.toml:70`, `74`), but nothing calls it: not iroh 1.4.1, not noq 1.4.0, and not netwatch 0.19.3, which owns the socket (`netwatch src/udp.rs:736`, `801`). iroh does not expose its sockets, so `net` cannot call it either.
   - No upstream issue tracks enabling it. Searches of the iroh and noq trackers on 2026-10-23 found noq #204, which exposed the feature, and none that enables it.
   - iroh #4555 (open) reports that existing connections keep sending GSO batches after noq-udp turns GSO off. That bears on a Linux host whose probe passes but whose driver drops the batches.
-- **Keep-alive and idle timeout** are reachable through `keep_alive_interval` (`quic.rs:366`; iroh's default is 5 s) and `max_idle_timeout` (`quic.rs:212`). iroh clamps a per-path idle timeout to 15 s and ignores a per-path keep-alive above 5 s (`quic.rs:492`, `514`). Each path also has its own keep-alive and idle timeout, 5 s and 15 s by default (`quic.rs:157–159`), and iroh abandons a path when its own idle timeout expires. So `net` sets the table's values per path too, through `default_path_keep_alive_interval` (`quic.rs:514`) and `default_path_max_idle_timeout` (`quic.rs:492`), as well as connection-wide (added 2026-10-23 after #1773's review; the line references were `src/socket.rs:109`, `117`, which hold the constants). The table's values lie inside those bounds.
+- **Keep-alive and idle timeout** are reachable through `keep_alive_interval` (`quic.rs:366`; iroh's default is 5 s) and `max_idle_timeout` (`quic.rs:212`). iroh clamps a per-path idle timeout to 15 s and ignores a per-path keep-alive above 5 s (`quic.rs:492`, `514`). Each path also has its own keep-alive and idle timeout, 5 s and 15 s by default (`quic.rs:157–159`), and iroh abandons a path when its own idle timeout expires. So `net` sets the table's values per path too, through `default_path_keep_alive_interval` (`quic.rs:514`) and `default_path_max_idle_timeout` (`quic.rs:492`), as well as connection-wide, and `link.failover_timeout` is declared with a 15 s maximum (§11), so a larger value is refused at load rather than clamped to 15 s per path with only a log warning (added 2026-10-23 after #1773's and #1781's reviews; the line references were `src/socket.rs:109`, `117`, which hold the constants). The table's values lie inside those bounds.
 - **Who does what.** `net`'s endpoint (DIST-E7-T23) sets none of these yet. DIST-E7-T03 sets them, and DIST-E7-T16 measures what the initial window and GSO gain, macOS included.
 
 *Note 2026-10-23 (DIST-E7-T03): what the backend sets, and the connection window's cap.* For the maintainers to confirm the first bullet.
@@ -291,6 +314,7 @@ The hop's planned transport minimises `cost_t(S_dec)` in latency mode. When `cos
 - **The LAN window's first sample.** noq-proto calls `on_ack` for each acknowledged packet before it updates the round-trip estimate with that acknowledgement, so the first `on_ack` sees the configured initial round trip. The wrapper takes the first estimate that differs from it as the path's first sample.
 - **Keep-alive and idle timeout.** These follow the table, connection-wide and per path. A dialled connection takes `link.*`'s LAN defaults when every address the peer gave is loopback, link-local or private, and the WAN defaults otherwise, a relay-only peer among them. An accepted connection takes the WAN idle timeout; QUIC uses the smaller of the two sides', so a LAN dialler brings its 2 s.
 - **Windows.** The runtime cannot wait on a `syntropy-spsc` ring's event handle, so a parked channel's task re-checks its rings every 1 ms. While live sequences exist it busy-polls, as on other platforms (§4.4). DIST-E7-T24 adds the wait bridge.
+- **Early streams.** A stream whose `Hello` names a channel the acceptor has not yet called `accept` for is held for `QuicSettings::early_hold`: half the shorter of the LAN and WAN connect timeouts, 1 s with the defaults [target]. It is then refused with `NotANeighbour`. A connector on the same settings waits for `HelloAck` for its link's connect timeout, at least twice the hold, so it receives that refusal, and learns that the two plans disagree, rather than timing out. So `early_hold` also bounds how late an acceptor may call `accept`: within `early_hold` of the peer's `Hello`. At most 16 early streams are held from one peer key [target], a quarter of the 64 held in all [target], so one peer cannot fill the table for the others. A stream over either is closed without a `HelloAck`. The connector sees a link failure (`Link`), which is retried, and not `NotANeighbour`, which RFC-0001 §10 never retries, since nothing about the plan was wrong. A second stream for a held key replaces the first when it comes from the same peer, as a reconnect would, and is refused with `NotANeighbour` when it comes from another. An `accept` whose caller stops waiting leaves nothing registered, so the caller may call it again.
 
 #### 4.4 Hot-path integration
 
@@ -1104,10 +1128,10 @@ Blob streams use the data-plane frame layout (§6.10). Weight chunks are bulky a
 | `net.blob_frame` | node | 1 MiB | |
 | `net.bulk_p99_ratio` / `net.bulk_floor` | cluster | 1.2 / 5 % of β | §7.5 |
 | `link.connect_timeout` | cluster | 2 s LAN, 10 s WAN | §3 |
-| `link.failover_timeout` | cluster | 2 s LAN, 10 s WAN | §7.4 |
+| `link.failover_timeout` | cluster | 2 s LAN, 10 s WAN; at most 15 s, iroh's per-path idle cap, so a larger value is refused at load with RFC-0054's `out_of_range` (revised 2026-10-23, §4.3's note) | §7.4 |
 | `link.demote_after` | cluster | 3 faults in 60 s | ADR-0011 item 7 |
 | `link.ack_timeout_min` | cluster | 200 µs | §7.3 |
-| `link.p99_weight` | cluster | 1.0 Wi-Fi or relay, 0.25 otherwise (latency mode) | §3 λ |
+| `link.p99_weight` | cluster | 1.0 Wi-Fi, overlay or relay, 0.25 otherwise (latency mode); within 0–10 | §3 λ (note of 2026-10-23) |
 | `quic.congestion` | node | `cubic` | `cubic` \| `bbr` |
 | `quic.lan_initial_window` | node | 256 KiB | §4.3 |
 | `quic.max_conn_window` | node | 64 MiB | |
