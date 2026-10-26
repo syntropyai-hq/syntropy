@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 syntropy-core = { path = "../core" }
+# `Figure`, the labelled form of every number `doctor` reports as evidence (RFC-0001 §5.16).
+syntropy-api = { path = "../api" }
 # The host-change ledger (RFC-0052 §11.1): its JSON file and the BLAKE3 fingerprints of written files.
 blake3.workspace = true
 serde.workspace = true
