@@ -445,7 +445,7 @@ mod tests {
             .map(|name| given(name, "tuf-root-custody"))
             .collect::<Vec<_>>()
             .join("")
-            + &entry("dave", "tuf-root-custody", "2026-11-01", Some("2026-12-01"));
+            + &entry("dave", "tuf-root-custody", "2026-10-01", Some("2026-11-01"));
         assert!(Registry::parse(&text, &roster()).is_ok());
     }
 
