@@ -97,9 +97,17 @@ pub fn run(root: &Path, log: &mut dyn Write) -> io::Result<bool> {
          workflows",
         files.len()
     )?;
-    let config =
-        std::env::temp_dir().join(format!("syntropy-actionlint-{}.yaml", std::process::id()));
-    std::fs::write(&config, CONFIG)?;
+    // In the checkout's own `target/`, which only its user can write, not the shared temporary
+    // directory, where another user could plant a file or a link at a predictable name.
+    let dir = root.join("target");
+    std::fs::create_dir_all(&dir)?;
+    let config = dir.join(format!("actionlint-config-{}.yaml", std::process::id()));
+    let _ = std::fs::remove_file(&config);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&config)?
+        .write_all(CONFIG.as_bytes())?;
     let output = Command::new("actionlint")
         .args(["-no-color", "-shellcheck=", "-pyflakes=", "-config-file"])
         .arg(&config)
