@@ -23,3 +23,7 @@ toml.workspace = true
 # BLAKE3 for the fixture store: every object is addressed and verified by it (QUAL-E7-T05,
 # RFC-0060 §12.3). The workspace's version and features.
 blake3.workspace = true
+
+[dev-dependencies]
+# The cache cap property of QUAL-E7-T05 (pre-approved crate).
+proptest.workspace = true

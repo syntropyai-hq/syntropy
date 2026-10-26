@@ -297,3 +297,47 @@ fn import_then_fetch_then_verify_end_to_end() {
             .contains("Integrity")
     );
 }
+
+mod cap_property {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        // Each case writes files, so the case count is small [target]: 32 cases of up to 40
+        // operations each.
+        #![proptest_config(ProptestConfig { cases: 32, failure_persistence: None, ..ProptestConfig::default() })]
+
+        /// Whatever the object sizes, the cap and the access order, the cache holds at most
+        /// `cap` bytes after every operation, an object that fits is served with the right
+        /// bytes, and one that cannot fit is refused with `TooLarge`.
+        #[test]
+        fn the_cache_size_never_exceeds_the_cap(
+            cap in 1u64..=150,
+            sizes in proptest::collection::vec(1usize..=80, 1..=8),
+            accesses in proptest::collection::vec(0usize..8, 1..=40),
+        ) {
+            static CASE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let case = CASE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = scratch(&format!("prop-{case}"));
+            let store = LocalStore::new(dir.join("store"));
+            let objects: Vec<Vec<u8>> =
+                sizes.iter().enumerate().map(|(i, &n)| vec![i as u8; n]).collect();
+            let keys: Vec<Key> = objects.iter().map(|o| put(&dir, &store, o)).collect();
+            let cache = Cache::open(dir.join("cache"), cap).unwrap();
+            for &a in &accesses {
+                let i = a % objects.len();
+                let len = objects[i].len() as u64;
+                match cache.fetch(&store, &keys[i], len) {
+                    Ok(path) => {
+                        prop_assert!(len <= cap);
+                        prop_assert_eq!(fs::read(path).unwrap(), objects[i].clone());
+                    }
+                    Err(e) => prop_assert_eq!(e, Error::TooLarge { bytes: len, cap }),
+                }
+                prop_assert!(cache.size().unwrap() <= cap);
+            }
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+}
