@@ -7,6 +7,12 @@
 //! `graph::reference` (the interpreter) and the GPU reference in `kernels-cuda` (COMP-E14-T23)
 //! read them, and those two crates are peers in layer 2. The op semantics themselves come with
 //! later tasks.
+//!
+//! [`act_quant`] holds the activation quantisation references of RFC-0042 §4.3: ggml's 8-bit
+//! activation blocks, BF16 rounding of matrix inputs, and the fake-quant step of the op-level
+//! comparison (RFC-0042 §6.4).
+
+pub mod act_quant;
 
 /// The reference's numeric mode (RFC-0060 §4.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

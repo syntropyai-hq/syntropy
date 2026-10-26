@@ -857,6 +857,40 @@ fn link_info() -> impl Strategy<Value = LinkInfo> {
         })
 }
 
+fn link_caps() -> impl Strategy<Value = LinkCaps> {
+    (
+        link_id(),
+        transport_kind(),
+        m_nanos(),
+        m_bps(),
+        proptest::option::of(m_nanos()),
+        proptest::option::of(f32s()),
+    )
+        .prop_map(|(link, transport, alpha, beta, alpha_eff, loss)| LinkCaps {
+            link,
+            transport,
+            alpha,
+            beta,
+            alpha_eff,
+            loss,
+        })
+}
+
+fn demotion_cause() -> impl Strategy<Value = DemotionCause> {
+    prop_oneof![
+        Just(DemotionCause::ConnectFailed),
+        Just(DemotionCause::RepeatedFaults),
+    ]
+}
+
+fn demotion() -> impl Strategy<Value = Demotion> {
+    (link_id(), transport_kind(), transport_kind()).prop_map(|(edge, from, to)| Demotion {
+        edge,
+        from,
+        to,
+    })
+}
+
 fn node_inventory() -> impl Strategy<Value = NodeInventory> {
     (
         prop::collection::vec(device_info(), 0..3),
@@ -1363,6 +1397,9 @@ round_trip_tests! {
     rt_temp_source: temp_source();
     rt_host_pool_info: host_pool_info();
     rt_link_info: link_info();
+    rt_link_caps: link_caps();
+    rt_demotion: demotion();
+    rt_demotion_cause: demotion_cause();
     rt_iface_info: iface_info();
     rt_iface_flags: iface_flags();
     rt_ip_net: ip_net();
@@ -1782,4 +1819,37 @@ fn records_without_interface_fields_decode() {
     assert_eq!(bare.flags, IfaceFlags::empty());
     assert_eq!((bare.bridge, bare.rdma, bare.tb_peer), (None, None, None));
     round_trip(&iface);
+}
+
+/// A `LinkCaps` that names only its link and transport decodes as unmeasured: zero figures with
+/// source `Prior`, no `alpha_eff`, no loss.
+#[test]
+fn link_caps_decodes_as_unmeasured_without_its_figures() {
+    let full = LinkCaps {
+        link: LinkId {
+            src: Endpoint::Nic {
+                node: NodeId([1; 32]),
+                ordinal: 0,
+            },
+            dst: Endpoint::Nic {
+                node: NodeId([2; 32]),
+                ordinal: 0,
+            },
+            kind: LinkKind::Network(NetMedium::Ethernet),
+            path: 0,
+        },
+        transport: TransportKind::Quic,
+        alpha: Measured::default(),
+        beta: Measured::default(),
+        alpha_eff: None,
+        loss: None,
+    };
+    let mut json: serde_json::Value = serde_json::to_value(&full).unwrap();
+    let object = json.as_object_mut().unwrap();
+    for field in ["alpha", "beta", "alpha_eff", "loss"] {
+        object.remove(field);
+    }
+    let back: LinkCaps = serde_json::from_value(json).unwrap();
+    assert_eq!(back, full);
+    assert!(!back.is_measured());
 }

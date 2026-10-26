@@ -249,6 +249,7 @@ Command-channel messages:
 | R → D | `ResidencyDigest { version: u64, digest: ResidencySummary }` | low-rate residency summary for routing and the dashboard |
 | R → D | `SequenceEnded { seq: SequenceId, outcome: SequenceOutcome }` | finished, failed or migrated |
 | R → D | `ErrorReport { error: Error }` | errors that are not tied to one sequence |
+| R → D | `EdgeDemoted { demotion: Demotion, cause: DemotionCause, cost: Nanos }` | a hop moved off its transport: the planned one could not connect (`ConnectFailed`, RFC-0031 §3), or it faulted 3 times in 60 s (`RepeatedFaults`, RFC-0031 §7.4). `cost` is the new transport's `cost_t` at the decode frame size. The daemon forwards it as `ReportEdgeDemoted` (RFC-0033 §11). Added by DIST-E7-T11, with an `ipc_protocol` bump (RFC-0031 §3, note of 2026-10-23) |
 | R → D | `ProbeResult { profile: CapabilityProfile }` | probe output |
 | R → D | `Pong` | — |
 
@@ -268,6 +269,7 @@ Command-channel messages:
 - **PLC-E2-T01:** `ProbeRequest`, with `ProbeSuite` and `ModelShapes` in `core`, and every variant but `DevicePath`, which arrives with PLC-E2-T12. `Confirm`'s `ProfileKey` is already in `core`.
 - **COMP-E10-T11:** `FetchShard` and `PackCommitted`, with `ShardSpec` and `PackKey`, and their field types `ChunkId` and `LayoutVersion`, in `core`.
 - **TIER-E1-T09:** `ResidencyDigest`, with `ResidencySummary` and the types it holds in `core`: `TierUsage`, `Purpose` (moved from `tier`), `PinProgress`, `PinState`, `YieldReport`, `YieldOption`, `KvHeadroom`, `PageClass`, `KvSpillOutcome`, `SpillOutcome` and `ExpertCacheDigest`.
+- **DIST-E7-T11:** `EdgeDemoted { demotion, cause, cost }`, with `Demotion` and `DemotionCause` in `core` (RFC-0031 §3, note of 2026-10-23). It reports both demotion paths, the connect-time fallback and DIST-E7-T10's fault-time demotion, and the daemon forwards it as `ReportEdgeDemoted` (RFC-0033 §11).
 - **Two fields hold what `core` cannot.** `RemoteEndpoint`, in `ProbeSuite::DevicePath`, holds transport state: keys, socket addresses, a relay URL. The message carries the remote's `NodeId` and the endpoint as bytes in `net`'s encoding (PLC-E2-T12). `DegradeDetail::Fallback` names an `OpKind` and a `ProviderId`, which are `kernels`'. It carries the provider's `ProviderName` (§5.1), which COMP-E2-T13 defines in `core` with `ReaderId`, and the op's name as owned text (DIST-E14-T13).
 - **No task yet:** `ProbeResult` waits for the task that defines `CapabilityProfile` (#1524), and `ErrorReport` for the task that builds `core`'s `Error` (§5.12). No task row names either yet.
 
@@ -1104,9 +1106,9 @@ pub trait KernelProvider: Send + Sync {
     /// Checks for sticky device errors. A sticky error fails the runner with class Device.
     fn health(&self, ctx: &DeviceCtx) -> DeviceHealth;
 
-    // Added by RFC-0040 §2.1, which gives their full signatures. All but `poll` and
-    // `synchronize` have default bodies (Unsupported, None or a no-op); those two have none,
-    // because every backend implements them.
+    // Added by RFC-0040 §2.1, which gives their full signatures. All but `build`, `domain`,
+    // `poll` and `synchronize` have default bodies (Unsupported, None or a no-op); those four
+    // have none, because every backend implements them (corrected 2026-10-23, §18.32).
     // build() -> ProviderBuild           build identity; part of every selection-cache key
     // domain() -> MemoryDomain           providers that share buffers, streams and events
     // memory_info(ctx)                   free and budgeted memory now; never on a hot path
@@ -1536,6 +1538,8 @@ pub enum RunnerState {
 pub enum RunnerStateKind { Fetching, Packing, Loading, Warming, Ready, Draining, Failed, Stopped }
 pub enum DrainReason { Replan { successor: PlanEpoch }, Unload, Shutdown, NodeLeaving, RestartBudgetSpent }
 /// Why a runner stopped (§18.28): after a drain, or from `Failed` (§3.3). Not the API's completion reason.
+/// From `Failed`, a spent restart budget is `Drained(DrainReason::RestartBudgetSpent)` and a fatal error
+/// `Fatal(class)`, so the supervisor and the event log name the same reason (§18.34).
 pub enum StopReason { Drained(DrainReason), Fatal(ErrorClass) }
 ```
 
@@ -1552,7 +1556,7 @@ pub struct Error {
     pub scope: ErrorScope,                      // Sequence(SequenceId) | Stage(StageIx) | Runner
                                                 // | Node(NodeId) | Link(LinkId) | Instance | Cluster
     pub retry: RetryHint,                       // Never | After(Nanos) | OnNewPlan | Backoff
-    pub context: SmallVec<[(&'static str, String); 4]>,
+    pub context: SmallVec<[(Cow<'static, str>, String); 4]>, // Cow since 2026-10-23 (§18.32)
     pub source: Option<Box<Error>>,
 }
 
@@ -1611,7 +1615,7 @@ pub enum ErrorClass {
 | `GrammarRef` | core (added 2026-10-23; §5.8's note) | 0050 | 0012 (masks) |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
-| `Error`, `ErrorClass` | core | 0001 | every RFC (codes) |
+| `Error`, `ErrorClass`, `ErrorCode`, `Domain` | core | 0001 | every RFC (codes in its domain; the `Domain` variant and range come with its table), 0050 (the API shape per code) |
 | Policy objects (`Objective`, `ExactnessPolicy`, `ResourcePolicy`, `ResourceOverlay`, `InstancePolicy`), and the plain-data field types `config` parses into (`Fidelity`, `ApproxParams`, `NetworkScope`, `Reserve`, `Fraction`, the selectors, `PlacementPin`, `TensorOverride`, `KeyPath`, `ConfigValue`; OQ-PRD-27) | core | 0054 | 0011, 0012, 0042 |
 | Canonical encoding (`canon::to_bytes`), behind `InstancePolicy::canonical_bytes` and `digest_with` | core | 0054 (§4.5) | |
 | `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore`, `Outbox` | core | 0060 | 0030, 0032, 0033 (the protocol cores) |
@@ -2715,7 +2719,9 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | SC-17's bound is `α_wire + S/β + 2 · t_switch`; Goals item 3 and §5.3 still quote `α_wire + 2 · t_switch`. Done 2026-10-20 | DIST | RFC-0032 Goals, §5.3 |
 | RFC-0062 §12.1: row 1 checks `core`'s normal and build dependencies (rule 1's 2026-10-21 note), and row 7 is named for rule 7 as it now reads (GPU providers ship in backend modules) instead of "backends are cargo features resolved at runtime" | QUAL | RFC-0062 §12.1 |
 
-### 18.6 Core types for the I/O interface (2026-10-21)
+### 18.6a Core types for the I/O interface (2026-10-21)
+
+*Note 2026-10-23:* this entry was headed §18.6, a number §18.6 "Changes requested in other documents" already had. It is §18.6a, so the log keeps its date order without renumbering the entries after it. The two citations of §18.6, in this section's introduction and in §18.2's row on the b2 prefill figure, mean "Changes requested in other documents", and no text cited this entry by number.
 
 `syntropy-io`'s interface (RFC-0021 §2) needs types that other crates share. They are placed in `core`.
 
@@ -2874,7 +2880,7 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 
 | Change | Sections touched | Reason |
 |---|---|---|
-| `AttnKind::Compressed` becomes `Compressed { sinks: bool }`, so `KernelClass::Attention` carries the sink flag. `AttnIndex(CompressedTopK)` runs only on layers whose ratio has an indexer (r = 4), r = 128 layers read every formed entry, and r = 0 layers read the raw window alone. `deepseek4` lists `AttnIndex(CompressedTopK)` as its indexer and no longer lists `SparseIndexed` or a separate `SlidingGqa` | §5.2 (`KernelClass` doc); RFC-0040 §3.1 (dated note); RFC-0043 §3.1, §5.5, open question 2; ADR-0003 (revision note, decision 1 unchanged). In code, `core`'s `AttnKind::Compressed` is still a unit variant, and COMP-E1-T10 moves it, changing its serde form and the IPC schema fingerprint | COMP-E16-T18 settles OQ-MF-16 (a)–(c) from the reference code COMP-E16-T15 read (`deepseek-ai/DeepSeek-V4-Pro` revision `b5968e9190ef611bbf34a7229255be88a0e937c1`). For the maintainers to confirm |
+| `AttnKind::Compressed` becomes `Compressed { sinks: bool }`, so `KernelClass::Attention` carries the sink flag. `AttnIndex(CompressedTopK)` runs only on layers whose ratio has an indexer (r = 4), r = 128 layers read every formed entry, and r = 0 layers read the raw window alone. `deepseek4` lists `AttnIndex(CompressedTopK)` as its indexer and no longer lists `SparseIndexed` or a separate `SlidingGqa`. In code, `core`'s `AttnKind::Compressed` is still a unit variant, and COMP-E1-T10 moves it, changing its serde and postcard forms, so that change bumps `ipc_protocol` (§18.20) and the IPC schema fingerprint changes with it | §5.2 (`KernelClass` doc); RFC-0040 §3.1 (dated note); RFC-0043 §3.1, §5.5, open question 2; ADR-0003 (revision note, decision 1 unchanged) | COMP-E16-T18 settles OQ-MF-16 (a)–(c) from the reference code COMP-E16-T15 read (`deepseek-ai/DeepSeek-V4-Pro` revision `b5968e9190ef611bbf34a7229255be88a0e937c1`). For the maintainers to confirm |
 
 ### 18.28 Types the IPC carries live in `core`, and their messages arrive with them (2026-10-23)
 
@@ -2899,3 +2905,36 @@ DIST-E10-T10 model-checked OQ-NET-34's option (a), which was settled under the m
 | Change | Sections touched | Reason |
 |---|---|---|
 | `PrefixRef` and its `PrefixKey` and `TailId`, and `GrammarRef`, are `core` types in `core::sequence`. `TailId` was one of TIER-E6-T02's supporting types, listed in RFC-0022's KV listing; TIER-E6-T02 and TIER-E7-T01 now use `core`'s, and PROD-E3-T05 uses `core`'s `GrammarRef`. `LogprobBlock { k: 0 }` is the chosen tokens' logprobs alone, which `net` cannot encode until OQ-NET-35 settles. `TokenEntry::rng_counter` has no serde default | §5.8 (dated notes of 2026-10-23), §5.13; RFC-0022 §7.1, §7.2; RFC-0031 §6.5 (dated notes); RFC-0050 §3.1 (dated note) | DIST-E1-T14 builds `SequenceOpen` and `SamplingParams`, which hold these types, and `core` cannot name a type of `tier` or `api` (review-1493's N5 on #1780). For the maintainers to confirm |
+
+### 18.31 Link selection's cost, home and demotion report (2026-10-23)
+
+DIST-E7-T11's criteria needed three things RFC-0031 §3 named but no task defined: a cost function the solver could call, a type for the demotion, and a message to report it. They were settled under the maintainers' standing instruction.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `LinkCaps` (§5.2) and `link_cost(caps, size, objective, λ) -> Nanos` live in `core::resource::link`; `net`'s `Transport::cost` delegates to it | RFC-0031 §3 (dated note) | the solver picks a hop's transport by `cost_t` and must not depend on `net`; no task had built §5.2's base `LinkCaps` |
+| `cost_t` is the selection cost between an edge's transports, not the objective's hop term, which stays RFC-0011 §5's `α^plan + S/β` with C14's wireless costing; z defaults per transport [estimate], derived in the note | RFC-0031 §3 (dated note) | λ = 1.0 on Wi-Fi predates C14 (2026-10-20), which costs wireless hops at their mean in the objective |
+| A hop's demotion is reported in one new R → D message, `EdgeDemoted { demotion, cause, cost }`, for both the connect-time fallback (RFC-0031 §3) and the fault-time demotion (RFC-0031 §7.4); `Demotion` and `DemotionCause` are in `core`; the daemon forwards it as RFC-0033 §11's `ReportEdgeDemoted`; its `cost` is §3's drift report, not sent twice; `TRANSPORT_DEMOTED` is set from it by DIST-E14-T13 | §3.5; RFC-0031 §3 (dated note) | §3.5 had no message for either path, and RFC-0033 §11's `ReportEdgeDemoted` names a `cause` no type held. `Degradation` is built at M3, after DIST-E7-T11 (M2). A re-plan for it needs `ReplanReason::Drift` with a `DriftTerm::Hop { link, transport }`, and no task builds `ReplanReason` yet. For the maintainers to confirm |
+
+### 18.32 Default bodies in §5.7, and owned names in `Error` (2026-10-23)
+
+From issue #1525, the review of COMP-E1-T01.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| §5.7's comment says that `build`, `domain`, `poll` and `synchronize` have no default bodies | §5.7 | RFC-0040 §2.1, which §5.7 defers to, gives `build` and `domain` no body; the comment named only `poll` and `synchronize` |
+| `Error::context`'s keys are `Cow<'static, str>`, not `&'static str` | §5.12 | `Error` crosses the IPC in `ErrorReport` (§3.5), and decoding a `&'static str` needs a buffer that lives for the whole program, so every decode would leak one. Code still writes literal keys without allocating. RFC-0040 §2.2 makes the same change to `ProviderId` and `ProviderBuild` (note of the same date) |
+
+### 18.34 The split heal in ADR-0009, and the stop reason of a spent restart budget (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| ADR-0009 item 7's "On heal, the higher epoch wins" is replaced by ADR-0304's heal order, now its standings comparison | ADR-0009 (revision of 2026-10-23, item 7 marked) | ADR-0304 has ranked support ahead of the counter since 2026-10-19 (item 3 of its "Revised 2026-10-19, second revision" block), so item 7 had contradicted it since then; RFC-0032 §7.5 and DIST-E10-T05 follow ADR-0304 (the review of #1783) |
+| `Failed → Stopped` on a spent restart budget carries `StopReason::Drained(DrainReason::RestartBudgetSpent)`; on a fatal error, `Fatal(class)` | §5.11 (`StopReason` doc); DIST-E1-T05 | §3.3's edge named both causes, and both variants could carry the first; the supervisor and the event log now name the same one (the review of #1789) |
+
+### 18.35 Hardware jobs before their rigs run (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A hardware job whose rig and `lab.yml` job do not exist yet is marked `planned` in `ci/jobs.toml`. `ci-gate` does not hold a same-repository PR for it, but still holds a fork PR. QUAL-E2-T02 ends the interim for `hw-cuda-ada`, and QUAL-E2-T08 adds the other Tier 1 rigs' jobs | ADR-0620 decision 3 (dated revision); RFC-0062 §2.5 (dated note) | QUAL-E1-T07 requires hardware for every PR touching the hardware paths, months before the first rig runs. Without the interim, most engine and networking PRs could not merge. Fork PRs keep ADR-0620 decision 4's rule. Taken under the maintainer's standing instruction, for the maintainers to confirm |
+| The direct hardware paths gain `numerics/`, the tolerance tables `kernels` embeds | ADR-0620 decision 3 (dated revision); RFC-0062 §2.2 (dated note) | the op conformance a hardware job runs checks against those tables, so a change to a ceiling alone changes what the rig judges. From the engine-lane review of #1830 |

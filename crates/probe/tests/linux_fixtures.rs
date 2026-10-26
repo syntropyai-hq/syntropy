@@ -18,7 +18,7 @@ use syntropy_core::units::Bytes;
 use syntropy_probe::DirFs;
 use syntropy_probe::linux::{
     CgroupVersion, ContainerKind, HostEnv, IoUringSysctl, IsaSource, LinuxHost, NodeFacts,
-    NumaHostMem, enumerate,
+    NumaHostMem, RawCall, SysCheck, Syscalls, enumerate,
 };
 
 const NODE: NodeId = NodeId([7; 32]);
@@ -26,11 +26,26 @@ const KIB: u64 = 1024;
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * 1024 * 1024;
 
+/// System calls cannot be recorded with a fixture tree. Every fixture host grants both: only
+/// the dual-socket server reports AMX, so it is the only one that requests the permission.
+struct FixtureCalls;
+
+impl Syscalls for FixtureCalls {
+    fn request_xtiledata_permission(&self) -> RawCall {
+        RawCall::Ok
+    }
+
+    fn io_uring_setup(&self) -> RawCall {
+        RawCall::Ok
+    }
+}
+
 fn run(scenario: &str) -> LinuxHost {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/linux/");
     enumerate(
         &DirFs::new(format!("{root}{scenario}")),
         IsaSource::CpuInfo,
+        &FixtureCalls,
         NODE,
     )
     .unwrap_or_else(|e| panic!("{scenario}: {e}"))
@@ -130,6 +145,8 @@ fn desktop_hybrid() {
             container: None,
             io_uring: IoUringSysctl::Enabled,
             seccomp_filtered: false,
+            io_uring_setup: SysCheck::Granted,
+            amx_permission: None,
             cgroup: CgroupVersion::V2,
             cap_ipc_lock: false,
         }
@@ -195,7 +212,7 @@ fn dual_socket_two_numa_domains() {
                 llc: Bytes(23_040 * KIB),
                 ccds: 0,
                 isa,
-                amx_permitted: false,
+                amx_permitted: true,
                 reserved_cpus: CpuSet::default(),
             }),
             ..DeviceInfoExt::default()
@@ -233,6 +250,8 @@ fn dual_socket_two_numa_domains() {
             container: None,
             io_uring: IoUringSysctl::Enabled,
             seccomp_filtered: false,
+            io_uring_setup: SysCheck::Granted,
+            amx_permission: Some(SysCheck::Granted),
             cgroup: CgroupVersion::V2,
             cap_ipc_lock: true,
         }
@@ -331,6 +350,8 @@ fn wsl2() {
             container: None,
             io_uring: IoUringSysctl::Absent,
             seccomp_filtered: false,
+            io_uring_setup: SysCheck::Granted,
+            amx_permission: None,
             cgroup: CgroupVersion::V2,
             cap_ipc_lock: false,
         }
@@ -406,6 +427,8 @@ fn docker_cgroup_v2_limit() {
             container: Some(ContainerKind::Docker),
             io_uring: IoUringSysctl::Enabled,
             seccomp_filtered: true,
+            io_uring_setup: SysCheck::Granted,
+            amx_permission: None,
             cgroup: CgroupVersion::V2,
             cap_ipc_lock: false,
         }
@@ -484,6 +507,8 @@ fn raspberry_pi_5() {
             container: None,
             io_uring: IoUringSysctl::Enabled,
             seccomp_filtered: false,
+            io_uring_setup: SysCheck::Granted,
+            amx_permission: None,
             cgroup: CgroupVersion::V2,
             cap_ipc_lock: false,
         }

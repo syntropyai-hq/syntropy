@@ -158,8 +158,8 @@ pub trait KernelProvider: Send + Sync {
 #### 2.2 Supporting types
 
 ```rust
-pub struct ProviderId(pub &'static str);           // "cuda", "metal", "cpu", "hip", "vulkan", "ggml-cuda", …
-pub struct ProviderBuild { pub version: u32, pub module: Option<Blake3>, pub toolchain: SmallVec<[(&'static str, String); 3]>, pub driver: Option<String> }
+pub struct ProviderId(pub Cow<'static, str>);      // "cuda", "metal", "cpu", "hip", "vulkan", "ggml-cuda", …
+pub struct ProviderBuild { pub version: u32, pub module: Option<Blake3>, pub toolchain: SmallVec<[(Cow<'static, str>, String); 3]>, pub driver: Option<String> }
 pub enum MemoryDomain { Cuda, Hip, Metal, Vulkan, Host, Ggml(GgmlBackend) }
 
 /// One device as a provider sees it. The probe (RFC-0010) merges records from several
@@ -253,6 +253,8 @@ pub trait HostRegistrar: Send {
 bitflags! { pub struct HostRegFlags: u8 { const DMA = 1; const MAPPED = 2; } }   // the tier manager maps its Registrations onto these
 pub struct Segment { pub reservation: u64, pub offset: Bytes, pub bytes: Bytes, pub handle: u64 }
 ```
+
+*Note 2026-10-23 (#1525):* `ProviderId` and the toolchain names in `ProviderBuild` were `&'static str`. §6.5 postcard-encodes `SelectionKey` and `SelectionEntry`, which hold them, to `<state>/kernels/selection.v1`. Decoding a `&'static str` needs a buffer that lives for the whole program, so every cache load would have leaked one. `Cow<'static, str>` decodes owned, and a provider still names itself with a literal without allocating. A `Cow` cannot be `Copy`, because its owned form holds a `String`, so `ProviderId` departs from RFC-0001 §5's default that IDs are `Copy`: it is `Clone` only. RFC-0001 §5.12 makes the same change to `Error::context` (RFC-0001 §18.32). COMP-E13-T15 makes the change in code.
 
 *Revised 2026-10-22 (ADR-0405):* `DeviceClass`, `CpuIsa` and `DeviceFeatures` live in `syntropy-core`, and `kernels` re-exports them (PLC-E1-T16). RFC-0010 §1.2 had its own `DeviceClass` with other variants, and now points here. `AppleFamily` is renamed `AppleGpuFamily`, the name `core` already uses. `Npu` comes from RFC-0010. `ProviderDevice` is unchanged.
 
@@ -913,6 +915,16 @@ ADR-0001's note asked for this record before M1. ADR-0402 turns it into policy, 
 - **Attention, scans and sampling** for CPU-hosted layers and CPU-only nodes, with F32 softmax statistics and states.
 
 The CPU provider is also a correctness tool: `kernels::reference` is separate code, so the CPU provider is itself checked against it and against ggml's CPU ops.
+
+*Note 2026-10-23 (COMP-E3-T02):* the CPU provider's shell, as built in `syntropy_kernels_cpu::CpuProvider`.
+- **Devices.** One device per NUMA node among the cores the process may run on (`syntropy_io::os::cpu_topology`). Each reports `DeviceClass::Cpu { isa }` from detection, and adds `GRAPH_CAPTURE`, `STREAM_MEM_OPS`, `HOST_REGISTER` and `HOST_IMPORT` to its ISA's features. The tier manager budgets RAM, so `ProviderDevice::memory` reports none.
+- **Memory.** `alloc` takes only `HostMapped` and gives zeroed host memory aligned to at least 64 bytes. `register_host` records the region, and `import` wraps it without copying; the CPU sees host memory as it is. `Device`, `Unified` and `reserve_only` are `Unsupported`. A queued copy holds raw host addresses, so `free` defers deallocation while any stream has items left. The memory is released by the first `free` or `synchronize` that finds every stream drained, both between-step calls, and at the latest when the device drops. `poll` never deallocates, because a deallocation inside a step could take the allocator's lock (§2.4).
+- **Streams.** Each stream is a preallocated `syntropy-spsc` ring of 4,096 items [target] that the provider's calls push onto. A `StreamRunner` runs the items in order on the thread that holds it. That can be a pool thread, after `take_runner`. It can be the device's own thread, through `CpuProvider::run`, which is the inline path behind `ComputePool::run_inline`. Or it can be `synchronize`. `run` never spins or parks: it returns at the first item that has to wait. `StreamRunner::drain` waits as a thread inside a step may, with an acquire spin and `pause` back-off, parking only on an armed `CpuWaker`. A full ring is refused, never grown.
+- **Events and doorbells.** An event is a pair of atomic generation counters, and `poll` compares them. A record sets its generation with `fetch_max`, which gives timeline semantics, as §4.3 lets a backend's events follow: a wait for generation g passes once any record of g or later has run, from any stream. Doorbell flags are `AtomicU32`s, each on its own 64-byte line, 64 to a page. `signal_host` is a release store. `wait_host` is an acquire check, then the consumer's reset. `CpuProvider::doorbells` gives host threads the same flags.
+- **The wake.** `arm_wake` takes a `CpuWaker` the waiter registered with `CpuProvider::register_waker`, whose `HostWaker` is `{ kind: Futex, handle: index }`. It queues the writer's wake: after the items before it, normally the doorbell's release store, the runner unparks the waiter if the waiter announced it is parking. The park is `std::thread::park_timeout`, which is a futex on Linux, `WaitOnAddress` on Windows, and a dispatch semaphore on Apple platforms.
+- **Capture.** It records the items a stream's calls would push, and `replay` pushes them again. Each record and wait takes its event generation at that moment. A captured copy keeps its buffer handles, not their addresses, and each replay resolves them, so a buffer freed since the capture fails the replay rather than being written. A replay is all or nothing: every captured copy's buffers, and the ring's room for the whole list, are checked before any item is pushed. When COMP-E1-T05 gives launches buffer arguments, a captured launch keeps its buffers as handles under the same rules. A dropped device waits at most 30 s [target] for its taken runners to drain, then leaks their memory rather than free it under them.
+- **Kernels.** `prepare` looks the op up in the ISA's dispatch table and returns `PreparedOp::with_handle`, whose handle is the kernel's index; `kernels` gained the handle field for this. `query` returns `None`, because each kernel task declares its op's capabilities. `OpArgs` is still COMP-E1-T05's placeholder, so a launch runs with `OpArgs::none()`, and tests add stand-in kernels with `CpuProvider::with_kernel`.
+- **Health.** A kernel's error makes the device's health sticky with that error's code, and every later call fails with class `Device`. A caller's error that no §13 code names, such as a handle from another device or a full ring, is class `Internal` with the unassigned code 0.
 
 #### 7.4 HIP (Tier 2; M3)
 

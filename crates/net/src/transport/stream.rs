@@ -604,7 +604,7 @@ impl ChannelBackend for HotSide {
 // ---- The net task ----
 
 /// A channel opened over `r` and `w` after the handshake: the dispatcher's [`Channel`] and the
-/// task that drives it, which [`spawn`] runs in the domain.
+/// task that drives it, which [`Opened::spawn`] runs in the domain.
 pub struct Opened<R, W> {
     pub channel: Channel,
     driver: Driver<R, W>,

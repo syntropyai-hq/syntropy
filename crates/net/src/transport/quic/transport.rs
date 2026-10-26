@@ -26,7 +26,13 @@
 //! - **Early streams.** A stream whose `Hello` comes before its channel is accepted is held for
 //!   [`QuicSettings::early_hold`], half the shorter connect timeout, then refused with
 //!   `NotANeighbour`: within the connector's wait on the same settings, so it learns that the plans
-//!   disagree (`Auth`) rather than timing out (`Link`), which would make it reconnect.
+//!   disagree (`Auth`) rather than timing out (`Link`), which would make it reconnect. At most
+//!   [`MAX_EARLY_PER_PEER`] are held from one peer, so one peer cannot fill the table for the
+//!   others. A stream over that, or over the table's 64, is closed without a `HelloAck`: the
+//!   connector sees a link failure, which is retried, since nothing about the plan was wrong. A
+//!   second stream for a held key replaces the first if it comes from the same peer, as a
+//!   reconnect would, and is refused with `NotANeighbour` otherwise. An `accept` waits in its
+//!   caller's task, so one whose caller stops waiting leaves nothing registered.
 //! - **Timeouts.** A dial or a handshake that outlasts `link.connect_timeout` fails with
 //!   `ConnectTimeout` (0x020A). A refusal, such as an unaccepted ALPN or a `HelloAck` with a
 //!   §12 status, keeps its own error: a refusal is `Link` with no code, or the status's code.
@@ -59,6 +65,7 @@ use crate::error::{Error, ErrorCode};
 use crate::transport::buffer::{BufferPool, PoolRegistration};
 use crate::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
 use crate::transport::domain::DomainHandle;
+use crate::transport::registration::RegistrationTable;
 use crate::transport::stream::{self, ChannelAuth, HelloIn, StreamSpec};
 use crate::transport::{
     Channel, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec, RemoteEndpoint, Transport,
@@ -72,8 +79,12 @@ pub const DATA_ALPN: &[u8] = b"syntropy/data/1";
 /// reaches the transport: 1 ms, so its first ack timeout is 4 ms (§7.3).
 pub const INITIAL_ALPHA_P99: Nanos = Nanos(1_000_000);
 
-/// The early streams held for a channel nobody accepts yet; more are refused.
+/// The early streams held for a channel nobody accepts yet; more are refused \[target\].
 const MAX_EARLY: usize = 64;
+
+/// Of those, the most from one peer key \[target\]: a quarter of the table, so one peer cannot
+/// fill it and have every other peer's early streams refused.
+pub const MAX_EARLY_PER_PEER: usize = MAX_EARLY / 4;
 
 /// Which of a peer's two connections a channel takes (RFC-0031 §4.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -191,7 +202,59 @@ type Conns = HashMap<([u8; 32], Role), Arc<OnceCell<Arc<Conn>>>>;
 #[derive(Default)]
 struct Routes {
     waiters: HashMap<ChannelKey, Waiter>,
-    early: HashMap<ChannelKey, Early>,
+    /// Each early stream with its arrival number, so its hold's end removes it and not a later
+    /// stream that replaced it.
+    early: HashMap<ChannelKey, (u64, Early)>,
+    /// The next arrival number.
+    arrivals: u64,
+}
+
+/// What the router does with an early stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Admit {
+    /// Held for its `accept`, in place of the held stream for its key, if any.
+    Hold,
+    /// Another peer holds a stream for its key: refused with `NotANeighbour`.
+    Claimed,
+    /// The table, or its peer's share of it, is full: closed without a `HelloAck`, so the
+    /// connector sees a link failure, which is retried, and not a refusal, which is not
+    /// (RFC-0001 §10).
+    Full,
+}
+
+/// The rule [`Routes::admit`] applies. `holder` is the peer that holds a stream for the key, if
+/// any, `held` the streams held in all and `from_peer` those `peer` holds. A second stream for a
+/// held key replaces the first when it comes from the same peer, as a reconnect would, and needs
+/// no room; from another peer it is refused. Otherwise there must be room under [`MAX_EARLY`],
+/// and under [`MAX_EARLY_PER_PEER`] for its peer.
+fn admit(holder: Option<&[u8; 32]>, peer: &[u8; 32], held: usize, from_peer: usize) -> Admit {
+    match holder {
+        Some(holder) if holder == peer => Admit::Hold,
+        Some(_) => Admit::Claimed,
+        None if held < MAX_EARLY && from_peer < MAX_EARLY_PER_PEER => Admit::Hold,
+        None => Admit::Full,
+    }
+}
+
+impl Routes {
+    /// What to do with a stream from `peer` for `key`, by [`admit`].
+    fn admit(&self, key: &ChannelKey, peer: &[u8; 32]) -> Admit {
+        let holder = self.early.get(key).map(|(_, held)| &held.conn.peer);
+        let from_peer = self
+            .early
+            .values()
+            .filter(|(_, held)| held.conn.peer == *peer)
+            .count();
+        admit(holder, peer, self.early.len(), from_peer)
+    }
+
+    /// The `accept` waiting for `key`, if its caller is still there: one that went away is
+    /// dropped.
+    fn waiter(&mut self, key: &ChannelKey) -> Option<Waiter> {
+        self.waiters
+            .remove(key)
+            .filter(|waiter| !waiter.reply.is_closed())
+    }
 }
 
 struct Inner {
@@ -200,12 +263,13 @@ struct Inner {
     settings: QuicSettings,
     auth: Arc<dyn ChannelAuth>,
     capabilities: u64,
-    pools: Mutex<Vec<BufferPool>>,
+    pools: RegistrationTable,
     conns: Mutex<Conns>,
     routes: Mutex<Routes>,
 }
 
-/// The QUIC backend of RFC-0031 §4. See the [module](self).
+/// The QUIC backend of RFC-0031 §4: endpoints, two connections per peer, a stream per channel,
+/// and the transport configuration of §4.3.
 #[derive(Clone)]
 pub struct QuicTransport {
     inner: Arc<Inner>,
@@ -265,7 +329,7 @@ impl QuicTransport {
                     settings,
                     auth,
                     capabilities,
-                    pools: Mutex::new(Vec::new()),
+                    pools: RegistrationTable::new(),
                     conns: Mutex::new(HashMap::new()),
                     routes: Mutex::new(Routes::default()),
                 });
@@ -360,20 +424,16 @@ impl Inner {
 
     /// The receive pool and send pools of a channel spec, resolved from the registrations.
     fn stream_spec(&self, spec: &ChannelSpec) -> Result<StreamSpec, Error> {
-        let pools = lock(&self.pools).clone();
-        let pool = pools
-            .iter()
-            .find(|pool| pool.id() == spec.pool.pool)
-            .cloned()
-            .ok_or_else(|| {
-                Error::uncoded(
-                    ErrorClass::InvalidRequest,
-                    format!(
-                        "pool {:?} is not registered with this transport",
-                        spec.pool.pool
-                    ),
-                )
-            })?;
+        let pools = self.pools.pools();
+        let pool = self.pools.resolve(spec.pool).ok_or_else(|| {
+            Error::uncoded(
+                ErrorClass::InvalidRequest,
+                format!(
+                    "pool {:?} is not registered with this transport",
+                    spec.pool.pool
+                ),
+            )
+        })?;
         let slot_size = spec.slot_size.0;
         if slot_size > self.settings.max_frame {
             return Err(Error::uncoded(
@@ -525,18 +585,27 @@ impl Inner {
         /// What to do with the stream, decided under the routing lock and done after it.
         enum Next {
             Complete(Waiter, Early),
-            Hold,
+            /// Held, with its arrival number, and the stream it replaced, if any, which is
+            /// dropped once the lock is released.
+            Hold(u64, Option<Early>),
             Refuse(Early),
+            /// Closed without a `HelloAck`, once the lock is released.
+            Close(Early),
         }
         let next = {
             let mut routes = lock(&self.routes);
-            match routes.waiters.remove(&key) {
+            match routes.waiter(&key) {
                 Some(waiter) => Next::Complete(waiter, early),
-                None if routes.early.len() < MAX_EARLY && !routes.early.contains_key(&key) => {
-                    routes.early.insert(key, early);
-                    Next::Hold
-                }
-                None => Next::Refuse(early),
+                None => match routes.admit(&key, &early.conn.peer) {
+                    Admit::Hold => {
+                        let arrival = routes.arrivals;
+                        routes.arrivals += 1;
+                        let replaced = routes.early.insert(key, (arrival, early));
+                        Next::Hold(arrival, replaced.map(|(_, early)| early))
+                    }
+                    Admit::Claimed => Next::Refuse(early),
+                    Admit::Full => Next::Close(early),
+                },
             }
         };
         let refuse = match next {
@@ -546,11 +615,22 @@ impl Inner {
                 return;
             }
             Next::Refuse(early) => Some(early),
-            Next::Hold => {
+            Next::Close(early) => {
+                drop(early);
+                return;
+            }
+            Next::Hold(arrival, replaced) => {
+                drop(replaced);
                 // Refuse the early stream if nobody accepts its channel in time: well within the
                 // connector's own wait, so it gets the refusal, not a timeout.
                 tokio::time::sleep(hold).await;
-                lock(&self.routes).early.remove(&key)
+                let mut routes = lock(&self.routes);
+                match routes.early.get(&key) {
+                    Some((held, _)) if *held == arrival => {
+                        routes.early.remove(&key).map(|(_, early)| early)
+                    }
+                    _ => None,
+                }
             }
         };
         if let Some(Early { mut send, .. }) = refuse {
@@ -729,20 +809,13 @@ impl Transport for QuicTransport {
         }
     }
 
+    /// Records the pool in the transport's registration table (RFC-0031 §8): QUIC needs no
+    /// registration with the OS, so the handle is 0. The same pool again returns its one
+    /// registration; another pool under a registered id is refused.
     fn register(&self, pool: &BufferPool) -> Result<PoolRegistration, Error> {
-        let mut pools = lock(&self.inner.pools);
-        if pools.iter().any(|known| known.id() == pool.id()) {
-            return Err(Error::uncoded(
-                ErrorClass::InvalidRequest,
-                format!("pool {:?} is already registered", pool.id()),
-            ));
-        }
-        pools.push(pool.clone());
-        Ok(PoolRegistration {
-            pool: pool.id(),
-            transport: TransportKind::Quic,
-            handle: 0,
-        })
+        self.inner
+            .pools
+            .register_transport(pool, TransportKind::Quic, 0)
     }
 
     async fn connect(&self, remote: &RemoteEndpoint, spec: ChannelSpec) -> Result<Channel, Error> {
@@ -786,50 +859,74 @@ impl Transport for QuicTransport {
             .map_err(|error| link(format!("the net domain stopped: {error}")))?
     }
 
+    /// Opens the channel `spec.key` on the stream that names it: one held since it arrived, or
+    /// the next. The wait runs in the caller's task, so a caller that stops waiting, such as on
+    /// its own timeout, leaves no `accept` registered, and may call again.
     async fn accept(&self, spec: ChannelSpec) -> Result<Channel, Error> {
-        let inner = Arc::clone(&self.inner);
-        self.inner
-            .domain
-            .spawn(async move {
-                let spec_in = inner.stream_spec(&spec)?;
-                let (reply, answer) = oneshot::channel();
-                let early = {
-                    let mut routes = lock(&inner.routes);
-                    if routes.waiters.contains_key(&spec.key) {
-                        return Err(Error::uncoded(
-                            ErrorClass::InvalidRequest,
-                            format!("the channel {:?} is already being accepted", spec.key),
-                        ));
-                    }
-                    match routes.early.remove(&spec.key) {
-                        Some(early) => Some(early),
-                        None => {
-                            routes.waiters.insert(
-                                spec.key,
-                                Waiter {
-                                    spec: spec_in.clone(),
-                                    reply,
-                                },
-                            );
-                            None
-                        }
-                    }
-                };
-                match early {
-                    Some(early) => inner.complete(early, spec_in).await,
-                    None => answer
-                        .await
-                        .map_err(|_| link("the transport closed before the channel opened"))?,
+        let spec_in = self.inner.stream_spec(&spec)?;
+        let (reply, answer) = oneshot::channel();
+        let early = {
+            let mut routes = lock(&self.inner.routes);
+            if let Some(waiter) = routes.waiter(&spec.key) {
+                routes.waiters.insert(spec.key, waiter);
+                return Err(Error::uncoded(
+                    ErrorClass::InvalidRequest,
+                    format!("the channel {:?} is already being accepted", spec.key),
+                ));
+            }
+            match routes.early.remove(&spec.key) {
+                Some((_, early)) => Some(early),
+                None => {
+                    routes.waiters.insert(
+                        spec.key,
+                        Waiter {
+                            spec: spec_in.clone(),
+                            reply,
+                        },
+                    );
+                    None
                 }
-            })
-            .await
-            .map_err(|error| link(format!("the net domain stopped: {error}")))?
+            }
+        };
+        match early {
+            Some(early) => {
+                let inner = Arc::clone(&self.inner);
+                self.inner
+                    .domain
+                    .spawn(async move { inner.complete(early, spec_in).await })
+                    .await
+                    .map_err(|error| link(format!("the net domain stopped: {error}")))?
+            }
+            None => answer
+                .await
+                .map_err(|_| link("the transport closed before the channel opened"))?,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stream is held when there is room for it and its peer, or when it replaces its own
+    /// peer's held stream, which needs no room. It is refused when another peer holds its key,
+    /// and closed for capacity when the table or its peer's share of it is full.
+    #[test]
+    fn an_early_stream_is_held_claimed_or_closed_for_capacity() {
+        let (peer, other) = ([1u8; 32], [2u8; 32]);
+        assert_eq!(admit(None, &peer, 0, 0), Admit::Hold);
+        assert_eq!(
+            admit(None, &peer, MAX_EARLY - 1, MAX_EARLY_PER_PEER - 1),
+            Admit::Hold
+        );
+        assert_eq!(admit(None, &peer, MAX_EARLY, 0), Admit::Full);
+        assert_eq!(admit(None, &peer, 1, MAX_EARLY_PER_PEER), Admit::Full);
+        assert_eq!(
+            admit(Some(&peer), &peer, MAX_EARLY, MAX_EARLY_PER_PEER),
+            Admit::Hold
+        );
+        assert_eq!(admit(Some(&other), &peer, 1, 0), Admit::Claimed);
+    }
 
     #[test]
     fn replay_and_bulk_take_the_bulk_connection() {
