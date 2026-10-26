@@ -208,6 +208,12 @@ impl Fabric for QuicFabric {
     fn pump(&mut self) {
         std::thread::sleep(Duration::from_micros(500));
     }
+
+    /// A sanitizer's slowdown, or a busy runner, stretches the round trips that the pump count
+    /// assumes; a wait for an acknowledgement gets this long in wall-clock time before it fails.
+    fn patience(&self) -> Duration {
+        Duration::from_secs(10)
+    }
 }
 
 fn key(purpose: ChannelPurpose, lane: u8) -> ChannelKey {
