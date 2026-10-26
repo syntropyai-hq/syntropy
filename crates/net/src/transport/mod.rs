@@ -6,8 +6,9 @@
 //! This module is the specification every backend builds on: QUIC (DIST-E7-T03), TCP
 //! (DIST-E7-T05), shared memory (DIST-E7-T06), RDMA (DIST-E7-T07, DIST-E7-T08), and the
 //! simulator's `SimTransport` (QUIC-equivalent semantics over `SimFabric`, QUAL-E8-T04). The
-//! first backend here is [`tcp`], the TCP fallback. [`conformance`] is RFC-0031 §2's binding semantics as a suite every backend
-//! runs.
+//! backends here are [`quic`] and [`tcp`], the TCP fallback, which both run their channels on
+//! [`stream`]'s driver. [`conformance`] is RFC-0031 §2's binding semantics as a suite every
+//! backend runs.
 //!
 //! - A [`Transport`] opens channels: [`Transport::connect`] and [`Transport::accept`] are
 //!   asynchronous, and run in the runner's `net` domain, never on a hot thread.

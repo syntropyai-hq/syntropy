@@ -56,6 +56,16 @@ pub(crate) const MOE_DOORBELL: Target = Target {
     cgen: "crate::step::cgen",
 };
 
+/// The table-delta ring's header and mirror (RFC-0023 §5.4).
+pub(crate) const TABLE_DELTA_RING: Target = Target {
+    header: "include/syntropy/table_delta_ring.h",
+    include: "syntropy/table_delta_ring.h",
+    mirror: "src/delta_ring/mirror.rs",
+    cites: "RFC-0023 §5.4",
+    filter: "delta_ring::",
+    cgen: "crate::step::cgen",
+};
+
 /// A member type the generator knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CType {

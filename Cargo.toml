@@ -65,6 +65,10 @@ bitflags = { version = "2", features = ["serde"] }
 # in `syntropy-net`. `pure` is the portable Rust code: no C or assembly to build, and the same
 # digest on every target.
 blake3 = { version = "1.8.7", default-features = false, features = ["pure"] }
+# The build-time driver that assembles `syntropy-kernels-cpu`'s SME2 unit (`src/sme2/*.S`) with
+# the platform assembler (ADR-0402 item 3; RFC-0040 §7.3). A build dependency only, of that crate
+# alone; nothing it builds runs outside AArch64 macOS, Linux and Android.
+cc = "1.9.0"
 # `SimEntropy`'s seeded ChaCha20 stream in `testkit` (RFC-0060 §2.1 rule T2). `rng` alone: the
 # block generator over `rand_core`, without the cipher traits.
 chacha20 = { version = "0.10.2", default-features = false, features = ["rng"] }

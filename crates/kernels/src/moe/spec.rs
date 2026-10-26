@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The one specification of the split rule (RFC-0023 §6; RFC-0040 §3.4; ADR-0404 item 4), and
-//! the printers that turn it into the Rust version (`src/moe/split.rs`) and the C version
-//! (`include/syntropy/moe_assign.h`).
+//! the printers that turn it into the Rust version (`src/moe/split.rs`), the C version
+//! (`include/syntropy/moe_assign.h`) and the Metal Shading Language version the Metal provider
+//! compiles (`crates/kernels-metal/shaders/moe_assign.metal`).
 //!
 //! The rule is written once, below, as a small statement tree with only the constructs every
 //! kernel language has: `u32` and `u64` integers, the `syn_route_slot` struct, counted loops,
 //! `if`, and the operators C and Rust spell alike. Each printer maps the tree one statement to
-//! one statement, so the versions differ only in spelling. The CUDA, HIP, MSL and Slang
-//! printers join it with their providers (COMP-E1-T11, COMP-E1-T12).
+//! one statement, so the versions differ only in spelling. The CUDA, HIP and Slang printers
+//! join it with their providers (COMP-E1-T12).
 //!
 //! The walk of RFC-0023 §6 is written as a rank, so each route entry is decided on its own,
 //! which is how a kernel evaluates it with one thread per entry: a missed, eligible expert's
@@ -19,10 +20,15 @@
 
 use std::fmt::Write as _;
 
+use crate::step::cgen::{CType, Header};
+
 /// The generated Rust version, relative to the crate root.
 pub(super) const RUST_PATH: &str = "src/moe/split.rs";
 /// The generated C version, relative to the crate root.
 pub(super) const C_PATH: &str = "include/syntropy/moe_assign.h";
+/// The generated MSL version, relative to this crate's root: it belongs to the Metal provider,
+/// which compiles it, and the `syntropy-kernels-metal` tests run it against the Rust version.
+pub(super) const MSL_PATH: &str = "../kernels-metal/shaders/moe_assign.metal";
 
 /// A value's type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -252,11 +258,13 @@ pub(super) fn assign() -> Func {
     }
 }
 
-/// The two languages the specification prints in today.
+/// The languages the specification prints in today.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lang {
     Rust,
     C,
+    /// Metal Shading Language: C's spelling with MSL's type names and `device` pointers.
+    Msl,
 }
 
 impl Lang {
@@ -268,6 +276,9 @@ impl Lang {
             (Self::C, Ty::U32) => "uint32_t",
             (Self::C, Ty::U64) => "uint64_t",
             (Self::C, Ty::Route) => "struct syn_route_slot",
+            (Self::Msl, Ty::U32) => "uint",
+            (Self::Msl, Ty::U64) => "ulong",
+            (Self::Msl, Ty::Route) => "syn_route_slot",
         }
     }
 
@@ -279,9 +290,12 @@ impl Lang {
             (Self::C, Param::Routes) => format!("const struct syn_route_slot *{name}"),
             (Self::C, Param::Words) => format!("const uint32_t *{name}"),
             (Self::C, Param::WordsMut) => format!("uint32_t *{name}"),
+            (Self::Msl, Param::Routes) => format!("device const syn_route_slot *{name}"),
+            (Self::Msl, Param::Words) => format!("device const uint *{name}"),
+            (Self::Msl, Param::WordsMut) => format!("device uint *{name}"),
             (_, Param::Scalar(ty)) => match self {
                 Self::Rust => format!("{name}: {}", self.ty(ty)),
-                Self::C => format!("{} {name}", self.ty(ty)),
+                Self::C | Self::Msl => format!("{} {name}", self.ty(ty)),
             },
         }
     }
@@ -299,21 +313,21 @@ impl Lang {
             E::Var(n) => (*n).to_owned(),
             E::Const(n) => match self {
                 Self::Rust => (*n).to_owned(),
-                Self::C => format!("SYN_{n}"),
+                Self::C | Self::Msl => format!("SYN_{n}"),
             },
             E::Lit(n) => match self {
                 Self::Rust => n.to_string(),
-                Self::C => format!("{n}u"),
+                Self::C | Self::Msl => format!("{n}u"),
             },
             E::Field(var, field) => format!("{var}.{field}"),
             E::Index(array, i) => match self {
                 Self::Rust => format!("{array}[{} as usize]", self.operand(i)),
-                Self::C => format!("{array}[{}]", self.expr(i)),
+                Self::C | Self::Msl => format!("{array}[{}]", self.expr(i)),
             },
             E::Bin(op, a, b) => format!("{} {op} {}", self.operand(a), self.operand(b)),
             E::Cast(ty, x) => match self {
                 Self::Rust => format!("{} as {}", self.operand(x), self.ty(*ty)),
-                Self::C => format!("({}){}", self.ty(*ty), self.operand(x)),
+                Self::C | Self::Msl => format!("({}){}", self.ty(*ty), self.operand(x)),
             },
         }
     }
@@ -338,8 +352,10 @@ impl Lang {
                 let _ = match (self, mutable) {
                     (Self::Rust, true) => writeln!(out, "{pad}let mut {name}: {ty} = {init};"),
                     (Self::Rust, false) => writeln!(out, "{pad}let {name}: {ty} = {init};"),
-                    (Self::C, true) => writeln!(out, "{pad}{ty} {name} = {init};"),
-                    (Self::C, false) => writeln!(out, "{pad}const {ty} {name} = {init};"),
+                    (Self::C | Self::Msl, true) => writeln!(out, "{pad}{ty} {name} = {init};"),
+                    (Self::C | Self::Msl, false) => {
+                        writeln!(out, "{pad}const {ty} {name} = {init};")
+                    }
                 };
             }
             S::Inc(name) => {
@@ -370,9 +386,10 @@ impl Lang {
                 let end = self.expr(end);
                 let _ = match self {
                     Self::Rust => writeln!(out, "{pad}for {var} in 0..{end} {{"),
-                    Self::C => writeln!(
+                    Self::C | Self::Msl => writeln!(
                         out,
-                        "{pad}for (uint32_t {var} = 0u; {var} < {end}; {var}++) {{"
+                        "{pad}for ({} {var} = 0u; {var} < {end}; {var}++) {{",
+                        self.ty(Ty::U32)
                     ),
                 };
                 self.stmts(out, depth + 1, body);
@@ -384,7 +401,7 @@ impl Lang {
     fn cond(self, keyword: &str, cond: &E) -> String {
         match self {
             Self::Rust => format!("{keyword} {}", self.expr(cond)),
-            Self::C => format!("{keyword} ({})", self.expr(cond)),
+            Self::C | Self::Msl => format!("{keyword} ({})", self.expr(cond)),
         }
     }
 }
@@ -467,5 +484,150 @@ pub(super) fn c(f: &Func) -> String {
     );
     Lang::C.stmts(&mut out, 1, &f.body);
     out.push_str("}\n\n/* SYNTROPY_MOE_ASSIGN_H */\n#endif\n");
+    out
+}
+
+/// The MSL name of a header member's type.
+fn msl_member(ty: CType) -> &'static str {
+    match ty {
+        CType::U8 => "uchar",
+        CType::U16 => "ushort",
+        CType::U32 => "uint",
+        CType::I32 => "int",
+        CType::U64 => "ulong",
+        CType::F32 => "float",
+    }
+}
+
+/// Doc lines as `///` comments at `indent`.
+fn msl_docs<T: AsRef<str>>(out: &mut String, indent: &str, docs: &[T]) {
+    for doc in docs {
+        let doc = doc.as_ref();
+        if doc.is_empty() {
+            let _ = writeln!(out, "{indent}///");
+        } else {
+            let _ = writeln!(out, "{indent}/// {doc}");
+        }
+    }
+}
+
+/// The MSL version of `f`, for the Metal provider. It holds `header`'s constants and structs
+/// (the doorbell's one definition, `moe_doorbell.h`, which an MSL source compiled at run time
+/// cannot include), with `static_assert`s of the layout the header gives them; `f`'s outer
+/// loop body as `<c_name>_entry`, which decides route entry `i` on its own; and the kernel
+/// `<c_name>`, one thread per route entry.
+///
+/// # Panics
+///
+/// If `f`'s body is not one loop `for i in 0..n_route`, the shape the kernel splits across
+/// threads, or a constant does not fit in a `uint`.
+pub(super) fn msl(f: &Func, header: &Header) -> String {
+    let [S::For("i", E::Var("n_route"), entry)] = f.body.as_slice() else {
+        panic!("the MSL printer needs a body of one loop `for i in 0..n_route`");
+    };
+    let mut out = String::from(
+        "// SPDX-License-Identifier: MIT OR Apache-2.0\n\
+         \n\
+         // @generated from the specification in `crates/kernels/src/moe/spec.rs` and the layouts\n\
+         // of `crates/kernels/include/syntropy/moe_doorbell.h` by the `syntropy-kernels` tests. Do\n\
+         // not edit: change the specification or the header and run\n\
+         // `SYNTROPY_BLESS_GENERATED=1 cargo test -p syntropy-kernels moe::`.\n\
+         //\n\
+         // The split rule in Metal Shading Language (RFC-0023 §6; RFC-0040 §3.4; ADR-0404 item 4),\n\
+         // printed from the same specification as `crates/kernels/src/moe/split.rs` and\n\
+         // `crates/kernels/include/syntropy/moe_assign.h`. The `syntropy-kernels-metal` tests\n\
+         // compile it with the Metal compiler and run it against the Rust version.\n\
+         \n\
+         #include <metal_stdlib>\n\
+         \n\
+         using namespace metal;\n",
+    );
+    for d in &header.defines {
+        let value = u32::try_from(d.value).expect("an MSL constant fits in a uint");
+        out.push('\n');
+        msl_docs(&mut out, "", &d.docs);
+        let _ = writeln!(out, "constant uint {} = {value}u;", d.name);
+    }
+    for s in &header.structs {
+        out.push('\n');
+        msl_docs(&mut out, "", &s.docs);
+        let _ = writeln!(out, "struct {} {{", s.c_name);
+        for m in &s.fields {
+            msl_docs(&mut out, "    ", &m.docs);
+            let _ = writeln!(out, "    {} {};", msl_member(m.ty), m.name);
+        }
+        out.push_str("};\n");
+    }
+    out.push_str(
+        "\n// The layout `moe_doorbell.h` gives each struct, checked by the Metal compiler.\n",
+    );
+    for s in &header.structs {
+        let tag = &s.c_name;
+        let _ = writeln!(
+            out,
+            "static_assert(sizeof({tag}) == {}, \"{tag} size\");",
+            s.size
+        );
+        let _ = writeln!(
+            out,
+            "static_assert(alignof({tag}) == {}, \"{tag} align\");",
+            s.align
+        );
+        for m in &s.fields {
+            let _ = writeln!(
+                out,
+                "static_assert(__builtin_offsetof({tag}, {0}) == {1}, \"{tag}.{0}\");",
+                m.name, m.offset
+            );
+        }
+    }
+    out.push('\n');
+    msl_docs(&mut out, "", f.docs);
+    out.push_str(
+        "///\n\
+         /// This function decides entry `i` alone, reading every entry of `route`: it is the body\n\
+         /// of the specification's loop over `i`.\n",
+    );
+    let mut params: Vec<String> = f
+        .params
+        .iter()
+        .map(|&(name, p)| format!("    {}", Lang::Msl.param(name, p)))
+        .collect();
+    params.push(format!("    {} i", Lang::Msl.ty(Ty::U32)));
+    let _ = writeln!(
+        out,
+        "static inline void {}_entry(\n{}) {{",
+        f.c_name,
+        params.join(",\n")
+    );
+    Lang::Msl.stmts(&mut out, 1, entry);
+    out.push_str("}\n\n");
+    let _ = writeln!(
+        out,
+        "/// `{}_entry` for every route entry, one thread per entry: dispatch at least\n\
+         /// `n_route` threads in one dimension. Threads at or past `n_route` write nothing.",
+        f.c_name
+    );
+    let mut params = Vec::new();
+    let mut args = Vec::new();
+    for (k, &(name, p)) in f.params.iter().enumerate() {
+        let decl = match p {
+            Param::Scalar(ty) => format!("constant {} &{name}", Lang::Msl.ty(ty)),
+            _ => Lang::Msl.param(name, p),
+        };
+        params.push(format!("    {decl} [[buffer({k})]]"));
+        args.push(name);
+    }
+    params.push(format!(
+        "    {} i [[thread_position_in_grid]]",
+        Lang::Msl.ty(Ty::U32)
+    ));
+    let _ = writeln!(out, "kernel void {}(\n{}) {{", f.c_name, params.join(",\n"));
+    let _ = writeln!(
+        out,
+        "    if (i < n_route) {{\n        {}_entry({}, i);\n    }}\n}}",
+        f.c_name,
+        args.join(", ")
+    );
     out
 }

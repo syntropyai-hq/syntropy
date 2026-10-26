@@ -53,13 +53,37 @@ fn mirror_is_generated_from_the_header() {
     );
 }
 
-/// The Rust and C versions of the split rule are what the printers make of the one
-/// specification today.
+/// The Rust, C and MSL versions of the split rule are what the printers make of the one
+/// specification today, the MSL version with the header's layouts.
 #[test]
 fn split_rule_is_generated_from_the_specification() {
     let f = spec::assign();
     assert_current(spec::RUST_PATH, &spec::rust(&f));
     assert_current(spec::C_PATH, &spec::c(&f));
+    assert_current(spec::MSL_PATH, &spec::msl(&f, &header()));
+}
+
+/// The MSL version declares every struct and constant of the header, and the kernel splits the
+/// specification's outer loop: the entry function has no loop over `i`, and the kernel guards
+/// `i < n_route`.
+#[test]
+fn msl_version_has_the_header_and_one_thread_per_entry() {
+    let msl = spec::msl(&spec::assign(), &header());
+    for s in &header().structs {
+        assert!(
+            msl.contains(&format!("struct {} {{", s.c_name)),
+            "{}",
+            s.c_name
+        );
+        assert!(msl.contains(&format!("static_assert(sizeof({}) == {}", s.c_name, s.size)));
+    }
+    assert!(msl.contains("constant uint SYN_MOE_MISS = 4294967295u;"));
+    assert!(msl.contains("constant uint SYN_MOE_CPU = 4294967294u;"));
+    assert!(msl.contains("static inline void syn_moe_assign_entry(\n"));
+    assert!(msl.contains("kernel void syn_moe_assign(\n"));
+    assert!(msl.contains("    uint i [[thread_position_in_grid]]) {\n    if (i < n_route) {\n"));
+    assert!(!msl.contains("for (uint i "));
+    assert!(msl.contains("for (uint j = 0u; j < n_route; j++) {"));
 }
 
 /// The Rust compiler's layout of each mirror equals the C layout the generator computes from
