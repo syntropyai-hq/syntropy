@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(Sanitizer::Address.options(root), "detect_leaks=0");
         assert_eq!(
             Sanitizer::Thread.options(root),
-            "suppressions=/w/ci/tsan-suppressions.txt"
+            format!("suppressions={}", root.join(TSAN_SUPPRESSIONS).display())
         );
         assert_eq!(combined(None, "a=1"), "a=1");
         assert_eq!(combined(Some(" ".to_owned()), "a=1"), "a=1");
