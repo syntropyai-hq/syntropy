@@ -214,3 +214,20 @@ fn nothing_but_the_ledger_and_the_report_workflow_may_name_it() {
         1
     );
 }
+
+/// Two `pr.yml` runs of this repository, recorded read-only from
+/// `GET /repos/syntropyai-hq/syntropy/actions/runs/{id}/jobs` on 2026-10-26 and trimmed to the
+/// fields the report reads. They are public metadata.
+#[test]
+fn the_report_reads_recorded_actions_api_jobs() {
+    let cost = Cost::parse(COST_TEXT).unwrap();
+    let pages = parse_pages(include_str!("jobs-recorded-2026-10.json")).unwrap();
+    let metrics: Metrics = serde_json::from_str("{}").unwrap();
+    let r = build_report(&cost, "2026-10", &pages, &metrics, None);
+    // lint ran 51 s and 87 s, which bill as 1 and 2 minutes. Skipped jobs bill nothing.
+    assert_eq!(value(&r, "hosted/lint"), 3.0);
+    assert_eq!(value(&r, "hosted/changes"), 2.0);
+    assert_eq!(value(&r, "hosted/ci-gate"), 2.0);
+    assert_eq!(r.lines.len(), 3, "{}", r.text);
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+}
