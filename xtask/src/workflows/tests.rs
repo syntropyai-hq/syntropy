@@ -715,8 +715,36 @@ fn a_lab_job_needs_a_timeout_of_at_most_an_hour() {
     );
     assert_clean("lab.yml", &lab_job("    timeout-minutes: 60\n"));
     assert_clean("lab.yml", &lab_job("    timeout-minutes: 5\n"));
-    // A hosted job needs no timeout.
-    assert_clean("lab.yml", &clean());
+    // Every job in lab.yml needs one, whatever runner it names, and a hosted job elsewhere does
+    // not (review of #1885, B1 and N1).
+    for runs_on in [
+        "[linux, x64]",
+        "[macos, arm64]",
+        "windows",
+        "{ group: rigs }",
+        "ubuntu-24.04",
+    ] {
+        let job = clean().replace("runs-on: ubuntu-24.04", &format!("runs-on: {runs_on}"));
+        assert_one(
+            "lab.yml",
+            &job,
+            "jobs.build.timeout-minutes",
+            "sets no `timeout-minutes`",
+        );
+    }
+    assert_clean("w.yml", &clean());
+    // The OS and architecture labels are lab labels outside lab.yml too.
+    let elsewhere = clean().replace(
+        "runs-on: ubuntu-24.04",
+        "runs-on: [linux, x64]\n    timeout-minutes: 30",
+    );
+    let findings = found("pr.yml", &elsewhere);
+    assert_eq!(findings.len(), 2, "{findings:#?}");
+    assert!(
+        findings
+            .iter()
+            .all(|(at, m)| at == "jobs.build.runs-on" && m.contains("lab label"))
+    );
 }
 
 /// A script that names the PR's head counts whatever program it runs (#1872 N11), and `github.sha`

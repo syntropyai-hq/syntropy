@@ -20,9 +20,9 @@ name: weekly
 
 on:
   schedule:
-    # Sunday at 08:00 UTC, after the nightly window: the nightly run starts at 02:00 and has a
-    # budget of 6 hours per rig (RFC-0062, Performance model and budgets), so the two share no
-    # rig hours.
+    # Sunday at 08:00 UTC, after the nightly window: the nightly run starts at 02:00 with a
+    # 6-hour per-rig budget [target] (RFC-0062, Performance model and budgets). It is the lab
+    # dispatcher's queue (§3.4), not the clock, that keeps the two from sharing a rig.
     - cron: "0 8 * * 0"
   workflow_dispatch:
 

@@ -11,7 +11,7 @@
 //! | No `pull_request_target` | a workflow triggered by it, in any form of `on:` |
 //! | No lab label | a job outside `lab.yml` whose `runs-on` names a lab label (§3.2) |
 //! | No PR checkout beside a secret | a job that checks out a PR ref and holds a secret, an environment or a write token |
-//! | Lab jobs in chunks | a job on a lab label without a `timeout-minutes` from 1 to 60, or with one an expression computes (§3.4) |
+//! | Lab jobs in chunks | a job in `lab.yml`, or on a lab label anywhere, without a `timeout-minutes` from 1 to 60, or with one an expression computes (§3.4) |
 //!
 //! **Lab labels.** A label is a lab label, compared without case, when it is `self-hosted` or
 //! `syntropy-lab`; starts with `lab-` (the per-run `lab-run-<uuid>`), or `r-` (a rig ID such as
@@ -71,8 +71,21 @@ use yaml_rust2::{Yaml, YamlLoader};
 /// The one workflow that may name a lab label (RFC-0062 §3.2).
 pub const LAB_WORKFLOW: &str = "lab.yml";
 
-/// Lab labels matched exactly, without case.
-const LAB_LABELS: &[&str] = &["self-hosted", "syntropy-lab", "roce", "unified"];
+/// Lab labels matched exactly, without case. The OS and architecture labels are the ones GitHub
+/// gives every self-hosted runner (RFC-0062 §3.2 lists OS and architecture among a rig's labels);
+/// no hosted runner carries them, since hosted labels name an image such as `ubuntu-24.04`.
+const LAB_LABELS: &[&str] = &[
+    "self-hosted",
+    "syntropy-lab",
+    "roce",
+    "unified",
+    "linux",
+    "macos",
+    "windows",
+    "x64",
+    "arm",
+    "arm64",
+];
 
 /// Prefixes of lab labels, matched without case.
 const LAB_PREFIXES: &[&str] = &[
@@ -735,7 +748,9 @@ pub fn check_workflow(
             }
             // A lab job is a chunk of at most an hour, so a PR's hardware job waits behind at
             // most one (RFC-0062 §3.4; QUAL-E1-T08).
-            if labels.iter().any(|l| is_lab_label(l)) {
+            // Every job in `lab.yml` that names a runner is a lab job, whatever its labels, so a
+            // runner group or label this list does not know still gets the check.
+            if lab || labels.iter().any(|l| is_lab_label(l)) {
                 check_lab_timeout(&mut report, &at, job);
             }
         }
