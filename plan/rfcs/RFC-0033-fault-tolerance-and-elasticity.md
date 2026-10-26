@@ -298,7 +298,7 @@ pub enum RepairOutput {
 /// blocks a dispatcher.
 pub struct HandshakeCore { seqs: BTreeMap<SequenceId, SeqRecovery>, phase: Phase }
 pub enum HandshakeInput {
-    Reconcile { seq: SequenceId, emitted: u32, rng_counter: u64 },  // from ingress (§4.2)
+    Reconcile { seq: SequenceId, emitted: u32, rng_counter: u64, recent: SmallVec<[u32; 8]> },  // from ingress (§4.2)
     RecoverFrame(RecoverMsg),                                        // QUERY reports, DONE, from the ring return
     ReplayProgress { seq: SequenceId, through: u32 },
     TimerFired(HandshakeTimer),                                      // per-phase deadlines; re-run on loss
@@ -311,6 +311,8 @@ pub enum HandshakeOutput {
     SetTimer { timer: HandshakeTimer, at: MonoTime },
 }
 ```
+
+*Note 2026-10-23:* `HandshakeInput::Reconcile` gains `recent`, the last up to 8 emitted tokens, which §4.2 and §11's `SequenceControl::Reconcile` carry and this input had left out. It gives the head the last emitted tokens, among them the resume step's input when `emitted > 0` (§4.2). DIST-E14-T06 builds `HandshakeCore` with it.
 
 The choice rule of §5.1 and the strategy rule of §6.2 are pure functions that these cores call. The L6 property suites drive the public `Input` enums with random multi-stage losses, and the simulator's fault injection (RFC-0060 §9) checks the chaos-plan outcomes below.
 
@@ -326,7 +328,7 @@ For sequence q on retiring epoch e, moving to target epoch e′ (or another inst
 t_finish   = remaining(q) · t_tok(e)              remaining(q) = min(limits.max_tokens − emitted, p90_len(class) − emitted)
 t_kvmig    = Σ_moved stages KV_bytes(q, layers) / β_bulk(holder → new) + α        (needs old holders alive and e′ loaded)
 t_replay   = H_bytes(q) / β + t_prefill(moved layers, ctx(q))                      (needs a surviving upstream source in e′)
-t_reprefill= TTFT_{e′}(prompt_len + emitted)                                      (always available)
+t_reprefill= TTFT_{e′}(prompt_len + emitted)                                      (when e′ holds ctx(q))
 feasible   = { finish  if t_finish ≤ drain_deadline,
                kvmig   if make-before-break and β_bulk known,
                replay  if e′ shares the upstream stages that hold q's history,
@@ -405,6 +407,21 @@ pub enum RepairStrategy {
 }
 ```
 
+*Note 2026-10-23 (DIST-E14-T21; RFC-0001 §18.33): where `ReplanReason` lives, and its two term types.* No task built `ReplanReason`, though ten tasks use it: PLC-E3-T07 and PLC-E9-T07 (`RequestReplan { WorkloadDrift }`), PROD-E1-T11 and TIER-E10-T01 (`Config`), DIST-E14-T01 and DIST-E14-T15 (`RecoveryStarted { cause }`), DIST-E15-T02 (`EdgeLost`), DIST-E14-T13 (`DegradedExit`), DIST-E10-T06 (`HealOrphans`) and PLC-E6-T04 (`Drift { term: DriftTerm::Hop }`, below). DIST-E14-T21 builds it, and its term types, at M1a.
+- **Where it lives.** It is plain data in `core`, with serde. `cluster` carries it in RFC-0001 §5.10's `RequestReplan`, and the solver reads it in `SolveInput::reason` (`SolveReason::Replan`, RFC-0011 §2). `solver` is layer 2 and cannot depend on `cluster` (RFC-0001 §4.2).
+- **`DriftTerm`** names the profile quantity whose drift caused a re-plan. It has one variant per live estimator of RFC-0010 §6.2, the quantities §7.2's rule reports. It is `#[non_exhaustive]`, so a later estimator adds its own term.
+  - `Bandwidth { device: DeviceId, tier: TierId, class: KernelClass, scheme: QuantScheme }`: a device's W_eff from one tier for one kernel class and quant scheme, as when another app takes bandwidth or the power source changes. `scheme` is there because RFC-0010 §7.2's rule runs per observed quantity, and §6.2's W_eff estimator is keyed by (device, tier, class, scheme), so the term names the quantity that drifted (added 2026-10-23, from the review of #1811);
+  - `FixedTime { device: DeviceId }`: a device's `t_fixed`;
+  - `Storage { tier: TierId }`: a storage tier's sustained read, as under thermal throttling;
+  - `HostLink { device: DeviceId }`: the pinned host↔device rate over the device's PCIe link or tunnel, the figure `HostLinkCaps` holds, as when a link trains down;
+  - `Hop { link: LinkId, transport: TransportKind }`: a hop's α, β, wireless mean or stall rate, or its demotion to another transport (RFC-0031 §3, §7.4). For a demotion, `transport` is the planned transport, `Demotion::from`: the figure the plan assumed and lost. The new transport's cost is in the graph the next solve reads (§11).
+- **`WorkloadTerm`** is RFC-0010 §7.1's list: `ExpertMiss`, `ExpertTierShortfall { tier: TierId }` and `SpeculativeAcceptance`.
+- **A demotion is hop drift.** A hop is demoted by RFC-0031 §3's connect-time fallback or by its §7.4 faults.
+  - **The report.** The runner reports the demotion to its daemon as RFC-0001 §3.5's `EdgeDemoted` message. The daemon forwards it as `ReportEdgeDemoted`, which the coordinator applies as §11's `EdgeDemoted` event.
+  - **The re-plan.** Applying that event requests a deferred re-plan: it is solved in the background and adopted as for `NodeAdmitted` (RFC-0001 §7.2). One discrete event needs no drift threshold or window. Its reason is `ReplanReason::Drift { node, term: DriftTerm::Hop { link, transport: from } }`.
+  - **Who builds what.** DIST-E14-T22 (M2) adds the event, and DIST-E14-T15 (M3) raises the re-plan when it applies it. PLC-E6-T04 builds the deferred re-plan and its reason. DIST-E14-T22 was split from DIST-E14-T15 on 2026-10-23, because M2 tasks use `ReportEdgeDemoted`, `EdgeDemoted` and `RecoveryStarted`.
+
+
 #### 6.2 Choosing the strategy
 
 The reaction's `StartSolve` calls RFC-0011's `solve_repair(input, current, &RepairConstraints)` (RFC-0011 §12.4). It returns one `(RepairStrategy, PlacementPlan, t_resume)` candidate per feasible strategy, already filtered by `max_move_bytes`. Each repair strategy is a plan with predicted steady-state `t_tok`. RFC-0033 adds the **time to resume**:
@@ -446,7 +463,7 @@ sequenceDiagram
   S->>K: ReportEdgeDown (and the next stage too)
   K->>K: own probe fails → RecoveryStarted; solve repair (≤ 2 s)
   K-->>I: RecoveryStarted (log)
-  I->>H: Reconcile { emitted, rng_counter } per sequence
+  I->>H: Reconcile { emitted, rng_counter, recent } per sequence
   K->>K: NodeFailed, or confirm_after → commit repair plan (Relink, ExtendShard or new runner)
   R->>R: fetch missing chunks, pack, load, warm (canary)
   S->>R: channels for the new epoch (Relink)
@@ -568,6 +585,8 @@ Only a link that stays down past `link.failover_timeout` *and* whose node is unr
 
 `InstancePolicy` gains `standby: Standby`. The default is `None`.
 
+*Note 2026-10-22 (review of #1740, after #1679): where `standby` lives.* `standby` is this RFC's instance key, so it travels in `InstancePolicy`'s `domain` map under its path, `standby`, as `recovery.history` does. It is not a typed field. RFC-0054 §4.5 keeps typed fields for the six RFC-0001 §11.3 names and for RFC-0054's own keys, and puts instance keys that domain RFCs own in `domain`. That map is covered by the policy digest, so nodes still agree on an instance's standby, and `EnsureInstance` stays idempotent. The `Standby` enum below is the value's shape. Its configuration form is `"none"`, `"replica"` or `{ warm = { nodes = [...] } }`, with node names (RFC-0054 §5.4; DIST-E18-T01 registers it as a top-level instance key). The sentence above, "`InstancePolicy` gains `standby: Standby`", is superseded by this note.
+
 ```rust
 pub enum Standby {
     None,
@@ -599,11 +618,13 @@ pub enum Standby {
 - The new plan is adopted only if it passes hysteresis and payback (RFC-0001 §7.2):
   - predicted `t_tok` improves by at least `replan.min_gain` (20 %), or 10 % from a degraded plan;
   - its moved bytes divided by measured link rates are recovered within `replan.payback_horizon`.
-- **In latency mode** the adoption waits for an idle window (no live sequences) for up to `replan.max_defer` (10 min).
-  - A long agent session may never go idle. When the deadline passes, live sequences are moved at step boundaries by the per-sequence rule of §5.1, usually KV migration under make-before-break when memory allows, otherwise replay.
+- **In latency mode** the adoption waits for an idle window (no live sequences) for up to `replan.max_defer` (5 min, RFC-0011 §16; 10 min before 2026-10-22, §12's note).
+  - A long agent session may never go idle. When the deadline passes, the plan is applied if its `context_length` holds every live sequence's `prompt_len + emitted`, and otherwise it keeps waiting, as before, until the sequences it cannot hold have ended (RFC-0011 §12.2). Once it is applied, each live sequence takes the per-sequence choice of §5.1. A sequence that fits `recovery.drain_deadline` finishes on the retiring epoch. The others move at step boundaries, usually by KV migration under make-before-break when memory allows, otherwise by replay or re-prefill (revised 2026-10-22, note below).
   - Persisted sessions are re-homed by RFC-0022.
 - **In throughput mode** the plan is adopted by make-before-break when capacity allows. Otherwise it waits for the instance's load to fall below half its admission limit.
 - A returning node that held the lost stage of a degraded plan usually still has its pack. If so, `Replace` back onto it costs only `t_load + t_warm + t_replay`, and the solver's move cost reflects that through `ChunksAnnounced`.
+
+*Note 2026-10-22 (#1748):* the deadline bullet said live sequences "are moved at step boundaries by the per-sequence rule of §5.1, usually KV migration under make-before-break when memory allows, otherwise replay". That left out §5.1's `finish`, which wins whenever a sequence fits the drain deadline, and re-prefill, which is always feasible. RFC-0011 §12.2 now refers to this section for the deadline; before, it waited for the next idle window with no bound. Re-prefill needs e′ to hold the sequence's context, which a deferred plan need not (RFC-0011 §11.2), so the plan is applied at the deadline only if it holds every live sequence. §5.1's `t_reprefill` reads "(when e′ holds ctx(q))" where it read "(always available)", and so does the choice rule's test under Testing. Settled under the maintainer's standing instruction of 2026-10-22.
 
 ### 11. Commands, events and types added
 
@@ -635,12 +656,13 @@ These are added to the RFC-0032 §6.5 catalogue under RFC-0001's extension rules
 | `recovery.drain_deadline` | instance | 60 s latency mode, 300 s throughput mode | §5.1 |
 | `recovery.p90_len_seed` | cluster | 512 tokens | §5.1 |
 | `recovery.strategy_slack` | cluster | 20 % | prefer better steady state within this slack of the fastest resume (§6.2) |
-| `replan.min_gain` / `replan.degraded_min_gain` | cluster | 20 % / 10 % | RFC-0001 §7.2; §7.2 |
-| `replan.payback_horizon` | cluster | 10 min | |
-| `replan.max_defer` | cluster | 10 min | §10 |
+| `replan.degraded_min_gain` | cluster | 10 % | §7.2; the one `replan.*` key this RFC declares (RFC-0054 §5.1) |
+| `replan.min_gain`, `replan.payback_horizon`, `replan.max_defer` | cluster | 20 %, 600 s, 5 min | declared by RFC-0011 §16, which owns them (RFC-0054 §5.1); listed here because §7.2 and §10 use them (revised 2026-10-22, note below) |
 | `straggler.factor` / `straggler.window` | cluster | 1.25 / 30 s | §8.1 |
 | `runner.*` | node | §8.2 | |
 | `standby` | instance | `none` | §9.3; second copies on the predicted absorber are separate and on by default, capped by `store.standby_max_bytes` (RFC-0041 §9) |
+
+*Note 2026-10-22 (#1678):* this table declared `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` as RFC-0011 §16 does, with `replan.max_defer` at 10 min against RFC-0011's 5 min. Two declarations of one key make RFC-0054's registry refuse to build (§5.1, §10.3). RFC-0054 §5.1 gives `replan.*` to RFC-0011, so RFC-0011 declares those three and its 5 min holds: the default was settled at 5 min (RFC-0011's value) under the maintainer's standing instruction of 2026-10-22. This RFC declares only `replan.degraded_min_gain`, and §10 now reads 5 min.
 
 Every key above is declared, with each scope it may be set at, in its owning crate's `#[derive(ConfigSection)]` section (RFC-0054 §10.3), and cluster-scope keys carry `introduced_at`. RFC-0054's registry is generated from those sections (§5.1). So the instance-scope keys `recovery.history`, `recovery.state_checkpoint_tokens`, `recovery.drain_deadline` and `standby` appear in the registry and can be set per instance through `InstancePolicy.domain`, which the policy digest covers (RFC-0054 §4.5, §5.4).
 
@@ -731,7 +753,7 @@ Re-prefill instead of replay would take the full ≈ 22 s two-stage prefill (RFC
   - truncation stays consistent with KV truncation across verify windows;
   - spill and restore are byte-exact;
   - drops advance `from` and set `HISTORY_PARTIAL`.
-- *Choice rule (§5.1):* property tests that `finish` is chosen whenever it fits the deadline, and that `reprefill` is always feasible.
+- *Choice rule (§5.1):* property tests that `finish` is chosen whenever it fits the deadline, and that `reprefill` is feasible whenever e′ holds `ctx(q)`.
 - *Repair choice (§6.2):* deterministic on identical inputs.
 
 **Exactness.** The parity harness decodes N tokens, kills stage s, resumes, and compares the continuation with uninterrupted decode under teacher forcing. It runs for each conformance family, hybrid State-layer families included, for s ∈ {head, middle, tail}, with F32 and BF16 wire. KL and top-1 must stay within RFC-0042's tolerances (ADR-0019).

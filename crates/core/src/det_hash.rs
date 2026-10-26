@@ -24,14 +24,26 @@
 //!
 //! With a fixed key, the hasher gives no protection against keys chosen to collide.
 
-use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 
+// The two aliases below are the only place `core` names `HashMap` and `HashSet`. The determinism
+// lints (QUAL-E3-T03) ban both types in this crate, so each definition lifts the ban for itself
+// alone; uses of the aliases are not affected. This file is a listed exception in
+// `xtask/src/determinism.rs`.
+
 /// A `HashMap` with the fixed-key [`DetHasher`]. Build one with `DetHashMap::default()`.
-pub type DetHashMap<K, V> = HashMap<K, V, DetState>;
+#[allow(
+    clippy::disallowed_types,
+    reason = "rule T3's replacement for `HashMap` is this alias, which must name it"
+)]
+pub type DetHashMap<K, V> = std::collections::HashMap<K, V, DetState>;
 
 /// A `HashSet` with the fixed-key [`DetHasher`]. Build one with `DetHashSet::default()`.
-pub type DetHashSet<T> = HashSet<T, DetState>;
+#[allow(
+    clippy::disallowed_types,
+    reason = "rule T3's replacement for `HashSet` is this alias, which must name it"
+)]
+pub type DetHashSet<T> = std::collections::HashSet<T, DetState>;
 
 /// Builds [`DetHasher`]s, every one with the same key.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

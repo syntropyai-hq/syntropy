@@ -140,6 +140,12 @@ pub struct HopPlan {
 pub struct RelayVia { pub node: NodeId, pub first: LinkId, pub second: LinkId, pub transport: TransportKind }
 ```
 
+**Note, 2026-10-22 (#1661): a `predicted_p99` of 0 is no tail prediction.**
+- `predicted_p99` is `Nanos`, not `Option<Nanos>`. Its serde default is 0 (DIST-E11-T18), and 0 means the plan carries no tail prediction for the hop. A plan written before the field existed has none.
+- Plan assembly sets every hop's value from the link profile (PLC-E6-T22).
+- For a hop at 0, the drift detector makes no tail comparison, and `validate()` accepts the hop. So an older plan neither shows constant drift nor fails validation (DIST-E11-T10).
+- A nonzero value is a real prediction. A measured p99 above it by more than `replan.drift_threshold`, sustained past `replan.drift_window`, raises drift.
+
 #### 3.4 Relayed token-return hops
 
 Thunderbolt cables are point-to-point and unrouted (ADR-0011). With three Macs cabled in a chain A–B–C and stages A → B → C, the tail-to-head return C → A has no cable.
@@ -280,6 +286,7 @@ Items that other RFCs place "on the side channel" (RFC-0001 §5.8) travel in `Ac
 - **Freshness.** A headroom value is at most one ring traversal old when it reaches the head. When the ring is idle, no frames refresh it. The head then uses its last list, plus the gossiped load digests (RFC-0030 §5.6), and refreshes it on the next frame. An entry that is copied forward without having been refreshed carries `STALE`.
 - **Idle relays.** An item that must move while no step is due, such as `PREFIX_EVICT` on an idle ring or a pending `PREFIX_DROPPED`, rides an empty-payload `Activation` frame (`n_rows = 0`). That is the same mechanism as `SEQ_CTRL` (§3.1). The tail answers it with an empty ring-return `Token` frame when it carries items for the head.
 - **Capability gating.** Prefix items and headroom are sent only on channels that negotiated `PREFIX_ITEMS` and `KV_HEADROOM` (RFC-0031 §10).
+- **Revision note, 2026-10-22 (DIST-E8-T03): `TRACE` on the return path.** The table's `TRACE` row covers the head's item moving downstream. On a sampled step the tail also writes `TRACE` on both `Token` copies, one per sampled entry, for the return hop's span (RFC-0031 §6.5, RFC-0053 §3.2). The head and the ingress node consume it, and nothing relays it.
 
 ### 4. Plan transitions on the data plane
 
@@ -453,6 +460,7 @@ pub struct LogEntry {
 }
 ```
 
+- **The chain's bytes.** `index` and `term` are 8-byte little-endian integers, as everywhere on the wire (RFC-0031). `cause` is one byte `0` when there is none, else `1` followed by the origin's 32 bytes and its counter as 8 little-endian bytes. `event_bytes` come last, so they need no length. `cluster_id` is the cluster key's 32-byte public half (RFC-0034 §4). `crates/cluster/tests/log/vectors.txt` pins the result for a fixed log.
 - **Divergence check.** The chain makes divergence detectable in one comparison: two nodes agree on everything up to index i if and only if their `chain` values at i match. It is used in sync (§6.7), in split-brain heal (§7.5) and in the debug endpoint.
 - **Not a security mechanism.** Security comes from `validate()` (§6.3) and the keyholder signatures that authority events carry (RFC-0034 §8.3).
 
@@ -547,6 +555,13 @@ loop:
                    reply Ok { index, replicated: bool }                     // §6.10
                    for entry: for r in reactions(&state, &entry): spawn(r)  // e.g. solver task
 ```
+
+**Revision note, 2026-10-22 (OQ-NET-33): which acks count toward `replicated = true`.**
+- **The rule.** The ack the loop awaits must come from a `COORDINATOR`-eligible member other than both the coordinator and the command's originator. A command the coordinator originates itself still needs an ack from any other eligible member.
+- **Why.** The originator's own ack adds no independent copy: its journal already guards the command (§6.10). DIST-E10-T08's model check found an 8-step trace in which that ack alone made a reply `replicated = true`, and the command was then lost with the coordinator's and the originator's disks.
+- **The consequence.** In a two-node cluster, a follower's command is never `replicated = true`. The reply then says, truthfully, that only the coordinator and the originator hold it.
+
+**Revision note, 2026-10-23 (DIST-E10-T10; OQ-NET-34): why the ack keeps the command through a heal.** The member whose ack makes a command `replicated = true` acked the claim of the election the command was appended under, which is then in that `SignedElection`'s `acks`, or endorsed that election, which it records on disk (§7.5). So its own chain shows that election as supported, and under §7.5's standing comparison no older proof outranks it at heal. The command stays in that member's log however the other members, the originator included, are lost. Before this rule, a stale supported proof could roll that member back past the command (OQ-NET-34).
 
 - **Long work stays out of `decide()`.**
   - `EnsureInstance` produces `InstanceRequested`. Its reaction runs the solver (RFC-0011) on a blocking thread over a snapshot of the inputs, then submits an internal `CommitPlan { instance, plan, solved_against: GraphVersion }` command.
@@ -901,6 +916,22 @@ When connectivity returns:
    - The merge itself never kills a runner (ADR-0009 item 7).
    - `InstanceId`s from the two sides cannot collide, because the terms differ (§7.2).
 
+**Revision note, 2026-10-23 (DIST-E10-T10; settles OQ-NET-34): the heal compares standings, not proofs alone.** The heal order above compared a node's coordinator's proof with the incoming one. That let a stale supported proof roll a lone survivor back past a command its own ack had made `replicated = true` (OQ-NET-34; the 15-step trace in Testing). Option (a) replaces it, model-checked in every scenario of the "Election safety and liveness" row:
+- **Standing.** Every node compares two standings, highest first. A standing is the strongest supported election in the node's chain, ranked by the heal order, and then its coordinator's proof, by the heal order. A chain with no supported election ranks below any chain with one. The order stays total, because the second key decides between different coordinators.
+- **A chain's support** comes from three sources:
+  - each `CoordinatorElected` in the node's log whose `SignedElection` carries an `Ack` from another member. `SignedElection` already carries the claim's `acks` (§7.3), so no field is added to it;
+  - each election the node endorsed itself. A node keeps the elections it endorsed on disk with its command journal, because a `SignedElection` shows only the support an election had when it was won, not the `Endorse`s that came after;
+  - its coordinator's proof, when that is supported.
+- **Support only grows.** A node merges the `Ack`s and `Endorse`s of every copy it receives of the same election's proof. An older copy, from an append sent before a later `Endorse`, never replaces a better-supported one.
+- **Every node endorses each election it accepts, once**, whichever path brought it there: a new election, a heal switch, or the winner's snapshot adopted after stepping down on a fencing reply.
+- **Fencing replies carry the chain.** Beside its coordinator's `ElectionProof`, a fencing reply carries the strongest supported election in the sender's chain: its `SignedElection`, and the sender's own `Endorse` of it where that is what makes it supported. A coordinator whose standing loses to the sender's steps down, follows the sender's coordinator, and adopts its snapshot; when the carried election is the one it then follows, its support is merged in. That is how a coordinator learns that its election was succeeded by a supported one it never saw.
+
+**Why it is enough.** A member whose ack makes a command `replicated = true` either acked the claim of the election under which the command was appended, so its ack is in that `SignedElection`'s `acks`, or endorsed that election. Either way its own chain shows that election as supported. An older proof cannot then outrank its standing, so the heal never rolls it back past the command (§6.3).
+
+**Why an isolated node still cannot inflate counters.** Its chain holds nothing newer than the last supported election it saw, which is also in the other side's chain or older than it. Its self-elections add no support. The tie on the first key goes to the second, where a supported coordinator beats its unsupported proof, as before.
+
+**What the model check found on the way.** Reading support from `acks` alone was not enough: in `stale-heal-late-support` a successor that won with its ack lost, then supported only by a later `Endorse`, looked unsupported, and the command was lost (a default test replays that 33-step trace). The same probe found two gaps that §7.5 as written had too: a held proof's support could shrink when an older copy arrived, and a node that stepped down on a fencing reply never endorsed the winner. Each let a stale proof roll a node back. The two rules above close them.
+
 #### 7.6 Reaching the coordinator
 
 - A node sends commands straight to the coordinator over its control connection.
@@ -1098,7 +1129,7 @@ Chunking hides the 4090 stage and the hop behind the Strix's compute, which domi
 | `decide()` invariants | property tests: single-use tokens; feature-level gating; `CommitPlan` rejected on a moved graph; dedup makes retried commands apply once |
 | `plan_actions()` converges | property test: repeatedly applying the actions to a simulated node reaches a fixed point; never more than one action per instance per call; island member order respected |
 | Cores run deterministically in the simulator | `LogCore`, `ElectionCore` and `TransitionCore` driven by RFC-0060's deterministic multi-node simulator from M2: seeded runs reproduce byte-identical logs, and the L6 property suites drive the public `Input` enums directly |
-| Election safety and liveness | an explicit-state model of election, lease, replication and heal, written in Rust with a model-checking library and run in CI on 3–4 nodes with partitions and message loss. Properties: no two coordinators accepted by one node at the same term; after heal every node's chain converges; a lone survivor elects itself; a partial partition never yields two coordinators that a single node accepts; **an aborted claim never deposes a live coordinator**; **a node without `COORDINATOR` never becomes coordinator, and a forged authority entry is never applied by an honest node**; **a snapshot whose authority records fail verification is never adopted, and a revocation of the coordinator stops its followers even when the coordinator omits it from the log**; **a heal at equal counters converges; a bare or forged term, from any member, never deposes a coordinator; an unsupported self-election never deposes a supported coordinator**; **every command acknowledged with `replicated = true`, or kept in a live originator's journal, appears in the converged log** |
+| Election safety and liveness | an explicit-state model of election, lease, replication and heal, written in Rust with a model-checking library and run in CI on 3–4 nodes with partitions and message loss. Properties: no two coordinators accepted by one node at the same term; after heal every node's chain converges; a lone survivor elects itself; a partial partition never yields two coordinators that a single node accepts; **an aborted claim never deposes a live coordinator**; **a node without `COORDINATOR` never becomes coordinator, and a forged authority entry is never applied by an honest node**; **a snapshot whose authority records fail verification is never adopted, and a revocation of the coordinator stops its followers even when the coordinator omits it from the log**; **a heal at equal counters converges; a bare or forged term, from any member, never deposes a coordinator; an unsupported self-election never deposes a supported coordinator, unless the deposing side's chain holds a supported election that beats that coordinator's**; **every command acknowledged with `replicated = true`, or kept in a live originator's journal, appears in the converged log** |
 | SC-27: coordinator change fails no in-flight request | `testkit` simulated fabric: kill the coordinator, which hosts no stage, during 1,000 decoding sequences; assert zero failed sequences and continuous tokens. Also run with the coordinator hosting a non-head stage, where the expected outcome is stage recovery per RFC-0033 and no failure from the election itself |
 | Split and heal | simulated split during load: both sides commit plans, start instances and admit nodes. After heal: one chain; orphan runners adopted or drained, never killed; no `InstanceId` collision |
 | Catch-up | laggard beyond the retained tail takes the snapshot path; full cluster power cycle restores from disk with chains intact |
@@ -1107,6 +1138,47 @@ Chunking hides the 4090 stage and the hop behind the Strix's compute, which domi
 | No deadlock in collectives | randomised step-descriptor sequences (window sizes, trees, cancels mid-step) on a simulated 4-member island |
 | Performance | RFC-0061 gates: SC-13 on rig (c), SC-15 in throughput mode, SC-16/SC-17 on the two-Mac TB5 rig, routing ≤ 1 ms |
 
+**Revision note, 2026-10-22 (DIST-E10-T08): the model check, run.** An explicit-state model of election, the lease, replication and heal (`crates/cluster/tests/election/`, checked with stateright by depth-first search) checks each property of the "Election safety and liveness" row as a named case. It runs them in 14 scenarios on 3 nodes and 12 on 4:
+- splits that heal, with and without message loss;
+- elections at equal counters, and a 24-bit tag collision;
+- a partial partition, a lone survivor, and a claim aborted after an `Ack`;
+- a byzantine coordinator that forges an authority entry and omits its own revocation, forged terms, and a byzantine snapshot;
+- a claimant without `COORDINATOR`, and an isolated self-election;
+- commands under crash-recover, and under the loss of nodes with their disks.
+
+Splits, message loss, crashes, claims and elections are bounded per scenario. Each scenario must reach the situation it names, including a settled state wherever a liveness property is judged. The default tests check a bounded 3-node configuration, every scenario to exhaustion. `cargo xtask test election-model` runs the full configuration release-optimised and stops each scenario at 5 × 10⁷ generated states. Seventeen scenarios finish within that cap. Nine reach it, so for them the check explores up to the cap rather than exhaustively: `split-heal` on 3 and 4 nodes, `equal-counters` on 3 and 4, `tag-collision`, `stale-heal`, `byzantine-snapshot` on 4, and `commands-crash` on 3 and 4. The full run uses one thread, so a capped scenario explores the same states on every run. DIST-E10-T09 runs the suite on every change to `cluster`.
+
+A scenario that expects a property to fail names the cause the plan predicts. A counterexample with any other cause fails the check. Two properties have expected failures:
+- "No two coordinators accepted by one node at the same term" fails in `tag-collision`, caused by a 24-bit tag collision. Both sides of a split elect at one term, and at heal the lower node ID wins the tie, so a node switches coordinators within that term. §7.2 accepts this risk.
+- "Every command acknowledged with `replicated = true` … appears in the converged log" fails in `stale-heal`, caused by a heal that rolls a node back past a command its own ack made `replicated = true`. A stale but supported proof deposes the node's unsupported self-election, though a supported election follows the stale one in the node's own chain (§7.5), and the command's originator, lost with its disk, cannot re-submit it. OQ-NET-34 holds the question, with the 15-step trace a default test replays, and DIST-E10-T10 model-checks the rule it recommends.
+
+The model found one other cause of lost commands, the originator's own ack, and §6.3's rule as revised by OQ-NET-33 removes it. A default test replays its 8-step trace against the old rule. Under crash-recover the command property shows no counterexample: exhaustively in the bounded `commands-crash`, and up to the cap in the full ones. In `commands-lost`, where nodes are lost with their disks but the network never splits, it holds exhaustively.
+
+The liveness properties are judged in quiescent states with the network whole, so the check finds a heal that stalls but not one that cycles for ever. Ties in the heal order would make a heal cycle, and they are checked directly.
+
+**Revision note, 2026-10-23 (DIST-E10-T10): OQ-NET-34's rule, checked, and one property restated.** The model implements §7.5's standing comparison, as revised on this date, and runs two more scenarios:
+- `stale-heal-one-claim` is `stale-heal` with one claim per node, which is all the 15-step trace needs. It runs to exhaustion. `stale-heal` stops at its cap first, and under §7.5's proof comparison the model, now larger, no longer reaches the trace before that cap;
+- `stale-heal-late-support` is `stale-heal` with one message loss and one claim per node, so a successor can win with its `Ack` lost and be supported only by a later `Endorse`.
+- **Result.** No property fails in any scenario, apart from `tag-collision`'s expected failure, which is unchanged. The full run has 16 scenarios on 3 nodes and 12 on 4.
+  - **Exhaustive:** the check is exhaustive in the 18 full-run scenarios that finish and in all 12 bounded ones.
+  - **To the cap:** the other ten reach the cap of 5 × 10⁷ generated states, so in them it holds only up to the cap. They are the nine above and `stale-heal-late-support`. `stale-heal`, whose expected failure is removed, is one of them.
+- **The other comparisons fail where the settled rule passes.**
+  - `stale-heal-one-claim`: under §7.5's proof comparison it fails the command property. The settled rule passes it exhaustively.
+  - `stale-heal-late-support`: under the proof comparison, and under support read from `acks` alone, it fails the command property and "an aborted claim never deposes a live coordinator". The settled rule passes it up to the cap.
+
+  Both alternatives run with this change's two bookkeeping rules still on: support only grows, and each accepted election is endorsed once. Only the comparison differs. Without those rules, a stale proof could roll a node back (§7.5's note, "What the model check found on the way").
+- **Run figures.** The full run visits 94 million states in 1061 s release-optimised on one checker thread, with a test-process peak of 171 MB. The bounded configuration visits 2.3 million states: 53 s in the dev profile and 8.1 s release-optimised [measured, 2026-10-23, DIST-E10-T10's model, AMD Ryzen 9 5950X under WSL2, toolchain 1.99.1, with other builds running].
+- **The restated property.** The row's "an unsupported self-election never deposes a supported coordinator" now ends "unless the deposing side's chain holds a supported election that beats that coordinator's". OQ-NET-34's 15-step trace forces it:
+  1. a split cuts coordinator 0 off alone, before node 2 sends it a command;
+  2. nodes 1 and 2 lose their leases, and node 2 claims at counter 2 and wins with node 1's `Ack`;
+  3. node 2 appends the command and replicates it, and node 1's ack makes it `replicated = true`;
+  4. node 2 is lost with its disk, node 1 claims at counter 3, and the network heals;
+  5. node 1 wins alone, unsupported, and node 0's append arrives with its supported proof at counter 1.
+
+  Under option (a), node 1 refuses that append, because its chain holds node 2's election at counter 2, supported by node 1's own `Ack`, which beats node 0's. Its fencing reply carries that election, and node 0 steps down and follows node 1. Node 1's election is unsupported and node 0's was supported, so the strict wording counts a violation. But any rule that keeps the acknowledged command must depose node 0 here: node 1 is the only live node that holds the command. What the property protects still holds. An isolated node's self-elections stay unsupported, and its chain holds no supported election newer than the other side's, so it never deposes a supported coordinator. The restatement excuses only a deposition whose side holds a supported election newer than the deposed coordinator's.
+- **Default tests that pin it.** One replays the 15 steps under §7.5's proof comparison and shows the rollback. One replays them under option (a), then the fencing reply, and shows the command kept, node 0 following node 1, and the restated property holding. One replays `stale-heal-late-support`'s 33-step trace with support read from `acks` alone and shows the command lost, then shows that the steps cannot all happen once node 1's own `Endorse` counts. `ELECTION_HEAL_RULE=proof|acks|chain` runs any scenario under §7.5's proof comparison, `acks` alone, or the settled rule, each with the bookkeeping above.
+
+
 ## Rollout / milestones
 
 | Milestone | Lands |
@@ -1114,6 +1186,8 @@ Chunking hides the 4090 stage and the hop behind the Strix's compute, which domi
 | M2 | first, before the election and heal code: an explicit-state model check of lease, pre-vote, signed proofs, replication and heal against §7, with every RT-DIST scenario as a named case, then run in CI on every change to `cluster` (DIST-E10-T08; OQ-NET-08); `LogCore`, `ElectionCore` and `TransitionCore` as sans-I/O protocol cores driven by the deterministic simulator (RFC-0060); side-channel relays for KV headroom, router hints and prefix-cache items (§3.10); parity `Tap` channels; ring pipeline: channels, steps, `Activation`/`Token`/`SeqControl` semantics, `SequenceOpen::resume` field (used from M3), chunked staggered prefill with the TTFT model; make-before-break and break-before-make; event log with `decide`, `apply`, `reactions`, `plan_actions`, hash chain, persistence, snapshots and sync; election with leases, tagged terms, fencing, heal with orphan records, relayed commands and planned handover; feature levels; routing integration with load digests; verify-window frames in the wire format (enabled in M3) |
 | M3 | cross-node TP (one-shot and ring) and EP; intra-node TP with P2P verification; step descriptors and verified local router; in-place `Relink` and `ExtendShard` (with RFC-0033); relayed token-return hops; throughput mode with multiple steps in flight; orphan adoption by re-plan |
 | M4 | validation above 16 members; prefill/decode disaggregation decision (open question 1); the optional quorum mode, only if the model checker or the simulator finds a heal that cannot be repaired |
+
+**Note, 2026-10-22 (DIST-E10-T08).** "Every RT-DIST scenario" in the M2 row means each property in the Testing table's "Election safety and liveness" row, each a named case of the model check. The run on every change to `cluster` is DIST-E10-T09, which needs QUAL-E1-T07's change detection. Until then the default tests run a bounded 3-node configuration, and `cargo xtask test election-model` runs the full check.
 
 ## Open questions
 

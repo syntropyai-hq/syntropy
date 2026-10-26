@@ -7,11 +7,14 @@ publish.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+syntropy-core = { path = "../core" }
+# Fault plans are TOML files (RFC-0060 §9.2); only the `fault-injection` build reads them.
+toml = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
 
 [features]
-# Test-only (RFC-0001 §4.2 rule 10): compiles `fault_point!`, which QUAL-E9-T01 adds (RFC-0060
-# §9.2). Release artefacts never enable it; `cargo xtask check-deps` rule 10 checks that.
-fault-injection = []
+# Test-only (RFC-0001 §4.2 rule 10): compiles the fault points of `fault_point!` and their plans
+# (RFC-0060 §9.2). Release artefacts never enable it; `cargo xtask check-deps` rule 10 checks that.
+fault-injection = ["dep:toml"]

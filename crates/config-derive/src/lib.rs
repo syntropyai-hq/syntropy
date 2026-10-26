@@ -595,11 +595,53 @@ fn key_attrs(attrs: &[Attribute], errors: &mut Errors) -> KeyAttrs {
     out
 }
 
+/// `syntropy-core`'s policy value types, whose own serde form is the record encoding: a key of
+/// one reads RFC-0054 §3's forms only through `syntropy_config::form` (PROD-E1-T23).
+const CORE_FORM_TYPES: [&str; 6] = [
+    "Fraction",
+    "Reserve",
+    "NodeSelector",
+    "DeviceSelector",
+    "TierSelector",
+    "LayerRange",
+];
+
+/// The name of the core policy value type `ty` holds, bare or in an `Option` or `Vec`, if any.
+/// The match is by the type's last path segment, as written.
+fn core_form_type(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let last = path.path.segments.last()?;
+    let name = last.ident.to_string();
+    if CORE_FORM_TYPES.contains(&name.as_str()) {
+        return Some(name);
+    }
+    if name == "Option" || name == "Vec" {
+        let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+            return None;
+        };
+        if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+            return core_form_type(inner);
+        }
+    }
+    None
+}
+
 /// The type as written, with token spacing tidied: `Option<Duration>`.
+/// The type as one line of text, for `KeySchema::ty` and the messages that quote it. The token
+/// printer can break a long type across lines and keeps a trailing comma, so every whitespace
+/// character goes, a comma before `>` or `)` goes, and each other comma gets one space after it.
 fn type_name(ty: &syn::Type) -> String {
-    ty.to_token_stream()
+    let compact: String = ty
+        .to_token_stream()
         .to_string()
-        .replace(' ', "")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    compact
+        .replace(",>", ">")
+        .replace(",)", ")")
         .replace(',', ", ")
 }
 
@@ -853,6 +895,18 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             <#ty as ::syntropy_config::HoldsSecret>::HOLDS_SECRET
         };
         let with = serde_with(&field.attrs, &mut errors);
+        if with.is_none()
+            && let Some(core_type) = core_form_type(ty)
+        {
+            errors.at(
+                ty.span(),
+                format!(
+                    "a `{core_type}` key reads RFC-0054 §3's forms through \
+                     `#[serde(with = \"syntropy_config::form\")]`; without it, it would read \
+                     `syntropy-core`'s record encoding"
+                ),
+            );
+        }
         let ranged = key.min.is_some() || key.max.is_some();
         let this_key = quote!(&<#name as ::syntropy_config::ConfigSection>::SCHEMA.keys[#index]);
         let check_body = match (&with, ranged) {
@@ -875,6 +929,28 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         value, #this_key, #call,
                     )
                 }
+            }
+        };
+
+        // `KeySchema::same`, which `InstanceSection::changes` uses to tell a value written
+        // another way (`"30s"`, `"30000ms"`) from a new one. It reads both values through the
+        // deserializer the section uses, then compares them:
+        // - with `==` where the field type implements `PartialEq`;
+        // - as written where it does not, such as `Secret<T>`, which has no `PartialEq` on
+        //   purpose.
+        //
+        // A derive cannot ask whether a type implements a trait, so the choice is made by method
+        // lookup, a pattern known as autoref specialization. `__private::Same<T>` implements
+        // `SameByValue` when `T: PartialEq`, and `&Same<T>` implements `SameAsWritten` for every
+        // `T`. The call `(&probe).same(a, b)` has a receiver of type `&Same<T>`. Lookup tries
+        // that type before it adds a reference, so it takes `SameByValue::same` when its impl
+        // applies and `SameAsWritten::same` otherwise. Both arms are tested in
+        // `tests/derive.rs`, `the_generated_same_compares_by_value_or_as_written`.
+        let same_probe = match &with {
+            None => quote! { ::syntropy_config::__private::Same::<#ty>::deserialized() },
+            Some(with) => {
+                let call = with.call();
+                quote! { ::syntropy_config::__private::Same::<#ty>(#call) }
             }
         };
 
@@ -901,6 +977,19 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         #check_body
                     }
                     check
+                },
+                same: {
+                    // `PartialEq` where the type has it, else as written: see `Same`.
+                    #[allow(clippy::needless_borrow)]
+                    fn same(
+                        a: &::syntropy_config::__private::toml::Value,
+                        b: &::syntropy_config::__private::toml::Value,
+                    ) -> bool {
+                        #[allow(unused_imports)]
+                        use ::syntropy_config::__private::{SameAsWritten as _, SameByValue as _};
+                        (&#same_probe).same(a, b)
+                    }
+                    same
                 },
             }
         });

@@ -103,6 +103,16 @@ pub trait IoEngine: Send {
     /// Opens a file and, where the engine supports it, registers the handle.
     fn open(&mut self, path: &Path, mode: OpenMode) -> Result<FileIx, IoError>;
 
+    /// The direct-I/O alignment the OS reported for `file` when [`IoEngine::open`] opened it
+    /// (RFC-0021 §6: "per open file"), or `None` when the engine recorded none, in which case
+    /// [`EngineCaps::dio`] stands for every file. The I/O loop checks each request against its
+    /// own file's alignment, so a file opened after the loop was built is still checked
+    /// against what its volume needs.
+    fn file_dio(&self, file: FileIx) -> Option<DioAlign> {
+        let _ = file;
+        None
+    }
+
     /// Registers host ranges as engine buffers, returning one index per region in order.
     ///
     /// RFC-0021 §2 returns a `SmallVec<[BufIndex; 16]>`; this crate takes no `smallvec`

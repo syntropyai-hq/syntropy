@@ -8,3 +8,6 @@ publish.workspace = true
 [dependencies]
 smallvec.workspace = true
 syntropy-core = { path = "../core" }
+# The system calls E1 makes: the AMX and io_uring checks on Linux (`syntropy_io::os::checks`),
+# and `syntropy_io::os::{macos_host, windows_host}` (RFC-0001 §4.2 rule 8, OQ-PRC-26).
+syntropy-io = { path = "../io" }

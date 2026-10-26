@@ -1,0 +1,16 @@
+{
+  "action": "checks_requested",
+  "merge_group": {
+    "head_sha": "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d",
+    "head_ref": "refs/heads/gh-readonly-queue/main/pr-4242-59db6f7c0000000000000000000000000000000a",
+    "base_sha": "59db6f7c0000000000000000000000000000000a",
+    "base_ref": "refs/heads/main",
+    "head_commit": {
+      "id": "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d",
+      "message": "Merge pull request #4242"
+    }
+  },
+  "repository": {
+    "full_name": "syntropyai-hq/syntropy"
+  }
+}

@@ -4,16 +4,19 @@
 //!
 //! Selectors are parsed and printed here. Resolving one against cluster membership, the
 //! resource graph or the model registry happens where those live; this module only gives each
-//! selector its syntax and the checks that need no other state.
+//! selector its syntax and the checks that need no other state. The node, device and tier
+//! selectors and the layer range are `syntropy-core`'s types ([`Form`]); the model selector,
+//! which no policy object holds, is this crate's.
 
 use std::fmt;
-use std::ops::Range;
 use std::str::FromStr;
 
+use syntropy_core::policy::{DeviceApi, DeviceSelector, LayerRange, NodeSelector, TierSelector};
 use syntropy_core::resource::device::DeviceKind;
 use syntropy_core::resource::tier::TierKind;
 use syntropy_core::{LayerIx, ModelId};
 
+use super::form::{Form, string_form};
 use super::{ValueError, serde_via_str};
 use crate::schema::Scope;
 
@@ -55,60 +58,29 @@ fn parse_id_prefix(hex: &str, input: &str) -> Result<String, ValueError> {
     }
 }
 
-/// Selects nodes: `"pc"` (a node name), `"id:3f9a…"` (a node ID prefix, at least 8 hex digits),
-/// `"label:gpu=rtx4090"`, `"self"` or `"*"` (RFC-0054 §3). Resolved against cluster membership
-/// where it is used.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum NodeSelector {
-    /// Every node.
-    Any,
-    /// The node reading the value. Allowed only in node-scope values: see
-    /// [`NodeSelector::check_scope`].
-    This,
-    /// The node with this name.
-    Name(String),
-    /// Nodes whose ID starts with these hex digits, lower case.
-    IdPrefix(String),
-    /// Nodes whose label `key` has `value`.
-    Label {
-        /// The label's name.
-        key: String,
-        /// The value it must have.
-        value: String,
-    },
-}
-
-impl NodeSelector {
-    /// Rejects `"self"` in a cluster-, instance- or request-scope value: in a `policy.*` table
-    /// or any other value every ingress node reads, it would mean a different node on each
-    /// (RFC-0054 §3).
-    pub fn check_scope(&self, scope: Scope) -> Result<(), ValueError> {
-        if *self == NodeSelector::This && scope != Scope::Node {
-            return Err(ValueError::bad_selector(format!(
-                "`self` is allowed only in node-scope values, not in a {scope}-scope value, \
-                 where it would mean a different node on each reader"
-            )));
-        }
-        Ok(())
+/// Rejects `"self"` in a cluster-, instance- or request-scope value: in a `policy.*` table or
+/// any other value every ingress node reads, it would mean a different node on each
+/// (RFC-0054 §3).
+pub fn check_node_scope(selector: &NodeSelector, scope: Scope) -> Result<(), ValueError> {
+    if *selector == NodeSelector::This && scope != Scope::Node {
+        return Err(ValueError::bad_selector(format!(
+            "`self` is allowed only in node-scope values, not in a {scope}-scope value, where it \
+             would mean a different node on each reader"
+        )));
     }
+    Ok(())
 }
 
-impl fmt::Display for NodeSelector {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            NodeSelector::Any => f.write_str("*"),
-            NodeSelector::This => f.write_str("self"),
-            NodeSelector::Name(name) => f.write_str(name),
-            NodeSelector::IdPrefix(hex) => write!(f, "id:{hex}"),
-            NodeSelector::Label { key, value } => write!(f, "label:{key}={value}"),
-        }
-    }
-}
+/// A node selector's forms: `"pc"` (a node name), `"id:3f9a…"` (a node ID prefix, at least 8
+/// hex digits), `"label:gpu=rtx4090"`, `"self"` or `"*"`. `"self"` is checked against the
+/// key's scope by [`check_node_scope`].
+impl Form for NodeSelector {
+    string_form!(
+        NodeSelector,
+        "a node selector: a node name, \"id:<hex>\", \"label:<key>=<value>\", \"self\" or \"*\""
+    );
 
-impl FromStr for NodeSelector {
-    type Err = ValueError;
-
-    fn from_str(s: &str) -> Result<Self, ValueError> {
+    fn parse_text(s: &str) -> Result<Self, ValueError> {
         if s == "*" {
             return Ok(NodeSelector::Any);
         }
@@ -138,43 +110,29 @@ impl FromStr for NodeSelector {
         check_node_name(s, s)?;
         Ok(NodeSelector::Name(s.to_owned()))
     }
-}
 
-serde_via_str!(
-    NodeSelector,
-    "a node selector: a node name, \"id:<hex>\", \"label:<key>=<value>\", \"self\" or \"*\""
-);
-
-/// A GPU API that numbers devices in a [`DeviceSelector`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum DeviceApi {
-    /// `cuda:<n>`.
-    Cuda,
-    /// `hip:<n>`.
-    Hip,
-    /// `metal:<n>`.
-    Metal,
-    /// `vulkan:<n>`.
-    Vulkan,
-}
-
-impl DeviceApi {
-    const ALL: [(DeviceApi, &'static str); 4] = [
-        (DeviceApi::Cuda, "cuda"),
-        (DeviceApi::Hip, "hip"),
-        (DeviceApi::Metal, "metal"),
-        (DeviceApi::Vulkan, "vulkan"),
-    ];
-
-    /// The API's name in a selector.
-    pub fn as_str(self) -> &'static str {
-        Self::ALL
-            .iter()
-            .find(|(api, _)| *api == self)
-            .map_or("", |(_, name)| name)
+    fn fmt_text(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeSelector::Any => f.write_str("*"),
+            NodeSelector::This => f.write_str("self"),
+            NodeSelector::Name(name) => f.write_str(name),
+            NodeSelector::IdPrefix(hex) => write!(f, "id:{hex}"),
+            NodeSelector::Label { key, value } => write!(f, "label:{key}={value}"),
+            // A form `core` added after this list; it prints, but does not parse back.
+            other => write!(f, "{other:?}"),
+        }
     }
 }
 
+/// GPU APIs by selector name.
+const DEVICE_APIS: [(DeviceApi, &str); 4] = [
+    (DeviceApi::Cuda, "cuda"),
+    (DeviceApi::Hip, "hip"),
+    (DeviceApi::Metal, "metal"),
+    (DeviceApi::Vulkan, "vulkan"),
+];
+
+/// Device kinds by selector name (RFC-0001 §5.2's `DeviceKind`).
 const DEVICE_KINDS: [(DeviceKind, &str); 4] = [
     (DeviceKind::DiscreteGpu, "dgpu"),
     (DeviceKind::IntegratedGpu, "igpu"),
@@ -182,63 +140,16 @@ const DEVICE_KINDS: [(DeviceKind, &str); 4] = [
     (DeviceKind::Npu, "npu"),
 ];
 
-/// Selects devices: `"cuda:0"`, `"metal:0"`, `"cpu:numa1"`, `"<node>/cuda:1"`, `"kind:dgpu"`
-/// or `"*"` (RFC-0054 §3). Ordinals count each API's devices in RFC-0001 §5.1 probe order.
-///
-/// Device kinds are `dgpu`, `igpu`, `cpu` and `npu` (RFC-0001 §5.2's `DeviceKind`).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum DeviceSelector {
-    /// Every device.
-    Any,
-    /// Every device of a kind.
-    Kind(DeviceKind),
-    /// The `index`th device of `api`, on the named node or, with no node, on each node.
-    Gpu {
-        /// A node name, or `None` for the node reading the value.
-        node: Option<String>,
-        /// The API whose devices are counted.
-        api: DeviceApi,
-        /// The device's position among that API's devices.
-        index: u16,
-    },
-    /// The CPU device of NUMA domain `numa`.
-    Cpu {
-        /// A node name, or `None` for the node reading the value.
-        node: Option<String>,
-        /// The NUMA domain.
-        numa: u16,
-    },
-}
+/// A device selector's forms: `"cuda:0"`, `"metal:0"`, `"cpu:numa1"`, `"<node>/cuda:1"`,
+/// `"kind:dgpu"` or `"*"`. Ordinals count each API's devices in RFC-0001 §5.1 probe order.
+/// Device kinds are `dgpu`, `igpu`, `cpu` and `npu`.
+impl Form for DeviceSelector {
+    string_form!(
+        DeviceSelector,
+        "a device selector such as \"cuda:0\", \"cpu:numa1\", \"<node>/cuda:1\" or \"kind:dgpu\""
+    );
 
-impl fmt::Display for DeviceSelector {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let node_prefix = |f: &mut fmt::Formatter<'_>, node: &Option<String>| match node {
-            Some(node) => write!(f, "{node}/"),
-            None => Ok(()),
-        };
-        match self {
-            DeviceSelector::Any => f.write_str("*"),
-            DeviceSelector::Kind(kind) => match DEVICE_KINDS.iter().find(|(k, _)| k == kind) {
-                Some((_, name)) => write!(f, "kind:{name}"),
-                // A kind `core` added after this table; it prints, but does not parse back.
-                None => write!(f, "kind:{kind:?}"),
-            },
-            DeviceSelector::Gpu { node, api, index } => {
-                node_prefix(f, node)?;
-                write!(f, "{}:{index}", api.as_str())
-            }
-            DeviceSelector::Cpu { node, numa } => {
-                node_prefix(f, node)?;
-                write!(f, "cpu:numa{numa}")
-            }
-        }
-    }
-}
-
-impl FromStr for DeviceSelector {
-    type Err = ValueError;
-
-    fn from_str(s: &str) -> Result<Self, ValueError> {
+    fn parse_text(s: &str) -> Result<Self, ValueError> {
         let bad = || {
             ValueError::bad_selector(format!(
                 "`{s}` is not a device selector; write \"cuda:0\", \"metal:0\", \"cpu:numa1\", \
@@ -276,7 +187,7 @@ impl FromStr for DeviceSelector {
                 numa: number(numa)?,
             });
         }
-        let api = DeviceApi::ALL
+        let api = DEVICE_APIS
             .iter()
             .find(|(_, name)| *name == api)
             .map(|(api, _)| *api)
@@ -287,12 +198,36 @@ impl FromStr for DeviceSelector {
             index: number(ordinal)?,
         })
     }
-}
 
-serde_via_str!(
-    DeviceSelector,
-    "a device selector such as \"cuda:0\", \"cpu:numa1\", \"<node>/cuda:1\" or \"kind:dgpu\""
-);
+    fn fmt_text(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let node_prefix = |f: &mut fmt::Formatter<'_>, node: &Option<String>| match node {
+            Some(node) => write!(f, "{node}/"),
+            None => Ok(()),
+        };
+        match self {
+            DeviceSelector::Any => f.write_str("*"),
+            DeviceSelector::Kind(kind) => match DEVICE_KINDS.iter().find(|(k, _)| k == kind) {
+                Some((_, name)) => write!(f, "kind:{name}"),
+                // A kind `core` added after this table; it prints, but does not parse back.
+                None => write!(f, "kind:{kind:?}"),
+            },
+            DeviceSelector::Gpu { node, api, index } => {
+                node_prefix(f, node)?;
+                match DEVICE_APIS.iter().find(|(a, _)| a == api) {
+                    Some((_, name)) => write!(f, "{name}:{index}"),
+                    // An API `core` added after this table; it prints, but does not parse back.
+                    None => write!(f, "{api:?}:{index}"),
+                }
+            }
+            DeviceSelector::Cpu { node, numa } => {
+                node_prefix(f, node)?;
+                write!(f, "cpu:numa{numa}")
+            }
+            // A form `core` added after this list; it prints, but does not parse back.
+            other => write!(f, "{other:?}"),
+        }
+    }
+}
 
 /// Tier kinds by selector name. `ram` is `HostPinned` (RFC-0054 §3).
 const TIER_KINDS: [(TierKind, &str); 5] = [
@@ -303,50 +238,15 @@ const TIER_KINDS: [(TierKind, &str); 5] = [
     (TierKind::Nvme, "nvme"),
 ];
 
-/// Selects tiers: `"vram"`, `"unified"`, `"ram"` (= `HostPinned`), `"ram-pageable"`, `"nvme"`,
-/// optionally on a node and numbered, as in `"<node>/nvme:1"` (RFC-0054 §3).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct TierSelector {
-    /// A node name, or `None` for every node.
-    pub node: Option<String>,
-    /// The tier kind.
-    pub kind: TierKind,
-    /// The tier's position among that node's tiers of this kind, or `None` for all of them.
-    pub index: Option<u16>,
-}
+/// A tier selector's forms: `"vram"`, `"unified"`, `"ram"` (= `HostPinned`), `"ram-pageable"`,
+/// `"nvme"`, optionally on a node and numbered, as in `"<node>/nvme:1"`.
+impl Form for TierSelector {
+    string_form!(
+        TierSelector,
+        "a tier selector such as \"vram\", \"ram\", \"nvme\" or \"<node>/nvme:1\""
+    );
 
-impl TierSelector {
-    /// Every tier of `kind`.
-    pub const fn kind(kind: TierKind) -> Self {
-        Self {
-            node: None,
-            kind,
-            index: None,
-        }
-    }
-}
-
-impl fmt::Display for TierSelector {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(node) = &self.node {
-            write!(f, "{node}/")?;
-        }
-        match TIER_KINDS.iter().find(|(k, _)| *k == self.kind) {
-            Some((_, name)) => f.write_str(name)?,
-            // A kind `core` added after this table; it prints, but does not parse back.
-            None => write!(f, "{:?}", self.kind)?,
-        }
-        if let Some(index) = self.index {
-            write!(f, ":{index}")?;
-        }
-        Ok(())
-    }
-}
-
-impl FromStr for TierSelector {
-    type Err = ValueError;
-
-    fn from_str(s: &str) -> Result<Self, ValueError> {
+    fn parse_text(s: &str) -> Result<Self, ValueError> {
         let bad = || {
             ValueError::bad_selector(format!(
                 "`{s}` is not a tier selector; write \"vram\", \"unified\", \"ram\", \
@@ -376,67 +276,39 @@ impl FromStr for TierSelector {
             .ok_or_else(bad)?;
         Ok(TierSelector { node, kind, index })
     }
-}
 
-serde_via_str!(
-    TierSelector,
-    "a tier selector such as \"vram\", \"ram\", \"nvme\" or \"<node>/nvme:1\""
-);
-
-/// A range of decoder layers: `"0..20"` (half-open, as in RFC-0001), `"40.."`, `"..8"` or a
-/// single layer, `"7"` (RFC-0054 §3). `".."` is every layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct LayerRange {
-    /// The first layer, or `None` for the first of the model.
-    pub start: Option<u16>,
-    /// One past the last layer, or `None` for one past the last of the model.
-    pub end: Option<u16>,
-}
-
-impl LayerRange {
-    /// The layers as a range over a model with `layers` decoder layers. Fails if the range
-    /// reaches past the model's last layer.
-    pub fn resolve(&self, layers: u16) -> Result<Range<LayerIx>, ValueError> {
-        let start = self.start.unwrap_or(0);
-        let end = self.end.unwrap_or(layers);
-        if end > layers || start >= end {
-            return Err(ValueError::bad_selector(format!(
-                "layers `{self}` do not fit a model with {layers} layers"
-            )));
+    fn fmt_text(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(node) = &self.node {
+            write!(f, "{node}/")?;
         }
-        Ok(LayerIx(start)..LayerIx(end))
+        match TIER_KINDS.iter().find(|(k, _)| *k == self.kind) {
+            Some((_, name)) => f.write_str(name)?,
+            // A kind `core` added after this table; it prints, but does not parse back.
+            None => write!(f, "{:?}", self.kind)?,
+        }
+        if let Some(index) = self.index {
+            write!(f, ":{index}")?;
+        }
+        Ok(())
     }
 }
 
-impl fmt::Display for LayerRange {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (self.start, self.end) {
-            (Some(start), Some(end)) if end.checked_sub(start) == Some(1) => write!(f, "{start}"),
-            (start, end) => {
-                if let Some(start) = start {
-                    write!(f, "{start}")?;
-                }
-                f.write_str("..")?;
-                if let Some(end) = end {
-                    write!(f, "{end}")?;
-                }
-                Ok(())
-            }
-        }
-    }
-}
+/// A layer range's forms: `"0..20"` (half-open, as in RFC-0001), `"40.."`, `"..8"` or a single
+/// layer, `"7"`. `".."` is every layer.
+impl Form for LayerRange {
+    string_form!(
+        LayerRange,
+        "a layer range such as \"0..20\", \"40..\", \"..8\" or \"7\""
+    );
 
-impl FromStr for LayerRange {
-    type Err = ValueError;
-
-    fn from_str(s: &str) -> Result<Self, ValueError> {
+    fn parse_text(s: &str) -> Result<Self, ValueError> {
         let bad = |why: &str| {
             ValueError::bad_selector(format!(
                 "`{s}` is not a layer range: {why}; write \"0..20\" (half-open), \"40..\", \
                  \"..8\" or \"7\""
             ))
         };
-        let bound = |digits: &str| -> Result<Option<u16>, ValueError> {
+        let bound = |digits: &str| -> Result<Option<LayerIx>, ValueError> {
             if digits.is_empty() {
                 return Ok(None);
             }
@@ -445,7 +317,7 @@ impl FromStr for LayerRange {
             }
             digits
                 .parse()
-                .map(Some)
+                .map(|layer| Some(LayerIx(layer)))
                 .map_err(|_| bad("a bound is above 65535"))
         };
         let range = match s.split_once("..") {
@@ -456,11 +328,12 @@ impl FromStr for LayerRange {
             None => {
                 let layer = bound(s)?.ok_or_else(|| bad("it is empty"))?;
                 let end = layer
+                    .0
                     .checked_add(1)
                     .ok_or_else(|| bad("the layer is above 65534"))?;
                 LayerRange {
                     start: Some(layer),
-                    end: Some(end),
+                    end: Some(LayerIx(end)),
                 }
             }
         };
@@ -471,12 +344,25 @@ impl FromStr for LayerRange {
         }
         Ok(range)
     }
-}
 
-serde_via_str!(
-    LayerRange,
-    "a layer range such as \"0..20\", \"40..\", \"..8\" or \"7\""
-);
+    fn fmt_text(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.start, self.end) {
+            (Some(start), Some(end)) if end.0.checked_sub(start.0) == Some(1) => {
+                write!(f, "{}", start.0)
+            }
+            (start, end) => {
+                if let Some(start) = start {
+                    write!(f, "{}", start.0)?;
+                }
+                f.write_str("..")?;
+                if let Some(end) = end {
+                    write!(f, "{}", end.0)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
 
 /// Selects models: an exact name, a glob (`*` and `?`), `"id:<blake3 hex prefix>"` or
 /// `"default"` (RFC-0054 §3), matched against resolved model names and IDs (RFC-0050 §4).
@@ -585,18 +471,39 @@ mod tests {
     use syntropy_core::Blake3;
 
     use super::*;
+    use crate::value::form::{Shown, parse};
+
+    /// A selector printed and parsed back, the way `config show` and a file do.
+    fn back<T: Form>(value: &T) -> Result<T, ValueError> {
+        parse(&Shown(value).to_string())
+    }
+
+    /// Reads JSON the way a key with `serde(with = "syntropy_config::form")` does.
+    fn json<T: Form>(text: &str) -> Option<T> {
+        let mut de = serde_json::Deserializer::from_str(text);
+        T::deserialize_form(&mut de).ok()
+    }
+
+    /// Writes JSON the way such a key does.
+    fn to_json<T: Form>(value: &T) -> String {
+        let mut out = Vec::new();
+        value
+            .serialize_form(&mut serde_json::Serializer::new(&mut out))
+            .unwrap();
+        String::from_utf8(out).unwrap()
+    }
 
     #[test]
     fn node_selectors_parse() {
-        assert_eq!("pc".parse(), Ok(NodeSelector::Name("pc".into())));
-        assert_eq!("*".parse(), Ok(NodeSelector::Any));
-        assert_eq!("self".parse(), Ok(NodeSelector::This));
+        assert_eq!(parse("pc"), Ok(NodeSelector::Name("pc".into())));
+        assert_eq!(parse("*"), Ok(NodeSelector::Any));
+        assert_eq!(parse("self"), Ok(NodeSelector::This));
         assert_eq!(
-            "id:3F9A0B1C2D".parse(),
+            parse("id:3F9A0B1C2D"),
             Ok(NodeSelector::IdPrefix("3f9a0b1c2d".into()))
         );
         assert_eq!(
-            "label:gpu=rtx4090".parse(),
+            parse("label:gpu=rtx4090"),
             Ok(NodeSelector::Label {
                 key: "gpu".into(),
                 value: "rtx4090".into()
@@ -612,22 +519,22 @@ mod tests {
             "-pc",
             "a:b",
         ] {
-            assert!(s.parse::<NodeSelector>().is_err(), "{s:?} should not parse");
+            assert!(parse::<NodeSelector>(s).is_err(), "{s:?} should not parse");
         }
     }
 
     #[test]
     fn self_is_node_scope_only() {
-        assert!(NodeSelector::This.check_scope(Scope::Node).is_ok());
-        assert!(NodeSelector::This.check_scope(Scope::Cluster).is_err());
-        assert!(NodeSelector::This.check_scope(Scope::Instance).is_err());
-        assert!(NodeSelector::Any.check_scope(Scope::Cluster).is_ok());
+        assert!(check_node_scope(&NodeSelector::This, Scope::Node).is_ok());
+        assert!(check_node_scope(&NodeSelector::This, Scope::Cluster).is_err());
+        assert!(check_node_scope(&NodeSelector::This, Scope::Instance).is_err());
+        assert!(check_node_scope(&NodeSelector::Any, Scope::Cluster).is_ok());
     }
 
     #[test]
     fn device_selectors_parse() {
         assert_eq!(
-            "cuda:0".parse(),
+            parse("cuda:0"),
             Ok(DeviceSelector::Gpu {
                 node: None,
                 api: DeviceApi::Cuda,
@@ -635,7 +542,7 @@ mod tests {
             })
         );
         assert_eq!(
-            "pc/cuda:1".parse(),
+            parse("pc/cuda:1"),
             Ok(DeviceSelector::Gpu {
                 node: Some("pc".into()),
                 api: DeviceApi::Cuda,
@@ -643,17 +550,17 @@ mod tests {
             })
         );
         assert_eq!(
-            "cpu:numa1".parse(),
+            parse("cpu:numa1"),
             Ok(DeviceSelector::Cpu {
                 node: None,
                 numa: 1
             })
         );
         assert_eq!(
-            "kind:dgpu".parse(),
+            parse("kind:dgpu"),
             Ok(DeviceSelector::Kind(DeviceKind::DiscreteGpu))
         );
-        assert_eq!("*".parse(), Ok(DeviceSelector::Any));
+        assert_eq!(parse("*"), Ok(DeviceSelector::Any));
         for s in [
             "",
             "cuda",
@@ -665,7 +572,7 @@ mod tests {
             "a b/cuda:0",
         ] {
             assert!(
-                s.parse::<DeviceSelector>().is_err(),
+                parse::<DeviceSelector>(s).is_err(),
                 "{s:?} should not parse"
             );
         }
@@ -673,13 +580,15 @@ mod tests {
 
     #[test]
     fn tier_selectors_parse() {
-        assert_eq!("ram".parse(), Ok(TierSelector::kind(TierKind::HostPinned)));
+        let kind = |kind| TierSelector {
+            node: None,
+            kind,
+            index: None,
+        };
+        assert_eq!(parse("ram"), Ok(kind(TierKind::HostPinned)));
+        assert_eq!(parse("ram-pageable"), Ok(kind(TierKind::HostPageable)));
         assert_eq!(
-            "ram-pageable".parse(),
-            Ok(TierSelector::kind(TierKind::HostPageable))
-        );
-        assert_eq!(
-            "pc/nvme:1".parse(),
+            parse("pc/nvme:1"),
             Ok(TierSelector {
                 node: Some("pc".into()),
                 kind: TierKind::Nvme,
@@ -687,27 +596,24 @@ mod tests {
             })
         );
         for s in ["", "disk", "nvme:", "pc/", "/nvme"] {
-            assert!(s.parse::<TierSelector>().is_err(), "{s:?} should not parse");
+            assert!(parse::<TierSelector>(s).is_err(), "{s:?} should not parse");
         }
     }
 
     #[test]
-    fn layer_ranges_parse_and_resolve() {
-        let range = |start, end| LayerRange { start, end };
-        assert_eq!("0..20".parse(), Ok(range(Some(0), Some(20))));
-        assert_eq!("40..".parse(), Ok(range(Some(40), None)));
-        assert_eq!("..8".parse(), Ok(range(None, Some(8))));
-        assert_eq!("7".parse(), Ok(range(Some(7), Some(8))));
-        assert_eq!("..".parse(), Ok(range(None, None)));
+    fn layer_ranges_parse() {
+        let range = |start: Option<u16>, end: Option<u16>| LayerRange {
+            start: start.map(LayerIx),
+            end: end.map(LayerIx),
+        };
+        assert_eq!(parse("0..20"), Ok(range(Some(0), Some(20))));
+        assert_eq!(parse("40.."), Ok(range(Some(40), None)));
+        assert_eq!(parse("..8"), Ok(range(None, Some(8))));
+        assert_eq!(parse("7"), Ok(range(Some(7), Some(8))));
+        assert_eq!(parse(".."), Ok(range(None, None)));
         for s in ["", "5..5", "20..10", "a..b", "1...2", "-1..2", "70000"] {
-            assert!(s.parse::<LayerRange>().is_err(), "{s:?} should not parse");
+            assert!(parse::<LayerRange>(s).is_err(), "{s:?} should not parse");
         }
-        assert_eq!(
-            range(Some(40), None).resolve(61),
-            Ok(LayerIx(40)..LayerIx(61))
-        );
-        assert!(range(Some(40), Some(70)).resolve(61).is_err());
-        assert!(range(Some(61), None).resolve(61).is_err());
     }
 
     #[test]
@@ -785,7 +691,10 @@ mod tests {
                 (Some(s), Some(e)) => s < e,
                 _ => true,
             })
-            .prop_map(|(start, end)| LayerRange { start, end })
+            .prop_map(|(start, end)| LayerRange {
+                start: start.map(LayerIx),
+                end: end.map(LayerIx),
+            })
     }
 
     fn model_selector() -> impl Strategy<Value = ModelSelector> {
@@ -802,26 +711,26 @@ mod tests {
     proptest! {
         #[test]
         fn node_selectors_parse_back(sel in node_selector()) {
-            prop_assert_eq!(sel.to_string().parse::<NodeSelector>(), Ok(sel.clone()));
-            let json = serde_json::to_string(&sel).unwrap();
-            prop_assert_eq!(serde_json::from_str::<NodeSelector>(&json).unwrap(), sel);
+            prop_assert_eq!(back(&sel), Ok(sel.clone()));
+            prop_assert_eq!(json::<NodeSelector>(&to_json(&sel)), Some(sel));
         }
 
         #[test]
         fn device_selectors_parse_back(sel in device_selector()) {
-            prop_assert_eq!(sel.to_string().parse::<DeviceSelector>(), Ok(sel.clone()));
-            let json = serde_json::to_string(&sel).unwrap();
-            prop_assert_eq!(serde_json::from_str::<DeviceSelector>(&json).unwrap(), sel);
+            prop_assert_eq!(back(&sel), Ok(sel.clone()));
+            prop_assert_eq!(json::<DeviceSelector>(&to_json(&sel)), Some(sel));
         }
 
         #[test]
         fn tier_selectors_parse_back(sel in tier_selector()) {
-            prop_assert_eq!(sel.to_string().parse::<TierSelector>(), Ok(sel.clone()));
+            prop_assert_eq!(back(&sel), Ok(sel.clone()));
+            prop_assert_eq!(json::<TierSelector>(&to_json(&sel)), Some(sel));
         }
 
         #[test]
         fn layer_ranges_parse_back(range in layer_range()) {
-            prop_assert_eq!(range.to_string().parse::<LayerRange>(), Ok(range));
+            prop_assert_eq!(back(&range), Ok(range));
+            prop_assert_eq!(json::<LayerRange>(&to_json(&range)), Some(range));
         }
 
         #[test]

@@ -141,6 +141,35 @@ paths = ["docs/**", "plan/**", "*.md"]
 - **Requests.** For same-repository PRs the dispatcher runs `hw_required` automatically. For fork PRs, a `/hw run <sha> [<backend>…]` from a maintainer requests it, or more (§3.3).
 - **Docs-only changes** run only `docs` and L0.
 
+*Note, 2026-10-23 (QUAL-E1-T07).* `cargo xtask ci changes --base <rev> --head <rev>` computes the set from `ci/jobs.toml`, and `xtask/src/changes.rs` documents the format.
+- **Where it runs.** `changes` runs from the base, as `ci-gate` does (note above). On a PR the head is the merge commit GitHub tests and the base is its first parent, as for `dep-diff` (#1702). In a merge group they are the group's base and head commits, so the diff is already the union over the batch. Two trees are compared without rename detection, so a moved file counts at both paths.
+- **Nothing from the PR runs.** The PR's files are read through git as data. The crate graph is read from the manifests as TOML at both revisions, and the closure is taken over the union of the two graphs, so an edge the PR adds counts. No cargo command reads the PR's tree, whose `.cargo/config.toml` could otherwise start a program inside the job.
+- **Path classes**, tried in order:
+  - `workspace` paths, such as `Cargo.lock`, the toolchain pin, `xtask/`, `pr.yml` and the composite actions, count as every crate;
+  - a path inside a crate counts as that crate;
+  - `inputs` maps files outside every crate to the crates that read them, such as `numerics/` to `kernels`;
+  - `no_crate` paths change no crate;
+  - any other path fails closed and counts as every crate.
+- **A plan-only or docs-only diff runs `lint` alone.** Hosted tests read some plan files, but `lint` checks the same facts on every PR:
+  - `check-deps` compares RFC-0001 §4.1's table with `ci/layers.toml`, which only an `xtask` test did before;
+  - `properties` checks RFC-0060 §3.2 and the epics;
+  - `scenarios` checks the vision's §7, RFC-0061 §4.2 and the epics;
+  - a new `plan` step runs the plan tools: `epics.py`, `depcheck.py`, and `deps_report.py`, `trace.py` and `roadmap.py` with `--check`. Before this, no hosted job ran the task-graph check.
+  A hosted test may read a file outside its crate only when `inputs` lists that file, or when the test checks only what a `lint` step also checks. Otherwise a plan-only PR could break it unseen.
+- **The hardware rule.** `hw-cuda-ada` takes the paths of the excerpt's `hw-cuda`, its row's list, and `numerics/**`, the tolerance tables `kernels` embeds and the op conformance checks run against (ADR-0019), so a change to a ceiling alone requires the rig. It also takes `third_party/ggml.lock`, which records the vendored ggml commit (§4.2), beside the excerpt's `third_party/ggml/**`: a ggml bump changes both.
+  - Each module is named in both forms, `<name>.rs` and `<name>/**`, because `testkit`'s reference executor is the single file `refexec.rs`.
+  - QUAL-E2-T08 adds the other Tier 1 rigs' jobs with their own rules. Each job is named by its status context, `hw/<job>`, so the excerpt's `hw-cuda` and `hw-metal` groups become per-rig jobs.
+  - `lock_deps` stays empty until the CUDA bindings crate exists. COMP-E4-T01, which adds it, lists it. ggml's bindings are generated inside `kernels-ggml` (COMP-E7-T01), whose paths the rule covers, so they need no entry.
+- **`hosted-l3`'s crates.** Beside §2.3's `ipc`, `tier`, `exec`, `io` and `net`, the rule lists `spsc`, whose ring the loom models cover, and `kernels-cpu`, the CPU provider that RFC-0060 §3.4 builds with the sanitizers. So a change to the CPU provider alone runs L3. QUAL-E3-T10 adds any other crate its Miri and sanitizer jobs build.
+- **Planned jobs.** A job marked `planned = "<task>"` has no suite or rig yet. Its rule is evaluated and reported. A planned hosted job is not listed, and a planned hardware job is handled as §2.5's note describes.
+- **The golden suite.** `ci/jobs-goldens.toml` holds recorded diffs, most of them commits on `main`, each with its expected sets. `lint`'s `jobs` step fails when:
+  - a golden's sets differ;
+  - a job, pattern or lock dependency has no golden, or no golden fails closed;
+  - a direct rule's pattern or lock dependency has no golden that it alone of its job's meets, or a closure rule's crate that could stand alone has no golden whose closure holds it alone of the listed crates. So dropping any one of them changes a golden;
+  - `pr.yml`'s jobs and the hosted rules differ;
+  - the recorded digest of `ci/jobs.toml` is stale, so the rules cannot change without the goldens.
+- **Old bases.** A base without `ci/jobs.toml` predates QUAL-E1-T07. Only then does `changes` list every hosted job with a suite and no hardware, and `ci-gate` run with `--needs` alone. #1577 has merged, so its bootstrap is gone.
+
 #### 2.3 Job catalogue
 
 | Job | Runner | When | Contents (RFC-0060 / RFC-0061) | Budget [target] |
@@ -165,6 +194,14 @@ paths = ["docs/**", "plan/**", "*.md"]
 - `hosted-l3` and `hosted-parity-nano` are in `ci-gate`'s `needs` but not listed, so they show as skipped, because their suites do not exist yet (planned: QUAL-E3-T09/T10 and QUAL-E5-T06). Each fails if it is listed before then.
 - `ci-gate` runs the base branch's `cargo xtask ci ci-gate` (§2.2 note), which reads each job's result from the `needs` context. Beyond the row above, it fails when `changes` did not succeed, when a job `changes` listed was skipped, and when `changes` lists a job that `ci-gate` does not wait for. It runs even in a cancelled run, because a skipped `ci-gate` would report success. Its summary names the tasks that add the planned jobs' suites.
 - The hosted runners are pinned by label: `ubuntu-24.04`, `macos-26` and `windows-2025`.
+
+*Note, 2026-10-22 (QUAL-E1-T31).* `lint` will also run rustdoc over the workspace with `-D warnings` (`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`), so a broken or ambiguous intra-doc link fails a PR. Until then no gate checks the docs, which is how #1666's links broke unnoticed. QUAL-E1-T31 adds the step after #1666's fix lands, and keeps `lint` within its budget or moves the step to a job of its own.
+
+*Note, 2026-10-26 (QUAL-E1-T31).* `lint` now runs that step, named `rustdoc`, after `clippy`, whose check builds of the dependencies it reuses. It documents the workspace's own crates only (`--no-deps`), and `cargo xtask ci lint` names it in its verdict.
+
+*Note, 2026-10-23 (QUAL-E3-T09).* `hosted-l3` now runs `cargo xtask test loom`: the loom models of RFC-0060 §3.4 in `spsc` and `ipc`, built with `--cfg loom` into `target/loom/`, with a preemption bound of 3. Miri and the sanitizer builds stay with QUAL-E3-T10. Until QUAL-E1-T07 computes the closure (§2.2), `changes` lists `hosted-l3` when the PR's diff from its base, with renames counted at both paths, touches `crates/`, `third_party/`, `.cargo/`, `xtask/`, the workspace `Cargo.toml` or `Cargo.lock`, `rust-toolchain.toml`, `pr.yml` or `.github/actions/`. That runs it more often than the closure rule in the table above would, and skips plan-only PRs. `ci-gate` no longer lists `hosted-l3` as planned; `hosted-parity-nano` stays planned (QUAL-E5-T06).
+
+*Note, 2026-10-23 (QUAL-E1-T07).* `changes` now builds the base's `xtask` with no cache before it decides, as `ci-gate` does. Its budget of < 1 min [target] is checked against the first hosted runs.
 
 #### 2.4 Platform promises to jobs
 
@@ -191,6 +228,19 @@ The required-check set differs by event, so that no required check ever waits fo
 | post-merge (`main` commit) | none (not a merge gate) | the dispatcher runs the commit's `hw_required` hardware jobs on rigs and posts `hw/<job>` statuses on the `main` commit |
 
 *Note, 2026-10-22 (QUAL-E1-T19).* `dep-diff` joins the required checks on `pull_request` and `merge_group`, next to `ci-gate`, `dco` and `pr-title`. It must stop a PR that adds a dependency nobody approved (§12.3), and it has to run again when a maintainer approves the PR's new dependencies in a comment, which `ci-gate` does not. On `merge_group` it reports success, as `dco` and `pr-title` do.
+
+*Note, 2026-10-23 (QUAL-E1-T07).* `ci-gate`'s hardware clause.
+- **Inputs:**
+  - `hw_required`, from `changes`;
+  - the event payload, `--event`;
+  - on `pull_request`, every page of `GET /commits/{head}/statuses` for the PR's head commit, which the job reads with `statuses: read`.
+- **Which status counts.** Only a status that an account in `ci/jobs.toml`'s `hardware.status_creators` posted, which is the dispatcher App's. The latest one for each `hw/<job>` context decides, and it must be `success` on the head commit. QUAL-E2-T01 names the App's account. Until then no status counts.
+- **Jobs whose rig does not run yet** (ADR-0620 revision of 2026-10-23). `ci/jobs.toml` marks such a job `planned = "<task>"`.
+  - A fork PR still waits for every job in `hw_required` (ADR-0620 decision 4), so a fork PR that touches a hardware path cannot merge until the dispatcher runs that job.
+  - A same-repository PR is not held for a planned job, and the summary names the task.
+  - QUAL-E2-T02 removes the mark from `hw-cuda-ada`. QUAL-E2-T08 adds the other Tier 1 rigs' jobs.
+- **Merge groups.** `ci-gate` evaluates hosted jobs only. QUAL-E1-T11 adds the `hw:queue` members' statuses.
+- **Re-runs.** A status that lands does not re-run `pr.yml` by itself. So the dispatcher that posts it re-runs `ci-gate`, which QUAL-E2-T02's criterion needs (`ci-gate` turns green only after its status lands).
 
 - **`ci-gate`** is the only check that aggregates conditional jobs, which keeps the required set stable as jobs come and go. Hardware jobs report back as commit statuses `hw/<job>`, which `lab.yml` posts on the SHA it tested. On a PR, `ci-gate` re-evaluates when they arrive.
 - **Post-merge hardware results gate release promotion, not merges.**
@@ -621,6 +671,8 @@ unknown-git = "deny"
 allow-git = []              # every git dependency is listed with a pinned revision
 ```
 
+*Note 2026-10-22 (DIST-E7-T23):* the checks resolve every feature for the targets of §4.1's table, the ADR-0020 tiers, through `[graph] targets`. A crate that links only on another target, such as iroh-relay's wasm32-only browser WebSocket crates, reaches no artefact and is not checked. Every crate linked into a shipped artefact still is, so the licence, ban, advisory and source checks lose nothing ADR-0018 §3 covers. The first per-crate MPL-2.0 exception is `attohttpc@0.30.1`, which iroh's port mapping brings in.
+
 #### 11.3 Vendored non-Rust code
 
 - **ggml** is vendored as a source tree under `third_party/ggml/`. `third_party/ggml.lock` records the upstream commit and a BLAKE3 of the tree. `cargo xtask vendor ggml <commit>` updates both. A Renovate custom manager watches upstream and opens update PRs, which never auto-merge.
@@ -702,6 +754,13 @@ A new direct dependency also passes a registry check that reports its first-publ
     - A review approval is not required, and a label does not approve: a label carries no commit.
     - `dep-approval.yml`, on `issue_comment`, re-runs the latest `pr-meta` run's `dep-diff` job for the PR's head when a comment holding that line is posted, and when any PR comment is edited or deleted, since an edit may withdraw an approval.
     - The job reads the roster from the base branch's current tip through the API, not from its checkout, because a re-run replays the original event, whose base commit could predate a maintainer's removal. The comment's own run posts its checks on `main`, not on the PR. That workflow runs as defined on `main`, never checks out the PR, and holds only `actions: write`, to re-run the job.
+
+    *Note, 2026-10-22 (#1692).* A path dependency on a directory that is not a workspace member, such as one the workspace `exclude`s, is external code.
+    - It is new like a crate, as `path+<dir>`, when the base does not declare it.
+    - Its own `Cargo.toml` counts as a member's does: every dependency table, `[dev-dependencies]` and the `[target.*]` tables included, with path dependencies followed to further non-member crates. So a dependency added inside a directory that was approved earlier is new.
+    - The check reads that manifest as TOML rather than through `cargo metadata`. Cargo would look for the crate's workspace above it, and in CI the head checkout lies inside the base's.
+    - It fails closed where it cannot follow. A dependency inherited with `workspace = true` counts on every PR while it stays. So does a path crate outside the workspace root, or one with a symbolic link anywhere between the root and its `Cargo.toml`. The check does not read either, because a link in a PR's tree can point anywhere on the runner. A manifest it cannot parse is reported by line and column, never by quoting its text.
+    - A dependency of one platform shows its `cfg` or target triple after its kind.
   - **The bootstrap.** As for `ci-gate` (§2.2 note), a base whose `xtask` has no `dep-diff` job, which the exit code 2 shows, fails the check, except on #1590, the PR that adds the job, which is judged by its own evaluator once.
   - **The registry check** (§11.4, ADR-0624 decision 5) is `dep-diff`'s second step. For each new crates.io dependency, it prints the crate's first-publish date, the publisher of its first version (or the earliest one recorded, since older versions record none) and its owners, for the maintainer's review. It fails on a name that does not resolve, and when crates.io cannot be reached. A git dependency has no registry entry; its URL is printed for the maintainer instead.
 - **Delegations and the maintainer-action queue** (ADR-0021 decision 4). `governance/delegations.toml` records each delegation: the maintainer, the action it covers, and the dates it was granted and revoked, and changes only with a maintainer's approval. It records the key holders of §7.2, the organisation owners (§12.6) and the security deputy (§13). The checks that accept a maintainer (`/hw run`, the gate labels, `rc:start`, `promote`) read identities from it. `cargo xtask maintainer-actions` lists every task marked as a human-only action in the epics, with its state and evidence, as one queue.
@@ -714,6 +773,8 @@ A new direct dependency also passes a registry check that reports its first-publ
 - `lint` fails any workflow other than `lab.yml` that names a lab label in `runs-on`, and any workflow file that checks out a PR ref in a job holding secrets or a write token.
 - Secrets exist only in environments (§3.3, §7.2).
 - `actionlint` and a workflow security linter run in `lint` on every change to `.github/`.
+
+*Note, 2026-10-26 (QUAL-E1-T09).* `lint` runs both on every PR, a superset of every change to `.github/`. `cargo xtask workflows` checks every rule above that a file can show, over the workflows and every local action they reach: the read-only top level, SHA pins in workflows, reusable workflows and actions (a `docker://` image by digest), no `pull_request_target`, no lab label outside `lab.yml` (a `runs-on` that an expression computes fails unless it reads a matrix the lint can read), and no PR checkout in a job that uses the `secrets` context other than for `GITHUB_TOKEN`, names an environment or passes `secrets: inherit`, or whose token can write. A checkout counts as a PR checkout unless it is of this repository and its ref is known safe: a literal ref, the base, or the default checkout on triggers known to check out the repository's own code. Every other trigger, `workflow_call` and the review triggers among them, counts as a pull request's. A file it cannot parse fails. `cargo xtask actionlint` runs actionlint 1.7.12 with its shellcheck and pyflakes integrations off, so the result does not depend on the host's versions of those. CI installs it from the release archive, checked against a pinned SHA-256, and the step passes its own configuration, so a `.github/actionlint.yaml` in a PR cannot silence it. A file cannot show three things, which the lint therefore does not check: whether a 40-hex pin is a commit rather than a tag or branch of that name, a fork of `actions/checkout` under another name, and a ref that reaches a checkout through `env` or a step's outputs.
 
 #### 12.5 Agent pipeline security
 

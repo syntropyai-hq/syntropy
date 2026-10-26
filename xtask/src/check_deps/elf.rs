@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A minimal ELF reader for rule 7: the shared libraries a binary needs (`DT_NEEDED`) and the
-//! names in its dynamic symbol table (`.dynsym`).
+//! A minimal ELF reader for rules 7 and 10: the shared libraries a binary needs (`DT_NEEDED`), the
+//! names in its dynamic symbol table (`.dynsym`) and, for rule 10, the names in its full symbol
+//! table (`.symtab`).
 //!
 //! It reads 32- and 64-bit files of either byte order through the section headers, which
 //! `strip` keeps. Every offset is bounds-checked, so a truncated or malformed file is an error,
@@ -16,6 +17,7 @@ pub struct Dynamic {
     pub symbols: Vec<String>,
 }
 
+const SHT_SYMTAB: u32 = 2;
 const SHT_DYNAMIC: u32 = 6;
 const SHT_DYNSYM: u32 = 11;
 const DT_NULL: u64 = 0;
@@ -62,6 +64,30 @@ pub fn read(bytes: &[u8]) -> Result<Dynamic, String> {
         }
     }
     Ok(dynamic)
+}
+
+/// Every named entry of the full symbol table (`.symtab`), in file order: the binary's own
+/// functions and statics, by their mangled names. A stripped file has no `.symtab`, and gives an
+/// empty list.
+pub fn symtab(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let elf = Elf::new(bytes)?;
+    let mut names = Vec::new();
+    for index in 0..elf.section_count()? {
+        let section = elf.section(index)?;
+        if section.kind != SHT_SYMTAB {
+            continue;
+        }
+        let strings = elf.section(section.link)?;
+        let entry = if elf.wide { 24 } else { 16 };
+        // Entry 0 is the reserved null symbol.
+        for at in (1..section.size / entry).map(|n| section.offset.saturating_add(n * entry)) {
+            let name = elf.string(&strings, u64::from(elf.u32(at)?))?;
+            if !name.is_empty() {
+                names.push(name);
+            }
+        }
+    }
+    Ok(names)
 }
 
 struct Elf<'a> {
@@ -248,6 +274,23 @@ mod tests {
         let step = (bytes.len() / 512).max(1);
         for length in (0..bytes.len()).step_by(step).chain(0..256) {
             let _ = read(&bytes[..length]);
+            let _ = symtab(&bytes[..length]);
         }
+    }
+
+    /// The test binary keeps its `.symtab`, which names this very test function, mangled.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_symbol_table_names_this_test() {
+        let bytes = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let names = symtab(&bytes).unwrap();
+        assert!(
+            names
+                .iter()
+                .any(|name| name.contains("the_symbol_table_names_this_test")),
+            "{} names",
+            names.len()
+        );
+        assert_eq!(symtab(b"MZ").unwrap_err(), "not an ELF file");
     }
 }

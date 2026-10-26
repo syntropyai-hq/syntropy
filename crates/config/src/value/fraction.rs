@@ -1,62 +1,45 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `Fraction`: a share of something, in [0, 1] (RFC-0054 §3).
+//! `Fraction`'s forms: a share of something, in [0, 1], written as a number (`0.2`) or a
+//! percentage (`"20%"`) (RFC-0054 §3). The type is `syntropy-core`'s.
+//!
+//! Output is the shortest decimal that reads back as the same `f32`, such as `0.2`. A
+//! percentage is converted by moving the decimal point, so `"20%"` and `0.20` are the same
+//! value. Negative zero is stored as zero.
 
 use std::fmt;
-use std::str::FromStr;
 
 use serde::de::{self, Visitor};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserializer, Serializer};
+use syntropy_core::policy::Fraction;
 
+use super::form::Form;
 use super::{ValueError, serde_error, split_decimal, split_number};
 
-/// A share in [0, 1], written as a number (`0.2`) or a percentage (`"20%"`) (RFC-0054 §3).
-///
-/// Output is the shortest decimal that reads back as the same `f32`, such as `0.2`. A
-/// percentage is converted by moving the decimal point, so `"20%"` and `0.20` are the same
-/// value. Negative zero is stored as zero.
-#[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
-pub struct Fraction(f32);
-
-impl Fraction {
-    /// Zero.
-    pub const ZERO: Fraction = Fraction(0.0);
-    /// One.
-    pub const ONE: Fraction = Fraction(1.0);
-
-    /// `value`, if it lies in [0, 1].
-    pub fn new(value: f32) -> Result<Self, ValueError> {
-        if (0.0..=1.0).contains(&value) {
-            // `+ 0.0` turns -0.0 into 0.0.
-            Ok(Self(value + 0.0))
-        } else {
-            Err(ValueError::out_of_range(format!(
-                "{value} is not a fraction: it must lie between 0 and 1, or 0% and 100%"
-            )))
-        }
-    }
-
-    /// The share as a number in [0, 1].
-    pub const fn get(self) -> f32 {
-        self.0
-    }
-
-    /// The share as a percentage string, such as `20%`, that parses back to the same value.
-    pub fn to_percent_string(self) -> String {
-        shift_point_right(&self.0.to_string(), 2) + "%"
-    }
+/// `value` as a [`Fraction`], or the error a key reports for a value outside [0, 1].
+pub(crate) fn fraction(value: f32) -> Result<Fraction, ValueError> {
+    Fraction::new(value).ok_or_else(|| {
+        ValueError::out_of_range(format!(
+            "{value} is not a fraction: it must lie between 0 and 1, or 0% and 100%"
+        ))
+    })
 }
 
-impl fmt::Display for Fraction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
+/// The share as a percentage string, such as `20%`, that parses back to the same value.
+pub(crate) fn percent_string(share: Fraction) -> String {
+    shift_point_right(&share.get().to_string(), 2) + "%"
 }
 
-impl FromStr for Fraction {
-    type Err = ValueError;
+impl Form for Fraction {
+    fn deserialize_form<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(FractionVisitor)
+    }
 
-    fn from_str(s: &str) -> Result<Self, ValueError> {
+    fn serialize_form<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f32(self.get())
+    }
+
+    fn parse_text(s: &str) -> Result<Self, ValueError> {
         let bad = || {
             ValueError::bad_unit(format!(
                 "`{s}` is not a fraction: write a number between 0 and 1, such as 0.2, or a \
@@ -75,7 +58,11 @@ impl FromStr for Fraction {
             _ => return Err(bad()),
         };
         let value: f32 = decimal.parse().map_err(|_| bad())?;
-        Self::new(value)
+        fraction(value)
+    }
+
+    fn fmt_text(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.get())
     }
 }
 
@@ -102,18 +89,6 @@ fn shift_point_right(number: &str, places: usize) -> String {
     }
 }
 
-impl Serialize for Fraction {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_f32(self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for Fraction {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(FractionVisitor)
-    }
-}
-
 pub(super) struct FractionVisitor;
 
 impl Visitor<'_> for FractionVisitor {
@@ -124,12 +99,12 @@ impl Visitor<'_> for FractionVisitor {
     }
 
     fn visit_f64<E: de::Error>(self, x: f64) -> Result<Fraction, E> {
-        // The shortest text of `x` read as f32 rounds once, as `from_str` does.
-        x.to_string().parse().map_err(serde_error)
+        // The shortest text of `x` read as f32 rounds once, as `parse_text` does.
+        Fraction::parse_text(&x.to_string()).map_err(serde_error)
     }
 
     fn visit_f32<E: de::Error>(self, x: f32) -> Result<Fraction, E> {
-        Fraction::new(x).map_err(serde_error)
+        fraction(x).map_err(serde_error)
     }
 
     fn visit_i64<E: de::Error>(self, n: i64) -> Result<Fraction, E> {
@@ -147,7 +122,7 @@ impl Visitor<'_> for FractionVisitor {
     }
 
     fn visit_str<E: de::Error>(self, s: &str) -> Result<Fraction, E> {
-        s.parse().map_err(serde_error)
+        Fraction::parse_text(s).map_err(serde_error)
     }
 }
 
@@ -156,16 +131,22 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::value::form::{Shown, parse};
+
+    /// Reads JSON the way a key with `serde(with = "syntropy_config::form")` does.
+    fn json(s: &str) -> Option<f32> {
+        let mut de = serde_json::Deserializer::from_str(s);
+        Fraction::deserialize_form(&mut de).ok().map(Fraction::get)
+    }
 
     #[test]
     fn parses_numbers_and_percentages() {
-        assert_eq!("0.2".parse::<Fraction>().map(Fraction::get), Ok(0.2));
-        assert_eq!("20%".parse::<Fraction>().map(Fraction::get), Ok(0.2));
-        assert_eq!("12.5%".parse::<Fraction>().map(Fraction::get), Ok(0.125));
-        assert_eq!("100%".parse::<Fraction>(), Ok(Fraction::ONE));
-        assert_eq!("0.5%".parse::<Fraction>().map(Fraction::get), Ok(0.005));
-        assert_eq!("1".parse::<Fraction>(), Ok(Fraction::ONE));
-        let json = |s: &str| serde_json::from_str::<Fraction>(s).ok().map(Fraction::get);
+        assert_eq!(parse::<Fraction>("0.2").map(Fraction::get), Ok(0.2));
+        assert_eq!(parse::<Fraction>("20%").map(Fraction::get), Ok(0.2));
+        assert_eq!(parse::<Fraction>("12.5%").map(Fraction::get), Ok(0.125));
+        assert_eq!(parse::<Fraction>("100%"), Ok(Fraction::ONE));
+        assert_eq!(parse::<Fraction>("0.5%").map(Fraction::get), Ok(0.005));
+        assert_eq!(parse::<Fraction>("1"), Ok(Fraction::ONE));
         assert_eq!(json("0.1"), Some(0.1));
         assert_eq!(json("0"), Some(0.0));
         assert_eq!(json("\"10%\""), Some(0.1));
@@ -176,38 +157,37 @@ mod tests {
         for s in [
             "1.1", "101%", "-0.1", "", "%", "20 %%", "0.2x", "nan", "inf",
         ] {
-            assert!(s.parse::<Fraction>().is_err(), "{s:?} should not parse");
+            assert!(parse::<Fraction>(s).is_err(), "{s:?} should not parse");
         }
-        assert!(serde_json::from_str::<Fraction>("2").is_err());
-        assert!(Fraction::new(f32::NAN).is_err());
-        assert_eq!(Fraction::new(-0.0).map(|f| f.get().to_bits()), Ok(0));
+        assert!(json("2").is_none());
+        assert!(fraction(f32::NAN).is_err());
+        assert_eq!(fraction(-0.0).map(|f| f.get().to_bits()), Ok(0));
     }
 
     #[test]
     fn prints_the_shortest_decimal() {
-        assert_eq!(Fraction::new(0.2).unwrap().to_string(), "0.2");
-        assert_eq!(Fraction::new(0.015625).unwrap().to_string(), "0.015625");
-        assert_eq!(Fraction::ONE.to_string(), "1");
-        assert_eq!(Fraction::new(0.2).unwrap().to_percent_string(), "20%");
-        assert_eq!(
-            Fraction::new(0.015625).unwrap().to_percent_string(),
-            "1.5625%"
-        );
-        assert_eq!(Fraction::ONE.to_percent_string(), "100%");
-        assert_eq!(Fraction::ZERO.to_percent_string(), "0%");
+        let shown = |x: f32| Shown(&fraction(x).unwrap()).to_string();
+        assert_eq!(shown(0.2), "0.2");
+        assert_eq!(shown(0.015625), "0.015625");
+        assert_eq!(shown(1.0), "1");
+        assert_eq!(percent_string(fraction(0.2).unwrap()), "20%");
+        assert_eq!(percent_string(fraction(0.015625).unwrap()), "1.5625%");
+        assert_eq!(percent_string(Fraction::ONE), "100%");
+        assert_eq!(percent_string(Fraction::ZERO), "0%");
     }
 
     proptest! {
         #[test]
         fn printed_form_parses_back(x in 0.0f32..=1.0) {
-            let f = Fraction::new(x).unwrap();
-            let back = f.to_string().parse::<Fraction>().unwrap();
+            let f = fraction(x).unwrap();
+            let back = parse::<Fraction>(&Shown(&f).to_string()).unwrap();
             prop_assert_eq!(back.get().to_bits(), f.get().to_bits());
-            let back = f.to_percent_string().parse::<Fraction>().unwrap();
+            let back = parse::<Fraction>(&percent_string(f)).unwrap();
             prop_assert_eq!(back.get().to_bits(), f.get().to_bits());
-            let json = serde_json::to_string(&f).unwrap();
-            let back = serde_json::from_str::<Fraction>(&json).unwrap();
-            prop_assert_eq!(back.get().to_bits(), f.get().to_bits());
+            let mut out = Vec::new();
+            f.serialize_form(&mut serde_json::Serializer::new(&mut out)).unwrap();
+            let back = json(std::str::from_utf8(&out).unwrap()).unwrap();
+            prop_assert_eq!(back.to_bits(), f.get().to_bits());
         }
     }
 }

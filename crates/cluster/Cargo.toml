@@ -8,7 +8,13 @@ publish.workspace = true
 [dependencies]
 # The pairing commitment and SAS (RFC-0030 §6.2).
 blake3.workspace = true
+# Payloads whose owners have not defined them yet are kept as their CBOR value (`log::payload`).
+ciborium.workspace = true
 serde.workspace = true
 syntropy-config = { path = "../config" }
 syntropy-core = { path = "../core" }
 syntropy-net = { path = "../net" }
+
+[dev-dependencies]
+proptest.workspace = true
+stateright.workspace = true

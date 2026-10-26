@@ -8,18 +8,29 @@
 //!   declare its section, and the [`SectionSchema`] and [`KeySchema`] it records;
 //! - the section [`Registry`], whose construction fails the build when two sections claim one
 //!   prefix (§5.1);
-//! - the value types of §3: [`ByteSize`], [`Duration`], [`Fraction`], [`Reserve`], [`Rate`],
-//!   the node, device, tier, layer and model selectors, [`Regex`] and [`Secret`];
+//! - the value types of §3: [`ByteSize`], [`Duration`], [`Rate`], the model selector,
+//!   [`Regex`] and [`Secret`], and, for `syntropy-core`'s `Fraction`, `Reserve` and node,
+//!   device, tier and layer selectors, their forms ([`form`]; OQ-PRD-27 (a));
 //! - node-key layering (§1, §2.2 Rule 1, §2.4): the config files per OS ([`locate`],
 //!   [`Locations::scan`]), the environment ([`Env`]) and command-line ([`Flags`]) layers, and
 //!   [`ResolvedConfig`], an immutable snapshot whose every value carries its [`Origin`], held
 //!   for readers by [`SharedConfig`];
 //! - the text of `config show --resolved`, `config check` and `config path`
-//!   ([`command`]).
-//!
+//!   ([`command`]);
+//! - the debug-key gates of §7.1 ([`DebugSection`]): the three `debug.*` keys, the loopback
+//!   predicate the API applies to the debug endpoints, the warning a [`ResolvedConfig`] carries
+//!   while any key is on, and the predicate for a manifest signed by the CI test key;
 //! - the validation of RFC-0054 §8 (PROD-E1-T03): [`load_and_validate`] runs phases 1–5 and keeps
 //!   every error, each a [`Problem`] with its [`Code`], and [`diagnostic::render`] prints them in
-//!   §8's format without ever showing a secret.
+//!   §8's format without ever showing a secret;
+//! - an instance's typed section from its policy (§5.4, PROD-E1-T24): [`InstanceSection`] builds
+//!   a domain crate's section from the `<prefix>` table of the policy, or from
+//!   `InstancePolicy::domain`, with the computed defaults the caller supplies, checks it as a
+//!   policy table is checked at load, and lists what changed between two builds with each key's
+//!   reload class;
+//! - per-request overrides (§7, PROD-E1-T10): [`RequestOverrides`] and [`resolve_request`], which
+//!   resolves a request against one candidate instance's policy, enforcing D3: approximate only
+//!   when the request, the instance and the cluster all opt in.
 //!
 //! The cluster and instance scopes, and reload, come in later tasks.
 //!
@@ -59,7 +70,8 @@
 //!
 //! ```
 //! use serde::Deserialize;
-//! use syntropy_config::{ConfigSection, Duration, Reserve};
+//! use syntropy_config::{ConfigSection, Duration};
+//! use syntropy_core::policy::Reserve;
 //!
 //! /// Resource settings.
 //! #[derive(Deserialize, ConfigSection)]
@@ -68,6 +80,7 @@
 //!     /// RAM never pinned or allocated by Syntropy.
 //!     #[config(reload = Hot, default = computed("by mode: max(6GiB, 10% of RAM) for personal"),
 //!              min = "1GiB")]
+//!     #[serde(with = "syntropy_config::form")]
 //!     ram_headroom: Reserve,
 //!     /// How long a probe waits.
 //!     #[config(reload = Node, default = "7s")]
@@ -102,7 +115,10 @@
 //! reserves for keyholders: cluster keys under `security.*`, `invite.*`, `coordinator.*`,
 //! `swim.*` and `update.*`, `cluster.lan_admission`, `cluster_aliases`, `network_scope` and
 //! `allow_approximate`, and the instance keys `fidelity`, `default_fidelity`, `pin`,
-//! `tensor_override` and `approximate.*`.
+//! `tensor_override` and `approximate.*`. So is a key of `syntropy-core`'s `Fraction`,
+//! `Reserve`, `NodeSelector`, `DeviceSelector`, `TierSelector` or `LayerRange`, or an `Option`
+//! or `Vec` of one, without `#[serde(with = "syntropy_config::form")]`: their own serde form is
+//! the record encoding, which reads none of §3's text forms.
 
 #![forbid(unsafe_code)]
 
@@ -111,14 +127,17 @@ extern crate self as syntropy_config;
 
 mod code;
 pub mod command;
+mod debug;
 mod default;
 pub mod diagnostic;
 mod discovery;
 mod env;
 mod holds_secret;
+mod instance;
 mod origin;
 mod registry;
 mod render;
+mod request;
 mod resolve;
 mod schema;
 mod text;
@@ -126,6 +145,7 @@ mod validate;
 pub mod value;
 
 pub use code::{Code, suggest};
+pub use debug::{DebugApi, DebugSection, ManifestSignerNotAllowed, Peer, is_loopback};
 pub use diagnostic::{Problem, Severity};
 pub use discovery::{
     CONFIG_FLAG, CONFIG_VAR, Dirs, Explicit, HOME_VAR, Locations, Mode, Os, Runtime, Scan, locate,
@@ -133,8 +153,13 @@ pub use discovery::{
 };
 pub use env::{API_KEY_VAR, Env, HF_TOKEN_VAR, HOST_VAR, OTHER_KNOWN, path_for, var_for};
 pub use holds_secret::HoldsSecret;
+pub use instance::{Change, InstanceSection, InstanceSectionError};
 pub use origin::Origin;
 pub use registry::{Registry, RegistryError};
+pub use request::{
+    BenchControls, EffectiveRequestPolicy, RequestError, RequestOverrides, RequestWarning,
+    SessionBinding, knob_names, priority_for_service_tier, resolve_request,
+};
 pub use resolve::{
     ConfigFile, Flags, Layers, Proposal, Rejected, Resolved, ResolvedConfig, SectionError,
     SharedConfig, load,
@@ -154,9 +179,8 @@ pub use validate::{
     Rule, RuleInput, config_version_problem, load_and_validate, validate,
 };
 pub use value::{
-    ByteSize, DeviceApi, DeviceSelector, Duration, Fraction, InRange, LayerRange, ModelSelector,
-    NodeSelector, Rate, Regex, Reserve, Secret, SecretSource, TierSelector, ValueError,
-    ValueErrorKind, never,
+    ByteSize, Duration, InRange, ModelSelector, Rate, Regex, Secret, SecretSource, ValueError,
+    ValueErrorKind, check_node_scope, form, never,
 };
 
 /// Items the derive's generated code calls. Not a public interface.
@@ -166,7 +190,7 @@ pub mod __private {
 
     use crate::default::UnsetDeserializer;
     use crate::schema::{DefaultSpec, DefaultValue, KeyError, KeySchema};
-    use crate::value::{InRange, ValueError, ValueErrorKind, capture_kind};
+    use crate::value::{InRange, ValueError, ValueErrorKind, capture_kind, uncaptured_kind};
 
     /// The TOML value type the generated `check` functions take, so a crate that declares a
     /// section needs no `toml` dependency of its own.
@@ -186,13 +210,58 @@ pub mod __private {
         check_value_by(value, T::deserialize)
     }
 
-    /// Checks that `value` deserializes through `de`, the field's `serde(with)` path.
+    /// A key's comparison of two values, for `KeySchema::same`: each is read through `.0`,
+    /// the field's deserializer. The derive calls `(&Same::<T>(..)).same(a, b)` with both
+    /// traits below in scope. Method lookup takes [`SameByValue`] when `T` implements
+    /// `PartialEq`, and otherwise falls back to [`SameAsWritten`], which needs one more
+    /// auto-reference.
+    pub struct Same<T>(pub FromToml<T>);
+
+    impl<T: DeserializeOwned> Same<T> {
+        /// Reads through `T`'s own `Deserialize`.
+        pub fn deserialized() -> Self {
+            Same(T::deserialize)
+        }
+    }
+
+    /// The comparison for a field type with `PartialEq`.
+    pub trait SameByValue {
+        /// Whether `a` and `b` read as equal values; as written when either does not read.
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool;
+    }
+
+    impl<T: PartialEq> SameByValue for Same<T> {
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool {
+            match ((self.0)(a.clone()), (self.0)(b.clone())) {
+                (Ok(read_a), Ok(read_b)) => read_a == read_b,
+                _ => a == b,
+            }
+        }
+    }
+
+    /// The comparison for a field type without `PartialEq`, such as a `Secret`.
+    pub trait SameAsWritten {
+        /// Whether `a` and `b` are written alike.
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool;
+    }
+
+    impl<T> SameAsWritten for &Same<T> {
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool {
+            a == b
+        }
+    }
+
+    /// Checks that `value` deserializes through `de`, the field's `serde(with)` path. A
+    /// failure keeps the kind this crate's types recorded; one they did not record is
+    /// `out_of_range` for an integer outside the field's integer type and `wrong_type`
+    /// otherwise.
     pub fn check_value_by<T>(value: &toml::Value, de: FromToml<T>) -> Result<T, ValueError> {
         let (result, kind) = capture_kind(|| de(value.clone()));
         result.map_err(|e| {
+            let message = e.message();
             ValueError::new(
-                kind.unwrap_or(ValueErrorKind::WrongType),
-                e.message().to_owned(),
+                kind.unwrap_or_else(|| uncaptured_kind(message)),
+                message.to_owned(),
             )
         })
     }

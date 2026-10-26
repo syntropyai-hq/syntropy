@@ -122,6 +122,15 @@ pub fn run(manifest: &Path, log: &mut dyn Write) -> io::Result<bool> {
             None
         }
     };
+    // The table must be RFC-0001 §4.1's, which `lint` checks here so that a change to either is
+    // caught on a plan-only PR too, which runs `lint` alone (RFC-0062 §2.2).
+    if let Some(layers) = &layers {
+        findings.extend(
+            layers::matches_rfc_0001(layers, &graph.root)
+                .into_iter()
+                .map(|problem| Finding::new(Rule::Table, problem)),
+        );
+    }
     findings.extend(rules::check(&graph, layers.as_ref()));
     findings.extend(crate_roots::check(&graph));
     findings.extend(release::default_features(&graph));
@@ -129,6 +138,7 @@ pub fn run(manifest: &Path, log: &mut dyn Write) -> io::Result<bool> {
     for (number, outcome) in [
         (7, release::rule_7(manifest, &graph)),
         (10, release::rule_10(manifest, &graph)),
+        (10, release::fault_point_symbols(manifest, &graph)),
     ] {
         match outcome {
             Outcome::Ran(found) => findings.extend(found),

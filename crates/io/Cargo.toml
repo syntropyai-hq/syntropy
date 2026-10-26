@@ -7,3 +7,30 @@ publish.workspace = true
 
 [dependencies]
 syntropy-core = { path = "../core" }
+# The OS CSPRNG behind `os::OsEntropy` (ADR-0022 decisions 3 and 4). RFC-0001 §4.2 rule 6 allows
+# it as a direct dependency of this crate only.
+getrandom = { version = "0.4.3", default-features = false }
+# The rings between producers and the I/O thread (RFC-0021 §3.1; ADR-0012 item 4).
+syntropy-spsc = { path = "../spsc" }
+
+[dev-dependencies]
+# Property tests of the alignment contract (RFC-0021 Testing, "Alignment (§6)").
+proptest.workspace = true
+# `CountingAlloc`, for the test that the I/O loop allocates nothing in steady state.
+syntropy-testkit = { path = "../testkit" }
+
+# The clocks of `os::SystemClock` (ADR-0022 decision 4: binding crates for the clock calls), and
+# on macOS the `sysctlbyname`, `host_statistics64` and `getrlimit` calls of `os::macos_host`
+# (E1 host enumeration, PLC-E1-T03; OQ-PRC-26) and the `mmap`, `madvise` and `mincore` calls of
+# `MacMapped` (RFC-0021 §5).
+[target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+# `Win32_System_Threading`, `Win32_System_Kernel`, `Win32_System_SystemInformation` and
+# `Win32_Foundation` for hot-thread placement (`os::thread`). `Win32_Storage_FileSystem` and
+# `Win32_System_IO` for the IoRing and IOCP engines (`windows`, RFC-0021 §7), which also wait on
+# events through `Win32_System_Threading`. `Win32_System_Memory`, `Win32_System_Power` and
+# `Wdk_System_SystemServices` (for `RtlGetVersion`) for E1 host enumeration (`os::windows_host`,
+# PLC-E1-T03).
+windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Power", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }

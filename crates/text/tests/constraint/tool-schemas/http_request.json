@@ -1,0 +1,12 @@
+{
+  "title": "http_request",
+  "type": "object",
+  "properties": {
+    "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE"] },
+    "url": { "type": "string", "pattern": "^https?://[a-z0-9.-]+(/[A-Za-z0-9._~/-]*)?$" },
+    "headers": { "type": "object", "additionalProperties": { "type": "string", "maxLength": 30 } },
+    "body": { "type": ["string", "null"] }
+  },
+  "required": ["method", "url"],
+  "additionalProperties": false
+}

@@ -2,16 +2,20 @@
 
 //! The value types of RFC-0054 §3: units, selectors, regular expressions and secrets.
 //!
-//! Every type parses the forms §3 accepts, through [`FromStr`](std::str::FromStr) and serde,
-//! and prints one canonical form through [`Display`](std::fmt::Display). The printed form parses
-//! back to the same value, so any value `config show` prints can be pasted back into a file
-//! (§3, last paragraph). Secrets are the exception: they never print.
+//! Every type parses the forms §3 accepts and prints one canonical form. The printed form
+//! parses back to the same value, so any value `config show` prints can be pasted back into a
+//! file (§3, last paragraph). Secrets are the exception: they never print.
+//!
+//! This crate's own types do it through [`FromStr`](std::str::FromStr), serde and
+//! [`Display`](std::fmt::Display). The policy value types are `syntropy-core`'s (OQ-PRD-27 (a)),
+//! and [`form`] reads and prints them.
 
 use std::cell::Cell;
 use std::fmt;
 
 mod bytes;
 mod duration;
+pub mod form;
 mod fraction;
 mod range;
 mod rate;
@@ -22,17 +26,13 @@ mod selector;
 
 pub use self::bytes::ByteSize;
 pub use self::duration::{Duration, never};
-pub use self::fraction::Fraction;
 pub use self::range::InRange;
 pub use self::rate::Rate;
 pub use self::regex::{
     MAX_PATTERN_LEN as REGEX_MAX_PATTERN_LEN, Regex, SIZE_LIMIT as REGEX_SIZE_LIMIT,
 };
-pub use self::reserve::Reserve;
 pub use self::secret::{REDACTED, Secret, SecretSource};
-pub use self::selector::{
-    DeviceApi, DeviceSelector, LayerRange, MIN_ID_PREFIX, ModelSelector, NodeSelector, TierSelector,
-};
+pub use self::selector::{MIN_ID_PREFIX, ModelSelector, check_node_scope};
 
 /// Why a value was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -129,6 +129,18 @@ pub(crate) fn serde_error<E: serde::de::Error>(error: ValueError) -> E {
     E::custom(error)
 }
 
+/// The kind of a serde error that carries none of this crate's kinds ([`capture_kind`] saw
+/// none). serde rejects an integer that does not fit the field's integer type, such as `-1` or
+/// `2^32` for a `u32`, as ``invalid value: integer `<n>`, expected <type>``: that is a value
+/// outside the key's range, RFC-0054 §8's `out_of_range`. Any other failure is `wrong_type`.
+pub(crate) fn uncaptured_kind(message: &str) -> ValueErrorKind {
+    if message.starts_with("invalid value: integer `") {
+        ValueErrorKind::OutOfRange
+    } else {
+        ValueErrorKind::WrongType
+    }
+}
+
 /// Runs `f` and returns what it returned, with the kind of the first `ValueError` it turned
 /// into a serde error, if any. Nested calls each see only their own errors.
 pub(crate) fn capture_kind<T>(f: impl FnOnce() -> T) -> (T, Option<ValueErrorKind>) {
@@ -189,4 +201,35 @@ pub(crate) fn split_number(s: &str) -> (&str, &str) {
         .find(|c: char| !(c.is_ascii_digit() || c == '.'))
         .unwrap_or(s.len());
     (&s[..end], s[end..].trim_start())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`uncaptured_kind`] relies on serde's wording for an integer outside the target type;
+    /// this fails first if a serde release changes it.
+    #[test]
+    fn serde_reports_an_integer_outside_its_type_as_an_invalid_value() {
+        let message = |value: toml::Value| match value.try_into::<u32>() {
+            Err(e) => e.message().to_owned(),
+            Ok(n) => panic!("{n} fits a u32"),
+        };
+        for n in [-1, 1 << 32] {
+            let text = message(toml::Value::Integer(n));
+            assert!(
+                text.starts_with(&format!("invalid value: integer `{n}`, expected u32")),
+                "{text}"
+            );
+            assert_eq!(uncaptured_kind(&text), ValueErrorKind::OutOfRange);
+        }
+        for value in [
+            toml::Value::String("x".into()),
+            toml::Value::Float(1.5),
+            toml::Value::Boolean(true),
+        ] {
+            let text = message(value);
+            assert_eq!(uncaptured_kind(&text), ValueErrorKind::WrongType, "{text}");
+        }
+    }
 }

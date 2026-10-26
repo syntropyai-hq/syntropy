@@ -126,6 +126,7 @@ pub struct DioAlign { pub mem: u32, pub offset: u32 }
 4. `Wait::Until(Nanos)` is a relative timeout: block until a completion arrives or that much time passes.
 5. `BufIndex` is 16 bits, the narrower of the native indexes (io_uring's `buf_index`; I/O rings take 32), so every value is valid on every engine.
 6. `CancelOutcome::Cancelled` still produces a completion, carrying `IO_CANCELLED`. `TooLate` completes normally and the I/O thread discards it as stale.
+7. *(2026-10-22, TIER-E5-T02.)* Two safe methods let the I/O thread chunk and coalesce without new `unsafe`. `IoDest::split_at(at)` gives two disjoint halves of the range. `IoDest::join(next)` joins two `Fixed` ranges of one buffer when `next` starts where the first ends. Each result names only bytes its inputs already vouched for. `Raw` ranges never join, because two adjacent ones may lie in different allocations.
 
 ### 3. Threads, rings, priorities and queue depth
 
@@ -147,6 +148,14 @@ loop:
 ```
 
 Producers signal a parked I/O thread through one doorbell word per ring (ADR-0012 item 5). A dispatcher never waits for the I/O thread: it posts a request and carries on, and finds the completion when it next polls its ring.
+
+*Note 2026-10-22 (TIER-E5-T02, as built):* `syntropy_io::IoLoop` runs this loop, and each producer holds an `IoClient`. The details below are choices this section leaves open:
+- **Doorbells.** Each request ring has a doorbell word of its own, on its own cache line. To park, the loop sets every word, issues a sequentially consistent fence and drains the rings once more. A producer issues the same fence after its push and unparks the loop if its word is set. `syntropy-spsc`'s own wait parks a consumer on one ring, so the many-ring park lives in `io`.
+- **Draining.** Each visit drains one producer's ring in full, starting at a different producer each pass. That keeps the rows a token needs, posted together, adjacent in their queue, so they can coalesce. A producer's requests in the loop, plus its completions it hasn't taken yet, never exceed its completion ring's capacity, so a completion always has a slot. The producer takes completions only through `IoClient`, which counts each one and rings the doorbell, so a loop parked on a full completion ring wakes when the producer frees a slot. A producer that doesn't take its completions is not drained.
+- **Coalescing.** A read joins the read at the back of its queue when the file bytes and the `Fixed` destination bytes both continue that read, and the destination of the read already queued is exactly as long as its extent. A coalesced read holds at most the chunk size and 16 requests. A short transfer credits the requests in extent order.
+- **Writes** are submitted whole, never chunked or coalesced, because their `SyncMode` covers the whole extent.
+- **An extent longer than its destination** completes at intake with `IO_MISALIGNED` and never reaches the engine. §16 gives that producer bug no code of its own (open, for the maintainers).
+- Not in this task: §3.2's depth rules beyond "highest class first", and the `useful_until` drops, are TIER-E5-T07. The one retry of a short transfer is TIER-E5-T15, so a short transfer completes with `IO_SHORT_READ` for now.
 
 #### 3.2 Depth and priority rules
 
@@ -196,13 +205,34 @@ In-flight I/O cannot be pre-empted, so the cap on prefetch bytes in flight is wh
 - **Direct I/O.** Files are opened `O_DIRECT`. If `open` or the first aligned read returns `EINVAL` (tmpfs, some FUSE filesystems, WSL2's `/mnt/c` drvfs mounts), the file is opened buffered, every read is followed by `posix_fadvise(POSIX_FADV_DONTNEED)` on its range, and the volume is flagged `buffered` in the resource graph so the solver and `doctor` see it. On WSL2, `doctor` tells the user to keep the model store on the Linux filesystem.
 - **Cancellation** removes queued chunks; a chunk already in a `pread` completes and is discarded.
 
+*Note 2026-10-22 (TIER-E5-T03, as built):* `syntropy_io::pool::PreadPool` (Linux and Windows) and `MacNoCache` (§5) share one pool. Choices this section leaves open:
+- **Depth.** The engine sends an operation only to a worker with nothing outstanding, so `max_depth` is the thread count and each worker's ring holds at most one operation, plus file handles sent at `open`.
+- **tmpfs.** Since Linux 6.6 tmpfs accepts `O_DIRECT`, but its pages are the page cache. A file on tmpfs or ramfs (`fstatfs`) is therefore opened buffered and flagged on every kernel, before the `EINVAL` checks on `open` and on the first aligned read (one 4 KiB block at offset 0, read at `open`).
+- **Windows.** Synchronous I/O on one handle is serialised, so each worker opens the file itself with `FILE_FLAG_NO_BUFFERING` and issues positional `ReadFile`/`WriteFile`. The buffered fallback there is flagged only; Windows has no per-range cache drop.
+- **The flag.** A buffered file sets `EngineCaps::direct = false` for the engine, which the probe copies into `StorageCapsExt::buffered`; `buffered_reason()` returns the `IO_DIRECT_REFUSED` error with its OS error.
+- **Errors.** A transfer's `EINVAL` (`ERROR_INVALID_PARAMETER`) is `IO_MISALIGNED`, `ENOSPC`/`EDQUOT` (disk-full on Windows) `IO_NO_SPACE`, anything else `IO_SHORT_READ`. A file that cannot be opened has no code in §16; it is `IO_EXTENT_BAD` with the OS error (open, for the maintainers). A `Fixed` destination outside the registered buffers, or an unknown file index, completes with `IO_MISALIGNED` and is never touched.
+- **Cancellation** marks an operation no worker has started, which then completes with `IO_CANCELLED` and no system call; one a worker has started is `TooLate`.
+- **Alignment.** Each backend calls TIER-E5-T05's `align::query` when it opens a file, and `IoEngine::file_dio` returns that file's alignment. `EngineCaps::dio` stays zero (the 4096-byte floor), since the alignment is per file (§6).
+- Not in this task: pinning workers to the I/O cores is the runner's.
+
 ### 5. macOS engines
 
 ADR-0013 defines two engines and chooses between them per volume by measurement (§10).
 
 **`MacNoCache`.** Files are opened read-only and `fcntl(F_NOCACHE, 1)` is set before the first read, because `F_NOCACHE` does not purge pages already cached; `fcntl(F_RDAHEAD, 0)` turns off read-ahead. A pool of `io.pool_threads_macos` (8 by default) threads issues `preadv` with 16 KiB-aligned destinations in the `Unified` arena, in requests of at least 32 KiB; smaller rows are coalesced up to that size. On Apple silicon the destination is GPU-visible as allocated, so a read is the only copy (RFC-0020 §9).
 
+*Note 2026-10-22 (TIER-E5-T03, as built):* `MacNoCache` sets `F_NOCACHE` and then `F_RDAHEAD` in `open`, before any worker holds the file. "Requests of at least 32 KiB" is met by gathering: reads in one submission batch that continue one another in the file are issued as one `preadv` of up to 16 destinations, until it holds at least 32 KiB. A read that nothing continues is issued at its own size. A cancel of a gathered read is `TooLate`. A refused `F_NOCACHE` leaves the file buffered and flags the volume, as §4.2 does for `O_DIRECT`; a refused `F_RDAHEAD` is ignored.
+
 **`MacMapped`.** The pack file is mapped read-only (`mmap(PROT_READ, MAP_SHARED)`) with `madvise(MADV_RANDOM)`. A read is `madvise(MADV_WILLNEED)` on the extent when it is requested, followed by a copy from the mapping into the destination slot by a pool thread once the pages are resident (`mincore` polled at 50 µs). After the copy, the mapping's range is released with `madvise(MADV_DONTNEED)`; the clean file pages that remain belong to the OS's cache, are reclaimable without compression, and are never counted as residency. This keeps residency owned by the tier manager (ADR-0007 item 6): `MacMapped` is a read mechanism, not a cache. Its extra cost is one memory copy per byte read, which the A/B includes.
+
+*Note 2026-10-23 (TIER-E5-T09, as built):* `syntropy_io::pool::MacMapped` runs on the pool of §4.2 with `io.pool_threads_macos` workers. Choices this section leaves open:
+- **The mapping.** `open` for reading maps the whole file at its length then, and marks it `MADV_RANDOM`. A read covers the pages of its extent: `MADV_WILLNEED`, `mincore` polled every 50 µs, the copy, then `MADV_DONTNEED` on the same pages, which may include a page a concurrent read shares at an edge. That read faults the page in again; its bytes stay right.
+- **The wait is bounded** at 20 ms [target] (`RESIDENT_WAIT_MAX`, a chosen budget). Past it, or if `mincore` fails, the read is a `pread` of the file, which returns an I/O error as §16 expects. A copy that faults a page in and meets an I/O error raises `SIGBUS` instead.
+- **Ends of file.** A read from or past the mapped length returns 0 bytes; one that crosses it returns the bytes before it, as `pread` does. Committed packs do not change (RFC-0041), so the length holds. If a file is truncated while mapped, `mincore` reports the lost pages absent, the wait times out, and the `pread` after it returns a short count or 0. Only a truncation between a `mincore` that saw the pages and the copy raises `SIGBUS`.
+- **Writes** go through `F_NOCACHE` as in `MacNoCache` (§13). A file opened for writing is not mapped, since it grows, and is read with `pread` on that handle. An empty file is not mapped either, and reads of it return 0 bytes.
+- **A refused `mmap`** fails `open` with `IO_ENGINE_UNAVAILABLE` and the OS error, so `MacNoCache` reads that file. A mapped file is never the flagged buffered mode: `EngineCaps::direct` changes only for a file opened for writing whose `F_NOCACHE` is refused.
+- **Residency.** A completion reports only the bytes copied into the slot, and the engine has no other report. RFC-0020 §3 keys a home's `Loading` state to the read's `IoTicket`, so the residency map (TIER-E1-T04) learns of a read only from its completion and never records a mapped page. The unit check is the engine's half: every range advised in is released once its read completes.
+- Contiguous reads are not gathered, since the copy costs the same per byte at any size.
 
 ### 6. Alignment rules and the pack contract
 
@@ -232,6 +262,12 @@ ADR-0013 defines two engines and chooses between them per volume by measurement 
 
 **Checks.** Every request is checked against `A` and `M` before submission. A misaligned request is a bug (`IO_MISALIGNED`, `Internal`) and is rejected before it reaches the kernel, never silently bounced.
 
+*Note 2026-10-22 (TIER-E5-T05, as built):* `syntropy_io::align` holds this section. The details below are choices it leaves open:
+- **Query.** `align::query(file, path)` returns `Aligned { dio, source }`, `Unsupported` (`statx` reports zero for both values, so the file goes to buffered mode) or `Unknown` (nothing answered; the 4 KiB floor applies). On Linux `statx` is called through `syscall`, and the fallback reads `/sys/dev/block/<major>:<minor>/queue/logical_block_size`, or the parent device's for a partition. On Windows the fallback opens the file's volume with no access rights for `StorageAccessAlignmentProperty` and uses its physical sector size. Engines record `query(..).dio()` per file at `open` and return it from `IoEngine::file_dio`; the pool engines of TIER-E5-T03 report nothing per file until they call it, so the floor applies to them.
+- **`A` and `M`.** `RequestAlign::from_dio` takes the least common multiple where the table takes the maximum. The two agree for powers of two, which is every value an OS reports; for any other value the multiple keeps a request aligned to every part.
+- **The check** runs in `IoLoop` at intake and again as each chunk joins the batch, so a failing request never reaches the engine; `IoLoop::misaligned()` counts the rejections. It uses the request's own file's alignment, read at each request: `IoEngine::file_dio(file)`, which an engine records at `open`, or else the engine's current `EngineCaps::dio`. A file opened after the loop was built is therefore checked against its volume. A `Fixed` destination is checked by its offset inside the registered buffer; the buffer's start is the tier manager's guarantee. Each request's chunks are `io.chunk` rounded down to a multiple of its file's `A` and `M`, so chunks of an aligned request stay aligned.
+- **The pack rule** is `RequestAlign::pack_extent`, which RFC-0041's pack builder is to call. Rows and read-around use `RequestAlign::window`. `ReadAroundStats` counts each volume's payload and window bytes and writes their ratio into `StorageCapsExt::read_around_efficiency`. Copying the payload out of the `IoStaging` slot, and calling `report` when the profile is built, belong to the read-around consumer (COMP-E11-T08) and the probe (PLC-E2-T08, TIER-E5-T10): the loop holds no pointer to a `Fixed` buffer.
+
 ### 7. Windows engines
 
 **`IoRingEngine`** (Windows 11, build 22000 and later):
@@ -248,6 +284,16 @@ ADR-0013 defines two engines and chooses between them per volume by measurement 
 - Cancellation: `CancelIoEx` on the request's `OVERLAPPED`.
 
 Unbuffered I/O on Windows requires sector-aligned offsets, lengths and buffers; §6 provides them.
+
+*Note 2026-10-23 (TIER-E5-T08, as built):* `syntropy_io::windows` holds both engines. Choices this section leaves open:
+- **Loading.** The IoRing functions are resolved at run time from `api-ms-win-core-ioring-l1-1-0.dll`, and `BuildIoRingWriteFile` and `BuildIoRingFlushFile` from `kernel32.dll`. A binary that links the crate therefore starts on a Windows without them, where `IoRingEngine::new` returns `IO_ENGINE_UNAVAILABLE` and `IocpEngine` is used.
+- **Files.** Both engines open files with `FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED` and `FILE_SHARE_READ | FILE_SHARE_WRITE`, so the IOCP engine that takes a ring's writes can open the same file. A file system that refuses unbuffered opens (`ERROR_INVALID_PARAMETER`) gets a buffered handle, and `EngineCaps::direct` is false.
+- **Registration.** Files and `IO_FIXED` regions are registered while nothing is in flight, the whole table each time; one asked for while operations are in flight is made by the first `reap` that finds the ring idle. `IORING_BUFFER_INFO`'s length is 32 bits, so a larger region is registered in 2 GiB pieces, and an operation that crosses a piece's end uses its raw address. A registration that fails leaves raw handles and addresses (`IO_REGISTER_FAILED` continues unregistered).
+- **Writes.** The ring writes when `IsIoRingOpSupported` reports both write and flush. A write with a sync mode is followed by `BuildIoRingFlushFile` (`FILE_FLUSH_DATA` for `DataSync`) and completes when the flush does. Otherwise writes go to an `IocpEngine` the ring engine owns, which flushes with `FlushFileBuffers` on the I/O thread when the write's completion is reaped. That flush blocks the I/O thread, so every completion behind it, demand reads included, waits for it; only `Background` pack and session writes ask for a sync (§13).
+- **Depth.** The ring holds half its completion entries in flight, 256, since each operation may also have a cancellation's completion queued. One call moves at most 1 GiB; a longer operation completes short (§16).
+- **Waiting.** `reap` blocks on the ring's completion event or in `GetQueuedCompletionStatusEx` only for whole milliseconds. A shorter wait polls, because a Windows timer wait rounds up to the timer tick.
+- **Cancellation.** Both engines ask the OS (`BuildIoRingCancelRequest`, `CancelIoEx`) and return `CancelOutcome::TooLate`: the operation is in the kernel, and completes normally or with `IO_CANCELLED`.
+- **Helper submitters.** `IocpOptions::helpers` threads issue the calls, taking slots over SPSC rings in turn; a call that fails at once is posted to the port with `PostQueuedCompletionStatus`. The engine takes the count from its caller; deciding that one thread is submission-bound is §10's selection.
 
 ### 8. Pinned staging to GPU: the DMA pipelines
 
@@ -506,6 +552,8 @@ All figures are **[estimate]** with derivation or **[target]**; none is a Syntro
 | Integrity | flip bytes in a pack extent on disk; the scrubber or the load sample finds it; the extent is rebuilt and never served | integration, chaos |
 | Crash safety of writes | kill the runner mid-pack-build and mid-session-save; no torn pack or blob is ever accepted (atomic rename) | chaos (RFC-0060) |
 | Direct-path capability report (§9) | on a CUDA Linux CI host without `libcufile`, a fixture with a fake `libcufile` reporting compatibility mode, and a Windows host with and without the DirectStorage runtime: `direct_paths` matches each case, no read goes through either API, and `doctor` prints the result | integration |
+
+*Note 2026-10-23 (TIER-E5-T33, as built):* the first row's suite is in two parts. `syntropy_io::conformance` is the harness: `check` takes a constructor for any `IoEngine` and a file, builds and drives the engine on one thread of its own (a ring set up with `IORING_SETUP_SINGLE_ISSUER` takes submissions only from its creator, §4.1), reads random aligned extents into fixed and raw destinations, and compares each with a buffered `std::fs` read of the same extent. That read, a seek and a read, goes through the page cache as `pread` does, and works on every OS, Windows included, which has no `pread`. When the engine writes, `check` also writes random aligned extents to a scratch file and reads them back, through `std::fs` and through the engine. It also checks that each operation completes once, with its own ticket and its whole length (one round gives every operation a different length, so swapped tickets show); that it touches no memory outside its destination; that no write changes the file past its extent; and that no engine call outlasts the run's timeout. A run is fixed by a seed, which it prints, and `SYNTROPY_IO_CONFORMANCE_SEED` repeats it. Each engine task runs the harness over a file that `write_test_file` generates (TIER-E5-T33), and TIER-E5-T04 runs it over the nano fixture files against every engine available on the CI host.
 
 ## Rollout / milestones
 

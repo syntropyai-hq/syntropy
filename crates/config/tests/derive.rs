@@ -10,9 +10,10 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use syntropy_config::{
-    Authority, ByteSize, ConfigSection, DefaultSpec, DefaultValue, Deprecated, Duration, Fraction,
-    Rate, Registry, Reload, Reserve, Scope, ValueErrorKind, never,
+    Authority, ByteSize, ConfigSection, DefaultSpec, DefaultValue, Deprecated, Duration, Rate,
+    Registry, Reload, Scope, ValueErrorKind, never,
 };
+use syntropy_core::policy::{Fraction, NodeSelector, Reserve};
 
 /// Example node settings.
 ///
@@ -34,6 +35,7 @@ struct ExampleSection {
     threads: u32,
     /// A share.
     #[config(reload = Hot, default = 0.015625)]
+    #[serde(with = "syntropy_config::form")]
     sample: Fraction,
     /// A switch.
     #[config(reload = Hot, default = false)]
@@ -49,6 +51,7 @@ struct ExampleSection {
     limit: Option<u32>,
     /// Memory kept back.
     #[config(reload = Hot, default = computed("max(6GiB, 10% of RAM)"), min = "1GiB")]
+    #[serde(with = "syntropy_config::form")]
     headroom: Reserve,
     /// A negative offset.
     #[config(reload = Hot, default = -3)]
@@ -222,6 +225,36 @@ struct SecretsSection {
     /// No secret anywhere.
     #[config(reload = Hot, default = {})]
     labels: BTreeMap<String, Vec<String>>,
+}
+
+/// `KeySchema::same`, the derive's value comparison. A field type with `PartialEq` compares
+/// the values it reads, through its `serde(with)` path where it has one. A type without
+/// `PartialEq`, such as `Secret<T>`, compares them as written. The derive picks the arm by
+/// method lookup (autoref specialization), so this tests both.
+#[test]
+fn the_generated_same_compares_by_value_or_as_written() {
+    use syntropy_config::Value;
+    let text = |s: &str| Value::String(s.to_owned());
+    // By value: a size, a duration read through `serde(with = "never")`, and a fraction read
+    // through `serde(with = "syntropy_config::form")`.
+    let size = key("example.size");
+    assert!((size.same)(&text("1GiB"), &text("1024MiB")));
+    assert!(!(size.same)(&text("1GiB"), &text("2GiB")));
+    let keep = key("example.keep");
+    assert!((keep.same)(&text("2m"), &text("120s")));
+    assert!((keep.same)(&text("never"), &text("never")));
+    assert!(!(keep.same)(&text("never"), &text("2m")));
+    let sample = key("example.sample");
+    assert!((sample.same)(&text("25%"), &Value::Float(0.25)));
+    assert!(!(sample.same)(&text("25%"), &text("26%")));
+    // A value that does not read compares as written.
+    assert!(!(size.same)(&text("1 parsec"), &text("1GiB")));
+    assert!((size.same)(&text("1 parsec"), &text("1 parsec")));
+    // As written: `Secret<String>` has no `PartialEq`, and a section holding one still derives.
+    let token = SecretsSection::SCHEMA.key("token").unwrap();
+    assert!(token.holds_secret);
+    assert!((token.same)(&text("a"), &text("a")));
+    assert!(!(token.same)(&text("a"), &text("b")));
 }
 
 #[test]
@@ -409,7 +442,8 @@ struct CheckedSection {
     keep: Option<Duration>,
     /// A node.
     #[config(reload = Hot, default = "*")]
-    node: syntropy_config::NodeSelector,
+    #[serde(with = "syntropy_config::form")]
+    node: NodeSelector,
     /// A pattern.
     #[config(reload = Hot, default = "blk\\..*")]
     pattern: syntropy_config::Regex,
@@ -563,5 +597,38 @@ fn suggests_the_closest_key() {
         suggest(&REGISTRY, "example.size"),
         None,
         "an exact key needs no suggestion"
+    );
+}
+
+/// A key whose type is too long for one line of the compiler's token printer. The type is
+/// written out, since an alias would record the alias's short name and test nothing.
+#[allow(clippy::type_complexity)]
+#[derive(Debug, Deserialize, ConfigSection)]
+#[config(section = "long_type", scope = Node, owner = "RFC-0054")]
+struct LongTypeSection {
+    /// Nested maps with a long type name.
+    #[config(reload = Hot, default = {})]
+    nested: std::collections::BTreeMap<
+        std::string::String,
+        std::collections::BTreeMap<
+            std::string::String,
+            std::vec::Vec<
+                std::option::Option<std::collections::BTreeMap<std::string::String, u64>>,
+            >,
+        >,
+    >,
+}
+
+/// A key's recorded type is one line however long it is, since messages quote it
+/// (`does not fit its type, …`), and a line break there would split an error's header.
+#[test]
+fn a_long_type_is_recorded_on_one_line() {
+    let key = &LongTypeSection::SCHEMA.keys[0];
+    assert!(!key.ty.contains('\n'), "{:?}", key.ty);
+    assert!(!key.ty.contains("  "), "{:?}", key.ty);
+    assert_eq!(
+        key.ty,
+        "std::collections::BTreeMap<std::string::String, std::collections::BTreeMap<std::string::String, \
+         std::vec::Vec<std::option::Option<std::collections::BTreeMap<std::string::String, u64>>>>>"
     );
 }

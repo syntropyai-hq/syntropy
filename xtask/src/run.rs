@@ -293,7 +293,10 @@ mod tests {
                 "toolchain",
                 "fmt",
                 "clippy",
+                "rustdoc",
+                "determinism",
                 "check-deps",
+                "properties",
                 "codeowners",
                 "agent-instructions",
                 "rigs",
@@ -303,7 +306,12 @@ mod tests {
                 "spdx",
                 "third-party",
                 "notices",
+                "workflows",
+                "actionlint",
                 "scenarios",
+                "sim-presets",
+                "jobs",
+                "plan",
             ]
         );
         for pending in lint.pending {

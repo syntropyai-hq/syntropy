@@ -414,6 +414,11 @@ pub struct Rejected {
 pub struct ResolvedConfig {
     /// Every node and cluster key of the registry, by path.
     values: BTreeMap<&'static str, Resolved>,
+    /// Every instance key of the registry with its schema default, by path. A node's layers
+    /// never set one (§2.2 Rule 3), so this is what an instance gets when no policy table and
+    /// no explicit value sets the key. Request-scope keys are kept nowhere: a request sets
+    /// them.
+    instance: BTreeMap<&'static str, Resolved>,
     proposals: Vec<Proposal>,
     files: Vec<PathBuf>,
     warnings: Vec<Problem>,
@@ -464,7 +469,14 @@ impl ResolvedConfig {
             });
         }
         let mut values = BTreeMap::new();
+        let mut instance = BTreeMap::new();
         for key in registry.keys() {
+            if key.scope == Scope::Instance {
+                // A computed instance default depends on the instance, so it stays unset here
+                // and prints its rule.
+                instance.insert(key.path, default_of(key, &|_| None));
+                continue;
+            }
             if !matches!(key.scope, Scope::Node | Scope::Cluster) {
                 continue;
             }
@@ -478,12 +490,16 @@ impl ResolvedConfig {
             };
             values.insert(key.path, resolved);
         }
-        Ok(Self {
+        let mut config = Self {
             values,
+            instance,
             proposals: r.proposals.into_values().collect(),
             files: layers.files.iter().map(|f| f.path.clone()).collect(),
             warnings: r.warnings,
-        })
+        };
+        // A `debug.*` key that is on is accepted with a warning (RFC-0054 §7.1, §8 phase 4).
+        config.warnings.extend(crate::debug::warnings(&config));
+        Ok(config)
     }
 
     /// The effective value of the node or cluster key at `path`.
@@ -496,6 +512,13 @@ impl ResolvedConfig {
         self.values.values()
     }
 
+    /// Every instance key with its schema default, in path order. A computed default stays
+    /// unset here, with its rule in the origin, since it depends on the instance; request-scope
+    /// keys are not included.
+    pub fn instance_defaults(&self) -> impl Iterator<Item = &Resolved> {
+        self.instance.values()
+    }
+
     /// The cluster values this node's layers propose, in path order.
     pub fn proposals(&self) -> &[Proposal] {
         &self.proposals
@@ -506,7 +529,8 @@ impl ResolvedConfig {
         &self.files
     }
 
-    /// The warnings found while loading, such as an unknown `SYNTROPY_*` variable.
+    /// The warnings found while loading, such as an unknown `SYNTROPY_*` variable, then one for
+    /// each `debug.*` key that is on ([`crate::DebugSection`]).
     pub fn warnings(&self) -> &[Problem] {
         &self.warnings
     }
@@ -575,7 +599,7 @@ impl ResolvedConfig {
 /// - if that still fails, a key that holds no secret is at fault, and its message is shown;
 /// - otherwise a secret-typed key is, and the message names the section's secret-typed keys
 ///   with no serde text.
-fn withhold_secrets<S: ConfigSection>(table: toml::Table, message: String) -> String {
+pub(crate) fn withhold_secrets<S: ConfigSection>(table: toml::Table, message: String) -> String {
     let secrets: Vec<&KeySchema> = S::SCHEMA.keys.iter().filter(|k| k.holds_secret).collect();
     if secrets.is_empty() {
         return message;
@@ -602,7 +626,7 @@ fn withhold_secrets<S: ConfigSection>(table: toml::Table, message: String) -> St
     }
 }
 
-fn deserialize<T: DeserializeOwned>(value: Value) -> Result<T, String> {
+pub(crate) fn deserialize<T: DeserializeOwned>(value: Value) -> Result<T, String> {
     value
         .try_into()
         .map_err(|e: toml::de::Error| e.message().to_owned())
@@ -625,7 +649,7 @@ fn default_of(
 }
 
 /// A schema default as a TOML value.
-fn to_value(value: &DefaultValue) -> Value {
+pub(crate) fn to_value(value: &DefaultValue) -> Value {
     match *value {
         DefaultValue::Bool(b) => Value::Boolean(b),
         DefaultValue::Int(i) => Value::Integer(i),
@@ -701,7 +725,8 @@ impl<'r> Resolution<'r> {
         if matches!(key.scope, Scope::Node | Scope::Cluster)
             && let Err(error) = (key.check)(&value)
         {
-            self.errors.push(value_problem(key, &error, origin.clone()));
+            self.errors
+                .push(value_problem(key, &error, Some(origin.clone())));
         }
         match key.scope {
             Scope::Node => {
@@ -1036,7 +1061,7 @@ impl Resolution<'_> {
                 Some(key) if key.scope == Scope::Instance => {
                     if let Err(error) = (key.check)(value) {
                         self.errors
-                            .push(value_problem(key, &error, at(segments)).about(&written));
+                            .push(value_problem(key, &error, Some(at(segments))).about(&written));
                     }
                 }
                 Some(key) => self.errors.push(
@@ -1095,7 +1120,11 @@ fn did_you_mean(registry: &Registry, path: &str) -> Option<String> {
 
 /// A value that failed phase 3. A secret-typed key's message is fixed, since an error about a
 /// value inside it could quote the value.
-fn value_problem(key: &'static KeySchema, error: &ValueError, origin: Origin) -> Problem {
+pub(crate) fn value_problem(
+    key: &'static KeySchema,
+    error: &ValueError,
+    origin: Option<Origin>,
+) -> Problem {
     let message = if text::is_secret(key) {
         format!(
             "`{}` does not fit its type, `{}`; the value is not shown, since the key holds a secret",
@@ -1104,7 +1133,7 @@ fn value_problem(key: &'static KeySchema, error: &ValueError, origin: Origin) ->
     } else {
         format!("`{}`: {}", key.path, error.message())
     };
-    Problem::new(Code::from(error.kind()), Some(origin), message).about(key.path)
+    Problem::new(Code::from(error.kind()), origin, message).about(key.path)
 }
 
 /// Why a key of `key.scope` cannot be set from a node's file, environment or flags.

@@ -9,6 +9,10 @@
 //!   golden values. CI runs this file on x86_64 Linux and Windows and on arm64 macOS, so one set
 //!   of values passing everywhere is the cross-target check.
 //! - Records written before RFC-0054's fields decode with those fields at their defaults.
+//! - `ApproxParams` and `Objective::Throughput` skip an unset field only in the canonical
+//!   encoding, so their canonical bytes are the ones they had when they skipped in every format,
+//!   and postcard, which the IPC uses and which cannot skip a field, round-trips them
+//!   (RFC-0001 §18.20).
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -548,6 +552,128 @@ proptest! {
         }
         prop_assert_eq!(forward.canonical_bytes(), backward.canonical_bytes());
     }
+}
+
+// ---- ApproxParams and Objective in the canonical encoding and in postcard -----------------
+
+/// `ApproxParams` with the attributes it had before `canon::absent_if_none`: an unset field
+/// skipped in every format. The canonical encoding writes a struct's field names, not its type
+/// name, so the two must encode alike.
+#[derive(Serialize)]
+struct ApproxParamsBefore {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    miss_low_precision: Option<QuantScheme>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kv_lossy: Option<KvDType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wire_compress: Option<WireDType>,
+}
+
+/// `ExactnessPolicy` over [`ApproxParamsBefore`].
+#[derive(Serialize)]
+enum ExactnessPolicyBefore {
+    #[allow(dead_code, reason = "the variant is only written")]
+    Exact,
+    Approximate {
+        knobs: ApproxKnobs,
+        params: ApproxParamsBefore,
+    },
+}
+
+/// `Objective` with the attributes it had before `canon::absent_if_none`.
+#[derive(Serialize)]
+enum ObjectiveBefore {
+    Latency,
+    Throughput {
+        per_sequence_floor_tps: f32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_concurrency: Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ttft_ceiling: Option<Nanos>,
+    },
+}
+
+fn objective_before(objective: &Objective) -> ObjectiveBefore {
+    match *objective {
+        Objective::Latency => ObjectiveBefore::Latency,
+        Objective::Throughput {
+            per_sequence_floor_tps,
+            target_concurrency,
+            ttft_ceiling,
+        } => ObjectiveBefore::Throughput {
+            per_sequence_floor_tps,
+            target_concurrency,
+            ttft_ceiling,
+        },
+        _ => unreachable!("a variant this test does not mirror"),
+    }
+}
+
+fn before(params: &ApproxParams) -> ApproxParamsBefore {
+    ApproxParamsBefore {
+        miss_low_precision: params.miss_low_precision,
+        kv_lossy: params.kv_lossy,
+        wire_compress: params.wire_compress,
+    }
+}
+
+fn postcard_round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) {
+    let bytes = postcard::to_allocvec(value).expect("serialize");
+    let back: T = postcard::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(&back, value);
+}
+
+proptest! {
+    /// The canonical bytes, and so every policy digest, are what they were with
+    /// `Option::is_none`, for every combination of set and unset parameters.
+    #[test]
+    fn approx_params_canonical_bytes_are_unchanged(params in approx_params(), bits in any::<u32>()) {
+        prop_assert_eq!(
+            canon::to_bytes(&params).unwrap(),
+            canon::to_bytes(&before(&params)).unwrap()
+        );
+        let knobs = ApproxKnobs::from_bits_truncate(bits);
+        prop_assert_eq!(
+            canon::to_bytes(&ExactnessPolicy::Approximate { knobs, params }).unwrap(),
+            canon::to_bytes(&ExactnessPolicyBefore::Approximate { knobs, params: before(&params) })
+                .unwrap()
+        );
+    }
+
+    /// The same for `Objective`.
+    #[test]
+    fn objective_canonical_bytes_are_unchanged(objective in objective()) {
+        prop_assert_eq!(
+            canon::to_bytes(&objective).unwrap(),
+            canon::to_bytes(&objective_before(&objective)).unwrap()
+        );
+    }
+
+    /// Postcard round-trips every parameter combination, and every objective and exactness.
+    #[test]
+    fn approx_params_and_objective_round_trip_through_postcard(
+        params in approx_params(),
+        exactness in exactness(),
+        objective in objective(),
+    ) {
+        postcard_round_trip(&params);
+        postcard_round_trip(&exactness);
+        postcard_round_trip(&objective);
+    }
+}
+
+#[test]
+fn unset_approx_params_are_null_in_json() {
+    let params = ApproxParams {
+        kv_lossy: Some(KvDType::Q8 { block: 32 }),
+        ..ApproxParams::default()
+    };
+    let json = serde_json::to_value(params).unwrap();
+    assert_eq!(json["miss_low_precision"], serde_json::Value::Null);
+    assert_eq!(json["wire_compress"], serde_json::Value::Null);
+    // A record written while the fields were skipped still decodes.
+    let old: ApproxParams = serde_json::from_str(r#"{"kv_lossy":{"Q8":{"block":32}}}"#).unwrap();
+    assert_eq!(old, params);
 }
 
 // ---- ApproxKnobs ------------------------------------------------------------------------
