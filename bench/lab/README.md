@@ -23,10 +23,13 @@ sudo bench/lab/capture-inventory.sh --id R-ADA \
   Pass one `--attachment <name>=<cpu|chipset>` per NVMe controller.
 - NVMe and NIC links are the negotiated ones (sysfs `current_link_speed` and `_width`): a Gen4
   drive in a Gen3 slot is recorded `gen3x4`. A GPU's current link falls at idle, so its link is
-  the highest the GPU and its slot support together; check it against the board manual.
+  the highest the GPU and its slot support together; check it against the board manual. Some
+  devices also drop their link at idle, so before committing the records confirm the NVMe and NIC
+  links under load (for example `lspci -vv` `LnkSta` during a transfer).
 
 The spare GPU has no record format of its own: RFC-0061 §6.3 defines one record per rig. Swap the
-spare into the host, boot the same image, and run the script again with `--id R-ADA-SPARE`. The ID is a judgement call (no source names one); a maintainer confirms it.
+spare into the host, boot the same image, and run the script again with `--id R-ADA-SPARE`. The ID is a judgement call, since no source names one, so a maintainer
+confirms it.
 
 Then:
 
