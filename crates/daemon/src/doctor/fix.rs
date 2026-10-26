@@ -71,16 +71,17 @@ impl<R: BufRead, W: Write> Prompt<R, W> {
 
 impl<R: BufRead, W: Write> Consent for Prompt<R, W> {
     fn ask(&mut self, id: &str, fix: &Fix, auto: &AutoFix) -> Answer {
-        let mut question = format!("{id}: {}\n", fix.description);
+        // Every line is escaped: the description and a file's name come from the check too.
+        let mut question = format!("{id}: {}\n", printable(&fix.description));
         for edit in &auto.edits {
-            question.push_str(&format!("  {edit}\n"));
+            question.push_str(&format!("  {}\n", printable(&edit.to_string())));
             let HostEdit::WriteFile { contents, .. } = edit;
             // Short text is shown in full, so the user sees what is written.
             if let Ok(text) = std::str::from_utf8(contents)
                 && contents.len() <= SHOWN_BYTES
             {
                 for line in text.lines() {
-                    question.push_str(&format!("    | {line}\n"));
+                    question.push_str(&format!("    | {}\n", printable(line)));
                 }
             }
         }
@@ -106,6 +107,41 @@ impl<R: BufRead, W: Write> Consent for Prompt<R, W> {
             },
         }
     }
+}
+
+/// `line` with every control character but a tab, and every invisible formatting character,
+/// escaped, so what the prompt shows cannot move the cursor, clear the screen, reverse text or hide
+/// it from the user.
+fn printable(line: &str) -> String {
+    line.chars()
+        .map(|c| {
+            if (c.is_control() && c != '\t') || invisible(c) {
+                c.escape_default().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+/// Whether `c` is a Unicode character that changes how the text around it shows without showing
+/// itself: zero-width characters and joiners, the bidirectional controls, which can reverse the
+/// text after them, the line and paragraph separators, the byte-order mark, the interlinear
+/// annotation characters and the tag characters.
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{FEFF}'
+            | '\u{034F}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
 }
 
 /// The largest file content the prompt shows in full; a longer file is shown by its size only.
@@ -138,6 +174,9 @@ pub struct Targets {
 
 impl Targets {
     /// The host's own files: under `/`, and under `home` when the user has one.
+    ///
+    /// The patterns are Linux paths, so on macOS (where `/etc` links to `/private/etc`) and on
+    /// Windows every edit is refused: no automatic fix exists there yet.
     #[must_use]
     pub fn host(home: Option<&Path>) -> Self {
         Self::under(Path::new("/"), home)
@@ -396,6 +435,24 @@ pub fn apply(
         }
     }
     Ok(lines)
+}
+
+/// The `--json` output of a `--fix` run that stopped because the revert scripts could not be
+/// written: the fixes offered so far, under `fixes`, and the error.
+#[must_use]
+pub fn json_error(fixes: &[FixLine], error: &LedgerError) -> String {
+    #[derive(Serialize)]
+    struct Stopped<'a> {
+        schema: u16,
+        fixes: &'a [FixLine],
+        error: String,
+    }
+    serde_json::to_string_pretty(&Stopped {
+        schema: super::JSON_SCHEMA,
+        fixes,
+        error: error.to_string(),
+    })
+    .expect("fix lines always serialize")
 }
 
 /// The `--json` output of a `--fix` run: the report, with the offered fixes under `fixes`.

@@ -716,11 +716,13 @@ pub fn doctor(
         fixes = match fix::apply(registry, &ctx, &mut report, setup) {
             Ok(lines) => lines,
             Err(fix::FixError { lines, error }) => {
-                // The fixes that were made are still reported, before the error.
-                let mut text = String::new();
-                for line in &lines {
-                    text.push_str(&format!("{line}\n"));
-                }
+                // The fixes that were made are still reported, before the error, in the format
+                // the run asked for.
+                let text = if options.json {
+                    fix::json_error(&lines, &error) + "\n"
+                } else {
+                    lines.iter().map(|line| format!("{line}\n")).collect()
+                };
                 out.write_all(text.as_bytes())
                     .map_err(DoctorError::Output)?;
                 return Err(DoctorError::Ledger(error));
