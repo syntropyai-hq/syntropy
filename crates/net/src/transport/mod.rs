@@ -5,9 +5,10 @@
 //!
 //! This module is the specification every backend builds on: QUIC (DIST-E7-T03), TCP
 //! (DIST-E7-T05), shared memory (DIST-E7-T06), RDMA (DIST-E7-T07, DIST-E7-T08), and the
-//! simulator's `SimTransport` (QUIC-equivalent semantics over `SimFabric`, QUAL-E8-T04). It
-//! holds no backend. [`conformance`] is RFC-0031 §2's binding semantics as a suite every backend
-//! runs.
+//! simulator's `SimTransport` (QUIC-equivalent semantics over `SimFabric`, QUAL-E8-T04). The
+//! backends here are [`quic`] and [`tcp`], the TCP fallback, which both run their channels on
+//! [`stream`]'s driver. [`conformance`] is RFC-0031 §2's binding semantics as a suite every
+//! backend runs.
 //!
 //! - A [`Transport`] opens channels: [`Transport::connect`] and [`Transport::accept`] are
 //!   asynchronous, and run in the runner's `net` domain, never on a hot thread.
@@ -15,6 +16,11 @@
 //!   the backend through [`ChannelBackend`].
 //! - Frames name their extension and payload by descriptors into registered slots
 //!   ([`buffer`]), so no frame is copied on the way in or out except where RFC-0031 §8 says.
+//! - [`core`] is RFC-0031 §7's flow control, acknowledgement and retransmission, sans I/O:
+//!   every backend wraps one [`ChannelCore`] per channel side (DIST-E7-T02).
+//! - [`registration`], [`sizing`] and [`landing`] are the rest of RFC-0031 §8 (DIST-E7-T12): one
+//!   registration per pool per transport and kernel provider, slot sizes from the plan, and
+//!   multi-part prefill frames landing at consecutive offsets of a stage's input.
 //!
 //! `exec` and `sched` never see this module: they hand frames to the runner over SPSC rings,
 //! and only the runner and the daemon depend on `net` (RFC-0001 §4.2 rule 3).
@@ -22,6 +28,14 @@
 pub mod buffer;
 mod channel;
 pub mod conformance;
+pub mod core;
+pub mod domain;
+pub mod landing;
+pub mod quic;
+pub mod registration;
+pub mod sizing;
+pub mod stream;
+pub mod tcp;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -29,6 +43,7 @@ use std::net::SocketAddr;
 use syntropy_core::resource::TransportKind;
 use syntropy_core::{Bytes, NodeId};
 
+pub use self::core::{ChannelCore, CoreConfig, CreditCadence, SendConfig, Transmit};
 pub use buffer::{
     BufferPool, ExtBuf, ExtRef, HeapMemory, PayloadRef, PayloadSlice, PoolError, PoolId,
     PoolMemory, PoolRegistration, SLOT_ALIGN, SlotReader, SlotWriter,
@@ -37,6 +52,7 @@ pub use channel::{
     Channel, ChannelBackend, ChannelKey, ChannelPriority, ChannelPurpose, ChannelSpec,
     ChannelStats, CloseReason, INGRESS, InFrame, OutFrame, SendError, SendTicket,
 };
+pub use registration::{Registrant, RegistrationTable};
 
 use crate::endpoint::{PathKind, RelayUrl};
 use crate::error::Error;

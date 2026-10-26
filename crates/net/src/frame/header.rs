@@ -212,6 +212,35 @@ impl<'a> Frame<'a> {
     /// payload holds at least the AEAD tag. The negotiated minor, the channel key, `chan_seq`
     /// continuity and the slot size are the channel's to check.
     pub fn decode(buf: &'a [u8]) -> Result<Frame<'a>, FrameError> {
+        Frame::decode_checked(buf, true)
+    }
+
+    /// [`Frame::decode`] without the payload CRC, for a channel that must check its key and
+    /// `chan_seq` between the header's checks and the payload's (RFC-0031 §6.1, §7.2): a frame for
+    /// another instance or epoch is dropped and never NACKed, whatever its payload holds. Call
+    /// [`Frame::verify_payload`] before trusting the payload.
+    pub fn decode_header_first(buf: &'a [u8]) -> Result<Frame<'a>, FrameError> {
+        Frame::decode_checked(buf, false)
+    }
+
+    /// Checks `payload_crc` against the payload.
+    pub fn verify_payload(&self) -> Result<(), FrameError> {
+        let computed = if self.payload.is_empty() {
+            0
+        } else {
+            crc32c(self.payload)
+        };
+        if computed == self.header.payload_crc {
+            Ok(())
+        } else {
+            Err(FrameError::PayloadCrc {
+                stated: self.header.payload_crc,
+                computed,
+            })
+        }
+    }
+
+    fn decode_checked(buf: &'a [u8], check_payload: bool) -> Result<Frame<'a>, FrameError> {
         if buf.len() < HEADER_LEN {
             return Err(FrameError::Truncated {
                 needed: HEADER_LEN as u64,
@@ -243,16 +272,18 @@ impl<'a> Frame<'a> {
                 computed,
             });
         }
-        let computed = if payload.is_empty() {
-            0
-        } else {
-            crc32c(payload)
-        };
-        if computed != payload_crc {
-            return Err(FrameError::PayloadCrc {
-                stated: payload_crc,
-                computed,
-            });
+        if check_payload {
+            let computed = if payload.is_empty() {
+                0
+            } else {
+                crc32c(payload)
+            };
+            if computed != payload_crc {
+                return Err(FrameError::PayloadCrc {
+                    stated: payload_crc,
+                    computed,
+                });
+            }
         }
         let ftype = FrameType::from_code(buf[5]).ok_or(FrameError::UnknownFrameType(buf[5]))?;
         if !(ext_len as usize).is_multiple_of(ALIGN) {
@@ -422,6 +453,42 @@ fn finish(spec: &FrameSpec, ext_len: usize, out: &mut [u8]) {
     h[56..60].copy_from_slice(&payload_crc.to_le_bytes());
     let header_crc = crc32c_append(crc32c(&out[..60]), &out[HEADER_LEN..ext_end]);
     out[60..64].copy_from_slice(&header_crc.to_le_bytes());
+}
+
+/// The base header of a frame whose extension and payload sit elsewhere, as a zero-copy sender
+/// sends them: the header, then `ext`, then `payload`, contiguous on the wire (RFC-0031 §8).
+/// `ext` is the extension with its padding, a multiple of 64. Both CRCs are computed here and the
+/// rules of [`encode`] apply, so the bytes are those [`encode`] would write for the same frame.
+pub fn encode_header(
+    spec: &FrameSpec,
+    ext: &[u8],
+    payload: &[u8],
+) -> Result<[u8; HEADER_LEN], FrameError> {
+    if !ext.len().is_multiple_of(ALIGN) {
+        return Err(FrameError::ExtLenUnaligned(ext.len() as u32));
+    }
+    check_frame(spec, ext.len(), ext.len(), payload.len(), usize::MAX)?;
+    let payload_crc = if payload.is_empty() {
+        0
+    } else {
+        crc32c(payload)
+    };
+    let mut h = [0u8; HEADER_LEN];
+    h[0..4].copy_from_slice(&MAGIC);
+    h[4] = spec.wire_minor;
+    h[5] = spec.ftype.code();
+    h[6..8].copy_from_slice(&spec.flags.0.to_le_bytes());
+    h[8..16].copy_from_slice(&spec.instance.0.to_le_bytes());
+    h[16..24].copy_from_slice(&spec.epoch.term.to_le_bytes());
+    h[24..32].copy_from_slice(&spec.epoch.seq.to_le_bytes());
+    h[32..40].copy_from_slice(&spec.step.to_le_bytes());
+    h[40..48].copy_from_slice(&spec.chan_seq.to_le_bytes());
+    h[48..52].copy_from_slice(&(ext.len() as u32).to_le_bytes());
+    h[52..56].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+    h[56..60].copy_from_slice(&payload_crc.to_le_bytes());
+    let header_crc = crc32c_append(crc32c(&h[..60]), ext);
+    h[60..64].copy_from_slice(&header_crc.to_le_bytes());
+    Ok(h)
 }
 
 /// [`encode`] into a new vector of exactly the frame's length.

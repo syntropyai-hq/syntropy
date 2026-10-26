@@ -104,13 +104,17 @@ fn standard_normal(entropy: &dyn Entropy) -> f64 {
 const LN_2_HI: f64 = f64::from_bits(0x3fe6_2e42_fee0_0000);
 const LN_2_LO: f64 = f64::from_bits(0x3dea_39ef_3579_3c76);
 
+/// ln(`f64::MAX`) rounded to the nearest double, 709.782712893384, given by its bits: the largest
+/// `x` whose `e^x` is finite.
+const LN_MAX: f64 = f64::from_bits(0x4086_2e42_fefa_39ef);
+
 /// `e^x` from basic IEEE operations: `x = k·ln 2 + r` with `|r| ≤ ln 2 / 2`, `e^r` by its Taylor
 /// series, then `× 2^k`. Accurate to about 1e-15 relative.
 pub(crate) fn exp(x: f64) -> f64 {
     if x.is_nan() {
         return x;
     }
-    if x > 709.78 {
+    if x > LN_MAX {
         return f64::INFINITY;
     }
     if x < -745.2 {
@@ -223,6 +227,33 @@ mod tests {
         assert_eq!(ln(1.0), 0.0);
         assert_eq!(exp(800.0), f64::INFINITY);
         assert_eq!(exp(-800.0), 0.0);
+    }
+
+    /// The top edge: `e^x` is finite up to ln(`f64::MAX`) and infinite one step above, as std's
+    /// is, and matches std there.
+    #[test]
+    fn exp_is_finite_up_to_ln_of_the_largest_double() {
+        assert_eq!(LN_MAX, f64::MAX.ln());
+        assert!(LN_MAX.exp().is_finite());
+        assert_eq!(LN_MAX.next_up().exp(), f64::INFINITY);
+        let mut x = 709.78;
+        let mut checked = 0;
+        while x <= LN_MAX {
+            let ours = exp(x);
+            assert!(ours.is_finite(), "exp({x}) is {ours}");
+            assert!(
+                relative(ours, x.exp()) < 1e-15,
+                "exp({x}): {ours} against {}",
+                x.exp()
+            );
+            x += 1e-5;
+            checked += 1;
+        }
+        for x in [LN_MAX.next_down(), LN_MAX] {
+            assert!(relative(exp(x), x.exp()) < 1e-15, "exp({x})");
+        }
+        assert!(checked > 200);
+        assert_eq!(exp(LN_MAX.next_up()), f64::INFINITY);
     }
 
     #[test]

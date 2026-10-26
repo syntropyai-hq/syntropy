@@ -71,15 +71,15 @@ impl ErrorCode {
         Self::QP_BUDGET_EXHAUSTED,
     ];
 
-    /// The class RFC-0031 §12's table gives the code, with its revision notes of 2026-10-22;
-    /// `None` for a value outside the table.
+    /// The class RFC-0031 §12's table gives the code, with its revision notes of 2026-10-22 and
+    /// 2026-10-23; `None` for a value outside the table.
     pub fn class(self) -> Option<ErrorClass> {
-        use ErrorClass::{Auth, Internal, Link, Transient, Unsupported};
+        use ErrorClass::{Auth, InvalidRequest, Link, Transient, Unsupported};
         Some(match self.0 {
             code::PROTO_MAJOR_MISMATCH => Unsupported,
             code::CREDENTIAL_INVALID | code::NOT_A_NEIGHBOUR => Auth,
             code::UNKNOWN_FRAME_TYPE | code::WIRE_DTYPE_MISMATCH => Unsupported,
-            code::FRAME_TOO_LARGE => Internal,
+            code::FRAME_TOO_LARGE => InvalidRequest,
             code::CRC_STORM
             | code::ACK_TIMEOUT
             | code::QP_ERROR
@@ -198,7 +198,7 @@ mod tests {
             (0x0202, ErrorClass::Auth),
             (0x0203, ErrorClass::Auth),
             (0x0204, ErrorClass::Unsupported),
-            (0x0205, ErrorClass::Internal),
+            (0x0205, ErrorClass::InvalidRequest),
             (0x0206, ErrorClass::Unsupported),
             (0x0207, ErrorClass::Link),
             (0x0208, ErrorClass::Link),

@@ -27,7 +27,10 @@
 //!   a domain crate's section from the `<prefix>` table of the policy, or from
 //!   `InstancePolicy::domain`, with the computed defaults the caller supplies, checks it as a
 //!   policy table is checked at load, and lists what changed between two builds with each key's
-//!   reload class.
+//!   reload class;
+//! - per-request overrides (§7, PROD-E1-T10): [`RequestOverrides`] and [`resolve_request`], which
+//!   resolves a request against one candidate instance's policy, enforcing D3: approximate only
+//!   when the request, the instance and the cluster all opt in.
 //!
 //! The cluster and instance scopes, and reload, come in later tasks.
 //!
@@ -134,6 +137,7 @@ mod instance;
 mod origin;
 mod registry;
 mod render;
+mod request;
 mod resolve;
 mod schema;
 mod text;
@@ -152,6 +156,10 @@ pub use holds_secret::HoldsSecret;
 pub use instance::{Change, InstanceSection, InstanceSectionError};
 pub use origin::Origin;
 pub use registry::{Registry, RegistryError};
+pub use request::{
+    BenchControls, EffectiveRequestPolicy, RequestError, RequestOverrides, RequestWarning,
+    SessionBinding, knob_names, priority_for_service_tier, resolve_request,
+};
 pub use resolve::{
     ConfigFile, Flags, Layers, Proposal, Rejected, Resolved, ResolvedConfig, SectionError,
     SharedConfig, load,
@@ -200,6 +208,47 @@ pub mod __private {
     /// Checks that `value` deserializes into `T`, keeping the kind of the error.
     pub fn check_value<T: DeserializeOwned>(value: &toml::Value) -> Result<T, ValueError> {
         check_value_by(value, T::deserialize)
+    }
+
+    /// A key's comparison of two values, for `KeySchema::same`: each is read through `.0`,
+    /// the field's deserializer. The derive calls `(&Same::<T>(..)).same(a, b)` with both
+    /// traits below in scope. Method lookup takes [`SameByValue`] when `T` implements
+    /// `PartialEq`, and otherwise falls back to [`SameAsWritten`], which needs one more
+    /// auto-reference.
+    pub struct Same<T>(pub FromToml<T>);
+
+    impl<T: DeserializeOwned> Same<T> {
+        /// Reads through `T`'s own `Deserialize`.
+        pub fn deserialized() -> Self {
+            Same(T::deserialize)
+        }
+    }
+
+    /// The comparison for a field type with `PartialEq`.
+    pub trait SameByValue {
+        /// Whether `a` and `b` read as equal values; as written when either does not read.
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool;
+    }
+
+    impl<T: PartialEq> SameByValue for Same<T> {
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool {
+            match ((self.0)(a.clone()), (self.0)(b.clone())) {
+                (Ok(read_a), Ok(read_b)) => read_a == read_b,
+                _ => a == b,
+            }
+        }
+    }
+
+    /// The comparison for a field type without `PartialEq`, such as a `Secret`.
+    pub trait SameAsWritten {
+        /// Whether `a` and `b` are written alike.
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool;
+    }
+
+    impl<T> SameAsWritten for &Same<T> {
+        fn same(&self, a: &toml::Value, b: &toml::Value) -> bool {
+            a == b
+        }
     }
 
     /// Checks that `value` deserializes through `de`, the field's `serde(with)` path. A

@@ -579,3 +579,109 @@ fn workspace_check_passes_at_or_below_the_declaration() {
     assert_eq!(PreparedOp::new(Bytes(0)).check_workspace(&caps(0)), Ok(()));
     assert!(PreparedOp::new(Bytes(1)).check_workspace(&caps(0)).is_err());
 }
+
+// ---- OpArgs, TensorArg and Scalar --------------------------------------------------------
+
+fn slice(bytes: u64) -> crate::BufferSlice {
+    crate::BufferSlice {
+        buffer: 1,
+        offset: Bytes(0),
+        bytes: Bytes(bytes),
+    }
+}
+
+#[test]
+fn packed_tensors_have_row_major_element_strides() {
+    let t = TensorArg::packed(slice(4 * 2 * 3 * 5 * 7), DType::F32, [2, 3, 5, 7]).unwrap();
+    assert_eq!(t.strides, [105, 35, 7, 1]);
+    assert_eq!(t.span_bytes(), 4 * 210);
+    assert!(t.fits());
+    let short = TensorArg {
+        buf: slice(4 * 210 - 1),
+        ..t
+    };
+    assert!(!short.fits());
+    // A stride that does not fit in a u32.
+    assert_eq!(
+        TensorArg::packed(slice(0), DType::U8, [2, 1 << 16, 1 << 16, 2]),
+        None
+    );
+}
+
+#[test]
+fn span_bytes_edge_cases() {
+    // Sub-byte elements round up to a whole byte: 3 FP4 elements span 2 bytes.
+    let t = TensorArg::packed(slice(2), DType::F4E2M1, [1, 1, 1, 3]).unwrap();
+    assert_eq!(t.span_bytes(), 2);
+    // An empty dimension spans nothing, whatever the strides.
+    let empty = TensorArg {
+        dims: [4, 0, 4, 4],
+        ..t
+    };
+    assert_eq!(empty.span_bytes(), 0);
+    assert!(empty.fits());
+    // Padded rows: 2 rows of 3 F16 elements, 8 elements apart, span 8 + 3 elements.
+    let padded = TensorArg {
+        buf: slice(22),
+        dtype: DType::F16,
+        dims: [1, 1, 2, 3],
+        strides: [0, 0, 8, 1],
+    };
+    assert_eq!(padded.span_bytes(), 22);
+    assert!(padded.fits());
+    // A span past u64 saturates rather than wrapping.
+    let huge = TensorArg {
+        buf: slice(u64::MAX),
+        dtype: DType::F64,
+        dims: [u32::MAX; 4],
+        strides: [u32::MAX; 4],
+    };
+    assert_eq!(huge.span_bytes(), u64::MAX);
+}
+
+#[test]
+fn op_args_bind_weights_step_and_statics() {
+    use syntropy_core::{BufferView, DeviceId, ViewKind};
+    let x = TensorArg::packed(slice(64), DType::F32, [1, 1, 1, 16]).unwrap();
+    let w = BufferView {
+        kind: ViewKind::Device(DeviceId {
+            node: syntropy_core::NodeId([0; 32]),
+            ordinal: 0,
+        }),
+        addr: 0x1000,
+        len: Bytes(4096),
+    };
+    let statics = [Scalar::F32(1e-6), Scalar::U32(3), Scalar::I32(-1)];
+    let args = OpArgs {
+        inputs: &[x],
+        outputs: &[x],
+        weights: &[w],
+        step: slice(320),
+        workspace: None,
+        statics: &statics,
+    };
+    let copy = args;
+    assert_eq!(copy, args);
+    assert_eq!(args.weights[0].len, Bytes(4096));
+    assert_eq!(args.statics[0], Scalar::F32(1e-6));
+}
+
+#[test]
+fn op_args_none_binds_nothing() {
+    // Usable in a const context, as a replaying provider's default arguments.
+    const NONE: OpArgs<'static> = OpArgs::none();
+    assert!(NONE.inputs.is_empty());
+    assert!(NONE.outputs.is_empty());
+    assert!(NONE.weights.is_empty());
+    assert!(NONE.statics.is_empty());
+    assert_eq!(NONE.workspace, None);
+    assert_eq!(
+        NONE.step,
+        crate::BufferSlice {
+            buffer: 0,
+            offset: Bytes(0),
+            bytes: Bytes(0),
+        }
+    );
+    assert_eq!(OpArgs::none(), NONE);
+}
