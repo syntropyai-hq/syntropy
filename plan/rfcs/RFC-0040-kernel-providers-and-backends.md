@@ -984,7 +984,7 @@ ADR-0002 gives the ggml provider two jobs: coverage on every backend ggml suppor
 
 #### 8.1 What is linked, and how
 
-- **Only the tensor library.** `vendor/ggml` holds ggml's `ggml/` tree (ggml-base, the CPU backend and the GPU backends) at the commit in `third_party/ggml.lock` (RFC-0062 §4.2). Its model library is never vendored or linked (ADR-0002).
+- **Only the tensor library.** `third_party/ggml/` holds ggml's `ggml/` tree (ggml-base, the CPU backend and the GPU backends) at the commit in `third_party/ggml.lock` (RFC-0062 §4.2). Its model library is never vendored or linked (ADR-0002). *Note 2026-10-23:* this bullet said `vendor/ggml`; RFC-0062 §4.2, the CI path rules and the repository use `third_party/ggml/`, which is the path.
 - **Statically, with one backend per artefact.** ggml is built without its dynamic-backend loader. Each artefact links its own static copy of ggml-base together with the backends it serves:
   - the core: the CPU backend, plus the Metal backend on macOS;
   - each provider library: that module's GPU backend (CUDA, HIP, Vulkan or SYCL);
