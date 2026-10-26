@@ -40,8 +40,10 @@
 //! Any other expression counts as a PR checkout on every trigger. A `run` script that names
 //! `refs/pull/`, runs `gh … pr … checkout`, or runs git or gh with `pull/` anywhere in it counts
 //! too, and so does one that runs git or gh with any expression the checkout rule would not
-//! allow as a `ref` (such as `workflow_run.head_sha`); `github.repository` is allowed there. So does a step that uses a local composite action
-//! one of whose steps counts.
+//! allow as a `ref` (such as `workflow_run.head_sha`); `github.repository` is allowed there. A
+//! script that names the PR's head (`pull_request.head…`, `workflow_run.head…`, `head_ref`) in
+//! an expression counts whatever program it runs, since `curl` or `wget` can fetch the code as
+//! well as git. So does a step that uses a local composite action one of whose steps counts.
 //!
 //! **Secrets.** A job holds a secret when any expression in it, or in the workflow's `env`, uses
 //! the `secrets` context, in any case and any form (`secrets.X`, `secrets['X']`,
@@ -388,6 +390,20 @@ fn checks_out_pr(step: &Yaml, pr_event: bool) -> bool {
         let gh_checkout = runs("gh") && run.contains(" pr ") && run.contains("checkout");
         let git_or_gh = runs("git") || runs("gh");
         if run.contains("refs/pull/") || gh_checkout || (git_or_gh && run.contains("pull/")) {
+            return true;
+        }
+        // An expression naming the PR's head fetches its code whatever program uses it.
+        let mut named = Vec::new();
+        expressions(&Yaml::String(run.clone()), &mut named);
+        let head = [
+            "github.event.pull_request.head",
+            "github.event.workflow_run.head",
+            "github.head_ref",
+        ];
+        if named.iter().any(|e| {
+            let compact: String = e.chars().filter(|c| !c.is_whitespace()).collect();
+            head.iter().any(|h| compact.contains(h))
+        }) {
             return true;
         }
         // A git or gh command that takes any expression other than a known-safe one may fetch,

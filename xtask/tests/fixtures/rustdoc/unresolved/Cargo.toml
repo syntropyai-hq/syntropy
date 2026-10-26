@@ -1,5 +1,6 @@
-# A rustdoc fixture: a crate whose doc comment links to an item that does not exist. xtask's registry tests run the `lint` job's `rustdoc`
-# step on it and expect it to fail (QUAL-E1-T31).
+# A rustdoc fixture: a crate whose doc comment links to an item that does not exist.
+# xtask's registry tests run the `lint` job's `rustdoc` step on it and expect it to fail
+# (QUAL-E1-T31).
 [workspace]
 
 [package]

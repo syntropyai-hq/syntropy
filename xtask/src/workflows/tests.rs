@@ -718,3 +718,21 @@ fn a_lab_job_needs_a_timeout_of_at_most_an_hour() {
     // A hosted job needs no timeout.
     assert_clean("lab.yml", &clean());
 }
+
+/// A script that names the PR's head counts whatever program it runs (#1872 N11), and `github.sha`
+/// in a git script is unsafe on a pull request's trigger (#1872 N12).
+#[test]
+fn a_script_naming_the_pr_head_counts_whatever_it_runs() {
+    let secret_env = "    env:\n      TOKEN: ${{ secrets.NPM_TOKEN }}\n";
+    let download = "- run: curl -sL https://github.com/${{ github.event.workflow_run.head_repository.full_name }}/archive/${{ github.event.workflow_run.head_sha }}.tar.gz | tar xz";
+    let source =
+        pr_checkout_job(secret_env, download).replace("  pull_request:\n", "  workflow_run:\n");
+    assert_one(
+        "w.yml",
+        &source,
+        "jobs.build.steps[0]",
+        "checks out a PR ref",
+    );
+    let sha = pr_checkout_job(secret_env, "- run: git log ${{ github.sha }}");
+    assert_one("w.yml", &sha, "jobs.build.steps[0]", "checks out a PR ref");
+}

@@ -1,5 +1,6 @@
-# A rustdoc fixture: the two crates above with their links fixed. xtask's registry tests run the `lint` job's `rustdoc`
-# step on it and expect it to pass (QUAL-E1-T31).
+# A rustdoc fixture: the two crates above with their links fixed.
+# xtask's registry tests run the `lint` job's `rustdoc` step on it and expect it to pass
+# (QUAL-E1-T31).
 [workspace]
 
 [package]
