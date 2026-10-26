@@ -28,8 +28,8 @@ sudo bench/lab/capture-inventory.sh --id R-ADA \
   links under load (for example `lspci -vv` `LnkSta` during a transfer).
 
 The spare GPU has no record format of its own: RFC-0061 §6.3 defines one record per rig. Swap the
-spare into the host, boot the same image, and run the script again with `--id R-ADA-SPARE`. The ID is a judgement call, since no source names one, so a maintainer
-confirms it.
+spare into the host, boot the same image, and run the script again with `--id R-ADA-SPARE`. The
+ID is a judgement call, since no source names one, so a maintainer confirms it.
 
 Then:
 
