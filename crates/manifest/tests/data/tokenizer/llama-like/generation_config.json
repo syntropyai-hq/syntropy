@@ -1,0 +1,9 @@
+{
+  "bos_token_id": 9,
+  "eos_token_id": [
+    10,
+    15,
+    16
+  ],
+  "do_sample": true
+}

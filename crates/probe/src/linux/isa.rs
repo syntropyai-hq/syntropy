@@ -227,8 +227,9 @@ impl Detector<'_> {
                     IsaFlags::empty(),
                     DeviceFeatures::AVX_VNNI,
                 );
-                // AMX: the hardware has the tiles. `DeviceFeatures` stays clear of AMX until
-                // the kernel grants the tile-data permission, which E1 does not request.
+                // AMX: the hardware has the tiles. `DeviceFeatures` stays clear of AMX: E1
+                // records the kernel's tile-data grant in `CpuTopology::amx_permitted`
+                // (PLC-E1-T14), and the features the provider may use are E5's.
                 set(
                     self.has(Feature::AmxBf16),
                     IsaFlags::AMX_BF16,
@@ -239,8 +240,9 @@ impl Detector<'_> {
                     IsaFlags::AMX_INT8,
                     DeviceFeatures::empty(),
                 );
-                // Never `X86V4Amx`: that level needs the tile-data permission granted, which
-                // E1 does not request; the CPU provider requests it at E5 (ADR-0405 decision 3).
+                // Never `X86V4Amx`: that level needs the tile-data permission granted in the
+                // process that runs the kernels, and the CPU provider sets it at E5 (ADR-0405
+                // decision 3). E1's own grant only fills `amx_permitted`.
                 if avx512 {
                     CpuIsa::X86V4
                 } else if v3 {

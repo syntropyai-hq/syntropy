@@ -1,0 +1,6 @@
+## Decode
+RmsNorm [Elementwise] in(v0:F32[Rows,64]) out(v1:F32[Rows,64]) w(Norm@g7) fuse(-) attrs(eps=1e-6)
+Logits [Head] in(v1:F32[Rows,64]) out(v2:F32[Rows,260]) w(Head@g7) fuse(-) attrs(n_vocab=260 softcap=30.0)
+## Prefill
+RmsNorm [Elementwise] in(v0:F32[Rows,64]) out(v1:F32[Rows,64]) w(Norm@g7) fuse(-) attrs(eps=1e-6)
+Logits [Head] in(v1:F32[Rows,64]) out(v2:F32[Rows,260]) w(Head@g7) fuse(-) attrs(n_vocab=260 softcap=30.0)
