@@ -29,7 +29,8 @@ use crate::run::Context;
 /// Where the registry lives, relative to the workspace root.
 pub const REGISTRY: &str = "governance/delegations.toml";
 
-/// Every scope a delegation can name.
+/// Every scope a delegation can name. The names after `security-deputy` are provisional:
+/// QUAL-E1-T18 and QUAL-E2-T03 read them and may rename them.
 pub const SCOPES: &[&str] = &[
     "tuf-root-custody",
     "tuf-targets-custody",
@@ -239,21 +240,29 @@ impl Registry {
                 }
             }
         }
-        // A delegation that has ended holds nothing, so a revoked one never counts here.
+        // The holders at once peak on a day some delegation begins, so count the distinct
+        // holders active on each grant date. A delegation that has ended holds nothing then.
         for (scope, limit, rule) in [
             ("tuf-root-custody", MAX_ROOT_CUSTODY, "RFC-0062 §7.2"),
             ("org-owner", MAX_ORG_OWNERS, "RFC-0062 §12.6"),
         ] {
-            let held: BTreeSet<String> = entries
+            let worst = entries
                 .iter()
-                .filter(|entry| entry.scope == scope && entry.revoked.is_none())
-                .map(|entry| entry.delegate.to_ascii_lowercase())
-                .collect();
-            if held.len() > limit {
+                .filter(|entry| entry.scope == scope)
+                .map(|begin| {
+                    entries
+                        .iter()
+                        .filter(|entry| entry.scope == scope && entry.active_on(begin.granted))
+                        .map(|entry| entry.delegate.to_ascii_lowercase())
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                })
+                .max()
+                .unwrap_or(0);
+            if worst > limit {
                 problems.push(format!(
-                    "the registry delegates `{scope}` to {} delegates at once; only {limit} may \
-                     hold it ({rule})",
-                    held.len()
+                    "the registry delegates `{scope}` to {worst} delegates at once; only {limit} \
+                     may hold it ({rule})"
                 ));
             }
         }
@@ -279,7 +288,6 @@ impl Registry {
 }
 
 /// The `delegations` step of `lint`: the registry reads, and every delegate is a maintainer.
-#[cfg_attr(not(test), allow(dead_code))] // read by QUAL-E1-T18 and QUAL-E2-T03
 pub fn step(context: &Context) -> Result<(), String> {
     let read = |relative: &str| {
         std::fs::read_to_string(context.root.join(relative))
@@ -406,6 +414,25 @@ mod tests {
         assert!(held("tuf-root-custody", 3).is_ok());
         let error = held("tuf-root-custody", 4).unwrap_err();
         assert!(error[0].contains("only 3 may hold it"), "{error:?}");
+        // Four overlapping holders whose `revoked` dates all lie ahead still breach the limit.
+        let future = |n: usize| {
+            (0..n)
+                .map(|i| {
+                    format!(
+                        "[[delegation]]\ndelegate = \"{}\"\nscope = \"tuf-root-custody\"\n\
+                         granted = \"2026-11-0{}\"\nrevoked = \"2099-01-01\"\n",
+                        ["alice", "bob", "carol", "dave"][i],
+                        i + 1
+                    )
+                })
+                .collect::<String>()
+        };
+        assert!(Registry::parse(&future(4), &roster()).is_err());
+        assert!(Registry::parse(&future(3), &roster()).is_ok());
+        // A fourth holder who starts after another one ends is fine.
+        let handover = future(3).replace("revoked = \"2099-01-01\"", "revoked = \"2026-11-04\"")
+            + "[[delegation]]\ndelegate = \"dave\"\nscope = \"tuf-root-custody\"\ngranted = \"2026-11-04\"\n";
+        assert!(Registry::parse(&handover, &roster()).is_ok(), "{handover}");
         assert!(held("org-owner", 2).is_ok());
         let error = held("org-owner", 3).unwrap_err();
         assert!(

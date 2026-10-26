@@ -55,7 +55,7 @@ pub struct Completion {
     pub evidence: String,
 }
 
-/// Whether a task cell carries the marker that opens a human-only step.
+/// Whether a cell carries the marker that opens a human-only step.
 pub fn marks_action(task_cell: &str) -> bool {
     const MARKER: &str = "**Maintainer action";
     task_cell.match_indices(MARKER).any(|(at, _)| {
@@ -91,7 +91,9 @@ pub fn queue(epics: &[&str]) -> Vec<Action> {
             let (Some(id), Some(task)) = (cells.next(), cells.next()) else {
                 continue;
             };
-            if is_task_id(id.trim()) && marks_action(task) {
+            // The marker can sit in any cell: a few rows open their human-only step in the
+            // acceptance criteria.
+            if is_task_id(id.trim()) && marks_action(row) {
                 actions.push(Action {
                     task: id.trim().to_owned(),
                     summary: summary(task),
@@ -311,7 +313,8 @@ mod tests {
 | QUAL-E1-T02 | Do a thing (**Maintainer action**: approving the plan) | M0a | none | ok | RFC |
 | QUAL-E1-T03 | **Maintainer action, late in M0: key custody set-up.** Provision | M0a | none | ok | RFC |
 | QUAL-E1-T04 | Registry. Recording is a **Maintainer action** (QUAL-E1-T01) | M0a | none | ok | RFC |
-| QUAL-E1-T05 | Plain task | M0a | none | the ceremonies are **Maintainer action**: yes | RFC |
+| QUAL-E1-T05 | Plain task | M0a | none | the ceremonies are **Maintainer action** (see T01) | RFC |
+| QUAL-E1-T07 | Plain | M0a | none | ends with **Maintainer action**: creating the App | RFC |
 | QUAL-E1-T06 | Mentions **Maintainer actions** | M0a | none | ok | RFC |
 Some prose with **Maintainer action**: here.
 ";
@@ -330,7 +333,10 @@ Some prose with **Maintainer action**: here.
     #[test]
     fn the_queue_is_the_rows_that_open_a_step() {
         let actions = queue(&[EPIC]);
-        assert_eq!(ids(&actions), ["QUAL-E1-T01", "QUAL-E1-T02", "QUAL-E1-T03"]);
+        assert_eq!(
+            ids(&actions),
+            ["QUAL-E1-T01", "QUAL-E1-T02", "QUAL-E1-T03", "QUAL-E1-T07"]
+        );
     }
 
     #[test]
