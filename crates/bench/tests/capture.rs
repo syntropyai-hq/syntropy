@@ -206,6 +206,23 @@ mod on_unix {
     }
 
     #[test]
+    fn a_link_is_clamped_to_its_upstream_port() {
+        let fake = Fake::new("clamp");
+        // eth0 sits under a port that only offers Gen3 x2.
+        let up = fake.dir.join("sys/devices/pci/0000:02:00.0");
+        fs::write(up.join("max_link_speed"), "8.0 GT/s PCIe\n").unwrap();
+        fs::write(up.join("max_link_width"), "2\n").unwrap();
+        let child = up.join("child");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(child.join("max_link_speed"), "16.0 GT/s PCIe\n").unwrap();
+        fs::write(child.join("max_link_width"), "4\n").unwrap();
+        fs::remove_file(fake.dir.join("sys/class/net/eth0/device")).unwrap();
+        symlink(&child, fake.dir.join("sys/class/net/eth0/device")).unwrap();
+        let rig = captured(&fake).rigs.remove(0);
+        assert_eq!(rig.nic[0].pcie.as_ref().unwrap().to_string(), "gen3x2");
+    }
+
+    #[test]
     fn a_cpu_without_microcode_omits_the_key() {
         let fake = Fake::new("nomicrocode");
         fake.file("proc/cpuinfo", "processor\t: 0\n");

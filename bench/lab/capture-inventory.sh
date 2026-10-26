@@ -98,12 +98,22 @@ gen_of_speed() {
     esac
 }
 
-# The highest link a PCI device supports at this slot, from its sysfs directory: `gen4x4`.
+# The highest link a PCI device can negotiate at this slot, from its sysfs directory: `gen4x4`.
+# It is the device's maximum, clamped to its upstream port's maximum when that port reports one,
+# so a Gen4 drive in a Gen3 slot or a card in an x8 slot is not recorded at its own rating.
 max_link() {
-    local dir="$1" speed width
+    local dir="$1" speed width gen up up_gen up_width
     speed="$(read_file "$dir/max_link_speed")"
     width="$(read_file "$dir/max_link_width")"
-    echo "gen$(gen_of_speed "$speed")x$width"
+    gen="$(gen_of_speed "$speed")"
+    up="$(dirname "$(cd "$dir" && pwd -P)")"
+    if [ -r "$up/max_link_speed" ] && [ -r "$up/max_link_width" ]; then
+        up_gen="$(gen_of_speed "$(read_file "$up/max_link_speed")")"
+        up_width="$(read_file "$up/max_link_width")"
+        [ "$up_gen" -ge "$gen" ] || gen="$up_gen"
+        [ "$up_width" -ge "$width" ] || width="$up_width"
+    fi
+    echo "gen${gen}x${width}"
 }
 
 id=""
