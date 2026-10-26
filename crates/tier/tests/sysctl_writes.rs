@@ -45,6 +45,58 @@ fn production_sources() -> Vec<PathBuf> {
     files
 }
 
+/// `text` with every comment blanked out, string and char literals kept, so a call or a name
+/// that only a comment mentions is not counted. Raw strings (`r"…"`, `r#"…"#`) are kept too.
+fn code_only(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+        } else if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i < b.len() && !(b[i] == b'*' && b.get(i + 1) == Some(&b'/')) {
+                i += 1;
+            }
+            i += 2;
+        } else if b[i] == b'r' && matches!(b.get(i + 1), Some(b'"') | Some(b'#')) {
+            let hashes = b[i + 1..].iter().take_while(|c| **c == b'#').count();
+            let start = i;
+            i += 1 + hashes + 1;
+            let close: Vec<u8> = std::iter::once(b'"')
+                .chain(std::iter::repeat_n(b'#', hashes))
+                .collect();
+            while i < b.len() && !b[i..].starts_with(&close) {
+                i += 1;
+            }
+            i = (i + close.len()).min(b.len());
+            out.push_str(&text[start..i]);
+        } else if b[i] == b'"' {
+            let start = i;
+            i += 1;
+            while i < b.len() && b[i] != b'"' {
+                i += if b[i] == b'\\' { 2 } else { 1 };
+            }
+            i = (i + 1).min(b.len());
+            out.push_str(&text[start..i]);
+        } else if b[i] == b'\'' && (b.get(i + 2) == Some(&b'\'') || b.get(i + 1) == Some(&b'\\')) {
+            // A char literal such as '"' or '\\'', so its quote is not read as a string.
+            let start = i;
+            i += if b.get(i + 1) == Some(&b'\\') { 4 } else { 3 };
+            i = i.min(b.len());
+            out.push_str(&text[start..i]);
+        } else {
+            let len = text[i..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&text[i..i + len]);
+            i += len;
+        }
+    }
+    out
+}
+
 /// The arguments of the call whose opening parenthesis is at `open`, split at top-level commas.
 fn call_args(text: &str, open: usize) -> Vec<String> {
     let mut depth = 0;
@@ -84,7 +136,7 @@ fn call_args(text: &str, open: usize) -> Vec<String> {
 fn every_sysctlbyname_call_only_reads() {
     let mut calls = 0;
     for path in production_sources() {
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = code_only(&std::fs::read_to_string(&path).unwrap());
         for (at, _) in text.match_indices("sysctlbyname(") {
             let before = &text[..at];
             // The declaration, not a call.
@@ -125,35 +177,59 @@ fn only_tune_spells_out_the_write() {
     );
 }
 
+/// Where production code may name `iogpu.wired_limit_mb` to read it (RFC-0020 §9.1: the probe
+/// reads the limit). Every read reaches the kernel through `syntropy_io::os::macos_host`, whose
+/// `sysctlbyname` calls `every_sysctlbyname_call_only_reads` checks.
+const READERS: &[&str] = &["probe/src/macos/mod.rs"];
+
 /// Other ways to write the sysctl that a source could spell out (review of #1822, N1): the
-/// `sysctl` tool found on `PATH`, the MIB-form `sysctl()` or `sysctlnametomib()` calls, and the
-/// sysctl's name as a string. None may appear outside `tier/src/tune.rs`.
+/// `sysctl` tool found on `PATH`, the MIB-form `libc::sysctl()` and `sysctlnametomib()` calls,
+/// an FFI declaration of the MIB-form `sysctl` that would bypass `libc`, and the sysctl's
+/// name outside the read sites in [`READERS`]. None may appear outside `tier/src/tune.rs`.
+/// Comments are not counted. Rust functions named `sysctl` that take a name, such as `io`'s
+/// read-only wrapper and the probe's `MacApi::sysctl`, end in `libc::sysctlbyname`, which
+/// `every_sysctlbyname_call_only_reads` checks, so they are not counted either.
 #[test]
 fn no_other_write_form_appears() {
     let tune = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/tune.rs")
         .canonicalize()
         .unwrap();
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .unwrap();
     let mut found = Vec::new();
     for path in production_sources() {
-        if path.canonicalize().unwrap() == tune {
+        let path = path.canonicalize().unwrap();
+        if path == tune {
             continue;
         }
-        let text = std::fs::read_to_string(&path).unwrap();
-        for needle in ["Command::new(\"sysctl\")", "\"iogpu.wired_limit_mb"] {
-            if text.contains(needle) {
-                found.push(format!("{}: {needle}", path.display()));
+        let shown = path
+            .strip_prefix(&crates)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = code_only(&std::fs::read_to_string(&path).unwrap());
+        if text.contains("Command::new(\"sysctl\")") {
+            found.push(format!("{shown}: runs the sysctl tool"));
+        }
+        if text.contains("\"iogpu.wired_limit_mb") && !READERS.contains(&shown.as_str()) {
+            found.push(format!("{shown}: names iogpu.wired_limit_mb"));
+        }
+        for call in ["libc::sysctl(", "sysctlnametomib("] {
+            if text.contains(call) {
+                found.push(format!("{shown}: a {call}…) call"));
             }
         }
-        for call in ["sysctl(", "sysctlnametomib("] {
-            for (at, _) in text.match_indices(call) {
-                let before = &text[..at];
-                let joined = before
-                    .chars()
-                    .last()
-                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
-                if !joined && !before.trim_end().ends_with("fn") {
-                    found.push(format!("{}: a {call}…) call", path.display()));
+        // A raw-pointer declaration of the MIB-form `sysctl`: its calls would read as a bare
+        // `sysctl(…)`, which no other rule sees. `sysctlbyname` declarations are fine, because
+        // `every_sysctlbyname_call_only_reads` checks every call however it is declared.
+        for decl in ["fn sysctl("] {
+            for (at, _) in text.match_indices(decl) {
+                let args = call_args(&text, at + decl.len() - 1).join(",");
+                if args.contains("*mut") || args.contains("*const") {
+                    found.push(format!("{shown}: an FFI declaration of {decl}…)"));
                 }
             }
         }
@@ -161,5 +237,23 @@ fn no_other_write_form_appears() {
     assert!(
         found.is_empty(),
         "sysctl write forms outside tune: {found:#?}"
+    );
+}
+
+/// The scan's own rules catch each write form, and skip what only a comment says.
+#[test]
+fn the_scan_catches_each_write_form() {
+    let text = code_only(
+        "// libc::sysctl(mib, 2, old, oldlen, new, newlen) in a comment\n\
+         let s = \"http://x\"; let n = 1; /* sysctlnametomib( */\n",
+    );
+    assert!(!text.contains("libc::sysctl(") && !text.contains("sysctlnametomib("));
+    assert!(text.contains("\"http://x\"") && text.contains("let n = 1;"));
+    let ffi = code_only("extern \"C\" { fn sysctl(name: *mut c_int, len: u32); }");
+    let at = ffi.find("fn sysctl(").unwrap();
+    assert!(
+        call_args(&ffi, at + "fn sysctl".len())
+            .join(",")
+            .contains("*mut")
     );
 }
