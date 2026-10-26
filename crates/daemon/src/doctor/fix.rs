@@ -80,7 +80,7 @@ impl<R: BufRead, W: Write> Consent for Prompt<R, W> {
                 && contents.len() <= SHOWN_BYTES
             {
                 for line in text.lines() {
-                    question.push_str(&format!("    | {line}\n"));
+                    question.push_str(&format!("    | {}\n", printable(line)));
                 }
             }
         }
@@ -106,6 +106,20 @@ impl<R: BufRead, W: Write> Consent for Prompt<R, W> {
             },
         }
     }
+}
+
+/// `line` with every control character but a tab escaped, so file content shown in the prompt
+/// cannot move the cursor, clear the screen or hide text from the user.
+fn printable(line: &str) -> String {
+    line.chars()
+        .map(|c| {
+            if c.is_control() && c != '\t' {
+                c.escape_default().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 /// The largest file content the prompt shows in full; a longer file is shown by its size only.
@@ -138,6 +152,9 @@ pub struct Targets {
 
 impl Targets {
     /// The host's own files: under `/`, and under `home` when the user has one.
+    ///
+    /// The patterns are Linux paths, so on macOS (where `/etc` links to `/private/etc`) and on
+    /// Windows every edit is refused: no automatic fix exists there yet.
     #[must_use]
     pub fn host(home: Option<&Path>) -> Self {
         Self::under(Path::new("/"), home)
@@ -396,6 +413,22 @@ pub fn apply(
         }
     }
     Ok(lines)
+}
+
+/// The `--json` output of a `--fix` run that stopped because the revert scripts could not be
+/// written: the fixes offered so far, under `fixes`, and the error.
+#[must_use]
+pub fn json_error(fixes: &[FixLine], error: &LedgerError) -> String {
+    #[derive(Serialize)]
+    struct Stopped<'a> {
+        fixes: &'a [FixLine],
+        error: String,
+    }
+    serde_json::to_string_pretty(&Stopped {
+        fixes,
+        error: error.to_string(),
+    })
+    .expect("fix lines always serialize")
 }
 
 /// The `--json` output of a `--fix` run: the report, with the offered fixes under `fixes`.

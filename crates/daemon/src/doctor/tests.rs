@@ -802,3 +802,75 @@ fn the_prompt_shows_short_text_content_in_full() {
     let asked = String::from_utf8(asked).unwrap();
     assert!(asked.contains("(6 bytes)\n    | fixed\n"), "{asked}");
 }
+
+#[test]
+fn the_prompt_escapes_control_characters_in_content() {
+    fn sneaky(ctx: &DoctorCtx) -> Finding {
+        Finding::fail("needs a write").with_fix(Fix {
+            automatic: Some(AutoFix {
+                edits: vec![HostEdit::WriteFile {
+                    path: host_file(ctx, "sneaky.conf"),
+                    contents: b"ok\x1b[2K\x1b[1Ahidden\r\tend\n".to_vec(),
+                }],
+            }),
+            ..Fix::manual("write sneaky.conf")
+        })
+    }
+    let r = registry(vec![check("OS-001", Area::Os, Needs::Offline, sneaky)]);
+    let dir = temp_dir();
+    let mut asked = Vec::new();
+    let mut prompt = Prompt::new(Cursor::new(b"n\n".to_vec()), &mut asked);
+    doctor_fix(&r, &dir, &mut prompt, false);
+    let asked = String::from_utf8(asked).unwrap();
+    assert!(
+        !asked.contains('\x1b') && !asked.contains('\r'),
+        "{asked:?}"
+    );
+    assert!(
+        asked.contains("    | ok\\u{1b}[2K\\u{1b}[1Ahidden\\r\tend\n"),
+        "{asked:?}"
+    );
+}
+
+#[test]
+fn a_json_run_that_cannot_write_the_revert_script_still_reports_its_fixes_as_json() {
+    let r = registry(vec![check("OS-001", Area::Os, Needs::Offline, fixable)]);
+    let dir = temp_dir();
+    let state = dir.join("state");
+    let mut ledger = HostChangeLedger::open(&state).unwrap();
+    // A directory where the script goes, so writing it fails after the fix was made.
+    let script = if cfg!(windows) {
+        "revert-host-changes.ps1"
+    } else {
+        "revert-host-changes.sh"
+    };
+    fs::create_dir_all(state.join(script).join("x")).unwrap();
+    let mut out = Vec::new();
+    let err = doctor(
+        &r,
+        &DoctorCtx::new(&state, Reach::default()),
+        Options {
+            offline: false,
+            json: true,
+            fix: true,
+        },
+        Some(FixSetup {
+            ledger: &mut ledger,
+            consent: &mut AssumeYes,
+            targets: &targets(&dir),
+            at: 0,
+            by_version: VERSION,
+        }),
+        &mut out,
+    )
+    .unwrap_err();
+    assert!(matches!(err, DoctorError::Ledger(_)), "{err}");
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["fixes"][0]["id"], "OS-001");
+    assert_eq!(v["fixes"][0]["outcome"], "applied");
+    assert!(
+        v["error"].as_str().unwrap().contains(script),
+        "{}",
+        v["error"]
+    );
+}
