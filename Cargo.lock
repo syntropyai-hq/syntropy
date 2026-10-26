@@ -4279,6 +4279,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "proc-macro2",
+ "proptest",
  "serde",
  "serde_json",
  "toml",

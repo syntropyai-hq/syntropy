@@ -26,3 +26,7 @@ blake3.workspace = true
 # YAML: the workflows and composite actions under `.github/`, which `workflows` checks against
 # RFC-0062 §12.4 (QUAL-E1-T09).
 yaml-rust2.workspace = true
+
+[dev-dependencies]
+# The cache cap property of QUAL-E7-T05 (pre-approved crate).
+proptest.workspace = true
