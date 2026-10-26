@@ -764,3 +764,27 @@ fn a_script_naming_the_pr_head_counts_whatever_it_runs() {
     let sha = pr_checkout_job(secret_env, "- run: git log ${{ github.sha }}");
     assert_one("w.yml", &sha, "jobs.build.steps[0]", "checks out a PR ref");
 }
+
+/// Index syntax and upper case name the PR's head too (review of #1884, N1).
+#[test]
+fn index_syntax_names_the_pr_head_too() {
+    let secret_env = "    env:\n      TOKEN: ${{ secrets.NPM_TOKEN }}\n";
+    for expr in [
+        "github.event['pull_request']['head']['sha']",
+        "github.event.pull_request['head'].sha",
+        "github.event[\"workflow_run\"][\"head_sha\"]",
+        "github['head_ref']",
+        "GITHUB.HEAD_REF",
+    ] {
+        let step = format!("- run: curl -sL https://example.invalid/${{{{ {expr} }}}} | tar xz");
+        let source =
+            pr_checkout_job(secret_env, &step).replace("  pull_request:\n", "  workflow_run:\n");
+        assert_one(
+            "w.yml",
+            &source,
+            "jobs.build.steps[0]",
+            "checks out a PR ref",
+        );
+    }
+    assert_eq!(dotted_index("a['b'][\"c\"].d[0]"), "a.b.c.d[0]");
+}
