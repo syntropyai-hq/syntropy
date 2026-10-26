@@ -28,6 +28,9 @@
 //!   `probe` makes through safe functions (RFC-0010 §2.2; OQ-PRC-26): sysctl reads,
 //!   `host_statistics64` and IOKit power sources on macOS; processor, memory, NUMA, power,
 //!   working-set and version calls on Windows.
+//! - The `private` functions make the owner-only state directory and node key file of RFC-0030
+//!   §2.1–§2.2 for `cluster` and `daemon` (OQ-PRC-26): [`private_dir`], [`create_private_file`],
+//!   [`sync_dir`] and [`is_owner_only`].
 //!
 //! Every `unsafe` block carries a `// SAFETY:` comment with its invariant (ADR-0001 item 4).
 
@@ -37,10 +40,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 pub mod checks;
 #[cfg(target_os = "macos")]
 pub mod macos_host;
+mod private;
 mod thread;
 #[cfg(windows)]
 pub mod windows_host;
 
+pub use private::{create_private_file, is_owner_only, private_dir, sync_dir};
 pub use thread::{
     Core, CoreId, PinError, Priority, cpu_topology, current_core, pin_current_thread,
     raise_current_thread_priority,
