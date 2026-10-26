@@ -71,9 +71,10 @@ impl<R: BufRead, W: Write> Prompt<R, W> {
 
 impl<R: BufRead, W: Write> Consent for Prompt<R, W> {
     fn ask(&mut self, id: &str, fix: &Fix, auto: &AutoFix) -> Answer {
-        let mut question = format!("{id}: {}\n", fix.description);
+        // Every line is escaped: the description and a file's name come from the check too.
+        let mut question = format!("{id}: {}\n", printable(&fix.description));
         for edit in &auto.edits {
-            question.push_str(&format!("  {edit}\n"));
+            question.push_str(&format!("  {}\n", printable(&edit.to_string())));
             let HostEdit::WriteFile { contents, .. } = edit;
             // Short text is shown in full, so the user sees what is written.
             if let Ok(text) = std::str::from_utf8(contents)
@@ -108,18 +109,35 @@ impl<R: BufRead, W: Write> Consent for Prompt<R, W> {
     }
 }
 
-/// `line` with every control character but a tab escaped, so file content shown in the prompt
-/// cannot move the cursor, clear the screen or hide text from the user.
+/// `line` with every control character but a tab, and every invisible formatting character,
+/// escaped, so what the prompt shows cannot move the cursor, clear the screen, reverse text or hide
+/// it from the user.
 fn printable(line: &str) -> String {
     line.chars()
         .map(|c| {
-            if c.is_control() && c != '\t' {
+            if (c.is_control() && c != '\t') || invisible(c) {
                 c.escape_default().to_string()
             } else {
                 c.to_string()
             }
         })
         .collect()
+}
+
+/// Whether `c` is a Unicode character that changes how the text around it shows without showing
+/// itself: zero-width characters, the bidirectional controls, which can reverse the text after
+/// them, the line and paragraph separators, and the byte-order mark.
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 /// The largest file content the prompt shows in full; a longer file is shown by its size only.
@@ -421,10 +439,12 @@ pub fn apply(
 pub fn json_error(fixes: &[FixLine], error: &LedgerError) -> String {
     #[derive(Serialize)]
     struct Stopped<'a> {
+        schema: u16,
         fixes: &'a [FixLine],
         error: String,
     }
     serde_json::to_string_pretty(&Stopped {
+        schema: super::JSON_SCHEMA,
         fixes,
         error: error.to_string(),
     })

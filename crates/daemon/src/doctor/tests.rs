@@ -874,3 +874,37 @@ fn a_json_run_that_cannot_write_the_revert_script_still_reports_its_fixes_as_jso
         v["error"]
     );
 }
+
+#[test]
+fn the_prompt_escapes_invisible_characters_and_every_line_it_prints() {
+    fn hidden(ctx: &DoctorCtx) -> Finding {
+        let path = host_file(ctx, "a\u{1b}[2Kb.conf");
+        Finding::fail("needs a write").with_fix(Fix {
+            automatic: Some(AutoFix {
+                edits: vec![HostEdit::WriteFile {
+                    path,
+                    contents: "x\u{202E}fdp.exe\u{200B}\u{2028}y\n".as_bytes().to_vec(),
+                }],
+            }),
+            ..Fix::manual("write \u{1b}[1Ahidden")
+        })
+    }
+    let r = registry(vec![check("OS-001", Area::Os, Needs::Offline, hidden)]);
+    let dir = temp_dir();
+    let mut asked = Vec::new();
+    let mut prompt = Prompt::new(Cursor::new(b"n\n".to_vec()), &mut asked);
+    doctor_fix(&r, &dir, &mut prompt, false);
+    let asked = String::from_utf8(asked).unwrap();
+    for c in ['\u{1b}', '\u{202E}', '\u{200B}', '\u{2028}'] {
+        assert!(!asked.contains(c), "{c:?} in {asked:?}");
+    }
+    assert!(
+        asked.contains("OS-001: write \\u{1b}[1Ahidden\n"),
+        "{asked:?}"
+    );
+    assert!(asked.contains("a\\u{1b}[2Kb.conf (19 bytes)"), "{asked:?}");
+    assert!(
+        asked.contains("    | x\\u{202e}fdp.exe\\u{200b}\\u{2028}y\n"),
+        "{asked:?}"
+    );
+}
