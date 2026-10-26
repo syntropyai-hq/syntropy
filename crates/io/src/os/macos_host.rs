@@ -219,7 +219,7 @@ pub struct PowerSources {
     pub sources: Vec<PowerSourceDesc>,
 }
 
-type CFTypeRef = *const c_void;
+pub(super) type CFTypeRef = *const c_void;
 type CFIndex = isize;
 type CFTypeID = usize;
 
@@ -254,7 +254,7 @@ unsafe extern "C" {
 }
 
 /// A CoreFoundation object this code owns (from a Create or Copy call), released on drop.
-struct Owned(CFTypeRef);
+pub(super) struct Owned(pub(super) CFTypeRef);
 
 impl Drop for Owned {
     fn drop(&mut self) {
@@ -267,7 +267,7 @@ impl Drop for Owned {
 }
 
 /// A CFString holding `s`.
-fn cf_string(s: &CStr) -> Owned {
+pub(super) fn cf_string(s: &CStr) -> Owned {
     // SAFETY: `s` is NUL-terminated and valid for the call; a null allocator is the default
     // allocator. The result is owned (Create rule).
     Owned(unsafe { CFStringCreateWithCString(ptr::null(), s.as_ptr(), K_CF_STRING_ENCODING_UTF8) })
@@ -278,7 +278,7 @@ fn cf_string(s: &CStr) -> Owned {
 /// # Safety
 ///
 /// `s` is null or a valid CoreFoundation object for the duration of the call.
-unsafe fn string_value(s: CFTypeRef) -> Option<String> {
+pub(super) unsafe fn string_value(s: CFTypeRef) -> Option<String> {
     // SAFETY: `s` is a valid object by the caller's contract; `CFGetTypeID` reads its type.
     if s.is_null() || unsafe { CFGetTypeID(s) } != CFStringGetTypeID() {
         return None;
@@ -307,7 +307,7 @@ unsafe fn string_value(s: CFTypeRef) -> Option<String> {
 /// # Safety
 ///
 /// `dict` is a valid CFDictionary for the duration of the call.
-unsafe fn dict_get(dict: CFTypeRef, key: &CStr) -> CFTypeRef {
+pub(super) unsafe fn dict_get(dict: CFTypeRef, key: &CStr) -> CFTypeRef {
     let k = cf_string(key);
     if k.0.is_null() {
         return ptr::null();
@@ -368,7 +368,7 @@ pub fn power_sources() -> io::Result<PowerSources> {
 /// # Safety
 ///
 /// `n` is null or a valid CoreFoundation object for the duration of the call.
-unsafe fn number_value(n: CFTypeRef) -> Option<i64> {
+pub(super) unsafe fn number_value(n: CFTypeRef) -> Option<i64> {
     // SAFETY: `n` is a valid object by the caller's contract.
     if n.is_null() || unsafe { CFGetTypeID(n) } != CFNumberGetTypeID() {
         return None;
@@ -385,7 +385,7 @@ unsafe fn number_value(n: CFTypeRef) -> Option<i64> {
 /// # Safety
 ///
 /// `b` is null or a valid CoreFoundation object for the duration of the call.
-unsafe fn bool_value(b: CFTypeRef) -> Option<bool> {
+pub(super) unsafe fn bool_value(b: CFTypeRef) -> Option<bool> {
     // SAFETY: `b` is a valid object by the caller's contract.
     if b.is_null() || unsafe { CFGetTypeID(b) } != CFBooleanGetTypeID() {
         return None;
