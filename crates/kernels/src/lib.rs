@@ -16,6 +16,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod delta_ring;
 pub mod device;
 pub mod error;
 pub mod memory;
