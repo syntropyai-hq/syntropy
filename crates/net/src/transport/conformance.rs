@@ -82,7 +82,7 @@ pub trait Fabric {
     /// it can; a fabric over a real link waits a little.
     fn pump(&mut self);
 
-    /// How long, in wall-clock time, a check keeps pumping for an event after its [`PUMPS`] are
+    /// How long, in wall-clock time, a check keeps pumping for an event after its `PUMPS` are
     /// spent. A fabric over a real link on a loaded or instrumented machine needs this: its pumps
     /// sleep, so a count of them is a duration that slows with the machine. A check that passes
     /// never waits it out; the default, none, leaves a simulated fabric on its count.
