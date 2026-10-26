@@ -117,6 +117,8 @@ jobs:
           # fork's run never saves (RFC-0062 §3.3 item 3).
           cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
       - uses: ./.github/actions/install-cargo-deny
+      # The pinned actionlint, for `lint`'s actionlint step (RFC-0062 §12.4).
+      - uses: ./.github/actions/install-actionlint
       - run: cargo xtask ci lint
 
   build:
