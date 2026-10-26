@@ -231,3 +231,19 @@ fn the_report_reads_recorded_actions_api_jobs() {
     assert_eq!(r.lines.len(), 3, "{}", r.text);
     assert!(r.problems.is_empty(), "{:?}", r.problems);
 }
+
+/// A durations file in the shape `ci freeze --durations-out` writes (QUAL-E17-T04): two closed
+/// windows of 2 h and 5 h, and one still open. The file is a hand-written test input.
+#[test]
+fn the_freeze_line_counts_windows_hours_and_the_longest() {
+    let windows: Vec<FreezeWindow> =
+        serde_json::from_str(include_str!("freeze-2026-10.json")).unwrap();
+    assert_eq!(
+        freeze_line(&windows),
+        format!(
+            "  {:<44} {:>10} windows, 7.0 h total, longest 5.0 h, 1 open\n",
+            "release freezes", 3
+        )
+    );
+    assert!(freeze_line(&[]).contains("0.0 h total"));
+}

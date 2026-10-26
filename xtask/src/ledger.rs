@@ -388,6 +388,31 @@ pub struct Previous {
     lines: BTreeMap<String, f64>,
 }
 
+/// One release-freeze window, as `cargo xtask ci freeze --events <log> --durations-out <file>`
+/// writes it (QUAL-E17-T04). Times are unix seconds; an open window has no end. Fields the report
+/// does not read are ignored.
+#[derive(Debug, Deserialize)]
+pub struct FreezeWindow {
+    #[serde(default)]
+    seconds: Option<u64>,
+}
+
+/// The "release freezes" line: the windows, the hours of the closed ones, the longest, and how
+/// many are still open. The hours come from the event log, so they are as measured as the log.
+pub fn freeze_line(windows: &[FreezeWindow]) -> String {
+    let closed: Vec<u64> = windows.iter().filter_map(|w| w.seconds).collect();
+    let total: u64 = closed.iter().sum();
+    let longest = closed.iter().copied().max().unwrap_or(0);
+    format!(
+        "  {:<44} {:>10} windows, {:.1} h total, longest {:.1} h, {} open\n",
+        "release freezes",
+        windows.len(),
+        total as f64 / 3600.0,
+        longest as f64 / 3600.0,
+        windows.len() - closed.len()
+    )
+}
+
 /// One line of the report.
 #[derive(Debug, PartialEq)]
 pub struct Line {
@@ -591,7 +616,12 @@ pub fn report_step(context: &Context) -> Result<(), String> {
         ),
         None => None,
     };
-    let report = build_report(&cost, month, &pages, &metrics, previous.as_ref());
+    let mut report = build_report(&cost, month, &pages, &metrics, previous.as_ref());
+    if let Some(path) = arg("--freeze") {
+        let windows: Vec<FreezeWindow> =
+            serde_json::from_str(&read(path)?).map_err(|e| format!("{path}: {e}"))?;
+        report.text.push_str(&freeze_line(&windows));
+    }
     print!("{}", report.text);
     if let Some(out) = arg("--out") {
         std::fs::write(context.root.join(out), totals_json(month, &report.lines))

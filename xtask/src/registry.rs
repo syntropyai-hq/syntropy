@@ -602,6 +602,12 @@ pub const JOBS: &[Entry] = &[
                 required: false,
             },
             Param {
+                name: "--freeze",
+                value: "<file>",
+                help: "release-freeze windows, as `ci freeze --durations-out` writes them",
+                required: false,
+            },
+            Param {
                 name: "--cost",
                 value: "<file>",
                 help: "the ledger to read, ci/cost.toml by default",

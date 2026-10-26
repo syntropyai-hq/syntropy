@@ -1,0 +1,5 @@
+[
+  {"version": "0.4.0", "continued_by": [], "start": 1760000000, "end": 1760007200, "seconds": 7200, "lifted_by": "publish"},
+  {"version": "0.4.1", "continued_by": ["0.4.2"], "start": 1760100000, "end": 1760118000, "seconds": 18000, "lifted_by": "abort"},
+  {"version": "0.5.0", "continued_by": [], "start": 1760200000, "end": null, "seconds": null, "lifted_by": null}
+]
