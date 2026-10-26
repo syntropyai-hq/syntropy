@@ -955,19 +955,78 @@ fn a_client_refuses_anything_but_one_constrained_ca() {
         "the certificate has no name constraints"
     );
 
-    // A constrained CA that permits a public subnet.
-    let mut params = CertificateParams::default();
-    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    params.name_constraints = Some(rcgen::NameConstraints {
-        permitted_subtrees: vec![rcgen::GeneralSubtree::IpAddress(
-            rcgen::CidrSubnet::from_v4_prefix([8, 8, 8, 0], 24),
-        )],
-        excluded_subtrees: vec![],
-    });
-    let public = params.self_signed(&key).unwrap();
+    // Constrained CAs that a node would never mint.
+    let constrained = |permitted: Vec<rcgen::GeneralSubtree>,
+                       excluded: Vec<rcgen::GeneralSubtree>| {
+        let mut params = CertificateParams::default();
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        params.name_constraints = Some(rcgen::NameConstraints {
+            permitted_subtrees: permitted,
+            excluded_subtrees: excluded,
+        });
+        super::ca::certificate_pem(params.self_signed(&key).unwrap().der())
+    };
+    let dns = |n: &str| rcgen::GeneralSubtree::DnsName(n.into());
+    let v4 = |a: [u8; 4], p: u8| {
+        rcgen::GeneralSubtree::IpAddress(rcgen::CidrSubnet::from_v4_prefix(a, p))
+    };
+    let v6_all = || rcgen::GeneralSubtree::IpAddress(rcgen::CidrSubnet::from_v6_prefix([0; 16], 0));
+    let v4_all = || v4([0; 4], 0);
+    for (permitted, excluded, why) in [
+        (
+            vec![v4([8, 8, 8, 0], 24)],
+            vec![v6_all()],
+            "the CA may issue for a public address",
+        ),
+        // A local base address with a short mask covers public addresses: refused, not read as 10/8.
+        (
+            vec![v4([10, 0, 0, 0], 0)],
+            vec![v6_all()],
+            "the CA may issue for a public address",
+        ),
+        (
+            vec![v4([10, 0, 0, 0], 7)],
+            vec![v6_all()],
+            "the CA may issue for a public address",
+        ),
+        (
+            vec![rcgen::GeneralSubtree::IpAddress(rcgen::CidrSubnet::V4(
+                [10, 0, 0, 0],
+                [255, 0, 255, 0],
+            ))],
+            vec![v6_all()],
+            "a name-constraint address is malformed",
+        ),
+        // A family neither permitted nor excluded is unconstrained.
+        (
+            vec![dns("box.local"), v4([192, 168, 1, 0], 24)],
+            vec![],
+            "the CA may issue for any IPv6 address",
+        ),
+        (
+            vec![dns("box.local")],
+            vec![v6_all()],
+            "the CA may issue for any IPv4 address",
+        ),
+        // A single label covers a whole top-level domain.
+        (
+            vec![dns("box")],
+            vec![v4_all(), v6_all()],
+            "the CA may issue for a whole top-level domain, or a malformed name",
+        ),
+        (
+            vec![],
+            vec![v4_all(), v6_all()],
+            "the certificate's name constraints permit no subtree",
+        ),
+    ] {
+        assert_eq!(refused(&constrained(permitted, excluded)), why);
+    }
+    // Names only, with both families excluded, as a node that serves no local address mints.
+    let names_only = constrained(vec![dns("box.local")], vec![v4_all(), v6_all()]);
     assert_eq!(
-        refused(&super::ca::certificate_pem(public.der())),
-        "the CA may issue for a public address"
+        CaCertificate::from_pem(&names_only).unwrap().permitted(),
+        ["box.local"]
     );
 
     // A leaf the CA issued.

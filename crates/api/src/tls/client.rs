@@ -6,22 +6,22 @@
 //! A client fetches the certificate before it trusts anything, so it checks what it got before it
 //! shows the fingerprint and installs it. [`CaCertificate::from_pem`] accepts exactly one PEM
 //! `CERTIFICATE` block that is a self-signed CA certificate carrying critical X.509 name
-//! constraints, with at least one permitted subtree and no permitted address outside the local
-//! ranges ([`is_local`]). Anything else is refused, because a CA without those constraints is a
+//! constraints that hold it to what a node mints: permitted DNS names of two or more labels,
+//! permitted subnets each inside one local block (the ranges [`super::is_local`] accepts), and
+//! each address family either permitted a subnet or excluded whole. Anything else is refused, because a CA without those constraints is a
 //! grant over every name, and no Syntropy node mints one (ADR-0505 item 6). This check does not
 //! say which node minted the certificate: the user's fingerprint comparison does, and from M2 the
 //! node-key binding does too (`trust --cluster`, PROD-E5-T08).
 
 use std::fmt;
-use std::net::IpAddr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 use syntropy_net::crypto::{self, Context};
-use x509_parser::extensions::{GeneralName, ParsedExtension};
+use x509_parser::extensions::{GeneralName, NameConstraints, ParsedExtension};
 
 use super::ca::{base64, certificate_pem};
-use super::scope::is_local;
 
 /// Why a fetched certificate is not installed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,7 +56,7 @@ impl fmt::Debug for CaCertificate {
 impl CaCertificate {
     /// Parses and checks the PEM text a node served: one `CERTIFICATE` block and nothing else but
     /// white space around it, holding a self-signed CA certificate whose critical name
-    /// constraints permit at least one subtree, and permit no address outside the local ranges.
+    /// constraints hold it to what a node mints (see the module documentation).
     ///
     /// # Errors
     ///
@@ -103,15 +103,7 @@ impl CaCertificate {
                             "the certificate's name constraints are not critical",
                         ));
                     }
-                    permitted = Some(
-                        constraints
-                            .permitted_subtrees
-                            .as_deref()
-                            .unwrap_or_default()
-                            .iter()
-                            .map(|subtree| permitted_name(&subtree.base))
-                            .collect::<Result<Vec<String>, CaRefused>>()?,
-                    );
+                    permitted = Some(checked_permitted(constraints)?);
                 }
                 _ => {}
             }
@@ -120,11 +112,6 @@ impl CaCertificate {
             return Err(CaRefused("the certificate is not a CA certificate"));
         }
         let permitted = permitted.ok_or(CaRefused("the certificate has no name constraints"))?;
-        if permitted.is_empty() {
-            return Err(CaRefused(
-                "the certificate's name constraints permit no subtree",
-            ));
-        }
         let subject = certificate
             .subject()
             .iter_common_name()
@@ -187,43 +174,136 @@ impl CaCertificate {
     }
 }
 
-/// One permitted subtree for display, refused if it is not a DNS name or a local subnet.
-fn permitted_name(name: &GeneralName<'_>) -> Result<String, CaRefused> {
-    match name {
-        GeneralName::DNSName(dns) if !dns.trim_start_matches('.').is_empty() => {
-            Ok((*dns).to_owned())
-        }
-        GeneralName::IPAddress(bytes) => {
-            let (addr, prefix) = match bytes.len() {
-                8 => {
-                    let addr: [u8; 4] = bytes[..4].try_into().expect("8 bytes");
-                    (IpAddr::from(addr), prefix_len(&bytes[4..]))
-                }
-                32 => {
-                    let addr: [u8; 16] = bytes[..16].try_into().expect("32 bytes");
-                    (IpAddr::from(addr), prefix_len(&bytes[16..]))
-                }
-                _ => return Err(CaRefused("a permitted address is malformed")),
-            };
-            if !is_local(addr) {
-                return Err(CaRefused("the CA may issue for a public address"));
-            }
-            Ok(format!("{addr}/{prefix}"))
-        }
-        _ => Err(CaRefused(
-            "a permitted subtree is neither a DNS name nor an address",
-        )),
-    }
+/// A name-constraint subtree this check understands.
+enum Subtree {
+    /// A DNS name and every name below it.
+    Dns(String),
+    /// An IPv4 network and its prefix length.
+    V4(u32, u32),
+    /// An IPv6 network and its prefix length.
+    V6(u128, u32),
+    /// Any other name form, which a TLS client does not match a server against.
+    Other,
 }
 
-/// The number of leading one bits in a subnet mask.
-fn prefix_len(mask: &[u8]) -> u32 {
-    let mut ones = 0;
-    for byte in mask {
-        ones += byte.leading_ones();
-        if *byte != 0xff {
-            break;
+/// The local blocks a permitted subnet must lie inside, whole: what [`super::is_local`] accepts.
+const LOCAL_V4: [(u32, u32); 5] = [
+    (0x0a00_0000, 8),  // 10/8
+    (0xac10_0000, 12), // 172.16/12
+    (0xc0a8_0000, 16), // 192.168/16
+    (0xa9fe_0000, 16), // 169.254/16, link-local
+    (0x6440_0000, 10), // 100.64/10, shared
+];
+const LOCAL_V6: [(u128, u32); 2] = [
+    (0xfc00 << 112, 7),  // fc00::/7, unique local
+    (0xfe80 << 112, 10), // fe80::/10, link-local
+];
+
+/// Whether `prefix` bits of `network` lie inside one of `blocks`, whole.
+fn inside<T>(network: T, prefix: u32, blocks: &[(T, u32)], width: u32) -> bool
+where
+    T: Copy + PartialEq + std::ops::Shr<u32, Output = T>,
+{
+    blocks
+        .iter()
+        .any(|&(block, len)| prefix >= len && network >> (width - len) == block >> (width - len))
+}
+
+/// The prefix length of a contiguous subnet mask, or `None` for a mask with a hole in it.
+fn prefix_len(mask: &[u8]) -> Option<u32> {
+    let ones: u32 = mask.iter().map(|b| b.count_ones()).sum();
+    let contiguous = mask
+        .iter()
+        .flat_map(|b| (0..8).rev().map(move |i| b >> i & 1))
+        .enumerate()
+        .all(|(i, bit)| (bit == 1) == (i < ones as usize));
+    contiguous.then_some(ones)
+}
+
+fn subtree(name: &GeneralName<'_>) -> Result<Subtree, CaRefused> {
+    const MALFORMED: CaRefused = CaRefused("a name-constraint address is malformed");
+    Ok(match name {
+        GeneralName::DNSName(dns) => Subtree::Dns((*dns).to_owned()),
+        GeneralName::IPAddress(bytes) if bytes.len() == 8 => {
+            let prefix = prefix_len(&bytes[4..]).ok_or(MALFORMED)?;
+            let addr = u32::from_be_bytes(bytes[..4].try_into().expect("4 bytes"));
+            let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
+            Subtree::V4(addr & mask, prefix)
+        }
+        GeneralName::IPAddress(bytes) if bytes.len() == 32 => {
+            let prefix = prefix_len(&bytes[16..]).ok_or(MALFORMED)?;
+            let addr = u128::from_be_bytes(bytes[..16].try_into().expect("16 bytes"));
+            let mask = u128::MAX.checked_shl(128 - prefix).unwrap_or(0);
+            Subtree::V6(addr & mask, prefix)
+        }
+        GeneralName::IPAddress(_) => return Err(MALFORMED),
+        _ => Subtree::Other,
+    })
+}
+
+/// Holds the name constraints to what a node mints (RFC-0050 §11.1.1), and returns the
+/// permitted subtrees for display.
+/// - Every permitted subtree is a DNS name of two or more labels, or a subnet that lies whole
+///   inside one local block: a mask such as `10.0.0.0/0` is refused, not read as `10/8`.
+/// - Each address family is constrained: some subnet of it is permitted, or the whole family is
+///   excluded, as a node with no subnet of that family excludes it. Otherwise the CA could issue
+///   for any address of that family.
+fn checked_permitted(constraints: &NameConstraints<'_>) -> Result<Vec<String>, CaRefused> {
+    let mut shown = Vec::new();
+    let (mut v4, mut v6) = (false, false);
+    for entry in constraints
+        .permitted_subtrees
+        .as_deref()
+        .unwrap_or_default()
+    {
+        match subtree(&entry.base)? {
+            Subtree::Dns(dns) => {
+                let name = dns.trim_start_matches('.');
+                if !name.contains('.') || name.split('.').any(str::is_empty) {
+                    return Err(CaRefused(
+                        "the CA may issue for a whole top-level domain, or a malformed name",
+                    ));
+                }
+                shown.push(dns);
+            }
+            Subtree::V4(network, prefix) => {
+                if !inside(network, prefix, &LOCAL_V4, 32) {
+                    return Err(CaRefused("the CA may issue for a public address"));
+                }
+                v4 = true;
+                shown.push(format!("{}/{prefix}", Ipv4Addr::from(network)));
+            }
+            Subtree::V6(network, prefix) => {
+                if !inside(network, prefix, &LOCAL_V6, 128) {
+                    return Err(CaRefused("the CA may issue for a public address"));
+                }
+                v6 = true;
+                shown.push(format!("{}/{prefix}", Ipv6Addr::from(network)));
+            }
+            Subtree::Other => {
+                return Err(CaRefused(
+                    "a permitted subtree is neither a DNS name nor an address",
+                ));
+            }
         }
     }
-    ones
+    for entry in constraints.excluded_subtrees.as_deref().unwrap_or_default() {
+        match subtree(&entry.base)? {
+            Subtree::V4(_, 0) => v4 = true,
+            Subtree::V6(_, 0) => v6 = true,
+            _ => {}
+        }
+    }
+    if shown.is_empty() {
+        return Err(CaRefused(
+            "the certificate's name constraints permit no subtree",
+        ));
+    }
+    if !v4 {
+        return Err(CaRefused("the CA may issue for any IPv4 address"));
+    }
+    if !v6 {
+        return Err(CaRefused("the CA may issue for any IPv6 address"));
+    }
+    Ok(shown)
 }
