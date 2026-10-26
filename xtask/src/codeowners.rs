@@ -262,7 +262,7 @@ impl Pattern {
 }
 
 /// `*` matches any run of characters within one segment; everything else matches itself.
-fn glob_matches(glob: &str, text: &str) -> bool {
+pub(crate) fn glob_matches(glob: &str, text: &str) -> bool {
     let pieces: Vec<&str> = glob.split('*').collect();
     if pieces.len() == 1 {
         return glob == text;

@@ -822,6 +822,26 @@ DIST-E1-T02 (M0a) builds the shared-memory region. Its criterion "the daemon unl
 |---|---|---|---|
 | DIST-E1-T02's criterion becomes the creating side's unlink after the runner process exits, shown by its cross-process test; "the daemon calls `Region::unlink` when a runner exits" moves to DIST-E1-T04 | DIST-E1-T02, DIST-E1-T04 | R9 | DIST-E1-T04 spawns runners and sees them exit. DIST-E1-T02's test plays both processes, so it can show the unlink itself. On Linux a memfd has no name, and on Windows a mapping's name goes with its last handle, so the test checks each OS's own form of "no name left" |
 
+## Review follow-ups from merged PRs (2026-10-23)
+
+Three merged PRs left non-blocking review findings that tasks not yet started must act on. They are recorded here as criteria, so they live in the plan and not only in PR comments.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T06 and DIST-E4-T05 each gain "the stopped-clock reading reaches the supervisor (the detector) through a trait the wiring implements over `SystemClock::awake()`, or the file that holds the `SystemClock` is listed in `EXCEPTIONS` in `xtask/src/determinism.rs` with its reason; either way `cargo xtask ci lint` passes"; DIST-E1-T06 → QUAL-E3-T03 and DIST-E4-T05 → QUAL-E3-T03 | DIST-E1-T06, DIST-E4-T05 | R9 | #1769 bans `SystemClock` as a type in every crate the determinism lint covers, `daemon` and `cluster` among them. `awake()` is an inherent method, not part of `core::Clock`, so a covered file that holds a `SystemClock` to call it fails `lint` (the stand-in engine review's N2 on #1769, issuecomment-6342117596). Each task picks its path; the injected trait keeps the supervisor and the detector testable on virtual time. QUAL-E3-T03 (M0b) builds the lint and its `EXCEPTIONS` list |
+| DIST-E1-T04 gains "the runner reads `SystemTicks::rate()` once at start-up, before it starts a dispatcher or I/O thread, so the calibration never falls on a hot thread's first step", with a test that times the first `ticks()` read on a thread the runner starts; DIST-E1-T04 → QUAL-E3-T17 | DIST-E1-T04 | R9 | since #1762, `SystemTicks` calibrates at its first use, which can take `TSC_CALIBRATION` (20 ms), so a runner that skips the start-up call stalls its first hot step (review-1493's N1 on #1762, issuecomment-6342083856). DIST-E1-T04 starts the runner process, `__runner --ipc`, which is the runner's composition root. No daemon task takes the criterion, because the daemon runs no hot thread: RFC-0001 §13 puts hot-thread timing on the runner's dispatcher and I/O threads |
+| QUAL-E3-T17 moves from M0b to M0a | QUAL-E3-T17 | R6 | DIST-E1-T04, an M0a task, now reaches it. Its own dependencies (QUAL-E3-T01, QUAL-E3-T02, QUAL-E3-T24) are all M0a, and it has merged (#1762), so the move adds no M0a work. ADR-0022's list of affected tasks still names it as M0b, as it stood when that ADR was accepted |
+| PLC-E7-T17 → QUAL-E3-T17 | PLC-E7-T17 | R9 | PLC-E7-T17's dispatchers take a statically dispatched `TickSource`, which is QUAL-E3-T17's trait. QUAL-E3-T17 also provides the `SimClock`-backed source that a simulator run, as in PLC-E7-T17's criteria, can use. While QUAL-E3-T17 was M0b, the M0a task could not depend on it. With the move above the edge is legal, and it adds no cycle: QUAL-E3-T17 reaches only QUAL-E3-T01, QUAL-E3-T02 and QUAL-E3-T24 |
+| DIST-E1-T01's task cell records `crates/spsc/tests/safety_comments.rs` and the three shapes in which it asks for one more `// SAFETY:` comment than clippy does; no edge | DIST-E1-T01 | — | #1723 added the scan, because `lint` runs clippy on Linux only and the Apple and Windows wake handles' `unsafe` would otherwise go unchecked. Its module doc names two of the stricter shapes. The third, a second `unsafe` argument of one call under one comment above the statement, came from the stand-in engine review's N1 on #1723 (issuecomment-6342060373). Clippy 0.1.99 accepts that shape and the scan reports the second argument. That errs in the safe direction, and no current source has the shape |
+
+## OQ-NET-34 settled (2026-10-23)
+
+DIST-E10-T10 model-checked OQ-NET-34's option (a) and settled it in RFC-0032 §7.5, §6.3 and Testing, under the maintainers' standing instruction. The check needed two parts more than the open question named: a node's own `Endorse`s count as support, because a `SignedElection`'s `acks` miss support given after the win; and two heal-path rules, that a held proof's support only grows and that every accepted election is endorsed once. DIST-E10-T05 builds the heal, so it takes them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E10-T05's task and criteria take the settled rule: the standing comparison, the endorsement record, support that only grows, endorsing once, and fencing replies with the sender's strongest supported election; its `gate: OQ-NET-34` is removed, and its edge to DIST-E10-T10 stays | DIST-E10-T05 | Definition of done (the spike closed the question) | DIST-E10-T05 builds the heal comparison, the fencing replies and the endorsement the answer changes. Its new criteria replay the election model's two pinned traces in the simulator, DIST-E10-T08's `stale-heal` trace and DIST-E10-T10's `stale-heal-late-support` trace, which DIST-E10-T05's existing simulator criterion already uses |
+
 ## DIST-E7-T01's conformance criterion and buffer types (2026-10-22)
 
 DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-conformance suite", could not be met by DIST-E7-T01: `SimTransport` is QUAL-E8-T04, which depends on DIST-E7-T01 and DIST-E7-T02, and no task row built the suite itself, though DIST-E7-T03, T05, T06 and T08 and QUAL-E8-T04 all run it. RFC-0001 §5.8 and RFC-0031 §2 also name six buffer types without defining them (`BufferPool`, `PoolRegistration`, `PayloadSlice`, `PayloadRef`, `ExtBuf`, `ExtRef`), and DIST-E7-T01's signatures need them. These are plan corrections that take the recommended default, under the maintainer's standing instruction; RFC-0031 §2's note of 2026-10-22 records the definitions.
@@ -834,6 +854,18 @@ DIST-E7-T01's second criterion, "`SimTransport` passes the shared channel-confor
 | Added TIER-E2-T25 (M2, `NetPool` registered with the transports, in `runner`) → TIER-E2-T21, DIST-E7-T01 | TIER-E2-T25 | R1 | `runner` (layer 5) may depend on both `tier` and `net`; a `runner` newtype over the `NetPool` lease implements `PoolMemory`, which the orphan rule allows, and the runner calls `Transport::register`. The `unsafe impl` sits in one `runner` module that RFC-0001 §4.2 rule 8's note of 2026-10-23 allows (§18.25), as `testkit`'s `GlobalAlloc` does. `core` cannot hold the trait instead: it forbids `unsafe` code, and an `unsafe trait` trips that lint. It has no edge to DIST-E7-T07: its criteria use fake transports, so neither the RDMA backend nor the two-Mac TB5 rig behind it has to come first, and DIST-E11-T01, which depends on it, does not wait on them |
 | DIST-E7-T12's pools are over any `PoolMemory` (`HeapMemory` in its tests), not "from TIER's pinned network sub-arena"; its edge to TIER-E2-T21 is cut | DIST-E7-T12 | R8 | `net` cannot depend on `tier`, and none of DIST-E7-T12's criteria uses `NetPool`; a runner's `NetPool` reaches `net` through TIER-E2-T25 |
 | DIST-E11-T01 → TIER-E2-T25 | DIST-E11-T01 | R9 | DIST-E11-T01 opens the runner's data-plane channels, and each channel's `ChannelSpec::pool` names a `NetPool` registration that TIER-E2-T25 makes |
+
+## DIST-E8-T15: the `EmbeddingResult` frame without the embedding path (2026-10-23)
+
+DIST-E8-T15 could not be finished as written. Its first criterion, "an embedding request through a 2-stage instance returns the vector", needs two tasks it does not reach: the tail's pooling path, PLC-E9-T22 (M3), and the API path, PROD-E4-T09, which depends on DIST-E8-T15. PLC-E9-T22's row already sends the frame and already checks the vector through one- and two-stage instances, but it had no edge to DIST-E8-T15. These are plan corrections under R9, approved by the lead running the task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E8-T15's criteria become: golden frames round-trip with `dims`, `pooling`, `normalised` and `prompt_tokens` recorded, a 4096-dimension vector among them in parts; hostile input is refused; the encoder refuses a channel without bit 14 `EMBEDDING`. The end-to-end criterion rests with PLC-E9-T22, which already states it | DIST-E8-T15, PLC-E9-T22 | R9 | the codec is what DIST-E8-T15 builds. "A peer without the capability never receives one" is kept as the encoder's refusal, which DIST-E8-T15 can check; negotiating the set is DIST-E8-T13's capability intersection |
+| PLC-E9-T22 → DIST-E8-T15 | PLC-E9-T22 | R9 | the tail sends the frame DIST-E8-T15 defines. DIST-E8-T15 is M2 and PLC-E9-T22 M3, so the edge adds no delay |
+| DIST-E8-T15 carries the frame's parts in the extension's `reserved[4]` (RFC-0031 §6.14, revised 2026-10-23) | DIST-E8-T15 | — | §6.14 sent a larger vector in `Token`'s parts, but its extension had no part fields; a 4096-dimension F32 vector does not fit a 16 KiB slot with its header |
+| PLC-E9-T22 moves from M3 to M2, and PROD-E4-T09 → PLC-E9-T22 and PROD-E4-T10 → PLC-E9-T22 are added | PLC-E9-T22, PROD-E4-T09, PROD-E4-T10 | R9 | RFC-0050 serves `/v1/embeddings` at M2, and PROD-E4-T09 and PROD-E4-T10 check it end to end there, but the pooling path at the tail they rely on was M3 and unreachable from them. Every task PLC-E9-T22 depends on is M2 or earlier, so it moves to M2 with nothing else (review of #1777) |
+| PLC-E9-T22's criterion reads the vector at ingress from the `EmbeddingResult` frame, with the frame's `dims` and `pooling` recorded | PLC-E9-T22 | R9 | the end-to-end check DIST-E8-T15 gave up is then the one PLC-E9-T22 runs: through one- and two-stage instances, across the frame, not inside the tail alone (review of #1777) |
 
 ## DIST-E6-T01's p99 criterion and the metered gap (2026-10-22)
 
@@ -868,6 +900,24 @@ TIER-E5-T08 (M1b) builds `IoRingEngine` and `IocpEngine`, and its criterion is t
 | TIER-E5-T08's criterion reads "TIER-E5-T33's conformance harness passes", and TIER-E5-T08 → TIER-E5-T33 | TIER-E5-T08 | R9 | M1b → M0b. TIER-E5-T33 reaches no TIER-E5 engine task, so the edge adds no cycle |
 | TIER-E5-T03's, TIER-E5-T06's and TIER-E5-T09's criteria read "TIER-E5-T33's conformance harness passes", TIER-E5-T22's "engines pass TIER-E5-T33's conformance harness on the Tier 2/3 CI targets", and each gains an edge to TIER-E5-T33 | TIER-E5-T03, TIER-E5-T06, TIER-E5-T09, TIER-E5-T22 | R9 | each criterion cited the suite, and none reached TIER-E5-T04. #1738, TIER-E5-T03's change, reports that criterion as not run for that reason. M0b, M1a, M1b and M4 → M0b, and TIER-E5-T33 reaches none of them, so the edges add no cycle and no `LATER` |
 
+## DIST-E7-T11's link selection: what it builds and who carries its report (2026-10-23)
+
+DIST-E7-T11 (M2) could not meet its criteria as written:
+- "flags `TransportDemoted`" needs RFC-0033 §7.1's `Degradation`, which DIST-E14-T13 builds at M3;
+- "reports `Drift`" names no message;
+- "connects on QUIC" needs a QUIC backend that DIST-E7-T11 did not depend on;
+- "exposed to the solver" needs RFC-0001 §5.2's base `LinkCaps`, which no task built, in a crate the solver can use.
+
+These were settled under the maintainers' standing instruction. RFC-0031 §3's note of 2026-10-23 and RFC-0001 §18.31 record them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T11 builds `LinkCaps` and `link_cost` in `core::resource::link`, with `Transport::cost` delegating to it, and a fallback generic over `Transport` that returns a `Demotion` and the new hop's `cost_t`, and the R→D message `EdgeDemoted { demotion, cause, cost }` that reports it. Its criteria test the fallback with two test transports, read as "the fallback picks QUIC"; DIST-E7-T11 → DIST-E1-T03 | DIST-E7-T11 | R9 | the solver must not depend on `net`, and no task had built the base `LinkCaps`. The fallback's choice does not depend on the backend, so test transports show it. `EdgeDemoted` travels on DIST-E1-T03's command channel, and arrives with the task that owns its field type (RFC-0001 §3.5's note of 2026-10-23) |
+| "flags `TransportDemoted`" moves to DIST-E14-T13, which sets `TRANSPORT_DEMOTED` and `DegradeDetail::Demoted` from DIST-E7-T11's `Demotion`; DIST-E14-T13 → DIST-E7-T11 | DIST-E7-T11, DIST-E14-T13 | R9 | DIST-E14-T13 (M3) carries `Degradation` through runner state, and DIST-E7-T11 (M2) cannot depend on it |
+| DIST-E7-T03 and QUAL-E8-T04 each gain "DIST-E7-T11's fallback connects a hop planned on an unavailable `Rdma(_)` transport on QUIC", through the real backend and through `SimTransport`; DIST-E7-T03 → DIST-E7-T11 and QUAL-E8-T04 → DIST-E7-T11 | DIST-E7-T03, QUAL-E8-T04 | R9 | the check on a real backend needs one, and each of these tasks builds one. Neither reaches DIST-E7-T11's dependencies, so the edges add no cycle |
+| DIST-E7-T10 reports its fault-time demotion through DIST-E7-T11's `EdgeDemoted` with cause `RepeatedFaults`; DIST-E7-T10 → DIST-E7-T11 | DIST-E7-T10 | R9 | one message serves both demotion paths, and DIST-E7-T11, written first, owns it. RFC-0031 §7.4 and RFC-0033 §11 already call the report `ReportEdgeDemoted`, which the daemon forwards it as. DIST-E7-T11 does not reach DIST-E7-T10 |
+| DIST-E11-T01 connects each hop through DIST-E7-T11's `connect_hop` and reports a demotion as `EdgeDemoted` with cause `ConnectFailed`, with a simulator criterion; DIST-E11-T01 → DIST-E7-T11 | DIST-E11-T01 | R9 | DIST-E11-T01 opens the runner's outbound and inbound channels at `Loading`, so it is where the fallback runs. DIST-E7-T11 does not reach DIST-E11-T01 |
+
 ## PROD-E1-T10: instance-wide knobs a request did not name (2026-10-22)
 
 Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request that names its knobs and leaves out one the candidate's plan applies to every sequence would run with it while its label omitted it. The RFC-0054 §7 note of 2026-10-22 refuses that case with `fidelity_conflict`.
@@ -877,6 +927,16 @@ Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request 
 | PROD-E1-T10 gains a criterion for that case | PROD-E1-T10 | Definition of done | the rule needs a check that can fail: a P-config-2 case shows that such a request never resolves to a knob set missing a plan knob, and that `fidelity_conflict` names exactly the missing ones |
 | The criterion also covers a knob bit this version cannot name: it counts as instance-wide, and a plan holding one serves no request | PROD-E1-T10 | Definition of done | `ApproxKnobs` keeps a bit it does not name, and RFC-0042 §10 reserves `1 << 8` for a later knob. The review of #1771 found that such a bit counted as neither scope, so an exact request could be served by a plan that applied it, and an approximate label could leave it out |
 
+## `ReplanReason` gets a task (2026-10-23)
+
+RFC-0033 §6.1 defines `ReplanReason`, and ten tasks use it, the first at M1a, but no task built it. Its `DriftTerm` was named and never defined. The review of #1803, which needs a `DriftTerm::Hop` for a demoted hop, found the gap. The answers were taken under the maintainers' standing instruction. RFC-0033 §6.1's note of 2026-10-23 and RFC-0001 §18.33 record them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New DIST-E14-T21 (M1a): `ReplanReason`, `DriftTerm` (one variant per RFC-0010 §6.2 live estimator, `#[non_exhaustive]`) and `WorkloadTerm` in `core`, with serde; → PROD-E1-T04, PLC-E1-T01, PLC-E4-T17 | DIST-E14-T21 | R9 | the solver reads the reason in `SolveInput::reason` and cannot depend on `cluster`. M1a is the earliest user's milestone (PLC-E3-T07, PROD-E1-T11, TIER-E10-T01) |
+| PLC-E3-T07, PROD-E1-T11, TIER-E10-T01, DIST-E10-T06 and DIST-E14-T15 → DIST-E14-T21 | PLC-E3-T07, PROD-E1-T11, TIER-E10-T01, DIST-E10-T06, DIST-E14-T15 | R9 | each names a `ReplanReason` variant: `WorkloadDrift`, `Config` twice, `HealOrphans`, and `RecoveryStarted`'s `cause` |
+| PLC-E6-T04 builds the deferred re-plan for a demoted hop, with `DriftTerm::Hop` naming the planned transport, and a unit-test criterion; PLC-E6-T04 → DIST-E14-T21. DIST-E14-T15 raises it when it applies `EdgeDemoted`, with a test; DIST-E14-T15 → PLC-E6-T04 | PLC-E6-T04, DIST-E14-T15 | R9 | RFC-0001 §7.2 had no trigger for a demotion (RFC-0031 §3, §7.4). The coordinator first sees one through RFC-0033 §11's `EdgeDemoted` event, which DIST-E14-T15 adds at M3, so the wiring is there, and PLC-E6-T04 (M2), which owns deferred re-plans, builds the reason (standin-engine's review of #1811, B2) |
+
 ## PLC-E8-T13's rejection criterion after the section builder (2026-10-23)
 
 #1792 builds `SchedSection` with `config`'s `InstanceSection` (PROD-E1-T24), as RFC-0054 §5.4's note of 2026-10-22 says every domain crate's section is built. It removes `SchedSection::from_policy`, which PLC-E8-T13's criterion named.
@@ -884,3 +944,220 @@ Building PROD-E1-T10 found a gap in RFC-0054 §7's rule. An approximate request 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | PLC-E8-T13's criterion names `config`'s `InstanceSection::<SchedSection>::from_policy` in place of `SchedSection::from_policy`, and PLC-E8-T13 → PROD-E1-T24 | PLC-E8-T13 | R9 | the criterion's wording had drifted from the code: the builder now rejects the invalid values, and PROD-E1-T24 produces it. Both tasks are M1a and done (#1656, #1772), so the edge adds no wait |
+| PLC-E9-T07, DIST-E14-T01, DIST-E15-T02 and DIST-E14-T13 → DIST-E14-T21; RFC-0011 §12.1 gains the demoted hop's row | PLC-E9-T07, DIST-E14-T01, DIST-E15-T02, DIST-E14-T13 | R9 | each names a variant too: `WorkloadDrift` (the SC-21 check), `RecoveryStarted`'s `cause` with its solve, `EdgeLost`'s repair, and `DegradedExit`. None is reachable from DIST-E14-T21, so the edges add no cycle (review-1474's review of #1811, B1 and N1) |
+
+## DIST-E1-T03's message set, by owner (2026-10-23)
+
+DIST-E1-T03 (M0a) could not be finished as written. "The full RFC-0001 §3.5 message set plus `PeerRevoked` and `DataPlaneGrant`" needs about 16 field types that do not exist:
+- **Built later:** `DataPlaneCredential` (DIST-E2-T05, M2), `PackKey` (COMP-E10-T11, M1a), `RunnerConfig` (PROD-E1-T07, M1a) and `ResidencySummary` (TIER-E1-T09, M1a). The last two tasks depend on DIST-E1-T03 themselves.
+- **Owned by no task:** `Deadline`, `DrainReason`, `SequenceOutcome` and `FetchPriority`.
+- **In a crate `ipc` cannot name:** several sit in `manifest`, `kernels`, `tier` or the probe, and `ipc` is layer 1, which rule 2 (RFC-0001 §4.2) limits to layer 0.
+
+Its fuzz criterion also needs QUAL-E10-T01's harness (M0b), which it did not depend on. The maintainers chose to have each owner add its messages, under the standing instruction (RFC-0001 §18.28).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T03 keeps the channel and the messages whose field types exist at M0a (`Hello`, `Ping`, `Pong`, `PeerRevoked`, `ShardProgress`, `AssignPlan`, `ApplyPlanDelta`, `StateChanged`, and `Init` without `config` and `grant`); its fuzz criterion becomes "decode is total over arbitrary bytes", which QUAL-E10-T03's `ipc_msgs` target wraps | DIST-E1-T03 | R9 | the rest of the set needs types from later milestones or from tasks that depend on DIST-E1-T03, and the fuzz registry is QUAL-E10-T01's; the same fix as DIST-E8-T12's fuzz criterion above |
+| Added DIST-E1-T15 (M0a) → DIST-E1-T03: `Deadline`, `DrainReason`, `SequenceOutcome` and `FetchPriority` in `core`, `PressureLevel` moved from `tier` to `core`, and the `Drain`, `Shutdown`, `MemoryPressure` and `SequenceEnded` messages | DIST-E1-T15 | R9 | no task owned these types. TIER-E1-T01, which built `PressureLevel` in `tier`, is done, so it takes no edge; the move is the new task's, with `tier` re-exporting the type |
+| DIST-E1-T04 → DIST-E1-T15; a `TBD` segment for the task that defines `CapabilityProfile` (#1524) | DIST-E1-T04 | R9 | its runner drains and shuts down on `Drain` and `Shutdown`, and its probe-mode criterion returns `ProbeResult`, whose `CapabilityProfile` no task defines yet |
+| PROD-E1-T07 adds `Init`'s `config` and `ConfigChanged`; TIER-E1-T09 adds `ResidencyDigest`, with `ResidencySummary` in `core`; no new edge | PROD-E1-T07, TIER-E1-T09 | R1 | each owns the message's field type and already depends on DIST-E1-T03 |
+| DIST-E7-T04 → DIST-E1-T03, adding `Init`'s `grant` and `DataPlaneGrant`; DIST-E2-T05's `DataPlaneCredential` becomes plain data in `core` | DIST-E7-T04, DIST-E2-T05 | R1, R9 | DIST-E7-T04 builds the runner's data-plane grant, and `ipc` can carry the credential only from layer 0. Signing and verification stay in the crate with the signature scheme |
+| DIST-E1-T03 → DIST-E1-T14, adding `CancelSequence` to DIST-E1-T03's messages | DIST-E1-T03 | R1, R9 | DIST-E1-T14 defines `CancelReason` and is done (#1780), so the message's field types exist at M0a |
+| PLC-E2-T01 → DIST-E1-T03, adding `ProbeRequest` with `ProbeSuite` in `core` | PLC-E2-T01 | R1, R9 | it owns `ProbeSuite`; it already reached DIST-E1-T03 through PLC-E1-T07, and the edge names it |
+| COMP-E10-T11 → DIST-E1-T03, DIST-E1-T15, adding `FetchShard` and `PackCommitted`, with `ShardSpec`, `PackKey`, `ChunkId` and `LayoutVersion` in `core` | COMP-E10-T11 | R1, R9 | it builds `ShardSpec::digest` and `PackKey`; `FetchShard` carries DIST-E1-T15's `FetchPriority` |
+| `ErrorReport` has no owner | — | — | it carries RFC-0001 §5.12's `Error`, which no task row builds; recorded in RFC-0001 §3.5's note for the maintainers |
+| DIST-E1-T15's types made concrete: `Deadline { within: Nanos }`, relative to receipt; `Drain` without `successor`; `SequenceOutcome` with its variants, and `FetchPriority` with RFC-0041 §7's, which RFC-0031 §6.10's dated note maps to blob-plane classes | DIST-E1-T15 | R9 | an absolute instant cannot cross machines (RFC-0011 §13 passes `Option<Deadline>` between nodes); `DrainReason::Replan` already carries the successor; RFC-0041 §7 defines what `FetchShard`'s priority does, and COMP-E12-T04 implements it |
+| DIST-E1-T05 → DIST-E1-T15, putting `RunnerState` and the types it holds (`Degradation` among them) in `core`; `StateChanged` carries it from there, `Draining` carries a `Deadline`, and `Stopped` a `StopReason` (`Drained(DrainReason)` or `Fatal(ErrorClass)`) | DIST-E1-T05 | R1, R9 | `RunnerState` is a `core` type (RFC-0001 §5.11), and `Draining` holds `DrainReason` and `Deadline`; §5.11's `StopReason` was never defined, and §3.3 stops a runner from `Draining` or from `Failed`; DIST-E14-T13 adds `DegradeDetail::Fallback` with the op and provider as text |
+| TIER-E1-T09 → DIST-E1-T15, DIST-E1-T05, with every type `ResidencySummary` holds listed in `core`, `Purpose` among them, moved from `tier` | TIER-E1-T09 | R1, R9 | `ResidencySummary` holds `PressureLevel` and `Degradation`, and eleven more types from RFC-0020, RFC-0022 and RFC-0023, which `core` must hold too (RFC-0001 §18.28); `TierUsage` counts bytes by `Purpose`, today `tier`'s |
+| PLC-E2-T01 puts `ProbeSuite` in `core` with every variant but `DevicePath`, which PLC-E2-T12 adds with the endpoint as `net`-encoded bytes | PLC-E2-T01, PLC-E2-T12 | R9 | `Confirm`'s `ProfileKey` is already in `core`; `RemoteEndpoint` holds transport state that `core` cannot |
+| PROD-E1-T07's `RunnerConfig` and `RunnerConfigPatch` are `ResourcePolicy` plus resolved `KeyPath → ConfigValue` values; PROD-E1-T07 → PROD-E1-T24, generalising `InstanceSection`'s builder over the key scope, and each runner crate builds its node-scope section with it | PROD-E1-T07 | R1, R9 | `InstanceSection` refuses a key whose scope is not `instance` (`scope_mismatch`), and `runner.*`, `tier.*` and `io.*` are node scope (RFC-0054 §5.1); one builder with a scope parameter duplicates less than a second one. The typed sections are their crates', which `ipc` cannot name: `runner.*` is `cluster`'s `RunnerSection` (layer 3), and `tier.*` and `io.*` are `tier`'s and `io`'s |
+| PROD-E1-T11 → PROD-E1-T07, in place of its edge to DIST-E1-T03 | PROD-E1-T11 | R1 | reload sends `ConfigChanged`, which PROD-E1-T07 now adds; PROD-E1-T07 depends on DIST-E1-T03 |
+| TIER-E4-T04 → DIST-E1-T15, in place of its edge to DIST-E1-T03; TIER-E1-T09's edge to DIST-E1-T03 relabelled "the command channel" | TIER-E4-T04, TIER-E1-T09 | R1 | `MemoryPressure` is DIST-E1-T15's; TIER-E1-T09 adds `ResidencyDigest` itself |
+| DIST-E2-T05's `DataPlaneCredential.purposes` stays a `u16` bitmask, with its bit layout as `core` constants | DIST-E2-T05 | R9 | the channel-purpose enum is `net`'s, and `core` needs only the bits |
+| COMP-E11-T05 → COMP-E10-T11 and COMP-E12-T04 → COMP-E10-T11 | COMP-E11-T05, COMP-E12-T04 | R9 | they use `PackCommitted` and `FetchShard`, which COMP-E10-T11 adds; neither reached DIST-E1-T03 on `main` either, so the gap predates this split |
+| COMP-E2-T13 defines `ReaderId` and `ProviderName` in `core`; DIST-E14-T13 → COMP-E2-T13 | COMP-E2-T13, DIST-E14-T13 | R1, R9 | RFC-0001 §5.1 puts both in `core`, and no row defined them; `DegradeDetail::Fallback` carries a `ProviderName` |
+| COMP-E10-T11 moves `LayoutVersion`'s inherent `SOURCE` constant with the type | COMP-E10-T11 | R9 | an inherent impl cannot stay in `kernels` once the type is `core`'s, and `LayoutVersion::SOURCE` must keep resolving through the re-export |
+
+## PLC-E7-T17's watchdog criterion (2026-10-23)
+
+Building PLC-E7-T17 found that its criterion 1, "a watchdog fails any call over its budget", has no check that can fail. `poll_once` is timed on the dispatcher's injected `TickSource`, and under test no pass can move that clock: the simulator's moves only between events, so a pass that parks or spins measures 0 there (the review of #1802). The first `Dispatcher::run` on a real `TickSource` is PLC-E7-T18's hardware run.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PLC-E7-T17's criterion 1 reads "a watchdog counts any call over its budget (`PollStats`)"; PLC-E7-T18's hardware criterion gains "and the dispatcher's `PollStats` records no overrun"; no edge | PLC-E7-T17, PLC-E7-T18 | R9 | the check that fails on an overrun moves to the first run where a pass's time is real. PLC-E7-T18 already depends on PLC-E7-T17 |
+
+## QUAL-E3-T09's loom job (2026-10-23)
+
+QUAL-E3-T09's criterion named `hosted-test-linux`, the unit suite's job, for the loom models. RFC-0060 §1.1 and RFC-0062 §2.3 put loom in L3, which runs in `hosted-l3`, and `ci-gate` already listed `hosted-l3` as planned for QUAL-E3-T09/T10. RFC-0062 §2.3 gains a dated note: `hosted-l3` runs `cargo xtask test loom`, behind a coarse path filter until QUAL-E1-T07 computes the closure. RFC-0060 §3.4 gains one on how the three-thread models are built.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E3-T09's and QUAL-E3-T22's criteria name the `hosted-l3` job in place of `hosted-test-linux`; no edge | QUAL-E3-T09, QUAL-E3-T22 | Definition of done | RFC-0060 §1.1 runs loom in L3, which RFC-0062 §2.3 gives to `hosted-l3`. The unit suite's job is not where loom models run, and T22's models are L3 too |
+
+## OQ-NET-35: the chosen-only logprobs form (2026-10-23)
+
+#1780 let `core`'s `LogprobBlock { k: 0 }` hold the chosen tokens' logprobs alone, which OpenAI's `top_logprobs = 0` asks for and the in-process path carries. RFC-0031 §6.5's `logprob_k = 0` means no logprobs, so `net` refuses such a block until the entry has a form for it. review-1493's N1 on #1780 found the question cited but not recorded. It is now OQ-NET-35, with `logprob_k = 0x80` recommended, and a new task settles it. Until then RFC-0050 §3.1's note has ingress ask a remote tail for one alternative and drop it (standin-engine's N3 on #1780). These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E8-T18 (M2) → DIST-E8-T03, DIST-E1-T14: the chosen-only form, recorded as OQ-NET-35's decision and built in the `Token` codec behind capability bit 16, with RFC-0050 §3.1's rewrite kept towards peers without the bit | DIST-E8-T18 | R9 | no task gave the entry the form `core`'s type already holds. It changes the codec DIST-E8-T03 built and maps to DIST-E1-T14's `LogprobBlock`. M2 → M2 and M2 → M0a, no cycle |
+
+## DIST-E7-T24: a Windows wake for the QUIC `net` domain (2026-10-23)
+
+DIST-E7-T03 builds the QUIC backend's `net` domain, where channel tasks wait on their rings' wake handles. On Windows the runtime cannot wait on a `syntropy-spsc` event handle, so DIST-E7-T03's parked tasks re-check their rings every 1 ms, as the lead approved. Its criteria run on Linux and loopback and do not see that delay. No task covered the bridge.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T24 (M2) → DIST-E7-T03, QUAL-E15-T05 | DIST-E7-T24 | Definition of done | the bridge needs DIST-E7-T03's domain, and its latency criterion needs the R-WIN rig, as DIST-E7-T19's does. It names `windows-sys`, the new direct dependency of `net` it brings, and pins the one lifetime hazard it creates: the callback runs on a pool thread, so the wait is unregistered before the ring's handle drops (review of #1826, N2) |
+
+## PLC-E8-T21: resumed sequences at the head and tail (2026-10-23)
+
+#1749 gave PLC-E6-T04 an M2 re-prefill: the ingress reopens each live sequence on the new epoch from its transcript with `SequenceOpen { resume }`. No task before M3's DIST-E14-T08 built the other side, where the head prefills the transcript, the tail emits from token `emitted + 1`, and the tail's state is rebuilt from the transcript (RFC-0033 §5.3, RFC-0012 §8.6). The stand-in engine review of #1749 asked for that as its own PLC-E8 row. These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added PLC-E8-T21 (M2) → PLC-E8-T01, PLC-E9-T01, PLC-E9-T02, PLC-E9-T18, DIST-E8-T05 | PLC-E8-T21 | R9 | the head and tail side of `SequenceOpen { resume }`, which PLC-E6-T04's M2 re-prefill uses |
+| PLC-E6-T04 → PLC-E8-T21; DIST-E14-T08 → PLC-E8-T21; DIST-E14-T10 → PLC-E8-T21 | PLC-E6-T04, DIST-E14-T08, DIST-E14-T10 | R9 | each reopens sequences with `resume`: the M2 re-prefill, head-loss recovery and re-prefill migration. M2 → M2 and M3 → M2, so no `LATER`, and no cycle |
+| PLC-E8-T21's greedy criterion is scoped to the same epoch and devices and judged by RFC-0060 §5.4's parity gate, which is tolerance-based; PLC-E9-T18's grammar-mask check runs once on a v1-size vocabulary; no edge | PLC-E8-T21, PLC-E9-T18 | Definition of done | re-prefill recomputes the emitted tokens' KV with prefill, not decode, so bit-identity can fail at near-ties without a fault; a mask check on a small vocabulary misses the cost and edge cases of a full one (the stand-in engine review of #1781, N1 and N2). Deterministic kernels are not named: they are M3 work (COMP-E5-T14, PLC-E9-T15), which PLC-E8-T21 does not reach (review-1474's B1) |
+| PLC-E8-T21 gains "a sequence constrained by a JSON grammar, cancelled and re-opened with `resume`, samples only grammar-valid tokens after the resume, and its whole output parses under the grammar"; no edge | PLC-E8-T21 | Definition of done | the end-to-end grammar resume had no M2 criterion (review-1474's N2). PLC-E8-T21 reaches the grammar masks (PLC-E9-T04, M1a) and the constraint engine (PROD-E3-T04, M1a) through PLC-E9-T18 |
+| PLC-E9-T18 M3 → M2. Its criterion "killing the tail mid-sequence and resuming elsewhere gives a token distribution matching an uninterrupted run (chi-square over many seeds) and valid grammar masks" moves to DIST-E14-T09. It keeps "fresh and resumed sequences give identical penalised logits" and gains "the state rebuilt from a transcript has the count tables, grammar mask and RNG counter of an uninterrupted run at the same position" | PLC-E9-T18, DIST-E14-T09 | R9 | PLC-E8-T21 needs the tail state in M2: without it, a re-prefilled sequence with penalties or a grammar would not continue as an uninterrupted one (D3). Every dependency of PLC-E9-T18 is M2 or earlier. Killing a tail and resuming elsewhere needs M3's tail-loss recovery, DIST-E14-T09, which depends on PLC-E9-T18, so that criterion moves to DIST-E14-T09 |
+
+## DIST-E7-T03's per-path keep-alive and idle timeout (2026-10-23)
+
+#1773 recorded RFC-0031 §4.3's transport knobs on iroh 1.4.1 (DIST-E7-T21). Its review found that the table's keep-alive (500 ms) and idle timeout (`link.failover_timeout`) also need iroh's per-path setters, whose defaults are 5 s and 15 s, because iroh abandons a path at its own idle timeout (review-plan3's N1, issuecomment-6342144851). RFC-0031 §4.3's note now says so, with the corrected line references.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T03 gains "keep-alive and idle timeout take the table's values per path, through `default_path_keep_alive_interval` and `default_path_max_idle_timeout`, as well as connection-wide through `keep_alive_interval` and `max_idle_timeout`, and a unit test reads all four back from the transport configuration `net` builds"; no edge | DIST-E7-T03 | Definition of done | with only the connection-wide values set, a dead path would be abandoned after iroh's 15 s per-path default, not within `link.failover_timeout` |
+
+## DIST-E18-T01 after #1673 (2026-10-22)
+
+The post-merge review of #1673 found the code right and the row wrong. The row depended on the schema registry alone, though its criteria use layering and validation, and it claimed every key of RFC-0033 §12, though three of them are RFC-0011's.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E18-T01 → PROD-E1-T02, PROD-E1-T03 | DIST-E18-T01 | R9 | its criteria are "`syntropy config show --resolved` lists every key with its default", which is PROD-E1-T02's `ResolvedConfig` and `show_resolved`, and "unknown or mis-scoped keys fail validation", which is PROD-E1-T03's `unknown_key` (3) and `scope_mismatch` (9). Both are earlier milestones than M2 |
+| DIST-E18-T01's task text leaves `replan.min_gain`, `replan.payback_horizon` and `replan.max_defer` to PLC-E6-T11 | DIST-E18-T01 | Definition of done | RFC-0054 §5.1 gives `replan.*` to RFC-0011, whose key table declares those three. RFC-0033's shared `replan` section holds only `replan.degraded_min_gain`, as RFC-0054 §5.1's note of 2026-10-22 records. PLC-E6-T11 registers "the cluster-scope `solver.*` and `replan.*` keys" |
+
+## QUAL-E1-T06's second-account checks split out (2026-10-23)
+
+QUAL-E1-T06 is the only blocker of QUAL-E1-T07, the affected-job rules engine. Until T07 lands, every plan-only PR runs the full three-OS build and test matrix. T06's agent work has merged (#1577, #1676), and `cargo xtask ci repo-settings` reports `PASS` against the repository (#133's comment of 2026-10-23). Two of its criteria need a second, non-admin GitHub account, which no agent has. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| T06's criteria "a fork contributor's workflows wait for approval on their first and on every later PR" and "a force-push to `main` from a test account is rejected" move to a new **Maintainer action** task, QUAL-E1-T32 (M0a), with QUAL-E1-T32 → QUAL-E1-T06 | QUAL-E1-T06, QUAL-E1-T32 | R9 | both need a second, non-admin account, while the settings they check are in force and checked by T06's settings check (`fork-pr-contributor-approval.json: matches`; `ruleset-main.json`'s rules in force). None of T06's 24 dependents uses either behaviour. QUAL-E1-T07's fork clauses are about `ci-gate`'s hardware statuses on recorded payloads, and the "branch protection test" clauses of QUAL-E1-T16, QUAL-E1-T17 and QUAL-E1-T19 are about required checks and reviews. So QUAL-E1-T32 has no dependents. M0a → M0a, no cycle |
+| T06's "a fixture workflow on a test branch shows `ci-gate` passing with skipped hosted jobs and failing with a failed or cancelled job" may be met by recorded runs of real PRs | QUAL-E1-T06 | — | the recorded runs exercise the real `pr.yml` and `ci-gate`, which a fixture branch would only imitate: #1773 at `e64665f` passes with `hosted-l3` and `hosted-parity-nano` skipped; #1712 at `17263a6` (run 39785121248) fails with every build, test and lint job failed; #1723's run 39786377605, cancelled by a second push, fails. `xtask/src/ci_gate.rs`'s unit tests cover the same three verdicts on demand (`every_listed_job_passing_and_the_rest_skipped_passes`, `a_failed_job_fails_the_gate`, `a_cancelled_job_fails_the_gate`), so the criterion is no weaker |
+
+## COMP-E3-T02's `Numeric`-mode criterion (2026-10-23)
+
+COMP-E3-T02 builds the CPU provider's shell. Its first criterion read "the fake provider's `Numeric` mode runs on these kernels (QUAL-E3-T12)". QUAL-E3-T12 needs COMP-E3-T09's deterministic kernels, which need COMP-E3-T03's GEMV, and none of the three is a dependency of COMP-E3-T02 or was built when the shell was. So the criterion used work no finished task produces (R9). The clause belongs with the fake, which runs on the shell.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T02's first criterion becomes RFC-0040 §2's contract checks over real host buffers with a stand-in op; QUAL-E3-T12 gains "the fake's `Numeric` mode runs on the CPU provider shell's streams, buffers and capture", and QUAL-E3-T12 → COMP-E3-T02 | COMP-E3-T02, QUAL-E3-T12 | R9 | M0a → M0a. COMP-E3-T02 reaches none of QUAL-E3-T12, COMP-E3-T09 or COMP-E3-T03, so the edge adds no cycle, and COMP-E3-T02 stays ready for its M0a dependents |
+
+## The follow-ups of QUAL-E1-T07's rules (2026-10-23)
+
+QUAL-E1-T07 puts the affected-job rules in `ci/jobs.toml` (RFC-0062 §2.2). Four later tasks must change that file, and their rows did not say so. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E2-T01 → QUAL-E1-T07; its criterion names the App's bot account in `hardware.status_creators` | QUAL-E2-T01 | R9 | `ci-gate` counts a `hw/<job>` status only from an account that list names, and the list is empty until the App exists (RFC-0062 §2.5, note 2026-10-23) |
+| QUAL-E2-T02's criterion removes `hw-cuda-ada`'s `planned` mark | QUAL-E2-T02 | R9 | the interim of ADR-0620's revision of 2026-10-23 ends for `hw-cuda-ada` when its rig runs it. QUAL-E2-T02 already depends on QUAL-E1-T07 |
+| COMP-E4-T01 → QUAL-E1-T07; its criterion lists `cudarc` in `hw-cuda-ada`'s `lock_deps`, with a golden | COMP-E4-T01 | R9 | COMP-E4-T01 adds the CUDA bindings crate, so a `Cargo.lock` change to it should require the rig from then on. ggml's bindings are generated inside `kernels-ggml` (COMP-E7-T01), whose paths the rule covers, so COMP-E7-T01 needs no such line. From the engine-lane review of #1830 |
+| QUAL-E3-T10 → QUAL-E1-T07; its criterion widens `hosted-l3`'s rule to any further crate its Miri and sanitizer jobs build | QUAL-E3-T10 | R9 | RFC-0060 §3.4's sanitizer builds cover the `unsafe` crates and the CPU provider. QUAL-E1-T07 lists `spsc` and `kernels-cpu` beside §2.3's five crates; a crate QUAL-E3-T10 adds to its jobs needs the rule too. From the engine-lane review of #1830 |
+
+QUAL-E1-T07 is M0a, and so are QUAL-E2-T01, QUAL-E2-T02 and COMP-E4-T01; QUAL-E3-T10 is M1a. So no edge points later, and QUAL-E1-T07 depends only on QUAL-E1-T06, so there is no cycle.
+## DIST-E7-T12's channel slots and the control receives (2026-10-23)
+
+RFC-0031 §8's pool table counts "recv_slots + retention" slots per channel, and DIST-E7-T12's criterion said the same. But the channel core of DIST-E7-T02 takes a receive pool of `recv_slots + 4`: the four receives for control frames, which credit never counts (§7.1). A side that only receives keeps no retention, so with the table's count its pool would be four slots short.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T12's criterion reads `(recv_slots + 4 + retention) × slot_size`, and RFC-0031 §8 gains a dated note that the four control receives sit beside the data receives; no edge | DIST-E7-T12 | Definition of done | the criterion must hold for the pool the channel core already requires (DIST-E7-T02). Built under the lead's run, for the maintainers to confirm |
+
+## COMP-E15-T08's missing prerequisites (2026-10-23)
+
+COMP-E15-T08 gives `TpSharding` to the `llama`, `qwen_moe`, `deepseek3` and `gptoss` families, and its parity criterion runs a split layer through the reference executor. It depended only on COMP-E15-T06 and DIST-E13-T13, which are done, so the board showed it ready. But the families it shards, the blocks it splits and the machinery its parity check runs on were neither built nor edges, so it could not start (#333, released 2026-10-23). These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E15-T08 → COMP-E15-T02, COMP-E15-T04 | COMP-E15-T08 | R9 | RFC-0043 §6.3's `split(&LayerProgram, weights)` splits block nodes: `Gqa`, `DenseFfn` and `Moe` (COMP-E15-T02), `SlidingGqa` and `Mla` (COMP-E15-T04) |
+| COMP-E15-T08 → COMP-E16-T01, COMP-E16-T03, COMP-E16-T04, COMP-E16-T05, COMP-E16-T06 | COMP-E15-T08 | R9 | `TpSharding` is implemented by the family modules: the `Family` trait (COMP-E16-T01) and `llama`, `qwen_moe`, `gptoss` and `deepseek3` (COMP-E16-T03 to T06) |
+| COMP-E15-T08 → COMP-E15-T03, QUAL-E4-T01 | COMP-E15-T08 | R9 | the criterion "recombining member outputs in member order matches single-device output within `τ_op`" runs on `graph::reference`'s interpreter (COMP-E15-T03) driven by `testkit`'s `RefExecutor` (QUAL-E4-T01) |
+| COMP-E15-T08 → PLC-E4-T09 | COMP-E15-T08 | R9 | its solver test checks RFC-0011 §3.1's rule that an `IntraTp(n, G)` node exists only for a family with a TP sharding strategy, which PLC-E4-T09 builds |
+| COMP-E15-T08's solver test covers `IntraTp` only; PLC-E4-T10 gains the cross-node half | COMP-E15-T08, PLC-E4-T10 | R9 | RFC-0043 §6.3 keeps a family without `TpSharding` off `IntraNodeTp`, `CrossNodeTp` and `CrossNodeEp`. The island nodes for the last two are PLC-E4-T10's, which comes after COMP-E15-T08 (PLC-E4-T10 → PLC-E2-T12 → DIST-E13-T03 → DIST-E13-T02 → DIST-E13-T01 → COMP-E15-T08), so COMP-E15-T08 cannot test them and an edge would make a cycle |
+
+Nine are M0a or M1a and PLC-E4-T09 is M2, all before COMP-E15-T08's M3, so no edge points later. None of the ten reaches COMP-E15-T08, whose one dependent is DIST-E13-T01 (M3), so there is no cycle.
+
+Left for a follow-up: RFC-0011 §3.1's `Island(I, Tp)` and `Island(I, Ep)` rows do not state the family condition that its `IntraTp(n, G)` row and RFC-0043 §6.3 state. PLC-E4-T10's criterion cites RFC-0043 §6.3 for it until RFC-0011 says so too.
+## COMP-E13-T15: `core::Error`, and DIST-E18-T02 in M0a (2026-10-23)
+
+Issue #1525, from the review of COMP-E1-T01, found that no task builds RFC-0001 §5.12's `Error`. COMP-E1-T01 built a stand-in, `kernels::Error { class, code: u16, message }`, whose bare `u16` cannot hold another domain's code, as in `DeviceHealth::Sticky { code }`. PLC-E7-T17 (#1802) reports a closed ring as Kernels code 7, `CaptureFailed`, because `exec` has no codes. The issue also found that `ProviderId` and `ProviderBuild` decode only from a `'static` buffer, which the selection cache (RFC-0040 §6.5) would leak on every load. These are plan corrections under R9 and R6, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added COMP-E13-T15 (M0a) → DIST-E18-T02, COMP-E1-T01, PLC-E1-T01, PLC-E4-T17, PLC-E9-T26, PLC-E7-T17 | COMP-E13-T15 | R9 | `core::Error` on DIST-E18-T02's `ErrorCode` and `Domain`, with `ErrorScope` and `RetryHint`, whose fields use `SequenceId`, `StageIx`, `NodeId`, `LinkId` and `Nanos`. It folds in COMP-E1-T01's `kernels::Error` and changes its provider names to `Cow<'static, str>`, since COMP-E1-T01 is done. Its criterion moves PLC-E7-T17's closed-ring fault to an exec code |
+| COMP-E1-T08 → COMP-E13-T15; PLC-E7-T03 → COMP-E13-T15 | COMP-E1-T08, PLC-E7-T03 | R9 | COMP-E1-T08 raises the `(Kernels, n)` codes, and PLC-E7-T03, the stand-in's next consumer, handles step faults; both need `core::Error` and its domains |
+| COMP-E2-T05 → COMP-E13-T15 | COMP-E2-T05 | R9 | the selection cache decodes `ProviderId` and `ProviderBuild`, which must be owned to load without a leak |
+| DIST-E18-T02 M2 → M0a | DIST-E18-T02 | R6 | COMP-E13-T15 is M0a, because PLC-E7-T03 is, and it builds on DIST-E18-T02's `ErrorCode` and `Domain`. DIST-E18-T02's one dependency, QUAL-E1-T01, is M0a, and its PR (#1669) is already open |
+
+Not changed here: `Domain::Kernels`'s range, `Domain::Exec`'s range and exec's codes. RFC-0040 §13 numbers its codes but gives no range, and RFC-0012 §13 has no codes. COMP-E13-T15's PR assigns them in dated notes in those two sections: the two ranges, and the exec codes for a closed ring, the stall watchdog and the CPU pool's barrier deadline, with Kernels codes 1–17 unchanged. The engine lane's reviewer checks the assignment as the RFCs' owner. So the task that needs them owns the proposal, and this plan fix chooses none (review-plan3's B1 on #1810).
+## Held review follow-ups (2026-10-23)
+
+Non-blocking notes from the reviews of #1781, #1786, #1783 and #1789, which the lead collected for one plan PR. These are plan corrections under R9 and the Definition of done, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E7-T03 gains "`link.failover_timeout` declares a maximum of 15 s, iroh's per-path idle cap, so a larger value is refused at load with RFC-0054's `out_of_range` rather than clamped"; RFC-0031 §11's key row and §4.3's note say the same; no edge | DIST-E7-T03 | Definition of done | iroh's `default_path_max_idle_timeout` clamps anything above 15 s with only a log warning, so a 30 s setting would give a 15 s per-path idle and an unchanged connection idle (review-1474's N1 on #1781) |
+| PLC-E8-T21 → QUAL-E5-T04 | PLC-E8-T21 | R9 | its greedy criterion passes RFC-0060 §5.4's parity gate, whose evaluator is QUAL-E5-T04 (M0a), which none of its prerequisites reached (#1781's review, N1) |
+| COMP-E5-T07 → COMP-E1-T10 | COMP-E5-T07 | R9 | its conformance check is against COMP-E1-T10's `kernels::reference` for the M3 ops, and it uses the `core` variant COMP-E1-T10 moves; COMP-E6-T07, the Metal side, already depends on it. M3 → M3 (#1786's review, N1) |
+| COMP-E1-T10's `core` change bumps `ipc_protocol`, not only the fingerprint; no edge | COMP-E1-T10 | Definition of done | `AttnKind` reaches the IPC through `KernelClass::Attention` in `QuantBw`, inside the `CapabilityProfile` that `ProbeResult` carries, so a variant gaining a field is an `ipc_protocol` change (RFC-0001 §18.20; #1786's review, N2) |
+| DIST-E1-T05's `StopReason` from `Failed`: `Drained(DrainReason::RestartBudgetSpent)` for a spent restart budget, `Fatal(ErrorClass)` for a fatal error; no edge | DIST-E1-T05 | Definition of done | RFC-0001 §3.3's `Failed → Stopped` edge names both causes, and either variant could carry the first (#1789's review, N3; RFC-0001 §18.34) |
+| DIST-E14-T06's `Reconcile` carries `recent`; no edge | DIST-E14-T06 | Definition of done | RFC-0033 §4.6's `HandshakeInput::Reconcile` left out `recent`, which §4.2 and §11's `SequenceControl::Reconcile` carry (note of 2026-10-23) |
+
+
+## Splits of nine `gate:uncovered` criteria (2026-10-23)
+
+Nine open PRs carry `gate:uncovered`: each meets its task's criteria except ones it cannot check yet, because the input or hardware they need comes from a later task. The maintainer, devdaviddr, accepted a split for each on 2026-10-23. The unchecked criterion moves to a new task that depends on the parent task and on the tasks that bring the missing input, and the parent row keeps what its PR checks. Each moved criterion is marked "(moved to <ID>, 2026-10-23, maintainer decision)" in the parent row.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added COMP-E10-T15 (M0b) → COMP-E10-T02, QUAL-E7-T06, QUAL-E10-T02, COMP-E7-T01; COMP-E10-T02 loses the differential-oracle and recorded-M0-header criteria | COMP-E10-T02, COMP-E10-T15 | R9 | the recorded headers are QUAL-E7-T06's, the `gguf_header` differential target is QUAL-E10-T02's (M0b, and it depends on COMP-E10-T02) and the pinned ggml is COMP-E7-T01's (PR #1736). The new task also checks the reader's ggml type table against the pinned header |
+| Added COMP-E1-T16 (M0a) → COMP-E1-T05, COMP-E1-T03, QUAL-E3-T12; COMP-E1-T05's handshake criterion runs on a test-local fake and its `row_kv_write_from` criterion checks the `kv_writes` rule | COMP-E1-T05, COMP-E1-T16 | R9 | no attention or `KvWrite` code exists before COMP-E1-T03, and the shared `FakeKernelProvider` is QUAL-E3-T12's (PR #1622) |
+| PLC-E7-T19 → COMP-E1-T16; DIST-E14-T17 → COMP-E1-T16 | PLC-E7-T19, DIST-E14-T17 | R9 | both replay steps with a per-row `kv_write_from` and check that committed KV equals an uninterrupted run, which needs attention to honour `row_kv_write_from`: the criterion that moved from COMP-E1-T05. M3 → M0a |
+| Added COMP-E15-T13 (M0a) → COMP-E15-T02, COMP-E16-T03, COMP-E16-T04, QUAL-E7-T01; COMP-E15-T02's validation and op-subset criteria use block-built graphs and the blocks' `ops()` | COMP-E15-T02, COMP-E15-T13 | R9 | the families' `FamilySpec::required_ops` are COMP-E16-T03's and COMP-E16-T04's and the `nano` generator is QUAL-E7-T01's; all three depend on COMP-E15-T02 (PR #1640) |
+| Added COMP-E2-T23 (M0b) → COMP-E2-T01, COMP-E2-T03, QUAL-E15-T02; COMP-E2-T01's replay criterion uses benchmark tables, not rig-recorded ones | COMP-E2-T01, COMP-E2-T23 | R9 | recording needs `kernels::bench` (COMP-E2-T03, M0b) and R-ADA (QUAL-E15-T02) (PR #1718) |
+| Added COMP-E17-T14 (M0a) → COMP-E17-T01, QUAL-E7-T06; COMP-E17-T01's extraction criterion uses synthetic fixtures laid out like the M0 repositories | COMP-E17-T01, COMP-E17-T14 | R9 | no task recorded the M0 repositories' tokenizer files; QUAL-E7-T06 imports the M0 checkpoints with revision and licence (PR #1739) |
+| COMP-E17-T03 → COMP-E17-T14 | COMP-E17-T03 | R9 | its criterion compares converted GGUF tokenizers with the M0 families' source `tokenizer.json`, which COMP-E17-T14 records. M0a → M0a |
+| COMP-E9-T18 → QUAL-E4-T13 | COMP-E9-T18 | R9 | its L0 criterion runs QUAL-E4-T13's contraction-off check on a real build's records, rather than building the same test twice. M0b → M0b (#1840's review, O2) |
+| COMP-E10-T07 → QUAL-E7-T06; COMP-E16-T03 → QUAL-E7-T06 | COMP-E10-T07, COMP-E16-T03 | R9 | their golden census runs on recorded headers of the M0 models, which they reached through COMP-E10-T02's criterion that now sits in COMP-E10-T15; QUAL-E7-T06 brings the M0 checkpoints. M0a → M0a (#1840's review, R1) |
+| COMP-E17-T04 → COMP-E17-T14; PROD-E3-T10 → COMP-E17-T14 | COMP-E17-T04, PROD-E3-T10 | R9 | each resolves or renders from the M0 families' real special tokens and shipped templates, which COMP-E17-T01 no longer checks and COMP-E17-T14 records; COMP-E17-T13 and PROD-E3-T01 reach it through them. M0a → M0a (#1840's review, R1) |
+| Added COMP-E9-T18 (M0b) → COMP-E9-T01, COMP-E9-T02, QUAL-E16-T04, QUAL-E16-T24; COMP-E9-T01 keeps the key-level, host-compiler and build-record halves of its criteria | COMP-E9-T01, COMP-E9-T18 | R9 | hosted CI has no nvcc; the build path, the object cache and the toolchain image are COMP-E9-T02's, QUAL-E16-T04's and QUAL-E16-T24's, and the first two depend on COMP-E9-T01 (PR #1729) |
+| Added TIER-E5-T34 (M0b) → TIER-E5-T03, QUAL-E15-T17; TIER-E5-T03's `F_NOCACHE` criterion is recorded at the `MacSys` seam | TIER-E5-T03, TIER-E5-T34 | R9 | a kernel syscall trace needs root with SIP relaxed on the Mac rig, R-MACF (QUAL-E15-T17) (PR #1738) |
+| Added TIER-E2-T26 (M1b) → TIER-E2-T04, TIER-E2-T07, QUAL-E15-T05, QUAL-E15-T17; TIER-E2-T04's WSL2 and sysctl criteria are a shim test | TIER-E2-T04, TIER-E2-T26 | R9 | the WSL2 pinning job needs R-WIN with WSL2 (QUAL-E15-T05) and progressive pinning (TIER-E2-T07); the syscall trace needs R-MACF (PR #1727) |
+| Added TIER-E2-T27 (M1b) → TIER-E2-T03, QUAL-E15-T05; TIER-E2-T03's lock-range criterion runs on hosted Windows | TIER-E2-T03, TIER-E2-T27 | R9 | no gate runs on R-WIN (QUAL-E15-T05) yet (PR #1659) |
+
+Not re-pointed to COMP-E10-T15: COMP-E16-T03 and COMP-E10-T07 run their golden census on recorded headers themselves, so they need no edge to COMP-E10-T15 (M0b, which would be `LATER`). They now depend on QUAL-E7-T06, which brings the M0 checkpoints. The other dependents of the nine parents use what the parents still check.
+## DIST-E14-T22: the recovery entries M2 tasks use, and `DriftTerm::Bandwidth`'s scheme (2026-10-23)
+
+The review of #1811 (review-1474's N2) found that DIST-E14-T15 (M3) builds the catalogue entries `ReportEdgeDemoted`, `EdgeDemoted` and `RecoveryStarted`, which M2 tasks use: DIST-E14-T01 emits `RecoveryStarted`, and DIST-E7-T10 sends `ReportEdgeDemoted`. The same review's N1 found that `DriftTerm::Bandwidth` left out the quant scheme, which RFC-0010 §6.2's W_eff estimator is keyed by. These are plan corrections under R3b and R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E14-T22 (M2) → DIST-E9-T03, DIST-E14-T21: `ReportEdgeDemoted`, `EdgeDemoted` and `RecoveryStarted` in `decide` and `apply`. DIST-E14-T15 keeps `ReportRecovery`, `RecoveryCompleted`, `InstanceDegraded` and `RecoveryRecord`, and the re-plan that applying `EdgeDemoted` raises; DIST-E14-T15 → DIST-E14-T22 | DIST-E14-T22, DIST-E14-T15 | R3b | M2 tasks used entries an M3 task built. The split puts the three they use in M2, with no `LATER` edge. The re-plan raise stays in M3 with its PLC-E6-T04 edge, so M2's critical path stays 16 tasks; with the raise in DIST-E14-T22, PLC-E6-T04's chain would run under DIST-E7-T10 and DIST-E14-T01 and lengthen it to 20 |
+| DIST-E14-T01 → DIST-E14-T22; DIST-E7-T10 → DIST-E14-T22 | DIST-E14-T01, DIST-E7-T10 | R9 | DIST-E14-T01 emits `RecoveryStarted`, and DIST-E7-T10 sends `ReportEdgeDemoted`. M2 → M2, with no cycle |
+| DIST-E7-T10 gains "a demotion of either cause, `RepeatedFaults` from this task's fault count or `ConnectFailed` from DIST-E7-T11's `connect_hop`, reaches the coordinator as `ReportEdgeDemoted` and is applied as `EdgeDemoted`"; no new edge | DIST-E7-T10 | Definition of done | nothing showed a `ConnectFailed` demotion reaching the coordinator. DIST-E7-T10 already depends on DIST-E7-T11 and DIST-E14-T22, so its test can raise both causes and check both arrive (review-plan3's N2 on #1832) |
+| DIST-E4-T13 → DIST-E14-T01 | DIST-E4-T13 | R9 | its criterion asserts that a planned restart raises no `RecoveryStarted`, which DIST-E14-T01 raises. M3 → M2, with no cycle (review-plan3's N1 on #1832) |
+| `DriftTerm::Bandwidth` gains `scheme: QuantScheme`, and DIST-E14-T21 → COMP-E13-T01 | DIST-E14-T21 | R9 | RFC-0010 §7.2's rule runs per observed quantity, and §6.2's W_eff estimator is keyed by (device, tier, class, scheme), so the term names the scheme that drifted. `QuantScheme` is COMP-E13-T01's (M0a), which DIST-E14-T21 did not reach |
+
+## DIST-E7-T25: bulk pacing in the real backends, and the rig check moved there (2026-10-23)
+
+DIST-E7-T13 builds the bulk pacer (`net::transport::pacing`) and paces the simulator's bulk sends. Nothing in it paces a real transport, so its rig criterion could not run even on a rig. Its independent review (issuecomment-6352911884) found that no row paced the TCP fallback's bulk channels either, and that QUAL-E13-T10, which measures the data hop under bulk, reached the pacing only through COMP-E12-T05. These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T25 (M2) → DIST-E7-T13, DIST-E7-T03, DIST-E7-T05 | DIST-E7-T25 | R9 | the pacer in the QUIC backend's bulk connection and the TCP fallback, each with a loopback test; it needs the pacer and both backends |
+| DIST-E7-T13's rig criterion, "a 10 GB blob transfer on the same 2.5 GbE edge as a live ring keeps the hop's p99 within 1.2 × its idle p99", moves to DIST-E7-T25; DIST-E7-T13 keeps simulator criteria | DIST-E7-T13, DIST-E7-T25 | R9 | the rig run needs pacing in a real backend, which DIST-E7-T25 is the first task to build |
+| DIST-E11-T13 → DIST-E7-T25; COMP-E12-T05 → DIST-E7-T25; QUAL-E13-T10 → DIST-E7-T25 | DIST-E11-T13, COMP-E12-T05, QUAL-E13-T10 | R9 | each sends bulk on, or measures the data hop under bulk on, a real transport: KV migration, peer chunk serving, and `net.hop.p99_under_bulk`. QUAL-E13-T10's edge, once reached only through COMP-E12-T05, is now explicit. M3 → M2 and M2 → M2, so no `LATER` and no cycle |
+

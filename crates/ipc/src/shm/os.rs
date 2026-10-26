@@ -309,9 +309,8 @@ mod imp {
                     Err(error) => return Err(error),
                 };
                 // SAFETY: `ftruncate` takes the open descriptor and a length, no pointers.
-                if let Err(error) =
-                    check(unsafe { libc::ftruncate(fd.as_raw_fd(), len as libc::off_t) })
-                {
+                let rc = unsafe { libc::ftruncate(fd.as_raw_fd(), len as libc::off_t) };
+                if let Err(error) = check(rc) {
                     // SAFETY: `name` is NUL-terminated; the object was created just above.
                     unsafe { libc::shm_unlink(name.as_ptr()) };
                     return Err(error);

@@ -15,8 +15,10 @@
 //! A figure the research does not give is `unknown`, with where the research leaves it open. A
 //! preset never fills one in.
 //!
-//! **Each kind has a fixed set of figure keys** ([`Preset::required_keys`]), and every preset of
-//! the kind has each of them, known or `unknown`, so a figure is never absent by accident:
+//! **Each kind has a fixed set of figure keys** ([`DevicePreset::required_keys`]), and every
+//! preset of the kind has each of them, known or `unknown`, so a figure is never absent by
+//! accident. The table is one file, `crates/testkit/sim/figure-keys.toml` ([`figure_keys`]),
+//! which this module compiles in and the `sim-presets` lint reads:
 //! - a device (`gpu`, `cpu`): `memory`, `f_eff`, `t_fixed`, `sigma_dev`, and RFC-0060 §8.4's
 //!   `W_eff(device, tier, kernel class)` as `w_eff.<tier>.<kernel class>`. The tiers are the ones
 //!   the device's kernels read (RFC-0010's M1 probe): a discrete GPU's `vram` and `host_pinned`,
@@ -26,7 +28,7 @@
 //! - a drive (`nvme`): `seq_read`, `sustained_read`, `throttled_read`, `heating_time`,
 //!   `qd1_4k_read_iops`, `qd32_4k_read_iops` and `read_latency`.
 //!
-//! **A figure is read through [`Preset::figure`]**, which refuses one that is `unknown` or
+//! **A figure is read through [`DevicePreset::figure`]**, which refuses one that is `unknown` or
 //! absent, so no fake can take a figure the research leaves open for a zero or a default. A
 //! scenario supplies such a figure itself, labelled, in its node's `set`
 //! ([`NodeSpec::figure`](super::scenario::NodeSpec::figure)).
@@ -105,26 +107,47 @@ pub enum MemoryTier {
     Unified,
 }
 
-/// The figure keys of every device preset, beside its `w_eff.<tier>.<kernel class>` keys.
-pub const DEVICE_KEYS: [&str; 4] = ["memory", "f_eff", "t_fixed", "sigma_dev"];
+/// The figure-key table, `crates/testkit/sim/figure-keys.toml`, as compiled in. The
+/// `sim-presets` lint reads the same file.
+pub const FIGURE_KEYS_FILE: &str = include_str!("../../sim/figure-keys.toml");
 
-/// The figure key a discrete GPU has besides: its host link's pinned host-to-device copy rate.
-pub const DISCRETE_GPU_KEY: &str = "host_link_pinned_h2d";
+/// The figure keys each preset kind must have (see the [module](self) docs).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FigureKeys {
+    /// Every device's keys, beside its W_eff keys.
+    pub device: Vec<String>,
+    /// A discrete GPU's keys besides.
+    pub discrete_gpu: Vec<String>,
+    /// Every drive's keys: `FakeIo`'s model (RFC-0060 §8.4).
+    pub drive: Vec<String>,
+    /// The kernel classes W_eff is given for: the two RFC-0010's M1 probe measures,
+    /// `DenseGemv` and `ExpertGemv` (`syntropy_core::resource::KernelClass`).
+    pub kernel_classes: Vec<String>,
+    pub tiers: Tiers,
+}
 
-/// The figure keys of every drive preset: `FakeIo`'s model (RFC-0060 §8.4).
-pub const DRIVE_KEYS: [&str; 7] = [
-    "seq_read",
-    "sustained_read",
-    "throttled_read",
-    "heating_time",
-    "qd1_4k_read_iops",
-    "qd32_4k_read_iops",
-    "read_latency",
-];
+/// The memory tiers each kind of device reads, which its W_eff keys name.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tiers {
+    pub gpu_vram: Vec<String>,
+    pub gpu_unified: Vec<String>,
+    pub cpu: Vec<String>,
+}
 
-/// The kernel classes W_eff is given for: the two RFC-0010's M1 probe measures, `DenseGemv` and
-/// `ExpertGemv` (`syntropy_core::resource::KernelClass`).
-pub const KERNEL_CLASSES: [&str; 2] = ["dense_gemv", "expert_gemv"];
+/// The figure-key table, parsed once.
+///
+/// # Panics
+///
+/// If the compiled-in file does not parse; `the_figure_key_table_parses` tests that it does.
+pub fn figure_keys() -> &'static FigureKeys {
+    static KEYS: OnceLock<FigureKeys> = OnceLock::new();
+    KEYS.get_or_init(|| {
+        toml::from_str(FIGURE_KEYS_FILE)
+            .unwrap_or_else(|error| panic!("the figure-key table does not parse: {error}"))
+    })
+}
 
 /// The prefix of the W_eff keys, `w_eff.<tier>.<kernel class>`.
 pub const W_EFF: &str = "w_eff";
@@ -132,7 +155,7 @@ pub const W_EFF: &str = "w_eff";
 /// One device or drive preset.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Preset {
+pub struct DevicePreset {
     /// The name a scenario uses: `gpu:ada-24g`, or a drive's bare name, `gen4-990pro-class`.
     pub name: String,
     pub kind: PresetKind,
@@ -300,11 +323,11 @@ impl fmt::Display for FigureError {
 
 impl std::error::Error for FigureError {}
 
-impl Preset {
+impl DevicePreset {
     /// Parses the preset file `file` and checks it: its name, its sources, and each figure's
     /// value and source.
-    pub fn from_toml(file: &str, text: &str) -> Result<Preset, PresetError> {
-        let preset: Preset = toml::from_str(text).map_err(|error| PresetError::Parse {
+    pub fn from_toml(file: &str, text: &str) -> Result<DevicePreset, PresetError> {
+        let preset: DevicePreset = toml::from_str(text).map_err(|error| PresetError::Parse {
             file: file.to_owned(),
             message: error.to_string(),
         })?;
@@ -384,28 +407,30 @@ impl Preset {
 
     /// The memory tiers the device's kernels read, which its W_eff keys name (RFC-0010's M1
     /// probe): none for a drive.
-    pub fn tiers(&self) -> &'static [&'static str] {
+    pub fn tiers(&self) -> &'static [String] {
+        let tiers = &figure_keys().tiers;
         match (self.kind, self.memory_tier) {
-            (PresetKind::Gpu, Some(MemoryTier::Vram)) => &["vram", "host_pinned"],
-            (PresetKind::Gpu, Some(MemoryTier::Unified)) => &["unified"],
-            (PresetKind::Cpu, _) => &["host_pinned", "host_pageable"],
+            (PresetKind::Gpu, Some(MemoryTier::Vram)) => &tiers.gpu_vram,
+            (PresetKind::Gpu, Some(MemoryTier::Unified)) => &tiers.gpu_unified,
+            (PresetKind::Cpu, _) => &tiers.cpu,
             (PresetKind::Gpu, None) | (PresetKind::Nvme, _) => &[],
         }
     }
 
     /// Every figure key the preset's kind requires (see the [module](self) docs).
     pub fn required_keys(&self) -> Vec<String> {
+        let table = figure_keys();
         if self.kind == PresetKind::Nvme {
-            return DRIVE_KEYS.iter().map(|key| (*key).to_owned()).collect();
+            return table.drive.clone();
         }
-        let mut keys: Vec<String> = DEVICE_KEYS.iter().map(|key| (*key).to_owned()).collect();
+        let mut keys = table.device.clone();
         for tier in self.tiers() {
-            for class in KERNEL_CLASSES {
+            for class in &table.kernel_classes {
                 keys.push(w_eff_key(tier, class));
             }
         }
         if self.memory_tier == Some(MemoryTier::Vram) {
-            keys.push(DISCRETE_GPU_KEY.to_owned());
+            keys.extend(table.discrete_gpu.iter().cloned());
         }
         keys
     }
@@ -460,10 +485,10 @@ impl Known {
 /// # Panics
 ///
 /// If a compiled-in file does not load; `presets_load` tests that none can.
-pub fn by_name() -> BTreeMap<String, Preset> {
+pub fn by_name() -> BTreeMap<String, DevicePreset> {
     ALL.iter()
         .map(|(file, text)| {
-            let preset = Preset::from_toml(file, text)
+            let preset = DevicePreset::from_toml(file, text)
                 .unwrap_or_else(|error| panic!("a compiled-in preset does not load: {error}"));
             (preset.name.clone(), preset)
         })
@@ -471,22 +496,36 @@ pub fn by_name() -> BTreeMap<String, Preset> {
 }
 
 /// The compiled-in preset `name`, loaded once.
-pub fn get(name: &str) -> Option<&'static Preset> {
-    static ALL_PRESETS: OnceLock<BTreeMap<String, Preset>> = OnceLock::new();
+pub fn get(name: &str) -> Option<&'static DevicePreset> {
+    static ALL_PRESETS: OnceLock<BTreeMap<String, DevicePreset>> = OnceLock::new();
     ALL_PRESETS.get_or_init(by_name).get(name)
 }
 
 /// Every figure key some kind requires: the device and drive keys, the discrete GPU's host link,
 /// and every tier's W_eff for each kernel class.
 pub fn all_keys() -> Vec<String> {
-    let mut keys: Vec<String> = DEVICE_KEYS
+    let table = figure_keys();
+    let mut keys: Vec<String> = table
+        .device
         .iter()
-        .chain(DRIVE_KEYS.iter())
-        .chain([DISCRETE_GPU_KEY].iter())
-        .map(|key| (*key).to_owned())
+        .chain(&table.drive)
+        .chain(&table.discrete_gpu)
+        .cloned()
         .collect();
-    for tier in ["vram", "unified", "host_pinned", "host_pageable"] {
-        for class in KERNEL_CLASSES {
+    let tiers = &table.tiers;
+    let mut every_tier: Vec<&String> = Vec::new();
+    for tier in tiers
+        .gpu_vram
+        .iter()
+        .chain(&tiers.gpu_unified)
+        .chain(&tiers.cpu)
+    {
+        if !every_tier.contains(&tier) {
+            every_tier.push(tier);
+        }
+    }
+    for tier in every_tier {
+        for class in &table.kernel_classes {
             keys.push(w_eff_key(tier, class));
         }
     }

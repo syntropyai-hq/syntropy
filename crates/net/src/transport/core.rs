@@ -78,9 +78,11 @@ pub const ACK_TIMEOUTS_TO_FAULT: u32 = 3;
 const MAX_PING_REPLIES: usize = 4;
 
 /// The longest wait between a stalled sender's credit probes, in ack timeouts; a power of 2.
+/// 64 \[target\]: a chosen budget, with the 1, 2, 4, … backoff, not a measured figure.
 pub const PROBE_BACKOFF_MAX: u64 = 64;
 
 /// One-way α samples the core keeps for its p99 estimate.
+/// 128 \[target\]: a chosen budget, not a measured figure.
 pub const ALPHA_WINDOW: usize = 128;
 
 /// Pings this core sent whose replies it still accepts; an older one's reply gives no sample.
@@ -462,6 +464,15 @@ impl ChannelCore {
         }
     }
 
+    /// A fault the backend sees itself, outside the core's own checks: a queue pair in its
+    /// error state, a lost QUIC connection or TCP reset, a link down past `link.failover_timeout`
+    /// (RFC-0031 §7.4). From now on sends return [`SendError::Link`], the next
+    /// [`poll_transmit`](Self::poll_transmit) gives a `Close` with the error's code, and nothing
+    /// more is received. The first fault is kept.
+    pub fn fail(&mut self, error: Error) {
+        self.raise(error);
+    }
+
     // ---- Sending ----
 
     /// Queues a data frame whose extension and payload sit in the given leases (`Channel::
@@ -647,7 +658,8 @@ impl ChannelCore {
     /// is in use. Only the core hands out its pool's slots, so it sees each one come back.
     pub fn next_receive_slot(&mut self) -> Option<SlotWriter> {
         self.reap_released();
-        let writer = (0..self.pool.slots()).find_map(|slot| self.pool.claim(slot))?;
+        // Any free slot, taken without a lock (RFC-0031 §8).
+        let writer = self.pool.take()?;
         // A delivered frame dropped on another thread since the scan above: its slot is free,
         // so its credit returns now, before the slot holds another frame.
         if let Some(at) = self
@@ -999,12 +1011,10 @@ impl ChannelCore {
         if self.highest_seen > self.expected {
             self.nack_gaps(now);
         }
-        let timeout = self.ack_timeout();
         let mut fault = false;
-        if let Some(send) = self.send.as_mut()
+        if self.ack_due().is_some_and(|due| now >= due)
+            && let Some(send) = self.send.as_mut()
             && let Some(oldest) = send.retained.front()
-            && oldest.sent_at.is_some()
-            && now.saturating_duration_since(send.last_progress) >= timeout
         {
             let seq = oldest.chan_seq;
             if !send.resend.contains(&seq) {
@@ -1014,21 +1024,12 @@ impl ChannelCore {
             send.timeouts += 1;
             fault = send.timeouts >= self.ack_timeouts_to_fault;
         }
-        if let Some(send) = self.send.as_mut()
-            && let Some(since) = send.stalled_since
-            && send.retained.is_empty()
+        if self.probe_due_at().is_some_and(|due| now >= due)
+            && let Some(send) = self.send.as_mut()
         {
-            let backoff = 1u64 << send.probes.min(PROBE_BACKOFF_MAX.trailing_zeros());
-            let wait = timeout.0.saturating_mul(backoff);
-            if now
-                .saturating_duration_since(send.last_probe.unwrap_or(since))
-                .0
-                >= wait
-            {
-                send.last_probe = Some(now);
-                send.probes = send.probes.saturating_add(1);
-                self.probe_due = true;
-            }
+            send.last_probe = Some(now);
+            send.probes = send.probes.saturating_add(1);
+            self.probe_due = true;
         }
         if fault {
             self.raise(Error::new(
@@ -1036,6 +1037,56 @@ impl ChannelCore {
                 "no ack within the ack timeout, repeatedly (RFC-0031 §7.3)",
             ));
         }
+    }
+
+    /// When the ack timer of the oldest frame on the wire runs out (§7.3).
+    fn ack_due(&self) -> Option<MonoTime> {
+        let send = self.send.as_ref()?;
+        send.retained.front()?.sent_at?;
+        Some(send.last_progress.saturating_add(self.ack_timeout()))
+    }
+
+    /// When a sender refused for credit, with nothing unacknowledged, sends its next probe.
+    fn probe_due_at(&self) -> Option<MonoTime> {
+        let send = self.send.as_ref()?;
+        let since = send.stalled_since?;
+        if !send.retained.is_empty() {
+            return None;
+        }
+        let backoff = 1u64 << send.probes.min(PROBE_BACKOFF_MAX.trailing_zeros());
+        let wait = Nanos(self.ack_timeout().0.saturating_mul(backoff));
+        Some(send.last_probe.unwrap_or(since).saturating_add(wait))
+    }
+
+    /// When [`on_tick`](Self::on_tick) next has work, for a driver that steps on events: the
+    /// ack timeout of the oldest frame on the wire, a stalled sender's next probe, or the next
+    /// NACK of a missing frame, whichever comes first. A time already past means now. `None`
+    /// when no timer runs, and after a fault. A received frame the caller drops is not a timer:
+    /// its credit goes out at the next [`poll_transmit`](Self::poll_transmit).
+    pub fn next_deadline(&self) -> Option<MonoTime> {
+        if self.fault.is_some() {
+            return None;
+        }
+        let mut next = [self.ack_due(), self.probe_due_at()]
+            .into_iter()
+            .flatten()
+            .min();
+        if self.recv_slots > 0 {
+            let interval = self.nack_interval();
+            for seq in self.expected..self.highest_seen {
+                if self.is_held(seq) {
+                    continue;
+                }
+                let (last_seq, last_at) = self.nacked[(seq % u64::from(self.recv_slots)) as usize];
+                let due = if last_seq == seq && last_at != MonoTime(0) {
+                    last_at.saturating_add(interval)
+                } else {
+                    MonoTime(0)
+                };
+                next = Some(next.map_or(due, |next| next.min(due)));
+            }
+        }
+        next
     }
 
     /// The next frame to put on the wire, or `None`: control frames first (the credit, ping

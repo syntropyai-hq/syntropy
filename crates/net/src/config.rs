@@ -109,9 +109,17 @@ pub struct LinkSection {
     /// The floor of the adaptive acknowledgement timeout (RFC-0031 §7.3).
     #[config(reload = Hot, default = "200us", introduced_at = FEATURE_LEVEL_V1)]
     pub ack_timeout_min: Duration,
-    /// λ, the weight of a link's p99 in its cost, in latency mode (RFC-0031 §3).
-    #[config(reload = Hot, default = computed("1.0 on Wi-Fi or relayed links, 0.25 otherwise"),
-             introduced_at = FEATURE_LEVEL_V1)]
+    /// λ, the weight of a link's p99 in its cost, in latency mode (RFC-0031 §3): one number that
+    /// replaces both defaults. Between 0 and 10 [target: a chosen bound; 1.0 already prices a hop
+    /// at its p99], so NaN and infinity are refused here rather than absorbed by `link_cost`
+    /// (RFC-0031 §3, note of 2026-10-23).
+    #[config(
+        reload = Hot,
+        default = computed("1.0 on Wi-Fi, overlay or relayed links, 0.25 otherwise"),
+        min = 0.0,
+        max = 10.0,
+        introduced_at = FEATURE_LEVEL_V1
+    )]
     pub p99_weight: Option<f64>,
 }
 

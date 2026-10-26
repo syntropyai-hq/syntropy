@@ -36,10 +36,10 @@ pub use arena::{
 };
 pub use manager::TierCommand;
 pub use os::{
-    CgroupMem, CommitCharge, HostRange, HugePages, LockOutcome, MemSnapshot, OsMemError, OsMemory,
-    PageableReason, PinLimits, Psi, ReclaimStalls,
+    CgroupMem, CommitCharge, CommitOutcome, HostRange, HugePages, LockOutcome, MemSnapshot,
+    OsMemError, OsMemory, PageableReason, PinLimits, Psi, ReclaimStalls,
 };
-pub use pin::{PinProgress, PinState};
+pub use pin::{LockRange, PinProgress, PinState, UnitSlot, lock_ranges, slot_layout};
 pub use pressure::PressureLevel;
 pub use residency::{HomeState, StepFence};
 /// RFC-0020 §3's supporting types that `syntropy-core` defines, because `syntropy-io` carries

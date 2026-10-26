@@ -216,6 +216,7 @@ pub(super) fn topology(
     fs: &dyn HostFs,
     d: &Domain,
     cpu: &CpuFacts,
+    amx_permitted: bool,
 ) -> Result<CpuTopology, EnumError> {
     // Physical cores: logical CPUs that share a core list are one core.
     let mut cores: BTreeSet<Vec<u32>> = BTreeSet::new();
@@ -251,8 +252,8 @@ pub(super) fn topology(
         // unit on every part. 0 is the documented "unknown".
         ccds: 0,
         isa: cpu.isa.flags,
-        // The tile-data permission request is a system call (PLC-E1-T14); not granted.
-        amx_permitted: false,
+        // The tile-data permission request, made by the caller (PLC-E1-T14).
+        amx_permitted,
         // ADR-0012's reservation is made by the scheduler, not enumeration.
         reserved_cpus: CpuSet::default(),
     })

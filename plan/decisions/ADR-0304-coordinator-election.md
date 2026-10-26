@@ -70,6 +70,16 @@ The surveyed bully election re-ran on every connection change, with a 3 s campai
 
 **Clarified 2026-10-22 (DIST-E10-T08):** "Every RT-DIST scenario" in item 2 of the 2026-10-20 revision means each property in RFC-0032 Testing's "Election safety and liveness" row. Each is a named case of the model check. The decision is unchanged. The model runs in a bounded 3-node configuration in the default tests, and in full on 3–4 nodes with partitions and message loss as the `election-model` suite. DIST-E10-T09 runs that suite on every change to `cluster`, once QUAL-E1-T07's change detection exists.
 
+**Revised 2026-10-23 (DIST-E10-T10; OQ-NET-34), for the maintainers to confirm.** This revision was taken under the maintainers' standing instruction of 2026-10-22, after DIST-E10-T10's model check. It changes items 2–4 of the second 2026-10-19 revision (RFC-0032 §6.3, §7.5 and Testing, notes of this date):
+1. **Fencing replies carry the chain** (item 2). Beside the coordinator's `ElectionProof`, a fencing reply carries the strongest supported election in the sender's chain: its `SignedElection`, and the sender's own `Endorse` when that is what makes it supported. Beats are unchanged.
+2. **The heal compares standings** (item 3). The heal order still ranks one election by `(supported, counter, tag)`, then lower node ID. A node now compares standings, though, not proofs alone. A standing is the strongest supported election in its chain, ranked by that order, and then its coordinator's proof. A chain with no supported election ranks below any chain with one.
+   - **Where support comes from.** It is read from each `SignedElection`'s `acks`, and from the elections the node endorsed itself, which it keeps on disk with its command journal.
+   - **Support only grows.** A held proof's support is merged across the copies the node receives.
+   - **An isolated node still can't inflate counters.** Its self-elections add no support, and its chain holds no supported election newer than the other side's.
+3. **Every accepted election is endorsed once** (item 4). A node endorses each election it accepts, whichever path accepted it, not only the winner of a heal.
+
+The reason: under the heal order applied to proofs alone, a stale supported proof rolled a lone survivor back past a command that its own ack had made `replicated = true` (OQ-NET-34). Testing's property "an unsupported self-election never deposes a supported coordinator" is restated to end "unless the deposing side's chain holds a supported election that beats that coordinator's". DIST-E10-T05 builds the rule.
+
 ## Consequences
 
 - Positive:

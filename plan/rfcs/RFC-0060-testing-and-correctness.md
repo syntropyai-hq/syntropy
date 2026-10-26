@@ -229,6 +229,8 @@ pub enum PollOutcome { Progress, Idle { next_wake: Option<MonoTime> }, Fault(Err
 
 The production thread wraps `poll_once` in the spin-then-park loop of ADR-0012. The simulator calls it when the device's virtual timeline says the dispatcher has work. The CPU compute pool gets the same treatment: `ComputePool::run_inline` executes a doorbell's work on the calling thread, which the simulator uses so that one OS thread runs every node. The I/O engine is a trait owned by RFC-0021, and the simulator implements it with `FakeIo` (§8.4).
 
+*Note 2026-10-23 (PLC-E7-T17):* built in `syntropy_exec::dispatch` and `syntropy_exec::pool`, as RFC-0012 §3.1's note of the same date describes. A pass is timed on the dispatcher's `TickSource`, and a pass over its budget counts as an overrun. A unit test moves the injected clock inside a pass and sees the count. In the simulator a pass takes no virtual time, because `SimTicks` moves only between events, so the watchdog cannot fire there. A pass that waited for an event would hang the run's one thread. A bounded wait inside a pass, such as a timed park, a sleep or a counted spin, goes unseen under test. The check that fails on it is PLC-E7-T18's hardware run, the first on a real `TickSource`. `crates/exec/tests/sim_one_stage.rs` drives a one-stage instance through `poll_once` and `run_inline` on one OS thread in a `SimWorld`. Two runs of one seed give identical step records, tokens and trace hashes. A checker fails the run if a pass returns `Idle` with a step in flight.
+
 #### 2.4 Deterministic iteration and hashing
 
 - **Rule T3.** Crates reachable from a protocol core or the solver use `BTreeMap`/`BTreeSet`, or `syntropy_core::DetHashMap`, a `HashMap` with a fixed-key hasher. They never use `std::collections::HashMap` with `RandomState`. A clippy `disallowed-types` configuration on those crates enforces this.
@@ -323,6 +325,11 @@ Each stateful component listed below has a **reference model**: a deliberately s
   Each primitive's crate keeps its loom model next to it under `#[cfg(loom)]`.
 - **Miri** runs the unit tests of `tier` (arenas), `ipc` (shared-memory layout) and `net` (frame codecs, shared-memory transport) with FFI stubbed. It catches undefined behaviour in the `unsafe` blocks that ADR-0001 confines to these crates.
 - **Sanitizers.** A test-only job builds the `unsafe` crates and the CPU provider with AddressSanitizer and ThreadSanitizer on a pinned nightly toolchain. ADR-0001 forbids nightly compilers only for release builds.
+
+*Note 2026-10-23 (QUAL-E3-T09):* the M0 loom models are in `spsc` (the heap ring and the shared ring) and `ipc` (the `local_tokens` and `local_sequences` rings of one region), and `cargo xtask test loom` runs them in `hosted-l3` (RFC-0062 §2.3). Three findings apply to the M1 models of QUAL-E3-T22:
+- **No spinning between three threads.** In loom 0.7, a thread that yields hands over to another without spending a preemption. When two threads spin on a third, loom can hand control between the two indefinitely, and the run fails at loom's branch limit rather than finishing. A model of three threads therefore gives each thread a fixed number of attempts that never wait. The main thread then finishes the run alone and checks the outcome: every record arrives once and in order. Two-thread models may still spin.
+- **The planted bug is a twin, not a one-off edit.** Each ring has a test-only twin whose publishing store is relaxed, and a test runs the cross-thread model on it in a child process and expects loom's causality violation. A child process, because loom may abort instead of unwinding.
+- **Slot bytes are invisible to loom.** The shared ring's slots are plain memory that loom cannot see, so a loom-only cell per slot records each write and read, and loom checks those are ordered.
 
 #### 3.5 Hot-path guards
 
@@ -1011,7 +1018,7 @@ pub enum Dist {
 ```
 
 **Reliable channels** (`Channel` semantics, RFC-0001 §5.8):
-- **Delivery time.** A frame of S bytes sent at t on an up link is delivered at `max(t + α + S/β + ⌈S/mtu⌉·per_packet_overhead + jitter, last_delivery_on_channel)`. FIFO order is preserved.
+- **Delivery time.** A frame of S bytes sent at t on an up link starts going out at `s = max(t, the end of what the link was already sending)`, and is delivered at `max(s + S/β + ⌈S/mtu⌉·per_packet_overhead + α + jitter, last_delivery_on_channel)`. Every stream on the link shares its β, in send order; FIFO order on each channel is preserved (revised 2026-10-23, note below).
 - **Loss.** A packet lost with probability `loss` delays its frame by one QUIC probe timeout, `PTO = srtt + max(4·rttvar, 1 ms) + max_ack_delay` with `max_ack_delay` = 25 ms (the QUIC default), using the link's running α statistics.
 - **Back-pressure.** Credit-based, with the window RFC-0031 specifies. A sender out of credit gets `WouldBlock`, and the time it waits is recorded as `credit_stall`, as in production.
 - **Link down.** Frames in flight are dropped and the channel reports a `Link` error after the transport's failure timeout. That is what production sees when a QUIC connection or RDMA queue pair dies.
@@ -1044,6 +1051,33 @@ pub enum Dist {
 - **Fields the table leaves out.** The presets set them plainly: no jitter, no reorder, no per-packet overhead, an MTU of 1,500 bytes on IP links and 4,096 on RDMA, and one packet per frame on shared memory. `wan_invite`'s tail is `Const(100 ms)`, 4 × its median, at p_tail 0.01.
 - **Portable sampling.** Every draw comes from the run's `SimEntropy`. The log-normal's `exp` and the Marsaglia polar method's `ln` are computed in `testkit::sim` from addition, subtraction, multiplication, division and square root only, which IEEE 754 rounds the same everywhere, not from the platform's maths library, whose `exp` and `ln` may differ between Linux, macOS and Windows. So a seed replays one run on any host (§8). A golden test pins the exact bits of seeded draws, so a platform difference fails loudly.
 - **Loss on reliable channels.** Each packet of a frame is lost at most once, independently, with probability `loss`, and each lost packet adds one PTO. A round-trip sample is twice a message's α plus jitter, and the PTO uses the link's estimate before the frame's own sample. Before any sample, a link assumes RFC 9002's initial RTT, 333 ms.
+
+**Note, 2026-10-23 (QUAL-E8-T04): `SimTransport` as built.**
+- **Where.** `testkit::sim::SimTransport` implements `net`'s `Transport`, one per simulated node, over a shared `SimNet` that holds the fabric and every channel. It sits behind `testkit`'s `transport` feature, which `net`'s tests turn on, so crates that use `testkit` for anything else don't build `net`.
+- **Channels.** Each side of a channel is DIST-E7-T02's channel core, so the credit window, `WouldBlock`, `credit_stall`, acknowledgements and retention are production's. Every frame goes through `SimFabric::send_reliable`, one stream per channel side, and is delivered at its own arrival time.
+- **Link down.** The failure timeout is `link.failover_timeout`, RFC-0031 §4's QUIC idle timeout: 2 s on a LAN, 10 s across a WAN, chosen per `SimNet`.
+  - A channel fails at both ends, with an uncoded `Link` error, when either direction of its link has been down for the timeout. The timeout counts from the moment the link went down, noted when the fabric changes, however late the driver next steps. That includes a one-way split, since the far end hears nothing.
+  - `SimNet::next_deadline` gives the next time anything is due: a frame's arrival, a failover, or a core's timer (`ChannelCore::next_deadline`). So a driver that steps on events sees each one at its time.
+  - A link back up sooner loses nothing: the cores send the dropped frames again on their ack timeouts.
+  - The cores never escalate ack timeouts to a link fault, since QUIC retransmits lost packets itself (RFC-0031 §7.3).
+- **Not modelled yet.**
+  - Handshake time: `connect` and `accept` pair as soon as both are called, and a `connect` with no link up fails at once with `ConnectTimeout`.
+  - `reconnect`.
+  - Gossip datagrams use the fabric's `send_datagram` directly, not the transport.
+
+**Note, 2026-10-23 (DIST-E7-T13): one serialisation queue per link.**
+- **What changed.** Before, each message on a link got the link's whole β whatever else was on it, so a bulk transfer could not delay a data channel beside it, and RFC-0031 §7.5's pacing had nothing to act on.
+  - Now each directed link has one serialisation queue. A message starts going out when the link has finished what it was given before, by send time; equal times go in the order of the sends, which the run fixes.
+  - Datagrams join the same queue.
+  - A link that goes down drops what it was sending, its queue with it, so after a heal a message does not wait behind bytes that never went out.
+  - A message on an idle link is timed as before.
+- **What moved.** Back-to-back messages on one link now go out one after another, so arrival times move in seven existing tests that send them. In `sim_fabric`, that's `a_one_way_split_drops_a_to_b_and_keeps_b_to_a`. In `sim_transport`, that's `a_link_back_up_before_the_timeout_loses_nothing`, `frames_in_flight_on_a_downed_link_are_dropped_and_the_channel_reports_link`, `a_sender_out_of_credit_gets_would_block_and_records_the_stall`, `a_driver_stepping_on_deadlines_sees_every_event_on_time`, `the_conformance_suite_passes_on_sim_transport` and `a_seed_replays_exactly`. No asserted figure changed. In the replay test (`wifi6_home`, loss 0.05, 60 frames), seed 7's last delivery moves from 1,566,418,047 ns to 1,566,503,327 ns, and seed 8's from 1,958,764,363 ns to 1,958,901,483 ns, with the same retransmits [estimate]. No trace hash depends on the fabric yet.
+- **Bulk frames in a simulation.** A real QUIC connection interleaves at packet granularity, about 1.5 KB. A scenario that runs bulk beside a data channel sends it in small frames, 4 KiB [target], which take about 14 µs on 2.5 GbE [estimate].
+- **`SimNet` gains pacing** (RFC-0031 §7.5):
+  - `pace(from, to, config)` puts a `BulkPacer` on an edge, and `try_send` on its `Bulk` and `Replay` channels returns `WouldBlock` until the pacer has tokens;
+  - `pacing_ready_at` says when it will;
+  - `watch_alpha` and `alpha_log` record the edge's data-channel α samples;
+  - `next_deadline` includes the pacer's window ends.
 
 #### 8.4 Fake devices, tiers and drives
 

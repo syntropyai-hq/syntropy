@@ -1,0 +1,66 @@
+{
+  "name": "nvidia_decode",
+  "note": "Hand-written in the recorded-table format; the times are chosen to exercise each rule, not measured on hardware.",
+  "vendor": "Nvidia",
+  "deterministic": true,
+  "terms": { "t_submit": 2000, "t_fence": 500 },
+  "programs": [
+    {
+      "domain": "Cuda",
+      "ops": [
+        {
+          "op": "Gemv", "predicted": 50000,
+          "offers": [
+            { "provider": "cuda", "backend": "Cuda", "domain": "Cuda", "ns": 40000 },
+            { "provider": "ggml-cuda", "backend": "GgmlCuda", "domain": "Cuda", "ns": 39000 }
+          ],
+          "expect": "cuda#0"
+        },
+        {
+          "op": "Gemm", "predicted": 30000,
+          "offers": [
+            { "provider": "cuda", "backend": "Cuda", "domain": "Cuda", "ns": 30000 },
+            { "provider": "ggml-cuda", "backend": "GgmlCuda", "domain": "Cuda", "ns": 27000 }
+          ],
+          "expect": "ggml-cuda#0"
+        },
+        {
+          "op": "Logits", "predicted": 20000,
+          "offers": [
+            { "provider": "cuda", "backend": "Cuda", "domain": "Cuda", "ns": 20000 },
+            { "provider": "ggml-cuda", "backend": "GgmlCuda", "domain": "Cuda", "ns": 18000, "fences": 3 }
+          ],
+          "expect": "cuda#0"
+        },
+        {
+          "op": "RmsNorm", "predicted": 1000,
+          "offers": [
+            { "provider": "cuda", "backend": "Cuda", "domain": "Cuda", "ns": 1000, "capture_safe": false, "breaks": 1 },
+            { "provider": "ggml-cuda", "backend": "GgmlCuda", "domain": "Cuda", "ns": 1500 }
+          ],
+          "expect": "ggml-cuda#0"
+        },
+        {
+          "op": "Add", "predicted": 800,
+          "offers": [
+            { "provider": "cuda", "backend": "Cuda", "domain": "Cuda", "ns": 500, "deterministic": false },
+            { "provider": "ggml-cuda", "backend": "GgmlCuda", "domain": "Cuda", "ns": 800 }
+          ],
+          "expect": "ggml-cuda#0"
+        },
+        {
+          "op": "Argmax", "predicted": 500,
+          "offers": [
+            { "provider": "cuda", "backend": "Cuda", "domain": "Cuda", "ns": 300, "numerics": "bad_output" },
+            { "provider": "ggml-cpu", "backend": "GgmlCpu", "domain": "Host", "ns": 200 },
+            { "provider": "ggml-cuda", "backend": "GgmlCuda", "domain": "Cuda", "ns": 600 }
+          ],
+          "expect": "ggml-cuda#0"
+        }
+      ],
+      "expect_step": 89900
+    }
+  ],
+  "opened": ["Vulkan", "Cuda"],
+  "expect_domain": "Cuda"
+}

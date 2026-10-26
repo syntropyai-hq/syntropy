@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# A workflow-lint fixture: a composite action whose one action is pinned by SHA (QUAL-E1-T09).
+name: setup
+description: A pinned composite action.
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        path: target
+        key: cargo

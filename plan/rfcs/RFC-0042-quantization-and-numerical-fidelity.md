@@ -237,6 +237,8 @@ A kernel that converts its activation input to a narrower type before multiplyin
 
 `Numerics::act_in` carries the variant, so selection can enforce the rule mechanically.
 
+**ggml's 8-bit quantizers depend on the ISA** (revision, 2026-10-24, COMP-E13-T03). At the ggml commit the golden vectors pin, `Q8_0` and `Q8_1` have three quantizers: the portable reference rounds `x · (1/d)` half away from zero, the CPU backend's arm64 NEON path rounds it half to even, and its x86 AVX path rounds half to even and multiplies by `127/amax` in place of `1/d`. They differ only where `x · id` falls on or next to a half integer; `Q8_K` has one quantizer on both ISAs. `kernels::reference` implements each path, and a comparison against the ggml CPU baseline uses the path that baseline ran. Rule (b)'s argument is unchanged: the baseline's own path is inside its spread.
+
 ### 5. Implementing the exactness contract: what is measured
 
 ADR-0019 decision 9 asks for three levels of checks. RFC-0060 builds the harness; this section defines the measurements.

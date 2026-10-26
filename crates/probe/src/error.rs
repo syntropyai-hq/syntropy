@@ -45,6 +45,22 @@ pub enum EnumError {
     UnsupportedOs,
     /// More devices or tiers than a `u16` ordinal can number.
     TooManyOrdinals,
+    /// An OS call failed (Windows and macOS, whose E1 facts come from calls, not files).
+    Os {
+        /// The call, e.g. `GlobalMemoryStatusEx` or `sysctl hw.memsize`.
+        call: String,
+        /// The error's kind.
+        kind: io::ErrorKind,
+        /// The OS's message.
+        message: String,
+    },
+    /// An OS call succeeded but its response lacks a value E1 needs or does not parse.
+    BadResponse {
+        /// The call.
+        call: String,
+        /// What was wrong.
+        what: String,
+    },
 }
 
 impl EnumError {
@@ -57,6 +73,22 @@ impl EnumError {
                 path: path.into(),
                 kind: err.kind(),
             }
+        }
+    }
+
+    /// Maps an OS call's error.
+    pub(crate) fn os(call: impl Into<String>, err: &io::Error) -> Self {
+        Self::Os {
+            call: call.into(),
+            kind: err.kind(),
+            message: err.to_string(),
+        }
+    }
+
+    pub(crate) fn bad(call: impl Into<String>, what: impl Into<String>) -> Self {
+        Self::BadResponse {
+            call: call.into(),
+            what: what.into(),
         }
     }
 
@@ -82,6 +114,8 @@ impl fmt::Display for EnumError {
             Self::UnsupportedArch { found } => write!(f, "unsupported CPU architecture {found}"),
             Self::UnsupportedOs => f.write_str("host enumeration does not cover this OS"),
             Self::TooManyOrdinals => f.write_str("more than 65,536 devices or tiers on one node"),
+            Self::Os { call, message, .. } => write!(f, "{call} failed: {message}"),
+            Self::BadResponse { call, what } => write!(f, "{call} returned a bad response: {what}"),
         }
     }
 }
