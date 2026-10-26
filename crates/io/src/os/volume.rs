@@ -34,10 +34,21 @@ pub struct StatX {
     pub dev_major: u32,
     /// Minor number (`stx_dev_minor`).
     pub dev_minor: u32,
-    /// `(stx_dio_mem_align, stx_dio_offset_align)` when the kernel reports `STATX_DIOALIGN`
-    /// and both are non-zero; `None` when it does not report them or reports zero, which
-    /// means direct I/O is refused on the file.
-    pub dio: Option<(u32, u32)>,
+    /// What the kernel said about direct-I/O alignment.
+    pub dio: DioReport,
+}
+
+/// The `STATX_DIOALIGN` answer. A kernel before 6.1, or a file system that does not fill the
+/// fields, leaves the bit unset, which is not the same as reporting zero: zero means direct I/O
+/// is refused (RFC-0021 §4.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DioReport {
+    /// `STATX_DIOALIGN` was not set in `stx_mask`, or no file could be asked.
+    NotReported,
+    /// The kernel reported zero for either alignment: direct I/O is refused.
+    Zero,
+    /// `(stx_dio_mem_align, stx_dio_offset_align)`, both non-zero.
+    Aligned(u32, u32),
 }
 
 /// The raw Linux calls behind E3. [`LiveVolumeCalls`] makes them; tests inject a shim.
@@ -128,20 +139,24 @@ impl VolumeCalls for LiveVolumeCalls {
                     return Ok(StatX {
                         dev_major,
                         dev_minor,
-                        dio: None,
+                        dio: DioReport::NotReported,
                     });
                 }
             } else {
                 return Ok(StatX {
                     dev_major,
                     dev_minor,
-                    dio: None,
+                    dio: DioReport::NotReported,
                 });
             }
         }
-        let reported = buf.stx_mask & libc::STATX_DIOALIGN != 0;
-        let dio = (reported && buf.stx_dio_mem_align != 0 && buf.stx_dio_offset_align != 0)
-            .then_some((buf.stx_dio_mem_align, buf.stx_dio_offset_align));
+        let dio = if buf.stx_mask & libc::STATX_DIOALIGN == 0 {
+            DioReport::NotReported
+        } else if buf.stx_dio_mem_align == 0 || buf.stx_dio_offset_align == 0 {
+            DioReport::Zero
+        } else {
+            DioReport::Aligned(buf.stx_dio_mem_align, buf.stx_dio_offset_align)
+        };
         Ok(StatX {
             dev_major,
             dev_minor,

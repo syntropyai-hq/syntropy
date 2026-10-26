@@ -17,7 +17,7 @@ use std::path::Path;
 use syntropy_core::resource::{
     DirectIoSupport, FsKind, PcieUpstream, StorageBus, TempSource, VolumeInfo,
 };
-use syntropy_io::os::volume::{FsStat, StatX, VolumeCalls};
+use syntropy_io::os::volume::{DioReport, FsStat, StatX, VolumeCalls};
 use syntropy_probe::storage::linux_volume;
 use syntropy_probe::{EnumError, HostFs};
 
@@ -114,7 +114,7 @@ struct Shim {
     fs_type: u64,
     free: u64,
     dev: (u32, u32),
-    dio: Option<(u32, u32)>,
+    dio: DioReport,
 }
 
 impl VolumeCalls for Shim {
@@ -169,7 +169,7 @@ fn ext4_on_a_cpu_attached_nvme() {
         fs_type: EXT4,
         free: 500 << 30,
         dev: (259, 2),
-        dio: Some((512, 4096)),
+        dio: DioReport::Aligned(512, 4096),
     };
     let v = run(&cpu_attached(), &shim).unwrap();
     assert_eq!(v.fs, FsKind::Ext4);
@@ -214,7 +214,7 @@ fn xfs_on_a_sata_partition() {
         fs_type: XFS,
         free: 1 << 40,
         dev: (8, 17),
-        dio: Some((512, 512)),
+        dio: DioReport::Aligned(512, 512),
     };
     let v = run(&t, &shim).unwrap();
     assert_eq!(v.fs, FsKind::Xfs);
@@ -236,7 +236,7 @@ fn tmpfs_has_no_block_device_and_refuses_direct_io() {
     let mut t = Tree::default();
     t.mount("/srv/store", "0:50", "tmpfs", "tmpfs");
     // Even if a kernel reported an alignment, a memory-backed volume is `Unsupported`.
-    for dio in [None, Some((4096, 4096))] {
+    for dio in [DioReport::NotReported, DioReport::Aligned(4096, 4096)] {
         let shim = Shim {
             fs_type: TMPFS,
             free: 8 << 30,
@@ -252,15 +252,51 @@ fn tmpfs_has_no_block_device_and_refuses_direct_io() {
 }
 
 #[test]
-fn a_kernel_that_reports_no_alignment_reads_as_unsupported() {
+fn an_old_kernel_falls_back_to_the_logical_block_size() {
+    // Before Linux 6.1 `STATX_DIOALIGN` is not reported (RFC-0021 §4.2): ext4 on a 512-byte
+    // logical-block drive is `Supported` at 512.
     let shim = Shim {
         fs_type: EXT4,
         free: 1,
         dev: (259, 2),
-        dio: None,
+        dio: DioReport::NotReported,
     };
     assert_eq!(
         run(&cpu_attached(), &shim).unwrap().direct_io,
+        DirectIoSupport::Supported {
+            mem_align: 512,
+            offset_align: 512
+        }
+    );
+}
+
+#[test]
+fn a_reported_zero_is_unsupported() {
+    let shim = Shim {
+        fs_type: EXT4,
+        free: 1,
+        dev: (259, 2),
+        dio: DioReport::Zero,
+    };
+    assert_eq!(
+        run(&cpu_attached(), &shim).unwrap().direct_io,
+        DirectIoSupport::Unsupported
+    );
+}
+
+#[test]
+fn an_unreported_alignment_without_a_block_device_is_unsupported() {
+    // A network or overlay volume: no disk to take a block size from.
+    let mut t = Tree::default();
+    t.mount("/srv/store", "0:60", "overlay", "overlay");
+    let shim = Shim {
+        fs_type: 0x794c_7630,
+        free: 1,
+        dev: (0, 60),
+        dio: DioReport::NotReported,
+    };
+    assert_eq!(
+        run(&t, &shim).unwrap().direct_io,
         DirectIoSupport::Unsupported
     );
 }
@@ -294,7 +330,7 @@ fn a_chipset_attached_nvme_is_flagged_shared_lane() {
         fs_type: EXT4,
         free: 1 << 40,
         dev: (259, 2),
-        dio: Some((512, 4096)),
+        dio: DioReport::Aligned(512, 4096),
     };
     let v = run(&am5_chipset(), &shim).unwrap();
     assert!(v.shared_lane);
@@ -313,7 +349,7 @@ fn an_uplink_wide_enough_for_its_children_is_not_shared() {
         fs_type: EXT4,
         free: 1,
         dev: (259, 2),
-        dio: Some((512, 4096)),
+        dio: DioReport::Aligned(512, 4096),
     };
     let v = run(&t, &shim).unwrap();
     assert!(!v.shared_lane);
@@ -344,7 +380,7 @@ fn a_bridge_with_only_the_drive_below_it_is_not_shared() {
         fs_type: EXT4,
         free: 1,
         dev: (259, 2),
-        dio: Some((512, 4096)),
+        dio: DioReport::Aligned(512, 4096),
     };
     let v = run(&t, &shim).unwrap();
     assert!(!v.shared_lane);
@@ -365,7 +401,7 @@ fn dm_crypt_over_a_partition_is_marked_encrypted() {
         fs_type: EXT4,
         free: 1,
         dev: (253, 0),
-        dio: Some((512, 4096)),
+        dio: DioReport::Aligned(512, 4096),
     };
     let v = run(&t, &shim).unwrap();
     assert_eq!(v.encrypted, Some(true));
@@ -386,7 +422,7 @@ fn the_deepest_mount_holds_the_path() {
         fs_type: EXT4,
         free: 1,
         dev: (259, 2),
-        dio: Some((512, 512)),
+        dio: DioReport::Aligned(512, 512),
     };
     // `/srv/stor` is a string prefix of the path but not a path prefix.
     assert_eq!(run(&t, &shim).unwrap().mount, Path::new("/srv"));
@@ -400,7 +436,7 @@ fn a_missing_block_queue_file_is_reported_not_guessed() {
         fs_type: EXT4,
         free: 1,
         dev: (259, 2),
-        dio: Some((512, 512)),
+        dio: DioReport::Aligned(512, 512),
     };
     assert!(matches!(run(&t, &shim), Err(EnumError::Missing { .. })));
 }

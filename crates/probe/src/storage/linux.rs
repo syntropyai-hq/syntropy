@@ -7,17 +7,18 @@
 //! from `/proc/self/mountinfo` and `/sys` through a [`HostFs`], so the same code runs on the live
 //! host and on a fixture tree. No step needs root.
 //!
-//! **Direct I/O** is `Supported` when the kernel reports non-zero `STATX_DIOALIGN` values for a
-//! file on the volume. It is `Unsupported` when the kernel reports zero, does not report them (a
-//! kernel before 6.1) or the file system is memory-backed (tmpfs, ramfs), which RFC-0010 §9 lists
-//! as refusing it. An old kernel therefore reads as `Unsupported`, the safe side: S1 then runs
-//! buffered and labels it, rather than assuming an alignment.
+//! **Direct I/O** follows RFC-0021 §4.2's Linux row. `Supported` at the reported alignments when
+//! the kernel reports non-zero `STATX_DIOALIGN` values. When it does not report them (a kernel
+//! before 6.1) and the volume has a block device, `Supported` at the device's
+//! `queue/logical_block_size`, the alignment direct I/O has always needed. `Unsupported` when
+//! the kernel reports zero, when the file system is memory-backed (tmpfs, ramfs; RFC-0010 §9),
+//! or when it does not report and the volume has no block device to take a size from.
 
 use std::path::{Path, PathBuf};
 
 use syntropy_core::resource::{DirectIoSupport, FsKind, StorageBus, TempSource, VolumeInfo};
 use syntropy_core::units::Bytes;
-use syntropy_io::os::volume::VolumeCalls;
+use syntropy_io::os::volume::{DioReport, VolumeCalls};
 
 use super::pci;
 use crate::error::EnumError;
@@ -203,10 +204,12 @@ pub fn volume(
         bus: StorageBus::Virtual,
         free: Bytes(st.free),
         direct_io: match sx.dio {
-            Some((mem_align, offset_align)) if !memory_backed => DirectIoSupport::Supported {
-                mem_align,
-                offset_align,
-            },
+            DioReport::Aligned(mem_align, offset_align) if !memory_backed => {
+                DirectIoSupport::Supported {
+                    mem_align,
+                    offset_align,
+                }
+            }
             _ => DirectIoSupport::Unsupported,
         },
         ..VolumeInfo::default()
@@ -232,6 +235,12 @@ pub fn volume(
         info.encrypted = Some(true);
     }
     info.logical_block = number(fs, &format!("sys/block/{disk}/queue/logical_block_size"))?;
+    if sx.dio == DioReport::NotReported && !memory_backed {
+        info.direct_io = DirectIoSupport::Supported {
+            mem_align: info.logical_block,
+            offset_align: info.logical_block,
+        };
+    }
     info.physical_block = number(fs, &format!("sys/block/{disk}/queue/physical_block_size"))?;
 
     if let Some(ctrl) = nvme_controller(&disk) {
