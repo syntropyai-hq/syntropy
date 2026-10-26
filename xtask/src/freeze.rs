@@ -9,7 +9,9 @@
 //!
 //! This module is the rule, over data. `--events` is the freeze's event log, a JSON array in time
 //! order of `{"at": <unix seconds>, "kind": "set" | "lift", "version": "X.Y.Z"}`; a `lift` also
-//! has `"reason": "publish" | "abort"`. `--pr` is `{"number": <n>, "labels": ["rc:fix", ...]}`.
+//! has `"reason": "publish" | "abort"`. `--pr` is
+//! `{"number": <n>, "base": "<branch>", "labels": ["rc:fix", ...]}`. The freeze is on `main`
+//! only: a PR to another branch, such as a backport to `release/vX.Y` (§9.2 step 8), is not held.
 //! With `--pr` the command fails when the freeze holds that PR. With `--durations-out` it writes
 //! each freeze window as JSON, for the CI cost report (QUAL-E1-T13).
 //!
@@ -21,6 +23,9 @@
 use serde_json::{Value, json};
 
 use crate::run::Context;
+
+/// The branch the freeze is on.
+pub const FROZEN_BRANCH: &str = "main";
 
 /// The label that lets a PR merge during a freeze.
 pub const FIX_LABEL: &str = "rc:fix";
@@ -59,7 +64,10 @@ impl Event {
 /// One freeze, from `rc:start` to its lift. Times are unix seconds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Window {
+    /// The version of the `set` that started the window.
     pub version: String,
+    /// The versions of later `set` events under the same freeze, one per patch RC.
+    pub continued_by: Vec<String>,
     pub start: u64,
     /// `None` while the freeze is still set.
     pub end: Option<u64>,
@@ -75,6 +83,7 @@ impl Window {
     fn to_json(&self) -> Value {
         json!({
             "version": self.version,
+            "continued_by": self.continued_by,
             "start": self.start,
             "end": self.end,
             "seconds": self.seconds(),
@@ -142,11 +151,12 @@ pub fn durations(events: &[Event]) -> Result<Vec<Window>, String> {
         match (event, open) {
             (Event::Set { at, version }, None) => windows.push(Window {
                 version: version.clone(),
+                continued_by: Vec::new(),
                 start: *at,
                 end: None,
                 lifted_by: None,
             }),
-            (Event::Set { .. }, Some(_)) => {}
+            (Event::Set { version, .. }, Some(window)) => window.continued_by.push(version.clone()),
             (Event::Lift { at, reason }, Some(window)) => {
                 window.end = Some(*at);
                 window.lifted_by = Some(*reason);
@@ -165,22 +175,37 @@ pub fn is_frozen(events: &[Event]) -> Result<bool, String> {
 }
 
 /// The freeze's verdict on one PR: `Ok` if it may merge, else why it is held.
-pub fn evaluate(frozen: bool, labels: &[String]) -> Result<(), String> {
-    if frozen && !labels.iter().any(|l| l == FIX_LABEL) {
+pub fn evaluate(frozen: bool, base: &str, labels: &[String]) -> Result<(), String> {
+    if frozen && base == FROZEN_BRANCH && !labels.iter().any(|l| l == FIX_LABEL) {
         return Err(format!(
-            "held: a release freeze is set and the PR is not labelled `{FIX_LABEL}`"
+            "held: a release freeze is set on `{FROZEN_BRANCH}` and the PR is not labelled \
+             `{FIX_LABEL}`"
         ));
     }
     Ok(())
 }
 
-/// Reads a PR file: `{"number": <n>, "labels": [...]}`. Returns the number and the labels.
-pub fn parse_pr(text: &str) -> Result<(u64, Vec<String>), String> {
+/// A PR as `--pr` gives it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Pr {
+    pub number: u64,
+    pub base: String,
+    pub labels: Vec<String>,
+}
+
+/// Reads a PR file: `{"number": <n>, "base": "<branch>", "labels": [...]}`. A missing `base` is
+/// an error, so a PR is never let through for want of it.
+pub fn parse_pr(text: &str) -> Result<Pr, String> {
     let value: Value = serde_json::from_str(text).map_err(|e| format!("pr: not JSON: {e}"))?;
     let number = value
         .get("number")
         .and_then(Value::as_u64)
         .ok_or_else(|| "pr: no numeric `number`".to_owned())?;
+    let base = value
+        .get("base")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "pr: no `base` branch".to_owned())?
+        .to_owned();
     let labels = value
         .get("labels")
         .and_then(Value::as_array)
@@ -192,7 +217,11 @@ pub fn parse_pr(text: &str) -> Result<(u64, Vec<String>), String> {
                 .ok_or_else(|| "pr: a label is not a string".to_owned())
         })
         .collect::<Result<_, _>>()?;
-    Ok((number, labels))
+    Ok(Pr {
+        number,
+        base,
+        labels,
+    })
 }
 
 /// The `ci freeze` step.
@@ -216,8 +245,12 @@ pub fn step(context: &Context) -> Result<(), String> {
     if context.args.get("--pr").is_none() {
         return Ok(());
     }
-    let (number, labels) = parse_pr(&read("--pr")?)?;
-    let verdict = evaluate(frozen, &labels);
+    let Pr {
+        number,
+        base,
+        labels,
+    } = parse_pr(&read("--pr")?)?;
+    let verdict = evaluate(frozen, &base, &labels);
     match &verdict {
         Ok(()) => eprintln!("freeze: PR #{number} may merge"),
         Err(why) => eprintln!("freeze: PR #{number} {why}"),
@@ -248,14 +281,25 @@ mod tests {
 
     #[test]
     fn an_unlabelled_pr_is_held_while_frozen_and_an_rc_fix_merges() {
-        assert!(evaluate(true, &labels(&["area:ci"])).is_err());
-        assert!(evaluate(true, &[]).is_err());
-        assert_eq!(evaluate(true, &labels(&["rc:fix", "area:ci"])), Ok(()));
+        assert!(evaluate(true, "main", &labels(&["area:ci"])).is_err());
+        assert!(evaluate(true, "main", &[]).is_err());
+        assert_eq!(
+            evaluate(true, "main", &labels(&["rc:fix", "area:ci"])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_frozen_main_does_not_hold_a_backport_to_a_release_branch() {
+        assert_eq!(
+            evaluate(true, "release/v0.1", &labels(&["backport:v0.1"])),
+            Ok(())
+        );
     }
 
     #[test]
     fn every_pr_merges_when_no_freeze_is_set() {
-        assert_eq!(evaluate(false, &[]), Ok(()));
+        assert_eq!(evaluate(false, "main", &[]), Ok(()));
     }
 
     #[test]
@@ -278,7 +322,7 @@ mod tests {
         ];
         let merged: Vec<&str> = queue
             .iter()
-            .filter(|(_, l)| evaluate(true, l).is_ok())
+            .filter(|(_, l)| evaluate(true, "main", l).is_ok())
             .map(|(name, _)| *name)
             .collect();
         assert_eq!(merged, ["fix-a", "fix-b"]);
@@ -289,6 +333,7 @@ mod tests {
         let windows = durations(&events(LOG)).expect("durations");
         assert_eq!(windows.len(), 3);
         assert_eq!(windows[0].version, "0.1.0");
+        assert_eq!(windows[0].continued_by, ["0.1.1"]);
         assert_eq!(windows[0].seconds(), Some(3600));
         assert_eq!(windows[0].lifted_by, Some(Reason::Publish));
         assert_eq!(windows[1].seconds(), Some(300));
@@ -311,9 +356,14 @@ mod tests {
     #[test]
     fn pr_files_parse() {
         assert_eq!(
-            parse_pr(r#"{"number": 7, "labels": ["rc:fix"]}"#),
-            Ok((7, labels(&["rc:fix"])))
+            parse_pr(r#"{"number": 7, "base": "main", "labels": ["rc:fix"]}"#),
+            Ok(Pr {
+                number: 7,
+                base: "main".to_owned(),
+                labels: labels(&["rc:fix"])
+            })
         );
-        assert!(parse_pr(r#"{"number": 7}"#).is_err());
+        assert!(parse_pr(r#"{"number": 7, "labels": []}"#).is_err());
+        assert!(parse_pr(r#"{"number": 7, "base": "main"}"#).is_err());
     }
 }

@@ -42,6 +42,19 @@ fn a_frozen_main_lets_an_rc_fix_pr_merge() {
 }
 
 #[test]
+fn a_frozen_main_does_not_hold_a_backport_pr() {
+    let (code, log) = run("frozen.json", Some("pr-backport.json"), None);
+    assert_eq!(code, Some(0), "{log}");
+}
+
+#[test]
+fn a_pr_file_without_a_base_fails_closed() {
+    let (code, log) = run("frozen.json", Some("pr-nobase.json"), None);
+    assert_eq!(code, Some(1), "{log}");
+    assert!(log.contains("no `base`"), "{log}");
+}
+
+#[test]
 fn a_lifted_freeze_holds_nothing() {
     let (code, log) = run("lifted.json", Some("pr-plain.json"), None);
     assert_eq!(code, Some(0), "{log}");

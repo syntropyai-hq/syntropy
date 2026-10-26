@@ -742,7 +742,7 @@ pub const JOBS: &[Entry] = &[
             Param {
                 name: "--pr",
                 value: "<file>",
-                help: "a PR as {number, labels}; the job fails if the freeze holds it",
+                help: "a PR as {number, base, labels}; the job fails if the freeze holds it",
                 required: false,
             },
             Param {
