@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# A workflow-lint fixture: pr.yml naming lab labels, which only lab.yml may (QUAL-E1-T09).
+name: pr
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  gpu:
+    runs-on: [self-hosted, syntropy-lab]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

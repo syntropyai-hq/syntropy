@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Installs the actionlint release that `cargo xtask actionlint` pins (RFC-0062 §12.4;
+# QUAL-E1-T09), for the `lint` job. Use it after `./.github/actions/setup-rust`, which puts
+# `~/.cargo/bin` on the path:
+#
+#   - uses: ./.github/actions/install-actionlint
+#
+# It downloads the release archive and checks it against the SHA-256 pinned here, which is the
+# release's own checksums file's entry for the archive, before it unpacks anything. A version bump
+# changes VERSION and SHA256 together, and `cargo xtask actionlint` refuses any other version.
+
+name: Install actionlint
+description: >-
+  Installs the pinned actionlint release for x86_64 Linux into ~/.cargo/bin, after checking the
+  archive against a pinned SHA-256.
+
+runs:
+  using: composite
+  steps:
+    - name: Install actionlint
+      shell: bash
+      env:
+        VERSION: 1.7.12
+        SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+      run: |
+        if [ "$RUNNER_OS" != Linux ] || [ "$RUNNER_ARCH" != X64 ]; then
+          echo "::error::this action installs the x86_64 Linux build, not $RUNNER_OS $RUNNER_ARCH"
+          exit 1
+        fi
+        name="actionlint_${VERSION}_linux_amd64.tar.gz"
+        dir="$RUNNER_TEMP/actionlint"
+        mkdir -p "$dir"
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 \
+          --output "$dir/$name" \
+          "https://github.com/rhysd/actionlint/releases/download/v$VERSION/$name"
+        echo "$SHA256  $dir/$name" | sha256sum --check --strict
+        tar -xzf "$dir/$name" -C "$dir" actionlint
+        install -m 0755 "$dir/actionlint" "$HOME/.cargo/bin/actionlint"
+        actionlint -version

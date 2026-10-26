@@ -35,6 +35,12 @@ Commands:
   third-party [--root <dir>]
                           check that third_party/licences.toml lists every vendored file
                           (ADR-0018 §3, RFC-0062 §12.2); `lint` runs it
+  workflows [--root <dir>]
+                          check the workflows and composite actions under .github against
+                          RFC-0062 §12.4's security rules; `lint` runs it
+  actionlint [--root <dir>]
+                          run the pinned actionlint on the workflows under .github/workflows
+                          (RFC-0062 §12.4); `lint` runs it
   notices [--manifest-path <path>] [--out <file>]
                           generate THIRD-PARTY-NOTICES for the release build (ADR-0018 §6) and
                           write it to <file>; without --out, only check it can be generated,
@@ -60,6 +66,8 @@ const COMMANDS: &[&str] = &[
     "deny",
     "spdx",
     "third-party",
+    "workflows",
+    "actionlint",
     "notices",
     "instructions",
     "help",
@@ -97,6 +105,14 @@ pub enum Command<'r> {
     },
     /// `third-party`: the vendored-file manifest under `root`, else under this checkout.
     ThirdParty {
+        root: Option<String>,
+    },
+    /// `workflows`: the workflow security lint under `root`, else under this checkout.
+    Workflows {
+        root: Option<String>,
+    },
+    /// `actionlint`: the pinned actionlint on the workflows under `root`, else this checkout's.
+    Actionlint {
         root: Option<String>,
     },
     /// `notices`: generate `THIRD-PARTY-NOTICES`, writing it to `out` when given.
@@ -323,6 +339,16 @@ pub fn parse<'r>(
         }),
         "third-party" => parse_options(rest, &["--root"], &[]).map(|o| {
             o.or_help(|o| Command::ThirdParty {
+                root: o.value("--root"),
+            })
+        }),
+        "workflows" => parse_options(rest, &["--root"], &[]).map(|o| {
+            o.or_help(|o| Command::Workflows {
+                root: o.value("--root"),
+            })
+        }),
+        "actionlint" => parse_options(rest, &["--root"], &[]).map(|o| {
+            o.or_help(|o| Command::Actionlint {
                 root: o.value("--root"),
             })
         }),
@@ -853,7 +879,7 @@ mod tests {
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
             "unknown command `frob`; valid commands: ci, test, check-deps, build, deny, spdx, \
-             third-party, notices, instructions, help"
+             third-party, workflows, actionlint, notices, instructions, help"
         );
         assert_eq!(
             parse_real("--frob"),
@@ -1201,6 +1227,20 @@ mod tests {
                 "third-party --root=x",
                 Command::ThirdParty {
                     root: Some("x".into()),
+                },
+            ),
+            ("workflows", Command::Workflows { root: None }),
+            (
+                "workflows --root fixtures/w",
+                Command::Workflows {
+                    root: Some("fixtures/w".into()),
+                },
+            ),
+            ("actionlint", Command::Actionlint { root: None }),
+            (
+                "actionlint --root=w",
+                Command::Actionlint {
+                    root: Some("w".into()),
                 },
             ),
             (

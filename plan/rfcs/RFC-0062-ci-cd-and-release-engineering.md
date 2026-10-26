@@ -772,6 +772,8 @@ A new direct dependency also passes a registry check that reports its first-publ
 - Secrets exist only in environments (§3.3, §7.2).
 - `actionlint` and a workflow security linter run in `lint` on every change to `.github/`.
 
+*Note, 2026-10-26 (QUAL-E1-T09).* `lint` runs both on every PR, a superset of every change to `.github/`. `cargo xtask workflows` checks every rule above that a file can show: the read-only top level, SHA pins in workflows, reusable workflows and composite actions (a `docker://` image by digest), no `pull_request_target`, no lab label outside `lab.yml` (a `runs-on` that an expression computes fails unless it reads a matrix the lint can read), and no PR checkout in a job that names a secret other than `GITHUB_TOKEN`, an environment or `secrets: inherit`, or whose token can write. A file it cannot parse fails. `cargo xtask actionlint` runs actionlint 1.7.12 with its shellcheck and pyflakes integrations off, so the result does not depend on the host's versions of those. CI installs it from the release archive, checked against a pinned SHA-256.
+
 #### 12.5 Agent pipeline security
 
 ADR-0624 sets the rules; this section places them in the pipeline.
