@@ -28,7 +28,7 @@ use crate::run::Context;
 /// The ledger, relative to the workspace root.
 pub const COST: &str = "ci/cost.toml";
 
-/// Growth over the previous month, beyond which a line needs a note: 20% [target], from
+/// Growth over the previous month, beyond which a line needs a note: 20% \[target\], from
 /// RFC-0062 "Ledger".
 const GROWTH_NUMERATOR: f64 = 1.0;
 const GROWTH_DENOMINATOR: f64 = 5.0;
