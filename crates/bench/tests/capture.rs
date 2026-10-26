@@ -90,16 +90,19 @@ mod on_unix {
             let base = format!("sys/class/nvme/{name}");
             self.file(&format!("{base}/model"), "Fixture NVMe 2TB\n");
             self.file(&format!("{base}/firmware_rev"), "FIXFW01\n");
-            self.file(&format!("{base}/device/max_link_speed"), "16.0 GT/s PCIe\n");
-            self.file(&format!("{base}/device/max_link_width"), "4\n");
+            self.file(
+                &format!("{base}/device/current_link_speed"),
+                "16.0 GT/s PCIe\n",
+            );
+            self.file(&format!("{base}/device/current_link_width"), "4\n");
         }
 
         /// A NIC whose `device` link points at a PCI directory named by its address.
         fn nic(&self, name: &str, addr: &str, speed: &str, width: &str) {
             let pci = self.dir.join("sys/devices/pci").join(addr);
             fs::create_dir_all(&pci).unwrap();
-            fs::write(pci.join("max_link_speed"), format!("{speed}\n")).unwrap();
-            fs::write(pci.join("max_link_width"), format!("{width}\n")).unwrap();
+            fs::write(pci.join("current_link_speed"), format!("{speed}\n")).unwrap();
+            fs::write(pci.join("current_link_width"), format!("{width}\n")).unwrap();
             let net = self.dir.join("sys/class/net").join(name);
             fs::create_dir_all(&net).unwrap();
             symlink(&pci, net.join("device")).unwrap();
@@ -206,20 +209,19 @@ mod on_unix {
     }
 
     #[test]
-    fn a_link_is_clamped_to_its_upstream_port() {
-        let fake = Fake::new("clamp");
-        // eth0 sits under a port that only offers Gen3 x2.
-        let up = fake.dir.join("sys/devices/pci/0000:02:00.0");
-        fs::write(up.join("max_link_speed"), "8.0 GT/s PCIe\n").unwrap();
-        fs::write(up.join("max_link_width"), "2\n").unwrap();
-        let child = up.join("child");
-        fs::create_dir_all(&child).unwrap();
-        fs::write(child.join("max_link_speed"), "16.0 GT/s PCIe\n").unwrap();
-        fs::write(child.join("max_link_width"), "4\n").unwrap();
-        fs::remove_file(fake.dir.join("sys/class/net/eth0/device")).unwrap();
-        symlink(&child, fake.dir.join("sys/class/net/eth0/device")).unwrap();
+    fn a_gen4_device_in_a_gen3_slot_is_recorded_at_gen3() {
+        let fake = Fake::new("gen3slot");
+        // The drive is rated for Gen4 but trained at Gen3 x4.
+        fake.file(
+            "sys/class/nvme/nvme0/device/max_link_speed",
+            "16.0 GT/s PCIe\n",
+        );
+        fake.file(
+            "sys/class/nvme/nvme0/device/current_link_speed",
+            "8.0 GT/s PCIe\n",
+        );
         let rig = captured(&fake).rigs.remove(0);
-        assert_eq!(rig.nic[0].pcie.as_ref().unwrap().to_string(), "gen3x2");
+        assert_eq!(rig.nvme[0].pcie.as_ref().unwrap().to_string(), "gen3x4");
     }
 
     #[test]

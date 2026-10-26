@@ -21,9 +21,9 @@ sudo bench/lab/capture-inventory.sh --id R-ADA \
 - The memory profile, power limits, resizable-BAR state and each NVMe slot's attachment come
   from the firmware setup screen and the board manual; the operating system does not report them.
   Pass one `--attachment <name>=<cpu|chipset>` per NVMe controller.
-- The PCIe links recorded are the highest the device can negotiate here: its own maximum,
-  clamped to its upstream port's. The current link drops at idle, so it is not read. Check the
-  recorded links against the board manual; a Gen4 drive that shows `gen3` sits in a Gen3 slot.
+- NVMe and NIC links are the negotiated ones (sysfs `current_link_speed` and `_width`): a Gen4
+  drive in a Gen3 slot is recorded `gen3x4`. A GPU's current link falls at idle, so its link is
+  the highest the GPU and its slot support together; check it against the board manual.
 
 The spare GPU has no record format of its own: RFC-0061 §6.3 defines one record per rig. Swap the
 spare into the host, boot the same image, and run the script again with `--id R-ADA-SPARE`. The ID is a judgement call (no source names one); a maintainer confirms it.
@@ -31,9 +31,12 @@ spare into the host, boot the same image, and run the script again with `--id R-
 Then:
 
 1. Append both records to `rigs.toml`, and update its header comment's "No rig is installed yet".
-2. The CPU model is recorded as `lscpu` prints it, such as `Intel(R) Core(TM) ...`. The spec
-   record (`bench/specs/`) matches models exactly, so if it names the CPU differently, add the
-   printed name to that record's `models`; do not edit the captured value.
+2. Names must match the spec records. The script records the CPU as `lscpu` prints it and the
+   GPU as `nvidia-smi` prints it (for example `Intel(R) Core(TM) ... ` against a spec record
+   named `Intel Core ...`), and the spec database (`bench/specs/`) matches models exactly. If
+   `rigs check` or the specs check reports a model-name mismatch, add the printed name to that spec
+   record's `models`; do not edit the captured value, which the lab agent compares against the
+   live machine.
 3. Check that R-ADA lists 2 × 64 GiB at 6000 MT/s (2 channels), the 24 GB GPU, the Gen4 NVMe on the
    CPU, the 10 GbE and 2.5 GbE NICs and the RoCEv2-capable NIC (RFC-0061 §6.2). A part the script
    did not find is a part to fix on the rig, not to add by hand.

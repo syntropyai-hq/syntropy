@@ -25,10 +25,14 @@
 #                        configured speed
 #   GPU                  nvidia-smi: PCI bus ID as the slot, model, VBIOS, driver, and the
 #                        highest link the GPU and host support (the current link drops at idle)
-#   NVMe                 /sys/class/nvme: model, firmware, the device's highest link
+#   NVMe                 /sys/class/nvme: model, firmware, the negotiated link
 #   NIC                  /sys/class/net devices that sit on PCI: lspci name, ethtool firmware,
-#                        the device's highest link
+#                        the negotiated link
 #   BIOS                 dmidecode -s bios-version; SMT from /sys/devices/system/cpu/smt
+#
+# A GPU's current link falls to a low power state at idle, so the GPU's link is the highest that
+# the GPU and the slot support together (nvidia-smi's gpumax, hostmax and width.max); a GPU in a
+# slower slot still shows the slot's limit. NVMe and NIC links are the negotiated ones.
 #
 # The spare GPU of ADR-0610 decision 1 has no format of its own: RFC-0061 §6.3 defines one record
 # per rig. Install the spare in the rig's host, run this script with `--id R-ADA-SPARE`, and
@@ -98,22 +102,12 @@ gen_of_speed() {
     esac
 }
 
-# The highest link a PCI device can negotiate at this slot, from its sysfs directory: `gen4x4`.
-# It is the device's maximum, clamped to its upstream port's maximum when that port reports one,
-# so a Gen4 drive in a Gen3 slot or a card in an x8 slot is not recorded at its own rating.
-max_link() {
-    local dir="$1" speed width gen up up_gen up_width
-    speed="$(read_file "$dir/max_link_speed")"
-    width="$(read_file "$dir/max_link_width")"
-    gen="$(gen_of_speed "$speed")"
-    up="$(dirname "$(cd "$dir" && pwd -P)")"
-    if [ -r "$up/max_link_speed" ] && [ -r "$up/max_link_width" ]; then
-        up_gen="$(gen_of_speed "$(read_file "$up/max_link_speed")")"
-        up_width="$(read_file "$up/max_link_width")"
-        [ "$up_gen" -ge "$gen" ] || gen="$up_gen"
-        [ "$up_width" -ge "$width" ] || width="$up_width"
-    fi
-    echo "gen${gen}x${width}"
+# The link a PCI device negotiated in its slot (RFC-0061 §6.3), from its sysfs directory:
+# `gen4x4`. A Gen4 drive in a Gen3 slot reads `gen3x4`. Not read from `max_link_*`, which is the
+# device's rating and would hide the slot.
+negotiated_link() {
+    local dir="$1"
+    echo "gen$(gen_of_speed "$(read_file "$dir/current_link_speed")")x$(read_file "$dir/current_link_width")"
 }
 
 id=""
@@ -230,7 +224,7 @@ for ctrl in "$root"/sys/class/nvme/nvme*; do
     printf '\n[[rig.nvme]]\nslot = %s\nmodel = %s\nfirmware = %s\nattachment = %s\npcie = %s\n' \
         "$(quote "$name" nvme.slot)" "$(quote "$(read_file "$ctrl/model")" nvme.model)" \
         "$(quote "$(read_file "$ctrl/firmware_rev")" nvme.firmware)" "$(quote "$attach")" \
-        "$(quote "$(max_link "$ctrl/device")" nvme.pcie)"
+        "$(quote "$(negotiated_link "$ctrl/device")" nvme.pcie)"
 done
 
 # NICs on PCI.
@@ -243,7 +237,7 @@ for dev in "$root"/sys/class/net/*; do
     printf '\n[[rig.nic]]\nslot = %s\nmodel = %s\nfirmware = %s\npcie = %s\n' \
         "$(quote "$addr" nic.slot)" "$(quote "$(trim "$model")" nic.model)" \
         "$(quote "$(trim "$fw")" "nic.firmware of $ifname")" \
-        "$(quote "$(max_link "$dev/device")" nic.pcie)"
+        "$(quote "$(negotiated_link "$dev/device")" nic.pcie)"
 done
 
 printf '\n[rig.bios]\nversion = %s\nmemory_profile = %s\npower_limits = %s\nsmt = %s\nresizable_bar = %s\n' \
