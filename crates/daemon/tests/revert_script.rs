@@ -19,14 +19,14 @@ use syntropy_daemon::host_changes::{ChangeState, HostChangeKind, HostChangeLedge
 
 /// A new directory, private to this user (0700), as a real state directory is.
 fn temp_dir(name: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
         "syntropy-{name}-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
+    // A directory left by an earlier run with the same process ID.
+    let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     #[cfg(unix)]
     {
@@ -235,14 +235,8 @@ mod windows {
                 key: None,
             };
         }
-        let unique = format!(
-            "SyntropyRevertTest-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
+        // The process ID keeps parallel runs apart; this test adds one entry per run.
+        let unique = format!("SyntropyRevertTest-{}", std::process::id());
         let before = user_path();
         let entry = format!("C:\\{unique}\\bin");
         record(

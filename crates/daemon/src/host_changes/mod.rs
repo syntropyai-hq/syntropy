@@ -47,7 +47,7 @@ pub mod script;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use syntropy_core::Blake3;
@@ -62,9 +62,12 @@ pub const COPIES_DIR: &str = "host-changes";
 pub const LOCK_FILE: &str = "host-changes.lock";
 
 /// How long a writer waits for another to release the lock before it gives up with
-/// [`LedgerError::Busy`]: 10 s [target], a chosen budget, longer than any one change takes and
+/// [`LedgerError::Busy`]: 10 s \[target\], a chosen budget, longer than any one change takes and
 /// short enough that a command never seems to hang.
 pub const LOCK_WAIT: Duration = Duration::from_secs(10);
+
+/// The pause between two tries for the lock.
+const LOCK_RETRY: Duration = Duration::from_millis(20);
 
 /// The ledger file's format version.
 pub const SCHEMA: u16 = 1;
@@ -400,8 +403,10 @@ impl HostChangeLedger {
     pub(crate) fn lock(&self) -> Result<LedgerLock, LedgerError> {
         fs::create_dir_all(&self.state_dir).map_err(io_error(&self.state_dir))?;
         let path = self.state_dir.join(LOCK_FILE);
-        let started = Instant::now();
-        loop {
+        // Counted in tries, not read from a clock (RFC-0060 §2.1, rule T1): each failed try sleeps
+        // `LOCK_RETRY`, so the tries span at least `lock_wait`.
+        let tries = (self.lock_wait.as_millis() / LOCK_RETRY.as_millis()).max(1);
+        for _ in 0..=tries {
             match open_lock_file(&path) {
                 Ok(file) => match file.try_lock() {
                     Ok(()) => return Ok(LedgerLock { file }),
@@ -418,11 +423,9 @@ impl HostChangeLedger {
                 }
                 Err(e) => return Err(io_error(&path)(e)),
             }
-            if started.elapsed() >= self.lock_wait {
-                return Err(LedgerError::Busy { path });
-            }
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(LOCK_RETRY);
         }
+        Err(LedgerError::Busy { path })
     }
 
     /// Reads the ledger again from disk, as another writer may have saved it since. Callers hold
@@ -644,6 +647,8 @@ impl HostChangeLedger {
     /// place is refused, never followed or given new permissions.
     pub(crate) fn copies_dir(&self) -> Result<PathBuf, LedgerError> {
         let dir = self.state_dir.join(COPIES_DIR);
+        // Only Unix sets a mode on the builder.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -1093,14 +1098,12 @@ mod tests {
     fn temp_state() -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "syntropy-ledger-{}-{}-{}",
+            "syntropy-ledger-{}-{}",
             std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
+        // A directory left by an earlier run with the same process ID.
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
         dir
     }
@@ -1314,7 +1317,6 @@ mod tests {
         let kind = HostChangeKind::FileWritten {
             path: state.join("a.conf"),
         };
-        let started = Instant::now();
         let err = ledger.begin(kind.clone(), None, None, 0, "v").unwrap_err();
         assert!(matches!(err, LedgerError::Busy { .. }), "{err}");
         assert!(
@@ -1322,7 +1324,6 @@ mod tests {
                 .contains("another Syntropy command is changing this host"),
             "{err}"
         );
-        assert!(started.elapsed() < Duration::from_secs(5));
         drop(held);
         ledger.begin(kind, None, None, 0, "v").unwrap();
     }

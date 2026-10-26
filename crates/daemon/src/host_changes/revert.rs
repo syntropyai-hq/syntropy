@@ -684,14 +684,12 @@ mod tests {
     fn temp_state() -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "syntropy-revert-{}-{}-{}",
+            "syntropy-revert-{}-{}",
             std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
+        // A directory left by an earlier run with the same process ID.
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
         #[cfg(unix)]
         {
