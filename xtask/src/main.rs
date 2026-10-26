@@ -35,6 +35,7 @@ mod codeowners;
 mod contrib;
 mod dep_diff;
 mod determinism;
+mod fixtures;
 mod hot_threads;
 mod instructions;
 mod licences;
@@ -199,6 +200,19 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
                 }
                 Err(error) => {
                     eprintln!("instructions: {error}");
+                    Ok(EXIT_FAIL)
+                }
+            }
+        }
+        Command::Fixtures { action, args } => {
+            let root = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            match fixtures::run(action, &args, &root, &mut io::stdout()) {
+                Ok(()) => Ok(EXIT_PASS),
+                Err(error) => {
+                    eprintln!("fixtures: {error}");
                     Ok(EXIT_FAIL)
                 }
             }
