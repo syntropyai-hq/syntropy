@@ -17,7 +17,7 @@
 //! A pattern with no tracked file under a rule whose job is `planned` is reported and passes: the
 //! suite or rig the rule is for does not exist yet, and its task adds the paths.
 //!
-//! The scheduled workflow that opens the draft PR is a separate task (QUAL-E1-T34): it needs a
+//! The scheduled workflow that opens the draft PR is a separate task (QUAL-E1-T35): it needs a
 //! write token, which only a maintainer can issue. This module is the check that workflow runs.
 
 use std::collections::BTreeSet;
