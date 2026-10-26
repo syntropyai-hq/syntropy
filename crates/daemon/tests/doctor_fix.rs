@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use syntropy_daemon::doctor::fix::AssumeYes;
+use syntropy_daemon::doctor::fix::{AssumeYes, Targets};
 use syntropy_daemon::doctor::{
     Area, AutoFix, DoctorCheck, DoctorCtx, EXIT_OK, Finding, Fix, FixSetup, HostEdit, Needs,
     Options, Reach, Registry, doctor,
@@ -79,7 +79,7 @@ fn host_dir(ctx: &DoctorCtx) -> PathBuf {
 
 /// Fails until `limits.conf` holds `fixed`, and offers an automatic fix that writes it.
 fn limits(ctx: &DoctorCtx) -> Finding {
-    let path = host_dir(ctx).join("limits.conf");
+    let path = host_dir(ctx).join("etc/security/limits.d/limits.conf");
     if fs::read(&path).is_ok_and(|b| b == b"fixed\n") {
         return Finding::pass("limits.conf is set");
     }
@@ -96,7 +96,7 @@ fn limits(ctx: &DoctorCtx) -> Finding {
 
 /// Fails until `dropin.conf` exists, and offers an automatic fix that creates it.
 fn dropin(ctx: &DoctorCtx) -> Finding {
-    let path = host_dir(ctx).join("dropin.conf");
+    let path = host_dir(ctx).join("etc/systemd/system/syntropy.service.d/dropin.conf");
     if path.exists() {
         return Finding::pass("drop-in present");
     }
@@ -117,14 +117,17 @@ fn fixes_applied_by_doctor_are_reverted_by_the_generated_script() {
     let state = root.join("state");
     let host = root.join("host");
     fs::create_dir_all(&state).unwrap();
-    fs::create_dir_all(&host).unwrap();
+    let limits_file = host.join("etc/security/limits.d/limits.conf");
+    let dropin_file = host.join("etc/systemd/system/syntropy.service.d/dropin.conf");
+    fs::create_dir_all(limits_file.parent().unwrap()).unwrap();
+    fs::create_dir_all(dropin_file.parent().unwrap()).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
     }
     // The user's own file, which a fix replaces.
-    fs::write(host.join("limits.conf"), b"user's own\n").unwrap();
+    fs::write(&limits_file, b"user's own\n").unwrap();
 
     let registry = Registry::new(vec![
         DoctorCheck {
@@ -154,6 +157,7 @@ fn fixes_applied_by_doctor_are_reverted_by_the_generated_script() {
         Some(FixSetup {
             ledger: &mut ledger,
             consent: &mut AssumeYes,
+            targets: &Targets::under(&host, None),
             at: 0,
             by_version: "test",
         }),
@@ -162,8 +166,8 @@ fn fixes_applied_by_doctor_are_reverted_by_the_generated_script() {
     .unwrap();
     let out = String::from_utf8(out).unwrap();
     assert_eq!(code, EXIT_OK, "{out}");
-    assert_eq!(fs::read(host.join("limits.conf")).unwrap(), b"fixed\n");
-    assert!(host.join("dropin.conf").exists());
+    assert_eq!(fs::read(&limits_file).unwrap(), b"fixed\n");
+    assert!(dropin_file.exists());
 
     // `doctor --fix` wrote the script; rendering it again from the saved ledger changes nothing.
     let script = if cfg!(windows) {
@@ -177,12 +181,8 @@ fn fixes_applied_by_doctor_are_reverted_by_the_generated_script() {
     assert_eq!(fs::read(&script).unwrap(), written);
 
     let report = run(&script);
-    assert_eq!(
-        fs::read(host.join("limits.conf")).unwrap(),
-        b"user's own\n",
-        "{report}"
-    );
-    assert!(!host.join("dropin.conf").exists(), "{report}");
+    assert_eq!(fs::read(&limits_file).unwrap(), b"user's own\n", "{report}");
+    assert!(!dropin_file.exists(), "{report}");
 
     // The script leaves markers, so the daemon's next ledger walk records both as reverted.
     let mut ledger = HostChangeLedger::open(&state).unwrap();

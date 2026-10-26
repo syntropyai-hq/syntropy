@@ -7,12 +7,17 @@ use std::path::PathBuf;
 
 use syntropy_api::figure::Figure;
 
-use super::fix::{AssumeYes, NoTerminal, Prompt};
+use super::fix::{AssumeYes, Consent, NoTerminal, Prompt, Targets};
 use super::*;
 use crate::host_changes::revert::{self, FsHost};
 use crate::host_changes::{ChangeState, HostChangeKind};
 
 const VERSION: &str = "0.0.0-test";
+
+/// The fixable checks' files, under a test's directory: a `limits.d` file and a service drop-in,
+/// both files `--fix` may write.
+const LIMITS: &str = "host/etc/security/limits.d/limits.conf";
+const DROPIN: &str = "host/etc/systemd/system/syntropy.service.d/dropin.conf";
 
 /// A new directory per call, owner-only as a state directory is. Tests run in parallel, so a
 /// counter keeps the names apart.
@@ -25,7 +30,9 @@ fn temp_dir() -> PathBuf {
     ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("state")).unwrap();
-    fs::create_dir_all(dir.join("host")).unwrap();
+    fs::create_dir_all(dir.join(LIMITS).parent().unwrap()).unwrap();
+    fs::create_dir_all(dir.join(DROPIN).parent().unwrap()).unwrap();
+    fs::create_dir_all(dir.join("home")).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -73,9 +80,19 @@ fn panics(_: &DoctorCtx) -> Finding {
     panic!("a bug in a check")
 }
 
-/// The file the fixable checks look after: `<dir>/host/<name>`, beside the state directory.
+/// The file the fixable checks look after, under the test's directory beside the state directory:
+/// `limits.conf` and `never.conf` in `limits.d`, `dropin.conf` in the service drop-in directory.
 fn host_file(ctx: &DoctorCtx, name: &str) -> PathBuf {
-    ctx.state_dir.parent().unwrap().join("host").join(name)
+    let dir = ctx.state_dir.parent().unwrap();
+    match name {
+        "dropin.conf" => dir.join(DROPIN),
+        _ => dir.join(LIMITS).with_file_name(name),
+    }
+}
+
+/// The files `--fix` may write under the test's directory.
+fn targets(dir: &std::path::Path) -> Targets {
+    Targets::under(&dir.join("host"), Some(&dir.join("home")))
 }
 
 /// Fails until `limits.conf` holds `fixed`, and offers an automatic fix that writes it.
@@ -125,17 +142,26 @@ fn passes_with_fix(ctx: &DoctorCtx) -> Finding {
     })
 }
 
-/// Offers a fix whose path is relative, which the ledger refuses.
-fn bad_fix(_: &DoctorCtx) -> Finding {
+/// Offers a fix that writes a read-only file in `limits.d`, which the ledger refuses.
+fn read_only_fix(ctx: &DoctorCtx) -> Finding {
     Finding::fail("bad").with_fix(Fix {
         automatic: Some(AutoFix {
             edits: vec![HostEdit::WriteFile {
-                path: PathBuf::from("relative.conf"),
+                path: host_file(ctx, "read-only.conf"),
                 contents: b"x".to_vec(),
             }],
         }),
         ..Fix::manual("a fix the ledger refuses")
     })
+}
+
+/// A consent that fails the test if it is ever asked.
+struct NeverAsked;
+
+impl Consent for NeverAsked {
+    fn ask(&mut self, id: &str, _fix: &Fix, _auto: &AutoFix) -> fix::Answer {
+        panic!("{id}'s fix was offered")
+    }
 }
 
 fn registry(checks: Vec<DoctorCheck>) -> Registry {
@@ -454,6 +480,7 @@ fn doctor_fix(
         Some(FixSetup {
             ledger: &mut ledger,
             consent,
+            targets: &targets(dir),
             at: 1_700_000_000_000,
             by_version: VERSION,
         }),
@@ -471,8 +498,8 @@ fn fix_with_yes_applies_records_and_re_runs_and_uninstall_reverts_it() {
         check("OS-003", Area::Os, Needs::Offline, passes_with_fix),
     ]);
     let dir = temp_dir();
-    let limits = dir.join("host/limits.conf");
-    let dropin = dir.join("host/dropin.conf");
+    let limits = dir.join(LIMITS);
+    let dropin = dir.join(DROPIN);
     // The user's own file, which the fix replaces and the revert puts back.
     fs::write(&limits, b"user's own\n").unwrap();
 
@@ -500,7 +527,7 @@ fn fix_with_yes_applies_records_and_re_runs_and_uninstall_reverts_it() {
     );
     assert_eq!(fs::read(&limits).unwrap(), b"fixed\n");
     assert_eq!(fs::read(&dropin).unwrap(), b"[Service]\n");
-    assert!(!dir.join("host/never.conf").exists());
+    assert!(!dir.join(LIMITS).with_file_name("never.conf").exists());
 
     // Every change is in the ledger, applied, and the revert script was rewritten for it.
     let mut ledger = HostChangeLedger::open(&dir.join("state")).unwrap();
@@ -556,7 +583,7 @@ fn fix_without_a_terminal_or_yes_changes_nothing() {
         out.contains("not fixed OS-001: no terminal to ask on; run on a terminal, or pass --yes"),
         "{out}"
     );
-    assert!(!dir.join("host/limits.conf").exists());
+    assert!(!dir.join(LIMITS).exists());
     let ledger = HostChangeLedger::open(&dir.join("state")).unwrap();
     assert!(ledger.changes().is_empty());
 }
@@ -589,8 +616,8 @@ fn fix_asks_for_each_fix_and_applies_only_the_accepted_ones() {
     assert!(out.contains("fixed OS-002"), "{out}");
     // OS-001 still fails.
     assert_eq!(code, EXIT_FAILED);
-    assert!(!dir.join("host/limits.conf").exists());
-    assert!(dir.join("host/dropin.conf").exists());
+    assert!(!dir.join(LIMITS).exists());
+    assert!(dir.join(DROPIN).exists());
     let ledger = HostChangeLedger::open(&dir.join("state")).unwrap();
     assert_eq!(ledger.changes().len(), 1);
 }
@@ -611,27 +638,167 @@ fn a_prompt_with_no_answer_declines() {
 #[test]
 fn a_fix_the_ledger_refuses_is_reported_and_the_others_still_apply() {
     let r = registry(vec![
-        check("OS-001", Area::Os, Needs::Offline, bad_fix),
+        check("OS-001", Area::Os, Needs::Offline, read_only_fix),
         check("OS-002", Area::Os, Needs::Offline, fixable_warning),
     ]);
     let dir = temp_dir();
+    let read_only = dir.join(LIMITS).with_file_name("read-only.conf");
+    fs::write(&read_only, b"theirs\n").unwrap();
+    let mut perms = fs::metadata(&read_only).unwrap().permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&read_only, perms).unwrap();
     let (code, out) = doctor_fix(&r, &dir, &mut AssumeYes, true);
     assert_eq!(code, EXIT_FAILED);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     let fixes = v["fixes"].as_array().unwrap();
     assert_eq!(fixes[0]["id"], "OS-001");
     assert_eq!(fixes[0]["outcome"], "failed");
+    let error = fixes[0]["error"].as_str().unwrap();
     assert!(
-        fixes[0]["error"]
-            .as_str()
-            .unwrap()
-            .starts_with("write relative.conf (1 bytes): "),
-        "{}",
-        fixes[0]["error"]
+        error.starts_with("write ") && error.contains("read-only.conf (1 bytes): "),
+        "{error}"
     );
     assert_eq!(fixes[0]["changes"], serde_json::json!([]));
     assert_eq!(fixes[1]["id"], "OS-002");
     assert_eq!(fixes[1]["outcome"], "applied");
     assert_eq!(fixes[1]["changes"], serde_json::json!([1]));
     assert_eq!(v["results"][1]["status"], "pass");
+    assert_eq!(fs::read(&read_only).unwrap(), b"theirs\n");
+}
+
+/// A check whose automatic fix writes `path`, for the target tests.
+fn writes(path: PathBuf) -> Finding {
+    Finding::fail("needs a write").with_fix(Fix {
+        automatic: Some(AutoFix {
+            edits: vec![HostEdit::WriteFile {
+                path,
+                contents: b"x\n".to_vec(),
+            }],
+        }),
+        ..Fix::manual("write a file")
+    })
+}
+
+#[test]
+fn only_limits_files_and_service_drop_ins_may_be_written() {
+    let dir = temp_dir();
+    let t = targets(&dir);
+    let host = dir.join("host");
+    let home = dir.join("home");
+    let edit = |path: PathBuf| HostEdit::WriteFile {
+        path,
+        contents: Vec::new(),
+    };
+    for allowed in [
+        host.join("etc/security/limits.d/syntropy.conf"),
+        host.join("etc/systemd/system/syntropy.service.d/memlock.conf"),
+        // A drop-in directory that does not exist yet.
+        host.join("etc/systemd/system/other.service.d/memlock.conf"),
+        home.join(".config/systemd/user/syntropy.service.d/memlock.conf"),
+    ] {
+        assert_eq!(
+            t.refuse(&edit(allowed.clone())),
+            None,
+            "{}",
+            allowed.display()
+        );
+    }
+    for refused in [
+        // Sysctls, module parameters (the TTM `pages_limit`), the boot loader, boot-time plists.
+        host.join("etc/sysctl.d/99-syntropy.conf"),
+        host.join("etc/sysctl.conf"),
+        host.join("etc/modprobe.d/ttm.conf"),
+        host.join("etc/default/grub"),
+        host.join("etc/kernel/cmdline"),
+        host.join("Library/LaunchDaemons/syntropy.wired.plist"),
+        // Near misses of the patterns.
+        host.join("etc/security/limits.conf"),
+        host.join("etc/security/limits.d/syntropy"),
+        host.join("etc/security/limits.d/.conf"),
+        host.join("etc/security/limits.d/sub/syntropy.conf"),
+        host.join("etc/systemd/system/syntropy.service"),
+        host.join("etc/systemd/system/syntropy.service.d/memlock"),
+        host.join("etc/systemd/system/syntropy.socket.d/memlock.conf"),
+        home.join("etc/security/limits.d/syntropy.conf"),
+        host.join(".config/systemd/user/syntropy.service.d/memlock.conf"),
+        // `..` that would leave the pattern's directory.
+        host.join("etc/security/limits.d/../../sysctl.d/x.conf"),
+        PathBuf::from("etc/security/limits.d/syntropy.conf"),
+    ] {
+        assert!(
+            t.refuse(&edit(refused.clone())).is_some(),
+            "{}",
+            refused.display()
+        );
+    }
+    // Without a home, nothing under it may be written.
+    let no_home = Targets::under(&host, None);
+    assert!(
+        no_home
+            .refuse(&edit(
+                home.join(".config/systemd/user/syntropy.service.d/memlock.conf")
+            ))
+            .is_some()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_limits_directory_that_links_elsewhere_is_refused() {
+    let dir = temp_dir();
+    let host = dir.join("host");
+    let sysctl = host.join("etc/sysctl.d");
+    fs::create_dir_all(&sysctl).unwrap();
+    fs::remove_dir(host.join("etc/security/limits.d")).unwrap();
+    std::os::unix::fs::symlink(&sysctl, host.join("etc/security/limits.d")).unwrap();
+    let why = targets(&dir)
+        .refuse(&HostEdit::WriteFile {
+            path: host.join("etc/security/limits.d/99-syntropy.conf"),
+            contents: Vec::new(),
+        })
+        .expect("refused");
+    assert!(why.contains("resolves to"), "{why}");
+}
+
+/// Fails with an automatic fix that writes a sysctl file.
+fn sysctl_fix(ctx: &DoctorCtx) -> Finding {
+    writes(
+        ctx.state_dir
+            .parent()
+            .unwrap()
+            .join("host/etc/sysctl.d/99-syntropy.conf"),
+    )
+}
+
+#[test]
+fn a_fix_outside_the_targets_is_refused_without_asking_or_recording() {
+    let r = registry(vec![
+        check("OS-001", Area::Os, Needs::Offline, sysctl_fix),
+        check("OS-002", Area::Os, Needs::Offline, passes),
+    ]);
+    let dir = temp_dir();
+    let (code, out) = doctor_fix(&r, &dir, &mut NeverAsked, false);
+    assert_eq!(code, EXIT_FAILED);
+    assert!(out.contains("fix refused OS-001: "), "{out}");
+    assert!(
+        out.contains("is not a file doctor --fix may write"),
+        "{out}"
+    );
+    assert!(!dir.join("host/etc/sysctl.d/99-syntropy.conf").exists());
+    let ledger = HostChangeLedger::open(&dir.join("state")).unwrap();
+    assert!(ledger.changes().is_empty());
+    // Nothing changed, so no revert script was written.
+    assert!(!dir.join("state/revert-host-changes.sh").exists());
+    assert!(!dir.join("state/revert-host-changes.ps1").exists());
+}
+
+#[test]
+fn the_prompt_shows_short_text_content_in_full() {
+    let r = registry(vec![check("OS-001", Area::Os, Needs::Offline, fixable)]);
+    let dir = temp_dir();
+    let mut asked = Vec::new();
+    let mut prompt = Prompt::new(Cursor::new(b"n\n".to_vec()), &mut asked);
+    doctor_fix(&r, &dir, &mut prompt, false);
+    let asked = String::from_utf8(asked).unwrap();
+    assert!(asked.contains("(6 bytes)\n    | fixed\n"), "{asked}");
 }

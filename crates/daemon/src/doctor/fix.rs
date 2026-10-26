@@ -4,11 +4,13 @@
 //! rewritten afterwards, so `uninstall` reverts it whether or not a Syntropy binary is left.
 
 use std::fmt;
+use std::fs;
 use std::io::{BufRead, Write};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
-use super::{AutoFix, DoctorCtx, Fix, FixSetup, Registry, Report, Status, run_check};
+use super::{AutoFix, DoctorCtx, Fix, FixSetup, HostEdit, Registry, Report, Status, run_check};
 use crate::host_changes::LedgerError;
 use crate::host_changes::script::write_revert_script;
 
@@ -72,6 +74,15 @@ impl<R: BufRead, W: Write> Consent for Prompt<R, W> {
         let mut question = format!("{id}: {}\n", fix.description);
         for edit in &auto.edits {
             question.push_str(&format!("  {edit}\n"));
+            let HostEdit::WriteFile { contents, .. } = edit;
+            // Short text is shown in full, so the user sees what is written.
+            if let Ok(text) = std::str::from_utf8(contents)
+                && contents.len() <= SHOWN_BYTES
+            {
+                for line in text.lines() {
+                    question.push_str(&format!("    | {line}\n"));
+                }
+            }
         }
         question.push_str("  `syntropy uninstall` reverts it. Apply this fix? [y/N] ");
         let mut line = String::new();
@@ -97,6 +108,134 @@ impl<R: BufRead, W: Write> Consent for Prompt<R, W> {
     }
 }
 
+/// The largest file content the prompt shows in full; a longer file is shown by its size only.
+pub const SHOWN_BYTES: usize = 2048;
+
+/// The files `--fix` may write, each a pattern of path components under a base directory: the
+/// host's root, or the user's home. `*.conf` matches one component ending in `.conf`, and
+/// `*.service.d` one ending in `.service.d`.
+const UNDER_ROOT: &[&[&str]] = &[
+    // A pluggable-authentication limits file, such as the memlock limit (OS-001).
+    &["etc", "security", "limits.d", "*.conf"],
+    // A drop-in for a systemd system service, such as `LimitMEMLOCK=` for the daemon's unit.
+    &["etc", "systemd", "system", "*.service.d", "*.conf"],
+];
+
+/// As [`UNDER_ROOT`], under the user's home.
+const UNDER_HOME: &[&[&str]] = &[
+    // A drop-in for a systemd user service.
+    &[".config", "systemd", "user", "*.service.d", "*.conf"],
+];
+
+/// Where `--fix` may write (RFC-0053 §5.1). Every [`HostEdit`] is checked against this list before
+/// anyone is asked, and an edit outside it is refused with no ledger entry. Adding a pattern is a
+/// reviewed change to this file.
+#[derive(Clone, Debug)]
+pub struct Targets {
+    root: PathBuf,
+    home: Option<PathBuf>,
+}
+
+impl Targets {
+    /// The host's own files: under `/`, and under `home` when the user has one.
+    #[must_use]
+    pub fn host(home: Option<&Path>) -> Self {
+        Self::under(Path::new("/"), home)
+    }
+
+    /// The same patterns under another root, such as a test's directory.
+    #[must_use]
+    pub fn under(root: &Path, home: Option<&Path>) -> Self {
+        Self {
+            root: root.to_owned(),
+            home: home.map(Path::to_owned),
+        }
+    }
+
+    /// Why `edit` may not be made, or `None` when it may.
+    #[must_use]
+    pub fn refuse(&self, edit: &HostEdit) -> Option<String> {
+        let HostEdit::WriteFile { path, .. } = edit;
+        if !path.is_absolute() {
+            return Some(format!("{} is not an absolute path", path.display()));
+        }
+        // `.` and `..` would let a path that matches a pattern name another file.
+        if path
+            .components()
+            .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+        {
+            return Some(format!("{} has a `.` or `..` component", path.display()));
+        }
+        let bases = [
+            (Some(&self.root), UNDER_ROOT),
+            (self.home.as_ref(), UNDER_HOME),
+        ];
+        for (base, patterns) in bases {
+            let Some(base) = base else { continue };
+            let Ok(rest) = path.strip_prefix(base) else {
+                continue;
+            };
+            let parts: Vec<_> = rest.components().map(|c| c.as_os_str()).collect();
+            let matched = patterns.iter().any(|pattern| {
+                pattern.len() == parts.len()
+                    && pattern
+                        .iter()
+                        .zip(&parts)
+                        .all(|(want, got)| matches_part(want, &got.to_string_lossy()))
+            });
+            if matched {
+                return linked_parent(base, path);
+            }
+        }
+        Some(format!(
+            "{} is not a file doctor --fix may write: only a `limits.d` file or a systemd service \
+             drop-in",
+            path.display()
+        ))
+    }
+}
+
+/// Whether one path component matches one pattern component.
+fn matches_part(want: &str, got: &str) -> bool {
+    match want.strip_prefix('*') {
+        Some(suffix) => got.len() > suffix.len() && got.ends_with(suffix),
+        None => got == want,
+    }
+}
+
+/// Why `path`'s directory is not where its name says, or `None` when it is: a link among the
+/// directories under `base` would send the write somewhere the pattern does not allow, such as a
+/// `limits.d` that links to `sysctl.d`. The nearest directory that exists is resolved and must be
+/// the same directory under the resolved base.
+fn linked_parent(base: &Path, path: &Path) -> Option<String> {
+    let mut dir = path.parent()?;
+    while !dir.exists() {
+        dir = dir.parent()?;
+    }
+    let Ok(rest) = dir.strip_prefix(base) else {
+        return Some(format!("{} does not exist", base.display()));
+    };
+    match (fs::canonicalize(base), fs::canonicalize(dir)) {
+        (Ok(base_real), Ok(dir_real)) if dir_real == base_real.join(rest) => None,
+        (Ok(_), Ok(dir_real)) => Some(format!(
+            "{} resolves to {}, outside the files doctor --fix may write",
+            dir.display(),
+            dir_real.display()
+        )),
+        (Err(e), _) | (_, Err(e)) => Some(format!("{}: {e}", dir.display())),
+    }
+}
+
+/// Why a fix could not finish: the revert scripts could not be written after a change. `lines`
+/// reports the fixes, including the ones that were made.
+#[derive(Debug)]
+pub struct FixError {
+    /// The fixes offered so far.
+    pub lines: Vec<FixLine>,
+    /// The ledger's error.
+    pub error: LedgerError,
+}
+
 /// How one offered fix ended.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
@@ -105,6 +244,12 @@ pub enum Outcome {
     Applied {
         /// The ledger entries, in edit order.
         changes: Vec<u32>,
+    },
+    /// Not offered: an edit writes a file [`Targets`] does not allow. Nothing was asked or
+    /// recorded.
+    Refused {
+        /// Why.
+        why: String,
     },
     /// Left, for this reason.
     Declined {
@@ -149,6 +294,7 @@ impl fmt::Display for FixLine {
                 self.description,
                 ids(changes)
             ),
+            Outcome::Refused { why } => write!(f, "fix refused {}: {why}", self.id),
             Outcome::Declined { why } => write!(f, "not fixed {}: {why}", self.id),
             Outcome::Failed { error, changes } if changes.is_empty() => {
                 write!(f, "fix failed {}: {error}", self.id)
@@ -165,21 +311,23 @@ impl fmt::Display for FixLine {
 
 /// Offers the automatic fix of every failing or warning check in `report`, applies the accepted
 /// ones through the ledger, rewrites the revert scripts when anything changed, and runs the fixed
-/// checks again, replacing their results in `report`.
+/// checks again, replacing their results in `report`. A fix with an edit outside `targets` is
+/// refused before it is offered.
 ///
 /// # Errors
 ///
-/// [`LedgerError`] if the revert scripts cannot be written after a change. An edit that fails is
+/// [`FixError`] if the revert scripts cannot be written after a change. An edit that fails is
 /// reported as [`Outcome::Failed`], and the other fixes are still offered.
 pub fn apply(
     registry: &Registry,
     ctx: &DoctorCtx,
     report: &mut Report,
     setup: FixSetup<'_>,
-) -> Result<Vec<FixLine>, LedgerError> {
+) -> Result<Vec<FixLine>, FixError> {
     let FixSetup {
         ledger,
         consent,
+        targets,
         at,
         by_version,
     } = setup;
@@ -192,23 +340,30 @@ pub fn apply(
         }
         let Some(fix) = &finding.fix else { continue };
         let Some(auto) = &fix.automatic else { continue };
-        let outcome = match consent.ask(result.id, fix, auto) {
-            Answer::No { why } => Outcome::Declined { why },
-            Answer::Yes => {
+        let refused = auto.edits.iter().find_map(|edit| targets.refuse(edit));
+        let answer = match refused {
+            Some(why) => Err(Outcome::Refused { why }),
+            None => Ok(consent.ask(result.id, fix, auto)),
+        };
+        let outcome = match answer {
+            Err(refused) => refused,
+            Ok(Answer::No { why }) => Outcome::Declined { why },
+            Ok(Answer::Yes) => {
                 let mut changes = Vec::new();
                 let mut error = None;
                 for edit in &auto.edits {
                     match edit.apply(ledger, at, by_version) {
                         Ok(id) => changes.push(id),
                         Err(e) => {
+                            // An I/O error can come after the entry was recorded, leaving it
+                            // pending, which the revert scripts must then cover.
+                            changed |= matches!(e, LedgerError::Io { .. });
                             error = Some(format!("{edit}: {e}"));
                             break;
                         }
                     }
                 }
-                // A failed write leaves its entry pending, which the ledger's revert resolves, so
-                // the scripts are rewritten after any attempt.
-                changed = true;
+                changed |= !changes.is_empty();
                 match error {
                     None => Outcome::Applied { changes },
                     Some(error) => Outcome::Failed { error, changes },
@@ -221,12 +376,15 @@ pub fn apply(
             outcome,
         });
     }
-    if changed {
-        write_revert_script(ledger, by_version)?;
+    if changed && let Err(error) = write_revert_script(ledger, by_version) {
+        return Err(FixError { lines, error });
     }
     // The fixed checks run again, so the report shows the host as it is now.
     for line in &lines {
-        if matches!(line.outcome, Outcome::Declined { .. }) {
+        if matches!(
+            line.outcome,
+            Outcome::Declined { .. } | Outcome::Refused { .. }
+        ) {
             continue;
         }
         let check = registry

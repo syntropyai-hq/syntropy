@@ -360,10 +360,13 @@ impl Fix {
 /// A fix that `--fix` may apply: host edits, each one recorded in the host-change ledger before it
 /// is made, so `uninstall` reverts it (RFC-0053 §5.1, RFC-0052 §11.1).
 ///
-/// The edits are a closed list of ledgered kinds. There is deliberately no edit for firmware or
-/// BIOS settings, a sysctl, the Windows GPU watchdog (`TdrDelay`) or hardware-accelerated GPU
-/// scheduling, or anything on another node: `doctor` never changes those, and the only OS limits
-/// Syntropy changes go through `syntropy tune` (RFC-0051 §2.1).
+/// The edits are a closed list of ledgered kinds, and [`fix::Targets`] closes the files they may
+/// write: a pluggable-authentication `limits.d` file and a systemd service drop-in, nothing else.
+/// A fix that writes anywhere else, such as `sysctl.d`, `modprobe.d` (the TTM `pages_limit`), the
+/// boot loader's configuration or a launchd plist, is refused before anyone is asked. There is no
+/// edit at all for firmware or BIOS settings, the Windows GPU watchdog (`TdrDelay`),
+/// hardware-accelerated GPU scheduling or anything on another node. `doctor` never changes those,
+/// and the only OS limits Syntropy changes go through `syntropy tune` (RFC-0051 §2.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutoFix {
     /// The edits, made in order.
@@ -679,6 +682,8 @@ pub struct FixSetup<'a> {
     pub ledger: &'a mut HostChangeLedger,
     /// Asks before each fix: a terminal prompt, `--yes`, or a refusal when there is no terminal.
     pub consent: &'a mut dyn fix::Consent,
+    /// The files a fix may write: [`fix::Targets::host`] in production.
+    pub targets: &'a fix::Targets,
     /// The time to record, in Unix milliseconds.
     pub at: u64,
     /// The Syntropy version to record.
@@ -708,7 +713,19 @@ pub fn doctor(
     let mut fixes = Vec::new();
     if options.fix {
         let setup = fix_setup.ok_or(DoctorError::NoLedger)?;
-        fixes = fix::apply(registry, &ctx, &mut report, setup)?;
+        fixes = match fix::apply(registry, &ctx, &mut report, setup) {
+            Ok(lines) => lines,
+            Err(fix::FixError { lines, error }) => {
+                // The fixes that were made are still reported, before the error.
+                let mut text = String::new();
+                for line in &lines {
+                    text.push_str(&format!("{line}\n"));
+                }
+                out.write_all(text.as_bytes())
+                    .map_err(DoctorError::Output)?;
+                return Err(DoctorError::Ledger(error));
+            }
+        };
     }
     let text = if options.json {
         if options.fix {
