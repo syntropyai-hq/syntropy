@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:fec496af00cc6773"
+jobs_toml = "fnv1a:8968ddee9b530f20"
 
 [[golden]]
 name = "plan only"
@@ -76,7 +76,7 @@ hw_required = []
 name = "unclassified path"
 source = "97c34763 on main, \"build(quality): pin text files to LF checkout (#1721)\": the commit's paths, from `git show --no-renames --name-only`"
 paths = [".gitattributes"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -84,7 +84,7 @@ planned = ["hosted-parity-nano"]
 name = "core only"
 source = "25f386d0 on main, \"test(core): round-trip the RFC-0032 \u00a75.1 island types and a 4-member weighted split and owner map (#1782)\": the commit's paths, from `git show --no-renames --name-only`"
 paths = ["crates/core/src/plan/stage.rs", "crates/core/tests/plan_serde.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -116,7 +116,7 @@ paths = [
     "plan/rfcs/RFC-0042-quantization-and-numerical-fidelity.md",
 ]
 lock = ["equivalent", "hashbrown", "indexmap", "serde_spanned", "toml", "toml_datetime", "toml_parser", "toml_writer", "winnow"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -137,7 +137,7 @@ paths = [
     "plan/rfcs/RFC-0001-system-architecture.md",
     "plan/rfcs/RFC-0040-kernel-providers-and-backends.md",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -153,7 +153,7 @@ paths = [
     "third_party/bip39/english.txt",
     "third_party/licences.toml",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -178,7 +178,7 @@ paths = [
     "third_party/licences.toml",
 ]
 lock = ["block-buffer", "crypto-common", "curve25519-dalek", "curve25519-dalek-derive", "digest", "ed25519", "ed25519-dalek", "fiat-crypto", "hybrid-array", "sha2", "signature", "subtle", "syn", "typenum"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -201,7 +201,7 @@ paths = [
     "plan/rfcs/RFC-0050-api-surface.md",
     "xtask/src/check_deps/rules.rs",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -232,7 +232,7 @@ paths = [
     "crates/graph/src/ir/validate.rs",
     "crates/graph/src/lib.rs",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -265,7 +265,7 @@ paths = [
     "plan/rfcs/RFC-0001-system-architecture.md",
     "plan/rfcs/RFC-0041-model-formats-packs-weight-distribution.md",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -285,7 +285,7 @@ paths = [
     "xtask/src/registry.rs",
     "xtask/src/run.rs",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -303,7 +303,7 @@ paths = [
     "testdata/corpus/attribution/taskmaster-2.txt",
     "testdata/corpus/attribution/taskmaster-3.txt",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -319,7 +319,7 @@ paths = [
     "plan/implementation/epics/PROD.md",
     "plan/rfcs/RFC-0054-configuration-and-policy.md",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -332,7 +332,7 @@ paths = [
     "plan/rfcs/RFC-0062-ci-cd-and-release-engineering.md",
     "xtask/src/codeowners.rs",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -352,7 +352,7 @@ paths = [
     "xtask/src/run.rs",
 ]
 lock = ["syntropy-xtask"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -389,7 +389,7 @@ paths = [
     "xtask/src/main.rs",
     "xtask/src/registry.rs",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -405,7 +405,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "toolchain pin"
 source = "constructed: a toolchain bump alone"
 paths = ["rust-toolchain.toml"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -413,7 +413,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "actions and the root manifest"
 source = "constructed: a composite action and the workspace manifest"
 paths = [".github/actions/setup-rust/action.yml", "Cargo.toml"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -435,7 +435,7 @@ planned = ["hosted-parity-nano"]
 name = "tolerance tables only"
 source = "constructed: a change to the release tolerance table alone, which `kernels` embeds and the op conformance checks run against"
 paths = ["numerics/tolerances-v1.toml"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -457,7 +457,7 @@ paths = [
     "crates/kernels/src/op.rs",
     "crates/kernels/src/op/tests.rs",
 ]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -489,7 +489,7 @@ planned = ["hosted-parity-nano"]
 name = "census module file"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/manifest/src/census.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -497,7 +497,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "census module directory"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/manifest/src/census/scan.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -505,7 +505,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "kv module file"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/manifest/src/kv.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -513,7 +513,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "kv module directory"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/manifest/src/kv/formula.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -521,7 +521,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "refexec module file"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/testkit/src/refexec.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -529,7 +529,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "refexec module directory"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/testkit/src/refexec/run.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -537,7 +537,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "parity module file"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/testkit/src/parity.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -545,7 +545,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "parity module directory"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/testkit/src/parity/report.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -553,7 +553,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "conformance module file"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/testkit/src/conformance.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -561,7 +561,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "conformance module directory"
 source = "constructed: one form of a module the direct rule names, alone"
 paths = ["crates/testkit/src/conformance/cases.rs"]
-jobs = ["build", "hosted-election-model", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
