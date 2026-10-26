@@ -24,8 +24,9 @@ sudo bench/lab/capture-inventory.sh --id R-ADA \
 - NVMe and NIC links are the negotiated ones (sysfs `current_link_speed` and `_width`): a Gen4
   drive in a Gen3 slot is recorded `gen3x4`. A GPU's current link falls at idle, so its link is
   the highest the GPU and its slot support together; check it against the board manual. Some
-  devices also drop their link at idle, so before committing the records confirm the NVMe and NIC
-  links under load (for example `lspci -vv` `LnkSta` during a transfer).
+  devices also drop their link at idle, so run the capture while the NVMe and NIC are busy (for
+  example a `dd` read of the drive and an `iperf3` run on each NIC), and confirm the links with
+  `lspci -vv` `LnkSta` during that load before committing the records.
 
 The spare GPU has no record format of its own: RFC-0061 §6.3 defines one record per rig. Swap the
 spare into the host, boot the same image, and run the script again with `--id R-ADA-SPARE`. The
