@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! `cargo xtask workflows`: the workflow security lint of RFC-0062 §12.4 (QUAL-E1-T09), over
-//! every workflow in `.github/workflows/` and every composite action under `.github/actions/`.
+//! every workflow in `.github/workflows/`, every action under `.github/actions/`, and every local
+//! action (`uses: ./…`) a workflow or action reaches.
 //!
 //! | Check | What fails |
 //! |---|---|
@@ -19,15 +20,35 @@
 //! through the job's matrix when it is `${{ matrix.<key> }}`, and otherwise fails, because the
 //! labels it yields cannot be checked.
 //!
-//! **PR checkouts.** A step checks out a PR ref when it is `actions/checkout` and either its `ref`
-//! names one (`github.event.pull_request.head…`, `…merge_commit_sha`, `github.head_ref`,
-//! `refs/pull/`, `github.event.workflow_run.head…`), or the workflow runs on `pull_request`,
-//! `pull_request_target` or `merge_group` and the `ref` is unset, `github.sha` or `github.ref`,
-//! which there name the PR's merge commit. A `run` script that fetches `refs/pull/` or runs
-//! `gh pr checkout` checks one out too. A job holds a secret when it, or the workflow's `env`,
-//! names `secrets.` other than `secrets.GITHUB_TOKEN`, when it names an `environment`, or when it
-//! passes `secrets: inherit`. It holds a write token when its own `permissions`, or the
-//! workflow's where it sets none, grant any scope `write`.
+//! **PR checkouts.** The rule allows only what it knows is safe. A step that is `actions/checkout`
+//! (in any case) checks out a PR ref unless its `ref` is one of these, compared without case or
+//! whitespace:
+//! - a literal branch, tag or SHA with no `pull/` in it;
+//! - an expression naming the base: `github.event.pull_request.base.sha` or `.base.ref`,
+//!   `github.base_ref`, `github.event.merge_group.base_sha`, or
+//!   `github.event.repository.default_branch`;
+//! - unset, empty, `github.sha` or `github.ref`, but only when the workflow is not triggered by
+//!   `pull_request`, `pull_request_target`, `merge_group` or `workflow_call`. Under those, these
+//!   name code the PR controls. A called workflow cannot see what calls it, so `workflow_call`
+//!   counts.
+//!
+//! Any other expression counts as a PR checkout on every trigger. A `run` script that names
+//! `refs/pull/`, runs `gh pr checkout`, or runs `git fetch`, `checkout`, `pull`, `switch` or
+//! `worktree` with `pull/` in it counts too. So does a step that uses a local composite action
+//! one of whose steps counts.
+//!
+//! **Secrets.** A job holds a secret when any expression in it, or in the workflow's `env`, uses
+//! the `secrets` context, in any case and any form (`secrets.X`, `secrets['X']`,
+//! `toJSON(secrets)`), other than `GITHUB_TOKEN`. That includes `if:` values, which GitHub reads
+//! as expressions without braces. It also holds one when it names an `environment` or passes
+//! `secrets: inherit`. It holds a write token when its own `permissions`, or the workflow's where
+//! it sets none, grant any scope `write`.
+//!
+//! **Limits.** A file cannot show these, so the lint does not check them:
+//! - whether a 40-hex `@` is a commit, rather than a tag or branch of that name;
+//! - a fork of `actions/checkout` under another name;
+//! - a ref that reaches a checkout through `env` or a step's outputs, unless it is an expression
+//!   in the `ref` itself.
 //!
 //! A file that does not parse, or whose shape the checks cannot read, fails: the lint never
 //! passes a workflow it could not check.
@@ -50,18 +71,28 @@ const LAB_PREFIXES: &[&str] = &[
     "lab-", "r-", "cuda-", "metal-", "hip-", "vulkan-", "rdma-", "nvme-",
 ];
 
-/// Triggers under which a checkout with no `ref`, or `github.sha` or `github.ref`, gets the PR's
-/// code.
-const PR_TRIGGERS: &[&str] = &["pull_request", "pull_request_target", "merge_group"];
-
-/// Expression fragments that name a PR's code in a checkout's `ref`.
-const PR_REFS: &[&str] = &[
-    "github.event.pull_request.head",
-    "github.event.pull_request.merge_commit_sha",
-    "github.head_ref",
-    "refs/pull/",
-    "github.event.workflow_run.head",
+/// Triggers under which a checkout with no `ref`, or `github.sha` or `github.ref`, gets code a
+/// pull request controls. A called workflow (`workflow_call`) cannot see its caller's trigger, so
+/// it counts.
+const PR_TRIGGERS: &[&str] = &[
+    "pull_request",
+    "pull_request_target",
+    "merge_group",
+    "workflow_call",
 ];
+
+/// Checkout refs, as expressions without whitespace and in lower case, that name the base
+/// branch or the repository's own code under any trigger.
+const BASE_REFS: &[&str] = &[
+    "${{github.event.pull_request.base.sha}}",
+    "${{github.event.pull_request.base.ref}}",
+    "${{github.base_ref}}",
+    "${{github.event.merge_group.base_sha}}",
+    "${{github.event.repository.default_branch}}",
+];
+
+/// How deep a chain of local composite actions is followed.
+const LOCAL_DEPTH: usize = 8;
 
 /// One problem: the file, where in it, and what is wrong.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -306,30 +337,150 @@ fn runs_on_labels(report: &mut Report<'_>, at: &str, job: &Yaml, runs_on: &Yaml)
     labels
 }
 
-/// Whether a step checks out a PR ref.
+/// Whether `uses` names `actions/checkout`, in any case and with or without a trailing slash.
+fn is_checkout(uses: &str) -> bool {
+    let name = uses.split('@').next().unwrap_or_default().trim();
+    name.trim_end_matches('/')
+        .eq_ignore_ascii_case("actions/checkout")
+}
+
+/// Whether a step checks out code a pull request controls, by itself: see the module docs.
 fn checks_out_pr(step: &Yaml, pr_event: bool) -> bool {
-    if let Some(run) = get(step, "run").and_then(text)
-        && (run.contains("refs/pull/") || run.contains("gh pr checkout"))
-    {
+    if let Some(run) = get(step, "run").and_then(text) {
+        let run = run.to_ascii_lowercase();
+        let git = [
+            "git fetch",
+            "git checkout",
+            "git pull",
+            "git switch",
+            "git worktree",
+        ]
+        .iter()
+        .any(|command| run.contains(command));
+        if run.contains("refs/pull/")
+            || run.contains("gh pr checkout")
+            || (git && run.contains("pull/"))
+        {
+            return true;
+        }
+    }
+    let Some(uses) = get(step, "uses").and_then(text) else {
+        return false;
+    };
+    if !is_checkout(&uses) {
+        return false;
+    }
+    let reference: String = get(step, "with")
+        .and_then(|with| get(with, "ref"))
+        .and_then(text)
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if reference.is_empty() {
+        return pr_event;
+    }
+    if reference.contains("${{") {
+        if BASE_REFS.contains(&reference.as_str()) {
+            return false;
+        }
+        let own = reference == "${{github.sha}}" || reference == "${{github.ref}}";
+        return pr_event || !own;
+    }
+    reference.contains("pull/")
+}
+
+/// Whether a step checks out a PR ref, itself or through the local composite action it uses,
+/// followed through `actions` (which reads a local action by its `uses:` path) to `depth`.
+fn step_checks_out_pr(
+    step: &Yaml,
+    pr_event: bool,
+    actions: &dyn Fn(&str) -> Option<String>,
+    depth: usize,
+) -> bool {
+    if checks_out_pr(step, pr_event) {
         return true;
     }
     let Some(uses) = get(step, "uses").and_then(text) else {
         return false;
     };
-    if !uses.starts_with("actions/checkout@") {
+    if !uses.starts_with("./") || depth == 0 {
         return false;
     }
-    let reference = get(step, "with")
-        .and_then(|with| get(with, "ref"))
-        .and_then(text);
-    match reference {
-        Some(r) if PR_REFS.iter().any(|p| r.contains(p)) => true,
-        Some(r) => {
-            let r: String = r.chars().filter(|c| !c.is_whitespace()).collect();
-            pr_event && (r == "${{github.sha}}" || r == "${{github.ref}}")
-        }
-        None => pr_event,
+    let Some(action) = actions(&uses).and_then(|source| parse(&source).ok()) else {
+        return false;
+    };
+    match get(&action, "runs").and_then(|runs| get(runs, "steps")) {
+        Some(Yaml::Array(steps)) => steps
+            .iter()
+            .any(|step| step_checks_out_pr(step, pr_event, actions, depth - 1)),
+        _ => false,
     }
+}
+
+/// The expressions under `node`: each `${{ … }}` in a scalar, and each `if:` value whole, which
+/// GitHub reads as an expression without braces.
+fn expressions(node: &Yaml, out: &mut Vec<String>) {
+    match node {
+        Yaml::Array(items) => items.iter().for_each(|item| expressions(item, out)),
+        Yaml::Hash(map) => {
+            for (key, value) in map {
+                expressions(key, out);
+                if text(key).as_deref() == Some("if") {
+                    out.extend(text(value));
+                }
+                expressions(value, out);
+            }
+        }
+        other => {
+            let Some(scalar) = text(other) else { return };
+            let mut rest = scalar.as_str();
+            while let Some(open) = rest.find("${{") {
+                let inside = &rest[open + 3..];
+                let close = inside.find("}}").unwrap_or(inside.len());
+                out.push(inside[..close].to_owned());
+                rest = &inside[close..];
+            }
+        }
+    }
+}
+
+/// The first use of the `secrets` context in `expression` other than `GITHUB_TOKEN`, in any case
+/// and any form: `secrets.X`, `secrets['X']`, `toJSON(secrets)`.
+fn reads_secret(expression: &str) -> Option<String> {
+    // ASCII lower-casing keeps every byte offset, so offsets in `lower` index `expression` too.
+    let lower = expression.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("secrets").map(|i| i + from) {
+        let end = at + "secrets".len();
+        from = end;
+        let inside_a_name = at > 0 && (word(bytes[at - 1]) || bytes[at - 1] == b'.');
+        if inside_a_name || (end < bytes.len() && word(bytes[end])) {
+            continue;
+        }
+        let rest: String = lower[end..]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let token = [".github_token", "['github_token']", "[\"github_token\"]"]
+            .iter()
+            .any(|form| {
+                rest.strip_prefix(form)
+                    .is_some_and(|after| after.bytes().next().is_none_or(|b| !word(b)))
+            });
+        if token {
+            continue;
+        }
+        let named: String = expression[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || "_-.[]'\"".contains(*c))
+            .collect();
+        return Some(named);
+    }
+    None
 }
 
 /// Why a job holds a secret, if it does.
@@ -341,24 +492,23 @@ fn holds_secret(job: &Yaml, workflow_env: Option<&Yaml>) -> Option<String> {
         return Some("it passes `secrets: inherit`".to_owned());
     }
     let mut all = Vec::new();
-    scalars(job, &mut all);
+    expressions(job, &mut all);
     if let Some(env) = workflow_env {
-        scalars(env, &mut all);
+        expressions(env, &mut all);
     }
     all.iter()
-        .flat_map(|s| s.match_indices("secrets.").map(move |(i, _)| &s[i..]))
-        .find(|named| !named.starts_with("secrets.GITHUB_TOKEN"))
-        .map(|named| {
-            let name: String = named
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
-                .collect();
-            format!("it reads `{name}`")
-        })
+        .find_map(|expression| reads_secret(expression))
+        .map(|named| format!("it reads `{named}`"))
 }
 
-/// Checks one workflow file, named `name` (its file name).
-pub fn check_workflow(file: &str, name: &str, source: &str) -> Vec<Finding> {
+/// Checks one workflow file, named `name` (its file name). `actions` reads a local action by its
+/// `uses:` path (`./…`), so a job's composite actions are followed when looking for a PR checkout.
+pub fn check_workflow(
+    file: &str,
+    name: &str,
+    source: &str,
+    actions: &dyn Fn(&str) -> Option<String>,
+) -> Vec<Finding> {
     let mut report = Report {
         file,
         findings: Vec::new(),
@@ -461,7 +611,9 @@ pub fn check_workflow(file: &str, name: &str, source: &str) -> Vec<Finding> {
 
         // No PR checkout in a job that holds a secret or a write token.
         let pr_step = match get(job, "steps") {
-            Some(Yaml::Array(steps)) => steps.iter().position(|s| checks_out_pr(s, pr_event)),
+            Some(Yaml::Array(steps)) => steps
+                .iter()
+                .position(|s| step_checks_out_pr(s, pr_event, actions, LOCAL_DEPTH)),
             _ => None,
         };
         if let Some(n) = pr_step {
@@ -485,7 +637,8 @@ pub fn check_workflow(file: &str, name: &str, source: &str) -> Vec<Finding> {
     report.findings
 }
 
-/// Checks one composite action: its steps' `uses:` are pinned.
+/// Checks one action: a composite action's steps' `uses:` are pinned, and a Docker action's
+/// `docker://` image is pinned by digest.
 pub fn check_action(file: &str, source: &str) -> Vec<Finding> {
     let mut report = Report {
         file,
@@ -499,10 +652,46 @@ pub fn check_action(file: &str, source: &str) -> Vec<Finding> {
                 "runs.steps",
                 runs.and_then(|r| get(r, "steps")),
             );
+            if let Some(image) = runs.and_then(|r| get(r, "image")).and_then(text)
+                && image.starts_with("docker://")
+                && let Some(problem) = unpinned(&image)
+            {
+                report.add("runs.image", format!("`{image}` {problem}"));
+            }
         }
         Err(error) => report.add("", format!("does not parse: {error}")),
     }
     report.findings
+}
+
+/// Every `uses:` under `node` that names a local action: `./…`, but not a reusable workflow
+/// (`.yml` or `.yaml`).
+fn local_uses(node: &Yaml, out: &mut Vec<String>) {
+    match node {
+        Yaml::Array(items) => items.iter().for_each(|item| local_uses(item, out)),
+        Yaml::Hash(map) => {
+            for (key, value) in map {
+                if text(key).as_deref() == Some("uses")
+                    && let Some(uses) = text(value)
+                    && uses.starts_with("./")
+                    && !(uses.ends_with(".yml") || uses.ends_with(".yaml"))
+                {
+                    out.push(uses);
+                }
+                local_uses(value, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The action file of the local action `uses` (`./dir`) under `root`, if it has one.
+fn local_action(root: &Path, uses: &str) -> Option<PathBuf> {
+    let dir = root.join(uses.trim_start_matches("./"));
+    ["action.yml", "action.yaml"]
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file())
 }
 
 /// The YAML files directly in `dir`, sorted.
@@ -564,30 +753,62 @@ pub fn run(root: &Path, log: &mut dyn Write) -> io::Result<bool> {
             .to_string_lossy()
             .replace('\\', "/")
     };
+    let read = |path: &Path| fs::read_to_string(path);
     let workflows = workflow_files(root)?;
-    let actions = action_files(&root.join(".github/actions"))?;
+    let mut actions = action_files(&root.join(".github/actions"))?;
     let mut findings = Vec::new();
+    let unreadable = |file: String, error: io::Error| Finding {
+        file,
+        at: String::new(),
+        message: format!("cannot be read: {error}"),
+    };
+
+    // Every local action a workflow or an action reaches is checked too, wherever it sits.
+    let mut queue: Vec<(String, String)> = Vec::new();
+    let queue_uses = |path: &Path, queue: &mut Vec<(String, String)>| {
+        if let Ok(yaml) = read(path)
+            .map_err(|_| ())
+            .and_then(|s| parse(&s).map_err(|_| ()))
+        {
+            let mut uses = Vec::new();
+            local_uses(&yaml, &mut uses);
+            queue.extend(uses.into_iter().map(|u| (shown(path), u)));
+        }
+    };
+    for path in workflows.iter().chain(actions.clone().iter()) {
+        queue_uses(path, &mut queue);
+    }
+    while let Some((from, uses)) = queue.pop() {
+        match local_action(root, &uses) {
+            Some(path) if !actions.contains(&path) => {
+                queue_uses(&path, &mut queue);
+                actions.push(path);
+            }
+            Some(_) => {}
+            None => findings.push(Finding {
+                file: from,
+                at: String::new(),
+                message: format!("uses `{uses}`, a local action with no action.yml or action.yaml"),
+            }),
+        }
+    }
+    actions.sort();
+    actions.dedup();
+
+    let resolve = |uses: &str| local_action(root, uses).and_then(|path| read(&path).ok());
     for path in &workflows {
         let file = shown(path);
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        match fs::read_to_string(path) {
-            Ok(source) => findings.extend(check_workflow(&file, &name, &source)),
-            Err(error) => findings.push(Finding {
-                file,
-                at: String::new(),
-                message: format!("cannot be read: {error}"),
-            }),
+        match read(path) {
+            Ok(source) => findings.extend(check_workflow(&file, &name, &source, &resolve)),
+            Err(error) => findings.push(unreadable(file, error)),
         }
     }
     for path in &actions {
         let file = shown(path);
-        match fs::read_to_string(path) {
+        match read(path) {
             Ok(source) => findings.extend(check_action(&file, &source)),
-            Err(error) => findings.push(Finding {
-                file,
-                at: String::new(),
-                message: format!("cannot be read: {error}"),
-            }),
+            Err(error) => findings.push(unreadable(file, error)),
         }
     }
     for finding in &findings {
@@ -596,7 +817,7 @@ pub fn run(root: &Path, log: &mut dyn Write) -> io::Result<bool> {
     if findings.is_empty() {
         writeln!(
             log,
-            "workflows: PASS: {} workflows and {} composite actions meet RFC-0062 §12.4",
+            "workflows: PASS: {} workflows and {} actions meet RFC-0062 §12.4",
             workflows.len(),
             actions.len()
         )?;
@@ -605,7 +826,7 @@ pub fn run(root: &Path, log: &mut dyn Write) -> io::Result<bool> {
             log,
             "workflows: FAIL: {} problems in the workflows and actions under {} (RFC-0062 §12.4)",
             findings.len(),
-            root.join(".github").display()
+            root.display()
         )?;
     }
     Ok(findings.is_empty())

@@ -21,7 +21,7 @@ fn clean() -> String {
 
 /// The findings' `at` and the first words of each message, for compact assertions.
 fn found(file: &str, source: &str) -> Vec<(String, String)> {
-    check_workflow("w.yml", file, source)
+    check_workflow("w.yml", file, source, &|_| None)
         .into_iter()
         .map(|f| (f.at, f.message))
         .collect()
@@ -378,6 +378,10 @@ fn each_acceptance_fixture_fails_for_its_fault() {
             "pr-checkout-secret",
             "checks out a PR ref in a job that holds a secret",
         ),
+        (
+            "local-action-unpinned",
+            "ci/act/action.yml: runs.steps[0].uses",
+        ),
     ] {
         let (pass, log) = lint_fixture(fixture);
         assert!(!pass, "{fixture}: {log}");
@@ -387,7 +391,7 @@ fn each_acceptance_fixture_fails_for_its_fault() {
     let (pass, log) = lint_fixture("clean");
     assert!(pass, "{log}");
     assert!(
-        log.contains("workflows: PASS: 1 workflows and 1 composite actions"),
+        log.contains("workflows: PASS: 1 workflows and 1 actions"),
         "{log}"
     );
 }
@@ -400,4 +404,135 @@ fn this_repository_passes() {
     let pass = run(&root, &mut log).expect("the checkout is readable");
     let log = String::from_utf8(log).expect("the report is UTF-8");
     assert!(pass, "{log}");
+}
+
+/// Every form of the `secrets` context counts, in any case, `if:` values included; only
+/// `GITHUB_TOKEN` does not.
+#[test]
+fn every_form_of_the_secrets_context_counts() {
+    let checkout = format!("- uses: actions/checkout@{SHA}");
+    for (env, named) in [
+        ("    env:\n      ALL: ${{ toJSON(secrets) }}\n", "secrets"),
+        (
+            "    env:\n      KEY: ${{ secrets['DEPLOY'] }}\n",
+            "secrets['DEPLOY']",
+        ),
+        (
+            "    env:\n      KEY: ${{ SECRETS.DEPLOY }}\n",
+            "SECRETS.DEPLOY",
+        ),
+        ("    if: secrets.DEPLOY != ''\n", "secrets.DEPLOY"),
+        (
+            "    env:\n      KEY: ${{ format('{0}', secrets.X) }}\n",
+            "secrets.X",
+        ),
+    ] {
+        assert_one(
+            "w.yml",
+            &pr_checkout_job(env, &checkout),
+            "jobs.build.steps[0]",
+            &format!("it reads `{named}`"),
+        );
+    }
+    for env in [
+        "    env:\n      T: ${{ secrets['GITHUB_TOKEN'] }}\n",
+        "    env:\n      T: ${{ Secrets.github_token }}\n",
+        "    env:\n      T: ${{ github.event.secrets_url }}\n",
+    ] {
+        assert_clean("w.yml", &pr_checkout_job(env, &checkout));
+    }
+}
+
+/// A called workflow cannot see its caller's trigger, so a default checkout there is a PR
+/// checkout.
+#[test]
+fn a_called_workflow_counts_as_a_pr_trigger() {
+    let source = format!(
+        "on:\n  workflow_call:\n    secrets:\n      token:\n        required: true\n\
+         permissions:\n  contents: read\n\
+         jobs:\n  build:\n    runs-on: ubuntu-24.04\n    steps:\n      \
+         - uses: actions/checkout@{SHA}\n      - run: make\n        env:\n          \
+         TOKEN: ${{{{ secrets.token }}}}\n"
+    );
+    assert_one(
+        "w.yml",
+        &source,
+        "jobs.build.steps[0]",
+        "it reads `secrets.token`",
+    );
+}
+
+/// Only refs known to be safe pass; anything else beside a secret fails.
+#[test]
+fn only_known_safe_checkout_refs_pass() {
+    let secret_env = "    env:\n      TOKEN: ${{ secrets.DEPLOY_KEY }}\n";
+    let with_ref =
+        |r: &str| format!("- uses: actions/checkout@{SHA}\n        with:\n          ref: {r}");
+    for unsafe_step in [
+        with_ref("''"),
+        with_ref("${{ inputs.ref }}"),
+        with_ref("${{ github.event.after }}"),
+        with_ref("${{ github.SHA }}"),
+        with_ref("${{ github.event['pull_request'].head.sha }}"),
+        with_ref("refs/pull/7/merge"),
+        format!("- uses: Actions/Checkout@{SHA}"),
+        format!("- uses: actions/checkout/@{SHA}"),
+        "- run: git fetch origin pull/7/head".to_owned(),
+    ] {
+        let findings = found("w.yml", &pr_checkout_job(secret_env, &unsafe_step));
+        assert!(
+            findings
+                .iter()
+                .any(|(at, m)| at == "jobs.build.steps[0]" && m.contains("checks out a PR ref")),
+            "{unsafe_step}: {findings:#?}"
+        );
+    }
+    for safe_step in [
+        with_ref("main"),
+        with_ref(SHA),
+        with_ref("${{ github.base_ref }}"),
+        with_ref("${{ github.event.repository.default_branch }}"),
+    ] {
+        assert_clean("w.yml", &pr_checkout_job(secret_env, &safe_step));
+    }
+    // On `push`, the event's own commit is the repository's code.
+    let push = pr_checkout_job(secret_env, &with_ref("${{ github.sha }}"))
+        .replace("on:\n  pull_request:\n", "on:\n  push:\n");
+    assert_clean("w.yml", &push);
+}
+
+/// A step that uses a local composite action which checks out the PR counts, through a chain of
+/// actions.
+#[test]
+fn a_pr_checkout_inside_a_local_action_counts() {
+    let secret_env = "    env:\n      TOKEN: ${{ secrets.DEPLOY_KEY }}\n";
+    let source = pr_checkout_job(secret_env, "- uses: ./ci/outer");
+    let outer = "runs:\n  using: composite\n  steps:\n    - uses: ./ci/inner\n".to_owned();
+    let inner =
+        format!("runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@{SHA}\n");
+    let resolve = |uses: &str| match uses {
+        "./ci/outer" => Some(outer.clone()),
+        "./ci/inner" => Some(inner.clone()),
+        _ => None,
+    };
+    let findings = check_workflow("w.yml", "w.yml", &source, &resolve);
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(findings[0].at, "jobs.build.steps[0]");
+    let harmless = |uses: &str| {
+        (uses == "./ci/outer")
+            .then(|| "runs:\n  using: composite\n  steps:\n    - run: make\n".to_owned())
+    };
+    assert!(check_workflow("w.yml", "w.yml", &source, &harmless).is_empty());
+}
+
+/// A Docker action's `docker://` image is pinned by digest.
+#[test]
+fn a_docker_actions_image_is_pinned() {
+    let action = |image: &str| format!("runs:\n  using: docker\n  image: {image}\n");
+    let findings = check_action("a/action.yml", &action("docker://alpine:3.20"));
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(findings[0].at, "runs.image");
+    let digest = format!("docker://alpine@sha256:{}", "b".repeat(64));
+    assert!(check_action("a/action.yml", &action(&digest)).is_empty());
+    assert!(check_action("a/action.yml", &action("Dockerfile")).is_empty());
 }

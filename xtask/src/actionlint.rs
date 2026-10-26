@@ -13,6 +13,10 @@
 //! SHA-256 before unpacking it. The integrations with shellcheck and pyflakes are off
 //! (`-shellcheck= -pyflakes=`): actionlint uses whatever versions of those a host has, so with
 //! them on the same workflow could pass on one machine and fail on another.
+//!
+//! actionlint reads a `.github/actionlint.yaml` from the checkout, which a PR could add to
+//! silence it. The step passes its own configuration with `-config-file` instead, which takes
+//! that file's place: [`CONFIG`], no self-hosted runner labels.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -23,12 +27,17 @@ use crate::workflows;
 /// The actionlint release `lint` runs. CI installs exactly this version.
 pub const VERSION: &str = "1.7.12";
 
-/// How to install the pinned actionlint.
+/// The configuration the step passes: no self-hosted runner labels. `lab.yml`'s labels join it
+/// when that workflow exists.
+pub const CONFIG: &str = "self-hosted-runner:\n  labels: []\n";
+
+/// How to install the pinned actionlint. Only the release binary prints the bare version this
+/// step checks; a `go install` build prints `v` before it.
 pub fn install_hint() -> String {
     format!(
         "install actionlint {VERSION}: the release binary from \
          https://github.com/rhysd/actionlint/releases/tag/v{VERSION}, checked against the \
-         release's checksums file, or `go install github.com/rhysd/actionlint/cmd/actionlint@v{VERSION}`"
+         release's checksums file"
     )
 }
 
@@ -84,14 +93,21 @@ pub fn run(root: &Path, log: &mut dyn Write) -> io::Result<bool> {
     }
     writeln!(
         log,
-        "actionlint: actionlint {VERSION}, shellcheck and pyflakes off, on {} workflows",
+        "actionlint: actionlint {VERSION}, shellcheck and pyflakes off, its own config, on {} \
+         workflows",
         files.len()
     )?;
+    let config =
+        std::env::temp_dir().join(format!("syntropy-actionlint-{}.yaml", std::process::id()));
+    std::fs::write(&config, CONFIG)?;
     let output = Command::new("actionlint")
-        .args(["-no-color", "-shellcheck=", "-pyflakes="])
+        .args(["-no-color", "-shellcheck=", "-pyflakes=", "-config-file"])
+        .arg(&config)
         .args(&files)
         .current_dir(root)
-        .output()?;
+        .output();
+    let _ = std::fs::remove_file(&config);
+    let output = output?;
     log.write_all(&output.stdout)?;
     log.write_all(&output.stderr)?;
     if output.status.success() {
