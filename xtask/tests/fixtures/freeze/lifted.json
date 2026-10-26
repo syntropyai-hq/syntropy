@@ -1,0 +1,4 @@
+[
+  {"at": 1000, "kind": "set", "version": "0.1.0"},
+  {"at": 4600, "kind": "lift", "reason": "abort"}
+]

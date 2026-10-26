@@ -36,6 +36,7 @@ mod contrib;
 mod dep_diff;
 mod determinism;
 mod fixtures;
+mod freeze;
 mod hot_threads;
 mod instructions;
 mod licences;
