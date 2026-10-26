@@ -33,6 +33,7 @@ pub mod domain;
 pub mod landing;
 pub mod quic;
 pub mod registration;
+pub mod select;
 pub mod sizing;
 pub mod stream;
 pub mod tcp;
@@ -40,8 +41,8 @@ pub mod tcp;
 use std::future::Future;
 use std::net::SocketAddr;
 
-use syntropy_core::resource::TransportKind;
-use syntropy_core::{Bytes, NodeId};
+use syntropy_core::resource::{LinkCaps, TransportKind, link_cost};
+use syntropy_core::{Bytes, Nanos, NodeId, Objective};
 
 pub use self::core::{ChannelCore, CoreConfig, CreditCadence, SendConfig, Transmit};
 pub use buffer::{
@@ -53,6 +54,7 @@ pub use channel::{
     ChannelStats, CloseReason, INGRESS, InFrame, OutFrame, SendError, SendTicket,
 };
 pub use registration::{Registrant, RegistrationTable};
+pub use select::{AnyTransport, AttemptFailure, HopChoice, HopConnection, HopError, connect_hop};
 
 use crate::endpoint::{PathKind, RelayUrl};
 use crate::error::Error;
@@ -114,9 +116,6 @@ impl From<PathKind> for TransportKind {
 /// `connect` and `accept` return futures that are `Send`, so the `net` domain can run them on
 /// its runtime. Implementations write them as `async fn`. Because of those methods the trait is
 /// not object-safe; code that picks a transport at run time is generic over it, or wraps it.
-///
-/// RFC-0031 §2's `cost` method, the per-frame cost from the link profile, comes with link
-/// selection (DIST-E7-T11), which defines it with RFC-0010's `LinkCaps`.
 pub trait Transport: Send + Sync {
     /// `SharedMemory`, `Rdma(_)`, `Quic`, `QuicRelay` or `Tcp`. `QuicRelay` marks a relayed
     /// path, so plans and metrics never mistake it for a direct one.
@@ -125,6 +124,19 @@ pub trait Transport: Send + Sync {
     /// Zero-copy receive, device-memory receive, maximum frame size, whether buffers must be
     /// registered, whether the channel is encrypted.
     fn caps(&self) -> TransportCaps;
+
+    /// RFC-0031 §3's cost of one frame of `size` bytes on `edge`, this transport's probed costs
+    /// on one link, at `link.p99_weight`'s default: `core`'s
+    /// [`link_cost`], which the solver and
+    /// [`connect_hop`] call with the configured weight.
+    fn cost(&self, edge: &LinkCaps, size: Bytes, objective: Objective) -> Nanos {
+        debug_assert_eq!(
+            edge.transport,
+            self.kind(),
+            "the edge's figures are this transport's"
+        );
+        link_cost(edge, size, &objective, None)
+    }
 
     /// Registers a buffer pool: RDMA memory regions, shared-memory segments. Pools come from the
     /// tier manager's pinned arena (RFC-0001 §9.4). Each pool is registered once per transport.
