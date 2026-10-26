@@ -547,6 +547,9 @@ fn only_known_triggers_make_a_default_checkout_safe() {
         "  pull_request_review:\n",
         "  pull_request_review_comment:\n",
         "  some_future_event:\n",
+        "  deployment:\n",
+        "  deployment_status:\n",
+        "  registry_package:\n",
     ] {
         let source = pr_checkout_job(secret_env, &checkout).replace("  pull_request:\n", on);
         assert_one(

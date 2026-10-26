@@ -79,6 +79,8 @@ const LAB_PREFIXES: &[&str] = &[
 /// repository's own code: a pushed commit, or the default branch. Every other trigger counts as a
 /// pull request's, the review triggers and `workflow_call` among them (a called workflow cannot
 /// see its caller's trigger), so a trigger GitHub adds later is not trusted by default.
+/// `deployment`, `deployment_status` and `registry_package` are left out: their commit comes from
+/// the event's payload, which can name any commit.
 const OWN_CODE_TRIGGERS: &[&str] = &[
     "push",
     "schedule",
@@ -96,15 +98,12 @@ const OWN_CODE_TRIGGERS: &[&str] = &[
     "discussion_comment",
     "check_run",
     "check_suite",
-    "deployment",
-    "deployment_status",
     "status",
     "watch",
     "fork",
     "gollum",
     "page_build",
     "public",
-    "registry_package",
     "branch_protection_rule",
 ];
 
