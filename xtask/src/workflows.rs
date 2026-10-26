@@ -38,7 +38,8 @@
 //!
 //! Any other expression counts as a PR checkout on every trigger. A `run` script that names
 //! `refs/pull/`, runs `gh … pr … checkout`, or runs git or gh with `pull/` anywhere in it counts
-//! too. So does a step that uses a local composite action
+//! too, and so does one that runs git or gh with any expression the checkout rule would not
+//! allow as a `ref` (such as `workflow_run.head_sha`); `github.repository` is allowed there. So does a step that uses a local composite action
 //! one of whose steps counts.
 //!
 //! **Secrets.** A job holds a secret when any expression in it, or in the workflow's `env`, uses
@@ -384,11 +385,27 @@ fn checks_out_pr(step: &Yaml, pr_event: bool) -> bool {
                 .any(|word| word == program)
         };
         let gh_checkout = runs("gh") && run.contains(" pr ") && run.contains("checkout");
-        if run.contains("refs/pull/")
-            || gh_checkout
-            || ((runs("git") || runs("gh")) && run.contains("pull/"))
-        {
+        let git_or_gh = runs("git") || runs("gh");
+        if run.contains("refs/pull/") || gh_checkout || (git_or_gh && run.contains("pull/")) {
             return true;
+        }
+        // A git or gh command that takes any expression other than a known-safe one may fetch,
+        // clone or check out code a PR names, such as `workflow_run.head_sha` or
+        // `pull_request.head.sha`: the same allowlist as a checkout step's `ref`.
+        if git_or_gh {
+            let mut used = Vec::new();
+            expressions(&Yaml::String(run.clone()), &mut used);
+            let unsafe_expression = used.iter().any(|e| {
+                let compact: String = e.chars().filter(|c| !c.is_whitespace()).collect();
+                let wrapped = format!("${{{{{compact}}}}}");
+                !(BASE_REFS.contains(&wrapped.as_str())
+                    || wrapped == "${{github.repository}}"
+                    || (!pr_event
+                        && (wrapped == "${{github.sha}}" || wrapped == "${{github.ref}}")))
+            });
+            if unsafe_expression {
+                return true;
+            }
         }
     }
     let Some(uses) = get(step, "uses").and_then(text) else {

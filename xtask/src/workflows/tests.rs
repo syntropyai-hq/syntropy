@@ -632,3 +632,40 @@ fn a_quoted_closing_brace_does_not_hide_a_secret() {
     );
     assert_eq!(ends, [" 'it''s }}' ".to_owned()]);
 }
+
+/// A script that names the PR's commit or repository in an expression counts, as a checkout step
+/// would; known-safe expressions do not.
+#[test]
+fn a_script_that_names_pr_code_in_an_expression_counts() {
+    let secret_env = "    env:\n      TOKEN: ${{ secrets.NPM_TOKEN }}\n";
+    for (on, step) in [
+        (
+            "  workflow_run:\n",
+            "- run: git fetch origin ${{ github.event.workflow_run.head_sha }} && git checkout FETCH_HEAD",
+        ),
+        (
+            "  workflow_run:\n",
+            "- run: git clone https://github.com/${{ github.event.workflow_run.head_repository.full_name }}",
+        ),
+        (
+            "  pull_request:\n",
+            "- run: git checkout ${{ github.event.pull_request.head.sha }}",
+        ),
+    ] {
+        let source = pr_checkout_job(secret_env, step).replace("  pull_request:\n", on);
+        assert_one(
+            "w.yml",
+            &source,
+            "jobs.build.steps[0]",
+            "checks out a PR ref",
+        );
+    }
+    for step in [
+        "- run: git fetch origin ${{ github.base_ref }}",
+        "- run: gh api repos/${{ github.repository }}/pulls",
+        "- run: git checkout ${{ github.sha }}",
+    ] {
+        let source = pr_checkout_job(secret_env, step).replace("  pull_request:\n", "  push:\n");
+        assert_clean("w.yml", &source);
+    }
+}
