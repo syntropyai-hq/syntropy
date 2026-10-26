@@ -176,12 +176,24 @@ jobs:
       - if: matrix.os == 'linux'
         uses: ./.github/actions/install-cargo-deny
       # The second OS account that `syntropy-ipc`'s peer test connects from (DIST-E1-T03,
-      # RFC-0034 §6.4). On Linux in CI the test fails without it. The macOS and Windows jobs
-      # create none, so the refusal of another user is not tested there.
+      # RFC-0034 §6.4). On Linux and macOS in CI the test fails without it. The Windows job
+      # creates none yet, so there the refusal of another user is not tested in CI.
       - if: matrix.os == 'linux'
         name: Add a second OS account for the IPC peer test
         run: |
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin syntropy-peer
+          echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
+      - if: matrix.os == 'macos'
+        name: Add a second OS account for the IPC peer test
+        run: |
+          id=599
+          while dscl . -search /Users UniqueID "$id" | grep -q .; do id=$((id - 1)); done
+          sudo dscl . -create /Users/syntropy-peer
+          sudo dscl . -create /Users/syntropy-peer UserShell /usr/bin/false
+          sudo dscl . -create /Users/syntropy-peer UniqueID "$id"
+          sudo dscl . -create /Users/syntropy-peer PrimaryGroupID 20
+          sudo dscl . -create /Users/syntropy-peer NFSHomeDirectory /var/empty
+          id syntropy-peer
           echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
       - run: cargo xtask test unit
 

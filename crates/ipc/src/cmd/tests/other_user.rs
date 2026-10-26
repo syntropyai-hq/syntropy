@@ -10,9 +10,10 @@
 //! 2. to a listener on a socket every user can reach, so the connection reaches the peer check,
 //!    which refuses it and names the account's user ID.
 //!
-//! CI's hosted Linux job creates the account and names it in `SYNTROPY_IPC_PEER_USER`. Without it
-//! the test prints a notice and passes, except on Linux in CI, where it fails. The macOS and
-//! Windows jobs create no second account, so there the refusal is not tested in CI.
+//! CI's hosted Linux and macOS jobs create the account and name it in `SYNTROPY_IPC_PEER_USER`.
+//! Without it the test prints a notice and passes, except in CI, where it fails. Its files sit
+//! under `/tmp`, not the temporary directory, which macOS gives each user as a private 0700
+//! directory the other account could not enter.
 
 use std::env;
 use std::ffi::OsStr;
@@ -43,8 +44,8 @@ fn a_connection_from_another_user_is_refused() {
     let Some(user) = env::var_os(USER).filter(|user| !user.is_empty()) else {
         let in_ci = env::var_os("CI").is_some_and(|v| !v.is_empty() && v != "false");
         assert!(
-            !(in_ci && cfg!(target_os = "linux")),
-            "CI on Linux must run this test: create a second OS account and name it in {USER}"
+            !in_ci,
+            "CI must run this test: create a second OS account and name it in {USER}"
         );
         eprintln!(
             "skipped: no second OS account named in {USER}, so the other-user refusal did not run"
@@ -53,7 +54,7 @@ fn a_connection_from_another_user_is_refused() {
     };
 
     // Everything the other account touches sits under a directory it may enter.
-    let base = env::temp_dir().join(format!("syntropy-ipc-peer-{}", std::process::id()));
+    let base = Path::new("/tmp").join(format!("syntropy-ipc-peer-{}", std::process::id()));
     fs::create_dir(&base).unwrap();
     fs::set_permissions(&base, fs::Permissions::from_mode(0o755)).unwrap();
     let exe = base.join("peer");
