@@ -24,11 +24,15 @@ use serde::de::{DeserializeOwned, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::smallvec;
 use syntropy_core::ledger::LedgerGrant;
-use syntropy_core::runner::{Deadline, DrainReason};
+use syntropy_core::resource::{TierKind, TransportKind};
+use syntropy_core::runner::{
+    Deadline, Degradation, DegradeDetail, DegradeFlags, DrainReason, RunnerState, RunnerStateKind,
+    StopReason, WarmStep,
+};
 use syntropy_core::sequence::SequenceOutcome;
 use syntropy_core::{
-    Blake3, Bytes, CancelReason, ErrorClass, InstanceId, Nanos, PlanEpoch, PressureLevel,
-    SequenceId, StageIx, TierId,
+    Blake3, Bytes, CancelReason, DeviceId, ErrorClass, InstanceId, LinkId, LinkKind, Nanos,
+    NetMedium, NodeId, PlanEpoch, PressureLevel, SequenceId, StageIx, TierId,
 };
 
 use super::*;
@@ -153,14 +157,98 @@ fn hello(build_id: [u8; 32]) -> Hello {
     }
 }
 
-/// Every runner message: each variant at least once.
-fn runner_msgs() -> Vec<RunnerMsg> {
+/// One runner state of each kind, `Ready` both plain and with every kind of degradation detail.
+fn runner_states() -> Vec<RunnerState> {
+    let node = NodeId([0x3c; 32]);
+    let device = DeviceId { node, ordinal: 1 };
     let all = vec![
-        RunnerMsg::Hello(hello(BUILD)),
-        RunnerMsg::StateChanged {
-            state: 4,
-            epoch: PlanEpoch { term: 7, seq: 2 },
+        RunnerState::Fetching {
+            have: Bytes(1 << 20),
+            need: Bytes(3 << 30),
         },
+        RunnerState::Packing {
+            done: Bytes(0),
+            total: Bytes(u64::MAX),
+        },
+        RunnerState::Loading {
+            done: Bytes(7),
+            total: Bytes(9),
+        },
+        RunnerState::Warming {
+            step: WarmStep::LinkProbe,
+        },
+        RunnerState::Ready {
+            live_sequences: 0,
+            degraded: None,
+        },
+        RunnerState::Ready {
+            live_sequences: u32::MAX,
+            degraded: Some(Degradation {
+                flags: DegradeFlags::ABSORBED_STAGE
+                    | DegradeFlags::TRANSPORT_DEMOTED
+                    | DegradeFlags::CACHE_REDUCED,
+                detail: smallvec![
+                    DegradeDetail::Absorbed {
+                        stages: smallvec![StageIx(2), StageIx(3)],
+                        tiers: smallvec![TierKind::HostPinned, TierKind::Nvme],
+                    },
+                    DegradeDetail::Demoted {
+                        edge: LinkId {
+                            src: syntropy_core::Endpoint::Device(device),
+                            dst: syntropy_core::Endpoint::Nic { node, ordinal: 0 },
+                            kind: LinkKind::Network(NetMedium::default()),
+                            path: 1,
+                        },
+                        from: TransportKind::Quic,
+                        to: TransportKind::Tcp,
+                    },
+                    DegradeDetail::Reduced {
+                        device,
+                        bytes: Bytes(512 << 20),
+                    },
+                ],
+            }),
+        },
+        RunnerState::Draining {
+            reason: DrainReason::Replan {
+                successor: PlanEpoch { term: 7, seq: 3 },
+            },
+            deadline: Deadline::within(Nanos(30_000_000_000)),
+            live_sequences: 4,
+        },
+        RunnerState::Failed {
+            class: ErrorClass::Device,
+            during: RunnerStateKind::Warming,
+            restarts: 2,
+        },
+        RunnerState::Stopped {
+            reason: StopReason::Drained(DrainReason::RestartBudgetSpent),
+        },
+        RunnerState::Stopped {
+            reason: StopReason::Fatal(ErrorClass::Integrity),
+        },
+    ];
+    for kind in RunnerStateKind::ALL {
+        assert!(
+            all.iter().any(|state| state.kind() == kind),
+            "{kind:?} has no fixture"
+        );
+    }
+    all
+}
+
+/// Every runner message: each variant at least once, and `StateChanged` with every state.
+fn runner_msgs() -> Vec<RunnerMsg> {
+    let mut all = vec![RunnerMsg::Hello(hello(BUILD))];
+    all.extend(
+        runner_states()
+            .into_iter()
+            .map(|state| RunnerMsg::StateChanged {
+                state,
+                epoch: PlanEpoch { term: 7, seq: 2 },
+            }),
+    );
+    all.extend([
         RunnerMsg::Pong,
         RunnerMsg::SequenceEnded {
             seq: SequenceId {
@@ -188,7 +276,7 @@ fn runner_msgs() -> Vec<RunnerMsg> {
                 to: PlanEpoch { term: 9, seq: 0 },
             },
         },
-    ];
+    ]);
     let mut seen = [false; 4];
     for msg in &all {
         seen[match msg {
@@ -260,7 +348,9 @@ fn a_borrowed_message_frames_as_an_owned_one() {
 }
 
 /// Postcard writes a variant as its index, so the 1.0 messages keep theirs and DIST-E1-T15's
-/// come after them; protocol 1.1 marks the addition (RFC-0001 §3.5; §5, note of 2026-10-22).
+/// come after them; protocol 1.1 marked the addition (RFC-0001 §3.5; §5, note of 2026-10-22).
+/// Protocol 2.0 is DIST-E1-T05's: `StateChanged`'s `state` became a `RunnerState`, a layout
+/// change an older peer cannot read, so the major moved (RFC-0001 §3.5, note of 2026-10-28).
 #[test]
 fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
     let index = |bytes: Vec<u8>| bytes[0];
@@ -300,7 +390,38 @@ fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
             .expect("a known variant");
         assert_eq!(runner(&msg), *want, "{name}");
     }
-    assert_eq!(PROTOCOL, IpcProtocol { major: 1, minor: 1 });
+    assert_eq!(PROTOCOL, IpcProtocol { major: 2, minor: 0 });
+}
+
+/// Why 2.0 is a major bump: a 1.1 `StateChanged` (variant 1, the state's `u32`, the epoch) does
+/// not read as itself under 2.0. It fails to decode or decodes as some other value, so a 1.x
+/// peer cannot be read and the handshake must refuse it by protocol.
+#[test]
+fn a_1_1_state_changed_does_not_read_as_itself_under_2_0() {
+    for word in 0..RunnerStateKind::ALL.len() as u32 {
+        for (term, seq) in [(0u64, 0u64), (7, 2), (u64::MAX, 1)] {
+            let mut old = vec![1u8];
+            for value in [u64::from(word), term, seq] {
+                let mut v = value;
+                loop {
+                    let byte = (v & 0x7f) as u8;
+                    v >>= 7;
+                    if v == 0 {
+                        old.push(byte);
+                        break;
+                    }
+                    old.push(byte | 0x80);
+                }
+            }
+            let read_as_itself = matches!(
+                postcard::from_bytes::<RunnerMsg>(&old),
+                Ok(RunnerMsg::StateChanged { state, epoch })
+                    if state.kind().discriminant() == word && epoch == PlanEpoch { term, seq }
+            );
+            assert!(!read_as_itself, "{old:?}");
+        }
+    }
+    assert_ne!(PROTOCOL.major, 1);
 }
 
 #[test]
@@ -461,6 +582,128 @@ fn sequence_outcome() -> impl Strategy<Value = SequenceOutcome> {
     ]
 }
 
+fn error_class() -> impl Strategy<Value = ErrorClass> {
+    prop_oneof![
+        Just(ErrorClass::InvalidRequest),
+        Just(ErrorClass::Unsupported),
+        Just(ErrorClass::Capacity),
+        Just(ErrorClass::Transient),
+        Just(ErrorClass::Link),
+        Just(ErrorClass::Device),
+        Just(ErrorClass::Integrity),
+        Just(ErrorClass::Correctness),
+        Just(ErrorClass::Drift),
+        Just(ErrorClass::Timeout),
+        Just(ErrorClass::Auth),
+        Just(ErrorClass::Cancelled),
+        Just(ErrorClass::Internal),
+    ]
+}
+
+fn degradation() -> impl Strategy<Value = Degradation> {
+    let transport = || {
+        prop_oneof![
+            Just(TransportKind::SharedMemory),
+            Just(TransportKind::Quic),
+            Just(TransportKind::QuicRelay),
+            Just(TransportKind::Tcp),
+        ]
+    };
+    let detail = prop_oneof![
+        (
+            prop::collection::vec(any::<u16>().prop_map(StageIx), 0..4),
+            prop::collection::vec(
+                prop_oneof![
+                    Just(TierKind::Vram),
+                    Just(TierKind::Unified),
+                    Just(TierKind::HostPinned),
+                    Just(TierKind::HostPageable),
+                    Just(TierKind::Nvme),
+                ],
+                0..4
+            ),
+        )
+            .prop_map(|(stages, tiers)| DegradeDetail::Absorbed {
+                stages: stages.into(),
+                tiers: tiers.into(),
+            }),
+        (tier_id(), tier_id(), any::<u8>(), transport(), transport()).prop_map(
+            |(src, dst, path, from, to)| DegradeDetail::Demoted {
+                edge: LinkId {
+                    src: syntropy_core::Endpoint::Tier(src),
+                    dst: syntropy_core::Endpoint::Tier(dst),
+                    kind: LinkKind::Pcie,
+                    path,
+                },
+                from,
+                to,
+            }
+        ),
+        (tier_id(), any::<u64>()).prop_map(|(tier, bytes)| DegradeDetail::Reduced {
+            device: DeviceId {
+                node: tier.node,
+                ordinal: tier.ordinal,
+            },
+            bytes: Bytes(bytes),
+        }),
+    ];
+    (any::<u32>(), prop::collection::vec(detail, 0..4)).prop_map(|(bits, detail)| Degradation {
+        flags: DegradeFlags::from_bits_truncate(bits),
+        detail: detail.into(),
+    })
+}
+
+fn runner_state() -> impl Strategy<Value = RunnerState> {
+    let kind = (0..RunnerStateKind::ALL.len()).prop_map(|i| RunnerStateKind::ALL[i]);
+    prop_oneof![
+        any::<(u64, u64)>().prop_map(|(have, need)| RunnerState::Fetching {
+            have: Bytes(have),
+            need: Bytes(need),
+        }),
+        any::<(u64, u64)>().prop_map(|(done, total)| RunnerState::Packing {
+            done: Bytes(done),
+            total: Bytes(total),
+        }),
+        any::<(u64, u64)>().prop_map(|(done, total)| RunnerState::Loading {
+            done: Bytes(done),
+            total: Bytes(total),
+        }),
+        prop_oneof![
+            Just(WarmStep::Prepare),
+            Just(WarmStep::Capture),
+            Just(WarmStep::CacheFill),
+            Just(WarmStep::LinkProbe),
+            Just(WarmStep::Canary),
+        ]
+        .prop_map(|step| RunnerState::Warming { step }),
+        (any::<u32>(), prop::option::of(degradation())).prop_map(|(live_sequences, degraded)| {
+            RunnerState::Ready {
+                live_sequences,
+                degraded,
+            }
+        }),
+        (drain_reason(), any::<u64>(), any::<u32>()).prop_map(
+            |(reason, within, live_sequences)| RunnerState::Draining {
+                reason,
+                deadline: Deadline::within(Nanos(within)),
+                live_sequences,
+            }
+        ),
+        (error_class(), kind, any::<u32>()).prop_map(|(class, during, restarts)| {
+            RunnerState::Failed {
+                class,
+                during,
+                restarts,
+            }
+        }),
+        prop_oneof![
+            drain_reason().prop_map(StopReason::Drained),
+            error_class().prop_map(StopReason::Fatal),
+        ]
+        .prop_map(|reason| RunnerState::Stopped { reason }),
+    ]
+}
+
 fn runner_msg() -> impl Strategy<Value = RunnerMsg> {
     prop_oneof![
         (
@@ -477,7 +720,8 @@ fn runner_msg() -> impl Strategy<Value = RunnerMsg> {
                     obs_tables: Blake3(digest),
                 })
             }),
-        (any::<u32>(), epoch()).prop_map(|(state, epoch)| RunnerMsg::StateChanged { state, epoch }),
+        (runner_state(), epoch())
+            .prop_map(|(state, epoch)| RunnerMsg::StateChanged { state, epoch }),
         Just(RunnerMsg::Pong),
         (any::<(u64, u32, u32)>(), sequence_outcome()).prop_map(|((ingress, boot, n), outcome)| {
             RunnerMsg::SequenceEnded {

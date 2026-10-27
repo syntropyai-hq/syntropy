@@ -202,6 +202,14 @@ A restarted runner always re-enters at `Fetching`. `Fetching` and `Packing` comp
 
 An instance becomes routable only when every runner in it is `Ready` and the canary has passed. The coordinator then emits `InstanceRoutable { instance, epoch, context_length }` (§5.10). Bring-up order matters only inside tensor-parallel groups: members open their collective channels in member order, so no member blocks on one that has not started (RFC-0032).
 
+*Note 2026-10-28 (as built, proposed, §18.45; DIST-E1-T05): where the machine lives.*
+- **The edge table is in `core`.** `RunnerStateKind::can_become` holds the diagram's edges as a pure function over plain data, which is what layer 0 may hold. Every party that judges a transition reads the same table: the runner's machine, and DIST-E1-T06's supervisor, which checks the reports it receives against it.
+- **The machine is in `runner`.** `syntropy_runner::lifecycle::Lifecycle` takes the runner's events (a verified shard, a committed pack, `Drain`, a fault) and returns the one `StateChanged` each transition sends. That message is `ipc`'s, which `core` cannot name (rule 2, §4.2), and the events are the runner's own. The machine reads no clock (RFC-0060 §2.1, rule T1): the caller reports a drain's deadline when it passes.
+- **What counts as a transition.** A transition is a change of state kind, or `Ready → Ready` when a plan delta is adopted under a later epoch. A delta whose epoch is not later is refused. Progress inside a state changes its fields and sends nothing. That covers bytes fetched, packed or loaded, a warm step started, the live sequence count, and a change of `degraded`. Byte-level progress travels as RFC-0050 §4.3's `LoadProgress`.
+- **A drain always passes through `Draining`.** That holds even with no live sequence, since `Ready → Stopped` is not an edge. It ends when the caller reports zero live sequences or the deadline.
+- **Restarts and giving up are the supervisor's** (§3.4). The machine counts restarts and reports the count in `Failed`. `Failed → Fetching` re-enters with the same shard and epoch. `Failed → Stopped` happens only when the supervisor gives up: a spent budget stops as `Drained(DrainReason::RestartBudgetSpent)`, and a fatal error as `Fatal` with the last failure's class (§18.34).
+- **Open for the maintainers.** No message reports a change of `degraded` until the next transition. RFC-0033 §7.1 shows degradation in the dashboard and in response metadata. Whether a degradation change should count as a transition, or have a report of its own, is left to the task that first sets `degraded`.
+
 ### 3.4 Supervision
 
 - **Spawn.** The daemon creates a socket pair (Unix) or a named-pipe pair (Windows) and a shared-memory region, then spawns the runner with both handles inherited. The runner's first message is `Hello` with its build ID and IPC protocol version (§3.5). A freshly spawned runner whose build ID differs from the daemon's is killed.
@@ -276,6 +284,13 @@ Command-channel messages:
 - **No task yet:** `ProbeResult` waits for the task that defines `CapabilityProfile` (#1524), and `ErrorReport` for the task that builds `core`'s `Error` (§5.12). No task row names either yet.
 
 Each added message or field changes the postcard layout, so it bumps `ipc_protocol` (§5, note of 2026-10-22).
+
+*Note 2026-10-28 (as built, proposed, §18.45; DIST-E1-T05): protocol 2.0.*
+- **`StateChanged`'s `state` is a `RunnerState`, and `ipc_protocol` moves from 1.1 to 2.0.** The change replaces a field's type rather than appending a variant. A 1.x peer would read the new variant index and fields as the old `u32`, so it is an incompatible change, and a major bump marks it. `Hello` keeps variant 0 and its layout, so a 1.x peer and a 2.0 peer still reach the version check. An adoption across the bump fails that check, so the runner drains and restarts (§3.4, RFC-0052 §6.5).
+- **The shared-memory header's state word** is `RunnerStateKind::discriminant()`: the kind's position in the declaration order above, from 0.
+- **`DegradeDetail`'s variants are numbered** `Absorbed` 0, `Demoted` 1 and `Reduced` 2. DIST-E14-T13 appends `Fallback` at 3.
+- **The `DIST-E1-T05` bullet above** gives `Fatal(ErrorClass)` for a spent restart budget. §18.34, §5.11 and the built type give `Drained(DrainReason::RestartBudgetSpent)`, and `Fatal` only for a fatal error.
+- **Forwarding.** The daemon forwards each `StateChanged` as `ReportRunner { instance, node, epoch, state: RunnerStateKind }` (§5.10). `ClusterCommand` and its client are DIST-E9's, so the forwarding is built up to a seam: `syntropy_daemon::report`'s `ReportSink`, which that client implements.
 
 IPC never carries per-token traffic across the network boundary, and no message on the command channel is sent per token. Local token delivery uses `local_tokens`.
 
@@ -3008,3 +3023,14 @@ PROD-E6-T23 builds `config show --resolved`, `config check` and `config path` in
 | `TelemetryRecord`'s deltas name a `SeriesId`, one metric with its label values bound at registration, not a `MetricId`; a new last variant, `Series`, tells the daemon each ID's metric and label values before any record uses it | RFC-0053 §1 (dated revision), §2.1 (note) | a `MetricId` cannot tell two label sets of one metric apart, and labels are bound at registration (RFC-0053 §2.1), so the record needs the bound series' ID. Each change to the record's variants changes the ring's record schema, which `ipc_protocol` covers |
 
 Taken under the maintainers' standing instruction, for the maintainers to confirm.
+
+### 18.45 The runner lifecycle machine as built (2026-10-28)
+
+DIST-E1-T05 builds RFC-0001 §3.3's machine and moves `StateChanged` to `RunnerState`. Proposed for the maintainers to accept.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| The edge table is `RunnerStateKind::can_become` in `core`; the machine is `runner`'s `lifecycle::Lifecycle`; a transition is a change of kind or `Ready → Ready` under a later epoch, and progress inside a state sends nothing | §3.3 (dated note) | `core` may hold pure functions over plain data, so the supervisor and the runner judge transitions by one table. The machine returns `ipc`'s `RunnerMsg`, which `core` cannot name |
+| `ipc_protocol` 2.0: `StateChanged { state: RunnerState }` replaces the `u32` discriminant | §3.5 (dated note) | a changed field type cannot be read by a 1.x peer, so the bump is major. `Hello` is unchanged, so the version check still runs |
+| The daemon forwards `StateChanged` up to a `ReportSink` seam | §3.5 (dated note) | `ClusterCommand::ReportRunner` and its client are DIST-E9's and not built |
+| A change of `degraded` is in place and sends no message until the next transition | §3.3 (dated note) | left open for the task that first sets `degraded`, against RFC-0033 §7.1's dashboard and response metadata |

@@ -13,8 +13,12 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::Duration;
 
+use smallvec::smallvec;
 use syntropy_core::ledger::LedgerGrant;
-use syntropy_core::{Blake3, InstanceId, PlanEpoch};
+use syntropy_core::{
+    Blake3, Bytes, Degradation, DegradeDetail, DegradeFlags, DeviceId, InstanceId, NodeId,
+    PlanEpoch, RunnerState,
+};
 use syntropy_ipc::cmd::{
     DaemonChannel, DaemonMsg, Endpoint, HandshakeError, Hello, Init, Listener, PROTOCOL,
     RunnerChannel, RunnerMsg, connect,
@@ -27,8 +31,22 @@ const ENDPOINT: &str = "SYNTROPY_IPC_TEST_CMD_ENDPOINT";
 const RUNNER_BUILD: &str = "SYNTROPY_IPC_TEST_CMD_BUILD";
 const BUILD: [u8; 32] = [0x5a; 32];
 const OTHER_BUILD: [u8; 32] = [0xa5; 32];
-/// A test value of a `RunnerState` discriminant.
-const STATE: u32 = 3;
+/// The state the runner reports: `Ready` and degraded, so the payload crosses with nested fields.
+fn reported_state() -> RunnerState {
+    RunnerState::Ready {
+        live_sequences: 3,
+        degraded: Some(Degradation {
+            flags: DegradeFlags::RELINKING | DegradeFlags::CACHE_REDUCED,
+            detail: smallvec![DegradeDetail::Reduced {
+                device: DeviceId {
+                    node: NodeId([0x11; 32]),
+                    ordinal: 0,
+                },
+                bytes: Bytes(64 << 20),
+            }],
+        }),
+    }
+}
 /// How long a child runner lives if nobody ends it, so a failed kill fails the test rather than
 /// hanging it.
 const RUNNER_LIFETIME: Duration = Duration::from_secs(60);
@@ -53,7 +71,7 @@ fn run_runner(endpoint: &str, build: &str) {
     assert_eq!(init.instance, InstanceId(41));
     channel
         .send(&RunnerMsg::StateChanged {
-            state: STATE,
+            state: reported_state(),
             epoch: PlanEpoch { term: 1, seq: 1 },
         })
         .unwrap();
@@ -120,7 +138,7 @@ fn a_runner_of_the_daemons_build_passes_the_handshake() {
     assert_eq!(
         state.msg,
         RunnerMsg::StateChanged {
-            state: STATE,
+            state: reported_state(),
             epoch: PlanEpoch { term: 1, seq: 1 }
         }
     );

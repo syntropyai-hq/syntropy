@@ -3,6 +3,10 @@
 //! The runner process: its lifecycle state machine and the wiring of exec, sched, tier, io, net and
 //! the kernel providers.
 //!
-//! Stub: layer 5 in RFC-0001 §4.1, designed in RFC-0001 §3. Nothing is implemented yet.
+//! Layer 5 in RFC-0001 §4.1, designed in RFC-0001 §3. Implemented so far: the lifecycle machine of
+//! RFC-0001 §3.3 ([`lifecycle`]).
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+pub mod lifecycle;
