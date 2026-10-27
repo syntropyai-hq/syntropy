@@ -18,9 +18,11 @@
 //!   nothing: byte-level progress travels as RFC-0050 §4.3's `LoadProgress`, never as a transition.
 //! - **No clock.** The machine reads no time (RFC-0060 §2.1, rule T1). A drain's deadline is the
 //!   caller's to watch; it reports [`Event::DeadlineReached`] when the deadline passes.
-//! - **The restart budget is the supervisor's** (RFC-0001 §3.4, DIST-E1-T06). The machine counts
-//!   restarts and reports the count in `Failed`, and takes `Failed → Stopped` only when the
-//!   supervisor gives up ([`Event::GiveUp`]).
+//! - **The restart count and budget are the supervisor's** (RFC-0001 §3.4, DIST-E1-T06). A
+//!   restart is a new process, whose machine starts again at [`Lifecycle::start`] with a count of
+//!   0. So the `restarts` a real runner reports in `Failed` is 0, and the supervisor reports
+//!   `Failed` and `Stopped` from `core`'s types with its own count. [`Event::Restart`] and
+//!   [`Event::GiveUp`] model the supervisor's edges, which the property test drives.
 
 use std::fmt;
 
@@ -380,7 +382,8 @@ impl Lifecycle {
     }
 }
 
-/// Moves a progress counter forward in place, refusing a value past `total`.
+/// Sets a progress counter in place, refusing a value past `total`. A smaller value is taken,
+/// since RFC-0001 §3.3 does not say progress only grows.
 fn in_place(counter: &mut Bytes, now: Bytes, total: Bytes) -> Result<(), Refused> {
     if now > total {
         return Err(Refused::PastTotal {

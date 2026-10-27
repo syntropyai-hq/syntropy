@@ -211,6 +211,9 @@ impl RunnerStateKind {
     /// Packing → Loading → Warming → Ready → Draining → Stopped`, `Ready → Ready` for
     /// `ApplyPlanDelta`, every working state to `Failed`, and `Failed` to `Fetching` (the
     /// supervisor's restart, in a new process) or to `Stopped`. `Stopped` has no way out.
+    ///
+    /// `Ready → Ready` is an edge whatever the epochs. §3.3 takes it only for a plan delta under a
+    /// later epoch, which is the caller's to check: `StateChanged` carries the epoch.
     #[must_use]
     pub const fn can_become(self, next: RunnerStateKind) -> bool {
         use RunnerStateKind::{
