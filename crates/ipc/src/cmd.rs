@@ -56,7 +56,11 @@ pub use os::{AcceptError, Endpoint, EndpointParseError, Listener, Peer, Stream, 
 /// The IPC protocol this build speaks (RFC-0001 §3.5): the command messages and every ring record
 /// schema. A change to either bumps it (RFC-0001 §5, note of 2026-10-22). QUAL-E17-T15's schema
 /// fingerprint and golden vectors check that it does.
-pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 1, minor: 0 };
+///
+/// 1.0 was DIST-E1-T03's message set. 1.1 appends `Drain`, `Shutdown` and `MemoryPressure` to
+/// [`DaemonMsg`] and `SequenceEnded` to [`RunnerMsg`] (DIST-E1-T15): a compatible change, because
+/// every earlier message keeps its variant index and layout.
+pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 1, minor: 1 };
 
 /// One end of a command channel, which sends `S` and receives `R`.
 ///

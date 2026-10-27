@@ -22,8 +22,11 @@ use serde::de::{DeserializeOwned, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::smallvec;
 use syntropy_core::ledger::LedgerGrant;
+use syntropy_core::runner::{Deadline, DrainReason};
+use syntropy_core::sequence::SequenceOutcome;
 use syntropy_core::{
-    Blake3, Bytes, CancelReason, InstanceId, PlanEpoch, SequenceId, StageIx, TierId,
+    Blake3, Bytes, CancelReason, ErrorClass, InstanceId, Nanos, PlanEpoch, PressureLevel,
+    SequenceId, StageIx, TierId,
 };
 
 use super::*;
@@ -86,9 +89,35 @@ fn daemon_msgs() -> Vec<DaemonMsg> {
             node: fixtures::node(9),
         },
         DaemonMsg::Ping,
+        DaemonMsg::Drain {
+            reason: DrainReason::Replan {
+                successor: PlanEpoch { term: 8, seq: 1 },
+            },
+            deadline: Deadline::within(Nanos(30_000_000_000)),
+        },
+        DaemonMsg::Drain {
+            reason: DrainReason::RestartBudgetSpent,
+            deadline: Deadline::within(Nanos(u64::MAX)),
+        },
+        DaemonMsg::Shutdown {
+            deadline: Deadline::within(Nanos(0)),
+        },
+        DaemonMsg::MemoryPressure {
+            level: PressureLevel::Critical,
+            reclaim: Bytes(2 << 30),
+            tier: None,
+        },
+        DaemonMsg::MemoryPressure {
+            level: PressureLevel::Moderate,
+            reclaim: Bytes(512 << 20),
+            tier: Some(TierId {
+                node: fixtures::node(2),
+                ordinal: 1,
+            }),
+        },
     ];
     // No wildcard: a new variant does not compile here until it has a fixture.
-    let mut seen = [false; 7];
+    let mut seen = [false; 10];
     for msg in &all {
         seen[match msg {
             DaemonMsg::Init(_) => 0,
@@ -98,6 +127,9 @@ fn daemon_msgs() -> Vec<DaemonMsg> {
             DaemonMsg::CancelSequence { .. } => 4,
             DaemonMsg::PeerRevoked { .. } => 5,
             DaemonMsg::Ping => 6,
+            DaemonMsg::Drain { .. } => 7,
+            DaemonMsg::Shutdown { .. } => 8,
+            DaemonMsg::MemoryPressure { .. } => 9,
         }] = true;
     }
     assert!(
@@ -125,13 +157,40 @@ fn runner_msgs() -> Vec<RunnerMsg> {
             epoch: PlanEpoch { term: 7, seq: 2 },
         },
         RunnerMsg::Pong,
+        RunnerMsg::SequenceEnded {
+            seq: SequenceId {
+                ingress: 0x5eed,
+                boot: 3,
+                n: 41,
+            },
+            outcome: SequenceOutcome::Finished,
+        },
+        RunnerMsg::SequenceEnded {
+            seq: SequenceId {
+                ingress: 1,
+                boot: 0,
+                n: u32::MAX,
+            },
+            outcome: SequenceOutcome::Failed(ErrorClass::Device),
+        },
+        RunnerMsg::SequenceEnded {
+            seq: SequenceId {
+                ingress: u64::MAX,
+                boot: u32::MAX,
+                n: 0,
+            },
+            outcome: SequenceOutcome::Migrated {
+                to: PlanEpoch { term: 9, seq: 0 },
+            },
+        },
     ];
-    let mut seen = [false; 3];
+    let mut seen = [false; 4];
     for msg in &all {
         seen[match msg {
             RunnerMsg::Hello(_) => 0,
             RunnerMsg::StateChanged { .. } => 1,
             RunnerMsg::Pong => 2,
+            RunnerMsg::SequenceEnded { .. } => 3,
         }] = true;
     }
     assert!(
@@ -193,6 +252,50 @@ fn a_borrowed_message_frames_as_an_owned_one() {
         });
         assert_eq!(owned, borrowed);
     }
+}
+
+/// Postcard writes a variant as its index, so the 1.0 messages keep theirs and DIST-E1-T15's
+/// come after them; protocol 1.1 marks the addition (RFC-0001 §3.5; §5, note of 2026-10-22).
+#[test]
+fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
+    let index = |bytes: Vec<u8>| bytes[0];
+    let daemon = |msg: &DaemonMsg| index(postcard::to_allocvec(msg).unwrap());
+    let runner = |msg: &RunnerMsg| index(postcard::to_allocvec(msg).unwrap());
+    let expected_daemon = [
+        ("Init", 0),
+        ("AssignPlan", 1),
+        ("ShardProgress", 2),
+        ("ApplyPlanDelta", 3),
+        ("CancelSequence", 4),
+        ("PeerRevoked", 5),
+        ("Ping", 6),
+        ("Drain", 7),
+        ("Shutdown", 8),
+        ("MemoryPressure", 9),
+    ];
+    for msg in daemon_msgs() {
+        let name = format!("{msg:?}");
+        let (_, want) = expected_daemon
+            .iter()
+            .find(|(n, _)| name.starts_with(n))
+            .expect("a known variant");
+        assert_eq!(daemon(&msg), *want, "{name}");
+    }
+    let expected_runner = [
+        ("Hello", 0),
+        ("StateChanged", 1),
+        ("Pong", 2),
+        ("SequenceEnded", 3),
+    ];
+    for msg in runner_msgs() {
+        let name = format!("{msg:?}");
+        let (_, want) = expected_runner
+            .iter()
+            .find(|(n, _)| name.starts_with(n))
+            .expect("a known variant");
+        assert_eq!(runner(&msg), *want, "{name}");
+    }
+    assert_eq!(PROTOCOL, IpcProtocol { major: 1, minor: 1 });
 }
 
 #[test]
@@ -302,6 +405,54 @@ fn daemon_msg() -> impl Strategy<Value = DaemonMsg> {
             node: syntropy_core::NodeId(node)
         }),
         Just(DaemonMsg::Ping),
+        (drain_reason(), any::<u64>()).prop_map(|(reason, within)| DaemonMsg::Drain {
+            reason,
+            deadline: Deadline::within(Nanos(within)),
+        }),
+        any::<u64>().prop_map(|within| DaemonMsg::Shutdown {
+            deadline: Deadline::within(Nanos(within)),
+        }),
+        (
+            prop_oneof![
+                Just(PressureLevel::Normal),
+                Just(PressureLevel::Moderate),
+                Just(PressureLevel::High),
+                Just(PressureLevel::Critical),
+            ],
+            any::<u64>(),
+            prop::option::of(tier_id()),
+        )
+            .prop_map(|(level, reclaim, tier)| DaemonMsg::MemoryPressure {
+                level,
+                reclaim: Bytes(reclaim),
+                tier,
+            }),
+    ]
+}
+
+fn drain_reason() -> impl Strategy<Value = DrainReason> {
+    prop_oneof![
+        epoch().prop_map(|successor| DrainReason::Replan { successor }),
+        Just(DrainReason::Unload),
+        Just(DrainReason::Shutdown),
+        Just(DrainReason::NodeLeaving),
+        Just(DrainReason::RestartBudgetSpent),
+    ]
+}
+
+fn sequence_outcome() -> impl Strategy<Value = SequenceOutcome> {
+    prop_oneof![
+        Just(SequenceOutcome::Finished),
+        prop_oneof![
+            Just(ErrorClass::InvalidRequest),
+            Just(ErrorClass::Capacity),
+            Just(ErrorClass::Device),
+            Just(ErrorClass::Timeout),
+            Just(ErrorClass::Cancelled),
+            Just(ErrorClass::Internal),
+        ]
+        .prop_map(SequenceOutcome::Failed),
+        epoch().prop_map(|to| SequenceOutcome::Migrated { to }),
     ]
 }
 
@@ -323,6 +474,12 @@ fn runner_msg() -> impl Strategy<Value = RunnerMsg> {
             }),
         (any::<u32>(), epoch()).prop_map(|(state, epoch)| RunnerMsg::StateChanged { state, epoch }),
         Just(RunnerMsg::Pong),
+        (any::<(u64, u32, u32)>(), sequence_outcome()).prop_map(|((ingress, boot, n), outcome)| {
+            RunnerMsg::SequenceEnded {
+                seq: SequenceId { ingress, boot, n },
+                outcome,
+            }
+        }),
     ]
 }
 
