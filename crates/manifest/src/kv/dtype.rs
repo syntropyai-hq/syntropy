@@ -133,15 +133,15 @@ impl KvDTypeRule {
     /// [`KvDTypeError`] for a declared cache that is not FP8, a family requirement that is not
     /// F16, BF16 or F32, or two requirements for one layer.
     pub fn reference(&self) -> Result<KvDTypeSpec, KvDTypeError> {
-        if let Some(d) = self.declared_cache {
-            if !matches!(d, DType::F8E4M3 | DType::F8E5M2) {
-                return Err(KvDTypeError::DeclaredNotFp8(d));
-            }
+        if let Some(d) = self.declared_cache
+            && !matches!(d, DType::F8E4M3 | DType::F8E5M2)
+        {
+            return Err(KvDTypeError::DeclaredNotFp8(d));
         }
-        if let Some(d) = self.family {
-            if !is_wide_float(d) {
-                return Err(KvDTypeError::FamilyNotFloat(d));
-            }
+        if let Some(d) = self.family
+            && !is_wide_float(d)
+        {
+            return Err(KvDTypeError::FamilyNotFloat(d));
         }
         for (i, (layer, d)) in self.family_layers.iter().enumerate() {
             if !is_wide_float(*d) {
