@@ -959,6 +959,7 @@ fn a_client_refuses_anything_but_one_constrained_ca() {
     let constrained = |permitted: Vec<rcgen::GeneralSubtree>,
                        excluded: Vec<rcgen::GeneralSubtree>| {
         let mut params = CertificateParams::default();
+        params.distinguished_name = super::ca::common_name("Syntropy local CA 0123456789abcdef");
         params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
         params.name_constraints = Some(rcgen::NameConstraints {
             permitted_subtrees: permitted,
@@ -1018,15 +1019,59 @@ fn a_client_refuses_anything_but_one_constrained_ca() {
         (
             vec![dns("box")],
             vec![v4_all(), v6_all()],
-            "the CA may issue for a whole top-level domain, or a malformed name",
+            "the CA may issue for a whole top-level domain",
         ),
         (
             vec![],
             vec![v4_all(), v6_all()],
             "the CA may issue for any DNS name",
         ),
+        // Names no node mints, which would reach the user's screen beside the fingerprint:
+        // terminal escape codes, a wildcard, a space and a slash.
+        (
+            vec![dns("box\u{1b}[1A\u{1b}[2K.local")],
+            vec![v4_all(), v6_all()],
+            "a permitted name is not a host name a node mints",
+        ),
+        (
+            vec![dns("*.com")],
+            vec![v4_all(), v6_all()],
+            "a permitted name is not a host name a node mints",
+        ),
+        (
+            vec![dns("a b/c.lan")],
+            vec![v4_all(), v6_all()],
+            "a permitted name is not a host name a node mints",
+        ),
+        (
+            vec![dns("Box.Local")],
+            vec![v4_all(), v6_all()],
+            "a permitted name is not a host name a node mints",
+        ),
     ] {
         assert_eq!(refused(&constrained(permitted, excluded)), why);
+    }
+    // A common name with terminal escape codes, or any name but a node CA's, with constraints a
+    // node would mint.
+    for cn in [
+        "Syntropy local CA \u{1b}[1A\u{1b}[2K0123456789",
+        "Syntropy local CA 0123456789ABCDEF",
+        "Syntropy local CA 0123456789abcdef0",
+        "Totally Legit CA",
+    ] {
+        let mut params = CertificateParams::default();
+        params.distinguished_name = super::ca::common_name(cn);
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        params.name_constraints = Some(rcgen::NameConstraints {
+            permitted_subtrees: vec![dns("box.local")],
+            excluded_subtrees: vec![v4_all(), v6_all()],
+        });
+        let pem = super::ca::certificate_pem(params.self_signed(&key).unwrap().der());
+        assert_eq!(
+            refused(&pem),
+            "the certificate is not named as a node's CA (`Syntropy local CA <16 hex digits>`)",
+            "{cn:?}"
+        );
     }
     // Names only, with both families excluded, as a node that serves no local address mints.
     let names_only = constrained(vec![dns("box.local")], vec![v4_all(), v6_all()]);

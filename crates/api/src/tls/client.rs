@@ -22,6 +22,7 @@ use syntropy_net::crypto::{self, Context};
 use x509_parser::extensions::{GeneralName, NameConstraints, ParsedExtension};
 
 use super::ca::{base64, certificate_pem};
+use super::scope::host_name;
 
 /// Why a fetched certificate is not installed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +113,8 @@ impl CaCertificate {
             return Err(CaRefused("the certificate is not a CA certificate"));
         }
         let permitted = permitted.ok_or(CaRefused("the certificate has no name constraints"))?;
+        // The subject is shown beside the fingerprint, so it must be exactly the name a node
+        // gives its CA: one common name, `Syntropy local CA <16 lowercase hex digits>`.
         let subject = certificate
             .subject()
             .iter_common_name()
@@ -119,6 +122,11 @@ impl CaCertificate {
             .and_then(|cn| cn.as_str().ok())
             .unwrap_or_default()
             .to_owned();
+        if certificate.subject().iter_attributes().count() != 1 || !is_ca_name(&subject) {
+            return Err(CaRefused(
+                "the certificate is not named as a node's CA (`Syntropy local CA <16 hex digits>`)",
+            ));
+        }
         Ok(CaCertificate {
             der: der.to_vec(),
             spki: certificate.tbs_certificate.subject_pki.raw.to_vec(),
@@ -172,6 +180,17 @@ impl CaCertificate {
     pub fn permitted(&self) -> &[String] {
         &self.permitted
     }
+}
+
+/// Whether `name` is a node CA's common name: `Syntropy local CA ` and 16 lowercase hex digits,
+/// as `ca::ca_name` makes it from the node key.
+fn is_ca_name(name: &str) -> bool {
+    name.strip_prefix("Syntropy local CA ").is_some_and(|hex| {
+        hex.len() == 16
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 /// A name-constraint subtree this check understands.
@@ -243,8 +262,9 @@ fn subtree(name: &GeneralName<'_>) -> Result<Subtree, CaRefused> {
 
 /// Holds the name constraints to what a node mints (RFC-0050 §11.1.1), and returns the
 /// permitted subtrees for display.
-/// - Every permitted subtree is a DNS name of two or more labels, or a subnet that lies whole
-///   inside one local block: a mask such as `10.0.0.0/0` is refused, not read as `10/8`.
+/// - Every permitted subtree is a DNS name of two or more labels that the node's host-name rule
+///   leaves unchanged, or a subnet that lies whole inside one local block: a mask such as
+///   `10.0.0.0/0` is refused, not read as `10/8`.
 /// - At least one DNS name is permitted, as every node's scope has one; otherwise DNS names
 ///   would be unconstrained.
 /// - Each address family is constrained: some subnet of it is permitted, or the whole family is
@@ -259,14 +279,20 @@ fn checked_permitted(constraints: &NameConstraints<'_>) -> Result<Vec<String>, C
         .unwrap_or_default()
     {
         match subtree(&entry.base)? {
-            Subtree::Dns(text) => {
-                let name = text.trim_start_matches('.');
-                if !name.contains('.') || name.split('.').any(str::is_empty) {
+            Subtree::Dns(name) => {
+                // The node's own host-name rule, which every name it mints passed, and with the
+                // name unchanged by it: lowercase letters, digits and hyphens in dot-separated
+                // labels. No wildcard, space, slash or control character reaches the user's
+                // screen beside the fingerprint.
+                if host_name(&name).as_deref() != Ok(name.as_str()) {
                     return Err(CaRefused(
-                        "the CA may issue for a whole top-level domain, or a malformed name",
+                        "a permitted name is not a host name a node mints",
                     ));
                 }
-                shown.push(name.to_owned());
+                if !name.contains('.') {
+                    return Err(CaRefused("the CA may issue for a whole top-level domain"));
+                }
+                shown.push(name);
                 dns = true;
             }
             Subtree::V4(network, prefix) => {
