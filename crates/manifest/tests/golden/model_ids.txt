@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Golden FileDigests and v1 ModelIds of the fixtures under tests/data (RFC-0041 §1).
+# Checked by identity::tests; a changed line is a changed formula or fixture, not a re-bless.
+file gguf/tiny-split-00001-of-00002.gguf 749b572033a53d40fa956f4e2b5d16e5365a7c10dc04a62e8fb65da3cd1e7689 452
+file gguf/tiny-split-00002-of-00002.gguf 51350fb8774a8c44db452a53bc8ba170e0d79895b6d5c1fbe80845cda0ea0e56 388
+file gguf/tiny-v3.gguf ea5ca5c25e80c3220476c480ccf450955810dbb5c383d13f850b29b801a7fe4c 2432
+file safetensors/config.json 2c767c44f4e660bd7fd9803381b07c1e334db78a5d17b5f1a80a742fc1b8437a 82
+file safetensors/dtypes.safetensors d71dcc0b50c3773ec7eefda156a9357bde569ba0afe256a6a2226fedef7c931b 1199
+file safetensors/model-00001-of-00002.safetensors 6b50d1b28bde5586cd2bffb4ab5a145a7134088ae94e5a40d6aaab5ac32399b1 240
+file safetensors/model-00002-of-00002.safetensors e53318521cf0d757f0e1487560f404ea7dc8e49bf5260917f16cad5d6ab0afde 328
+file safetensors/model.safetensors.index.json 0314998c22c624783608763f3034eaca0f4edb91fd87a1554322a9dd141e9cfd 371
+file safetensors/tiny.safetensors c03fde697f091092e3e88327392fcdb7b7168b8e08531d88c0707caa79c994c8 496
+model gguf/tiny-v3 llama e9bb4aa78d0a5909cc2946cb57fbda5e630c6a2272957b824fbfdfbff81cde3d
+model gguf/tiny-split llama d69a7a15c2338b64423c7aa2418c7bab303cf4095669db3d3a9e84e4e4e7ae06
+model safetensors/tiny llama a7e89dea5e13f9b4a023c827302d025cdddd410dd672f979b834698ce90b1f2c
+model safetensors/sharded llama 3cc660dee82c17e0bb75319e9f6f90dae934ef413f6a015c43c6b3cc6b8c38cf
+model safetensors/dtypes llama 65fd3dacad4f1f05b04b0ad9a4ec416a3c935f6e4fe4ac24d6d6be7fb72c4d3f

@@ -152,6 +152,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 # type everywhere, whatever else is in the build. Code whose output must not depend on document
 # order sorts at the boundary (RFC-0060 §2.4 rule T4).
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
+# SHA-256, for `FileDigest` (RFC-0041 §1; ADR-0411 decision 1), `manifest` only: the Hub's object
+# ID is the SHA-256 of the file, and a local file is hashed the same way. Pure Rust; already in the
+# lock through ed25519-dalek.
+sha2 = { version = "0.11.1", default-features = false }
 smallvec = { version = "1", features = ["serde"] }
 # The explicit-state model check of election, lease, replication and heal (RFC-0032 Testing,
 # DIST-E10-T08). A dev-dependency of `cluster` only.
