@@ -720,6 +720,25 @@ pub fn check_edit(
     Checked { files, outcome }
 }
 
+/// Removes a temporary file that was not renamed into place. On Windows a read-only file cannot
+/// be removed, so the attribute is cleared first: the file holds the new text, which can be a
+/// secret, and must not stay beside the config.
+fn discard(path: &Path) {
+    #[cfg(windows)]
+    if let Ok(meta) = fs::metadata(path) {
+        let mut permissions = meta.permissions();
+        if permissions.readonly() {
+            #[allow(
+                clippy::permissions_set_readonly_false,
+                reason = "Windows only, where it clears the read-only attribute"
+            )]
+            permissions.set_readonly(false);
+            let _ = fs::set_permissions(path, permissions);
+        }
+    }
+    let _ = fs::remove_file(path);
+}
+
 /// Whether a write may replace `path`: `Ok(true)` for a regular file, `Ok(false)` when nothing is
 /// there yet, and an error for a symbolic link or anything that is not a regular file.
 pub fn replaceable(path: &Path) -> io::Result<bool> {
@@ -742,6 +761,15 @@ fn existing(path: &Path) -> io::Result<Option<fs::Metadata>> {
             io::ErrorKind::InvalidInput,
             format!("`{}` is not a regular file", path.display()),
         )),
+        // Refused before anything is written: on Windows the rename over a read-only file fails,
+        // and someone marked it so it would not change.
+        Ok(meta) if meta.permissions().readonly() => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "`{}` is read-only; make it writable to change it",
+                path.display()
+            ),
+        )),
         Ok(meta) => Ok(Some(meta)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
@@ -752,8 +780,12 @@ fn existing(path: &Path) -> io::Result<Option<fs::Metadata>> {
 /// flushed to disk, with the old file's permissions (`0600` for a new one on Unix, since a config
 /// file can hold a secret), renamed over `path`, then the directory flushed on Unix. A target
 /// that is a symbolic link is refused; the rename replaces the directory entry itself, so a link
-/// that appears between the check and the rename is replaced, never followed. The directory is
-/// created if it does not exist.
+/// that appears between the check and the rename is replaced, never followed. A read-only
+/// target is refused too. The directory is created if it does not exist.
+///
+/// On Windows the permissions copied are the read-only attribute only: the new file takes the
+/// directory's inherited ACL, not the old file's. Under `%LOCALAPPDATA%` that is the user's own;
+/// a file given a narrower ACL by hand loses it.
 pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     let old = existing(path)?;
     let dir = match path.parent() {
@@ -808,7 +840,7 @@ pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
         fs::rename(&temp_path, path)
     })();
     if let Err(e) = written {
-        let _ = fs::remove_file(&temp_path);
+        discard(&temp_path);
         return Err(e);
     }
     #[cfg(unix)]

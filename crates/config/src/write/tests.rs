@@ -422,6 +422,53 @@ fn a_symbolic_link_at_the_target_is_refused_and_its_file_untouched() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A read-only file is refused before anything is written, its text unchanged and no temporary
+/// file left, on every OS (review of #1927, N2). Run on Windows by its CI.
+#[test]
+fn a_read_only_target_is_refused_and_nothing_is_left() {
+    let dir = dir("readonly");
+    let path = dir.join("config.toml");
+    fs::write(&path, "kept = true\n").unwrap();
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&path, permissions).unwrap();
+    let error = write_atomic(&path, "new = 2\n").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert!(error.to_string().contains("read-only"), "{error}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "kept = true\n");
+    assert_eq!(others(&dir, "config.toml"), Vec::<String>::new());
+    assert!(replaceable(&path).is_err());
+    // Writable again, so the directory can go.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false, reason = "Windows only")]
+        permissions.set_readonly(false);
+        fs::set_permissions(&path, permissions).unwrap();
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A temporary file that could not be renamed is removed even when it is read-only, which on
+/// Windows needs the attribute cleared first.
+#[test]
+fn a_read_only_temporary_file_is_still_discarded() {
+    let dir = dir("discard");
+    let temp = dir.join(".config.toml.syntropy-write-test");
+    fs::write(&temp, "secret = 1\n").unwrap();
+    let mut permissions = fs::metadata(&temp).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&temp, permissions).unwrap();
+    discard(&temp);
+    assert!(!temp.exists());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn a_directory_at_the_target_is_refused() {
     let dir = dir("isdir");
