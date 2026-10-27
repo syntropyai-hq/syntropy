@@ -4,7 +4,7 @@
 //! `local_tokens` consumer, and the live sequences with their transcripts.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use syntropy_core::{Clock, Entropy, NodeId, SequenceControl, SequenceId, TokenEntry};
@@ -15,14 +15,49 @@ use syntropy_spsc::shared::{SharedConsumer, SharedPopError, SharedProducer, Shar
 use super::stages::Stages;
 use super::types::ApiError;
 
-/// Who this ingress is: the node, and its boot counter, which with a per-boot counter make each
-/// `SequenceId` unique cluster-wide (RFC-0001 §5.9).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct IngressConfig {
-    /// This node.
-    pub node: NodeId,
-    /// This node's boot counter.
-    pub boot: u32,
+/// The node's one source of `SequenceId`s for this boot (RFC-0001 §5.9): the node's short ID, its
+/// boot counter, and a per-boot counter `n`.
+///
+/// One per node per boot, held by the daemon and lent to every [`Ingress`], one per runner, so two
+/// ingresses on one node never mint the same ID. `n` runs from 0 to `u32::MAX`; after that the
+/// minter refuses with [`ApiError::SequenceIdsExhausted`] and never wraps, since a wrapped ID
+/// would name a sequence another may still hold.
+#[derive(Debug)]
+pub struct SequenceIdMinter {
+    node: NodeId,
+    boot: u32,
+    /// The next `n`. A `u64`, so taking one cannot wrap before the refusal.
+    next: AtomicU64,
+}
+
+impl SequenceIdMinter {
+    /// The minter for `node`'s boot `boot`, starting at `n = 0`.
+    #[must_use]
+    pub fn new(node: NodeId, boot: u32) -> SequenceIdMinter {
+        SequenceIdMinter {
+            node,
+            boot,
+            next: AtomicU64::new(0),
+        }
+    }
+
+    /// The node the IDs name.
+    #[must_use]
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+
+    /// The next `SequenceId`.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::SequenceIdsExhausted`] once `n = u32::MAX` has been minted. Each call adds one
+    /// to a `u64`, so no realistic number of calls wraps it.
+    pub fn mint(&self) -> Result<SequenceId, ApiError> {
+        let n = self.next.fetch_add(1, Ordering::Relaxed);
+        let n = u32::try_from(n).map_err(|_| ApiError::SequenceIdsExhausted)?;
+        Ok(SequenceId::new(&self.node, self.boot, n))
+    }
 }
 
 /// One live sequence's transcript (RFC-0050 §2.2; RFC-0001 §6.1 step 5): its prompt, the tokens
@@ -49,13 +84,14 @@ pub struct Transcript {
 ///
 /// Controls are never lost. A `Cancel` or `Release` that finds `local_sequences` full waits in
 /// order, and every later call to the ring sends what waits first. An `Open` that finds the ring
-/// full fails its request with [`ApiError::Capacity`] instead, since it has not started.
+/// full fails its request with [`ApiError::Capacity`] instead, since it has not started. Nothing
+/// here waits for room: the owner calls [`Ingress::flush`] until [`Ingress::waiting_controls`] is
+/// 0, or a generation's `Release` may wait until the next request reaches the ring.
 pub struct Ingress<'r> {
-    pub(super) config: IngressConfig,
+    pub(super) minter: &'r SequenceIdMinter,
     pub(super) stages: &'r dyn Stages,
     pub(super) clock: &'r dyn Clock,
     pub(super) entropy: &'r dyn Entropy,
-    next: AtomicU32,
     outbox: Mutex<Outbox<'r>>,
     inbox: Mutex<Inbox<'r>>,
 }
@@ -63,7 +99,7 @@ pub struct Ingress<'r> {
 impl std::fmt::Debug for Ingress<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Ingress")
-            .field("config", &self.config)
+            .field("node", &self.minter.node())
             .field("live", &self.inbox().live.len())
             .finish_non_exhaustive()
     }
@@ -103,8 +139,10 @@ pub(super) enum SendError {
 
 impl<'r> Ingress<'r> {
     /// The ingress over `region`'s daemon side: it takes the region's `local_sequences` producer
-    /// and `local_tokens` consumer. `stages` computes stages 3 to 8 and the text state of stage
-    /// 10; `clock` times each request, and `entropy` draws the seeds of requests without one.
+    /// and `local_tokens` consumer. `minter` is the node's one [`SequenceIdMinter`], shared with
+    /// every other ingress on the node. `stages` computes stages 3 to 8 and the text state of
+    /// stage 10; `clock` times each request, and `entropy` draws the seeds of requests without
+    /// one.
     ///
     /// # Errors
     ///
@@ -112,7 +150,7 @@ impl<'r> Ingress<'r> {
     /// already handed out either end.
     pub fn new(
         region: &'r Region,
-        config: IngressConfig,
+        minter: &'r SequenceIdMinter,
         stages: &'r dyn Stages,
         clock: &'r dyn Clock,
         entropy: &'r dyn Entropy,
@@ -121,11 +159,10 @@ impl<'r> Ingress<'r> {
         let tokens = region.consumer(RingRole::LocalTokens)?;
         let slot = tokens.layout().slot_bytes() as usize;
         Ok(Ingress {
-            config,
+            minter,
             stages,
             clock,
             entropy,
-            next: AtomicU32::new(0),
             outbox: Mutex::new(Outbox {
                 ring: controls,
                 waiting: VecDeque::new(),
@@ -176,12 +213,6 @@ impl<'r> Ingress<'r> {
     /// [`ApiError::RunnerUnavailable`] when the runner is gone or broke the ring protocol.
     pub fn flush(&self) -> Result<(), ApiError> {
         flush(&mut self.outbox()).map_err(ApiError::RunnerUnavailable)
-    }
-
-    /// The next `SequenceId` this ingress mints.
-    pub(super) fn mint(&self) -> SequenceId {
-        let n = self.next.fetch_add(1, Ordering::Relaxed);
-        SequenceId::new(&self.config.node, self.config.boot, n)
     }
 
     /// Makes `seq` live with `prompt` as its transcript's prompt, so its entries are kept from
@@ -323,5 +354,24 @@ fn drain(inbox: &mut Inbox<'_>) {
                 None => inbox.stray += 1,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// IDs count up from 0 for the node and boot, and the minter refuses after `n = u32::MAX`
+    /// instead of wrapping to 0.
+    #[test]
+    fn the_minter_counts_up_and_refuses_to_wrap() {
+        let node = NodeId([2; 32]);
+        let minter = SequenceIdMinter::new(node, 4);
+        assert_eq!(minter.mint(), Ok(SequenceId::new(&node, 4, 0)));
+        assert_eq!(minter.mint(), Ok(SequenceId::new(&node, 4, 1)));
+        minter.next.store(u64::from(u32::MAX), Ordering::Relaxed);
+        assert_eq!(minter.mint(), Ok(SequenceId::new(&node, 4, u32::MAX)));
+        assert_eq!(minter.mint(), Err(ApiError::SequenceIdsExhausted));
+        assert_eq!(minter.mint(), Err(ApiError::SequenceIdsExhausted));
     }
 }

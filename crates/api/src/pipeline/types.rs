@@ -323,6 +323,9 @@ pub enum ApiError {
     Capacity(String),
     /// The runner's rings are gone or broke their protocol.
     RunnerUnavailable(String),
+    /// The node has minted every `SequenceId` of this boot (2^32 of them); only a restart, with a
+    /// new boot counter, mints more.
+    SequenceIdsExhausted,
     /// A sequence-scoped error at a stage (RFC-0001 §10.4): the tail finished the sequence with
     /// this `ErrorCode`, in its numeric form.
     Sequence {
@@ -345,6 +348,9 @@ impl fmt::Display for ApiError {
             ),
             ApiError::Capacity(why) => write!(f, "no capacity: {why}"),
             ApiError::RunnerUnavailable(why) => write!(f, "the runner is unavailable: {why}"),
+            ApiError::SequenceIdsExhausted => {
+                f.write_str("this node has used every sequence ID of this boot")
+            }
             ApiError::Sequence { domain, code } => {
                 write!(f, "the sequence failed with error {domain}.{code}")
             }

@@ -10,8 +10,8 @@
 
 use syntropy_api::pipeline::{
     ApiError, ApiShape, ClientGone, ClientMeta, ClientWatch, Detokenize, EventSink, GenEvent,
-    GenerateRequest, Ingress, IngressConfig, Input, ModelInfo, ModelRef, Outcome, Progress, Route,
-    SamplingRequest, Stages, StopMatch, StopReason, StopStep, StreamMode, Usage,
+    GenerateRequest, Ingress, Input, ModelInfo, ModelRef, Outcome, Progress, Route,
+    SamplingRequest, SequenceIdMinter, Stages, StopMatch, StopReason, StopStep, StreamMode, Usage,
 };
 use syntropy_core::{
     CancelReason, FinishReason, InstanceId, Nanos, NodeId, PlanEpoch, SequenceControl,
@@ -188,9 +188,10 @@ fn request(prompt: Vec<u32>, stop: &[&str]) -> GenerateRequest {
     }
 }
 
-/// The region, the clock and the entropy every test's ingress borrows.
+/// The region, the node's minter, the clock and the entropy every test's ingress borrows.
 struct World {
     region: FakeRegion,
+    minter: SequenceIdMinter,
     clock: SimClock,
     entropy: SimEntropy,
 }
@@ -199,16 +200,12 @@ impl World {
     fn new() -> World {
         World {
             region: FakeRegion::new().unwrap(),
+            minter: SequenceIdMinter::new(NODE, 1),
             clock: SimClock::new(),
             entropy: SimEntropy::new(7),
         }
     }
 }
-
-const CONFIG: IngressConfig = IngressConfig {
-    node: NODE,
-    boot: 1,
-};
 
 /// Acceptance 1: a disconnect sends `Cancel` before the next encoder write. The client goes away
 /// while a token is on the ring: the next poll writes nothing, and the runner receives `Cancel`
@@ -219,7 +216,7 @@ fn a_disconnect_sends_cancel_before_the_next_encoder_write() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -279,7 +276,7 @@ fn a_failed_write_cancels_and_writes_nothing_more() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -322,7 +319,7 @@ fn dropping_a_live_generation_cancels_it() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -352,7 +349,7 @@ fn the_transcript_holds_prompt_and_emitted_tokens_until_release() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -420,7 +417,7 @@ fn tokens_after_a_matched_stop_are_discarded_and_not_counted() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -489,7 +486,7 @@ fn a_stop_inside_a_token_counts_that_token() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -533,7 +530,7 @@ fn entries_after_the_end_are_strays() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -577,7 +574,7 @@ fn refusals_send_no_open() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -626,7 +623,7 @@ fn the_open_carries_the_request() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -679,7 +676,7 @@ fn started_and_finished_carry_the_route_and_the_times() {
     let handle = world.clock.handle();
     let ingress = Ingress::new(
         world.region.daemon(),
-        CONFIG,
+        &world.minter,
         &FakeStages,
         &handle,
         &world.entropy,
@@ -724,14 +721,16 @@ fn started_and_finished_carry_the_route_and_the_times() {
 }
 
 /// A `Cancel` that finds `local_sequences` full waits and goes first once there is room; an
-/// `Open` that finds it full fails with `Capacity`.
+/// `Open` that finds it full fails with `Capacity`. The generation ends with its `Cancel` and
+/// final `Release` both waiting, and the owner's `flush` sends them, in order.
 #[test]
-fn controls_wait_for_room_and_opens_fail_fast() {
+fn controls_wait_for_room_and_the_final_release_goes_out_on_flush() {
     let region = FakeRegion::with_layout(&fake_runner::layout(2, 4096)).unwrap();
+    let minter = SequenceIdMinter::new(NODE, 1);
     let clock = SimClock::new();
     let handle = clock.handle();
     let entropy = SimEntropy::new(1);
-    let ingress = Ingress::new(region.daemon(), CONFIG, &FakeStages, &handle, &entropy).unwrap();
+    let ingress = Ingress::new(region.daemon(), &minter, &FakeStages, &handle, &entropy).unwrap();
     let mut runner = FakeRunner::new(region.runner(), Script::new()).unwrap();
 
     let watch = ClientWatch::default();
@@ -754,11 +753,145 @@ fn controls_wait_for_room_and_opens_fail_fast() {
     ingress.flush().unwrap();
     assert_eq!(ingress.waiting_controls(), 0);
     runner.step().unwrap();
-    assert_eq!(runner.log().len(), 4);
+    assert_eq!(
+        &runner.log()[2..],
+        &[
+            SequenceControl::Cancel {
+                seq: first.seq(),
+                reason: CancelReason::ClientGone
+            },
+            SequenceControl::Release {
+                seq: first.seq(),
+                persist: None
+            },
+        ],
+        "the final Release went out"
+    );
     assert_eq!(runner.state(first.seq()), None);
     assert_eq!(runner.state(second.seq()), Some(SeqState::Running));
     assert!(runner.anomalies().iter().all(|anomaly| matches!(
         anomaly,
         syntropy_testkit::sim::fake_runner::Anomaly::Unscripted(_)
     )));
+}
+
+/// Two ingresses on one node, one per runner, share the node's minter, so they never mint the same
+/// `SequenceId` (the review of #1917, B1).
+#[test]
+fn two_ingresses_on_one_node_mint_distinct_ids() {
+    let minter = SequenceIdMinter::new(NODE, 1);
+    let (first_region, second_region) = (FakeRegion::new().unwrap(), FakeRegion::new().unwrap());
+    let clock = SimClock::new();
+    let handle = clock.handle();
+    let entropy = SimEntropy::new(3);
+    let first = Ingress::new(
+        first_region.daemon(),
+        &minter,
+        &FakeStages,
+        &handle,
+        &entropy,
+    )
+    .unwrap();
+    let second = Ingress::new(
+        second_region.daemon(),
+        &minter,
+        &FakeStages,
+        &handle,
+        &entropy,
+    )
+    .unwrap();
+    let mut seqs = Vec::new();
+    let mut live = Vec::new();
+    for _ in 0..3 {
+        for ingress in [&first, &second] {
+            let generation = ingress
+                .start(&request(vec![1], &[]), ClientWatch::default())
+                .unwrap();
+            seqs.push(generation.seq());
+            live.push(generation);
+        }
+    }
+    let ns: Vec<u32> = seqs.iter().map(|seq| seq.n).collect();
+    assert_eq!(ns, [0, 1, 2, 3, 4, 5]);
+    let mut unique = seqs.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), seqs.len(), "{seqs:?}");
+    assert!(
+        seqs.iter()
+            .all(|seq| seq.boot == 1 && seq.ingress == NODE.short())
+    );
+}
+
+/// The client goes away between two writes of one `poll`: the write after it is never made, and
+/// `Cancel` and `Release` follow (the review of #1917, N2). The sink sets the watch itself after
+/// its second write, as the HTTP layer would from another task.
+#[test]
+fn a_disconnect_between_two_writes_of_one_poll_stops_the_next_write() {
+    struct GoneAfter {
+        events: Vec<GenEvent>,
+        watch: ClientWatch,
+        after: usize,
+    }
+    impl EventSink for GoneAfter {
+        fn emit(&mut self, event: GenEvent) -> Result<(), ClientGone> {
+            self.events.push(event);
+            if self.events.len() == self.after {
+                self.watch.client_gone();
+            }
+            Ok(())
+        }
+    }
+
+    let world = World::new();
+    let handle = world.clock.handle();
+    let ingress = Ingress::new(
+        world.region.daemon(),
+        &world.minter,
+        &FakeStages,
+        &handle,
+        &world.entropy,
+    )
+    .unwrap();
+    let mut runner = FakeRunner::new(
+        world.region.runner(),
+        Script::new().otherwise(Stream::new().window([1, 2, 3]).tokens([4])),
+    )
+    .unwrap();
+    let watch = ClientWatch::default();
+    let mut generation = ingress
+        .start(&request(vec![9], &[]), watch.clone())
+        .unwrap();
+    let seq = generation.seq();
+    runner.step().unwrap(); // three tokens in one entry: three writes in one poll, after Started
+    let mut sink = GoneAfter {
+        events: Vec::new(),
+        watch,
+        after: 2,
+    };
+    assert_eq!(
+        generation.poll(&mut sink),
+        Progress::Ended(Outcome::ClientGone)
+    );
+    assert_eq!(
+        sink.events.len(),
+        2,
+        "Started and \"Hel\" only: {:?}",
+        sink.events
+    );
+    assert!(matches!(
+        &sink.events[1],
+        GenEvent::TextDelta { text, .. } if text == "Hel"
+    ));
+    runner.step().unwrap();
+    assert_eq!(
+        &runner.log()[1..],
+        &[
+            SequenceControl::Cancel {
+                seq,
+                reason: CancelReason::ClientGone
+            },
+            SequenceControl::Release { seq, persist: None },
+        ]
+    );
 }

@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use syntropy_core::{
-    CancelReason, FinishReason, MonoTime, PrefixScope, SamplingParams, SequenceControl, SequenceId,
-    SequenceLimits, SequenceOpen, TokenEntry,
+    CancelReason, FinishReason, MonoTime, NodeId, PrefixScope, SamplingParams, SequenceControl,
+    SequenceId, SequenceLimits, SequenceOpen, TokenEntry,
 };
 
 use super::ingress::{Ingress, SendError};
@@ -99,6 +99,7 @@ impl<'r> Ingress<'r> {
     ///   context;
     /// - [`ApiError::Capacity`] when `local_sequences` is full;
     /// - [`ApiError::RunnerUnavailable`] when the runner is gone;
+    /// - [`ApiError::SequenceIdsExhausted`] when the node has minted every ID of this boot;
     /// - any error a stage returns.
     pub fn start(
         &self,
@@ -140,11 +141,11 @@ impl<'r> Ingress<'r> {
         stages.admit(&route, prompt_len, max_tokens)?;
         // Stage 9.
         let seed = request.sampling.seed.unwrap_or_else(|| self.entropy.u64());
-        let seq = self.mint();
+        let seq = self.minter.mint()?;
         let open = open(
             request,
             seq,
-            &self.config,
+            self.minter.node(),
             prompt.clone(),
             seed,
             max_tokens,
@@ -192,7 +193,7 @@ impl<'r> Ingress<'r> {
 fn open(
     request: &GenerateRequest,
     seq: SequenceId,
-    config: &super::IngressConfig,
+    node: NodeId,
     prompt: Vec<u32>,
     seed: u64,
     max_tokens: u32,
@@ -203,7 +204,7 @@ fn open(
     SequenceOpen {
         seq,
         session: None,
-        ingress: config.node,
+        ingress: node,
         prompt: prompt.into(),
         prefix: None,
         sampling: SamplingParams {
