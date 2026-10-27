@@ -201,7 +201,8 @@ impl Registry {
         Ok(HistIx(slot))
     }
 
-    /// The handle of gauge `metric` with label values `labels`.
+    /// The handle of gauge `metric` with label values `labels`. Only one thread may set a gauge
+    /// series ([`LocalMetrics::set`](super::LocalMetrics::set)).
     ///
     /// # Errors
     ///

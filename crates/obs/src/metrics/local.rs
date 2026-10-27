@@ -123,6 +123,10 @@ impl LocalMetrics {
     }
 
     /// Sets gauge `gauge` to `value`. Owning thread only.
+    ///
+    /// A gauge series has one writing thread. `TelemetryRecord::Gauges` names no thread, so the
+    /// drain reports the latest value it reads from each thread's cells, and two threads that set
+    /// one series would overwrite each other's report.
     #[inline]
     pub fn set(&self, gauge: GaugeIx, value: f64) {
         self.check_owner();
