@@ -23,3 +23,7 @@ toml.workspace = true
 proptest.workspace = true
 # The microbenchmarks of `obs`'s hot-thread recording (PROD-E8-T01).
 syntropy-obs = { path = "../obs" }
+# The local index's timing against RFC-0041 §4.3's `t_index` bound (COMP-E11-T03).
+syntropy-core = { path = "../core" }
+syntropy-manifest = { path = "../manifest" }
+syntropy-store = { path = "../store" }

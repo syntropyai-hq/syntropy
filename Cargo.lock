@@ -3899,7 +3899,10 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "syntropy-core",
+ "syntropy-manifest",
  "syntropy-obs",
+ "syntropy-store",
  "toml",
 ]
 
@@ -4208,6 +4211,13 @@ dependencies = [
 [[package]]
 name = "syntropy-store"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "syntropy-core",
+ "syntropy-io",
+ "syntropy-manifest",
+]
 
 [[package]]
 name = "syntropy-testkit"
