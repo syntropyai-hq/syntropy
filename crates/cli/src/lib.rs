@@ -17,8 +17,9 @@
 //! Every command of the tree is declared. `version` is served: its `--json` output is the native
 //! API's `VersionInfo`, unchanged. `config show --resolved`, `config check` and `config path` are
 //! served without a daemon, over the binary's section registry ([`config`]). Each other command
-//! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` and `__selftest` parse their arguments and
-//! stop there, because runner mode and the self-test are not built.
+//! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` and
+//! `__selftest` parse their arguments and stop there, because runner mode and the self-test are
+//! not built.
 //!
 //! Dispatch reads no configuration, opens no GPU or network library and builds no async runtime
 //! before it knows the command, so a client command prints within RFC-0051's 50 ms \[target\].

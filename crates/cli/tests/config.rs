@@ -437,3 +437,57 @@ fn diagnostics_never_put_a_source_s_escape_sequences_on_the_terminal() {
     }
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// Paths `config path` and `show --resolved` echo come from `--config`, `SYNTROPY_CONFIG` and the
+/// home variables, so their control characters are escaped on stdout too (N1 of the review of
+/// #1921).
+#[test]
+fn echoed_paths_never_put_escape_sequences_on_the_terminal() {
+    let home = temp("path-escapes");
+    let odd = home.join("ev\u{1b}]0;x\u{7}il\u{1b}[2J.toml");
+    let odd = odd.to_str().unwrap();
+    let clean = |output: &std::process::Output| {
+        let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+        assert!(
+            !stdout.contains('\u{1b}') && !stdout.contains('\u{7}'),
+            "raw control characters on stdout: {stdout:?}"
+        );
+        assert!(
+            !stderr.contains('\u{1b}') && !stderr.contains('\u{7}'),
+            "raw control characters on stderr: {stderr:?}"
+        );
+        stdout
+    };
+    // From `--config`, and from `SYNTROPY_CONFIG`: the file need not exist.
+    let output = finish(&mut isolated(&["config", "path", "--config", odd], &home));
+    assert_eq!(code(&output), 0);
+    assert!(clean(&output).contains("ev\\u{1b}]0;x\\u{7}il\\u{1b}[2J.toml"));
+    let output = finish(isolated(&["config", "path"], &home).env("SYNTROPY_CONFIG", odd));
+    assert_eq!(code(&output), 0);
+    let stdout = clean(&output);
+    assert!(
+        stdout.contains("(from SYNTROPY_CONFIG; absent)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\\u{1b}"), "{stdout}");
+    // From the home variables, which every location under them repeats.
+    let var = if cfg!(windows) {
+        "LOCALAPPDATA"
+    } else {
+        "HOME"
+    };
+    let output = finish(isolated(&["config", "path"], &home).env(var, home.join("h\u{1b}[31m")));
+    assert_eq!(code(&output), 0);
+    assert!(clean(&output).contains("h\\u{1b}[31m"));
+    // `show --resolved` names the file in each origin. Only Unix lets a file name hold ESC.
+    if cfg!(unix) {
+        std::fs::write(odd, "[api]\nbind = [\"127.0.0.1:7433\"]\n").unwrap();
+        let output = finish(&mut isolated(
+            &["config", "show", "--resolved", "--config", odd],
+            &home,
+        ));
+        assert_eq!(code(&output), 0, "{}", text(&output.stderr));
+        assert!(clean(&output).contains("il\\u{1b}[2J.toml:2"));
+    }
+    let _ = std::fs::remove_dir_all(home);
+}
