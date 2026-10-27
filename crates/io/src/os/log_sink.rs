@@ -356,7 +356,9 @@ mod tests {
             .unwrap();
     }
 
-    /// Reports a unique line and reads it back with `wevtutil`.
+    /// Reports a unique line and reads it back with `wevtutil`, as the event's XML: without the
+    /// message file that registering the source installs (packaging's), the rendered text shows
+    /// event ID 0's system message, and the line itself is the event's `EventData`.
     #[cfg(windows)]
     #[test]
     #[ignore = "reads the Application log with `wevtutil`"]
@@ -367,16 +369,17 @@ mod tests {
             .report(Severity::Warning, &marker)
             .unwrap();
         let out = std::process::Command::new("wevtutil")
-            .args(["qe", "Application", "/c:20", "/rd:true", "/f:text"])
+            .args(["qe", "Application", "/c:20", "/rd:true", "/f:xml"])
             .arg("/q:*[System[Provider[@Name='Syntropy']]]")
             .output()
             .unwrap();
         let seen = String::from_utf8_lossy(&out.stdout);
-        let line = seen.lines().find(|l| l.contains(&marker));
+        let data = format!("<Data>{marker}</Data>");
+        let event = seen.split("</Event>").find(|e| e.contains(&data));
         assert!(
-            line.is_some(),
-            "{marker} not in the event log; wevtutil printed:\n{seen}"
+            event.is_some(),
+            "{data} not in the event log; wevtutil printed:\n{seen}"
         );
-        println!("read back: {}", line.unwrap_or("").trim());
+        println!("read back: {}</Event>", event.unwrap_or("").trim());
     }
 }
