@@ -209,7 +209,7 @@ domain_codes! {
 domain_codes! {
     /// `Domain::Exec`, 0x0600–0x06FF (RFC-0012 §13, note of 2026-10-28).
     exec: Exec {
-        RING_CLOSED = 0x0601, ["RingClosed"], Link;
+        RING_CLOSED = 0x0601, ["RingClosed"], Internal;
         STEP_STALLED = 0x0602, ["StepStalled"], Internal;
         POOL_BARRIER_MISSED = 0x0603, ["PoolBarrierMissed"], Internal;
     }

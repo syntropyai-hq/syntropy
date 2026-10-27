@@ -747,7 +747,7 @@ Acceptance is learned per (drafter, model) and per request kind (greedy or sampl
 
 | Code | Name | Class | Raised when |
 |---|---|---|---|
-| 0x0601 | `RingClosed` | `Link` | a dispatcher's outbound ring has closed because the `net` domain is gone, so a step can never be sent (PLC-E7-T17) |
+| 0x0601 | `RingClosed` | `Internal` | a dispatcher's outbound ring, the runner-internal ring to its own `net` domain, has closed because that domain is gone, so a step can never be sent (PLC-E7-T17). It is not a link fault: no transport failover or re-plan can reopen it, so the runner fails and its supervisor restarts it |
 | 0x0602 | `StepStalled` | `Internal` | the stall watchdog finds a step whose waiter is parked on a source that cannot wake it (§3.3, the row above) |
 | 0x0603 | `PoolBarrierMissed` | `Internal` | the CPU pool's barrier misses its deadline because a pool thread panicked or hung (the row above); the runner exits |
 

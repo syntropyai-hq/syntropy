@@ -936,7 +936,7 @@ Errors become the request shape's own error body:
 - *Note 2026-10-28 (COMP-E13-T15):* the `Kernels` domain (RFC-0040 §13) and the `Exec` domain (RFC-0012 §13) follow the same rules.
   - Their codes are raised inside a node, and the node handles them there. Selection, the module loader and the tier manager answer the `Unsupported` and `Capacity` ones by choosing another candidate or domain, or by re-planning. None of these is ever the error of a request, so they are exempt:
   - `Kernels`: 0x0001 `OpUnsupported`, 0x0002 `ModuleMissing`, 0x0004 `ModuleAbi`, 0x0005 `DriverTooOld`, 0x0007 `CaptureFailed`, 0x0009 `AllocFailed`, 0x000A `RegisterFailed`, 0x000C `GgmlImportFailed`, 0x000D `AmxDenied`, 0x000F `NoCertifiedCandidate`;
-  - The other codes map through a whole-class row: `ParityFailed` (`Correctness`), `DeviceSticky` (`Device`), `DoorbellTimeout` (`Timeout`), and `WorkspaceExceeded` and `ProviderPanicked` (`Internal`). `ModuleIntegrity` and `ManifestInvalid` follow the rule for `Integrity`. Every `Exec` code maps the same way: `RingClosed` (`Link`), `StepStalled` and `PoolBarrierMissed` (`Internal`).
+  - The other codes map through a whole-class row: `ParityFailed` (`Correctness`), `DeviceSticky` (`Device`), `DoorbellTimeout` (`Timeout`), and `WorkspaceExceeded` and `ProviderPanicked` (`Internal`). `ModuleIntegrity` and `ManifestInvalid` follow the rule for `Integrity`. Every `Exec` code maps the same way: `RingClosed`, `StepStalled` and `PoolBarrierMissed` (`Internal`).
 
 The Anthropic shape uses 529 for overload, as the published API does, because Anthropic SDKs retry it. The OpenAI shape uses 429 and 503, which OpenAI SDKs retry.
 

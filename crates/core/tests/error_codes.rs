@@ -149,7 +149,7 @@ const PINNED: &[(Domain, u16, &[&str], Option<ErrorClass>)] = &[
     (Kernels, 16, &["ProviderPanicked"], Some(Internal)),
     (Kernels, 17, &["ManifestInvalid"], Some(Integrity)),
     // RFC-0012 §13, note of 2026-10-28
-    (Exec, 0x0601, &["RingClosed"], Some(Link)),
+    (Exec, 0x0601, &["RingClosed"], Some(Internal)),
     (Exec, 0x0602, &["StepStalled"], Some(Internal)),
     (Exec, 0x0603, &["PoolBarrierMissed"], Some(Internal)),
 ];
