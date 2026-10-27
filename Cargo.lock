@@ -3882,6 +3882,8 @@ dependencies = [
  "syntropy-core",
  "syntropy-ipc",
  "syntropy-net",
+ "syntropy-spsc",
+ "syntropy-testkit",
  "time",
  "tokio",
  "toml",
