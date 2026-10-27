@@ -86,9 +86,41 @@ fn a_hub_object_id_parses_to_the_same_digest() {
     let listed = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD";
     assert_eq!(FileDigest::from_hex(listed), Some(local));
     assert_eq!(FileDigest::from_hex(&local.to_hex()), Some(local));
-    assert_eq!(FileDigest::from_hex(&listed[..62]), None);
-    assert_eq!(FileDigest::from_hex(&format!("{}zz", &listed[..62])), None);
-    assert_eq!(FileDigest::from_hex(&format!("{}é", &listed[..62])), None);
+    let mixed = format!("{}{}", &listed[..32], &local.to_hex()[32..]);
+    assert_eq!(FileDigest::from_hex(&mixed), Some(local));
+}
+
+#[test]
+fn from_hex_takes_exactly_64_hex_digits() {
+    let good = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    assert!(FileDigest::from_hex(good).is_some());
+    let refused = [
+        // `from_str_radix` would take a sign on a pair.
+        format!("+{}", &good[1..]),
+        format!("{}+{}", &good[..10], &good[11..]),
+        format!("-{}", &good[1..]),
+        // Whitespace, inside or around.
+        format!(" {}", &good[1..]),
+        format!("{} ", &good[..63]),
+        format!("{}\n", &good[..63]),
+        format!("{}\t{}", &good[..20], &good[21..]),
+        format!(" {good}"),
+        format!("{good}\n"),
+        // Wrong lengths: 63, 65, empty, and the Hub's 40-digit SHA-1 of a Git-stored file.
+        good[..63].to_owned(),
+        format!("{good}0"),
+        String::new(),
+        good[..40].to_owned(),
+        // Non-hex, and a prefix.
+        format!("{}zz", &good[..62]),
+        format!("{}g", &good[..63]),
+        format!("0x{}", &good[2..]),
+        // A multi-byte character that keeps the byte length at 64.
+        format!("{}é", &good[..62]),
+    ];
+    for text in &refused {
+        assert_eq!(FileDigest::from_hex(text), None, "{text:?}");
+    }
 }
 
 #[test]

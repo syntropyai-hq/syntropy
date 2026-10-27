@@ -78,15 +78,23 @@ impl FileDigest {
         Ok(FileDigest(hasher.finalize().into()))
     }
 
-    /// The digest the Hub publishes as a file's object ID: 64 hex digits, either case.
+    /// The digest the Hub publishes as a file's object ID: exactly 64 ASCII hex digits, either
+    /// case, with no sign, space or prefix. The listing is untrusted input, so anything else is
+    /// `None`, including the 40-digit SHA-1 the Hub lists for a file stored in Git itself.
     #[must_use]
     pub fn from_hex(hex: &str) -> Option<FileDigest> {
-        if hex.len() != 64 {
+        let hex = hex.as_bytes();
+        if hex.len() != 64 || !hex.iter().all(u8::is_ascii_hexdigit) {
             return None;
         }
+        let nibble = |c: u8| match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => c - b'A' + 10,
+        };
         let mut out = [0u8; 32];
-        for (i, byte) in out.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
+        for (byte, pair) in out.iter_mut().zip(hex.chunks_exact(2)) {
+            *byte = nibble(pair[0]) << 4 | nibble(pair[1]);
         }
         Some(FileDigest(out))
     }
