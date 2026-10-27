@@ -96,8 +96,9 @@ impl Serialize for Build {
 
 impl<'de> Deserialize<'de> for Build {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Unknown fields are ignored: a newer daemon may add one (ADR-0503's additive changes),
+        // and an older client must still read the rest.
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Text {
             version: SemVer,
             commit: String,
@@ -228,9 +229,12 @@ mod tests {
                 "{field} = {bad}"
             );
         }
+        // A newer daemon's extra fields, in `build` and beside it, are ignored.
         let mut body = good.clone();
-        body["build"]["extra"] = 1.into();
-        assert!(serde_json::from_value::<VersionInfo>(body).is_err());
+        body["build"]["dirty"] = true.into();
+        body["build"]["features"] = serde_json::json!(["cli/x"]);
+        body["uptime_s"] = 7.into();
+        assert_eq!(serde_json::from_value::<VersionInfo>(body).unwrap(), info);
     }
 
     #[test]

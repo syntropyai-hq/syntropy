@@ -10,8 +10,19 @@ use std::sync::Arc;
 use syntropy_api::config::{ApiSection, TlsSource};
 use syntropy_api::routes::{ApiState, NodeStatus};
 use syntropy_api::version::{Build, ProtocolMajors, SupportTier, VersionInfo};
+use syntropy_config::Runtime as RuntimeLocation;
 use syntropy_core::build::{BuildId, BuildProfile, TargetTriple};
 use syntropy_core::ids::Blake3;
+use syntropy_daemon::ctl::{runtime, start_api};
+
+/// A solo node: it needs no replica.
+struct Solo;
+
+impl NodeStatus for Solo {
+    fn has_state_replica(&self) -> bool {
+        true
+    }
+}
 
 /// The build a test daemon reports.
 fn test_build() -> Build {
@@ -25,17 +36,6 @@ fn test_build() -> Build {
         },
         features: Vec::new(),
         id: [0; 32],
-    }
-}
-use syntropy_config::Runtime as RuntimeLocation;
-use syntropy_daemon::ctl::{runtime, start_api};
-
-/// A solo node: it needs no replica.
-struct Solo;
-
-impl NodeStatus for Solo {
-    fn has_state_replica(&self) -> bool {
-        true
     }
 }
 

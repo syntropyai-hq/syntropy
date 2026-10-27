@@ -17,11 +17,12 @@ use syntropy_ipc::cmd::Endpoint;
 #[derive(Debug, Parser)]
 ///
 /// `-V` and `--version` are this binary's own flag, not clap's, so `--version --json` can print
-/// the build as JSON (QUAL-E16-T03). Without it a command is required.
+/// the build as JSON (QUAL-E16-T03). Like clap's propagated flag, every command takes it. Without
+/// it a command is required.
 #[command(name = "syntropy", about, disable_version_flag = true)]
 pub struct Cli {
     /// Print this binary's version and build, with `--json` as the native API's `Build`
-    #[arg(short = 'V', long = "version")]
+    #[arg(short = 'V', long = "version", global = true)]
     pub version: bool,
     /// The options every command takes.
     #[command(flatten)]

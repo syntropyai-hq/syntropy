@@ -6,9 +6,9 @@
 //! - **version**: `version.txt` at the repository root, or `CARGO_PKG_VERSION` where the file
 //!   is absent, as in a crate archive;
 //! - **commit**: `SYNTROPY_BUILD_COMMIT` (40 hex digits) when set, as a release or a source
-//!   archive's build sets it; else `git rev-parse HEAD` in this checkout; else all zeros, which
-//!   the binary reports as unknown. There is no git dependency, only the `git` command when it
-//!   exists;
+//!   archive's build sets it; else `git rev-parse HEAD`, when the repository's top level is this
+//!   workspace's root; else all zeros, which the binary reports as unknown. There is no git
+//!   dependency, only the `git` command when it exists;
 //! - **profile**: the cargo profile, from the directory cargo builds it in (`OUT_DIR`), since
 //!   cargo tells a build script only `debug` or `release`;
 //! - **target**: `TARGET`;
@@ -118,6 +118,17 @@ fn commit(manifest: &Path) -> [u8; 20] {
             .success()
             .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
     };
+    // A source tree unpacked inside another repository, such as a packager's, has no `.git` of
+    // its own, and git would answer with the outer repository's HEAD. Trust HEAD only when the
+    // repository's top level is this workspace's root.
+    let root = manifest.join("..").join("..");
+    let ours = |top: String| match (fs::canonicalize(top), fs::canonicalize(&root)) {
+        (Ok(top), Ok(root)) => top == root,
+        _ => false,
+    };
+    if !git(&["rev-parse", "--show-toplevel"]).is_some_and(ours) {
+        return [0; 20];
+    }
     let Some(head) = git(&["rev-parse", "HEAD"]) else {
         return [0; 20];
     };

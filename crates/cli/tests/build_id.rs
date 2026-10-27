@@ -118,7 +118,9 @@ fn a_crate_with_a_test_feature_reports_it() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(cargo)
-        .args(["metadata", "--format-version", "1", "--locked", "--offline"])
+        // Not `--offline`: without `--filter-platform`, cargo resolves every platform's
+        // dependencies, and a runner's cache holds only its own (as `check-deps` reads it).
+        .args(["metadata", "--format-version", "1", "--locked"])
         .arg("--manifest-path")
         .arg(&manifest)
         .output()

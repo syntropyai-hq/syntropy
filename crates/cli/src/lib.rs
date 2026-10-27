@@ -18,8 +18,8 @@
 //!
 //! Every command of the tree is declared. `-V`/`--version` prints this binary's build with no
 //! daemon; with `--json` it is the native API's `Build`. `version` is served: its `--json` output
-//! is the native API's `VersionInfo`, unchanged. `config show --resolved`, `config check` and `config path` are
-//! served without a daemon, over the binary's section registry ([`config`]). Each other command
+//! is the native API's `VersionInfo`, unchanged. `config show --resolved`, `config check` and
+//! `config path` are served without a daemon, over the binary's section registry ([`config`]). Each other command
 //! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` and
 //! `__selftest` parse their arguments and stop there, because runner mode and the self-test are
 //! not built.

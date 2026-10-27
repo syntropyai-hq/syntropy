@@ -6,10 +6,14 @@
 //! The commit and the rest of the `BuildId` reach the binary only through `cli`'s build script,
 //! so no other crate's fingerprint can see them. The suite checks that with cargo's own record:
 //! 1. it builds `syntropy-cli`, so every crate is compiled;
-//! 2. it stands in for a comment-only commit: it moves `cli`'s `src/lib.rs` modification time
-//!    forward (cargo fingerprints workspace sources by modification time, so an edited comment
-//!    and a touched file look the same to it) and builds again with `SYNTROPY_BUILD_COMMIT` set
-//!    to another commit, which the build script reads in place of `git rev-parse HEAD`;
+//! 2. it stands in for a comment-only commit. It moves forward the modification times of
+//!    `cli`'s `src/lib.rs` and of the git files a commit moves: `HEAD`, the branch's ref and
+//!    `packed-refs`, wherever `git rev-parse --git-path` puts them. Cargo fingerprints workspace
+//!    sources, and the files a build script watches, by modification time, so an edited comment
+//!    and a touched file look the same to it, as does a moved `HEAD`. A build script of another
+//!    crate that watched git would therefore rerun and fail the check. It then builds again with
+//!    `SYNTROPY_BUILD_COMMIT` set to another commit, which `cli`'s build script reads in place of
+//!    `git rev-parse HEAD`, so an `env!` or `option_env!` of it elsewhere fails the check too;
 //! 3. it reads that build's `--message-format=json` lines: every `compiler-artifact` that is not
 //!    `fresh` must be `syntropy-cli`'s, and at least one must be, so a build that rebuilt nothing
 //!    cannot pass;
@@ -17,10 +21,8 @@
 //! 5. it builds once more without the variable, so the binary left behind names the checkout's
 //!    commit again.
 //!
-//! A real commit moves `HEAD` instead of setting the variable. The build script watches `HEAD`,
-//! the branch's ref and `packed-refs` (`cargo:rerun-if-changed`), which reruns `cli`'s script
-//! only: a build script's rerun rules cannot reach another package. This suite runs locally; no
-//! hosted job runs it yet.
+//! Outside a git checkout, step 2 touches only the source. This suite runs locally; no hosted job
+//! runs it yet, which is the maintainers' call.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -39,8 +41,10 @@ const OTHER_COMMIT: &str = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00";
 pub fn suite_step(context: &Context) -> Result<(), String> {
     let root = &context.root;
     build(root, None).map_err(|e| format!("the first build failed: {e}"))?;
-    let source = root.join("crates/cli/src/lib.rs");
-    touch(&source)?;
+    touch(&root.join("crates/cli/src/lib.rs"))?;
+    for file in git_files(root) {
+        touch(&file)?;
+    }
     let lines =
         build(root, Some(OTHER_COMMIT)).map_err(|e| format!("the second build failed: {e}"))?;
     let verdict = check(&lines);
@@ -98,6 +102,31 @@ fn touch(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))?;
     file.set_modified(SystemTime::now())
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The git files a commit moves, where they exist: `HEAD`, the branch's ref and `packed-refs`.
+/// None outside a git checkout.
+fn git_files(root: &Path) -> Vec<PathBuf> {
+    let git = |args: &[&str]| -> Option<String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let mut names = vec!["HEAD".to_owned(), "packed-refs".to_owned()];
+    names.extend(git(&["symbolic-ref", "-q", "HEAD"]));
+    names
+        .iter()
+        .filter_map(|name| git(&["rev-parse", "--path-format=absolute", "--git-path", name]))
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 /// One `compiler-artifact` line: its package's name and whether cargo reused it.
