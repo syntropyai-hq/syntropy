@@ -20,11 +20,15 @@
 //!   filesystem or thread-pool crate. Normal edges, transitively.
 //! - **Rule 6**: only each external system's own crate reaches its bindings ([`policy::SYSTEMS`]).
 //!   Every edge kind, through external packages.
-//! - **Rule 7**: the core binary, built with no default features, needs no shared library outside
-//!   an allow-list of system libraries ([`policy::SYSTEM_LIBRARIES`] and the dynamic loader), so
-//!   any vendor GPU library fails, named or not. As a second check, its dynamic symbol table holds
-//!   no vendor runtime symbol. Linux only: QUAL-E1-T28 adds the Windows import table and the
-//!   macOS load commands.
+//! - **Rule 7**: the core binary, built with no default features, loads no library outside an
+//!   allow-list of system libraries for its format, so any vendor GPU library fails, named or not:
+//!   its ELF `DT_NEEDED` entries ([`policy::SYSTEM_LIBRARIES`] and the dynamic loader), its PE
+//!   import and delay-load directories ([`policy::WINDOWS_SYSTEM_LIBRARIES`] and the Universal
+//!   CRT's API sets) and its Mach-O load commands, every architecture of a universal file
+//!   ([`policy::MACOS_SYSTEM_LIBRARIES`] and [`policy::MACOS_FRAMEWORKS`], which hold the
+//!   frameworks the Metal provider needs). As a second check, no symbol it binds is a vendor
+//!   runtime's. It runs on the host it builds on: Linux in `lint`, and each OS in `build-<os>`
+//!   (QUAL-E1-T28).
 //! - **Rule 8**: every lib and bin crate root outside the `unsafe` allow-list sets
 //!   `#![forbid(unsafe_code)]`. `testkit` holds the one module-scoped exception: its root sets
 //!   `#![deny(unsafe_code)]`, and its only `unsafe` is the `GlobalAlloc` impl in `src/guards.rs`,
@@ -46,6 +50,8 @@ mod crate_roots;
 mod elf;
 mod graph;
 pub(crate) mod layers;
+mod macho;
+mod pe;
 pub(crate) mod policy;
 mod release;
 mod rules;
@@ -55,6 +61,7 @@ use std::fmt;
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::run::Context;
 use graph::Graph;
 use layers::Layers;
 use release::Outcome;
@@ -122,6 +129,15 @@ pub fn run(manifest: &Path, log: &mut dyn Write) -> io::Result<bool> {
             None
         }
     };
+    // The table must be RFC-0001 §4.1's, which `lint` checks here so that a change to either is
+    // caught on a plan-only PR too, which runs `lint` alone (RFC-0062 §2.2).
+    if let Some(layers) = &layers {
+        findings.extend(
+            layers::matches_rfc_0001(layers, &graph.root)
+                .into_iter()
+                .map(|problem| Finding::new(Rule::Table, problem)),
+        );
+    }
     findings.extend(rules::check(&graph, layers.as_ref()));
     findings.extend(crate_roots::check(&graph));
     findings.extend(release::default_features(&graph));
@@ -139,6 +155,23 @@ pub fn run(manifest: &Path, log: &mut dyn Write) -> io::Result<bool> {
     findings.sort();
     report(&findings, &not_run, log)?;
     Ok(findings.is_empty())
+}
+
+/// The `rule-7` step of `cargo xtask ci build`: rule 7 alone, on the core binary of the host it
+/// runs on, so `build-<os>` checks the Linux, macOS and Windows binaries (RFC-0062 §12.1,
+/// QUAL-E1-T28). `lint` runs every rule, on Linux. A rule 7 that cannot run fails the step.
+pub fn rule_7_step(context: &Context) -> Result<(), String> {
+    let manifest = context.root.join("Cargo.toml");
+    let graph = Graph::load(&manifest)?;
+    match release::rule_7(&manifest, &graph) {
+        Outcome::Ran(findings) if findings.is_empty() => Ok(()),
+        Outcome::Ran(findings) => Err(findings
+            .iter()
+            .map(Finding::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")),
+        Outcome::NotRun(reason) => Err(format!("rule 7 did not run: {reason}")),
+    }
 }
 
 /// Writes one line per finding, then the verdict, then a line per rule that did not run.

@@ -249,6 +249,7 @@ Command-channel messages:
 | R → D | `ResidencyDigest { version: u64, digest: ResidencySummary }` | low-rate residency summary for routing and the dashboard |
 | R → D | `SequenceEnded { seq: SequenceId, outcome: SequenceOutcome }` | finished, failed or migrated |
 | R → D | `ErrorReport { error: Error }` | errors that are not tied to one sequence |
+| R → D | `EdgeDemoted { demotion: Demotion, cause: DemotionCause, cost: Nanos }` | a hop moved off its transport: the planned one could not connect (`ConnectFailed`, RFC-0031 §3), or it faulted 3 times in 60 s (`RepeatedFaults`, RFC-0031 §7.4). `cost` is the new transport's `cost_t` at the decode frame size. The daemon forwards it as `ReportEdgeDemoted` (RFC-0033 §11). Added by DIST-E7-T11, with an `ipc_protocol` bump (RFC-0031 §3, note of 2026-10-23) |
 | R → D | `ProbeResult { profile: CapabilityProfile }` | probe output |
 | R → D | `Pong` | — |
 
@@ -268,6 +269,7 @@ Command-channel messages:
 - **PLC-E2-T01:** `ProbeRequest`, with `ProbeSuite` and `ModelShapes` in `core`, and every variant but `DevicePath`, which arrives with PLC-E2-T12. `Confirm`'s `ProfileKey` is already in `core`.
 - **COMP-E10-T11:** `FetchShard` and `PackCommitted`, with `ShardSpec` and `PackKey`, and their field types `ChunkId` and `LayoutVersion`, in `core`.
 - **TIER-E1-T09:** `ResidencyDigest`, with `ResidencySummary` and the types it holds in `core`: `TierUsage`, `Purpose` (moved from `tier`), `PinProgress`, `PinState`, `YieldReport`, `YieldOption`, `KvHeadroom`, `PageClass`, `KvSpillOutcome`, `SpillOutcome` and `ExpertCacheDigest`.
+- **DIST-E7-T11:** `EdgeDemoted { demotion, cause, cost }`, with `Demotion` and `DemotionCause` in `core` (RFC-0031 §3, note of 2026-10-23). It reports both demotion paths, the connect-time fallback and DIST-E7-T10's fault-time demotion, and the daemon forwards it as `ReportEdgeDemoted` (RFC-0033 §11).
 - **Two fields hold what `core` cannot.** `RemoteEndpoint`, in `ProbeSuite::DevicePath`, holds transport state: keys, socket addresses, a relay URL. The message carries the remote's `NodeId` and the endpoint as bytes in `net`'s encoding (PLC-E2-T12). `DegradeDetail::Fallback` names an `OpKind` and a `ProviderId`, which are `kernels`'. It carries the provider's `ProviderName` (§5.1), which COMP-E2-T13 defines in `core` with `ReaderId`, and the op's name as owned text (DIST-E14-T13).
 - **No task yet:** `ProbeResult` waits for the task that defines `CapabilityProfile` (#1524), and `ErrorReport` for the task that builds `core`'s `Error` (§5.12). No task row names either yet.
 
@@ -304,16 +306,22 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 3 | `exec` | lowers the graph to per-stage step programs; per-device dispatchers; CPU compute pool; doorbells; graph capture | `graph`, `kernels`, `tier` | 0012 (provider contract: 0040) |
 | 3 | `cluster` | discovery, invites, SWIM membership, coordinator lease, event log, pure `apply()`, snapshots, re-placement triggers | `net`, `manifest`, `solver` | 0030 (re-placement and recovery: 0033) |
 | 4 | `sched` | step scheduler: continuous batching, chunked prefill, verify windows, drafting, acceptance, sampler (with token-level stop sets and grammar masks), activation history | `exec`, `tier`, `graph`, `text` | 0012 |
-| 4 | `api` | OpenAI, Anthropic and native HTTP surfaces; ingress routing; sequence channels; dashboard state endpoints | `text`, `cluster`, `solver`, `net` | 0050 (dashboard endpoints: 0051) |
+| 4 | `api` | OpenAI, Anthropic and native HTTP surfaces; ingress routing; sequence channels; dashboard state endpoints | `text`, `cluster`, `solver`, `net`, `ipc` (the local socket's listener, added 2026-10-27, note below) | 0050 (dashboard endpoints: 0051) |
 | 5 | `runner` | runner process: lifecycle state machine, wiring of exec, sched, tier, io, net and providers; probe mode; loading backend modules through `kernels-loader` | `ipc`, `manifest`, `graph`, `kernels`, `kernels-cpu`, `kernels-metal` (macOS and iOS), `kernels-ggml`, `kernels-loader`, `io`, `tier`, `net`, `probe`, `store`, `exec`, `sched` | 0001 (distributed behaviour: 0032) |
 | 5 | `daemon` | node daemon: supervisor, device ledger, wiring of cluster, store, api and probe orchestration | `ipc`, `manifest`, `kernels` (types only), `io`, `net`, `solver`, `text`, `probe`, `store`, `cluster`, `api` | 0001 (recovery: 0033) |
-| 6 | `cli` | the `syntropy` binary: argument parsing, mode dispatch, client subcommands, dashboard assets; constructs the `BuildId` value at build time and passes it down (RFC-0062 §8.1) | `daemon`, `runner`, `config`, `obs` | 0051 |
+| 6 | `cli` | the `syntropy` binary: argument parsing, mode dispatch, client subcommands, dashboard assets; constructs the `BuildId` value at build time and passes it down (RFC-0062 §8.1) | `daemon`, `runner`, `config`, `obs`, `api` and `ipc` (the client's API types and local socket, added 2026-10-27, note below), and `cluster`, `net` and `sched` (the configuration sections of the binary's registry, added 2026-10-27, note below) | 0051 |
 | — | `testkit` | simulated fabric (virtual nodes; links with α, β, p99 and loss; fake devices), the deterministic simulator that drives the protocol cores (`SimClock`, `SimEntropy`), fake `KernelProvider`, `RefExecutor` and the parity harness, golden traces | any (dev-dependency only) | 0060 |
 | — | `bench` | benchmark scenarios, result schema, regression gates | `cli` (as a client), `testkit` | 0061 |
 
 *Note 2026-10-21 (amendment, §18.8):* `config-derive` joins layer 0. RFC-0054 §10.3 puts the schema derive in `config`, but Rust requires a proc-macro to be its own crate, and a proc-macro crate can export nothing but macros. `config-derive` therefore holds the derive, with no runtime code and no workspace dependencies, and `config` re-exports it, so other crates name only `config`.
 
 *Note 2026-10-22 (amendment, §18.9):* `spsc` joins layer 1. `io` (its submission rings and RFC-0021 §3.1's rings to the I/O thread), `net` (its rings to the network task, §5.8) and `ipc` all need §8.3's ring, and all three are in layer 1, where rule 2 forbids edges between crates (OQ-IO-29). `spsc` holds the one implementation, with no workspace dependencies, so one set of loom models covers every ring.
+
+*Note 2026-10-27 (amendment, §18.38):* `api` depends on `ipc`. The API's local socket (RFC-0050 §1.1) uses the endpoint and peer check of the daemon-runner channel, in its tokio form (`ipc::cmd::AsyncListener`), and `/v1/syntropy/version` reports `ipc`'s protocol major. The `unsafe` these need stays in `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and neither crate is a compute crate (rule 3).
+
+*Note 2026-10-27 (amendment, §18.40):* `cli` depends on `api` and `ipc`. Its native-API client reads and writes the `syntropy-api` types the server uses, so the two cannot disagree about a field (RFC-0051 §1), and it reaches the local socket through `ipc::cmd::connect_async`. Both edges point to lower layers (rule 2).
+
+*Note 2026-10-27 (amendment, §18.42):* `cli` depends on `cluster`, `net` and `sched` for their configuration sections. `config show --resolved`, `config check` and `config path` (RFC-0054 §2.2, §8) resolve over the binary's section registry, which holds every section of the crates the binary links; `cluster`, `net` and `sched` declare theirs, and `cli` is the one crate above all three. All three edges point to lower layers (rule 2).
 
 Packaging, installers, backend modules and update channels (RFC-0052) and CI (RFC-0062) live outside the crate graph, in `packaging/` and `.github/`. A backend module is a directory beside the core binary of the same version holding one provider library and its vendor redistributables (ADR-0507, RFC-0052 §4.3).
 
@@ -1104,9 +1112,9 @@ pub trait KernelProvider: Send + Sync {
     /// Checks for sticky device errors. A sticky error fails the runner with class Device.
     fn health(&self, ctx: &DeviceCtx) -> DeviceHealth;
 
-    // Added by RFC-0040 §2.1, which gives their full signatures. All but `poll` and
-    // `synchronize` have default bodies (Unsupported, None or a no-op); those two have none,
-    // because every backend implements them.
+    // Added by RFC-0040 §2.1, which gives their full signatures. All but `build`, `domain`,
+    // `poll` and `synchronize` have default bodies (Unsupported, None or a no-op); those four
+    // have none, because every backend implements them (corrected 2026-10-23, §18.32).
     // build() -> ProviderBuild           build identity; part of every selection-cache key
     // domain() -> MemoryDomain           providers that share buffers, streams and events
     // memory_info(ctx)                   free and budgeted memory now; never on a hot path
@@ -1540,6 +1548,8 @@ pub enum RunnerState {
 pub enum RunnerStateKind { Fetching, Packing, Loading, Warming, Ready, Draining, Failed, Stopped }
 pub enum DrainReason { Replan { successor: PlanEpoch }, Unload, Shutdown, NodeLeaving, RestartBudgetSpent }
 /// Why a runner stopped (§18.28): after a drain, or from `Failed` (§3.3). Not the API's completion reason.
+/// From `Failed`, a spent restart budget is `Drained(DrainReason::RestartBudgetSpent)` and a fatal error
+/// `Fatal(class)`, so the supervisor and the event log name the same reason (§18.34).
 pub enum StopReason { Drained(DrainReason), Fatal(ErrorClass) }
 ```
 
@@ -1556,7 +1566,7 @@ pub struct Error {
     pub scope: ErrorScope,                      // Sequence(SequenceId) | Stage(StageIx) | Runner
                                                 // | Node(NodeId) | Link(LinkId) | Instance | Cluster
     pub retry: RetryHint,                       // Never | After(Nanos) | OnNewPlan | Backoff
-    pub context: SmallVec<[(&'static str, String); 4]>,
+    pub context: SmallVec<[(Cow<'static, str>, String); 4]>, // Cow since 2026-10-23 (§18.32)
     pub source: Option<Box<Error>>,
 }
 
@@ -1615,7 +1625,8 @@ pub enum ErrorClass {
 | `GrammarRef` | core (added 2026-10-23; §5.8's note) | 0050 | 0012 (masks) |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
-| `Error`, `ErrorClass` | core | 0001 | every RFC (codes) |
+| `ReplanReason`, `DriftTerm`, `WorkloadTerm` | core (added 2026-10-23, §18.33) | 0033 | 0010 (the terms), 0031 (`DriftTerm::Hop`), 0054 (`Config { keys }`) |
+| `Error`, `ErrorClass`, `ErrorCode`, `Domain` | core | 0001 | every RFC (codes in its domain; the `Domain` variant and range come with its table), 0050 (the API shape per code) |
 | Policy objects (`Objective`, `ExactnessPolicy`, `ResourcePolicy`, `ResourceOverlay`, `InstancePolicy`), and the plain-data field types `config` parses into (`Fidelity`, `ApproxParams`, `NetworkScope`, `Reserve`, `Fraction`, the selectors, `PlacementPin`, `TensorOverride`, `KeyPath`, `ConfigValue`; OQ-PRD-27) | core | 0054 | 0011, 0012, 0042 |
 | Canonical encoding (`canon::to_bytes`), behind `InstancePolicy::canonical_bytes` and `digest_with` | core | 0054 (§4.5) | |
 | `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore`, `Outbox` | core | 0060 | 0030, 0032, 0033 (the protocol cores) |
@@ -1873,6 +1884,7 @@ sequenceDiagram
 | `NodeAdmitted` | deferred | solve in the background; adopt only when the predicted gain passes the hysteresis threshold and the move pays back (below) |
 | Capability drift: a measured term more than `replan.drift_threshold` (default 20%) off the profile for longer than `replan.drift_window` | deferred | `ReportProfile`, `GraphUpdated`, then as for `NodeAdmitted`. The 10% drift event of §7.4 is telemetry only |
 | Workload drift: hit curves, acceptance or context lengths off what the plan assumed (`WorkloadUpdated`, RFC-0010 §7) | deferred | delta solve over budgets only (RFC-0011 §12.3); a delta that improves predicted `t_tok` by at least 2% is adopted in place, since nothing moves; otherwise as for `NodeAdmitted` |
+| A hop demoted to another transport (RFC-0031 §3, §7.4), applied as RFC-0033 §11's `EdgeDemoted` event | deferred | the next solve costs the new transport; solve in the background and adopt as for `NodeAdmitted`, with `ReplanReason::Drift { term: DriftTerm::Hop { link, transport } }`, `transport` the planned one (RFC-0033 §6.1, note of 2026-10-23) |
 | Sustained memory pressure (§10.3) | deferred | first degrade locally; re-plan only when the ladder is exhausted or pressure outlasts `replan.pressure_window` |
 | User: load, unload, policy change; a cluster or `hot` node key the solver reads (headroom, labels, GPU filters) | as requested | new epoch (`ReplanReason::Config`) |
 
@@ -2719,7 +2731,9 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | SC-17's bound is `α_wire + S/β + 2 · t_switch`; Goals item 3 and §5.3 still quote `α_wire + 2 · t_switch`. Done 2026-10-20 | DIST | RFC-0032 Goals, §5.3 |
 | RFC-0062 §12.1: row 1 checks `core`'s normal and build dependencies (rule 1's 2026-10-21 note), and row 7 is named for rule 7 as it now reads (GPU providers ship in backend modules) instead of "backends are cargo features resolved at runtime" | QUAL | RFC-0062 §12.1 |
 
-### 18.6 Core types for the I/O interface (2026-10-21)
+### 18.6a Core types for the I/O interface (2026-10-21)
+
+*Note 2026-10-23:* this entry was headed §18.6, a number §18.6 "Changes requested in other documents" already had. It is §18.6a, so the log keeps its date order without renumbering the entries after it. The two citations of §18.6, in this section's introduction and in §18.2's row on the b2 prefill figure, mean "Changes requested in other documents", and no text cited this entry by number.
 
 `syntropy-io`'s interface (RFC-0021 §2) needs types that other crates share. They are placed in `core`.
 
@@ -2878,7 +2892,7 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 
 | Change | Sections touched | Reason |
 |---|---|---|
-| `AttnKind::Compressed` becomes `Compressed { sinks: bool }`, so `KernelClass::Attention` carries the sink flag. `AttnIndex(CompressedTopK)` runs only on layers whose ratio has an indexer (r = 4), r = 128 layers read every formed entry, and r = 0 layers read the raw window alone. `deepseek4` lists `AttnIndex(CompressedTopK)` as its indexer and no longer lists `SparseIndexed` or a separate `SlidingGqa` | §5.2 (`KernelClass` doc); RFC-0040 §3.1 (dated note); RFC-0043 §3.1, §5.5, open question 2; ADR-0003 (revision note, decision 1 unchanged). In code, `core`'s `AttnKind::Compressed` is still a unit variant, and COMP-E1-T10 moves it, changing its serde form and the IPC schema fingerprint | COMP-E16-T18 settles OQ-MF-16 (a)–(c) from the reference code COMP-E16-T15 read (`deepseek-ai/DeepSeek-V4-Pro` revision `b5968e9190ef611bbf34a7229255be88a0e937c1`). For the maintainers to confirm |
+| `AttnKind::Compressed` becomes `Compressed { sinks: bool }`, so `KernelClass::Attention` carries the sink flag. `AttnIndex(CompressedTopK)` runs only on layers whose ratio has an indexer (r = 4), r = 128 layers read every formed entry, and r = 0 layers read the raw window alone. `deepseek4` lists `AttnIndex(CompressedTopK)` as its indexer and no longer lists `SparseIndexed` or a separate `SlidingGqa`. In code, `core`'s `AttnKind::Compressed` is still a unit variant, and COMP-E1-T10 moves it, changing its serde and postcard forms, so that change bumps `ipc_protocol` (§18.20) and the IPC schema fingerprint changes with it | §5.2 (`KernelClass` doc); RFC-0040 §3.1 (dated note); RFC-0043 §3.1, §5.5, open question 2; ADR-0003 (revision note, decision 1 unchanged) | COMP-E16-T18 settles OQ-MF-16 (a)–(c) from the reference code COMP-E16-T15 read (`deepseek-ai/DeepSeek-V4-Pro` revision `b5968e9190ef611bbf34a7229255be88a0e937c1`). For the maintainers to confirm |
 
 ### 18.28 Types the IPC carries live in `core`, and their messages arrive with them (2026-10-23)
 
@@ -2889,8 +2903,81 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 | The rule covers the types a moved type holds: `RunnerState`'s (`Degradation` among them), `ResidencySummary`'s eleven (`Purpose` among them), `ProbeSuite`'s `ModelShapes`, and `ProviderName` (COMP-E2-T13), each listed under the task that defines it in `core`. `RunnerConfig` is `ResourcePolicy` plus resolved `KeyPath → ConfigValue` values, not the typed sections. A field that holds transport state or a `kernels` type travels in a form `core` holds: `RemoteEndpoint` as `net`-encoded bytes beside its `NodeId`, and `DegradeDetail::Fallback`'s op and provider as owned text | §3.5 (dated note) | a type in `core` can hold only layer-0 types. Listing each type under its owner keeps the RFC-0020, RFC-0022, RFC-0023 and RFC-0033 definitions unchanged; a narrower core-level summary would redesign them. Only these two fields reach past plain data |
 | `Deadline { within: Nanos }` is a duration counted from receipt, and `RunnerState::Draining` carries it for `deadline_ms`. `Drain` loses `successor`, which `DrainReason::Replan` already carries. `StopReason` is defined: `Drained(DrainReason)` or `Fatal(ErrorClass)`. `SequenceOutcome` gets its variants, and `FetchPriority` RFC-0041 §7's, with RFC-0031 §6.10 mapping them to blob-plane classes | §3.5, §5.11; RFC-0031 §6.10 (dated note) | an absolute instant cannot cross machines, and RFC-0011 §13 already passes `Option<Deadline>` between nodes. One source for the successor epoch. §3.3 stops a runner from `Draining` or from `Failed`, and the only `StopReason` in the RFCs was the API's completion reason. RFC-0041 §7 defines what `FetchShard`'s priority does |
 
+### 18.29 The split heal compares standings (2026-10-23)
+
+DIST-E10-T10 model-checked OQ-NET-34's option (a), which was settled under the maintainers' standing instruction of 2026-10-22.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| the split heal compares standings, the strongest supported election in a node's chain and then its coordinator's proof, instead of proofs alone; a node keeps the elections it endorsed on disk with its command journal; a held proof's support only grows; every accepted election is endorsed once; fencing replies carry the sender's strongest supported election | RFC-0032 §6.3, §7.5 (dated notes); ADR-0304 (revision of 2026-10-23, changing items 2–4 of its second 2026-10-19 revision) | a stale supported proof rolled a lone survivor back past a command its own ack had made `replicated = true` (OQ-NET-34). For the maintainers to confirm |
+| RFC-0032 Testing's property "an unsupported self-election never deposes a supported coordinator" ends "unless the deposing side's chain holds a supported election that beats that coordinator's" | RFC-0032 Testing (the row, and a dated note) | OQ-NET-34's 15-step trace shows that any rule which keeps the acknowledged command must depose the stale coordinator there; an isolated node still cannot win a heal by inflating its counter |
+
 ### 18.30 The sequence types' field types in `core` (2026-10-23)
 
 | Change | Sections touched | Reason |
 |---|---|---|
 | `PrefixRef` and its `PrefixKey` and `TailId`, and `GrammarRef`, are `core` types in `core::sequence`. `TailId` was one of TIER-E6-T02's supporting types, listed in RFC-0022's KV listing; TIER-E6-T02 and TIER-E7-T01 now use `core`'s, and PROD-E3-T05 uses `core`'s `GrammarRef`. `LogprobBlock { k: 0 }` is the chosen tokens' logprobs alone, which `net` cannot encode until OQ-NET-35 settles. `TokenEntry::rng_counter` has no serde default | §5.8 (dated notes of 2026-10-23), §5.13; RFC-0022 §7.1, §7.2; RFC-0031 §6.5 (dated notes); RFC-0050 §3.1 (dated note) | DIST-E1-T14 builds `SequenceOpen` and `SamplingParams`, which hold these types, and `core` cannot name a type of `tier` or `api` (review-1493's N5 on #1780). For the maintainers to confirm |
+
+### 18.31 Link selection's cost, home and demotion report (2026-10-23)
+
+DIST-E7-T11's criteria needed three things RFC-0031 §3 named but no task defined: a cost function the solver could call, a type for the demotion, and a message to report it. They were settled under the maintainers' standing instruction.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `LinkCaps` (§5.2) and `link_cost(caps, size, objective, λ) -> Nanos` live in `core::resource::link`; `net`'s `Transport::cost` delegates to it | RFC-0031 §3 (dated note) | the solver picks a hop's transport by `cost_t` and must not depend on `net`; no task had built §5.2's base `LinkCaps` |
+| `cost_t` is the selection cost between an edge's transports, not the objective's hop term, which stays RFC-0011 §5's `α^plan + S/β` with C14's wireless costing; z defaults per transport [estimate], derived in the note | RFC-0031 §3 (dated note) | λ = 1.0 on Wi-Fi predates C14 (2026-10-20), which costs wireless hops at their mean in the objective |
+| A hop's demotion is reported in one new R → D message, `EdgeDemoted { demotion, cause, cost }`, for both the connect-time fallback (RFC-0031 §3) and the fault-time demotion (RFC-0031 §7.4); `Demotion` and `DemotionCause` are in `core`; the daemon forwards it as RFC-0033 §11's `ReportEdgeDemoted`; its `cost` is §3's drift report, not sent twice; `TRANSPORT_DEMOTED` is set from it by DIST-E14-T13 | §3.5; RFC-0031 §3 (dated note) | §3.5 had no message for either path, and RFC-0033 §11's `ReportEdgeDemoted` names a `cause` no type held. `Degradation` is built at M3, after DIST-E7-T11 (M2). A re-plan for it needs `ReplanReason::Drift` with a `DriftTerm::Hop { link, transport }`, and no task builds `ReplanReason` yet. For the maintainers to confirm |
+
+### 18.32 Default bodies in §5.7, and owned names in `Error` (2026-10-23)
+
+From issue #1525, the review of COMP-E1-T01.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| §5.7's comment says that `build`, `domain`, `poll` and `synchronize` have no default bodies | §5.7 | RFC-0040 §2.1, which §5.7 defers to, gives `build` and `domain` no body; the comment named only `poll` and `synchronize` |
+| `Error::context`'s keys are `Cow<'static, str>`, not `&'static str` | §5.12 | `Error` crosses the IPC in `ErrorReport` (§3.5), and decoding a `&'static str` needs a buffer that lives for the whole program, so every decode would leak one. Code still writes literal keys without allocating. RFC-0040 §2.2 makes the same change to `ProviderId` and `ProviderBuild` (note of the same date) |
+
+### 18.33 `ReplanReason` in `core`, with its term types (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ReplanReason` (RFC-0033 §6.1) is plain data in `core`, built by a new task, DIST-E14-T21, at M1a; `DriftTerm` gets one variant per RFC-0010 §6.2 live estimator (`Bandwidth`, `FixedTime`, `Storage`, `HostLink`, `Hop`) and is `#[non_exhaustive]`; `WorkloadTerm` gets RFC-0010 §7.1's | §5.13; RFC-0033 §6.1 (dated note) | ten tasks, the first at M1a, use it and no task built it; the solver reads it in `SolveInput::reason` and cannot depend on `cluster`. `DriftTerm` was named but never defined. For the maintainers to confirm |
+| A hop demoted to another transport is a deferred trigger, solved in the background and adopted as for `NodeAdmitted`, with `DriftTerm::Hop` naming the planned transport; DIST-E14-T15, which applies RFC-0033 §11's `EdgeDemoted` event, raises it | §7.2; RFC-0011 §12.1 (the matching row) | §7.2 had no row for the demotion, which RFC-0031 §3 and §7.4 raise and RFC-0033 §11 records |
+
+### 18.34 The split heal in ADR-0009, and the stop reason of a spent restart budget (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| ADR-0009 item 7's "On heal, the higher epoch wins" is replaced by ADR-0304's heal order, now its standings comparison | ADR-0009 (revision of 2026-10-23, item 7 marked) | ADR-0304 has ranked support ahead of the counter since 2026-10-19 (item 3 of its "Revised 2026-10-19, second revision" block), so item 7 had contradicted it since then; RFC-0032 §7.5 and DIST-E10-T05 follow ADR-0304 (the review of #1783) |
+| `Failed → Stopped` on a spent restart budget carries `StopReason::Drained(DrainReason::RestartBudgetSpent)`; on a fatal error, `Fatal(class)` | §5.11 (`StopReason` doc); DIST-E1-T05 | §3.3's edge named both causes, and both variants could carry the first; the supervisor and the event log now name the same one (the review of #1789) |
+
+### 18.35 Hardware jobs before their rigs run (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A hardware job whose rig and `lab.yml` job do not exist yet is marked `planned` in `ci/jobs.toml`. `ci-gate` does not hold a same-repository PR for it, but still holds a fork PR. QUAL-E2-T02 ends the interim for `hw-cuda-ada`, and QUAL-E2-T08 adds the other Tier 1 rigs' jobs | ADR-0620 decision 3 (dated revision); RFC-0062 §2.5 (dated note) | QUAL-E1-T07 requires hardware for every PR touching the hardware paths, months before the first rig runs. Without the interim, most engine and networking PRs could not merge. Fork PRs keep ADR-0620 decision 4's rule. Taken under the maintainer's standing instruction, for the maintainers to confirm |
+| The direct hardware paths gain `numerics/`, the tolerance tables `kernels` embeds | ADR-0620 decision 3 (dated revision); RFC-0062 §2.2 (dated note) | the op conformance a hardware job runs checks against those tables, so a change to a ceiling alone changes what the rig judges. From the engine-lane review of #1830 |
+
+### 18.38 The API's local socket in `ipc` (2026-10-27)
+
+PROD-E2-T01 builds the HTTP server of RFC-0050 §1.1, with its local socket.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `api` depends on `ipc`; `ipc` gains `AsyncListener`, the owner-only endpoint and peer check of §3.5 for servers on tokio, outside `--cfg loom` | §4.1 (row and dated note) | the local socket needs the same owner-only endpoint and OS peer check as the daemon-runner channel, which need `unsafe`, which rule 8 confines to `ipc`; `/v1/syntropy/version` reports `ipc`'s protocol major. For the maintainers to confirm |
+
+### 18.40 The CLI's client edges (2026-10-27)
+
+PROD-E6-T01 builds the CLI skeleton of RFC-0051 §1–§2.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `cli` depends on `api` and `ipc` | §4.1 (row and dated note) | the client uses the server's `syntropy-api` types, as RFC-0051 §1 requires, and the local socket's client end in `ipc`. For the maintainers to confirm |
+
+### 18.42 The binary's configuration registry (2026-10-27)
+
+PROD-E6-T23 builds `config show --resolved`, `config check` and `config path` in the CLI.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `cli` depends on `cluster`, `net` and `sched` | §4.1 (row and dated note) | the configuration commands resolve over the binary's section registry, which needs every crate that declares a section; `cli` is the one crate above them all. For the maintainers to confirm |

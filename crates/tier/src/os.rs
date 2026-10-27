@@ -13,15 +13,41 @@
 //!   are those of x86-64 and AArch64, the Linux targets ADR-0020 supports, so it is built for
 //!   those two only; another Linux architecture has no adapter and no `os::linux` module.
 //!
-//! The Windows adapter comes in TIER-E2-T03, WSL2 and macOS in TIER-E2-T04.
+//! - `windows` is the Windows adapter (TIER-E2-T03): `VirtualAllocExNuma`, `VirtualLock`,
+//!   the hard working-set minimum, `GlobalMemoryStatusEx`, job-object limits and the
+//!   low-memory notification, with its kernel32 declarations; built for x86-64 and AArch64.
+//! - Both adapters keep their live ranges in one shared registry (`registry`).
+//! - `macos` holds the macOS sysctl reads `syntropy tune`'s tier side needs (TIER-E2-T13):
+//!   `sysctlbyname` with no new value, under a scoped `allow`. Nothing in this crate writes a
+//!   sysctl (RFC-0020 §9.1).
+//!
+//! WSL2 and the rest of macOS come in TIER-E2-T04.
 
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod procfs;
+
+// Shared by the adapters; unused, and so allowed to be, where neither is built.
+#[cfg_attr(
+    not(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(windows, any(target_arch = "x86_64", target_arch = "aarch64"))
+    )),
+    allow(dead_code)
+)]
+mod registry;
 
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub mod linux;
+
+#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub mod windows;
 
 use std::fmt;
 use std::ops::Range;
@@ -539,14 +565,48 @@ impl fmt::Display for OsMemError {
 
 impl std::error::Error for OsMemError {}
 
+// ---- Gated commit ---------------------------------------------------------------------------
+
+/// The commit-headroom term of RFC-0020 §6's gate: committing `len` more bytes leaves at least
+/// `headroom` of the commit limit. Always true where the OS has no commit accounting
+/// (`commit_headroom` is `None`, every OS but Windows).
+pub fn commit_term(s: &MemSnapshot, len: Bytes, headroom: Bytes) -> bool {
+    s.commit_headroom.is_none_or(|h| {
+        h.0.checked_sub(len.0)
+            .is_some_and(|left| left >= headroom.0)
+    })
+}
+
+/// Whether [`commit_if`] committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitOutcome {
+    /// The gate allowed it and the pages are committed.
+    Committed,
+    /// The gate refused; nothing was committed, so no commit charge was taken.
+    Deferred,
+}
+
+/// Commits `sub` only if `gate` allows it on a fresh snapshot (RFC-0020 §4.2, Windows row: "no
+/// commit charge is taken before the gate allows it"). `gate` gets the snapshot and the bytes
+/// the commit would charge; the pinning loop (TIER-E2-T07) passes RFC-0020 §6's gate, of
+/// which [`commit_term`] is the Windows part.
+pub fn commit_if(
+    os: &dyn OsMemory,
+    r: &HostRange,
+    sub: Range<u64>,
+    gate: impl FnOnce(&MemSnapshot, Bytes) -> bool,
+) -> Result<CommitOutcome, OsMemError> {
+    check_sub(r.len, &sub)?;
+    let len = Bytes(sub.end - sub.start);
+    if gate(&os.snapshot(), len) {
+        os.commit(r, sub)?;
+        Ok(CommitOutcome::Committed)
+    } else {
+        Ok(CommitOutcome::Deferred)
+    }
+}
+
 /// Checks that `sub` lies inside a range of `len` bytes and is not empty.
-#[cfg_attr(
-    not(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    )),
-    allow(dead_code)
-)]
 pub(crate) fn check_sub(len: Bytes, sub: &Range<u64>) -> Result<(), OsMemError> {
     if sub.start < sub.end && sub.end <= len.0 {
         Ok(())

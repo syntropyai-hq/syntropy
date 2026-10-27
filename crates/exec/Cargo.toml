@@ -18,6 +18,10 @@ syntropy-spsc = { path = "../spsc" }
 
 [dev-dependencies]
 serde_json.workspace = true
+smallvec.workspace = true
+# The CPU provider, whose stream work runs under the dispatcher loop in `tests/cpu_in_step_wake.rs`
+# (COMP-E3-T02).
+syntropy-kernels-cpu = { path = "../kernels-cpu" }
 # The simulator driver (`SimWorld`, `SimTicks`) that runs a stage through `poll_once` and
 # `run_inline` (RFC-0060 §2.3, §8.2).
 syntropy-testkit = { path = "../testkit" }

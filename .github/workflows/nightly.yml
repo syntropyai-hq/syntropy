@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# The nightly workflow (RFC-0062 §2.1). This is its skeleton (QUAL-E1-T08): the trigger, the
+# concurrency rule and the conventions its jobs follow. The suites themselves arrive with the tasks
+# that build them: full-architecture builds for every tier, RFC-0060's nightly suites, RFC-0061's
+# nightly benchmark set, the fuzz rotation, the reproducibility check and the nightly channel.
+# Until then its one job is a placeholder that costs a few seconds of a hosted runner.
+#
+# Concurrency. One group, `nightly`, never cancelled in progress. A run that starts while another
+# is running waits as pending. A newer run replaces a pending one, and the running one finishes,
+# so a slow night is never cut short and the queue never holds more than one run.
+#
+# Lab work never runs here. A nightly suite on a rig is a request to the lab dispatcher, which runs
+# it as `lab.yml` jobs on `main` (RFC-0062 §3.2). Each such job is a chunk of at most 60 minutes
+# (§3.4), so a PR's hardware job waits behind at most one chunk. `cargo xtask ci lint` fails any
+# lab job without a `timeout-minutes` of at most 60.
+#
+# The same rules as `pr.yml` hold: read-only permissions, actions pinned by SHA, hosted runners
+# only, no `pull_request_target`.
+
+name: nightly
+
+on:
+  schedule:
+    # Daily at 02:00 UTC (RFC-0062 §2.1).
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Nightly suites
+        run: |
+          echo "nightly: skeleton (QUAL-E1-T08). The nightly suites of RFC-0062 §2.1 land with"
+          echo "the tasks that build them; lab work goes through the lab dispatcher (§3.2)."

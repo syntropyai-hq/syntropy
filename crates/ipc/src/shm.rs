@@ -52,6 +52,9 @@ use syntropy_spsc::shared::{LayoutError, SharedConsumer, SharedLayout, SharedPro
 
 mod os;
 
+#[cfg(windows)]
+pub(crate) use os::{OwnerOnly, UserSid, wide};
+
 /// The first 8 bytes of every region.
 pub const MAGIC: [u8; 8] = *b"SYNTRSHM";
 

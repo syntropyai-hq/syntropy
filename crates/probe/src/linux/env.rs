@@ -3,6 +3,7 @@
 //! Environment facts: WSL2, containers, the io_uring sysctl, seccomp, and the power source.
 
 use syntropy_core::resource::caps::PowerSource;
+use syntropy_io::os::checks::{self, SysCheck};
 
 use super::{at, list_opt, parse, read, read_opt};
 use crate::error::EnumError;
@@ -16,10 +17,16 @@ pub struct HostEnv {
     pub wsl2: bool,
     /// The process runs in a container, when detectable.
     pub container: Option<ContainerKind>,
-    /// `/proc/sys/kernel/io_uring_disabled`. This is half of RFC-0010 §2.2's "io_uring
-    /// allowed" test; the other half, `io_uring_setup` succeeding, is a system call and
-    /// belongs to PLC-E1-T14.
+    /// `/proc/sys/kernel/io_uring_disabled`: one half of RFC-0010 §2.2's "io_uring allowed"
+    /// test. [`HostEnv::io_uring_allowed`] combines it with [`HostEnv::io_uring_setup`].
     pub io_uring: IoUringSysctl,
+    /// The other half: whether `io_uring_setup` created a ring in this process. A seccomp
+    /// filter can refuse it while the sysctl is 0.
+    pub io_uring_setup: SysCheck,
+    /// The AMX tile-data permission request's outcome, or `None` when the CPU reports no AMX
+    /// and the request was not made. `CpuTopology::amx_permitted` is true exactly when this is
+    /// [`SysCheck::Granted`].
+    pub amx_permission: Option<SysCheck>,
     /// A seccomp filter is installed on this process (`Seccomp: 2` in `/proc/self/status`).
     /// Container runtimes' default filters may block io_uring (ADR-0020), so a filtered
     /// process cannot assume it is allowed even when the sysctl is 0.
@@ -28,6 +35,15 @@ pub struct HostEnv {
     pub cgroup: CgroupVersion,
     /// The process holds `CAP_IPC_LOCK`, so locking is not limited by `RLIMIT_MEMLOCK`.
     pub cap_ipc_lock: bool,
+}
+
+impl HostEnv {
+    /// RFC-0010 §2.2's io_uring-allowed test: the sysctl lets this process create rings and
+    /// `io_uring_setup` succeeded.
+    #[must_use]
+    pub fn io_uring_allowed(&self) -> bool {
+        checks::io_uring_allowed(self.io_uring.permits(), self.io_uring_setup)
+    }
 }
 
 /// A container runtime.
@@ -61,6 +77,21 @@ pub enum IoUringSysctl {
     Disabled,
 }
 
+impl IoUringSysctl {
+    /// The sysctl lets this process create rings: it is absent or 0, or it is 1 and the
+    /// process is in `kernel.io_uring_group`. A process outside the group that holds
+    /// `CAP_SYS_ADMIN` may still create rings, but this method does not read capabilities and
+    /// reports false there, so the io_uring-allowed test errs towards the `pread` pool.
+    #[must_use]
+    pub fn permits(self) -> bool {
+        match self {
+            IoUringSysctl::Absent | IoUringSysctl::Enabled => true,
+            IoUringSysctl::GroupOnly { member, .. } => member,
+            IoUringSysctl::Disabled => false,
+        }
+    }
+}
+
 /// Which cgroup hierarchy holds this process's memory limit.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,9 +116,11 @@ pub(super) fn facts(fs: &dyn HostFs) -> Result<HostEnv, EnumError> {
         container: container(fs)?,
         io_uring: io_uring(fs, &status)?,
         seccomp_filtered,
-        // Filled from the memory facts by the caller.
+        // Filled from the memory facts and the system-call checks by the caller.
         cgroup: CgroupVersion::None,
         cap_ipc_lock: false,
+        io_uring_setup: SysCheck::Unsupported { errno: None },
+        amx_permission: None,
     })
 }
 

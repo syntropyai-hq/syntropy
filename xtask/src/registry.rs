@@ -24,8 +24,8 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom, properties,
-    repo_settings, sim_presets, toolchain,
+    changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom,
+    plan_tools, properties, repo_settings, sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -74,6 +74,12 @@ pub enum Action {
     /// `cargo <args>`, with the cargo that started xtask (`$CARGO`), so the toolchain pinned in
     /// `rust-toolchain.toml` runs every step.
     Cargo(&'static [&'static str]),
+    /// `cargo <args>` as [`Action::Cargo`] runs it, with environment variables set for the
+    /// child, replacing any it would inherit: the `rustdoc` step's `RUSTDOCFLAGS`.
+    CargoWith {
+        env: &'static [(&'static str, &'static str)],
+        args: &'static [&'static str],
+    },
     /// `cargo xtask <args>`: this binary again, as a child process, for a check that lives in
     /// xtask. It inherits the environment, so it checks the same checkout.
     Xtask(&'static [&'static str]),
@@ -90,6 +96,9 @@ impl PartialEq for Action {
     fn eq(&self, other: &Action) -> bool {
         match (self, other) {
             (Action::Cargo(a), Action::Cargo(b)) => a == b,
+            (Action::CargoWith { env: a, args: b }, Action::CargoWith { env: c, args: d }) => {
+                a == c && b == d
+            }
             (Action::Xtask(a), Action::Xtask(b)) => a == b,
             (Action::Builtin { shown: a, .. }, Action::Builtin { shown: b, .. }) => a == b,
             _ => false,
@@ -116,6 +125,20 @@ impl Action {
                 command.args(*args);
                 Some(command)
             }
+            Action::CargoWith { env, args } => {
+                let mut command = Command::new(cargo());
+                // Cargo prefers `CARGO_ENCODED_RUSTFLAGS` and `CARGO_ENCODED_RUSTDOCFLAGS` to the
+                // plain variables, even when they are empty, so an inherited one would replace the
+                // flags this step sets (`-D warnings` for rustdoc). Clear the encoded form of each
+                // flags variable the step sets.
+                for (name, _) in *env {
+                    if *name == "RUSTFLAGS" || *name == "RUSTDOCFLAGS" {
+                        command.env_remove(format!("CARGO_ENCODED_{name}"));
+                    }
+                }
+                command.envs(env.iter().copied()).args(*args);
+                Some(command)
+            }
             Action::Xtask(args) => {
                 // If the path is unknown, the step fails with "could not start".
                 let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("xtask"));
@@ -132,6 +155,22 @@ impl Action {
         match self {
             Action::Cargo(args) => {
                 let mut line = String::from("cargo");
+                for arg in *args {
+                    line.push(' ');
+                    line.push_str(arg);
+                }
+                line
+            }
+            Action::CargoWith { env, args } => {
+                let mut line = String::new();
+                for (name, value) in *env {
+                    if value.contains(' ') {
+                        line.push_str(&format!("{name}=\"{value}\" "));
+                    } else {
+                        line.push_str(&format!("{name}={value} "));
+                    }
+                }
+                line.push_str("cargo");
                 for arg in *args {
                     line.push(' ');
                     line.push_str(arg);
@@ -156,12 +195,25 @@ pub fn cargo() -> OsString {
     std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
+/// `lint`'s `rustdoc` step: the workspace's own crates documented with every rustdoc warning an
+/// error, a broken or ambiguous intra-doc link among them.
+pub const RUSTDOC: Action = Action::CargoWith {
+    // `-F` (forbid) on the link lint, so a crate cannot lift it with `#![allow(…)]` or a
+    // manifest `[lints]` entry: rustdoc then fails with E0453 (review of #1884, N4).
+    env: &[(
+        "RUSTDOCFLAGS",
+        "-D warnings -F rustdoc::broken_intra_doc_links",
+    )],
+    args: &["doc", "--workspace", "--no-deps", "--locked"],
+};
+
 /// The CI jobs, called by `cargo xtask ci <job>`. RFC-0062 §2.3 lists the jobs the plan expects.
 pub const JOBS: &[Entry] = &[
     Entry {
         name: "lint",
-        summary: "the L0 static checks: rustfmt, clippy with the determinism lints, the crate \
-                  dependency rules, CODEOWNERS and the licence policy",
+        summary: "the L0 static checks: rustfmt, clippy with the determinism lints, rustdoc, the \
+                  crate dependency rules, CODEOWNERS, the licence policy and the workflow \
+                  security rules",
         defined_in: "RFC-0062 §2.3 and §12.4",
         params: &[],
         steps: &[
@@ -188,6 +240,14 @@ pub const JOBS: &[Entry] = &[
                     "-D",
                     "warnings",
                 ]),
+            },
+            // Rustdoc with every warning an error, so a broken or ambiguous intra-doc link fails
+            // a PR (RFC-0062 §2.3, note 2026-10-22; QUAL-E1-T31). It rebuilds the dependencies'
+            // metadata for rustdoc rather than reusing clippy's: 31.8 s on #1869's cold-cache hosted run
+            // [measured, lint job at 1f96829e].
+            Step {
+                name: "rustdoc",
+                action: RUSTDOC,
             },
             // What clippy cannot check about the determinism lints of RFC-0060 §2.1 and §2.4,
             // which the `clippy` step applies (QUAL-E3-T03).
@@ -280,6 +340,16 @@ pub const JOBS: &[Entry] = &[
                 name: "notices",
                 action: Action::Xtask(&["notices"]),
             },
+            // The workflow security lint and actionlint, over `.github/` (RFC-0062 §12.4;
+            // QUAL-E1-T09).
+            Step {
+                name: "workflows",
+                action: Action::Xtask(&["workflows"]),
+            },
+            Step {
+                name: "actionlint",
+                action: Action::Xtask(&["actionlint"]),
+            },
             // Scenario files, the SC map and RFC-0061 §4.2's table (QUAL-E13-T01, RFC-0061 §4).
             Step {
                 name: "scenarios",
@@ -305,15 +375,30 @@ pub const JOBS: &[Entry] = &[
                     run: sim_presets::step,
                 },
             },
+            // The affected-job rules and their golden suite (RFC-0062 §2.2; QUAL-E1-T07).
+            Step {
+                name: "jobs",
+                action: Action::Builtin {
+                    shown: "ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its \
+                            expected jobs, and covers pr.yml's jobs",
+                    run: changes::goldens_step,
+                },
+            },
+            // The task-graph check, so a plan-only diff, which runs `lint` alone, is checked
+            // (RFC-0062 §2.2, note 2026-10-23).
+            Step {
+                name: "plan",
+                action: Action::Builtin {
+                    shown: "the plan tools: every task row parses, the task graph checks, and \
+                            the generated sections are current",
+                    run: plan_tools::step,
+                },
+            },
         ],
-        // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
-        // further checks to `lint`, such as the `ci/jobs.toml` goldens (QUAL-E1-T07). The row's DCO
-        // and PR-title checks need a PR's data, so they are the `dco` and `pr-title` jobs, which are
-        // separate required checks (RFC-0062 §2.5).
-        pending: &[Pending {
-            check: "actionlint and the workflow security lint",
-            task: "QUAL-E1-T09",
-        }],
+        // Other task rows add further checks to `lint`. RFC-0062 §2.3's `lint` row also names the
+        // DCO and PR-title checks, which need a PR's data, so they are the `dco` and `pr-title`
+        // jobs, separate required checks (RFC-0062 §2.5).
+        pending: &[],
     },
     Entry {
         name: "dco",
@@ -490,10 +575,22 @@ pub const JOBS: &[Entry] = &[
         params: &[],
         // Until the `pr` profile exists, the PR build is the `dev` profile, which the hosted
         // tests use too.
-        steps: &[Step {
-            name: "dev",
-            action: Action::Xtask(&["build", "--profile", "dev"]),
-        }],
+        steps: &[
+            Step {
+                name: "dev",
+                action: Action::Xtask(&["build", "--profile", "dev"]),
+            },
+            // Rule 7 on this OS's core binary, built with no default features (RFC-0062 §12.1,
+            // QUAL-E1-T28). `lint` runs it with the other rules, on Linux only.
+            Step {
+                name: "rule-7",
+                action: Action::Builtin {
+                    shown: "rule 7 of RFC-0001 §4.2: the core binary, built with no default \
+                            features, loads only system libraries",
+                    run: check_deps::rule_7_step,
+                },
+            },
+        ],
         pending: &[Pending {
             check: "the `pr` profile build, in place of the `dev` build",
             task: "QUAL-E16-T21",
@@ -511,26 +608,76 @@ pub const JOBS: &[Entry] = &[
         pending: &[],
     },
     Entry {
-        name: "ci-gate",
-        summary: "the required check over `pr.yml`: every job `changes` listed passed, and no job \
-                  failed or was cancelled",
-        defined_in: "RFC-0062 §2.3 and §2.5",
-        params: &[Param {
-            name: "--needs",
-            value: "<file>",
-            help: "the `needs` context of the `ci-gate` job, as `${{ toJSON(needs) }}` writes it",
-            required: true,
+        name: "changes",
+        summary: "`changes` in `pr.yml`: the hosted jobs a change runs and the hardware jobs it \
+                  requires, from ci/jobs.toml",
+        defined_in: "RFC-0062 §2.2",
+        params: &[
+            Param {
+                name: "--base",
+                value: "<rev>",
+                help: "the commit the change is made against",
+                required: true,
+            },
+            Param {
+                name: "--head",
+                value: "<rev>",
+                help: "the commit with the change: a PR's merge commit, or a merge group's head",
+                required: true,
+            },
+            Param {
+                name: "--github-output",
+                value: "<file>",
+                help: "append `jobs=` and `hw_required=` to <file>, as $GITHUB_OUTPUT",
+                required: false,
+            },
+        ],
+        steps: &[Step {
+            name: "changes",
+            action: Action::Builtin {
+                shown: "the affected-job set of the change from --base to --head",
+                run: changes::step,
+            },
         }],
+        pending: &[],
+    },
+    Entry {
+        name: "ci-gate",
+        summary: "the required check over `pr.yml`: every job `changes` listed passed, no job \
+                  failed or was cancelled, and each required hardware job passed, by event",
+        defined_in: "RFC-0062 §2.3 and §2.5",
+        params: &[
+            Param {
+                name: "--needs",
+                value: "<file>",
+                help: "the `needs` context of the `ci-gate` job, as `${{ toJSON(needs) }}` writes \
+                       it",
+                required: true,
+            },
+            Param {
+                name: "--event",
+                value: "<file>",
+                help: "the run's `pull_request` or `merge_group` event payload",
+                required: true,
+            },
+            Param {
+                name: "--statuses",
+                value: "<file>",
+                help: "the PR head's commit statuses, every page of GET /commits/{sha}/statuses",
+                required: false,
+            },
+        ],
         steps: &[Step {
             name: "ci-gate",
             action: Action::Builtin {
-                shown: "every listed job passed, and none failed or was cancelled",
+                shown: "every listed job passed, none failed or was cancelled, and each required \
+                        hardware job has a passing `hw/<job>` status",
                 run: ci_gate::step,
             },
         }],
         pending: &[Pending {
-            check: "a passing `hw/<job>` status for each job in `hw_required`, by event",
-            task: "QUAL-E1-T07",
+            check: "on a merge group, the `hw/<job>` statuses of members labelled `hw:queue`",
+            task: "QUAL-E1-T11",
         }],
     },
     Entry {
@@ -797,6 +944,7 @@ mod tests {
                 "xtask: cargo and rustc are the release rust-toolchain.toml pins",
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
+                "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked",
                 "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
                  listed",
                 "cargo xtask check-deps",
@@ -813,10 +961,16 @@ mod tests {
                 "cargo xtask spdx",
                 "cargo xtask third-party",
                 "cargo xtask notices",
+                "cargo xtask workflows",
+                "cargo xtask actionlint",
                 "cargo run --locked --quiet --package syntropy-bench --bin syntropy-bench -- \
                  scenarios check",
                 "xtask: every simulator preset cites its sources, and labels and sources each \
                  figure",
+                "xtask: ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its expected \
+                 jobs, and covers pr.yml's jobs",
+                "xtask: the plan tools: every task row parses, the task graph checks, and the \
+                 generated sections are current",
             ]
         );
     }
@@ -854,7 +1008,7 @@ mod tests {
     fn lint_lists_the_checks_later_tasks_add() {
         let lint = find(JOBS, "lint").expect("lint is registered");
         let tasks: Vec<&str> = lint.pending.iter().map(|p| p.task).collect();
-        assert_eq!(tasks, ["QUAL-E1-T09"]);
+        assert!(tasks.is_empty(), "{tasks:?}");
     }
 
     #[test]
@@ -863,8 +1017,8 @@ mod tests {
             let entry = find(JOBS, job).expect("the build jobs are registered");
             let commands: Vec<String> = entry.steps.iter().map(|s| s.action.display()).collect();
             assert_eq!(
-                commands,
-                [format!("cargo xtask build --profile {profile}")],
+                commands[0],
+                format!("cargo xtask build --profile {profile}"),
                 "{job}"
             );
             assert!(
@@ -872,8 +1026,13 @@ mod tests {
                 "{job}: no profile `{profile}`"
             );
         }
-        // `build` names the profile that replaces `dev`.
+        let release = find(JOBS, "build-test-release").unwrap();
+        assert_eq!(release.steps.len(), 1);
+        // `build-<os>` checks rule 7 on each OS's core binary (QUAL-E1-T28).
         let build = find(JOBS, "build").unwrap();
+        let steps: Vec<&str> = build.steps.iter().map(|s| s.name).collect();
+        assert_eq!(steps, ["dev", "rule-7"]);
+        // `build` names the profile that replaces `dev`.
         let tasks: Vec<&str> = build.pending.iter().map(|p| p.task).collect();
         assert_eq!(tasks, ["QUAL-E16-T21"]);
     }
@@ -882,7 +1041,24 @@ mod tests {
     fn ci_gate_needs_the_needs_context_and_repo_settings_needs_nothing() {
         let gate = find(JOBS, "ci-gate").expect("ci-gate is registered");
         let params: Vec<(&str, bool)> = gate.params.iter().map(|p| (p.name, p.required)).collect();
-        assert_eq!(params, [("--needs", true)]);
+        assert_eq!(
+            params,
+            [("--needs", true), ("--event", true), ("--statuses", false)]
+        );
+        let changes = find(JOBS, "changes").expect("changes is registered");
+        let params: Vec<(&str, bool)> = changes
+            .params
+            .iter()
+            .map(|p| (p.name, p.required))
+            .collect();
+        assert_eq!(
+            params,
+            [
+                ("--base", true),
+                ("--head", true),
+                ("--github-output", false)
+            ]
+        );
         let settings = find(JOBS, "repo-settings").expect("repo-settings is registered");
         let params: Vec<(&str, bool)> = settings
             .params
@@ -946,6 +1122,92 @@ mod tests {
     #[test]
     fn names_keeps_registry_order() {
         assert_eq!(names(JOBS), JOBS.iter().map(|e| e.name).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn cargo_with_action_sets_its_environment_and_shows_it() {
+        let command = RUSTDOC.command().unwrap();
+        let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        assert_eq!(
+            env,
+            [
+                (std::ffi::OsStr::new("CARGO_ENCODED_RUSTDOCFLAGS"), None),
+                (
+                    std::ffi::OsStr::new("RUSTDOCFLAGS"),
+                    Some(std::ffi::OsStr::new(
+                        "-D warnings -F rustdoc::broken_intra_doc_links"
+                    ))
+                )
+            ]
+        );
+        let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+        assert_eq!(args, ["doc", "--workspace", "--no-deps", "--locked"]);
+        assert_eq!(
+            RUSTDOC.display(),
+            "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked"
+        );
+    }
+
+    #[test]
+    fn the_rustdoc_step_clears_an_inherited_encoded_flags_variable() {
+        let command = RUSTDOC.command().unwrap();
+        let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        assert!(
+            env.contains(&(std::ffi::OsStr::new("CARGO_ENCODED_RUSTDOCFLAGS"), None)),
+            "{env:?}"
+        );
+    }
+
+    /// `lint`'s `rustdoc` step, run on the fixture crate `tests/fixtures/rustdoc/<fixture>` with
+    /// a target directory of its own: whether it passed, and what cargo and rustdoc printed.
+    fn rustdoc_on(fixture: &str) -> (bool, String) {
+        let lint = find(JOBS, "lint").expect("lint is registered");
+        let step = lint
+            .steps
+            .iter()
+            .find(|s| s.name == "rustdoc")
+            .expect("lint has a rustdoc step");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/rustdoc")
+            .join(fixture);
+        let target = std::env::temp_dir().join(format!(
+            "syntropy-xtask-rustdoc-{}-{fixture}",
+            std::process::id()
+        ));
+        let output = step
+            .action
+            .command()
+            .expect("the step starts cargo")
+            .current_dir(&dir)
+            .env("CARGO_TARGET_DIR", &target)
+            .output()
+            .expect("cargo runs");
+        let _ = std::fs::remove_dir_all(&target);
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    #[test]
+    fn the_rustdoc_step_fails_an_unresolved_intra_doc_link() {
+        let (passed, log) = rustdoc_on("unresolved");
+        assert!(!passed, "{log}");
+        assert!(log.contains("unresolved link to `Missing`"), "{log}");
+    }
+
+    #[test]
+    fn the_rustdoc_step_fails_an_ambiguous_intra_doc_link() {
+        let (passed, log) = rustdoc_on("ambiguous");
+        assert!(!passed, "{log}");
+        assert!(log.contains("`thing` is both a"), "{log}");
+        assert!(log.contains("ambiguous link"), "{log}");
+    }
+
+    #[test]
+    fn the_rustdoc_step_passes_the_crate_with_its_links_fixed() {
+        let (passed, log) = rustdoc_on("fixed");
+        assert!(passed, "{log}");
     }
 
     #[test]

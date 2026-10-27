@@ -24,7 +24,9 @@
 
 #![forbid(unsafe_code)]
 
+mod actionlint;
 mod build;
+mod changes;
 mod check_deps;
 mod ci_gate;
 mod cli;
@@ -35,6 +37,7 @@ mod determinism;
 mod instructions;
 mod licences;
 mod loom;
+mod plan_tools;
 mod properties;
 mod registry;
 mod repo_settings;
@@ -42,6 +45,7 @@ mod roster;
 mod run;
 mod sim_presets;
 mod toolchain;
+mod workflows;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
@@ -213,6 +217,24 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
             };
             let root = root.map_or_else(|| checkout.clone(), PathBuf::from);
             let pass = licences::manifest::run(&checkout, &root, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Workflows { root } => {
+            let checkout = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            let root = root.map_or(checkout, PathBuf::from);
+            let pass = workflows::run(&root, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Actionlint { root } => {
+            let checkout = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            let root = root.map_or(checkout, PathBuf::from);
+            let pass = actionlint::run(&root, &mut io::stderr())?;
             Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
         }
         Command::Notices { manifest_path, out } => {

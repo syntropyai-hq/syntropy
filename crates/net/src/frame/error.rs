@@ -90,10 +90,13 @@ pub enum FrameError {
     /// the encoder refuses it, so a peer that did not advertise the capability never receives
     /// the frame.
     CapabilityNotNegotiated { ftype: FrameType, capability: u64 },
-    /// A `Token` entry's tap block, carried as bytes, was to be converted to or from `core`'s
-    /// `LogitTap`. The block's codec is DIST-E8-T06's (RFC-0031 §6.13), so until it exists a
-    /// `TokenEntryView` converts to and from `core`'s `TokenEntry` only without a tap.
+    /// A `Token` entry's tap block of `len` bytes was to be converted to `core`'s `LogitTap`. The
+    /// block's codec is DIST-E8-T06's (RFC-0031 §6.13), so until it exists a `TokenEntryView`
+    /// converts to `core`'s `TokenEntry` only without a tap.
     TapNotDecoded { len: usize },
+    /// `core`'s `LogitTap` of `rows` rows was to be encoded as a `Token` entry's tap block, which
+    /// has no codec before DIST-E8-T06.
+    TapNotEncoded { rows: usize },
     /// A `core` `LogprobBlock` with `k = 0`, the chosen tokens' logprobs alone, was to be encoded.
     /// RFC-0031 §6.5's `logprob_k = 0` means no logprobs, so the entry has no form for it until
     /// OQ-NET-35 settles.
@@ -147,6 +150,7 @@ impl FrameError {
             | FrameError::UnsupportedDType(_)
             | FrameError::CapabilityNotNegotiated { .. }
             | FrameError::TapNotDecoded { .. }
+            | FrameError::TapNotEncoded { .. }
             | FrameError::ChosenLogprobsOnly { .. } => ErrorClass::Unsupported,
             FrameError::TooLong { .. } | FrameError::BufferTooSmall { .. } => ErrorClass::Internal,
             _ => ErrorClass::Integrity,
@@ -311,6 +315,10 @@ impl fmt::Display for FrameError {
                 f,
                 "{ftype:?} needs capability bit {}, which the channel did not negotiate",
                 capability.trailing_zeros()
+            ),
+            FrameError::TapNotEncoded { rows } => write!(
+                f,
+                "a {rows}-row LogitTap has no Token tap-block codec in this build"
             ),
             FrameError::TapNotDecoded { len } => write!(
                 f,

@@ -2,16 +2,22 @@
 
 //! Failure and edge cases of Linux E1 enumeration: missing files, malformed numbers, cgroup
 //! `max` and v1 limits, no NUMA directory, hybrid Arm cores, batteries, the io_uring sysctl,
-//! and the live host (PLC-E1-T02 criterion 2).
+//! and the live host (PLC-E1-T02 criterion 2); the system-call checks through a shim, and on
+//! the live host (PLC-E1-T14 criteria 1 and 3).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 
 use syntropy_core::ids::NodeId;
+use syntropy_core::resource::IsaFlags;
 use syntropy_core::resource::caps::PowerSource;
 use syntropy_core::units::Bytes;
-use syntropy_probe::linux::{CgroupVersion, ContainerKind, IoUringSysctl, IsaSource, enumerate};
+use syntropy_probe::linux::{
+    CgroupVersion, ContainerKind, IoUringSysctl, IsaSource, LinuxHost, RawCall, SysCheck, Syscalls,
+    enumerate,
+};
 use syntropy_probe::{EnumError, HostFs};
 
 const NODE: NodeId = NodeId([7; 32]);
@@ -42,8 +48,40 @@ impl MemFs {
         self
     }
 
-    fn run(&self) -> Result<syntropy_probe::linux::LinuxHost, EnumError> {
-        enumerate(self, IsaSource::CpuInfo, NODE)
+    fn run(&self) -> Result<LinuxHost, EnumError> {
+        self.run_with(&Calls::new(RawCall::Ok, RawCall::Ok))
+    }
+
+    fn run_with(&self, calls: &Calls) -> Result<LinuxHost, EnumError> {
+        enumerate(self, IsaSource::CpuInfo, calls, NODE)
+    }
+}
+
+/// A system-call shim: fixed results for both calls, and a count of AMX requests.
+struct Calls {
+    amx: RawCall,
+    uring: RawCall,
+    amx_requests: Cell<u32>,
+}
+
+impl Calls {
+    fn new(amx: RawCall, uring: RawCall) -> Self {
+        Self {
+            amx,
+            uring,
+            amx_requests: Cell::new(0),
+        }
+    }
+}
+
+impl Syscalls for Calls {
+    fn request_xtiledata_permission(&self) -> RawCall {
+        self.amx_requests.set(self.amx_requests.get() + 1);
+        self.amx
+    }
+
+    fn io_uring_setup(&self) -> RawCall {
+        self.uring
     }
 }
 
@@ -621,6 +659,113 @@ fn io_uring_sysctl_values() {
     malformed_at(fs.run(), "proc/sys/kernel/io_uring_disabled");
 }
 
+// The system-call checks (PLC-E1-T14 criterion 1).
+
+/// The desktop fixture with AMX flags added to every processor entry.
+fn amx_desktop() -> MemFs {
+    let mut fs = MemFs::fixture("desktop");
+    let info =
+        fs.0["proc/cpuinfo"].replace("\nflags\t\t: ", "\nflags\t\t: amx_bf16 amx_int8 amx_tile ");
+    assert!(info.contains("amx_tile"), "the fixture's flags lines moved");
+    fs.set("proc/cpuinfo", &info);
+    fs
+}
+
+fn amx_permitted(host: &LinuxHost) -> Vec<bool> {
+    host.cpus
+        .iter()
+        .map(|d| d.ext.cpu.as_ref().unwrap().amx_permitted)
+        .collect()
+}
+
+#[test]
+fn amx_permission_granted_denied_unsupported() {
+    let fs = amx_desktop();
+    let calls = Calls::new(RawCall::Ok, RawCall::Ok);
+    let host = fs.run_with(&calls).unwrap();
+    assert!(
+        host.cpus[0]
+            .ext
+            .cpu
+            .as_ref()
+            .unwrap()
+            .isa
+            .contains(IsaFlags::AMX_BF16 | IsaFlags::AMX_INT8)
+    );
+    assert_eq!(calls.amx_requests.get(), 1, "one request per enumeration");
+    assert_eq!(host.env.amx_permission, Some(SysCheck::Granted));
+    assert_eq!(amx_permitted(&host), vec![true]);
+
+    // EPERM: a filter refused the request.
+    let host = fs
+        .run_with(&Calls::new(RawCall::Err(1), RawCall::Ok))
+        .unwrap();
+    assert_eq!(host.env.amx_permission, Some(SysCheck::Denied { errno: 1 }));
+    assert_eq!(amx_permitted(&host), vec![false]);
+
+    // EINVAL: a kernel before 5.16; EOPNOTSUPP: no AMX in the kernel's view.
+    for errno in [22, 95] {
+        let host = fs
+            .run_with(&Calls::new(RawCall::Err(errno), RawCall::Ok))
+            .unwrap();
+        assert_eq!(
+            host.env.amx_permission,
+            Some(SysCheck::Unsupported { errno: Some(errno) })
+        );
+        assert_eq!(amx_permitted(&host), vec![false]);
+    }
+}
+
+#[test]
+fn amx_permission_is_not_requested_without_amx() {
+    let calls = Calls::new(RawCall::Ok, RawCall::Ok);
+    let host = MemFs::fixture("desktop").run_with(&calls).unwrap();
+    assert_eq!(calls.amx_requests.get(), 0);
+    assert_eq!(host.env.amx_permission, None);
+    assert_eq!(amx_permitted(&host), vec![false]);
+}
+
+#[test]
+fn io_uring_setup_granted_denied_unsupported() {
+    let fs = MemFs::fixture("desktop");
+    let host = fs.run_with(&Calls::new(RawCall::Ok, RawCall::Ok)).unwrap();
+    assert_eq!(host.env.io_uring, IoUringSysctl::Enabled);
+    assert_eq!(host.env.io_uring_setup, SysCheck::Granted);
+    assert!(host.env.io_uring_allowed());
+
+    // A seccomp filter answers EPERM while the sysctl is 0.
+    let host = fs
+        .run_with(&Calls::new(RawCall::Ok, RawCall::Err(1)))
+        .unwrap();
+    assert_eq!(host.env.io_uring, IoUringSysctl::Enabled);
+    assert_eq!(host.env.io_uring_setup, SysCheck::Denied { errno: 1 });
+    assert!(!host.env.io_uring_allowed());
+
+    // ENOSYS: no io_uring in the kernel, or a filter that answers ENOSYS.
+    let host = fs
+        .run_with(&Calls::new(RawCall::Ok, RawCall::Err(38)))
+        .unwrap();
+    assert_eq!(
+        host.env.io_uring_setup,
+        SysCheck::Unsupported { errno: Some(38) }
+    );
+    assert!(!host.env.io_uring_allowed());
+}
+
+#[test]
+fn io_uring_allowed_needs_the_sysctl_too() {
+    let mut fs = MemFs::fixture("desktop");
+    fs.set("proc/sys/kernel/io_uring_disabled", "2");
+    assert!(!fs.run().unwrap().env.io_uring_allowed());
+    fs.set("proc/sys/kernel/io_uring_disabled", "1")
+        .set("proc/sys/kernel/io_uring_group", "27");
+    assert!(fs.run().unwrap().env.io_uring_allowed());
+    fs.set("proc/sys/kernel/io_uring_group", "990");
+    assert!(!fs.run().unwrap().env.io_uring_allowed());
+    fs.remove("proc/sys/kernel/io_uring_disabled");
+    assert!(fs.run().unwrap().env.io_uring_allowed());
+}
+
 #[test]
 fn containers_from_pid1_cgroup_and_podman_marker() {
     let mut fs = MemFs::fixture("desktop");
@@ -682,6 +827,22 @@ fn live_host_enumerates_without_privilege() {
     }
     for m in &host.host_mem {
         assert!(m.mem.total.0 > 0 && m.mem.available.0 <= m.mem.total.0);
+    }
+    // PLC-E1-T14 criterion 3: both system-call checks ran as this unprivileged user. Creating
+    // a ring needs no capability, so an unfiltered process the sysctl allows must succeed.
+    eprintln!(
+        "io_uring sysctl {:?}, seccomp filtered {}, io_uring_setup {:?}, AMX permission {:?}",
+        host.env.io_uring,
+        host.env.seccomp_filtered,
+        host.env.io_uring_setup,
+        host.env.amx_permission
+    );
+    if host.env.io_uring == IoUringSysctl::Enabled && !host.env.seccomp_filtered {
+        assert_eq!(host.env.io_uring_setup, SysCheck::Granted);
+    }
+    let granted = host.env.amx_permission == Some(SysCheck::Granted);
+    for d in &host.cpus {
+        assert_eq!(d.ext.cpu.as_ref().unwrap().amx_permitted, granted);
     }
     eprintln!("{host:#?}");
 }

@@ -1,0 +1,31 @@
+# Hand-made from m4-mini.txt: the same responses, except that reading iogpu.wired_limit_mb
+# fails with EINVAL. Enumeration must fail rather than report the default cap
+# (macos_fixtures.rs::wired_limit_einval_is_an_error).
+sysctl hw.optional.arm64 u32 1
+sysctl machdep.cpu.brand_string str Apple M4
+sysctl hw.optional.arm.AdvSIMD u32 1
+sysctl hw.optional.arm.FEAT_DotProd u32 1
+sysctl hw.optional.arm.FEAT_FP16 u32 1
+sysctl hw.optional.arm.FEAT_I8MM u32 1
+sysctl hw.optional.arm.FEAT_BF16 u32 1
+sysctl hw.optional.arm.FEAT_SVE2 absent
+sysctl hw.optional.arm.FEAT_SME2 u32 1
+sysctl hw.nperflevels u32 2
+sysctl hw.perflevel0.physicalcpu u32 4
+sysctl hw.perflevel0.l3cachesize absent
+sysctl hw.perflevel0.l2cachesize u32 16777216
+sysctl hw.perflevel0.cpusperl2 u32 4
+sysctl hw.perflevel1.physicalcpu u32 6
+sysctl hw.perflevel1.l3cachesize absent
+sysctl hw.perflevel1.l2cachesize u32 4194304
+sysctl hw.perflevel1.cpusperl2 u32 6
+sysctl hw.physicalcpu u32 10
+sysctl hw.logicalcpu u32 10
+sysctl hw.memsize u64 17179869184
+sysctl iogpu.wired_limit_mb einval
+sysctl kern.osrelease str 25.4.0
+sysctl kern.osproductversion str 26.4.1
+vm page_size=16384 free=28015 active=340750 inactive=319984 wired=115138 purgeable=1476 speculative=22556 compressor=210161
+memlock unlimited
+power providing AC Power
+sysctl hw.l2cachesize u32 4194304

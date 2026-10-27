@@ -242,6 +242,15 @@ pub enum Classification {
 
 `classify` matches the name, then checks the shape against the hyperparameters: a `Q` projection must be `[n_heads·d_head, hidden]` in source order, and a stacked expert tensor must have `n_experts` in its outermost dimension. A name that matches with the wrong shape is `Unknown`, not a guess. RFC-0041 §3 turns the result into records and groups.
 
+*Note 2026-10-23 (COMP-E16-T01, as built):* `syntropy_graph::classify` holds the engine. The choices this section leaves open:
+
+- `ClassRule` has a `shape` field, one `ShapeDim` per dimension (`Const`, `Hp(name)`, `Mul(a, b)`, `Any`), written in the source's order: ggml's `ne`, innermost first, for GGUF, and outermost first for safetensors. Each `RuleTable` states its order.
+- Patterns use `{L}` (a decoder layer, or for an MTP rule the module's layer `n_layers + n`), `{E}` (a routed expert, bounded by the `n_experts` hyperparameter) and `{N}` (any other index, such as a tower layer, matched but not read). Each matches a decimal number with no leading zero. `Matcher::new` refuses a pattern that could be read two ways, and placeholders that do not fit the rule's block and class.
+- The first rule whose pattern matches decides. A failed shape, layer or expert check gives `Unknown`, and no later rule is tried.
+- `Classification::Classified` also carries the rule's `BlockSel`, because the census groups norms with their block (RFC-0041 §3.1). For a stacked expert tensor, `class` is the first slice's class, `Expert { layer, id: 0 }`, and `stacked_experts` gives the count.
+- `ClassSel` has one more variant, `Ignored { reason }`, for training-only tensors.
+- `classify_tensors` returns a `TensorPlan` built from names and shapes alone. It lists the tensors to fetch, the ignored tensors with their reasons, and the unknown ones. A fetch reads only `TensorPlan::fetch`.
+
 #### 4.2 Special cases
 
 - **Tied embeddings**: no head tensor present, or the family's flag says tied. The census emits one record and two groups (`RowLookup` at the head, `Head` at the tail) linked by `shared_with` (RFC-0041 §3.1).
@@ -286,6 +295,22 @@ pub trait Family: Send + Sync {
 `MetaView` is a typed view over GGUF key-values or `config.json` plus `generation_config.json`, with the same accessors for both, so `parse_hparams` is written once per family. Families are compiled in and registered statically. There are no plugins.
 
 **Family tags are frozen.** `name()` is hashed into `ModelId` (RFC-0041 §1). A tag is never renamed and never reused for a different module; a module that changes what it computes for the same files keeps its tag only if the change is a bug fix certified by the harness, and otherwise registers a new tag. The registry test fails if a tag in the checked-in tag list disappears or is reassigned.
+
+*Note 2026-10-23 (COMP-E16-T01, as built):* `syntropy_graph::families` holds the trait, the registry and the list.
+
+- **The frozen list.** `FROZEN_TAGS` lists §5.5's ten module names in table order. Each tag is bound to the module path it registers from (`syntropy_graph::families::<tag>`). The tags are fixed before COMP-E10-T06 hashes any of them into `ModelId`. A listed tag may have no registered module yet.
+- **The checks.** `Registry::check` fails in five cases:
+  - a registered tag is unlisted;
+  - a registered tag is bound to another module;
+  - two registrations share a tag;
+  - two families accept one architecture name;
+  - the list repeats a tag or a module.
+
+  `crates/graph/tests/family_tags.rs` pins the list, so the test fails if an entry is removed, renamed, reordered or rebound.
+- **The trait.** The trait has the methods whose types exist: `name`, `accepts`, `version`, `parse_hparams`, `classify` and `required_ops`. The others are added with the tasks that add their types.
+- **`MetaView`.** `MetaView` is an enum over the GGUF reader's metadata and `syntropy_manifest::config::HfConfig`. A family names each value once as a `Key`, with its GGUF key (`{arch}` reads as `general.architecture`) and its `config.json` or `generation_config.json` path.
+- **Errors.** `UnknownArchitecture` (1) and `HyperParamInvalid` (3) are `FamilyError` variants, and `code()` gives the number. A wrong type, a missing required key and a value outside the family's range are all code 3. `core` has no `Domain::Graph` yet.
+- **`HyperParams`.** `HyperParams` lives in `syntropy_manifest::hparams`, with the shared fields and `extra`. `LayerSpec` is added with the blocks.
 
 #### 5.2 Hyperparameters
 
@@ -426,6 +451,14 @@ pub struct TokenizerSpec {
     pub id: TokenizerId,                    // RFC-0041 §1: over `model`, specials and the template in use
 }
 ```
+
+*Note 2026-10-22 (COMP-E17-T01, `TokenizerSpec` for `tokenizer.json` sources as built):* `syntropy_manifest::tokenizer::TokenizerSpec::from_sources` builds the spec from a checkpoint's `tokenizer.json`, `tokenizer_config.json`, `generation_config.json` and `chat_template.jinja`. The parts the struct above leaves open:
+- **Fields are private, with accessors** of the same names, so `id` cannot fall out of step with what it covers. `with_template_source` is the one way to change the template in use, and it recomputes `id`. `TemplateSource` carries the template text for `FamilyDefault` and `UserOverride`, and has a fourth variant, `None`, for a checkpoint that ships no template when none is supplied. `chat_template` stays the shipped text either way.
+- **Specials.** BOS, EOS, pad and unknown are `tokenizer_config.json`'s `bos_token`, `eos_token`, `pad_token` and `unk_token` (a string or an added-token object), resolved through `tokenizer.json`'s added tokens, then its vocabulary. The end-of-turn set is EOS together with `generation_config.json`'s `eos_token_id` (an integer or a list), sorted. FIM prefix, middle and suffix are added tokens spelled as in `FIM_SPELLINGS`, all three or none, whether or not `tokenizer.json` marks them special: the Qwen3-MoE repositories ship theirs as not special. No token is looked up by a family or model name.
+- **`add_bos` and `add_eos`** come from `add_bos_token` and `add_eos_token` where the config sets them. Otherwise they are read from the post-processor: a `TemplateProcessing` single-sequence template that starts (ends) with a special token adds BOS (EOS).
+- **The shipped template** is `chat_template.jinja` when present, else the config's `chat_template`: a string, or the entry named `default` of a list.
+- **`TokenizerId`** is BLAKE3 over `"syntropy/tokenizer-id/v1"`, `model`, the specials, `add_bos`, `add_eos` and the template in use, with every field length-prefixed. No input depends on listing order. The specials are single IDs plus the end-of-turn set, which `TokenizerSpec::new` sorts and deduplicates. `model` is hashed as the shipped bytes, so its added tokens and maps are covered through the file and never re-encoded. The two flags are included because they change the tokens of a prompt. The source tag is not hashed, so an override equal to the shipped text keeps the ID. `TokenizerSpec::id` is the value RFC-0022's saved sessions record in their metadata; nothing keys on it (Open question 6, OQ-MF-14).
+- **Errors.** A malformed or inconsistent side file is `TokenizerSpecError`, class `Integrity`, naming the file. No code is assigned yet; the codes are COMP-E10-T09's.
 
 #### 8.2 The engine
 

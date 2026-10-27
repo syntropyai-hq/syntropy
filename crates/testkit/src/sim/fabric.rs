@@ -6,9 +6,12 @@
 //! A [`SimFabric`] holds one [`LinkModel`] per directed link ([`LinkId`]) and answers one
 //! question per message: when does it arrive, if at all?
 //! - **A reliable frame** on a stream (one `Channel`, RFC-0001 §5.8) arrives at
-//!   `max(t + α + S/β + ⌈S/mtu⌉ · per_packet_overhead + jitter, last delivery on the stream)`.
-//!   So each stream keeps FIFO order however the jitter falls. Each lost packet delays its frame
-//!   by one QUIC probe timeout (`PTO`), as a QUIC stream recovers it.
+//!   `max(s + S/β + ⌈S/mtu⌉ · per_packet_overhead + α + jitter, last delivery on the stream)`,
+//!   where `s`, when it starts to go out, is the later of its send time and the end of whatever
+//!   the link was already sending. So every stream on a link shares its β, in send order, and a
+//!   bulk transfer delays the frames of a data channel beside it (RFC-0060 §8.3, note of
+//!   2026-10-23). Each stream keeps FIFO order however the jitter falls. Each lost packet delays
+//!   its frame by one QUIC probe timeout (`PTO`), as a QUIC stream recovers it.
 //! - **A datagram** (membership gossip) is lost with probability `loss` and never sent again.
 //!   With probability `reorder` it leaves the link's order and takes one more α draw.
 //! - **A split** marks links down, in one direction or both. A link going down drops every
@@ -223,6 +226,8 @@ struct Link {
     streams: BTreeMap<u64, MonoTime>,
     /// The last in-order datagram delivery.
     last_datagram: MonoTime,
+    /// When the link finishes sending what it has been given: its serialisation queue.
+    busy_until: MonoTime,
 }
 
 /// A message on its way: when it is due, and the link state it was sent under.
@@ -277,6 +282,7 @@ impl SimFabric {
                 rtt: RttEstimate::new(),
                 streams: BTreeMap::new(),
                 last_datagram: MonoTime(0),
+                busy_until: MonoTime(0),
             },
         );
     }
@@ -294,14 +300,16 @@ impl SimFabric {
         self.links.get(link).is_some_and(|state| state.model.up)
     }
 
-    /// Marks `link` up or down. Going down drops every message in flight on it. Returns whether
-    /// the link exists.
+    /// Marks `link` up or down. Going down drops every message in flight on it, and empties its
+    /// serialisation queue. Returns whether the link exists.
     pub fn set_up(&mut self, link: &LinkId, up: bool) -> bool {
         let Some(state) = self.links.get_mut(link) else {
             return false;
         };
         if state.model.up && !up {
             state.generation += 1;
+            // What it was sending is dropped, so it is no longer busy sending it.
+            state.busy_until = MonoTime(0);
         }
         state.model.up = up;
         true
@@ -355,10 +363,9 @@ impl SimFabric {
         } else {
             0
         };
-        let delay = one_way
-            .saturating_add(state.serialisation(bytes, packets))
-            .saturating_add(lost_packets.saturating_mul(pto.0));
-        let due = now.saturating_add(Nanos(delay));
+        let sent = state.queue(now, bytes, packets);
+        let delay = one_way.saturating_add(lost_packets.saturating_mul(pto.0));
+        let due = sent.saturating_add(Nanos(delay));
         let last = state.streams.entry(stream).or_insert(MonoTime(0));
         let at = due.max(*last);
         *last = at;
@@ -387,9 +394,9 @@ impl SimFabric {
             return None;
         }
         let packets = state.packets(bytes);
-        let due = now.saturating_add(Nanos(
-            one_way.saturating_add(state.serialisation(bytes, packets)),
-        ));
+        let due = state
+            .queue(now, bytes, packets)
+            .saturating_add(Nanos(one_way));
         let at = if state.model.reorder > 0.0 && unit(entropy) < state.model.reorder {
             // Out of order: one more α, and the link's order does not hold it back.
             let extra = state.model.alpha.sample(entropy, &mut state.alpha_cursor);
@@ -421,6 +428,15 @@ impl Link {
         let alpha = self.model.alpha.sample(entropy, &mut self.alpha_cursor);
         let jitter = self.model.jitter.sample(entropy, &mut self.jitter_cursor);
         alpha.0.saturating_add(jitter.0)
+    }
+
+    /// Puts a message of `bytes` in `packets` on the link's serialisation queue at `now`, and
+    /// says when its last byte has gone out: after whatever the link was already sending.
+    fn queue(&mut self, now: MonoTime, bytes: u64, packets: u64) -> MonoTime {
+        let start = now.max(self.busy_until);
+        let end = start.saturating_add(Nanos(self.serialisation(bytes, packets)));
+        self.busy_until = end;
+        end
     }
 
     /// Packets for a message of `bytes`: at least one.

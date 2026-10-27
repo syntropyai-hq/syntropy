@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# A workflow-lint fixture that meets every RFC-0062 §12.4 rule (QUAL-E1-T09).
+name: ci
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/setup
+      - run: cargo xtask ci lint

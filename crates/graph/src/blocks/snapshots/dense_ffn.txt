@@ -1,0 +1,10 @@
+## Decode
+RmsNorm [Elementwise] in(v0:F32[Rows,64]) out(v1:F32[Rows,64]) w(Norm@g7) fuse(-) attrs(eps=1e-6)
+GateUpAct { act: Silu } [Dense] in(v1:F32[Rows,64]) out(v2:F32[Rows,256]) w(GateUp@g7) fuse(-) attrs(inter=256)
+Gemv [Dense] in(v2:F32[Rows,256]) out(v3:F32[Rows,64]) w(Down@g7) fuse(-) attrs()
+Add [Elementwise] in(v0:F32[Rows,64] v3:F32[Rows,64]) out(v4:F32[Rows,64]) w() fuse(-) attrs()
+## Prefill
+RmsNorm [Elementwise] in(v0:F32[Rows,64]) out(v1:F32[Rows,64]) w(Norm@g7) fuse(-) attrs(eps=1e-6)
+GateUpAct { act: Silu } [Dense] in(v1:F32[Rows,64]) out(v2:F32[Rows,256]) w(GateUp@g7) fuse(-) attrs(inter=256)
+Gemm [Dense] in(v2:F32[Rows,256]) out(v3:F32[Rows,64]) w(Down@g7) fuse(-) attrs()
+Add [Elementwise] in(v0:F32[Rows,64] v3:F32[Rows,64]) out(v4:F32[Rows,64]) w() fuse(-) attrs()
