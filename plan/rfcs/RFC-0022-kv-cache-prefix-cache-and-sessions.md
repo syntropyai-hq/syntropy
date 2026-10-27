@@ -104,7 +104,7 @@ Rules:
   - `Q8 { block }` is one byte per element plus an F16 scale per `block` elements.
   - `K8V4 { block }` stores the entry's first half as `Q8` and its second half at 4 bits, each with F16 scales.
   - Recurrent state keeps the reference dtype, and an auxiliary cache keeps its own dtype.
-  - §9 defines `K8V4` by K and V planes only. An entry that is not a K/V pair, such as an MLA latent, is sized as `Q8`, the conservative upper bound, until OQ-IO-30 is settled. `LayerKv::PerToken` gains `latent: bool` with a serde default of `false` (an owner addition, like `Compressed`), and `LayerKv::mla` sets it. A `Sparse` or `Compressed` entry counts as a latent, since the known families store one there.
+  - §9 defines `K8V4` by K and V planes only. An entry that is not a K/V pair is sized as `Q8`, the conservative upper bound, until OQ-IO-30 is settled. Such an entry is a latent: MLA's, a DSA-class indexer's main cache over MLA, or a V4-class compressed entry. `LayerKv::PerToken`, `Sparse` and `Compressed` each gain `latent: bool` with a serde default of `false`. That is an owner addition, like `Compressed`, recorded in RFC-0001 §18.46. The family sets it, and `LayerKv::mla` does. A layer that stores K/V pairs, as block-sparse and QSA-class layers do "as `Gqa`" (RFC-0043 §3.1), splits as GQA does.
 
 ### 3. Pages, page classes and pools
 
@@ -726,7 +726,7 @@ RFC-0001 §16 lists KV paging, the prefix cache and saved sessions in M1, with S
 
 ## Proposed amendments to RFC-0001
 
-1. **§5.3 `KvFormula`.** Add the `LayerKv::Compressed` variant and the `aux`, `dtype` and `layout_version` fields with serde defaults (§2). RFC-0022 owns the type, so these are owner additions; listed here because RFC-0043 and RFC-0011 read them.
+1. **§5.3 `KvFormula`.** Add the `LayerKv::Compressed` variant and the `aux`, `dtype` and `layout_version` fields with serde defaults (§2). RFC-0022 owns the type, so these are owner additions; listed here because RFC-0043 and RFC-0011 read them. *Note 2026-10-28 (TIER-E6-T01):* `LayerKv::PerToken`, `Sparse` and `Compressed` also gain `latent: bool` with a serde default of `false`. It marks an entry that is one latent rather than a K/V pair, which `K8V4` sizes as `Q8` (§2's note of this date, OQ-IO-30). RFC-0001 §5.3 and §18.46 record it.
 2. **§17 item 1 resolved.** `KvHandle` covers recurrent state: `State` is a page class in the same store, with the same residency, export and persistence paths. No sibling type is needed.
 3. **§5.8 side channel.** `ActivationFrame::side` and `TokenFrame` carry the prefix-cache items `PageKeys`, `PrefixEvict`, `PrefixDropped`, `PrefixPressure`, `PrefixMiss` and `Restart` (§7.5), `SessionSaved` (§8.1) and each stage's `KvHeadroom` (§11). RFC-0031 encodes them; RFC-0032 relays them.
 5. **§5.4 `KvBudget`.** Add `spill_compute: SpillCompute` with a serde default (§5.3). RFC-0022 owns the type; listed because RFC-0011 must choose it.

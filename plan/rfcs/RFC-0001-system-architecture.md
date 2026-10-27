@@ -822,6 +822,8 @@ impl KvFormula {
 }
 ```
 
+*Note 2026-10-28 (owner addition, §18.46; TIER-E6-T01):* `LayerKv::PerToken`, `Sparse` and `Compressed` gain `latent: bool` with a serde default of `false`. It marks an entry that is one latent shared by K and V (MLA, a DSA-class main cache over MLA, a V4-class compressed entry) rather than a K/V pair. The lossy `K8V4` form sizes a latent as `Q8` until OQ-IO-30 is settled (RFC-0022 §2, note of the same date). `KvFormula` lives in `manifest::kv`.
+
 ### 5.4 Placement plan *(core)*
 
 ```rust
@@ -3056,3 +3058,11 @@ DIST-E1-T05 builds RFC-0001 §3.3's machine and moves `StateChanged` to `RunnerS
 | The daemon forwards `StateChanged` up to a `ReportSink` seam | §3.5 (dated note) | `ClusterCommand::ReportRunner` and its client are DIST-E9's and not built |
 | A change of `degraded` is in place and sends no message until the next transition | §3.3 (dated note) | left open as OQ-NET-36 for DIST-E14-T13, the task that first sets `degraded`, against RFC-0033 §7.1's dashboard and response metadata |
 | A runner not yet `Ready` has no clean stop: §3.3 has no edge from a bring-up state to `Draining` or `Stopped` | §3.3 (dated note) | not settled here; for the maintainers, with DIST-E1-T06's supervisor (the review of #1932) |
+
+### 18.46 `LayerKv`'s latent flag (2026-10-28)
+
+TIER-E6-T01 builds `KvFormula`. Its owner, RFC-0022, adds a field to three `LayerKv` variants.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `LayerKv::PerToken`, `Sparse` and `Compressed` gain `latent: bool` with a serde default of `false`; the family sets it, and `LayerKv::mla` does | §5.3 (dated note); RFC-0022 §2 (dated note) and its "Proposed amendments to RFC-0001" item 1 | RFC-0022 §9 defines `K8V4` by K and V planes, and a latent is not a K/V pair, so the sizes must tell the two apart. A latent is sized as `Q8` until OQ-IO-30 is settled. Block-sparse and QSA-class layers store K/V pairs, so the flag is per layer, not per variant (the review of #1935) |
