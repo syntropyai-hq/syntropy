@@ -465,18 +465,22 @@ fn the_record_round_trips() {
 #[test]
 fn mtimes_before_the_epoch_count_forward_from_the_second() {
     use std::time::Duration;
+    // Offsets in whole 100 ns, the resolution of Windows' `SystemTime`.
     let at = |d: Duration| Mtime::of(UNIX_EPOCH - d);
     assert_eq!(at(Duration::new(5, 0)), Mtime { secs: -5, nanos: 0 });
     assert_eq!(
-        at(Duration::new(5, 1)),
+        at(Duration::new(5, 100)),
         Mtime {
             secs: -6,
-            nanos: 999_999_999
+            nanos: 999_999_900
         }
     );
     assert_eq!(
-        Mtime::of(UNIX_EPOCH + Duration::new(7, 3)),
-        Mtime { secs: 7, nanos: 3 }
+        Mtime::of(UNIX_EPOCH + Duration::new(7, 300)),
+        Mtime {
+            secs: 7,
+            nanos: 300
+        }
     );
 }
 
