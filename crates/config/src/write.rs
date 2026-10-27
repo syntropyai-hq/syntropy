@@ -128,13 +128,16 @@ fn basic_string(text: &str) -> EditValue {
         .expect("an escaped basic string parses")
 }
 
-/// `text` with `path` set to `value` ([`parse_value`]). An existing value is replaced in place,
-/// keeping its line's spacing and comment. A new key goes after the last key of the deepest table
+/// `text` with `path` set to `value` ([`parse_value`]). A file whose last line has no line break
+/// gains one, in the file's own ending. An existing value is replaced in place, keeping its line's
+/// spacing and comment. A new key goes after the last key of the deepest table
 /// the file already has for it, indented like that key; a key under no table of the file goes in
 /// a new table at the end.
 pub fn set(text: &str, path: &str, value: &str) -> Result<String, EditError> {
     let segments = key_segments(path)?;
     let ending = line_ending(text)?;
+    // A last line without a break gets one first, or a key added after it would change it.
+    let text = &*ending.terminate(text);
     let mut doc = parse_document(text)?;
     let new = parse_value(value);
     set_in_table(doc.as_table_mut(), &segments, new.clone(), path, true)?;
@@ -194,6 +197,33 @@ enum LineEnding {
 }
 
 impl LineEnding {
+    /// This platform's: `\r\n` on Windows, `\n` elsewhere.
+    fn native() -> LineEnding {
+        if cfg!(windows) {
+            LineEnding::CrLf
+        } else {
+            LineEnding::Lf
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            LineEnding::Lf => "\n",
+            LineEnding::CrLf => "\r\n",
+        }
+    }
+
+    /// `text` ending in a line break: one in this ending is added when its last line has none,
+    /// as a file saved by some editors does not. An edit then changes only that end and the
+    /// key's own lines.
+    fn terminate(self, text: &str) -> std::borrow::Cow<'_, str> {
+        if text.is_empty() || text.ends_with('\n') {
+            std::borrow::Cow::Borrowed(text)
+        } else {
+            std::borrow::Cow::Owned(format!("{text}{}", self.as_str()))
+        }
+    }
+
     /// `text`, written by `toml_edit`, with every line break this ending.
     fn apply(self, text: &str) -> String {
         let lf = text.replace("\r\n", "\n");
@@ -204,12 +234,14 @@ impl LineEnding {
     }
 }
 
-/// The ending of `text`'s lines: `\r\n` when every line break is one, `\n` otherwise. A file that
-/// mixes the two is refused, since an edit could not keep both.
+/// The ending of `text`'s lines: `\r\n` when every line break is one, `\n` when none is, and this
+/// platform's (`\r\n` on Windows) for a text with no line break at all. A file that mixes the
+/// two is refused, since an edit could not keep both.
 fn line_ending(text: &str) -> Result<LineEnding, EditError> {
     let breaks = text.matches('\n').count();
     let crlf = text.matches("\r\n").count();
     match (breaks, crlf) {
+        (0, _) => Ok(LineEnding::native()),
         (_, 0) => Ok(LineEnding::Lf),
         (b, c) if b == c => Ok(LineEnding::CrLf),
         _ => Err(EditError::new(
