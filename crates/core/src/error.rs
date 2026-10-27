@@ -59,6 +59,9 @@ pub enum ErrorClass {
 
 /// The area that publishes a code (RFC-0001 §5.12, §10.4). Each domain RFC owns the codes in
 /// its range. Other domains are added with the tasks that build their tables. Owner: RFC-0001.
+///
+/// Variants are appended, so `Ord` and the postcard index follow declaration order, not
+/// [`range`](Domain::range) order: `Kernels` (0x0001–0x00FF) sorts after `Security`.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Domain {
@@ -234,9 +237,39 @@ impl Error {
         self
     }
 
-    /// The error wrapping `source`.
+    /// The error wrapping `source`. The chain stays within [`MAX_SOURCE_DEPTH`] sources, so a
+    /// receiver never refuses an error its sender built: past it, the deepest sources are
+    /// dropped, and the deepest one kept gains the context entry `sources_dropped` with how
+    /// many went, counting any that an earlier cut dropped.
     #[must_use]
-    pub fn with_source(mut self, source: Error) -> Self {
+    pub fn with_source(mut self, mut source: Error) -> Self {
+        // `source` is the first of this error's sources; keep it and the 15 below it.
+        let mut kept = &mut source;
+        for _ in 1..MAX_SOURCE_DEPTH {
+            match kept.source {
+                Some(ref mut next) => kept = next,
+                None => break,
+            }
+        }
+        if let Some(tail) = kept.source.take() {
+            let mut dropped = 0u64;
+            let mut next = Some(*tail);
+            // Unlinks the tail one error at a time, so a long tail is not dropped by recursion.
+            while let Some(mut e) = next {
+                dropped += 1 + e
+                    .context(SOURCES_DROPPED)
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .unwrap_or(0);
+                next = e.source.take().map(|b| *b);
+            }
+            dropped += kept
+                .context(SOURCES_DROPPED)
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(0);
+            kept.context.retain(|(k, _)| k != SOURCES_DROPPED);
+            kept.context
+                .push((Cow::Borrowed(SOURCES_DROPPED), dropped.to_string()));
+        }
         self.source = Some(Box::new(source));
         self
     }
@@ -274,6 +307,9 @@ impl std::error::Error for Error {
 /// `Error` comes from another process or node (`ErrorReport`, RFC-0001 §3.5), and a nested
 /// chain decodes by recursion, so a forged frame could otherwise exhaust the stack.
 pub const MAX_SOURCE_DEPTH: usize = 16;
+
+/// The context key [`Error::with_source`] records dropped sources under.
+pub const SOURCES_DROPPED: &str = "sources_dropped";
 
 /// Decodes as the derived form would, field by field, but refuses a `source` chain deeper than
 /// [`MAX_SOURCE_DEPTH`].

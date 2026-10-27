@@ -20,7 +20,7 @@ use serde::de::DeserializeOwned;
 use syntropy_core::error::codes;
 use syntropy_core::{
     Domain, Endpoint, Error, ErrorClass, ErrorCode, ErrorScope, LinkId, LinkKind, MAX_SOURCE_DEPTH,
-    Nanos, NodeId, RetryHint, SequenceId, StageIx,
+    Nanos, NodeId, RetryHint, SOURCES_DROPPED, SequenceId, StageIx,
 };
 
 /// Decodes `bytes` and drops them before returning the value, so the value cannot borrow them.
@@ -203,7 +203,7 @@ fn context_and_source_by_example() {
     )
     .with_context("device", "gpu0");
     let step = Error::new(
-        ErrorClass::Device,
+        ErrorClass::Internal,
         codes::exec::RING_CLOSED,
         "step 41 abandoned",
     )
@@ -240,16 +240,18 @@ fn context_and_source_by_example() {
     );
 }
 
-/// A chain of `n` errors: the outermost and `n − 1` sources.
+/// A chain of `n` errors: the outermost and `n − 1` sources, linked through the field rather
+/// than [`Error::with_source`], so it can exceed the bound a decode refuses.
 fn chain_of(n: usize) -> Error {
     let mut e = Error::new(ErrorClass::Internal, codes::exec::STEP_STALLED, "0");
     for i in 1..n {
-        e = Error::new(
+        let mut outer = Error::new(
             ErrorClass::Device,
             codes::kernels::DEVICE_STICKY,
             i.to_string(),
-        )
-        .with_source(e);
+        );
+        outer.source = Some(Box::new(e));
+        e = outer;
     }
     e
 }
@@ -301,7 +303,7 @@ fn a_forged_deep_chain_is_refused_without_exhausting_the_stack() {
 /// is skipped, and a repeated field is refused.
 #[test]
 fn the_json_form_keeps_the_derived_rules() {
-    let e = Error::new(ErrorClass::Link, codes::exec::RING_CLOSED, "gone");
+    let e = Error::new(ErrorClass::Internal, codes::exec::RING_CLOSED, "gone");
     let mut value = serde_json::to_value(&e).unwrap();
     let object = value.as_object_mut().unwrap();
     object.remove("source");
@@ -311,4 +313,48 @@ fn the_json_form_keeps_the_derived_rules() {
     let repeated = r#"{"class":"Link","class":"Link","code":{"domain":"Exec","code":1537},"message":"","scope":"Runner","retry":"Never","context":[]}"#;
     let err = serde_json::from_str::<Error>(repeated).unwrap_err();
     assert!(err.to_string().contains("duplicate field `class`"), "{err}");
+}
+
+/// `with_source` keeps a chain within `MAX_SOURCE_DEPTH` sources, so what a sender builds a
+/// receiver accepts. Past it the deepest sources go, and the deepest kept records how many,
+/// across repeated cuts.
+#[test]
+fn with_source_keeps_the_chain_within_the_bound() {
+    let mut e = Error::new(ErrorClass::Internal, codes::exec::STEP_STALLED, "root");
+    for i in 1..=40 {
+        e = Error::new(
+            ErrorClass::Device,
+            codes::kernels::DEVICE_STICKY,
+            i.to_string(),
+        )
+        .with_source(e);
+        assert!(e.chain().count() <= MAX_SOURCE_DEPTH + 1);
+    }
+    // 41 errors were linked; 17 remain, so 24 were dropped.
+    assert_eq!(e.chain().count(), MAX_SOURCE_DEPTH + 1);
+    let deepest = e.chain().last().unwrap();
+    assert_eq!(deepest.context(SOURCES_DROPPED), Some("24"));
+    assert_eq!(e.message, "40");
+    assert_eq!(deepest.message, "24");
+    // Exactly one marker, and a receiver accepts the chain.
+    assert_eq!(
+        e.chain()
+            .filter(|x| x.context(SOURCES_DROPPED).is_some())
+            .count(),
+        1
+    );
+    round_trip(&e);
+    // Wrapping an over-deep chain built through the field cuts it too.
+    let wrapped = Error::new(ErrorClass::Internal, codes::exec::STEP_STALLED, "top")
+        .with_source(chain_of(1000));
+    assert_eq!(wrapped.chain().count(), MAX_SOURCE_DEPTH + 1);
+    assert_eq!(
+        wrapped.chain().last().unwrap().context(SOURCES_DROPPED),
+        Some("984")
+    );
+    // A chain within the bound is untouched.
+    let short = chain_of(MAX_SOURCE_DEPTH);
+    let wrapped = Error::new(ErrorClass::Internal, codes::exec::STEP_STALLED, "top")
+        .with_source(short.clone());
+    assert_eq!(wrapped.source.as_deref(), Some(&short));
 }
