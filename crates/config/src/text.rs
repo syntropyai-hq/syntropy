@@ -184,4 +184,46 @@ mod tests {
         assert_eq!(Key("qwen3*").to_string(), "\"qwen3*\"");
         assert_eq!(Key("ram_headroom").to_string(), "ram_headroom");
     }
+
+    /// Whether `text` holds a control (but a tab) or an invisible character raw.
+    fn has_unsafe(text: &str) -> bool {
+        text.chars()
+            .any(|c| (c.is_control() && c != '\t') || crate::chars::invisible(c))
+    }
+
+    /// A string with ESC, a zero-width space, a right-to-left override, a soft hyphen and a tag
+    /// character prints as a TOML string holding none of them raw, which parses back to the
+    /// original, in a value, an array, a table and a quoted key (review of #1923, N1).
+    #[test]
+    fn controls_and_invisible_characters_print_as_toml_escapes() {
+        let hostile = "a\u{1b}[2Jb\u{200B}c\u{202E}d\u{AD}e\u{E0041}f\u{7}";
+        let string = Value::String(hostile.to_owned());
+        let shown = Inline(&string).to_string();
+        assert_eq!(
+            shown,
+            r#""a\u001B[2Jb\u200Bc\u202Ed\u00ADe\U000E0041f\u0007""#
+        );
+        let mut table = toml::Table::new();
+        table.insert(hostile.to_owned(), Value::Array(vec![string.clone()]));
+        let table = Value::Table(table);
+        for value in [string, table] {
+            let shown = Inline(&value).to_string();
+            assert!(!has_unsafe(&shown), "{shown:?}");
+            let back: toml::Table = format!("v = {shown}").parse().expect("valid TOML");
+            assert_eq!(back["v"], value, "{shown}");
+        }
+        assert!(!has_unsafe(&Key(hostile).to_string()));
+    }
+
+    /// A secret's file and variable forms print as TOML too, not Rust's `{:?}`.
+    #[test]
+    fn a_secret_source_prints_as_toml() {
+        let source = SecretSource::File("/run/secrets/a\u{200B}b".into());
+        let shown = source.to_string();
+        assert_eq!(shown, r#"{ file = "/run/secrets/a\u200Bb" }"#);
+        let back: toml::Table = format!("v = {shown}").parse().expect("valid TOML");
+        assert_eq!(back["v"]["file"].as_str(), Some("/run/secrets/a\u{200B}b"));
+        let shown = SecretSource::Env("V\u{202E}".into()).to_string();
+        assert_eq!(shown, r#"{ env = "V\u202E" }"#);
+    }
 }

@@ -5,8 +5,9 @@
 //! `serde_json::Value` keeps the last of two equal keys and drops the first without a word.
 //! A header that names one tensor twice, or gives one tensor two `data_offsets`, would then
 //! parse as something its writer may not have meant. [`Json`] keeps objects as ordered key
-//! lists and refuses a repeated key, so such a header fails instead. Numbers keep only what
-//! the readers need: a non-negative integer that fits `u64`, or "some other number".
+//! lists and refuses a repeated key, so such a header fails instead. Numbers are a
+//! non-negative integer that fits `u64`, or any other number as the `f64` `serde_json` reads,
+//! which `config.json`'s fractional hyperparameters need ([`crate::config`]).
 //! Nesting depth is bounded by `serde_json`'s recursion limit (128).
 
 use std::fmt;
@@ -15,14 +16,14 @@ use serde::Deserialize;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 
 /// A JSON value with ordered, duplicate-free objects.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Json {
     Null,
     Bool(bool),
     /// A non-negative integer that fits `u64`.
     Uint(u64),
-    /// Any other number: negative, fractional or too large.
-    OtherNumber,
+    /// Any other number: negative, fractional or too large, as `serde_json` reads it.
+    OtherNumber(f64),
     Str(String),
     Array(Vec<Json>),
     Object(Vec<(String, Json)>),
@@ -42,7 +43,7 @@ impl Json {
         match self {
             Json::Null => "null",
             Json::Bool(_) => "a boolean",
-            Json::Uint(_) | Json::OtherNumber => "a number",
+            Json::Uint(_) | Json::OtherNumber(_) => "a number",
             Json::Str(_) => "a string",
             Json::Array(_) => "an array",
             Json::Object(_) => "an object",
@@ -78,11 +79,11 @@ impl<'de> Visitor<'de> for JsonVisitor {
     }
 
     fn visit_i64<E: de::Error>(self, v: i64) -> Result<Json, E> {
-        Ok(u64::try_from(v).map_or(Json::OtherNumber, Json::Uint))
+        Ok(u64::try_from(v).map_or(Json::OtherNumber(v as f64), Json::Uint))
     }
 
-    fn visit_f64<E: de::Error>(self, _: f64) -> Result<Json, E> {
-        Ok(Json::OtherNumber)
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Json, E> {
+        Ok(Json::OtherNumber(v))
     }
 
     fn visit_str<E: de::Error>(self, v: &str) -> Result<Json, E> {
@@ -128,8 +129,8 @@ mod tests {
                 "a".into(),
                 Json::Array(vec![
                     Json::Uint(1),
-                    Json::OtherNumber,
-                    Json::OtherNumber,
+                    Json::OtherNumber(-2.0),
+                    Json::OtherNumber(1.5),
                     Json::Str("x".into()),
                     Json::Null,
                     Json::Bool(true),
@@ -142,7 +143,7 @@ mod tests {
         assert!(Json::parse(b"{} x").is_err());
         assert_eq!(
             Json::parse(b"18446744073709551616").unwrap(),
-            Json::OtherNumber
+            Json::OtherNumber(18_446_744_073_709_551_616.0)
         );
     }
 
