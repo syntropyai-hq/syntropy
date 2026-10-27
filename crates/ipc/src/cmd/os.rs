@@ -1015,8 +1015,17 @@ mod imp {
                     async_instance(&self.path, &self.descriptor, false).map_err(AcceptError::Io)?;
                 let client = std::mem::replace(&mut self.pending, next);
                 connected.map_err(AcceptError::Io)?;
-                let peer = check_peer(client.as_handle(), &self.user)?;
-                Ok((AsyncStream::Server(client), peer))
+                match check_peer(client.as_handle(), &self.user) {
+                    Ok(peer) => Ok((AsyncStream::Server(client), peer)),
+                    Err(refusal) => {
+                        // Cut the refused client off now. Dropping the instance alone closes its
+                        // handle only once the runtime has processed the cancellation of the
+                        // read tokio keeps pending on it, which a runtime that has stopped
+                        // polling never does.
+                        let _ = client.disconnect();
+                        Err(refusal)
+                    }
+                }
             }
         }
 

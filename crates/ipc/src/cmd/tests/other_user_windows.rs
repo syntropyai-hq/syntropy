@@ -186,7 +186,13 @@ fn an_async_connection_from_another_user_is_refused() {
     let (accepted, result) = thread::scope(|scope| {
         let peer = scope.spawn(|| account.run(&exposed, "exposed"));
         let accepted = rt.block_on(async {
-            tokio::time::timeout(Duration::from_secs(180), listener.accept()).await
+            let accepted = tokio::time::timeout(Duration::from_secs(180), listener.accept()).await;
+            // Keep the runtime polling until the peer is done, so nothing the listener does
+            // on it waits for a runtime that has stopped.
+            while !peer.is_finished() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            accepted
         });
         (accepted, peer.join().unwrap())
     });
@@ -404,6 +410,9 @@ fn connect_as_peer(pipe: &str, out: &Path) {
             match stream.read(&mut buf) {
                 Ok(0) => "closed".to_owned(),
                 Ok(n) => format!("read {n} bytes"),
+                // `ERROR_PIPE_NOT_CONNECTED`: the server disconnected the pipe, as the async
+                // listener does to a refused peer.
+                Err(error) if error.raw_os_error() == Some(233) => "closed".to_owned(),
                 Err(error) => format!("read-error {:?}", error.kind()),
             }
         }
