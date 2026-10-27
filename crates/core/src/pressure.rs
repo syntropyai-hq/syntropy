@@ -7,6 +7,10 @@
 use serde::{Deserialize, Serialize};
 
 /// System memory pressure, ordered from none to worst (RFC-0020 §11.2).
+///
+/// Variants are only appended, as the command channel's postcard encodes a variant by its index
+/// (RFC-0001 §3.5). The derived order follows variant order, so a new level between two others
+/// needs a hand-written `Ord` or an `ipc_protocol` major bump.
 #[non_exhaustive]
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,

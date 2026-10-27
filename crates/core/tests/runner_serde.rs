@@ -4,8 +4,9 @@
 //! DIST-E1-T15): `Deadline`, `DrainReason`, `SequenceOutcome`, `FetchPriority` and
 //! `PressureLevel` round-trip through serde, and a `Deadline` holds no absolute time.
 //!
-//! JSON stands in for the command channel's postcard: any serde format that round-trips a value
-//! carries the same value. `ipc`'s own tests round-trip the messages through the channel.
+//! Each value round-trips through postcard, the command channel's encoding, which tags a variant
+//! by its index, and through JSON, which tags it by name. `ipc`'s own tests round-trip the
+//! messages through the channel.
 
 use std::fmt::Debug;
 
@@ -19,9 +20,12 @@ use syntropy_core::{
 };
 
 fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) {
+    let bytes = postcard::to_allocvec(value).expect("serialize");
+    let back: T = postcard::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(&back, value, "postcard round trip through {bytes:?}");
     let json = serde_json::to_string(value).expect("serialize");
     let back: T = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(&back, value, "round trip through {json}");
+    assert_eq!(&back, value, "JSON round trip through {json}");
 }
 
 fn epoch() -> impl Strategy<Value = PlanEpoch> {
