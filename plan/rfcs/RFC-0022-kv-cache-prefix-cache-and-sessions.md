@@ -104,7 +104,7 @@ Rules:
   - `Q8 { block }` is one byte per element plus an F16 scale per `block` elements.
   - `K8V4 { block }` stores the entry's first half as `Q8` and its second half at 4 bits, each with F16 scales.
   - Recurrent state keeps the reference dtype, and an auxiliary cache keeps its own dtype.
-  - §9 does not define `K8V4` for an entry that is not a K/V pair, such as MLA's latent. That layer is split the same way until a decision says otherwise.
+  - §9 defines `K8V4` by K and V planes only. An entry that is not a K/V pair, such as an MLA latent, is sized as `Q8`, the conservative upper bound, until OQ-IO-30 is settled. `LayerKv::PerToken` gains `latent: bool` with a serde default of `false` (an owner addition, like `Compressed`), and `LayerKv::mla` sets it. A `Sparse` or `Compressed` entry counts as a latent, since the known families store one there.
 
 ### 3. Pages, page classes and pools
 
