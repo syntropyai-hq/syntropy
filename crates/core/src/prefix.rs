@@ -27,12 +27,23 @@
 //!   `shared_until` tokens, rounded down to whole pages, carry no salt; from the first page after
 //!   them, every key mixes in `scope_salt`: the principal's 16 bytes, or [`LOCAL_SCOPE_SALT`] for
 //!   the local principal. Under [`PrefixScopeMode::Instance`], the opt-in that restores one cache
-//!   for every client, `shared_salt` is [`INSTANCE_SHARED_SALT`] and no page carries a scope salt.
+//!   for every client, `shared_salt` is [`INSTANCE_SHARED_SALT`] and no page carries a scope salt:
+//!   prefixes are shared across principals by design (RFC-0022 §7.1), which is what the operator
+//!   opts into, not a leak.
+//! - **The two constants** differ from each other and sit where no principal's salt can. The
+//!   instance salt is only ever in `k_root`'s input, where principal scope puts nothing; a scope
+//!   salt is only ever in a page's input. The local salt is a fixed ASCII string; a principal's
+//!   salt is 16 bytes ingress derives from a credential by hashing (RFC-0050), so it equals the
+//!   local salt only by a 128-bit collision.
 //! - **Non-text inputs** ([`MediaSpan`]). A media item enters the token stream as the family's
 //!   placeholder IDs, which are the same for every image. So each page that holds any of a media
-//!   item's placeholders appends, after its tokens, the span's absolute start and length (u32 LE)
-//!   and its 32-byte content hash. A page with no media hashes exactly RFC-0022 §7.1's bytes. A
-//!   different image changes the key of the first page that holds it, and of every page after.
+//!   item's placeholders appends, after its tokens, one fixed-width 40-byte record per such item:
+//!   the span's absolute start and length (u32 LE each) and its 32-byte content hash. Records go
+//!   in order of absolute start (then length, then hash), whatever order the caller lists them
+//!   in. A page's token bytes are always exactly `4·P` long and each record exactly 40, so a
+//!   record cannot be read as tokens: a page with media is a longer input than any text page of
+//!   the same chain. A page with no media hashes exactly RFC-0022 §7.1's bytes. A different image
+//!   changes the key of the first page that holds it, and of every page after.
 //!
 //! The constants and the media encoding fill gaps in RFC-0022 §7.1 and are recorded in its note
 //! of 2026-10-28.
@@ -40,6 +51,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 use crate::canon;
 use crate::dtype::DType;
@@ -54,10 +66,12 @@ pub const KV_SETTINGS_DOMAIN: &[u8] = b"syntropy/kv-settings/v1";
 /// The domain string of `k_root` (RFC-0022 §7.1).
 pub const PREFIX_DOMAIN: &[u8] = b"syntropy-kv-prefix-v1";
 
-/// The scope salt of the local principal (`PrefixScope::principal == None`).
+/// The scope salt of the local principal (`PrefixScope::principal == None`). A fixed ASCII
+/// string, where a principal's salt is a credential's hash (module docs).
 pub const LOCAL_SCOPE_SALT: [u8; 16] = *b"syntropy/local\0\0";
 
-/// `shared_salt` under `kv.prefix_scope = instance`.
+/// `shared_salt` under `kv.prefix_scope = instance`. It appears only in `k_root`'s input, never
+/// in a page's, so it cannot stand for a scope salt (module docs).
 pub const INSTANCE_SHARED_SALT: [u8; 16] = *b"syntropy/instanc";
 
 /// The approximate knobs that touch KV: a lossy stored dtype, and approximate attention, whose
@@ -250,8 +264,8 @@ impl<H: Fn(&[u8]) -> Blake3> PrefixKeyChain<H> {
     }
 
     /// Keys the next page, whose `P` tokens are `tokens`. `media` may list every media span of
-    /// the sequence; the spans that hold a placeholder in this page are mixed in, in the order
-    /// given.
+    /// the sequence, in any order; the spans that hold a placeholder in this page are mixed in by
+    /// absolute start, then length, then hash.
     ///
     /// # Panics
     ///
@@ -272,7 +286,10 @@ impl<H: Fn(&[u8]) -> Blake3> PrefixKeyChain<H> {
         for t in tokens {
             self.buf.extend_from_slice(&t.to_le_bytes());
         }
-        for span in media.iter().filter(|m| m.overlaps(from, to)) {
+        let mut here: SmallVec<[&MediaSpan; 4]> =
+            media.iter().filter(|m| m.overlaps(from, to)).collect();
+        here.sort_unstable_by_key(|m| (m.start, m.len, m.hash.0));
+        for span in here {
             self.buf.extend_from_slice(&span.start.to_le_bytes());
             self.buf.extend_from_slice(&span.len.to_le_bytes());
             self.buf.extend_from_slice(&span.hash.0);

@@ -392,6 +392,81 @@ fn a_different_image_parts_the_keys_from_its_first_page() {
     assert_eq!(edge[1..], only_before[1..]);
 }
 
+/// Media records go by absolute start, whatever order the caller lists the spans in, and each
+/// is a fixed 40 bytes after the page's `4·P` token bytes.
+#[test]
+fn media_records_have_a_fixed_order_and_width() {
+    let inputs = RefCell::new(Vec::<Vec<u8>>::new());
+    let record = |bytes: &[u8]| {
+        inputs.borrow_mut().push(bytes.to_vec());
+        mix(bytes)
+    };
+    let a = MediaSpan {
+        start: 2,
+        len: 1,
+        hash: Blake3([0xA; 32]),
+    };
+    let b = MediaSpan {
+        start: 1,
+        len: 1,
+        hash: Blake3([0xB; 32]),
+    };
+    let page = [10, 11, 12, 13];
+    let key = |spans: &[MediaSpan]| {
+        let mut chain = PrefixKeyChain::new(
+            &record,
+            model(),
+            Blake3([9; 32]),
+            &PrefixScope::default(),
+            PrefixScopeMode::Instance,
+            4,
+        );
+        chain.push_page(&page, spans)
+    };
+    assert_eq!(key(&[a, b]), key(&[b, a]));
+    let inputs = inputs.into_inner();
+    let page_input = &inputs[1];
+    // 32 bytes of k_root, no scope salt (instance scope), 16 bytes of tokens, two 40-byte records.
+    assert_eq!(page_input.len(), 32 + 4 * 4 + 2 * 40);
+    let records = &page_input[32 + 16..];
+    assert_eq!(
+        &records[..8],
+        &[1, 0, 0, 0, 1, 0, 0, 0],
+        "b, which starts first, comes first"
+    );
+    assert_eq!(&records[8..40], &[0xB; 32]);
+    assert_eq!(&records[40..48], &[2, 0, 0, 0, 1, 0, 0, 0]);
+}
+
+#[test]
+fn the_salt_constants_differ() {
+    assert_ne!(LOCAL_SCOPE_SALT, INSTANCE_SHARED_SALT);
+    // Both are ASCII text, unlike the hashed bytes of a principal's salt.
+    assert!(
+        LOCAL_SCOPE_SALT
+            .iter()
+            .chain(&INSTANCE_SHARED_SALT)
+            .all(u8::is_ascii)
+    );
+    // The local principal and a principal whose salt is the instance constant are two scopes.
+    let s = settings();
+    let h = s.hash_with(mix);
+    let toks = tokens(64, 5);
+    let key = |scope: PrefixScope| {
+        PrefixKeyChain::new(mix, model(), h, &scope, PrefixScopeMode::Principal, 64)
+            .push_tokens(&toks, &[])
+    };
+    let local = key(PrefixScope {
+        principal: None,
+        shared_until: None,
+    });
+    let other = key(PrefixScope {
+        principal: Some(INSTANCE_SHARED_SALT),
+        shared_until: None,
+    });
+    assert_ne!(local, other);
+}
+
 #[test]
 fn a_partial_page_has_no_key_and_the_chain_resumes() {
     let s = settings();

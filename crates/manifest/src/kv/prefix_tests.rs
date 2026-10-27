@@ -101,6 +101,55 @@ fn the_formula_fills_its_part_of_the_settings() {
     assert_eq!(s.compression[4..], [Some(4), None]);
 }
 
+/// `kv_settings` carries every RFC-0022 §7.1 field from its inputs. The destructure names every
+/// field of `KvSettings`, so a field added there fails to compile here until it is filled and
+/// checked, and cannot be left out of the hash unnoticed.
+#[test]
+fn kv_settings_carries_every_field() {
+    let f = KvFormula {
+        layers: vec![
+            LayerKv::gqa(8, 128, Some(512)),
+            LayerKv::Compressed {
+                elems_per_entry: 576,
+                tokens_per_entry: 8,
+                window: Some(64),
+                selected: None,
+                latent: true,
+            },
+        ],
+        aux: Vec::new(),
+        dtype: KvDTypeSpec {
+            default: DType::BF16,
+            layers: vec![(LayerIx(1), DType::F32)],
+        },
+        layout_version: 7,
+    };
+    let stored = vec![KvDType::Q8 { block: 32 }, KvDType::Native];
+    let lossy = Some(KvDType::Q8 { block: 32 });
+    let KvSettings {
+        page_tokens,
+        stored: got_stored,
+        dtype,
+        dtype_layers,
+        layout_version,
+        rope: got_rope,
+        windows,
+        compression,
+        knobs,
+        kv_lossy,
+    } = f.kv_settings(32, stored.clone(), rope(), ApproxKnobs::KV_LOSSY, lossy);
+    assert_eq!(page_tokens, 32);
+    assert_eq!(got_stored, stored);
+    assert_eq!(dtype, DType::BF16);
+    assert_eq!(dtype_layers, vec![(LayerIx(1), DType::F32)]);
+    assert_eq!(layout_version, 7);
+    assert_eq!(got_rope, rope());
+    assert_eq!(windows, vec![Some(512), Some(64)]);
+    assert_eq!(compression, vec![None, Some(8)]);
+    assert_eq!(knobs, ApproxKnobs::KV_LOSSY);
+    assert_eq!(kv_lossy, lossy);
+}
+
 /// The `kv_dtype` override (COMP-E13-T06) changes the root key: it changes the resolved
 /// `KvDTypeSpec`, which `KvFormula::dtype` holds and `kv_settings_hash` covers.
 #[test]
