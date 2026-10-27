@@ -388,6 +388,18 @@ The rotating file is `<state>/logs/daemon.log`, 16 MiB × 5 files. Runner logs g
 
 `syntropy logs` reads through the API: the daemon serves the recent tail from its flight recorder and follows live records.
 
+*Note 2026-10-27 (PROD-E8-T04, as built).* The build settles what §4.1–§4.3 leave open:
+- **Where it lives.** `LogRecord`, `Callsite` and the `log` ring's `LogWriter` are in `syntropy_obs::log`, a hot-thread module under the `hot-threads` lint. The record is a fixed 48-byte little-endian encoding: callsite `u32`, level `u8`, three zero bytes, `at: MonoTime`, then the four `u64` arguments. The daemon's pipeline, formats and sinks are in `syntropy_daemon::logging`. The `[logging]` section is `syntropy_config::logging`, beside the `debug.*` keys, with RFC-0054 §5.2's five keys.
+- **Content** travels in fields marked as content: a `tracing` field named `content.<name>`, or a callsite argument whose bit is set in `Callsite::content`. Messages never carry content, so a runner callsite's content argument shows as `[content]` in its message. The pipeline drops content fields unless `logging.include_content` is on and the record is at `debug` or `trace`. While it is on, the logger warns at start and on every reload, and so does the resolved configuration.
+- **Repeat suppression** (§4.1). The first record of a run is written at once and opens a 10 s window, timed on the record's own `MonoTime` and the logger's injected `Clock`. Records in the window that share the callsite, the level and the key fields are counted, not written. When the window closes, one record stands for them, carrying `repeated = N`, the number it replaces. So 1,000 identical warnings in 10 s are written as the first one and one record with `repeated = 999`. At most 4,096 runs are tracked; past that, the oldest run's summary is written early.
+- **Timestamps** are UTC with microseconds. They come from one sample of the `Clock`'s wall time and monotonic time, then monotonic differences, so every record's time comes from the injected `Clock`.
+- **Sinks** follow §4.2's table: `JOURNAL_STREAM` means systemd, a `XPC_SERVICE_NAME` other than `0` means launchd, and a Windows service is told by its own start path.
+  - journald gets its native protocol over `/run/systemd/journal/socket`, with every field as `SYNTROPY_<NAME>`.
+  - Unified logging gets one `os_log_t` per crate, written as `%{public}s` through the call the `os_log` macros make.
+  - The Windows event log gets warnings and errors from source `Syntropy`, without a message file, which is packaging's.
+  - Both OS facilities are linked by `syntropy-io` alone (`io::os::log_sink`), from `libSystem` and `advapi32.dll`, which rule 7 already allows.
+  - A user-named `logging.file` is written in every situation; `auto` writes `<state>/logs/daemon.log` only where the table keeps a file.
+
 ### 5. `syntropy doctor`
 
 #### 5.1 Checks and findings

@@ -3982,8 +3982,12 @@ dependencies = [
  "syntropy-api",
  "syntropy-config",
  "syntropy-core",
+ "syntropy-io",
  "syntropy-ipc",
+ "syntropy-obs",
+ "syntropy-testkit",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

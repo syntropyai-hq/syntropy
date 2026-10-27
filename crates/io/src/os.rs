@@ -28,6 +28,8 @@
 //!   `probe` makes through safe functions (RFC-0010 §2.2; OQ-PRC-26): sysctl reads,
 //!   `host_statistics64` and IOKit power sources on macOS; processor, memory, NUMA, power,
 //!   working-set and version calls on Windows.
+//! - [`log_sink`] holds the OS log facilities the daemon's log sinks write to: unified logging
+//!   on macOS and the event log on Windows (RFC-0053 §4.2; PROD-E8-T04).
 //!
 //! Every `unsafe` block carries a `// SAFETY:` comment with its invariant (ADR-0001 item 4).
 
@@ -35,6 +37,7 @@ use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub mod checks;
+pub mod log_sink;
 #[cfg(target_os = "macos")]
 pub mod macos_host;
 mod thread;

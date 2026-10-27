@@ -14,9 +14,19 @@ syntropy-api = { path = "../api" }
 syntropy-config = { path = "../config" }
 # The local socket's endpoint type (RFC-0050 §1.1).
 syntropy-ipc = { path = "../ipc" }
+# Unified logging and the Windows event log, the OS log facilities `io` alone links (RFC-0053 §4.2).
+syntropy-io = { path = "../io" }
+# Hot-thread `LogRecord`s and their callsites, which the daemon formats (RFC-0053 §4.1).
+syntropy-obs = { path = "../obs" }
+# The subscriber for async code's events (RFC-0053 §4.1).
+tracing.workspace = true
 # The `ctl` runtime (RFC-0001 §8.1): multi-thread, with I/O and timers, and the API's stop signal.
 tokio = { workspace = true, features = ["net", "sync"] }
 # The host-change ledger (RFC-0052 §11.1): its JSON file and the BLAKE3 fingerprints of written files.
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# `SimClock`, the injected time of the logging tests (RFC-0060 §2.1).
+syntropy-testkit = { path = "../testkit" }

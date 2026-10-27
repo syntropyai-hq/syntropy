@@ -58,6 +58,9 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+# Structured events for async and other non-hot code (RFC-0053 §4.1). Hot threads never use it
+# (the `hot-threads` lint step). Without default features: no `attributes` proc macro.
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 # The config snapshot swap with lock-free readers (RFC-0054 §9.1).
 arc-swap = "1.9.3"
 bitflags = { version = "2", features = ["serde"] }
