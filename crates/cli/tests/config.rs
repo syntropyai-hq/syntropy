@@ -367,6 +367,54 @@ fn bad_arguments_exit_5_and_path_still_prints() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// `config show --resolved` prints a value holding controls and invisible characters as a TOML
+/// string that parses back to the original, and none of them raw: a line pastes back into a file
+/// (review of #1923, N1).
+#[test]
+fn show_prints_controls_and_invisible_characters_as_toml_escapes() {
+    let home = temp("toml-escapes");
+    let file = home.join("config.toml");
+    // ESC, a zero-width space, a right-to-left override and a soft hyphen, as TOML escapes.
+    std::fs::write(
+        &file,
+        "[cluster]\nnamespace = \"a\\u001b[2Jb\\u200Bc\\u202Ed\\u00ADe\"\n",
+    )
+    .unwrap();
+    let output = finish(&mut isolated(
+        &[
+            "config",
+            "show",
+            "--resolved",
+            "--config",
+            file.to_str().unwrap(),
+        ],
+        &home,
+    ));
+    assert_eq!(code(&output), 0, "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    let raw = |c: char| {
+        (c.is_control() && c != '\n' && c != '\t') || syntropy_api::printable::invisible(c)
+    };
+    assert!(
+        !stdout.chars().any(raw),
+        "raw control or invisible character: {stdout:?}"
+    );
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("cluster.namespace = "))
+        .expect("the key's line");
+    let value = line
+        .strip_prefix("cluster.namespace = ")
+        .and_then(|rest| rest.split("  # ").next())
+        .unwrap()
+        .trim_end();
+    assert_eq!(value, r#""a\u001B[2Jb\u200Bc\u202Ed\u00ADe""#, "{line}");
+    // `syntropy_config::Value` is `toml::Value`, which parses one TOML value.
+    let back: syntropy_config::Value = value.parse().expect("the value is TOML");
+    assert_eq!(back.as_str(), Some("a\u{1b}[2Jb\u{200B}c\u{202E}d\u{AD}e"));
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// One case: the arguments, an environment variable to set, and the exit code.
 type Case<'a> = (Vec<&'a str>, Option<(&'a str, &'a str)>, i32);
 

@@ -125,6 +125,7 @@
 // Lets the derive's `::syntropy_config::…` paths resolve inside this crate's own tests.
 extern crate self as syntropy_config;
 
+pub mod chars;
 mod code;
 pub mod command;
 mod debug;

@@ -160,8 +160,17 @@ impl fmt::Display for SecretSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SecretSource::Inline(_) => f.write_str(REDACTED),
-            SecretSource::File(path) => write!(f, "{{ file = {:?} }}", path.display().to_string()),
-            SecretSource::Env(var) => write!(f, "{{ env = {var:?} }}"),
+            // TOML strings, not Rust's `{:?}`, so the form pastes back into a file.
+            SecretSource::File(path) => {
+                f.write_str("{ file = ")?;
+                crate::schema::write_toml_string(f, &path.display().to_string())?;
+                f.write_str(" }")
+            }
+            SecretSource::Env(var) => {
+                f.write_str("{ env = ")?;
+                crate::schema::write_toml_string(f, var)?;
+                f.write_str(" }")
+            }
         }
     }
 }
