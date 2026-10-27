@@ -594,6 +594,8 @@ pub struct FamilyCert { pub family: ArchFamily, pub code: Blake3, pub quants: Sm
 | `models.<name>.chat_template` | unset | template override (RFC-0054 §5.3) |
 | `models.<name>.kv_dtype` | family default | force BF16 KV where F16 overflows (RFC-0042 §4.2); changes `KvFormula::dtype` and therefore prefix and session keys |
 
+*Note 2026-10-28 (COMP-E13-T06):* RFC-0054 §5.1 keeps per-model settings out of `models.*`, so `models.<name>.kv_dtype` is the instance key `kv_dtype` of a `[policy."<selector>"]` table (RFC-0054 §5.4), as `models.<name>.chat_template` is `chat_template` there. It takes `f16`, `bf16` or `f32`; unset, the family's reference dtype stands. It replaces the default dtype of `KvFormula::dtype` and keeps the layers a family requires (`KvDTypeSpec::with_override`). The row above keeps its old name for the record.
+
 Codes are `(Domain::Graph, n)`:
 
 | Code | Name | Class | Raised when |

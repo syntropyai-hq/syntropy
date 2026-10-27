@@ -15,6 +15,9 @@
 //! KV dtype ([`KvFormula::dtype`]). `Q8` and `K8V4` store per-token, sparse and compressed entries
 //! below it. Recurrent state (`Fixed`) is never quantized (RFC-0022 §9), and an auxiliary cache
 //! keeps its own dtype ([`AuxKv::dtype`]).
+//!
+//! [`dtype`] holds RFC-0042 §4.2's rule that fills [`KvFormula::dtype`] per family and source,
+//! and the instance's `kv_dtype` override.
 
 use std::ops::Range;
 
@@ -137,7 +140,8 @@ pub enum AuxKind {
 }
 
 /// The reference's KV dtype per layer (RFC-0022 §2): one dtype, with per-layer exceptions.
-/// RFC-0042 §4.2's rule fills it per family and source (COMP-E13-T06).
+/// RFC-0042 §4.2's rule fills it per family and source ([`KvDTypeRule::reference`]), and an
+/// instance's `kv_dtype` override changes it ([`KvDTypeSpec::with_override`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvDTypeSpec {
     /// The dtype of every layer not in `layers`.
@@ -419,6 +423,10 @@ fn bits_to_bytes(bits: u128) -> u128 {
 fn saturate(bytes: u128) -> Bytes {
     Bytes(u64::try_from(bytes).unwrap_or(u64::MAX))
 }
+
+pub mod dtype;
+
+pub use dtype::{KvDTypeError, KvDTypeOverride, KvDTypeRule, KvDTypeSection, KvSource};
 
 #[cfg(test)]
 mod tests;

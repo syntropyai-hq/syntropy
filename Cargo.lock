@@ -3919,6 +3919,7 @@ dependencies = [
  "syntropy-config",
  "syntropy-core",
  "syntropy-ipc",
+ "syntropy-manifest",
  "syntropy-net",
  "syntropy-sched",
  "tokio",
@@ -4113,6 +4114,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "syntropy-config",
  "syntropy-core",
  "syntropy-testkit",
 ]

@@ -227,6 +227,10 @@ pub struct Numerics {
 
 **The model's KV dtype** is what the reference stores, recorded per layer in `KvFormula::dtype` by the family module (RFC-0043 §5; RFC-0022 §2): FP8 where the model's own configuration specifies an FP8 cache (ADR-0019's revisit case); otherwise BF16 for safetensors sources whose weights are BF16 or lower, F16 for GGUF sources (matching ggml's default cache type, so the calibration baseline agrees), and F32 only when a family module requires it. RFC-0022 stores KV in this dtype in exact mode; anything lower is the `kv_lossy` knob (§10).
 
+**Revision note, 2026-10-28 (COMP-E13-T06): the rule as `manifest::kv::dtype` applies it.** `KvDTypeRule::reference` takes the source, the declared cache, and the family's requirements, for every layer or per layer, and applies them in this order: a declared FP8 cache sets every layer; otherwise a family requirement (F16, BF16 or F32) wins over the source; otherwise the source decides. Two parts are not in the text above:
+- **Safetensors checkpoints that are not quantised and whose compute dtype is F16 or F32** take that dtype. One with no compute dtype takes BF16. Quantised weights below 16 bits take BF16, as the text says. This follows a reading, not yet checked against the publishers' code, that the reference stores KV in its compute dtype (`config.json`'s `torch_dtype`).
+- **Which configuration fields declare an FP8 cache** is left to the caller, the family module or the census. The rule takes the declared dtype and refuses one that is not FP8.
+
 #### 4.3 Activation quantisation inside a matrix product
 
 A kernel that converts its activation input to a narrower type before multiplying changes the result. The rule (ADR-0421):

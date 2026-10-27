@@ -3070,3 +3070,11 @@ TIER-E6-T01 builds `KvFormula`. Its owner, RFC-0022, adds a field to three `Laye
 | Change | Sections touched | Reason |
 |---|---|---|
 | `LayerKv::PerToken`, `Sparse` and `Compressed` gain `latent: bool` with a serde default of `false`; the family sets it, and `LayerKv::mla` does | §5.3 (dated note); RFC-0022 §2 (dated note) and its "Proposed amendments to RFC-0001" item 1 | RFC-0022 §9 defines `K8V4` by K and V planes, and a latent is not a K/V pair, so the sizes must tell the two apart. A latent is sized as `Q8` until OQ-IO-30 is settled. Block-sparse and QSA-class layers store K/V pairs, so the flag is per layer, not per variant (the review of #1935) |
+
+### 18.47 The `kv_dtype` override is a per-model instance key (2026-10-28)
+
+COMP-E13-T06 builds RFC-0042 §4.2's KV dtype rule and its override. The override's key moves to where RFC-0054 puts every per-model setting.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| RFC-0043 §10's node key `models.<name>.kv_dtype` becomes the instance key `kv_dtype` of a `[policy."<selector>"]` table, taking `f16`, `bf16` or `f32` | RFC-0043 §10 (dated note); RFC-0054 §5.4 (a row and a dated note); RFC-0042 §4.2 (dated note on the rule) | RFC-0054 §5.1 keeps per-model policies out of `models.*`, as it did for `chat_template`. A node-scope dtype would let two ingress nodes build different instances of one model, which breaks the idempotence of `EnsureInstance` (RFC-0054 §6.1). A lower dtype stays `approximate.kv_lossy` (D3) |
