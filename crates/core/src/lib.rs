@@ -25,6 +25,7 @@ pub mod policy;
 pub mod pressure;
 pub mod protocol;
 pub mod quant;
+pub mod replan;
 pub mod resource;
 pub mod runner;
 pub mod sequence;
@@ -54,6 +55,7 @@ pub use policy::{
 pub use pressure::PressureLevel;
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
+pub use replan::{DriftTerm, ReplanReason, WorkloadTerm};
 pub use runner::{Deadline, DrainReason};
 pub use sequence::{
     CancelReason, DraftNode, FinishReason, GrammarRef, LogprobBlock, PoolingMode, PrefixKey,
