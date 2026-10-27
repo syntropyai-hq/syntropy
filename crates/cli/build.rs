@@ -4,7 +4,8 @@
 //!
 //! It writes `$OUT_DIR/build_id.rs`, which `src/build_id.rs` includes:
 //! - **version**: `version.txt` at the repository root, or `CARGO_PKG_VERSION` where the file
-//!   is absent, as in a crate archive;
+//!   is absent, as in a crate archive. A `version.txt` that `syntropy_core::build::SemVer` would
+//!   refuse fails the build, through that parser itself ([`version::checked`]);
 //! - **commit**: `SYNTROPY_BUILD_COMMIT` (40 hex digits) when set, as a release or a source
 //!   archive's build sets it; else `git rev-parse HEAD`, when the repository's top level is this
 //!   workspace's root; else all zeros, which the binary reports as unknown. There is no git
@@ -22,6 +23,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[path = "build/version.rs"]
+mod version;
 
 fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets it"));
@@ -67,34 +71,11 @@ fn version(manifest: &Path) -> String {
     let file = manifest.join("..").join("..").join("version.txt");
     println!("cargo:rerun-if-changed={}", file.display());
     match fs::read_to_string(&file) {
+        // `core`'s own parser, so a version that builds is one `SemVer` reads at run time.
         Ok(text) => {
-            let version = text.trim().to_owned();
-            assert!(
-                version.parse::<Version>().is_ok(),
-                "{}: `{version}` is not a MAJOR.MINOR.PATCH version",
-                file.display()
-            );
-            version
+            version::checked(&text).unwrap_or_else(|why| panic!("{}: {why}", file.display()))
         }
         Err(_) => env::var("CARGO_PKG_VERSION").expect("cargo sets it"),
-    }
-}
-
-/// Just enough of SemVer to refuse a malformed `version.txt` at build time; `core::build::SemVer`
-/// parses it fully at run time.
-struct Version;
-
-impl std::str::FromStr for Version {
-    type Err = ();
-    fn from_str(text: &str) -> Result<Version, ()> {
-        let core = text.split_once('-').map_or(text, |(core, _)| core);
-        let parts: Vec<&str> = core.split('.').collect();
-        let numeric = |p: &&str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
-        if parts.len() == 3 && parts.iter().all(numeric) {
-            Ok(Version)
-        } else {
-            Err(())
-        }
     }
 }
 

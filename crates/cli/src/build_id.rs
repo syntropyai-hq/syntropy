@@ -102,6 +102,11 @@ pub fn build() -> Build {
     }
 }
 
+/// The build script's version check, compiled here too so its tests run (`build/version.rs`).
+#[cfg(test)]
+#[path = "../build/version.rs"]
+mod build_version;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +123,35 @@ mod tests {
             "{}",
             generated::TOOLCHAIN
         );
+    }
+
+    /// The build refuses exactly the `version.txt` `SemVer` refuses, through the same parser:
+    /// a pre-release outside SemVer §9, such as `0.0.0-a_b`, fails the build rather than
+    /// `syntropy --version` at run time (review of #1924).
+    #[test]
+    fn the_build_refuses_a_version_semver_refuses() {
+        for text in [
+            "0.0.0",
+            "1.2.3\n",
+            " 1.2.3-rc.1 ",
+            "1.0.0-x-y.7",
+            "0.0.0-a_b",
+            "1.0.0-rc.01",
+            "1.0.0-a..b",
+            "1.0.0+build",
+            "1.2",
+            "v1.2.3",
+            "",
+        ] {
+            let built = super::build_version::checked(text);
+            let parsed = text.trim().parse::<SemVer>();
+            assert_eq!(built.is_ok(), parsed.is_ok(), "{text:?}");
+            if let Ok(version) = built {
+                assert_eq!(version, text.trim());
+            }
+        }
+        let refused = super::build_version::checked("0.0.0-a_b").unwrap_err();
+        assert!(refused.contains("0.0.0-a_b"), "{refused}");
     }
 
     #[test]

@@ -40,6 +40,11 @@ hyper = { workspace = true, features = ["client"] }
 hyper-util.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "time"] }
 
+[build-dependencies]
+# `SemVer`'s parser, so the build refuses exactly the `version.txt` the binary would refuse at
+# run time (RFC-0062 §8.1).
+syntropy-core = { path = "../core" }
+
 [dev-dependencies]
 # The contract tests serve the API in-process, as a daemon would.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "time", "sync"] }
