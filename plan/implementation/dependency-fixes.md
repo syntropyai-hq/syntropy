@@ -1183,3 +1183,13 @@ The review of #1922 (PROD-E8-T01) found two of its criteria needed work no M0b t
 | QUAL-E3-T16 → PROD-E8-T07 (`SpanRecord`) | QUAL-E3-T16 | R9 | its new criterion stamps span records, which PROD-E8-T07 builds. M2 → M1a, and PROD-E8-T07 does not reach QUAL-E3-T16, so the edge adds no cycle |
 | PROD-E8-T01's "step times are unaffected" moves to PLC-E7-T10 (M1a), as an A/B of the step loop with the `telemetry` and step rings full and with them drained. PROD-E8-T01 keeps "drops the new record and counts it, and a write never waits" | PROD-E8-T01, PLC-E7-T10 | R9, definition of done | a step time can be measured only on a step loop, and PLC-E7-T10 builds the one that writes these rings. By the definition of done a criterion is demonstrated, not argued, so it moves rather than holding by construction |
 | PLC-E7-T10's criterion "a full ring drops oldest records and counts drops" becomes "a full ring drops the new record and counts it" | PLC-E7-T10 | Definition of done | as written it could not be met on an SPSC ring; RFC-0001 §8.4 rule 8's note of 2026-10-27 and §18.43 |
+
+## DIST-E1-T05's forwarding criterion, at a seam (2026-10-28)
+
+The review of #1932 (DIST-E1-T05) found its criterion "the daemon forwards `ReportRunner` (DIST-E9)" could be met at M0a only up to a seam. `daemon::report::forward_state_changed` maps each `StateChanged` to one `RunnerReport`, with `ClusterCommand::ReportRunner`'s fields (RFC-0001 §5.10), and hands it to a `ReportSink`. No daemon loop calls it yet: the runner-channel loop is DIST-E1-T06's (M1a). No sink submits a `ClusterCommand` yet: that is DIST-E9-T02's (M2). The two missing halves move to the tasks that build them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T05's criterion becomes "the daemon maps each `StateChanged` to one `ReportRunner` at a `ReportSink` seam (unit test through real frames)" | DIST-E1-T05 | R9 | the loop that calls the mapping and the client behind the sink are M1a and M2 work, which an M0a task cannot depend on |
+| DIST-E1-T06 gains "the daemon's runner-channel loop passes every `StateChanged` to `forward_state_changed`" | DIST-E1-T06 | R9 | DIST-E1-T06 builds that loop, and already depends on DIST-E1-T05 |
+| DIST-E9-T02 → DIST-E1-T05 (`ReportSink`), and DIST-E9-T02 gains "the `ClusterCommand` client implements `ReportSink`, and a `RunnerReport` submitted through it applies as `RunnerStateChanged`" | DIST-E9-T02 | R9 | `ReportRunner` is one of RFC-0001 §5.10's base commands, which DIST-E9-T02 builds. M2 → M0a, and DIST-E1-T05 does not reach DIST-E9-T02, so the edge adds no cycle |
