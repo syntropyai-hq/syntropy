@@ -1016,6 +1016,107 @@ fn pair() -> (DaemonChannel, RunnerChannel) {
     (Channel::new(daemon), Channel::new(runner))
 }
 
+/// Reads the `len` raw bytes the other end wrote.
+fn raw(stream: &mut impl std::io::Read, len: usize) -> Vec<u8> {
+    let mut bytes = vec![0; len];
+    stream.read_exact(&mut bytes).unwrap();
+    bytes
+}
+
+/// Both transports carry the same bytes: every message, sent through a channel over the OS
+/// socket and over the in-memory pair, arrives as exactly `encode_frame`'s frame (DIST-E1-T11).
+#[test]
+fn the_framing_is_byte_identical_over_both_transports() {
+    let (mut os_daemon, mut os_runner) = pair();
+    let (mut mem_daemon, mut mem_runner) = memory_channel();
+    for (n, msg) in daemon_msgs().into_iter().enumerate() {
+        let want = encode_frame(&Envelope {
+            id: RequestId(n as u64 + 1),
+            reply_to: None,
+            msg: &msg,
+        })
+        .unwrap();
+        os_daemon.send(&msg).unwrap();
+        mem_daemon.send(&msg).unwrap();
+        assert_eq!(
+            raw(os_runner.stream_mut(), want.len()),
+            want,
+            "{msg:?} over the socket"
+        );
+        assert_eq!(
+            raw(mem_runner.stream_mut(), want.len()),
+            want,
+            "{msg:?} in memory"
+        );
+    }
+    for (n, msg) in runner_msgs().into_iter().enumerate() {
+        let want = encode_frame(&Envelope {
+            id: RequestId(n as u64 + 1),
+            reply_to: Some(RequestId(7)),
+            msg: &msg,
+        })
+        .unwrap();
+        os_runner.reply(RequestId(7), &msg).unwrap();
+        mem_runner.reply(RequestId(7), &msg).unwrap();
+        assert_eq!(
+            raw(os_daemon.stream_mut(), want.len()),
+            want,
+            "{msg:?} over the socket"
+        );
+        assert_eq!(
+            raw(mem_daemon.stream_mut(), want.len()),
+            want,
+            "{msg:?} in memory"
+        );
+    }
+    assert_eq!(mem_daemon.stream().available(), 0);
+}
+
+/// The in-process handshake keeps the process handshake's checks: the build, the protocol, and
+/// the process ID, which for a runner in this process is this process's.
+#[test]
+fn the_in_process_handshake_checks_build_protocol_and_process() {
+    let hello = |pid, build_id, ipc_protocol| Hello {
+        pid,
+        build_id,
+        ipc_protocol,
+        obs_tables: Blake3([0; 32]),
+    };
+    let me = std::process::id();
+    let cases = [
+        (hello(me, BUILD, PROTOCOL), true),
+        (hello(me.wrapping_add(1), BUILD, PROTOCOL), false),
+        (hello(me, [0xee; 32], PROTOCOL), false),
+        (
+            hello(
+                me,
+                BUILD,
+                IpcProtocol {
+                    major: PROTOCOL.major + 1,
+                    minor: 0,
+                },
+            ),
+            false,
+        ),
+    ];
+    for (hello, accepted) in cases {
+        let (mut daemon, mut runner) = memory_channel();
+        runner.send(&RunnerMsg::Hello(hello)).unwrap();
+        let result = daemon.handshake_in_process(&BUILD);
+        assert_eq!(result.is_ok(), accepted, "{hello:?}: {result:?}");
+        if accepted {
+            assert_eq!(result.unwrap(), hello);
+        }
+    }
+    // A runner that sends anything else first is refused.
+    let (mut daemon, mut runner) = memory_channel();
+    runner.send(&RunnerMsg::Pong).unwrap();
+    assert!(matches!(
+        daemon.handshake_in_process(&BUILD),
+        Err(HandshakeError::Unexpected { expected: "Hello" })
+    ));
+}
+
 #[test]
 fn every_message_crosses_a_channel_with_its_request_id() {
     let (mut daemon, mut runner) = pair();

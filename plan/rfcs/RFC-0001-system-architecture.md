@@ -150,7 +150,7 @@ On platforms that forbid spawning a child process (iOS, some Android contexts), 
 - **The region.** The shared-memory region is real in-process too. The host creates it on the daemon's side and opens it on the runner's, so the header's words and the supervisor's `RunnerLink::sample_region` work unchanged.
 - **The handshake.** The daemon checks an in-process runner's `Hello` against its own process ID (`DaemonChannel::handshake_in_process`).
 - **Still to come.** The process host, which spawns `__runner`, comes with DIST-E1-T04.
-- **The suite.** `crates/cli/tests/runner_integration.rs` is the runner integration suite DIST-E1-T11's criterion names. One scenario runs over the in-process host and over an OS socket: the handshake, a real `Lifecycle` to `Ready` through the supervisor, the header's words, a stall kill, and a drain to `Stopped`.
+- **The suite.** The runner integration suite DIST-E1-T11's criterion names is this change's `runner_integration` test, `crates/cli/tests/runner_integration.rs`. It runs in the workspace unit job (`cargo test --workspace`, `cargo xtask test unit`) on every hosted OS, Linux included, and no xtask suite of its own is registered. One scenario runs over the in-process host and over an OS socket: the handshake, a real `Lifecycle` to `Ready` through the supervisor, the header's words, a stall kill, and a drain to `Stopped`.
 
 ### 3.2 What each process owns
 
