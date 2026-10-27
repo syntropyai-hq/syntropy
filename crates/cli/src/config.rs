@@ -1,11 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! `syntropy config show --resolved`, `config check` and `config path` (RFC-0051 §2.1; RFC-0054
-//! §1, §2.2, §2.4; RFC-0001 §11.2; PROD-E6-T23).
+//! §1, §2.2, §2.4; RFC-0001 §11.2; PROD-E6-T23), and `config set`, `unset` and `edit` (RFC-0054
+//! §10.2; PROD-E1-T12).
 //!
-//! Each calls `syntropy-config`'s `command` function over [`REGISTRY`], the binary's section
-//! registry, with the process environment and the `--config` and `--set` flags. None needs a
-//! daemon (RFC-0051 §1).
+//! Each calls `syntropy-config`'s `command` or `write` functions over [`REGISTRY`], the binary's
+//! section registry, with the process environment and the `--config` and `--set` flags. None
+//! needs a daemon (RFC-0051 §1).
+//!
+//! A write edits one file: the user file, the system file under `--system`, or the explicit
+//! file `--config` or `SYNTROPY_CONFIG` names. It changes only the lines of the key it sets,
+//! validates the whole layer as it would be with the new text, RFC-0054 §8's phases 1–5 with no
+//! environment overrides or flags, and writes nothing if the result is invalid. The file is
+//! replaced atomically, keeping its permissions, and a symbolic link at its path is refused.
+//! Nothing a write prints holds the value it wrote, which can be a secret. A running daemon
+//! applies the change at its next start: `config reload` is PROD-E1-T11's.
 //!
 //! Output follows RFC-0051 §2.2. The command's result goes to stdout: the resolved values,
 //! `check`'s summary line, or the paths. Every diagnostic goes to stderr, in RFC-0054 §8's form,
@@ -17,18 +26,23 @@
 //! The files are those a user's daemon reads (`Mode::User`). `--json` is refused until the API
 //! has a configuration type to print (`/v1/syntropy/config`, RFC-0054 §10.2).
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 use syntropy_api::config::ApiSection;
 use syntropy_api::rules::API_RULES;
 use syntropy_config::{
-    ConfigSection, DebugSection, Env, Flags, HostEnvironment, Locations, Mode, Os, Problem,
-    Registry, Scan, SectionSchema, command, load_and_validate, locate,
+    Checked, ConfigSection, DebugSection, Env, Flags, HostEnvironment, Locations, Mode, Os,
+    Problem, Registry, Scan, SectionSchema, command, load_and_validate, locate, write,
 };
 
-use crate::args::{ConfigCheckArgs, ConfigPathArgs, ConfigShowArgs, ConfigSource};
+use crate::args::{
+    ConfigCheckArgs, ConfigEditArgs, ConfigPathArgs, ConfigSetArgs, ConfigShowArgs, ConfigSource,
+    ConfigTarget, ConfigUnsetArgs,
+};
 use crate::error::{CliError, Exit};
-use crate::output::Output;
+use crate::output::{Output, Terminal};
+use crate::prompt;
 
 /// `syntropy-net`'s sections.
 const NET: &[&SectionSchema] = syntropy_net::config::SECTIONS;
@@ -90,7 +104,9 @@ pub fn show(args: &ConfigShowArgs, output: Output) -> Result<Exit, CliError> {
             for warning in config.warnings() {
                 values = values.replacen(&format!("\nwarning: {warning}\n"), "", 1);
             }
-            print!("{values}");
+            // Values are TOML-quoted, but each line's origin echoes a path or a variable's name
+            // from the environment or the command line.
+            print!("{}", printable_lines(&values));
             Ok(Exit::Success)
         }
         Err(_) => Err(CliError::cli(
@@ -113,13 +129,15 @@ pub fn check(args: &ConfigCheckArgs, output: Output) -> Result<Exit, CliError> {
     let report = command::check(&checked, &REGISTRY);
     eprint!("{}", printable_lines(&diagnostics));
     // The report is the diagnostics, then one summary line.
-    print!(
-        "{}",
-        report
-            .text
-            .strip_prefix(&diagnostics)
-            .unwrap_or(&report.text)
-    );
+    // `command::check`'s text is `Checked::render` followed by the summary, and the render is
+    // pure over the same `Checked`, so the prefix always matches
+    // (`check_s_report_starts_with_its_diagnostics`). Were it ever not to, the whole report goes
+    // to stdout, escaped like the rest.
+    let summary = report
+        .text
+        .strip_prefix(&diagnostics)
+        .unwrap_or(&report.text);
+    print!("{}", printable_lines(summary));
     Ok(if report.exit == command::EXIT_OK {
         Exit::Success
     } else {
@@ -148,8 +166,558 @@ pub fn path(args: &ConfigPathArgs, output: Output) -> Result<Exit, CliError> {
             }
         }
     };
-    print!("{}", command::path(&locations, &scan));
+    // Every path comes from the environment or `--config`: `SYNTROPY_CONFIG`, `HOME`, the XDG
+    // and Windows variables, `TMPDIR`.
+    print!("{}", printable_lines(&command::path(&locations, &scan)));
     Ok(Exit::Success)
+}
+
+/// `config set <key> <value>`: the key set in the target file, the rest of the file unchanged.
+pub fn set(args: &ConfigSetArgs, output: Output) -> Result<Exit, CliError> {
+    refuse_json(output, "set")?;
+    if args.cluster {
+        return Err(cluster_not_built("set"));
+    }
+    let value = if args.value == "-" {
+        value_from_stdin(&args.key)?
+    } else {
+        if holds_secret(&REGISTRY, &args.key) && !names_a_source(&args.value) {
+            eprintln!(
+                "warning: `{}` is a secret, and its value is on the command line, where shell \
+                 history and the process list can see it; pass `-` to read it from stdin, or set \
+                 `{{ file = \"…\" }}` or `{{ env = \"…\" }}`",
+                printable(&args.key)
+            );
+        }
+        args.value.clone()
+    };
+    let target = Target::of(&args.target)?;
+    let old = target.read()?;
+    let new = write::set(&old, &args.key, &value).map_err(|e| edit_failed(&target, &e))?;
+    target.save(&new, false)?;
+    println!("set `{}` in {}", printable(&args.key), target.shown());
+    reload_note();
+    Ok(Exit::Success)
+}
+
+/// `config unset <key>`: the key's line removed from the target file, its comments kept.
+pub fn unset(args: &ConfigUnsetArgs, output: Output) -> Result<Exit, CliError> {
+    refuse_json(output, "unset")?;
+    if args.cluster {
+        return Err(cluster_not_built("unset"));
+    }
+    let target = Target::of(&args.target)?;
+    let old = target.read()?;
+    let Some(new) = write::unset(&old, &args.key).map_err(|e| edit_failed(&target, &e))? else {
+        println!(
+            "`{}` is not set in {}; nothing changed",
+            printable(&args.key),
+            target.shown()
+        );
+        return Ok(Exit::Success);
+    };
+    target.save(&new, false)?;
+    println!("removed `{}` from {}", printable(&args.key), target.shown());
+    reload_note();
+    Ok(Exit::Success)
+}
+
+/// `config set <key> -`: the value from stdin, without one trailing line break. Piped in, it is
+/// read whole. On a terminal it is read as one line with echo off, after a prompt on stderr
+/// ([`read_hidden_line`]), so a secret never shows on the screen.
+fn value_from_stdin(key: &str) -> Result<String, CliError> {
+    use std::io::{IsTerminal as _, Read as _};
+    let failed = |e: std::io::Error| {
+        CliError::cli(
+            Exit::Failure,
+            "read_failed",
+            format!("cannot read the value from stdin: {e}"),
+        )
+    };
+    let stdin = std::io::stdin();
+    let mut value = String::new();
+    if stdin.is_terminal() {
+        value = read_hidden_line(&format!("value for `{}`: ", printable(key))).map_err(|e| {
+            CliError::cli(
+                Exit::Failure,
+                "read_failed",
+                format!("cannot read the value from the terminal with echo off: {e}"),
+            )
+            .hint("pipe the value in instead, as `printf '%s' … | syntropy config set <key> -`")
+        })?;
+    } else {
+        stdin.lock().read_to_string(&mut value).map_err(failed)?;
+    }
+    if let Some(line) = value.strip_suffix('\n') {
+        value.truncate(line.strip_suffix('\r').unwrap_or(line).len());
+    }
+    if value.is_empty() {
+        return Err(CliError::cli(
+            Exit::Invalid,
+            "no_value",
+            "`-` reads the value from stdin, and stdin was empty",
+        ));
+    }
+    Ok(value)
+}
+
+/// The Unix half of [`read_hidden_line`]: `sh` saves the terminal's state, turns echo off, prints
+/// the prompt (`$1`), reads one line and writes it to its stdout, a pipe to this process.
+/// - `stty` is `/bin/stty`, or `/usr/bin/stty`, never one found on `PATH`.
+/// - Traps put the terminal back on exit, and on `INT`, `TERM`, `HUP` and `PIPE`, so a Ctrl-C or
+///   a closed pipe never leaves it without echo.
+/// - A watchdog checks once a second that this process is alive. If it is killed outright, which
+///   no trap of its own can handle, the watchdog sends the reader `TERM` within a second, so the
+///   reader puts the terminal back and exits, instead of holding it and taking the next line
+///   typed. The watchdog's output goes to `/dev/null`, so it never holds the pipe open, and the
+///   reader ends it on its own exit.
+#[cfg(unix)]
+const HIDDEN_READ: &str = r#"t=/bin/stty
+[ -x "$t" ] || t=/usr/bin/stty
+[ -x "$t" ] || exit 3
+s=$("$t" -g) || exit 3
+w=
+put_back() { "$t" "$s"; [ -n "$w" ] && kill "$w" 2>/dev/null; }
+trap 'put_back' EXIT
+trap 'put_back; trap - EXIT; exit 130' INT TERM HUP PIPE
+(while kill -0 "$PPID" 2>/dev/null; do sleep 1; done; kill -TERM $$ 2>/dev/null) >/dev/null 2>&1 &
+w=$!
+"$t" -echo || exit 3
+printf '%s' "$1" >&2
+IFS= read -r v || [ -n "$v" ] || exit 4
+printf '%s' "$v"
+"#;
+
+/// The Windows half of [`read_hidden_line`]: PowerShell's `Read-Host -AsSecureString`, which shows
+/// `*` for each character typed, written to its stdout, a pipe to this process, as UTF-8. The
+/// prompt comes in `HIDDEN_READ_PROMPT`: `-Command` would join an argument into the script.
+/// - PowerShell is `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`, never one found
+///   beside this binary or on `PATH`.
+/// - Under PowerShell's Constrained Language Mode (AppLocker or WDAC), the `Marshal` and
+///   `UTF8Encoding` calls are blocked, so the read fails, closed: nothing is read with echo on, and
+///   the error says to pipe the value in instead.
+/// - If this process is terminated while PowerShell reads, PowerShell keeps reading the console:
+///   the next line typed goes to it, masked, and it exits when its write to the closed pipe fails.
+///   `Read-Host` restores the console's mode itself, so echo is not left off. A watchdog as on Unix
+///   needs a key-by-key read loop, which no CI runner can drive without a console.
+#[cfg(windows)]
+const HIDDEN_READ: &str = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; \
+    [Console]::Error.Write($env:HIDDEN_READ_PROMPT); $s = Read-Host -AsSecureString; \
+    $p = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); \
+    try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($p)) } \
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p) }";
+
+/// One line from the terminal on stdin, typed with echo off, after `prompt` on stderr.
+///
+/// This crate has no `unsafe` (RFC-0001 §4.2), and turning echo off is a terminal-mode call, so
+/// the read runs in a short child: `sh` with `stty` on Unix, PowerShell on Windows. The child
+/// shares this process's terminal, and hands the line back through a pipe.
+fn read_hidden_line(prompt: &str) -> std::io::Result<String> {
+    use std::process::{Command, Stdio};
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", HIDDEN_READ, "sh", prompt]);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let mut command = Command::new(
+            std::path::Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
+        );
+        command
+            .args(["-NoProfile", "-Command", HIDDEN_READ])
+            .env("HIDDEN_READ_PROMPT", prompt);
+        command
+    };
+    #[cfg(not(any(unix, windows)))]
+    return Err(std::io::Error::other(
+        "no way to turn the terminal's echo off here",
+    ));
+    let output = command
+        .stdin(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .output()?;
+    // Enter was not echoed either.
+    eprintln!();
+    match output.status.code() {
+        Some(0) => String::from_utf8(output.stdout)
+            .map_err(|_| std::io::Error::other("the value is not UTF-8")),
+        Some(3) => Err(std::io::Error::other(
+            "the terminal's echo could not be turned off",
+        )),
+        Some(4) => Ok(String::new()),
+        _ => Err(std::io::Error::other(format!(
+            "the read was interrupted ({})",
+            output.status
+        ))),
+    }
+}
+
+/// Whether `path` is a secret-typed key of `registry`, or a key under one, such as an entry of
+/// `obs.otlp.headers`.
+fn holds_secret(registry: &Registry, path: &str) -> bool {
+    registry.keys().any(|key| {
+        key.holds_secret
+            && (path == key.path
+                || path
+                    .strip_prefix(key.path)
+                    .is_some_and(|rest| rest.starts_with('.')))
+    })
+}
+
+/// Whether `value` is a secret's file or variable form, which holds no secret itself.
+fn names_a_source(value: &str) -> bool {
+    write::parse_value(value)
+        .as_inline_table()
+        .is_some_and(|table| {
+            table.len() == 1 && (table.contains_key("file") || table.contains_key("env"))
+        })
+}
+
+/// `config edit`: the target file in `$VISUAL` or `$EDITOR`, validated when the editor exits.
+///
+/// The editor works on a copy beside the file (mode `0600` on Unix). A valid result replaces the
+/// file. An invalid one is kept only with `--force`. Otherwise, on a terminal, the editor can
+/// open again; without one, or when the answer is no, the file stays as it was and the edit is
+/// kept beside it as `<file>.rejected`, and the command exits 5. No question is asked without a
+/// terminal (RFC-0051 §2.2).
+pub fn edit(args: &ConfigEditArgs, output: Output) -> Result<Exit, CliError> {
+    refuse_json(output, "edit")?;
+    let target = Target::of(&args.target)?;
+    let old = target.read()?;
+    let terminal = Terminal::detect();
+    let (program, editor_args) = editor(terminal)?;
+    let working = target.working_copy(&old)?;
+    let result = edit_until_done(
+        &target,
+        &old,
+        &working,
+        &program,
+        &editor_args,
+        args,
+        terminal,
+    );
+    if working.exists() {
+        let _ = std::fs::remove_file(&working);
+    }
+    result
+}
+
+fn edit_until_done(
+    target: &Target,
+    old: &str,
+    working: &Path,
+    program: &OsString,
+    editor_args: &[OsString],
+    args: &ConfigEditArgs,
+    terminal: Terminal,
+) -> Result<Exit, CliError> {
+    loop {
+        let status = std::process::Command::new(program)
+            .args(editor_args)
+            .arg(working)
+            .status()
+            .map_err(|e| {
+                CliError::cli(
+                    Exit::Failure,
+                    "editor_failed",
+                    format!(
+                        "cannot start the editor `{}`: {e}",
+                        printable(&program.to_string_lossy())
+                    ),
+                )
+                .hint("set EDITOR or VISUAL to your editor")
+            })?;
+        if !status.success() {
+            return Err(CliError::cli(
+                Exit::Failure,
+                "editor_failed",
+                format!(
+                    "the editor exited with {status}, so {} was not changed",
+                    target.shown()
+                ),
+            ));
+        }
+        let text = std::fs::read_to_string(working).map_err(|e| {
+            CliError::cli(
+                Exit::Failure,
+                "editor_failed",
+                format!("cannot read the edited copy: {e}"),
+            )
+        })?;
+        if text == old {
+            println!("no change to {}", target.shown());
+            return Ok(Exit::Success);
+        }
+        let checked = target.check(&text);
+        eprint!("{}", printable_lines(&checked.render(&REGISTRY)));
+        if checked.outcome.is_ok() || args.force {
+            target.write(&text)?;
+            if checked.outcome.is_ok() {
+                println!("saved {}", target.shown());
+            } else {
+                println!(
+                    "saved {}, which is invalid ({}), because of --force",
+                    target.shown(),
+                    errors(checked.errors().len())
+                );
+            }
+            reload_note();
+            return Ok(Exit::Success);
+        }
+        let again = terminal.can_ask()
+            && prompt::confirm(
+                terminal,
+                "The edited file is invalid. Edit it again?",
+                "--force",
+            )?;
+        if again {
+            continue;
+        }
+        let rejected = target.rejected_path();
+        let kept = std::fs::rename(working, &rejected).is_ok();
+        let mut error = CliError::cli(
+            Exit::Invalid,
+            "invalid_config",
+            format!(
+                "the edited file has {}, so {} was not changed",
+                errors(checked.errors().len()),
+                target.shown()
+            ),
+        );
+        if kept {
+            error = error.detail(format!(
+                "your edit is kept in {}",
+                printable(&rejected.display().to_string())
+            ));
+        }
+        return Err(error.hint("syntropy config edit --force"));
+    }
+}
+
+/// The editor: `$VISUAL`, then `$EDITOR`, as a program and its arguments. A value that names an
+/// existing file is the program, spaces and all; any other is split on whitespace. Without
+/// either, `vi` (`notepad` on Windows), which needs a terminal: without one the command exits 2.
+fn editor(terminal: Terminal) -> Result<(OsString, Vec<OsString>), CliError> {
+    for var in ["VISUAL", "EDITOR"] {
+        let Some(value) = std::env::var_os(var).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        if Path::new(&value).is_file() {
+            return Ok((value, Vec::new()));
+        }
+        let text = value.to_string_lossy().into_owned();
+        let mut words = text.split_whitespace().map(OsString::from);
+        if let Some(program) = words.next() {
+            return Ok((program, words.collect()));
+        }
+    }
+    if !(terminal.stdin && terminal.stdout) || terminal.dumb {
+        return Err(CliError::cli(
+            Exit::Usage,
+            "needs_terminal",
+            "`config edit` opens an editor, and there is no terminal for the default one",
+        )
+        .hint("set EDITOR to an editor that needs no terminal, or use `syntropy config set`"));
+    }
+    let default = if cfg!(windows) { "notepad" } else { "vi" };
+    Ok((OsString::from(default), Vec::new()))
+}
+
+/// The file a write changes, and the layer it is read in.
+struct Target {
+    os: Os,
+    path: PathBuf,
+    /// The layer's files, with `path` among them whether it exists or not.
+    scan: Scan,
+}
+
+impl Target {
+    /// The file `args` names: the explicit file, the system file, or the user file.
+    fn of(args: &ConfigTarget) -> Result<Target, CliError> {
+        let (os, _, locations) = locations(args.config.as_deref());
+        if !args.system
+            && let Some(explicit) = &locations.explicit
+        {
+            let path = explicit.path.clone();
+            let scan = Scan {
+                system_file: None,
+                dropins: Vec::new(),
+                user_file: None,
+                explicit: Some(path.clone()),
+            };
+            return Ok(Target { os, path, scan });
+        }
+        // The layer without the explicit file, as a daemon reads it when none is named.
+        let layered = Locations {
+            explicit: None,
+            ..locations.clone()
+        };
+        let mut scan = layered.scan().map_err(invalid)?;
+        let path = if args.system {
+            if locations.explicit.is_some() {
+                eprintln!(
+                    "warning: SYNTROPY_CONFIG names the file a daemon reads, in place of the \
+                     system file; this change applies where SYNTROPY_CONFIG is not set"
+                );
+            }
+            scan.system_file = Some(locations.system_file.clone());
+            locations.system_file.clone()
+        } else {
+            let path = locations.user_file.clone().ok_or_else(|| {
+                CliError::cli(
+                    Exit::Invalid,
+                    "no_user_file",
+                    "there is no user config file here: the environment gives no home directory",
+                )
+                .hint("name the file with --config, or write the system file with --system")
+            })?;
+            scan.user_file = Some(path.clone());
+            path
+        };
+        Ok(Target { os, path, scan })
+    }
+
+    /// The path, safe to print.
+    fn shown(&self) -> String {
+        printable(&self.path.display().to_string())
+    }
+
+    /// The file's text, or nothing when it does not exist yet. A symbolic link is refused.
+    fn read(&self) -> Result<String, CliError> {
+        let exists = write::replaceable(&self.path).map_err(|e| self.write_failed(&e))?;
+        if !exists {
+            return Ok(String::new());
+        }
+        std::fs::read_to_string(&self.path).map_err(|e| {
+            CliError::cli(
+                Exit::Failure,
+                "read_failed",
+                format!("cannot read {}: {e}", self.shown()),
+            )
+        })
+    }
+
+    /// The layer validated with `text` as this file.
+    fn check(&self, text: &str) -> Checked {
+        // No environment overrides or flags: what is checked is the file layer a daemon reads.
+        let env = Env::from_pairs(
+            self.os,
+            std::env::vars_os()
+                .filter(|(name, _)| !name.to_string_lossy().starts_with("SYNTROPY_")),
+        );
+        write::check_edit(
+            &REGISTRY,
+            self.os,
+            &self.scan,
+            &env,
+            &self.path,
+            text,
+            API_RULES,
+            &HostEnvironment,
+        )
+    }
+
+    /// Validates `text` and writes it, or refuses: the diagnostics go to stderr either way.
+    fn save(&self, text: &str, force: bool) -> Result<(), CliError> {
+        let checked = self.check(text);
+        eprint!("{}", printable_lines(&checked.render(&REGISTRY)));
+        if checked.outcome.is_err() && !force {
+            return Err(CliError::cli(
+                Exit::Invalid,
+                "invalid_config",
+                format!(
+                    "the change would leave the configuration with {}, so {} was not changed",
+                    errors(checked.errors().len()),
+                    self.shown()
+                ),
+            ));
+        }
+        self.write(text)
+    }
+
+    fn write(&self, text: &str) -> Result<(), CliError> {
+        write::write_atomic(&self.path, text).map_err(|e| self.write_failed(&e))
+    }
+
+    fn write_failed(&self, error: &std::io::Error) -> CliError {
+        CliError::cli(
+            Exit::Failure,
+            "write_failed",
+            format!(
+                "cannot write {}: {}",
+                self.shown(),
+                printable(&error.to_string())
+            ),
+        )
+    }
+
+    /// A private copy of `text` beside the file, for the editor.
+    fn working_copy(&self, text: &str) -> Result<PathBuf, CliError> {
+        let dir = self.path.parent().unwrap_or(Path::new("."));
+        let name = self.path.file_name().map_or_else(
+            || "config.toml".into(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let working = dir.join(format!(".{name}.syntropy-edit-{}.toml", std::process::id()));
+        let failed = |e: std::io::Error| {
+            CliError::cli(
+                Exit::Failure,
+                "write_failed",
+                format!(
+                    "cannot make a copy to edit in {}: {e}",
+                    printable(&dir.display().to_string())
+                ),
+            )
+        };
+        std::fs::create_dir_all(dir).map_err(failed)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&working).map_err(failed)?;
+        std::io::Write::write_all(&mut file, text.as_bytes()).map_err(failed)?;
+        Ok(working)
+    }
+
+    /// Where a refused edit is kept: `<file>.rejected` beside the file.
+    fn rejected_path(&self) -> PathBuf {
+        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        name.push(".rejected");
+        self.path.with_file_name(name)
+    }
+}
+
+fn edit_failed(target: &Target, error: &write::EditError) -> CliError {
+    CliError::cli(
+        Exit::Invalid,
+        "edit_failed",
+        format!("{}: {}", target.shown(), printable(&error.to_string())),
+    )
+}
+
+/// `--cluster` submits `SetClusterConfig`, which needs the cluster configuration endpoint.
+fn cluster_not_built(command: &str) -> CliError {
+    CliError::not_built(&format!("config {command} --cluster"))
+        .detail("cluster values are submitted to the coordinator as `SetClusterConfig`")
+}
+
+/// What a write cannot do yet: reload the daemon (PROD-E1-T11).
+fn reload_note() {
+    eprintln!(
+        "note: a running daemon applies this at its next start; `syntropy config reload` is not \
+         available in this build yet"
+    );
+}
+
+fn printable(text: &str) -> String {
+    syntropy_api::printable::printable(text).into_owned()
 }
 
 /// The OS, its environment and where a user's daemon looks, with `config` as the explicit file.
@@ -237,6 +805,34 @@ fn errors(n: usize) -> String {
 mod tests {
     use super::*;
 
+    /// A section with a secret, for [`holds_secret`].
+    #[derive(Debug, serde::Deserialize, syntropy_config::ConfigSection)]
+    #[config(section = "vault", scope = Node, owner = "RFC-0054")]
+    #[allow(dead_code)]
+    struct Vault {
+        /// A secret.
+        #[config(reload = Hot, default = {})]
+        headers: std::collections::BTreeMap<String, syntropy_config::SecretSource>,
+        /// Not a secret.
+        #[config(reload = Hot, default = 1)]
+        retries: u32,
+    }
+
+    /// `config set` warns for a secret on the command line: a secret key or a key under one, and
+    /// not for its file or variable form (review of #1927, N3).
+    #[test]
+    fn a_secret_on_the_command_line_is_recognised() {
+        static VAULT: Registry = Registry::new(&[&Vault::SCHEMA]);
+        assert!(holds_secret(&VAULT, "vault.headers"));
+        assert!(holds_secret(&VAULT, "vault.headers.authorization"));
+        assert!(!holds_secret(&VAULT, "vault.headersx"));
+        assert!(!holds_secret(&VAULT, "vault.retries"));
+        assert!(names_a_source(r#"{ file = "/run/secrets/x" }"#));
+        assert!(names_a_source(r#"{ env = "X" }"#));
+        assert!(!names_a_source("Bearer x"));
+        assert!(!names_a_source(r#"{ file = "/x", env = "Y" }"#));
+    }
+
     #[test]
     fn the_registry_holds_every_section_and_every_default_fits() {
         assert_eq!(REGISTRY.check(), vec![]);
@@ -252,6 +848,28 @@ mod tests {
             assert!(REGISTRY.key(prefix).is_some(), "{prefix}");
         }
         assert_eq!(COUNT, NET.len() + CLUSTER.len() + 3);
+    }
+
+    /// `check` prints its summary as the report after the diagnostics, which holds while
+    /// `command::check`'s text starts with `Checked::render`'s.
+    #[test]
+    fn check_s_report_starts_with_its_diagnostics() {
+        let dir = std::env::temp_dir().join(format!("syntropy-cli-prefix-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, text) in [("ok.toml", ""), ("bad.toml", "[api]\nbnd = 1\n")] {
+            let file = dir.join(name);
+            std::fs::write(&file, text).unwrap();
+            let checked = load(&ConfigSource {
+                config: Some(file),
+                set: vec!["discovery.port=x".to_owned()],
+            })
+            .unwrap();
+            let diagnostics = checked.render(&REGISTRY);
+            let report = command::check(&checked, &REGISTRY);
+            assert!(report.text.starts_with(&diagnostics), "{name}");
+            assert!(report.text.len() > diagnostics.len(), "{name}: no summary");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The registry is the linked crates' lists, then the three single sections, in that order,

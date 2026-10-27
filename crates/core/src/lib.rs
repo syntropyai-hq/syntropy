@@ -13,6 +13,7 @@ pub mod det_hash;
 pub mod dtype;
 pub mod entropy;
 pub mod error;
+pub mod fetch;
 pub mod fidelity;
 pub mod ids;
 pub mod ledger;
@@ -21,9 +22,12 @@ pub mod numerics;
 pub mod parity;
 pub mod plan;
 pub mod policy;
+pub mod pressure;
 pub mod protocol;
 pub mod quant;
+pub mod replan;
 pub mod resource;
+pub mod runner;
 pub mod sequence;
 pub mod session;
 pub mod tick;
@@ -35,6 +39,7 @@ pub use det_hash::{DetHashMap, DetHashSet, DetHasher, DetState};
 pub use dtype::{DType, GgmlType};
 pub use entropy::Entropy;
 pub use error::{Domain, ErrorClass, ErrorCode};
+pub use fetch::FetchPriority;
 pub use ids::{
     Blake3, DeviceId, Endpoint, ExpertIx, GraphVersion, InstanceId, LayerIx, LinkId, LinkKind,
     ModelId, NetMedium, NodeId, RdmaKind, StageIx, TensorGroupId, TierId,
@@ -47,13 +52,16 @@ pub use policy::{
     ApproxFlags, ApproxKnobs, ApproxParams, ExactnessPolicy, Fidelity, InstancePolicy,
     NetworkScope, Objective, ResourceOverlay, ResourcePolicy,
 };
+pub use pressure::PressureLevel;
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
+pub use replan::{DriftTerm, ReplanReason, WorkloadTerm};
+pub use runner::{Deadline, DrainReason};
 pub use sequence::{
     CancelReason, DraftNode, FinishReason, GrammarRef, LogprobBlock, PoolingMode, PrefixKey,
     PrefixRef, PrefixScope, Priority, ResumeCause, ResumePoint, SamplingParams, SequenceControl,
-    SequenceLimits, SequenceMeta, SequenceOpen, TailId, TokenEntry, TokenFrame, TokenSlice,
-    TraceContext,
+    SequenceLimits, SequenceMeta, SequenceOpen, SequenceOutcome, TailId, TokenEntry, TokenFrame,
+    TokenSlice, TraceContext,
 };
 pub use session::{ParseSessionIdError, SequenceId, SessionId};
 pub use tick::{DeviceClockSync, TickRate, TickSource};

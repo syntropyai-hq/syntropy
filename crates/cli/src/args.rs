@@ -239,6 +239,63 @@ pub struct ConfigSource {
     pub set: Vec<String>,
 }
 
+/// Which file `config set`, `unset` and `edit` write (RFC-0054 §10.2): the user file, the system
+/// file under `--system`, or the explicit file that `--config` or `SYNTROPY_CONFIG` names, which
+/// replaces the other three when the daemon reads its configuration (RFC-0054 §1, order 4).
+#[derive(Clone, Debug, Default, Args)]
+pub struct ConfigTarget {
+    /// Write the system file, which needs the privileges to write it
+    #[arg(long, conflicts_with = "config")]
+    pub system: bool,
+    /// Write this file (replaces `SYNTROPY_CONFIG`)
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+}
+
+/// `syntropy config set <key> <value>`.
+#[derive(Clone, Debug, Args)]
+pub struct ConfigSetArgs {
+    /// The dotted key, such as `api.tls`; quote a segment with other characters, as
+    /// `policy."qwen3*".ram_headroom`
+    pub key: String,
+    /// The value: TOML (`8080`, `true`, `["a", "b"]`, `{ file = "/run/secrets/x" }`), or else
+    /// the text as a string; quote a number meant as a string, as `'"8080"'`. `-` reads it from
+    /// stdin, which keeps a secret out of shell history and the process list
+    #[arg(allow_hyphen_values = true)]
+    pub value: String,
+    /// Submit the value to the cluster instead of writing a file
+    #[arg(long, conflicts_with_all = ["system", "config"])]
+    pub cluster: bool,
+    /// The file to write.
+    #[command(flatten)]
+    pub target: ConfigTarget,
+}
+
+/// `syntropy config unset <key>`.
+#[derive(Clone, Debug, Args)]
+pub struct ConfigUnsetArgs {
+    /// The dotted key
+    pub key: String,
+    /// Remove the cluster's value instead of a file's
+    #[arg(long, conflicts_with_all = ["system", "config"])]
+    pub cluster: bool,
+    /// The file to write.
+    #[command(flatten)]
+    pub target: ConfigTarget,
+}
+
+/// `syntropy config edit`. The editor is `$VISUAL` or `$EDITOR`, started even without a terminal,
+/// since it was named; only the default editor needs one.
+#[derive(Clone, Debug, Args)]
+pub struct ConfigEditArgs {
+    /// Keep the edited file even when it is invalid
+    #[arg(long)]
+    pub force: bool,
+    /// The file to edit.
+    #[command(flatten)]
+    pub target: ConfigTarget,
+}
+
 /// `syntropy config show`.
 #[derive(Clone, Debug, Args)]
 pub struct ConfigShowArgs {
@@ -273,12 +330,12 @@ pub enum ConfigCommand {
     Show(ConfigShowArgs),
     /// Print one key
     Get(Later),
-    /// Set one key
-    Set(Later),
-    /// Remove one key
-    Unset(Later),
-    /// Edit the configuration file
-    Edit(Later),
+    /// Set one key in a configuration file
+    Set(ConfigSetArgs),
+    /// Remove one key from a configuration file
+    Unset(ConfigUnsetArgs),
+    /// Edit a configuration file in $EDITOR, validated on save
+    Edit(ConfigEditArgs),
     /// Check the configuration, without a daemon
     Check(ConfigCheckArgs),
     /// Reload the configuration

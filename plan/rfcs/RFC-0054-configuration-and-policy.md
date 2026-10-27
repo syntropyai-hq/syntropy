@@ -952,6 +952,16 @@ Cluster-scope changes arriving through `ClusterConfigChanged` go through the sam
 - Node-scope edits made in the dashboard write the same user file through the same path. There is no hidden settings database: the file is the record.
 - `syntropy config unset`, `get`, `show [--resolved] [--json]`, `edit` (opens `$EDITOR`, validates on save, refuses to keep an invalid file without `--force`), `path`, `check` and `schema` complete the set (RFC-0051 §2).
 
+*Note 2026-10-27 (PROD-E1-T12): how the writes behave where this section is silent.*
+- **The file.** A write edits the user file, the system file under `--system`, or the explicit file that `--config` or `SYNTROPY_CONFIG` names, since that file replaces the other three when a daemon reads its configuration (§1, order 4).
+- **The value.** `set`'s value is read as TOML when it is a TOML value, and as a string otherwise, so `auto` needs no quotes and a number meant as a string does: `'"8080"'`.
+- **What is validated.** The configuration layer is validated as a daemon would read it with the new text in place of that file: phases 1–5 of §8, without `SYNTROPY_*` overrides or flags, which can differ when the daemon starts. An invalid result writes nothing and exits 5.
+- **The rename.** The new text goes to a temporary file in the same directory, flushed to disk, with the old file's permissions (`0600` for a new file on Unix, since a config file can hold a secret), and is renamed over the file. A symbolic link at the path is refused.
+- **A refused edit.** `edit` without `--force` keeps a refused edit beside the file as `<file>.rejected`, so the work is not lost. On a terminal it offers to reopen the editor first. Without a terminal it asks nothing (RFC-0051 §2.2), and the default editor, which needs a terminal, is not started.
+- **Output.** No output of a write holds the value written. Until PROD-E1-T11 builds reload, a write says that a running daemon applies it at its next start.
+- **Line endings.** A file whose lines end in `\r\n` keeps them, and a file that mixes `\r\n` and `\n` is refused.
+- **Secret files (§8, phase 5).** A `{ file = … }` secret whose file does not exist, or whose file its group or others can read, is a warning, like the other paths phase 5 checks. The secret is read when it is first used, so the load does not fail.
+
 #### 10.3 The schema as code
 
 The schema is written once, as Rust types in `syntropy-config` with attributes:

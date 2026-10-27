@@ -17,8 +17,9 @@
 //! Every command of the tree is declared. `version` is served: its `--json` output is the native
 //! API's `VersionInfo`, unchanged. `config show --resolved`, `config check` and `config path` are
 //! served without a daemon, over the binary's section registry ([`config`]). Each other command
-//! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` and `__selftest` parse their arguments and
-//! stop there, because runner mode and the self-test are not built.
+//! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` and
+//! `__selftest` parse their arguments and stop there, because runner mode and the self-test are
+//! not built.
 //!
 //! Dispatch reads no configuration, opens no GPU or network library and builds no async runtime
 //! before it knows the command, so a client command prints within RFC-0051's 50 ms \[target\].
@@ -96,6 +97,9 @@ fn dispatch(command: Command, path: &str, output: Output) -> Result<Exit, CliErr
         Command::Config(ConfigCommand::Show(args)) => config::show(&args, output),
         Command::Config(ConfigCommand::Check(args)) => config::check(&args, output),
         Command::Config(ConfigCommand::Path(args)) => config::path(&args, output),
+        Command::Config(ConfigCommand::Set(args)) => config::set(&args, output),
+        Command::Config(ConfigCommand::Unset(args)) => config::unset(&args, output),
+        Command::Config(ConfigCommand::Edit(args)) => config::edit(&args, output),
         Command::Runner(args) => runner(&args).map(|()| Exit::Success),
         Command::Selftest(args) => selftest(&args).map(|()| Exit::Success),
         _ => Err(CliError::not_built(path)),

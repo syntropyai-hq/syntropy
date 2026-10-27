@@ -11,41 +11,13 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
-use common::{code, finish, syntropy};
+use common::{code, finish, isolated};
 
 /// A fresh directory for one test.
 fn temp(tag: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("syntropy-cli-config-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// `syntropy` with `args`, isolated in `home` as the module docs say.
-fn isolated(args: &[&str], home: &Path) -> Command {
-    let mut command = syntropy(args);
-    for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("SYNTROPY_") {
-            command.env_remove(name);
-        }
-    }
-    for var in [
-        "HOME",
-        "LOCALAPPDATA",
-        "PROGRAMDATA",
-        "TMPDIR",
-        "XDG_RUNTIME_DIR",
-    ] {
-        command.env(var, home.join(var.to_ascii_lowercase()));
-    }
-    for var in ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"] {
-        command.env_remove(var);
-    }
-    command
+    common::temp(&format!("config-{tag}"))
 }
 
 /// The text of a stream.
@@ -367,6 +339,54 @@ fn bad_arguments_exit_5_and_path_still_prints() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// `config show --resolved` prints a value holding controls and invisible characters as a TOML
+/// string that parses back to the original, and none of them raw: a line pastes back into a file
+/// (review of #1923, N1).
+#[test]
+fn show_prints_controls_and_invisible_characters_as_toml_escapes() {
+    let home = temp("toml-escapes");
+    let file = home.join("config.toml");
+    // ESC, a zero-width space, a right-to-left override and a soft hyphen, as TOML escapes.
+    std::fs::write(
+        &file,
+        "[cluster]\nnamespace = \"a\\u001b[2Jb\\u200Bc\\u202Ed\\u00ADe\"\n",
+    )
+    .unwrap();
+    let output = finish(&mut isolated(
+        &[
+            "config",
+            "show",
+            "--resolved",
+            "--config",
+            file.to_str().unwrap(),
+        ],
+        &home,
+    ));
+    assert_eq!(code(&output), 0, "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    let raw = |c: char| {
+        (c.is_control() && c != '\n' && c != '\t') || syntropy_api::printable::invisible(c)
+    };
+    assert!(
+        !stdout.chars().any(raw),
+        "raw control or invisible character: {stdout:?}"
+    );
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("cluster.namespace = "))
+        .expect("the key's line");
+    let value = line
+        .strip_prefix("cluster.namespace = ")
+        .and_then(|rest| rest.split("  # ").next())
+        .unwrap()
+        .trim_end();
+    assert_eq!(value, r#""a\u001B[2Jb\u200Bc\u202Ed\u00ADe""#, "{line}");
+    // `syntropy_config::Value` is `toml::Value`, which parses one TOML value.
+    let back: syntropy_config::Value = value.parse().expect("the value is TOML");
+    assert_eq!(back.as_str(), Some("a\u{1b}[2Jb\u{200B}c\u{202E}d\u{AD}e"));
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// One case: the arguments, an environment variable to set, and the exit code.
 type Case<'a> = (Vec<&'a str>, Option<(&'a str, &'a str)>, i32);
 
@@ -434,6 +454,60 @@ fn diagnostics_never_put_a_source_s_escape_sequences_on_the_terminal() {
             !stdout.contains('\u{1b}') && !stdout.contains('\u{7}'),
             "{stdout:?}"
         );
+    }
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// Paths `config path` and `show --resolved` echo come from `--config`, `SYNTROPY_CONFIG` and the
+/// home variables, so their control characters are escaped on stdout too (N1 of the review of
+/// #1921).
+#[test]
+fn echoed_paths_never_put_escape_sequences_on_the_terminal() {
+    let home = temp("path-escapes");
+    let odd = home.join("ev\u{1b}]0;x\u{7}il\u{1b}[2J.toml");
+    let odd = odd.to_str().unwrap();
+    let clean = |output: &std::process::Output| {
+        let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+        assert!(
+            !stdout.contains('\u{1b}') && !stdout.contains('\u{7}'),
+            "raw control characters on stdout: {stdout:?}"
+        );
+        assert!(
+            !stderr.contains('\u{1b}') && !stderr.contains('\u{7}'),
+            "raw control characters on stderr: {stderr:?}"
+        );
+        stdout
+    };
+    // From `--config`, and from `SYNTROPY_CONFIG`: the file need not exist.
+    let output = finish(&mut isolated(&["config", "path", "--config", odd], &home));
+    assert_eq!(code(&output), 0);
+    assert!(clean(&output).contains("ev\\u{1b}]0;x\\u{7}il\\u{1b}[2J.toml"));
+    let output = finish(isolated(&["config", "path"], &home).env("SYNTROPY_CONFIG", odd));
+    assert_eq!(code(&output), 0);
+    let stdout = clean(&output);
+    assert!(
+        stdout.contains("(from SYNTROPY_CONFIG; absent)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\\u{1b}"), "{stdout}");
+    // From the home variables, which every location under them repeats.
+    let var = if cfg!(windows) {
+        "LOCALAPPDATA"
+    } else {
+        "HOME"
+    };
+    let output = finish(isolated(&["config", "path"], &home).env(var, home.join("h\u{1b}[31m")));
+    assert_eq!(code(&output), 0);
+    assert!(clean(&output).contains("h\\u{1b}[31m"));
+    // `show --resolved` names the file in each origin. Only Unix lets a file name hold ESC.
+    if cfg!(unix) {
+        std::fs::write(odd, "[api]\nbind = [\"127.0.0.1:7433\"]\n").unwrap();
+        let output = finish(&mut isolated(
+            &["config", "show", "--resolved", "--config", odd],
+            &home,
+        ));
+        assert_eq!(code(&output), 0, "{}", text(&output.stderr));
+        assert!(clean(&output).contains("il\\u{1b}[2J.toml:2"));
     }
     let _ = std::fs::remove_dir_all(home);
 }

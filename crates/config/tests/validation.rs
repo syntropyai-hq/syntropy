@@ -159,6 +159,8 @@ struct FakeHost {
     /// Paths that are regular files, so unusable where a directory is expected.
     files: Vec<PathBuf>,
     open_to_others: Vec<PathBuf>,
+    /// Paths that name no file.
+    missing: Vec<PathBuf>,
 }
 
 impl Environment for FakeHost {
@@ -174,6 +176,10 @@ impl Environment for FakeHost {
 
     fn readable_by_others(&self, path: &Path) -> Option<bool> {
         Some(self.open_to_others.iter().any(|p| p == path))
+    }
+
+    fn is_file(&self, path: &Path) -> Option<bool> {
+        Some(!self.missing.iter().any(|p| p == path))
     }
 }
 
@@ -565,7 +571,7 @@ fn a_secret_in_a_file_others_can_read_warns() {
             .message
             .contains("its group or others can read it")
     );
-    // The file form keeps the secret out of the file, so nothing is flagged.
+    // The file form keeps the secret out of the config file, so that file is not flagged.
     let c = checked(
         &[(FILE, "api_key = { file = \"/run/secrets/k\" }\n")],
         &[],
@@ -574,6 +580,118 @@ fn a_secret_in_a_file_others_can_read_warns() {
         &[],
     );
     assert!(c.outcome.unwrap().warnings().is_empty());
+}
+
+/// The file a `{ file = … }` secret names warns when others can read it, at any depth and from
+/// any layer, once per file; the variable form is not flagged (PROD-E1-T12).
+#[test]
+fn a_secret_file_others_can_read_warns() {
+    let host = FakeHost {
+        open_to_others: vec![PathBuf::from("/run/secrets/open")],
+        ..FakeHost::default()
+    };
+    let c = checked(
+        &[(
+            FILE,
+            "api_key = { file = \"/run/secrets/open\" }\n\
+             [obs.otlp.headers]\n\
+             authorization = { file = \"/run/secrets/open\" }\n\
+             x-tenant = { file = \"/run/secrets/closed\" }\n\
+             x-other = { env = \"OTHER\" }\n",
+        )],
+        &[],
+        &[],
+        &host,
+        &[],
+    );
+    let config = c.outcome.as_ref().unwrap();
+    assert_eq!(config.warnings().len(), 1, "{:?}", config.warnings());
+    let warning = &config.warnings()[0];
+    assert!(
+        warning.message.contains(
+            "`api_key` reads its secret from `/run/secrets/open`, and its group or others can read it"
+        ),
+        "{warning}"
+    );
+    assert_eq!(
+        warning.help.as_deref(),
+        Some("restrict the file (`chmod 600`)")
+    );
+    // From a flag, nested in a table.
+    let c = checked(
+        &[],
+        &[],
+        &["obs.otlp.headers={ authorization = { file = \"/run/secrets/open\" } }"],
+        &host,
+        &[],
+    );
+    let config = c.outcome.as_ref().unwrap();
+    assert_eq!(config.warnings().len(), 1, "{:?}", config.warnings());
+    assert!(config.warnings()[0].message.contains("`obs.otlp.headers`"));
+    // A private file: nothing.
+    let c = checked(
+        &[(FILE, "api_key = { file = \"/run/secrets/closed\" }\n")],
+        &[],
+        &[],
+        &host,
+        &[],
+    );
+    assert!(c.outcome.unwrap().warnings().is_empty());
+}
+
+/// A `{ file = … }` secret whose file is missing is a phase 5 warning, not an error: the load
+/// succeeds, and the secret is read when first used (review of #1927, N1). With the host's own
+/// check, a real missing path warns and a real file does not.
+#[test]
+fn a_missing_secret_file_warns() {
+    let host = FakeHost {
+        missing: vec![PathBuf::from("/run/secrets/gone")],
+        open_to_others: vec![PathBuf::from("/run/secrets/gone")],
+        ..FakeHost::default()
+    };
+    let c = checked(
+        &[(FILE, "api_key = { file = \"/run/secrets/gone\" }\n")],
+        &[],
+        &[],
+        &host,
+        &[],
+    );
+    let config = c
+        .outcome
+        .as_ref()
+        .expect("a missing secret file does not fail the load");
+    assert_eq!(config.warnings().len(), 1, "{:?}", config.warnings());
+    let warning = &config.warnings()[0];
+    assert_eq!(
+        warning.message,
+        "`api_key` reads its secret from `/run/secrets/gone`, which does not exist or is not a file"
+    );
+    assert_eq!(warning.code, None);
+
+    let present =
+        std::env::temp_dir().join(format!("syntropy-secret-present-{}", std::process::id()));
+    fs_write_private(&present);
+    let missing = present.with_extension("missing");
+    for (path, warns) in [(&present, false), (&missing, true)] {
+        let text = format!("api_key = {{ file = {:?} }}\n", path.display().to_string());
+        let c = checked(&[(FILE, &text)], &[], &[], &HostEnvironment, &[]);
+        let warnings = c.outcome.as_ref().unwrap().warnings();
+        let says = warnings
+            .iter()
+            .any(|w| w.message.contains("does not exist"));
+        assert_eq!(says, warns, "{}: {warnings:?}", path.display());
+    }
+    std::fs::remove_file(present).unwrap();
+}
+
+/// A file only its owner can read, where the OS has permission bits.
+fn fs_write_private(path: &Path) {
+    std::fs::write(path, "s\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 }
 
 #[test]

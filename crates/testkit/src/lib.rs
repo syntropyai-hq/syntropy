@@ -17,6 +17,7 @@
 #![deny(unsafe_code)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 
+pub mod fuzz;
 pub mod guards;
 pub mod refexec;
 pub mod sim;
