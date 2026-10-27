@@ -200,7 +200,10 @@ fn an_async_connection_from_another_user_is_refused() {
                 }
                 Err(_) => Err("no connection completed the accept within 180 s".to_owned()),
             };
-            eprintln!("2. the async accept returned: {refused:?}");
+            match &refused {
+                Ok(peer) => eprintln!("2. the async accept refused the peer: {peer}"),
+                Err(why) => eprintln!("2. the async accept did not refuse the peer: {why}"),
+            }
             // Keep the runtime polling until the peer is done, so nothing the listener does
             // on it waits for a runtime that has stopped.
             while !peer.is_finished() {
