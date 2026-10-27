@@ -139,7 +139,7 @@ pub fn decode_frame<M: DeserializeOwned>(input: &[u8]) -> Result<(Envelope<M>, u
 /// element can take far more memory than the one byte the check allows for it, so a forged length
 /// in a 64 MiB frame could reserve gigabytes. With a hint of 0, postcard hints nothing for any
 /// non-empty sequence, and every collection grows as its elements decode.
-pub(super) struct NoPrealloc<'de>(pub(super) Slice<'de>);
+pub(crate) struct NoPrealloc<'de>(pub(crate) Slice<'de>);
 
 impl<'de> Flavor<'de> for NoPrealloc<'de> {
     type Remainder = &'de [u8];

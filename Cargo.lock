@@ -4192,10 +4192,13 @@ dependencies = [
  "blake3",
  "chacha20",
  "serde",
+ "smallvec",
  "syntropy-config",
  "syntropy-core",
  "syntropy-graph",
+ "syntropy-ipc",
  "syntropy-net",
+ "syntropy-spsc",
  "toml",
 ]
 

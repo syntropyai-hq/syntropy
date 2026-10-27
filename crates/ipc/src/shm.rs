@@ -37,7 +37,8 @@
 //! bounds-check it (see [`syntropy_spsc::shared`]).
 //!
 //! The record types the rings carry belong to the rings' owners (RFC-0053 for telemetry, steps and
-//! logs; RFC-0031 for `TokenFrame`; RFC-0001 §3.5 for the sequence controls). `BuildId`
+//! logs; RFC-0031 for `TokenFrame`; RFC-0001 §3.5 for the sequence controls). [`records`] encodes
+//! and decodes the `local_sequences` and `local_tokens` records. `BuildId`
 //! (QUAL-E16-T03) and `RunnerState` (DIST-E1-T05) are given here as their encodings: 32 bytes and
 //! a `u32` discriminant.
 
@@ -51,6 +52,7 @@ use syntropy_core::Entropy;
 use syntropy_spsc::shared::{LayoutError, SharedConsumer, SharedLayout, SharedProducer};
 
 mod os;
+pub mod records;
 
 #[cfg(windows)]
 pub(crate) use os::{OwnerOnly, UserSid, wide};

@@ -226,6 +226,8 @@ Two channels per runner:
 | `local_sequences` | daemon → head runner | `SequenceOpen` and `SequenceControl` for sequences whose ingress is this node |
 | `log` | runner → daemon | `LogRecord`s with static callsite IDs; the daemon formats them (RFC-0053 §4.1) |
 
+*Note 2026-10-27 (QUAL-E3-T18, as built): the M0 records of `local_sequences` and `local_tokens`.* One slot holds one record: the postcard encoding of one `core::sequence::SequenceControl` on `local_sequences`, or of one `TokenFrame` on `local_tokens`, as the command channel encodes its messages. `syntropy_ipc::shm::records` is the one encoder and decoder; its decoders are total and reserve no memory for a declared length. Ingress (PROD-E2-T02), the head and tail (PLC-E8-T01) and `syntropy-testkit`'s fake runner use it, so a test against the fake runner exercises the encoding ingress uses. RFC-0031 §1 has these rings carry RFC-0031 §6's frame bytes; that codec has no sequence-control frames until DIST-E8-T05 (M2), and §5.8's note of 2026-10-23 already has M0 parity taps travel on `local_tokens` as `core` types, so the move to frame bytes belongs to DIST-E11-T03 (M2). `ipc_protocol` stays 1.0: no build has shipped, and the rings' record types were already declared as these. §18.39 records this, for the maintainers to confirm.
+
 Command-channel messages:
 
 | Direction | Message | Purpose |
@@ -2961,6 +2963,12 @@ PROD-E2-T01 builds the HTTP server of RFC-0050 §1.1, with its local socket.
 | Change | Sections touched | Reason |
 |---|---|---|
 | `api` depends on `ipc`; `ipc` gains `AsyncListener`, the owner-only endpoint and peer check of §3.5 for servers on tokio, outside `--cfg loom` | §4.1 (row and dated note) | the local socket needs the same owner-only endpoint and OS peer check as the daemon-runner channel, which need `unsafe`, which rule 8 confines to `ipc`; `/v1/syntropy/version` reports `ipc`'s protocol major. For the maintainers to confirm |
+
+### 18.39 The M0 records of the local rings (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| Until DIST-E11-T03 (M2), each slot of `local_sequences` and `local_tokens` holds one postcard-encoded `SequenceControl` or `TokenFrame`, the `core` types themselves, encoded and decoded by `syntropy_ipc::shm::records` alone. DIST-E11-T03 moves both rings to RFC-0031 §6's frame bytes. `ipc_protocol` stays 1.0 | §3.5 (dated note); RFC-0031 §1 (dated note) | RFC-0031 §1 has these rings carry §6's frame bytes, but §6 has no sequence-control frames until DIST-E8-T05 (M2), and §5.8's note of 2026-10-23 already has M0 parity taps travel on `local_tokens` as `core` types. Ingress (PROD-E2-T02), the one-stage lifecycle (PLC-E8-T01) and the fake runner (QUAL-E3-T18) need one shared encoding at M0a. No build has shipped, and the rings' record types were already declared as these, so the protocol needs no bump. Taken under the maintainers' standing instruction, for the maintainers to confirm |
 
 ### 18.40 The CLI's client edges (2026-10-27)
 

@@ -55,6 +55,7 @@ mod frame;
 mod msg;
 mod os;
 
+pub(crate) use frame::NoPrealloc;
 pub use frame::{EncodeError, FrameError, HEADER, MAX_FRAME, decode_frame, encode_frame};
 pub use msg::{DaemonMsg, Envelope, Hello, Init, RequestId, RunnerMsg};
 pub use os::{AcceptError, Endpoint, EndpointParseError, Listener, Peer, Stream, connect};
