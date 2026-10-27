@@ -12,6 +12,8 @@ syntropy-core = { path = "../core" }
 syntropy-api = { path = "../api" }
 # The runtime location the local socket lives in (RFC-0054 §1).
 syntropy-config = { path = "../config" }
+# `RunnerSection`, the `runner.*` keys the supervisor's policy is read from (RFC-0033 §8.2).
+syntropy-cluster = { path = "../cluster" }
 # The local socket's endpoint type (RFC-0050 §1.1).
 syntropy-ipc = { path = "../ipc" }
 # Unified logging and the Windows event log, the OS log facilities `io` alone links (RFC-0053 §4.2).

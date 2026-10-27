@@ -50,3 +50,9 @@ syntropy-core = { path = "../core" }
 [dev-dependencies]
 # The contract tests serve the API in-process, as a daemon would.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "time", "sync"] }
+# The supervisor's laptop-sleep rig test (DIST-E1-T06) runs `daemon`'s supervisor on `io`'s
+# `SystemClock`, which only a binary's crate may build (ADR-0022; RFC-0060 §2.1 rule T1).
+syntropy-daemon = { path = "../daemon" }
+syntropy-io = { path = "../io" }
+# The supervisor's end-to-end stall test drives a real runner `Lifecycle` (DIST-E1-T06).
+syntropy-runner = { path = "../runner" }

@@ -504,6 +504,10 @@ When the running clock advances at least `swim.resume_detect` (5 s) more than th
 4. Send `Sync` to the coordinator before acting on any cluster state (RFC-0032 §6.3). If the log shows that this node's instances moved to a newer plan epoch while it slept, the daemon drains the stale runners at once. Their sequences were recovered elsewhere or have ended.
 5. The supervisor (RFC-0001 §3.4) measures runner liveness with the same running clock, adjusted for the suspended interval, so it does not kill healthy runners for "missing" heartbeats on resume.
 
+*Note 2026-10-28 (DIST-E1-T06):* the detector is `core`'s `SuspendDetector`, over an `AwakeClock` that `io`'s `SystemClock` implements (RFC-0001 §5.14, note of this date). Each user applies its own threshold to the `Interval` it returns:
+- the supervisor excuses any gap between the two clocks, and lateness past one sample period;
+- this section's resume detection, DIST-E4-T05, compares against `swim.resume_detect` (5 s).
+
 Peers saw the node go silent. If it sent a sleep notice (§5.9) they marked it `Sleeping`; otherwise they eventually marked it `Failed`. In both cases it returns through `NodeAlive` at its higher incarnation. Sleeping never counts towards flapping.
 
 #### 5.9 Sleep notices and inhibition
