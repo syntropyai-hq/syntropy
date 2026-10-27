@@ -74,6 +74,12 @@ cc = "1.9.0"
 chacha20 = { version = "0.10.2", default-features = false, features = ["rng"] }
 # Deterministic CBOR for the control envelope (RFC-0031 §9.1, ADR-0305), `syntropy-net` only.
 ciborium = "0.2.2"
+# The CLI's command tree (RFC-0051 §1), `syntropy-cli` only. MIT OR Apache-2.0. The lock file
+# already held this version, through iroh. Default features off: no colour, terminal-width or
+# environment-variable support in clap itself; the CLI decides colour (RFC-0051 §2.2). `derive`
+# for the tree, `help`, `usage` and `error-context` for its messages, `suggestions` for "did you
+# mean".
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 # CRC32C (Castagnoli) for frame headers and payloads (RFC-0031 §6.1), with SSE4.2 or Armv8 CRC
 # instructions picked at run time and a table fallback; also the beacon, invite and log codecs.
 crc32c = "0.6.8"

@@ -19,7 +19,8 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{self, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use syntropy_core::error::ErrorClass;
 
 use crate::version::VersionInfo;
 
@@ -99,7 +100,7 @@ pub async fn dispatch(state: &ApiState, request: Request<Incoming>) -> Response<
         let message = format!("no endpoint at {} {path}", request.method());
         return error(
             StatusCode::NOT_FOUND,
-            "Unsupported",
+            ErrorClass::Unsupported,
             "unsupported_endpoint",
             &message,
         );
@@ -108,7 +109,7 @@ pub async fn dispatch(state: &ApiState, request: Request<Incoming>) -> Response<
     let message = format!("{path} takes {allow}, not {}", request.method());
     let mut response = error(
         StatusCode::METHOD_NOT_ALLOWED,
-        "InvalidRequest",
+        ErrorClass::InvalidRequest,
         "method_not_allowed",
         &message,
     );
@@ -131,11 +132,37 @@ pub fn json<T: Serialize>(status: StatusCode, body: &T) -> Response<Body> {
     response
 }
 
-/// An error in the native shape's form: `{"error": {"class", "code", "message"}}`.
-fn error(status: StatusCode, class: &str, code: &str, message: &str) -> Response<Body> {
+/// An error response in the native shape: `{"error": {"class", "code", "message"}}`. The CLI
+/// reads it back with the same type. The full native error of RFC-0050 §12.1, with `domain`,
+/// `retry`, `scope` and `context`, and each vendor shape's body, are PROD-E2-T05's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorBody {
+    /// The error.
+    pub error: NativeError,
+}
+
+/// The error inside an [`ErrorBody`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeError {
+    /// What kind of failure it is (RFC-0001 §5.12).
+    pub class: ErrorClass,
+    /// The code for programs, such as `unsupported_endpoint`.
+    pub code: String,
+    /// The message for people.
+    pub message: String,
+}
+
+/// An error response with `status`.
+fn error(status: StatusCode, class: ErrorClass, code: &str, message: &str) -> Response<Body> {
     json(
         status,
-        &serde_json::json!({ "error": { "class": class, "code": code, "message": message } }),
+        &ErrorBody {
+            error: NativeError {
+                class,
+                code: code.to_owned(),
+                message: message.to_owned(),
+            },
+        },
     )
 }
 

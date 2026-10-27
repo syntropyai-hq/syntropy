@@ -11,6 +11,7 @@
 //!   cleartext HTTP/2 on the daemon's `ctl` runtime;
 //! - [`routes`]: the route table, with `/healthz`, `/readyz` and `/v1/syntropy/version`;
 //! - [`version`]: what `/v1/syntropy/version` reports;
+//! - [`printable`]: text made safe to show on a terminal, which the CLI and `doctor` share;
 //! - [`config`]: the `[api]` section's listener keys, `api.bind`, `api.tls`,
 //!   `api.allow_plaintext_lan` and `api.local_socket` (RFC-0054 §5.2);
 //! - [`bind`]: each bind address's class (loopback, LAN or public) and [`bind::plan_binds`],
@@ -30,6 +31,7 @@
 pub mod bind;
 pub mod config;
 pub mod figure;
+pub mod printable;
 pub mod routes;
 pub mod rules;
 pub mod server;
