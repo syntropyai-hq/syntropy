@@ -164,7 +164,10 @@ fn check_takes_kv_dtype_in_a_policy_table_and_refuses_a_lossy_one() {
         assert_eq!(code(&output), want, "{value}: {stderr}");
         if want != 0 {
             // A wrong type (`config/0002`), not an unknown key: the key is registered.
-            assert!(stderr.contains("error[config/0002]: `kv_dtype`"), "{value}: {stderr}");
+            assert!(
+                stderr.contains("error[config/0002]: `kv_dtype`"),
+                "{value}: {stderr}"
+            );
             assert!(stderr.contains("`f16`, `bf16`, `f32`"), "{value}: {stderr}");
         }
         let _ = std::fs::remove_dir_all(home);
