@@ -55,6 +55,103 @@ pub trait Clock: Send + Sync {
     fn unix_ms(&self) -> u64;
 }
 
+/// A reading of the clock that stops while the host is suspended, in nanoseconds since an
+/// arbitrary origin (RFC-0030 §5.8). It is not on [`MonoTime`]'s timeline: compare only the
+/// differences of two readings, against the differences of [`Clock::now`] taken around them.
+/// The production reading is `syntropy_io::os::SystemClock::awake` (ADR-0022).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AwakeTime(pub u64);
+
+impl AwakeTime {
+    /// The awake time from `earlier` to `self`, or zero if `earlier` is later.
+    #[must_use]
+    pub fn saturating_duration_since(self, earlier: AwakeTime) -> Nanos {
+        Nanos(self.0.saturating_sub(earlier.0))
+    }
+}
+
+/// A [`Clock`] that can also read the clock that stops while the host is suspended (RFC-0030
+/// §5.8; ADR-0022 decision 2). Code that detects a suspend takes one, so it runs on virtual time
+/// in tests; only a binary's wiring passes the production one.
+pub trait AwakeClock: Clock {
+    /// The clock that stops while the host is suspended.
+    fn awake(&self) -> AwakeTime;
+
+    /// One tick of the coarser of the two clocks: the slack a comparison of their differences
+    /// needs, since each reading is a whole number of its clock's ticks.
+    fn tick(&self) -> Nanos;
+}
+
+/// The time between two observations, on both clocks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Interval {
+    /// The time [`Clock::now`] advanced, suspends included.
+    pub running: Nanos,
+    /// The time [`AwakeClock::awake`] advanced, suspends excluded.
+    pub awake: Nanos,
+}
+
+impl Interval {
+    /// The time the host was suspended in the interval: `running − awake`, when that is more
+    /// than `slack`, else zero.
+    #[must_use]
+    pub fn suspended(&self, slack: Nanos) -> Nanos {
+        let gap = self.running.0.saturating_sub(self.awake.0);
+        if gap > slack.0 { Nanos(gap) } else { Nanos(0) }
+    }
+
+    /// How much later than `expected` the interval ended while the host was awake: `awake −
+    /// expected`, when that is more than `slack`, else zero. A late tick on both clocks is a
+    /// paused VM or a starved process (RFC-0030 §5.8).
+    #[must_use]
+    pub fn late(&self, expected: Nanos, slack: Nanos) -> Nanos {
+        let late = self.awake.0.saturating_sub(expected.0);
+        if late > slack.0 {
+            Nanos(late)
+        } else {
+            Nanos(0)
+        }
+    }
+}
+
+/// Measures the interval between successive observations of the two clocks, from which a
+/// caller finds the time the host spent suspended or paused (RFC-0030 §5.8). The runner
+/// supervisor (DIST-E1-T06) and the membership shell's resume detection (DIST-E4-T05) each keep
+/// one, with their own thresholds. It reads no clock: the caller passes both readings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SuspendDetector {
+    last: Option<(MonoTime, AwakeTime)>,
+}
+
+impl SuspendDetector {
+    /// A detector with no observation yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { last: None }
+    }
+
+    /// Records the readings `now` and `awake`, taken together, and returns the interval since
+    /// the previous observation. The first observation returns a zero interval. A reading earlier
+    /// than the previous one counts as no time.
+    pub fn observe(&mut self, now: MonoTime, awake: AwakeTime) -> Interval {
+        let interval = self
+            .last
+            .map_or(Interval::default(), |(then, then_awake)| Interval {
+                running: now.saturating_duration_since(then),
+                awake: awake.saturating_duration_since(then_awake),
+            });
+        self.last = Some((now, awake));
+        interval
+    }
+
+    /// Reads both clocks of `clock` and observes them.
+    pub fn observe_clock(&mut self, clock: &impl AwakeClock) -> Interval {
+        let now = clock.now();
+        let awake = clock.awake();
+        self.observe(now, awake)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -154,5 +251,37 @@ mod tests {
             serde_json::from_str::<MonoTime>(&json).unwrap(),
             MonoTime(42)
         );
+    }
+
+    /// A suspend shows as running time with no awake time; a late tick as awake time past the
+    /// expected interval; small differences within the slack are neither.
+    #[test]
+    fn the_detector_separates_suspends_from_late_ticks() {
+        let mut d = SuspendDetector::new();
+        assert_eq!(d.observe(MonoTime(0), AwakeTime(500)), Interval::default());
+        let s = 1_000_000_000;
+        // 60 s asleep inside a 61 s interval.
+        let i = d.observe(MonoTime(61 * s), AwakeTime(500 + s));
+        assert_eq!(
+            i,
+            Interval {
+                running: Nanos(61 * s),
+                awake: Nanos(s)
+            }
+        );
+        assert_eq!(i.suspended(Nanos(1_000)), Nanos(60 * s));
+        assert_eq!(i.late(Nanos(s), Nanos(0)), Nanos(0));
+        // A tick 9 s late on both clocks: no suspend, 8 s late against a 1 s period.
+        let i = d.observe(MonoTime(70 * s), AwakeTime(500 + 10 * s));
+        assert_eq!(i.suspended(Nanos(1_000)), Nanos(0));
+        assert_eq!(i.late(Nanos(s), Nanos(0)), Nanos(8 * s));
+        assert_eq!(i.late(Nanos(s), Nanos(8 * s)), Nanos(0), "within the slack");
+        // Clock granularity: a gap no larger than the slack is no suspend.
+        let i = d.observe(MonoTime(71 * s + 10), AwakeTime(500 + 11 * s));
+        assert_eq!(i.suspended(Nanos(10)), Nanos(0));
+        assert_eq!(i.suspended(Nanos(9)), Nanos(10));
+        // A reading that goes back counts as no time, never as a wrap.
+        let i = d.observe(MonoTime(5), AwakeTime(0));
+        assert_eq!(i, Interval::default());
     }
 }
