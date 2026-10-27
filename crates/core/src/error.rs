@@ -14,7 +14,8 @@ use std::borrow::Cow;
 use std::fmt;
 use std::ops::RangeInclusive;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
 
 use crate::ids::{LinkId, NodeId, StageIx};
@@ -172,8 +173,9 @@ pub enum RetryHint {
 ///
 /// It is owned data: `context`'s keys are `Cow<'static, str>` (RFC-0001 §18.32), so code writes
 /// literal keys without allocating, and decoding one needs no buffer that lives for the whole
-/// program. `Error` crosses the IPC in `ErrorReport` (RFC-0001 §3.5).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// program. `Error` crosses the IPC in `ErrorReport` (RFC-0001 §3.5), so its decode refuses a
+/// `source` chain deeper than [`MAX_SOURCE_DEPTH`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Error {
     /// What kind of failure; RFC-0001 §10 says what each class triggers.
     pub class: ErrorClass,
@@ -265,5 +267,163 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.source.as_deref().map(|e| e as _)
+    }
+}
+
+/// The deepest `source` chain a decode accepts: the outermost error and 16 sources. A decoded
+/// `Error` comes from another process or node (`ErrorReport`, RFC-0001 §3.5), and a nested
+/// chain decodes by recursion, so a forged frame could otherwise exhaust the stack.
+pub const MAX_SOURCE_DEPTH: usize = 16;
+
+/// Decodes as the derived form would, field by field, but refuses a `source` chain deeper than
+/// [`MAX_SOURCE_DEPTH`].
+impl<'de> Deserialize<'de> for Error {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        ErrorSeed { depth: 0 }.deserialize(deserializer)
+    }
+}
+
+const FIELDS: &[&str] = &[
+    "class", "code", "message", "scope", "retry", "context", "source",
+];
+
+/// Decodes one `Error` at `depth` sources below the outermost.
+struct ErrorSeed {
+    depth: usize,
+}
+
+impl<'de> DeserializeSeed<'de> for ErrorSeed {
+    type Value = Error;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Error, D::Error> {
+        if self.depth > MAX_SOURCE_DEPTH {
+            return Err(de::Error::custom(format_args!(
+                "an error's source chain is deeper than {MAX_SOURCE_DEPTH}"
+            )));
+        }
+        deserializer.deserialize_struct("Error", FIELDS, ErrorVisitor { depth: self.depth })
+    }
+}
+
+/// Decodes an `Error`'s `source`: `None`, or one error a level deeper.
+struct SourceSeed {
+    depth: usize,
+}
+
+impl<'de> DeserializeSeed<'de> for SourceSeed {
+    type Value = Option<Box<Error>>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_option(self)
+    }
+}
+
+impl<'de> Visitor<'de> for SourceSeed {
+    type Value = Option<Box<Error>>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an optional error")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        ErrorSeed {
+            depth: self.depth + 1,
+        }
+        .deserialize(deserializer)
+        .map(|e| Some(Box::new(e)))
+    }
+}
+
+/// `Error`'s field names, for self-describing formats. An unknown field is skipped, as the
+/// derived form does.
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "lowercase")]
+enum Field {
+    Class,
+    Code,
+    Message,
+    Scope,
+    Retry,
+    Context,
+    Source,
+    #[serde(other)]
+    Other,
+}
+
+struct ErrorVisitor {
+    depth: usize,
+}
+
+impl<'de> Visitor<'de> for ErrorVisitor {
+    type Value = Error;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("struct Error")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Error, A::Error> {
+        let missing = |n| de::Error::invalid_length(n, &"struct Error with 7 elements");
+        Ok(Error {
+            class: seq.next_element()?.ok_or_else(|| missing(0))?,
+            code: seq.next_element()?.ok_or_else(|| missing(1))?,
+            message: seq.next_element()?.ok_or_else(|| missing(2))?,
+            scope: seq.next_element()?.ok_or_else(|| missing(3))?,
+            retry: seq.next_element()?.ok_or_else(|| missing(4))?,
+            context: seq.next_element()?.ok_or_else(|| missing(5))?,
+            source: seq
+                .next_element_seed(SourceSeed { depth: self.depth })?
+                .ok_or_else(|| missing(6))?,
+        })
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Error, A::Error> {
+        let mut class = None;
+        let mut code = None;
+        let mut message = None;
+        let mut scope = None;
+        let mut retry = None;
+        let mut context = None;
+        let mut source = None;
+        fn set<T, E: de::Error>(slot: &mut Option<T>, name: &'static str, v: T) -> Result<(), E> {
+            if slot.replace(v).is_some() {
+                return Err(E::duplicate_field(name));
+            }
+            Ok(())
+        }
+        while let Some(key) = map.next_key::<Field>()? {
+            match key {
+                Field::Class => set(&mut class, "class", map.next_value()?)?,
+                Field::Code => set(&mut code, "code", map.next_value()?)?,
+                Field::Message => set(&mut message, "message", map.next_value()?)?,
+                Field::Scope => set(&mut scope, "scope", map.next_value()?)?,
+                Field::Retry => set(&mut retry, "retry", map.next_value()?)?,
+                Field::Context => set(&mut context, "context", map.next_value()?)?,
+                Field::Source => set(
+                    &mut source,
+                    "source",
+                    map.next_value_seed(SourceSeed { depth: self.depth })?,
+                )?,
+                Field::Other => {
+                    map.next_value::<de::IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(Error {
+            class: class.ok_or_else(|| de::Error::missing_field("class"))?,
+            code: code.ok_or_else(|| de::Error::missing_field("code"))?,
+            message: message.ok_or_else(|| de::Error::missing_field("message"))?,
+            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
+            retry: retry.ok_or_else(|| de::Error::missing_field("retry"))?,
+            context: context.ok_or_else(|| de::Error::missing_field("context"))?,
+            source: source.unwrap_or(None),
+        })
     }
 }

@@ -8,6 +8,8 @@
 //!   (RFC-0001 §18.32).
 //! - An `Error` keeps its context and its source chain through a round trip, and
 //!   `std::error::Error::source` walks the same chain.
+//! - A decode refuses a source chain deeper than `MAX_SOURCE_DEPTH`, including a forged
+//!   million-deep frame, without exhausting the stack.
 
 use std::borrow::Cow;
 use std::error::Error as _;
@@ -17,8 +19,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use syntropy_core::error::codes;
 use syntropy_core::{
-    Domain, Endpoint, Error, ErrorClass, ErrorCode, ErrorScope, LinkId, LinkKind, Nanos, NodeId,
-    RetryHint, SequenceId, StageIx,
+    Domain, Endpoint, Error, ErrorClass, ErrorCode, ErrorScope, LinkId, LinkKind, MAX_SOURCE_DEPTH,
+    Nanos, NodeId, RetryHint, SequenceId, StageIx,
 };
 
 /// Decodes `bytes` and drops them before returning the value, so the value cannot borrow them.
@@ -236,4 +238,77 @@ fn context_and_source_by_example() {
         ),
         (ErrorScope::Runner, RetryHint::Never, 0, true)
     );
+}
+
+/// A chain of `n` errors: the outermost and `n − 1` sources.
+fn chain_of(n: usize) -> Error {
+    let mut e = Error::new(ErrorClass::Internal, codes::exec::STEP_STALLED, "0");
+    for i in 1..n {
+        e = Error::new(
+            ErrorClass::Device,
+            codes::kernels::DEVICE_STICKY,
+            i.to_string(),
+        )
+        .with_source(e);
+    }
+    e
+}
+
+/// A decode accepts a chain of `MAX_SOURCE_DEPTH` sources below the outermost error and
+/// refuses one more, in both encodings.
+#[test]
+fn a_decode_bounds_the_source_chain() {
+    assert_eq!(MAX_SOURCE_DEPTH, 16);
+    let deepest = chain_of(MAX_SOURCE_DEPTH + 1);
+    round_trip(&deepest);
+    let too_deep = chain_of(MAX_SOURCE_DEPTH + 2);
+    let postcard = postcard::to_allocvec(&too_deep).unwrap();
+    assert!(postcard::from_bytes::<Error>(&postcard).is_err());
+    let json = serde_json::to_vec(&too_deep).unwrap();
+    let err = serde_json::from_slice::<Error>(&json).unwrap_err();
+    assert!(err.to_string().contains("deeper than 16"), "{err}");
+}
+
+/// A forged frame nesting a million sources is refused at depth 17, without recursing a
+/// million deep. The bytes are built by hand: an error's postcard encoding ends with its
+/// `source`, `00` for none, so each wrapping repeats the fields and writes `01` instead.
+#[test]
+fn a_forged_deep_chain_is_refused_without_exhausting_the_stack() {
+    let leaf = postcard::to_allocvec(&Error::new(
+        ErrorClass::Internal,
+        codes::exec::RING_CLOSED,
+        "x",
+    ))
+    .unwrap();
+    assert_eq!(leaf.last(), Some(&0));
+    let mut wrap = leaf[..leaf.len() - 1].to_vec();
+    wrap.push(1);
+    let depth = 1_000_000;
+    let mut forged = Vec::with_capacity(wrap.len() * depth + leaf.len());
+    for _ in 0..depth {
+        forged.extend_from_slice(&wrap);
+    }
+    forged.extend_from_slice(&leaf);
+    assert!(postcard::from_bytes::<Error>(&forged).is_err());
+    // The same construction at the limit decodes.
+    let mut ok = wrap.repeat(MAX_SOURCE_DEPTH);
+    ok.extend_from_slice(&leaf);
+    let decoded: Error = postcard::from_bytes(&ok).unwrap();
+    assert_eq!(decoded.chain().count(), MAX_SOURCE_DEPTH + 1);
+}
+
+/// The JSON form decodes as the derived form did: an absent `source` is none, an unknown field
+/// is skipped, and a repeated field is refused.
+#[test]
+fn the_json_form_keeps_the_derived_rules() {
+    let e = Error::new(ErrorClass::Link, codes::exec::RING_CLOSED, "gone");
+    let mut value = serde_json::to_value(&e).unwrap();
+    let object = value.as_object_mut().unwrap();
+    object.remove("source");
+    object.insert("later_field".into(), serde_json::json!([1, 2]));
+    let back: Error = serde_json::from_value(value).unwrap();
+    assert_eq!(back, e);
+    let repeated = r#"{"class":"Link","class":"Link","code":{"domain":"Exec","code":1537},"message":"","scope":"Runner","retry":"Never","context":[]}"#;
+    let err = serde_json::from_str::<Error>(repeated).unwrap_err();
+    assert!(err.to_string().contains("duplicate field `class`"), "{err}");
 }

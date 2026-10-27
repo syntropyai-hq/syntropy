@@ -40,7 +40,7 @@ pub use clock::{Clock, MonoTime};
 pub use det_hash::{DetHashMap, DetHashSet, DetHasher, DetState};
 pub use dtype::{DType, GgmlType};
 pub use entropy::Entropy;
-pub use error::{Domain, Error, ErrorClass, ErrorCode, ErrorScope, RetryHint};
+pub use error::{Domain, Error, ErrorClass, ErrorCode, ErrorScope, MAX_SOURCE_DEPTH, RetryHint};
 pub use fetch::FetchPriority;
 pub use ids::{
     Blake3, DeviceId, Endpoint, ExpertIx, GraphVersion, InstanceId, LayerIx, LinkId, LinkKind,
