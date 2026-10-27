@@ -21,6 +21,17 @@ syntropy-spsc = { path = "../spsc" }
 proptest = { workspace = true }
 serde_json = { workspace = true }
 
+# `AsyncListener`, the owner-only endpoint for servers on tokio: the API's local socket on the
+# daemon's `ctl` runtime (RFC-0050 §1.1, PROD-E2-T01). `net` gives its Unix socket and named
+# pipe types. `ipc` is not a compute crate, so rule 3 of RFC-0001 §4.2 allows it. Not under
+# `--cfg loom`, which tokio does not build under: the loom suite leaves the async half out.
+[target.'cfg(not(loom))'.dependencies]
+tokio = { workspace = true, features = ["net"] }
+
+# The async listener's tests read and write through `AsyncReadExt` and `AsyncWriteExt`.
+[target.'cfg(not(loom))'.dev-dependencies]
+tokio = { workspace = true, features = ["io-util"] }
+
 # Only under `RUSTFLAGS="--cfg loom"`: the model checker for the region's loom model (RFC-0060
 # §3.4; QUAL-E3-T09). `syntropy-spsc` then builds its rings on loom's atomics. The same version.
 [target.'cfg(loom)'.dev-dependencies]

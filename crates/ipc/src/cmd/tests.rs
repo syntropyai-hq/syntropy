@@ -10,6 +10,8 @@
 //! - No message skips a field on the way out (`skips`): postcard reads fields by position.
 //! - The endpoint is owner-only, and a peer of another user is refused (`other_user`, which needs
 //!   a second OS account).
+//! - The async listener, the API's local socket, accepts this user with its peer and keeps its
+//!   endpoint owner-only (`async_listener`; its other-user case is in `other_user`).
 
 use std::fmt::Debug;
 use std::io::Write;
@@ -29,6 +31,9 @@ use syntropy_core::{
 use super::*;
 use crate::shm::{IpcProtocol, RingRole, RingSpec, ShmLayout};
 
+// Not under loom, which tokio does not build under.
+#[cfg(not(loom))]
+mod async_listener;
 mod fixtures;
 // Not under loom: `cargo xtask test loom` runs this crate's unit tests in a job with no second
 // account, and the test needs real processes and sockets, which loom does not model.

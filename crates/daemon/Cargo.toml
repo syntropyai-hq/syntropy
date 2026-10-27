@@ -7,8 +7,15 @@ publish.workspace = true
 
 [dependencies]
 syntropy-core = { path = "../core" }
-# `Figure`, the labelled form of every number `doctor` reports as evidence (RFC-0001 §5.16).
+# `Figure`, the labelled form of every number `doctor` reports as evidence (RFC-0001 §5.16), and
+# the API server the `ctl` runtime runs (RFC-0050 §1.1).
 syntropy-api = { path = "../api" }
+# The runtime location the local socket lives in (RFC-0054 §1).
+syntropy-config = { path = "../config" }
+# The local socket's endpoint type (RFC-0050 §1.1).
+syntropy-ipc = { path = "../ipc" }
+# The `ctl` runtime (RFC-0001 §8.1): multi-thread, with I/O and timers, and the API's stop signal.
+tokio = { workspace = true, features = ["net", "sync"] }
 # The host-change ledger (RFC-0052 §11.1): its JSON file and the BLAKE3 fingerprints of written files.
 blake3.workspace = true
 serde.workspace = true

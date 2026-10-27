@@ -213,6 +213,141 @@ pub fn connect(endpoint: &Endpoint) -> io::Result<Stream> {
     imp::connect(endpoint).map(Stream)
 }
 
+/// The async endpoint and stream, on tokio. Not under loom: the loom suite builds this crate with
+/// `--cfg loom`, which tokio does not build under.
+#[cfg(not(loom))]
+mod aio {
+    use std::io;
+    #[cfg(all(test, any(target_os = "linux", target_vendor = "apple")))]
+    use std::path::PathBuf;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    use super::imp::aio as imp;
+    use super::{AcceptError, Endpoint, Peer};
+
+    /// The daemon's listening endpoint for async servers on tokio, such as the API's local socket
+    /// (RFC-0050 §1.1). The endpoint is protected as [`Listener`](super::Listener)'s is, and a
+    /// Unix socket is also given mode 0600. Every connection it accepts has passed the same peer
+    /// check.
+    #[derive(Debug)]
+    pub struct AsyncListener {
+        inner: imp::AsyncListener,
+        endpoint: Endpoint,
+    }
+
+    impl AsyncListener {
+        /// Listens on `endpoint`, with [`Listener::bind`](super::Listener::bind)'s rules for the
+        /// directory, the socket and the pipe's first instance.
+        ///
+        /// # Panics
+        ///
+        /// Outside a tokio runtime with I/O enabled.
+        pub fn bind(endpoint: &Endpoint) -> io::Result<AsyncListener> {
+            Ok(AsyncListener {
+                inner: imp::AsyncListener::bind(endpoint)?,
+                endpoint: endpoint.clone(),
+            })
+        }
+
+        /// The endpoint it listens on.
+        pub fn endpoint(&self) -> &Endpoint {
+            &self.endpoint
+        }
+
+        /// Waits for the next connection, checks its peer is this process's user, and returns it
+        /// with the peer the OS reported. A refused peer's connection is closed.
+        pub async fn accept(&mut self) -> Result<(AsyncStream, Peer), AcceptError> {
+            self.inner
+                .accept()
+                .await
+                .map(|(stream, peer)| (AsyncStream(stream), peer))
+        }
+
+        /// An async listener on a socket whose protection the caller set up, so a test can reach
+        /// the peer check from another user's process.
+        #[cfg(all(test, any(target_os = "linux", target_vendor = "apple")))]
+        pub(in crate::cmd) fn from_std(
+            socket: std::os::unix::net::UnixListener,
+            path: PathBuf,
+        ) -> io::Result<AsyncListener> {
+            Ok(AsyncListener {
+                inner: imp::AsyncListener::from_std(socket, path.clone())?,
+                endpoint: Endpoint::Socket(path),
+            })
+        }
+
+        /// An async listener on a pipe whose DACL also lets every authenticated user open it, so a
+        /// test can reach the peer check from another user's process.
+        #[cfg(all(test, windows))]
+        pub(in crate::cmd) fn open_to_authenticated_users(
+            endpoint: &Endpoint,
+        ) -> io::Result<AsyncListener> {
+            Ok(AsyncListener {
+                inner: imp::AsyncListener::open_to_authenticated_users(endpoint)?,
+                endpoint: endpoint.clone(),
+            })
+        }
+    }
+
+    /// A connected byte stream for tokio: a Unix-domain socket, or a named pipe on Windows. A
+    /// stream from [`AsyncListener::accept`] has passed the peer check.
+    #[derive(Debug)]
+    pub struct AsyncStream(imp::AsyncStream);
+
+    /// Connects to the daemon at `endpoint`, for a client on tokio.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime with I/O enabled.
+    pub async fn connect_async(endpoint: &Endpoint) -> io::Result<AsyncStream> {
+        imp::connect_async(endpoint).await.map(AsyncStream)
+    }
+
+    /// The named pipe of this user's endpoint for `role`, `syntropy-<user SID>-<role>`, as
+    /// RFC-0054 §1 names the runtime endpoints on Windows: `api` is the API's local socket
+    /// (RFC-0050 §1.1).
+    #[cfg(windows)]
+    pub fn user_pipe(role: &str) -> io::Result<Endpoint> {
+        imp::user_pipe_name(role).map(Endpoint::Pipe)
+    }
+
+    impl AsyncRead for AsyncStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for AsyncStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().0).poll_flush(cx)
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().0).poll_shutdown(cx)
+        }
+    }
+}
+
+#[cfg(all(windows, not(loom)))]
+pub use aio::user_pipe;
+#[cfg(not(loom))]
+pub use aio::{AsyncListener, AsyncStream, connect_async};
+
 /// The error for an endpoint of another OS's kind.
 fn unsupported(endpoint: &Endpoint) -> io::Error {
     io::Error::new(
@@ -225,6 +360,7 @@ fn unsupported(endpoint: &Endpoint) -> io::Error {
 mod imp {
     use std::fs;
     use std::io;
+    use std::os::fd::{AsFd, BorrowedFd};
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
@@ -275,24 +411,30 @@ mod imp {
         Ok(())
     }
 
+    /// The socket path of `endpoint`, after making its directory owner-only.
+    fn prepare(endpoint: &Endpoint) -> io::Result<&Path> {
+        let Endpoint::Socket(path) = endpoint else {
+            return Err(unsupported(endpoint));
+        };
+        let dir = path
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{endpoint}: the socket path has no directory"),
+                )
+            })?;
+        owner_only_dir(dir)?;
+        Ok(path)
+    }
+
     impl Listener {
         pub(super) fn bind(endpoint: &Endpoint) -> io::Result<Listener> {
-            let Endpoint::Socket(path) = endpoint else {
-                return Err(unsupported(endpoint));
-            };
-            let dir = path
-                .parent()
-                .filter(|dir| !dir.as_os_str().is_empty())
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("{endpoint}: the socket path has no directory"),
-                    )
-                })?;
-            owner_only_dir(dir)?;
+            let path = prepare(endpoint)?;
             Ok(Listener {
                 socket: UnixListener::bind(path)?,
-                path: path.clone(),
+                path: path.to_path_buf(),
             })
         }
 
@@ -303,11 +445,16 @@ mod imp {
 
         pub(super) fn accept(&self) -> Result<UnixStream, AcceptError> {
             let (stream, _) = self.socket.accept().map_err(AcceptError::Io)?;
-            let peer = peer(&stream).map_err(AcceptError::Io)?;
-            match peer {
-                Peer::Unix { uid, .. } if uid == euid() => Ok(stream),
-                _ => Err(AcceptError::Refused(peer)),
-            }
+            check(stream.as_fd()).map(|_| stream)
+        }
+    }
+
+    /// Reads the peer's credentials on `fd`, a connected socket, and checks it is this user.
+    fn check(fd: BorrowedFd<'_>) -> Result<Peer, AcceptError> {
+        let peer = peer(fd).map_err(AcceptError::Io)?;
+        match peer {
+            Peer::Unix { uid, .. } if uid == euid() => Ok(peer),
+            _ => Err(AcceptError::Refused(peer)),
         }
     }
 
@@ -321,7 +468,7 @@ mod imp {
 
     /// The peer's credentials: `SO_PEERCRED`.
     #[cfg(target_os = "linux")]
-    fn peer(stream: &UnixStream) -> io::Result<Peer> {
+    fn peer(fd: BorrowedFd<'_>) -> io::Result<Peer> {
         use std::os::fd::AsRawFd;
 
         let mut cred = libc::ucred {
@@ -334,7 +481,7 @@ mod imp {
         // SAFETY: a live socket, and an output buffer of `len` bytes that outlives the call.
         let result = unsafe {
             libc::getsockopt(
-                stream.as_raw_fd(),
+                fd.as_raw_fd(),
                 libc::SOL_SOCKET,
                 libc::SO_PEERCRED,
                 (&raw mut cred).cast(),
@@ -357,13 +504,13 @@ mod imp {
 
     /// The peer's credentials: `getpeereid`.
     #[cfg(target_vendor = "apple")]
-    fn peer(stream: &UnixStream) -> io::Result<Peer> {
+    fn peer(fd: BorrowedFd<'_>) -> io::Result<Peer> {
         use std::os::fd::AsRawFd;
 
         let mut uid: libc::uid_t = 0;
         let mut gid: libc::gid_t = 0;
         // SAFETY: a live socket and two output pointers that outlive the call.
-        if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } == -1 {
+        if unsafe { libc::getpeereid(fd.as_raw_fd(), &mut uid, &mut gid) } == -1 {
             return Err(io::Error::last_os_error());
         }
         Ok(Peer::Unix { uid, pid: None })
@@ -375,13 +522,96 @@ mod imp {
         };
         UnixStream::connect(path)
     }
+
+    /// The async listener, on tokio; not under loom, which tokio does not build under.
+    #[cfg(not(loom))]
+    pub(in super::super) mod aio {
+        use std::fs;
+        use std::io;
+        use std::os::fd::AsFd;
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixListener;
+        use std::path::PathBuf;
+
+        use super::super::{AcceptError, Endpoint, Peer, unsupported};
+        use super::{check, prepare};
+
+        pub(in crate::cmd::os) type AsyncStream = tokio::net::UnixStream;
+
+        #[derive(Debug)]
+        pub(in crate::cmd::os) struct AsyncListener {
+            socket: tokio::net::UnixListener,
+            path: PathBuf,
+        }
+
+        impl AsyncListener {
+            pub(in crate::cmd::os) fn bind(endpoint: &Endpoint) -> io::Result<AsyncListener> {
+                let path = prepare(endpoint)?;
+                let socket = UnixListener::bind(path)?;
+                // From here the name is ours, so a failure removes it.
+                let listen = || {
+                    // The socket is owner-only too (RFC-0050 §1.1), though the directory already
+                    // keeps every other user out.
+                    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+                    socket.set_nonblocking(true)?;
+                    tokio::net::UnixListener::from_std(socket)
+                };
+                match listen() {
+                    Ok(socket) => Ok(AsyncListener {
+                        socket,
+                        path: path.to_path_buf(),
+                    }),
+                    Err(error) => {
+                        let _ = fs::remove_file(path);
+                        Err(error)
+                    }
+                }
+            }
+
+            #[cfg(test)]
+            pub(in crate::cmd::os) fn from_std(
+                socket: UnixListener,
+                path: PathBuf,
+            ) -> io::Result<AsyncListener> {
+                socket.set_nonblocking(true)?;
+                Ok(AsyncListener {
+                    socket: tokio::net::UnixListener::from_std(socket)?,
+                    path,
+                })
+            }
+
+            pub(in crate::cmd::os) async fn accept(
+                &mut self,
+            ) -> Result<(AsyncStream, Peer), AcceptError> {
+                let (stream, _) = self.socket.accept().await.map_err(AcceptError::Io)?;
+                let peer = check(stream.as_fd())?;
+                Ok((stream, peer))
+            }
+        }
+
+        impl Drop for AsyncListener {
+            fn drop(&mut self) {
+                // Best effort, as for `Listener`.
+                let _ = fs::remove_file(&self.path);
+            }
+        }
+
+        pub(in crate::cmd::os) async fn connect_async(
+            endpoint: &Endpoint,
+        ) -> io::Result<AsyncStream> {
+            let Endpoint::Socket(path) = endpoint else {
+                return Err(unsupported(endpoint));
+            };
+            tokio::net::UnixStream::connect(path).await
+        }
+    }
 }
 
 #[cfg(windows)]
 mod imp {
     use std::fs::File;
     use std::io;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 
     use windows_sys::Win32::Foundation::{
         ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
@@ -519,13 +749,13 @@ mod imp {
             if let Some(error) = failed {
                 return Err(AcceptError::Io(error));
             }
-            check_peer(&client, &self.user)?;
+            check_peer(client.as_handle(), &self.user)?;
             Ok(File::from(client))
         }
     }
 
     /// Checks the client of `pipe` runs as `user`: its process's token user SID.
-    fn check_peer(pipe: &OwnedHandle, user: &UserSid) -> Result<(), AcceptError> {
+    fn check_peer(pipe: BorrowedHandle<'_>, user: &UserSid) -> Result<Peer, AcceptError> {
         let mut pid = 0u32;
         // SAFETY: a live, connected pipe instance and an output pointer.
         if unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
@@ -543,14 +773,15 @@ mod imp {
         let Ok(sid) = UserSid::of_process(process.as_raw_handle()) else {
             return Err(unknown());
         };
+        let peer = Peer::Windows {
+            pid,
+            sid: sid.text().ok(),
+        };
         // SAFETY: two valid SIDs, each alive for the call.
         if unsafe { EqualSid(sid.sid(), user.sid()) } != 0 {
-            Ok(())
+            Ok(peer)
         } else {
-            Err(AcceptError::Refused(Peer::Windows {
-                pid,
-                sid: sid.text().ok(),
-            }))
+            Err(AcceptError::Refused(peer))
         }
     }
 
@@ -586,5 +817,200 @@ mod imp {
             io::ErrorKind::TimedOut,
             "the daemon's pipe stayed busy",
         ))
+    }
+
+    /// The async listener, on tokio; not under loom, which tokio does not build under.
+    #[cfg(not(loom))]
+    pub(in super::super) mod aio {
+        use std::ffi::OsString;
+        use std::io;
+        use std::os::windows::io::AsHandle;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+        use tokio::net::windows::named_pipe::{
+            ClientOptions, NamedPipeClient, NamedPipeServer, PipeMode, ServerOptions,
+        };
+        use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+        use windows_sys::Win32::Storage::FileSystem::{
+            SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+        };
+
+        use super::super::{AcceptError, Endpoint, Peer};
+        use super::{BUFFER, BUSY_ATTEMPTS, BUSY_WAIT_MS, check_peer, pipe_path};
+        use crate::shm::{OwnerOnly, UserSid};
+
+        /// A connected pipe for tokio: the daemon's end, or a client's.
+        #[derive(Debug)]
+        pub(in crate::cmd::os) enum AsyncStream {
+            Server(NamedPipeServer),
+            Client(NamedPipeClient),
+        }
+
+        impl AsyncRead for AsyncStream {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                match self.get_mut() {
+                    AsyncStream::Server(pipe) => Pin::new(pipe).poll_read(cx, buf),
+                    AsyncStream::Client(pipe) => Pin::new(pipe).poll_read(cx, buf),
+                }
+            }
+        }
+
+        impl AsyncWrite for AsyncStream {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                match self.get_mut() {
+                    AsyncStream::Server(pipe) => Pin::new(pipe).poll_write(cx, buf),
+                    AsyncStream::Client(pipe) => Pin::new(pipe).poll_write(cx, buf),
+                }
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                match self.get_mut() {
+                    AsyncStream::Server(pipe) => Pin::new(pipe).poll_flush(cx),
+                    AsyncStream::Client(pipe) => Pin::new(pipe).poll_flush(cx),
+                }
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                match self.get_mut() {
+                    AsyncStream::Server(pipe) => Pin::new(pipe).poll_shutdown(cx),
+                    AsyncStream::Client(pipe) => Pin::new(pipe).poll_shutdown(cx),
+                }
+            }
+        }
+
+        pub(in crate::cmd::os) struct AsyncListener {
+            /// `\\.\pipe\<name>`.
+            path: OsString,
+            /// The instance the next client connects to.
+            pending: NamedPipeServer,
+            /// This process's user, which every peer must be.
+            user: UserSid,
+            /// The DACL each instance is created with.
+            descriptor: OwnerOnly,
+        }
+
+        impl std::fmt::Debug for AsyncListener {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("AsyncListener")
+                    .field("path", &self.path)
+                    .finish_non_exhaustive()
+            }
+        }
+
+        /// The text form of a pipe path from [`pipe_path`], without its NUL.
+        fn pipe_os_path(endpoint: &Endpoint) -> io::Result<OsString> {
+            let mut path = pipe_path(endpoint)?;
+            path.pop();
+            Ok(String::from_utf16_lossy(&path).into())
+        }
+
+        /// One instance of the pipe at `path` for tokio, with the same flags and DACL as
+        /// [`instance`]'s, and overlapped I/O.
+        fn async_instance(
+            path: &OsString,
+            descriptor: &OwnerOnly,
+            first: bool,
+        ) -> io::Result<NamedPipeServer> {
+            let mut attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor.descriptor(),
+                bInheritHandle: 0,
+            };
+            let mut options = ServerOptions::new();
+            options
+                .first_pipe_instance(first)
+                .reject_remote_clients(true)
+                .pipe_mode(PipeMode::Byte)
+                .in_buffer_size(BUFFER)
+                .out_buffer_size(BUFFER);
+            // SAFETY: the attributes are a valid `SECURITY_ATTRIBUTES`, and they and the descriptor
+            // they point to live for the call.
+            unsafe {
+                options.create_with_security_attributes_raw(path, (&raw mut attributes).cast())
+            }
+        }
+
+        impl AsyncListener {
+            pub(in crate::cmd::os) fn bind(endpoint: &Endpoint) -> io::Result<AsyncListener> {
+                AsyncListener::with_descriptor(endpoint, OwnerOnly::new()?)
+            }
+
+            #[cfg(test)]
+            pub(in crate::cmd::os) fn open_to_authenticated_users(
+                endpoint: &Endpoint,
+            ) -> io::Result<AsyncListener> {
+                AsyncListener::with_descriptor(endpoint, OwnerOnly::open_to_authenticated_users()?)
+            }
+
+            fn with_descriptor(
+                endpoint: &Endpoint,
+                descriptor: OwnerOnly,
+            ) -> io::Result<AsyncListener> {
+                let path = pipe_os_path(endpoint)?;
+                let user = UserSid::current()?;
+                let pending = async_instance(&path, &descriptor, true)?;
+                Ok(AsyncListener {
+                    path,
+                    pending,
+                    user,
+                    descriptor,
+                })
+            }
+
+            pub(in crate::cmd::os) async fn accept(
+                &mut self,
+            ) -> Result<(AsyncStream, Peer), AcceptError> {
+                // A client that connected before this call counts as connected.
+                let connected = self.pending.connect().await;
+                // A new instance replaces this one either way, as in `Listener::accept`.
+                let next =
+                    async_instance(&self.path, &self.descriptor, false).map_err(AcceptError::Io)?;
+                let client = std::mem::replace(&mut self.pending, next);
+                connected.map_err(AcceptError::Io)?;
+                let peer = check_peer(client.as_handle(), &self.user)?;
+                Ok((AsyncStream::Server(client), peer))
+            }
+        }
+
+        pub(in crate::cmd::os) async fn connect_async(
+            endpoint: &Endpoint,
+        ) -> io::Result<AsyncStream> {
+            let path = pipe_os_path(endpoint)?;
+            let mut options = ClientOptions::new();
+            // The identification level keeps the daemon from impersonating the client.
+            options.security_qos_flags(SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION);
+            for _ in 0..BUSY_ATTEMPTS {
+                match options.open(&path) {
+                    Ok(client) => return Ok(AsyncStream::Client(client)),
+                    Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(u64::from(
+                            BUSY_WAIT_MS,
+                        )))
+                        .await;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the daemon's pipe stayed busy",
+            ))
+        }
+
+        /// The pipe name of this user's endpoint for `role`: `syntropy-<user SID>-<role>`.
+        pub(in crate::cmd::os) fn user_pipe_name(role: &str) -> io::Result<String> {
+            Ok(format!("syntropy-{}-{role}", UserSid::current()?.text()?))
+        }
     }
 }
