@@ -141,6 +141,41 @@ fn set_changes_only_the_target_line() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `config set <key> -` reads the value from stdin, so it never sits on the command line.
+#[test]
+fn set_reads_the_value_from_stdin_with_a_dash() {
+    use std::io::Write as _;
+    let (dir, file) = setup("stdin", FILE);
+    let path = file.to_str().unwrap();
+    let run_with = |input: &str| {
+        let mut command = isolated(&["config", "set", "--config", path, "api.tls", "-"], &dir);
+        command.stdin(std::process::Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let out = run_with("none\r\n");
+    assert_eq!(code(&out), 0, "{}", text(&out.stderr));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        FILE.replace("tls = \"auto\"", "tls = \"none\"")
+    );
+    // An empty stdin is refused, and nothing is written.
+    let out = run_with("");
+    assert_eq!(code(&out), 5, "{}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("stdin was empty"));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        FILE.replace("tls = \"auto\"", "tls = \"none\"")
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn unset_removes_only_the_key_s_line() {
     let (dir, file) = setup("unset", FILE);

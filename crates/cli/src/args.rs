@@ -259,7 +259,8 @@ pub struct ConfigSetArgs {
     /// `policy."qwen3*".ram_headroom`
     pub key: String,
     /// The value: TOML (`8080`, `true`, `["a", "b"]`, `{ file = "/run/secrets/x" }`), or else
-    /// the text as a string; quote a number meant as a string, as `'"8080"'`
+    /// the text as a string; quote a number meant as a string, as `'"8080"'`. `-` reads it from
+    /// stdin, which keeps a secret out of shell history and the process list
     #[arg(allow_hyphen_values = true)]
     pub value: String,
     /// Submit the value to the cluster instead of writing a file
@@ -283,7 +284,8 @@ pub struct ConfigUnsetArgs {
     pub target: ConfigTarget,
 }
 
-/// `syntropy config edit`.
+/// `syntropy config edit`. The editor is `$VISUAL` or `$EDITOR`, started even without a terminal,
+/// since it was named; only the default editor needs one.
 #[derive(Clone, Debug, Args)]
 pub struct ConfigEditArgs {
     /// Keep the edited file even when it is invalid

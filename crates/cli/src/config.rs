@@ -178,9 +178,22 @@ pub fn set(args: &ConfigSetArgs, output: Output) -> Result<Exit, CliError> {
     if args.cluster {
         return Err(cluster_not_built("set"));
     }
+    let value = if args.value == "-" {
+        value_from_stdin(&args.key)?
+    } else {
+        if holds_secret(&REGISTRY, &args.key) && !names_a_source(&args.value) {
+            eprintln!(
+                "warning: `{}` is a secret, and its value is on the command line, where shell \
+                 history and the process list can see it; pass `-` to read it from stdin, or set \
+                 `{{ file = \"…\" }}` or `{{ env = \"…\" }}`",
+                printable(&args.key)
+            );
+        }
+        args.value.clone()
+    };
     let target = Target::of(&args.target)?;
     let old = target.read()?;
-    let new = write::set(&old, &args.key, &args.value).map_err(|e| edit_failed(&target, &e))?;
+    let new = write::set(&old, &args.key, &value).map_err(|e| edit_failed(&target, &e))?;
     target.save(&new, false)?;
     println!("set `{}` in {}", printable(&args.key), target.shown());
     reload_note();
@@ -207,6 +220,60 @@ pub fn unset(args: &ConfigUnsetArgs, output: Output) -> Result<Exit, CliError> {
     println!("removed `{}` from {}", printable(&args.key), target.shown());
     reload_note();
     Ok(Exit::Success)
+}
+
+/// `config set <key> -`: the value from stdin, without one trailing line break. On a terminal it
+/// asks for it first, on stderr; the value is then echoed as it is typed.
+fn value_from_stdin(key: &str) -> Result<String, CliError> {
+    use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
+    let failed = |e: std::io::Error| {
+        CliError::cli(
+            Exit::Failure,
+            "read_failed",
+            format!("cannot read the value from stdin: {e}"),
+        )
+    };
+    let stdin = std::io::stdin();
+    let mut value = String::new();
+    if stdin.is_terminal() {
+        eprint!("value for `{}`: ", printable(key));
+        std::io::stderr().flush().map_err(failed)?;
+        stdin.lock().read_line(&mut value).map_err(failed)?;
+    } else {
+        stdin.lock().read_to_string(&mut value).map_err(failed)?;
+    }
+    if let Some(line) = value.strip_suffix('\n') {
+        value.truncate(line.strip_suffix('\r').unwrap_or(line).len());
+    }
+    if value.is_empty() {
+        return Err(CliError::cli(
+            Exit::Invalid,
+            "no_value",
+            "`-` reads the value from stdin, and stdin was empty",
+        ));
+    }
+    Ok(value)
+}
+
+/// Whether `path` is a secret-typed key of `registry`, or a key under one, such as an entry of
+/// `obs.otlp.headers`.
+fn holds_secret(registry: &Registry, path: &str) -> bool {
+    registry.keys().any(|key| {
+        key.holds_secret
+            && (path == key.path
+                || path
+                    .strip_prefix(key.path)
+                    .is_some_and(|rest| rest.starts_with('.')))
+    })
+}
+
+/// Whether `value` is a secret's file or variable form, which holds no secret itself.
+fn names_a_source(value: &str) -> bool {
+    write::parse_value(value)
+        .as_inline_table()
+        .is_some_and(|table| {
+            table.len() == 1 && (table.contains_key("file") || table.contains_key("env"))
+        })
 }
 
 /// `config edit`: the target file in `$VISUAL` or `$EDITOR`, validated when the editor exits.
@@ -636,6 +703,34 @@ fn errors(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A section with a secret, for [`holds_secret`].
+    #[derive(Debug, serde::Deserialize, syntropy_config::ConfigSection)]
+    #[config(section = "vault", scope = Node, owner = "RFC-0054")]
+    #[allow(dead_code)]
+    struct Vault {
+        /// A secret.
+        #[config(reload = Hot, default = {})]
+        headers: std::collections::BTreeMap<String, syntropy_config::SecretSource>,
+        /// Not a secret.
+        #[config(reload = Hot, default = 1)]
+        retries: u32,
+    }
+
+    /// `config set` warns for a secret on the command line: a secret key or a key under one, and
+    /// not for its file or variable form (review of #1927, N3).
+    #[test]
+    fn a_secret_on_the_command_line_is_recognised() {
+        static VAULT: Registry = Registry::new(&[&Vault::SCHEMA]);
+        assert!(holds_secret(&VAULT, "vault.headers"));
+        assert!(holds_secret(&VAULT, "vault.headers.authorization"));
+        assert!(!holds_secret(&VAULT, "vault.headersx"));
+        assert!(!holds_secret(&VAULT, "vault.retries"));
+        assert!(names_a_source(r#"{ file = "/run/secrets/x" }"#));
+        assert!(names_a_source(r#"{ env = "X" }"#));
+        assert!(!names_a_source("Bearer x"));
+        assert!(!names_a_source(r#"{ file = "/x", env = "Y" }"#));
+    }
 
     #[test]
     fn the_registry_holds_every_section_and_every_default_fits() {
