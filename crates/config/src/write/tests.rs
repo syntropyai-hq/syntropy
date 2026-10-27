@@ -225,10 +225,62 @@ fn quoted_segments_address_selector_tables() {
 
 #[test]
 fn an_empty_file_gets_its_first_key() {
-    assert_eq!(set("", "api.tls", "off").unwrap(), "[api]\ntls = \"off\"\n");
+    assert_eq!(
+        set("", "api.tls", "off").unwrap(),
+        native("[api]\ntls = \"off\"\n")
+    );
     assert_eq!(
         set("", "fidelity", "exact").unwrap(),
-        "fidelity = \"exact\"\n"
+        native("fidelity = \"exact\"\n")
+    );
+}
+
+/// This platform's line break, as a file with none gets.
+fn native(text: &str) -> String {
+    if cfg!(windows) {
+        text.replace('\n', "\r\n")
+    } else {
+        text.to_owned()
+    }
+}
+
+/// A file whose last line has no line break, as some editors save it, gains one in its own
+/// ending; the edit changes only that end and the key's lines (review of #1927, N2).
+#[test]
+fn a_file_without_a_final_line_break_gains_one_in_its_own_ending() {
+    for (file, end) in [
+        ("# mine\n[api]\ntls = \"auto\"", "\n"),
+        ("# mine\r\n[api]\r\ntls = \"auto\"", "\r\n"),
+    ] {
+        // A new key after the last line.
+        let edited = set(file, "api.local_socket", "false").unwrap();
+        assert_eq!(
+            edited,
+            format!("{file}{end}local_socket = false{end}"),
+            "{file:?}"
+        );
+        // The last line's own value.
+        let edited = set(file, "api.tls", "none").unwrap();
+        assert_eq!(
+            edited,
+            format!("{}{end}", file.replace("\"auto\"", "\"none\"")),
+            "{file:?}"
+        );
+        // A new table at the end.
+        let edited = set(file, "link.failover_timeout", "10s").unwrap();
+        assert_eq!(
+            edited,
+            format!("{file}{end}{end}[link]{end}failover_timeout = \"10s\"{end}"),
+            "{file:?}"
+        );
+        // Removing the last line leaves the rest as it was.
+        let edited = unset(file, "api.tls").unwrap().unwrap();
+        assert_eq!(edited, file.replace("tls = \"auto\"", ""), "{file:?}");
+    }
+    // One line, no break at all: this platform's.
+    assert_eq!(
+        set("fidelity = \"exact\"", "config_version", "1").unwrap(),
+        native("fidelity = \"exact\"\nconfig_version = 1\n")
     );
 }
 

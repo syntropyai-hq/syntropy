@@ -53,6 +53,13 @@ pub fn temp(tag: &str) -> PathBuf {
 /// `VISUAL`, so no command reads or writes this machine's own files or starts its editor.
 pub fn isolated(args: &[&str], home: &Path) -> Command {
     let mut command = syntropy(args);
+    isolate(&mut command, home);
+    command
+}
+
+/// [`isolated`]'s environment, for any command that runs the binary, such as `script` running it
+/// on a pseudo-terminal.
+pub fn isolate(command: &mut Command, home: &Path) {
     for (name, _) in std::env::vars_os() {
         if name.to_string_lossy().starts_with("SYNTROPY_") {
             command.env_remove(name);
@@ -76,7 +83,6 @@ pub fn isolated(args: &[&str], home: &Path) -> Command {
     ] {
         command.env_remove(var);
     }
-    command
 }
 
 /// Runs `command` to completion, failing the test if it runs past [`HANG`].

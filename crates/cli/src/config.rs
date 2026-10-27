@@ -222,10 +222,11 @@ pub fn unset(args: &ConfigUnsetArgs, output: Output) -> Result<Exit, CliError> {
     Ok(Exit::Success)
 }
 
-/// `config set <key> -`: the value from stdin, without one trailing line break. On a terminal it
-/// asks for it first, on stderr; the value is then echoed as it is typed.
+/// `config set <key> -`: the value from stdin, without one trailing line break. Piped in, it is
+/// read whole. On a terminal it is read as one line with echo off, after a prompt on stderr
+/// ([`read_hidden_line`]), so a secret never shows on the screen.
 fn value_from_stdin(key: &str) -> Result<String, CliError> {
-    use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
+    use std::io::{IsTerminal as _, Read as _};
     let failed = |e: std::io::Error| {
         CliError::cli(
             Exit::Failure,
@@ -236,9 +237,14 @@ fn value_from_stdin(key: &str) -> Result<String, CliError> {
     let stdin = std::io::stdin();
     let mut value = String::new();
     if stdin.is_terminal() {
-        eprint!("value for `{}`: ", printable(key));
-        std::io::stderr().flush().map_err(failed)?;
-        stdin.lock().read_line(&mut value).map_err(failed)?;
+        value = read_hidden_line(&format!("value for `{}`: ", printable(key))).map_err(|e| {
+            CliError::cli(
+                Exit::Failure,
+                "read_failed",
+                format!("cannot read the value from the terminal with echo off: {e}"),
+            )
+            .hint("pipe the value in instead, as `printf '%s' … | syntropy config set <key> -`")
+        })?;
     } else {
         stdin.lock().read_to_string(&mut value).map_err(failed)?;
     }
@@ -253,6 +259,101 @@ fn value_from_stdin(key: &str) -> Result<String, CliError> {
         ));
     }
     Ok(value)
+}
+
+/// The Unix half of [`read_hidden_line`]: `sh` saves the terminal's state, turns echo off, prints
+/// the prompt (`$1`), reads one line and writes it to its stdout, a pipe to this process.
+/// - `stty` is `/bin/stty`, or `/usr/bin/stty`, never one found on `PATH`.
+/// - Traps put the terminal back on exit, and on `INT`, `TERM`, `HUP` and `PIPE`, so a Ctrl-C or
+///   a closed pipe never leaves it without echo.
+/// - A watchdog checks once a second that this process is alive. If it is killed outright, which
+///   no trap of its own can handle, the watchdog sends the reader `TERM` within a second, so the
+///   reader puts the terminal back and exits, instead of holding it and taking the next line
+///   typed. The watchdog's output goes to `/dev/null`, so it never holds the pipe open, and the
+///   reader ends it on its own exit.
+#[cfg(unix)]
+const HIDDEN_READ: &str = r#"t=/bin/stty
+[ -x "$t" ] || t=/usr/bin/stty
+[ -x "$t" ] || exit 3
+s=$("$t" -g) || exit 3
+w=
+put_back() { "$t" "$s"; [ -n "$w" ] && kill "$w" 2>/dev/null; }
+trap 'put_back' EXIT
+trap 'put_back; trap - EXIT; exit 130' INT TERM HUP PIPE
+(while kill -0 "$PPID" 2>/dev/null; do sleep 1; done; kill -TERM $$ 2>/dev/null) >/dev/null 2>&1 &
+w=$!
+"$t" -echo || exit 3
+printf '%s' "$1" >&2
+IFS= read -r v || [ -n "$v" ] || exit 4
+printf '%s' "$v"
+"#;
+
+/// The Windows half of [`read_hidden_line`]: PowerShell's `Read-Host -AsSecureString`, which shows
+/// `*` for each character typed, written to its stdout, a pipe to this process, as UTF-8. The
+/// prompt comes in `HIDDEN_READ_PROMPT`: `-Command` would join an argument into the script.
+/// - PowerShell is `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`, never one found
+///   beside this binary or on `PATH`.
+/// - Under PowerShell's Constrained Language Mode (AppLocker or WDAC), the `Marshal` and
+///   `UTF8Encoding` calls are blocked, so the read fails, closed: nothing is read with echo on, and
+///   the error says to pipe the value in instead.
+/// - If this process is terminated while PowerShell reads, PowerShell keeps reading the console:
+///   the next line typed goes to it, masked, and it exits when its write to the closed pipe fails.
+///   `Read-Host` restores the console's mode itself, so echo is not left off. A watchdog as on Unix
+///   needs a key-by-key read loop, which no CI runner can drive without a console.
+#[cfg(windows)]
+const HIDDEN_READ: &str = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; \
+    [Console]::Error.Write($env:HIDDEN_READ_PROMPT); $s = Read-Host -AsSecureString; \
+    $p = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); \
+    try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($p)) } \
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p) }";
+
+/// One line from the terminal on stdin, typed with echo off, after `prompt` on stderr.
+///
+/// This crate has no `unsafe` (RFC-0001 §4.2), and turning echo off is a terminal-mode call, so
+/// the read runs in a short child: `sh` with `stty` on Unix, PowerShell on Windows. The child
+/// shares this process's terminal, and hands the line back through a pipe.
+fn read_hidden_line(prompt: &str) -> std::io::Result<String> {
+    use std::process::{Command, Stdio};
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", HIDDEN_READ, "sh", prompt]);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let mut command = Command::new(
+            std::path::Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
+        );
+        command
+            .args(["-NoProfile", "-Command", HIDDEN_READ])
+            .env("HIDDEN_READ_PROMPT", prompt);
+        command
+    };
+    #[cfg(not(any(unix, windows)))]
+    return Err(std::io::Error::other(
+        "no way to turn the terminal's echo off here",
+    ));
+    let output = command
+        .stdin(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .output()?;
+    // Enter was not echoed either.
+    eprintln!();
+    match output.status.code() {
+        Some(0) => String::from_utf8(output.stdout)
+            .map_err(|_| std::io::Error::other("the value is not UTF-8")),
+        Some(3) => Err(std::io::Error::other(
+            "the terminal's echo could not be turned off",
+        )),
+        Some(4) => Ok(String::new()),
+        _ => Err(std::io::Error::other(format!(
+            "the read was interrupted ({})",
+            output.status
+        ))),
+    }
 }
 
 /// Whether `path` is a secret-typed key of `registry`, or a key under one, such as an entry of
