@@ -295,6 +295,7 @@ mod tests {
                 "clippy",
                 "rustdoc",
                 "determinism",
+                "hot-threads",
                 "check-deps",
                 "properties",
                 "codeowners",

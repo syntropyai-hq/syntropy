@@ -20,6 +20,8 @@ syntropy-spsc = { path = "../spsc" }
 [dev-dependencies]
 proptest = { workspace = true }
 serde_json = { workspace = true }
+# `obs`'s ring writers and drain on a region's rings, as the runner joins them (PROD-E8-T01).
+syntropy-obs = { path = "../obs" }
 
 # `AsyncListener`, the owner-only endpoint for servers on tokio: the API's local socket on the
 # daemon's `ctl` runtime (RFC-0050 §1.1, PROD-E2-T01). `net` gives its Unix socket and named

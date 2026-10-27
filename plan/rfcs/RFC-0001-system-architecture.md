@@ -1979,6 +1979,8 @@ All rings are lock-free SPSC with power-of-two capacity, cache-line padded, and 
 7. **Expert-cache changes never block a step.** Victims are dropped at once; newcomers become visible when their copy lands.
 8. **Telemetry is lossy.** A full `telemetry` ring drops the oldest samples and counts the drops.
 
+*Note 2026-10-27 (PROD-E8-T01, §18.43):* a full lossy ring, `telemetry` or a dispatcher's step ring, drops the **new** record, not the oldest. An SPSC producer cannot take back a record its consumer has not read. The writer counts the drop (`syntropy_obs_ring_dropped_records_total{ring}`), and the write never waits. The telemetry drain keeps its last read for the series a dropped record carried, and sends those deltas again with its next records, so the record is lost but the counts it carried are not.
+
 ## 9. Memory model
 
 ### 9.1 Who allocates what
@@ -2997,3 +2999,12 @@ PROD-E6-T23 builds `config show --resolved`, `config check` and `config path` in
 | Change | Sections touched | Reason |
 |---|---|---|
 | `cli` depends on `cluster`, `net` and `sched` | §4.1 (row and dated note) | the configuration commands resolve over the binary's section registry, which needs every crate that declares a section; `cli` is the one crate above them all. For the maintainers to confirm |
+
+### 18.43 Lossy rings drop the new record, and telemetry records name series (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A full `telemetry` or step ring drops the new record, not the oldest, and counts it; the telemetry drain sends the dropped deltas again with its next records | §8.4 rule 8 (dated note); RFC-0053 §1 (dated revision); PLC-E7-T10's criterion | an SPSC producer cannot take back a record its consumer has not read, so "drops the oldest" cannot be built on the rings of §3.5. Re-sending the deltas keeps the counts a dropped record carried. Found by PROD-E8-T01 and the review of #1922 |
+| `TelemetryRecord`'s deltas name a `SeriesId`, one metric with its label values bound at registration, not a `MetricId`; a new last variant, `Series`, tells the daemon each ID's metric and label values before any record uses it | RFC-0053 §1 (dated revision), §2.1 (note) | a `MetricId` cannot tell two label sets of one metric apart, and labels are bound at registration (RFC-0053 §2.1), so the record needs the bound series' ID. Each change to the record's variants changes the ring's record schema, which `ipc_protocol` covers |
+
+Taken under the maintainers' standing instruction, for the maintainers to confirm.

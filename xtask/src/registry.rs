@@ -24,8 +24,8 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom,
-    plan_tools, properties, repo_settings, sim_presets, toolchain,
+    changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, hot_threads,
+    instructions, loom, plan_tools, properties, repo_settings, sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -257,6 +257,14 @@ pub const JOBS: &[Entry] = &[
                     shown: "the covered crates keep ci/clippy-determinism.toml and lift it only \
                             where listed",
                     run: determinism::step,
+                },
+            },
+            // No `tracing` in hot-thread modules (RFC-0053 Testing; PROD-E8-T01).
+            Step {
+                name: "hot-threads",
+                action: Action::Builtin {
+                    shown: "the hot-thread modules hot_threads::MODULES lists use no tracing",
+                    run: hot_threads::step,
                 },
             },
             Step {
@@ -947,6 +955,7 @@ mod tests {
                 "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked",
                 "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
                  listed",
+                "xtask: the hot-thread modules hot_threads::MODULES lists use no tracing",
                 "cargo xtask check-deps",
                 "xtask: ci/properties.toml matches the property tests, RFC-0060 and the epics",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
