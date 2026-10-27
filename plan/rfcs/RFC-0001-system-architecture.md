@@ -315,9 +315,9 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 
 *Note 2026-10-21 (amendment, §18.8):* `config-derive` joins layer 0. RFC-0054 §10.3 puts the schema derive in `config`, but Rust requires a proc-macro to be its own crate, and a proc-macro crate can export nothing but macros. `config-derive` therefore holds the derive, with no runtime code and no workspace dependencies, and `config` re-exports it, so other crates name only `config`.
 
-*Note 2026-10-27 (amendment, §18.38):* `api` depends on `ipc`. The API's local socket (RFC-0050 §1.1) uses the endpoint and peer check of the daemon-runner channel, in its tokio form (`ipc::cmd::AsyncListener`), and `/v1/syntropy/version` reports `ipc`'s protocol major. The `unsafe` these need stays in `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and neither crate is a compute crate (rule 3).
-
 *Note 2026-10-22 (amendment, §18.9):* `spsc` joins layer 1. `io` (its submission rings and RFC-0021 §3.1's rings to the I/O thread), `net` (its rings to the network task, §5.8) and `ipc` all need §8.3's ring, and all three are in layer 1, where rule 2 forbids edges between crates (OQ-IO-29). `spsc` holds the one implementation, with no workspace dependencies, so one set of loom models covers every ring.
+
+*Note 2026-10-27 (amendment, §18.38):* `api` depends on `ipc`. The API's local socket (RFC-0050 §1.1) uses the endpoint and peer check of the daemon-runner channel, in its tokio form (`ipc::cmd::AsyncListener`), and `/v1/syntropy/version` reports `ipc`'s protocol major. The `unsafe` these need stays in `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and neither crate is a compute crate (rule 3).
 
 Packaging, installers, backend modules and update channels (RFC-0052) and CI (RFC-0062) live outside the crate graph, in `packaging/` and `.github/`. A backend module is a directory beside the core binary of the same version holding one provider library and its vendor redistributables (ADR-0507, RFC-0052 §4.3).
 
