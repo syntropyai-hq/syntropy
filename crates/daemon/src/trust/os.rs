@@ -160,6 +160,22 @@ fn read_anchor_file(path: &Path) -> io::Result<Option<Observed>> {
     }
 }
 
+/// Refuses a system-store anchor outside its store's directory: those commands run as root.
+fn outside_store(anchor: &Anchor) -> io::Result<()> {
+    if anchor.store.holds_anchor(&anchor.location) {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{} is not a Syntropy anchor file in {}; not touched",
+            anchor.location.display(),
+            anchor
+                .store
+                .anchor_dir()
+                .map_or_else(String::new, |d| d.display().to_string())
+        )))
+    }
+}
+
 fn is_base64(text: &str) -> bool {
     !text.is_empty()
         && text
@@ -248,6 +264,7 @@ impl StoreTool for OsStoreTool {
             )
             .map(drop),
             TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust => {
+                outside_store(anchor)?;
                 run_on_terminal(
                     "installing the anchor file",
                     privileged("install")
@@ -287,6 +304,7 @@ impl StoreTool for OsStoreTool {
             )
             .map(drop),
             TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust => {
+                outside_store(anchor)?;
                 run_on_terminal(
                     "removing the anchor file",
                     privileged("rm").args(["-f", "--"]).arg(&anchor.location),

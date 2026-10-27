@@ -482,6 +482,15 @@ fi
 ",
             absent = sh_absent(change, "the CA in the keychain $k"),
         ),
+        TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust
+            if !store.holds_anchor(location) =>
+        {
+            // The revert runs as root here: nothing outside the store's anchor directory.
+            format!(
+                "p={loc}\nnote \"left in place: $p is not a Syntropy anchor file in {dir}\"; left=$((left + 1))\n",
+                dir = store.anchor_dir().map_or_else(String::new, path_str),
+            )
+        }
         TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust => {
             let tool = if store == TrustStore::LinuxSystemCaCertificates {
                 "update-ca-certificates"
@@ -1353,6 +1362,38 @@ mod tests {
             node: "box'$(touch PWN-O)\u{2018}; touch PWN-O".into(),
             certificate: "QUJD".into(),
         }
+    }
+
+    /// A system-store entry whose location is not an anchor file in that store's directory, as
+    /// a tampered ledger could hold, is reported, never removed: the removal would run as root.
+    #[test]
+    fn a_system_anchor_outside_its_directory_is_left() {
+        for location in [
+            "/etc/passwd",
+            "/usr/local/share/ca-certificates/../../../etc/shadow",
+            "/usr/local/share/ca-certificates/other.crt",
+            "/usr/local/share/ca-certificates/sub/syntropy-a.crt",
+        ] {
+            let ledger = ledger_with(vec![(
+                trust_anchor(TrustStore::LinuxSystemCaCertificates, location),
+                None,
+            )]);
+            let sh = render_sh(&ledger, "v");
+            assert!(!sh.contains("rm -f -- \"$p\""), "{location}\n{sh}");
+            assert!(
+                sh.contains("is not a Syntropy anchor file in"),
+                "{location}"
+            );
+        }
+        assert!(
+            TrustStore::LinuxSystemCaCertificates.holds_anchor(Path::new(
+                "/usr/local/share/ca-certificates/syntropy-box.local-0123456789abcdef.crt"
+            ))
+        );
+        assert!(!TrustStore::LinuxSystemCaTrust.holds_anchor(Path::new(
+            "/usr/local/share/ca-certificates/syntropy-box.local-0123456789abcdef.crt"
+        )));
+        assert!(!TrustStore::LinuxUserNss.holds_anchor(Path::new("/u/.pki/nssdb")));
     }
 
     #[test]

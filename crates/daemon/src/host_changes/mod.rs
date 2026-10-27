@@ -262,6 +262,31 @@ pub enum TrustStore {
 }
 
 impl TrustStore {
+    /// The directory a system store's anchor files go in; `None` for a user store.
+    #[must_use]
+    pub fn anchor_dir(self) -> Option<&'static Path> {
+        match self {
+            TrustStore::LinuxSystemCaCertificates => {
+                Some(Path::new("/usr/local/share/ca-certificates"))
+            }
+            TrustStore::LinuxSystemCaTrust => Some(Path::new("/etc/pki/ca-trust/source/anchors")),
+            _ => None,
+        }
+    }
+
+    /// Whether `location` is an anchor file Syntropy may write or remove in this system store:
+    /// directly in [`TrustStore::anchor_dir`], named `syntropy-…`. A system-store change runs as
+    /// root, so the binary and the revert scripts touch no other path, whatever the ledger says.
+    #[must_use]
+    pub fn holds_anchor(self, location: &Path) -> bool {
+        let named = location
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("syntropy-") && !n.contains(['/', '\\']));
+        self.anchor_dir()
+            .is_some_and(|dir| location.parent() == Some(dir) && named)
+    }
+
     /// Whether this is a system store, which every user of the machine trusts and which only
     /// `--system` changes.
     #[must_use]

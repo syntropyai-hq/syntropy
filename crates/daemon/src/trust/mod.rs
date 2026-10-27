@@ -171,8 +171,12 @@ impl Plan {
                     location: nss,
                 });
             }
-            let debian = Path::new("/usr/local/share/ca-certificates");
-            let fedora = Path::new("/etc/pki/ca-trust/source/anchors");
+            let debian = TrustStore::LinuxSystemCaCertificates
+                .anchor_dir()
+                .expect("a system store");
+            let fedora = TrustStore::LinuxSystemCaTrust
+                .anchor_dir()
+                .expect("a system store");
             if os::find_program("update-ca-certificates").is_some() && debian.is_dir() {
                 plan.system_store = Some(Target {
                     store: TrustStore::LinuxSystemCaCertificates,
@@ -223,11 +227,11 @@ pub fn node_slug(node: &str) -> String {
             slug.push_str(&format!("_{byte:02x}"));
         }
     }
+    slug
 }
 
 /// The shell [`env_lines`] writes for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    slug
 pub enum Shell {
     /// `sh`, `bash`, `zsh`: `export NAME='value'`.
     Posix,
