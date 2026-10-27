@@ -358,8 +358,22 @@ fn holds_inline_secret(value: &toml::Value) -> bool {
     }
 }
 
-/// Phase 5: a config file that holds a secret inline is not readable by its group or others
-/// (a warning on Unix; RFC-0054 §8, §10.1). The file and variable forms are not flagged.
+/// The files a value's `{ file = … }` secrets name, at any depth.
+fn secret_files(value: &toml::Value) -> Vec<&str> {
+    match value {
+        toml::Value::Table(table) if table.len() == 1 => match table.get("file") {
+            Some(toml::Value::String(path)) => vec![path.as_str()],
+            _ => table.values().flat_map(secret_files).collect(),
+        },
+        toml::Value::Table(table) => table.values().flat_map(secret_files).collect(),
+        toml::Value::Array(items) => items.iter().flat_map(secret_files).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Phase 5: a secret is not readable by others where it sits (a warning on Unix; RFC-0054 §8,
+/// §10.1). That is the config file, for a secret written inline, and the named file, for the
+/// `{ file = … }` form (PROD-E1-T12). The variable form is not flagged.
 fn secret_file_private(input: &RuleInput<'_>, findings: &mut Findings) {
     let mut flagged: Vec<&Path> = Vec::new();
     let sources = input
@@ -376,6 +390,27 @@ fn secret_file_private(input: &RuleInput<'_>, findings: &mut Findings) {
                 .map(|p| (p.path.as_str(), p.raw_value(), &p.origin)),
         );
     for (key, value, origin) in sources {
+        for named in secret_files(value) {
+            let named = Path::new(named);
+            if flagged.contains(&named) {
+                continue;
+            }
+            if input.environment.readable_by_others(named) == Some(true) {
+                flagged.push(named);
+                findings.warnings.push(
+                    Problem::uncoded(
+                        Some(origin.clone()),
+                        format!(
+                            "`{key}` reads its secret from `{}`, and its group or others can \
+                             read it",
+                            named.display()
+                        ),
+                    )
+                    .about(key)
+                    .hint(Some(String::from("restrict the file (`chmod 600`)"))),
+                );
+            }
+        }
         let Origin::File { path, .. } = origin else {
             continue;
         };

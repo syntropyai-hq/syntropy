@@ -565,9 +565,66 @@ fn a_secret_in_a_file_others_can_read_warns() {
             .message
             .contains("its group or others can read it")
     );
-    // The file form keeps the secret out of the file, so nothing is flagged.
+    // The file form keeps the secret out of the config file, so that file is not flagged.
     let c = checked(
         &[(FILE, "api_key = { file = \"/run/secrets/k\" }\n")],
+        &[],
+        &[],
+        &host,
+        &[],
+    );
+    assert!(c.outcome.unwrap().warnings().is_empty());
+}
+
+/// The file a `{ file = … }` secret names warns when others can read it, at any depth and from
+/// any layer, once per file; the variable form is not flagged (PROD-E1-T12).
+#[test]
+fn a_secret_file_others_can_read_warns() {
+    let host = FakeHost {
+        open_to_others: vec![PathBuf::from("/run/secrets/open")],
+        ..FakeHost::default()
+    };
+    let c = checked(
+        &[(
+            FILE,
+            "api_key = { file = \"/run/secrets/open\" }\n\
+             [obs.otlp.headers]\n\
+             authorization = { file = \"/run/secrets/open\" }\n\
+             x-tenant = { file = \"/run/secrets/closed\" }\n\
+             x-other = { env = \"OTHER\" }\n",
+        )],
+        &[],
+        &[],
+        &host,
+        &[],
+    );
+    let config = c.outcome.as_ref().unwrap();
+    assert_eq!(config.warnings().len(), 1, "{:?}", config.warnings());
+    let warning = &config.warnings()[0];
+    assert!(
+        warning.message.contains(
+            "`api_key` reads its secret from `/run/secrets/open`, and its group or others can read it"
+        ),
+        "{warning}"
+    );
+    assert_eq!(
+        warning.help.as_deref(),
+        Some("restrict the file (`chmod 600`)")
+    );
+    // From a flag, nested in a table.
+    let c = checked(
+        &[],
+        &[],
+        &["obs.otlp.headers={ authorization = { file = \"/run/secrets/open\" } }"],
+        &host,
+        &[],
+    );
+    let config = c.outcome.as_ref().unwrap();
+    assert_eq!(config.warnings().len(), 1, "{:?}", config.warnings());
+    assert!(config.warnings()[0].message.contains("`obs.otlp.headers`"));
+    // A private file: nothing.
+    let c = checked(
+        &[(FILE, "api_key = { file = \"/run/secrets/closed\" }\n")],
         &[],
         &[],
         &host,
