@@ -54,6 +54,8 @@ const OUT: &str = "SYNTROPY_IPC_PEER_OUT";
 const TEST: &str = "cmd::tests::other_user::a_connection_from_another_user_is_refused";
 /// How long the copy may take, in milliseconds. A first logon creates the account's profile.
 const PEER_TIMEOUT_MS: u32 = 180_000;
+/// How long the copy waits for the daemon's answer once connected, in seconds.
+const PEER_READ_TIMEOUT_S: u64 = 60;
 
 #[test]
 fn a_connection_from_another_user_is_refused() {
@@ -183,21 +185,33 @@ fn an_async_connection_from_another_user_is_refused() {
     let exposed = format!("syntropy-ipc-async-peer-{}-exposed", std::process::id());
     let mut listener =
         AsyncListener::open_to_authenticated_users(&Endpoint::Pipe(exposed.clone())).unwrap();
-    let (accepted, result) = thread::scope(|scope| {
+    let (refused, result) = thread::scope(|scope| {
         let peer = scope.spawn(|| account.run(&exposed, "exposed"));
-        let accepted = rt.block_on(async {
+        let refused = rt.block_on(async {
             let accepted = tokio::time::timeout(Duration::from_secs(180), listener.accept()).await;
+            // Name the arm at once, and drop an accepted stream at once, so a failure says what
+            // happened and never holds the peer open.
+            let refused = match accepted {
+                Ok(Err(AcceptError::Refused(peer))) => Ok(peer),
+                Ok(Err(AcceptError::Io(error))) => Err(format!("the accept failed: {error}")),
+                Ok(Ok((stream, peer))) => {
+                    drop(stream);
+                    Err(format!("the peer check ACCEPTED {peer}"))
+                }
+                Err(_) => Err("no connection completed the accept within 180 s".to_owned()),
+            };
+            eprintln!("2. the async accept returned: {refused:?}");
             // Keep the runtime polling until the peer is done, so nothing the listener does
             // on it waits for a runtime that has stopped.
             while !peer.is_finished() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            accepted
+            refused
         });
-        (accepted, peer.join().unwrap())
+        (refused, peer.join().unwrap())
     });
-    match accepted {
-        Ok(Err(AcceptError::Refused(Peer::Windows { pid, sid }))) => {
+    match refused {
+        Ok(Peer::Windows { pid, sid }) => {
             assert_eq!(pid, result.pid, "the refusal names another process");
             if let Some(sid) = &sid {
                 assert_eq!(*sid, result.sid, "the refusal names another user");
@@ -205,12 +219,8 @@ fn an_async_connection_from_another_user_is_refused() {
             let refusal = AcceptError::Refused(Peer::Windows { pid, sid });
             eprintln!("2. the async peer check: {refusal}");
         }
-        Ok(Err(error)) => panic!("the connection failed in another way: {error}"),
-        Ok(Ok(_)) => panic!("the peer check accepted user {}", result.sid),
-        Err(_) => panic!(
-            "the other user never reached the peer check: {}",
-            result.outcome
-        ),
+        Ok(peer) => panic!("a Unix peer on a named pipe: {peer}"),
+        Err(why) => panic!("{why}; the peer saw: {}", result.outcome),
     }
     assert!(
         matches!(result.outcome.as_str(), "closed" | "read-error BrokenPipe"),
@@ -406,14 +416,21 @@ fn connect_as_peer(pipe: &str, out: &Path) {
     let outcome = match connect(&Endpoint::Pipe(pipe.to_owned())) {
         Err(error) => format!("connect-error {:?}", error.kind()),
         Ok(mut stream) => {
-            let mut buf = [0u8; 16];
-            match stream.read(&mut buf) {
-                Ok(0) => "closed".to_owned(),
-                Ok(n) => format!("read {n} bytes"),
+            // A pipe has no read timeout, so the read runs on a thread and the wait is bounded:
+            // a server that never closes shows as `read-timeout`, and this copy still reports.
+            let (sent, read) = mpsc::channel();
+            thread::spawn(move || {
+                let mut buf = [0u8; 16];
+                let _ = sent.send(stream.read(&mut buf));
+            });
+            match read.recv_timeout(Duration::from_secs(PEER_READ_TIMEOUT_S)) {
+                Ok(Ok(0)) => "closed".to_owned(),
+                Ok(Ok(n)) => format!("read {n} bytes"),
                 // `ERROR_PIPE_NOT_CONNECTED`: the server disconnected the pipe, as the async
                 // listener does to a refused peer.
-                Err(error) if error.raw_os_error() == Some(233) => "closed".to_owned(),
-                Err(error) => format!("read-error {:?}", error.kind()),
+                Ok(Err(error)) if error.raw_os_error() == Some(233) => "closed".to_owned(),
+                Ok(Err(error)) => format!("read-error {:?}", error.kind()),
+                Err(_) => "read-timeout".to_owned(),
             }
         }
     };

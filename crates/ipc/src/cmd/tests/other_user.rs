@@ -146,18 +146,30 @@ fn an_async_connection_from_another_user_is_refused() {
     let socket = UnixListener::bind(&path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
     let mut listener = AsyncListener::from_std(socket, path.clone()).unwrap();
-    let (accepted, result) = thread::scope(|scope| {
+    let (refused, result) = thread::scope(|scope| {
         let peer = scope.spawn(|| run_as(&user, &exe, &path));
-        let accepted = rt.block_on(async {
-            tokio::time::timeout(Duration::from_secs(60), listener.accept()).await
+        let refused = rt.block_on(async {
+            let accepted = tokio::time::timeout(Duration::from_secs(60), listener.accept()).await;
+            // Name the arm at once, and drop an accepted stream at once, so a failure says what
+            // happened and never holds the peer open.
+            let refused = match accepted {
+                Ok(Err(AcceptError::Refused(peer))) => Ok(peer),
+                Ok(Err(AcceptError::Io(error))) => Err(format!("the accept failed: {error}")),
+                Ok(Ok((stream, peer))) => {
+                    drop(stream);
+                    Err(format!("the peer check ACCEPTED {peer}"))
+                }
+                Err(_) => Err("no connection completed the accept within 60 s".to_owned()),
+            };
+            eprintln!("2. the async accept returned: {refused:?}");
+            refused
         });
-        (accepted, peer.join().unwrap())
+        (refused, peer.join().unwrap())
     });
-    match accepted {
-        Ok(Err(AcceptError::Refused(Peer::Unix { uid, .. }))) => assert_eq!(uid, result.uid),
-        Ok(Err(error)) => panic!("the connection failed in another way: {error}"),
-        Ok(Ok(_)) => panic!("the peer check accepted user {}", result.uid),
-        Err(_) => panic!("the other user never connected: {}", result.outcome),
+    match refused {
+        Ok(Peer::Unix { uid, .. }) => assert_eq!(uid, result.uid),
+        Ok(peer) => panic!("a Windows peer on a Unix socket: {peer}"),
+        Err(why) => panic!("{why}; the peer saw: {}", result.outcome),
     }
     assert!(
         matches!(
