@@ -274,6 +274,39 @@ fn a_stall_is_killed_after_the_stall_bound() {
     }
 }
 
+/// The stall clock starts at the first sample that shows stepping is needed. The interval before
+/// it, when no sequence was live, never counts: with frozen steps throughout, the kill comes 20
+/// samples (10 s) after the first sample that counts live sequences, not 19.
+#[test]
+fn the_stall_clock_starts_when_stepping_is_first_needed() {
+    let mut r = Run::new(0);
+    r.reach_ready(0);
+    r.input(Input::PredictedStep {
+        p99: Nanos(100 * MS),
+    });
+    r.sample_after(0);
+    for _ in 0..10 {
+        r.heartbeat += 1;
+        assert!(r.sample_after(500 * MS).is_empty());
+    }
+    // The runner admits a sequence; its steps stay frozen from here on, as before.
+    r.live = 1;
+    let mut samples = 0;
+    loop {
+        r.heartbeat += 1;
+        let out = r.sample_after(500 * MS);
+        samples += 1;
+        if out.is_empty() {
+            assert!(samples < 21, "no stall kill after {samples} samples");
+            continue;
+        }
+        assert_eq!(out, [Output::Kill(KillReason::Stalled)]);
+        break;
+    }
+    // The first live sample starts the clock at zero, and 20 more reach 10 s.
+    assert_eq!(samples, 21);
+}
+
 /// A crash after a sticky device report is `Device`: re-probe, then restart if the device is
 /// there, or stop with `Fatal(Device)` if it is gone. A crash without one is `Internal`.
 #[test]
