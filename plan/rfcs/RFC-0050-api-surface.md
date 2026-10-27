@@ -215,6 +215,8 @@ Token IDs reach unsafe device code: the sampler indexes per-sequence count table
 - prompt `tokens` on the native API, teacher tokens on the parity endpoint (§13.6), `logit_bias` keys, stop token IDs, and the token set of a compiled grammar;
 - each ID must be below `vocab_limit = min(embedding rows, LM-head rows, sampler table size)`, which the model's manifest carries (RFC-0043 §5.2 checks at census that the tokenizer's largest ID and every special-token ID are below the vocabulary).
 
+*Note (2026-10-27):* the list also covers a token-array `prompt` on legacy `/v1/completions` (§3.5) and token-array `input` on embeddings (§14), which take token IDs from the client the same way. The validator is one function; PROD-E2-T20 builds it, and each endpoint task tests it through its own route.
+
 A request with an ID outside the range fails with 400 `token_id_out_of_range`, naming the field, the first offending position and `vocab_limit`. Nothing is clamped or dropped silently. The check costs one pass over the IDs and sits inside the pre-`SequenceOpen` budget (Performance). Debug kernels keep bounds assertions as a second line (RFC-0040); they are not the defence.
 
 ### 3. API shapes
