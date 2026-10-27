@@ -10,8 +10,6 @@ serde.workspace = true
 # `ErrorClass`, which the native error body carries (RFC-0001 §5.12).
 syntropy-core = { path = "../core" }
 syntropy-config = { path = "../config" }
-# The pipeline's sequence and token types (RFC-0001 §5.8), `Clock` and `Entropy`.
-syntropy-core = { path = "../core" }
 syntropy-net = { path = "../net" }
 # The local socket's listener and peer check (RFC-0050 §1.1), and the IPC protocol major that
 # `/v1/syntropy/version` reports.
