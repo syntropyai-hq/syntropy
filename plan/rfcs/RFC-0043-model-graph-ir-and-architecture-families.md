@@ -594,7 +594,7 @@ pub struct FamilyCert { pub family: ArchFamily, pub code: Blake3, pub quants: Sm
 | `models.<name>.chat_template` | unset | template override (RFC-0054 §5.3) |
 | `models.<name>.kv_dtype` | family default | force BF16 KV where F16 overflows (RFC-0042 §4.2); changes `KvFormula::dtype` and therefore prefix and session keys |
 
-*Note 2026-10-28 (COMP-E13-T06):* RFC-0054 §5.1 keeps per-model settings out of `models.*`, so `models.<name>.kv_dtype` is the instance key `kv_dtype` of a `[policy."<selector>"]` table (RFC-0054 §5.4), as `models.<name>.chat_template` is `chat_template` there. It takes `f16`, `bf16` or `f32`; unset, the family's reference dtype stands. It replaces the default dtype of `KvFormula::dtype` and keeps the layers a family requires (`KvDTypeSpec::with_override`). The row above keeps its old name for the record.
+*Note 2026-10-28 (COMP-E13-T06):* RFC-0054 §5.1 keeps per-model settings out of `models.*`, so `models.<name>.kv_dtype` is the instance key `kv_dtype` of a `[policy."<selector>"]` table (RFC-0054 §5.4), as `models.<name>.chat_template` is `chat_template` there. It takes `f16`, `bf16` or `f32`; unset, the family's reference dtype stands. It replaces only the source's default dtype in `KvFormula::dtype` (`KvDTypeRule::resolve`). It never replaces a family's requirement, for every layer or per layer, or a declared FP8 cache. It never narrows the default, where F16 over a BF16 default counts as narrowing; BF16 over F16, this key's sanctioned use, does not (RFC-0042 §4.2, note of 2026-10-28). Each of those is refused with an error that names `approximate.kv_lossy` where it applies. The row above keeps its old name for the record.
 
 Codes are `(Domain::Graph, n)`:
 

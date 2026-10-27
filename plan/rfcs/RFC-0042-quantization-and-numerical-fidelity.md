@@ -231,6 +231,14 @@ pub struct Numerics {
 - **Safetensors checkpoints that are not quantised and whose compute dtype is F16 or F32** take that dtype. One with no compute dtype takes BF16. Quantised weights below 16 bits take BF16, as the text says. This follows a reading, not yet checked against the publishers' code, that the reference stores KV in its compute dtype (`config.json`'s `torch_dtype`).
 - **Which configuration fields declare an FP8 cache** is left to the caller, the family module or the census. The rule takes the declared dtype and refuses one that is not FP8.
 
+An instance's `kv_dtype` override (RFC-0043 §10; RFC-0054 §5.4) is applied inside the rule, by `KvDTypeRule::resolve`, where the family's requirements are still known. It replaces only what the source gives. It never moves a family requirement: an override that differs from a family's requirement for every layer is refused, and per-layer requirements keep their dtype. It is refused where it would store KV below the source default. Below means:
+- **fewer bits per element**, such as F16 or BF16 over an F32 default;
+- **F16 over a BF16 default.** It is the same width but has less range. It is refused for now, and whether it should be allowed is **open for the maintainers**.
+- **Not below: BF16 over an F16 default.** It is the same width with more range, and it is RFC-0043 §10's sanctioned "force BF16 where F16 overflows". Allowed.
+- **Below 16 bits** is always the `kv_lossy` knob of §10, which needs `fidelity = "approximate"` (D3). No `kv_dtype` value is below 16 bits.
+
+The override also never changes a declared FP8 cache, even to a wider dtype. That cache's rounding is part of the reference, which ADR-0019 compares against, and no test bounds what removing it does to the output. Whether raising a declared cache should be allowed is likewise **open for the maintainers**.
+
 #### 4.3 Activation quantisation inside a matrix product
 
 A kernel that converts its activation input to a narrower type before multiplying changes the result. The rule (ADR-0421):
