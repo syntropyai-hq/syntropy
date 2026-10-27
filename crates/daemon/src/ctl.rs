@@ -74,6 +74,7 @@ impl std::error::Error for ApiStartError {
 #[derive(Debug)]
 pub struct Api {
     addrs: Vec<SocketAddr>,
+    skipped: Vec<String>,
     local: Option<Endpoint>,
     stop: oneshot::Sender<()>,
     task: JoinHandle<()>,
@@ -83,6 +84,12 @@ impl Api {
     /// The TCP addresses it listens on, in `api.bind`'s order.
     pub fn addrs(&self) -> &[SocketAddr] {
         &self.addrs
+    }
+
+    /// The warnings for loopback listeners left out because the host lacks their address
+    /// family, such as `[::1]` without IPv6. `start_api` has printed each to standard error.
+    pub fn skipped(&self) -> &[String] {
+        &self.skipped
     }
 
     /// The local socket's endpoint, when `api.local_socket` is on.
@@ -105,7 +112,8 @@ impl Api {
 ///
 /// [`ApiStartError`]: the server's refusal or bind failure, or a local socket that cannot be
 /// named. A local socket needs a runtime location; with none (`runtime_dir` is `None`) the API
-/// serves without it.
+/// serves without it. A loopback listener whose address family the host lacks is skipped with a
+/// warning on standard error while another listener binds ([`Api::skipped`]).
 pub fn start_api(
     ctl: &Runtime,
     api: &ApiSection,
@@ -124,12 +132,18 @@ pub fn start_api(
         Server::bind(api, local.as_ref(), has_api_key, state).map_err(ApiStartError::Serve)?
     };
     let addrs = server.local_addrs();
+    let skipped: Vec<String> = server.skipped().iter().map(ToString::to_string).collect();
+    for warning in &skipped {
+        // The start block's warning; `obs` has no log sink for the daemon yet.
+        eprintln!("warning: {warning}");
+    }
     let (stop, stopped) = oneshot::channel();
     let task = ctl.spawn(server.serve(async {
         let _ = stopped.await;
     }));
     Ok(Api {
         addrs,
+        skipped,
         local,
         stop,
         task,

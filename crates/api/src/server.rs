@@ -11,6 +11,14 @@
 //!   Every connection's peer is checked with the OS peer-credential call and refused unless it is
 //!   the daemon's own user. The same routes are served on both.
 //!
+//! - **A missing address family.** A loopback listener whose address family the host lacks, such
+//!   as `[::1]` in a container without IPv6 or under `ipv6.disable=1`, is skipped and reported in
+//!   [`Server::skipped`], as long as another `api.bind` listener bound. The default `api.bind`
+//!   names both families, so such a host still starts on `127.0.0.1`. If none bound, the start
+//!   fails.
+//! - **Timeouts.** Each connection gets a timer, and HTTP/1 requests must deliver their headers
+//!   within [`HEADER_READ_TIMEOUT`].
+//!
 //! Every request carries a [`Via`] extension: the listener and peer it came from, which the
 //! authentication of RFC-0050 §11 reads.
 //!
@@ -30,7 +38,7 @@ use std::time::Duration;
 use hyper::Request;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use syntropy_ipc::cmd::{AcceptError, AsyncListener, Endpoint, Peer};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -142,10 +150,78 @@ pub fn local_endpoint(runtime: &syntropy_config::Runtime) -> io::Result<Endpoint
     }
 }
 
+/// A loopback listener from `api.bind` left out because the host lacks its address family.
+#[derive(Debug)]
+pub struct Skipped {
+    /// The address from `api.bind`.
+    pub addr: SocketAddr,
+    /// The bind error: address not available, or address family not supported.
+    pub error: io::Error,
+}
+
+impl fmt::Display for Skipped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "`api.bind` listener `{}` is not served: this host lacks its address family ({}); \
+             the other listeners serve",
+            self.addr, self.error
+        )
+    }
+}
+
+/// `EAFNOSUPPORT`, the OS's "address family not supported", which has no `io::ErrorKind` of its
+/// own: 97 on Linux, 47 on Apple platforms, `WSAEAFNOSUPPORT` (10047) on Windows.
+#[cfg(target_os = "linux")]
+const EAFNOSUPPORT: Option<i32> = Some(97);
+#[cfg(target_vendor = "apple")]
+const EAFNOSUPPORT: Option<i32> = Some(47);
+#[cfg(windows)]
+const EAFNOSUPPORT: Option<i32> = Some(10047);
+#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+const EAFNOSUPPORT: Option<i32> = None;
+
+/// Whether a bind failed because the host lacks the address's family or address.
+fn family_unavailable(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::AddrNotAvailable
+        || (error.raw_os_error().is_some() && error.raw_os_error() == EAFNOSUPPORT)
+}
+
+/// The listeners that bound, each with its plan, and those skipped.
+type Bound<T> = (Vec<(T, Listener)>, Vec<Skipped>);
+
+/// Binds each planned listener with `bind`. A loopback listener whose family is unavailable is
+/// skipped while another binds; any other failure, or no listener bound, fails the start.
+fn bind_listeners<T>(
+    plan: Vec<Listener>,
+    mut bind: impl FnMut(SocketAddr) -> io::Result<T>,
+) -> Result<Bound<T>, ServeError> {
+    let mut bound = Vec::with_capacity(plan.len());
+    let mut skipped = Vec::new();
+    for listener in plan {
+        let addr = listener.addr;
+        match bind(addr) {
+            Ok(socket) => bound.push((socket, listener)),
+            Err(error) if listener.class == BindClass::Loopback && family_unavailable(&error) => {
+                skipped.push(Skipped { addr, error });
+            }
+            Err(error) => return Err(ServeError::Bind { addr, error }),
+        }
+    }
+    if bound.is_empty() {
+        if let Some(Skipped { addr, error }) = skipped.into_iter().next() {
+            return Err(ServeError::Bind { addr, error });
+        }
+        return Ok((bound, Vec::new()));
+    }
+    Ok((bound, skipped))
+}
+
 /// The API's bound listeners, ready to serve.
 #[derive(Debug)]
 pub struct Server {
     tcp: Vec<(TcpListener, Listener)>,
+    skipped: Vec<Skipped>,
     local: Option<AsyncListener>,
     state: Arc<ApiState>,
 }
@@ -158,7 +234,8 @@ impl Server {
     /// # Errors
     ///
     /// [`ServeError`]: the bind policy's refusal, a listener this build does not serve yet, or a
-    /// failure to bind.
+    /// failure to bind. A loopback listener whose address family the host lacks is not a failure
+    /// while another listener binds: it is in [`Server::skipped`].
     ///
     /// # Panics
     ///
@@ -178,17 +255,11 @@ impl Server {
                 listener: listener.clone(),
             });
         }
-        let mut tcp = Vec::with_capacity(plan.len());
-        for listener in plan {
-            let addr = listener.addr;
-            let bind = || {
-                let socket = std::net::TcpListener::bind(addr)?;
-                socket.set_nonblocking(true)?;
-                TcpListener::from_std(socket)
-            };
-            let socket = bind().map_err(|error| ServeError::Bind { addr, error })?;
-            tcp.push((socket, listener));
-        }
+        let (tcp, skipped) = bind_listeners(plan, |addr| {
+            let socket = std::net::TcpListener::bind(addr)?;
+            socket.set_nonblocking(true)?;
+            TcpListener::from_std(socket)
+        })?;
         let local = local
             .map(|endpoint| {
                 AsyncListener::bind(endpoint).map_err(|error| ServeError::LocalSocket {
@@ -199,6 +270,7 @@ impl Server {
             .transpose()?;
         Ok(Server {
             tcp,
+            skipped,
             local,
             state: Arc::new(state),
         })
@@ -211,6 +283,12 @@ impl Server {
             .iter()
             .filter_map(|(socket, _)| socket.local_addr().ok())
             .collect()
+    }
+
+    /// The loopback listeners left out because the host lacks their address family. The daemon
+    /// reports each as a warning at start.
+    pub fn skipped(&self) -> &[Skipped] {
+        &self.skipped
     }
 
     /// The local socket's endpoint, when it is served.
@@ -232,6 +310,11 @@ impl Server {
         tasks.shutdown().await;
     }
 }
+
+/// How long an HTTP/1 client has to send a request's headers before the connection is closed,
+/// a chosen budget \[target\]: long for a local client, and short enough that an idle or stalled
+/// connection does not hold its task. HTTP/2 sets no such limit here.
+pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long an accept loop waits after an error that is not one connection's, such as running
 /// out of file descriptors, before it tries again [target].
@@ -299,6 +382,11 @@ async fn serve_local(mut socket: AsyncListener, state: Arc<ApiState>) {
 }
 
 /// Serves one connection: HTTP/1.1, or HTTP/2 when it opens with the HTTP/2 preface.
+///
+/// Cleartext HTTP/2 is allowed on loopback and the local socket only (RFC-0050 §1.1). Those are the
+/// only listeners served today. When plain listeners beyond loopback arrive
+/// (`api.allow_plaintext_lan`, PROD-E5-T01), pass the listener's class here and serve those with
+/// `http1_only()`.
 async fn serve_connection<S>(stream: S, via: Via, state: Arc<ApiState>)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -308,8 +396,14 @@ where
         request.extensions_mut().insert(via.clone());
         async move { Ok::<_, Infallible>(dispatch(&state, request).await) }
     });
+    let mut builder = auto::Builder::new(TokioExecutor::new());
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_READ_TIMEOUT);
+    builder.http2().timer(TokioTimer::new());
     // A connection that fails, such as a client that leaves mid-request, ends here.
-    let _ = auto::Builder::new(TokioExecutor::new())
+    let _ = builder
         .serve_connection(TokioIo::new(stream), service)
         .await;
 }
@@ -333,6 +427,76 @@ mod tests {
             assert!(stream.nodelay().unwrap());
             assert_eq!(remote, client.local_addr().unwrap());
         });
+    }
+
+    fn plan(addrs: &[&str]) -> Vec<Listener> {
+        addrs
+            .iter()
+            .map(|addr| Listener {
+                addr: addr.parse().unwrap(),
+                class: BindClass::Loopback,
+                transport: Transport::Plain,
+            })
+            .collect()
+    }
+
+    fn unavailable() -> io::Error {
+        io::ErrorKind::AddrNotAvailable.into()
+    }
+
+    #[test]
+    fn a_loopback_family_the_host_lacks_is_skipped_while_another_binds() {
+        let v6: SocketAddr = "[::1]:7433".parse().unwrap();
+        let (bound, skipped) = bind_listeners(plan(&["127.0.0.1:7433", "[::1]:7433"]), |addr| {
+            if addr == v6 {
+                Err(unavailable())
+            } else {
+                Ok(addr)
+            }
+        })
+        .unwrap();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(bound[0].0, "127.0.0.1:7433".parse::<SocketAddr>().unwrap());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].addr, v6);
+        assert!(skipped[0].to_string().contains("lacks its address family"));
+        // The family-not-supported code counts too.
+        if let Some(code) = EAFNOSUPPORT {
+            let (bound, skipped) =
+                bind_listeners(plan(&["[::1]:7433", "127.0.0.1:7433"]), |addr| {
+                    if addr == v6 {
+                        Err(io::Error::from_raw_os_error(code))
+                    } else {
+                        Ok(addr)
+                    }
+                })
+                .unwrap();
+            assert_eq!((bound.len(), skipped.len()), (1, 1));
+        }
+    }
+
+    #[test]
+    fn no_listener_bound_or_another_error_fails_the_start() {
+        // Every family missing: the first one's error.
+        let error =
+            bind_listeners(plan(&["[::1]:7433"]), |_| Err::<(), _>(unavailable())).unwrap_err();
+        assert!(
+            matches!(&error, ServeError::Bind { addr, .. } if addr.port() == 7433),
+            "{error}"
+        );
+        // A taken port is no missing family, even on `[::1]`.
+        let error = bind_listeners(plan(&["127.0.0.1:7433", "[::1]:7433"]), |addr| {
+            if addr.is_ipv6() {
+                Err(io::ErrorKind::AddrInUse.into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(error, ServeError::Bind { .. }), "{error}");
+        // No `api.bind` listener at all is not a failure here: the local socket may serve alone.
+        let (bound, skipped) = bind_listeners(Vec::new(), |_| Ok(())).unwrap();
+        assert!(bound.is_empty() && skipped.is_empty());
     }
 
     #[test]
