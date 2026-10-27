@@ -201,29 +201,33 @@ pub fn normalize_node(node: &str) -> String {
     node.trim().to_ascii_lowercase()
 }
 
-/// `node` as part of a file name: letters, digits, `.`, `-` and `_` kept, anything else, such as
-/// the `:` before a port, made `_`, and never starting with a `.`.
+/// `node` as part of a file name, one to one: lowercase letters, digits, `-` and `.` are kept, and
+/// every other byte, `_` among them, becomes `_` and its two hex digits, so `box:1` is
+/// `box_3a1` and `box_1` is `box_5f1`. A leading `.` is escaped too, so the name is never hidden
+/// and never `..`. Two nodes that differ after [`normalize_node`] never share a PEM file.
 #[must_use]
 pub fn node_slug(node: &str) -> String {
-    let slug: String = normalize_node(node)
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if slug.is_empty() || slug.starts_with('.') {
-        format!("node{slug}")
-    } else {
-        slug
+    let normal = normalize_node(node);
+    if normal.is_empty() {
+        return "_".into();
+    }
+    let mut slug = String::with_capacity(normal.len());
+    for (i, byte) in normal.bytes().enumerate() {
+        let kept = byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || byte == b'-'
+            || (byte == b'.' && i > 0);
+        if kept {
+            slug.push(char::from(byte));
+        } else {
+            slug.push_str(&format!("_{byte:02x}"));
+        }
     }
 }
 
 /// The shell [`env_lines`] writes for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    slug
 pub enum Shell {
     /// `sh`, `bash`, `zsh`: `export NAME='value'`.
     Posix,

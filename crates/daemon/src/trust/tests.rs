@@ -522,10 +522,21 @@ fn the_user_is_told_before_the_os_asks() {
 #[test]
 fn node_names_become_safe_file_names() {
     assert_eq!(node_slug("Box.Local"), "box.local");
-    assert_eq!(node_slug("box.local:8443"), "box.local_8443");
-    assert_eq!(node_slug("[fd00::1]:8443"), "_fd00__1__8443");
-    assert_eq!(node_slug("../etc"), "node.._etc");
-    assert_eq!(node_slug(""), "node");
+    assert_eq!(node_slug("box.local:8443"), "box.local_3a8443");
+    assert_eq!(node_slug("[fd00::1]:8443"), "_5bfd00_3a_3a1_5d_3a8443");
+    assert_eq!(node_slug("../etc"), "_2e._2fetc");
+    assert_eq!(node_slug(".."), "_2e.");
+    assert_eq!(node_slug(""), "_");
+    // One to one: names that the old mapping folded together stay apart.
+    let nodes = [
+        "box:1", "box_1", "box 1", "box/1", "box\\1", "box_3a1", "bóx", "b_c3_b3x",
+    ];
+    let mut slugs: Vec<String> = nodes.iter().map(|n| node_slug(n)).collect();
+    assert_eq!(slugs[0], "box_3a1");
+    assert_eq!(slugs[1], "box_5f1");
+    slugs.sort();
+    slugs.dedup();
+    assert_eq!(slugs.len(), nodes.len(), "{slugs:?}");
 }
 
 /// Criterion: uninstall reverts an un-removed trust after the binary is gone. The generated sh
