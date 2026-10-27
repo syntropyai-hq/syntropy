@@ -122,6 +122,10 @@ pub struct SourceFile {
 }
 
 /// The role code [`model_id`] writes for `role`, or `None` for a role it does not hash.
+///
+/// The match names every role, with no wildcard arm, so a role added later fails to compile here
+/// until someone decides whether `ModelId` hashes it. [`SourceRole::in_model_id`] is defined by
+/// this function.
 #[must_use]
 pub fn role_code(role: SourceRole) -> Option<u8> {
     match role {
@@ -130,7 +134,7 @@ pub fn role_code(role: SourceRole) -> Option<u8> {
         SourceRole::Config => Some(3),
         SourceRole::GenerationConfig => Some(4),
         // 5 is the quantization config file's, which no reader names yet.
-        _ => None,
+        SourceRole::Tokenizer | SourceRole::TokenizerConfig | SourceRole::SpecialTokensMap => None,
     }
 }
 

@@ -31,16 +31,11 @@ pub enum SourceRole {
 }
 
 impl SourceRole {
-    /// Whether RFC-0041 §1's `ModelId` hashes a file of this role.
+    /// Whether RFC-0041 §1's `ModelId` hashes a file of this role. It is defined by
+    /// [`role_code`](crate::identity::role_code), so the two cannot disagree.
     #[must_use]
     pub fn in_model_id(self) -> bool {
-        matches!(
-            self,
-            SourceRole::Weights
-                | SourceRole::WeightIndex
-                | SourceRole::Config
-                | SourceRole::GenerationConfig
-        )
+        crate::identity::role_code(self).is_some()
     }
 }
 

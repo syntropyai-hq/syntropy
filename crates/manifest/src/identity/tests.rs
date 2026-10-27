@@ -174,6 +174,56 @@ fn files_outside_the_formula_s_roles_are_not_hashed() {
     }
 }
 
+/// Every role, in code order. `every_role_is_listed` fails to compile when a role is added and not
+/// listed here.
+const ALL_ROLES: [SourceRole; 7] = [
+    SourceRole::Weights,
+    SourceRole::WeightIndex,
+    SourceRole::Config,
+    SourceRole::GenerationConfig,
+    SourceRole::Tokenizer,
+    SourceRole::TokenizerConfig,
+    SourceRole::SpecialTokensMap,
+];
+
+#[test]
+fn every_role_is_listed() {
+    fn listed(role: SourceRole) -> bool {
+        match role {
+            SourceRole::Weights
+            | SourceRole::WeightIndex
+            | SourceRole::Config
+            | SourceRole::GenerationConfig
+            | SourceRole::Tokenizer
+            | SourceRole::TokenizerConfig
+            | SourceRole::SpecialTokensMap => ALL_ROLES.contains(&role),
+        }
+    }
+    assert!(ALL_ROLES.into_iter().all(listed));
+}
+
+#[test]
+fn role_codes_and_in_model_id_agree_and_codes_are_fixed() {
+    let codes: Vec<(SourceRole, Option<u8>)> =
+        ALL_ROLES.into_iter().map(|r| (r, role_code(r))).collect();
+    for (role, code) in &codes {
+        assert_eq!(role.in_model_id(), code.is_some(), "{role:?}");
+    }
+    // The v1 codes; changing one changes every ModelId.
+    assert_eq!(
+        codes,
+        [
+            (SourceRole::Weights, Some(1)),
+            (SourceRole::WeightIndex, Some(2)),
+            (SourceRole::Config, Some(3)),
+            (SourceRole::GenerationConfig, Some(4)),
+            (SourceRole::Tokenizer, None),
+            (SourceRole::TokenizerConfig, None),
+            (SourceRole::SpecialTokensMap, None),
+        ]
+    );
+}
+
 #[test]
 fn an_id_needs_a_tag_and_a_weights_file() {
     let w = weights(b"weights");
