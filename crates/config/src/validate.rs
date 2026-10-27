@@ -145,6 +145,13 @@ pub trait Environment {
     /// has no such permission bits, or the file cannot be read.
     fn readable_by_others(&self, path: &Path) -> Option<bool>;
 
+    /// Whether `path` is a regular file, after symbolic links; `None` if not known. Phase 5 warns
+    /// when a `{ file = … }` secret names no file (PROD-E1-T12).
+    fn is_file(&self, path: &Path) -> Option<bool> {
+        let _ = path;
+        None
+    }
+
     /// Whether the volume holding `path` supports direct I/O; `None` if not known.
     fn direct_io(&self, path: &Path) -> Option<bool> {
         let _ = path;
@@ -212,6 +219,10 @@ impl Environment for HostEnvironment {
                 },
             }
         }
+    }
+
+    fn is_file(&self, path: &Path) -> Option<bool> {
+        Some(path.is_file())
     }
 
     fn readable_by_others(&self, path: &Path) -> Option<bool> {
@@ -373,7 +384,9 @@ fn secret_files(value: &toml::Value) -> Vec<&str> {
 
 /// Phase 5: a secret is not readable by others where it sits (a warning on Unix; RFC-0054 §8,
 /// §10.1). That is the config file, for a secret written inline, and the named file, for the
-/// `{ file = … }` form (PROD-E1-T12). The variable form is not flagged.
+/// `{ file = … }` form (PROD-E1-T12). A `{ file = … }` secret whose file does not exist is a
+/// warning too, like the other paths phase 5 checks: the secret is read when it is first used,
+/// so the load itself does not fail. The variable form is not flagged.
 fn secret_file_private(input: &RuleInput<'_>, findings: &mut Findings) {
     let mut flagged: Vec<&Path> = Vec::new();
     let sources = input
@@ -393,6 +406,25 @@ fn secret_file_private(input: &RuleInput<'_>, findings: &mut Findings) {
         for named in secret_files(value) {
             let named = Path::new(named);
             if flagged.contains(&named) {
+                continue;
+            }
+            if input.environment.is_file(named) == Some(false) {
+                flagged.push(named);
+                findings.warnings.push(
+                    Problem::uncoded(
+                        Some(origin.clone()),
+                        format!(
+                            "`{key}` reads its secret from `{}`, which does not exist or is not \
+                             a file",
+                            named.display()
+                        ),
+                    )
+                    .about(key)
+                    .hint(Some(String::from(
+                        "create the file, or correct the path; the secret is read when it is \
+                         first used",
+                    ))),
+                );
                 continue;
             }
             if input.environment.readable_by_others(named) == Some(true) {

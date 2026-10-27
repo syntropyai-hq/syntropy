@@ -959,6 +959,8 @@ Cluster-scope changes arriving through `ClusterConfigChanged` go through the sam
 - **The rename.** The new text goes to a temporary file in the same directory, flushed to disk, with the old file's permissions (`0600` for a new file on Unix, since a config file can hold a secret), and is renamed over the file. A symbolic link at the path is refused.
 - **A refused edit.** `edit` without `--force` keeps a refused edit beside the file as `<file>.rejected`, so the work is not lost. On a terminal it offers to reopen the editor first. Without a terminal it asks nothing (RFC-0051 §2.2), and the default editor, which needs a terminal, is not started.
 - **Output.** No output of a write holds the value written. Until PROD-E1-T11 builds reload, a write says that a running daemon applies it at its next start.
+- **Line endings.** A file whose lines end in `\r\n` keeps them, and a file that mixes `\r\n` and `\n` is refused.
+- **Secret files (§8, phase 5).** A `{ file = … }` secret whose file does not exist, or whose file its group or others can read, is a warning, like the other paths phase 5 checks. The secret is read when it is first used, so the load does not fail.
 
 #### 10.3 The schema as code
 
