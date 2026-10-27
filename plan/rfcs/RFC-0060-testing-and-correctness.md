@@ -1266,6 +1266,8 @@ pub struct FaultRule {
 }
 ```
 
+*Note 2026-10-27 (DIST-E1-T13):* "pushed over IPC in tests" is the command channel's test-only `SetFaultPlan`, answered by `FaultPlanSet` (RFC-0001 §3.5, note of the same date, and §18.44). The runner's handler, `ipc::cmd::install_fault_plan`, installs the plan with `install` on the runner's clock; an invalid plan is refused in the reply, and the plan before stays.
+
 Every point is named `<crate>.<component>.<operation>`. Each crate's RFC keeps a list of its points, and every point has at least one test that fires it, enforced by a coverage counter the chaos suite checks. Fault points sit on the error paths that matter: I/O submission and completion, channel send and receive, connection setup, kernel launch and device health, allocation, pinning, IPC send, store chunk receive, pack write and atomic rename. With the feature off, the macro compiles to nothing, which L0 checks on release builds (§1.3).
 
 #### 9.3 Lab chaos

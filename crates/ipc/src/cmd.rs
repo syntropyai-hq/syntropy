@@ -40,6 +40,17 @@
 //! and kills the runner on any mismatch. The daemon then sends `Init`, and
 //! [`RunnerChannel::handshake`] checks that its build ID is the runner's own. Adopting a runner of
 //! another build, which needs an equal protocol instead, is RFC-0052 §6.5's (DIST-E1-T08).
+//!
+//! **Fault plans (test builds only).** With the `fault-injection` feature, a test daemon can push
+//! a fault plan to a runner (RFC-0060 §9.2; DIST-E1-T13): `DaemonFrame::SetFaultPlan`, answered
+//! by `RunnerFrame::FaultPlanSet`, at the fixed wire index `TEST_VARIANT` (2²⁰) above every
+//! production variant. A build without the feature has neither type, and refuses such a frame
+//! as an unknown variant:
+//!
+#![cfg_attr(not(feature = "fault-injection"), doc = "```compile_fail")]
+#![cfg_attr(feature = "fault-injection", doc = "```")]
+//! use syntropy_ipc::cmd::DaemonFrame;
+//! ```
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -65,6 +76,14 @@ pub use os::{AcceptError, Endpoint, EndpointParseError, Listener, Peer, Stream, 
 pub use os::user_pipe;
 #[cfg(all(feature = "async", not(loom)))]
 pub use os::{AsyncListener, AsyncStream, connect_async};
+// The test-only fault-plan message (RFC-0060 §9.2; DIST-E1-T13), with `fault-injection` only.
+#[cfg(feature = "fault-injection")]
+mod fault;
+#[cfg(feature = "fault-injection")]
+pub use fault::{
+    DaemonFrame, FaultDaemonChannel, FaultRunnerChannel, RunnerFrame, TEST_VARIANT,
+    install_fault_plan,
+};
 
 /// The IPC protocol this build speaks (RFC-0001 §3.5): the command messages and every ring record
 /// schema. A change to either bumps it (RFC-0001 §5, note of 2026-10-22). QUAL-E17-T15's schema
