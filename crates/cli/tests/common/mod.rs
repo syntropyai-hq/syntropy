@@ -16,6 +16,8 @@ use syntropy_api::config::{ApiSection, TlsSource};
 use syntropy_api::routes::{ApiState, NodeStatus};
 use syntropy_api::server::Server;
 use syntropy_api::version::{Build, ProtocolMajors, SupportTier, VersionInfo};
+use syntropy_core::build::{BuildId, BuildProfile, TargetTriple};
+use syntropy_core::ids::Blake3;
 use syntropy_ipc::cmd::Endpoint;
 
 /// The `syntropy` binary under test.
@@ -120,7 +122,14 @@ pub fn closed_addr() -> SocketAddr {
 pub fn test_version() -> VersionInfo {
     VersionInfo {
         build: Build {
-            version: "0.0.0-test".into(),
+            build_id: BuildId {
+                version: "0.0.0-test".parse().unwrap(),
+                commit: [0x1c; 20],
+                profile: BuildProfile::Release,
+                target: TargetTriple("x86_64-unknown-linux-gnu".into()),
+                toolchain: Blake3([0x70; 32]),
+            },
+            features: Vec::new(),
             id: [0x5a; 32],
         },
         protocols: ProtocolMajors::current(),

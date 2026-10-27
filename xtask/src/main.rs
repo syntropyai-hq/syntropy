@@ -26,6 +26,7 @@
 
 mod actionlint;
 mod build;
+mod cache_hit;
 mod changes;
 mod check_deps;
 mod ci_gate;

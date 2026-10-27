@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod budget;
+pub mod build;
 pub mod canon;
 pub mod clock;
 pub mod det_hash;
@@ -34,6 +35,7 @@ pub mod tick;
 pub mod transfer;
 pub mod units;
 
+pub use build::{BuildId, BuildProfile, SemVer, SemVerError, TargetTriple};
 pub use clock::{Clock, MonoTime};
 pub use det_hash::{DetHashMap, DetHashSet, DetHasher, DetState};
 pub use dtype::{DType, GgmlType};

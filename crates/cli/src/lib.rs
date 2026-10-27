@@ -12,11 +12,14 @@
 //! - [`autostart`]: when a command may start a daemon, and how;
 //! - [`output`]: terminal detection, colour, `--json`, JSON Lines, units and labels;
 //! - [`prompt`]: questions, which are never asked without a terminal;
-//! - [`error`]: the exit-code table and error rendering with hints.
+//! - [`error`]: the exit-code table and error rendering with hints;
+//! - [`build_id`]: this binary's `BuildId`, which `build.rs` builds, and its 32-byte build ID
+//!   (QUAL-E16-T03).
 //!
-//! Every command of the tree is declared. `version` is served: its `--json` output is the native
-//! API's `VersionInfo`, unchanged. `config show --resolved`, `config check` and `config path` are
-//! served without a daemon, over the binary's section registry ([`config`]). Each other command
+//! Every command of the tree is declared. `-V`/`--version` prints this binary's build with no
+//! daemon; with `--json` it is the native API's `Build`. `version` is served: its `--json` output
+//! is the native API's `VersionInfo`, unchanged. `config show --resolved`, `config check` and
+//! `config path` are served without a daemon, over the binary's section registry ([`config`]). Each other command
 //! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` and
 //! `__selftest` parse their arguments and stop there, because runner mode and the self-test are
 //! not built.
@@ -32,6 +35,7 @@ use clap::FromArgMatches as _;
 
 pub mod args;
 pub mod autostart;
+pub mod build_id;
 pub mod client;
 pub mod config;
 pub mod error;
@@ -50,7 +54,7 @@ where
 {
     let matches = match args::command().try_get_matches_from(args) {
         Ok(matches) => matches,
-        // `--help` and `--version` print and exit 0; a usage error prints and exits 2.
+        // `--help` prints and exits 0; a usage error prints and exits 2.
         Err(error) => {
             let _ = error.print();
             return ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(Exit::Usage.code()));
@@ -66,7 +70,21 @@ where
     };
     let terminal = Terminal::detect();
     let output = Output::new(&cli.global, terminal);
-    match dispatch(cli.command, &path, output) {
+    let result = match cli.command {
+        _ if cli.version => self_version(output).map(|()| Exit::Success),
+        Some(command) => dispatch(command, &path, output),
+        // No command at all is a usage error, as clap reports a missing subcommand.
+        None => {
+            let _ = args::command()
+                .error(
+                    clap::error::ErrorKind::MissingSubcommand,
+                    "a command is required; see `syntropy --help`",
+                )
+                .print();
+            return Exit::Usage.into();
+        }
+    };
+    match result {
         Ok(exit) => exit.into(),
         Err(error) => {
             eprintln!("{error}");
@@ -118,7 +136,7 @@ fn version(output: Output) -> Result<(), CliError> {
     if output.json {
         return output::print_json(&info).map_err(write_failed);
     }
-    let id: String = info.build.id.iter().map(|b| format!("{b:02x}")).collect();
+    let id = hex(&info.build.id);
     let tier = match info.support_tier {
         syntropy_api::version::SupportTier::Tier1 => "Tier 1",
         syntropy_api::version::SupportTier::Tier2 => "Tier 2",
@@ -128,14 +146,49 @@ fn version(output: Output) -> Result<(), CliError> {
     let text = format!(
         "daemon     syntropy {} (build {id})\nprotocols  wire {}, ipc {}\nsupport    {tier}\n\
          reached    {}\nclient     syntropy {}\n",
-        output::sanitize(&info.build.version),
+        output::sanitize(&info.build.build_id.version.to_string()),
         info.protocols.wire,
         info.protocols.ipc,
         client.target(),
-        env!("CARGO_PKG_VERSION"),
+        build_id::current().version,
     );
     print!("{text}");
     Ok(())
+}
+
+/// `syntropy --version`: this binary's own build, with no daemon (RFC-0062 §8.1). With `--json`
+/// it prints the native API's `Build`, with every `BuildId` field.
+fn self_version(output: Output) -> Result<(), CliError> {
+    let build = build_id::build();
+    if output.json {
+        return output::print_json(&build).map_err(write_failed);
+    }
+    let id = &build.build_id;
+    let commit = if id.commit_known() {
+        hex(&id.commit)
+    } else {
+        "unknown".to_owned()
+    };
+    let features = if build.features.is_empty() {
+        "none".to_owned()
+    } else {
+        build.features.join(", ")
+    };
+    print!(
+        "syntropy {}\ncommit     {commit}\nprofile    {}\ntarget     {}\ntoolchain  {}\n\
+         features   {features}\nbuild      {}\n",
+        id.version,
+        id.profile,
+        id.target,
+        hex(&id.toolchain.0),
+        hex(&build.id),
+    );
+    Ok(())
+}
+
+/// `bytes` as lower-case hex.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// `syntropy __runner --ipc <endpoint>`: runner mode (ADR-0015 decision 1). The runner process,

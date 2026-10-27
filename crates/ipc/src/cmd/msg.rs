@@ -147,8 +147,9 @@ pub enum RunnerMsg {
 pub struct Hello {
     /// The runner's process ID.
     pub pid: u32,
-    /// The runner's build ID. `BuildId` is QUAL-E16-T03's; the channel carries its 32-byte
-    /// encoding, as the shared-memory header does.
+    /// The runner's build ID: the 32-byte BLAKE3 digest of its `BuildId` and features, which
+    /// `cli` computes (`syntropy_cli::build_id::id`, RFC-0062 §8.1). The shared-memory header
+    /// carries the same bytes.
     pub build_id: [u8; 32],
     /// The protocol the runner speaks.
     pub ipc_protocol: IpcProtocol,

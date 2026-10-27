@@ -11,6 +11,10 @@ use common::{Fake, closed_addr, code, finish, syntropy};
 fn help_and_version_flags_exit_0_and_a_usage_error_exits_2() {
     assert_eq!(code(&finish(&mut syntropy(&["--help"]))), 0);
     assert_eq!(code(&finish(&mut syntropy(&["--version"]))), 0);
+    // Every command takes `--version`, as clap's propagated flag did.
+    let sub = finish(&mut syntropy(&["config", "check", "--version"]));
+    assert_eq!(code(&sub), 0, "{}", String::from_utf8_lossy(&sub.stderr));
+    assert!(String::from_utf8_lossy(&sub.stdout).starts_with("syntropy "));
     assert_eq!(code(&finish(&mut syntropy(&["cluster", "--help"]))), 0);
     let unknown = finish(&mut syntropy(&["frobnicate"]));
     assert_eq!(code(&unknown), 2);
@@ -182,16 +186,18 @@ fn syntropy_host_with_tls_or_a_bad_url_exits_5() {
 /// #1919).
 #[test]
 fn a_hostile_daemon_s_escape_sequences_never_reach_the_terminal() {
-    let id = "5a".repeat(32);
+    // A valid build, and one whose version is not a version: serde's error quotes it.
+    let build = serde_json::to_string(&common::test_version().build).unwrap();
+    let mut bad = serde_json::to_value(&common::test_version().build).unwrap();
+    bad["version"] = "\u{1b}[31mEVIL\u{202e}".into();
+    let bad = serde_json::to_string(&bad).unwrap();
     let bodies = [
         // An unknown variant: an OSC title set, a BEL and a screen clear.
         format!(
-            r#"{{"build":{{"version":"0","id":"{id}"}},"protocols":{{"wire":1,"ipc":1}},"support_tier":"\u001b]0;PWNED\u0007\u001b[2J"}}"#
+            r#"{{"build":{build},"protocols":{{"wire":1,"ipc":1}},"support_tier":"\u001b]0;PWNED\u0007\u001b[2J"}}"#
         ),
-        // An unknown field inside `build`, with a colour and a right-to-left override.
-        format!(
-            r#"{{"build":{{"version":"0","id":"{id}","\u001b[31mEVIL\u202e":1}},"protocols":{{"wire":1,"ipc":1}},"support_tier":"tier1"}}"#
-        ),
+        // A malformed version inside `build`, with a colour and a right-to-left override.
+        format!(r#"{{"build":{bad},"protocols":{{"wire":1,"ipc":1}},"support_tier":"tier1"}}"#),
     ];
     for body in bodies {
         let fake = Fake::start(200, body, 2);
@@ -206,6 +212,22 @@ fn a_hostile_daemon_s_escape_sequences_never_reach_the_terminal() {
         );
         assert!(stderr.contains("\\u{1b}"), "{stderr}");
     }
+    // A version with escapes in its pre-release is not a SemVer version (§9), so the answer is
+    // refused when it is read, and the error shows the escapes escaped (review of #1924, N1).
+    let mut odd = serde_json::to_value(common::test_version()).unwrap();
+    odd["build"]["version"] = "0.0.0-x\u{1b}]0;PWNED\u{7}".into();
+    let fake = Fake::start(200, odd.to_string(), 2);
+    let output =
+        finish(syntropy(&["version"]).env("SYNTROPY_HOST", format!("http://{}", fake.addr)));
+    assert_eq!(code(&output), 1);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("error[cli/bad_response]"), "{stderr}");
+    assert!(
+        !stderr.contains('\u{1b}') && !stderr.contains('\u{7}'),
+        "{stderr:?}"
+    );
+    assert!(stderr.contains("0.0.0-x\\u{1b}]0;PWNED\\u{7}"), "{stderr}");
+    assert!(output.stdout.is_empty());
     // An API error body whose code and message carry the same.
     let body =
         r#"{"error":{"class":"Internal","code":"x\u001b[2J","message":"m\u001b]0;t\u0007"}}"#;

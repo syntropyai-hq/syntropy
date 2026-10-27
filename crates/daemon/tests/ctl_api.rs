@@ -11,6 +11,8 @@ use syntropy_api::config::{ApiSection, TlsSource};
 use syntropy_api::routes::{ApiState, NodeStatus};
 use syntropy_api::version::{Build, ProtocolMajors, SupportTier, VersionInfo};
 use syntropy_config::Runtime as RuntimeLocation;
+use syntropy_core::build::{BuildId, BuildProfile, TargetTriple};
+use syntropy_core::ids::Blake3;
 use syntropy_daemon::ctl::{runtime, start_api};
 
 /// A solo node: it needs no replica.
@@ -19,6 +21,21 @@ struct Solo;
 impl NodeStatus for Solo {
     fn has_state_replica(&self) -> bool {
         true
+    }
+}
+
+/// The build a test daemon reports.
+fn test_build() -> Build {
+    Build {
+        build_id: BuildId {
+            version: "0.0.0-test".parse().unwrap(),
+            commit: [0; 20],
+            profile: BuildProfile::Dev,
+            target: TargetTriple("test".into()),
+            toolchain: Blake3([0; 32]),
+        },
+        features: Vec::new(),
+        id: [0; 32],
     }
 }
 
@@ -52,10 +69,7 @@ fn the_api_serves_on_the_ctl_runtime_over_tcp_and_the_local_socket() {
     };
     let state = ApiState {
         version: VersionInfo {
-            build: Build {
-                version: "0.0.0-test".into(),
-                id: [0; 32],
-            },
+            build: test_build(),
             protocols: ProtocolMajors::current(),
             support_tier: SupportTier::Tier1,
         },
@@ -100,10 +114,7 @@ fn without_a_runtime_location_the_api_serves_tcp_only() {
     };
     let state = ApiState {
         version: VersionInfo {
-            build: Build {
-                version: "0.0.0-test".into(),
-                id: [0; 32],
-            },
+            build: test_build(),
             protocols: ProtocolMajors::current(),
             support_tier: SupportTier::Tier1,
         },
