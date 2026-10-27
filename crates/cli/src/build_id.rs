@@ -47,19 +47,25 @@ pub fn current() -> &'static BuildId {
 ///
 /// The build script sees only `cli`'s own features. A test-only feature (RFC-0001 §4.2 rule 10)
 /// of a crate further down would reach this binary through cargo's feature unification without
-/// `cli` seeing it, so each crate in `cli`'s dependency graph that declares one reports it here.
-/// None does yet: the `a_crate_with_a_test_feature_reports_it` test fails when one joins the
-/// graph, and names it.
+/// `cli` seeing it, so each crate in `cli`'s dependency graph that declares one reports it here,
+/// through its own `TEST_FEATURES`: today `ipc` (`fault-injection`). The
+/// `a_crate_with_a_test_feature_reports_it` test fails when another joins the graph, and names
+/// it.
 #[must_use]
 pub fn features() -> Vec<String> {
     generated::FEATURES
         .iter()
         .map(|feature| format!("cli/{feature}"))
+        .chain(
+            syntropy_ipc::TEST_FEATURES
+                .iter()
+                .map(|feature| format!("ipc/{feature}")),
+        )
         .collect()
 }
 
 /// The crates in `cli`'s dependency graph whose test-only features [`features`] reports.
-pub const REPORTING_CRATES: &[&str] = &[];
+pub const REPORTING_CRATES: &[&str] = &["ipc"];
 
 /// The 32-byte build ID of `build` with `features`: BLAKE3 over a domain tag and each field,
 /// length-prefixed. Two builds pair at the IPC handshake only when every field is equal.
