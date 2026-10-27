@@ -11,7 +11,8 @@
 //! ([`logging`]), the forwarding of a runner's `StateChanged` as `ReportRunner` up to its seam
 //! (RFC-0001 §3.5; [`report`]), and the runner supervisor: its restart policy as a protocol core
 //! ([`supervisor`]) and the shell that feeds it a runner's channel and counters
-//! ([`runner_link`]; RFC-0001 §3.4, RFC-0033 §8.2).
+//! ([`runner_link`]; RFC-0001 §3.4, RFC-0033 §8.2), and the in-process runner host
+//! ([`runner_host`]; RFC-0001 §3.1, ADR-0015 item 7).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -21,5 +22,6 @@ pub mod doctor;
 pub mod host_changes;
 pub mod logging;
 pub mod report;
+pub mod runner_host;
 pub mod runner_link;
 pub mod supervisor;

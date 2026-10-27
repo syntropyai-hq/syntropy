@@ -144,6 +144,14 @@ On Windows the release also ships `syntropyw.exe`, a GUI-subsystem launcher that
 
 On platforms that forbid spawning a child process (iOS, some Android contexts), the runner runs in-process behind the same IPC protocol carried over in-memory channels (`RunnerHost::InProcess`). That gives up crash isolation and nothing else. It is Tier 3 only (ADR-0020).
 
+*Note 2026-10-28 (as built, DIST-E1-T11):*
+- **The transport.** The "same IPC trait" is `ipc::cmd::Transport`, the byte stream a command channel runs over. It has two implementations: the OS `Stream` between processes, and `ipc::cmd::memory::MemoryStream`, a connected pair in one process. `Channel` frames and encodes the same way over either, so the two are interchangeable, and `ipc::cmd::memory_channel` gives a connected daemon end and runner end.
+- **The host.** `daemon::runner_host::RunnerHost::InProcess` runs the runner on a thread of its own, or hands its end to a caller that drives it, as the simulator does (QUAL-E8-T06). `runner` is layer 5 like `daemon`, so the binary's wiring passes the runner's entry point in.
+- **The region.** The shared-memory region is real in-process too. The host creates it on the daemon's side and opens it on the runner's, so the header's words and the supervisor's `RunnerLink::sample_region` work unchanged.
+- **The handshake.** The daemon checks an in-process runner's `Hello` against its own process ID (`DaemonChannel::handshake_in_process`).
+- **Still to come.** The process host, which spawns `__runner`, comes with DIST-E1-T04.
+- **The suite.** `crates/cli/tests/runner_integration.rs` is the runner integration suite DIST-E1-T11's criterion names. One scenario runs over the in-process host and over an OS socket: the handshake, a real `Lifecycle` to `Ready` through the supervisor, the header's words, a stall kill, and a drain to `Stopped`.
+
 ### 3.2 What each process owns
 
 | Resource | Daemon | Runner |
