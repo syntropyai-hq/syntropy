@@ -11,41 +11,13 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
-use common::{code, finish, syntropy};
+use common::{code, finish, isolated};
 
 /// A fresh directory for one test.
 fn temp(tag: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("syntropy-cli-config-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// `syntropy` with `args`, isolated in `home` as the module docs say.
-fn isolated(args: &[&str], home: &Path) -> Command {
-    let mut command = syntropy(args);
-    for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("SYNTROPY_") {
-            command.env_remove(name);
-        }
-    }
-    for var in [
-        "HOME",
-        "LOCALAPPDATA",
-        "PROGRAMDATA",
-        "TMPDIR",
-        "XDG_RUNTIME_DIR",
-    ] {
-        command.env(var, home.join(var.to_ascii_lowercase()));
-    }
-    for var in ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"] {
-        command.env_remove(var);
-    }
-    command
+    common::temp(&format!("config-{tag}"))
 }
 
 /// The text of a stream.

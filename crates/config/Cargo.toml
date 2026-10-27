@@ -14,6 +14,8 @@ syntropy-core = { path = "../core" }
 # Reading the config files and the environment and flag values (RFC-0054 §1, §2.4), and
 # checking each value as TOML gives it in phase 3 (§8).
 toml.workspace = true
+# `config set`, `unset` and `edit` change only the lines they target (RFC-0054 §10.2).
+toml_edit.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
