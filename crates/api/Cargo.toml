@@ -20,6 +20,8 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 tokio = { workspace = true, features = ["net"] }
+# The rings' ends, which the pipeline holds.
+syntropy-spsc = { path = "../spsc" }
 # The local CA (PROD-E5-T03): certificates, the leaf resolver, validity times and the stored CA.
 rcgen.workspace = true
 rustls.workspace = true
@@ -29,6 +31,8 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# The fake runner the pipeline's tests run against (QUAL-E3-T18), and its `SimClock`.
+syntropy-testkit = { path = "../testkit" }
 # Parses `api.tls` values in the unit tests.
 toml.workspace = true
 # The server tests' HTTP/1.1 and HTTP/2 clients.

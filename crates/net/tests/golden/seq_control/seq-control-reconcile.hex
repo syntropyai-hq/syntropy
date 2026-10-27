@@ -1,0 +1,16 @@
+# seq-control-reconcile: Reconcile, kind 7: { seq, emitted 12, rng_counter 2^40 + 5, recent [9, 10, 70000] }
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 03 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 4d 00 00 00 38 64 49 7e bb 0a 2e 25  # 0030 header
+07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0040 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+a4 63 73 65 71 a3 67 69 6e 67 72 65 73 73 1b 01  # 0080 payload
+02 03 04 05 06 07 08 64 62 6f 6f 74 03 61 6e 07  # 0090 payload
+67 65 6d 69 74 74 65 64 0c 6b 72 6e 67 5f 63 6f  # 00a0 payload
+75 6e 74 65 72 1b 00 00 01 00 00 00 00 05 66 72  # 00b0 payload
+65 63 65 6e 74 83 09 0a 1a 00 01 11 70           # 00c0 payload

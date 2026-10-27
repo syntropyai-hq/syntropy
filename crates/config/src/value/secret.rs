@@ -44,6 +44,12 @@ const NOT_A_SECRET_TABLE: &str =
 /// - The value is read only through [`Secret::expose_for`], which names why, so every read is
 ///   findable with a search.
 /// - The value's memory is zeroed on drop, through `zeroize`.
+///
+/// Only the value inside a `Secret` is zeroed, which is what RFC-0054 §10.1 asks. The loader's
+/// other copies are plain strings, dropped without zeroing: a config file's text in
+/// [`crate::ConfigFile`], the [`crate::Env`] snapshot, the [`crate::Flags`] values, and the text
+/// `config set` and `config edit` handle. They are not printed either: their `Debug` shows paths,
+/// lengths and names.
 pub struct Secret<T: Zeroize>(T);
 
 impl<T: Zeroize> Secret<T> {
@@ -160,8 +166,17 @@ impl fmt::Display for SecretSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SecretSource::Inline(_) => f.write_str(REDACTED),
-            SecretSource::File(path) => write!(f, "{{ file = {:?} }}", path.display().to_string()),
-            SecretSource::Env(var) => write!(f, "{{ env = {var:?} }}"),
+            // TOML strings, not Rust's `{:?}`, so the form pastes back into a file.
+            SecretSource::File(path) => {
+                f.write_str("{ file = ")?;
+                crate::schema::write_toml_string(f, &path.display().to_string())?;
+                f.write_str(" }")
+            }
+            SecretSource::Env(var) => {
+                f.write_str("{ env = ")?;
+                crate::schema::write_toml_string(f, var)?;
+                f.write_str(" }")
+            }
         }
     }
 }

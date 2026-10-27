@@ -13,13 +13,16 @@
 //! [`SimFabric`], its [`LinkModel`]s and their [`Preset`]s, and the delay distributions
 //! [`Dist`]. The scenario file and its device and drive presets are [`scenario`] and [`presets`]
 //! (QUAL-E8-T03). With the `transport` feature it holds `SimTransport` (QUAL-E8-T04): RFC-0031's
-//! `Transport` and `Channel` over the fabric, in a `SimNet`. The fakes and the cluster model are
-//! planned.
+//! `Transport` and `Channel` over the fabric, in a `SimNet`. [`fake_runner`] is the stub runner
+//! ingress is tested against (QUAL-E3-T18): it serves a real region's `local_sequences` and
+//! `local_tokens` rings. The other fakes and the cluster model are planned.
 
 mod clock;
 mod dist;
 mod entropy;
 mod fabric;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+pub mod fake_runner;
 pub mod presets;
 pub mod scenario;
 mod ticks;

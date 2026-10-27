@@ -21,3 +21,5 @@ toml.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# The microbenchmarks of `obs`'s hot-thread recording (PROD-E8-T01).
+syntropy-obs = { path = "../obs" }

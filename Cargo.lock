@@ -3882,6 +3882,8 @@ dependencies = [
  "syntropy-core",
  "syntropy-ipc",
  "syntropy-net",
+ "syntropy-spsc",
+ "syntropy-testkit",
  "time",
  "tokio",
  "toml",
@@ -3897,6 +3899,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "syntropy-obs",
  "toml",
 ]
 
@@ -3946,6 +3949,7 @@ dependencies = [
  "syntropy-config-derive",
  "syntropy-core",
  "toml",
+ "toml_edit",
  "trybuild",
  "zeroize",
 ]
@@ -4136,9 +4140,13 @@ dependencies = [
 name = "syntropy-obs"
 version = "0.0.0"
 dependencies = [
+ "postcard",
+ "proptest",
  "serde",
  "serde_json",
+ "smallvec",
  "syntropy-core",
+ "syntropy-testkit",
  "toml",
 ]
 
@@ -4192,10 +4200,13 @@ dependencies = [
  "blake3",
  "chacha20",
  "serde",
+ "smallvec",
  "syntropy-config",
  "syntropy-core",
  "syntropy-graph",
+ "syntropy-ipc",
  "syntropy-net",
+ "syntropy-spsc",
  "toml",
 ]
 
@@ -4578,6 +4589,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

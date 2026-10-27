@@ -1325,6 +1325,8 @@ ADR-0001 item 4 requires that all untrusted bytes are parsed in safe Rust and fu
 - **Bounded time:** 1 s per input (libFuzzer `-timeout=1`).
 - **Classified errors:** every rejection returns an `Error` whose class is `Integrity`, `InvalidRequest`, `Auth` or `Unsupported`, never `Internal`.
 
+*Note, 2026-10-27 (QUAL-E10-T01), for the maintainers to confirm.* `testkit::fuzz` reads "total allocation" as the most heap the parse holds at once on its thread (the peak of `testkit::guards`'s live bytes), not the bytes it requests in all: what a hostile input makes the process hold, with churn already bounded by the 1 s limit. A size the format declares is added to the 4 × length + 1 MiB allowance, because a parser that allocates exactly what it declares still needs a little for its own structures. A declared size larger than the input is itself a violation, so the property catches a parser that trusts an unchecked size field.
+
 #### 10.3 Corpus and cadence
 
 - **Seed corpora** come only from project-synthetic fixtures (generated GGUF and safetensors files of every family, generated frames of every version) and from requests recorded from the corpus, never from headers cut out of third-party checkpoints, so they can be public (OQ-PRC-18; ADR-0603 decision 8). Each target's corpus is minimised nightly and stored in the fixture store.

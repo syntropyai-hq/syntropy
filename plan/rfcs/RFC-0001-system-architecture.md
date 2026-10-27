@@ -226,6 +226,8 @@ Two channels per runner:
 | `local_sequences` | daemon → head runner | `SequenceOpen` and `SequenceControl` for sequences whose ingress is this node |
 | `log` | runner → daemon | `LogRecord`s with static callsite IDs; the daemon formats them (RFC-0053 §4.1) |
 
+*Note 2026-10-27 (QUAL-E3-T18, as built): the M0 records of `local_sequences` and `local_tokens`.* One slot holds one record: the postcard encoding of one `core::sequence::SequenceControl` on `local_sequences`, or of one `TokenFrame` on `local_tokens`, as the command channel encodes its messages. `syntropy_ipc::shm::records` is the one encoder and decoder; its decoders are total and reserve no memory for a declared length. Ingress (PROD-E2-T02), the head and tail (PLC-E8-T01) and `syntropy-testkit`'s fake runner use it, so a test against the fake runner exercises the encoding ingress uses. RFC-0031 §1 has these rings carry RFC-0031 §6's frame bytes; that codec has no sequence-control frames until DIST-E8-T05 (M2), and §5.8's note of 2026-10-23 already has M0 parity taps travel on `local_tokens` as `core` types, so the move to frame bytes belongs to DIST-E11-T03 (M2). `ipc_protocol` stays 1.0: no build has shipped, and the rings' record types were already declared as these. §18.39 records this, for the maintainers to confirm.
+
 Command-channel messages:
 
 | Direction | Message | Purpose |
@@ -319,7 +321,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 3 | `exec` | lowers the graph to per-stage step programs; per-device dispatchers; CPU compute pool; doorbells; graph capture | `graph`, `kernels`, `tier` | 0012 (provider contract: 0040) |
 | 3 | `cluster` | discovery, invites, SWIM membership, coordinator lease, event log, pure `apply()`, snapshots, re-placement triggers | `net`, `manifest`, `solver` | 0030 (re-placement and recovery: 0033) |
 | 4 | `sched` | step scheduler: continuous batching, chunked prefill, verify windows, drafting, acceptance, sampler (with token-level stop sets and grammar masks), activation history | `exec`, `tier`, `graph`, `text` | 0012 |
-| 4 | `api` | OpenAI, Anthropic and native HTTP surfaces; ingress routing; sequence channels; dashboard state endpoints | `text`, `cluster`, `solver`, `net`, `ipc` (the local socket's listener, added 2026-10-27, note below) | 0050 (dashboard endpoints: 0051) |
+| 4 | `api` | OpenAI, Anthropic and native HTTP surfaces; ingress routing; sequence channels; dashboard state endpoints | `text`, `cluster`, `solver`, `net`, `ipc` (the local socket's listener, added 2026-10-27, note below), `spsc` (the local rings' ends, added 2026-10-27, note below) | 0050 (dashboard endpoints: 0051) |
 | 5 | `runner` | runner process: lifecycle state machine, wiring of exec, sched, tier, io, net and providers; probe mode; loading backend modules through `kernels-loader` | `ipc`, `manifest`, `graph`, `kernels`, `kernels-cpu`, `kernels-metal` (macOS and iOS), `kernels-ggml`, `kernels-loader`, `io`, `tier`, `net`, `probe`, `store`, `exec`, `sched` | 0001 (distributed behaviour: 0032) |
 | 5 | `daemon` | node daemon: supervisor, device ledger, wiring of cluster, store, api and probe orchestration | `ipc`, `manifest`, `kernels` (types only), `io`, `net`, `solver`, `text`, `probe`, `store`, `cluster`, `api` | 0001 (recovery: 0033) |
 | 6 | `cli` | the `syntropy` binary: argument parsing, mode dispatch, client subcommands, dashboard assets; constructs the `BuildId` value at build time and passes it down (RFC-0062 §8.1) | `daemon`, `runner`, `config`, `obs`, `api` and `ipc` (the client's API types and local socket, added 2026-10-27, note below), and `cluster`, `net` and `sched` (the configuration sections of the binary's registry, added 2026-10-27, note below) | 0051 |
@@ -333,6 +335,8 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 *Note 2026-10-27 (amendment, §18.38):* `api` depends on `ipc`. The API's local socket (RFC-0050 §1.1) uses the endpoint and peer check of the daemon-runner channel, in its tokio form (`ipc::cmd::AsyncListener`), and `/v1/syntropy/version` reports `ipc`'s protocol major. The `unsafe` these need stays in `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and neither crate is a compute crate (rule 3).
 
 *Note 2026-10-27 (amendment, §18.40):* `cli` depends on `api` and `ipc`. Its native-API client reads and writes the `syntropy-api` types the server uses, so the two cannot disagree about a field (RFC-0051 §1), and it reaches the local socket through `ipc::cmd::connect_async`. Both edges point to lower layers (rule 2).
+
+*Note 2026-10-27 (amendment, §18.41):* `api` depends on `spsc`. The ingress pipeline (RFC-0050 §2, PROD-E2-T02) holds the daemon side's `local_sequences` producer and `local_tokens` consumer, which `ipc`'s region hands out as `spsc`'s shared ring ends, and it names their types. The `unsafe` stays in `spsc` and `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and `api` is not a compute crate (rule 3).
 
 *Note 2026-10-27 (amendment, §18.42):* `cli` depends on `cluster`, `net` and `sched` for their configuration sections. `config show --resolved`, `config check` and `config path` (RFC-0054 §2.2, §8) resolve over the binary's section registry, which holds every section of the crates the binary links; `cluster`, `net` and `sched` declare theirs, and `cli` is the one crate above all three. All three edges point to lower layers (rule 2).
 
@@ -1348,6 +1352,10 @@ The head forwards `SequenceOpen` metadata (`SequenceMeta`: every field except th
 - **`net`'s view and the tap block.** `net`'s `TokenEntryView` converts to and from `TokenEntry` for every field but `tap`. The tap block travels as bytes until its codec exists (DIST-E8-T06, M2), and `TokenEntry::tap` is the typed `LogitTap`, so `net` refuses a non-empty tap block either way with a classified `Unsupported` error. M0 loses nothing: PLC-E9-T16's parity taps travel in-process on the `local_tokens` ring as `core` types, never through `net`'s codec.
 - **Field types.** `TokenSlice` is the prompt's owned token IDs. `PrefixKey` and `TailId` are RFC-0022 §7.1's and §7.2's, as plain newtypes in `core`, since `core` cannot name a `tier` type. `GrammarRef` is the BLAKE3 of a compiled grammar. `PoolingMode` is `LastToken`, `Mean` or `Cls`. `PrefixScope` is amendment A7's.
 
+*Note 2026-10-23 (DIST-E8-T05): `Reconcile`, and the prompt's binary form.*
+- **`SequenceControl::Reconcile { seq, emitted: u32, rng_counter: u64, recent: SmallVec<[u32; 8]> }`** is the sixth variant, as RFC-0033 §11 lists it: ingress tells the head what the client has seen of a sequence during recovery (RFC-0033 §4.2). `recent` holds the last emitted tokens, up to 8, in the order they were emitted.
+- **`TokenSlice`'s serde form depends on the format.** A human-readable format such as JSON gets an array of the IDs. A binary one gets a byte string of the IDs as little-endian `u32`s, so a prompt takes 4 bytes a token whatever its IDs, as RFC-0031 §6.6 requires of the `SeqControl` body. That covers CBOR, the IPC's postcard and `canon`. A byte string whose length is not a multiple of 4 is refused. No canonical digest covers a prompt, so no digest changes.
+
 ### 5.9 Sessions, sequences and KV
 
 ```rust
@@ -1983,6 +1991,8 @@ All rings are lock-free SPSC with power-of-two capacity, cache-line padded, and 
 6. **The bulk plane yields to the data plane.** Weight and session transfers on a link that carries a ring hop are rate-limited so that hop's measured p99 α stays within its plan prediction (RFC-0031).
 7. **Expert-cache changes never block a step.** Victims are dropped at once; newcomers become visible when their copy lands.
 8. **Telemetry is lossy.** A full `telemetry` ring drops the oldest samples and counts the drops.
+
+*Note 2026-10-27 (PROD-E8-T01, §18.43):* a full lossy ring, `telemetry` or a dispatcher's step ring, drops the **new** record, not the oldest. An SPSC producer cannot take back a record its consumer has not read. The writer counts the drop (`syntropy_obs_ring_dropped_records_total{ring}`), and the write never waits. The telemetry drain keeps its last read for the series a dropped record carried, and sends those deltas again with its next records, so the record is lost but the counts it carried are not.
 
 ## 9. Memory model
 
@@ -2975,6 +2985,12 @@ PROD-E2-T01 builds the HTTP server of RFC-0050 §1.1, with its local socket.
 |---|---|---|
 | `api` depends on `ipc`; `ipc` gains `AsyncListener`, the owner-only endpoint and peer check of §3.5 for servers on tokio, outside `--cfg loom` | §4.1 (row and dated note) | the local socket needs the same owner-only endpoint and OS peer check as the daemon-runner channel, which need `unsafe`, which rule 8 confines to `ipc`; `/v1/syntropy/version` reports `ipc`'s protocol major. For the maintainers to confirm |
 
+### 18.39 The M0 records of the local rings (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| Until DIST-E11-T03 (M2), each slot of `local_sequences` and `local_tokens` holds one postcard-encoded `SequenceControl` or `TokenFrame`, the `core` types themselves, encoded and decoded by `syntropy_ipc::shm::records` alone. DIST-E11-T03 moves both rings to RFC-0031 §6's frame bytes. `ipc_protocol` stays 1.0 | §3.5 (dated note); RFC-0031 §1 (dated note) | RFC-0031 §1 has these rings carry §6's frame bytes, but §6 has no sequence-control frames until DIST-E8-T05 (M2), and §5.8's note of 2026-10-23 already has M0 parity taps travel on `local_tokens` as `core` types. Ingress (PROD-E2-T02), the one-stage lifecycle (PLC-E8-T01) and the fake runner (QUAL-E3-T18) need one shared encoding at M0a. No build has shipped, and the rings' record types were already declared as these, so the protocol needs no bump. Taken under the maintainers' standing instruction, for the maintainers to confirm |
+
 ### 18.40 The CLI's client edges (2026-10-27)
 
 PROD-E6-T01 builds the CLI skeleton of RFC-0051 §1–§2.
@@ -2983,6 +2999,12 @@ PROD-E6-T01 builds the CLI skeleton of RFC-0051 §1–§2.
 |---|---|---|
 | `cli` depends on `api` and `ipc` | §4.1 (row and dated note) | the client uses the server's `syntropy-api` types, as RFC-0051 §1 requires, and the local socket's client end in `ipc`. For the maintainers to confirm |
 
+### 18.41 `api` holds the local rings' ends (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `api` depends on `spsc`, beside §18.38's `ipc` | §4.1 (row and note) | the ingress pipeline (RFC-0050 §2, PROD-E2-T02) holds the daemon side's `local_sequences` producer and `local_tokens` consumer, `spsc`'s shared ring ends, which `ipc`'s region hands out. Rules 2, 3 and 8 allow it. For the maintainers to confirm |
+
 ### 18.42 The binary's configuration registry (2026-10-27)
 
 PROD-E6-T23 builds `config show --resolved`, `config check` and `config path` in the CLI.
@@ -2990,6 +3012,15 @@ PROD-E6-T23 builds `config show --resolved`, `config check` and `config path` in
 | Change | Sections touched | Reason |
 |---|---|---|
 | `cli` depends on `cluster`, `net` and `sched` | §4.1 (row and dated note) | the configuration commands resolve over the binary's section registry, which needs every crate that declares a section; `cli` is the one crate above them all. For the maintainers to confirm |
+
+### 18.43 Lossy rings drop the new record, and telemetry records name series (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A full `telemetry` or step ring drops the new record, not the oldest, and counts it; the telemetry drain sends the dropped deltas again with its next records | §8.4 rule 8 (dated note); RFC-0053 §1 (dated revision); PLC-E7-T10's criterion | an SPSC producer cannot take back a record its consumer has not read, so "drops the oldest" cannot be built on the rings of §3.5. Re-sending the deltas keeps the counts a dropped record carried. Found by PROD-E8-T01 and the review of #1922 |
+| `TelemetryRecord`'s deltas name a `SeriesId`, one metric with its label values bound at registration, not a `MetricId`; a new last variant, `Series`, tells the daemon each ID's metric and label values before any record uses it | RFC-0053 §1 (dated revision), §2.1 (note) | a `MetricId` cannot tell two label sets of one metric apart, and labels are bound at registration (RFC-0053 §2.1), so the record needs the bound series' ID. Each change to the record's variants changes the ring's record schema, which `ipc_protocol` covers |
+
+Taken under the maintainers' standing instruction, for the maintainers to confirm.
 
 ### 18.44 A test-only fault-plan message on the command channel (2026-10-27)
 
