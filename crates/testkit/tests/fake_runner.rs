@@ -314,7 +314,8 @@ fn a_full_ring_holds_the_frame_until_there_is_room() {
 }
 
 /// `serve` on a thread of its own delivers the same stream in the same order. Ingress reads until
-/// the finish arrives; no step timing is assumed.
+/// the finish arrives or `serve` returns; no step timing is assumed, and a `serve` that fails
+/// fails the test instead of leaving it waiting.
 #[test]
 fn serve_streams_on_its_own_thread() {
     let region = FakeRegion::new().unwrap();
@@ -329,16 +330,21 @@ fn serve_streams_on_its_own_thread() {
     std::thread::scope(|scope| {
         let served = scope.spawn(|| runner.serve(&stop));
         ingress.send(open(1, vec![1]));
+        let finished = |frames: &[TokenFrame]| {
+            frames
+                .last()
+                .is_some_and(|frame| frame.entries[0].finish.is_some())
+        };
         let mut frames = Vec::new();
-        while !frames
-            .last()
-            .is_some_and(|frame: &TokenFrame| frame.entries[0].finish.is_some())
-        {
+        while !finished(&frames) && !served.is_finished() {
             frames.extend(ingress.frames());
             std::thread::yield_now();
         }
+        // Anything written before `serve` returned.
+        frames.extend(ingress.frames());
         stop.store(true, Ordering::Release);
         served.join().unwrap().unwrap();
+        assert!(finished(&frames), "the stream ended before its finish");
         assert_eq!(tokens_of(&frames, seq(1)), (1..=200).collect::<Vec<u32>>());
     });
     assert_eq!(runner.log(), ingress.sent.as_slice());

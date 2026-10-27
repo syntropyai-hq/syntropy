@@ -66,8 +66,11 @@ use super::SimEntropy;
 /// Slots per ring in [`layout`]'s default: a power of two.
 pub const DEFAULT_SLOTS: u32 = 64;
 
-/// The largest record in [`layout`]'s default, in bytes: room for a `SequenceOpen` with a
-/// prompt of several thousand tokens.
+/// The largest record in [`layout`]'s default, in bytes. It holds a `SequenceOpen` with a prompt of
+/// about 21,000 tokens `[estimate]`: postcard writes a token ID below 2^21 in at most 3 bytes, so
+/// 65,536 bytes less under 1 KiB for the other fields leave room for 21,500 IDs. An open that
+/// carries a compiled grammar inline (`SamplingParams::grammar_inline`) holds fewer. A
+/// `TokenFrame` is far smaller.
 pub const DEFAULT_SLOT_BYTES: u32 = 64 << 10;
 
 /// The build ID the fake region is created with.
