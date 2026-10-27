@@ -1161,3 +1161,12 @@ DIST-E7-T13 builds the bulk pacer (`net::transport::pacing`) and paces the simul
 | DIST-E7-T13's rig criterion, "a 10 GB blob transfer on the same 2.5 GbE edge as a live ring keeps the hop's p99 within 1.2 × its idle p99", moves to DIST-E7-T25; DIST-E7-T13 keeps simulator criteria | DIST-E7-T13, DIST-E7-T25 | R9 | the rig run needs pacing in a real backend, which DIST-E7-T25 is the first task to build |
 | DIST-E11-T13 → DIST-E7-T25; COMP-E12-T05 → DIST-E7-T25; QUAL-E13-T10 → DIST-E7-T25 | DIST-E11-T13, COMP-E12-T05, QUAL-E13-T10 | R9 | each sends bulk on, or measures the data hop under bulk on, a real transport: KV migration, peer chunk serving, and `net.hop.p99_under_bulk`. QUAL-E13-T10's edge, once reached only through COMP-E12-T05, is now explicit. M3 → M2 and M2 → M2, so no `LATER` and no cycle |
 
+
+## PROD-E2-T20 moves to M0a, ahead of M0's token-input endpoint (2026-10-27)
+
+The review of #1917 (review-1889's N3) found that PROD-E4-T13, M0's native generate with token input, did not depend on PROD-E2-T20, the token-ID range check. RFC-0050 §2.3 and §6.4 require every token ID a request supplies to be range-checked at ingress, because an out-of-range ID is an out-of-bounds read or write on the device. PROD-E2-T20 was M0b, so the edge would have been `LATER`. Every task PROD-E2-T20 depends on is M0a. This is a plan correction under R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E2-T20 moves from M0b to M0a | PROD-E2-T20 | R9 | M0's token-input endpoint needs it. Its dependencies, PROD-E2-T02 and COMP-E10-T07, are both M0a, so the move adds no `LATER` edge |
+| PROD-E4-T13 → PROD-E2-T20 | PROD-E4-T13 | R9 | `POST /v1/syntropy/generate` with token input passes client token IDs towards the device; the range check must run first (RFC-0050 §2.3, §6.4). PROD-E4-T02 reaches PROD-E2-T20 through PROD-E4-T13. M0a → M0a, with no cycle |
