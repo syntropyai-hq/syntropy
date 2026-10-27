@@ -174,6 +174,38 @@ impl std::error::Error for CliError {}
 mod tests {
     use super::*;
 
+    /// A `kv_dtype` override the rule refuses (RFC-0042 §4.2), as the daemon's native error
+    /// carries it to the CLI: `InvalidRequest`, so exit 5, with the refusal's name and text.
+    #[test]
+    fn a_refused_kv_dtype_override_exits_5_naming_the_lossy_knob() {
+        use syntropy_manifest::kv::{KvDTypeOverride, KvDTypeRule, KvSource};
+        let source = KvSource::Safetensors {
+            compute: Some(syntropy_core::DType::F32),
+            quantized: false,
+        };
+        let refused = KvDTypeRule::for_source(source)
+            .resolve(Some(KvDTypeOverride::Bf16))
+            .unwrap_err();
+        let error = CliError::api(
+            400,
+            &syntropy_api::routes::NativeError {
+                class: refused.class(),
+                code: refused.name().to_owned(),
+                message: refused.to_string(),
+            },
+        );
+        assert_eq!(error.exit, Exit::Invalid);
+        assert_eq!(error.exit.code(), 5);
+        let shown = error.to_string();
+        assert!(
+            shown.starts_with(
+                "error[api/kv_dtype_narrows]: kv_dtype = \"bf16\" would store KV below"
+            ),
+            "{shown}"
+        );
+        assert!(shown.contains("approximate.kv_lossy"), "{shown}");
+    }
+
     /// Every class of RFC-0001 §5.12 and its code in RFC-0051 §2.2's table.
     #[test]
     fn each_error_class_has_its_exit_code() {

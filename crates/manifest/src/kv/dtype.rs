@@ -24,17 +24,31 @@
 //!
 //! **The override.** An instance's policy may set `kv_dtype` to `f16`, `bf16` or `f32`
 //! ([`KvDTypeSection`], a top-level instance key: `[policy."<selector>"] kv_dtype = "bf16"`).
-//! [`KvDTypeSpec::with_override`] applies it to the reference: it replaces the default dtype,
-//! and keeps the layers a family requires. It changes the KV a sequence stores, so it changes
-//! the KV settings that prefix and session keys hash (RFC-0022 §7.1; the hash itself is
-//! TIER-E7-T01's). A dtype below the reference's is never set here: that is the `kv_lossy`
-//! approximate knob (RFC-0042 §10).
+//! [`KvDTypeRule::resolve`] applies it inside the rule, where it can tell the family's
+//! requirements from the source's default:
+//!
+//! - it replaces only the dtype step 3 gives, the source default. A family's per-layer
+//!   requirements keep their dtype, and an override that differs from a family's requirement
+//!   for every layer is refused ([`KvDTypeError::OverrideOverFamily`]);
+//! - it never changes a declared FP8 cache ([`KvDTypeError::OverrideOverDeclaredCache`]): that
+//!   cache's rounding is part of the reference, and no test bounds what removing it does to the
+//!   output (ADR-0019);
+//! - it never narrows the source default ([`KvDTypeError::OverrideNarrows`]). Narrower means
+//!   fewer bits per element (F32 to F16 or BF16), or, at 16 bits, F16 over a BF16 default, which
+//!   loses range; whether that one should be allowed is open for the maintainers (RFC-0042 §4.2,
+//!   note of 2026-10-28). BF16 over an F16 default is RFC-0043 §10's sanctioned use, "force BF16
+//!   where F16 overflows", and is allowed. Below 16 bits is always the `kv_lossy` approximate
+//!   knob (RFC-0042 §10), which needs `fidelity = "approximate"` (D3), so no `kv_dtype` value
+//!   is below 16 bits.
+//!
+//! The override changes the KV a sequence stores, so it changes the KV settings that prefix and
+//! session keys hash (RFC-0022 §7.1; the hash itself is TIER-E7-T01's).
 
 use std::fmt;
 
 use serde::Deserialize;
 use syntropy_config::{ConfigSection, HoldsSecret};
-use syntropy_core::{DType, LayerIx};
+use syntropy_core::{DType, ErrorClass, LayerIx};
 
 use super::KvDTypeSpec;
 
@@ -68,7 +82,8 @@ pub struct KvDTypeRule {
     pub family_layers: Vec<(LayerIx, DType)>,
 }
 
-/// An input the rule refuses: the caller passed something RFC-0042 §4.2 does not allow.
+/// Why the rule gives no dtype. The first three are the caller's mistake, an input RFC-0042
+/// §4.2 does not allow; the last three refuse an instance's `kv_dtype` override.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KvDTypeError {
     /// A declared cache that is not an FP8 dtype.
@@ -77,6 +92,66 @@ pub enum KvDTypeError {
     FamilyNotFloat(DType),
     /// Two family requirements for one layer.
     LayerTwice(LayerIx),
+    /// The override would store KV below the reference's dtype in exact mode.
+    OverrideNarrows {
+        /// The dtype the override would replace: the source default.
+        reference: DType,
+        /// The dtype it asks for.
+        requested: DType,
+    },
+    /// The checkpoint declares an FP8 cache, which the override may not change.
+    OverrideOverDeclaredCache {
+        /// The declared cache.
+        declared: DType,
+        /// The dtype the override asks for.
+        requested: DType,
+    },
+    /// The family requires a dtype for every layer, and the override asks for another.
+    OverrideOverFamily {
+        /// The family's dtype.
+        required: DType,
+        /// The dtype the override asks for.
+        requested: DType,
+    },
+}
+
+impl KvDTypeError {
+    /// A stable name for the error, for logs and API errors.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::DeclaredNotFp8(_) => "kv_declared_not_fp8",
+            Self::FamilyNotFloat(_) => "kv_family_not_float",
+            Self::LayerTwice(_) => "kv_layer_twice",
+            Self::OverrideNarrows { .. } => "kv_dtype_narrows",
+            Self::OverrideOverDeclaredCache { .. } => "kv_dtype_over_declared_cache",
+            Self::OverrideOverFamily { .. } => "kv_dtype_over_family",
+        }
+    }
+
+    /// Its class (RFC-0001 §10): an override's refusal is `InvalidRequest`, the policy's to fix;
+    /// a bad rule input is `Internal`, a bug in the family module or the census.
+    #[must_use]
+    pub fn class(&self) -> ErrorClass {
+        match self {
+            Self::DeclaredNotFp8(_) | Self::FamilyNotFloat(_) | Self::LayerTwice(_) => {
+                ErrorClass::Internal
+            }
+            Self::OverrideNarrows { .. }
+            | Self::OverrideOverDeclaredCache { .. }
+            | Self::OverrideOverFamily { .. } => ErrorClass::InvalidRequest,
+        }
+    }
+}
+
+/// The `kv_dtype` value that names `d`.
+fn value(d: DType) -> &'static str {
+    match d {
+        DType::F16 => "f16",
+        DType::BF16 => "bf16",
+        DType::F32 => "f32",
+        _ => "?",
+    }
 }
 
 impl fmt::Display for KvDTypeError {
@@ -87,6 +162,34 @@ impl fmt::Display for KvDTypeError {
                 write!(f, "a family may require F16, BF16 or F32 KV, not {d:?}")
             }
             Self::LayerTwice(l) => write!(f, "layer {} has two required KV dtypes", l.0),
+            Self::OverrideNarrows {
+                reference,
+                requested,
+            } => write!(
+                f,
+                "kv_dtype = \"{}\" would store KV below the model's reference dtype, {reference:?}, \
+                 in exact mode; lower KV precision is the approximate.kv_lossy knob, which needs \
+                 fidelity = \"approximate\"",
+                value(*requested)
+            ),
+            Self::OverrideOverDeclaredCache {
+                declared,
+                requested,
+            } => write!(
+                f,
+                "kv_dtype = \"{}\" cannot replace the {declared:?} KV cache the checkpoint \
+                 declares: that cache is part of the model's reference",
+                value(*requested)
+            ),
+            Self::OverrideOverFamily {
+                required,
+                requested,
+            } => write!(
+                f,
+                "kv_dtype = \"{}\" cannot replace the {required:?} KV the model's family \
+                 requires on every layer",
+                value(*requested)
+            ),
         }
     }
 }
@@ -96,6 +199,16 @@ impl std::error::Error for KvDTypeError {}
 /// The dtypes a family may require, or an override may set.
 fn is_wide_float(d: DType) -> bool {
     matches!(d, DType::F16 | DType::BF16 | DType::F32)
+}
+
+/// Whether `requested` stores KV below `reference` (module docs): fewer bits per element, or F16
+/// over BF16. BF16 over F16 is not narrower.
+fn narrows(reference: DType, requested: DType) -> bool {
+    match (reference, requested) {
+        (DType::BF16, DType::F16) => true,
+        (DType::F16, DType::BF16) => false,
+        _ => requested.bits() < reference.bits(),
+    }
 }
 
 impl KvDTypeRule {
@@ -133,6 +246,19 @@ impl KvDTypeRule {
     /// [`KvDTypeError`] for a declared cache that is not FP8, a family requirement that is not
     /// F16, BF16 or F32, or two requirements for one layer.
     pub fn reference(&self) -> Result<KvDTypeSpec, KvDTypeError> {
+        self.resolve(None)
+    }
+
+    /// The model's KV dtype per layer with an instance's `kv_dtype` override applied (module
+    /// docs), in normal form. No override gives the [`reference`](Self::reference).
+    ///
+    /// # Errors
+    ///
+    /// The [`reference`](Self::reference)'s errors, and, for the override:
+    /// [`KvDTypeError::OverrideOverDeclaredCache`] when the checkpoint declares a cache,
+    /// [`KvDTypeError::OverrideOverFamily`] when the family requires another dtype on every
+    /// layer, and [`KvDTypeError::OverrideNarrows`] when it is below the source default.
+    pub fn resolve(&self, kv_dtype: Option<KvDTypeOverride>) -> Result<KvDTypeSpec, KvDTypeError> {
         if let Some(d) = self.declared_cache
             && !matches!(d, DType::F8E4M3 | DType::F8E5M2)
         {
@@ -151,13 +277,44 @@ impl KvDTypeRule {
                 return Err(KvDTypeError::LayerTwice(*layer));
             }
         }
-        if let Some(d) = self.declared_cache {
-            return Ok(KvDTypeSpec::uniform(d));
+        let requested = kv_dtype.map(KvDTypeOverride::dtype);
+        if let Some(declared) = self.declared_cache {
+            return match requested {
+                Some(requested) if requested != declared => {
+                    Err(KvDTypeError::OverrideOverDeclaredCache {
+                        declared,
+                        requested,
+                    })
+                }
+                _ => Ok(KvDTypeSpec::uniform(declared)),
+            };
         }
+        let default = match (self.family, requested) {
+            (Some(required), Some(requested)) if requested != required => {
+                return Err(KvDTypeError::OverrideOverFamily {
+                    required,
+                    requested,
+                });
+            }
+            (Some(required), _) => required,
+            (None, requested) => {
+                let reference = Self::source_default(self.source);
+                match requested {
+                    Some(requested) if narrows(reference, requested) => {
+                        return Err(KvDTypeError::OverrideNarrows {
+                            reference,
+                            requested,
+                        });
+                    }
+                    Some(requested) => requested,
+                    None => reference,
+                }
+            }
+        };
+        // The family's per-layer requirements, as the family gave them: an override never moves
+        // one, even one equal to the source default that the normal form would fold away.
         let spec = KvDTypeSpec {
-            default: self
-                .family
-                .unwrap_or_else(|| Self::source_default(self.source)),
+            default,
             layers: self.family_layers.clone(),
         };
         Ok(spec.normalized())
@@ -182,21 +339,6 @@ impl KvDTypeSpec {
         Self {
             default: self.default,
             layers,
-        }
-    }
-
-    /// The spec with the instance's `kv_dtype` override applied: the override replaces the
-    /// default, and the layers the family requires keep their dtype. No override leaves the
-    /// spec as it is. The result is in normal form.
-    #[must_use]
-    pub fn with_override(&self, kv_dtype: Option<KvDTypeOverride>) -> Self {
-        match kv_dtype {
-            None => self.normalized(),
-            Some(o) => Self {
-                default: o.dtype(),
-                layers: self.layers.clone(),
-            }
-            .normalized(),
         }
     }
 }
@@ -234,10 +376,11 @@ impl KvDTypeOverride {
 #[derive(Clone, Debug, PartialEq, Deserialize, ConfigSection)]
 #[config(section = "", scope = Instance, owner = "RFC-0043")]
 pub struct KvDTypeSection {
-    /// The model's KV dtype in exact mode, in place of the family's reference dtype: `f16`,
-    /// `bf16` or `f32`. Forcing `bf16` where F16 overflows is the usual use (RFC-0042 §4.2). It
-    /// changes `KvFormula::dtype`, and so prefix and session keys. A dtype below the
-    /// reference's is `approximate.kv_lossy`, not this key.
+    /// The model's KV dtype in exact mode, in place of the source's default dtype: `f16`, `bf16`
+    /// or `f32`. Forcing `bf16` where F16 overflows is the usual use (RFC-0042 §4.2). It changes
+    /// `KvFormula::dtype`, and so prefix and session keys. It never replaces a family's required
+    /// dtype or a declared FP8 cache, and never narrows the default: [`KvDTypeRule::resolve`]
+    /// refuses those. Lower KV precision is `approximate.kv_lossy`, not this key.
     #[config(
         reload = Instance,
         default = computed("the family's reference KV dtype (RFC-0042 §4.2)")

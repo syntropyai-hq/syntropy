@@ -141,7 +141,7 @@ pub enum AuxKind {
 
 /// The reference's KV dtype per layer (RFC-0022 §2): one dtype, with per-layer exceptions.
 /// RFC-0042 §4.2's rule fills it per family and source ([`KvDTypeRule::reference`]), and an
-/// instance's `kv_dtype` override changes it ([`KvDTypeSpec::with_override`]).
+/// instance's `kv_dtype` override changes it ([`KvDTypeRule::resolve`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvDTypeSpec {
     /// The dtype of every layer not in `layers`.

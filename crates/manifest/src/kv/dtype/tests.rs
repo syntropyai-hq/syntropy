@@ -199,29 +199,23 @@ fn normal_form_keeps_what_of_reads() {
 /// The override changes the resolved spec, and so the KV settings that prefix and session keys
 /// hash (RFC-0022 §7.1). That the hash itself changes is TIER-E7-T01's test.
 #[test]
-fn the_override_changes_the_resolved_dtype() {
+fn the_override_replaces_the_source_default() {
     use DType::{BF16, F16, F32};
-    let gguf = rule(GGUF, None, None, &[]).reference().unwrap();
-    assert_eq!(gguf, uniform(F16));
-    assert_eq!(gguf.with_override(None), gguf);
-    let forced = gguf.with_override(Some(KvDTypeOverride::Bf16));
+    let gguf = rule(GGUF, None, None, &[]);
+    assert_eq!(gguf.resolve(None), gguf.reference());
+    // RFC-0043 §10's use: BF16 where F16 overflows. Same width, wider range: allowed.
+    let forced = gguf.resolve(Some(KvDTypeOverride::Bf16)).unwrap();
     assert_eq!(forced, uniform(BF16));
-    assert_ne!(forced, gguf);
-    // Setting the dtype the reference already has changes nothing.
-    assert_eq!(gguf.with_override(Some(KvDTypeOverride::F16)), gguf);
-    // The layers a family requires keep their dtype; one equal to the new default folds in.
-    let family = rule(GGUF, None, None, &[(0, F32), (3, BF16)])
-        .reference()
-        .unwrap();
+    assert_ne!(Ok(forced), gguf.reference());
+    // Wider is allowed from either 16-bit default.
+    assert_eq!(gguf.resolve(Some(KvDTypeOverride::F32)), Ok(uniform(F32)));
+    let bf16_st = rule(st(Some(BF16), false), None, None, &[]);
     assert_eq!(
-        family.with_override(Some(KvDTypeOverride::Bf16)),
-        spec(BF16, &[(0, F32)])
+        bf16_st.resolve(Some(KvDTypeOverride::F32)),
+        Ok(uniform(F32))
     );
-    // A declared FP8 cache can be raised to a wider dtype.
-    let fp8 = rule(GGUF, Some(DType::F8E4M3), None, &[])
-        .reference()
-        .unwrap();
-    assert_eq!(fp8.with_override(Some(KvDTypeOverride::F32)), uniform(F32));
+    // The dtype the reference already has changes nothing.
+    assert_eq!(gguf.resolve(Some(KvDTypeOverride::F16)), gguf.reference());
     for (o, d) in [
         (KvDTypeOverride::F16, F16),
         (KvDTypeOverride::Bf16, BF16),
@@ -229,6 +223,112 @@ fn the_override_changes_the_resolved_dtype() {
     ] {
         assert_eq!(o.dtype(), d);
     }
+}
+
+/// Review B1 on #1939: the override never moves a family requirement.
+#[test]
+fn the_override_keeps_every_family_requirement() {
+    use DType::{BF16, F16, F32};
+    // A family that requires BF16 on every layer, because F16 overflows: `f16` is refused, not
+    // applied, and asking for the required dtype is a no-op.
+    let all = rule(GGUF, None, Some(BF16), &[]);
+    assert_eq!(
+        all.resolve(Some(KvDTypeOverride::F16)),
+        Err(KvDTypeError::OverrideOverFamily {
+            required: BF16,
+            requested: F16
+        })
+    );
+    assert_eq!(
+        all.resolve(Some(KvDTypeOverride::F32)),
+        Err(KvDTypeError::OverrideOverFamily {
+            required: BF16,
+            requested: F32
+        })
+    );
+    assert_eq!(all.resolve(Some(KvDTypeOverride::Bf16)), Ok(uniform(BF16)));
+    // A per-layer requirement equal to the source default (F16 on GGUF), which the normal form
+    // folds away in the reference, still holds after `bf16` moves the default.
+    let layer = rule(GGUF, None, None, &[(3, F16)]);
+    assert_eq!(layer.reference(), Ok(uniform(F16)));
+    let resolved = layer.resolve(Some(KvDTypeOverride::Bf16)).unwrap();
+    assert_eq!(resolved, spec(BF16, &[(3, F16)]));
+    assert_eq!(resolved.of(LayerIx(3)), F16);
+    assert_eq!(resolved.of(LayerIx(4)), BF16);
+    // Other per-layer requirements stay too; one equal to the new default folds in.
+    let layers = rule(GGUF, None, None, &[(0, F32), (3, BF16)]);
+    assert_eq!(
+        layers.resolve(Some(KvDTypeOverride::Bf16)),
+        Ok(spec(BF16, &[(0, F32)]))
+    );
+}
+
+/// Review B2 on #1939: exact mode never stores KV below the reference (D3).
+#[test]
+fn an_override_below_the_reference_is_refused() {
+    use DType::{BF16, F16, F32};
+    // An F32 checkpoint: either 16-bit dtype is fewer bits per element.
+    let f32_st = rule(st(Some(F32), false), None, None, &[]);
+    for (o, d) in [(KvDTypeOverride::F16, F16), (KvDTypeOverride::Bf16, BF16)] {
+        let err = f32_st.resolve(Some(o)).unwrap_err();
+        assert_eq!(
+            err,
+            KvDTypeError::OverrideNarrows {
+                reference: F32,
+                requested: d
+            }
+        );
+        assert_eq!(err.class(), syntropy_core::ErrorClass::InvalidRequest);
+        assert_eq!(err.name(), "kv_dtype_narrows");
+        let text = err.to_string();
+        assert!(text.contains("approximate.kv_lossy"), "{text}");
+        assert!(text.contains("fidelity = \"approximate\""), "{text}");
+    }
+    // F16 over a BF16 reference: the same width, less range. Refused until the maintainers
+    // decide otherwise (RFC-0042 §4.2, note of 2026-10-28).
+    let bf16_st = rule(st(Some(BF16), false), None, None, &[]);
+    assert_eq!(
+        bf16_st.resolve(Some(KvDTypeOverride::F16)),
+        Err(KvDTypeError::OverrideNarrows {
+            reference: BF16,
+            requested: F16
+        })
+    );
+    // A quantised checkpoint's BF16 default likewise.
+    assert!(matches!(
+        rule(st(None, true), None, None, &[]).resolve(Some(KvDTypeOverride::F16)),
+        Err(KvDTypeError::OverrideNarrows { .. })
+    ));
+    assert_eq!(f32_st.resolve(Some(KvDTypeOverride::F32)), Ok(uniform(F32)));
+}
+
+/// Review N1 on #1939: a declared FP8 cache is part of the reference, so no override moves it.
+#[test]
+fn an_override_never_changes_a_declared_cache() {
+    use DType::{F8E4M3, F16, F32};
+    let fp8 = rule(GGUF, Some(F8E4M3), None, &[]);
+    for (o, d) in [
+        (KvDTypeOverride::F16, F16),
+        (KvDTypeOverride::Bf16, DType::BF16),
+        (KvDTypeOverride::F32, F32),
+    ] {
+        let err = fp8.resolve(Some(o)).unwrap_err();
+        assert_eq!(
+            err,
+            KvDTypeError::OverrideOverDeclaredCache {
+                declared: F8E4M3,
+                requested: d
+            }
+        );
+        assert_eq!(err.class(), syntropy_core::ErrorClass::InvalidRequest);
+        assert!(err.to_string().contains("declares"), "{err}");
+    }
+    assert_eq!(fp8.resolve(None), Ok(uniform(F8E4M3)));
+    // A bad rule input is the caller's bug, refused before the override is looked at.
+    let bad = rule(GGUF, Some(DType::BF16), None, &[]);
+    let err = bad.resolve(Some(KvDTypeOverride::F32)).unwrap_err();
+    assert_eq!(err, KvDTypeError::DeclaredNotFp8(DType::BF16));
+    assert_eq!(err.class(), syntropy_core::ErrorClass::Internal);
 }
 
 static REGISTRY: Registry = Registry::new(&[&KvDTypeSection::SCHEMA]);
@@ -272,11 +372,10 @@ fn a_policy_sets_the_override_and_leaving_it_out_keeps_the_reference() {
     // Another top-level key belongs to another section: this one ignores it.
     assert_eq!(from_policy("standby = \"none\"").unwrap().kv_dtype, None);
     // The resolved spec follows the policy.
-    let reference = KvDTypeRule::for_source(KvSource::Gguf).reference().unwrap();
     let policy = from_policy("kv_dtype = \"bf16\"").unwrap();
     assert_eq!(
-        reference.with_override(policy.kv_dtype),
-        KvDTypeSpec::uniform(DType::BF16)
+        KvDTypeRule::for_source(KvSource::Gguf).resolve(policy.kv_dtype),
+        Ok(KvDTypeSpec::uniform(DType::BF16))
     );
 }
 
