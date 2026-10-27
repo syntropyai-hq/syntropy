@@ -25,12 +25,16 @@
 //! [`EpCombine`] carry an expert owner's rows and their weighted sums, split into parts by a
 //! row limit that counts the extension.
 //!
+//! [`encode_seq_control`] and [`Frame::seq_control`] write and read the `SeqControl` frame (§6.6,
+//! DIST-E8-T05), whose body is the CBOR of `core`'s `SequenceControl` variant, and
+//! [`encode_seq_meta`] and [`decode_seq_meta`] the `SEQ_META` item's `SequenceMeta`.
+//!
 //! [`EmbeddingResult`] reads and writes the `EmbeddingResult` frame (§6.14), the pooled vector of
 //! an embedding sequence, splits a vector larger than `max_frame` into parts and [`assemble`]s
 //! them, and is written only on a channel that negotiated [`capability::EMBEDDING`].
 //!
-//! The typed codecs of the other frame types (`SeqControl`, `KvChunk`, …) are later tasks; at this
-//! layer their extension and payload are bytes. So are a sealed frame's: the AEAD layer
+//! The typed codecs of the other frame types (`KvChunk`, …) are later tasks; at this layer their
+//! extension and payload are bytes. So are a sealed frame's: the AEAD layer
 //! (ADR-0314) seals and opens them, and this layer carries the result, `ctl_seq` in `step` and
 //! the `KEY_PHASE` flag included.
 
@@ -43,6 +47,7 @@ mod ep;
 mod error;
 mod header;
 mod route;
+mod seq_control;
 mod token;
 
 pub use activation::{
@@ -73,6 +78,11 @@ pub use header::{
 pub use route::{
     EpRow, EpRows, Experts, MAX_ROUTE_K, ROUTE_HEAD_LEN, RouterRow, RouterRows, Weights,
     route_row_len,
+};
+pub use seq_control::{
+    INLINE_ALLOWANCE, MAX_RECENT, OPEN_ALLOWANCE, SEQ_CONTROL_FIXED_LEN, SMALL_BODY,
+    SeqControlError, SeqControlKind, SeqControlLimits, SeqControlSpec, decode_seq_meta,
+    encode_seq_control, encode_seq_meta, open_body_limit, sequence_slot_size,
 };
 pub use token::{
     ENTRY_HEADER_LEN, Entries, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,

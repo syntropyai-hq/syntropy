@@ -6,13 +6,21 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The `telemetry` ring's records are postcard (RFC-0053 §1).
+postcard = { workspace = true }
 serde = { workspace = true }
+# The records' delta lists (RFC-0053 §1).
+smallvec = { workspace = true }
 syntropy-core = { path = "../core" }
 # Fault plans are TOML files (RFC-0060 §9.2); only the `fault-injection` build reads them.
 toml = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The codec's totality property.
+proptest = { workspace = true }
 serde_json = { workspace = true }
+# `SimTicks` on a `SimClock`, and the counting allocator of the hot-path test (RFC-0060 §3.5).
+syntropy-testkit = { path = "../testkit" }
 
 [features]
 # Test-only (RFC-0001 §4.2 rule 10): compiles the fault points of `fault_point!` and their plans

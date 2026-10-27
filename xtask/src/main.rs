@@ -35,6 +35,7 @@ mod codeowners;
 mod contrib;
 mod dep_diff;
 mod determinism;
+mod hot_threads;
 mod instructions;
 mod licences;
 mod loom;
