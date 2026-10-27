@@ -13,6 +13,8 @@ use std::process::ExitCode;
 
 use syntropy_core::error::ErrorClass;
 
+use crate::output::sanitize;
+
 /// The exit codes of RFC-0051 §2.2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
@@ -106,15 +108,14 @@ impl CliError {
         }
     }
 
-    /// An error from the daemon's native error body. Its code and message are made safe to
-    /// print on a terminal ([`crate::output::sanitize`]).
+    /// An error from the daemon's native error body.
     pub fn api(status: u16, error: &syntropy_api::routes::NativeError) -> CliError {
         let not_found = status == 404 || error.code.ends_with("not_found");
         CliError {
             exit: Exit::for_class(error.class, not_found),
             domain: "api",
-            code: crate::output::sanitize(&error.code).into_owned(),
-            message: crate::output::sanitize(&error.message).into_owned(),
+            code: error.code.clone(),
+            message: error.message.clone(),
             details: Vec::new(),
             hints: Vec::new(),
         }
@@ -144,15 +145,24 @@ impl CliError {
     }
 }
 
-/// Renders the error as RFC-0051 §2.2 writes it, without colour.
+/// Renders the error as RFC-0051 §2.2 writes it, without colour. Every field goes through
+/// [`sanitize`] here, the one place an error reaches the terminal, because any of them can hold a
+/// daemon's text: an API error's code and message, or a parse error that quotes the daemon's
+/// answer.
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "error[{}/{}]: {}", self.domain, self.code, self.message)?;
+        write!(
+            f,
+            "error[{}/{}]: {}",
+            sanitize(self.domain),
+            sanitize(&self.code),
+            sanitize(&self.message)
+        )?;
         for line in &self.details {
-            write!(f, "\n  {line}")?;
+            write!(f, "\n  {}", sanitize(line))?;
         }
         for hint in &self.hints {
-            write!(f, "\n  hint: {hint}")?;
+            write!(f, "\n  hint: {}", sanitize(hint))?;
         }
         Ok(())
     }
@@ -236,13 +246,19 @@ mod tests {
         assert_eq!(missing.exit, Exit::NotFound);
         let auth = CliError::api(401, &native(ErrorClass::Auth, "local_auth_required"));
         assert_eq!(auth.exit, Exit::Auth);
-        // A daemon's control characters never reach the terminal.
+        // A daemon's control and invisible characters never reach the terminal, in any field.
         let mut hostile = native(ErrorClass::Internal, "c\u{1b}[2J");
         hostile.message = "m\u{1b}]0;owned\u{7}".to_owned();
-        let error = CliError::api(500, &hostile);
+        let error = CliError::api(500, &hostile)
+            .detail("unknown variant `\u{1b}[31m`")
+            .hint("run \u{202e}evil\u{200b}");
+        let shown = error.to_string();
         assert!(
-            !error.to_string().chars().any(char::is_control),
-            "{error:?}"
+            !shown
+                .chars()
+                .any(|c| (c.is_control() && c != '\n') || syntropy_api::printable::invisible(c)),
+            "{shown:?}"
         );
+        assert!(shown.contains("\\u{1b}[31m") && shown.contains("\\u{202e}evil\\u{200b}"));
     }
 }

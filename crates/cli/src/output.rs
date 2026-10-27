@@ -10,7 +10,6 @@
 //!   durations human-readable.
 //! - A predicted figure carries "estimate" or `≈`; a measured one carries nothing.
 
-use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -149,38 +148,14 @@ pub fn labelled(value: &str, kind: FigureKind) -> String {
     }
 }
 
-/// `text` from a daemon, safe to print on a terminal: every control character, C0 (with ESC,
-/// which starts CSI and OSC sequences), DEL and C1, and every bidirectional formatting character
-/// ([`is_bidi_control`]) is written as a `\u{…}` escape, so a daemon's answer cannot move the
-/// cursor, retitle the window, reorder what is shown or forge other output. `--json`
-/// output is left as the API sent it, for programs: `serde_json` escapes the C0 characters, ESC
-/// among them, and nothing else.
+/// `text` from a daemon, safe to print on a terminal: every control character but a tab, and
+/// every invisible formatting character, escaped ([`syntropy_api::printable`], the set `doctor`
+/// uses too), so a daemon's answer cannot move the cursor, retitle the window, reorder or hide
+/// what is shown, or forge other output. `--json` output is left as the API sent it, for
+/// programs.
 #[must_use]
 pub fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
-    let unsafe_char = |c: char| c.is_control() || is_bidi_control(c);
-    if !text.chars().any(unsafe_char) {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let mut safe = String::with_capacity(text.len() + 8);
-    for c in text.chars() {
-        if unsafe_char(c) {
-            let _ = write!(safe, "\\u{{{:x}}}", u32::from(c));
-        } else {
-            safe.push(c);
-        }
-    }
-    std::borrow::Cow::Owned(safe)
-}
-
-/// Whether `c` changes the direction text is shown in: the Arabic letter mark, the left-to-right
-/// and right-to-left marks, the embeddings, overrides and their pop, and the isolates (Unicode
-/// UAX #9).
-#[must_use]
-pub fn is_bidi_control(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-    )
+    syntropy_api::printable::printable(text)
 }
 
 /// `value` with three significant figures, as `41.0`, `512`, `3.20`.
@@ -333,22 +308,13 @@ mod tests {
     }
 
     #[test]
-    fn control_characters_from_a_daemon_are_escaped() {
-        assert_eq!(sanitize("plain text, ≈ ünïcode"), "plain text, ≈ ünïcode");
+    fn daemon_text_is_made_printable() {
+        assert_eq!(sanitize("plain"), "plain");
         assert_eq!(sanitize("a\u{1b}[2Jb"), "a\\u{1b}[2Jb");
-        assert_eq!(sanitize("x\u{1b}]0;title\u{7}y"), "x\\u{1b}]0;title\\u{7}y");
-        assert_eq!(sanitize("c1\u{9b}31m"), "c1\\u{9b}31m");
-        assert_eq!(sanitize("line\nbreak\r"), "line\\u{a}break\\u{d}");
-        assert_eq!(sanitize("del\u{7f}"), "del\\u{7f}");
-        // Bidirectional overrides and isolates cannot reorder what is shown.
-        assert_eq!(sanitize("ok\u{202e}gnp.exe"), "ok\\u{202e}gnp.exe");
-        for c in [
-            '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202d}', '\u{2066}', '\u{2069}',
-        ] {
-            assert!(!sanitize(&format!("a{c}b")).contains(c), "{c:?}");
-        }
-        // Letters of a right-to-left script are not controls, and stay.
-        assert_eq!(sanitize("שלום"), "שלום");
+        assert_eq!(
+            sanitize("hidden\u{200b}zero\u{2028}width"),
+            "hidden\\u{200b}zero\\u{2028}width"
+        );
     }
 
     #[test]

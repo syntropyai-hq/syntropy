@@ -109,39 +109,12 @@ impl<R: BufRead, W: Write> Consent for Prompt<R, W> {
     }
 }
 
-/// `line` with every control character but a tab, and every invisible formatting character,
-/// escaped, so what the prompt shows cannot move the cursor, clear the screen, reverse text or hide
-/// it from the user.
+/// `line` made safe to show in the prompt: every control character but a tab, and every invisible
+/// formatting character, escaped, so what the prompt shows cannot move the cursor, clear the
+/// screen, reverse text or hide it from the user. The set is `syntropy_api::printable`'s, which
+/// the CLI shares.
 fn printable(line: &str) -> String {
-    line.chars()
-        .map(|c| {
-            if (c.is_control() && c != '\t') || invisible(c) {
-                c.escape_default().to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
-}
-
-/// Whether `c` is a Unicode character that changes how the text around it shows without showing
-/// itself: zero-width characters and joiners, the bidirectional controls, which can reverse the
-/// text after them, the line and paragraph separators, the byte-order mark, the interlinear
-/// annotation characters and the tag characters.
-fn invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{00AD}'
-            | '\u{061C}'
-            | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{2028}'..='\u{202E}'
-            | '\u{2060}'..='\u{2069}'
-            | '\u{FEFF}'
-            | '\u{034F}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{E0000}'..='\u{E007F}'
-    )
+    syntropy_api::printable::printable(line).into_owned()
 }
 
 /// The largest file content the prompt shows in full; a longer file is shown by its size only.

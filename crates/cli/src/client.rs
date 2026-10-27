@@ -44,6 +44,10 @@ pub const DEFAULT_PORT: u16 = 7433;
 /// refuses at once; this bounds a remote one that does neither.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// The largest answer the client reads \[target\]: a chosen budget, ample for every read route, so
+/// a wrong or hostile listener cannot fill memory.
+pub const MAX_RESPONSE: usize = 4 << 20;
+
 /// How long a request may take once connected \[target\]: a chosen budget for the read routes.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -125,18 +129,12 @@ fn parse_host(text: &str) -> Result<String, CliError> {
             "bad_host",
             format!("SYNTROPY_HOST=`{text}` {why}"),
         )
-        .hint("export SYNTROPY_HOST=http://<host>:7433")
+        .hint("export SYNTROPY_HOST=http://127.0.0.1:7433")
     };
     if text.starts_with("https://") {
-        return Err(CliError::cli(
-            Exit::Invalid,
-            "not_built",
-            format!(
-                "SYNTROPY_HOST=`{text}` asks for TLS, and this build's client speaks plain HTTP only"
-            ),
-        )
-        .detail("the TLS client comes with the API's TLS listeners and `syntropy trust`")
-        .hint("reach the daemon over an overlay or loopback address with http://"));
+        return Err(no_tls(format!(
+            "SYNTROPY_HOST=`{text}` asks for TLS, and this build's client speaks plain HTTP only"
+        )));
     }
     let Some(rest) = text.strip_prefix("http://") else {
         return Err(bad("is not an http:// URL"));
@@ -157,13 +155,49 @@ fn parse_host(text: &str) -> Result<String, CliError> {
         },
         None => authority.split_once(':').map(|(_, port)| port),
     };
+    if port.is_some_and(|port| port.parse::<u16>().is_err()) {
+        return Err(bad("has a port that is not a number from 0 to 65535"));
+    }
+    let host = match port {
+        Some(port) => &authority[..authority.len() - port.len() - 1],
+        None => authority,
+    };
+    // Plain HTTP only to this machine: no daemon serves plain HTTP beyond loopback (RFC-0050
+    // §11.1), so anything that answers there is not one, and `SYNTROPY_API_KEY` would cross the
+    // network in the clear.
+    if !is_loopback_host(host) {
+        return Err(no_tls(format!(
+            "SYNTROPY_HOST=`{text}` is plain HTTP to a host beyond this machine, which would send \
+             SYNTROPY_API_KEY in the clear; a daemon serves such hosts only over TLS"
+        )));
+    }
     match port {
-        Some(port) if port.parse::<u16>().is_err() => {
-            Err(bad("has a port that is not a number from 0 to 65535"))
-        }
         Some(_) => Ok(authority.to_owned()),
         None => Ok(format!("{authority}:{DEFAULT_PORT}")),
     }
+}
+
+/// Whether `host`, from a URL, is this machine: `localhost`, `127.0.0.0/8` or `[::1]`.
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let ip = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    ip.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.to_canonical().is_loopback())
+}
+
+/// The exit-5 error for a daemon that only TLS can reach, which this build's client lacks.
+fn no_tls(message: String) -> CliError {
+    CliError::cli(Exit::Invalid, "not_built", message)
+        .detail("the TLS client comes with the API's TLS listeners and `syntropy trust`")
+        .hint(
+            "forward the daemon's port to this machine, as `ssh -L 7433:127.0.0.1:7433 <host>`, \
+             then export SYNTROPY_HOST=http://127.0.0.1:7433",
+        )
 }
 
 /// A daemon the client reached, and the runtime it talks to it on.
@@ -323,11 +357,23 @@ async fn exchange(target: &Target, path: &str) -> Result<(StatusCode, Bytes), Cl
         .await
         .map_err(|error| failed(&error))?;
     let status = response.status();
-    let body = response
-        .into_body()
+    let body = http_body_util::Limited::new(response.into_body(), MAX_RESPONSE)
         .collect()
         .await
-        .map_err(|error| failed(&error))?
+        .map_err(|error| {
+            if error.is::<http_body_util::LengthLimitError>() {
+                CliError::cli(
+                    Exit::Failure,
+                    "bad_response",
+                    format!(
+                        "the daemon's answer to `GET {path}` is over the client's {} limit",
+                        crate::output::iec_bytes(MAX_RESPONSE as u64)
+                    ),
+                )
+            } else {
+                failed(&error)
+            }
+        })?
         .to_bytes();
     Ok((status, body))
 }
@@ -384,7 +430,7 @@ mod tests {
             Os::Linux,
             &env(&[
                 ("XDG_RUNTIME_DIR", "/run/user/1000"),
-                ("SYNTROPY_HOST", "http://10.0.0.2:7433"),
+                ("SYNTROPY_HOST", "http://127.0.0.2:7433"),
                 ("SYNTROPY_API_KEY", "sk-test"),
             ]),
         )
@@ -398,7 +444,7 @@ mod tests {
         else {
             panic!("{found:?}")
         };
-        assert_eq!((addr.as_str(), *remote), ("10.0.0.2:7433", true));
+        assert_eq!((addr.as_str(), *remote), ("127.0.0.2:7433", true));
         assert_eq!(
             api_key.as_ref().map(|k| k.expose_for("test").as_str()),
             Some("sk-test")
@@ -410,14 +456,37 @@ mod tests {
     #[test]
     fn syntropy_host_takes_http_urls_with_an_optional_port() {
         for (text, addr) in [
-            ("http://box.tailnet:8080", "box.tailnet:8080"),
-            ("http://box.tailnet", "box.tailnet:7433"),
-            ("http://box.tailnet/", "box.tailnet:7433"),
-            ("http://[fd00::2]:7433", "[fd00::2]:7433"),
-            ("http://[fd00::2]", "[fd00::2]:7433"),
-            ("http://10.0.0.2", "10.0.0.2:7433"),
+            ("http://localhost:8080", "localhost:8080"),
+            ("http://LOCALHOST", "LOCALHOST:7433"),
+            ("http://localhost/", "localhost:7433"),
+            ("http://127.0.0.1", "127.0.0.1:7433"),
+            ("http://127.5.6.7:9000", "127.5.6.7:9000"),
+            ("http://[::1]:7433", "[::1]:7433"),
+            ("http://[::1]", "[::1]:7433"),
+            ("http://[::ffff:127.0.0.1]", "[::ffff:127.0.0.1]:7433"),
         ] {
             assert_eq!(parse_host(text).unwrap(), addr, "{text}");
+        }
+        // Plain HTTP beyond this machine would send the key in the clear: refused, as TLS is.
+        for text in [
+            "http://10.0.0.2:7433",
+            "http://box.tailnet",
+            "http://[fd00::2]",
+            "http://192.168.1.10:7433",
+            "http://localhost.example.com",
+            "http://128.0.0.1",
+        ] {
+            let error = parse_host(text).unwrap_err();
+            assert_eq!(
+                (error.exit, error.code.as_str()),
+                (Exit::Invalid, "not_built"),
+                "{text}"
+            );
+            assert!(error.message.contains("in the clear"), "{text}: {error}");
+            assert!(
+                error.hints[0].contains("ssh -L 7433:127.0.0.1:7433"),
+                "{error}"
+            );
         }
         for text in [
             "box:7433",

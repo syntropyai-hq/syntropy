@@ -171,8 +171,91 @@ fn an_answer_that_is_not_the_api_type_exits_1() {
 
 #[test]
 fn syntropy_host_with_tls_or_a_bad_url_exits_5() {
-    for host in ["https://box:7433", "box:7433"] {
+    for host in ["https://box:7433", "box:7433", "http://10.0.0.2:7433"] {
         let output = finish(syntropy(&["version"]).env("SYNTROPY_HOST", host));
         assert_eq!(code(&output), 5, "{host}");
     }
+}
+
+/// A hostile daemon's text never reaches the terminal raw: serde's error for a bad answer quotes
+/// the daemon's strings, and every field of the rendered error is escaped (B2 of the review of
+/// #1919).
+#[test]
+fn a_hostile_daemon_s_escape_sequences_never_reach_the_terminal() {
+    let id = "5a".repeat(32);
+    let bodies = [
+        // An unknown variant: an OSC title set, a BEL and a screen clear.
+        format!(
+            r#"{{"build":{{"version":"0","id":"{id}"}},"protocols":{{"wire":1,"ipc":1}},"support_tier":"\u001b]0;PWNED\u0007\u001b[2J"}}"#
+        ),
+        // An unknown field inside `build`, with a colour and a right-to-left override.
+        format!(
+            r#"{{"build":{{"version":"0","id":"{id}","\u001b[31mEVIL\u202e":1}},"protocols":{{"wire":1,"ipc":1}},"support_tier":"tier1"}}"#
+        ),
+    ];
+    for body in bodies {
+        let fake = Fake::start(200, body, 2);
+        let output =
+            finish(syntropy(&["version"]).env("SYNTROPY_HOST", format!("http://{}", fake.addr)));
+        assert_eq!(code(&output), 1);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.starts_with("error[cli/bad_response]"), "{stderr}");
+        assert!(
+            !stderr.contains('\u{1b}') && !stderr.contains('\u{7}') && !stderr.contains('\u{202e}'),
+            "raw control characters on stderr: {stderr:?}"
+        );
+        assert!(stderr.contains("\\u{1b}"), "{stderr}");
+    }
+    // An API error body whose code and message carry the same.
+    let body =
+        r#"{"error":{"class":"Internal","code":"x\u001b[2J","message":"m\u001b]0;t\u0007"}}"#;
+    let fake = Fake::start(500, body.to_owned(), 2);
+    let output =
+        finish(syntropy(&["version"]).env("SYNTROPY_HOST", format!("http://{}", fake.addr)));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr.trim_end(),
+        "error[api/x\\u{1b}[2J]: m\\u{1b}]0;t\\u{7}"
+    );
+}
+
+/// Plain HTTP to a host beyond this machine is refused before any connection, so the API key
+/// never crosses the network in the clear (B3 of the review of #1919).
+#[test]
+fn plain_http_beyond_loopback_is_refused_and_the_key_is_never_sent() {
+    for host in [
+        "http://192.0.2.1:7433",
+        "http://box.example:7433",
+        "http://[2001:db8::1]",
+    ] {
+        let output = finish(
+            syntropy(&["version"])
+                .env("SYNTROPY_HOST", host)
+                .env("SYNTROPY_API_KEY", "sk-never-sent"),
+        );
+        assert_eq!(code(&output), 5, "{host}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("in the clear"), "{stderr}");
+        assert!(stderr.contains("ssh -L 7433:127.0.0.1:7433"), "{stderr}");
+        assert!(!stderr.contains("sk-never-sent"), "{stderr}");
+    }
+}
+
+/// An answer over the client's size limit is refused, not read into memory (N1 of the review of
+/// #1919).
+#[test]
+fn an_answer_over_the_size_limit_exits_1() {
+    let body = format!(
+        "\"{}\"",
+        "a".repeat(syntropy_cli::client::MAX_RESPONSE + 1024)
+    );
+    let fake = Fake::start(200, body, 2);
+    let output =
+        finish(syntropy(&["version"]).env("SYNTROPY_HOST", format!("http://{}", fake.addr)));
+    assert_eq!(code(&output), 1);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("over the client's 4.00 MiB limit"),
+        "{stderr}"
+    );
 }
