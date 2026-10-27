@@ -212,24 +212,22 @@ fn a_hostile_daemon_s_escape_sequences_never_reach_the_terminal() {
         );
         assert!(stderr.contains("\\u{1b}"), "{stderr}");
     }
-    // A version that parses, with escapes in its pre-release part, is printed escaped.
+    // A version with escapes in its pre-release is not a SemVer version (§9), so the answer is
+    // refused when it is read, and the error shows the escapes escaped (review of #1924, N1).
     let mut odd = serde_json::to_value(common::test_version()).unwrap();
     odd["build"]["version"] = "0.0.0-x\u{1b}]0;PWNED\u{7}".into();
     let fake = Fake::start(200, odd.to_string(), 2);
     let output =
         finish(syntropy(&["version"]).env("SYNTROPY_HOST", format!("http://{}", fake.addr)));
-    assert_eq!(
-        code(&output),
-        0,
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(code(&output), 1);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("error[cli/bad_response]"), "{stderr}");
     assert!(
-        !stdout.contains('\u{1b}') && !stdout.contains('\u{7}'),
-        "{stdout:?}"
+        !stderr.contains('\u{1b}') && !stderr.contains('\u{7}'),
+        "{stderr:?}"
     );
-    assert!(stdout.contains("0.0.0-x\\u{1b}]0;PWNED\\u{7}"), "{stdout}");
+    assert!(stderr.contains("0.0.0-x\\u{1b}]0;PWNED\\u{7}"), "{stderr}");
+    assert!(output.stdout.is_empty());
     // An API error body whose code and message carry the same.
     let body =
         r#"{"error":{"class":"Internal","code":"x\u001b[2J","message":"m\u001b]0;t\u0007"}}"#;

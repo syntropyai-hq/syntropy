@@ -403,8 +403,10 @@ mod tests {
         }
         assert_eq!(BuildProfile::Other("dev".into()), BuildProfile::Dev);
         assert_ne!(BuildProfile::Other("bench".into()), BuildProfile::Dev);
-        let set: std::collections::HashSet<BuildProfile> =
-            [BuildProfile::Dev, BuildProfile::Other("debug".into())].into();
+        let set: crate::DetHashSet<BuildProfile> =
+            [BuildProfile::Dev, BuildProfile::Other("debug".into())]
+                .into_iter()
+                .collect();
         assert_eq!(set.len(), 1);
     }
 
