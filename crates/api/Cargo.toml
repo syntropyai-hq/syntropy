@@ -10,6 +10,8 @@ serde.workspace = true
 # `ErrorClass`, which the native error body carries (RFC-0001 §5.12).
 syntropy-core = { path = "../core" }
 syntropy-config = { path = "../config" }
+# The pipeline's sequence and token types (RFC-0001 §5.8), `Clock` and `Entropy`.
+syntropy-core = { path = "../core" }
 syntropy-net = { path = "../net" }
 # The local socket's listener and peer check (RFC-0050 §1.1), and the IPC protocol major that
 # `/v1/syntropy/version` reports.
@@ -20,6 +22,8 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 tokio = { workspace = true, features = ["net"] }
+# The rings' ends, which the pipeline holds.
+syntropy-spsc = { path = "../spsc" }
 # The local CA (PROD-E5-T03): certificates, the leaf resolver, validity times and the stored CA.
 rcgen.workspace = true
 rustls.workspace = true
@@ -29,6 +33,8 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# The fake runner the pipeline's tests run against (QUAL-E3-T18), and its `SimClock`.
+syntropy-testkit = { path = "../testkit" }
 # Parses `api.tls` values in the unit tests.
 toml.workspace = true
 # The server tests' HTTP/1.1 and HTTP/2 clients.

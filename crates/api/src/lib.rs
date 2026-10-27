@@ -4,8 +4,8 @@
 //!
 //! Layer 4 in RFC-0001 §4.1, designed in RFC-0050. So far it holds the HTTP server and its route
 //! table (RFC-0050 §1.1–§1.2, PROD-E2-T01), the bind policy of RFC-0050 §11.1 (PROD-E5-T02), the
-//! node's local TLS CA (PROD-E5-T03) and the `Figure` type that `doctor`'s evidence uses
-//! (PROD-E9-T01):
+//! node's local TLS CA (PROD-E5-T03), the `Figure` type that `doctor`'s evidence uses
+//! (PROD-E9-T01) and the ingress pipeline (PROD-E2-T02):
 //!
 //! - [`server`]: the `api.bind` listeners and the local socket, served with HTTP/1.1 and
 //!   cleartext HTTP/2 on the daemon's `ctl` runtime;
@@ -20,7 +20,9 @@
 //!   `syntropy_config::load_and_validate`;
 //! - [`tls`]: the node's local TLS CA and the leaves it serves (RFC-0050 §11.1.1);
 //! - [`figure`]: [`figure::Figure`], how every predicted or measured number reaches a client with
-//!   its kind and basis (RFC-0001 §5.16).
+//!   its kind and basis (RFC-0001 §5.16);
+//! - [`pipeline`]: the shape-neutral ingress pipeline of RFC-0050 §2 (PROD-E2-T02), from a parsed
+//!   request through `SequenceOpen` on `local_sequences` to the event stream from `local_tokens`.
 //!
 //! Binds restricted to overlay interfaces, which may omit TLS, need RFC-0030's interface classes
 //! and come with PROD-E5-T09.
@@ -31,6 +33,8 @@
 pub mod bind;
 pub mod config;
 pub mod figure;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+pub mod pipeline;
 pub mod printable;
 pub mod routes;
 pub mod rules;
