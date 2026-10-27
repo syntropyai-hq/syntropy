@@ -10,7 +10,7 @@
 //! forwarding target here is a seam: [`ReportSink`], which DIST-E9's command client implements.
 //! [`RunnerReport`] has `ReportRunner`'s fields.
 
-use syntropy_core::{InstanceId, NodeId, PlanEpoch, RunnerStateKind};
+use syntropy_core::{ErrorClass, InstanceId, NodeId, PlanEpoch, RunnerStateKind};
 use syntropy_ipc::cmd::RunnerMsg;
 
 /// `ClusterCommand::ReportRunner`'s fields (RFC-0001 §5.10).
@@ -26,10 +26,29 @@ pub struct RunnerReport {
     pub state: RunnerStateKind,
 }
 
+/// `ClusterCommand::ReportRunnerFailed`'s fields (RFC-0001 §5.10; RFC-0001 §3.4): the supervisor
+/// spent a runner's restart budget. §5.10 gives the error as an `ErrorSummary`, which no section
+/// defines yet, so the report carries the last failure's class and the failure count, which the
+/// dashboard and CLI show as the cause (ADR-0015 item 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunnerFailedReport {
+    /// The runner's instance.
+    pub instance: InstanceId,
+    /// The node it ran on: this daemon's.
+    pub node: NodeId,
+    /// The last failure's class.
+    pub class: ErrorClass,
+    /// The failures in the budget's window, the last included.
+    pub failures: u32,
+}
+
 /// Where the daemon submits runner reports: DIST-E9's `ClusterCommand` client.
 pub trait ReportSink {
     /// Submits one `ReportRunner`.
     fn report_runner(&mut self, report: RunnerReport);
+
+    /// Submits one `ReportRunnerFailed` (DIST-E1-T06).
+    fn report_runner_failed(&mut self, report: RunnerFailedReport);
 }
 
 /// Forwards `msg` from the runner of `instance` on `node` to `sink` when it is a
@@ -66,6 +85,10 @@ mod tests {
     impl ReportSink for Recorded {
         fn report_runner(&mut self, report: RunnerReport) {
             self.0.push(report);
+        }
+
+        fn report_runner_failed(&mut self, report: RunnerFailedReport) {
+            panic!("no runner fails here: {report:?}");
         }
     }
 

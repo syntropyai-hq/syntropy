@@ -221,6 +221,28 @@ An instance becomes routable only when every runner in it is `Ready` and the can
 - **Daemon loss: the bounded orphan rule** (RFC-0052 §6.5; supersedes ADR-0015 decision 6, see its revision of 2026-10-19). Runners use no parent-death signal, exit watch or kill-on-close job. A runner detects daemon loss by end-of-file on its command channel, or by the daemon's heartbeat in the shared-memory header not advancing for `runner.daemon_silence` (suspend-aware, RFC-0033 §8.2). It then enters orphan mode: it keeps serving sequences whose ingress is another node, admits nothing new, and listens on its per-instance adoption socket (`<runtime dir>/adopt/<instance>.sock`, owner-only, peer credentials checked). A daemon that connects within `runner.orphan_grace` re-adopts it when the IPC protocol versions are equal and the observability tables are equal or translatable (§3.5). Otherwise the runner drains for at most `recovery.drain_deadline` and exits, so a runner outlives its daemon by at most `runner.orphan_grace + recovery.drain_deadline`. Each OS's service manager is configured so that stopping the daemon process does not kill its runners (RFC-0052 §6.1–§6.3). Where re-adoption is unavailable (containers, embedded mobile runners, a changed IPC protocol, or a Windows logon task whose job forbids breakaway), updates drain and restart instead. Re-adoption is the in-place upgrade path (RFC-0052 §7.3).
 - **Shutdown.** `SIGTERM`, a service stop or `syntropy stop` drains every runner with a deadline, then stops the daemon.
 
+*Note 2026-10-28 (as built, proposed, §18.47; DIST-E1-T06).*
+- **Where it lives.** The restart policy is `syntropy_daemon::supervisor::Supervisor`, a `ProtocolCore` (invariant 12). Its policy comes from `cluster`'s `RunnerSection` (RFC-0033 §8.2). `daemon::runner_link` is its shell: it feeds the core a runner's `StateChanged` messages and the shared-memory counters, and carries out the core's outputs.
+- **Excused time.** At each deadline, every `sample_period` (a sixth of `runner.liveness_timeout`, 500 ms by default [chosen]), the shell reads the heartbeat and step counters with both clocks. A `SuspendDetector` (§5.14) measures the interval. A counter's silence is counted in excused time, which is running time less two things:
+  - the suspend, the gap between the two clocks;
+  - lateness on both clocks past one sample period, which covers a paused VM or a starved daemon.
+
+  So a host's sleep never counts against a runner, as RFC-0030 §5.8 step 5 asks. The stopped-clock reading reaches the core through `core`'s `AwakeClock` trait, which `io`'s `SystemClock` implements, so `daemon` never names `SystemClock` (ADR-0022 decision 2).
+- **Reports.** Each `StateChanged` is checked against §3.3's edges. For `Ready → Ready`, the epoch must also be later, which `can_become` does not check. An accepted report goes to `report::forward_state_changed`. A refused one is logged and not forwarded.
+- **Failures.** A crash is classified as this section says:
+  - `Device` after a `Failed { class: Device }` report;
+  - `Internal` otherwise;
+  - a kill for a hang or a stall is `Timeout` (§5.12: "Deadline passed or progress stalled").
+
+  The supervisor reports `Failed` for a runner that died without reporting one itself.
+- **Restarts.**
+  - The back-off doubles per failure in the budget's window, from 1 s to 60 s. The jitter draws the delay from [¾ · base, base] [chosen], through the `Entropy` the core is given.
+  - The failure that spends the budget stops the runner with `Drained(RestartBudgetSpent)` (§18.34), and the shell submits `ReportRunnerFailed`. §5.10 gives that command an `ErrorSummary`, which no section defines yet, so the report carries the last failure's class and the failure count.
+  - A `Device` failure is re-probed first, and a device that is gone stops the runner with `Fatal(Device)`.
+- **Not built here.**
+  - `runner.load_stall`, the bound from `Fetching` to `Warming`: it needs fetch progress that no message carries yet.
+  - A clean stop before `Ready` (§3.3's note of 2026-10-28): such a runner ends only through `Failed`, which the supervisor counts as a failure. That choice is the maintainers'.
+
 ### 3.5 Daemon↔runner IPC
 
 Two channels per runner:
@@ -1714,6 +1736,13 @@ pub struct Outbox<O> { items: SmallVec<[O; 8]> }
 
 The production sources are in `io` (ADR-0022), and the simulator's are in `testkit`.
 
+*Note 2026-10-28 (owner addition, proposed, §18.47; DIST-E1-T06):* `core::clock` gains three pieces, and `io`'s `SystemClock` implements the trait.
+- `AwakeTime`, a reading of the clock that stops during suspend. It moved from `io`, which re-exports it.
+- `AwakeClock: Clock`, with `awake()` and `tick()`.
+- `SuspendDetector`, which turns two successive observations of both clocks into an `Interval { running, awake }`, with `suspended(slack)` and `late(expected, slack)`.
+
+Code that detects a suspend takes an `AwakeClock`, so it runs on virtual time. That is the runner supervisor (§3.4) and the membership shell's resume detection (RFC-0030 §5.8, DIST-E4-T05).
+
 - *Note 2026-10-22 (amendment, §18.10):* `SystemClock` and `OsEntropy` moved from this block to `syntropy_io::os`. Reading a suspend-aware clock needs an `unsafe` OS call, and the OS CSPRNG needs `getrandom`, which rules 1 and 8 of §4.2 keep out of `core`. Their two rules moved with them: `SystemClock::now` reads a suspend-aware clock (`CLOCK_BOOTTIME`, `mach_continuous_time`, `QueryInterruptTime`), never one that stops during sleep, and key material always comes from `OsEntropy`. The same module also reads the clock that stops during suspend, which RFC-0030 §5.8 compares with `now` to detect a suspend.
 
 ### 5.15 Conformance manifest *(core)*
@@ -3070,3 +3099,13 @@ TIER-E6-T01 builds `KvFormula`. Its owner, RFC-0022, adds a field to three `Laye
 | Change | Sections touched | Reason |
 |---|---|---|
 | `LayerKv::PerToken`, `Sparse` and `Compressed` gain `latent: bool` with a serde default of `false`; the family sets it, and `LayerKv::mla` does | §5.3 (dated note); RFC-0022 §2 (dated note) and its "Proposed amendments to RFC-0001" item 1 | RFC-0022 §9 defines `K8V4` by K and V planes, and a latent is not a K/V pair, so the sizes must tell the two apart. A latent is sized as `Q8` until OQ-IO-30 is settled. Block-sparse and QSA-class layers store K/V pairs, so the flag is per layer, not per variant (the review of #1935) |
+
+### 18.47 The runner supervisor, and the suspend detector in `core` (2026-10-28)
+
+DIST-E1-T06 builds §3.4's supervisor. Proposed for the maintainers to accept.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `core::clock` holds `AwakeTime` (moved from `io`), the `AwakeClock` trait and `SuspendDetector`; `io`'s `SystemClock` implements the trait | §5.14 (dated note); RFC-0030 §5.8 (dated note) | the supervisor and DIST-E4-T05's resume detection both need the stopped-clock reading on virtual time. A trait in `core` lets `daemon` and `cluster` take it without naming `SystemClock` (ADR-0022 decision 2, rule T1) |
+| The supervisor counts silence in excused time; a hang or stall kill is class `Timeout`; the jitter range and the sample period are chosen values; `ReportRunnerFailed` carries a class and a count until `ErrorSummary` is defined | §3.4 (dated note) | as built; the class follows §5.12's definition of `Timeout`. The other three are labelled [chosen] for review |
+| `runner.load_stall` and a clean stop before `Ready` are not built | §3.4 (dated note) | the first needs fetch progress that no message carries; the second is the open point of §3.3's note of 2026-10-28 |
