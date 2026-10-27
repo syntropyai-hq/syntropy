@@ -42,6 +42,11 @@ fn engine(threads: usize) -> Engine {
 
 const BLOCK: u64 = 16384;
 
+/// How long a test waits for completions before it fails [target]. A loaded runner may take
+/// seconds; a wait ends as soon as the completions arrive, so the budget costs nothing when
+/// they do.
+const DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// One block, aligned for direct I/O on every OS (RFC-0021 §6: 4 KiB, 16 KiB on macOS).
 #[repr(C, align(16384))]
 #[derive(Clone)]
@@ -146,7 +151,8 @@ fn run(engine: &mut Engine, ops: Vec<IoOp>) -> Vec<ReadCompletion> {
     }
     let mut out = CompletionBuf::with_capacity(64);
     let mut done = Vec::new();
-    for _ in 0..1_000_000 {
+    let start = std::time::Instant::now();
+    while start.elapsed() < DEADLINE {
         if !batch.is_empty() {
             engine.submit(&mut batch).unwrap();
         }
@@ -158,7 +164,10 @@ fn run(engine: &mut Engine, ops: Vec<IoOp>) -> Vec<ReadCompletion> {
             return done;
         }
     }
-    panic!("only {} of {want} operations completed", done.len());
+    panic!(
+        "only {} of {want} operations completed within {DEADLINE:?}",
+        done.len()
+    );
 }
 
 #[test]
@@ -318,10 +327,17 @@ fn cancel_stops_an_unstarted_read_or_says_too_late() {
     );
     let mut out = CompletionBuf::with_capacity(4);
     let mut done = Vec::new();
-    while done.len() < 2 {
+    let start = std::time::Instant::now();
+    while done.len() < 2 && start.elapsed() < DEADLINE {
         e.reap(&mut out, Wait::Until(Nanos(1_000_000)));
         done.extend(out.drain());
     }
+    assert_eq!(
+        done.len(),
+        2,
+        "only {} of 2 completed within {DEADLINE:?}",
+        done.len()
+    );
     done.sort_by_key(|c| c.ticket);
     assert_eq!(done[0].result, Ok(Bytes(BLOCK)));
     match outcome {
@@ -354,6 +370,31 @@ fn the_engine_reports_its_kind_and_depth() {
     assert_eq!(e.kind(), syntropy_io::EngineKind::MacNoCache);
 }
 
+/// Polls `io` until `want` completions have reached `client` and the loop is idle, or until
+/// `deadline` passes, and returns the completions that arrived. It ends as soon as they have.
+fn drive(
+    io: &mut IoLoop<Engine>,
+    client: &mut IoClient,
+    want: usize,
+    deadline: std::time::Duration,
+) -> Vec<ReadCompletion> {
+    let mut done = Vec::new();
+    let start = std::time::Instant::now();
+    while start.elapsed() < deadline {
+        let p = io.poll_once();
+        while let Ok(c) = client.poll() {
+            done.push(c);
+        }
+        if done.len() >= want && p == Poll::Idle {
+            break;
+        }
+        if p != Poll::Busy {
+            std::thread::yield_now();
+        }
+    }
+    done
+}
+
 #[test]
 fn the_io_loop_drives_the_engine() {
     let (path, bytes) = fixture(&std::env::temp_dir(), "loop", 1 << 20);
@@ -381,17 +422,13 @@ fn the_io_loop_drives_the_engine() {
             ))
             .unwrap();
     }
-    let mut done = Vec::new();
-    for _ in 0..1_000_000 {
-        let p = io.poll_once();
-        while let Ok(c) = client.poll() {
-            done.push(c);
-        }
-        if done.len() == 8 && p == Poll::Idle {
-            break;
-        }
-    }
-    assert_eq!(done.len(), 8);
+    let done = drive(&mut io, client, 8, DEADLINE);
+    assert_eq!(
+        done.len(),
+        8,
+        "only {} of 8 completed within {DEADLINE:?}",
+        done.len()
+    );
     for c in &done {
         let i = c.ticket.0;
         assert_eq!(c.result, Ok(Bytes(8 * BLOCK)));
@@ -401,6 +438,42 @@ fn the_io_loop_drives_the_engine() {
                 == &bytes[offset as usize..(offset + 8 * BLOCK) as usize]
         );
     }
+    drop(io);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A completion that never arrives fails the wait at the deadline, not after a fixed count of
+/// polls. The loop is asked for nine completions after eight reads, with a deadline of 300 ms
+/// instead of the 30 s a real wait gets, and only the eight real ones come back.
+#[test]
+fn a_missing_completion_fails_the_wait_within_the_deadline() {
+    let (path, _) = fixture(&std::env::temp_dir(), "loop-missing", 1 << 20);
+    let mut e = engine(2);
+    let file = e.open(&path, OpenMode::Read).unwrap();
+    let mut mem = Mem::new(16);
+    // SAFETY: `mem` outlives the loop, which owns the engine and is dropped first.
+    let bufs = unsafe { e.register_buffers(&[mem.region()]) }.unwrap();
+    let config = LoopConfig {
+        spin: std::time::Duration::ZERO,
+        ..LoopConfig::new(1)
+    };
+    let (mut io, mut clients) = IoLoop::new(e, &config).unwrap();
+    let client: &mut IoClient = &mut clients[0];
+    for i in 0..8u64 {
+        client
+            .submit(read(i, file, 0, fixed(bufs[0], i * BLOCK, BLOCK)))
+            .unwrap();
+    }
+    let deadline = std::time::Duration::from_millis(300);
+    let start = std::time::Instant::now();
+    let done = drive(&mut io, client, 9, deadline);
+    let took = start.elapsed();
+    assert_eq!(done.len(), 8, "the eight submitted reads complete");
+    assert!(took >= deadline, "gave up early: {took:?}");
+    assert!(
+        took < deadline + std::time::Duration::from_secs(10),
+        "did not stop at the deadline: {took:?}"
+    );
     drop(io);
     let _ = std::fs::remove_file(&path);
 }

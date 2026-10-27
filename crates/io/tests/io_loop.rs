@@ -205,12 +205,13 @@ fn config(producers: usize, chunk: u64) -> LoopConfig {
 
 /// Polls until nothing is queued or in flight.
 fn settle(io: &mut IoLoop<FakeEngine>) {
-    for _ in 0..100_000 {
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(30) {
         if io.poll_once() == Poll::Idle {
             return;
         }
     }
-    panic!("the loop never went idle");
+    panic!("the loop never went idle within 30 s");
 }
 
 fn drain(client: &mut IoClient) -> Vec<ReadCompletion> {

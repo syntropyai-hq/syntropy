@@ -58,7 +58,10 @@ pub use pressure::PressureLevel;
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
 pub use replan::{DriftTerm, ReplanReason, WorkloadTerm};
-pub use runner::{Deadline, DrainReason};
+pub use runner::{
+    Deadline, Degradation, DegradeDetail, DegradeFlags, DrainReason, RunnerState, RunnerStateKind,
+    StopReason, WarmStep,
+};
 pub use sequence::{
     CancelReason, DraftNode, FinishReason, GrammarRef, LogprobBlock, PoolingMode, PrefixKey,
     PrefixRef, PrefixScope, Priority, ResumeCause, ResumePoint, SamplingParams, SequenceControl,
