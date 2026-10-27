@@ -8,9 +8,10 @@
 //! coalescing header-read routine ([`range`], RFC-0041 §2), the GGUF and safetensors readers,
 //! `config.json` read as metadata ([`config`]), `TokenizerSpec`, and the first census and
 //! hyperparameter types ([`census`], [`hparams`]) that the family modules in `graph` produce
-//! (RFC-0043 §4, §5.2), and expert slicing ([`slice`](mod@slice), RFC-0041 §2.1, §2.2), which turns a
-//! stacked expert tensor into one record per expert with its own extent. The census builder,
-//! the manifest, the KV formula and the pack sidecar come with later tasks.
+//! (RFC-0043 §4, §5.2); expert slicing ([`slice`](mod@slice), RFC-0041 §2.1, §2.2), which turns a
+//! stacked expert tensor into one record per expert with its own extent; and a model's identity:
+//! each source file's `FileDigest` and the v1 `ModelId` ([`identity`], RFC-0041 §1). The census
+//! builder, the manifest, the KV formula and the pack sidecar come with later tasks.
 
 #![forbid(unsafe_code)]
 
@@ -18,9 +19,11 @@ pub mod census;
 pub mod config;
 pub mod gguf;
 pub mod hparams;
+pub mod identity;
 pub mod range;
 pub mod safetensors;
 pub mod slice;
 pub mod tokenizer;
 
+pub use identity::{FileDigest, IdentityError, SourceFile, model_id};
 pub use range::{FileSource, HeaderReader, RangeError, RangeSource};

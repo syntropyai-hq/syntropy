@@ -9,6 +9,8 @@ publish.workspace = true
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# `FileDigest`: a source file's SHA-256 (RFC-0041 §1).
+sha2.workspace = true
 syntropy-core = { path = "../core" }
 
 [dev-dependencies]
