@@ -255,17 +255,12 @@ impl Error {
             let mut dropped = 0u64;
             let mut next = Some(*tail);
             // Unlinks the tail one error at a time, so a long tail is not dropped by recursion.
+            // The counts may come from a decoded chain, so they are untrusted: the sums saturate.
             while let Some(mut e) = next {
-                dropped += 1 + e
-                    .context(SOURCES_DROPPED)
-                    .and_then(|n| n.parse::<u64>().ok())
-                    .unwrap_or(0);
+                dropped = dropped.saturating_add(1).saturating_add(dropped_count(&e));
                 next = e.source.take().map(|b| *b);
             }
-            dropped += kept
-                .context(SOURCES_DROPPED)
-                .and_then(|n| n.parse::<u64>().ok())
-                .unwrap_or(0);
+            dropped = dropped.saturating_add(dropped_count(kept));
             kept.context.retain(|(k, _)| k != SOURCES_DROPPED);
             kept.context
                 .push((Cow::Borrowed(SOURCES_DROPPED), dropped.to_string()));
@@ -287,6 +282,13 @@ impl Error {
     pub fn chain(&self) -> impl Iterator<Item = &Error> {
         std::iter::successors(Some(self), |e| e.source.as_deref())
     }
+}
+
+/// The count an earlier cut recorded on `e` under [`SOURCES_DROPPED`], or 0.
+fn dropped_count(e: &Error) -> u64 {
+    e.context(SOURCES_DROPPED)
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 /// Shows the message, then the class and the code, e.g.

@@ -344,17 +344,54 @@ fn with_source_keeps_the_chain_within_the_bound() {
         1
     );
     round_trip(&e);
-    // Wrapping an over-deep chain built through the field cuts it too.
+    // Wrapping an over-deep chain built through the field cuts it too. A million errors, so a
+    // tail dropped by recursion would overflow the test thread's stack: the cut unlinks it one
+    // error at a time.
     let wrapped = Error::new(ErrorClass::Internal, codes::exec::STEP_STALLED, "top")
-        .with_source(chain_of(1000));
+        .with_source(chain_of(1_000_000));
     assert_eq!(wrapped.chain().count(), MAX_SOURCE_DEPTH + 1);
     assert_eq!(
         wrapped.chain().last().unwrap().context(SOURCES_DROPPED),
-        Some("984")
+        Some("999984")
     );
     // A chain within the bound is untouched.
     let short = chain_of(MAX_SOURCE_DEPTH);
     let wrapped = Error::new(ErrorClass::Internal, codes::exec::STEP_STALLED, "top")
         .with_source(short.clone());
     assert_eq!(wrapped.source.as_deref(), Some(&short));
+}
+
+/// A dropped count is untrusted: a chain a receiver accepted can carry any `sources_dropped`.
+/// Wrapping one whose markers hold `u64::MAX` saturates the count rather than overflowing.
+#[test]
+fn a_forged_dropped_count_saturates() {
+    for marked in [MAX_SOURCE_DEPTH, MAX_SOURCE_DEPTH + 1] {
+        // A 17-error chain, the most a decode accepts, with a `u64::MAX` marker on the deepest
+        // error kept (the 16th) or on the one cut (the 17th).
+        let mut chain = chain_of(MAX_SOURCE_DEPTH + 1);
+        let mut e = &mut chain;
+        for _ in 1..marked {
+            e = e.source.as_deref_mut().unwrap();
+        }
+        e.context
+            .push((Cow::Borrowed(SOURCES_DROPPED), u64::MAX.to_string()));
+        let bytes = postcard::to_allocvec(&chain).unwrap();
+        let chain: Error = decode(bytes, false);
+        let wrapped =
+            Error::new(ErrorClass::Internal, codes::exec::STEP_STALLED, "top").with_source(chain);
+        assert_eq!(wrapped.chain().count(), MAX_SOURCE_DEPTH + 1);
+        let deepest = wrapped.chain().last().unwrap();
+        assert_eq!(
+            deepest.context(SOURCES_DROPPED),
+            Some("18446744073709551615")
+        );
+        assert_eq!(
+            deepest
+                .context
+                .iter()
+                .filter(|(k, _)| k == SOURCES_DROPPED)
+                .count(),
+            1
+        );
+    }
 }
