@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
+# `ErrorClass`, which the native error body carries (RFC-0001 §5.12).
+syntropy-core = { path = "../core" }
 syntropy-config = { path = "../config" }
 syntropy-net = { path = "../net" }
 # The local socket's listener and peer check (RFC-0050 §1.1), and the IPC protocol major that

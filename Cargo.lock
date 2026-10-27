@@ -3879,6 +3879,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syntropy-config",
+ "syntropy-core",
  "syntropy-ipc",
  "syntropy-net",
  "time",
@@ -3902,6 +3903,19 @@ dependencies = [
 [[package]]
 name = "syntropy-cli"
 version = "0.0.0"
+dependencies = [
+ "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "syntropy-api",
+ "syntropy-config",
+ "syntropy-core",
+ "syntropy-ipc",
+ "tokio",
+]
 
 [[package]]
 name = "syntropy-cluster"
