@@ -176,6 +176,93 @@ fn set_reads_the_value_from_stdin_with_a_dash() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// On a terminal, `config set <key> -` reads the value with echo off: run on a pseudo-terminal by
+/// `script(1)`, a value typed after the prompt never appears in the terminal's output, and is
+/// written (review of #1927, N3). Linux only, where `script` is util-linux's.
+#[cfg(target_os = "linux")]
+#[test]
+fn set_dash_on_a_terminal_reads_with_echo_off() {
+    use std::io::{Read as _, Write as _};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    let secret = "cnry-echo-5Xq";
+    let Some(script) = ["/usr/bin/script", "/bin/script"]
+        .into_iter()
+        .find(|p| Path::new(p).exists())
+    else {
+        eprintln!("skipped: no script(1), so the terminal read did not run");
+        return;
+    };
+    let (dir, file) = setup("echo-off", FILE);
+    let line = format!(
+        "{} config set --config {} cluster.namespace -",
+        common::BIN,
+        file.display()
+    );
+    let mut command = std::process::Command::new(script);
+    command
+        .args(["-q", "-e", "-c", &line, "/dev/null"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    common::isolate(&mut command, &dir);
+    let mut child = command.spawn().unwrap();
+    let transcript = Arc::new(Mutex::new(Vec::new()));
+    let mut out = child.stdout.take().unwrap();
+    let seen = transcript.clone();
+    let reader = std::thread::spawn(move || {
+        let mut buffer = [0u8; 256];
+        while let Ok(n) = out.read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            seen.lock().unwrap().extend_from_slice(&buffer[..n]);
+        }
+    });
+    // The prompt comes once echo is off: type only then.
+    let start = Instant::now();
+    while !String::from_utf8_lossy(&transcript.lock().unwrap())
+        .contains("value for `cluster.namespace`: ")
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "no prompt: {:?}",
+            String::from_utf8_lossy(&transcript.lock().unwrap())
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(format!("{secret}\n").as_bytes()).unwrap();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "script did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(stdin);
+    reader.join().unwrap();
+    let transcript = String::from_utf8_lossy(&transcript.lock().unwrap()).into_owned();
+    assert!(status.success(), "{status}: {transcript:?}");
+    assert!(
+        !transcript.contains(secret),
+        "the value was echoed: {transcript:?}"
+    );
+    assert!(
+        transcript.contains("set `cluster.namespace` in"),
+        "{transcript:?}"
+    );
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        written.contains(&format!("namespace = \"{secret}\"")),
+        "{written}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn unset_removes_only_the_key_s_line() {
     let (dir, file) = setup("unset", FILE);
