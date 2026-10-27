@@ -409,6 +409,67 @@ fn the_file_rotates_and_keeps_five() {
     for name in &names {
         assert!(fs::metadata(dir.join("logs").join(name)).unwrap().len() <= 100);
     }
+    // Records can hold what a user would not share: owner-only on Unix, whatever the umask.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: PathBuf| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(dir.join("logs")), 0o700);
+        for name in &names {
+            assert_eq!(mode(dir.join("logs").join(name)), 0o600, "{name}");
+        }
+    }
+}
+
+/// An existing, world-readable log file is narrowed to 0600 when the sink opens it.
+#[cfg(unix)]
+#[test]
+fn an_existing_log_file_is_narrowed() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("narrow");
+    let path = dir.join("daemon.log");
+    fs::write(&path, "old\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let mut file = RotatingFile::open(path.clone(), false, 1 << 20, FILE_COUNT).unwrap();
+    file.write("new\n").unwrap();
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+/// A message's escape sequences and carriage returns reach neither stderr nor the file raw.
+#[test]
+fn control_characters_never_reach_a_sink_raw() {
+    let dir = scratch("controls");
+    let clock = SimClock::starting_at(MonoTime(0), 0);
+    let stderr = Captured::default();
+    let file = dir.join("daemon.log");
+    let logger = Logger::new(
+        Arc::new(clock.handle()),
+        &section(LogLevel::Info, false),
+        vec![
+            Sink::Stderr {
+                out: Box::new(stderr.clone()),
+                json: false,
+                colour: false,
+            },
+            Sink::File(RotatingFile::open(file.clone(), false, 1 << 20, FILE_COUNT).unwrap()),
+        ],
+    );
+    logger.log(LogEvent::new(
+        MonoTime(0),
+        Level::Warn,
+        "syntropy_api::server",
+        "client said \x1b[2J\x1b[31mhi\rERROR forged\x07",
+    ));
+    logger.flush();
+    for text in [stderr.text(), fs::read_to_string(&file).unwrap()] {
+        let body = text.trim_end_matches('\n');
+        assert!(!body.chars().any(char::is_control), "{body:?}");
+        assert!(body.contains("\\u{1b}[2J"), "{body}");
+        assert_eq!(text.lines().count(), 1, "one line, no forged second line");
+    }
 }
 
 /// The per-OS sink test for journald (Unix): the sink sends the native protocol to a socket the

@@ -345,6 +345,30 @@ impl Sink {
     }
 }
 
+/// Creates `dir` and any missing parents, mode 0700 on Unix whatever the umask allows more of.
+fn private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// Opens `path` for appending: created mode 0600 on Unix, and narrowed to 0600 if it existed.
+fn open_private(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 /// Sends one datagram of journald's native protocol to `socket`.
 ///
 /// # Errors
@@ -369,7 +393,10 @@ pub struct RotatingFile {
 
 impl RotatingFile {
     /// Opens `path` for appending, creating its directory, rotating at `max_bytes` and keeping
-    /// `count` files in all.
+    /// `count` files in all. Records can hold what a user would not share, so on Unix a directory
+    /// this creates is mode 0700, and every log file is 0600, an existing one narrowed to it. A
+    /// directory that already exists, such as one a user named in `logging.file`, is left as it
+    /// is.
     ///
     /// # Errors
     ///
@@ -381,9 +408,9 @@ impl RotatingFile {
         count: usize,
     ) -> io::Result<RotatingFile> {
         if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
+            private_dir(dir)?;
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = open_private(&path)?;
         let written = file.metadata()?.len();
         Ok(RotatingFile {
             path,
@@ -433,10 +460,7 @@ impl RotatingFile {
                 fs::rename(&from, self.nth(n + 1))?;
             }
         }
-        self.file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
+        self.file = open_private(&self.path)?;
         self.written = 0;
         Ok(())
     }

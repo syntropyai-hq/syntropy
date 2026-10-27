@@ -52,9 +52,12 @@ mod macos {
     const OS_LOG_TYPE_DEBUG: u8 = 0x02;
     const OS_LOG_TYPE_ERROR: u8 = 0x10;
 
-    /// The format every line is logged with: one public C string. A static, so it lives in this
-    /// image, as the `os_log` macros' literal formats do.
-    static FORMAT: &[u8; 11] = b"%{public}s\0";
+    /// The format every line is logged with: one public C string. It sits in this image's
+    /// `__TEXT,__oslogstring` section, where the `os_log` macros put their formats, because the
+    /// logging system reads a message's format back from that section of the image `dso` names
+    /// when it decodes the message.
+    #[unsafe(link_section = "__TEXT,__oslogstring,cstring_literals")]
+    static FORMAT: [u8; 11] = *b"%{public}s\0";
 
     unsafe extern "C" {
         fn os_log_create(subsystem: *const c_char, category: *const c_char) -> OsLogT;

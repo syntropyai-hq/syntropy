@@ -110,7 +110,22 @@ fn colour(level: Level) -> &'static str {
     }
 }
 
-/// A value as text shows it: bare when it is a plain word, quoted otherwise.
+/// `text` with every control character escaped (`\n`, `\r`, `\u{1b}`, …), so no record can move
+/// a terminal's cursor, colour its output or forge a line.
+pub fn escape_controls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A value as text shows it: bare when it is a plain word, quoted otherwise. Quoting escapes
+/// every control character.
 fn quoted(value: &str) -> String {
     if !value.is_empty()
         && value
@@ -146,7 +161,7 @@ pub fn text(event: &LogEvent, wall: &WallClock, stamp: bool, coloured: bool) -> 
         line,
         "{}: {}",
         event.target,
-        event.message.replace('\n', "\\n")
+        escape_controls(&event.message)
     );
     for (name, value) in shown_fields(event) {
         let _ = write!(line, " {name}={}", quoted(&value));
@@ -308,6 +323,21 @@ mod tests {
         assert_eq!(object["link"], "eth0");
         assert_eq!(object["repeated"], 7);
         assert_eq!(object["ts"], "1970-01-01T00:00:00.001000Z");
+    }
+
+    /// A message cannot carry a terminal escape or a forged line into text.
+    #[test]
+    fn control_characters_are_escaped() {
+        let wall = WallClock::new(0, MonoTime(0));
+        let mut e = event();
+        e.message = "a\x1b[31mred\nINFO forged\r".to_owned();
+        e.fields.clear();
+        let line = text(&e, &wall, false, false);
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(line.ends_with("a\\u{1b}[31mred\\nINFO forged\\r"), "{line}");
+        e.fields
+            .push(Field::new("v", Value::Str("x\x07y".to_owned())));
+        assert!(!text(&e, &wall, false, false).chars().any(char::is_control));
     }
 
     #[test]
