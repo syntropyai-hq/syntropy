@@ -31,7 +31,8 @@ pub enum SourceRole {
 }
 
 impl SourceRole {
-    /// Every role.
+    /// Every role, each at its [`position`](Self::position); a build-time check below holds
+    /// the two together. A new role takes the next position and is added here.
     pub const ALL: [SourceRole; 7] = [
         SourceRole::Weights,
         SourceRole::WeightIndex,
@@ -58,10 +59,35 @@ impl SourceRole {
         }
     }
 
-    /// The role named `name`, the inverse of [`name`](Self::name).
+    /// The role named `name`, the inverse of [`name`](Self::name). It does not go through
+    /// [`ALL`](Self::ALL), so a role left out of `ALL` still reads back.
     #[must_use]
     pub fn from_name(name: &str) -> Option<SourceRole> {
-        SourceRole::ALL.into_iter().find(|r| r.name() == name)
+        Some(match name {
+            "weights" => SourceRole::Weights,
+            "weight_index" => SourceRole::WeightIndex,
+            "config" => SourceRole::Config,
+            "generation_config" => SourceRole::GenerationConfig,
+            "tokenizer" => SourceRole::Tokenizer,
+            "tokenizer_config" => SourceRole::TokenizerConfig,
+            "special_tokens_map" => SourceRole::SpecialTokensMap,
+            _ => return None,
+        })
+    }
+
+    /// Where the role sits in [`ALL`](Self::ALL). The match names every role, so a new role
+    /// fails to compile here until it has a position.
+    #[must_use]
+    pub const fn position(self) -> usize {
+        match self {
+            SourceRole::Weights => 0,
+            SourceRole::WeightIndex => 1,
+            SourceRole::Config => 2,
+            SourceRole::GenerationConfig => 3,
+            SourceRole::Tokenizer => 4,
+            SourceRole::TokenizerConfig => 5,
+            SourceRole::SpecialTokensMap => 6,
+        }
     }
 
     /// Whether RFC-0041 §1's `ModelId` hashes a file of this role. It is defined by
@@ -71,6 +97,21 @@ impl SourceRole {
         crate::identity::role_code(self).is_some()
     }
 }
+
+// The build fails unless `ALL` lists each role at its position, so `ALL` cannot skip, repeat or
+// reorder a role. A new role must first get a position (`position`'s match is exhaustive); one
+// given the next position and left out of `ALL` is not caught here, which only `ALL` growing
+// with it fixes. `from_name` does not read `ALL`, so such a role still reads back from a record.
+const _: () = {
+    let mut i = 0;
+    while i < SourceRole::ALL.len() {
+        assert!(
+            SourceRole::ALL[i].position() == i,
+            "SourceRole::ALL must list each role at its position"
+        );
+        i += 1;
+    }
+};
 
 /// The side files RFC-0041 §2.2 names, with their roles.
 pub const SIDE_FILES: [(&str, SourceRole); 5] = [
