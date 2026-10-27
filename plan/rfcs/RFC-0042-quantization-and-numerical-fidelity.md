@@ -239,6 +239,10 @@ An instance's `kv_dtype` override (RFC-0043 §10; RFC-0054 §5.4) is applied ins
 
 The override also never changes a declared FP8 cache, even to a wider dtype. That cache's rounding is part of the reference, which ADR-0019 compares against, and no test bounds what removing it does to the output. Whether raising a declared cache should be allowed is likewise **open for the maintainers**.
 
+**Revision note, 2026-10-28 (after COMP-E13-T06; the review of #1939): what BF16 over F16, and a widening override, cost.**
+- **BF16 over an F16 default is not a precision gain.** BF16 has more range than F16 but 3 fewer significand bits: 7 stored bits, against F16's 10. So every K, V and latent is rounded more coarsely than the reference stores it. RFC-0043 §10 sanctions it, to stop F16 overflow. It sits against ADR-0019 decision 5, "No exact-mode path lowers stored KV precision". How the two are reconciled is **open for the maintainers**.
+- **A widening override is not bit-exact with the reference** (review-1889's N2). F32 over a 16-bit default, or BF16 over F16, changes the stored KV, so the output differs from the reference's. ADR-0019 decision 4 classifies a path by measurement. No parity task measures an overridden KV dtype yet, so whether such an instance stays within tolerance is unmeasured.
+
 #### 4.3 Activation quantisation inside a matrix product
 
 A kernel that converts its activation input to a narrower type before multiplying changes the result. The rule (ADR-0421):
