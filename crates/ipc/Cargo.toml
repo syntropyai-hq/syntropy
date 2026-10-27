@@ -23,10 +23,12 @@ serde_json = { workspace = true }
 
 # `AsyncListener`, the owner-only endpoint for servers on tokio: the API's local socket on the
 # daemon's `ctl` runtime (RFC-0050 §1.1, PROD-E2-T01). `net` gives its Unix socket and named
-# pipe types. `ipc` is not a compute crate, so rule 3 of RFC-0001 §4.2 allows it. Not under
-# `--cfg loom`, which tokio does not build under: the loom suite leaves the async half out.
+# pipe types. `ipc` is not a compute crate, so rule 3 of RFC-0001 §4.2 allows it. Optional, behind
+# the `async` feature, so the runner, which only speaks the command channel, does not link it
+# through `ipc`. Not under `--cfg loom`, which tokio does not build under: the loom suite leaves
+# the async half out.
 [target.'cfg(not(loom))'.dependencies]
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net"], optional = true }
 
 # The async listener's tests read and write through `AsyncReadExt` and `AsyncWriteExt`.
 [target.'cfg(not(loom))'.dev-dependencies]
@@ -55,6 +57,11 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
+
+[features]
+# The async endpoint and stream on tokio (`cmd::AsyncListener`, `cmd::connect_async`), which the
+# API's local socket uses. Off by default; `syntropy-api` turns it on.
+async = ["dep:tokio"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }

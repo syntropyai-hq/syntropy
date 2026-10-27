@@ -167,8 +167,10 @@ impl Listener {
     /// Listens on `endpoint`.
     ///
     /// A socket's directory is created with mode 0700, or, if it exists, must be a directory (not
-    /// a link) owned by this user with no permissions for group or others. The socket itself must
-    /// not exist yet. A pipe is created with a protected DACL that grants this user alone, and
+    /// a link) owned by this user with no permissions for group or others. A socket file already
+    /// at the path is taken over only when it is stale: a socket, not a link, owned by this user,
+    /// that no process accepts on, as a daemon killed without its cleanup leaves. A live socket
+    /// keeps the bind failing with `AddrInUse`. A pipe is created with a protected DACL that grants this user alone, and
     /// must be the pipe's first instance, so no other process holds the name.
     pub fn bind(endpoint: &Endpoint) -> io::Result<Listener> {
         Ok(Listener {
@@ -213,9 +215,9 @@ pub fn connect(endpoint: &Endpoint) -> io::Result<Stream> {
     imp::connect(endpoint).map(Stream)
 }
 
-/// The async endpoint and stream, on tokio. Not under loom: the loom suite builds this crate with
-/// `--cfg loom`, which tokio does not build under.
-#[cfg(not(loom))]
+/// The async endpoint and stream, on tokio, with the `async` feature. Not under loom: the loom
+/// suite builds this crate with `--cfg loom`, which tokio does not build under.
+#[cfg(all(feature = "async", not(loom)))]
 mod aio {
     use std::io;
     #[cfg(all(test, any(target_os = "linux", target_vendor = "apple")))]
@@ -343,9 +345,9 @@ mod aio {
     }
 }
 
-#[cfg(all(windows, not(loom)))]
+#[cfg(all(windows, feature = "async", not(loom)))]
 pub use aio::user_pipe;
-#[cfg(not(loom))]
+#[cfg(all(feature = "async", not(loom)))]
 pub use aio::{AsyncListener, AsyncStream, connect_async};
 
 /// The error for an endpoint of another OS's kind.
@@ -361,7 +363,7 @@ mod imp {
     use std::fs;
     use std::io;
     use std::os::fd::{AsFd, BorrowedFd};
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
 
@@ -429,11 +431,45 @@ mod imp {
         Ok(path)
     }
 
+    /// Binds a socket at `path`, in a directory [`prepare`] made owner-only.
+    ///
+    /// A daemon killed without its cleanup (SIGKILL, the OOM killer, a crash) leaves its socket
+    /// file behind, and binding over it fails with `AddrInUse`. So a socket file at `path` that
+    /// refuses connections is stale, and is removed before a second bind. It is removed only when
+    /// it is a socket owned by this user, read without following a link. A socket that accepts the
+    /// connection belongs to a live listener, and the bind fails. The directory admits this user
+    /// alone, so no other user can race the check.
+    fn bind_socket(path: &Path) -> io::Result<UnixListener> {
+        let in_use = match UnixListener::bind(path) {
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse => error,
+            other => return other,
+        };
+        match UnixStream::connect(path) {
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {}
+            // A live listener, or a path that cannot be checked: the bind stays refused.
+            _ => return Err(in_use),
+        }
+        let meta = fs::symlink_metadata(path)?;
+        if !meta.file_type().is_socket() || meta.uid() != euid() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "{}: the path is taken by something other than a stale socket of user {}, so \
+                     it is left in place",
+                    path.display(),
+                    euid()
+                ),
+            ));
+        }
+        fs::remove_file(path)?;
+        UnixListener::bind(path)
+    }
+
     impl Listener {
         pub(super) fn bind(endpoint: &Endpoint) -> io::Result<Listener> {
             let path = prepare(endpoint)?;
             Ok(Listener {
-                socket: UnixListener::bind(path)?,
+                socket: bind_socket(path)?,
                 path: path.to_path_buf(),
             })
         }
@@ -523,18 +559,18 @@ mod imp {
         UnixStream::connect(path)
     }
 
-    /// The async listener, on tokio; not under loom, which tokio does not build under.
-    #[cfg(not(loom))]
+    /// The async listener, on tokio, with the `async` feature; not under loom, which tokio does
+    /// not build under.
+    #[cfg(all(feature = "async", not(loom)))]
     pub(in super::super) mod aio {
         use std::fs;
         use std::io;
         use std::os::fd::AsFd;
         use std::os::unix::fs::PermissionsExt;
-        use std::os::unix::net::UnixListener;
         use std::path::PathBuf;
 
         use super::super::{AcceptError, Endpoint, Peer, unsupported};
-        use super::{check, prepare};
+        use super::{bind_socket, check, prepare};
 
         pub(in crate::cmd::os) type AsyncStream = tokio::net::UnixStream;
 
@@ -547,7 +583,7 @@ mod imp {
         impl AsyncListener {
             pub(in crate::cmd::os) fn bind(endpoint: &Endpoint) -> io::Result<AsyncListener> {
                 let path = prepare(endpoint)?;
-                let socket = UnixListener::bind(path)?;
+                let socket = bind_socket(path)?;
                 // From here the name is ours, so a failure removes it.
                 let listen = || {
                     // The socket is owner-only too (RFC-0050 §1.1), though the directory already
@@ -570,7 +606,7 @@ mod imp {
 
             #[cfg(test)]
             pub(in crate::cmd::os) fn from_std(
-                socket: UnixListener,
+                socket: std::os::unix::net::UnixListener,
                 path: PathBuf,
             ) -> io::Result<AsyncListener> {
                 socket.set_nonblocking(true)?;
@@ -819,8 +855,9 @@ mod imp {
         ))
     }
 
-    /// The async listener, on tokio; not under loom, which tokio does not build under.
-    #[cfg(not(loom))]
+    /// The async listener, on tokio, with the `async` feature; not under loom, which tokio does
+    /// not build under.
+    #[cfg(all(feature = "async", not(loom)))]
     pub(in super::super) mod aio {
         use std::ffi::OsString;
         use std::io;

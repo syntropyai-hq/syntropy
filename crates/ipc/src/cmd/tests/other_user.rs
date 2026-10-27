@@ -29,7 +29,9 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::super::{AcceptError, AsyncListener, Endpoint, Listener, Peer};
+#[cfg(feature = "async")]
+use super::super::AsyncListener;
+use super::super::{AcceptError, Endpoint, Listener, Peer};
 
 /// The second account's name.
 const USER: &str = "SYNTROPY_IPC_PEER_USER";
@@ -104,6 +106,7 @@ fn a_connection_from_another_user_is_refused() {
     fs::remove_dir_all(&base).unwrap();
 }
 
+#[cfg(feature = "async")]
 #[test]
 fn an_async_connection_from_another_user_is_refused() {
     // The copy runs only the test above.

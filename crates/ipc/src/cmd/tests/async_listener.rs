@@ -4,7 +4,8 @@
 //!
 //! - A connection of this user is accepted, and the peer the OS reported comes with it.
 //! - On Linux and Apple platforms the directory has mode 0700 and the socket 0600, and the socket
-//!   goes with the listener.
+//!   goes with the listener. A stale socket, as a killed daemon leaves, is taken over; a live one,
+//!   a regular file or a link is not.
 //! - On Windows the pipe name must be free: no second listener, async or not, can take it.
 //!
 //! A peer of another user is refused in `other_user`, beside the blocking listener's case.
@@ -96,6 +97,16 @@ fn the_directory_is_0700_the_socket_0600_and_both_go_with_the_listener() {
     drop(listener);
     assert!(!path.exists());
     remove_dir(&endpoint);
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn bind_takes_over_a_stale_socket_and_nothing_else() {
+    let rt = runtime();
+    let _context = rt.enter();
+    super::unix::stale_socket_cases(&|endpoint| {
+        AsyncListener::bind(endpoint).map(|l| Box::new(l) as Box<dyn std::any::Any>)
+    });
 }
 
 #[cfg(windows)]

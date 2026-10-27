@@ -37,7 +37,9 @@ use windows_sys::Win32::System::Threading::{
     LOGON_WITH_PROFILE, PROCESS_INFORMATION, STARTUPINFOW, WaitForSingleObject,
 };
 
-use super::super::{AcceptError, AsyncListener, Endpoint, Listener, Peer, connect};
+#[cfg(feature = "async")]
+use super::super::AsyncListener;
+use super::super::{AcceptError, Endpoint, Listener, Peer, connect};
 use crate::shm::UserSid;
 
 /// The second account's name.
@@ -136,6 +138,7 @@ fn a_connection_from_another_user_is_refused() {
     }
 }
 
+#[cfg(feature = "async")]
 #[test]
 fn an_async_connection_from_another_user_is_refused() {
     // The copy runs only the test above.
