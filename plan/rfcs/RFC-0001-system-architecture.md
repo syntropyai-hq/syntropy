@@ -323,7 +323,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 
 *Note 2026-10-27 (amendment, §18.40):* `cli` depends on `api` and `ipc`. Its native-API client reads and writes the `syntropy-api` types the server uses, so the two cannot disagree about a field (RFC-0051 §1), and it reaches the local socket through `ipc::cmd::connect_async`. Both edges point to lower layers (rule 2).
 
-*Note 2026-10-27 (amendment, §18.40):* `api` depends on `spsc`. The ingress pipeline (RFC-0050 §2, PROD-E2-T02) holds the daemon side's `local_sequences` producer and `local_tokens` consumer, which `ipc`'s region hands out as `spsc`'s shared ring ends, and it names their types. The `unsafe` stays in `spsc` and `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and `api` is not a compute crate (rule 3).
+*Note 2026-10-27 (amendment, §18.41):* `api` depends on `spsc`. The ingress pipeline (RFC-0050 §2, PROD-E2-T02) holds the daemon side's `local_sequences` producer and `local_tokens` consumer, which `ipc`'s region hands out as `spsc`'s shared ring ends, and it names their types. The `unsafe` stays in `spsc` and `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and `api` is not a compute crate (rule 3).
 
 *Note 2026-10-27 (amendment, §18.42):* `cli` depends on `cluster`, `net` and `sched` for their configuration sections. `config show --resolved`, `config check` and `config path` (RFC-0054 §2.2, §8) resolve over the binary's section registry, which holds every section of the crates the binary links; `cluster`, `net` and `sched` declare theirs, and `cli` is the one crate above all three. All three edges point to lower layers (rule 2).
 
@@ -2980,7 +2980,7 @@ PROD-E6-T01 builds the CLI skeleton of RFC-0051 §1–§2.
 |---|---|---|
 | `cli` depends on `api` and `ipc` | §4.1 (row and dated note) | the client uses the server's `syntropy-api` types, as RFC-0051 §1 requires, and the local socket's client end in `ipc`. For the maintainers to confirm |
 
-### 18.40 `api` holds the local rings' ends (2026-10-27)
+### 18.41 `api` holds the local rings' ends (2026-10-27)
 
 | Change | Sections touched | Reason |
 |---|---|---|
