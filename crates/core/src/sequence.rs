@@ -64,6 +64,23 @@ pub enum Priority {
     Background,
 }
 
+/// How a sequence ended on a runner, which the runner reports in `SequenceEnded` (RFC-0001 §3.5,
+/// note of 2026-10-23; DIST-E1-T15). Over the command channel it is postcard-encoded, so a variant
+/// is only ever appended. Owner: RFC-0001.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SequenceOutcome {
+    /// It finished.
+    Finished,
+    /// It failed, with the error's class (RFC-0001 §5.12).
+    Failed(crate::ErrorClass),
+    /// It moved to the plan epoch `to` (RFC-0033 §5), where it continues.
+    Migrated {
+        /// The epoch it continues on.
+        to: crate::PlanEpoch,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::Priority;
