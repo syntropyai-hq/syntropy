@@ -41,6 +41,13 @@
 //! [`RunnerChannel::handshake`] checks that its build ID is the runner's own. Adopting a runner of
 //! another build, which needs an equal protocol instead, is RFC-0052 §6.5's (DIST-E1-T08).
 //!
+//! **In-process transport.** A channel runs over a [`Transport`]: the OS [`Stream`] above, or
+//! [`memory::MemoryStream`], a connected pair in one process, for a runner the daemon hosts on its
+//! own threads (`RunnerHost::InProcess`, RFC-0001 §3.1; ADR-0015 item 7; DIST-E1-T11). The framing
+//! and the encoding are the same over both. [`memory_channel`] gives a connected daemon end and
+//! runner end, and [`DaemonChannel::handshake_in_process`] checks the in-process runner's `Hello`
+//! against this process's ID.
+//!
 //! **Fault plans (test builds only).** With the `fault-injection` feature, a test daemon can push
 //! a fault plan to a runner (RFC-0060 §9.2; DIST-E1-T13): `DaemonFrame::SetFaultPlan`, answered
 //! by `RunnerFrame::FaultPlanSet`, at the fixed wire index `TEST_VARIANT` (2²⁰) above every
@@ -63,6 +70,7 @@ use serde::de::DeserializeOwned;
 use crate::shm::IpcProtocol;
 
 mod frame;
+pub mod memory;
 mod msg;
 mod os;
 
@@ -101,24 +109,46 @@ pub use fault::{
 /// major moves.
 pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 3, minor: 0 };
 
-/// One end of a command channel, which sends `S` and receives `R`.
+/// The byte stream a command channel runs over: an OS [`Stream`] between processes, or a
+/// [`memory::MemoryStream`] between threads of one process (RFC-0001 §3.1, `RunnerHost::InProcess`;
+/// DIST-E1-T11). A channel frames and encodes the same way over either, so the two are
+/// interchangeable.
+pub trait Transport: Read + Write + Send + fmt::Debug {}
+
+impl Transport for Stream {}
+
+impl Transport for memory::MemoryStream {}
+
+/// One end of a command channel, which sends `S` and receives `R` over a [`Transport`], by
+/// default an OS [`Stream`].
 ///
 /// After an error from [`recv`](Channel::recv) other than [`FrameError::Malformed`] or
 /// [`FrameError::Trailing`], the stream is no longer at a frame boundary, and the channel should
 /// be dropped.
-pub struct Channel<S, R> {
-    stream: Stream,
+pub struct Channel<S, R, T: Transport = Stream> {
+    stream: T,
     sent: u64,
     types: PhantomData<fn(S) -> R>,
 }
 
 /// The daemon's end of a channel to a runner.
-pub type DaemonChannel = Channel<DaemonMsg, RunnerMsg>;
+pub type DaemonChannel<T = Stream> = Channel<DaemonMsg, RunnerMsg, T>;
 
 /// A runner's end of its channel to the daemon.
-pub type RunnerChannel = Channel<RunnerMsg, DaemonMsg>;
+pub type RunnerChannel<T = Stream> = Channel<RunnerMsg, DaemonMsg, T>;
 
-impl<S, R> fmt::Debug for Channel<S, R> {
+/// A connected daemon end and runner end in one process, over a [`memory::pair`]: the channel
+/// of a runner the daemon hosts in-process.
+#[must_use]
+pub fn memory_channel() -> (
+    DaemonChannel<memory::MemoryStream>,
+    RunnerChannel<memory::MemoryStream>,
+) {
+    let (daemon, runner) = memory::pair();
+    (Channel::new(daemon), Channel::new(runner))
+}
+
+impl<S, R, T: Transport> fmt::Debug for Channel<S, R, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Channel")
             .field("stream", &self.stream)
@@ -127,9 +157,9 @@ impl<S, R> fmt::Debug for Channel<S, R> {
     }
 }
 
-impl<S: Serialize, R: DeserializeOwned> Channel<S, R> {
+impl<S: Serialize, R: DeserializeOwned, T: Transport> Channel<S, R, T> {
     /// A channel over a connected stream.
-    pub fn new(stream: Stream) -> Channel<S, R> {
+    pub fn new(stream: T) -> Channel<S, R, T> {
         Channel {
             stream,
             sent: 0,
@@ -190,12 +220,18 @@ impl<S: Serialize, R: DeserializeOwned> Channel<S, R> {
     }
 
     /// The stream under the channel.
-    pub fn stream(&self) -> &Stream {
+    pub fn stream(&self) -> &T {
         &self.stream
+    }
+
+    /// The stream under the channel, to change its mode, such as a memory stream's
+    /// non-blocking reads.
+    pub fn stream_mut(&mut self) -> &mut T {
+        &mut self.stream
     }
 }
 
-impl Channel<DaemonMsg, RunnerMsg> {
+impl<T: Transport> Channel<DaemonMsg, RunnerMsg, T> {
     /// The daemon's side of a spawned runner's handshake: waits for the runner's `Hello`, and
     /// checks that the runner is this build (`build_id`), speaks [`PROTOCOL`] and is the process
     /// `runner`. On any failure it kills and reaps `runner` (ADR-0015 item 1).
@@ -209,6 +245,18 @@ impl Channel<DaemonMsg, RunnerMsg> {
                 Err(Refused { cause, exit })
             }
         }
+    }
+
+    /// The daemon's side of the handshake with a runner it hosts in-process
+    /// (`RunnerHost::InProcess`): as [`handshake`](Self::handshake), but the runner shares the
+    /// daemon's process, so its `Hello` must name this process's ID, and on a failure there is no
+    /// process to kill. The caller ends the runner's thread.
+    ///
+    /// # Errors
+    ///
+    /// [`HandshakeError`] as for [`handshake`](Self::handshake).
+    pub fn handshake_in_process(&mut self, build_id: &[u8; 32]) -> Result<Hello, HandshakeError> {
+        self.check_hello(std::process::id(), build_id)
     }
 
     fn check_hello(&mut self, pid: u32, build_id: &[u8; 32]) -> Result<Hello, HandshakeError> {
@@ -238,7 +286,7 @@ impl Channel<DaemonMsg, RunnerMsg> {
     }
 }
 
-impl Channel<RunnerMsg, DaemonMsg> {
+impl<T: Transport> Channel<RunnerMsg, DaemonMsg, T> {
     /// The runner's side of the handshake: sends `hello`, waits for `Init`, and checks that `Init`
     /// comes from a daemon of the runner's own build. On an error the runner exits.
     pub fn handshake(&mut self, hello: &Hello) -> Result<Init, HandshakeError> {
