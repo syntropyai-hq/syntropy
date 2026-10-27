@@ -48,11 +48,12 @@ use crate::prompt;
 const NET: &[&SectionSchema] = syntropy_net::config::SECTIONS;
 /// `syntropy-cluster`'s sections.
 const CLUSTER: &[&SectionSchema] = syntropy_cluster::config::SECTIONS;
-/// The sections of crates that declare one each: the API's listeners, the debug endpoints and
-/// the scheduler's instance keys.
-const SINGLES: [&SectionSchema; 3] = [
+/// The sections of crates that declare one each: the API's listeners, the debug endpoints, the
+/// node's logging and the scheduler's instance keys.
+const SINGLES: [&SectionSchema; 4] = [
     &ApiSection::SCHEMA,
     &DebugSection::SCHEMA,
+    &syntropy_config::logging::LoggingSection::SCHEMA,
     &syntropy_sched::SchedSection::SCHEMA,
 ];
 
@@ -840,6 +841,7 @@ mod tests {
         for prefix in [
             "api.bind",
             "debug.parity_api",
+            "logging.include_content",
             "net.listen_port",
             "discovery.port",
             "swim.period",
@@ -847,7 +849,7 @@ mod tests {
         ] {
             assert!(REGISTRY.key(prefix).is_some(), "{prefix}");
         }
-        assert_eq!(COUNT, NET.len() + CLUSTER.len() + 3);
+        assert_eq!(COUNT, NET.len() + CLUSTER.len() + 4);
     }
 
     /// `check` prints its summary as the report after the diagnostics, which holds while
@@ -872,7 +874,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// The registry is the linked crates' lists, then the three single sections, in that order,
+    /// The registry is the linked crates' lists, then the four single sections, in that order,
     /// by prefix and count.
     #[test]
     fn the_registry_is_net_then_cluster_then_the_singles() {
@@ -886,8 +888,8 @@ mod tests {
         assert_eq!(got, want);
         assert_eq!(
             got.len(),
-            32,
-            "the sections the workspace declares on 2026-10-27"
+            33,
+            "the sections the workspace declares on 2026-10-27, `logging` included"
         );
     }
 

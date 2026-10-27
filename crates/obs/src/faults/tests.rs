@@ -703,6 +703,18 @@ mod injected {
         };
         assert_eq!(FaultPlan::from_toml(text).unwrap(), expected);
         assert_eq!(FaultPlan::from_toml("").unwrap(), FaultPlan::default());
+        // `to_toml` writes what `from_toml` reads back, every trigger, effect and filter
+        // included: the form the command channel carries (DIST-E1-T13).
+        let written = expected.to_toml().unwrap();
+        assert_eq!(
+            FaultPlan::from_toml(&written).unwrap(),
+            expected,
+            "{written}"
+        );
+        assert_eq!(
+            FaultPlan::from_toml(&FaultPlan::default().to_toml().unwrap()).unwrap(),
+            FaultPlan::default()
+        );
     }
 
     #[test]

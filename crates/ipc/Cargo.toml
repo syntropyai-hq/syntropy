@@ -16,6 +16,8 @@ smallvec = { workspace = true }
 syntropy-core = { path = "../core" }
 # The shared rings (RFC-0001 §4.2 rule 2, note of 2026-10-22: `ipc` may depend on `spsc`).
 syntropy-spsc = { path = "../spsc" }
+# Fault plans over the command channel, with `fault-injection` only (RFC-0060 §9.2; DIST-E1-T13).
+syntropy-obs = { path = "../obs", optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
@@ -64,6 +66,11 @@ windows-sys = { version = "0.61.2", features = [
 # The async endpoint and stream on tokio (`cmd::AsyncListener`, `cmd::connect_async`), which the
 # API's local socket uses. Off by default; `syntropy-api` turns it on.
 async = ["dep:tokio"]
+# Test-only (RFC-0001 §4.2 rule 10): the command channel's fault-plan message, `DaemonFrame::
+# SetFaultPlan`, and its handler, which installs the plan with `obs`'s fault points compiled in
+# (RFC-0060 §9.2; DIST-E1-T13). Release artefacts never enable it; `cargo xtask check-deps` rule 10
+# checks that.
+fault-injection = ["dep:syntropy-obs", "syntropy-obs/fault-injection"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }

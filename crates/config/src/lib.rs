@@ -20,6 +20,8 @@
 //! - the debug-key gates of §7.1 ([`DebugSection`]): the three `debug.*` keys, the loopback
 //!   predicate the API applies to the debug endpoints, the warning a [`ResolvedConfig`] carries
 //!   while any key is on, and the predicate for a manifest signed by the CI test key;
+//! - the `[logging]` section ([`logging::LoggingSection`], RFC-0053 §4; PROD-E8-T04), with the
+//!   warning a [`ResolvedConfig`] carries while `logging.include_content` is on;
 //! - the validation of RFC-0054 §8 (PROD-E1-T03): [`load_and_validate`] runs phases 1–5 and keeps
 //!   every error, each a [`Problem`] with its [`Code`], and [`diagnostic::render`] prints them in
 //!   §8's format without ever showing a secret;
@@ -139,6 +141,7 @@ mod discovery;
 mod env;
 mod holds_secret;
 mod instance;
+pub mod logging;
 mod origin;
 mod registry;
 mod render;

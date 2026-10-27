@@ -285,6 +285,19 @@ Command-channel messages:
 
 Each added message or field changes the postcard layout, so it bumps `ipc_protocol` (§5, note of 2026-10-22).
 
+*Note 2026-10-27 (proposed, §18.44; DIST-E1-T13): a test-only message pair.* RFC-0060 §9.2's fault plans are "pushed over IPC in tests". Builds with the test-only `fault-injection` feature (§4.2 rule 10) add one message each way:
+
+| Direction | Message | Purpose |
+|---|---|---|
+| D → R | `SetFaultPlan(toml: String)` | install a `FaultPlan`, as TOML, with `syntropy_obs::faults::install` on the runner's clock |
+| R → D | `FaultPlanSet(Result<(), String>)` | the install's result; on an error the plan installed before stays |
+
+- **The wire index.** Both sit at a fixed wire index, `TEST_VARIANT` = 2²⁰, far above every production variant. Production variants are numbered by their order from 0, and new ones are appended, so the test messages never move them, and a production message's frame is byte for byte the same in both builds.
+- **The types.** In code they are the `ipc::cmd::DaemonFrame` and `RunnerFrame` enums, which wrap `DaemonMsg` and `RunnerMsg`. The production enums gain no variant.
+- **A production build** has neither type, and reads index 2²⁰ as an unknown variant, so it refuses the frame.
+- **The plan's form.** The plan travels as TOML, the form `FaultPlan::from_toml` reads and checks: the plan's types skip absent fields when they serialize, which postcard cannot read back.
+- **`ipc_protocol`.** Not bumped: no production message or field changes.
+
 *Note 2026-10-28 (as built, proposed, §18.45; DIST-E1-T05): protocol 2.0.*
 - **`StateChanged`'s `state` is a `RunnerState`, and `ipc_protocol` moves from 1.1 to 2.0.** The change replaces a field's type rather than appending a variant. A 1.x peer would read the new variant index and fields as the old `u32`, so it is an incompatible change, and a major bump marks it. `Hello` keeps variant 0 and its layout, so a 1.x peer and a 2.0 peer still reach the version check. An adoption across the bump fails that check, so the runner drains and restarts (§3.4, RFC-0052 §6.5).
 - **The shared-memory header's state word** is `RunnerStateKind::discriminant()`: the kind's position in the declaration order above, from 0.
@@ -3023,6 +3036,12 @@ PROD-E6-T23 builds `config show --resolved`, `config check` and `config path` in
 | `TelemetryRecord`'s deltas name a `SeriesId`, one metric with its label values bound at registration, not a `MetricId`; a new last variant, `Series`, tells the daemon each ID's metric and label values before any record uses it | RFC-0053 §1 (dated revision), §2.1 (note) | a `MetricId` cannot tell two label sets of one metric apart, and labels are bound at registration (RFC-0053 §2.1), so the record needs the bound series' ID. Each change to the record's variants changes the ring's record schema, which `ipc_protocol` covers |
 
 Taken under the maintainers' standing instruction, for the maintainers to confirm.
+
+### 18.44 A test-only fault-plan message on the command channel (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| With `fault-injection` only, `SetFaultPlan(toml)` daemon → runner and `FaultPlanSet(result)` runner → daemon, at the fixed wire index 2²⁰ above every production variant; production builds have neither and refuse the frame as an unknown variant; `ipc_protocol` unchanged | §3.5 (dated note); RFC-0060 §9.2 (dated note) | RFC-0060 §9.2 pushes fault plans "over IPC in tests", and §3.5 had no message for it (DIST-E1-T13, split from QUAL-E9-T01). A fixed index keeps the production indices, and every frame of a production message, the same whether or not the feature is on, whatever production variants are appended later. Proposed for the maintainers to accept |
 
 ### 18.45 The runner lifecycle machine as built (2026-10-28)
 

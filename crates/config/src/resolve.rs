@@ -531,6 +531,8 @@ impl ResolvedConfig {
         };
         // A `debug.*` key that is on is accepted with a warning (RFC-0054 §7.1, §8 phase 4).
         config.warnings.extend(crate::debug::warnings(&config));
+        // So is `logging.include_content` (RFC-0053 §4.3).
+        config.warnings.extend(crate::logging::warnings(&config));
         Ok(config)
     }
 
