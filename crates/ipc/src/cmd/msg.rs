@@ -18,7 +18,7 @@ use syntropy_core::runner::{Deadline, DrainReason};
 use syntropy_core::sequence::SequenceOutcome;
 use syntropy_core::{
     Blake3, Bytes, CancelReason, InstanceId, NodeId, PlacementPlan, PlanDelta, PlanEpoch,
-    PressureLevel, SequenceId, StageIx, TierId,
+    PressureLevel, RunnerState, SequenceId, StageIx, TierId,
 };
 
 use crate::shm::{IpcProtocol, ShmLayout};
@@ -120,11 +120,14 @@ pub enum RunnerMsg {
     /// a new `ipc_protocol` major version. So a daemon of any build reads any runner's `Hello`,
     /// and refuses a mismatch by its build ID or protocol rather than by a decode error.
     Hello(Hello),
-    /// A lifecycle transition. The daemon forwards it as `ClusterCommand::ReportRunner`.
+    /// A lifecycle transition (RFC-0001 §3.3). The daemon forwards it as
+    /// `ClusterCommand::ReportRunner`. Since protocol 2.0 it carries the whole [`RunnerState`];
+    /// the shared-memory header keeps the kind's `u32` ([`RunnerStateKind::discriminant`]).
+    ///
+    /// [`RunnerStateKind::discriminant`]: syntropy_core::RunnerStateKind::discriminant
     StateChanged {
-        /// The new state, as its `RunnerState` discriminant: the type is DIST-E1-T05's, and
-        /// the shared-memory header carries the same `u32`.
-        state: u32,
+        /// The new state.
+        state: RunnerState,
         /// The epoch of the plan the runner serves.
         epoch: PlanEpoch,
     },

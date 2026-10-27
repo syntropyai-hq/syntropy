@@ -4,3 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+# `RunnerState` and the transition table (RFC-0001 §3.3, §5.11).
+syntropy-core = { path = "../core" }
+# `RunnerMsg::StateChanged`, the message each transition sends (RFC-0001 §3.5).
+syntropy-ipc = { path = "../ipc" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+smallvec = { workspace = true }

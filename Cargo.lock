@@ -4166,6 +4166,12 @@ dependencies = [
 [[package]]
 name = "syntropy-runner"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "smallvec",
+ "syntropy-core",
+ "syntropy-ipc",
+]
 
 [[package]]
 name = "syntropy-sched"

@@ -5,8 +5,8 @@
 //! With `fault-injection`, this test binary plays a test daemon and runs itself again as the
 //! runner, which connects to the daemon's endpoint and serves `SetFaultPlan` with
 //! `install_fault_plan` on its clock, as the runner (DIST-E1-T04, T05) will. Each `Ping` makes
-//! the runner reach the fault point `ipc.test.point` and report, in a `StateChanged` reply, what
-//! the point did. Without the feature, the binary checks that the frame such a daemon sends is
+//! the runner reach the fault point `ipc.test.point` and report, in a `StateChanged` reply's
+//! `Ready { live_sequences }`, what the point did. Without the feature, the binary checks that the frame such a daemon sends is
 //! refused as an unknown variant.
 //!
 //! `cargo test --workspace` builds `ipc` without the feature, and `cargo xtask test unit` runs it
@@ -90,7 +90,7 @@ mod with_fault_injection {
     use std::thread;
     use std::time::Duration;
 
-    use syntropy_core::{Clock, ErrorClass, MonoTime, NodeId, PlanEpoch};
+    use syntropy_core::{Clock, ErrorClass, MonoTime, NodeId, PlanEpoch, RunnerState};
     use syntropy_ipc::cmd::{
         DaemonFrame, DaemonMsg, Endpoint, Envelope, FaultDaemonChannel, FaultRunnerChannel,
         Listener, RequestId, RunnerFrame, RunnerMsg, TEST_VARIANT, connect, decode_frame,
@@ -120,7 +120,8 @@ mod with_fault_injection {
         }
     }
 
-    /// What the fault point did, as the runner reports it in `StateChanged::state`.
+    /// What the fault point did, as the runner reports it in `StateChanged`'s
+    /// `Ready { live_sequences }`.
     fn code(effect: FaultEffect) -> u32 {
         match effect {
             FaultEffect::None => 0,
@@ -147,7 +148,10 @@ mod with_fault_injection {
                 DaemonFrame::Msg(DaemonMsg::Ping) => {
                     let effect = syntropy_obs::fault_point!("ipc.test.point");
                     RunnerFrame::Msg(RunnerMsg::StateChanged {
-                        state: code(effect),
+                        state: RunnerState::Ready {
+                            live_sequences: code(effect),
+                            degraded: None,
+                        },
                         epoch: PlanEpoch::default(),
                     })
                 }
@@ -199,7 +203,10 @@ mod with_fault_injection {
     /// What the runner's fault point does on the next `Ping`.
     fn ping(channel: &mut FaultDaemonChannel) -> u32 {
         match ask(channel, &DaemonFrame::Msg(DaemonMsg::Ping)) {
-            RunnerFrame::Msg(RunnerMsg::StateChanged { state, .. }) => state,
+            RunnerFrame::Msg(RunnerMsg::StateChanged {
+                state: RunnerState::Ready { live_sequences, .. },
+                ..
+            }) => live_sequences,
             other => panic!("a ping was answered with {other:?}"),
         }
     }
