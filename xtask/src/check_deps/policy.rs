@@ -217,11 +217,23 @@ pub const LOADER_PREFIX: &str = "ld-linux";
 /// [`WINDOWS_CRT_API_SETS`]. A DLL added here must ship with every supported Windows, or with
 /// the Visual C++ runtime, never a vendor GPU runtime (ADR-0018 decision 5), and the change needs a
 /// maintainer's review.
+///
+/// Added 2026-10-27, when the core binary gained the CLI's client and the API (PROD-E6-T01), from
+/// what rule 7 reported on the hosted `windows-2025` runner:
+/// - `ws2_32.dll`, Winsock: TCP sockets for the client and the API's listeners;
+/// - `advapi32.dll`: the security calls behind `syntropy-ipc`'s owner-only pipe and peer check
+///   (`ConvertStringSecurityDescriptorToSecurityDescriptorW`, `OpenProcessToken`,
+///   `GetTokenInformation`, `EqualSid`, `ConvertSidToStringSidW`);
+/// - `bcryptprimitives.dll`: `ProcessPrng`, the system random source the standard library and
+///   the OS entropy crates call.
 pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
     "kernel32.dll",
     "ntdll.dll",
     "api-ms-win-core-synch-l1-2-0.dll",
     "vcruntime140.dll",
+    "ws2_32.dll",
+    "advapi32.dll",
+    "bcryptprimitives.dll",
 ];
 
 /// Rule 7: the Universal CRT's API sets the core binary may import, compared without case. The
@@ -229,6 +241,10 @@ pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
 /// `llvm-readobj --coff-imports`). Every Universal CRT set ships with Windows 10 and later, but
 /// only these are allowed, so a dependency that pulls in another one, such as `time`, fails rule 7
 /// until a maintainer adds it here, as for [`WINDOWS_SYSTEM_LIBRARIES`].
+///
+/// `api-ms-win-crt-utility-l1-1-0.dll` was added 2026-10-27 (PROD-E6-T01), when the core binary
+/// gained the API: it holds the C runtime's `qsort`, `rand` and similar, which the bundled C code
+/// of a dependency calls (which dependency is unconfirmed).
 pub const WINDOWS_CRT_API_SETS: &[&str] = &[
     "api-ms-win-crt-heap-l1-1-0.dll",
     "api-ms-win-crt-locale-l1-1-0.dll",
@@ -236,6 +252,7 @@ pub const WINDOWS_CRT_API_SETS: &[&str] = &[
     "api-ms-win-crt-runtime-l1-1-0.dll",
     "api-ms-win-crt-stdio-l1-1-0.dll",
     "api-ms-win-crt-string-l1-1-0.dll",
+    "api-ms-win-crt-utility-l1-1-0.dll",
 ];
 
 /// Rule 7: the libraries the core binary may load on macOS, by install name. `libSystem` is what
@@ -247,8 +264,15 @@ pub const WINDOWS_CRT_API_SETS: &[&str] = &[
 /// COMP-E6-T01 lands it, and drop any entry it does not load. Rule 7 rejects every other library but [`MACOS_FRAMEWORKS`]. A library added here must
 /// ship with every supported macOS, never a vendor GPU runtime (ADR-0018 decision 5), and the
 /// change needs a maintainer's review.
-pub const MACOS_SYSTEM_LIBRARIES: &[&str] =
-    &["/usr/lib/libSystem.B.dylib", "/usr/lib/libobjc.A.dylib"];
+///
+/// `libiconv` was added 2026-10-27 (PROD-E6-T01), when the core binary gained the CLI's client
+/// and the API, from what rule 7 reported on the hosted `macos-26` runner. It ships with every
+/// macOS. Which dependency links it is unconfirmed.
+pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
+    "/usr/lib/libSystem.B.dylib",
+    "/usr/lib/libobjc.A.dylib",
+    "/usr/lib/libiconv.2.dylib",
+];
 
 /// Rule 7: the system frameworks the core binary may load on macOS, by name: `Metal` matches
 /// `/System/Library/Frameworks/Metal.framework/Versions/A/Metal`. The Metal provider is linked into
@@ -257,7 +281,19 @@ pub const MACOS_SYSTEM_LIBRARIES: &[&str] =
 /// come from, and `CoreGraphics` is the one `MTLCreateSystemDefaultDevice` needs linked to find a
 /// device on macOS. RFC-0040 names only the binding and that call, so the three are a forecast, as
 /// [`MACOS_SYSTEM_LIBRARIES`] says. The same review rule applies.
-pub const MACOS_FRAMEWORKS: &[&str] = &["Metal", "Foundation", "CoreFoundation", "CoreGraphics"];
+///
+/// `SystemConfiguration` and `Security` were added 2026-10-27 (PROD-E6-T01), from what rule 7
+/// reported on the hosted `macos-26` runner once the core binary gained the API. Both ship with
+/// macOS: the network configuration and change notices, and the keychain and trust store, which
+/// the networking stack under `syntropy-net` reads (which crate links each is unconfirmed).
+pub const MACOS_FRAMEWORKS: &[&str] = &[
+    "Metal",
+    "Foundation",
+    "CoreFoundation",
+    "CoreGraphics",
+    "SystemConfiguration",
+    "Security",
+];
 
 /// Where the system frameworks live.
 const MACOS_FRAMEWORK_DIR: &str = "/System/Library/Frameworks/";
@@ -629,6 +665,10 @@ mod tests {
             "VCRUNTIME140.dll",
             "api-ms-win-crt-runtime-l1-1-0.dll",
             "API-MS-WIN-CRT-HEAP-L1-1-0.DLL",
+            "WS2_32.dll",
+            "advapi32.dll",
+            "bcryptprimitives.dll",
+            "api-ms-win-crt-utility-l1-1-0.dll",
         ] {
             assert!(is_windows_system_library(dll), "{dll}");
         }
@@ -641,7 +681,8 @@ mod tests {
             "api-ms-win-crt-evil-l1-1-0.dll",
             "api-ms-win-crt-time-l1-1-0.dll",
             "api-ms-win-core-file-l1-1-0.dll",
-            "bcryptprimitives.dll",
+            "bcrypt.dll",
+            "ws2_32.dll.evil.dll",
             "libc.so.6",
         ] {
             assert!(!is_windows_system_library(dll), "{dll}");
@@ -670,6 +711,9 @@ mod tests {
             "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
             "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
             "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+            "/usr/lib/libiconv.2.dylib",
+            "/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration",
+            "/System/Library/Frameworks/Security.framework/Versions/A/Security",
         ] {
             assert!(is_macos_system_library(name), "{name}");
         }
