@@ -466,7 +466,20 @@ fn k8v4_splits_sparse_and_compressed_pairs() {
             latent.stored(one.clone(), 1000, k8v4),
             latent.stored(one.clone(), 1000, q8)
         );
-        assert_eq!(latent.stored(one, 1000, q8), Bytes(entries * 2176));
+        assert_eq!(latent.stored(one.clone(), 1000, q8), Bytes(entries * 2176));
+        // A step at 1,000 tokens reads the same entries: all 1,000 sparse ones (2,048 may be
+        // selected), or every compressed entry plus the window. Read and store follow one rule.
+        let read = pair.read_per_step(one.clone(), 1000, KvDType::Native).0 / 4096;
+        assert_eq!(read, entries);
+        assert_eq!(
+            pair.read_per_step(one.clone(), 1000, k8v4),
+            Bytes(read * 1664)
+        );
+        assert_eq!(
+            latent.read_per_step(one.clone(), 1000, k8v4),
+            latent.read_per_step(one.clone(), 1000, q8)
+        );
+        assert_eq!(latent.read_per_step(one, 1000, q8), Bytes(read * 2176));
     }
 }
 
