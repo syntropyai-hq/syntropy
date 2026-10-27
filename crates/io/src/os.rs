@@ -86,8 +86,9 @@ impl SystemClock {
         AwakeTime(platform::awake_nanos())
     }
 
-    /// One tick of the coarser of the two clocks: the slack a comparison of their differences
-    /// needs, since each reading is a whole number of its clock's ticks.
+    /// One tick of the coarser of the two clocks: a lower bound of the slack a comparison of their
+    /// differences needs. The two differences can disagree by two ticks plus the change in the
+    /// time between the two reads (`syntropy_core::Interval::suspended`).
     #[must_use]
     pub fn tick(&self) -> Nanos {
         Nanos(platform::tick_nanos())

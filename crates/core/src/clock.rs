@@ -77,8 +77,11 @@ pub trait AwakeClock: Clock {
     /// The clock that stops while the host is suspended.
     fn awake(&self) -> AwakeTime;
 
-    /// One tick of the coarser of the two clocks: the slack a comparison of their differences
-    /// needs, since each reading is a whole number of its clock's ticks.
+    /// One tick of the coarser of the two clocks: a lower bound, not enough slack on its own.
+    /// Each difference is off by up to a tick of its clock, so an interval's two differences can
+    /// disagree by two ticks, plus the change in the time between reading `now` and reading
+    /// `awake`, which includes any preemption between the two reads. See
+    /// [`Interval::suspended`].
     fn tick(&self) -> Nanos;
 }
 
@@ -92,12 +95,17 @@ pub struct Interval {
 }
 
 impl Interval {
-    /// The time the host was suspended in the interval: `running − awake`, when that is more
-    /// than `slack`, else zero.
+    /// The time the host was suspended in the interval: `running − awake`, when that is at least
+    /// `slack`, else zero, as RFC-0030 §5.8's "at least `swim.resume_detect`" reads.
+    ///
+    /// The two differences disagree by up to two ticks plus the change in the gap between the
+    /// two reads ([`AwakeClock::tick`]), so a `slack` that must ignore that noise covers it. A
+    /// threshold such as RFC-0030 §5.8's 5 s does; a slack of zero counts every gap, noise
+    /// included.
     #[must_use]
     pub fn suspended(&self, slack: Nanos) -> Nanos {
         let gap = self.running.0.saturating_sub(self.awake.0);
-        if gap > slack.0 { Nanos(gap) } else { Nanos(0) }
+        if gap >= slack.0 { Nanos(gap) } else { Nanos(0) }
     }
 
     /// How much later than `expected` the interval ended while the host was awake: `awake −
@@ -132,15 +140,20 @@ impl SuspendDetector {
 
     /// Records the readings `now` and `awake`, taken together, and returns the interval since
     /// the previous observation. The first observation returns a zero interval. A reading earlier
-    /// than the previous one counts as no time.
+    /// than the previous one counts as no time, and the later of the two stays the baseline, so
+    /// a reading that went back cannot overstate the next interval.
     pub fn observe(&mut self, now: MonoTime, awake: AwakeTime) -> Interval {
-        let interval = self
-            .last
-            .map_or(Interval::default(), |(then, then_awake)| Interval {
-                running: now.saturating_duration_since(then),
-                awake: awake.saturating_duration_since(then_awake),
-            });
-        self.last = Some((now, awake));
+        let (interval, baseline) = match self.last {
+            None => (Interval::default(), (now, awake)),
+            Some((then, then_awake)) => (
+                Interval {
+                    running: now.saturating_duration_since(then),
+                    awake: awake.saturating_duration_since(then_awake),
+                },
+                (now.max(then), awake.max(then_awake)),
+            ),
+        };
+        self.last = Some(baseline);
         interval
     }
 
@@ -276,12 +289,22 @@ mod tests {
         assert_eq!(i.suspended(Nanos(1_000)), Nanos(0));
         assert_eq!(i.late(Nanos(s), Nanos(0)), Nanos(8 * s));
         assert_eq!(i.late(Nanos(s), Nanos(8 * s)), Nanos(0), "within the slack");
-        // Clock granularity: a gap no larger than the slack is no suspend.
+        // A gap below the slack is no suspend; one at least the slack is (RFC-0030 §5.8).
         let i = d.observe(MonoTime(71 * s + 10), AwakeTime(500 + 11 * s));
-        assert_eq!(i.suspended(Nanos(10)), Nanos(0));
-        assert_eq!(i.suspended(Nanos(9)), Nanos(10));
-        // A reading that goes back counts as no time, never as a wrap.
+        assert_eq!(i.suspended(Nanos(11)), Nanos(0));
+        assert_eq!(i.suspended(Nanos(10)), Nanos(10));
+        // A reading that goes back counts as no time, never as a wrap, and the later reading
+        // stays the baseline: one true second later on both clocks is one second, no suspend.
         let i = d.observe(MonoTime(5), AwakeTime(0));
         assert_eq!(i, Interval::default());
+        let i = d.observe(MonoTime(72 * s + 10), AwakeTime(500 + 12 * s));
+        assert_eq!(
+            i,
+            Interval {
+                running: Nanos(s),
+                awake: Nanos(s)
+            }
+        );
+        assert_eq!(i.suspended(Nanos(1)), Nanos(0));
     }
 }
