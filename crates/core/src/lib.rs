@@ -36,7 +36,7 @@ pub mod transfer;
 pub mod units;
 
 pub use build::{BuildId, BuildProfile, SemVer, SemVerError, TargetTriple};
-pub use clock::{Clock, MonoTime};
+pub use clock::{AwakeClock, AwakeTime, Clock, Interval, MonoTime, SuspendDetector};
 pub use det_hash::{DetHashMap, DetHashSet, DetHasher, DetState};
 pub use dtype::{DType, GgmlType};
 pub use entropy::Entropy;

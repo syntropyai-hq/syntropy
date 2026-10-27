@@ -84,11 +84,13 @@ fn both_sides_share_the_header() {
     runner.beat();
     runner.step();
     runner.set_runner_state(4);
+    runner.set_live_sequences(3);
     daemon.beat();
     assert_eq!(daemon.peer_heartbeat(), 2);
     assert_eq!(runner.peer_heartbeat(), 1);
     assert_eq!(daemon.steps(), 1);
     assert_eq!(daemon.runner_state(), 4);
+    assert_eq!(daemon.live_sequences(), 3);
 }
 
 #[test]

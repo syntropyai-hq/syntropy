@@ -95,8 +95,11 @@ pub use fault::{
 /// from a `u32` discriminant to the whole `RunnerState` (DIST-E1-T05): the variant keeps its index,
 /// but a 1.x decoder cannot read its new layout, so the change is incompatible and bumps the major.
 /// `Hello` keeps its layout, so a daemon of any build still reads a runner's `Hello` and refuses a
-/// mismatch by its protocol.
-pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 2, minor: 0 };
+/// mismatch by its protocol. 3.0 adds the live-sequence count to the shared-memory header
+/// (DIST-E1-T06): the header grows by a line, the ring table moves, and the region's
+/// `LAYOUT_VERSION` goes to 2, so a 2.x peer cannot read the region. That is incompatible, so the
+/// major moves.
+pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 3, minor: 0 };
 
 /// One end of a command channel, which sends `S` and receives `R`.
 ///
