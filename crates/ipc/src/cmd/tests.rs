@@ -10,6 +10,8 @@
 //! - No message skips a field on the way out (`skips`): postcard reads fields by position.
 //! - The endpoint is owner-only, and a peer of another user is refused (`other_user`, which needs
 //!   a second OS account).
+//! - The async listener, the API's local socket, accepts this user with its peer and keeps its
+//!   endpoint owner-only (`async_listener`; its other-user case is in `other_user`).
 
 use std::fmt::Debug;
 use std::io::Write;
@@ -29,6 +31,9 @@ use syntropy_core::{
 use super::*;
 use crate::shm::{IpcProtocol, RingRole, RingSpec, ShmLayout};
 
+// With the `async` feature, and not under loom, which tokio does not build under.
+#[cfg(all(feature = "async", not(loom)))]
+mod async_listener;
 mod fixtures;
 // Not under loom: `cargo xtask test loom` runs this crate's unit tests in a job with no second
 // account, and the test needs real processes and sockets, which loom does not model.
@@ -771,11 +776,81 @@ fn a_second_listener_on_a_pipe_name_is_refused() {
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod unix {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::any::Any;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    use std::os::unix::net::{UnixListener, UnixStream};
 
     use super::*;
 
-    fn socket_path(endpoint: &Endpoint) -> &std::path::Path {
+    /// A listener of either kind, as the stale-socket cases bind it.
+    pub(super) type Bind<'a> = &'a dyn Fn(&Endpoint) -> std::io::Result<Box<dyn Any>>;
+
+    /// The error of a bind that must fail; `what` names what a success would mean.
+    fn refused(result: std::io::Result<Box<dyn Any>>, what: &str) -> std::io::Error {
+        match result {
+            Ok(_) => panic!("{what}"),
+            Err(error) => error,
+        }
+    }
+
+    /// What `bind` does with what a path already holds (B1 of the review of #1898):
+    /// - a stale socket, as a daemon killed without its cleanup leaves, is replaced, and the new
+    ///   listener accepts;
+    /// - a live listener's socket keeps the bind failing with `AddrInUse`, and stays;
+    /// - a regular file, and a link to a stale socket, are left in place and the bind fails.
+    pub(super) fn stale_socket_cases(bind: Bind<'_>) {
+        // 1. A stale socket: a std listener dropped without removing its file.
+        let endpoint = endpoint();
+        let path = socket_path(&endpoint).to_owned();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(path.parent().unwrap())
+            .unwrap();
+        drop(UnixListener::bind(&path).unwrap());
+        assert!(path.exists(), "the stand-in for a crash left no socket");
+        let listener = bind(&endpoint).expect("a stale socket is taken over");
+        UnixStream::connect(&path).expect("the new listener accepts");
+
+        // 2. A live listener's socket: the bind fails, and the socket stays.
+        let error = refused(bind(&endpoint), "a live socket was taken over");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse, "{error}");
+        assert!(path.exists());
+        drop(listener);
+        assert!(!path.exists());
+
+        // 3. A regular file is not a socket: left in place.
+        std::fs::write(&path, b"not a socket").unwrap();
+        let error = refused(bind(&endpoint), "a regular file was replaced");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse, "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a socket");
+        std::fs::remove_file(&path).unwrap();
+
+        // 4. A link to a stale socket: the link is not followed, and both stay.
+        let target = path.with_extension("target");
+        drop(UnixListener::bind(&target).unwrap());
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let error = refused(bind(&endpoint), "a link was replaced");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse, "{error}");
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(std::fs::symlink_metadata(&target).is_ok());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&target).unwrap();
+        remove_dir(&endpoint);
+    }
+
+    #[test]
+    fn bind_takes_over_a_stale_socket_and_nothing_else() {
+        stale_socket_cases(&|endpoint| {
+            Listener::bind(endpoint).map(|l| Box::new(l) as Box<dyn Any>)
+        });
+    }
+
+    pub(super) fn socket_path(endpoint: &Endpoint) -> &std::path::Path {
         match endpoint {
             Endpoint::Socket(path) => path,
             Endpoint::Pipe(_) => unreachable!(),

@@ -10,6 +10,9 @@
 //! 2. to a pipe whose DACL also lets every authenticated user open it, so the connection reaches
 //!    the peer check, which refuses it and names the client's process.
 //!
+//! `an_async_connection_from_another_user_is_refused` makes the same two connections to the async
+//! listener, the API's local socket (PROD-E2-T01; RFC-0050 §1.1).
+//!
 //! CI's hosted Windows job creates the account and names it in `SYNTROPY_IPC_PEER_USER`, with its
 //! password in `SYNTROPY_IPC_PEER_PASSWORD`. Without them the test prints a notice and passes,
 //! except in CI, where it fails. The copy cannot print to this process, so it writes what it saw
@@ -34,6 +37,8 @@ use windows_sys::Win32::System::Threading::{
     LOGON_WITH_PROFILE, PROCESS_INFORMATION, STARTUPINFOW, WaitForSingleObject,
 };
 
+#[cfg(feature = "async")]
+use super::super::AsyncListener;
 use super::super::{AcceptError, Endpoint, Listener, Peer, connect};
 use crate::shm::UserSid;
 
@@ -49,6 +54,8 @@ const OUT: &str = "SYNTROPY_IPC_PEER_OUT";
 const TEST: &str = "cmd::tests::other_user::a_connection_from_another_user_is_refused";
 /// How long the copy may take, in milliseconds. A first logon creates the account's profile.
 const PEER_TIMEOUT_MS: u32 = 180_000;
+/// How long the copy waits for the daemon's answer once connected, in seconds.
+const PEER_READ_TIMEOUT_S: u64 = 60;
 
 #[test]
 fn a_connection_from_another_user_is_refused() {
@@ -57,45 +64,11 @@ fn a_connection_from_another_user_is_refused() {
         connect_as_peer(&pipe.to_string_lossy(), Path::new(&out));
         return;
     }
-    let account = env::var_os(USER)
-        .filter(|user| !user.is_empty())
-        .zip(env::var_os(PASSWORD).filter(|password| !password.is_empty()));
-    let Some((user, password)) = account else {
-        let in_ci = env::var_os("CI").is_some_and(|v| !v.is_empty() && v != "false");
-        assert!(
-            !in_ci,
-            "CI must run this test: create a second OS account and name it in {USER}, with its \
-             password in {PASSWORD}"
-        );
-        eprintln!(
-            "skipped: no second OS account named in {USER} and {PASSWORD}, so the other-user \
-             refusal did not run"
-        );
+    let Some((user, password)) = second_account() else {
         return;
     };
     let our_sid = UserSid::current().unwrap().text().unwrap();
-
-    // Everything the other account touches sits in a directory it is granted.
-    let public =
-        env::var_os("PUBLIC").map_or_else(|| PathBuf::from(r"C:\Users\Public"), PathBuf::from);
-    let base = public.join(format!("syntropy-ipc-peer-{}", std::process::id()));
-    fs::create_dir(&base).unwrap();
-    let mut grant = OsString::from(&user);
-    grant.push(":(OI)(CI)M");
-    let icacls = Command::new("icacls")
-        .arg(&base)
-        .arg("/grant")
-        .arg(&grant)
-        .output()
-        .expect("run icacls");
-    assert!(
-        icacls.status.success(),
-        "icacls could not grant {} the test directory: {}",
-        user.to_string_lossy(),
-        String::from_utf8_lossy(&icacls.stdout)
-    );
-    let exe = base.join("peer.exe");
-    fs::copy(env::current_exe().unwrap(), &exe).unwrap();
+    let (base, exe) = peer_dir("peer", &user);
     let account = Account {
         user: &user,
         password: &password,
@@ -165,6 +138,149 @@ fn a_connection_from_another_user_is_refused() {
     if let Err(error) = fs::remove_dir_all(&base) {
         eprintln!("could not remove {}: {error}", base.display());
     }
+}
+
+#[cfg(feature = "async")]
+#[test]
+fn an_async_connection_from_another_user_is_refused() {
+    // The copy runs only the test above.
+    if env::var_os(CONNECT).is_some() {
+        return;
+    }
+    let Some((user, password)) = second_account() else {
+        return;
+    };
+    let our_sid = UserSid::current().unwrap().text().unwrap();
+    let (base, exe) = peer_dir("async-peer", &user);
+    let account = Account {
+        user: &user,
+        password: &password,
+        exe: &exe,
+        base: &base,
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .unwrap();
+    let _context = rt.enter();
+
+    // 1. The pipe as the API creates it: its DACL keeps the other user out.
+    let private = format!("syntropy-ipc-async-peer-{}-private", std::process::id());
+    let listener = AsyncListener::bind(&Endpoint::Pipe(private.clone())).unwrap();
+    let result = account.run(&private, "private");
+    assert_ne!(result.sid, our_sid, "{USER} names this test's own user");
+    assert!(
+        result.outcome == "connect-error PermissionDenied",
+        "the other user reached a pipe whose DACL grants only {our_sid}: {}",
+        result.outcome
+    );
+    eprintln!(
+        "1. the owner-only async pipe refused user {} (process {}): {}",
+        result.sid, result.pid, result.outcome
+    );
+    drop(listener);
+
+    // 2. A pipe any authenticated user may open: the peer check refuses the connection.
+    let exposed = format!("syntropy-ipc-async-peer-{}-exposed", std::process::id());
+    let mut listener =
+        AsyncListener::open_to_authenticated_users(&Endpoint::Pipe(exposed.clone())).unwrap();
+    let (refused, result) = thread::scope(|scope| {
+        let peer = scope.spawn(|| account.run(&exposed, "exposed"));
+        let refused = rt.block_on(async {
+            let accepted = tokio::time::timeout(Duration::from_secs(180), listener.accept()).await;
+            // Name the arm at once, and drop an accepted stream at once, so a failure says what
+            // happened and never holds the peer open.
+            let refused = match accepted {
+                Ok(Err(AcceptError::Refused(peer))) => Ok(peer),
+                Ok(Err(AcceptError::Io(error))) => Err(format!("the accept failed: {error}")),
+                Ok(Ok((stream, peer))) => {
+                    drop(stream);
+                    Err(format!("the peer check ACCEPTED {peer}"))
+                }
+                Err(_) => Err("no connection completed the accept within 180 s".to_owned()),
+            };
+            match &refused {
+                Ok(peer) => eprintln!("2. the async accept refused the peer: {peer}"),
+                Err(why) => eprintln!("2. the async accept did not refuse the peer: {why}"),
+            }
+            // Keep the runtime polling until the peer is done, so nothing the listener does
+            // on it waits for a runtime that has stopped.
+            while !peer.is_finished() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            refused
+        });
+        (refused, peer.join().unwrap())
+    });
+    match refused {
+        Ok(Peer::Windows { pid, sid }) => {
+            assert_eq!(pid, result.pid, "the refusal names another process");
+            if let Some(sid) = &sid {
+                assert_eq!(*sid, result.sid, "the refusal names another user");
+            }
+            let refusal = AcceptError::Refused(Peer::Windows { pid, sid });
+            eprintln!("2. the async peer check: {refusal}");
+        }
+        Ok(peer) => panic!("a Unix peer on a named pipe: {peer}"),
+        Err(why) => panic!("{why}; the peer saw: {}", result.outcome),
+    }
+    assert!(
+        matches!(result.outcome.as_str(), "closed" | "read-error BrokenPipe"),
+        "the refused peer saw: {}",
+        result.outcome
+    );
+    drop(listener);
+    if let Err(error) = fs::remove_dir_all(&base) {
+        eprintln!("could not remove {}: {error}", base.display());
+    }
+}
+
+/// The second account's name and password, or `None` after the notice that the test did not
+/// run. In CI the account must exist.
+fn second_account() -> Option<(OsString, OsString)> {
+    let account = env::var_os(USER)
+        .filter(|user| !user.is_empty())
+        .zip(env::var_os(PASSWORD).filter(|password| !password.is_empty()));
+    if account.is_none() {
+        let in_ci = env::var_os("CI").is_some_and(|v| !v.is_empty() && v != "false");
+        assert!(
+            !in_ci,
+            "CI must run this test: create a second OS account and name it in {USER}, with its \
+             password in {PASSWORD}"
+        );
+        eprintln!(
+            "skipped: no second OS account named in {USER} and {PASSWORD}, so the other-user \
+             refusal did not run"
+        );
+    }
+    account
+}
+
+/// A directory under `%PUBLIC%` that `user` is granted, named for `tag` and this process, with a
+/// copy of this test binary in it.
+fn peer_dir(tag: &str, user: &OsStr) -> (PathBuf, PathBuf) {
+    let public =
+        env::var_os("PUBLIC").map_or_else(|| PathBuf::from(r"C:\Users\Public"), PathBuf::from);
+    let base = public.join(format!("syntropy-ipc-{tag}-{}", std::process::id()));
+    fs::create_dir(&base).unwrap();
+    let mut grant = OsString::from(user);
+    grant.push(":(OI)(CI)M");
+    let icacls = Command::new("icacls")
+        .arg(&base)
+        .arg("/grant")
+        .arg(&grant)
+        .output()
+        .expect("run icacls");
+    assert!(
+        icacls.status.success(),
+        "icacls could not grant {} the test directory: {}",
+        user.to_string_lossy(),
+        String::from_utf8_lossy(&icacls.stdout)
+    );
+    let exe = base.join("peer.exe");
+    fs::copy(env::current_exe().unwrap(), &exe).unwrap();
+    (base, exe)
 }
 
 /// The second account, and where its copy of this test sits.
@@ -303,11 +419,21 @@ fn connect_as_peer(pipe: &str, out: &Path) {
     let outcome = match connect(&Endpoint::Pipe(pipe.to_owned())) {
         Err(error) => format!("connect-error {:?}", error.kind()),
         Ok(mut stream) => {
-            let mut buf = [0u8; 16];
-            match stream.read(&mut buf) {
-                Ok(0) => "closed".to_owned(),
-                Ok(n) => format!("read {n} bytes"),
-                Err(error) => format!("read-error {:?}", error.kind()),
+            // A pipe has no read timeout, so the read runs on a thread and the wait is bounded:
+            // a server that never closes shows as `read-timeout`, and this copy still reports.
+            let (sent, read) = mpsc::channel();
+            thread::spawn(move || {
+                let mut buf = [0u8; 16];
+                let _ = sent.send(stream.read(&mut buf));
+            });
+            match read.recv_timeout(Duration::from_secs(PEER_READ_TIMEOUT_S)) {
+                Ok(Ok(0)) => "closed".to_owned(),
+                Ok(Ok(n)) => format!("read {n} bytes"),
+                // `ERROR_PIPE_NOT_CONNECTED`: the server disconnected the pipe, as the async
+                // listener does to a refused peer.
+                Ok(Err(error)) if error.raw_os_error() == Some(233) => "closed".to_owned(),
+                Ok(Err(error)) => format!("read-error {:?}", error.kind()),
+                Err(_) => "read-timeout".to_owned(),
             }
         }
     };

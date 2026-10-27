@@ -9,6 +9,15 @@ publish.workspace = true
 serde.workspace = true
 syntropy-config = { path = "../config" }
 syntropy-net = { path = "../net" }
+# The local socket's listener and peer check (RFC-0050 §1.1), and the IPC protocol major that
+# `/v1/syntropy/version` reports.
+syntropy-ipc = { path = "../ipc", features = ["async"] }
+# The HTTP server (RFC-0050 §1.1, PROD-E2-T01): hyper's HTTP/1.1 and HTTP/2 connections, its tokio
+# glue and `auto` builder, and the response bodies. tokio's `net` gives the TCP listeners.
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tokio = { workspace = true, features = ["net"] }
 # The local CA (PROD-E5-T03): certificates, the leaf resolver, validity times and the stored CA.
 rcgen.workspace = true
 rustls.workspace = true
@@ -20,3 +29,5 @@ zeroize.workspace = true
 [dev-dependencies]
 # Parses `api.tls` values in the unit tests.
 toml.workspace = true
+# The server tests' HTTP/1.1 and HTTP/2 clients.
+hyper = { workspace = true, features = ["client"] }

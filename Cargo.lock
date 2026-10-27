@@ -3871,13 +3871,18 @@ dependencies = [
 name = "syntropy-api"
 version = "0.0.0"
 dependencies = [
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "rcgen",
  "rustls",
  "serde",
  "serde_json",
  "syntropy-config",
+ "syntropy-ipc",
  "syntropy-net",
  "time",
+ "tokio",
  "toml",
  "x509-parser",
  "zeroize",
@@ -3957,7 +3962,10 @@ dependencies = [
  "serde",
  "serde_json",
  "syntropy-api",
+ "syntropy-config",
  "syntropy-core",
+ "syntropy-ipc",
+ "tokio",
 ]
 
 [[package]]
@@ -4012,6 +4020,7 @@ dependencies = [
  "smallvec",
  "syntropy-core",
  "syntropy-spsc",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 

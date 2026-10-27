@@ -81,6 +81,18 @@ crc32c = "0.6.8"
 # key types use, so the two share one implementation. Pinned exactly: which keys and signatures
 # it accepts is part of the protocol, so a new version is a reviewed change.
 ed25519-dalek = "=3.0.0"
+# `Full`, the whole-body type the API's JSON responses use, and `BoxBody`, which lets later routes
+# stream, `syntropy-api` only. MIT. The lock file already held this version, through iroh.
+http-body-util = { version = "0.1.5", default-features = false }
+# The HTTP API's server (RFC-0050 §1.1, PROD-E2-T01), `syntropy-api` only: HTTP/1.1 and HTTP/2
+# connections over any byte stream, on the daemon's `ctl` runtime. MIT. The lock file already held
+# this version, through iroh. Only the server side and the two protocols: no client, no FFI.
+hyper = { version = "1.12.0", default-features = false, features = ["http1", "http2", "server"] }
+# hyper's tokio glue (`TokioIo`, `TokioExecutor`) and its `auto` connection builder, which serves
+# HTTP/1.1 and HTTP/2 with prior knowledge on one listener by reading the HTTP/2 preface (RFC-0050
+# §1.1), `syntropy-api` only. MIT. The lock file already held this version, through iroh. No
+# client, proxy or graceful-shutdown features.
+hyper-util = { version = "0.1.21", default-features = false, features = ["server-auto", "tokio"] }
 # iroh, ADR-0011's transport library, linked only by `syntropy-net` (RFC-0001 §4.2 rule 6). Pinned
 # exactly because this is the version the daemon builds on: DIST-E7-T23's endpoint and the field
 # probe now, DIST-E7-T03's QUIC backend later, so a bump is a reviewed change. rust-version 1.91,

@@ -29,6 +29,12 @@
 //! A peer that fails the check, or whose credentials cannot be read, is refused and its connection
 //! closed. A runner only connects; it never listens (RFC-0034 §6.4).
 //!
+//! [`AsyncListener`] is the same endpoint and check for servers on tokio: the API's local socket,
+//! on the daemon's `ctl` runtime (RFC-0050 §1.1), which also gives its Unix socket mode 0600.
+//! [`connect_async`] is its client. Both come with the `async` feature, which is off by default,
+//! so a crate that only speaks the command channel, such as the runner, does not link tokio
+//! through `ipc`. Neither exists under `--cfg loom`, which tokio does not build under.
+//!
 //! **Handshake.** A spawned runner is the daemon's own build (ADR-0015 item 1). It sends `Hello`
 //! first, and [`DaemonChannel::handshake`] checks the build ID, the protocol and the process ID,
 //! and kills the runner on any mismatch. The daemon then sends `Init`, and
@@ -52,6 +58,12 @@ mod os;
 pub use frame::{EncodeError, FrameError, HEADER, MAX_FRAME, decode_frame, encode_frame};
 pub use msg::{DaemonMsg, Envelope, Hello, Init, RequestId, RunnerMsg};
 pub use os::{AcceptError, Endpoint, EndpointParseError, Listener, Peer, Stream, connect};
+// The async half, on tokio, with the `async` feature: not under loom, which tokio does not build
+// under.
+#[cfg(all(windows, feature = "async", not(loom)))]
+pub use os::user_pipe;
+#[cfg(all(feature = "async", not(loom)))]
+pub use os::{AsyncListener, AsyncStream, connect_async};
 
 /// The IPC protocol this build speaks (RFC-0001 §3.5): the command messages and every ring record
 /// schema. A change to either bumps it (RFC-0001 §5, note of 2026-10-22). QUAL-E17-T15's schema
