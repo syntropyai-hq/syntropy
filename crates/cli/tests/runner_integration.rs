@@ -316,7 +316,8 @@ fn the_suite_passes_with_the_in_process_host() {
         runner(end.channel, end.region)
     })
     .unwrap();
-    let pings = daemon(&mut hosted.end.channel, &hosted.end.region);
+    let end = hosted.end_mut();
+    let pings = daemon(&mut end.channel, &end.region);
     assert_eq!(pings, PINGS_TO_STALL);
     hosted.join().expect("the runner thread ends cleanly");
 }
