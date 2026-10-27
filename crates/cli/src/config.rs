@@ -10,7 +10,9 @@
 //! Output follows RFC-0051 §2.2. The command's result goes to stdout: the resolved values,
 //! `check`'s summary line, or the paths. Every diagnostic goes to stderr, in RFC-0054 §8's form,
 //! as the configuration's own renderer writes it: an error, a warning such as an unknown
-//! `SYNTROPY_*` variable, and its source lines. An invalid configuration exits 5.
+//! `SYNTROPY_*` variable, and its source lines. The renderer quotes the configuration's sources,
+//! so each line is escaped on the way out ([`syntropy_api::printable`]). An invalid configuration
+//! exits 5.
 //!
 //! The files are those a user's daemon reads (`Mode::User`). `--json` is refused until the API
 //! has a configuration type to print (`/v1/syntropy/config`, RFC-0054 §10.2).
@@ -79,7 +81,7 @@ pub fn show(args: &ConfigShowArgs, output: Output) -> Result<Exit, CliError> {
     }
     let checked = load(&args.source)?;
     let diagnostics = checked.render(&REGISTRY);
-    eprint!("{diagnostics}");
+    eprint!("{}", printable_lines(&diagnostics));
     match &checked.outcome {
         Ok(config) => {
             // The values only: stderr already carries each warning in RFC-0054 §8's form, so
@@ -109,7 +111,7 @@ pub fn check(args: &ConfigCheckArgs, output: Output) -> Result<Exit, CliError> {
     let checked = load(&args.source)?;
     let diagnostics = checked.render(&REGISTRY);
     let report = command::check(&checked, &REGISTRY);
-    eprint!("{diagnostics}");
+    eprint!("{}", printable_lines(&diagnostics));
     // The report is the diagnostics, then one summary line.
     print!(
         "{}",
@@ -134,7 +136,10 @@ pub fn path(args: &ConfigPathArgs, output: Output) -> Result<Exit, CliError> {
         Ok(scan) => scan,
         // An explicit file that does not exist: the paths still print, with it absent.
         Err(problem) => {
-            eprintln!("warning: {problem}");
+            eprintln!(
+                "warning: {}",
+                syntropy_api::printable::printable(&problem.to_string())
+            );
             Scan {
                 system_file: None,
                 dropins: Vec::new(),
@@ -205,6 +210,24 @@ fn refuse_json(output: Output, command: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+/// `text` safe to print on a terminal, a line at a time: each line through
+/// `syntropy_api::printable`, with its newline kept. The renderer quotes the configuration's own
+/// sources, a file's or the environment's values and the variables' names, and none of them is
+/// text this binary wrote (RFC-0051 §2.2): a TOML `\u001b` escape, an environment value or a
+/// variable's name can hold ESC or BEL.
+fn printable_lines(text: &str) -> String {
+    let mut safe = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, end) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        safe.push_str(&syntropy_api::printable::printable(body));
+        safe.push_str(end);
+    }
+    safe
+}
+
 /// "1 error" or "n errors".
 fn errors(n: usize) -> String {
     format!("{n} error{}", if n == 1 { "" } else { "s" })
@@ -229,5 +252,92 @@ mod tests {
             assert!(REGISTRY.key(prefix).is_some(), "{prefix}");
         }
         assert_eq!(COUNT, NET.len() + CLUSTER.len() + 3);
+    }
+
+    /// The registry is the linked crates' lists, then the three single sections, in that order,
+    /// by prefix and count.
+    #[test]
+    fn the_registry_is_net_then_cluster_then_the_singles() {
+        let got: Vec<&str> = REGISTRY.sections().iter().map(|s| s.prefix).collect();
+        let want: Vec<&str> = NET
+            .iter()
+            .chain(CLUSTER)
+            .chain(SINGLES.iter())
+            .map(|s| s.prefix)
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(
+            got.len(),
+            32,
+            "the sections the workspace declares on 2026-10-27"
+        );
+    }
+
+    /// The drift guard: every configuration section a workspace crate `cli` depends on declares,
+    /// outside its tests, is in the registry, and the registry holds nothing else. A crate that
+    /// adds a section, or a new dependency of `cli` that has one, fails this test until the
+    /// registry lists it. The crates come from `cli`'s own manifest, so the guard follows it; a
+    /// section in a crate `cli` reaches only through another needs a direct edge to be listed.
+    #[test]
+    fn every_section_the_linked_crates_declare_is_in_the_registry() {
+        let cli = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest = std::fs::read_to_string(cli.join("Cargo.toml")).unwrap();
+        let crates: Vec<&str> = manifest
+            .lines()
+            .filter_map(|line| line.split_once("path = \"../")?.1.split_once('"'))
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            crates.contains(&"cluster") && crates.contains(&"api"),
+            "{crates:?}"
+        );
+        let mut declared = std::collections::BTreeSet::new();
+        for name in &crates {
+            declared_sections(&cli.join("..").join(name).join("src"), &mut declared);
+        }
+        let registered: std::collections::BTreeSet<&str> =
+            REGISTRY.sections().iter().map(|s| s.type_name).collect();
+        let declared: std::collections::BTreeSet<&str> =
+            declared.iter().map(String::as_str).collect();
+        assert_eq!(
+            declared, registered,
+            "the linked crates' sections and the registry differ"
+        );
+    }
+
+    /// The structs under a `#[config(section = …)]` attribute in the `.rs` files below `dir`,
+    /// leaving out test modules (from `#[cfg(test)]` on), test files and doc examples.
+    fn declared_sections(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.map(Result::unwrap) {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "tests" {
+                    declared_sections(&path, out);
+                }
+                continue;
+            }
+            if !name.ends_with(".rs") || name == "tests.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let code = text.split("#[cfg(test)]").next().unwrap_or("");
+            let mut pending = false;
+            for line in code.lines().map(str::trim) {
+                if line.starts_with("#[config(section") {
+                    pending = true;
+                } else if pending && let Some(rest) = line.strip_prefix("pub struct ") {
+                    let ident: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    out.insert(ident);
+                    pending = false;
+                }
+            }
+        }
     }
 }

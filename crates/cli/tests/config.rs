@@ -366,3 +366,74 @@ fn bad_arguments_exit_5_and_path_still_prints() {
     }
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// One case: the arguments, an environment variable to set, and the exit code.
+type Case<'a> = (Vec<&'a str>, Option<(&'a str, &'a str)>, i32);
+
+/// Text from the configuration's sources never reaches the terminal raw: the diagnostics quote a
+/// file's value, an environment value, a variable's name and a flag's value, and each line is
+/// escaped on the way out (B1 of the review of #1921).
+#[test]
+fn diagnostics_never_put_a_source_s_escape_sequences_on_the_terminal() {
+    let home = temp("escapes");
+    let hostile = home.join("hostile.toml");
+    // A TOML basic string's `\u001b` and `\u0007` decode to a real ESC and BEL.
+    std::fs::write(
+        &hostile,
+        "[api]\ntls = \"\\u001b]0;PWNED\\u0007\\u001b[2J\"\n",
+    )
+    .unwrap();
+    let empty = home.join("empty.toml");
+    std::fs::write(&empty, "").unwrap();
+    let (hostile, empty) = (hostile.to_str().unwrap(), empty.to_str().unwrap());
+    let cases: [Case<'_>; 4] = [
+        // A file's value.
+        (vec!["config", "check", "--config", hostile], None, 5),
+        // An environment value.
+        (
+            vec!["config", "check", "--config", empty],
+            Some(("SYNTROPY_API__TLS", "\u{1b}]0;PWNED\u{7}\u{1b}[2J")),
+            5,
+        ),
+        // An environment variable's name.
+        (
+            vec!["config", "check", "--config", empty],
+            Some(("SYNTROPY_X\u{1b}[31m", "1")),
+            0,
+        ),
+        // A flag's value, on `show`.
+        (
+            vec![
+                "config",
+                "show",
+                "--resolved",
+                "--config",
+                empty,
+                "--set",
+                "api.tls=\u{1b}[2J",
+            ],
+            None,
+            5,
+        ),
+    ];
+    for (args, env, want) in cases {
+        let mut command = isolated(&args, &home);
+        if let Some((name, value)) = env {
+            command.env(name, value);
+        }
+        let output = finish(&mut command);
+        let stderr = text(&output.stderr);
+        assert_eq!(code(&output), want, "{args:?} {env:?}: {stderr}");
+        assert!(
+            !stderr.contains('\u{1b}') && !stderr.contains('\u{7}'),
+            "{args:?} {env:?}: raw control characters on stderr: {stderr:?}"
+        );
+        assert!(stderr.contains("\\u{1b}"), "{args:?} {env:?}: {stderr}");
+        let stdout = text(&output.stdout);
+        assert!(
+            !stdout.contains('\u{1b}') && !stdout.contains('\u{7}'),
+            "{stdout:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(home);
+}
