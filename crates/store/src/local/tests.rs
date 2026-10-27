@@ -13,23 +13,44 @@ use syntropy_core::{Clock, MonoTime};
 
 use super::*;
 
-/// A clock that moves on 1 ms at each reading.
-struct StepClock(AtomicU64);
+/// A clock whose monotonic time moves on 1 ms at each reading, at a fixed virtual wall time.
+struct StepClock {
+    mono: AtomicU64,
+    unix_ms: u64,
+}
+
+/// 2100-01-01T00:00:00Z: a wall time long after any file a test writes, so no stamp is racy.
+const LATER_MS: u64 = 4_102_444_800_000;
 
 impl StepClock {
+    /// At [`LATER_MS`].
     fn new() -> StepClock {
-        StepClock(AtomicU64::new(0))
+        StepClock::at(LATER_MS)
+    }
+
+    /// At wall time `unix_ms`.
+    fn at(unix_ms: u64) -> StepClock {
+        StepClock {
+            mono: AtomicU64::new(0),
+            unix_ms,
+        }
     }
 }
 
 impl Clock for StepClock {
     fn now(&self) -> MonoTime {
-        MonoTime(self.0.fetch_add(1_000_000, Ordering::Relaxed))
+        MonoTime(self.mono.fetch_add(1_000_000, Ordering::Relaxed))
     }
 
     fn unix_ms(&self) -> u64 {
-        0
+        self.unix_ms
     }
+}
+
+/// `path`'s mtime in milliseconds from the epoch.
+fn mtime_ms(path: &Path) -> u64 {
+    let stamp = FileStamp::of(&File::open(path).unwrap()).unwrap();
+    u64::try_from(stamp.mtime.unix_ms()).unwrap()
 }
 
 /// A fresh directory, removed on drop, with a store root at `root/` and model files beside it.
@@ -452,6 +473,7 @@ fn the_record_round_trips() {
                     nanos: 999_999_999,
                 },
             },
+            racy: true,
         }],
     };
     let text = encode(&model).unwrap();
@@ -460,6 +482,125 @@ fn the_record_round_trips() {
         Some(model.clone())
     );
     assert_eq!(decode(&text, &"0".repeat(64)), None);
+}
+
+/// A file written just before the pass starts has a racy stamp: a same-tick write after it would
+/// leave the stamp unchanged. It is hashed again at the next start, which finds such a write.
+#[test]
+fn a_racy_stamp_is_hashed_again_at_the_next_start() {
+    let s = Scratch::new("racy");
+    let data = bytes(30, 1 << 20);
+    let path = s.file("model.gguf", &data);
+    let written = mtime_ms(&path);
+    let root = s.root();
+
+    // The pass starts 500 ms after the file's last write, inside the 2 s margin.
+    let first = LocalIndex::open(&root)
+        .unwrap()
+        .index(
+            "llama",
+            &[weights(&path)],
+            &StepClock::at(written + 500),
+            &quiet,
+        )
+        .unwrap();
+    assert_eq!(first.racy, 1);
+    assert!(first.model.files[0].racy);
+
+    // A same-tick rewrite at the same size: the bytes change, the stamp does not.
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let edited = bytes(31, 1 << 20);
+    {
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.write_all(&edited).unwrap();
+        f.set_modified(mtime).unwrap();
+    }
+    assert_eq!(
+        FileStamp::of(&File::open(&path).unwrap()).unwrap(),
+        first.model.files[0].stamp
+    );
+
+    // The next start, later: the racy record is not reused, so the new bytes are hashed.
+    let mut index = LocalIndex::open(&root).unwrap();
+    assert!(index.get(&first.model.model_id).unwrap().files[0].racy);
+    let second = index
+        .index("llama", &[weights(&path)], &StepClock::new(), &quiet)
+        .unwrap();
+    assert_eq!(second.hashed, vec![edited.len() as u64]);
+    assert_eq!(second.racy, 0);
+    assert_eq!(second.model.files[0].digest, FileDigest::of_bytes(&edited));
+    assert_ne!(second.model.model_id, first.model.model_id);
+
+    // Now settled, the record is reused.
+    let third = index
+        .index("llama", &[weights(&path)], &StepClock::new(), &quiet)
+        .unwrap();
+    assert_eq!((third.hashed.len(), third.reused), (0, 1));
+
+    // Exactly at the margin is still racy; one millisecond past it is not.
+    let edge = |offset: u64| {
+        let s = Scratch::new("racy-edge");
+        let path = s.file("model.gguf", &data);
+        let root = s.root();
+        let clock = StepClock::at(mtime_ms(&path) + offset);
+        LocalIndex::open(&root)
+            .unwrap()
+            .index("llama", &[weights(&path)], &clock, &quiet)
+            .unwrap()
+            .racy
+    };
+    assert_eq!(edge(RACY_MARGIN_MS as u64), 1);
+    assert_eq!(edge(RACY_MARGIN_MS as u64 + 1), 0);
+}
+
+/// A change that keeps the size, a new mtime or a new inode, is caught by `index` itself, not only
+/// by `check`.
+#[test]
+fn index_hashes_a_same_size_change_and_a_new_inode_again() {
+    let s = Scratch::new("same-size");
+    let data = bytes(40, 1 << 20);
+    let path = s.file("model.gguf", &data);
+    let root = s.root();
+    let mut index = LocalIndex::open(&root).unwrap();
+    let first = index
+        .index("llama", &[weights(&path)], &StepClock::new(), &quiet)
+        .unwrap();
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    // Same size, new bytes, a new mtime.
+    let edited = bytes(41, 1 << 20);
+    {
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.write_all(&edited).unwrap();
+        f.set_modified(mtime + std::time::Duration::from_secs(3))
+            .unwrap();
+    }
+    let second = index
+        .index("llama", &[weights(&path)], &StepClock::new(), &quiet)
+        .unwrap();
+    assert_eq!(second.hashed, vec![edited.len() as u64]);
+    assert_eq!(second.model.files[0].digest, FileDigest::of_bytes(&edited));
+    assert_ne!(second.model.model_id, first.model.model_id);
+
+    // The same bytes and mtime under a new inode: hashed again, the same ID.
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let copy = s.file("model.gguf.copy", &edited);
+    File::options()
+        .write(true)
+        .open(&copy)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    std::fs::rename(&copy, &path).unwrap();
+    let third = index
+        .index("llama", &[weights(&path)], &StepClock::new(), &quiet)
+        .unwrap();
+    assert_ne!(
+        third.model.files[0].stamp.inode,
+        second.model.files[0].stamp.inode
+    );
+    assert_eq!(third.hashed, vec![edited.len() as u64]);
+    assert_eq!(third.model.model_id, second.model.model_id);
 }
 
 #[test]
@@ -481,6 +622,22 @@ fn mtimes_before_the_epoch_count_forward_from_the_second() {
             secs: 7,
             nanos: 300
         }
+    );
+    assert_eq!(
+        Mtime {
+            secs: 7,
+            nanos: 300
+        }
+        .unix_ms(),
+        7_000
+    );
+    assert_eq!(
+        Mtime {
+            secs: -6,
+            nanos: 999_999_900
+        }
+        .unix_ms(),
+        -5_001
     );
 }
 
@@ -527,6 +684,7 @@ fn a_report_is_set_against_its_bound() {
         },
         hashed: vec![4_000_000_000, 2_000_000_000],
         reused: 1,
+        racy: 0,
         threads: 2,
         elapsed: Nanos(3_000_000_000),
         recorded: true,

@@ -5,12 +5,14 @@
 //! A local path is indexed, never copied or modified. [`LocalIndex::index`] takes the files the
 //! census read, each with its role, and:
 //!
-//! 1. stamps each file with its (device, inode, size, mtime), read through the open handle;
-//! 2. reuses the `FileDigest` of a file whose stamp matches the record of an earlier index, so a
-//!    later start reads nothing more;
+//! 1. stamps each file with its (device, inode, size, mtime), and closes it again;
+//! 2. reuses the `FileDigest` of a file whose stamp matches the record of an earlier index and
+//!    was not racy (below), so a later start reads nothing more;
 //! 3. hashes every other file in one multi-threaded pass. SHA-256 is a sequential chain, so each
 //!    file is hashed whole on one thread, and up to `min(cores, files)` files are hashed side by
-//!    side, as the `t_index` bound assumes;
+//!    side, as the `t_index` bound assumes. A thread opens its file when it starts on it, checks
+//!    the stamp through that handle, hashes, and stamps it again, so at most one file per thread
+//!    is open;
 //! 4. computes the v1 `ModelId` (RFC-0041 §1) and writes `local/<model-id>.sources`, which
 //!    survives a restart.
 //!
@@ -19,10 +21,23 @@
 //! `LocalSourceChanged` (14, `Integrity`). Its action is to re-index, which yields a new
 //! `ModelId` for the changed bytes.
 //!
-//! The stamp is a check against accidental change, not against an adversary: a file rewritten in
-//! place with its size and mtime set back keeps its record, and its old digest is reused. RFC-0041
-//! §4.3 accepts this, since the file is the user's own and bytes are copied out of it at
-//! `Loading`.
+//! # Racy stamps
+//!
+//! An mtime has the file system's granularity: a coarse-clock tick on Linux, 1 s on HFS+, 2 s on
+//! FAT32. A write in the same tick as the file's previous write leaves the stamp unchanged. If it
+//! lands while the file is hashed, after the hasher has read the range it changes, the check
+//! after hashing passes and the stamp is paired with a digest of bytes the file no longer holds.
+//! So, as version control systems do with their "racily clean" entries, a file whose mtime is
+//! less than [`RACY_MARGIN_MS`] (2 s, the coarsest supported granularity) before the clock's
+//! wall time at the start of the pass is recorded as **racy**. A racy stamp is never reused: the
+//! next pass hashes that file again, and by then a later write would have moved its mtime. The
+//! wall time comes from the [`Clock`] the pass is given (rule T1).
+//!
+//! Past that, the stamp is a check against accidental change, not against an adversary: a file
+//! rewritten in place with its size and mtime set back keeps its record, and its old digest is
+//! reused. RFC-0041 §4.3 accepts this, since the file is the user's own and bytes are copied out
+//! of it at `Loading`. [`LocalIndex::check`] compares stamps only, so it cannot see a same-tick
+//! write to a racy file either; the next `index` does.
 //!
 //! Chunk hashes in the same pass are COMP-E11-T14, and a local file's evidence in a cluster is
 //! COMP-E11-T17.
@@ -35,7 +50,8 @@
 //! ```text
 //! { "version": 1, "model_id": "<64 hex>", "family": "<frozen tag>",
 //!   "files": [ { "path": "<absolute path>", "role": "weights", "sha256": "<64 hex>",
-//!                "size": 123, "device": 1, "inode": 2, "mtime_secs": 1, "mtime_nanos": 0 } ] }
+//!                "size": 123, "device": 1, "inode": 2, "mtime_secs": 1, "mtime_nanos": 0,
+//!                "racy": false } ] }
 //! ```
 //!
 //! Paths are absolute and canonical. A path that is not valid Unicode cannot be written in this
@@ -79,7 +95,17 @@ pub struct Mtime {
     pub nanos: u32,
 }
 
+/// How close to the pass's start, in milliseconds, a file's mtime may be before its stamp is
+/// racy: 2 s, FAT32's granularity and the coarsest of the supported file systems.
+pub const RACY_MARGIN_MS: i64 = 2_000;
+
 impl Mtime {
+    /// Milliseconds from the Unix epoch, rounded down.
+    #[must_use]
+    pub fn unix_ms(self) -> i128 {
+        i128::from(self.secs) * 1_000 + i128::from(self.nanos / 1_000_000)
+    }
+
     fn of(time: SystemTime) -> Mtime {
         match time.duration_since(UNIX_EPOCH) {
             Ok(d) => Mtime {
@@ -147,6 +173,9 @@ pub struct SourceRecord {
     pub digest: FileDigest,
     /// Its stamp when it was hashed.
     pub stamp: FileStamp,
+    /// Whether the stamp was racy: its mtime was less than [`RACY_MARGIN_MS`] before the pass
+    /// began. A racy stamp is never reused (module docs).
+    pub racy: bool,
 }
 
 /// A local model as the index holds it.
@@ -183,6 +212,8 @@ pub struct IndexReport {
     pub hashed: Vec<u64>,
     /// Files whose digest came from their record, unread.
     pub reused: usize,
+    /// Files recorded with a racy stamp, which the next pass hashes again.
+    pub racy: usize,
     /// Threads that hashed files: `min(cores, files hashed)`.
     pub threads: usize,
     /// The pass's wall time on the clock it was given, from the first stamp to the record's
@@ -433,7 +464,9 @@ impl<'r> LocalIndex<'r> {
         &self.unreadable
     }
 
-    /// Checks every file of model `id` against its record.
+    /// Checks every file of model `id` against its record. It compares stamps only, so a
+    /// same-tick write to a file recorded as racy passes it; the next [`index`](Self::index)
+    /// hashes such a file again (module docs).
     ///
     /// # Errors
     ///
@@ -458,7 +491,8 @@ impl<'r> LocalIndex<'r> {
 
     /// Indexes the model of family `family_tag` made of `files`: reuses each digest whose record
     /// still matches, hashes the rest, and records the result (module docs). `progress` is called
-    /// from the hashing threads after each read; `clock` times the pass.
+    /// from the hashing threads after each read. `clock` times the pass, and its wall time at
+    /// the start decides which stamps are racy.
     ///
     /// # Errors
     ///
@@ -474,32 +508,37 @@ impl<'r> LocalIndex<'r> {
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<IndexReport, LocalError> {
         let start = clock.now();
+        // Taken before any stamp, so a pass longer than the margin cannot let a racy file
+        // through.
+        let racy_after = i128::from(clock.unix_ms()) - i128::from(RACY_MARGIN_MS);
 
-        // Open and stamp every file, and find the ones whose record still matches.
-        let known: BTreeMap<&Path, (&SourceRecord, ModelId)> = self
-            .models
-            .values()
-            .flat_map(|m| {
-                m.files
-                    .iter()
-                    .map(move |f| (f.path.as_path(), (f, m.model_id)))
-            })
-            .collect();
+        // Stamp every file, and find the ones whose record still matches and was not racy. Each
+        // file is closed again at once; the hashing threads reopen the ones they hash.
+        // Each path's record, a settled one in preference to a racy one when two models name it.
+        let mut known: BTreeMap<&Path, &SourceRecord> = BTreeMap::new();
+        for f in self.models.values().flat_map(|m| m.files.iter()) {
+            let entry = known.entry(f.path.as_path()).or_insert(f);
+            if entry.racy && !f.racy {
+                *entry = f;
+            }
+        }
         let mut opened = Vec::with_capacity(files.len());
         for file in files {
             let path = std::fs::canonicalize(&file.path)
                 .map_err(|e| LocalError::io("resolve", &file.path, e))?;
-            let handle = File::open(&path).map_err(|e| LocalError::io("open", &path, e))?;
-            let stamp = FileStamp::of(&handle).map_err(|e| LocalError::io("stamp", &path, e))?;
+            let stamp = {
+                let handle = File::open(&path).map_err(|e| LocalError::io("open", &path, e))?;
+                FileStamp::of(&handle).map_err(|e| LocalError::io("stamp", &path, e))?
+            };
             let cached = known
                 .get(path.as_path())
-                .filter(|(r, _)| r.stamp == stamp)
-                .map(|(r, _)| r.digest);
+                .filter(|r| !r.racy && r.stamp == stamp)
+                .map(|r| r.digest);
             opened.push(Opened {
                 path,
                 role: file.role,
-                handle,
                 stamp,
+                racy: stamp.mtime.unix_ms() >= racy_after,
                 digest: cached,
             });
         }
@@ -523,8 +562,10 @@ impl<'r> LocalIndex<'r> {
                 role: o.role,
                 digest: o.digest.expect("every file has a digest by now"),
                 stamp: o.stamp,
+                racy: o.racy,
             })
             .collect();
+        let racy = records.iter().filter(|r| r.racy).count();
         let sources: Vec<SourceFile> = records
             .iter()
             .map(|r| SourceFile {
@@ -540,17 +581,17 @@ impl<'r> LocalIndex<'r> {
             files: records,
         };
 
-        // A record naming one of these paths with an older stamp is stale: drop it.
+        // A record naming one of these paths with another stamp or digest is stale: drop it. A
+        // racy record whose file was hashed again goes this way when the bytes had changed.
         let stale: Vec<ModelId> = self
             .models
             .values()
             .filter(|m| m.model_id != id)
             .filter(|m| {
                 m.files.iter().any(|old| {
-                    model
-                        .files
-                        .iter()
-                        .any(|new| new.path == old.path && new.stamp != old.stamp)
+                    model.files.iter().any(|new| {
+                        new.path == old.path && (new.stamp != old.stamp || new.digest != old.digest)
+                    })
                 })
             })
             .map(|m| m.model_id)
@@ -574,6 +615,7 @@ impl<'r> LocalIndex<'r> {
         Ok(IndexReport {
             model,
             reused: files.len() - todo.len(),
+            racy,
             hashed,
             threads,
             elapsed: clock.now().saturating_duration_since(start),
@@ -604,12 +646,12 @@ impl<'r> LocalIndex<'r> {
     }
 }
 
-/// A file opened for indexing.
+/// A file stamped for indexing.
 struct Opened {
     path: PathBuf,
     role: SourceRole,
-    handle: File,
     stamp: FileStamp,
+    racy: bool,
     digest: Option<FileDigest>,
 }
 
@@ -676,12 +718,13 @@ fn hash_files(
     Ok(digests)
 }
 
-/// Hashes one opened file and checks that its stamp did not change meanwhile.
+/// Opens one stamped file, checks through the new handle that it is the file that was stamped,
+/// hashes it, and checks that its stamp did not change meanwhile.
 fn hash_one(file: &Opened, on_read: impl FnMut(u64)) -> Result<FileDigest, LocalError> {
-    let handle = file
-        .handle
-        .try_clone()
-        .map_err(|e| LocalError::io("open", &file.path, e))?;
+    let handle = File::open(&file.path).map_err(|e| LocalError::io("open", &file.path, e))?;
+    if FileStamp::of(&handle).ok() != Some(file.stamp) {
+        return Err(changed(file, &handle));
+    }
     let source = FileSource::from_file(handle).map_err(|e| range_error(&file.path, e))?;
     if source.len() != file.stamp.size {
         return Err(changed(file, source.file()));
@@ -735,6 +778,7 @@ struct FileText {
     inode: u64,
     mtime_secs: i64,
     mtime_nanos: u32,
+    racy: bool,
 }
 
 fn encode(model: &LocalModel) -> Option<String> {
@@ -751,6 +795,7 @@ fn encode(model: &LocalModel) -> Option<String> {
                 inode: f.stamp.inode,
                 mtime_secs: f.stamp.mtime.secs,
                 mtime_nanos: f.stamp.mtime.nanos,
+                racy: f.racy,
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -798,6 +843,7 @@ fn decode(text: &str, stem: &str) -> Option<LocalModel> {
                         nanos: f.mtime_nanos,
                     },
                 },
+                racy: f.racy,
             })
         })
         .collect::<Option<Vec<_>>>()?;

@@ -6,7 +6,8 @@
 //!
 //! An ignored timing test, not part of any suite: a timing on a shared CI runner proves nothing.
 //! Run it on a quiet machine with an optimised build, `--ignored --nocapture`, under a memory cap.
-//! It writes about 1.5 GiB under Cargo's temporary directory and removes it.
+//! It writes about 1.5 GiB under Cargo's temporary directory and removes it. It waits out the
+//! 2 s racy-stamp margin after writing the files, outside the timed pass.
 //!
 //! The rates are measured here, on the machine that runs it:
 //! - `R_sha` is one thread's SHA-256 rate over a 256 MiB buffer in memory, the median of 3 runs.
@@ -39,7 +40,10 @@ impl Clock for WallClock {
     }
 
     fn unix_ms(&self) -> u64 {
-        0
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
     }
 }
 
@@ -109,6 +113,12 @@ fn run(tag: &str, sizes: &[usize]) {
             path
         })
         .collect();
+    // Files just written have racy stamps, which a later start hashes again (RFC-0041 §4.3,
+    // note of 2026-10-28). A model is not usually indexed within 2 s of its last write, so wait
+    // that out before the timed pass; the wait is outside it.
+    std::thread::sleep(std::time::Duration::from_millis(
+        u64::try_from(syntropy_store::local::RACY_MARGIN_MS).unwrap() + 100,
+    ));
     let rates = IndexRates {
         w_read: w_read(&paths),
         r_sha: r_sha(),
