@@ -118,7 +118,8 @@ pub struct CheckReport {
 
 /// `config check`: every error and warning of one load and validation, from
 /// [`crate::load_and_validate`], rendered in RFC-0054 §8's format with their source lines, and
-/// never showing a secret.
+/// never showing a secret. The text quotes the configuration's sources, so a caller that prints
+/// it to a terminal escapes it first, as [`crate::Checked::render`] says.
 pub fn check(checked: &Checked, registry: &Registry) -> CheckReport {
     let (errors, warnings) = (checked.errors(), checked.warnings());
     let files = checked

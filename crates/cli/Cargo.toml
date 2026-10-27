@@ -22,8 +22,14 @@ serde_json.workspace = true
 syntropy-api = { path = "../api" }
 # `ErrorClass`, which the exit-code table maps (RFC-0051 §2.2).
 syntropy-core = { path = "../core" }
-# The runtime location, `SYNTROPY_HOST` and `SYNTROPY_API_KEY` (RFC-0054 §1, §2.4).
+# The runtime location, `SYNTROPY_HOST` and `SYNTROPY_API_KEY` (RFC-0054 §1, §2.4), and the
+# `config show`, `check` and `path` commands with their layering and validation (RFC-0054 §2, §8).
 syntropy-config = { path = "../config" }
+# The configuration sections the binary's registry holds (`config::REGISTRY`): `net`'s and
+# `cluster`'s, and the scheduler's instance keys. The API's are in `syntropy-api`.
+syntropy-cluster = { path = "../cluster" }
+syntropy-net = { path = "../net" }
+syntropy-sched = { path = "../sched" }
 # The local socket's client end, and the runner's `--ipc` endpoint (RFC-0051 §1; ADR-0015).
 syntropy-ipc = { path = "../ipc", features = ["async"] }
 # The client's HTTP/1.1 exchange on a single-threaded tokio runtime.

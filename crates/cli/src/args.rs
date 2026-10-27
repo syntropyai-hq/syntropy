@@ -226,11 +226,51 @@ pub enum DebugCommand {
     Dump(Later),
 }
 
+/// Where `config show`, `check` and `path` read the configuration from: the files RFC-0054 §1
+/// finds, or `--config`'s file in their place, then the environment and `--set` (RFC-0054 §2.2,
+/// §2.4).
+#[derive(Clone, Debug, Default, Args)]
+pub struct ConfigSource {
+    /// Read this file instead of the system, drop-in and user files (replaces `SYNTROPY_CONFIG`)
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+    /// Set one key for this command, as `key=value`; repeatable, and a later one wins
+    #[arg(long = "set", value_name = "KEY=VALUE")]
+    pub set: Vec<String>,
+}
+
+/// `syntropy config show`.
+#[derive(Clone, Debug, Args)]
+pub struct ConfigShowArgs {
+    /// Print every key's effective value and the layer it came from
+    #[arg(long)]
+    pub resolved: bool,
+    /// Where the configuration comes from.
+    #[command(flatten)]
+    pub source: ConfigSource,
+}
+
+/// `syntropy config check`.
+#[derive(Clone, Debug, Args)]
+pub struct ConfigCheckArgs {
+    /// Where the configuration comes from.
+    #[command(flatten)]
+    pub source: ConfigSource,
+}
+
+/// `syntropy config path`.
+#[derive(Clone, Debug, Args)]
+pub struct ConfigPathArgs {
+    /// Show this file as the explicit file, order 4 (replaces `SYNTROPY_CONFIG`)
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+}
+
 /// `syntropy config …`.
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     /// Print the resolved configuration
-    Show(Later),
+    Show(ConfigShowArgs),
     /// Print one key
     Get(Later),
     /// Set one key
@@ -239,12 +279,12 @@ pub enum ConfigCommand {
     Unset(Later),
     /// Edit the configuration file
     Edit(Later),
-    /// Check the configuration
-    Check(Later),
+    /// Check the configuration, without a daemon
+    Check(ConfigCheckArgs),
     /// Reload the configuration
     Reload(Later),
     /// Print the configuration files and directories
-    Path(Later),
+    Path(ConfigPathArgs),
     /// Print the configuration schema
     Schema(Later),
     /// Export configuration values to a file

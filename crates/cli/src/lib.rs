@@ -15,8 +15,9 @@
 //! - [`error`]: the exit-code table and error rendering with hints.
 //!
 //! Every command of the tree is declared. `version` is served: its `--json` output is the native
-//! API's `VersionInfo`, unchanged. Each other command fails with "not available in this build
-//! yet" (exit 5) until its task builds it. `__runner` and `__selftest` parse their arguments and
+//! API's `VersionInfo`, unchanged. `config show --resolved`, `config check` and `config path` are
+//! served without a daemon, over the binary's section registry ([`config`]). Each other command
+//! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` and `__selftest` parse their arguments and
 //! stop there, because runner mode and the self-test are not built.
 //!
 //! Dispatch reads no configuration, opens no GPU or network library and builds no async runtime
@@ -31,11 +32,12 @@ use clap::FromArgMatches as _;
 pub mod args;
 pub mod autostart;
 pub mod client;
+pub mod config;
 pub mod error;
 pub mod output;
 pub mod prompt;
 
-use args::{Cli, Command, RunnerArgs, SelftestArgs};
+use args::{Cli, Command, ConfigCommand, RunnerArgs, SelftestArgs};
 use error::{CliError, Exit};
 use output::{Output, Terminal};
 
@@ -64,7 +66,7 @@ where
     let terminal = Terminal::detect();
     let output = Output::new(&cli.global, terminal);
     match dispatch(cli.command, &path, output) {
-        Ok(()) => Exit::Success.into(),
+        Ok(exit) => exit.into(),
         Err(error) => {
             eprintln!("{error}");
             error.exit.into()
@@ -84,11 +86,18 @@ fn command_path(matches: &clap::ArgMatches) -> String {
 }
 
 /// Runs one command.
-fn dispatch(command: Command, path: &str, output: Output) -> Result<(), CliError> {
+///
+/// It returns the exit code: success, or a code a command chose to exit with after printing its
+/// own diagnostics, as `config check` does on an invalid configuration. An error prints as
+/// RFC-0051 §2.2 writes it.
+fn dispatch(command: Command, path: &str, output: Output) -> Result<Exit, CliError> {
     match command {
-        Command::Version => version(output),
-        Command::Runner(args) => runner(&args),
-        Command::Selftest(args) => selftest(&args),
+        Command::Version => version(output).map(|()| Exit::Success),
+        Command::Config(ConfigCommand::Show(args)) => config::show(&args, output),
+        Command::Config(ConfigCommand::Check(args)) => config::check(&args, output),
+        Command::Config(ConfigCommand::Path(args)) => config::path(&args, output),
+        Command::Runner(args) => runner(&args).map(|()| Exit::Success),
+        Command::Selftest(args) => selftest(&args).map(|()| Exit::Success),
         _ => Err(CliError::not_built(path)),
     }
 }

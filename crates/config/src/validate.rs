@@ -430,6 +430,13 @@ impl Checked {
     }
 
     /// Every error, then every warning, in RFC-0054 §8's format, never showing a secret.
+    ///
+    /// The text quotes the configuration's own sources: a value from a file, the environment or
+    /// a flag, and an unknown variable's name, any of which can hold a control character such as
+    /// ESC. A caller that prints it to a terminal escapes it first. The CLI's `config show` and
+    /// `config check` do, line by line, and so must the daemon's `serve` startup report
+    /// (PROD-E6-T02). This crate is layer 0 and leaves the escaping to its callers, which share
+    /// `syntropy_api::printable`.
     pub fn render(&self, registry: &Registry) -> String {
         render_all(self.errors(), self.warnings(), &self.files, registry)
     }
