@@ -78,6 +78,8 @@ Non-goals:
 - Runners have their own iroh endpoints, keyed by a per-runner Ed25519 key that the daemon delegates with a `DataPlaneCredential` (RFC-0034 §6). The node's secret key never enters a runner (RFC-0001 §3.2). Ring neighbours exchange runner endpoint addresses through their daemons (RFC-0030 §8.3).
 - When the head runner and the ingress daemon share a node, sequence channels use the IPC rings `local_sequences` and `local_tokens` (RFC-0001 §3.5). Those rings carry the **same frame bytes** defined in §6, so the head and tail code paths do not branch on locality.
 
+*Note 2026-10-27 (QUAL-E3-T18): the rings' records until M2.* Until DIST-E11-T03 (M2), `local_sequences` and `local_tokens` carry one postcard-encoded `SequenceControl` or `TokenFrame` per slot, the `core` types themselves, as RFC-0001 §5.8's note of 2026-10-23 already has M0 parity taps do. §6 has no sequence-control frames until DIST-E8-T05 (M2). `syntropy_ipc::shm::records` is the one encoder and decoder, which ingress, the runner and `syntropy-testkit`'s fake runner share. DIST-E11-T03 moves both rings to the frame bytes above. RFC-0001 §3.5's note and §18.39 record this, for the maintainers to confirm.
+
 ### 2. The `Transport` trait and `Channel` in full
 
 RFC-0001 §5.8 fixes the trait's methods. This section adds types and default-bodied methods only.
