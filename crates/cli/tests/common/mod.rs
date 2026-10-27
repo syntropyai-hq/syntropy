@@ -7,6 +7,7 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,6 +39,52 @@ pub fn syntropy(args: &[&str]) -> Command {
         .env_remove("SYNTROPY_API_KEY")
         .env_remove("NO_COLOR");
     command
+}
+
+/// A fresh, empty directory for one test, named by `tag` and this process.
+pub fn temp(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("syntropy-cli-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// [`syntropy`] isolated from this machine's configuration: every `SYNTROPY_*` variable of the
+/// test's own environment removed, the home, `%LOCALAPPDATA%`, `%PROGRAMDATA%`, `TMPDIR` and XDG
+/// runtime locations moved into `home`, the other XDG locations unset, and no `EDITOR` or
+/// `VISUAL`, so no command reads or writes this machine's own files or starts its editor.
+pub fn isolated(args: &[&str], home: &Path) -> Command {
+    let mut command = syntropy(args);
+    isolate(&mut command, home);
+    command
+}
+
+/// [`isolated`]'s environment, for any command that runs the binary, such as `script` running it
+/// on a pseudo-terminal.
+pub fn isolate(command: &mut Command, home: &Path) {
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("SYNTROPY_") {
+            command.env_remove(name);
+        }
+    }
+    for var in [
+        "HOME",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "TMPDIR",
+        "XDG_RUNTIME_DIR",
+    ] {
+        command.env(var, home.join(var.to_ascii_lowercase()));
+    }
+    for var in [
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_DATA_HOME",
+        "EDITOR",
+        "VISUAL",
+    ] {
+        command.env_remove(var);
+    }
 }
 
 /// Runs `command` to completion, failing the test if it runs past [`HANG`].
