@@ -105,6 +105,16 @@ impl LocalMetrics {
 - **Labels are resolved at registration**, not on each record. A hot thread holds `CounterIx` handles already bound to their label set: (stage, device, layer…). Recording never hashes a label.
 - **The drain.** A task on the runner's `net` runtime snapshots all cells every 250 ms (RFC-0001 §13), computes deltas, and writes `TelemetryRecord`s into the `telemetry` ring. Hot threads never take part. The daemon folds deltas into its store. For the series the dashboard draws (≤ 2,000), it keeps 1-second resolution for 15 minutes and 1-minute resolution for 24 hours in memory. Every other series keeps only its current value. Longer retention is the exporters' job.
 
+*Note 2026-10-27 (PROD-E8-T01, as built).* `syntropy-obs` holds the registry, the cells, the histograms, the `TelemetryRecord` codec and the drain. The build fixes what §1 and §2.1 leave open:
+- **Series, not metrics, in records.** A record names a `SeriesId`: one metric with its label values bound at registration. §1's listing names a `MetricId`, which cannot tell two label sets apart. A new last variant, `TelemetryRecord::Series`, tells the daemon each ID's metric and label values. The first drain sends every one before any record uses it. `Spans` and `Notice` come with the tasks that define their payloads (PROD-E8-T07 for spans), appended after `Series`.
+- **Timestamps** are `MonoTime`, from `TickSource::now()`. `Gauges` carries no thread, as listed.
+- **Histograms** take `Nanos` and `Bytes` units only, as this section gives ranges for those two. Each also keeps the sum of recorded values, so an exporter can report one.
+- **Cells.** A thread's cells are packed into 128-byte lines of their own, rather than one padded line per cell, so no two threads share a line. The single writer is asserted on every write in debug builds.
+- **The drain** is a value the runner drives: its `net` runtime calls `Drain::poll` from a timer, since `obs`, at layer 0, cannot depend on `net` or `tokio`. `poll` drains once per 250 ms of the `TickSource`'s time, however often it is called.
+- **A full ring.** An SPSC producer cannot take back a record the consumer has not read, so a full ring drops the new record, not the oldest, and counts it in `syntropy_obs_ring_dropped_records_total{ring}`. The drain keeps its last read for the series a dropped record carried, so the next drain sends those deltas again. A crash still loses at most one period, as long as the ring has room.
+- **One writer per ring.** `obs::ring::RingWriter` claims its ring (`telemetry`, or one step ring per dispatcher) in the region's `RingClaims`. A second claim of the same ring fails a debug assertion.
+- **No `tracing` on hot threads.** The `hot-threads` step of `cargo xtask ci lint` reads the Rust tokens of the modules `xtask/src/hot_threads.rs` lists, and rejects `tracing` there.
+
 #### 2.2 Cost terms: predicted against measured
 
 The solver predicts token time as a sum of terms (cost model §3.2–§3.10; `PlacementPlan::predicted`, RFC-0001 §5.4). Runners measure the same terms with the same keys:
