@@ -93,6 +93,19 @@ Rules:
 - **Hybrid models** mix classes per layer; a stage's store holds whichever classes its layers need. Stage cut points therefore move state and KV of different classes together (§10).
 - **Hyper-connection models** do not change KV; their extra residual streams travel in activation frames (RFC-0001 §5.8).
 
+*Note 2026-10-28 (as built, TIER-E6-T01).* `KvFormula` is `syntropy_manifest::kv`, beside `HyperParams`. `stored` and `read_per_step` are the one implementation of these sizes, and `tier` and `solver` both depend on `manifest` (RFC-0001 §4.1). Rules the table above leaves open:
+- **`KvDTypeSpec`** is one dtype for every layer plus per-layer exceptions. Its serde default is BF16 everywhere, and RFC-0042 §4.2's rule fills it per family and source (COMP-E13-T06).
+- **Counting.**
+  - A `Fixed` layer counts its state once per sequence, whatever the token count, 0 included.
+  - A `Compressed` layer stores ⌊tokens / r⌋ entries, since an entry forms when its last token is processed (OQ-MF-12). It also stores a raw window of at most `window` tokens, each `elems_per_entry` elements wide.
+  - A step reads every formed entry, or at most `selected`, plus the window.
+  - An `AuxKv` stores and reads one entry per token over the whole context.
+- **Lossy dtypes (§9)** apply to `PerToken`, `Sparse` and `Compressed` entries:
+  - `Q8 { block }` is one byte per element plus an F16 scale per `block` elements.
+  - `K8V4 { block }` stores the entry's first half as `Q8` and its second half at 4 bits, each with F16 scales.
+  - Recurrent state keeps the reference dtype, and an auxiliary cache keeps its own dtype.
+  - §9 does not define `K8V4` for an entry that is not a K/V pair, such as MLA's latent. That layer is split the same way until a decision says otherwise.
+
 ### 3. Pages, page classes and pools
 
 **Page size.** A page holds `P = 64` consecutive token positions (ADR-0205), or, for `Compressed` layers, 64 consecutive entries. `kv.page_tokens` may be set to 16, 32, 64, 128 or 256 per instance; it is part of the KV-settings hash (§7.1), so prefixes and sessions never mix page sizes.

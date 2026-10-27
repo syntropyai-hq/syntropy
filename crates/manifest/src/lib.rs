@@ -9,8 +9,9 @@
 //! `config.json` read as metadata ([`config`]), `TokenizerSpec`, and the first census and
 //! hyperparameter types ([`census`], [`hparams`]) that the family modules in `graph` produce
 //! (RFC-0043 §4, §5.2), and expert slicing ([`slice`](mod@slice), RFC-0041 §2.1, §2.2), which turns a
-//! stacked expert tensor into one record per expert with its own extent. The census builder,
-//! the manifest, the KV formula and the pack sidecar come with later tasks.
+//! stacked expert tensor into one record per expert with its own extent, and the KV formula
+//! ([`kv`], RFC-0022 §2), whose `stored` and `read_per_step` size KV for every party. The census
+//! builder, the manifest and the pack sidecar come with later tasks.
 
 #![forbid(unsafe_code)]
 
@@ -18,6 +19,7 @@ pub mod census;
 pub mod config;
 pub mod gguf;
 pub mod hparams;
+pub mod kv;
 pub mod range;
 pub mod safetensors;
 pub mod slice;
