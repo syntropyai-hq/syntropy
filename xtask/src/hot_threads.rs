@@ -33,6 +33,10 @@ pub const MODULES: &[(&str, &str)] = &[
     ),
     ("crates/obs/src/ring.rs", "step-ring writes (RFC-0053 §1)"),
     (
+        "crates/obs/src/log.rs",
+        "hot-thread log records (RFC-0053 §4.1)",
+    ),
+    (
         "crates/obs/src/timeline.rs",
         "hot-thread timing (RFC-0053 §2.1)",
     ),
