@@ -3922,6 +3922,7 @@ dependencies = [
  "syntropy-io",
  "syntropy-ipc",
  "syntropy-net",
+ "syntropy-runner",
  "syntropy-sched",
  "tokio",
 ]

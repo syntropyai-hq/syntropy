@@ -157,7 +157,8 @@ fn a_laptop_sleep_of_60_s_kills_no_runner() {
             thread::sleep(Duration::from_nanos(deadline.0 - now.0));
         }
         let n = beats.load(Ordering::Relaxed);
-        link.sample(&clock, n, n, &mut kills);
+        // One live sequence, as the runner's header would count, so stall detection is armed.
+        link.sample(&clock, n, n, 1, &mut kills);
         let suspended = detector.observe_clock(&clock).suspended(clock.tick());
         if suspended > longest {
             longest = suspended;

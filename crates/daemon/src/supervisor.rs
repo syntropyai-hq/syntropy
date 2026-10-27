@@ -6,12 +6,13 @@
 //! [`ProtocolCore`] that reads no clock and spawns, kills and probes nothing. A shell feeds it
 //! what it sees, and carries out what it asks:
 //!
-//! - **Liveness.** At each of its deadlines the shell reads the runner's heartbeat and step
-//!   counters from the shared-memory header and both clocks, and passes them as
+//! - **Liveness.** At each of its deadlines the shell reads the runner's heartbeat, step counter
+//!   and live-sequence count from the shared-memory header, and both clocks, and passes them as
 //!   [`Input::Sample`]. The core measures how long each counter has not moved in *excused*
 //!   time: running time less any interval the host spent suspended or paused, which a
 //!   [`SuspendDetector`] finds from the two clocks (RFC-0030 §5.8, step 5). No heartbeat for
-//!   `runner.liveness_timeout` is a hang. A `Ready` runner with live sequences whose step counter
+//!   `runner.liveness_timeout` is a hang. A `Ready` runner whose header counts live sequences and
+//!   whose step counter
 //!   has not moved for max(`runner.stall_floor`, `runner.stall_factor` × the predicted p99 step)
 //!   is a stall. Either is [`Output::Kill`].
 //! - **Reports.** Each `StateChanged` the runner sends is checked against RFC-0001 §3.3's edges
@@ -20,8 +21,9 @@
 //!   runner-channel loop hands to `report::forward_state_changed`. A report that is no §3.3
 //!   transition is [`Output::Rejected`] and is not forwarded.
 //! - **Crashes.** When the process exits, the core classifies the failure (§3.4): `Device` if the
-//!   runner reported a `Failed { class: Device }` before it died, `Timeout` if the core killed it
-//!   for a hang or a stall, and `Internal` otherwise. It reports `Failed` on the runner's behalf.
+//!   runner reported a `Failed { class: Device }` before it died, even if the core then killed
+//!   it; `Timeout` \[chosen\] if the core killed it for a hang or a stall; and `Internal`
+//!   otherwise. It reports `Failed` on the runner's behalf.
 //! - **Restarts.** A failure inside the budget (`runner.restart_budget`, 5 in 10 min) restarts
 //!   the runner after a back-off that doubles from `runner.restart_backoff`'s 1 s to 60 s, with
 //!   jitter drawn from the [`Entropy`] it is given (rule T1). A `Device` failure is re-probed
@@ -62,8 +64,11 @@ pub struct Policy {
     pub budget_window: Nanos,
     /// `runner.device_reprobe`: re-probe the device before restarting after a `Device` failure.
     pub reprobe_on_device: bool,
-    /// How often the shell samples the counters: a sixth of the liveness timeout, so a hang is
-    /// seen within a sixth of the timeout of its bound \[chosen\].
+    /// How often the shell samples the counters: a sixth of the liveness timeout \[chosen\]. A
+    /// counter's silence is counted from the sample that saw it last move, up to one period
+    /// after the move. A hang is killed at the first sample whose counted silence reaches the
+    /// timeout, so between the timeout and the timeout plus one period after the last beat, and
+    /// never before it.
     pub sample_period: Nanos,
 }
 
@@ -126,6 +131,9 @@ pub enum Input {
         heartbeat: u64,
         /// The runner's step counter.
         steps: u64,
+        /// The runner's live-sequence count. The runner changes it in place, with no
+        /// `StateChanged`, so it travels with the counters (RFC-0001 §3.5, note of 2026-10-28).
+        live: u32,
         /// The clock that stops while the host is suspended.
         awake: AwakeTime,
     },
@@ -217,6 +225,8 @@ pub struct Supervisor<E: Entropy> {
     last_sample: Option<MonoTime>,
     heartbeat: Option<u64>,
     steps: Option<u64>,
+    /// The live-sequence count from the last sample.
+    live: u32,
     /// Excused time since the heartbeat last moved.
     heartbeat_quiet: Nanos,
     /// Excused time since the step counter last moved, while `Ready` with live sequences.
@@ -240,6 +250,7 @@ impl<E: Entropy> Supervisor<E> {
             last_sample: None,
             heartbeat: None,
             steps: None,
+            live: 0,
             heartbeat_quiet: Nanos(0),
             step_quiet: Nanos(0),
             p99: None,
@@ -263,16 +274,16 @@ impl<E: Entropy> Supervisor<E> {
         self.last_sample = None;
         self.heartbeat = None;
         self.steps = None;
+        self.live = 0;
         self.heartbeat_quiet = Nanos(0);
         self.step_quiet = Nanos(0);
     }
 
-    /// Whether the runner is `Ready` with live sequences, so its step counter must move.
+    /// Whether the runner is `Ready` with live sequences, so its step counter must move. The
+    /// count is the header's, from the last sample: a `Ready` report carries the count only at
+    /// the moment it was sent, and the runner changes it without one.
     fn must_step(&self) -> bool {
-        matches!(
-            self.state,
-            Some((RunnerState::Ready { live_sequences, .. }, _)) if live_sequences > 0
-        )
+        self.live > 0 && matches!(self.state, Some((RunnerState::Ready { .. }, _)))
     }
 
     fn sample(
@@ -280,17 +291,20 @@ impl<E: Entropy> Supervisor<E> {
         now: MonoTime,
         heartbeat: u64,
         steps: u64,
+        live: u32,
         awake: AwakeTime,
         out: &mut Outbox<Output>,
     ) {
         if self.phase != Phase::Running {
             return;
         }
+        let stepping_before = self.must_step();
+        self.live = live;
         let interval = self.detector.observe(now, awake);
         let first = self.last_sample.is_none();
         self.last_sample = Some(now);
-        // Excused time: the running interval less a suspend (any gap between the clocks past
-        // their tick) and less lateness on both clocks past one sample period (a paused VM or a
+        // Excused time: the running interval less a suspend (any gap between the clocks) and
+        // less lateness on both clocks past one sample period (a paused VM or a
         // starved daemon), so a host's sleep never counts against the runner.
         let suspended = interval.suspended(Nanos(0));
         let late = interval.late(self.policy.sample_period, self.policy.sample_period);
@@ -306,18 +320,18 @@ impl<E: Entropy> Supervisor<E> {
         } else {
             self.heartbeat_quiet = Nanos(self.heartbeat_quiet.0.saturating_add(excused.0));
         }
-        if !self.must_step() || first || self.steps != Some(steps) {
+        if !stepping_before || !self.must_step() || first || self.steps != Some(steps) {
             self.step_quiet = Nanos(0);
         } else {
             self.step_quiet = Nanos(self.step_quiet.0.saturating_add(excused.0));
         }
         self.heartbeat = Some(heartbeat);
         self.steps = Some(steps);
-        if self.heartbeat_quiet > self.policy.liveness_timeout {
+        if self.heartbeat_quiet >= self.policy.liveness_timeout {
             self.kill(KillReason::Hung, out);
         } else if let Some(p99) = self.p99
             && self.must_step()
-            && self.step_quiet > self.policy.stall_after(p99)
+            && self.step_quiet >= self.policy.stall_after(p99)
         {
             self.kill(KillReason::Stalled, out);
         }
@@ -368,9 +382,13 @@ impl<E: Entropy> Supervisor<E> {
             self.phase = Phase::Stopped;
             return;
         }
+        // A reported sticky device error wins over a kill: a runner that reported `Device` and
+        // then hung on its way out still has its device re-probed. A kill for a hang or a stall
+        // is `Timeout`, §5.12's class for "progress stalled" \[chosen\]: §3.4 names only the
+        // classes of a crash.
         let class = match (killed, self.reported_failure) {
+            (_, Some(ErrorClass::Device)) => ErrorClass::Device,
             (Some(_), _) => ErrorClass::Timeout,
-            (None, Some(ErrorClass::Device)) => ErrorClass::Device,
             (None, _) => ErrorClass::Internal,
         };
         let epoch = self
@@ -466,8 +484,9 @@ impl<E: Entropy> ProtocolCore for Supervisor<E> {
             Input::Sample {
                 heartbeat,
                 steps,
+                live,
                 awake,
-            } => self.sample(now, heartbeat, steps, awake, out),
+            } => self.sample(now, heartbeat, steps, live, awake, out),
             Input::State { state, epoch } => {
                 if !matches!(self.phase, Phase::Stopped) {
                     self.report(state, epoch, out);

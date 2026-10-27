@@ -12,6 +12,9 @@
 //! - [`serve_channel`] is the runner-channel loop: it reads the runner's messages until the
 //!   runner closes the channel, and hands each to the link.
 //!
+//! [`RunnerLink::sample_region`] reads the counters from the daemon's side of the runner's
+//! shared-memory region.
+//!
 //! The link reads no clock of its own: the caller passes `now`, and [`RunnerLink::sample`] takes
 //! an [`AwakeClock`], which the daemon's wiring builds over `io`'s `SystemClock` (ADR-0022
 //! decision 2). So the daemon never names `SystemClock`, and tests run on virtual time.
@@ -21,6 +24,7 @@ use syntropy_core::{
     RunnerStateKind,
 };
 use syntropy_ipc::cmd::{DaemonChannel, RecvError, RunnerMsg};
+use syntropy_ipc::shm::Region;
 
 use crate::report::{self, ReportSink, RunnerFailedReport};
 use crate::supervisor::{Input, KillReason, Output, Supervisor};
@@ -114,6 +118,7 @@ impl<E: Entropy, S: ReportSink> RunnerLink<E, S> {
         clock: &impl AwakeClock,
         heartbeat: u64,
         steps: u64,
+        live: u32,
         effects: &mut impl Effects,
     ) {
         let now = clock.now();
@@ -123,10 +128,27 @@ impl<E: Entropy, S: ReportSink> RunnerLink<E, S> {
             Input::Sample {
                 heartbeat,
                 steps,
+                live,
                 awake,
             },
             effects,
         );
+    }
+
+    /// Samples the counters of the runner's shared-memory header, through the daemon's side of
+    /// its region: the runner's heartbeat, the step counter and the live-sequence count.
+    pub fn sample_region(
+        &mut self,
+        clock: &impl AwakeClock,
+        region: &Region,
+        effects: &mut impl Effects,
+    ) {
+        let (heartbeat, steps, live) = (
+            region.peer_heartbeat(),
+            region.steps(),
+            region.live_sequences(),
+        );
+        self.sample(clock, heartbeat, steps, live, effects);
     }
 
     /// When the supervisor next wants an input: a sample or a timer.

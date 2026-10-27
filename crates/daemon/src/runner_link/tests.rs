@@ -234,10 +234,10 @@ fn a_spent_budget_reaches_report_runner_failed() {
             },
             &mut seen,
         );
-        link.sample(&clock, 0, 0, &mut seen);
+        link.sample(&clock, 0, 0, 0, &mut seen);
         for _ in 0..7 {
             clock.0.fetch_add(S / 2, Ordering::Relaxed);
-            link.sample(&clock, 0, 0, &mut seen);
+            link.sample(&clock, 0, 0, 0, &mut seen);
         }
         assert_eq!(seen.kills.len(), round + 1);
         link.handle(clock.now(), Input::Exited, &mut seen);

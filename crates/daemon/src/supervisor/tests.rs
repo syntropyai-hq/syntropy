@@ -55,6 +55,8 @@ struct Run {
     awake: u64,
     heartbeat: u64,
     steps: u64,
+    /// The header's live-sequence count, which the runner writes and the shell samples.
+    live: u32,
 }
 
 impl Run {
@@ -69,6 +71,7 @@ impl Run {
             awake: 0,
             heartbeat: 0,
             steps: 0,
+            live: 0,
         };
         assert!(run.input(Input::Spawned).is_empty());
         run
@@ -91,6 +94,7 @@ impl Run {
         self.input(Input::Sample {
             heartbeat: self.heartbeat,
             steps: self.steps,
+            live: self.live,
             awake: AwakeTime(self.awake),
         })
     }
@@ -102,8 +106,11 @@ impl Run {
         })
     }
 
-    /// Reports the forward path up to `Ready` with `live` sequences.
+    /// Reports the forward path up to `Ready`, as a runner's machine does: `Ready` with no live
+    /// sequence. The runner then counts `live` sequences in the header, where the shell samples
+    /// them.
     fn reach_ready(&mut self, live: u32) {
+        self.live = live;
         for state in [
             RunnerState::Fetching {
                 have: Bytes(0),
@@ -121,7 +128,7 @@ impl Run {
                 step: WarmStep::Prepare,
             },
             RunnerState::Ready {
-                live_sequences: live,
+                live_sequences: 0,
                 degraded: None,
             },
         ] {
@@ -170,10 +177,11 @@ fn a_hang_is_killed_after_the_liveness_timeout() {
     let mut r = Run::new(0);
     r.reach_ready(0);
     assert!(r.sample_after(0).is_empty());
-    for _ in 0..6 {
-        // 0.5 s … 3.0 s of silence.
+    for _ in 0..5 {
+        // 0.5 s … 2.5 s of silence.
         assert!(r.sample_after(500 * MS).is_empty(), "at {} ms", r.now / MS);
     }
+    // 3.0 s: the timeout is reached.
     assert_eq!(r.sample_after(500 * MS), [Output::Kill(KillReason::Hung)]);
     // The kill's exit is a `Timeout` failure, reported for the runner, and a restart after 1 s.
     let out = r.input(Input::Exited);
@@ -213,15 +221,44 @@ fn a_stall_is_killed_after_the_stall_bound() {
             r.heartbeat += 1;
             let out = r.sample_after(500 * MS);
             quiet += 500 * MS;
-            if quiet <= bound {
+            if quiet < bound {
                 assert!(out.is_empty(), "at {} ms", quiet / MS);
             } else {
                 assert_eq!(out, [Output::Kill(KillReason::Stalled)], "p99 {p99}");
-                assert_eq!(quiet, bound + 500 * MS);
+                assert_eq!(quiet, bound);
                 break;
             }
         }
     }
+    // The count is the header's: a `Ready` report's own count is ignored, and a count that
+    // falls to zero stops the stall clock.
+    let mut r = Run::new(0);
+    r.reach_ready(0);
+    r.input(Input::PredictedStep {
+        p99: Nanos(100 * MS),
+    });
+    r.input(Input::State {
+        state: RunnerState::Ready {
+            live_sequences: 5,
+            degraded: None,
+        },
+        epoch: PlanEpoch { term: 1, seq: 2 },
+    });
+    for _ in 0..40 {
+        r.heartbeat += 1;
+        assert!(r.sample_after(500 * MS).is_empty());
+    }
+    r.live = 1;
+    for _ in 0..19 {
+        r.heartbeat += 1;
+        assert!(r.sample_after(500 * MS).is_empty());
+    }
+    r.live = 0;
+    r.heartbeat += 1;
+    assert!(
+        r.sample_after(500 * MS).is_empty(),
+        "no live sequence, no stall"
+    );
     for (live, predicted) in [(0, true), (3, false)] {
         let mut r = Run::new(0);
         r.reach_ready(live);
@@ -270,6 +307,22 @@ fn a_crash_is_classified_and_a_device_failure_re_probes() {
             assert_eq!(r.sup.next_deadline(), None);
         }
     }
+    // A runner that reports `Device` and then hangs on its way out is killed, and its failure
+    // stays `Device`, so the device is still re-probed.
+    let mut r = Run::new(0);
+    r.reach_ready(0);
+    r.state(RunnerState::Failed {
+        class: ErrorClass::Device,
+        during: RunnerStateKind::Ready,
+        restarts: 0,
+    });
+    r.sample_after(0);
+    let mut out = Vec::new();
+    for _ in 0..6 {
+        out.extend(r.sample_after(500 * MS));
+    }
+    assert_eq!(out, [Output::Kill(KillReason::Hung)]);
+    assert_eq!(r.input(Input::Exited), [Output::Reprobe]);
     let mut r = Run::new(0);
     r.reach_ready(1);
     let out = r.input(Input::Exited);

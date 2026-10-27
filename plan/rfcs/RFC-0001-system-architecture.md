@@ -223,21 +223,21 @@ An instance becomes routable only when every runner in it is `Ready` and the can
 
 *Note 2026-10-28 (as built, proposed, §18.47; DIST-E1-T06).*
 - **Where it lives.** The restart policy is `syntropy_daemon::supervisor::Supervisor`, a `ProtocolCore` (invariant 12). Its policy comes from `cluster`'s `RunnerSection` (RFC-0033 §8.2). `daemon::runner_link` is its shell: it feeds the core a runner's `StateChanged` messages and the shared-memory counters, and carries out the core's outputs.
-- **Excused time.** At each deadline, every `sample_period` (a sixth of `runner.liveness_timeout`, 500 ms by default [chosen]), the shell reads the heartbeat and step counters with both clocks. A `SuspendDetector` (§5.14) measures the interval. A counter's silence is counted in excused time, which is running time less two things:
+- **Excused time.** At each deadline, every `sample_period` (a sixth of `runner.liveness_timeout`, 500 ms by default [chosen]), the shell reads the heartbeat, the step counter and the live-sequence count from the shared-memory header, with both clocks. A `SuspendDetector` (§5.14) measures the interval. A counter's silence is counted in excused time, which is running time less two things:
   - the suspend, the gap between the two clocks;
   - lateness on both clocks past one sample period, which covers a paused VM or a starved daemon.
 
-  So a host's sleep never counts against a runner, as RFC-0030 §5.8 step 5 asks. The stopped-clock reading reaches the core through `core`'s `AwakeClock` trait, which `io`'s `SystemClock` implements, so `daemon` never names `SystemClock` (ADR-0022 decision 2).
+  So a host's sleep never counts against a runner, as RFC-0030 §5.8 step 5 asks. A hang is killed at the first sample whose counted silence reaches `runner.liveness_timeout`. Silence is counted from the sample that saw the last beat, so the kill comes between the timeout and the timeout plus one period after that beat, never before it. A stall needs live sequences, and the count is the header's (§3.5, note of 2026-10-28). The runner changes its count in place, with no `StateChanged`, so a `Ready` report's own count is out of date as soon as a sequence opens. The stopped-clock reading reaches the core through `core`'s `AwakeClock` trait, which `io`'s `SystemClock` implements, so `daemon` never names `SystemClock` (ADR-0022 decision 2).
 - **Reports.** Each `StateChanged` is checked against §3.3's edges. For `Ready → Ready`, the epoch must also be later, which `can_become` does not check. An accepted report goes to `report::forward_state_changed`. A refused one is logged and not forwarded.
 - **Failures.** A crash is classified as this section says:
   - `Device` after a `Failed { class: Device }` report;
   - `Internal` otherwise;
-  - a kill for a hang or a stall is `Timeout` (§5.12: "Deadline passed or progress stalled").
+  - a kill for a hang or a stall is `Timeout` [chosen] (§5.12: "Deadline passed or progress stalled"), unless the runner reported `Device` first: a reported `Device` stays `Device`, so the device is still re-probed.
 
   The supervisor reports `Failed` for a runner that died without reporting one itself.
 - **Restarts.**
   - The back-off doubles per failure in the budget's window, from 1 s to 60 s. The jitter draws the delay from [¾ · base, base] [chosen], through the `Entropy` the core is given.
-  - The failure that spends the budget stops the runner with `Drained(RestartBudgetSpent)` (§18.34), and the shell submits `ReportRunnerFailed`. §5.10 gives that command an `ErrorSummary`, which no section defines yet, so the report carries the last failure's class and the failure count.
+  - The failure that spends the budget stops the runner with `Drained(RestartBudgetSpent)` (§18.34), and the shell submits `ReportRunnerFailed`. §5.10 gives that command an `ErrorSummary`, which no section defines yet, so the report carries the last failure's class and the failure count [chosen].
   - A `Device` failure is re-probed first, and a device that is gone stops the runner with `Fatal(Device)`.
 - **Not built here.**
   - `runner.load_stall`, the bound from `Fetching` to `Warming`: it needs fetch progress that no message carries yet.
@@ -328,6 +328,10 @@ Each added message or field changes the postcard layout, so it bumps `ipc_protoc
 - **`DegradeDetail`'s variants are numbered** `Absorbed` 0, `Demoted` 1 and `Reduced` 2. DIST-E14-T13 appends `Fallback` at 3.
 - **The `DIST-E1-T05` bullet above** gave `Fatal(ErrorClass)` for a spent restart budget, against §18.34 and §5.11. It now carries a dated correction, and the built type follows §18.34: `Drained(DrainReason::RestartBudgetSpent)`, and `Fatal` only for a fatal error.
 - **Forwarding.** The daemon forwards each `StateChanged` as `ReportRunner { instance, node, epoch, state: RunnerStateKind }` (§5.10). `ClusterCommand` and its client are DIST-E9's, so the forwarding is built up to a seam: `syntropy_daemon::report`'s `ReportSink`, which that client implements.
+
+*Note 2026-10-28 (as built, proposed, §18.47; DIST-E1-T06): the live-sequence count and protocol 3.0.*
+- **The shared-memory header gains a live-sequence count.** It sits on its own line after the `RunnerState` word. The runner writes it each time its count changes, and the supervisor reads it at each sample for the stall check (§3.4). The runner's machine changes the count in place, with no `StateChanged`, so no other path carries it.
+- **The region's layout version goes to 2, and `ipc_protocol` to 3.0.** The header grows by a line, so the ring table moves, and a reader of layout 1 cannot read the region. That is an incompatible change, so the major moves, by the rule of 2.0 above.
 
 IPC never carries per-token traffic across the network boundary, and no message on the command channel is sent per token. Local token delivery uses `local_tokens`.
 
@@ -3107,5 +3111,6 @@ DIST-E1-T06 builds §3.4's supervisor. Proposed for the maintainers to accept.
 | Change | Sections touched | Reason |
 |---|---|---|
 | `core::clock` holds `AwakeTime` (moved from `io`), the `AwakeClock` trait and `SuspendDetector`; `io`'s `SystemClock` implements the trait | §5.14 (dated note); RFC-0030 §5.8 (dated note) | the supervisor and DIST-E4-T05's resume detection both need the stopped-clock reading on virtual time. A trait in `core` lets `daemon` and `cluster` take it without naming `SystemClock` (ADR-0022 decision 2, rule T1) |
-| The supervisor counts silence in excused time; a hang or stall kill is class `Timeout`; the jitter range and the sample period are chosen values; `ReportRunnerFailed` carries a class and a count until `ErrorSummary` is defined | §3.4 (dated note) | as built; the class follows §5.12's definition of `Timeout`. The other three are labelled [chosen] for review |
+| The supervisor counts silence in excused time; a hang or stall kill is class `Timeout`; the jitter range and the sample period are chosen values; `ReportRunnerFailed` carries a class and a count until `ErrorSummary` is defined | §3.4 (dated note) | as built. All four are labelled [chosen] for review: the class follows §5.12's definition of `Timeout` |
+| The shared-memory header gains a live-sequence count, written by the runner and read by the supervisor's stall check; the region's layout version goes to 2 and `ipc_protocol` to 3.0 | §3.5 (dated note) | the runner's machine changes its live count in place, with no `StateChanged`, so without the word a stall could never be seen (the review of #1937). The header grows by a line and the ring table moves, which a 2.x reader cannot read, so the bump is major |
 | `runner.load_stall` and a clean stop before `Ready` are not built | §3.4 (dated note) | the first needs fetch progress that no message carries; the second is the open point of §3.3's note of 2026-10-28 |
