@@ -1220,3 +1220,12 @@ TIER-E6-T01 builds `KvFormula::stored` and `read_per_step` in `manifest`. Its cr
 |---|---|---|---|
 | TIER-E6-T01's criterion becomes "the functions live in `manifest`, the crate `solver` and `tier` both depend on (RFC-0001 §4.1), so PLC's solver uses the same functions: PLC-E4-T03's KV terms call them" | TIER-E6-T01 | R9 | the solver's KV terms are PLC-E4-T03's, later than M0a |
 | PLC-E4-T03 gains "the KV read and store terms come from TIER-E6-T01's `KvFormula::read_per_step` and `stored` in `manifest`, with no second KV formula in `solver`" | PLC-E4-T03 | R9 | PLC-E4-T03 builds those terms, and its edge to TIER-E6-T01 already exists |
+
+## The runner's header writes get criteria (2026-10-28)
+
+The review of #1937 (DIST-E1-T06) found that nothing in production writes the shared-memory header's runner-side words: the heartbeat, the step counter, the `RunnerState` word, and the live-sequence count #1937 adds. The supervisor reads all four, so a wiring task that left one out would silently disable a liveness or stall check. No task row named the writes. DIST-E1-T04 wires the runner process, but it is M0a, and the live-count word (DIST-E1-T06) and the step loop (PLC-E7-T10) are M1a. So the writes are split by milestone.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T04 gains "the runner bumps its heartbeat … and writes the `RunnerState` word on each `Lifecycle` transition, and a test over a real region shows the daemon side reads each", and DIST-E1-T04 → DIST-E1-T05 (`Lifecycle`) | DIST-E1-T04 | R9 | both words exist at M0a (DIST-E1-T02's region), and the state word comes from DIST-E1-T05's machine. M0a → M0a, and DIST-E1-T05 does not reach DIST-E1-T04, so the edge adds no cycle |
+| Added DIST-E1-T16 (M1a) → DIST-E1-T04, DIST-E1-T06, PLC-E7-T10, PLC-E8-T01: the step counter and the live-sequence count, with a real-region test through `RunnerLink::sample_region` and an end-to-end stall kill | DIST-E1-T16 | R9 | the live-count word and `sample_region` are DIST-E1-T06's and the step loop is PLC-E7-T10's, both M1a, which an M0a task cannot depend on |
