@@ -23,6 +23,7 @@ pub mod plan;
 pub mod policy;
 pub mod protocol;
 pub mod quant;
+pub mod replan;
 pub mod resource;
 pub mod sequence;
 pub mod session;
@@ -49,6 +50,7 @@ pub use policy::{
 };
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
+pub use replan::{DriftTerm, ReplanReason, WorkloadTerm};
 pub use sequence::{
     CancelReason, DraftNode, FinishReason, GrammarRef, LogprobBlock, PoolingMode, PrefixKey,
     PrefixRef, PrefixScope, Priority, ResumeCause, ResumePoint, SamplingParams, SequenceControl,
