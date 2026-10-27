@@ -3911,9 +3911,12 @@ dependencies = [
  "serde",
  "serde_json",
  "syntropy-api",
+ "syntropy-cluster",
  "syntropy-config",
  "syntropy-core",
  "syntropy-ipc",
+ "syntropy-net",
+ "syntropy-sched",
  "tokio",
 ]
 
