@@ -17,9 +17,14 @@
 //!   the hard working-set minimum, `GlobalMemoryStatusEx`, job-object limits and the
 //!   low-memory notification, with its kernel32 declarations; built for x86-64 and AArch64.
 //! - Both adapters keep their live ranges in one shared registry (`registry`).
+//! - `macos` holds the macOS sysctl reads `syntropy tune`'s tier side needs (TIER-E2-T13):
+//!   `sysctlbyname` with no new value, under a scoped `allow`. Nothing in this crate writes a
+//!   sysctl (RFC-0020 §9.1).
 //!
-//! WSL2 and macOS come in TIER-E2-T04.
+//! WSL2 and the rest of macOS come in TIER-E2-T04.
 
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod procfs;
 
 // Shared by the adapters; unused, and so allowed to be, where neither is built.

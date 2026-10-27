@@ -1,0 +1,15 @@
+# seq-control-cancel-error: Cancel, kind 2: { seq, reason: Error { domain 4, code 9 } }
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 03 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 3d 00 00 00 91 fd 8a e6 c2 22 2b ff  # 0030 header
+02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0040 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+a2 63 73 65 71 a3 67 69 6e 67 72 65 73 73 1b 01  # 0080 payload
+02 03 04 05 06 07 08 64 62 6f 6f 74 03 61 6e 07  # 0090 payload
+66 72 65 61 73 6f 6e a1 65 45 72 72 6f 72 a2 66  # 00a0 payload
+64 6f 6d 61 69 6e 04 64 63 6f 64 65 09           # 00b0 payload

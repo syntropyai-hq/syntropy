@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# A workflow-lint fixture: a local action outside .github/actions whose step is tag-pinned
+# (QUAL-E1-T09).
+name: ci
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: ./ci/act

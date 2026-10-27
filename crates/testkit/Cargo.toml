@@ -11,12 +11,21 @@ blake3.workspace = true
 chacha20.workspace = true
 # Scenario and preset files (RFC-0060 §8.5).
 serde.workspace = true
+# The fake runner's token lists, as `core`'s `TokenEntry` holds them.
+smallvec.workspace = true
 syntropy-config = { path = "../config" }
 syntropy-core = { path = "../core" }
 syntropy-graph = { path = "../graph" }
+# The fake runner (QUAL-E3-T18) serves a real region's `local_sequences` and `local_tokens` rings,
+# in `ipc`'s record encoding, and holds their `spsc` ends. Not optional: its tests must run in the
+# workspace's test job, and `ipc` brings no external crate `testkit` lacks but `postcard` and the
+# OS bindings.
+syntropy-ipc = { path = "../ipc" }
 # `SimTransport` (QUAL-E8-T04) implements `net`'s `Transport` and `Channel`. Optional, so the crates
 # that use `testkit` for anything else do not build `net` and iroh; `net`'s tests turn it on.
 syntropy-net = { path = "../net", optional = true }
+# The ring ends the fake runner holds.
+syntropy-spsc = { path = "../spsc" }
 toml.workspace = true
 
 [features]

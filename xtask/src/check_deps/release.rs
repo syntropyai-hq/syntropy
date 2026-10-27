@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 
 use super::graph::Graph;
 use super::policy::{self, PREFIX};
-use super::{Finding, Rule, elf, list};
+use super::{Finding, Rule, elf, list, macho, pe};
 
 /// What a rule that may not run produced.
 pub enum Outcome {
@@ -208,23 +208,19 @@ fn parse_tree_line(line: &str) -> Option<(&str, Vec<&str>)> {
     Some((name, features))
 }
 
-/// Rule 7: builds the core binary with no default features, so with no GPU feature, and reads
-/// its dynamic section. Every library it needs must be on the system-library allow-list, which
-/// fails closed on a vendor library no list names, and no symbol may be a vendor runtime's. The
-/// reader handles ELF, so the rule runs on Linux, where `lint` runs; QUAL-E1-T28 adds Windows and
-/// macOS.
+/// Rule 7: builds the core binary with no default features, so with no GPU feature, and reads the
+/// libraries it makes the loader load: its ELF `DT_NEEDED` entries on Linux, its PE import and
+/// delay-load directories on Windows, and its Mach-O `LC_LOAD_DYLIB`, `LC_LOAD_WEAK_DYLIB`,
+/// `LC_REEXPORT_DYLIB`, `LC_LAZY_LOAD_DYLIB` and `LC_LOAD_UPWARD_DYLIB` commands on macOS, every
+/// architecture of a universal file included (QUAL-E1-T28). Every library must be on the
+/// allow-list of system libraries for its format, which fails closed on a vendor library no list
+/// names, and no symbol it binds may be a vendor runtime's. Libraries `kernels-loader` opens at
+/// run time are rule 6's, and no load command names them.
 pub fn rule_7(manifest: &Path, graph: &Graph) -> Outcome {
     let crate_name = policy::CORE_BINARY_CRATE;
     let Some(at) = graph.member(crate_name) else {
         return Outcome::NotRun(format!("the workspace has no `{PREFIX}{crate_name}` crate"));
     };
-    if !cfg!(target_os = "linux") {
-        return Outcome::NotRun(format!(
-            "it reads the ELF dynamic section, and this host is {}; `lint` runs it on Linux, \
-             and QUAL-E1-T28 adds Windows and macOS",
-            std::env::consts::OS
-        ));
-    }
     let has_bin = graph.package(at).targets.iter().any(|target| {
         target.name == policy::CORE_BINARY && target.kind.iter().any(|kind| kind == "bin")
     });
@@ -241,11 +237,11 @@ pub fn rule_7(manifest: &Path, graph: &Graph) -> Outcome {
         Ok(binary) => binary,
         Err(error) => return Outcome::Ran(vec![Finding::new(Rule::Numbered(7), error)]),
     };
-    let dynamic = match std::fs::read(&binary)
+    let linked = match std::fs::read(&binary)
         .map_err(|error| error.to_string())
-        .and_then(|bytes| elf::read(&bytes))
+        .and_then(|bytes| Linked::read(&bytes))
     {
-        Ok(dynamic) => dynamic,
+        Ok(linked) => linked,
         Err(error) => {
             return Outcome::Ran(vec![Finding::new(
                 Rule::Numbered(7),
@@ -253,7 +249,134 @@ pub fn rule_7(manifest: &Path, graph: &Graph) -> Outcome {
             )]);
         }
     };
-    Outcome::Ran(vendor_findings(&dynamic))
+    Outcome::Ran(vendor_findings(&linked))
+}
+
+/// The executable formats rule 7 reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Format {
+    Elf,
+    Pe,
+    MachO,
+}
+
+/// What rule 7 reads of a binary, whatever its format.
+#[derive(Debug)]
+struct Linked {
+    format: Format,
+    /// Each library the loader loads for it, with how the binary names it, such as `needs` for a
+    /// `DT_NEEDED` entry.
+    libraries: Vec<(String, &'static str)>,
+    /// The symbols the loader binds for it.
+    symbols: Vec<String>,
+}
+
+impl Linked {
+    /// Reads `bytes` as an ELF, PE or Mach-O file, by its magic number.
+    fn read(bytes: &[u8]) -> Result<Linked, String> {
+        if bytes.starts_with(b"\x7fELF") {
+            elf::read(bytes).map(Linked::from)
+        } else if bytes.starts_with(b"MZ") {
+            pe::read(bytes).map(Linked::from)
+        } else if macho::is_mach_o(bytes) {
+            macho::read(bytes).map(Linked::from)
+        } else {
+            Err("not an ELF, PE or Mach-O file".to_owned())
+        }
+    }
+
+    /// Whether the core binary may load `library`.
+    fn allows(&self, library: &str) -> bool {
+        match self.format {
+            Format::Elf => policy::is_system_library(library),
+            Format::Pe => policy::is_windows_system_library(library),
+            Format::MachO => policy::is_macos_system_library(library),
+        }
+    }
+
+    /// The vendor runtime `library` belongs to, if it is a known one.
+    fn vendor(&self, library: &str) -> Option<&'static policy::VendorRuntime> {
+        policy::VENDOR_RUNTIMES
+            .iter()
+            .find(|vendor| match self.format {
+                Format::Elf => vendor
+                    .libraries
+                    .iter()
+                    .any(|stem| policy::is_library(library, stem)),
+                Format::Pe => vendor.dlls.iter().any(|stem| policy::is_dll(library, stem)),
+                Format::MachO => vendor
+                    .libraries
+                    .iter()
+                    .any(|stem| policy::is_dylib(library, stem)),
+            })
+    }
+
+    /// The allow-list a finding points at, in xtask/src/check_deps/policy.rs.
+    fn allow_list(&self) -> &'static str {
+        match self.format {
+            Format::Elf => "`SYSTEM_LIBRARIES`",
+            Format::Pe => "`WINDOWS_SYSTEM_LIBRARIES`",
+            Format::MachO => "`MACOS_SYSTEM_LIBRARIES` or `MACOS_FRAMEWORKS`",
+        }
+    }
+
+    /// Where the symbols come from, for a finding.
+    fn symbol_source(&self) -> &'static str {
+        match self.format {
+            Format::Elf => "its dynamic symbol table",
+            Format::Pe => "its import name tables",
+            Format::MachO => "its undefined symbols",
+        }
+    }
+}
+
+impl From<elf::Dynamic> for Linked {
+    fn from(dynamic: elf::Dynamic) -> Linked {
+        Linked {
+            format: Format::Elf,
+            libraries: dynamic
+                .needed
+                .into_iter()
+                .map(|lib| (lib, "needs"))
+                .collect(),
+            symbols: dynamic.symbols,
+        }
+    }
+}
+
+impl From<pe::Imports> for Linked {
+    fn from(imports: pe::Imports) -> Linked {
+        let imported = imports.dlls.into_iter().map(|dll| (dll, "imports"));
+        let delayed = imports.delayed.into_iter().map(|dll| (dll, "delay-loads"));
+        Linked {
+            format: Format::Pe,
+            libraries: imported.chain(delayed).collect(),
+            symbols: imports.symbols,
+        }
+    }
+}
+
+impl From<macho::Loads> for Linked {
+    fn from(loads: macho::Loads) -> Linked {
+        Linked {
+            format: Format::MachO,
+            libraries: loads
+                .dylibs
+                .into_iter()
+                .map(|dylib| {
+                    let how = match dylib.command {
+                        macho::Command::Load => "loads",
+                        macho::Command::Weak => "weakly loads",
+                        macho::Command::Reexport => "re-exports",
+                        macho::Command::Lazy => "lazily loads",
+                        macho::Command::Upward => "loads upward",
+                    };
+                    (dylib.name, how)
+                })
+                .collect(),
+            symbols: loads.symbols,
+        }
+    }
 }
 
 /// The path, as both Rust manglings spell it, of `syntropy_obs::faults::inject`: the module that
@@ -269,7 +392,7 @@ pub const FAULT_POINT_PATH: &str = "12syntropy_obs6faults6inject";
 /// The build uses cargo's `dev` profile, which keeps every symbol and is fast enough for `lint`.
 /// The features, and so the code compiled in, are the release build's. Scanning the nightly
 /// `release` artefact itself is QUAL-E16-T15's. The reader handles ELF, so this part runs on
-/// Linux, as rule 7 does.
+/// Linux, where `lint` runs; rule 7 reads Windows and macOS binaries too.
 pub fn fault_point_symbols(manifest: &Path, graph: &Graph) -> Outcome {
     let crate_name = policy::CORE_BINARY_CRATE;
     let Some(at) = graph.member(crate_name) else {
@@ -380,37 +503,32 @@ fn build_core_binary(manifest: &Path, features: Features) -> Result<PathBuf, Str
         .ok_or_else(|| "`cargo build` reported no core binary".to_owned())
 }
 
-/// Rule 7's findings for a binary's dynamic section: one per `DT_NEEDED` entry that is not a
-/// system library, and one per vendor whose symbols it names.
-fn vendor_findings(dynamic: &elf::Dynamic) -> Vec<Finding> {
+/// Rule 7's findings for a binary's linkage: one per library that is not a system library, and
+/// one per vendor whose symbols it binds.
+fn vendor_findings(linked: &Linked) -> Vec<Finding> {
     let mut findings = Vec::new();
-    for needed in &dynamic.needed {
-        if policy::is_system_library(needed) {
+    for (library, how) in &linked.libraries {
+        if linked.allows(library) {
             continue;
         }
-        let vendor = policy::VENDOR_RUNTIMES.iter().find(|vendor| {
-            vendor
-                .libraries
-                .iter()
-                .any(|stem| policy::is_library(needed, stem))
-        });
-        let message = match vendor {
+        let message = match linked.vendor(library) {
             Some(vendor) => format!(
-                "the core binary, built with no default features, needs `{needed}` from the {} \
+                "the core binary, built with no default features, {how} `{library}` from the {} \
                  runtime; vendor GPU runtimes ship only in backend modules",
                 vendor.name
             ),
             None => format!(
-                "the core binary, built with no default features, needs `{needed}`, which is not \
+                "the core binary, built with no default features, {how} `{library}`, which is not \
                  a system library it may need; vendor GPU runtimes ship only in backend modules, \
-                 and a system library that is not one goes in `SYSTEM_LIBRARIES` in \
-                 xtask/src/check_deps/policy.rs, with a maintainer's review"
+                 and a system library that is not one goes in {} in \
+                 xtask/src/check_deps/policy.rs, with a maintainer's review",
+                linked.allow_list()
             ),
         };
         findings.push(Finding::new(Rule::Numbered(7), message));
     }
     for vendor in policy::VENDOR_RUNTIMES {
-        let symbols: Vec<&str> = dynamic
+        let symbols: Vec<&str> = linked
             .symbols
             .iter()
             .map(String::as_str)
@@ -425,9 +543,9 @@ fn vendor_findings(dynamic: &elf::Dynamic) -> Vec<Finding> {
                 Rule::Numbered(7),
                 format!(
                     "the core binary, built with no default features, has {} runtime symbols in \
-                     its dynamic symbol table: {shown}; vendor GPU runtimes ship only in backend \
-                     modules",
-                    vendor.name
+                     {}: {shown}; vendor GPU runtimes ship only in backend modules",
+                    vendor.name,
+                    linked.symbol_source()
                 ),
             ));
         }
@@ -681,8 +799,8 @@ mod tests {
         assert_eq!(parse_tree_line(""), None);
     }
 
-    fn messages(dynamic: &elf::Dynamic) -> Vec<String> {
-        vendor_findings(dynamic)
+    fn messages(dynamic: elf::Dynamic) -> Vec<String> {
+        vendor_findings(&Linked::from(dynamic))
             .iter()
             .map(Finding::to_string)
             .collect()
@@ -704,7 +822,7 @@ mod tests {
                 "_ZN4core3fmt5write17h0123456789abcdefE".into(),
             ],
         };
-        assert_eq!(messages(&dynamic), Vec::<String>::new());
+        assert_eq!(messages(dynamic), Vec::<String>::new());
     }
 
     #[test]
@@ -721,7 +839,7 @@ mod tests {
             symbols: vec![],
         };
         assert_eq!(
-            messages(&dynamic),
+            messages(dynamic),
             [
                 "rule 7: the core binary, built with no default features, needs `libcufft.so` from \
                  the CUDA runtime; vendor GPU runtimes ship only in backend modules",
@@ -752,7 +870,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            messages(&dynamic),
+            messages(dynamic),
             [
                 "rule 7: the core binary, built with no default features, has CUDA runtime symbols in \
                  its dynamic symbol table: cufftPlan1d, curand_init, ncclCommInitRank; vendor GPU \
@@ -784,7 +902,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            messages(&dynamic),
+            messages(dynamic),
             [
                 "rule 7: the core binary, built with no default features, needs `libcuda.so.1` from \
                  the CUDA runtime; vendor GPU runtimes ship only in backend modules",
@@ -797,6 +915,168 @@ mod tests {
                 "rule 7: the core binary, built with no default features, has Vulkan runtime symbols \
                  in its dynamic symbol table: vkCreateInstance; vendor GPU runtimes ship only in \
                  backend modules",
+            ]
+        );
+    }
+
+    fn read_messages(bytes: &[u8]) -> Vec<String> {
+        vendor_findings(&Linked::read(bytes).unwrap())
+            .iter()
+            .map(Finding::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_format_is_read_from_the_magic_number() {
+        assert_eq!(
+            Linked::read(b"#!/bin/sh\n").unwrap_err(),
+            "not an ELF, PE or Mach-O file"
+        );
+        assert_eq!(
+            Linked::read(b"").unwrap_err(),
+            "not an ELF, PE or Mach-O file"
+        );
+        let pe = pe::fixture::build(true, &[], &[], true);
+        assert_eq!(Linked::read(&pe).unwrap().format, Format::Pe);
+        let macho = macho::fixture::executable(true, true, &[], &[]);
+        assert_eq!(Linked::read(&macho).unwrap().format, Format::MachO);
+        let fat = macho::fixture::universal(false, &[macho]);
+        assert_eq!(Linked::read(&fat).unwrap().format, Format::MachO);
+    }
+
+    #[test]
+    fn a_windows_binary_importing_only_system_dlls_passes() {
+        let kernel = pe::fixture::Dll {
+            name: "KERNEL32.dll",
+            imports: &[Some("GetLastError"), Some("CloseHandle")],
+        };
+        let crt = pe::fixture::Dll {
+            name: "api-ms-win-crt-runtime-l1-1-0.dll",
+            imports: &[Some("_initterm"), None],
+        };
+        let vcruntime = pe::fixture::Dll {
+            name: "VCRUNTIME140.dll",
+            imports: &[Some("memcpy"), Some("__C_specific_handler")],
+        };
+        let file = pe::fixture::build(true, &[kernel, crt], &[vcruntime], true);
+        assert_eq!(read_messages(&file), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_windows_binary_that_imports_or_delay_loads_a_vendor_dll_fails() {
+        let kernel = pe::fixture::Dll {
+            name: "KERNEL32.dll",
+            imports: &[Some("GetLastError")],
+        };
+        let cuda = pe::fixture::Dll {
+            name: "nvcuda.dll",
+            imports: &[Some("cuInit")],
+        };
+        let vulkan = pe::fixture::Dll {
+            name: "vulkan-1.dll",
+            imports: &[Some("vkCreateInstance")],
+        };
+        let unknown = pe::fixture::Dll {
+            name: "gpuvendor.dll",
+            imports: &[None],
+        };
+        let file = pe::fixture::build(true, &[kernel, cuda], &[vulkan, unknown], true);
+        assert_eq!(
+            read_messages(&file),
+            [
+                "rule 7: the core binary, built with no default features, imports `nvcuda.dll` \
+                 from the CUDA runtime; vendor GPU runtimes ship only in backend modules",
+                "rule 7: the core binary, built with no default features, delay-loads \
+                 `vulkan-1.dll` from the Vulkan runtime; vendor GPU runtimes ship only in backend \
+                 modules",
+                "rule 7: the core binary, built with no default features, delay-loads \
+                 `gpuvendor.dll`, which is not a system library it may need; vendor GPU runtimes \
+                 ship only in backend modules, and a system library that is not one goes in \
+                 `WINDOWS_SYSTEM_LIBRARIES` in xtask/src/check_deps/policy.rs, with a \
+                 maintainer's review",
+                "rule 7: the core binary, built with no default features, has CUDA runtime symbols \
+                 in its import name tables: cuInit; vendor GPU runtimes ship only in backend \
+                 modules",
+                "rule 7: the core binary, built with no default features, has Vulkan runtime \
+                 symbols in its import name tables: vkCreateInstance; vendor GPU runtimes ship \
+                 only in backend modules",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_macos_binary_loading_only_system_frameworks_and_metal_passes() {
+        let dylibs = [
+            ("/usr/lib/libSystem.B.dylib", macho::Command::Load),
+            ("/usr/lib/libobjc.A.dylib", macho::Command::Load),
+            (
+                "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+                macho::Command::Load,
+            ),
+            (
+                "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+                macho::Command::Weak,
+            ),
+            (
+                "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+                macho::Command::Load,
+            ),
+            (
+                "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+                macho::Command::Load,
+            ),
+        ];
+        let symbols = [
+            "malloc",
+            "MTLCreateSystemDefaultDevice",
+            "objc_msgSend",
+            "CFRelease",
+        ];
+        let arm = macho::fixture::executable(true, true, &dylibs, &symbols);
+        let intel = macho::fixture::executable(true, true, &dylibs[..1], &symbols[..1]);
+        assert_eq!(read_messages(&arm), Vec::<String>::new());
+        let fat = macho::fixture::universal(false, &[arm, intel]);
+        assert_eq!(read_messages(&fat), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_macos_binary_loading_a_vendor_library_in_any_architecture_fails() {
+        let system = ("/usr/lib/libSystem.B.dylib", macho::Command::Load);
+        let arm = macho::fixture::executable(true, true, &[system], &["malloc"]);
+        let intel = macho::fixture::executable(
+            true,
+            true,
+            &[
+                system,
+                ("@rpath/libvulkan.1.dylib", macho::Command::Load),
+                ("/opt/gpu/libgpu.dylib", macho::Command::Weak),
+                (
+                    "/System/Library/Frameworks/OpenCL.framework/Versions/A/OpenCL",
+                    macho::Command::Reexport,
+                ),
+            ],
+            &["malloc", "vkCreateInstance"],
+        );
+        let fat = macho::fixture::universal(true, &[arm, intel]);
+        assert_eq!(
+            read_messages(&fat),
+            [
+                "rule 7: the core binary, built with no default features, loads \
+                 `@rpath/libvulkan.1.dylib` from the Vulkan runtime; vendor GPU runtimes ship \
+                 only in backend modules",
+                "rule 7: the core binary, built with no default features, weakly loads \
+                 `/opt/gpu/libgpu.dylib`, which is not a system library it may need; vendor GPU \
+                 runtimes ship only in backend modules, and a system library that is not one goes \
+                 in `MACOS_SYSTEM_LIBRARIES` or `MACOS_FRAMEWORKS` in \
+                 xtask/src/check_deps/policy.rs, with a maintainer's review",
+                "rule 7: the core binary, built with no default features, re-exports \
+                 `/System/Library/Frameworks/OpenCL.framework/Versions/A/OpenCL`, which is not a \
+                 system library it may need; vendor GPU runtimes ship only in backend modules, \
+                 and a system library that is not one goes in `MACOS_SYSTEM_LIBRARIES` or \
+                 `MACOS_FRAMEWORKS` in xtask/src/check_deps/policy.rs, with a maintainer's review",
+                "rule 7: the core binary, built with no default features, has Vulkan runtime \
+                 symbols in its undefined symbols: vkCreateInstance; vendor GPU runtimes ship \
+                 only in backend modules",
             ]
         );
     }

@@ -180,7 +180,9 @@ impl fmt::Display for DefaultValue {
     }
 }
 
-/// Writes a TOML basic string, escaping what TOML requires.
+/// Writes a TOML basic string, escaping what TOML requires and every control and
+/// [`crate::chars::invisible`] character, as TOML's `\uXXXX` or `\UXXXXXXXX`: the text holds none
+/// of them raw, so it is safe on a terminal, and it parses back to `s`.
 pub(crate) fn write_toml_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
     f.write_str("\"")?;
     for c in s.chars() {
@@ -190,7 +192,15 @@ pub(crate) fn write_toml_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Res
             '\n' => f.write_str("\\n")?,
             '\t' => f.write_str("\\t")?,
             '\r' => f.write_str("\\r")?,
-            c if c.is_control() => write!(f, "\\u{:04X}", c as u32)?,
+            // Controls and invisible characters as TOML escapes, so printed TOML holds none raw
+            // and still parses back to the same string.
+            c if c.is_control() || crate::chars::invisible(c) => {
+                if u32::from(c) <= 0xFFFF {
+                    write!(f, "\\u{:04X}", u32::from(c))?;
+                } else {
+                    write!(f, "\\U{:08X}", u32::from(c))?;
+                }
+            }
             c => write!(f, "{c}")?,
         }
     }

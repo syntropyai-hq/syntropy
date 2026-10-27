@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# A workflow-lint fixture: a local composite action with a tag-pinned step (QUAL-E1-T09).
+name: act
+description: A local action outside .github/actions.
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      with:
+        path: target
+        key: cargo

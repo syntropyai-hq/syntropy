@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# A workflow-lint fixture: a job that checks out the PR's head and holds a secret (QUAL-E1-T09).
+name: ci
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: ./publish.sh
