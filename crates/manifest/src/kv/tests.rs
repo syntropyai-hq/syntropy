@@ -24,8 +24,9 @@ fn count(config: &HfConfig, key: &str) -> u32 {
 }
 
 /// The keys of `meta-llama/Llama-3.3-70B-Instruct`'s published `config.json` that size its KV.
-/// The publisher's repository is gated; these values were read from a public copy of the file
-/// on 2026-10-28.
+/// The publisher's repository is gated; these values were read on 2026-10-28 from a public copy
+/// of the file, `unsloth/Llama-3.3-70B-Instruct` at revision
+/// `99cd0d2c829e92a67c844f9144c2509632e5c87f`.
 const LLAMA_3_3_70B: &str = r#"{
     "num_hidden_layers": 80,
     "num_attention_heads": 64,
@@ -380,14 +381,90 @@ fn the_check_refuses_an_empty_ratio_and_unknown_layers() {
     );
 }
 
+/// `K8V4` sizes a latent, which is no K/V pair, as `Q8` (OQ-IO-30's default): an MLA layer, and
+/// the latents of `Sparse` and `Compressed` layers.
+#[test]
+fn k8v4_sizes_a_latent_as_q8() {
+    let f = deepseek();
+    let k8v4 = KvDType::K8V4 {
+        block: 32,
+        rotate: true,
+    };
+    let q8 = KvDType::Q8 { block: 32 };
+    // 576 elements: 576 bytes and 18 F16 scales = 612 bytes per layer, against 1,152 in BF16.
+    assert_eq!(f.stored(all(&f), 1, k8v4), Bytes(61 * 612));
+    assert_eq!(f.stored(all(&f), 1, k8v4), f.stored(all(&f), 1, q8));
+    let other = KvFormula::new(
+        vec![
+            LayerKv::Sparse {
+                elems_per_token: 576,
+                selected: 2048,
+            },
+            LayerKv::Compressed {
+                elems_per_entry: 512,
+                tokens_per_entry: 4,
+                window: Some(128),
+                selected: None,
+            },
+        ],
+        DType::BF16,
+    );
+    assert_eq!(
+        other.stored(all(&other), 1000, k8v4),
+        other.stored(all(&other), 1000, q8)
+    );
+    // A K/V pair still splits: GQA is smaller under K8V4 than under Q8.
+    let g = llama();
+    assert!(g.stored(all(&g), 1, k8v4) < g.stored(all(&g), 1, q8));
+}
+
+/// Products are taken in `u128` and saturate at `u64::MAX` bytes; nothing wraps.
+#[test]
+fn extreme_sizes_saturate_rather_than_wrap() {
+    let wide = LayerKv::PerToken {
+        elems_per_token: u32::MAX,
+        window: None,
+        latent: false,
+    };
+    let f = KvFormula::new(vec![wide; 1 << 16], DType::F64);
+    let every = LayerIx(0)..LayerIx(u16::MAX);
+    for dtype in [KvDType::Native, KvDType::Q8 { block: 1 }] {
+        assert_eq!(f.stored(every.clone(), u64::MAX, dtype), Bytes(u64::MAX));
+        assert_eq!(
+            f.read_per_step(every.clone(), u64::MAX, dtype),
+            Bytes(u64::MAX)
+        );
+    }
+    // At the edge: one layer of u32::MAX F64 elements is 34,359,738,360 bytes per token, so
+    // 2^29 tokens need 2^64 − 2^32 bytes, which fits, and 2^30 tokens do not.
+    let one = LayerIx(0)..LayerIx(1);
+    let per_token = u128::from(u32::MAX) * 8;
+    assert_eq!(
+        u128::from(f.stored(one.clone(), 1 << 29, KvDType::Native).0),
+        per_token << 29
+    );
+    assert_eq!(f.stored(one, 1 << 30, KvDType::Native), Bytes(u64::MAX));
+    let state = KvFormula::new(
+        vec![LayerKv::Fixed {
+            elems_per_seq: u64::MAX,
+        }],
+        DType::F64,
+    );
+    assert_eq!(
+        state.stored(LayerIx(0)..LayerIx(1), 0, KvDType::Native),
+        Bytes(u64::MAX)
+    );
+}
+
 fn layer_kv() -> impl Strategy<Value = LayerKv> {
     prop_oneof![
-        (1u32..4096, prop::option::of(1u32..512)).prop_map(|(elems_per_token, window)| {
-            LayerKv::PerToken {
+        (1u32..4096, prop::option::of(1u32..512), any::<bool>()).prop_map(
+            |(elems_per_token, window, latent)| LayerKv::PerToken {
                 elems_per_token,
                 window,
+                latent,
             }
-        }),
+        ),
         (0u64..1 << 24).prop_map(|elems_per_seq| LayerKv::Fixed { elems_per_seq }),
         (1u32..4096, 0u32..4096).prop_map(|(elems_per_token, selected)| LayerKv::Sparse {
             elems_per_token,

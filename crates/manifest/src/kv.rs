@@ -49,6 +49,11 @@ pub enum LayerKv {
         elems_per_token: u32,
         /// The most recent tokens kept, for a sliding-window layer.
         window: Option<u32>,
+        /// Whether the entry is one latent shared by K and V (MLA) rather than a K/V pair.
+        /// `K8V4` sizes a latent as `Q8` (OQ-IO-30). An addition with a serde default, as
+        /// `Compressed` is (RFC-0022 §2, note of 2026-10-28).
+        #[serde(default)]
+        latent: bool,
     },
     /// Fixed state per sequence: linear attention and state-space layers.
     Fixed {
@@ -84,6 +89,7 @@ impl LayerKv {
         LayerKv::PerToken {
             elems_per_token: 2 * n_kv_heads * d_head,
             window,
+            latent: false,
         }
     }
 
@@ -94,6 +100,7 @@ impl LayerKv {
         LayerKv::PerToken {
             elems_per_token: d_c + d_rope,
             window: None,
+            latent: true,
         }
     }
 }
@@ -246,11 +253,12 @@ impl KvFormula {
             LayerKv::PerToken {
                 elems_per_token,
                 window,
-            } => Count::Entries(capped(tokens, window), elems_per_token),
+                latent,
+            } => Count::Entries(capped(tokens, window), elems_per_token, !latent),
             LayerKv::Fixed { elems_per_seq } => Count::State(elems_per_seq),
             LayerKv::Sparse {
                 elems_per_token, ..
-            } => Count::Entries(tokens, elems_per_token),
+            } => Count::Entries(tokens, elems_per_token, false),
             LayerKv::Compressed {
                 elems_per_entry,
                 tokens_per_entry,
@@ -259,6 +267,7 @@ impl KvFormula {
             } => Count::Entries(
                 compressed(tokens, tokens_per_entry) + capped(tokens, window),
                 elems_per_entry,
+                false,
             ),
         });
         saturate(main + self.aux_bytes(layers, tokens))
@@ -279,12 +288,13 @@ impl KvFormula {
             LayerKv::PerToken {
                 elems_per_token,
                 window,
-            } => Count::Entries(capped(context, window), elems_per_token),
+                latent,
+            } => Count::Entries(capped(context, window), elems_per_token, !latent),
             LayerKv::Fixed { elems_per_seq } => Count::State(elems_per_seq),
             LayerKv::Sparse {
                 elems_per_token,
                 selected,
-            } => Count::Entries(context.min(u64::from(selected)), elems_per_token),
+            } => Count::Entries(context.min(u64::from(selected)), elems_per_token, false),
             LayerKv::Compressed {
                 elems_per_entry,
                 tokens_per_entry,
@@ -293,7 +303,7 @@ impl KvFormula {
             } => {
                 let formed = compressed(context, tokens_per_entry);
                 let read = selected.map_or(formed, |s| formed.min(u64::from(s)));
-                Count::Entries(read + capped(context, window), elems_per_entry)
+                Count::Entries(read + capped(context, window), elems_per_entry, false)
             }
         });
         saturate(main + self.aux_bytes(layers, context))
@@ -312,7 +322,9 @@ impl KvFormula {
             let layer = LayerIx(i as u16);
             let native = self.dtype.of(layer);
             total += match count(self.layers[i]) {
-                Count::Entries(n, elems) => u128::from(n) * entry_bytes(elems, native, dtype),
+                Count::Entries(n, elems, pair) => {
+                    u128::from(n) * entry_bytes(elems, pair, native, dtype)
+                }
                 Count::State(elems) => bits_to_bytes(u128::from(elems) * u128::from(native.bits())),
             };
         }
@@ -332,9 +344,10 @@ impl KvFormula {
     }
 }
 
-/// What one layer counts: `n` entries of `elems` elements, or a state of `elems` elements.
+/// What one layer counts: `n` entries of `elems` elements, which are K/V pairs when the flag is
+/// set, or a state of `elems` elements.
 enum Count {
-    Entries(u64, u32),
+    Entries(u64, u32, bool),
     State(u64),
 }
 
@@ -353,24 +366,34 @@ fn compressed(tokens: u64, tokens_per_entry: u16) -> u64 {
 /// `dtype` (RFC-0022 §9).
 /// - `Native`: `elems` elements of `native`.
 /// - `Q8 { block }`: one byte per element and an F16 scale per `block` elements.
-/// - `K8V4 { block }`: the entry's first half (K) as `Q8`, its second half (V) at four bits per
-///   element with an F16 scale per `block` elements.
+/// - `K8V4 { block }`: for a K/V pair (`pair`), the first half (K) as `Q8` and the second half
+///   (V) at four bits per element with an F16 scale per `block` elements. Any other entry is
+///   sized as `Q8`. RFC-0022 §9 defines `K8V4` by K and V planes only, and an MLA latent, or the
+///   latent a `Sparse` or `Compressed` layer of the known families stores, is not a K/V pair.
+///   `Q8` is the conservative upper bound, and the default until OQ-IO-30 is settled.
 ///
-/// A `block` of 0 is taken as 1. RFC-0022 §9 defines `K8V4` for K and V planes; an entry that
-/// is not a K/V pair, such as MLA's latent, is split the same way, which §9 does not settle.
-fn entry_bytes(elems: u32, native: DType, dtype: KvDType) -> u128 {
+/// A `block` of 0 is taken as 1.
+fn entry_bytes(elems: u32, pair: bool, native: DType, dtype: KvDType) -> u128 {
     let elems = u128::from(elems);
     let scales = |n: u128, block: u16| n.div_ceil(u128::from(block.max(1))) * 2;
     match dtype {
         KvDType::Q8 { block } => elems + scales(elems, block),
+        KvDType::K8V4 { block, .. } if !pair => elems + scales(elems, block),
         KvDType::K8V4 { block, .. } => {
             let k = elems.div_ceil(2);
             let v = elems - k;
             k + scales(k, block) + v.div_ceil(2) + scales(v, block)
         }
-        // `Native`. `KvDType` is `core`'s and non-exhaustive: a new storage form adds its rule
-        // above.
-        _ => bits_to_bytes(elems * u128::from(native.bits())),
+        // `Native`. `KvDType` is `core`'s and non-exhaustive, so this arm also catches a storage
+        // form added later. That form is then sized as native, an over-estimate, until it gains
+        // its own rule above, and the assertion makes tests fail loudly meanwhile.
+        _ => {
+            debug_assert!(
+                matches!(dtype, KvDType::Native),
+                "KvDType {dtype:?} has no sizing rule"
+            );
+            bits_to_bytes(elems * u128::from(native.bits()))
+        }
     }
 }
 
