@@ -208,16 +208,21 @@ pub fn normalize_node(node: &str) -> String {
 /// `node` as part of a file name, one to one: lowercase letters, digits, `-` and `.` are kept, and
 /// every other byte, `_` among them, becomes `_` and its two hex digits, so `box:1` is
 /// `box_3a1` and `box_1` is `box_5f1`. A leading `.` is escaped too, so the name is never hidden
-/// and never `..`. Two nodes that differ after [`normalize_node`] never share a PEM file.
+/// and never `..`. A name whose part before the first `.` is one Windows reserves for a device
+/// (`con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`) has its first letter escaped, so
+/// `con.local` is `_63on.local`, a file Windows can create. Two nodes that differ after
+/// [`normalize_node`] never share a PEM file: a literal `_` is always escaped, so the mapping can
+/// be read back.
 #[must_use]
 pub fn node_slug(node: &str) -> String {
     let normal = normalize_node(node);
     if normal.is_empty() {
         return "_".into();
     }
+    let reserved = windows_device_name(normal.split('.').next().unwrap_or_default());
     let mut slug = String::with_capacity(normal.len());
     for (i, byte) in normal.bytes().enumerate() {
-        let kept = byte.is_ascii_lowercase()
+        let kept = (byte.is_ascii_lowercase() && !(i == 0 && reserved))
             || byte.is_ascii_digit()
             || byte == b'-'
             || (byte == b'.' && i > 0);
@@ -228,6 +233,16 @@ pub fn node_slug(node: &str) -> String {
         }
     }
     slug
+}
+
+/// Whether `stem`, a file name's part before its first `.`, is a device name Windows reserves
+/// whatever the extension: `con`, `prn`, `aux`, `nul`, and `com` or `lpt` with one digit.
+fn windows_device_name(stem: &str) -> bool {
+    match stem.as_bytes() {
+        b"con" | b"prn" | b"aux" | b"nul" => true,
+        [b'c', b'o', b'm', d] | [b'l', b'p', b't', d] => d.is_ascii_digit(),
+        _ => false,
+    }
 }
 
 /// The shell [`env_lines`] writes for.

@@ -539,6 +539,55 @@ fn node_names_become_safe_file_names() {
     assert_eq!(slugs.len(), nodes.len(), "{slugs:?}");
 }
 
+/// Windows reserves device names whatever their extension, so a node named for one gets its
+/// first letter escaped, and the mapping stays one to one: `con` and the node whose name was
+/// already `_63on` still get different files.
+#[test]
+fn windows_device_names_are_escaped() {
+    let cases = [
+        ("con", "_63on"),
+        ("CON.local", "_63on.local"),
+        ("nul", "_6eul"),
+        ("aux.home.arpa", "_61ux.home.arpa"),
+        ("prn", "_70rn"),
+        ("com1", "_63om1"),
+        ("com9.lan", "_63om9.lan"),
+        ("lpt1", "_6cpt1"),
+        ("lpt0", "_6cpt0"),
+        // Not device names: kept as they are.
+        ("console", "console"),
+        ("com10", "com10"),
+        ("comx", "comx"),
+        ("box.con", "box.con"),
+        ("nul-box", "nul-box"),
+    ];
+    for (node, slug) in cases {
+        assert_eq!(node_slug(node), slug, "{node}");
+        let file = Plan {
+            pem_dir: PathBuf::from("/p"),
+            user_stores: Vec::new(),
+            skipped: Vec::new(),
+            system_store: None,
+        }
+        .pem_file(node);
+        let stem = file
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split('.')
+            .next()
+            .unwrap()
+            .to_owned();
+        assert!(!windows_device_name(&stem), "{node}: {file:?}");
+    }
+    let nodes = ["con", "_63on", "c_6fn", "con.local", "_63on.local"];
+    let mut slugs: Vec<String> = nodes.iter().map(|n| node_slug(n)).collect();
+    slugs.sort();
+    slugs.dedup();
+    assert_eq!(slugs.len(), nodes.len(), "{slugs:?}");
+}
+
 /// Criterion: uninstall reverts an un-removed trust after the binary is gone. The generated sh
 /// script, run for real against a stand-in `certutil` that keeps one file per nickname, removes
 /// the CA from the NSS database and the PEM file, and leaves another nickname alone.
