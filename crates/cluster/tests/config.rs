@@ -158,7 +158,7 @@ const EXPECTED: &[(&str, Scope, &str, &str)] = &[
         "link.p99_weight",
         Cluster,
         "RFC-0031",
-        "computed: 1.0 on Wi-Fi or relayed links, 0.25 otherwise",
+        "computed: 1.0 on Wi-Fi, overlay or relayed links, 0.25 otherwise",
     ),
     ("quic.congestion", Node, "RFC-0031", "\"cubic\""),
     ("quic.lan_initial_window", Node, "RFC-0031", "\"256KiB\""),
@@ -531,6 +531,22 @@ fn instance_keys_in_a_node_file_fail_validation() {
             errors[0].contains(&format!("`{key}`")),
             "{text}: {errors:?}"
         );
+    }
+}
+
+/// `link.p99_weight` outside [0, 10] fails validation, and so do NaN and infinity, which
+/// `syntropy_core::resource::link_cost` would otherwise have to absorb (RFC-0031 §3, note of
+/// 2026-10-23).
+#[test]
+fn a_p99_weight_outside_its_range_fails_validation() {
+    for bad in ["-0.5", "10.5", "inf", "-inf", "nan"] {
+        let errors = file_errors(&format!("[link]\np99_weight = {bad}\n"));
+        assert_eq!(errors.len(), 1, "{bad}: {errors:?}");
+        assert!(errors[0].contains("link.p99_weight"), "{bad}: {errors:?}");
+    }
+    for good in ["0.0", "0.25", "1.0", "10.0"] {
+        let errors = file_errors(&format!("[link]\np99_weight = {good}\n"));
+        assert!(errors.is_empty(), "{good}: {errors:?}");
     }
 }
 

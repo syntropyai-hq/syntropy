@@ -20,3 +20,6 @@ proc-macro2 = { workspace = true, features = ["span-locations"] }
 # TOML: the repository's cargo config, which the `determinism` step reads, and the manifests of
 # non-member path crates, which `dep-diff` reads itself (#1692).
 toml.workspace = true
+# YAML: the workflows and composite actions under `.github/`, which `workflows` checks against
+# RFC-0062 §12.4 (QUAL-E1-T09).
+yaml-rust2.workspace = true

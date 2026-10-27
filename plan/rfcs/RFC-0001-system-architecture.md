@@ -306,16 +306,22 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 3 | `exec` | lowers the graph to per-stage step programs; per-device dispatchers; CPU compute pool; doorbells; graph capture | `graph`, `kernels`, `tier` | 0012 (provider contract: 0040) |
 | 3 | `cluster` | discovery, invites, SWIM membership, coordinator lease, event log, pure `apply()`, snapshots, re-placement triggers | `net`, `manifest`, `solver` | 0030 (re-placement and recovery: 0033) |
 | 4 | `sched` | step scheduler: continuous batching, chunked prefill, verify windows, drafting, acceptance, sampler (with token-level stop sets and grammar masks), activation history | `exec`, `tier`, `graph`, `text` | 0012 |
-| 4 | `api` | OpenAI, Anthropic and native HTTP surfaces; ingress routing; sequence channels; dashboard state endpoints | `text`, `cluster`, `solver`, `net` | 0050 (dashboard endpoints: 0051) |
+| 4 | `api` | OpenAI, Anthropic and native HTTP surfaces; ingress routing; sequence channels; dashboard state endpoints | `text`, `cluster`, `solver`, `net`, `ipc` (the local socket's listener, added 2026-10-27, note below) | 0050 (dashboard endpoints: 0051) |
 | 5 | `runner` | runner process: lifecycle state machine, wiring of exec, sched, tier, io, net and providers; probe mode; loading backend modules through `kernels-loader` | `ipc`, `manifest`, `graph`, `kernels`, `kernels-cpu`, `kernels-metal` (macOS and iOS), `kernels-ggml`, `kernels-loader`, `io`, `tier`, `net`, `probe`, `store`, `exec`, `sched` | 0001 (distributed behaviour: 0032) |
 | 5 | `daemon` | node daemon: supervisor, device ledger, wiring of cluster, store, api and probe orchestration | `ipc`, `manifest`, `kernels` (types only), `io`, `net`, `solver`, `text`, `probe`, `store`, `cluster`, `api` | 0001 (recovery: 0033) |
-| 6 | `cli` | the `syntropy` binary: argument parsing, mode dispatch, client subcommands, dashboard assets; constructs the `BuildId` value at build time and passes it down (RFC-0062 §8.1) | `daemon`, `runner`, `config`, `obs` | 0051 |
+| 6 | `cli` | the `syntropy` binary: argument parsing, mode dispatch, client subcommands, dashboard assets; constructs the `BuildId` value at build time and passes it down (RFC-0062 §8.1) | `daemon`, `runner`, `config`, `obs`, `api` and `ipc` (the client's API types and local socket, added 2026-10-27, note below), and `cluster`, `net` and `sched` (the configuration sections of the binary's registry, added 2026-10-27, note below) | 0051 |
 | — | `testkit` | simulated fabric (virtual nodes; links with α, β, p99 and loss; fake devices), the deterministic simulator that drives the protocol cores (`SimClock`, `SimEntropy`), fake `KernelProvider`, `RefExecutor` and the parity harness, golden traces | any (dev-dependency only) | 0060 |
 | — | `bench` | benchmark scenarios, result schema, regression gates | `cli` (as a client), `testkit` | 0061 |
 
 *Note 2026-10-21 (amendment, §18.8):* `config-derive` joins layer 0. RFC-0054 §10.3 puts the schema derive in `config`, but Rust requires a proc-macro to be its own crate, and a proc-macro crate can export nothing but macros. `config-derive` therefore holds the derive, with no runtime code and no workspace dependencies, and `config` re-exports it, so other crates name only `config`.
 
 *Note 2026-10-22 (amendment, §18.9):* `spsc` joins layer 1. `io` (its submission rings and RFC-0021 §3.1's rings to the I/O thread), `net` (its rings to the network task, §5.8) and `ipc` all need §8.3's ring, and all three are in layer 1, where rule 2 forbids edges between crates (OQ-IO-29). `spsc` holds the one implementation, with no workspace dependencies, so one set of loom models covers every ring.
+
+*Note 2026-10-27 (amendment, §18.38):* `api` depends on `ipc`. The API's local socket (RFC-0050 §1.1) uses the endpoint and peer check of the daemon-runner channel, in its tokio form (`ipc::cmd::AsyncListener`), and `/v1/syntropy/version` reports `ipc`'s protocol major. The `unsafe` these need stays in `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and neither crate is a compute crate (rule 3).
+
+*Note 2026-10-27 (amendment, §18.40):* `cli` depends on `api` and `ipc`. Its native-API client reads and writes the `syntropy-api` types the server uses, so the two cannot disagree about a field (RFC-0051 §1), and it reaches the local socket through `ipc::cmd::connect_async`. Both edges point to lower layers (rule 2).
+
+*Note 2026-10-27 (amendment, §18.42):* `cli` depends on `cluster`, `net` and `sched` for their configuration sections. `config show --resolved`, `config check` and `config path` (RFC-0054 §2.2, §8) resolve over the binary's section registry, which holds every section of the crates the binary links; `cluster`, `net` and `sched` declare theirs, and `cli` is the one crate above all three. All three edges point to lower layers (rule 2).
 
 Packaging, installers, backend modules and update channels (RFC-0052) and CI (RFC-0062) live outside the crate graph, in `packaging/` and `.github/`. A backend module is a directory beside the core binary of the same version holding one provider library and its vendor redistributables (ADR-0507, RFC-0052 §4.3).
 
@@ -2947,3 +2953,27 @@ From issue #1525, the review of COMP-E1-T01.
 |---|---|---|
 | A hardware job whose rig and `lab.yml` job do not exist yet is marked `planned` in `ci/jobs.toml`. `ci-gate` does not hold a same-repository PR for it, but still holds a fork PR. QUAL-E2-T02 ends the interim for `hw-cuda-ada`, and QUAL-E2-T08 adds the other Tier 1 rigs' jobs | ADR-0620 decision 3 (dated revision); RFC-0062 §2.5 (dated note) | QUAL-E1-T07 requires hardware for every PR touching the hardware paths, months before the first rig runs. Without the interim, most engine and networking PRs could not merge. Fork PRs keep ADR-0620 decision 4's rule. Taken under the maintainer's standing instruction, for the maintainers to confirm |
 | The direct hardware paths gain `numerics/`, the tolerance tables `kernels` embeds | ADR-0620 decision 3 (dated revision); RFC-0062 §2.2 (dated note) | the op conformance a hardware job runs checks against those tables, so a change to a ceiling alone changes what the rig judges. From the engine-lane review of #1830 |
+
+### 18.38 The API's local socket in `ipc` (2026-10-27)
+
+PROD-E2-T01 builds the HTTP server of RFC-0050 §1.1, with its local socket.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `api` depends on `ipc`; `ipc` gains `AsyncListener`, the owner-only endpoint and peer check of §3.5 for servers on tokio, outside `--cfg loom` | §4.1 (row and dated note) | the local socket needs the same owner-only endpoint and OS peer check as the daemon-runner channel, which need `unsafe`, which rule 8 confines to `ipc`; `/v1/syntropy/version` reports `ipc`'s protocol major. For the maintainers to confirm |
+
+### 18.40 The CLI's client edges (2026-10-27)
+
+PROD-E6-T01 builds the CLI skeleton of RFC-0051 §1–§2.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `cli` depends on `api` and `ipc` | §4.1 (row and dated note) | the client uses the server's `syntropy-api` types, as RFC-0051 §1 requires, and the local socket's client end in `ipc`. For the maintainers to confirm |
+
+### 18.42 The binary's configuration registry (2026-10-27)
+
+PROD-E6-T23 builds `config show --resolved`, `config check` and `config path` in the CLI.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `cli` depends on `cluster`, `net` and `sched` | §4.1 (row and dated note) | the configuration commands resolve over the binary's section registry, which needs every crate that declares a section; `cli` is the one crate above them all. For the maintainers to confirm |

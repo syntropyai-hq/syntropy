@@ -55,6 +55,12 @@ The second is ruled out by RFC-0001 invariants 1–2. This RFC makes sure the AP
 - **Local socket** (`api.local_socket`, default on): a Unix-domain socket at `<runtime dir>/api.sock` (mode 0600, in a 0700 directory) or a named pipe `\\.\pipe\syntropy-<sid>-api` with a same-SID ACL on Windows. The CLI prefers it. The peer's identity is checked with the OS peer-credential call, so the local socket needs no API key even when the HTTP listener does.
 - The same routes are served on both. The dashboard's static assets are served at `/` on the HTTP listener (RFC-0051 §5.1).
 
+*Note 2026-10-27 (PROD-E2-T01, as built):* how the listeners start.
+- **A missing address family.** A loopback listener whose address family the host lacks is skipped with a warning when another `api.bind` listener binds. Its bind fails with "address not available" or "address family not supported": `[::1]` in a container without IPv6, or on a kernel booted with `ipv6.disable=1`. So the default `["127.0.0.1:7433", "[::1]:7433"]` still starts on `127.0.0.1` there. Any other bind error, and a start where no listener binds, fails the start.
+- **A stale local socket.** A socket file left by a daemon that was killed without its cleanup is replaced at start. It is replaced only when it refuses connections and is a socket owned by the daemon's user, read without following a link. A socket that accepts a connection belongs to a running daemon, and the start fails.
+- **Header timeout.** Each HTTP/1 connection must send a request's headers within 30 s [target], a chosen budget.
+- **Not served yet.** Listeners beyond loopback, which need TLS and keys (§11.1), are refused at start until PROD-E5-T06 and PROD-E5-T01 serve them.
+
 #### 1.2 Route table
 
 | Surface | Method and path | Purpose | Milestone |
@@ -208,6 +214,8 @@ Steps 1–9 run once per request on the `ctl` runtime. Step 10 runs per `TokenFr
 Token IDs reach unsafe device code: the sampler indexes per-sequence count tables in device memory by token ID (RFC-0012 §8.1), and `RowGather` indexes embedding rows (RFC-0040 §3.1). An ID at or above a table's size would be an out-of-bounds read or, through the penalty tables, an out-of-bounds write. So ingress validates every token ID a request can carry, in one place, before routing:
 - prompt `tokens` on the native API, teacher tokens on the parity endpoint (§13.6), `logit_bias` keys, stop token IDs, and the token set of a compiled grammar;
 - each ID must be below `vocab_limit = min(embedding rows, LM-head rows, sampler table size)`, which the model's manifest carries (RFC-0043 §5.2 checks at census that the tokenizer's largest ID and every special-token ID are below the vocabulary).
+
+*Note (2026-10-27):* the list also covers a token-array `prompt` on legacy `/v1/completions` (§3.5) and token-array `input` on embeddings (§14), which take token IDs from the client the same way. The validator is one function; PROD-E2-T20 builds it, and each endpoint task tests it through its own route.
 
 A request with an ID outside the range fails with 400 `token_id_out_of_range`, naming the field, the first offending position and `vocab_limit`. Nothing is clamped or dropped silently. The check costs one pass over the IDs and sits inside the pre-`SequenceOpen` budget (Performance). Debug kernels keep bounds assertions as a second line (RFC-0040); they are not the defence.
 

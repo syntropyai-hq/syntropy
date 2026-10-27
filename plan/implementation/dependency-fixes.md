@@ -1150,3 +1150,24 @@ The review of #1811 (review-1474's N2) found that DIST-E14-T15 (M3) builds the c
 | DIST-E7-T10 gains "a demotion of either cause, `RepeatedFaults` from this task's fault count or `ConnectFailed` from DIST-E7-T11's `connect_hop`, reaches the coordinator as `ReportEdgeDemoted` and is applied as `EdgeDemoted`"; no new edge | DIST-E7-T10 | Definition of done | nothing showed a `ConnectFailed` demotion reaching the coordinator. DIST-E7-T10 already depends on DIST-E7-T11 and DIST-E14-T22, so its test can raise both causes and check both arrive (review-plan3's N2 on #1832) |
 | DIST-E4-T13 → DIST-E14-T01 | DIST-E4-T13 | R9 | its criterion asserts that a planned restart raises no `RecoveryStarted`, which DIST-E14-T01 raises. M3 → M2, with no cycle (review-plan3's N1 on #1832) |
 | `DriftTerm::Bandwidth` gains `scheme: QuantScheme`, and DIST-E14-T21 → COMP-E13-T01 | DIST-E14-T21 | R9 | RFC-0010 §7.2's rule runs per observed quantity, and §6.2's W_eff estimator is keyed by (device, tier, class, scheme), so the term names the scheme that drifted. `QuantScheme` is COMP-E13-T01's (M0a), which DIST-E14-T21 did not reach |
+
+## DIST-E7-T25: bulk pacing in the real backends, and the rig check moved there (2026-10-23)
+
+DIST-E7-T13 builds the bulk pacer (`net::transport::pacing`) and paces the simulator's bulk sends. Nothing in it paces a real transport, so its rig criterion could not run even on a rig. Its independent review (issuecomment-6352911884) found that no row paced the TCP fallback's bulk channels either, and that QUAL-E13-T10, which measures the data hop under bulk, reached the pacing only through COMP-E12-T05. These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T25 (M2) → DIST-E7-T13, DIST-E7-T03, DIST-E7-T05 | DIST-E7-T25 | R9 | the pacer in the QUIC backend's bulk connection and the TCP fallback, each with a loopback test; it needs the pacer and both backends |
+| DIST-E7-T13's rig criterion, "a 10 GB blob transfer on the same 2.5 GbE edge as a live ring keeps the hop's p99 within 1.2 × its idle p99", moves to DIST-E7-T25; DIST-E7-T13 keeps simulator criteria | DIST-E7-T13, DIST-E7-T25 | R9 | the rig run needs pacing in a real backend, which DIST-E7-T25 is the first task to build |
+| DIST-E11-T13 → DIST-E7-T25; COMP-E12-T05 → DIST-E7-T25; QUAL-E13-T10 → DIST-E7-T25 | DIST-E11-T13, COMP-E12-T05, QUAL-E13-T10 | R9 | each sends bulk on, or measures the data hop under bulk on, a real transport: KV migration, peer chunk serving, and `net.hop.p99_under_bulk`. QUAL-E13-T10's edge, once reached only through COMP-E12-T05, is now explicit. M3 → M2 and M2 → M2, so no `LATER` and no cycle |
+
+
+## PROD-E2-T20 moves to M0a, ahead of M0's token-input endpoint (2026-10-27)
+
+The review of #1917 (review-1889's N3) found that PROD-E4-T13, M0's native generate with token input, did not depend on PROD-E2-T20, the token-ID range check. RFC-0050 §2.3 and §6.4 require every token ID a request supplies to be range-checked at ingress, because an out-of-range ID is an out-of-bounds read or write on the device. PROD-E2-T20 was M0b, so the edge would have been `LATER`. Every task PROD-E2-T20 depends on is M0a. This is a plan correction under R9 and the definition of done, written by the lead under the maintainer's standing instruction; the lead is also the author, so the independent review of #1918 is its check.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E2-T20 moves from M0b to M0a | PROD-E2-T20 | R9 | M0's token-input endpoint needs it. Its dependencies, PROD-E2-T02 and COMP-E10-T07, are both M0a, so the move adds no `LATER` edge |
+| PROD-E2-T20's criterion: the validator is fuzzed through PROD-E2-T02's pipeline with the fake-runner counter, not through API routes; its field list gains the legacy completions and embeddings token arrays | PROD-E2-T20 | Definition of done | as first written, the criterion needed routes for its fields, and none exists when PROD-E2-T20 is done: native `tokens` is PROD-E4-T13's, teacher tokens PROD-E4-T01's, `logit_bias` PROD-E2-T06's and stop IDs PROD-E4-T02's. By R9 that would need edges from PROD-E2-T20 to them, a cycle with the edges below (review of #1918, B1). RFC-0050 §2.3 gains a dated note for the two token arrays (N1) |
+| PROD-E4-T13, PROD-E4-T01, PROD-E2-T06, PROD-E4-T02, PROD-E2-T15 each gain an API fuzz case for their own field, and each → PROD-E2-T20; PROD-E4-T09, which already had the edge, gains the case for a token-array `input` | PROD-E4-T13, PROD-E4-T01, PROD-E2-T06, PROD-E4-T02, PROD-E2-T15 | R9 | each route takes client token IDs (`tokens`, teacher tokens, `logit_bias` keys, stop IDs, a token-array `prompt`), and its new criterion runs PROD-E2-T20's validator through that route. PROD-E2-T06 and PROD-E2-T15 reached PROD-E2-T20 through nothing (review of #1918, B2). M0a → M0a and M1a → M0a, with no cycle |

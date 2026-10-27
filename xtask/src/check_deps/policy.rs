@@ -209,13 +209,127 @@ pub const SYSTEM_LIBRARIES: &[&str] = &["libc", "libm", "libpthread", "libdl", "
 /// `ld-linux-aarch64.so.1`.
 pub const LOADER_PREFIX: &str = "ld-linux";
 
-/// Rule 7: one vendor GPU runtime, as it shows in an ELF dynamic section. The library stems only
-/// name the vendor in a finding; the allow-list above decides which libraries fail. The symbols
-/// are a second check, for a runtime linked in a way that adds no `DT_NEEDED` entry of its own.
+/// Rule 7: the DLLs the core binary may import or delay-load on Windows, compared without case.
+/// The list is what the core binary, built with no default features for `x86_64-pc-windows-msvc`,
+/// imports on the hosted `windows-2025` runner (QUAL-E1-T28): the Windows kernel (`kernel32`,
+/// `ntdll`, and the API set of the wait-on-address calls the standard library's locks use) and the
+/// Visual C++ runtime. Rule 7 rejects every other DLL but the Universal CRT's API sets on
+/// [`WINDOWS_CRT_API_SETS`]. A DLL added here must ship with every supported Windows, or with
+/// the Visual C++ runtime, never a vendor GPU runtime (ADR-0018 decision 5), and the change needs a
+/// maintainer's review.
+///
+/// Added 2026-10-27, when the core binary gained the CLI's client and the API (PROD-E6-T01), from
+/// what rule 7 reported on the hosted `windows-2025` runner. Each with the crate that imports it:
+/// - `ws2_32.dll`, Winsock: `mio` 1.2.4, tokio's I/O driver, whose `sys/windows/net.rs` and
+///   `selector.rs` call it through `windows-sys`'s `Win32_Networking_WinSock` feature (its
+///   `Cargo.toml` line 140); every TCP socket of the client and the API's listeners;
+/// - `advapi32.dll`: `syntropy-ipc`'s owner-only pipe and peer check, whose calls
+///   `windows-sys` 0.61.2 declares from `advapi32.dll` (`OpenProcessToken`, `GetTokenInformation`,
+///   `EqualSid`, `ConvertSidToStringSidW`, `ConvertStringSecurityDescriptorToSecurityDescriptorW`);
+///   and `getrandom` 0.2.17 under `ring`, whose `RtlGenRandom` fallback is
+///   `#[link(name = "advapi32")]` (`src/windows.rs:19`);
+/// - `bcryptprimitives.dll`: `getrandom` 0.4.3's `ProcessPrng`,
+///   `link(name = "bcryptprimitives", kind = "raw-dylib")` (`src/backends/windows.rs:40`), reached
+///   through `rand` 0.10, `igd-next` and `portmapper` under `iroh` (`syntropy-net`).
+pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
+    "kernel32.dll",
+    "ntdll.dll",
+    "api-ms-win-core-synch-l1-2-0.dll",
+    "vcruntime140.dll",
+    "ws2_32.dll",
+    "advapi32.dll",
+    "bcryptprimitives.dll",
+];
+
+/// Rule 7: the Universal CRT's API sets the core binary may import, compared without case. The
+/// list is the six the core binary imports on the hosted `windows-2025` runner (QUAL-E1-T28,
+/// `llvm-readobj --coff-imports`). Every Universal CRT set ships with Windows 10 and later, but
+/// only these are allowed, so a dependency that pulls in another one, such as `time`, fails rule 7
+/// until a maintainer adds it here, as for [`WINDOWS_SYSTEM_LIBRARIES`].
+///
+/// `api-ms-win-crt-utility-l1-1-0.dll` was added 2026-10-27 (PROD-E6-T01), when the core binary
+/// gained the API. `zstd-sys`'s bundled zstd imports it, and nothing else does. On the hosted
+/// `windows-2025` runner, `llvm-readobj --coff-imports` on the core binary listed three functions
+/// from it: `_byteswap_ulong`, `_byteswap_uint64` and `_rotl64`. `llvm-nm --undefined-only` over
+/// all 328 rlibs and build-script outputs found them referenced only by `zstd-sys`'s objects (its
+/// `zstd.lib`, `libzstd.a` and the per-file `.o`s, and the rlib that bundles them). Under MSVC its
+/// `xxhash.h` maps `XXH_swap32`, `XXH_swap64` and `XXH_rotl64` to those functions (lines
+/// 2732–3282). `ring` references none: it declares `_byteswap_ulong` an intrinsic
+/// (`crypto/internal.h:354`). `zstd-sys` is `syntropy-net`'s control-message compression
+/// (RFC-0031 §9.1).
+pub const WINDOWS_CRT_API_SETS: &[&str] = &[
+    "api-ms-win-crt-heap-l1-1-0.dll",
+    "api-ms-win-crt-locale-l1-1-0.dll",
+    "api-ms-win-crt-math-l1-1-0.dll",
+    "api-ms-win-crt-runtime-l1-1-0.dll",
+    "api-ms-win-crt-stdio-l1-1-0.dll",
+    "api-ms-win-crt-string-l1-1-0.dll",
+    "api-ms-win-crt-utility-l1-1-0.dll",
+];
+
+/// Rule 7: the libraries the core binary may load on macOS, by install name. `libSystem` is what
+/// the core binary, built with no default features, loads on the hosted `macos-26` runner
+/// (QUAL-E1-T28). `libobjc` is the Objective-C runtime, which the Metal provider's planned
+/// Objective-C binding (`objc2-metal`, RFC-0040 §7.2) calls; that provider is linked into the core
+/// (RFC-0001 §4.2 rule 7). No Metal provider is built yet, so `libobjc` and [`MACOS_FRAMEWORKS`]
+/// are a forecast from that binding, not a measurement: re-derive both from the real binary when
+/// COMP-E6-T01 lands it, and drop any entry it does not load. Rule 7 rejects every other library but [`MACOS_FRAMEWORKS`]. A library added here must
+/// ship with every supported macOS, never a vendor GPU runtime (ADR-0018 decision 5), and the
+/// change needs a maintainer's review.
+///
+/// `libiconv` was added 2026-10-27 (PROD-E6-T01), when the core binary gained the CLI's client
+/// and the API, from what rule 7 reported on the hosted `macos-26` runner. The `libc` crate 0.2.191
+/// links it on Apple platforms (`src/unix/bsd/apple/mod.rs:5545`,
+/// `cfg_attr(not(feature = "rustc-dep-of-std"), link(name = "iconv"))`), so the standard
+/// library's own copy does not, and an empty binary never loaded it. `syntropy-ipc`,
+/// `syntropy-spsc`, `mio` and `socket2` use `libc`. It ships with every macOS.
+pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
+    "/usr/lib/libSystem.B.dylib",
+    "/usr/lib/libobjc.A.dylib",
+    "/usr/lib/libiconv.2.dylib",
+];
+
+/// Rule 7: the system frameworks the core binary may load on macOS, by name: `Metal` matches
+/// `/System/Library/Frameworks/Metal.framework/Versions/A/Metal`. The Metal provider is linked into
+/// the core, and its binding calls `MTLCreateSystemDefaultDevice` from `Metal` (RFC-0040 §7.2).
+/// `Foundation` and `CoreFoundation` are the frameworks an Objective-C binding's object types
+/// come from, and `CoreGraphics` is the one `MTLCreateSystemDefaultDevice` needs linked to find a
+/// device on macOS. RFC-0040 names only the binding and that call, so the three are a forecast, as
+/// [`MACOS_SYSTEM_LIBRARIES`] says. The same review rule applies.
+///
+/// `SystemConfiguration` and `Security` were added 2026-10-27 (PROD-E6-T01), from what rule 7
+/// reported on the hosted `macos-26` runner once the core binary gained the API. Both ship with
+/// macOS, and both come from `iroh` under `syntropy-net`:
+/// - `SystemConfiguration`: `system-configuration-sys` 0.6.0's build script
+///   (`cargo:rustc-link-lib=framework=SystemConfiguration`, `build.rs:11`), through
+///   `system-configuration`, `n0-dns-resolver` and `iroh-dns`, which read the system's DNS
+///   configuration; and `objc2-system-configuration`, through `netdev` under `netwatch`;
+/// - `Security`: `security-framework-sys` 2.17.0 (`link(name = "Security", kind = "framework")`,
+///   `src/lib.rs:3`), through `rustls-platform-verifier` under `reqwest`, which verifies TLS
+///   certificates against the system trust store.
+pub const MACOS_FRAMEWORKS: &[&str] = &[
+    "Metal",
+    "Foundation",
+    "CoreFoundation",
+    "CoreGraphics",
+    "SystemConfiguration",
+    "Security",
+];
+
+/// Where the system frameworks live.
+const MACOS_FRAMEWORK_DIR: &str = "/System/Library/Frameworks/";
+
+/// Rule 7: one vendor GPU runtime, as it shows in a binary's dynamic linkage. The library names
+/// only name the vendor in a finding; the allow-lists above decide which libraries fail. The
+/// symbols are a second check, for a runtime linked in a way that names no library of its own.
 pub struct VendorRuntime {
     pub name: &'static str,
-    /// Shared-library stems: `libcuda` matches `libcuda.so` and `libcuda.so.1`.
+    /// Shared-library stems: `libcuda` matches `libcuda.so` and `libcuda.so.1` on Linux, and
+    /// `libcuda.dylib` and `@rpath/libcuda.1.dylib` on macOS.
     pub libraries: &'static [&'static str],
+    /// DLL stems, compared without case: `cudart` matches `cudart64_12.dll`, `vulkan` matches
+    /// `vulkan-1.dll`.
+    pub dlls: &'static [&'static str],
     /// Prefixes of the runtime's own entry points, too short to match alone: one matches when
     /// the next character is an ASCII capital or `_`, so `cu` matches `cuInit` and not `cupcake`.
     pub entry_prefixes: &'static [&'static str],
@@ -242,6 +356,20 @@ pub const VENDOR_RUNTIMES: &[VendorRuntime] = &[
             "libnvrtc",
             "libnvJitLink",
             "libnvidia-ml",
+        ],
+        dlls: &[
+            "nvcuda",
+            "cudart",
+            "cublas",
+            "cublasLt",
+            "cufft",
+            "curand",
+            "cusparse",
+            "cusolver",
+            "cudnn",
+            "nvrtc",
+            "nvJitLink",
+            "nvml",
         ],
         entry_prefixes: &["cu"],
         families: &[
@@ -277,6 +405,20 @@ pub const VENDOR_RUNTIMES: &[VendorRuntime] = &[
             "libMIOpen",
             "librocm_smi64",
         ],
+        dlls: &[
+            "amdhip64",
+            "hiprtc",
+            "rocblas",
+            "hipblas",
+            "hipblaslt",
+            "rocfft",
+            "hipfft",
+            "rocrand",
+            "hiprand",
+            "rocsparse",
+            "hipsparse",
+            "MIOpen",
+        ],
         entry_prefixes: &["hip"],
         families: &[
             "hipblas",
@@ -295,19 +437,22 @@ pub const VENDOR_RUNTIMES: &[VendorRuntime] = &[
     },
     VendorRuntime {
         name: "Vulkan",
-        libraries: &["libvulkan"],
+        libraries: &["libvulkan", "libMoltenVK"],
+        dlls: &["vulkan"],
         entry_prefixes: &["vk"],
         families: &[],
     },
     VendorRuntime {
         name: "oneAPI",
         libraries: &["libze_loader", "libsycl"],
+        dlls: &["ze_loader", "sycl"],
         entry_prefixes: &["ze"],
         families: &[],
     },
     VendorRuntime {
         name: "OpenCL",
         libraries: &["libOpenCL"],
+        dlls: &["OpenCL"],
         entry_prefixes: &["cl"],
         families: &[],
     },
@@ -326,6 +471,59 @@ pub fn is_system_library(needed: &str) -> bool {
         || needed
             .strip_prefix(LOADER_PREFIX)
             .is_some_and(|rest| rest.starts_with(['-', '.']))
+}
+
+/// Whether the DLL `dll` has stem `stem`, without case: the stem, then nothing or a version that
+/// starts with a digit, `-` or `_`, then `.dll`.
+pub fn is_dll(dll: &str, stem: &str) -> bool {
+    let dll = dll.to_ascii_lowercase();
+    let stem = stem.to_ascii_lowercase();
+    dll.strip_suffix(".dll")
+        .and_then(|base| base.strip_prefix(stem.as_str()))
+        .is_some_and(|rest| {
+            rest.is_empty()
+                || rest.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '_')
+        })
+}
+
+/// Rule 7: whether the core binary may import `dll` on Windows.
+pub fn is_windows_system_library(dll: &str) -> bool {
+    let lower = dll.to_ascii_lowercase();
+    WINDOWS_SYSTEM_LIBRARIES.contains(&lower.as_str())
+        || WINDOWS_CRT_API_SETS.contains(&lower.as_str())
+}
+
+/// Whether the install name `name` is the dynamic library with stem `stem`: its last path
+/// component is the stem, then an optional version, then `.dylib`.
+pub fn is_dylib(name: &str, stem: &str) -> bool {
+    let file = name.rsplit('/').next().unwrap_or(name);
+    file.strip_prefix(stem)
+        .and_then(|rest| rest.strip_suffix(".dylib"))
+        .is_some_and(|version| version.is_empty() || version.starts_with('.'))
+}
+
+/// Rule 7: whether the core binary may load the install name `name` on macOS: a system library
+/// or a system framework on the lists above.
+pub fn is_macos_system_library(name: &str) -> bool {
+    if MACOS_SYSTEM_LIBRARIES.contains(&name) {
+        return true;
+    }
+    let Some(rest) = name.strip_prefix(MACOS_FRAMEWORK_DIR) else {
+        return false;
+    };
+    MACOS_FRAMEWORKS.iter().any(|framework| {
+        rest.strip_prefix(framework)
+            .and_then(|rest| rest.strip_prefix(".framework/"))
+            .is_some_and(|binary| {
+                binary == *framework
+                    || binary
+                        .strip_prefix("Versions/")
+                        .and_then(|rest| rest.split_once('/'))
+                        .is_some_and(|(version, file)| {
+                            !version.is_empty() && !version.contains('.') && file == *framework
+                        })
+            })
+    })
 }
 
 /// Rule 8: crates allowed `unsafe`, besides every `kernels-*` crate. `spsc` was added on
@@ -477,6 +675,94 @@ mod tests {
         ] {
             assert!(!is_system_library(needed), "{needed}");
         }
+    }
+
+    #[test]
+    fn the_windows_allow_list_matches_whole_names_without_case() {
+        for dll in [
+            "KERNEL32.dll",
+            "ntdll.dll",
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "VCRUNTIME140.dll",
+            "api-ms-win-crt-runtime-l1-1-0.dll",
+            "API-MS-WIN-CRT-HEAP-L1-1-0.DLL",
+            "WS2_32.dll",
+            "advapi32.dll",
+            "bcryptprimitives.dll",
+            "api-ms-win-crt-utility-l1-1-0.dll",
+        ] {
+            assert!(is_windows_system_library(dll), "{dll}");
+        }
+        for dll in [
+            "nvcuda.dll",
+            "vulkan-1.dll",
+            "kernel32.dll.evil.dll",
+            "kernel32",
+            "api-ms-win-crt-.dll",
+            "api-ms-win-crt-evil-l1-1-0.dll",
+            "api-ms-win-crt-time-l1-1-0.dll",
+            "api-ms-win-core-file-l1-1-0.dll",
+            "bcrypt.dll",
+            "ws2_32.dll.evil.dll",
+            "libc.so.6",
+        ] {
+            assert!(!is_windows_system_library(dll), "{dll}");
+        }
+    }
+
+    #[test]
+    fn dll_stems_match_a_version_but_not_a_longer_name() {
+        assert!(is_dll("nvcuda.dll", "nvcuda"));
+        assert!(is_dll("NVCUDA.DLL", "nvcuda"));
+        assert!(is_dll("cudart64_12.dll", "cudart"));
+        assert!(is_dll("cublasLt64_12.dll", "cublasLt"));
+        assert!(is_dll("vulkan-1.dll", "vulkan"));
+        assert!(!is_dll("cublasLt64_12.dll", "cublas"));
+        assert!(!is_dll("nvcudax.dll", "nvcuda"));
+        assert!(!is_dll("nvcuda.so", "nvcuda"));
+    }
+
+    #[test]
+    fn the_macos_allow_list_matches_install_names_and_framework_layouts() {
+        for name in [
+            "/usr/lib/libSystem.B.dylib",
+            "/usr/lib/libobjc.A.dylib",
+            "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+            "/System/Library/Frameworks/Metal.framework/Metal",
+            "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+            "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+            "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+            "/usr/lib/libiconv.2.dylib",
+            "/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration",
+            "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+        ] {
+            assert!(is_macos_system_library(name), "{name}");
+        }
+        for name in [
+            "@rpath/libvulkan.1.dylib",
+            "/usr/local/lib/libMoltenVK.dylib",
+            "/usr/lib/libSystem.dylib",
+            "/usr/lib/libc++.1.dylib",
+            "/System/Library/Frameworks/OpenCL.framework/Versions/A/OpenCL",
+            "/System/Library/Frameworks/Metal.framework/Versions/A/Other",
+            "/System/Library/Frameworks/Metal.framework/Versions/../Metal",
+            "/System/Library/Frameworks/Metal.framework/../../../../tmp/Metal",
+            "/Library/Frameworks/Metal.framework/Versions/A/Metal",
+            "@rpath/Metal.framework/Metal",
+            "libSystem.B.dylib",
+        ] {
+            assert!(!is_macos_system_library(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn dylib_stems_match_the_last_component_and_a_version() {
+        assert!(is_dylib("@rpath/libvulkan.1.dylib", "libvulkan"));
+        assert!(is_dylib("/usr/local/lib/libvulkan.dylib", "libvulkan"));
+        assert!(is_dylib("libMoltenVK.dylib", "libMoltenVK"));
+        assert!(!is_dylib("@rpath/libvulkanx.dylib", "libvulkan"));
+        assert!(!is_dylib("/opt/libvulkan/libother.dylib", "libvulkan"));
+        assert!(!is_dylib("libvulkan.so.1", "libvulkan"));
     }
 
     #[test]

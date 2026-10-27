@@ -90,9 +90,9 @@ impl std::error::Error for RingError {}
 /// Where a ring's parts sit, and its size, for one capacity (RFC-0023 §5.4).
 ///
 /// `capacity` is a power of two. A plan takes it from the ring's bound for the epoch, never
-/// below [`TABLE_DELTA_RING_MIN_CAPACITY`]. It is
-/// the capacity [`post`](Self::post) and [`read`](Self::read) index entries by; [`init`](Self::init)
-/// writes the same value into the header for the device to read.
+/// below [`TABLE_DELTA_RING_MIN_CAPACITY`]. It is the capacity [`post`](Self::post) and
+/// [`read`](Self::read) index entries by; [`init`](Self::init) writes the same value into the
+/// header for the device to read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct DeltaRingLayout {
     capacity: u32,
