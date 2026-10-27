@@ -93,8 +93,8 @@ impl FileDigest {
             _ => c - b'A' + 10,
         };
         let mut out = [0u8; 32];
-        for (byte, pair) in out.iter_mut().zip(hex.chunks_exact(2)) {
-            *byte = nibble(pair[0]) << 4 | nibble(pair[1]);
+        for (byte, &[hi, lo]) in out.iter_mut().zip(hex.as_chunks::<2>().0) {
+            *byte = nibble(hi) << 4 | nibble(lo);
         }
         Some(FileDigest(out))
     }
