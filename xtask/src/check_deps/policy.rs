@@ -248,11 +248,15 @@ pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
 /// until a maintainer adds it here, as for [`WINDOWS_SYSTEM_LIBRARIES`].
 ///
 /// `api-ms-win-crt-utility-l1-1-0.dll` was added 2026-10-27 (PROD-E6-T01), when the core binary
-/// gained the API. It exports the C runtime's `_rotl`, `_rotl64`, `_byteswap_ulong` and
-/// `_byteswap_uint64`, which `zstd-sys`'s bundled zstd calls under MSVC: its `xxhash.h` maps
-/// `XXH_rotl32`, `XXH_rotl64`, `XXH_swap32` and `XXH_swap64` to them (lines 2731–3282). `zstd-sys`
-/// is `syntropy-net`'s control-message compression (RFC-0031 §9.1). `ring` declares
-/// `_byteswap_ulong` an intrinsic (`crypto/internal.h:354`), so it imports none.
+/// gained the API. `zstd-sys`'s bundled zstd imports it, and nothing else does. On the hosted
+/// `windows-2025` runner, `llvm-readobj --coff-imports` on the core binary listed three functions
+/// from it: `_byteswap_ulong`, `_byteswap_uint64` and `_rotl64`. `llvm-nm --undefined-only` over
+/// all 328 rlibs and build-script outputs found them referenced only by `zstd-sys`'s objects (its
+/// `zstd.lib`, `libzstd.a` and the per-file `.o`s, and the rlib that bundles them). Under MSVC its
+/// `xxhash.h` maps `XXH_swap32`, `XXH_swap64` and `XXH_rotl64` to those functions (lines
+/// 2732–3282). `ring` references none: it declares `_byteswap_ulong` an intrinsic
+/// (`crypto/internal.h:354`). `zstd-sys` is `syntropy-net`'s control-message compression
+/// (RFC-0031 §9.1).
 pub const WINDOWS_CRT_API_SETS: &[&str] = &[
     "api-ms-win-crt-heap-l1-1-0.dll",
     "api-ms-win-crt-locale-l1-1-0.dll",

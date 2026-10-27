@@ -90,7 +90,9 @@ pub fn show(args: &ConfigShowArgs, output: Output) -> Result<Exit, CliError> {
             for warning in config.warnings() {
                 values = values.replacen(&format!("\nwarning: {warning}\n"), "", 1);
             }
-            print!("{values}");
+            // Values are TOML-quoted, but each line's origin echoes a path or a variable's name
+            // from the environment or the command line.
+            print!("{}", printable_lines(&values));
             Ok(Exit::Success)
         }
         Err(_) => Err(CliError::cli(
@@ -113,13 +115,15 @@ pub fn check(args: &ConfigCheckArgs, output: Output) -> Result<Exit, CliError> {
     let report = command::check(&checked, &REGISTRY);
     eprint!("{}", printable_lines(&diagnostics));
     // The report is the diagnostics, then one summary line.
-    print!(
-        "{}",
-        report
-            .text
-            .strip_prefix(&diagnostics)
-            .unwrap_or(&report.text)
-    );
+    // `command::check`'s text is `Checked::render` followed by the summary, and the render is
+    // pure over the same `Checked`, so the prefix always matches
+    // (`check_s_report_starts_with_its_diagnostics`). Were it ever not to, the whole report goes
+    // to stdout, escaped like the rest.
+    let summary = report
+        .text
+        .strip_prefix(&diagnostics)
+        .unwrap_or(&report.text);
+    print!("{}", printable_lines(summary));
     Ok(if report.exit == command::EXIT_OK {
         Exit::Success
     } else {
@@ -148,7 +152,9 @@ pub fn path(args: &ConfigPathArgs, output: Output) -> Result<Exit, CliError> {
             }
         }
     };
-    print!("{}", command::path(&locations, &scan));
+    // Every path comes from the environment or `--config`: `SYNTROPY_CONFIG`, `HOME`, the XDG
+    // and Windows variables, `TMPDIR`.
+    print!("{}", printable_lines(&command::path(&locations, &scan)));
     Ok(Exit::Success)
 }
 
@@ -252,6 +258,28 @@ mod tests {
             assert!(REGISTRY.key(prefix).is_some(), "{prefix}");
         }
         assert_eq!(COUNT, NET.len() + CLUSTER.len() + 3);
+    }
+
+    /// `check` prints its summary as the report after the diagnostics, which holds while
+    /// `command::check`'s text starts with `Checked::render`'s.
+    #[test]
+    fn check_s_report_starts_with_its_diagnostics() {
+        let dir = std::env::temp_dir().join(format!("syntropy-cli-prefix-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, text) in [("ok.toml", ""), ("bad.toml", "[api]\nbnd = 1\n")] {
+            let file = dir.join(name);
+            std::fs::write(&file, text).unwrap();
+            let checked = load(&ConfigSource {
+                config: Some(file),
+                set: vec!["discovery.port=x".to_owned()],
+            })
+            .unwrap();
+            let diagnostics = checked.render(&REGISTRY);
+            let report = command::check(&checked, &REGISTRY);
+            assert!(report.text.starts_with(&diagnostics), "{name}");
+            assert!(report.text.len() > diagnostics.len(), "{name}: no summary");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The registry is the linked crates' lists, then the three single sections, in that order,
