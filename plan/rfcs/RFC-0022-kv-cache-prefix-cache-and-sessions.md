@@ -359,6 +359,17 @@ k_b    = BLAKE3(k_(b−1) ‖ scope_salt ‖ tokens[b·P .. (b+1)·P] as u32 lit
 
 `PrefixKey` (RFC-0001 §5.9) is `k_b` for the last full page a sequence shares.
 
+**Revision note, 2026-10-28 (TIER-E7-T01): the bytes the keys hash.** `syntropy_core::prefix` builds the keys. `core` links no hasher (RFC-0001 §4.2 rule 1), so the caller passes BLAKE3 in, as for `InstancePolicy::digest_with`. Four things the text above leaves open are fixed as follows; golden keys in `manifest` pin them:
+- **`kv_settings_hash`** is `BLAKE3("syntropy/kv-settings/v1" ‖ canon(KvSettings))`. `canon` is RFC-0054 §4.5's canonical encoding: fields by name, maps sorted, floats by bit pattern. It is applied to the normal form:
+  - the per-layer dtype exceptions are sorted, each layer appears once, and none equals the default;
+  - the knobs are masked to those that touch KV, `kv_lossy` and `approx_attention`;
+  - `kv_lossy`'s dtype is dropped while that knob is off.
+
+  Settings that store the same KV thus hash the same, and the bytes depend on no host, build or map order. `KvSettings` holds the settings the text lists: the stored `KvDType` of each page class, `KvFormula::dtype` and `layout_version`, `P`, the RoPE configurations (base, scaling type, factors by name, original context length), each layer's window and compression ratio, and the knobs. `KvFormula::kv_settings` fills the formula's part.
+- **The local principal's `scope_salt`** is the 16 bytes `"syntropy/local\0\0"`.
+- **`shared_salt` under `kv.prefix_scope = instance`** is the 16 bytes `"syntropy/instanc"`, and no page then carries a `scope_salt`: every client shares one cache, kept apart from principal-scope keys by the root.
+- **Non-text inputs.** A media item's placeholder IDs are the same for every image, so a page that holds any of a media item's placeholders appends, after its tokens and in the order the spans are given, the span's absolute start and length (u32 LE each) and its 32-byte content hash (RFC-0050 §2.1's `ContentPart::Media::hash`). A page with no media hashes exactly the bytes above. A different image therefore changes the key of the first page that holds it and of every later page. RFC-0050 §2.1 points here for this rule, and this note is where it is defined.
+
 #### 7.2 Index
 
 Every stage keeps a `PrefixIndex`: a hash map from page key to node, which forms a radix tree whose edges are whole pages.

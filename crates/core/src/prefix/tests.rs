@@ -1,0 +1,457 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Tests of the prefix keys (TIER-E7-T01; RFC-0022 §7.1).
+//!
+//! `core` links no hasher, so these use two stand-ins: [`record`], which returns its input's
+//! length and keeps the bytes, to check exactly what is hashed; and [`mix`], a deterministic
+//! 256-bit mixer, for the properties. The BLAKE3 values, golden keys included, are checked in
+//! `manifest`, which links BLAKE3.
+
+use std::cell::RefCell;
+
+use proptest::prelude::*;
+
+use super::*;
+
+/// A deterministic stand-in for BLAKE3: four FNV-1a-64 lanes with different seeds.
+fn mix(bytes: &[u8]) -> Blake3 {
+    let mut out = [0u8; 32];
+    for (lane, chunk) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ (lane as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        chunk.copy_from_slice(&h.to_le_bytes());
+    }
+    Blake3(out)
+}
+
+/// A named edit of the settings.
+type Change = (&'static str, Box<dyn Fn(&mut KvSettings)>);
+
+fn model() -> ModelId {
+    ModelId(Blake3([7; 32]))
+}
+
+fn settings() -> KvSettings {
+    KvSettings {
+        page_tokens: 64,
+        stored: vec![KvDType::Native, KvDType::Native],
+        dtype: DType::F16,
+        dtype_layers: vec![(LayerIx(3), DType::F32)],
+        layout_version: 1,
+        rope: vec![RopeSettings {
+            base: 500_000.0,
+            scaling: Some("llama3".into()),
+            factors: [
+                ("factor".to_owned(), 8.0),
+                ("low_freq_factor".to_owned(), 1.0),
+            ]
+            .into_iter()
+            .collect(),
+            original_context: Some(8192),
+        }],
+        windows: vec![None, Some(4096), None, Some(4096)],
+        compression: vec![None, None, None, None],
+        knobs: ApproxKnobs::empty(),
+        kv_lossy: None,
+    }
+}
+
+fn root(s: &KvSettings, scope: &PrefixScope, mode: PrefixScopeMode) -> PrefixKey {
+    PrefixKeyChain::new(mix, model(), s.hash_with(mix), scope, mode, s.page_tokens).last()
+}
+
+fn principal(p: u8, shared_until: Option<u32>) -> PrefixScope {
+    PrefixScope {
+        principal: Some([p; 16]),
+        shared_until,
+    }
+}
+
+fn tokens(n: u32, seed: u32) -> Vec<u32> {
+    (0..n)
+        .map(|i| i.wrapping_mul(2_654_435_761) ^ seed)
+        .collect()
+}
+
+/// Every KV-affecting setting RFC-0022 §7.1 lists changes `kv_settings_hash`, and so the root
+/// key. The criterion's list: the dtype (with the `kv_dtype` override, which changes it), the
+/// layout version, P, RoPE scaling, the window, the compression ratio and a KV knob.
+#[test]
+fn every_kv_affecting_setting_changes_the_root_key() {
+    let base = settings();
+    let scope = PrefixScope::default();
+    let r0 = root(&base, &scope, PrefixScopeMode::Principal);
+    let changes: Vec<Change> = vec![
+        (
+            "dtype F16 → BF16 (a kv_dtype override)",
+            Box::new(|s| s.dtype = DType::BF16),
+        ),
+        (
+            "a per-layer dtype",
+            Box::new(|s| s.dtype_layers.push((LayerIx(1), DType::BF16))),
+        ),
+        (
+            "a per-layer dtype's value",
+            Box::new(|s| s.dtype_layers[0].1 = DType::BF16),
+        ),
+        ("layout version", Box::new(|s| s.layout_version = 2)),
+        ("P", Box::new(|s| s.page_tokens = 128)),
+        (
+            "a stored KvDType",
+            Box::new(|s| s.stored[1] = KvDType::Q8 { block: 32 }),
+        ),
+        (
+            "a page class more",
+            Box::new(|s| s.stored.push(KvDType::Native)),
+        ),
+        ("RoPE base", Box::new(|s| s.rope[0].base = 10_000.0)),
+        (
+            "RoPE scaling type",
+            Box::new(|s| s.rope[0].scaling = Some("yarn".into())),
+        ),
+        ("no RoPE scaling", Box::new(|s| s.rope[0].scaling = None)),
+        (
+            "a RoPE scaling factor",
+            Box::new(|s| {
+                s.rope[0].factors.insert("factor".into(), 4.0);
+            }),
+        ),
+        (
+            "a RoPE factor more",
+            Box::new(|s| {
+                s.rope[0].factors.insert("beta_fast".into(), 32.0);
+            }),
+        ),
+        (
+            "RoPE original context",
+            Box::new(|s| s.rope[0].original_context = Some(4096)),
+        ),
+        (
+            "a second RoPE set",
+            Box::new(|s| {
+                let r = s.rope[0].clone();
+                s.rope.push(r);
+            }),
+        ),
+        ("a window", Box::new(|s| s.windows[1] = Some(1024))),
+        ("a window added", Box::new(|s| s.windows[0] = Some(4096))),
+        (
+            "a compression ratio",
+            Box::new(|s| s.compression[2] = Some(4)),
+        ),
+        (
+            "the kv_lossy knob",
+            Box::new(|s| {
+                s.knobs = ApproxKnobs::KV_LOSSY;
+                s.kv_lossy = Some(KvDType::Q8 { block: 32 });
+            }),
+        ),
+        (
+            "the approx_attention knob",
+            Box::new(|s| s.knobs = ApproxKnobs::APPROX_ATTENTION),
+        ),
+    ];
+    let mut seen = vec![r0];
+    for (name, change) in &changes {
+        let mut s = base.clone();
+        change(&mut s);
+        let r = root(&s, &scope, PrefixScopeMode::Principal);
+        assert_ne!(r, r0, "{name}");
+        assert!(!seen.contains(&r), "{name} collides with an earlier change");
+        seen.push(r);
+    }
+    // kv_lossy's parameter counts too, while the knob is on.
+    let lossy = |block| {
+        let mut s = base.clone();
+        s.knobs = ApproxKnobs::KV_LOSSY;
+        s.kv_lossy = Some(KvDType::Q8 { block });
+        root(&s, &scope, PrefixScopeMode::Principal)
+    };
+    assert_ne!(lossy(32), lossy(64));
+}
+
+/// Settings that store the same KV give the same key: the normal form.
+#[test]
+fn what_does_not_change_kv_does_not_change_the_key() {
+    let base = settings();
+    let scope = PrefixScope::default();
+    let r0 = root(&base, &scope, PrefixScopeMode::Principal);
+    let same: Vec<Change> = vec![
+        (
+            "a knob that does not touch KV",
+            Box::new(|s| s.knobs = ApproxKnobs::EXPERT_SKIP | ApproxKnobs::WIRE_COMPRESS),
+        ),
+        (
+            "kv_lossy's dtype with the knob off",
+            Box::new(|s| s.kv_lossy = Some(KvDType::Q8 { block: 32 })),
+        ),
+        (
+            "a per-layer dtype equal to the default",
+            Box::new(|s| s.dtype_layers.push((LayerIx(0), DType::F16))),
+        ),
+        (
+            "a second entry for a layer",
+            Box::new(|s| s.dtype_layers.push((LayerIx(3), DType::BF16))),
+        ),
+        (
+            "factors inserted in another order",
+            Box::new(|s| {
+                s.rope[0].factors = [
+                    ("low_freq_factor".to_owned(), 1.0),
+                    ("factor".to_owned(), 8.0),
+                ]
+                .into_iter()
+                .collect();
+            }),
+        ),
+    ];
+    for (name, change) in &same {
+        let mut s = base.clone();
+        change(&mut s);
+        assert_eq!(root(&s, &scope, PrefixScopeMode::Principal), r0, "{name}");
+    }
+    // Exceptions given out of order.
+    let mut a = base.clone();
+    a.dtype_layers = vec![(LayerIx(5), DType::BF16), (LayerIx(3), DType::F32)];
+    let mut b = base.clone();
+    b.dtype_layers = vec![(LayerIx(3), DType::F32), (LayerIx(5), DType::BF16)];
+    assert_eq!(a.canonical_bytes(), b.canonical_bytes());
+}
+
+/// The bytes hashed are exactly RFC-0022 §7.1's, for text.
+#[test]
+fn the_chain_hashes_rfc_0022_s_bytes() {
+    let inputs = RefCell::new(Vec::<Vec<u8>>::new());
+    let record = |bytes: &[u8]| {
+        inputs.borrow_mut().push(bytes.to_vec());
+        mix(bytes)
+    };
+    let settings_hash = Blake3([9; 32]);
+    let p = 4;
+    let mut chain = PrefixKeyChain::new(
+        record,
+        model(),
+        settings_hash,
+        &principal(0xAB, Some(5)),
+        PrefixScopeMode::Principal,
+        p,
+    );
+    let root = chain.last();
+    let k0 = chain.push_page(&[1, 2, 3, 4], &[]);
+    let k1 = chain.push_page(&[5, 6, 7, 8], &[]);
+    let inputs = inputs.into_inner();
+    assert_eq!(inputs.len(), 3);
+    // k_root: the domain, the ModelId, the settings hash, and an empty shared_salt.
+    let mut want = b"syntropy-kv-prefix-v1".to_vec();
+    want.extend([7; 32]);
+    want.extend([9; 32]);
+    assert_eq!(inputs[0], want);
+    // Page 0 is wholly inside the shared span (5 tokens → 1 whole page): no salt.
+    let mut want = root.0.0.to_vec();
+    for t in 1u32..=4 {
+        want.extend(t.to_le_bytes());
+    }
+    assert_eq!(inputs[1], want);
+    // Page 1 straddles the breakpoint, so it is private: the scope salt comes first.
+    let mut want = k0.0.0.to_vec();
+    want.extend([0xAB; 16]);
+    for t in 5u32..=8 {
+        want.extend(t.to_le_bytes());
+    }
+    assert_eq!(inputs[2], want);
+    assert_eq!(k1, PrefixKey(mix(&inputs[2])));
+}
+
+/// The kv_settings_hash bytes: the domain, then `canon`'s encoding of the normal form. Pinned, so
+/// a change to the encoding, which would change every key, fails here.
+#[test]
+fn the_settings_bytes_are_pinned() {
+    let bytes = settings().canonical_bytes();
+    assert!(bytes.starts_with(b"syntropy/kv-settings/v1"));
+    assert_eq!(
+        &bytes[KV_SETTINGS_DOMAIN.len()..],
+        canon::to_bytes(&settings().normalized()).unwrap()
+    );
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex, PINNED_SETTINGS_HEX,
+        "the canonical encoding of KvSettings changed"
+    );
+}
+
+/// `settings()`'s bytes: the domain, then a struct (`0b`) of 10 fields by name, `compression`
+/// first and `windows` last; enums by variant name (`F16`, `Native`); `knobs` as its `u32` bits.
+const PINNED_SETTINGS_HEX: &str = concat!(
+    "73796e74726f70792f6b762d73657474696e67732f76310b0a00000000000000070b000000000000",
+    "00636f6d7072657373696f6e0904000000000000000000000007050000000000000064747970650c",
+    "07030000000000000046313600070c0000000000000064747970655f6c6179657273090100000000",
+    "0000000902000000000000000303000000000000000c070300000000000000463332000705000000",
+    "000000006b6e6f62730300000000000000000708000000000000006b765f6c6f73737900070e0000",
+    "00000000006c61796f75745f76657273696f6e030100000000000000070b00000000000000706167",
+    "655f746f6b656e73034000000000000000070400000000000000726f70650901000000000000000b",
+    "040000000000000007040000000000000062617365060000000080841e4107070000000000000066",
+    "6163746f72730a0200000000000000070600000000000000666163746f7206000000000000204007",
+    "0f000000000000006c6f775f667265715f666163746f7206000000000000f03f0710000000000000",
+    "006f726967696e616c5f636f6e74657874010300200000000000000707000000000000007363616c",
+    "696e67010706000000000000006c6c616d613307060000000000000073746f726564090200000000",
+    "0000000c0706000000000000004e6174697665000c0706000000000000004e617469766500070700",
+    "00000000000077696e646f7773090400000000000000000103001000000000000000010300100000",
+    "00000000",
+);
+
+#[test]
+fn two_principals_share_the_span_and_part_after_it() {
+    let s = settings();
+    let h = s.hash_with(mix);
+    let toks = tokens(64 * 5, 1);
+    let keys = |scope: PrefixScope, mode| {
+        PrefixKeyChain::new(mix, model(), h, &scope, mode, 64).push_tokens(&toks, &[])
+    };
+    // A breakpoint at token 150: pages 0 and 1 (tokens 0..128) are shared; page 2 straddles it.
+    let a = keys(principal(1, Some(150)), PrefixScopeMode::Principal);
+    let b = keys(principal(2, Some(150)), PrefixScopeMode::Principal);
+    assert_eq!(a.len(), 5);
+    assert_eq!(a[..2], b[..2], "inside the shared span");
+    for i in 2..5 {
+        assert_ne!(a[i], b[i], "page {i}, after the span");
+    }
+    // The local principal is a scope of its own.
+    let local = keys(
+        PrefixScope {
+            principal: None,
+            shared_until: Some(150),
+        },
+        PrefixScopeMode::Principal,
+    );
+    assert_eq!(local[..2], a[..2]);
+    assert_ne!(local[2], a[2]);
+    // No breakpoint: nothing shared, from the first page.
+    let a0 = keys(principal(1, None), PrefixScopeMode::Principal);
+    let b0 = keys(principal(2, None), PrefixScopeMode::Principal);
+    assert_ne!(a0[0], b0[0]);
+    // A breakpoint on a page boundary shares exactly the pages before it.
+    let a2 = keys(principal(1, Some(128)), PrefixScopeMode::Principal);
+    let b2 = keys(principal(2, Some(128)), PrefixScopeMode::Principal);
+    assert_eq!(a2[..2], b2[..2]);
+    assert_ne!(a2[2], b2[2]);
+    // Instance scope: one cache for every client, and apart from principal scope's keys.
+    let ia = keys(principal(1, None), PrefixScopeMode::Instance);
+    let ib = keys(principal(2, Some(150)), PrefixScopeMode::Instance);
+    assert_eq!(ia, ib);
+    assert_ne!(ia[0], a[0]);
+}
+
+#[test]
+fn a_different_image_parts_the_keys_from_its_first_page() {
+    let s = settings();
+    let h = s.hash_with(mix);
+    // A placeholder run at tokens 100..230: pages 1, 2 and 3 hold some of it.
+    let toks = tokens(64 * 5, 3);
+    let image = |byte| MediaSpan {
+        start: 100,
+        len: 130,
+        hash: Blake3([byte; 32]),
+    };
+    let keys = |media: &[MediaSpan]| {
+        PrefixKeyChain::new(
+            mix,
+            model(),
+            h,
+            &PrefixScope::default(),
+            PrefixScopeMode::Principal,
+            64,
+        )
+        .push_tokens(&toks, media)
+    };
+    let plain = keys(&[]);
+    let one = keys(&[image(1)]);
+    let two = keys(&[image(2)]);
+    assert_eq!(plain[0], one[0], "page 0 holds no placeholder");
+    assert_eq!(one[0], two[0]);
+    for i in 1..5 {
+        assert_ne!(one[i], two[i], "page {i}");
+        assert_ne!(one[i], plain[i], "page {i}");
+    }
+    // A span that ends where a page starts does not reach it; an empty span reaches nothing.
+    let before = MediaSpan {
+        start: 0,
+        len: 64,
+        hash: Blake3([5; 32]),
+    };
+    let empty = MediaSpan {
+        start: 64,
+        len: 0,
+        hash: Blake3([5; 32]),
+    };
+    let edge = keys(&[before, empty]);
+    assert_ne!(edge[0], plain[0]);
+    let only_before = keys(&[before]);
+    assert_eq!(edge[1..], only_before[1..]);
+}
+
+#[test]
+fn a_partial_page_has_no_key_and_the_chain_resumes() {
+    let s = settings();
+    let h = s.hash_with(mix);
+    let toks = tokens(64 * 3 + 10, 4);
+    let new = || {
+        PrefixKeyChain::new(
+            mix,
+            model(),
+            h,
+            &PrefixScope::default(),
+            PrefixScopeMode::Principal,
+            64,
+        )
+    };
+    let mut whole = new();
+    let all = whole.push_tokens(&toks, &[]);
+    assert_eq!(all.len(), 3);
+    assert_eq!(whole.next_page(), 3);
+    assert_eq!(whole.last(), all[2]);
+    // The same keys page by page, as the head keys each page when it seals.
+    let mut paged = new();
+    for (i, page) in toks.as_chunks::<64>().0.iter().enumerate() {
+        assert_eq!(paged.push_page(page, &[]), all[i]);
+    }
+}
+
+#[test]
+#[should_panic(expected = "only a full page has a key")]
+fn a_short_page_is_refused() {
+    let s = settings();
+    let mut chain = PrefixKeyChain::new(
+        mix,
+        model(),
+        s.hash_with(mix),
+        &PrefixScope::default(),
+        PrefixScopeMode::Principal,
+        64,
+    );
+    chain.push_page(&[1, 2, 3], &[]);
+}
+
+proptest! {
+    /// Identical inputs give identical keys: two chains built apart agree on every page.
+    #[test]
+    fn identical_inputs_give_identical_keys(
+        toks in prop::collection::vec(any::<u32>(), 0..600),
+        p in prop::sample::select(vec![1u32, 16, 64]),
+        who in any::<Option<[u8; 16]>>(),
+        until in any::<Option<u16>>(),
+    ) {
+        let mut s = settings();
+        s.page_tokens = p;
+        let scope = PrefixScope { principal: who, shared_until: until.map(u32::from) };
+        let run = || {
+            PrefixKeyChain::new(mix, model(), s.clone().hash_with(mix), &scope, PrefixScopeMode::Principal, p)
+                .push_tokens(&toks, &[])
+        };
+        let first = run();
+        prop_assert_eq!(first.len(), toks.len() / p as usize);
+        prop_assert_eq!(first, run());
+    }
+}
