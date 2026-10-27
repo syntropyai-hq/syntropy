@@ -1201,3 +1201,12 @@ The review of #1924 (QUAL-E16-T03, B2) found that QUAL-E16-T03's third criterion
 |---|---|---|---|
 | QUAL-E16-T03's third criterion now reads "`DaemonChannel::handshake` refuses and kills a freshly spawned process whose `Hello` carries another commit's build ID, and accepts this build's (re-exec test with the real build IDs)" | QUAL-E16-T03 | Definition of done | this is what the task can check before runner mode exists (#1924's review, B2) |
 | Added QUAL-E16-T29 (M0b) → QUAL-E16-T03, DIST-E1-T04, DIST-E1-T05: a daemon spawning `syntropy __runner` from a binary built with another `SYNTROPY_BUILD_COMMIT` kills it at `Hello`, and the daemon's own binary passes | QUAL-E16-T29 | R9 | the criterion needs the `BuildId` value (QUAL-E16-T03), the spawn path (DIST-E1-T04) and runner mode (DIST-E1-T05). All three are M0a or M0b, so the edges are not `LATER`. It also catches a binary replaced on disk under a running daemon, whose `current_exe()` then re-executes another build |
+
+## TIER-E6-T01's shared-functions criterion (2026-10-28)
+
+TIER-E6-T01 builds `KvFormula::stored` and `read_per_step` in `manifest`. Its criterion "PLC's solver uses the same functions (shared crate)" needs a solver call site, and `solver` has no KV term until PLC-E4-T03 (M1a), which already depends on TIER-E6-T01 for these functions. The call-site half moves there.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| TIER-E6-T01's criterion becomes "the functions live in `manifest`, the crate `solver` and `tier` both depend on (RFC-0001 §4.1), so PLC's solver uses the same functions: PLC-E4-T03's KV terms call them" | TIER-E6-T01 | R9 | the solver's KV terms are PLC-E4-T03's, later than M0a |
+| PLC-E4-T03 gains "the KV read and store terms come from TIER-E6-T01's `KvFormula::read_per_step` and `stored` in `manifest`, with no second KV formula in `solver`" | PLC-E4-T03 | R9 | PLC-E4-T03 builds those terms, and its edge to TIER-E6-T01 already exists |
