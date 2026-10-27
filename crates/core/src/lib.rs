@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod budget;
+pub mod build;
 pub mod canon;
 pub mod clock;
 pub mod det_hash;

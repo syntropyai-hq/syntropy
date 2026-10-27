@@ -31,6 +31,8 @@ use syntropy_api::routes::{ApiState, NodeStatus};
 use syntropy_api::server::{ServeError, Server, local_endpoint};
 use syntropy_api::version::{Build, ProtocolMajors, SupportTier, VersionInfo};
 use syntropy_config::{ConfigSection, DefaultSpec, Registry};
+use syntropy_core::build::{BuildId, BuildProfile, TargetTriple};
+use syntropy_core::ids::Blake3;
 use syntropy_ipc::cmd::{Endpoint, connect_async};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -48,7 +50,14 @@ impl NodeStatus for Node {
 fn version() -> VersionInfo {
     VersionInfo {
         build: Build {
-            version: "0.0.0-test".into(),
+            build_id: BuildId {
+                version: "0.0.0-test".parse().unwrap(),
+                commit: [0x1c; 20],
+                profile: BuildProfile::Dev,
+                target: TargetTriple("x86_64-unknown-linux-gnu".into()),
+                toolchain: Blake3([0x70; 32]),
+            },
+            features: Vec::new(),
             id: [0x5a; 32],
         },
         protocols: ProtocolMajors::current(),
@@ -267,6 +276,8 @@ fn version_reports_the_build_the_protocol_majors_and_the_support_tier() {
         let body = answer.body;
         assert_eq!(body["build"]["version"], "0.0.0-test");
         assert_eq!(body["build"]["id"], "5a".repeat(32));
+        assert_eq!(body["build"]["commit"], "1c".repeat(20));
+        assert_eq!(body["build"]["profile"], "dev");
         assert_eq!(
             body["protocols"]["wire"],
             u64::from(syntropy_net::transport::stream::PROTO_MAJOR)

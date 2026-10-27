@@ -13,6 +13,8 @@ name = "syntropy"
 path = "src/main.rs"
 
 [dependencies]
+# The 32-byte build ID, a BLAKE3 digest of the `BuildId` that `build.rs` builds (RFC-0062 §8.1).
+blake3.workspace = true
 # The command tree (RFC-0051 §1: argument parsing with clap's derive).
 clap.workspace = true
 serde.workspace = true

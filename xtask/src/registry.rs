@@ -24,8 +24,8 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom,
-    plan_tools, properties, repo_settings, sim_presets, toolchain,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
+    instructions, loom, plan_tools, properties, repo_settings, sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -834,6 +834,22 @@ pub const SUITES: &[Entry] = &[
             action: Action::Builtin {
                 shown: "each listed property's tests with PROPTEST_CASES set",
                 run: properties::suite_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "cache-hit",
+        summary: "a comment-only change in `cli` recompiles `cli` alone (QUAL-E16-T03): two builds \
+                  of syntropy-cli, the second's compiler artifacts read from cargo's JSON",
+        defined_in: "RFC-0062 §8.1",
+        params: &[],
+        steps: &[Step {
+            name: "cache-hit",
+            action: Action::Builtin {
+                shown: "build syntropy-cli, touch its source, rebuild with another commit, and \
+                        check that every recompiled artifact is syntropy-cli's",
+                run: cache_hit::suite_step,
             },
         }],
         pending: &[],

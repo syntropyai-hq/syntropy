@@ -15,14 +15,20 @@ use syntropy_ipc::cmd::Endpoint;
 
 /// `syntropy`: one binary for the daemon, its runners and every client command (ADR-0015).
 #[derive(Debug, Parser)]
-#[command(name = "syntropy", version, about, propagate_version = true)]
+///
+/// `-V` and `--version` are this binary's own flag, not clap's, so `--version --json` can print
+/// the build as JSON (QUAL-E16-T03). Without it a command is required.
+#[command(name = "syntropy", about, disable_version_flag = true)]
 pub struct Cli {
+    /// Print this binary's version and build, with `--json` as the native API's `Build`
+    #[arg(short = 'V', long = "version")]
+    pub version: bool,
     /// The options every command takes.
     #[command(flatten)]
     pub global: Global,
     /// The command.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 /// The options every command takes (RFC-0051 §2.2).

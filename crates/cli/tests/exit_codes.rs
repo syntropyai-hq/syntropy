@@ -182,15 +182,17 @@ fn syntropy_host_with_tls_or_a_bad_url_exits_5() {
 /// #1919).
 #[test]
 fn a_hostile_daemon_s_escape_sequences_never_reach_the_terminal() {
-    let id = "5a".repeat(32);
+    // A valid build; the hostile text goes elsewhere.
+    let build = serde_json::to_string(&common::test_version().build).unwrap();
+    let inner = build.strip_suffix('}').unwrap();
     let bodies = [
         // An unknown variant: an OSC title set, a BEL and a screen clear.
         format!(
-            r#"{{"build":{{"version":"0","id":"{id}"}},"protocols":{{"wire":1,"ipc":1}},"support_tier":"\u001b]0;PWNED\u0007\u001b[2J"}}"#
+            r#"{{"build":{build},"protocols":{{"wire":1,"ipc":1}},"support_tier":"\u001b]0;PWNED\u0007\u001b[2J"}}"#
         ),
         // An unknown field inside `build`, with a colour and a right-to-left override.
         format!(
-            r#"{{"build":{{"version":"0","id":"{id}","\u001b[31mEVIL\u202e":1}},"protocols":{{"wire":1,"ipc":1}},"support_tier":"tier1"}}"#
+            r#"{{"build":{inner},"\u001b[31mEVIL\u202e":1}},"protocols":{{"wire":1,"ipc":1}},"support_tier":"tier1"}}"#
         ),
     ];
     for body in bodies {
