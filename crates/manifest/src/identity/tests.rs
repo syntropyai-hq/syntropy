@@ -78,6 +78,13 @@ fn a_streamed_digest_equals_the_whole_buffer_s() {
         FileDigest::of_source(&Mem(Vec::new())).unwrap(),
         FileDigest::of_bytes(b"")
     );
+    // The progress hook sees every byte, one read at a time, each at most `READ_SIZE`.
+    let mut reads = Vec::new();
+    let with = FileDigest::of_source_with(&Mem(bytes.clone()), |n| reads.push(n)).unwrap();
+    assert_eq!(with, FileDigest::of_bytes(&bytes));
+    assert_eq!(reads.iter().sum::<u64>(), bytes.len() as u64);
+    assert_eq!(reads.len(), 3);
+    assert!(reads.iter().all(|&n| n <= READ_SIZE as u64));
 }
 
 #[test]

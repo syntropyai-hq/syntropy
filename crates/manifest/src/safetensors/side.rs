@@ -31,6 +31,39 @@ pub enum SourceRole {
 }
 
 impl SourceRole {
+    /// Every role.
+    pub const ALL: [SourceRole; 7] = [
+        SourceRole::Weights,
+        SourceRole::WeightIndex,
+        SourceRole::Config,
+        SourceRole::GenerationConfig,
+        SourceRole::Tokenizer,
+        SourceRole::TokenizerConfig,
+        SourceRole::SpecialTokensMap,
+    ];
+
+    /// The role's stable name, as records such as the store's local index write it. The match
+    /// names every role, so a role added later fails to compile here until it has a name, and
+    /// a name is never changed or reused.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            SourceRole::Weights => "weights",
+            SourceRole::WeightIndex => "weight_index",
+            SourceRole::Config => "config",
+            SourceRole::GenerationConfig => "generation_config",
+            SourceRole::Tokenizer => "tokenizer",
+            SourceRole::TokenizerConfig => "tokenizer_config",
+            SourceRole::SpecialTokensMap => "special_tokens_map",
+        }
+    }
+
+    /// The role named `name`, the inverse of [`name`](Self::name).
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<SourceRole> {
+        SourceRole::ALL.into_iter().find(|r| r.name() == name)
+    }
+
     /// Whether RFC-0041 §1's `ModelId` hashes a file of this role. It is defined by
     /// [`role_code`](crate::identity::role_code), so the two cannot disagree.
     #[must_use]

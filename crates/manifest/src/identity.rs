@@ -65,6 +65,19 @@ impl FileDigest {
     ///
     /// The source's error for a read that fails.
     pub fn of_source<S: RangeSource>(source: &S) -> Result<FileDigest, RangeError> {
+        FileDigest::of_source_with(source, |_| {})
+    }
+
+    /// As [`of_source`](Self::of_source), calling `on_read` with the byte count of each read once
+    /// it is hashed, so a caller can report progress (RFC-0041 §4.3).
+    ///
+    /// # Errors
+    ///
+    /// The source's error for a read that fails.
+    pub fn of_source_with<S: RangeSource>(
+        source: &S,
+        mut on_read: impl FnMut(u64),
+    ) -> Result<FileDigest, RangeError> {
         let mut hasher = Sha256::new();
         let mut buf = vec![0u8; READ_SIZE];
         let len = source.len();
@@ -74,6 +87,7 @@ impl FileDigest {
             source.read_at(at, &mut buf[..n])?;
             hasher.update(&buf[..n]);
             at += n as u64;
+            on_read(n as u64);
         }
         Ok(FileDigest(hasher.finalize().into()))
     }
