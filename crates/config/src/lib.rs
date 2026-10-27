@@ -32,7 +32,11 @@
 //!   reload class;
 //! - per-request overrides (§7, PROD-E1-T10): [`RequestOverrides`] and [`resolve_request`], which
 //!   resolves a request against one candidate instance's policy, enforcing D3: approximate only
-//!   when the request, the instance and the cluster all opt in.
+//!   when the request, the instance and the cluster all opt in;
+//! - writing a config file (§10.2, PROD-E1-T12): [`write::set`] and [`write::unset`] change only
+//!   the lines of one key, [`write::check_edit`] validates the layer with the edited text before
+//!   anything is written, and [`write::write_atomic`] replaces the file by a rename, keeping its
+//!   permissions and refusing a symbolic link.
 //!
 //! The cluster and instance scopes, and reload, come in later tasks.
 //!
@@ -127,6 +131,7 @@
 // Lets the derive's `::syntropy_config::…` paths resolve inside this crate's own tests.
 extern crate self as syntropy_config;
 
+pub mod chars;
 mod code;
 pub mod command;
 mod debug;
@@ -146,6 +151,7 @@ mod schema;
 mod text;
 mod validate;
 pub mod value;
+pub mod write;
 
 pub use code::{Code, suggest};
 pub use debug::{DebugApi, DebugSection, ManifestSignerNotAllowed, Peer, is_loopback};

@@ -185,6 +185,10 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring
 # TOML reading only (no writer): the RFC-0042 tolerance tables, `numerics/tolerances-v<N>.toml`,
 # the rig inventory `bench/lab/rigs.toml` (RFC-0061 §6.3) and fault plans (RFC-0060 §9.2).
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
+# Format-preserving TOML edits for `config set`, `unset` and `edit` (RFC-0054 §10.2), `config`
+# only: comments, ordering and spacing survive a write. Already in the lock through
+# proc-macro-crate; `display` adds `toml_writer`, which `toml` already links.
+toml_edit = { version = "0.25.17", default-features = false, features = ["parse", "display"] }
 trybuild = "1.0.122"
 # Reads a stored CA certificate's public key and extensions, and checks its self-signature with
 # ring (`verify`) (PROD-E5-T03). rcgen links the same version for its `x509-parser` feature.

@@ -3947,6 +3947,7 @@ dependencies = [
  "syntropy-config-derive",
  "syntropy-core",
  "toml",
+ "toml_edit",
  "trybuild",
  "zeroize",
 ]
@@ -4587,6 +4588,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

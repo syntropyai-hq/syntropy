@@ -47,9 +47,20 @@ pub const OTHER_KNOWN: [&str; 2] = ["SYNTROPY_FAULT_PLAN", "SYNTROPY_KERNELS"];
 /// not change while it runs (RFC-0054 §9.2).
 ///
 /// On Windows variable names are case-insensitive, so the snapshot stores them upper-cased.
-#[derive(Clone, Debug, Default)]
+///
+/// Its `Debug` lists the variables' names, never their values: the snapshot holds
+/// `SYNTROPY_API_KEY`, `SYNTROPY_HF_TOKEN` and any `{ env = … }` secret's variable.
+#[derive(Clone, Default)]
 pub struct Env {
     vars: BTreeMap<OsString, OsString>,
+}
+
+impl std::fmt::Debug for Env {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Env")
+            .field("names", &self.vars.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl Env {

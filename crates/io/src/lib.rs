@@ -31,7 +31,9 @@
 //! clock calls.
 //!
 //! The [`os`] module also holds OS system calls that crates without `unsafe` need, behind safe
-//! functions: so far E1's AMX permission and io_uring checks ([`os::checks`]).
+//! functions: E1's AMX permission and io_uring checks ([`os::checks`]), and the owner-only
+//! directory and file helpers of the state directory (RFC-0030 §2.1–§2.2), such as
+//! [`os::private_dir`].
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
