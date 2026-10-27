@@ -141,6 +141,39 @@ fn check_exits_0_on_a_valid_layer() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// A model policy table may set `kv_dtype` to a wide float, and `config check` refuses any other
+/// value, naming the key (RFC-0043 §10; RFC-0054 §5.4, §8).
+#[test]
+fn check_takes_kv_dtype_in_a_policy_table_and_refuses_a_lossy_one() {
+    for (value, want) in [("bf16", 0), ("q8", 5)] {
+        let home = temp(&format!("check-kv-dtype-{value}"));
+        let file = home.join("config.toml");
+        std::fs::write(
+            &file,
+            format!("[policy.\"llama-3*\"]\nkv_dtype = \"{value}\"\n"),
+        )
+        .unwrap();
+        let output = finish(
+            isolated(
+                &["config", "check", "--config", file.to_str().unwrap()],
+                &home,
+            )
+            .env("SYNTROPY_HOST", "http://127.0.0.1:1"),
+        );
+        let stderr = text(&output.stderr);
+        assert_eq!(code(&output), want, "{value}: {stderr}");
+        if want != 0 {
+            // A wrong type (`config/0002`), not an unknown key: the key is registered.
+            assert!(
+                stderr.contains("error[config/0002]: `kv_dtype`"),
+                "{value}: {stderr}"
+            );
+            assert!(stderr.contains("`f16`, `bf16`, `f32`"), "{value}: {stderr}");
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+}
+
 /// `config check` exits 5 on an invalid layer and lists every error, from the file, the
 /// environment and the flags together (RFC-0054 §8).
 #[test]

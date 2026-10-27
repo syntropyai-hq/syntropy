@@ -3114,3 +3114,11 @@ DIST-E1-T06 builds §3.4's supervisor. Proposed for the maintainers to accept.
 | The supervisor counts silence in excused time; a hang or stall kill is class `Timeout`; the jitter range and the sample period are chosen values; `ReportRunnerFailed` carries a class and a count until `ErrorSummary` is defined | §3.4 (dated note) | as built. All four are labelled [chosen] for review: the class follows §5.12's definition of `Timeout` |
 | The shared-memory header gains a live-sequence count, written by the runner and read by the supervisor's stall check; the region's layout version goes to 2 and `ipc_protocol` to 3.0 | §3.5 (dated note) | the runner's machine changes its live count in place, with no `StateChanged`, so without the word a stall could never be seen (the review of #1937). The header grows by a line and the ring table moves, which a 2.x reader cannot read, so the bump is major |
 | `runner.load_stall` and a clean stop before `Ready` are not built | §3.4 (dated note) | the first needs fetch progress that no message carries; the second is the open point of §3.3's note of 2026-10-28 |
+
+### 18.48 The `kv_dtype` override is a per-model instance key (2026-10-28)
+
+COMP-E13-T06 builds RFC-0042 §4.2's KV dtype rule and its override. The override's key moves to where RFC-0054 puts every per-model setting.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| RFC-0043 §10's node key `models.<name>.kv_dtype` becomes the instance key `kv_dtype` of a `[policy."<selector>"]` table, taking `f16`, `bf16` or `f32` | RFC-0043 §10 (dated note); RFC-0054 §5.4 (a row and a dated note); RFC-0042 §4.2 (dated note on the rule) | RFC-0054 §5.1 keeps per-model policies out of `models.*`, as it did for `chat_template`. A node-scope dtype would let two ingress nodes build different instances of one model, which breaks the idempotence of `EnsureInstance` (RFC-0054 §6.1). The override replaces only the source's default. It is refused where it would narrow that default, or replace a family requirement or a declared FP8 cache, so lower precision stays `approximate.kv_lossy` (D3; RFC-0042 §4.2, note of 2026-10-28) |

@@ -631,7 +631,10 @@ These keys build an `InstancePolicy` (§4.5). In addition, every instance-scope 
 | `kv.autosave` | bool | `true`: persist a session's KV on release (RFC-0022 §8.1) | hot | a request may override per session (RFC-0050 §9) | 0022 |
 | `sampling.temperature`, `sampling.top_p`, `sampling.top_k`, `sampling.min_p`, `sampling.repetition_penalty` | float/int | the model's own generation config, else `1.0`, `1.0`, `0` (off), `0.0`, `1.0` | hot | via the API's own fields | 0050 |
 | `chat_template` | path or unset | the template in the model's metadata | hot | — | 0050 |
+| `kv_dtype` | `f16` \| `bf16` \| `f32` or unset | unset: the family's reference KV dtype (RFC-0042 §4.2). Set, it replaces only the source's default, never a family requirement or a declared FP8 cache, and never narrows it (RFC-0042 §4.2, note of 2026-10-28) | instance | — | 0043 |
 | `reasoning.default` | `auto` \| `on` \| `off` | `auto` (the template's default) | hot | via the API's own fields | 0050 |
+
+*Note 2026-10-28 (COMP-E13-T06):* `kv_dtype` is RFC-0043 §10's `models.<name>.kv_dtype`, moved into the model policy tables as §5.1 requires of every per-model key, as `chat_template` was. It is instance scope, so every ingress node builds the same instance from it. `manifest`'s `KvDTypeSection` declares it as a top-level instance section, built through `InstanceSection`. It is refused where it would store KV below the reference's dtype, or replace a family requirement or a declared FP8 cache (RFC-0042 §4.2, note of 2026-10-28). Lower KV precision is `approximate.kv_lossy`.
 
 An approximate knob carries its RFC-0042 parameters, for example `approximate.topk_reduce = { experts = 6 }`. Enabling any knob on a model without `fidelity = "approximate"` is a validation error. An instance policy is `Approximate` only when a person has written the word "approximate" for that model (G5), and requests still have to ask for it (§7).
 
