@@ -242,17 +242,20 @@ fn connect_as_peer(socket: &Path) {
     let uid = unsafe { libc::geteuid() };
     let outcome = match UnixStream::connect(socket) {
         Err(error) => format!("connect-error {:?}", error.kind()),
-        Ok(mut stream) => {
-            stream
-                .set_read_timeout(Some(Duration::from_secs(30)))
-                .unwrap();
-            let mut buf = [0u8; 16];
-            match stream.read(&mut buf) {
-                Ok(0) => "closed".to_owned(),
-                Ok(n) => format!("read {n} bytes"),
-                Err(error) => format!("read-error {:?}", error.kind()),
+        Ok(mut stream) => match stream.set_read_timeout(Some(Duration::from_secs(30))) {
+            // macOS refuses `SO_RCVTIMEO` with EINVAL on a socket whose peer has already closed
+            // it: the daemon refused this connection before the timeout could be set.
+            Err(error) if error.kind() == ErrorKind::InvalidInput => "closed".to_owned(),
+            Err(error) => panic!("setting the read timeout failed: {error}"),
+            Ok(()) => {
+                let mut buf = [0u8; 16];
+                match stream.read(&mut buf) {
+                    Ok(0) => "closed".to_owned(),
+                    Ok(n) => format!("read {n} bytes"),
+                    Err(error) => format!("read-error {:?}", error.kind()),
+                }
             }
-        }
+        },
     };
     println!("\nPEER-RESULT uid={uid} {outcome}");
 }
