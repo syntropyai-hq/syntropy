@@ -164,6 +164,7 @@ fn a_sparse_layer_reads_its_selection_and_the_indexer_keys() {
             LayerKv::Sparse {
                 elems_per_token: 576,
                 selected: 2048,
+                latent: true,
             },
             LayerKv::mla(512, 64),
         ],
@@ -208,12 +209,14 @@ fn a_compressed_layer_counts_formed_entries_and_its_window() {
                 tokens_per_entry: 4,
                 window: Some(128),
                 selected: Some(1024),
+                latent: true,
             },
             LayerKv::Compressed {
                 elems_per_entry: 512,
                 tokens_per_entry: 128,
                 window: Some(128),
                 selected: None,
+                latent: true,
             },
         ],
         DType::BF16,
@@ -319,13 +322,18 @@ fn per_layer_dtypes_and_ranges() {
 /// defaults (RFC-0022 §2).
 #[test]
 fn the_added_fields_have_serde_defaults() {
-    let old = r#"{"layers":[{"PerToken":{"elems_per_token":2048,"window":null}},{"Fixed":{"elems_per_seq":7}}]}"#;
+    let old = r#"{"layers":[{"PerToken":{"elems_per_token":2048,"window":null}},{"Fixed":{"elems_per_seq":7}},{"Sparse":{"elems_per_token":10,"selected":2}}]}"#;
     let f: KvFormula = serde_json::from_str(old).unwrap();
     assert_eq!(
         f.layers,
         vec![
             LayerKv::gqa(8, 128, None),
-            LayerKv::Fixed { elems_per_seq: 7 }
+            LayerKv::Fixed { elems_per_seq: 7 },
+            LayerKv::Sparse {
+                elems_per_token: 10,
+                selected: 2,
+                latent: false,
+            },
         ]
     );
     assert!(f.aux.is_empty());
@@ -349,6 +357,7 @@ fn the_check_refuses_an_empty_ratio_and_unknown_layers() {
                 tokens_per_entry: 0,
                 window: Some(128),
                 selected: None,
+                latent: false,
             },
         ],
         DType::BF16,
@@ -382,7 +391,7 @@ fn the_check_refuses_an_empty_ratio_and_unknown_layers() {
 }
 
 /// `K8V4` sizes a latent, which is no K/V pair, as `Q8` (OQ-IO-30's default): an MLA layer, and
-/// the latents of `Sparse` and `Compressed` layers.
+/// `Sparse` and `Compressed` layers whose family marks them latent (DSA- and V4-class).
 #[test]
 fn k8v4_sizes_a_latent_as_q8() {
     let f = deepseek();
@@ -399,12 +408,14 @@ fn k8v4_sizes_a_latent_as_q8() {
             LayerKv::Sparse {
                 elems_per_token: 576,
                 selected: 2048,
+                latent: true,
             },
             LayerKv::Compressed {
                 elems_per_entry: 512,
                 tokens_per_entry: 4,
                 window: Some(128),
                 selected: None,
+                latent: true,
             },
         ],
         DType::BF16,
@@ -416,6 +427,47 @@ fn k8v4_sizes_a_latent_as_q8() {
     // A K/V pair still splits: GQA is smaller under K8V4 than under Q8.
     let g = llama();
     assert!(g.stored(all(&g), 1, k8v4) < g.stored(all(&g), 1, q8));
+}
+
+/// A `Sparse` or `Compressed` layer that stores K/V pairs, as block-sparse and QSA-class layers
+/// do "as `Gqa`" (RFC-0043 §3.1), splits under `K8V4` as GQA does; only a latent is `Q8`.
+#[test]
+fn k8v4_splits_sparse_and_compressed_pairs() {
+    let k8v4 = KvDType::K8V4 {
+        block: 32,
+        rotate: true,
+    };
+    let q8 = KvDType::Q8 { block: 32 };
+    // Block-sparse GQA: 2 × 8 KV heads × 128 = 2,048 elements per token. K8V4: 1,024 + 64 bytes
+    // of K and 512 + 64 bytes of V = 1,664 bytes.
+    let sparse = |latent| LayerKv::Sparse {
+        elems_per_token: 2048,
+        selected: 2048,
+        latent,
+    };
+    let compressed = |latent| LayerKv::Compressed {
+        elems_per_entry: 2048,
+        tokens_per_entry: 4,
+        window: Some(128),
+        selected: None,
+        latent,
+    };
+    for (pair, latent) in [
+        (sparse(false), sparse(true)),
+        (compressed(false), compressed(true)),
+    ] {
+        let pair = KvFormula::new(vec![pair], DType::BF16);
+        let latent = KvFormula::new(vec![latent], DType::BF16);
+        let one = LayerIx(0)..LayerIx(1);
+        // 1,000 tokens: 1,000 sparse entries, or 250 compressed entries plus 128 raw.
+        let entries = pair.stored(one.clone(), 1000, KvDType::Native).0 / 4096;
+        assert_eq!(pair.stored(one.clone(), 1000, k8v4), Bytes(entries * 1664));
+        assert_eq!(
+            latent.stored(one.clone(), 1000, k8v4),
+            latent.stored(one.clone(), 1000, q8)
+        );
+        assert_eq!(latent.stored(one, 1000, q8), Bytes(entries * 2176));
+    }
 }
 
 /// Products are taken in `u128` and saturate at `u64::MAX` bytes; nothing wraps.
@@ -466,24 +518,31 @@ fn layer_kv() -> impl Strategy<Value = LayerKv> {
             }
         ),
         (0u64..1 << 24).prop_map(|elems_per_seq| LayerKv::Fixed { elems_per_seq }),
-        (1u32..4096, 0u32..4096).prop_map(|(elems_per_token, selected)| LayerKv::Sparse {
-            elems_per_token,
-            selected
+        (1u32..4096, 0u32..4096, any::<bool>()).prop_map(|(elems_per_token, selected, latent)| {
+            LayerKv::Sparse {
+                elems_per_token,
+                selected,
+                latent,
+            }
         }),
         (
             1u32..4096,
             1u16..256,
             prop::option::of(0u32..512),
-            prop::option::of(0u32..4096)
+            prop::option::of(0u32..4096),
+            any::<bool>(),
         )
-            .prop_map(|(elems_per_entry, tokens_per_entry, window, selected)| {
-                LayerKv::Compressed {
-                    elems_per_entry,
-                    tokens_per_entry,
-                    window,
-                    selected,
+            .prop_map(
+                |(elems_per_entry, tokens_per_entry, window, selected, latent)| {
+                    LayerKv::Compressed {
+                        elems_per_entry,
+                        tokens_per_entry,
+                        window,
+                        selected,
+                        latent,
+                    }
                 }
-            }),
+            ),
     ]
 }
 

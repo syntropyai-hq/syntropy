@@ -51,7 +51,8 @@ pub enum LayerKv {
         window: Option<u32>,
         /// Whether the entry is one latent shared by K and V (MLA) rather than a K/V pair.
         /// `K8V4` sizes a latent as `Q8` (OQ-IO-30). An addition with a serde default, as
-        /// `Compressed` is (RFC-0022 §2, note of 2026-10-28).
+        /// `Compressed` is (RFC-0022 §2, note of 2026-10-28; RFC-0001 §18.46). `Sparse` and
+        /// `Compressed` carry the same flag.
         #[serde(default)]
         latent: bool,
     },
@@ -66,6 +67,11 @@ pub enum LayerKv {
         elems_per_token: u32,
         /// Positions read per step.
         selected: u32,
+        /// Whether the entry is one latent (a DSA-class indexer over MLA) rather than a K/V pair
+        /// (block-sparse and QSA-class layers, stored as GQA). Set by the family; as for
+        /// `PerToken`.
+        #[serde(default)]
+        latent: bool,
     },
     /// One compressed entry per `tokens_per_entry` tokens plus a short raw `window`; all
     /// entries, or `selected` of them, read per step (DeepSeek V4-class; M3).
@@ -78,6 +84,10 @@ pub enum LayerKv {
         window: Option<u32>,
         /// Compressed entries read per step; `None` reads them all.
         selected: Option<u32>,
+        /// Whether each entry, compressed or raw, is one latent rather than a K/V pair. Set by
+        /// the family; as for `PerToken`.
+        #[serde(default)]
+        latent: bool,
     },
 }
 
@@ -257,17 +267,20 @@ impl KvFormula {
             } => Count::Entries(capped(tokens, window), elems_per_token, !latent),
             LayerKv::Fixed { elems_per_seq } => Count::State(elems_per_seq),
             LayerKv::Sparse {
-                elems_per_token, ..
-            } => Count::Entries(tokens, elems_per_token, false),
+                elems_per_token,
+                latent,
+                ..
+            } => Count::Entries(tokens, elems_per_token, !latent),
             LayerKv::Compressed {
                 elems_per_entry,
                 tokens_per_entry,
                 window,
+                latent,
                 ..
             } => Count::Entries(
                 compressed(tokens, tokens_per_entry) + capped(tokens, window),
                 elems_per_entry,
-                false,
+                !latent,
             ),
         });
         saturate(main + self.aux_bytes(layers, tokens))
@@ -294,16 +307,18 @@ impl KvFormula {
             LayerKv::Sparse {
                 elems_per_token,
                 selected,
-            } => Count::Entries(context.min(u64::from(selected)), elems_per_token, false),
+                latent,
+            } => Count::Entries(context.min(u64::from(selected)), elems_per_token, !latent),
             LayerKv::Compressed {
                 elems_per_entry,
                 tokens_per_entry,
                 window,
                 selected,
+                latent,
             } => {
                 let formed = compressed(context, tokens_per_entry);
                 let read = selected.map_or(formed, |s| formed.min(u64::from(s)));
-                Count::Entries(read + capped(context, window), elems_per_entry, false)
+                Count::Entries(read + capped(context, window), elems_per_entry, !latent)
             }
         });
         saturate(main + self.aux_bytes(layers, context))
@@ -367,10 +382,10 @@ fn compressed(tokens: u64, tokens_per_entry: u16) -> u64 {
 /// - `Native`: `elems` elements of `native`.
 /// - `Q8 { block }`: one byte per element and an F16 scale per `block` elements.
 /// - `K8V4 { block }`: for a K/V pair (`pair`), the first half (K) as `Q8` and the second half
-///   (V) at four bits per element with an F16 scale per `block` elements. Any other entry is
-///   sized as `Q8`. RFC-0022 §9 defines `K8V4` by K and V planes only, and an MLA latent, or the
-///   latent a `Sparse` or `Compressed` layer of the known families stores, is not a K/V pair.
-///   `Q8` is the conservative upper bound, and the default until OQ-IO-30 is settled.
+///   (V) at four bits per element with an F16 scale per `block` elements. A latent (a layer's
+///   `latent` flag) is sized as `Q8`. RFC-0022 §9 defines `K8V4` by K and V planes only, and a
+///   latent is not a K/V pair. `Q8` is the conservative upper bound, and the default until
+///   OQ-IO-30 is settled.
 ///
 /// A `block` of 0 is taken as 1.
 fn entry_bytes(elems: u32, pair: bool, native: DType, dtype: KvDType) -> u128 {
