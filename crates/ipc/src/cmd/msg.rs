@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The command channel's messages (RFC-0001 §3.5): the ones whose field types exist at M0a.
+//! DIST-E1-T03 built the first set; DIST-E1-T15 appended `Drain`, `Shutdown`, `MemoryPressure`
+//! and `SequenceEnded`, whose field types it put in `core` (protocol 1.1).
 //!
 //! The tasks that own the other messages' field types add those messages (RFC-0001 §3.5, note of
 //! 2026-10-23). Postcard writes a variant as its index and a struct's fields in order, with no
@@ -12,9 +14,11 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use syntropy_core::ledger::LedgerGrant;
+use syntropy_core::runner::{Deadline, DrainReason};
+use syntropy_core::sequence::SequenceOutcome;
 use syntropy_core::{
     Blake3, Bytes, CancelReason, InstanceId, NodeId, PlacementPlan, PlanDelta, PlanEpoch,
-    SequenceId, StageIx,
+    PressureLevel, SequenceId, StageIx, TierId,
 };
 
 use crate::shm::{IpcProtocol, ShmLayout};
@@ -82,6 +86,29 @@ pub enum DaemonMsg {
     },
     /// An IPC round-trip check. The runner answers with `Pong`.
     Ping,
+    /// Stop admitting sequences; finish or migrate the ones in flight within `deadline`. A
+    /// re-plan's successor epoch travels in `reason`, as `DrainReason::Replan` (RFC-0001 §18.28).
+    Drain {
+        /// Why the runner drains.
+        reason: DrainReason,
+        /// How long the drain may take, from this message's receipt.
+        deadline: Deadline,
+    },
+    /// Drain, then exit, within `deadline`.
+    Shutdown {
+        /// How long the drain and exit may take, from this message's receipt.
+        deadline: Deadline,
+    },
+    /// The OS or the user needs memory back (RFC-0001 §10.3).
+    MemoryPressure {
+        /// How hard the pressure is.
+        level: PressureLevel,
+        /// The bytes to give back.
+        reclaim: Bytes,
+        /// The tier the pressure is on: `None` is host RAM, `Some` one GPU's budget drop (a DXGI
+        /// or NVML budget, RFC-0010).
+        tier: Option<TierId>,
+    },
 }
 
 /// Runner to daemon (RFC-0001 §3.5).
@@ -103,6 +130,13 @@ pub enum RunnerMsg {
     },
     /// The answer to `Ping`.
     Pong,
+    /// A sequence finished, failed or migrated.
+    SequenceEnded {
+        /// The sequence.
+        seq: SequenceId,
+        /// How it ended.
+        outcome: SequenceOutcome,
+    },
 }
 
 /// The runner's handshake (RFC-0001 §3.5).
