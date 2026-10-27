@@ -263,6 +263,151 @@ fn set_dash_on_a_terminal_reads_with_echo_off() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The parent and command line of process `pid`, from `/proc`.
+#[cfg(target_os = "linux")]
+fn proc_info(pid: u32) -> Option<(u32, String)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `pid (comm) state ppid …`: the name can hold spaces, so split after its `)`.
+    let rest = &stat[stat.rfind(')')? + 2..];
+    let ppid = rest.split(' ').nth(1)?.parse().ok()?;
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some((ppid, String::from_utf8_lossy(&cmdline).replace('\0', " ")))
+}
+
+/// Every live process under `root`, with its command line.
+#[cfg(target_os = "linux")]
+fn descendants(root: u32) -> Vec<(u32, String)> {
+    let all: Vec<(u32, u32, String)> = std::fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .filter_map(|pid| proc_info(pid).map(|(ppid, cmd)| (pid, ppid, cmd)))
+        .collect();
+    let mut found = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(parent) = frontier.pop() {
+        for (pid, ppid, cmd) in &all {
+            if *ppid == parent {
+                found.push((*pid, cmd.clone()));
+                frontier.push(*pid);
+            }
+        }
+    }
+    found
+}
+
+/// If `syntropy` is killed outright while its reader waits, the reader does not outlive it: within
+/// a few seconds the reader is gone and the terminal has its echo back (review of #1931, N1).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_killed_parent_leaves_no_reader_and_echo_on() {
+    use std::io::Read as _;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    let Some(script) = ["/usr/bin/script", "/bin/script"]
+        .into_iter()
+        .find(|p| Path::new(p).exists())
+    else {
+        eprintln!("skipped: no script(1), so the terminal read did not run");
+        return;
+    };
+    let (dir, file) = setup("echo-kill", FILE);
+    // The wrapper shell outlives `syntropy`, waits for the reader to give the terminal back, and
+    // prints the terminal's state.
+    let line = format!(
+        "{} config set --config {} cluster.namespace -; sleep 4; stty -a",
+        common::BIN,
+        file.display()
+    );
+    let mut command = std::process::Command::new(script);
+    command
+        .args(["-q", "-c", &line, "/dev/null"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    common::isolate(&mut command, &dir);
+    let mut child = command.spawn().unwrap();
+    let _stdin = child.stdin.take().unwrap();
+    let transcript = Arc::new(Mutex::new(Vec::new()));
+    let mut out = child.stdout.take().unwrap();
+    let seen = transcript.clone();
+    let pump = std::thread::spawn(move || {
+        let mut buffer = [0u8; 256];
+        while let Ok(n) = out.read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            seen.lock().unwrap().extend_from_slice(&buffer[..n]);
+        }
+    });
+    let text = |t: &Arc<Mutex<Vec<u8>>>| String::from_utf8_lossy(&t.lock().unwrap()).into_owned();
+    let start = Instant::now();
+    while !text(&transcript).contains("value for `cluster.namespace`: ") {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "no prompt: {:?}",
+            text(&transcript)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let tree = descendants(child.id());
+    let syntropy = tree
+        .iter()
+        .find(|(_, cmd)| cmd.starts_with(&format!("{} config set", common::BIN)))
+        .map(|(pid, _)| *pid)
+        .expect("the syntropy process");
+    // The reader, its watchdog and whatever they run.
+    let under: Vec<u32> = descendants(syntropy)
+        .into_iter()
+        .map(|(pid, _)| pid)
+        .collect();
+    let reader = under
+        .iter()
+        .copied()
+        .find(|pid| {
+            proc_info(*pid)
+                .is_some_and(|(ppid, cmd)| ppid == syntropy && cmd.starts_with("/bin/sh -c"))
+        })
+        .expect("the reader");
+    let killed = std::process::Command::new("kill")
+        .args(["-KILL", &syntropy.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    // The reader, and everything it started, is gone within a few seconds.
+    let gone = Instant::now();
+    while let Some(left) = under
+        .iter()
+        .find(|pid| Path::new(&format!("/proc/{pid}")).exists())
+    {
+        assert!(
+            gone.elapsed() < Duration::from_secs(5),
+            "process {left} outlived its parent (reader {reader}): {:?}",
+            proc_info(*left)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The wrapper's `stty -a` shows echo on.
+    while child.try_wait().unwrap().is_none() {
+        assert!(
+            start.elapsed() < Duration::from_secs(40),
+            "script did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    pump.join().unwrap();
+    let transcript = text(&transcript);
+    let flags: Vec<&str> = transcript.split_whitespace().collect();
+    assert!(
+        flags.contains(&"echo"),
+        "echo is off after the kill: {transcript:?}"
+    );
+    assert!(
+        !flags.contains(&"-echo"),
+        "echo is off after the kill: {transcript:?}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn unset_removes_only_the_key_s_line() {
     let (dir, file) = setup("unset", FILE);

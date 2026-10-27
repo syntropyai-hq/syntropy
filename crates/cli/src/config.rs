@@ -262,13 +262,27 @@ fn value_from_stdin(key: &str) -> Result<String, CliError> {
 }
 
 /// The Unix half of [`read_hidden_line`]: `sh` saves the terminal's state, turns echo off, prints
-/// the prompt (`$1`), reads one line and writes it to its stdout, a pipe to this process. Traps
-/// put the terminal back on exit and on an interrupt, so a Ctrl-C never leaves it without echo.
+/// the prompt (`$1`), reads one line and writes it to its stdout, a pipe to this process.
+/// - `stty` is `/bin/stty`, or `/usr/bin/stty`, never one found on `PATH`.
+/// - Traps put the terminal back on exit, and on `INT`, `TERM`, `HUP` and `PIPE`, so a Ctrl-C or
+///   a closed pipe never leaves it without echo.
+/// - A watchdog checks once a second that this process is alive. If it is killed outright, which
+///   no trap of its own can handle, the watchdog sends the reader `TERM` within a second, so the
+///   reader puts the terminal back and exits, instead of holding it and taking the next line
+///   typed. The watchdog's output goes to `/dev/null`, so it never holds the pipe open, and the
+///   reader ends it on its own exit.
 #[cfg(unix)]
-const HIDDEN_READ: &str = r#"s=$(stty -g) || exit 3
-trap 'stty "$s"' EXIT
-trap 'stty "$s"; exit 130' INT TERM HUP
-stty -echo || exit 3
+const HIDDEN_READ: &str = r#"t=/bin/stty
+[ -x "$t" ] || t=/usr/bin/stty
+[ -x "$t" ] || exit 3
+s=$("$t" -g) || exit 3
+w=
+put_back() { "$t" "$s"; [ -n "$w" ] && kill "$w" 2>/dev/null; }
+trap 'put_back' EXIT
+trap 'put_back; trap - EXIT; exit 130' INT TERM HUP PIPE
+(while kill -0 "$PPID" 2>/dev/null; do sleep 1; done; kill -TERM $$ 2>/dev/null) >/dev/null 2>&1 &
+w=$!
+"$t" -echo || exit 3
 printf '%s' "$1" >&2
 IFS= read -r v || [ -n "$v" ] || exit 4
 printf '%s' "$v"
@@ -277,6 +291,15 @@ printf '%s' "$v"
 /// The Windows half of [`read_hidden_line`]: PowerShell's `Read-Host -AsSecureString`, which shows
 /// `*` for each character typed, written to its stdout, a pipe to this process, as UTF-8. The
 /// prompt comes in `HIDDEN_READ_PROMPT`: `-Command` would join an argument into the script.
+/// - PowerShell is `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`, never one found
+///   beside this binary or on `PATH`.
+/// - Under PowerShell's Constrained Language Mode (AppLocker or WDAC), the `Marshal` and
+///   `UTF8Encoding` calls are blocked, so the read fails, closed: nothing is read with echo on, and
+///   the error says to pipe the value in instead.
+/// - If this process is terminated while PowerShell reads, PowerShell keeps reading the console:
+///   the next line typed goes to it, masked, and it exits when its write to the closed pipe fails.
+///   `Read-Host` restores the console's mode itself, so echo is not left off. A watchdog as on Unix
+///   needs a key-by-key read loop, which no CI runner can drive without a console.
 #[cfg(windows)]
 const HIDDEN_READ: &str = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; \
     [Console]::Error.Write($env:HIDDEN_READ_PROMPT); $s = Read-Host -AsSecureString; \
@@ -299,7 +322,10 @@ fn read_hidden_line(prompt: &str) -> std::io::Result<String> {
     };
     #[cfg(windows)]
     let mut command = {
-        let mut command = Command::new("powershell.exe");
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let mut command = Command::new(
+            std::path::Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
+        );
         command
             .args(["-NoProfile", "-Command", HIDDEN_READ])
             .env("HIDDEN_READ_PROMPT", prompt);
