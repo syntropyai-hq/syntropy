@@ -1211,3 +1211,12 @@ COMP-E10-T06 (M0a) asked that the same file give one `ModelId` through a local p
 | COMP-E10-T06's criterion "the same file through a local path, a Hub fixture and a sparse blob gives one `ModelId`" keeps the local path on Linux, macOS and Windows, and adds "a Hub object ID given as 64 hex digits parses to the same `FileDigest` as the local SHA-256 of those bytes" | COMP-E10-T06 | R9 | the Hub fixture and the sparse blob are built by later tasks; by the definition of done a criterion is demonstrated where its inputs exist |
 | The Hub-fixture leg moves to COMP-E12-T02 (M0b): "a recorded Hub fixture's listed LFS SHA-256 oids give the same `ModelId` as the same files read through a local path, and a file the listing gives only a 40-hex Git SHA-1 is hashed locally, never taken as a `FileDigest`". COMP-E12-T02 → COMP-E10-T06 | COMP-E12-T02 | R9 | COMP-E12-T02 records the listing with its oids. Small files stored in Git itself are listed with a 40-hex SHA-1, which is not a `FileDigest`, so the criterion names the LFS oids. M0b → M0a, and COMP-E10-T06 does not reach COMP-E12-T02, so the edge adds no cycle |
 | The sparse-blob leg moves to COMP-E11-T02 (M1a): "a file assembled in a sparse blob gives the same `FileDigest` and `ModelId` as the file read through a local path, on Linux, macOS and Windows". COMP-E11-T02 → COMP-E10-T06 | COMP-E11-T02 | R9 | COMP-E11-T02 builds the sparse blobs. M1a → M0a, and COMP-E10-T06 does not reach COMP-E11-T02, so the edge adds no cycle |
+
+## TIER-E6-T01's shared-functions criterion (2026-10-28)
+
+TIER-E6-T01 builds `KvFormula::stored` and `read_per_step` in `manifest`. Its criterion "PLC's solver uses the same functions (shared crate)" needs a solver call site, and `solver` has no KV term until PLC-E4-T03 (M1a), which already depends on TIER-E6-T01 for these functions. The call-site half moves there.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| TIER-E6-T01's criterion becomes "the functions live in `manifest`, the crate `solver` and `tier` both depend on (RFC-0001 §4.1), so PLC's solver uses the same functions: PLC-E4-T03's KV terms call them" | TIER-E6-T01 | R9 | the solver's KV terms are PLC-E4-T03's, later than M0a |
+| PLC-E4-T03 gains "the KV read and store terms come from TIER-E6-T01's `KvFormula::read_per_step` and `stored` in `manifest`, with no second KV formula in `solver`" | PLC-E4-T03 | R9 | PLC-E4-T03 builds those terms, and its edge to TIER-E6-T01 already exists |

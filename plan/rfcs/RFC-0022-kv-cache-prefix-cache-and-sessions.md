@@ -93,6 +93,19 @@ Rules:
 - **Hybrid models** mix classes per layer; a stage's store holds whichever classes its layers need. Stage cut points therefore move state and KV of different classes together (§10).
 - **Hyper-connection models** do not change KV; their extra residual streams travel in activation frames (RFC-0001 §5.8).
 
+*Note 2026-10-28 (as built, TIER-E6-T01).* `KvFormula` is `syntropy_manifest::kv`, beside `HyperParams`. `stored` and `read_per_step` are the one implementation of these sizes, and `tier` and `solver` both depend on `manifest` (RFC-0001 §4.1). Rules the table above leaves open:
+- **`KvDTypeSpec`** is one dtype for every layer plus per-layer exceptions. Its serde default is BF16 everywhere, and RFC-0042 §4.2's rule fills it per family and source (COMP-E13-T06).
+- **Counting.**
+  - A `Fixed` layer counts its state once per sequence, whatever the token count, 0 included.
+  - A `Compressed` layer stores ⌊tokens / r⌋ entries, since an entry forms when its last token is processed (OQ-MF-12). It also stores a raw window of at most `window` tokens, each `elems_per_entry` elements wide.
+  - A step reads every formed entry, or at most `selected`, plus the window.
+  - An `AuxKv` stores and reads one entry per token over the whole context.
+- **Lossy dtypes (§9)** apply to `PerToken`, `Sparse` and `Compressed` entries:
+  - `Q8 { block }` is one byte per element plus an F16 scale per `block` elements.
+  - `K8V4 { block }` stores the entry's first half as `Q8` and its second half at 4 bits, each with F16 scales.
+  - Recurrent state keeps the reference dtype, and an auxiliary cache keeps its own dtype.
+  - §9 defines `K8V4` by K and V planes only. An entry that is not a K/V pair is sized as `Q8`, the conservative upper bound, until OQ-IO-30 is settled. Such an entry is a latent: MLA's, a DSA-class indexer's main cache over MLA, or a V4-class compressed entry. `LayerKv::PerToken`, `Sparse` and `Compressed` each gain `latent: bool` with a serde default of `false`. That is an owner addition, like `Compressed`, recorded in RFC-0001 §18.46. The family sets it, and `LayerKv::mla` does. A layer that stores K/V pairs, as block-sparse and QSA-class layers do "as `Gqa`" (RFC-0043 §3.1), splits as GQA does.
+
 ### 3. Pages, page classes and pools
 
 **Page size.** A page holds `P = 64` consecutive token positions (ADR-0205), or, for `Compressed` layers, 64 consecutive entries. `kv.page_tokens` may be set to 16, 32, 64, 128 or 256 per instance; it is part of the KV-settings hash (§7.1), so prefixes and sessions never mix page sizes.
@@ -713,7 +726,7 @@ RFC-0001 §16 lists KV paging, the prefix cache and saved sessions in M1, with S
 
 ## Proposed amendments to RFC-0001
 
-1. **§5.3 `KvFormula`.** Add the `LayerKv::Compressed` variant and the `aux`, `dtype` and `layout_version` fields with serde defaults (§2). RFC-0022 owns the type, so these are owner additions; listed here because RFC-0043 and RFC-0011 read them.
+1. **§5.3 `KvFormula`.** Add the `LayerKv::Compressed` variant and the `aux`, `dtype` and `layout_version` fields with serde defaults (§2). RFC-0022 owns the type, so these are owner additions; listed here because RFC-0043 and RFC-0011 read them. *Note 2026-10-28 (TIER-E6-T01):* `LayerKv::PerToken`, `Sparse` and `Compressed` also gain `latent: bool` with a serde default of `false`. It marks an entry that is one latent rather than a K/V pair, which `K8V4` sizes as `Q8` (§2's note of this date, OQ-IO-30). RFC-0001 §5.3 and §18.46 record it.
 2. **§17 item 1 resolved.** `KvHandle` covers recurrent state: `State` is a page class in the same store, with the same residency, export and persistence paths. No sibling type is needed.
 3. **§5.8 side channel.** `ActivationFrame::side` and `TokenFrame` carry the prefix-cache items `PageKeys`, `PrefixEvict`, `PrefixDropped`, `PrefixPressure`, `PrefixMiss` and `Restart` (§7.5), `SessionSaved` (§8.1) and each stage's `KvHeadroom` (§11). RFC-0031 encodes them; RFC-0032 relays them.
 5. **§5.4 `KvBudget`.** Add `spill_compute: SpillCompute` with a serde default (§5.3). RFC-0022 owns the type; listed because RFC-0011 must choose it.

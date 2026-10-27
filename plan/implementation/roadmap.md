@@ -960,7 +960,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | PROD-E11-T08 | decision | Decision on ROCm user-space libraries (RFC-0052 open question 6): the licence part is answered (no obstacle; RCCL, ROCgdb and binary-only… | OQ-PKG-10 | 0 |
 | QUAL-E6-T15 | spike | Spike: strength-2 inference | OQ-PRC-11 | 0 |
 
-**Open questions needed by M3:** 24 (benchmark 13, check 1, decision 4, spike 6). Each one names a task that records the answer.
+**Open questions needed by M3:** 25 (benchmark 13, check 1, decision 5, spike 6). Each one names a task that records the answer.
 <!-- END GENERATED -->
 
 ## M4: hardening and 1.0
