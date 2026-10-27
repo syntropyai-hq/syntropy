@@ -4005,8 +4005,11 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "loom",
+ "postcard",
+ "proptest",
  "serde",
  "serde_json",
+ "smallvec",
  "syntropy-core",
  "syntropy-spsc",
  "windows-sys 0.61.2",
