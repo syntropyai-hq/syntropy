@@ -2,10 +2,11 @@
 
 //! Writing a config file: `config set`, `unset` and `edit` (RFC-0054 §10.2; PROD-E1-T12).
 //!
-//! - [`set`] and [`unset`] edit a file's text with `toml_edit`, so comments, ordering and
-//!   spacing survive and only the lines that hold the key change. Each checks its own result:
-//!   the edited text must parse, and must equal the old file with exactly that key changed, or
-//!   the edit is refused.
+//! - [`set`] and [`unset`] edit a file's text with `toml_edit`, so comments, ordering, spacing and
+//!   line endings survive and only the lines that hold the key change. A file whose lines end in
+//!   `\r\n` keeps them. Each checks its own result twice, or the edit is refused: the text must
+//!   be the old text byte for byte outside the key's own lines, and it must parse to the old file
+//!   with exactly that key changed.
 //! - [`check_edit`] validates the configuration layer as it would be with the edited text in
 //!   place of one file: RFC-0054 §8's phases 1–5, before anything is written.
 //! - [`write_atomic`] writes a temporary file beside the target, flushes it to disk, gives it the
@@ -13,6 +14,10 @@
 //!   symbolic link, and the rename never follows one.
 //!
 //! No message here quotes a value, the file's or the new one: either can be a secret.
+//!
+//! Only a [`crate::Secret`] is zeroed when it is dropped (RFC-0054 §10.1). The other copies of
+//! a secret are plain strings that are not: a file's text, the text an edit makes, `set`'s value,
+//! and the loader's environment snapshot and flag values.
 
 use std::fmt;
 use std::fs;
@@ -129,13 +134,14 @@ fn basic_string(text: &str) -> EditValue {
 /// a new table at the end.
 pub fn set(text: &str, path: &str, value: &str) -> Result<String, EditError> {
     let segments = key_segments(path)?;
+    let ending = line_ending(text)?;
     let mut doc = parse_document(text)?;
     let new = parse_value(value);
     set_in_table(doc.as_table_mut(), &segments, new.clone(), path, true)?;
-    let edited = doc.to_string();
+    let edited = ending.apply(&doc.to_string());
     let mut expected = toml_table(text)?;
     expected_set(&mut expected, &segments, toml_of(&new)?);
-    confirm(&edited, &expected, path)?;
+    confirm(text, &edited, &segments, &expected, path)?;
     Ok(edited)
 }
 
@@ -143,15 +149,16 @@ pub fn set(text: &str, path: &str, value: &str) -> Result<String, EditError> {
 /// comment lines above it stay, on the next key or header.
 pub fn unset(text: &str, path: &str) -> Result<Option<String>, EditError> {
     let segments = key_segments(path)?;
+    let ending = line_ending(text)?;
     let mut doc = parse_document(text)?;
     let removed = unset_in_doc(&mut doc, &segments, path)?;
     if !removed {
         return Ok(None);
     }
-    let edited = doc.to_string();
+    let edited = ending.apply(&doc.to_string());
     let mut expected = toml_table(text)?;
     expected_unset(&mut expected, &segments);
-    confirm(&edited, &expected, path)?;
+    confirm(text, &edited, &segments, &expected, path)?;
     Ok(Some(edited))
 }
 
@@ -179,9 +186,124 @@ fn toml_of(value: &EditValue) -> Result<toml::Value, EditError> {
         .ok_or_else(|| EditError::new("the new value is not a TOML value"))
 }
 
-/// The edit's own check: `edited` parses, and is `expected`, the old file with only the key
-/// changed. It fails only if the editor misplaced the key; the message says so.
-fn confirm(edited: &str, expected: &toml::Table, path: &str) -> Result<(), EditError> {
+/// How a file's lines end. `toml_edit` writes `\n`, so an edit puts the file's own ending back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineEnding {
+    Lf,
+    CrLf,
+}
+
+impl LineEnding {
+    /// `text`, written by `toml_edit`, with every line break this ending.
+    fn apply(self, text: &str) -> String {
+        let lf = text.replace("\r\n", "\n");
+        match self {
+            LineEnding::Lf => lf,
+            LineEnding::CrLf => lf.replace('\n', "\r\n"),
+        }
+    }
+}
+
+/// The ending of `text`'s lines: `\r\n` when every line break is one, `\n` otherwise. A file that
+/// mixes the two is refused, since an edit could not keep both.
+fn line_ending(text: &str) -> Result<LineEnding, EditError> {
+    let breaks = text.matches('\n').count();
+    let crlf = text.matches("\r\n").count();
+    match (breaks, crlf) {
+        (_, 0) => Ok(LineEnding::Lf),
+        (b, c) if b == c => Ok(LineEnding::CrLf),
+        _ => Err(EditError::new(
+            "the file mixes `\\r\\n` and `\\n` line endings, which an edit would not keep; edit it \
+             by hand (`syntropy config edit`)",
+        )),
+    }
+}
+
+/// The lines of `text`, each with its line break, so a changed ending is a changed line.
+fn lines(text: &str) -> Vec<&str> {
+    text.split_inclusive('\n').collect()
+}
+
+/// The old file's lines an edit of `segments` may change: those of the key's value, from the line
+/// it starts on, which is the key's own line, to the line it ends on. For a key the file does not
+/// set, those of the inline table it goes in, if it goes in one. `None` when there are none, as
+/// for a key added under a `[table]`, which only adds lines.
+fn key_lines(text: &str, segments: &[String]) -> Option<(usize, usize)> {
+    /// Where the walk is: an item of a table, or a value inside an inline table.
+    #[derive(Clone, Copy)]
+    enum At<'a> {
+        Item(&'a Item),
+        Value(&'a EditValue),
+    }
+    let doc = toml_edit::Document::parse(text).ok()?;
+    let mut at = At::Item(doc.as_item());
+    for segment in segments {
+        let next = match at {
+            At::Item(Item::Table(table)) => table.get(segment).map(At::Item),
+            At::Item(Item::Value(value)) | At::Value(value) => value
+                .as_inline_table()
+                .and_then(|inline| inline.get(segment))
+                .map(At::Value),
+            At::Item(_) => None,
+        };
+        match next {
+            Some(next) => at = next,
+            // The key is not there: an inline table on its path is what changes.
+            None => break,
+        }
+    }
+    if let At::Item(Item::Table(_) | Item::ArrayOfTables(_) | Item::None) = at {
+        return None;
+    }
+    let span = match at {
+        At::Item(item) => item.span()?,
+        At::Value(value) => value.span()?,
+    };
+    Some(line_range(text, span))
+}
+
+/// The first and last line a byte range of `text` touches, numbered from 0.
+fn line_range(text: &str, span: std::ops::Range<usize>) -> (usize, usize) {
+    let line_of = |at: usize| text[..at.min(text.len())].matches('\n').count();
+    (
+        line_of(span.start),
+        line_of(span.end.saturating_sub(1).max(span.start)),
+    )
+}
+
+/// The edit's own check, twice. First, `edited` is `old` byte for byte apart from one run of
+/// lines, and every old line in that run is one of the key's own lines ([`key_lines`]): none
+/// when the key is new. Line endings count. Second, `edited` parses to `expected`, the old file
+/// with only the key changed. Either failing means the editor misplaced something, and the
+/// message says so.
+fn confirm(
+    old: &str,
+    edited: &str,
+    segments: &[String],
+    expected: &toml::Table,
+    path: &str,
+) -> Result<(), EditError> {
+    let refused = || {
+        EditError::new(format!(
+            "editing `{path}` here would change more than the key, so the file was left as it is; \
+             edit it by hand (`syntropy config edit`)"
+        ))
+    };
+    let (a, b) = (lines(old), lines(edited));
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let changed = prefix..a.len() - suffix;
+    if !changed.is_empty() {
+        match key_lines(old, segments) {
+            Some((first, last)) if changed.start >= first && changed.end <= last + 1 => {}
+            _ => return Err(refused()),
+        }
+    }
     let mut expected = expected.clone();
     prune(&mut expected);
     let edited = edited.parse::<toml::Table>().map(|mut table| {
@@ -190,10 +312,7 @@ fn confirm(edited: &str, expected: &toml::Table, path: &str) -> Result<(), EditE
     });
     match edited {
         Ok(table) if table == expected => Ok(()),
-        _ => Err(EditError::new(format!(
-            "editing `{path}` here would change more than the key, so the file was left as it is; \
-             edit it by hand (`syntropy config edit`)"
-        ))),
+        _ => Err(refused()),
     }
 }
 

@@ -232,6 +232,123 @@ fn an_empty_file_gets_its_first_key() {
     );
 }
 
+/// `FILE` with Windows line endings.
+fn crlf() -> String {
+    FILE.replace('\n', "\r\n")
+}
+
+/// A CRLF file stays CRLF: each edit changes only its key's lines, each line still ending in
+/// `\r\n`, and every other byte stays (review of #1927, B1).
+#[test]
+fn a_crlf_file_keeps_its_line_endings() {
+    let file = crlf();
+    let crlf_only = |text: &str| {
+        assert_eq!(
+            text.matches('\n').count(),
+            text.matches("\r\n").count(),
+            "{text:?}"
+        );
+    };
+    // Replace.
+    let edited = set(&file, "discovery.port", "8000").unwrap();
+    assert_eq!(edited, file.replace("port=7999\r\n", "port=8000\r\n"));
+    // Add, indented like its neighbour.
+    let edited = set(&file, "api.local_socket", "false").unwrap();
+    assert_eq!(
+        edited,
+        file.replace(
+            "  tls = \"auto\"\r\n",
+            "  tls = \"auto\"\r\n  local_socket = false\r\n"
+        )
+    );
+    // A new table at the end.
+    let edited = set(&file, "link.failover_timeout", "10s").unwrap();
+    crlf_only(&edited);
+    assert!(
+        edited.contains("\r\n[link]\r\nfailover_timeout = \"10s\"\r\n"),
+        "{edited:?}"
+    );
+    // Unset, the comment above kept.
+    let edited = unset(&file, "api.bind").unwrap().unwrap();
+    assert_eq!(
+        edited,
+        file.replace(
+            "  bind   =   [\"127.0.0.1:7499\"]   # loopback only\r\n",
+            ""
+        )
+    );
+    // An inline table.
+    let edited = set(&file, "discovery.interfaces.v6", "true").unwrap();
+    crlf_only(&edited);
+    assert_eq!(
+        edited,
+        file.replace(
+            r#"exclude = ["docker*"] }"#,
+            r#"exclude = ["docker*"], v6 = true }"#
+        )
+    );
+    // An LF file stays LF.
+    let edited = set(FILE, "discovery.port", "8000").unwrap();
+    assert!(!edited.contains('\r'));
+}
+
+#[test]
+fn a_file_that_mixes_line_endings_is_refused() {
+    let mixed = "[api]\r\ntls = \"auto\"\nbind = []\r\n";
+    for error in [
+        set(mixed, "api.tls", "none").unwrap_err(),
+        unset(mixed, "api.tls").unwrap_err(),
+    ] {
+        assert!(error.to_string().contains("mixes"), "{error}");
+    }
+}
+
+/// The line check refuses an edit that touches any line but the key's, a changed line ending
+/// included, even when the parsed tables agree.
+#[test]
+fn the_line_check_refuses_a_change_outside_the_key() {
+    let segments = key_segments("discovery.port").unwrap();
+    let expected = |text: &str| -> toml::Table { text.parse().unwrap() };
+    let good = FILE.replace("port=7999", "port=8000");
+    assert_eq!(
+        confirm(FILE, &good, &segments, &expected(&good), "discovery.port"),
+        Ok(())
+    );
+    // Another line's comment changed as well.
+    let drift = good.replace("# discovery, tuned", "# discovery");
+    assert!(confirm(FILE, &drift, &segments, &expected(&good), "discovery.port").is_err());
+    // Another line's ending changed as well.
+    let ending = good.replacen("config_version = 1\n", "config_version = 1\r\n", 1);
+    assert!(confirm(FILE, &ending, &segments, &expected(&good), "discovery.port").is_err());
+    // A new key may only add lines.
+    let segments = key_segments("api.local_socket").unwrap();
+    let added = FILE.replace(
+        "  tls = \"auto\"\n",
+        "  tls = \"auto\"\n  local_socket = false\n",
+    );
+    assert_eq!(
+        confirm(
+            FILE,
+            &added,
+            &segments,
+            &expected(&added),
+            "api.local_socket"
+        ),
+        Ok(())
+    );
+    let rewritten = added.replace("  tls = \"auto\"", "  tls = \"auto\" ");
+    assert!(
+        confirm(
+            FILE,
+            &rewritten,
+            &segments,
+            &expected(&added),
+            "api.local_socket"
+        )
+        .is_err()
+    );
+}
+
 // ---- write_atomic -------------------------------------------------------------------------
 
 /// A fresh directory for one test.
