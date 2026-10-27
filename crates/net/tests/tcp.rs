@@ -255,11 +255,35 @@ fn passes_the_suite(rt: &tokio::runtime::Runtime, from: &TcpTransport, to: &TcpT
     assert_eq!(report.skipped, [Rule::CompletedAfterAck], "{report}");
 }
 
-/// Node B's UDP port with UDP "blocked": a socket bound there that never reads, so every datagram
-/// sent to it is dropped, as a firewall's `DROP` rule drops it, and a QUIC handshake gets no
-/// answer.
-fn block_udp(at: SocketAddr) -> UdpSocket {
-    UdpSocket::bind(at).expect("the TCP listener's port, free for UDP")
+/// How many ports [`bind_udp_blocked`] tries before it gives up.
+const PORT_ATTEMPTS: usize = 32;
+
+/// A node whose port has UDP "blocked": a UDP socket bound at the TCP listener's port that never
+/// reads, so every datagram sent to it is dropped, as a firewall's `DROP` rule drops it, and a
+/// QUIC handshake gets no answer.
+///
+/// The UDP port is taken first, from the OS, and the TCP listener then binds the same number. The
+/// other order fails on a Windows host whose excluded port ranges differ by protocol: the TCP port
+/// the OS hands out can sit in a range UDP may not bind (`WSAEACCES`). A port that TCP cannot have
+/// is skipped for another.
+fn bind_udp_blocked(rt: &tokio::runtime::Runtime, seed: u8) -> (Node, UdpSocket) {
+    let mut refused = Vec::new();
+    for _ in 0..PORT_ATTEMPTS {
+        let blocked = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("a UDP port");
+        let at = blocked.local_addr().expect("its address");
+        let domain = NetDomain::start("syntropy-net-tcp").expect("a net domain");
+        match rt.block_on(TcpTransport::bind(domain.handle(), config(seed, None), at)) {
+            Ok(transport) => {
+                let node = Node {
+                    transport,
+                    _domain: domain,
+                };
+                return (node, blocked);
+            }
+            Err(error) => refused.push(format!("{at}: {error}")),
+        }
+    }
+    panic!("no loopback port was free for both TCP and UDP: {refused:?}");
 }
 
 /// The criterion: with UDP blocked, QUIC dials between the two nodes fail, and a two-node ring
@@ -267,12 +291,10 @@ fn block_udp(at: SocketAddr) -> UdpSocket {
 #[test]
 fn with_udp_blocked_a_two_node_ring_forms_over_tcp_and_passes_the_suite() {
     let rt = runtime();
-    let a = bind(&rt, 1, None);
-    let b = bind(&rt, 2, None);
+    let (a, _blocked_a) = bind_udp_blocked(&rt, 1);
+    let (b, _blocked_b) = bind_udp_blocked(&rt, 2);
     a.allowed().allow(b.public_key());
     b.allowed().allow(a.public_key());
-    let _blocked_a = block_udp(a.local_addr());
-    let _blocked_b = block_udp(b.local_addr());
 
     // QUIC first, as ADR-0011's order has it; it fails in both directions.
     for (from_seed, to) in [(1u8, &b), (2, &a)] {
