@@ -219,13 +219,18 @@ pub const LOADER_PREFIX: &str = "ld-linux";
 /// maintainer's review.
 ///
 /// Added 2026-10-27, when the core binary gained the CLI's client and the API (PROD-E6-T01), from
-/// what rule 7 reported on the hosted `windows-2025` runner:
-/// - `ws2_32.dll`, Winsock: TCP sockets for the client and the API's listeners;
-/// - `advapi32.dll`: the security calls behind `syntropy-ipc`'s owner-only pipe and peer check
-///   (`ConvertStringSecurityDescriptorToSecurityDescriptorW`, `OpenProcessToken`,
-///   `GetTokenInformation`, `EqualSid`, `ConvertSidToStringSidW`);
-/// - `bcryptprimitives.dll`: `ProcessPrng`, the system random source the standard library and
-///   the OS entropy crates call.
+/// what rule 7 reported on the hosted `windows-2025` runner. Each with the crate that imports it:
+/// - `ws2_32.dll`, Winsock: `mio` 1.2.4, tokio's I/O driver, whose `sys/windows/net.rs` and
+///   `selector.rs` call it through `windows-sys`'s `Win32_Networking_WinSock` feature (its
+///   `Cargo.toml` line 140); every TCP socket of the client and the API's listeners;
+/// - `advapi32.dll`: `syntropy-ipc`'s owner-only pipe and peer check, whose calls
+///   `windows-sys` 0.61.2 declares from `advapi32.dll` (`OpenProcessToken`, `GetTokenInformation`,
+///   `EqualSid`, `ConvertSidToStringSidW`, `ConvertStringSecurityDescriptorToSecurityDescriptorW`);
+///   and `getrandom` 0.2.17 under `ring`, whose `RtlGenRandom` fallback is
+///   `#[link(name = "advapi32")]` (`src/windows.rs:19`);
+/// - `bcryptprimitives.dll`: `getrandom` 0.4.3's `ProcessPrng`,
+///   `link(name = "bcryptprimitives", kind = "raw-dylib")` (`src/backends/windows.rs:40`), reached
+///   through `rand` 0.10, `igd-next` and `portmapper` under `iroh` (`syntropy-net`).
 pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
     "kernel32.dll",
     "ntdll.dll",
@@ -243,8 +248,11 @@ pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
 /// until a maintainer adds it here, as for [`WINDOWS_SYSTEM_LIBRARIES`].
 ///
 /// `api-ms-win-crt-utility-l1-1-0.dll` was added 2026-10-27 (PROD-E6-T01), when the core binary
-/// gained the API: it holds the C runtime's `qsort`, `rand` and similar, which the bundled C code
-/// of a dependency calls (which dependency is unconfirmed).
+/// gained the API. It exports the C runtime's `_rotl`, `_rotl64`, `_byteswap_ulong` and
+/// `_byteswap_uint64`, which `zstd-sys`'s bundled zstd calls under MSVC: its `xxhash.h` maps
+/// `XXH_rotl32`, `XXH_rotl64`, `XXH_swap32` and `XXH_swap64` to them (lines 2731–3282). `zstd-sys`
+/// is `syntropy-net`'s control-message compression (RFC-0031 §9.1). `ring` declares
+/// `_byteswap_ulong` an intrinsic (`crypto/internal.h:354`), so it imports none.
 pub const WINDOWS_CRT_API_SETS: &[&str] = &[
     "api-ms-win-crt-heap-l1-1-0.dll",
     "api-ms-win-crt-locale-l1-1-0.dll",
@@ -266,8 +274,11 @@ pub const WINDOWS_CRT_API_SETS: &[&str] = &[
 /// change needs a maintainer's review.
 ///
 /// `libiconv` was added 2026-10-27 (PROD-E6-T01), when the core binary gained the CLI's client
-/// and the API, from what rule 7 reported on the hosted `macos-26` runner. It ships with every
-/// macOS. Which dependency links it is unconfirmed.
+/// and the API, from what rule 7 reported on the hosted `macos-26` runner. The `libc` crate 0.2.191
+/// links it on Apple platforms (`src/unix/bsd/apple/mod.rs:5545`,
+/// `cfg_attr(not(feature = "rustc-dep-of-std"), link(name = "iconv"))`), so the standard
+/// library's own copy does not, and an empty binary never loaded it. `syntropy-ipc`,
+/// `syntropy-spsc`, `mio` and `socket2` use `libc`. It ships with every macOS.
 pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
     "/usr/lib/libSystem.B.dylib",
     "/usr/lib/libobjc.A.dylib",
@@ -284,8 +295,14 @@ pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
 ///
 /// `SystemConfiguration` and `Security` were added 2026-10-27 (PROD-E6-T01), from what rule 7
 /// reported on the hosted `macos-26` runner once the core binary gained the API. Both ship with
-/// macOS: the network configuration and change notices, and the keychain and trust store, which
-/// the networking stack under `syntropy-net` reads (which crate links each is unconfirmed).
+/// macOS, and both come from `iroh` under `syntropy-net`:
+/// - `SystemConfiguration`: `system-configuration-sys` 0.6.0's build script
+///   (`cargo:rustc-link-lib=framework=SystemConfiguration`, `build.rs:11`), through
+///   `system-configuration`, `n0-dns-resolver` and `iroh-dns`, which read the system's DNS
+///   configuration; and `objc2-system-configuration`, through `netdev` under `netwatch`;
+/// - `Security`: `security-framework-sys` 2.17.0 (`link(name = "Security", kind = "framework")`,
+///   `src/lib.rs:3`), through `rustls-platform-verifier` under `reqwest`, which verifies TLS
+///   certificates against the system trust store.
 pub const MACOS_FRAMEWORKS: &[&str] = &[
     "Metal",
     "Foundation",
