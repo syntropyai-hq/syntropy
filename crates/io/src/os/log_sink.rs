@@ -315,7 +315,8 @@ mod tests {
         assert!(matches!(OsLog::new("a\0b", "c"), Err(OsLogError::Nul)));
     }
 
-    /// Writes a unique line and reads it back with `log show`.
+    /// Writes a unique line and reads it back with `log show`, polling for up to 20 s while the
+    /// unified log catches up.
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "reads the unified log with `log show`, which a runner may not allow"]
@@ -324,12 +325,24 @@ mod tests {
         OsLog::new("org.syntropy.test", "syntropy_io")
             .unwrap()
             .write(Severity::Warning, &marker);
-        let out = std::process::Command::new("log")
-            .args(["show", "--last", "1m", "--style", "compact", "--predicate"])
-            .arg("subsystem == \"org.syntropy.test\"")
-            .output()
-            .unwrap();
-        assert!(String::from_utf8_lossy(&out.stdout).contains(&marker));
+        let mut seen = String::new();
+        for _ in 0..20 {
+            let out = std::process::Command::new("log")
+                .args(["show", "--last", "2m", "--style", "compact", "--predicate"])
+                .arg("subsystem == \"org.syntropy.test\"")
+                .output()
+                .unwrap();
+            seen = String::from_utf8_lossy(&out.stdout).into_owned();
+            if seen.contains(&marker) {
+                println!(
+                    "read back: {}",
+                    seen.lines().find(|l| l.contains(&marker)).unwrap_or("")
+                );
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        panic!("{marker} not in the unified log; `log show` printed:\n{seen}");
     }
 
     /// On Windows the source registers and a warning and an error are reported.
@@ -358,6 +371,12 @@ mod tests {
             .arg("/q:*[System[Provider[@Name='Syntropy']]]")
             .output()
             .unwrap();
-        assert!(String::from_utf8_lossy(&out.stdout).contains(&marker));
+        let seen = String::from_utf8_lossy(&out.stdout);
+        let line = seen.lines().find(|l| l.contains(&marker));
+        assert!(
+            line.is_some(),
+            "{marker} not in the event log; wevtutil printed:\n{seen}"
+        );
+        println!("read back: {}", line.unwrap_or("").trim());
     }
 }
