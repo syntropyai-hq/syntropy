@@ -367,6 +367,8 @@ Hot threads write fixed 64-byte `SpanRecord { trace_id, span_id, parent_id, name
 - **Every record carries**: timestamp (UTC, microseconds), level, target (crate and module), node, and where applicable instance, stage, sequence (as an opaque short ID), trace ID, error code, plus event fields.
 - **Repeat suppression.** Identical (callsite, level, key fields) records within 10 s collapse into one with `repeated=N`, so a flapping link cannot flood the log. *Note 2026-10-27 (PROD-E8-T04):* the first record of a run is written at once, and the repeats in its window become one summary record with `repeated = N`, the number it stands for, when the window closes. 1,000 identical warnings in 10 s therefore write the first and one record with `repeated = 999`. Holding the first back for 10 s would delay every log line.
 
+*Note (2026-10-27, open for the maintainers):* the M0 shared-memory layout has one `log` ring per runner, and an SPSC ring has exactly one writer. Several hot threads can't share that writer without a lock, which ADR-0012 forbids on hot threads. So today only one hot thread per runner writes `LogRecord`s. The recommended default is one `log` ring per hot thread, as amendment A3 gives each dispatcher its own step ring, with the daemon draining them all. That changes `ShmLayout` and so `ipc_protocol`. Until it is decided, other hot threads report through metrics, which are per-thread already.
+
 #### 4.2 Sinks
 
 | Situation | Sinks |

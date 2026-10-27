@@ -151,8 +151,11 @@ impl LogRecord {
     }
 }
 
-/// A hot thread's writer of the runner's `log` ring. The ring has one writer, so the runner's
-/// hot threads share one `LogWriter` through their owner, as they share the ring.
+/// A hot thread's writer of the runner's `log` ring. The ring has exactly one writer and takes no
+/// lock on a hot thread (ADR-0012), so one hot thread owns this writer; it is never shared through
+/// a lock. The M0 layout has one `log` ring per runner, so only that thread logs records. A ring per
+/// hot thread, as each dispatcher has its own step ring, is open for the maintainers (RFC-0053 §4.1,
+/// note of 2026-10-27).
 #[derive(Debug)]
 pub struct LogWriter<S: RecordSink> {
     ring: RingWriter<S>,
