@@ -47,7 +47,12 @@ impl BuildId {
 
 /// A SemVer version, `MAJOR.MINOR.PATCH` with an optional pre-release (`-rc.1`). Written and
 /// read as its text in every format.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// It has no order: SemVer 2.0.0 §11's precedence puts `1.0.0-rc.1` below `1.0.0` and compares
+/// numeric identifiers as numbers, which no derived order does. The task that first compares
+/// versions adds it, with its own test. Build metadata (`+…`) is not part of a version here and
+/// is refused.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SemVer {
     /// The major version.
     pub major: u64,
@@ -55,7 +60,8 @@ pub struct SemVer {
     pub minor: u64,
     /// The patch version.
     pub patch: u64,
-    /// The pre-release identifiers after `-`, if any.
+    /// The pre-release identifiers after `-`, if any: dot-separated, each non-empty and of
+    /// `0-9`, `A-Z`, `a-z` and `-`, with no leading zero in a numeric one (SemVer 2.0.0 §9).
     pub pre: Option<String>,
 }
 
@@ -87,7 +93,7 @@ impl FromStr for SemVer {
     fn from_str(text: &str) -> Result<SemVer, SemVerError> {
         let error = || SemVerError(text.to_owned());
         let (core, pre) = match text.split_once('-') {
-            Some((core, pre)) if !pre.is_empty() => (core, Some(pre.to_owned())),
+            Some((core, pre)) if pre_release(pre) => (core, Some(pre.to_owned())),
             Some(_) => return Err(error()),
             None => (text, None),
         };
@@ -113,6 +119,17 @@ impl FromStr for SemVer {
     }
 }
 
+/// Whether `pre` is a SemVer pre-release (SemVer 2.0.0 §9): dot-separated identifiers, each
+/// non-empty and of `0-9`, `A-Z`, `a-z` and `-`, a numeric one without a leading zero.
+fn pre_release(pre: &str) -> bool {
+    pre.split('.').all(|id| {
+        let numeric = id.bytes().all(|b| b.is_ascii_digit());
+        !id.is_empty()
+            && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !(numeric && id.len() > 1 && id.starts_with('0'))
+    })
+}
+
 impl Serialize for SemVer {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)
@@ -129,8 +146,12 @@ impl<'de> Deserialize<'de> for SemVer {
 
 /// The cargo profile of a build: RFC-0062 §4.4's, or another a developer named. Written and read
 /// as the profile's name in every format.
+///
+/// Two profiles are equal when they name the same profile, as [`BuildProfile::from_name`] reads
+/// the name: a hand-built `Other("dev")` equals `Dev`, so every value reads back from its text as
+/// a value equal to it.
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub enum BuildProfile {
     /// `dev`, cargo's own.
     Dev,
@@ -142,8 +163,31 @@ pub enum BuildProfile {
     Pr,
     /// `release`: everything shipped.
     Release,
-    /// Another profile, by its name.
+    /// Another profile, by its name. Build one with [`BuildProfile::from_name`], which gives the
+    /// named variant for a name this enum has.
     Other(String),
+}
+
+impl BuildProfile {
+    /// The name [`BuildProfile::from_name`] reads this profile's name as: `Other("debug")` is
+    /// `dev`.
+    fn canonical(&self) -> String {
+        BuildProfile::from_name(self.name()).name().to_owned()
+    }
+}
+
+impl PartialEq for BuildProfile {
+    fn eq(&self, other: &BuildProfile) -> bool {
+        self.canonical() == other.canonical()
+    }
+}
+
+impl Eq for BuildProfile {}
+
+impl std::hash::Hash for BuildProfile {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.canonical().hash(state);
+    }
 }
 
 impl BuildProfile {
@@ -303,6 +347,65 @@ mod tests {
         ] {
             assert!(bad.parse::<SemVer>().is_err(), "{bad}");
         }
+    }
+
+    /// The pre-release is SemVer 2.0.0 §9's: dot-separated identifiers of `0-9A-Za-z-`, none
+    /// empty, a numeric one without a leading zero. Build metadata is refused (review of #1924,
+    /// N1).
+    #[test]
+    fn a_pre_release_is_semver_s() {
+        for good in [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-0.3.7",
+            "1.0.0-x.7.z.92",
+            "1.0.0-x-y-z.--",
+            "1.0.0-rc.10",
+            "1.0.0-0",
+            "1.0.0-0a",
+        ] {
+            assert_eq!(good.parse::<SemVer>().unwrap().to_string(), good);
+        }
+        for bad in [
+            "1.0.0-a..b",
+            "1.0.0-.a",
+            "1.0.0-a.",
+            "1.0.0-rc.01",
+            "1.0.0-00",
+            "1.0.0-a b",
+            "1.0.0-a_b",
+            "1.0.0-\u{1b}[2J",
+            "1.0.0-rc.1+build.5",
+            "1.0.0+build",
+        ] {
+            assert!(bad.parse::<SemVer>().is_err(), "{bad}");
+        }
+    }
+
+    /// A hand-built `Other` with a named profile's name equals that profile, so it reads back
+    /// from its text equal to itself (review of #1924, N2).
+    #[test]
+    fn every_profile_reads_back_equal_to_itself() {
+        for profile in [
+            BuildProfile::Dev,
+            BuildProfile::TestRelease,
+            BuildProfile::Chaos,
+            BuildProfile::Pr,
+            BuildProfile::Release,
+            BuildProfile::Other("bench-local".into()),
+            BuildProfile::Other("dev".into()),
+            BuildProfile::Other("debug".into()),
+            BuildProfile::Other("release".into()),
+        ] {
+            let json = serde_json::to_string(&profile).unwrap();
+            let back: BuildProfile = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, profile, "{json}");
+        }
+        assert_eq!(BuildProfile::Other("dev".into()), BuildProfile::Dev);
+        assert_ne!(BuildProfile::Other("bench".into()), BuildProfile::Dev);
+        let set: std::collections::HashSet<BuildProfile> =
+            [BuildProfile::Dev, BuildProfile::Other("debug".into())].into();
+        assert_eq!(set.len(), 1);
     }
 
     #[test]
