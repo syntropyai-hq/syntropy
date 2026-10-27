@@ -10,7 +10,7 @@ use syntropy_core::error::api::{self, ApiError, ApiMapping, NativeError, RetryAf
 use syntropy_core::error::codes::{self, CodeInfo};
 use syntropy_core::{Domain, ErrorClass, ErrorCode};
 
-use Domain::{Cluster, Dist, Net, Recovery, Security};
+use Domain::{Cluster, Dist, Exec, Kernels, Net, Recovery, Security};
 use ErrorClass::*;
 
 /// Every code as its RFC's table writes it. A renumbered, renamed, reclassed, removed or
@@ -130,6 +130,28 @@ const PINNED: &[(Domain, u16, &[&str], Option<ErrorClass>)] = &[
     (Security, 0x0511, &["AuthorityInvalid"], Some(Auth)),
     (Security, 0x0512, &["RotationChainInvalid"], Some(Auth)),
     (Security, 0x0513, &["NotCoordinatorEligible"], Some(Auth)),
+    // RFC-0040 §13
+    (Kernels, 1, &["OpUnsupported"], Some(Unsupported)),
+    (Kernels, 2, &["ModuleMissing"], Some(Unsupported)),
+    (Kernels, 3, &["ModuleIntegrity"], Some(Integrity)),
+    (Kernels, 4, &["ModuleAbi"], Some(Unsupported)),
+    (Kernels, 5, &["DriverTooOld"], Some(Unsupported)),
+    (Kernels, 6, &["ParityFailed"], Some(Correctness)),
+    (Kernels, 7, &["CaptureFailed"], Some(Unsupported)),
+    (Kernels, 8, &["DeviceSticky"], Some(Device)),
+    (Kernels, 9, &["AllocFailed"], Some(Capacity)),
+    (Kernels, 10, &["RegisterFailed"], Some(Capacity)),
+    (Kernels, 11, &["DoorbellTimeout"], Some(Timeout)),
+    (Kernels, 12, &["GgmlImportFailed"], Some(Unsupported)),
+    (Kernels, 13, &["AmxDenied"], Some(Unsupported)),
+    (Kernels, 14, &["WorkspaceExceeded"], Some(Internal)),
+    (Kernels, 15, &["NoCertifiedCandidate"], Some(Unsupported)),
+    (Kernels, 16, &["ProviderPanicked"], Some(Internal)),
+    (Kernels, 17, &["ManifestInvalid"], Some(Integrity)),
+    // RFC-0012 §13, note of 2026-10-28
+    (Exec, 0x0601, &["RingClosed"], Some(Link)),
+    (Exec, 0x0602, &["StepStalled"], Some(Internal)),
+    (Exec, 0x0603, &["PoolBarrierMissed"], Some(Internal)),
 ];
 
 /// A 503 `instance_unavailable` whose `Retry-After` the row does not fix: RFC-0050 §12.1's
@@ -289,6 +311,16 @@ const PINNED_EXEMPT: &[(Domain, u16)] = &[
     (Security, 0x0511),
     (Security, 0x0512),
     (Security, 0x0513),
+    (Kernels, 0x0001),
+    (Kernels, 0x0002),
+    (Kernels, 0x0004),
+    (Kernels, 0x0005),
+    (Kernels, 0x0007),
+    (Kernels, 0x0009),
+    (Kernels, 0x000A),
+    (Kernels, 0x000C),
+    (Kernels, 0x000D),
+    (Kernels, 0x000F),
 ];
 
 /// The whole-class rows of RFC-0050 §12.1 (and §12.2 for `Cancelled`), transcribed; `None`
@@ -319,7 +351,7 @@ fn is_note(mapping: ApiMapping) -> bool {
     matches!(mapping, ApiMapping::NeverSurfaces | ApiMapping::NoResponse)
 }
 
-const DOMAINS: [Domain; 5] = [Cluster, Net, Dist, Recovery, Security];
+const DOMAINS: [Domain; 7] = [Cluster, Net, Dist, Recovery, Security, Kernels, Exec];
 
 /// Every `ErrorClass` of RFC-0001 §5.12.
 const CLASSES: [ErrorClass; 13] = [
@@ -387,6 +419,8 @@ fn every_code_is_in_its_domains_range() {
     assert_eq!(Dist.range(), 0x0300..=0x03FF);
     assert_eq!(Recovery.range(), 0x0400..=0x04FF);
     assert_eq!(Security.range(), 0x0500..=0x05FF);
+    assert_eq!(Kernels.range(), 0x0001..=0x00FF);
+    assert_eq!(Exec.range(), 0x0600..=0x06FF);
     for info in registry()
         .into_iter()
         .map(|i| i.code)
@@ -400,7 +434,10 @@ fn every_code_is_in_its_domains_range() {
     // The ranges do not overlap, so a number alone names its domain.
     for (i, a) in DOMAINS.iter().enumerate() {
         for b in &DOMAINS[i + 1..] {
-            assert!(a.range().end() < b.range().start());
+            assert!(
+                a.range().end() < b.range().start() || b.range().end() < a.range().start(),
+                "{a:?} and {b:?} overlap"
+            );
         }
     }
 }
@@ -413,7 +450,7 @@ fn registry_is_in_domain_then_number_order() {
 
 #[test]
 fn constants_name_their_codes() {
-    use codes::{cluster, dist, net, recovery, security};
+    use codes::{cluster, dist, exec, kernels, net, recovery, security};
     assert_eq!(
         cluster::IDENTITY_HOST_MISMATCH,
         ErrorCode::new(Cluster, 0x0101)
@@ -437,6 +474,9 @@ fn constants_name_their_codes() {
     assert_eq!(security::MODEL_UNSIGNED, security::MODEL_SIGNATURE_INVALID);
     assert_eq!(codes::lookup(net::BLOB_BUSY).unwrap().names[1], "BlobBusy");
     assert_eq!(codes::lookup(ErrorCode::new(Security, 0x0509)), None);
+    assert_eq!(kernels::OP_UNSUPPORTED, ErrorCode::new(Kernels, 1));
+    assert_eq!(kernels::MANIFEST_INVALID, ErrorCode::new(Kernels, 17));
+    assert_eq!(exec::POOL_BARRIER_MISSED, ErrorCode::new(Exec, 0x0603));
 }
 
 #[test]
@@ -516,9 +556,10 @@ fn every_code_maps_to_an_rfc_0050_shape_or_is_exempt() {
         );
     }
     assert_eq!(api::for_code(ErrorCode::new(Security, 0x0509)), None);
-    // 13 codes by table rows plus `DuplicateCommand` and `IngressLost`; 26 exempt; the rest
-    // by class.
-    assert_eq!((by_row, exempt.len(), by_class), (15, 26, 33));
+    // 13 codes by table rows plus `DuplicateCommand` and `IngressLost`; 26 exempt in the
+    // distributed domains and 10 in `Kernels`; the rest by class, 7 of them `Kernels` codes
+    // and 3 `Exec` codes.
+    assert_eq!((by_row, exempt.len(), by_class), (15, 36, 43));
 }
 
 #[test]
@@ -542,6 +583,8 @@ fn code_table_rfc(domain: Domain) -> &'static str {
         Dist => "RFC-0032-distributed-execution.md",
         Recovery => "RFC-0033-fault-tolerance-and-elasticity.md",
         Security => "RFC-0034-security-and-trust.md",
+        Kernels => "RFC-0040-kernel-providers-and-backends.md",
+        Exec => "RFC-0012-execution-scheduler.md",
         other => panic!("{other:?} is a domain this test predates"),
     }
 }
@@ -552,17 +595,31 @@ fn is_camel_case(word: &str) -> bool {
         && word.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
-/// Reads every code row, `| 0x0NNN | \`Name\`… | \`Class\`… |`, out of the five domain RFCs'
-/// tables and checks the registry against them, so a code an RFC adds, renames or reclasses
+/// Reads every code row, `| 0x0NNN | \`Name\`… | \`Class\`… |` (`| N | …` in RFC-0040 §13),
+/// out of the seven domain RFCs' tables and checks the registry against them, so a code an RFC adds, renames or reclasses
 /// fails here even when `PINNED` was not updated.
 #[test]
 fn registry_matches_the_rfc_code_tables() {
     let mut from_rfcs = Vec::new();
     for domain in DOMAINS {
         let text = rfc(code_table_rfc(domain));
-        for line in text.lines().filter(|l| l.starts_with("| 0x0")) {
+        // RFC-0040 and RFC-0012 have other tables, so their codes are read from §13 alone.
+        // RFC-0040 numbers its codes in decimal.
+        let text = match domain {
+            Kernels | Exec => section_13(&text),
+            _ => text,
+        };
+        let rows = text.lines().filter(|l| match domain {
+            Kernels => l.starts_with("| ") && l[2..].starts_with(|c: char| c.is_ascii_digit()),
+            _ => l.starts_with("| 0x0"),
+        });
+        for line in rows {
             let cells: Vec<_> = line.trim_matches('|').split(" | ").map(str::trim).collect();
-            let Ok(number) = u16::from_str_radix(cells[0].trim_start_matches("0x"), 16) else {
+            let number = match domain {
+                Kernels => cells[0].parse::<u16>().ok(),
+                _ => u16::from_str_radix(cells[0].trim_start_matches("0x"), 16).ok(),
+            };
+            let Some(number) = number else {
                 continue; // a range such as the reserved 0x0509–0x050B
             };
             if !domain.range().contains(&number) {
@@ -599,6 +656,19 @@ fn registry_matches_the_rfc_code_tables() {
         registry, from_rfcs,
         "the registry and the RFC tables differ"
     );
+}
+
+/// An RFC's §13, from its heading to the next `## ` or `### ` heading.
+fn section_13(text: &str) -> String {
+    let start = text.find("\n### 13.").expect("§13") + 1;
+    let rest = &text[start + 4..];
+    let end = rest
+        .find("\n## ")
+        .into_iter()
+        .chain(rest.find("\n### "))
+        .min()
+        .unwrap_or(rest.len());
+    text[start..start + 4 + end].to_owned()
 }
 
 /// RFC-0050 §12.1, read from the plan.

@@ -3,16 +3,23 @@
 //! The error classes and codes of RFC-0001 §5.12. RFC-0001 §10 defines what each class
 //! triggers.
 //!
-//! Here so far: [`ErrorClass`], which `DeviceProblem::ProbeCrashed` records (RFC-0010 §1.2);
-//! [`ErrorCode`], the `(Domain, u16)` pair; the code tables of the domains whose RFCs publish
-//! them ([`codes`]); and the map from each code to its RFC-0050 §12 API error shape ([`api`]).
-//! The `Error` struct itself, with its scope, retry hint, context and source, comes with the
-//! task that builds it.
+//! - [`Error`], the one error every fallible interface returns, with its [`ErrorScope`],
+//!   [`RetryHint`], context and source chain (COMP-E13-T15).
+//! - [`ErrorClass`], which `DeviceProblem::ProbeCrashed` also records (RFC-0010 §1.2).
+//! - [`ErrorCode`], the `(Domain, u16)` pair.
+//! - The code tables of the domains whose RFCs publish them ([`codes`]).
+//! - The map from each code to its RFC-0050 §12 API error shape ([`api`]).
 
+use std::borrow::Cow;
 use std::fmt;
 use std::ops::RangeInclusive;
 
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
+
+use crate::ids::{LinkId, NodeId, StageIx};
+use crate::session::SequenceId;
+use crate::units::Nanos;
 
 pub mod api;
 pub mod codes;
@@ -64,6 +71,12 @@ pub enum Domain {
     Recovery,
     /// Security and trust: 0x0500–0x05FF (RFC-0034 §15).
     Security,
+    /// Kernel providers and backends: 0x0001–0x00FF, so RFC-0040 §13's codes 1–17 keep their
+    /// published numbers (RFC-0040 §13, note of 2026-10-28).
+    Kernels,
+    /// The faults `exec` detects in its dispatchers and CPU pools: 0x0600–0x06FF (RFC-0012
+    /// §13, note of 2026-10-28).
+    Exec,
 }
 
 impl Domain {
@@ -75,6 +88,8 @@ impl Domain {
             Self::Dist => 0x0300..=0x03FF,
             Self::Recovery => 0x0400..=0x04FF,
             Self::Security => 0x0500..=0x05FF,
+            Self::Kernels => 0x0001..=0x00FF,
+            Self::Exec => 0x0600..=0x06FF,
         }
     }
 
@@ -86,6 +101,8 @@ impl Domain {
             Self::Dist => "RFC-0032 §10",
             Self::Recovery => "RFC-0033 §13",
             Self::Security => "RFC-0034 §15",
+            Self::Kernels => "RFC-0040 §13",
+            Self::Exec => "RFC-0012 §13",
         }
     }
 }
@@ -112,5 +129,141 @@ impl ErrorCode {
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} 0x{:04X}", self.domain, self.code)
+    }
+}
+
+/// What an error is about (RFC-0001 §5.12): the sequence, stage, runner, node, link,
+/// instance or cluster it affects. Owner: RFC-0001.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ErrorScope {
+    /// One sequence; the rest of the instance is unaffected.
+    Sequence(SequenceId),
+    /// One stage of the instance.
+    Stage(StageIx),
+    /// The runner process that raised it.
+    Runner,
+    /// One node.
+    Node(NodeId),
+    /// One link.
+    Link(LinkId),
+    /// The whole instance.
+    Instance,
+    /// The whole cluster.
+    Cluster,
+}
+
+/// Whether and when the operation may be tried again (RFC-0001 §5.12). Owner: RFC-0001.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RetryHint {
+    /// Retrying cannot help.
+    Never,
+    /// Retry after this long.
+    After(Nanos),
+    /// Retry once a new plan is committed.
+    OnNewPlan,
+    /// Retry with the caller's back-off.
+    Backoff,
+}
+
+/// The error every fallible interface returns (RFC-0001 §5.12). Owner: RFC-0001 (classes and
+/// propagation), each domain RFC (the codes in its domain).
+///
+/// It is owned data: `context`'s keys are `Cow<'static, str>` (RFC-0001 §18.32), so code writes
+/// literal keys without allocating, and decoding one needs no buffer that lives for the whole
+/// program. `Error` crosses the IPC in `ErrorReport` (RFC-0001 §3.5).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Error {
+    /// What kind of failure; RFC-0001 §10 says what each class triggers.
+    pub class: ErrorClass,
+    /// The stable, machine-readable code.
+    pub code: ErrorCode,
+    /// For people; never parsed.
+    pub message: String,
+    /// What the error is about.
+    pub scope: ErrorScope,
+    /// Whether and when to retry.
+    pub retry: RetryHint,
+    /// Key and value pairs for people and diagnostics, such as the op or the device.
+    pub context: SmallVec<[(Cow<'static, str>, String); 4]>,
+    /// The error this one wraps, if any.
+    pub source: Option<Box<Error>>,
+}
+
+impl Error {
+    /// An error of `class` with `code` and `message`, scoped to the runner that raises it,
+    /// with no retry, context or source. The `with_*` methods set the rest.
+    #[must_use]
+    pub fn new(class: ErrorClass, code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            class,
+            code,
+            message: message.into(),
+            scope: ErrorScope::Runner,
+            retry: RetryHint::Never,
+            context: SmallVec::new(),
+            source: None,
+        }
+    }
+
+    /// The error with its scope set to `scope`.
+    #[must_use]
+    pub fn with_scope(mut self, scope: ErrorScope) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// The error with its retry hint set to `retry`.
+    #[must_use]
+    pub fn with_retry(mut self, retry: RetryHint) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    /// The error with `(key, value)` appended to its context.
+    #[must_use]
+    pub fn with_context(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.context.push((key.into(), value.into()));
+        self
+    }
+
+    /// The error wrapping `source`.
+    #[must_use]
+    pub fn with_source(mut self, source: Error) -> Self {
+        self.source = Some(Box::new(source));
+        self
+    }
+
+    /// The value of the first context entry named `key`.
+    #[must_use]
+    pub fn context(&self, key: &str) -> Option<&str> {
+        self.context
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// This error, then its source, then that one's source, and so on.
+    pub fn chain(&self) -> impl Iterator<Item = &Error> {
+        std::iter::successors(Some(self), |e| e.source.as_deref())
+    }
+}
+
+/// Shows the message, then the class and the code, e.g.
+/// `not supported by this provider (Unsupported, Kernels 0x0001)`.
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({:?}, {})", self.message, self.class, self.code)
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref().map(|e| e as _)
     }
 }

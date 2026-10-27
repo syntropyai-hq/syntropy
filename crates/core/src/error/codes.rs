@@ -183,6 +183,38 @@ domain_codes! {
     pub const MODEL_UNSIGNED: ErrorCode = MODEL_SIGNATURE_INVALID;
 }
 
+domain_codes! {
+    /// `Domain::Kernels`, 0x0001–0x00FF (RFC-0040 §13, whose table numbers its codes 1–17).
+    kernels: Kernels {
+        OP_UNSUPPORTED = 1, ["OpUnsupported"], Unsupported;
+        MODULE_MISSING = 2, ["ModuleMissing"], Unsupported;
+        MODULE_INTEGRITY = 3, ["ModuleIntegrity"], Integrity;
+        MODULE_ABI = 4, ["ModuleAbi"], Unsupported;
+        DRIVER_TOO_OLD = 5, ["DriverTooOld"], Unsupported;
+        PARITY_FAILED = 6, ["ParityFailed"], Correctness;
+        CAPTURE_FAILED = 7, ["CaptureFailed"], Unsupported;
+        DEVICE_STICKY = 8, ["DeviceSticky"], Device;
+        ALLOC_FAILED = 9, ["AllocFailed"], Capacity;
+        REGISTER_FAILED = 10, ["RegisterFailed"], Capacity;
+        DOORBELL_TIMEOUT = 11, ["DoorbellTimeout"], Timeout;
+        GGML_IMPORT_FAILED = 12, ["GgmlImportFailed"], Unsupported;
+        AMX_DENIED = 13, ["AmxDenied"], Unsupported;
+        WORKSPACE_EXCEEDED = 14, ["WorkspaceExceeded"], Internal;
+        NO_CERTIFIED_CANDIDATE = 15, ["NoCertifiedCandidate"], Unsupported;
+        PROVIDER_PANICKED = 16, ["ProviderPanicked"], Internal;
+        MANIFEST_INVALID = 17, ["ManifestInvalid"], Integrity;
+    }
+}
+
+domain_codes! {
+    /// `Domain::Exec`, 0x0600–0x06FF (RFC-0012 §13, note of 2026-10-28).
+    exec: Exec {
+        RING_CLOSED = 0x0601, ["RingClosed"], Link;
+        STEP_STALLED = 0x0602, ["StepStalled"], Internal;
+        POOL_BARRIER_MISSED = 0x0603, ["PoolBarrierMissed"], Internal;
+    }
+}
+
 /// Every published code, by domain and then by number.
 pub const REGISTRY: &[&[CodeInfo]] = &[
     cluster::TABLE,
@@ -190,6 +222,8 @@ pub const REGISTRY: &[&[CodeInfo]] = &[
     dist::TABLE,
     recovery::TABLE,
     security::TABLE,
+    kernels::TABLE,
+    exec::TABLE,
 ];
 
 /// Numbers a domain's table holds back. Never assigned (RFC-0034 §15: 0x0509–0x050B, because
