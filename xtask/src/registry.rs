@@ -742,6 +742,20 @@ pub const SUITES: &[Entry] = &[
                     "--locked",
                 ]),
             },
+            // Likewise `ipc`'s fault-plan message on the command channel, which a runner process
+            // installs and fires (DIST-E1-T13). `--workspace` runs its production half: the frame
+            // refused as an unknown variant.
+            Step {
+                name: "ipc-fault-injection",
+                action: Action::Cargo(&[
+                    "test",
+                    "--package",
+                    "syntropy-ipc",
+                    "--features",
+                    "fault-injection",
+                    "--locked",
+                ]),
+            },
         ],
         pending: &[],
     },
@@ -1084,6 +1098,7 @@ mod tests {
             [
                 "cargo test --workspace --locked",
                 "cargo test --package syntropy-obs --features fault-injection --locked",
+                "cargo test --package syntropy-ipc --features fault-injection --locked",
             ]
         );
     }

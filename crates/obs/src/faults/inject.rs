@@ -201,6 +201,17 @@ impl FaultPlan {
         Ok(plan)
     }
 
+    /// The plan as TOML, the form [`FaultPlan::from_toml`] reads: what the command channel's
+    /// test-only `SetFaultPlan` message carries to a runner (DIST-E1-T13).
+    ///
+    /// # Errors
+    ///
+    /// [`PlanError::Parse`] when a value has no TOML form, such as a `MonoTime` above
+    /// `i64::MAX`.
+    pub fn to_toml(&self) -> Result<String, PlanError> {
+        toml::to_string(self).map_err(|error| PlanError::Parse(error.to_string()))
+    }
+
     /// Checks every rule: a point name that is not empty, `Nth` from 1, a `Probability` in
     /// [0, 1] and a `Window` that ends after it starts.
     ///

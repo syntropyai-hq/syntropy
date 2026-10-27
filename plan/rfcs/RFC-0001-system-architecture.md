@@ -275,6 +275,19 @@ Command-channel messages:
 
 Each added message or field changes the postcard layout, so it bumps `ipc_protocol` (§5, note of 2026-10-22).
 
+*Note 2026-10-27 (proposed, §18.44; DIST-E1-T13): a test-only message pair.* RFC-0060 §9.2's fault plans are "pushed over IPC in tests". Builds with the test-only `fault-injection` feature (§4.2 rule 10) add one message each way:
+
+| Direction | Message | Purpose |
+|---|---|---|
+| D → R | `SetFaultPlan(toml: String)` | install a `FaultPlan`, as TOML, with `syntropy_obs::faults::install` on the runner's clock |
+| R → D | `FaultPlanSet(Result<(), String>)` | the install's result; on an error the plan installed before stays |
+
+- **The wire index.** Both sit at a fixed wire index, `TEST_VARIANT` = 2²⁰, far above every production variant. Production variants are numbered by their order from 0, and new ones are appended, so the test messages never move them, and a production message's frame is byte for byte the same in both builds.
+- **The types.** In code they are the `ipc::cmd::DaemonFrame` and `RunnerFrame` enums, which wrap `DaemonMsg` and `RunnerMsg`. The production enums gain no variant.
+- **A production build** has neither type, and reads index 2²⁰ as an unknown variant, so it refuses the frame.
+- **The plan's form.** The plan travels as TOML, the form `FaultPlan::from_toml` reads and checks: the plan's types skip absent fields when they serialize, which postcard cannot read back.
+- **`ipc_protocol`.** Not bumped: no production message or field changes.
+
 IPC never carries per-token traffic across the network boundary, and no message on the command channel is sent per token. Local token delivery uses `local_tokens`.
 
 ## 4. Crate layout
@@ -2977,3 +2990,9 @@ PROD-E6-T23 builds `config show --resolved`, `config check` and `config path` in
 | Change | Sections touched | Reason |
 |---|---|---|
 | `cli` depends on `cluster`, `net` and `sched` | §4.1 (row and dated note) | the configuration commands resolve over the binary's section registry, which needs every crate that declares a section; `cli` is the one crate above them all. For the maintainers to confirm |
+
+### 18.44 A test-only fault-plan message on the command channel (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| With `fault-injection` only, `SetFaultPlan(toml)` daemon → runner and `FaultPlanSet(result)` runner → daemon, at the fixed wire index 2²⁰ above every production variant; production builds have neither and refuse the frame as an unknown variant; `ipc_protocol` unchanged | §3.5 (dated note); RFC-0060 §9.2 (dated note) | RFC-0060 §9.2 pushes fault plans "over IPC in tests", and §3.5 had no message for it (DIST-E1-T13, split from QUAL-E9-T01). A fixed index keeps the production indices, and every frame of a production message, the same whether or not the feature is on, whatever production variants are appended later. Proposed for the maintainers to accept |

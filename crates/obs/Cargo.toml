@@ -9,7 +9,9 @@ publish.workspace = true
 serde = { workspace = true }
 syntropy-core = { path = "../core" }
 # Fault plans are TOML files (RFC-0060 §9.2); only the `fault-injection` build reads them.
-toml = { workspace = true, optional = true }
+# `display` writes them too, for `FaultPlan::to_toml` (DIST-E1-T13); its `toml_writer` is in the
+# lock already.
+toml = { workspace = true, optional = true, features = ["display"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
