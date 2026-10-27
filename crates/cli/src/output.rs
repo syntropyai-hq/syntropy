@@ -10,6 +10,7 @@
 //!   durations human-readable.
 //! - A predicted figure carries "estimate" or `≈`; a measured one carries nothing.
 
+use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -146,6 +147,27 @@ pub fn labelled(value: &str, kind: FigureKind) -> String {
         FigureKind::Estimate => format!("≈{value} estimate"),
         FigureKind::Target => format!("{value} (target)"),
     }
+}
+
+/// `text` from a daemon, safe to print on a terminal: every control character, C0 (with ESC,
+/// which starts CSI and OSC sequences), DEL and C1, is written as a `\u{…}` escape, so a
+/// daemon's answer cannot move the cursor, retitle the window or forge other output. `--json`
+/// output is left as the API sent it, for programs: `serde_json` escapes the C0 characters, ESC
+/// among them, and nothing else.
+#[must_use]
+pub fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.chars().any(char::is_control) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut safe = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        if c.is_control() {
+            let _ = write!(safe, "\\u{{{:x}}}", u32::from(c));
+        } else {
+            safe.push(c);
+        }
+    }
+    std::borrow::Cow::Owned(safe)
 }
 
 /// `value` with three significant figures, as `41.0`, `512`, `3.20`.
@@ -295,6 +317,16 @@ mod tests {
         );
         assert_eq!(labelled("41.0 GiB", FigureKind::Measured), "41.0 GiB");
         assert_eq!(labelled("50 ms", FigureKind::Target), "50 ms (target)");
+    }
+
+    #[test]
+    fn control_characters_from_a_daemon_are_escaped() {
+        assert_eq!(sanitize("plain text, ≈ ünïcode"), "plain text, ≈ ünïcode");
+        assert_eq!(sanitize("a\u{1b}[2Jb"), "a\\u{1b}[2Jb");
+        assert_eq!(sanitize("x\u{1b}]0;title\u{7}y"), "x\\u{1b}]0;title\\u{7}y");
+        assert_eq!(sanitize("c1\u{9b}31m"), "c1\\u{9b}31m");
+        assert_eq!(sanitize("line\nbreak\r"), "line\\u{a}break\\u{d}");
+        assert_eq!(sanitize("del\u{7f}"), "del\\u{7f}");
     }
 
     #[test]

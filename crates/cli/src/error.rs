@@ -106,14 +106,15 @@ impl CliError {
         }
     }
 
-    /// An error from the daemon's native error body.
+    /// An error from the daemon's native error body. Its code and message are made safe to
+    /// print on a terminal ([`crate::output::sanitize`]).
     pub fn api(status: u16, error: &syntropy_api::routes::NativeError) -> CliError {
         let not_found = status == 404 || error.code.ends_with("not_found");
         CliError {
             exit: Exit::for_class(error.class, not_found),
             domain: "api",
-            code: error.code.clone(),
-            message: error.message.clone(),
+            code: crate::output::sanitize(&error.code).into_owned(),
+            message: crate::output::sanitize(&error.message).into_owned(),
             details: Vec::new(),
             hints: Vec::new(),
         }
@@ -235,5 +236,13 @@ mod tests {
         assert_eq!(missing.exit, Exit::NotFound);
         let auth = CliError::api(401, &native(ErrorClass::Auth, "local_auth_required"));
         assert_eq!(auth.exit, Exit::Auth);
+        // A daemon's control characters never reach the terminal.
+        let mut hostile = native(ErrorClass::Internal, "c\u{1b}[2J");
+        hostile.message = "m\u{1b}]0;owned\u{7}".to_owned();
+        let error = CliError::api(500, &hostile);
+        assert!(
+            !error.to_string().chars().any(char::is_control),
+            "{error:?}"
+        );
     }
 }

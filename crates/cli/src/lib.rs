@@ -94,7 +94,8 @@ fn dispatch(command: Command, path: &str, output: Output) -> Result<(), CliError
 }
 
 /// `syntropy version`: the daemon's build, protocol majors and support tier. With `--json` it
-/// prints the native API's `VersionInfo` unchanged (RFC-0051 §2.2). The daemon must run: the
+/// prints the native API's `VersionInfo` unchanged (RFC-0051 §2.2). As text, the daemon's
+/// strings are made safe for a terminal first ([`output::sanitize`]). The daemon must run: the
 /// offline report of this binary alone comes with `version`'s own task (PROD-E6-T02).
 fn version(output: Output) -> Result<(), CliError> {
     let os = syntropy_config::Os::current();
@@ -114,7 +115,7 @@ fn version(output: Output) -> Result<(), CliError> {
     let text = format!(
         "daemon     syntropy {} (build {id})\nprotocols  wire {}, ipc {}\nsupport    {tier}\n\
          reached    {}\nclient     syntropy {}\n",
-        info.build.version,
+        output::sanitize(&info.build.version),
         info.protocols.wire,
         info.protocols.ipc,
         client.target(),
