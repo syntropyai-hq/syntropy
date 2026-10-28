@@ -139,12 +139,23 @@ mod tests {
 
     use super::*;
 
-    struct Fixed;
+    /// Bytes that differ on every call, in every test and process: this process's ID and a
+    /// counter, spread by a mixing step, as `ipc`'s own tests name their segments. Segment names on
+    /// Windows and Apple platforms are global to the session, so tests that run in parallel, or two
+    /// test processes, must never draw the same name. Production passes the OS entropy source.
+    struct Varying;
 
-    impl Entropy for Fixed {
+    static DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    impl Entropy for Varying {
         fn fill(&self, buf: &mut [u8]) {
-            for (i, b) in buf.iter_mut().enumerate() {
-                *b = (i as u8).wrapping_mul(31) ^ 0xa5;
+            let n = DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut x =
+                (u64::from(std::process::id()) << 32 | n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            for byte in buf {
+                x ^= x >> 29;
+                x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                *byte = (x >> 56) as u8;
             }
         }
     }
@@ -153,7 +164,7 @@ mod tests {
     /// writes is the one the daemon reads; the runner sees end-of-file when the daemon closes.
     #[test]
     fn an_in_process_runner_shares_the_channel_and_the_region() {
-        let runner = start_in_process(&ShmLayout::default(), [4; 32], &Fixed, |mut end| {
+        let runner = start_in_process(&ShmLayout::default(), [4; 32], &Varying, |mut end| {
             let ping = end.channel.recv().unwrap();
             assert_eq!(ping.msg, DaemonMsg::Ping);
             end.region.beat();

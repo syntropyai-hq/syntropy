@@ -51,13 +51,22 @@ const EPOCH: PlanEpoch = PlanEpoch { term: 1, seq: 1 };
 /// The ping at which the runner admits its two sequences.
 const ADMIT_AT: u32 = 2;
 
-/// Fixed bytes: the region's name and the back-off's jitter need no real randomness here.
-struct Fixed;
+/// Bytes that differ on every call, in every test and process: this process's ID and a
+/// counter, spread by a mixing step, as `ipc`'s own tests name their segments. Segment names on
+/// Windows and Apple platforms are global to the session, so tests that run in parallel, or two
+/// test processes, must never draw the same name. Production passes the OS entropy source.
+struct Varying;
 
-impl Entropy for Fixed {
+static DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl Entropy for Varying {
     fn fill(&self, buf: &mut [u8]) {
-        for (i, b) in buf.iter_mut().enumerate() {
-            *b = (i as u8).wrapping_mul(29) ^ 0x3c;
+        let n = DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut x = (u64::from(std::process::id()) << 32 | n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        for byte in buf {
+            x ^= x >> 29;
+            x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            *byte = (x >> 56) as u8;
         }
     }
 }
@@ -227,7 +236,7 @@ fn daemon<T: Transport>(channel: &mut DaemonChannel<T>, region: &Region) -> u32 
     let mut link = RunnerLink::new(
         InstanceId(5),
         NodeId([2; 32]),
-        Supervisor::new(policy(), Fixed),
+        Supervisor::new(policy(), Varying),
         Sink::default(),
     );
     let mut seen = Seen::default();
@@ -303,7 +312,7 @@ const PINGS_TO_STALL: u32 = ADMIT_AT + 20;
 #[test]
 fn the_suite_passes_with_the_in_process_host() {
     assert_eq!(RunnerHost::InProcess, RunnerHost::InProcess);
-    let mut hosted = start_in_process(&ShmLayout::default(), BUILD, &Fixed, |end| {
+    let mut hosted = start_in_process(&ShmLayout::default(), BUILD, &Varying, |end| {
         runner(end.channel, end.region)
     })
     .unwrap();
@@ -322,7 +331,7 @@ fn the_suite_passes_over_an_os_socket() {
     };
     let mut listener = Listener::bind(&endpoint).unwrap();
     let layout = ShmLayout::default();
-    let region = Region::create(&layout, BUILD, PROTOCOL, &Fixed).unwrap();
+    let region = Region::create(&layout, BUILD, PROTOCOL, &Varying).unwrap();
     let runner_region = Region::open(&region.handle(), Side::Runner, &layout, PROTOCOL).unwrap();
     let runner_thread = thread::spawn({
         let endpoint = endpoint.clone();
