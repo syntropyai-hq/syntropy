@@ -470,7 +470,7 @@ The records are as the table above gives them. A reader refuses:
 - a length that disagrees with the entry count;
 - records that do not tile the file from offset 0.
 
-On boundaries (§6.1), scale and zero-point tensors are tensors of the file, so their starts, the auxiliary-extent starts of rule 2, are tensor starts. Each 4 MiB step of rule 3 counts from its run's start.
+On boundaries (§6.1), rule 2's auxiliary-extent starts are of two kinds. An unstacked weight's scale, zero-point or global-scale tensor is a tensor of the file, so its start is a tensor start. A stacked expert tensor's auxiliary tensor is stacked too, MXFP4's `W_blocks` and `W_scales` for example, and expert *e*'s auxiliary extent is that tensor's *e*-th slice (§2.1, §2.2), which starts inside it. So the caller passes the slices of every stacked tensor, weights and auxiliary tensors alike, and each expert's scale slice starts a chunk of its own. Each 4 MiB step of rule 3 counts from its run's start. A reader of a stored or received table also refuses a record longer than 4 MiB or one that runs past the file, and uses the table only if it matches the chunks it computes from the header (`ChunkTable::matches`).
 
 #### 6.3 How chunk IDs become known (ADR-0412)
 
