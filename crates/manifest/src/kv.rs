@@ -221,7 +221,8 @@ impl KvFormula {
     /// dtype per layer (in normal form), the layout version, and each layer's window and
     /// compression ratio; the caller gives `P`, the stored `KvDType` of each page class, the
     /// resolved RoPE configurations and the instance's knobs and their parameters, which the
-    /// formula does not hold. A sequence's own knobs join them through `KvSettings::with_sequence`.
+    /// formula does not hold. A sequence's own per-sequence knobs join them through
+    /// `KvSettings::with_sequence`.
     /// [`KvSettings::hash_with`] then gives `kv_settings_hash`.
     #[must_use]
     pub fn kv_settings(

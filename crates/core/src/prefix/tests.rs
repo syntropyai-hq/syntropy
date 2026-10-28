@@ -266,7 +266,8 @@ fn an_approximate_sequence_on_an_exact_instance_gets_other_keys() {
         assert_eq!(seq.knobs, knob);
         assert_ne!(root_of(&seq), root_of(&exact), "{knob:?}");
     }
-    // A sequence's parameter takes the place of the instance's; its knobs add to the instance's.
+    // A sequence's per-sequence knobs add to the instance's; its per-instance parameter does not
+    // replace the instance's, which the pages are stored under (review N1 on #1942).
     let mut lossy = instance.clone();
     lossy.knobs = ApproxKnobs::KV_LOSSY;
     lossy.params.kv_lossy = Some(KvDType::Q8 { block: 32 });
@@ -278,7 +279,59 @@ fn an_approximate_sequence_on_an_exact_instance_gets_other_keys() {
         },
     });
     assert_eq!(seq.knobs, ApproxKnobs::KV_LOSSY | ApproxKnobs::EXPERT_SKIP);
-    assert_eq!(seq.params.kv_lossy, Some(KvDType::Q8 { block: 64 }));
+    assert_eq!(seq.params.kv_lossy, Some(KvDType::Q8 { block: 32 }));
+}
+
+/// A sequence's per-instance knobs and parameters leave its root as the instance's: the plan
+/// applies those knobs to every sequence or to none (RFC-0054 §4.2), so the pages are stored as
+/// the instance says (review N1 on #1942).
+#[test]
+fn a_sequence_s_per_instance_knobs_and_parameters_do_not_change_the_root() {
+    let scope = PrefixScope::default();
+    let root_of = |s: &KvSettings| root(s, &scope, PrefixScopeMode::Principal);
+    let per_instance = ExactnessPolicy::Approximate {
+        knobs: ApproxKnobs::PER_INSTANCE,
+        params: ApproxParams {
+            miss_low_precision: Some(crate::quant::QuantScheme::Ggml(
+                crate::dtype::GgmlType::Q4_0,
+            )),
+            kv_lossy: Some(KvDType::Q8 { block: 64 }),
+            wire_compress: Some(crate::plan::WireDType::F16),
+        },
+    };
+
+    // On an exact instance, they leave the exact root.
+    let exact = settings();
+    let seq = exact.with_sequence(&per_instance);
+    assert_eq!(seq, exact);
+    assert_eq!(root_of(&seq), root_of(&exact));
+
+    // On an instance with those knobs on, the instance's parameters stay.
+    let mut lossy = settings();
+    lossy.knobs = ApproxKnobs::PER_INSTANCE;
+    lossy.params = ApproxParams {
+        miss_low_precision: Some(crate::quant::QuantScheme::Ggml(
+            crate::dtype::GgmlType::Q8_0,
+        )),
+        kv_lossy: Some(KvDType::Q8 { block: 32 }),
+        wire_compress: Some(crate::plan::WireDType::Q8B32),
+    };
+    let seq = lossy.with_sequence(&per_instance);
+    assert_eq!(seq, lossy);
+    assert_eq!(root_of(&seq), root_of(&lossy));
+
+    // With a per-sequence knob as well, only that knob is added.
+    let mut mixed = per_instance;
+    if let ExactnessPolicy::Approximate { knobs, .. } = &mut mixed {
+        *knobs |= ApproxKnobs::EXPERT_SKIP;
+    }
+    let seq = lossy.with_sequence(&mixed);
+    assert_eq!(
+        seq.knobs,
+        ApproxKnobs::PER_INSTANCE | ApproxKnobs::EXPERT_SKIP
+    );
+    assert_eq!(seq.params, lossy.params);
+    assert_ne!(root_of(&seq), root_of(&lossy));
 }
 
 #[test]
