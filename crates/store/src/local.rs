@@ -14,7 +14,7 @@
 //!    side, as the `t_index` bound assumes. A thread opens its file when it starts on it, checks
 //!    the stamp through that handle, hashes, and stamps it again, so at most one file per thread
 //!    is open. The same read gives each chunk's BLAKE3, its `ChunkId`
-//!    ([`hash_chunks`](syntropy_manifest::chunk::hash_chunks)), and the file's chunk table is
+//!    ([`hash_chunks`]), and the file's chunk table is
 //!    written to `tables/<sha256>.chunks` with every ID set, so a local source's table is complete
 //!    when the model is registered (RFC-0041 §4.3 step 2). Its IDs are this node's own, evidence
 //!    form provisional: in a cluster they become a witness only as COMP-E11-T17 says;

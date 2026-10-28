@@ -818,11 +818,11 @@ fn a_later_start_needs_the_table_as_well_as_the_stamp() {
     let root = s.root();
     let mut index = LocalIndex::open(&root).unwrap();
     index
-        .index("llama", &[w.clone()], &StepClock::new(), &quiet)
+        .index("llama", std::slice::from_ref(&w), &StepClock::new(), &quiet)
         .unwrap();
     // The table is there: nothing is read.
     let again = index
-        .index("llama", &[w.clone()], &StepClock::new(), &quiet)
+        .index("llama", std::slice::from_ref(&w), &StepClock::new(), &quiet)
         .unwrap();
     assert_eq!((again.hashed.len(), again.reused), (0, 1));
     // The table is gone: the file is read again, and the table comes back.
@@ -830,7 +830,7 @@ fn a_later_start_needs_the_table_as_well_as_the_stamp() {
     std::fs::remove_file(&table).unwrap();
     let mut reopened = LocalIndex::open(&root).unwrap();
     let rebuilt = reopened
-        .index("llama", &[w.clone()], &StepClock::new(), &quiet)
+        .index("llama", std::slice::from_ref(&w), &StepClock::new(), &quiet)
         .unwrap();
     assert_eq!(rebuilt.hashed.len(), 1);
     assert_table_complete(&reopened, &data, w.chunks.as_ref().unwrap());
@@ -839,7 +839,12 @@ fn a_later_start_needs_the_table_as_well_as_the_stamp() {
     moved.chunks =
         Some(syntropy_manifest::chunk::chunk_file(data.len() as u64, 100, [100]).unwrap());
     let rechunked = reopened
-        .index("llama", &[moved.clone()], &StepClock::new(), &quiet)
+        .index(
+            "llama",
+            std::slice::from_ref(&moved),
+            &StepClock::new(),
+            &quiet,
+        )
         .unwrap();
     assert_eq!(rechunked.hashed.len(), 1);
     assert_table_complete(&reopened, &data, moved.chunks.as_ref().unwrap());
@@ -857,7 +862,12 @@ fn a_racy_stamp_rewrites_the_chunk_table() {
     let root = s.root();
     let mut index = LocalIndex::open(&root).unwrap();
     let first = index
-        .index("llama", &[w.clone()], &StepClock::at(written + 500), &quiet)
+        .index(
+            "llama",
+            std::slice::from_ref(&w),
+            &StepClock::at(written + 500),
+            &quiet,
+        )
         .unwrap();
     assert_eq!(first.racy, 1);
     // A same-tick rewrite at the same size.
@@ -869,7 +879,7 @@ fn a_racy_stamp_rewrites_the_chunk_table() {
         f.set_modified(mtime).unwrap();
     }
     let second = index
-        .index("llama", &[w.clone()], &StepClock::new(), &quiet)
+        .index("llama", std::slice::from_ref(&w), &StepClock::new(), &quiet)
         .unwrap();
     assert_eq!(second.hashed.len(), 1);
     assert_table_complete(&index, &edited, w.chunks.as_ref().unwrap());
