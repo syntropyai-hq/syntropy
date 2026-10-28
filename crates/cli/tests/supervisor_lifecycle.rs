@@ -48,13 +48,22 @@ impl AwakeClock for Virtual {
     }
 }
 
-/// Fixed bytes: the region's name and the back-off's jitter need no real randomness here.
-struct Fixed;
+/// Bytes that differ on every call, in every test and process: this process's ID and a
+/// counter, spread by a mixing step, as `ipc`'s own tests name their segments. Segment names on
+/// Windows and Apple platforms are global to the session, so tests that run in parallel, or two
+/// test processes, must never draw the same name. Production passes the OS entropy source.
+struct Varying;
 
-impl Entropy for Fixed {
+static DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl Entropy for Varying {
     fn fill(&self, buf: &mut [u8]) {
-        for (i, b) in buf.iter_mut().enumerate() {
-            *b = i as u8 ^ 0x5a;
+        let n = DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut x = (u64::from(std::process::id()) << 32 | n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        for byte in buf {
+            x ^= x >> 29;
+            x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            *byte = (x >> 56) as u8;
         }
     }
 }
@@ -111,13 +120,13 @@ fn live(machine: &Lifecycle) -> u32 {
 #[test]
 fn a_real_runner_that_admits_sequences_and_stops_stepping_is_killed_for_a_stall() {
     let layout = ShmLayout::default();
-    let daemon_side = Region::create(&layout, [7; 32], PROTOCOL, &Fixed).unwrap();
+    let daemon_side = Region::create(&layout, [7; 32], PROTOCOL, &Varying).unwrap();
     let runner_side = Region::open(&daemon_side.handle(), Side::Runner, &layout, PROTOCOL).unwrap();
     let clock = Virtual(AtomicU64::new(S));
     let mut link = RunnerLink::new(
         InstanceId(3),
         NodeId([9; 32]),
-        Supervisor::new(policy(), Fixed),
+        Supervisor::new(policy(), Varying),
         Sink::default(),
     );
     let mut kills = Kills::default();
@@ -165,7 +174,7 @@ fn a_real_runner_that_admits_sequences_and_stops_stepping_is_killed_for_a_stall(
     let tick = |runner_steps: bool,
                 machine: &Lifecycle,
                 kills: &mut Kills,
-                link: &mut RunnerLink<Fixed, Sink>| {
+                link: &mut RunnerLink<Varying, Sink>| {
         clock.0.fetch_add(500 * MS, Ordering::Relaxed);
         runner_side.beat();
         if runner_steps {

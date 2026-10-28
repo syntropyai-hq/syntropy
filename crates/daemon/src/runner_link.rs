@@ -23,7 +23,7 @@ use syntropy_core::{
     AwakeClock, Clock, Entropy, InstanceId, MonoTime, NodeId, Outbox, PlanEpoch, ProtocolCore,
     RunnerStateKind,
 };
-use syntropy_ipc::cmd::{DaemonChannel, RecvError, RunnerMsg};
+use syntropy_ipc::cmd::{DaemonChannel, RecvError, RunnerMsg, Transport};
 use syntropy_ipc::shm::Region;
 
 use crate::report::{self, ReportSink, RunnerFailedReport};
@@ -158,13 +158,14 @@ impl<E: Entropy, S: ReportSink> RunnerLink<E, S> {
 }
 
 /// The runner-channel loop: hands every message the runner sends to `link` until the runner
-/// closes the channel, which returns `Ok`. Any other failure of the channel is returned.
+/// closes the channel, which returns `Ok`. It runs over either transport: a process runner's
+/// socket or an in-process runner's memory stream (`runner_host`). Any other failure of the channel is returned.
 ///
 /// # Errors
 ///
 /// The [`RecvError`] that ended the loop, other than [`RecvError::Closed`].
-pub fn serve_channel<E: Entropy, S: ReportSink>(
-    channel: &mut DaemonChannel,
+pub fn serve_channel<E: Entropy, S: ReportSink, T: Transport>(
+    channel: &mut DaemonChannel<T>,
     clock: &impl Clock,
     link: &mut RunnerLink<E, S>,
     effects: &mut impl Effects,
