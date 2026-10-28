@@ -325,13 +325,79 @@ struct ReleaseBody {
     persist: Option<SessionId>,
 }
 
-/// The body of `Reconcile`, RFC-0033 §11's fields.
-#[derive(Serialize, Deserialize)]
+/// The body of `Reconcile`, RFC-0033 §11's fields, as it is written.
+#[derive(Serialize)]
 struct ReconcileBody {
     seq: SequenceId,
     emitted: u32,
     rng_counter: u64,
     recent: Vec<u32>,
+}
+
+/// The body of `Reconcile` as it is read: `recent` through [`Recent`], so a long array is counted
+/// and refused rather than held.
+#[derive(Deserialize)]
+struct ReconcileBodyIn {
+    seq: SequenceId,
+    emitted: u32,
+    rng_counter: u64,
+    recent: Recent,
+}
+
+/// `Reconcile::recent` as read: the first [`MAX_RECENT`] tokens, and how many the array held.
+///
+/// It never allocates. Every element is read and counted, but only the first [`MAX_RECENT`] are
+/// kept, so a longer array is refused without the decoder holding it. A derived `Vec<u32>` would
+/// reserve room for the array's stated length and hold every token before the length could be
+/// checked. The envelope's length check has already refused a length the body cannot hold, and
+/// the body is under its kind's ceiling ([`SMALL_BODY`]), so counting the rest is bounded too.
+///
+/// RFC-0033 §4.2 and §11 give `recent` as "the last up to 8 emitted tokens". They do not say
+/// that it must hold exactly `min(emitted, 8)`, so the decoder does not check that; DIST-E14-T06's
+/// handshake decides what a shorter `recent` means.
+struct Recent {
+    tokens: [u32; MAX_RECENT],
+    len: usize,
+}
+
+impl Recent {
+    /// The tokens kept: the first `min(len, MAX_RECENT)`.
+    fn kept(&self) -> &[u32] {
+        &self.tokens[..self.len.min(MAX_RECENT)]
+    }
+}
+
+impl<'de> Deserialize<'de> for Recent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Recent, D::Error> {
+        struct Tokens;
+
+        impl<'de> serde::de::Visitor<'de> for Tokens {
+            type Value = Recent;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an array of token IDs")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Recent, A::Error> {
+                let mut recent = Recent {
+                    tokens: [0; MAX_RECENT],
+                    len: 0,
+                };
+                while let Some(token) = seq.next_element::<u32>()? {
+                    if let Some(slot) = recent.tokens.get_mut(recent.len) {
+                        *slot = token;
+                    }
+                    recent.len = recent.len.saturating_add(1);
+                }
+                Ok(recent)
+            }
+        }
+
+        deserializer.deserialize_seq(Tokens)
+    }
 }
 
 /// `control`'s kind and its body as deterministic CBOR.
@@ -493,20 +559,20 @@ impl Frame<'_> {
                 SequenceControl::Release { seq, persist }
             }
             SeqControlKind::Reconcile => {
-                let ReconcileBody {
+                let ReconcileBodyIn {
                     seq,
                     emitted,
                     rng_counter,
                     recent,
                 } = read(encoding, payload, body)?;
-                if recent.len() > MAX_RECENT {
-                    return Err(SeqControlError::TooManyRecent { len: recent.len() });
+                if recent.len > MAX_RECENT {
+                    return Err(SeqControlError::TooManyRecent { len: recent.len });
                 }
                 SequenceControl::Reconcile {
                     seq,
                     emitted,
                     rng_counter,
-                    recent: recent.into_iter().collect(),
+                    recent: recent.kept().iter().copied().collect(),
                 }
             }
         })

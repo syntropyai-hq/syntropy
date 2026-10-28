@@ -978,6 +978,29 @@ fn unknown_kinds_and_encodings_are_refused() {
     assert_eq!(error.class(), ErrorClass::Unsupported);
 }
 
+/// A `Reconcile` body whose `recent` is the CBOR array `recent`, given as its bytes.
+fn reconcile_with_recent(recent: &[u8]) -> Vec<u8> {
+    let mut body = vec![0xa4];
+    for (key, value) in [
+        ("seq", seq_value(seq(1))),
+        ("emitted", int(9)),
+        ("rng_counter", int(1)),
+    ] {
+        body.extend(cbor(&text(key)));
+        body.extend(cbor(&value));
+    }
+    body.extend(cbor(&text("recent")));
+    body.extend(recent);
+    body
+}
+
+/// `body` read as a plain `Reconcile` frame.
+fn read_reconcile(body: &[u8]) -> Result<SequenceControl, SeqControlError> {
+    Frame::decode(&raw_frame(7, 0, body))
+        .unwrap()
+        .seq_control(SeqControlLimits::slot(small_slot()))
+}
+
 /// A `Reconcile` carries at most 8 recent tokens, both ways.
 #[test]
 fn a_reconcile_with_more_than_eight_recent_tokens_is_refused() {
@@ -1006,6 +1029,57 @@ fn a_reconcile_with_more_than_eight_recent_tokens_is_refused() {
         .unwrap_err();
     assert_eq!(error, SeqControlError::TooManyRecent { len: 9 });
     assert_eq!(error.class(), ErrorClass::InvalidRequest);
+
+    // Eight are read, in order, from a definite and from an indefinite-length array.
+    let eight: Vec<u8> = (1..=8).collect();
+    for header in [&[0x88][..], &[0x9f][..]] {
+        let mut recent = header.to_vec();
+        recent.extend(&eight);
+        if header == [0x9f] {
+            recent.push(0xff);
+        }
+        assert_eq!(
+            read_reconcile(&reconcile_with_recent(&recent)),
+            Ok(SequenceControl::Reconcile {
+                seq: seq(1),
+                emitted: 9,
+                rng_counter: 1,
+                recent: (1..=8).collect::<Vec<u32>>().into(),
+            })
+        );
+    }
+
+    // Nine are refused from an indefinite-length array too, which states no length up front.
+    let mut recent = vec![0x9f];
+    recent.extend((1..=9).collect::<Vec<u8>>());
+    recent.push(0xff);
+    let error = read_reconcile(&reconcile_with_recent(&recent)).unwrap_err();
+    assert_eq!(error, SeqControlError::TooManyRecent { len: 9 });
+    assert_eq!(error.class(), ErrorClass::InvalidRequest);
+}
+
+/// #1804's review, N1: a `recent` whose length prefix claims far more tokens than the body
+/// holds is refused as a damaged body, by the envelope's length check before the body is read.
+/// `seq_control_memory.rs` checks that the decoder reserves nothing for the claim.
+#[test]
+fn a_recent_claiming_more_tokens_than_the_body_holds_is_refused() {
+    for claimed in [9, 1 << 16, u32::MAX] {
+        let mut recent = vec![0x9a];
+        recent.extend(claimed.to_be_bytes());
+        recent.extend(1..=9u8);
+        let error = read_reconcile(&reconcile_with_recent(&recent)).unwrap_err();
+        if claimed == 9 {
+            assert_eq!(error, SeqControlError::TooManyRecent { len: 9 });
+            assert_eq!(error.class(), ErrorClass::InvalidRequest);
+        } else {
+            // The bytes end inside the array the prefix claims: a damaged body.
+            assert!(
+                matches!(error, SeqControlError::Body(DecodeError::Malformed(_))),
+                "{error:?}"
+            );
+            assert_eq!(error.class(), ErrorClass::Integrity);
+        }
+    }
 }
 
 /// A frame of another type, a sealed one, or one with a body of the wrong shape is refused,

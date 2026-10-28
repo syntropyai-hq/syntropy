@@ -21,8 +21,8 @@ use syntropy_core::{
 };
 use syntropy_net::ctl::envelope;
 use syntropy_net::frame::{
-    Flags, Frame, FrameSpec, FrameType, SeqControlLimits, WIRE_MINOR, encode_to_vec,
-    open_body_limit, sequence_slot_size,
+    Flags, Frame, FrameSpec, FrameType, SeqControlError, SeqControlLimits, WIRE_MINOR,
+    encode_to_vec, open_body_limit, sequence_slot_size,
 };
 
 /// The system allocator, recording the bytes held and their peak.
@@ -108,9 +108,14 @@ fn compress(body: &[u8], streamed: bool) -> Vec<u8> {
 
 /// A `SeqControl` frame of `kind`, its body zstd-compressed.
 fn compressed_frame(kind: u8, body: &[u8], streamed: bool) -> Vec<u8> {
+    seq_control_frame(kind, 1, &compress(body, streamed))
+}
+
+/// A `SeqControl` frame of `kind` whose body, encoded as `body_enc` says, is `payload`.
+fn seq_control_frame(kind: u8, body_enc: u8, payload: &[u8]) -> Vec<u8> {
     let mut ext = [0u8; 64];
     ext[0] = kind;
-    ext[1] = 1;
+    ext[1] = body_enc;
     let spec = FrameSpec {
         wire_minor: WIRE_MINOR,
         ftype: FrameType::SeqControl,
@@ -120,11 +125,17 @@ fn compressed_frame(kind: u8, body: &[u8], streamed: bool) -> Vec<u8> {
         step: 0,
         chan_seq: 1,
     };
-    encode_to_vec(&spec, &ext, &compress(body, streamed)).unwrap()
+    encode_to_vec(&spec, &ext, payload).unwrap()
 }
 
 /// B1's frame: a `Reconcile` whose `recent` declares `zeros` zero tokens, as bytes.
 fn reconcile_with_zeros(zeros: u32) -> Vec<u8> {
+    reconcile_claiming(zeros, zeros as usize)
+}
+
+/// A `Reconcile` body whose `recent` array header claims `claimed` tokens and is followed by
+/// `held` zero bytes, each one token.
+fn reconcile_claiming(claimed: u32, held: usize) -> Vec<u8> {
     #[derive(serde::Serialize)]
     struct Head {
         seq: SequenceId,
@@ -140,8 +151,8 @@ fn reconcile_with_zeros(zeros: u32) -> Vec<u8> {
     .unwrap();
     body[0] = 0xa4;
     body.extend([0x66, b'r', b'e', b'c', b'e', b'n', b't', 0x9a]);
-    body.extend(zeros.to_be_bytes());
-    body.resize(body.len() + zeros as usize, 0);
+    body.extend(claimed.to_be_bytes());
+    body.resize(body.len() + held, 0);
     body
 }
 
@@ -213,6 +224,35 @@ fn hostile_frames_stay_within_rfc_0060_s10_2s_bound() {
             "N1, streamed {streamed}: a {}-byte frame, {peak} bytes held at most, {declared} \
              declared",
             frame.len()
+        );
+    }
+
+    // #1804's review, N1. A plain `Reconcile` whose `recent` claims 2^32 - 1 tokens and holds
+    // nine is refused by the envelope's length check, before the body is read. One that holds
+    // 900 tokens, as many as fit under the small kinds' 1 KiB ceiling, is refused for having
+    // more than 8, and the decoder holds none of them: a `Vec<u32>` would hold 3.6 KB. The bound
+    // [chosen] is the ceiling itself.
+    for (claimed, held) in [(u32::MAX, 9), (900, 900)] {
+        let frame = seq_control_frame(7, 0, &reconcile_claiming(claimed, held));
+        let (decoded, peak) = peak_during(|| {
+            Frame::decode(&frame)
+                .unwrap()
+                .seq_control(SeqControlLimits::slot(slot))
+        });
+        let error = decoded.unwrap_err();
+        if claimed == 900 {
+            assert_eq!(error, SeqControlError::TooManyRecent { len: 900 });
+        }
+        assert!(
+            peak <= 1 << 10,
+            "N1 of #1804: {peak} bytes held for a {}-byte frame claiming {claimed} tokens",
+            frame.len()
+        );
+        eprintln!(
+            "N1 of #1804: a {}-byte frame claiming {claimed} tokens and holding {held}: {:?}, \
+             {peak} bytes held at most",
+            frame.len(),
+            error
         );
     }
 }
