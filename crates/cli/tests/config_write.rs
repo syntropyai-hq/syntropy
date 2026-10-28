@@ -67,7 +67,7 @@ fn fake_editor_command() -> String {
 }
 
 /// A test's directory, with `config.toml` holding `text`.
-fn setup(tag: &str, text: &str) -> (PathBuf, PathBuf) {
+fn setup(tag: &str, text: &str) -> (common::TempDir, PathBuf) {
     let dir = common::temp(&format!("write-{tag}"));
     let file = dir.join("config.toml");
     std::fs::write(&file, text).unwrap();

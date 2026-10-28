@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use common::{code, finish, isolated};
 
 /// A fresh directory for one test.
-fn temp(tag: &str) -> PathBuf {
+fn temp(tag: &str) -> common::TempDir {
     common::temp(&format!("config-{tag}"))
 }
 
