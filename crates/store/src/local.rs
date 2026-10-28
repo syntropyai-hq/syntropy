@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Local models, indexed in place (RFC-0041 §4.3; COMP-E11-T03).
+//! Local models, indexed in place (RFC-0041 §4.3; COMP-E11-T03, COMP-E11-T14).
 //!
 //! A local path is indexed, never copied or modified. [`LocalIndex::index`] takes the files the
-//! census read, each with its role, and:
+//! census read, each with its role and its chunks (RFC-0041 §6.1), and:
 //!
 //! 1. stamps each file with its (device, inode, size, mtime), and closes it again;
 //! 2. reuses the `FileDigest` of a file whose stamp matches the record of an earlier index and
-//!    was not racy (below), so a later start reads nothing more;
+//!    was not racy (below), and whose chunk table is on disk, matches its chunks and holds every
+//!    chunk's ID, so a later start reads nothing more;
 //! 3. hashes every other file in one multi-threaded pass. SHA-256 is a sequential chain, so each
 //!    file is hashed whole on one thread, and up to `min(cores, files)` files are hashed side by
 //!    side, as the `t_index` bound assumes. A thread opens its file when it starts on it, checks
 //!    the stamp through that handle, hashes, and stamps it again, so at most one file per thread
-//!    is open;
+//!    is open. The same read gives each chunk's BLAKE3, its `ChunkId`
+//!    ([`hash_chunks`](syntropy_manifest::chunk::hash_chunks)), and the file's chunk table is
+//!    written to `tables/<sha256>.chunks` with every ID set, so a local source's table is complete
+//!    when the model is registered (RFC-0041 §4.3 step 2). Its IDs are this node's own, evidence
+//!    form provisional: in a cluster they become a witness only as COMP-E11-T17 says;
 //! 4. computes the v1 `ModelId` (RFC-0041 §1) and writes `local/<model-id>.sources`, which
 //!    survives a restart.
 //!
@@ -39,7 +44,8 @@
 //! of it at `Loading`. [`LocalIndex::check`] compares stamps only, so it cannot see a same-tick
 //! write to a racy file either; the next `index` does.
 //!
-//! Chunk hashes in the same pass are COMP-E11-T14, and a local file's evidence in a cluster is
+//! A racy stamp also keeps the file's chunk table from being reused: the file is read again, and
+//! its table rewritten from the bytes it holds then. A local file's evidence in a cluster is
 //! COMP-E11-T17.
 //!
 //! # The record
@@ -70,11 +76,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use syntropy_core::{BytesPerSec, Clock, ErrorClass, ModelId, Nanos};
+use syntropy_manifest::chunk::{
+    Chunk, ChunkTable, EvidenceForm, HashError, chunk_file, hash_chunks,
+};
 use syntropy_manifest::identity::{IdentityError, SourceFile, model_id};
 use syntropy_manifest::safetensors::side::SourceRole;
 use syntropy_manifest::{FileDigest, FileSource, RangeError, RangeSource as _};
 
-use crate::WritableRoot;
+use crate::{Layout, WritableRoot};
 
 /// One file of a local model, as the census found it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,6 +92,22 @@ pub struct LocalFile {
     pub path: PathBuf,
     /// What it is to the census.
     pub role: SourceRole,
+    /// Its chunks (RFC-0041 §6.1), as the census computes them from its header: `gguf_chunks` or
+    /// `safetensors_chunks` with the slices of its stacked tensors. `None` for a side file with
+    /// no tensors, such as `config.json`, which is all header region: `chunk_file(len, len, [])`.
+    pub chunks: Option<Vec<Chunk>>,
+}
+
+impl LocalFile {
+    /// A file with no chunks of its own: a side file, all header region.
+    #[must_use]
+    pub fn side(path: impl Into<PathBuf>, role: SourceRole) -> LocalFile {
+        LocalFile {
+            path: path.into(),
+            role,
+            chunks: None,
+        }
+    }
 }
 
 /// A file's modification time, as seconds and nanoseconds from the Unix epoch. Before the
@@ -342,6 +367,11 @@ pub enum LocalError {
     NotIndexed(ModelId),
     /// The `ModelId` cannot be computed: an empty family tag, or no weights file.
     Identity(IdentityError),
+    /// A file's chunks do not tile it from offset 0 to its end.
+    ChunksNotTiled {
+        /// The file.
+        path: PathBuf,
+    },
     /// A file could not be opened, stamped or read.
     Io {
         /// What was being done, such as `"hash"`.
@@ -371,6 +401,8 @@ impl LocalError {
         match self {
             LocalError::SourceChanged { .. } | LocalError::Io { .. } => ErrorClass::Integrity,
             LocalError::NotIndexed(_) | LocalError::Identity(_) => ErrorClass::InvalidRequest,
+            // The census computed the chunks: a bug there, not in the file.
+            LocalError::ChunksNotTiled { .. } => ErrorClass::Internal,
         }
     }
 
@@ -397,6 +429,9 @@ impl fmt::Display for LocalError {
             }
             LocalError::NotIndexed(id) => write!(f, "no local model {} is indexed", hex(&id.0.0)),
             LocalError::Identity(e) => write!(f, "cannot compute the model ID: {e}"),
+            LocalError::ChunksNotTiled { path } => {
+                write!(f, "the chunks given for {} do not tile it", path.display())
+            }
             LocalError::Io { op, path, message } => {
                 write!(f, "cannot {op} {}: {message}", path.display())
             }
@@ -462,6 +497,33 @@ impl<'r> LocalIndex<'r> {
     #[must_use]
     pub fn unreadable(&self) -> &[PathBuf] {
         &self.unreadable
+    }
+
+    /// The chunk table of the source file whose SHA-256 is `digest`, from
+    /// `tables/<sha256>.chunks` (RFC-0041 §4.1, §6.2).
+    ///
+    /// # Errors
+    ///
+    /// [`LocalError::Io`] when the table cannot be read or is not a valid table of that file.
+    pub fn chunk_table(&self, digest: FileDigest) -> Result<ChunkTable, LocalError> {
+        let path = self.root.layout().chunk_table(&digest.0);
+        let bytes = std::fs::read(&path).map_err(|e| LocalError::io("read", &path, e))?;
+        let table = ChunkTable::decode(&bytes).map_err(|e| LocalError::io("read", &path, e))?;
+        if table.digest != digest {
+            return Err(LocalError::io(
+                "read",
+                &path,
+                "the table names another file's digest",
+            ));
+        }
+        Ok(table)
+    }
+
+    /// Whether the file `digest` has a table on disk that matches `chunks` and holds every
+    /// chunk's ID: what lets a later start skip the file.
+    fn table_is_complete(&self, digest: FileDigest, chunks: &[Chunk]) -> bool {
+        self.chunk_table(digest)
+            .is_ok_and(|t| t.matches(chunks) && t.records.iter().all(|r| r.committed.is_some()))
     }
 
     /// Checks every file of model `id` against its record. It compares stamps only, so a
@@ -530,15 +592,28 @@ impl<'r> LocalIndex<'r> {
                 let handle = File::open(&path).map_err(|e| LocalError::io("open", &path, e))?;
                 FileStamp::of(&handle).map_err(|e| LocalError::io("stamp", &path, e))?
             };
+            let chunks = match &file.chunks {
+                Some(chunks) => chunks.clone(),
+                None => {
+                    chunk_file(stamp.size, stamp.size, []).expect("a file is all header region")
+                }
+            };
+            if !tiles(&chunks, stamp.size) {
+                return Err(LocalError::ChunksNotTiled { path });
+            }
+            // A settled record is reused only with its complete chunk table, matching these
+            // chunks; a racy one never (module docs).
             let cached = known
                 .get(path.as_path())
                 .filter(|r| !r.racy && r.stamp == stamp)
+                .filter(|r| self.table_is_complete(r.digest, &chunks))
                 .map(|r| r.digest);
             opened.push(Opened {
                 path,
                 role: file.role,
                 stamp,
                 racy: stamp.mtime.unix_ms() >= racy_after,
+                chunks,
                 digest: cached,
             });
         }
@@ -550,7 +625,7 @@ impl<'r> LocalIndex<'r> {
         let hashed: Vec<u64> = todo.iter().map(|&i| opened[i].stamp.size).collect();
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
         let threads = cores.min(todo.len());
-        let digests = hash_files(&opened, &todo, threads, progress)?;
+        let digests = hash_files(&opened, &todo, threads, self.root.layout(), progress)?;
         for (&i, digest) in todo.iter().zip(digests) {
             opened[i].digest = Some(digest);
         }
@@ -652,6 +727,7 @@ struct Opened {
     role: SourceRole,
     stamp: FileStamp,
     racy: bool,
+    chunks: Vec<Chunk>,
     digest: Option<FileDigest>,
 }
 
@@ -661,6 +737,7 @@ fn hash_files(
     opened: &[Opened],
     todo: &[usize],
     threads: usize,
+    layout: &Layout,
     progress: &(dyn Fn(Progress) + Sync),
 ) -> Result<Vec<FileDigest>, LocalError> {
     let files_total = todo.len();
@@ -676,7 +753,7 @@ fn hash_files(
                 loop {
                     let k = next.fetch_add(1, Ordering::Relaxed);
                     let Some(&i) = todo.get(k) else { break };
-                    let result = hash_one(&opened[i], |n| {
+                    let result = hash_one(&opened[i], layout, |n| {
                         let done = bytes_done.fetch_add(n, Ordering::Relaxed) + n;
                         progress(Progress {
                             files_total,
@@ -719,8 +796,13 @@ fn hash_files(
 }
 
 /// Opens one stamped file, checks through the new handle that it is the file that was stamped,
-/// hashes it, and checks that its stamp did not change meanwhile.
-fn hash_one(file: &Opened, on_read: impl FnMut(u64)) -> Result<FileDigest, LocalError> {
+/// hashes it and its chunks in one pass, checks that its stamp did not change meanwhile, and
+/// writes its chunk table under `layout`.
+fn hash_one(
+    file: &Opened,
+    layout: &Layout,
+    on_read: impl FnMut(u64),
+) -> Result<FileDigest, LocalError> {
     let handle = File::open(&file.path).map_err(|e| LocalError::io("open", &file.path, e))?;
     if FileStamp::of(&handle).ok() != Some(file.stamp) {
         return Err(changed(file, &handle));
@@ -729,14 +811,54 @@ fn hash_one(file: &Opened, on_read: impl FnMut(u64)) -> Result<FileDigest, Local
     if source.len() != file.stamp.size {
         return Err(changed(file, source.file()));
     }
-    let digest = FileDigest::of_source_with(&source, on_read).map_err(|e| match e {
-        RangeError::OutOfRange { .. } => changed(file, source.file()),
-        e => range_error(&file.path, e),
+    let (digest, ids) = hash_chunks(&source, &file.chunks, on_read).map_err(|e| match e {
+        HashError::Read(RangeError::OutOfRange { .. }) => changed(file, source.file()),
+        HashError::Read(e) => range_error(&file.path, e),
+        HashError::NotTiled => LocalError::ChunksNotTiled {
+            path: file.path.clone(),
+        },
     })?;
     if FileStamp::of(source.file()).ok() != Some(file.stamp) {
         return Err(changed(file, source.file()));
     }
+    let mut table = ChunkTable::new(digest, file.stamp.size, &file.chunks);
+    for (record, id) in table.records.iter_mut().zip(ids) {
+        record.committed = Some((id, EvidenceForm::Provisional));
+    }
+    write_table(layout, &table)?;
     Ok(digest)
+}
+
+/// Whether `chunks` tile `[0, len)`.
+fn tiles(chunks: &[Chunk], len: u64) -> bool {
+    let mut at = 0u64;
+    for c in chunks {
+        if c.offset != at || c.len == 0 {
+            return false;
+        }
+        at = c.end();
+    }
+    at == len
+}
+
+/// Writes `table` under a temporary name, syncs it, renames it into place and syncs the
+/// directory. A table names its file by digest, so two models that share a file share its table.
+fn write_table(layout: &Layout, table: &ChunkTable) -> Result<(), LocalError> {
+    let tables = layout.tables_dir();
+    let path = layout.chunk_table(&table.digest.0);
+    // A per-thread temporary name: two hashing threads may write tables at once.
+    let tmp = tables.join(format!(
+        ".{}.{:?}.chunks.tmp",
+        table.digest.to_hex(),
+        std::thread::current().id()
+    ));
+    let mut file = File::create(&tmp).map_err(|e| LocalError::io("create", &tmp, e))?;
+    file.write_all(&table.encode())
+        .and_then(|()| file.sync_all())
+        .map_err(|e| LocalError::io("write", &tmp, e))?;
+    drop(file);
+    std::fs::rename(&tmp, &path).map_err(|e| LocalError::io("rename", &path, e))?;
+    syntropy_io::os::sync_dir(&tables).map_err(|e| LocalError::io("sync", &tables, e))
 }
 
 fn changed(file: &Opened, handle: &File) -> LocalError {

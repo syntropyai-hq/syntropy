@@ -131,6 +131,7 @@ fn run(tag: &str, sizes: &[usize]) {
         .map(|p| LocalFile {
             path: p.clone(),
             role: SourceRole::Weights,
+            chunks: None,
         })
         .collect();
     let clock = WallClock(Instant::now());
@@ -164,4 +165,60 @@ fn split_files_index_against_the_t_index_bound() {
 #[ignore = "a timing: run by hand, optimised, on a quiet machine"]
 fn one_unsplit_file_is_bound_by_one_core() {
     run("unsplit", &[512 * MIB]);
+}
+
+/// COMP-E11-T14: the chunk hashes ride the same read. One 512 MiB file, in the page cache, timed
+/// three ways on this host: SHA-256 alone (`FileDigest::of_source`), SHA-256 and every chunk's
+/// BLAKE3 in one pass (`hash_chunks`), and a plain sequential read. Each is the median of 3.
+/// `W_read` here is the page cache's rate, not a drive's.
+#[test]
+#[ignore = "a timing: run by hand, optimised, on a quiet machine"]
+fn chunk_hashes_ride_the_sha_256_pass() {
+    use syntropy_manifest::FileSource;
+    use syntropy_manifest::chunk::{chunk_file, hash_chunks};
+
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("bench-chunk-hashes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let scratch = Scratch(dir);
+    let path = scratch.0.join("model.gguf");
+    let len = 512 * MIB;
+    write_file(&path, len, 9);
+    let chunks = chunk_file(len as u64, 4096, [4096]).unwrap();
+    let median = |f: &dyn Fn()| {
+        let mut runs: Vec<f64> = (0..3)
+            .map(|_| {
+                let start = Instant::now();
+                f();
+                start.elapsed().as_secs_f64()
+            })
+            .collect();
+        runs.sort_by(f64::total_cmp);
+        runs[1]
+    };
+    let read = median(&|| {
+        let _ = w_read(std::slice::from_ref(&path));
+    });
+    let sha = median(&|| {
+        let source = FileSource::open(&path).unwrap();
+        std::hint::black_box(FileDigest::of_source(&source).unwrap());
+    });
+    let both = median(&|| {
+        let source = FileSource::open(&path).unwrap();
+        std::hint::black_box(hash_chunks(&source, &chunks, |_| {}).unwrap());
+    });
+    let gb = len as f64 / 1e9;
+    println!(
+        "chunk hashes: {} chunks; read {:.3} s ({:.2} GB/s), SHA-256 alone {:.3} s ({:.2} GB/s), \
+         SHA-256 + BLAKE3 per chunk {:.3} s ({:.2} GB/s); {:.2}× SHA-256 alone [measured; W_read is the page cache's rate]",
+        chunks.len(),
+        read,
+        gb / read,
+        sha,
+        gb / sha,
+        both,
+        gb / both,
+        both / sha,
+    );
 }

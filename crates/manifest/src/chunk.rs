@@ -48,6 +48,7 @@ use syntropy_core::Blake3;
 
 use crate::gguf::GgufHeader;
 use crate::identity::FileDigest;
+use crate::range::{RangeError, RangeSource};
 use crate::safetensors::SafetensorsHeader;
 use crate::slice::ExpertSlice;
 
@@ -468,6 +469,122 @@ impl ChunkTable {
         self.records.len() == chunks.len()
             && self.records.iter().zip(chunks).all(|(r, c)| r.chunk == *c)
     }
+}
+
+/// The bytes one read of [`hash_chunks`] takes.
+const READ_BYTES: usize = 1 << 20;
+
+/// Read buffers in flight between the reading thread and the chunk hasher.
+const BUFFERS: usize = 4;
+
+/// Why [`hash_chunks`] could not hash a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HashError {
+    /// The chunks do not tile the source from offset 0 to its end.
+    NotTiled,
+    /// A read failed.
+    Read(RangeError),
+}
+
+impl fmt::Display for HashError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotTiled => f.write_str("the chunks do not tile the file"),
+            Self::Read(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for HashError {}
+
+/// The file's SHA-256 and each chunk's BLAKE3, its `ChunkId`, from one sequential read of
+/// `source` (RFC-0041 §4.3 step 2). `chunks` must tile the source, as [`chunk_file`] gives them.
+///
+/// The file is read once, front to back, in 1 MiB reads. The calling thread feeds each read to
+/// SHA-256, which is a sequential chain, and hands the buffer to a second thread that feeds the
+/// same bytes to one BLAKE3 hasher per chunk, cutting at the chunk boundaries. So the two hashes
+/// overlap: the pass takes about as long as the slower of the read, SHA-256 and BLAKE3, not their
+/// sum. `on_read` is called on the calling thread with each read's length once SHA-256 has it.
+///
+/// # Errors
+///
+/// [`HashError::NotTiled`] for chunks that do not tile the source, and [`HashError::Read`] for a
+/// read that fails.
+pub fn hash_chunks<S: RangeSource>(
+    source: &S,
+    chunks: &[Chunk],
+    mut on_read: impl FnMut(u64),
+) -> Result<(FileDigest, Vec<Blake3>), HashError> {
+    use sha2::Digest as _;
+    use std::sync::mpsc::sync_channel;
+
+    let len = source.len();
+    let mut at = 0u64;
+    for c in chunks {
+        if c.offset != at || c.len == 0 {
+            return Err(HashError::NotTiled);
+        }
+        at = c.end();
+    }
+    if at != len {
+        return Err(HashError::NotTiled);
+    }
+
+    // Full buffers go to the chunk hasher; it sends each one back when it has hashed it.
+    let (full_tx, full_rx) = sync_channel::<(Vec<u8>, usize)>(BUFFERS);
+    let (free_tx, free_rx) = sync_channel::<Vec<u8>>(BUFFERS);
+    for _ in 0..BUFFERS {
+        free_tx
+            .send(vec![0u8; READ_BYTES])
+            .expect("the channel holds every buffer");
+    }
+    std::thread::scope(|s| {
+        let hasher = s.spawn(move || {
+            let mut ids = Vec::with_capacity(chunks.len());
+            let mut chunk = 0usize;
+            let mut left = chunks.first().map_or(0, |c| u64::from(c.len));
+            let mut current = blake3::Hasher::new();
+            while let Ok((buf, n)) = full_rx.recv() {
+                let mut bytes = &buf[..n];
+                while !bytes.is_empty() {
+                    let take = usize::try_from(left.min(bytes.len() as u64)).unwrap_or(0);
+                    current.update(&bytes[..take]);
+                    bytes = &bytes[take..];
+                    left -= take as u64;
+                    if left == 0 {
+                        ids.push(Blake3(*current.finalize().as_bytes()));
+                        current = blake3::Hasher::new();
+                        chunk += 1;
+                        left = chunks.get(chunk).map_or(0, |c| u64::from(c.len));
+                    }
+                }
+                // The reader may have stopped early; a closed channel is not an error here.
+                let _ = free_tx.send(buf);
+            }
+            ids
+        });
+        let mut sha = sha2::Sha256::new();
+        let mut at = 0u64;
+        let mut result = Ok(());
+        while at < len {
+            let Ok(mut buf) = free_rx.recv() else { break };
+            let n = usize::try_from((len - at).min(READ_BYTES as u64)).expect("at most 1 MiB");
+            if let Err(e) = source.read_at(at, &mut buf[..n]) {
+                result = Err(HashError::Read(e));
+                break;
+            }
+            sha.update(&buf[..n]);
+            at += n as u64;
+            on_read(n as u64);
+            if full_tx.send((buf, n)).is_err() {
+                break;
+            }
+        }
+        drop(full_tx);
+        let ids = hasher.join().expect("the chunk hasher does not panic");
+        result?;
+        Ok((FileDigest(sha.finalize().into()), ids))
+    })
 }
 
 #[cfg(test)]

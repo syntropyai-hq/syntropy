@@ -15,3 +15,7 @@ syntropy-core = { path = "../core" }
 syntropy-io = { path = "../io" }
 # `FileDigest`, `ModelId`'s formula and `SourceRole` (RFC-0041 §1).
 syntropy-manifest = { path = "../manifest" }
+
+[dev-dependencies]
+# The chunk tables' IDs, recomputed apart from the indexer (COMP-E11-T14).
+blake3.workspace = true
