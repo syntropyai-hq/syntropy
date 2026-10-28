@@ -106,8 +106,13 @@ pub use fault::{
 /// mismatch by its protocol. 3.0 adds the live-sequence count to the shared-memory header
 /// (DIST-E1-T06): the header grows by a line, the ring table moves, and the region's
 /// `LAYOUT_VERSION` goes to 2, so a 2.x peer cannot read the region. That is incompatible, so the
-/// major moves.
-pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 3, minor: 0 };
+/// major moves. 4.0 appends `Spans` to the `telemetry` ring's `TelemetryRecord` (PROD-E8-T07;
+/// RFC-0001 §18.49). Every earlier variant keeps its index, but a 4.0 runner writes `Spans` into
+/// the ring whenever it records spans, and a 3.x daemon cannot decode one. A change is compatible
+/// only when every older reader can read everything a newer writer sends it, so this one moves
+/// the major. Adoption needs equal versions anyway (RFC-0001 §3.5), so the bump changes what the
+/// version claims, not who may connect.
+pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 4, minor: 0 };
 
 /// The byte stream a command channel runs over: an OS [`Stream`] between processes, or a
 /// [`memory::MemoryStream`] between threads of one process (RFC-0001 §3.1, `RunnerHost::InProcess`;

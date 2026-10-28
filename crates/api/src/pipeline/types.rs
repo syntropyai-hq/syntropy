@@ -62,6 +62,9 @@ pub struct GenerateRequest {
     pub raw_special_tokens: bool,
     /// Who sent it.
     pub client: ClientMeta,
+    /// Whether the request asked for a full trace: `syntropy.trace = true` in the body or
+    /// `Syntropy-Trace: 1` (RFC-0053 §3.2, §3.3). Every step of its sequence is then traced.
+    pub trace: bool,
 }
 
 /// The prompt (RFC-0050 §2.1).
@@ -184,7 +187,8 @@ pub struct ClientMeta {
     pub peer: Option<SocketAddr>,
     /// The `User-Agent` header.
     pub user_agent: Option<String>,
-    /// The W3C `traceparent` header.
+    /// The W3C `traceparent` header, as received. Ingress continues its trace and returns a
+    /// `traceparent` only when the request carried one (RFC-0053 §3.2).
     pub traceparent: Option<String>,
 }
 

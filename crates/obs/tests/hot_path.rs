@@ -122,3 +122,51 @@ fn hot_threads_allocate_nothing_after_warming() {
     // 1,024 step records fit; the other 98,976 were dropped and counted.
     assert_eq!(step_ring.dropped(), 100_000 - 1_024);
 }
+
+/// The head's step sampling and a hot thread's span records allocate nothing after `Warming`
+/// (RFC-0053 §3.3, §3.4; PROD-E8-T07).
+#[test]
+fn span_recording_and_step_sampling_allocate_nothing() {
+    use syntropy_core::sequence::TraceContext;
+    use syntropy_obs::trace::{SpanName, SpanRecord, SpanWriter, StepKind, StepSampler};
+
+    // Warming: the ring and the sampler.
+    let mut spans = SpanWriter::new(Fixed {
+        slots: vec![[0; 256]; 1024],
+        used: 0,
+    });
+    let sampler = StepSampler::new(1.0 / 64.0);
+    let sequence = TraceContext {
+        version: 0,
+        trace_id: [3; 16],
+        span_id: [4; 8],
+        flags: 0,
+    };
+
+    // Ready: one decision and one span per step.
+    let before = alloc_count_this_thread();
+    let mut sampled = 0u32;
+    for step in 0..100_000u64 {
+        let kind = StepKind::Decode { index: step as u32 };
+        if let Some(ctx) = sampler.step_context(&sequence, step, kind, step.to_le_bytes()) {
+            sampled += 1;
+            spans.record(&SpanRecord {
+                trace_id: ctx.trace_id,
+                span_id: ctx.span_id,
+                parent_id: sequence.span_id,
+                start: MonoTime(step),
+                dur: SpanRecord::dur_ns(1_000 + step),
+                name: SpanName::Step.id(),
+                attr_count: 3,
+                attrs: [0, 1, step as u32, 0],
+            });
+        }
+    }
+    let allocations = alloc_count_this_thread() - before;
+    assert_eq!(
+        allocations, 0,
+        "span recording allocated {allocations} times after Warming"
+    );
+    assert!(sampled > 0);
+    assert_eq!(spans.written() + spans.dropped(), u64::from(sampled));
+}

@@ -32,6 +32,8 @@ syntropy-config = { path = "../config" }
 # `syntropy-api`.
 syntropy-cluster = { path = "../cluster" }
 syntropy-manifest = { path = "../manifest" }
+# The tracing keys, `obs.flight_recorder` and `obs.trace.*` (RFC-0053 §3).
+syntropy-obs = { path = "../obs" }
 syntropy-net = { path = "../net" }
 syntropy-sched = { path = "../sched" }
 # The local socket's client end, and the runner's `--ipc` endpoint (RFC-0051 §1; ADR-0015).

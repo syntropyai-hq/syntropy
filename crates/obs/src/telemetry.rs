@@ -63,6 +63,13 @@ pub enum TelemetryRecord {
         /// The series.
         entries: SmallVec<[SeriesEntry; 8]>,
     },
+    /// Span records housekeeping drained from the hot threads' span rings (RFC-0053 §3.4). A new
+    /// last variant, so every earlier variant keeps its index; a 3.x reader cannot read it, so
+    /// `ipc_protocol` moved to 4.0 (RFC-0001 §18.49).
+    Spans {
+        /// The records, in the order drained.
+        records: SmallVec<[crate::trace::SpanRecord; 8]>,
+    },
 }
 
 /// One histogram's change since the last drain. A large change may come in several deltas for
@@ -203,7 +210,29 @@ mod tests {
                     labels: vec!["0".to_owned(), "cuda0".to_owned()],
                 }],
             },
+            TelemetryRecord::Spans {
+                records: smallvec![crate::trace::SpanRecord {
+                    trace_id: [1; 16],
+                    span_id: [2; 8],
+                    parent_id: [0; 8],
+                    start: MonoTime(8),
+                    dur: 9,
+                    name: crate::trace::SpanName::Step.id(),
+                    attr_count: 1,
+                    attrs: [3, 0, 0, 0],
+                }],
+            },
         ]
+    }
+
+    /// Each variant keeps its index: `Spans` was appended (ipc_protocol 4.0).
+    #[test]
+    fn variants_keep_their_indices() {
+        let mut out = Vec::new();
+        for (index, record) in records().iter().enumerate() {
+            encode(record, &mut out).unwrap();
+            assert_eq!(usize::from(out[0]), index, "{record:?}");
+        }
     }
 
     #[test]

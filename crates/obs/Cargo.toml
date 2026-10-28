@@ -12,6 +12,9 @@ serde = { workspace = true }
 # The records' delta lists (RFC-0053 §1).
 smallvec = { workspace = true }
 syntropy-core = { path = "../core" }
+# The `obs` and `obs.trace` configuration sections (RFC-0053 §3; PROD-E8-T07). One way only:
+# `config` never depends on `obs`, so the two layer-0 crates cannot form a cycle.
+syntropy-config = { path = "../config" }
 # Fault plans are TOML files (RFC-0060 §9.2); only the `fault-injection` build reads them.
 # `display` writes them too, for `FaultPlan::to_toml` (DIST-E1-T13); its `toml_writer` is in the
 # lock already.

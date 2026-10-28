@@ -92,6 +92,9 @@ pub struct Ingress<'r> {
     pub(super) stages: &'r dyn Stages,
     pub(super) clock: &'r dyn Clock,
     pub(super) entropy: &'r dyn Entropy,
+    /// `obs.trace.honor_remote_sampled`: whether an incoming `traceparent`'s sampled bit forces
+    /// a full trace (RFC-0053 §3.2). Off unless the daemon turns it on.
+    pub(super) honor_remote_sampled: std::sync::atomic::AtomicBool,
     outbox: Mutex<Outbox<'r>>,
     inbox: Mutex<Inbox<'r>>,
 }
@@ -163,6 +166,7 @@ impl<'r> Ingress<'r> {
             stages,
             clock,
             entropy,
+            honor_remote_sampled: std::sync::atomic::AtomicBool::new(false),
             outbox: Mutex::new(Outbox {
                 ring: controls,
                 waiting: VecDeque::new(),
@@ -175,6 +179,14 @@ impl<'r> Ingress<'r> {
                 broken: None,
             }),
         })
+    }
+
+    /// Sets `obs.trace.honor_remote_sampled` for the requests that start from now on (a hot key,
+    /// RFC-0053 §3.2): whether an incoming `traceparent`'s sampled bit forces a full trace. Off by
+    /// default, so an untrusted client cannot make the node trace every step.
+    pub fn set_honor_remote_sampled(&self, on: bool) {
+        self.honor_remote_sampled
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The transcript of `seq` while it is live, or `None` once ingress has released it or never

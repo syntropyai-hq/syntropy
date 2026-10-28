@@ -118,6 +118,8 @@ impl Daemon {
                         self.gauges.insert(series, value);
                     }
                 }
+                // Housekeeping's span batches, which the drain never writes.
+                TelemetryRecord::Spans { .. } => {}
             }
         }
     }
