@@ -4,6 +4,7 @@
 //! `kv_dtype` override's effect on the root key, and golden keys that pin the chain's bytes
 //! across runs and builds. `core`'s tests check the same chain with a stand-in hash.
 
+use syntropy_core::policy::ExactnessPolicy;
 use syntropy_core::sequence::PrefixScope;
 use syntropy_core::{Blake3, ModelId, PrefixKeyChain, PrefixScopeMode};
 
@@ -52,7 +53,7 @@ fn settings_of(f: &KvFormula) -> KvSettings {
         vec![KvDType::Native],
         rope(),
         ApproxKnobs::empty(),
-        None,
+        ApproxParams::default(),
     )
 }
 
@@ -125,7 +126,10 @@ fn kv_settings_carries_every_field() {
         layout_version: 7,
     };
     let stored = vec![KvDType::Q8 { block: 32 }, KvDType::Native];
-    let lossy = Some(KvDType::Q8 { block: 32 });
+    let lossy = ApproxParams {
+        kv_lossy: Some(KvDType::Q8 { block: 32 }),
+        ..ApproxParams::default()
+    };
     let KvSettings {
         page_tokens,
         stored: got_stored,
@@ -136,7 +140,7 @@ fn kv_settings_carries_every_field() {
         windows,
         compression,
         knobs,
-        kv_lossy,
+        params,
     } = f.kv_settings(32, stored.clone(), rope(), ApproxKnobs::KV_LOSSY, lossy);
     assert_eq!(page_tokens, 32);
     assert_eq!(got_stored, stored);
@@ -147,7 +151,7 @@ fn kv_settings_carries_every_field() {
     assert_eq!(windows, vec![Some(512), Some(64)]);
     assert_eq!(compression, vec![None, Some(8)]);
     assert_eq!(knobs, ApproxKnobs::KV_LOSSY);
-    assert_eq!(kv_lossy, lossy);
+    assert_eq!(params, lossy);
 }
 
 /// The `kv_dtype` override (COMP-E13-T06) changes the root key: it changes the resolved
@@ -208,7 +212,7 @@ fn the_formula_s_other_settings_change_the_root_key() {
         vec![KvDType::Native],
         rope(),
         ApproxKnobs::empty(),
-        None,
+        ApproxParams::default(),
     );
     assert_ne!(root(&p), r, "P");
     let knob = base.kv_settings(
@@ -216,7 +220,10 @@ fn the_formula_s_other_settings_change_the_root_key() {
         vec![KvDType::Q8 { block: 32 }],
         rope(),
         ApproxKnobs::KV_LOSSY,
-        Some(KvDType::Q8 { block: 32 }),
+        ApproxParams {
+            kv_lossy: Some(KvDType::Q8 { block: 32 }),
+            ..ApproxParams::default()
+        },
     );
     assert_ne!(root(&knob), r, "kv_lossy");
     let mut scaled = rope();
@@ -226,9 +233,22 @@ fn the_formula_s_other_settings_change_the_root_key() {
         vec![KvDType::Native],
         scaled,
         ApproxKnobs::empty(),
-        None,
+        ApproxParams::default(),
     );
     assert_ne!(root(&s), r, "RoPE scaling");
+}
+
+/// An approximate sequence's own knob changes the root, with BLAKE3 (review B1 on #1942).
+#[test]
+fn a_sequence_s_knob_changes_the_root_key() {
+    let s = settings_of(&formula(KvDTypeSpec::uniform(DType::F16)));
+    let exact = root(&s.with_sequence(&ExactnessPolicy::Exact));
+    let skip = root(&s.with_sequence(&ExactnessPolicy::Approximate {
+        knobs: ApproxKnobs::EXPERT_SKIP,
+        params: ApproxParams::default(),
+    }));
+    assert_eq!(exact, root(&s));
+    assert_ne!(skip, exact);
 }
 
 /// Golden keys: BLAKE3 over the bytes this build writes, pinned, so a change to any part of the
@@ -276,14 +296,15 @@ fn golden_keys_are_stable_across_runs() {
     assert_eq!(got, GOLDEN, "a prefix key changed");
 }
 
-/// This build's BLAKE3 values, pinned when the chain was written (TIER-E7-T01). A change means
+/// This build's BLAKE3 values, pinned when the chain was written (TIER-E7-T01) and again when
+/// `KvSettings::kv_lossy` became `params` (the review of #1942). A change means
 /// every cached prefix and saved session key changes: a new `PREFIX_DOMAIN` or settings domain
 /// version, not a re-pin.
 const GOLDEN: [&str; 6] = [
-    "c101e9cd7667d3319ecd19b7adede8ed0fb0b13e5ec734828d628b175a7cd443",
-    "c11b3fc645a62f37ab3f36490cdb4fe317118404d01182a522847c72a8ad58ec",
-    "1c21687e0803900f722d66210ce3588c48742acb4d177633674ccb9a1ae1e9ad",
-    "fa6dc55a01f153193fb9becc23fa2e64623d4a128680525c171f685113be5435",
-    "a374015ca8cf5bdbd44227f473d6ebfcd2b1b1b2cfe02ce1b77da4deca874871",
-    "248f9500a86322c5959a876c0a0e2dbc8a21e5e3e17277d6b66c6f1554178d5d",
+    "76d3eabe4367c5ff3aeb1a6e418bac3bb774786d8a4075405e32e2c5fd0f3592",
+    "09839aebee2a4dcf7a119f28ef8186b27fa1ccf5dc3d8b1a9e0e1d2a069cb466",
+    "7c4b7a51c2c10712d96c72942c2c1c7942b0b85a9c4788b7081e3ed3d487a4aa",
+    "1edf259eb3771c7195e6ec91625c30e78c81bd2777939b5db19e85528b496a0b",
+    "369d20340f30b09176274cd5e367a9ab6eb2414df063ee077b85bc91cc364119",
+    "77ee803d7d2c1e61b0faafbcd2fb13e7df06afb1fd69f0ad7cb7a812e04236b9",
 ];

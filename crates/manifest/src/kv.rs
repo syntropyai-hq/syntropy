@@ -24,7 +24,7 @@ use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 use syntropy_core::plan::KvDType;
-use syntropy_core::policy::ApproxKnobs;
+use syntropy_core::policy::{ApproxKnobs, ApproxParams};
 use syntropy_core::{Bytes, DType, KvSettings, LayerIx, RopeSettings};
 
 /// KV and recurrent-state size per layer (RFC-0001 §5.3, RFC-0022 §2). Owner: RFC-0022.
@@ -220,7 +220,8 @@ impl KvFormula {
     /// RFC-0022 §7.1's `KvSettings` for an instance of this model: the formula gives the
     /// dtype per layer (in normal form), the layout version, and each layer's window and
     /// compression ratio; the caller gives `P`, the stored `KvDType` of each page class, the
-    /// resolved RoPE configurations and the instance's knobs, which the formula does not hold.
+    /// resolved RoPE configurations and the instance's knobs and their parameters, which the
+    /// formula does not hold. A sequence's own knobs join them through `KvSettings::with_sequence`.
     /// [`KvSettings::hash_with`] then gives `kv_settings_hash`.
     #[must_use]
     pub fn kv_settings(
@@ -229,7 +230,7 @@ impl KvFormula {
         stored: Vec<KvDType>,
         rope: Vec<RopeSettings>,
         knobs: ApproxKnobs,
-        kv_lossy: Option<KvDType>,
+        params: ApproxParams,
     ) -> KvSettings {
         let dtype = self.dtype.normalized();
         let (windows, compression) = self
@@ -255,7 +256,7 @@ impl KvFormula {
             windows,
             compression,
             knobs,
-            kv_lossy,
+            params,
         }
     }
 

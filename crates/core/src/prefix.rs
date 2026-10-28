@@ -57,7 +57,7 @@ use crate::canon;
 use crate::dtype::DType;
 use crate::ids::{Blake3, LayerIx, ModelId};
 use crate::plan::KvDType;
-use crate::policy::ApproxKnobs;
+use crate::policy::{ApproxKnobs, ApproxParams, ExactnessPolicy};
 use crate::sequence::{PrefixKey, PrefixScope};
 
 /// The domain string of `kv_settings_hash`.
@@ -74,9 +74,23 @@ pub const LOCAL_SCOPE_SALT: [u8; 16] = *b"syntropy/local\0\0";
 /// in a page's, so it cannot stand for a scope salt (module docs).
 pub const INSTANCE_SHARED_SALT: [u8; 16] = *b"syntropy/instanc";
 
-/// The approximate knobs that touch KV: a lossy stored dtype, and approximate attention, whose
-/// sparsity or windowing changes what is kept (RFC-0042 §10).
-pub const KV_KNOBS: ApproxKnobs = ApproxKnobs::KV_LOSSY.union(ApproxKnobs::APPROX_ATTENTION);
+/// The approximate knobs that change what KV holds, and so count in `kv_settings_hash`: every knob
+/// except `SPEC_LENIENT` (RFC-0022 §7.1, note of 2026-10-28, for the maintainers to confirm).
+///
+/// - `KV_LOSSY` stores KV below the model's dtype, and `APPROX_ATTENTION` changes which entries
+///   are kept or read.
+/// - `EXPERT_SKIP`, `EXPERT_DEFER`, `TOPK_REDUCE`, `MISS_LOW_PRECISION` and `WIRE_COMPRESS` change
+///   the hidden states of the forward pass, and so the K and V every later layer stores for the
+///   same tokens. Without them in the key, an exact sequence could reuse pages an approximate one
+///   computed, which D3 forbids (ADR-0019 decision 4 names prefix-cache reuse).
+/// - `SPEC_LENIENT` changes which drafted tokens are accepted, not the KV of a given token
+///   sequence, so it stays out.
+///
+/// It is the complement of `SPEC_LENIENT`, so a knob added later counts unless it is taken out
+/// here: an unknown knob fails toward a cache miss. When `APPROX_ATTENTION` (or any per-sequence
+/// knob) gains parameters in [`ApproxParams`], they must join [`KvSettings::params`] and its normal
+/// form, or two settings of the knob would share a key.
+pub const KV_KNOBS: ApproxKnobs = ApproxKnobs::all().difference(ApproxKnobs::SPEC_LENIENT);
 
 /// `kv.prefix_scope` (RFC-0022 §7.1, §9).
 #[non_exhaustive]
@@ -126,17 +140,19 @@ pub struct KvSettings {
     pub windows: Vec<Option<u32>>,
     /// Each layer's compression ratio, tokens per compressed entry, if it compresses.
     pub compression: Vec<Option<u16>>,
-    /// The instance's approximate knobs; only [`KV_KNOBS`] count.
+    /// The approximate knobs in effect for the sequence: the instance's, together with the
+    /// sequence's own from `SequenceOpen::exactness` (RFC-0001 §5.8), which the head reads when
+    /// the sequence opens ([`with_sequence`](Self::with_sequence)). Only [`KV_KNOBS`] count.
     pub knobs: ApproxKnobs,
-    /// `kv_lossy`'s dtype, which counts only while the knob is on.
-    pub kv_lossy: Option<KvDType>,
+    /// The knobs' parameters. Each counts only while its knob is on.
+    pub params: ApproxParams,
 }
 
 impl KvSettings {
     /// The same settings in one form, so that settings which store the same KV hash the same:
     /// dtype exceptions sorted, each layer once (the first, as `KvDTypeSpec::of` reads it) and
-    /// none equal to the default; knobs masked to [`KV_KNOBS`]; `kv_lossy` dropped while its knob
-    /// is off.
+    /// none equal to the default; knobs masked to [`KV_KNOBS`]; each parameter dropped while its
+    /// knob is off.
     #[must_use]
     pub fn normalized(&self) -> KvSettings {
         let mut layers: Vec<(LayerIx, DType)> = Vec::with_capacity(self.dtype_layers.len());
@@ -148,15 +164,41 @@ impl KvSettings {
         layers.retain(|&(_, d)| d != self.dtype);
         layers.sort_unstable_by_key(|&(l, _)| l);
         let knobs = self.knobs.intersection(KV_KNOBS);
+        let on = |knob| knobs.contains(knob);
+        let p = self.params;
         KvSettings {
             dtype_layers: layers,
             knobs,
-            kv_lossy: if knobs.contains(ApproxKnobs::KV_LOSSY) {
-                self.kv_lossy
-            } else {
-                None
+            params: ApproxParams {
+                miss_low_precision: p
+                    .miss_low_precision
+                    .filter(|_| on(ApproxKnobs::MISS_LOW_PRECISION)),
+                kv_lossy: p.kv_lossy.filter(|_| on(ApproxKnobs::KV_LOSSY)),
+                wire_compress: p.wire_compress.filter(|_| on(ApproxKnobs::WIRE_COMPRESS)),
             },
             ..self.clone()
+        }
+    }
+
+    /// The settings for a sequence that opened with `exactness`: its knobs join the instance's,
+    /// and a parameter it names takes the place of the instance's. An `Exact` sequence leaves the
+    /// settings as they are. A sequence's pages are keyed under these, so pages an approximate
+    /// sequence computed never match an exact sequence's keys (D3).
+    #[must_use]
+    pub fn with_sequence(&self, exactness: &ExactnessPolicy) -> KvSettings {
+        match exactness {
+            ExactnessPolicy::Exact => self.clone(),
+            ExactnessPolicy::Approximate { knobs, params } => KvSettings {
+                knobs: self.knobs.union(*knobs),
+                params: ApproxParams {
+                    miss_low_precision: params
+                        .miss_low_precision
+                        .or(self.params.miss_low_precision),
+                    kv_lossy: params.kv_lossy.or(self.params.kv_lossy),
+                    wire_compress: params.wire_compress.or(self.params.wire_compress),
+                },
+                ..self.clone()
+            },
         }
     }
 
@@ -265,7 +307,7 @@ impl<H: Fn(&[u8]) -> Blake3> PrefixKeyChain<H> {
 
     /// Keys the next page, whose `P` tokens are `tokens`. `media` may list every media span of
     /// the sequence, in any order; the spans that hold a placeholder in this page are mixed in by
-    /// absolute start, then length, then hash.
+    /// absolute start, then length, then hash, and a span listed twice counts once.
     ///
     /// # Panics
     ///
@@ -289,6 +331,7 @@ impl<H: Fn(&[u8]) -> Blake3> PrefixKeyChain<H> {
         let mut here: SmallVec<[&MediaSpan; 4]> =
             media.iter().filter(|m| m.overlaps(from, to)).collect();
         here.sort_unstable_by_key(|m| (m.start, m.len, m.hash.0));
+        here.dedup();
         for span in here {
             self.buf.extend_from_slice(&span.start.to_le_bytes());
             self.buf.extend_from_slice(&span.len.to_le_bytes());

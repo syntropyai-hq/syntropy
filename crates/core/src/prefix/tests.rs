@@ -55,7 +55,7 @@ fn settings() -> KvSettings {
         windows: vec![None, Some(4096), None, Some(4096)],
         compression: vec![None, None, None, None],
         knobs: ApproxKnobs::empty(),
-        kv_lossy: None,
+        params: ApproxParams::default(),
     }
 }
 
@@ -146,12 +146,33 @@ fn every_kv_affecting_setting_changes_the_root_key() {
             "the kv_lossy knob",
             Box::new(|s| {
                 s.knobs = ApproxKnobs::KV_LOSSY;
-                s.kv_lossy = Some(KvDType::Q8 { block: 32 });
+                s.params.kv_lossy = Some(KvDType::Q8 { block: 32 });
             }),
         ),
         (
             "the approx_attention knob",
             Box::new(|s| s.knobs = ApproxKnobs::APPROX_ATTENTION),
+        ),
+        // The knobs that change K and V through the forward pass (review B1 on #1942).
+        (
+            "the expert_skip knob",
+            Box::new(|s| s.knobs = ApproxKnobs::EXPERT_SKIP),
+        ),
+        (
+            "the expert_defer knob",
+            Box::new(|s| s.knobs = ApproxKnobs::EXPERT_DEFER),
+        ),
+        (
+            "the topk_reduce knob",
+            Box::new(|s| s.knobs = ApproxKnobs::TOPK_REDUCE),
+        ),
+        (
+            "the miss_low_precision knob",
+            Box::new(|s| s.knobs = ApproxKnobs::MISS_LOW_PRECISION),
+        ),
+        (
+            "the wire_compress knob",
+            Box::new(|s| s.knobs = ApproxKnobs::WIRE_COMPRESS),
         ),
     ];
     let mut seen = vec![r0];
@@ -167,13 +188,99 @@ fn every_kv_affecting_setting_changes_the_root_key() {
     let lossy = |block| {
         let mut s = base.clone();
         s.knobs = ApproxKnobs::KV_LOSSY;
-        s.kv_lossy = Some(KvDType::Q8 { block });
+        s.params.kv_lossy = Some(KvDType::Q8 { block });
         root(&s, &scope, PrefixScopeMode::Principal)
     };
     assert_ne!(lossy(32), lossy(64));
 }
 
 /// Settings that store the same KV give the same key: the normal form.
+/// Every knob but `SPEC_LENIENT` is a KV knob, a knob added later included; each knob's
+/// parameter counts while the knob is on and not while it is off.
+#[test]
+fn every_forward_pass_knob_and_its_parameter_counts() {
+    assert_eq!(
+        KV_KNOBS,
+        ApproxKnobs::all().difference(ApproxKnobs::SPEC_LENIENT)
+    );
+    assert!(!KV_KNOBS.contains(ApproxKnobs::SPEC_LENIENT));
+    let base = settings();
+    let scope = PrefixScope::default();
+    let root_of = |s: &KvSettings| root(s, &scope, PrefixScopeMode::Principal);
+    let with = |knobs, params: ApproxParams| {
+        let mut s = base.clone();
+        s.knobs = knobs;
+        s.params = params;
+        root_of(&s)
+    };
+    let mlp = |scheme| ApproxParams {
+        miss_low_precision: Some(scheme),
+        ..ApproxParams::default()
+    };
+    let wire = |dtype| ApproxParams {
+        wire_compress: Some(dtype),
+        ..ApproxParams::default()
+    };
+    let q4 = crate::quant::QuantScheme::Ggml(crate::dtype::GgmlType::Q4_0);
+    let q8 = crate::quant::QuantScheme::Ggml(crate::dtype::GgmlType::Q8_0);
+    assert_ne!(
+        with(ApproxKnobs::MISS_LOW_PRECISION, mlp(q4)),
+        with(ApproxKnobs::MISS_LOW_PRECISION, mlp(q8))
+    );
+    assert_ne!(
+        with(
+            ApproxKnobs::WIRE_COMPRESS,
+            wire(crate::plan::WireDType::F16)
+        ),
+        with(
+            ApproxKnobs::WIRE_COMPRESS,
+            wire(crate::plan::WireDType::Q8B32)
+        )
+    );
+    // Off, a parameter is not in the key.
+    assert_eq!(with(ApproxKnobs::empty(), mlp(q4)), root_of(&base));
+    assert_eq!(
+        with(ApproxKnobs::empty(), wire(crate::plan::WireDType::F16)),
+        root_of(&base)
+    );
+}
+
+/// A sequence's own knobs, from `SequenceOpen::exactness`, join the instance's: an approximate
+/// sequence on an exact instance gets other keys than an exact sequence (review B1 on #1942).
+#[test]
+fn an_approximate_sequence_on_an_exact_instance_gets_other_keys() {
+    let instance = settings();
+    let scope = PrefixScope::default();
+    let root_of = |s: &KvSettings| root(s, &scope, PrefixScopeMode::Principal);
+    let exact = instance.with_sequence(&ExactnessPolicy::Exact);
+    assert_eq!(exact, instance);
+    for knob in [
+        ApproxKnobs::EXPERT_SKIP,
+        ApproxKnobs::TOPK_REDUCE,
+        ApproxKnobs::EXPERT_DEFER,
+    ] {
+        let seq = instance.with_sequence(&ExactnessPolicy::Approximate {
+            knobs: knob,
+            params: ApproxParams::default(),
+        });
+        assert_eq!(seq.knobs, knob);
+        assert_ne!(root_of(&seq), root_of(&exact), "{knob:?}");
+    }
+    // A sequence's parameter takes the place of the instance's; its knobs add to the instance's.
+    let mut lossy = instance.clone();
+    lossy.knobs = ApproxKnobs::KV_LOSSY;
+    lossy.params.kv_lossy = Some(KvDType::Q8 { block: 32 });
+    let seq = lossy.with_sequence(&ExactnessPolicy::Approximate {
+        knobs: ApproxKnobs::EXPERT_SKIP,
+        params: ApproxParams {
+            kv_lossy: Some(KvDType::Q8 { block: 64 }),
+            ..ApproxParams::default()
+        },
+    });
+    assert_eq!(seq.knobs, ApproxKnobs::KV_LOSSY | ApproxKnobs::EXPERT_SKIP);
+    assert_eq!(seq.params.kv_lossy, Some(KvDType::Q8 { block: 64 }));
+}
+
 #[test]
 fn what_does_not_change_kv_does_not_change_the_key() {
     let base = settings();
@@ -181,12 +288,12 @@ fn what_does_not_change_kv_does_not_change_the_key() {
     let r0 = root(&base, &scope, PrefixScopeMode::Principal);
     let same: Vec<Change> = vec![
         (
-            "a knob that does not touch KV",
-            Box::new(|s| s.knobs = ApproxKnobs::EXPERT_SKIP | ApproxKnobs::WIRE_COMPRESS),
+            "spec_lenient, the one knob that does not change KV",
+            Box::new(|s| s.knobs = ApproxKnobs::SPEC_LENIENT),
         ),
         (
             "kv_lossy's dtype with the knob off",
-            Box::new(|s| s.kv_lossy = Some(KvDType::Q8 { block: 32 })),
+            Box::new(|s| s.params.kv_lossy = Some(KvDType::Q8 { block: 32 })),
         ),
         (
             "a per-layer dtype equal to the default",
@@ -283,23 +390,24 @@ fn the_settings_bytes_are_pinned() {
 }
 
 /// `settings()`'s bytes: the domain, then a struct (`0b`) of 10 fields by name, `compression`
-/// first and `windows` last; enums by variant name (`F16`, `Native`); `knobs` as its `u32` bits.
+/// first and `windows` last; enums by variant name (`F16`, `Native`); `knobs` as its `u32` bits;
+/// `params` as a struct of no fields while every knob is off.
 const PINNED_SETTINGS_HEX: &str = concat!(
     "73796e74726f70792f6b762d73657474696e67732f76310b0a00000000000000070b000000000000",
     "00636f6d7072657373696f6e0904000000000000000000000007050000000000000064747970650c",
     "07030000000000000046313600070c0000000000000064747970655f6c6179657273090100000000",
     "0000000902000000000000000303000000000000000c070300000000000000463332000705000000",
-    "000000006b6e6f62730300000000000000000708000000000000006b765f6c6f73737900070e0000",
-    "00000000006c61796f75745f76657273696f6e030100000000000000070b00000000000000706167",
-    "655f746f6b656e73034000000000000000070400000000000000726f70650901000000000000000b",
-    "040000000000000007040000000000000062617365060000000080841e4107070000000000000066",
-    "6163746f72730a0200000000000000070600000000000000666163746f7206000000000000204007",
-    "0f000000000000006c6f775f667265715f666163746f7206000000000000f03f0710000000000000",
-    "006f726967696e616c5f636f6e74657874010300200000000000000707000000000000007363616c",
-    "696e67010706000000000000006c6c616d613307060000000000000073746f726564090200000000",
-    "0000000c0706000000000000004e6174697665000c0706000000000000004e617469766500070700",
-    "00000000000077696e646f7773090400000000000000000103001000000000000000010300100000",
-    "00000000",
+    "000000006b6e6f6273030000000000000000070e000000000000006c61796f75745f76657273696f",
+    "6e030100000000000000070b00000000000000706167655f746f6b656e7303400000000000000007",
+    "0600000000000000706172616d730b0000000000000000070400000000000000726f706509010000",
+    "00000000000b040000000000000007040000000000000062617365060000000080841e4107070000",
+    "0000000000666163746f72730a0200000000000000070600000000000000666163746f7206000000",
+    "0000002040070f000000000000006c6f775f667265715f666163746f7206000000000000f03f0710",
+    "000000000000006f726967696e616c5f636f6e746578740103002000000000000007070000000000",
+    "00007363616c696e67010706000000000000006c6c616d613307060000000000000073746f726564",
+    "0902000000000000000c0706000000000000004e6174697665000c0706000000000000004e617469",
+    "76650007070000000000000077696e646f7773090400000000000000000103001000000000000000",
+    "01030010000000000000",
 );
 
 #[test]
@@ -436,6 +544,32 @@ fn media_records_have_a_fixed_order_and_width() {
     );
     assert_eq!(&records[8..40], &[0xB; 32]);
     assert_eq!(&records[40..48], &[2, 0, 0, 0, 1, 0, 0, 0]);
+}
+
+/// A media span listed twice counts once (review N2 on #1942).
+#[test]
+fn a_media_span_listed_twice_counts_once() {
+    let s = settings();
+    let h = s.hash_with(mix);
+    let toks = tokens(64, 6);
+    let span = MediaSpan {
+        start: 3,
+        len: 10,
+        hash: Blake3([4; 32]),
+    };
+    let key = |media: &[MediaSpan]| {
+        PrefixKeyChain::new(
+            mix,
+            model(),
+            h,
+            &PrefixScope::default(),
+            PrefixScopeMode::Principal,
+            64,
+        )
+        .push_tokens(&toks, media)
+    };
+    assert_eq!(key(&[span, span]), key(&[span]));
+    assert_ne!(key(&[span]), key(&[]));
 }
 
 #[test]
