@@ -41,3 +41,24 @@ pub mod trace;
 pub use cost_term::CostTerm;
 pub use drain::{DRAIN_PERIOD, Drain, DrainReport};
 pub use telemetry::TelemetryRecord;
+
+/// The test-only features (RFC-0001 §4.2 rule 10) this build of the crate has on. The binary's
+/// build metadata lists them (`cli`'s `build_id::features`, RFC-0062 §8.1), since cargo's
+/// feature unification can turn one on without the binary's own crate seeing it.
+pub const TEST_FEATURES: &[&str] = if cfg!(feature = "fault-injection") {
+    &["fault-injection"]
+} else {
+    &[]
+};
+
+#[cfg(test)]
+mod feature_tests {
+    /// `TEST_FEATURES` names `fault-injection` exactly when it is on.
+    #[test]
+    fn test_features_name_what_is_on() {
+        assert_eq!(
+            super::TEST_FEATURES.contains(&"fault-injection"),
+            cfg!(feature = "fault-injection")
+        );
+    }
+}

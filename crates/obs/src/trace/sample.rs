@@ -121,7 +121,7 @@ impl StepSampler {
     ) -> Option<TraceContext> {
         let full = sequence.full_trace();
         self.sampled(&sequence.trace_id, step, kind, full)
-            .then(|| TraceContext {
+            .then_some(TraceContext {
                 version: 0,
                 trace_id: sequence.trace_id,
                 span_id,

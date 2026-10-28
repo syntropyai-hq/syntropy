@@ -56,7 +56,7 @@ fn hex_into(field: &[u8], out: &mut [u8]) -> Option<()> {
     if field.len() != out.len() * 2 {
         return None;
     }
-    for (o, pair) in out.iter_mut().zip(field.chunks_exact(2)) {
+    for (o, pair) in out.iter_mut().zip(field.as_chunks::<2>().0) {
         *o = hex_byte(pair)?;
     }
     Some(())
