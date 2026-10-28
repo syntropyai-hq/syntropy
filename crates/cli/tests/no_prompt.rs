@@ -83,4 +83,5 @@ fn every_command_with_stdin_closed_and_term_dumb_never_prompts() {
             );
         }
     }
+    let _ = std::fs::remove_dir_all(&home);
 }
