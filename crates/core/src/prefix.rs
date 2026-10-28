@@ -141,8 +141,9 @@ pub struct KvSettings {
     /// Each layer's compression ratio, tokens per compressed entry, if it compresses.
     pub compression: Vec<Option<u16>>,
     /// The approximate knobs in effect for the sequence: the instance's, together with the
-    /// sequence's own from `SequenceOpen::exactness` (RFC-0001 §5.8), which the head reads when
-    /// the sequence opens ([`with_sequence`](Self::with_sequence)). Only [`KV_KNOBS`] count.
+    /// sequence's own per-sequence knobs from `SequenceOpen::exactness` (RFC-0001 §5.8), which the
+    /// head reads when the sequence opens ([`with_sequence`](Self::with_sequence)). Only
+    /// [`KV_KNOBS`] count.
     pub knobs: ApproxKnobs,
     /// The knobs' parameters. Each counts only while its knob is on.
     pub params: ApproxParams,
@@ -180,25 +181,35 @@ impl KvSettings {
         }
     }
 
-    /// The settings for a sequence that opened with `exactness`: its knobs join the instance's,
-    /// and a parameter it names takes the place of the instance's. An `Exact` sequence leaves the
-    /// settings as they are. A sequence's pages are keyed under these, so pages an approximate
-    /// sequence computed never match an exact sequence's keys (D3).
+    /// The settings for a sequence that opened with `exactness`: its
+    /// [`PER_SEQUENCE`](ApproxKnobs::PER_SEQUENCE) knobs join the instance's. An `Exact` sequence
+    /// leaves the settings as they are. A sequence's pages are keyed under these, so pages an
+    /// approximate sequence computed never match an exact sequence's keys (D3).
+    ///
+    /// A [`PER_INSTANCE`](ApproxKnobs::PER_INSTANCE) knob changes the plan, so it applies to
+    /// every sequence of the instance or to none (RFC-0054 §4.2). The pages are stored as the
+    /// instance's knobs and parameters say, whatever the sequence asked for. So the sequence's
+    /// per-instance knobs and their parameters are left out, and the key follows what is stored.
     #[must_use]
     pub fn with_sequence(&self, exactness: &ExactnessPolicy) -> KvSettings {
         match exactness {
             ExactnessPolicy::Exact => self.clone(),
-            ExactnessPolicy::Approximate { knobs, params } => KvSettings {
-                knobs: self.knobs.union(*knobs),
-                params: ApproxParams {
-                    miss_low_precision: params
-                        .miss_low_precision
-                        .or(self.params.miss_low_precision),
-                    kv_lossy: params.kv_lossy.or(self.params.kv_lossy),
-                    wire_compress: params.wire_compress.or(self.params.wire_compress),
-                },
-                ..self.clone()
-            },
+            ExactnessPolicy::Approximate { knobs, params } => {
+                // Every parameter `ApproxParams` holds today belongs to a per-instance knob, so
+                // none comes from the sequence. A per-sequence knob's parameter, when its M3 task
+                // adds one, joins here: naming every field makes that task decide.
+                let ApproxParams {
+                    miss_low_precision: _,
+                    kv_lossy: _,
+                    wire_compress: _,
+                } = params;
+                KvSettings {
+                    knobs: self
+                        .knobs
+                        .union(knobs.intersection(ApproxKnobs::PER_SEQUENCE)),
+                    ..self.clone()
+                }
+            }
         }
     }
 
