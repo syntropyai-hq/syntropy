@@ -421,6 +421,13 @@ fn a_bad_table_is_refused() {
     zero[HEADER_BYTES + 8..HEADER_BYTES + 12].copy_from_slice(&0u32.to_le_bytes());
     bad(ChunkTable::decode(&zero), "a zero length");
     bad(edit(HEADER_BYTES + RECORD_BYTES, 1), "a gap");
+    let mut long = good.clone();
+    long[HEADER_BYTES + 8..HEADER_BYTES + 12].copy_from_slice(&(4u32 << 20 | 1).to_le_bytes());
+    bad(ChunkTable::decode(&long), "a record over 4 MiB");
+    let mut past = good.clone();
+    let last = HEADER_BYTES + 2 * RECORD_BYTES;
+    past[last + 8..last + 12].copy_from_slice(&1000u32.to_le_bytes());
+    bad(ChunkTable::decode(&past), "a record past the file");
     let mut short = good.clone();
     short[48..56].copy_from_slice(&1001u64.to_le_bytes());
     bad(ChunkTable::decode(&short), "records short of the file");

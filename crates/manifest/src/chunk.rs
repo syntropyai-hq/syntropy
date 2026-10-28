@@ -317,8 +317,8 @@ impl ChunkRecord {
     ///
     /// # Errors
     ///
-    /// [`ChunkError::BadTable`] for a flag bit RFC-0041 §6.2 does not define, a zero length, or
-    /// an uncommitted record with an evidence form or a non-zero ID.
+    /// [`ChunkError::BadTable`] for a flag bit RFC-0041 §6.2 does not define, a length of 0 or
+    /// above [`CHUNK_BYTES`], or an uncommitted record with an evidence form or a non-zero ID.
     pub fn decode(bytes: &[u8; RECORD_BYTES]) -> Result<ChunkRecord, ChunkError> {
         let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
         let offset = u64::from_le_bytes(bytes[0..8].try_into().expect("8 bytes"));
@@ -329,6 +329,10 @@ impl ChunkRecord {
         }
         if len == 0 {
             return Err(ChunkError::BadTable("a record has length 0"));
+        }
+        // A table is read from disk or a peer: no record may claim more than one chunk's bytes.
+        if u64::from(len) > CHUNK_BYTES {
+            return Err(ChunkError::BadTable("a record is longer than 4 MiB"));
         }
         let id: [u8; 32] = bytes[16..48].try_into().expect("32 bytes");
         let evidence = EvidenceForm::from_bits(flags >> EVIDENCE_SHIFT);
@@ -403,7 +407,9 @@ impl ChunkTable {
     ///
     /// [`ChunkError::BadTable`] for a wrong magic or version, a non-zero reserved word, a length
     /// that disagrees with the entry count, a bad record, or records that do not tile the file
-    /// from offset 0 in order.
+    /// from offset 0 in order. A table that decodes says only that it is well formed; a reader
+    /// that uses its boundaries checks them against the chunks it computes from the file's
+    /// header ([`gguf_chunks`], [`safetensors_chunks`]), which are the source of truth.
     pub fn decode(bytes: &[u8]) -> Result<ChunkTable, ChunkError> {
         let header = bytes
             .get(..HEADER_BYTES)
@@ -434,7 +440,10 @@ impl ChunkTable {
             if record.chunk.offset != at {
                 return Err(ChunkError::BadTable("the records do not tile the file"));
             }
-            at = record.chunk.end();
+            at = at
+                .checked_add(u64::from(record.chunk.len))
+                .filter(|&end| end <= file_len)
+                .ok_or(ChunkError::BadTable("a record runs past the file"))?;
             records.push(record);
         }
         if at != file_len {
