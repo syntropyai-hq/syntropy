@@ -11,12 +11,14 @@
 //! (RFC-0043 §4, §5.2); expert slicing ([`slice`](mod@slice), RFC-0041 §2.1, §2.2), which turns a
 //! stacked expert tensor into one record per expert with its own extent; a model's identity:
 //! each source file's `FileDigest` and the v1 `ModelId` ([`identity`], RFC-0041 §1); and the KV
-//! formula ([`kv`], RFC-0022 §2), whose `stored` and `read_per_step` size KV for every party.
+//! formula ([`kv`], RFC-0022 §2), whose `stored` and `read_per_step` size KV for every party;
+//! and chunk boundaries with the chunk-table format ([`chunk`], RFC-0041 §6.1, §6.2).
 //! The census builder, the manifest and the pack sidecar come with later tasks.
 
 #![forbid(unsafe_code)]
 
 pub mod census;
+pub mod chunk;
 pub mod config;
 pub mod gguf;
 pub mod hparams;

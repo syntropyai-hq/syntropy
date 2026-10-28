@@ -456,6 +456,22 @@ A shard therefore maps to whole chunks with no over-fetch, and identical tensor 
 
 Record count is `Σ over boundary runs of ⌈run / 4 MiB⌉`, because rule 2 forces a boundary at every expert slice. For a Kimi-K3-class model, ≈ 1.4 TB over ≈ 250 K expert records (§3.2) is ≈ 5.6 MB per record, two chunks each, so ≈ 500 K records and ≈ 24 MB of table per model [estimate]. ADR-0016's ≈ 335 K assumed no forced boundaries.
 
+**Revision note, 2026-10-28 (COMP-E12-T01): the header's widths, as `syntropy_manifest::chunk` writes them.** The text names the header's fields and their order. Their widths and positions, every integer little-endian, are:
+- bytes 0–7: the magic `SYNCHNK1`;
+- 8–11: the version, a u32, 1;
+- 12–15: reserved and zero, so the digest starts on a 16-byte boundary;
+- 16–47: the `FileDigest`;
+- 48–55: the file length, a u64;
+- 56–63: the entry count, a u64.
+
+The records are as the table above gives them. A reader refuses:
+- an undefined flag bit, or a record of length 0;
+- an uncommitted record that carries an evidence form or a non-zero ID;
+- a length that disagrees with the entry count;
+- records that do not tile the file from offset 0.
+
+On boundaries (§6.1), rule 2's auxiliary-extent starts are of two kinds. An unstacked weight's scale, zero-point or global-scale tensor is a tensor of the file, so its start is a tensor start. A stacked expert tensor's auxiliary tensor is stacked too, MXFP4's `W_blocks` and `W_scales` for example, and expert *e*'s auxiliary extent is that tensor's *e*-th slice (§2.1, §2.2), which starts inside it. So the caller passes the slices of every stacked tensor, weights and auxiliary tensors alike, and each expert's scale slice starts a chunk of its own. Each 4 MiB step of rule 3 counts from its run's start. A reader of a stored or received table also refuses a record longer than 4 MiB or one that runs past the file, and uses the table only if it matches the chunks it computes from the header (`ChunkTable::matches`).
+
 #### 6.3 How chunk IDs become known (ADR-0412)
 
 No node needs to hold a whole file, so a chunk's BLAKE3 can only be computed by a node that holds the chunk. **The first fetcher is never the sole authority.** A batch of chunk IDs binds the cluster only with evidence, in one of RFC-0034 §10.1's three forms:
