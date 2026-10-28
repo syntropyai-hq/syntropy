@@ -17,13 +17,15 @@
 //! keeps its own dtype ([`AuxKv::dtype`]).
 //!
 //! [`dtype`] holds RFC-0042 §4.2's rule that fills [`KvFormula::dtype`] per family and source,
-//! and the instance's `kv_dtype` override.
+//! and the instance's `kv_dtype` override. [`KvFormula::kv_settings`] gives the formula's part of
+//! RFC-0022 §7.1's `KvSettings`, which prefix keys hash.
 
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 use syntropy_core::plan::KvDType;
-use syntropy_core::{Bytes, DType, LayerIx};
+use syntropy_core::policy::{ApproxKnobs, ApproxParams};
+use syntropy_core::{Bytes, DType, KvSettings, LayerIx, RopeSettings};
 
 /// KV and recurrent-state size per layer (RFC-0001 §5.3, RFC-0022 §2). Owner: RFC-0022.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +217,49 @@ impl std::fmt::Display for KvFormulaError {
 impl std::error::Error for KvFormulaError {}
 
 impl KvFormula {
+    /// RFC-0022 §7.1's `KvSettings` for an instance of this model: the formula gives the
+    /// dtype per layer (in normal form), the layout version, and each layer's window and
+    /// compression ratio; the caller gives `P`, the stored `KvDType` of each page class, the
+    /// resolved RoPE configurations and the instance's knobs and their parameters, which the
+    /// formula does not hold. A sequence's own knobs join them through `KvSettings::with_sequence`.
+    /// [`KvSettings::hash_with`] then gives `kv_settings_hash`.
+    #[must_use]
+    pub fn kv_settings(
+        &self,
+        page_tokens: u32,
+        stored: Vec<KvDType>,
+        rope: Vec<RopeSettings>,
+        knobs: ApproxKnobs,
+        params: ApproxParams,
+    ) -> KvSettings {
+        let dtype = self.dtype.normalized();
+        let (windows, compression) = self
+            .layers
+            .iter()
+            .map(|layer| match *layer {
+                LayerKv::PerToken { window, .. } => (window, None),
+                LayerKv::Compressed {
+                    window,
+                    tokens_per_entry,
+                    ..
+                } => (window, Some(tokens_per_entry)),
+                LayerKv::Fixed { .. } | LayerKv::Sparse { .. } => (None, None),
+            })
+            .unzip();
+        KvSettings {
+            page_tokens,
+            stored,
+            dtype: dtype.default,
+            dtype_layers: dtype.layers,
+            layout_version: self.layout_version,
+            rope,
+            windows,
+            compression,
+            knobs,
+            params,
+        }
+    }
+
     /// A formula with these layers, no auxiliary cache, `dtype` everywhere and layout version 0.
     #[must_use]
     pub fn new(layers: Vec<LayerKv>, dtype: DType) -> Self {
@@ -428,5 +473,7 @@ pub mod dtype;
 
 pub use dtype::{KvDTypeError, KvDTypeOverride, KvDTypeRule, KvDTypeSection, KvSource};
 
+#[cfg(test)]
+mod prefix_tests;
 #[cfg(test)]
 mod tests;

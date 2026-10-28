@@ -176,8 +176,8 @@ impl From<Vec<u32>> for TokenSlice {
 }
 
 /// A page key of the prefix index: `k_b`, the BLAKE3 chain over a prefix's pages (RFC-0022
-/// §7.1), named in `PrefixRef::Cached` for the last full page a sequence shares. TIER-E7-T01
-/// computes it. Owner: RFC-0022.
+/// §7.1), named in `PrefixRef::Cached` for the last full page a sequence shares.
+/// [`PrefixKeyChain`](crate::prefix::PrefixKeyChain) computes it. Owner: RFC-0022.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PrefixKey(pub Blake3);

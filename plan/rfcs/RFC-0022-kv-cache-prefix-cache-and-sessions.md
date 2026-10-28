@@ -359,6 +359,26 @@ k_b    = BLAKE3(k_(b−1) ‖ scope_salt ‖ tokens[b·P .. (b+1)·P] as u32 lit
 
 `PrefixKey` (RFC-0001 §5.9) is `k_b` for the last full page a sequence shares.
 
+**Revision note, 2026-10-28 (TIER-E7-T01): the bytes the keys hash.** `syntropy_core::prefix` builds the keys. `core` links no hasher (RFC-0001 §4.2 rule 1), so the caller passes BLAKE3 in, as for `InstancePolicy::digest_with`. The text above leaves the following open. Each choice is **for the maintainers to confirm**, and golden keys in `manifest` pin them:
+- **`kv_settings_hash`** (G3) is `BLAKE3("syntropy/kv-settings/v1" ‖ canon(KvSettings))`. `canon` is RFC-0054 §4.5's canonical encoding: fields by name, maps sorted, floats by bit pattern. It is applied to the normal form:
+  - the per-layer dtype exceptions are sorted, each layer appears once, and none equals the default;
+  - the knobs are masked to those that change KV (below);
+  - each knob's parameter is dropped while that knob is off.
+
+  Settings that store the same KV thus hash the same, and the bytes depend on no host, build or map order. `KvSettings` holds the settings the text lists: the stored `KvDType` of each page class, `KvFormula::dtype` and `layout_version`, `P`, the RoPE configurations (base, scaling type, factors by name, original context length), each layer's window and compression ratio, and the knobs with their parameters. `KvFormula::kv_settings` fills the formula's part.
+- **The knobs that touch KV: every knob except `spec_lenient`** (G4).
+  - `kv_lossy` and `approx_attention` change what is stored or kept.
+  - `expert_skip`, `expert_defer`, `topk_reduce`, `miss_low_precision` and `wire_compress` change the hidden states of the forward pass, and so the K and V every later layer stores for the same tokens.
+  - `spec_lenient` changes which drafted tokens are accepted, not the KV of a given token sequence.
+
+  The mask is the complement of `spec_lenient`, so a knob added later counts unless it is taken out: an unknown knob fails toward a cache miss. When `approx_attention` or any per-sequence knob gains parameters, they join `KvSettings::params`.
+
+  The knobs in the key are the instance's together with the sequence's own: `expert_skip`, `expert_defer` and `topk_reduce` can be on for one sequence of an exact instance (RFC-0001 §5.8 `SequenceOpen::exactness`). The head reads them when the sequence opens and keys its pages under `KvSettings::with_sequence`. So an approximate sequence's pages never match an exact sequence's keys, which D3 requires: ADR-0019 decision 4 names prefix-cache reuse among the exact-mode paths. A maintainer may prefer the alternative: an approximate sequence neither inserts into the prefix index nor reads from it.
+- **The local principal's `scope_salt`** (G2) is the 16 bytes `"syntropy/local\0\0"`.
+- **`shared_salt` under `kv.prefix_scope = instance`** is the 16 bytes `"syntropy/instanc"`, and no page then carries a `scope_salt`. Every client shares one cache, kept apart from principal-scope keys by the root. Instance scope shares prefixes across principals **by design**: it is the opt-in this section describes, not a leak.
+- **The two constants** differ from each other and from where a principal's salt can be. The instance salt appears only in `k_root`'s input, where principal scope puts nothing, and a scope salt appears only in a page's input. The local salt is ASCII text, while a principal's salt is a credential's hash, so the two meet only by a 128-bit collision.
+- **Non-text inputs** (G1). A media item's placeholder IDs are the same for every image. So a page that holds any of a media item's placeholders appends, after its tokens, one fixed-width 40-byte record per such item: the span's absolute start and length (u32 LE each) and its 32-byte content hash (RFC-0050 §2.1's `ContentPart::Media::hash`). The records go in order of absolute start, then length, then hash, and a span listed twice counts once. The token bytes are always exactly `4·P`, so a record cannot be read as tokens. A page with no media hashes exactly the bytes above. A different image therefore changes the key of the first page that holds it and of every later page. RFC-0050 §2.1 points here for this rule, and this note is where it is defined.
+
 #### 7.2 Index
 
 Every stage keeps a `PrefixIndex`: a hash map from page key to node, which forms a radix tree whose edges are whole pages.

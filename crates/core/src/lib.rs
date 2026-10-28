@@ -23,6 +23,7 @@ pub mod numerics;
 pub mod parity;
 pub mod plan;
 pub mod policy;
+pub mod prefix;
 pub mod pressure;
 pub mod protocol;
 pub mod quant;
@@ -56,6 +57,7 @@ pub use policy::{
     ApproxFlags, ApproxKnobs, ApproxParams, ExactnessPolicy, Fidelity, InstancePolicy,
     NetworkScope, Objective, ResourceOverlay, ResourcePolicy,
 };
+pub use prefix::{KvSettings, MediaSpan, PrefixKeyChain, PrefixScopeMode, RopeSettings};
 pub use pressure::PressureLevel;
 pub use protocol::{Outbox, ProtocolCore};
 pub use quant::{CtScheme, DTypeClass, ModelClassError, QuantScheme, ScaleGranularity};
