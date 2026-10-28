@@ -14,6 +14,12 @@
 //!   written before the drop, which [`Channel::recv`](super::Channel::recv) reports as
 //!   [`RecvError::Closed`](super::RecvError::Closed). A write to a closed peer fails with
 //!   `BrokenPipe`.
+//! - **The buffer is unbounded.** A write never blocks or fails for space. The command channel
+//!   carries control messages only, never per-token traffic (RFC-0001 §3.5), so what is queued is
+//!   bounded by the protocol's own message rate. The simulator drives both ends from one thread
+//!   and drains each end as it steps, so it needs no backpressure here. Backpressure on bulk data
+//!   belongs to the shared-memory rings, which are fixed-size (RFC-0001 §3.5, §8.3). No RFC asks
+//!   for a bound on this channel.
 //! - A read blocks until bytes or end-of-file arrive. [`MemoryStream::set_nonblocking`] makes it
 //!   return `WouldBlock` instead, for a caller that drives both ends from one thread, as the
 //!   simulator does (RFC-0060 §2.3). A [`Channel`](super::Channel) writes each frame in one write
