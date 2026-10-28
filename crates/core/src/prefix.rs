@@ -18,7 +18,7 @@
 //! is built here.
 //!
 //! - **[`KvSettings`]** holds every setting RFC-0022 §7.1 lists. [`KvSettings::canonical_bytes`]
-//!   writes its normal form through [`canon`](crate::canon): fields by name, maps sorted, floats
+//!   writes its normal form through [`canon`]: fields by name, maps sorted, floats
 //!   by bit pattern, so the bytes depend only on the values, never on the host, the build, a
 //!   `Hash` derive or a map's order. Equal settings give equal bytes on every run.
 //! - **[`PrefixKeyChain`]** computes `k_root` and then one key per full page, in order.
