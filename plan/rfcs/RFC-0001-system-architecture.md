@@ -3130,3 +3130,14 @@ COMP-E13-T06 builds RFC-0042 §4.2's KV dtype rule and its override. The overrid
 | Change | Sections touched | Reason |
 |---|---|---|
 | RFC-0043 §10's node key `models.<name>.kv_dtype` becomes the instance key `kv_dtype` of a `[policy."<selector>"]` table, taking `f16`, `bf16` or `f32` | RFC-0043 §10 (dated note); RFC-0054 §5.4 (a row and a dated note); RFC-0042 §4.2 (dated note on the rule) | RFC-0054 §5.1 keeps per-model policies out of `models.*`, as it did for `chat_template`. A node-scope dtype would let two ingress nodes build different instances of one model, which breaks the idempotence of `EnsureInstance` (RFC-0054 §6.1). The override replaces only the source's default. It is refused where it would narrow that default, or replace a family requirement or a declared FP8 cache, so lower precision stays `approximate.kv_lossy` (D3; RFC-0042 §4.2, note of 2026-10-28) |
+
+### 18.49 Span records reach the daemon through the `telemetry` ring (2026-10-28)
+
+PROD-E8-T07 builds local tracing (RFC-0053 §3.1–§3.4).
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| Hot threads write 64-byte `SpanRecord`s into in-process rings, and housekeeping batches them into a new last `TelemetryRecord` variant, `Spans`; `ipc_protocol` goes from 3.0 to 3.1 | §3.5 (the `telemetry` ring's records); RFC-0053 §3.4 (dated note) | RFC-0053 §3.4 has housekeeping batch the spans into `TelemetryRecord::Spans`, so no new shared-memory ring is needed. Appending a variant keeps every earlier variant's index and layout, so the change is compatible and moves the minor |
+| `SpanRecord` holds four attributes, not six, to stay 64 bytes | RFC-0053 §3.4 (dated note) | the six of §3.4 make a 70-byte record; a step's term durations come from its `StepRecord` |
+
+Taken under the maintainers' standing instruction, for the maintainers to confirm.

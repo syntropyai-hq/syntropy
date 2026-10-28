@@ -15,10 +15,14 @@
 //!   full;
 //! - [`timeline`]: hot-thread time through a `TickSource`, the only time `obs` reads (RFC-0060
 //!   §2.1 rule T1);
+//! - [`trace`]: local tracing: the span model, the 64-byte span record and its writer, the head's
+//!   step sampling, `traceparent` in and out, the flight recorder and the `obs.trace.*` keys
+//!   (RFC-0053 §3.1–§3.4; PROD-E8-T07);
 //! - the `CostTerm` key space (RFC-0053 §2.2) and the fault points of RFC-0060 §9.2
 //!   ([`faults`], [`fault_point!`]).
 //!
-//! **Hot threads.** [`metrics`]' cells, [`log`], [`ring`] and [`timeline`] run on hot threads: they
+//! **Hot threads.** [`metrics`]' cells, [`log`], [`ring`], [`timeline`] and [`trace`]'s span
+//! writer and sampler run on hot threads: they
 //! allocate nothing after `Warming`, take no lock and use no `tracing` (ADR-0012; the
 //! `hot-threads` step of `cargo xtask ci lint` rejects it there).
 
@@ -32,6 +36,7 @@ pub mod metrics;
 pub mod ring;
 pub mod telemetry;
 pub mod timeline;
+pub mod trace;
 
 pub use cost_term::CostTerm;
 pub use drain::{DRAIN_PERIOD, Drain, DrainReport};

@@ -390,7 +390,7 @@ fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
             .expect("a known variant");
         assert_eq!(runner(&msg), *want, "{name}");
     }
-    assert_eq!(PROTOCOL, IpcProtocol { major: 3, minor: 0 });
+    assert_eq!(PROTOCOL, IpcProtocol { major: 3, minor: 1 });
 }
 
 /// Why 2.0 is a major bump: a 1.1 `StateChanged` (variant 1, the state's `u32`, the epoch) does

@@ -346,6 +346,30 @@ pub struct TraceContext {
 
 Hot threads write fixed 64-byte `SpanRecord { trace_id, span_id, parent_id, name: SpanNameId, start: Nanos (monotonic), dur: u32 ns, attrs: [u32; 6] }` into a per-thread SPSC ring. Recording allocates nothing and touches no strings. Housekeeping batches the records into `TelemetryRecord::Spans`. The daemon turns them into full spans: it resolves name IDs, converts monotonic time to wall time with the node's offset, and attaches the per-term durations from the matching `StepRecord`.
 
+*Note 2026-10-28 (PROD-E8-T07, as built): `syntropy_obs::trace`.* Each point below is **for the maintainers to confirm**.
+- **The record is 64 bytes with four attributes.** The fields listed above sum to 70 bytes, not 64. `SpanRecord` is `repr(C)`, held to 64 bytes by a build-time assertion, and encoded little-endian at the same offsets:
+  - `trace_id` 0–15, `span_id` 16–23, `parent_id` 24–31;
+  - `start` (monotonic nanoseconds) 32–39, `dur` (u32 ns) 40–43;
+  - `name` (`SpanNameId`, u16) 44–45, `attr_count` (u16, at most 4) 46–47;
+  - four u32 attributes at 48–63.
+
+  The daemon takes a step's per-term durations from the matching `StepRecord`, so a span's own attributes need at most four. `SpanName::attrs` names them per span.
+- **The span ring is in-process.** Each hot thread owns its ring, through a `SpanWriter` that takes no lock and drops and counts when the ring is full. Housekeeping batches the records into a new last variant, `TelemetryRecord::Spans`, each batch as many records as fit a `telemetry` slot. So no shared-memory ring is added: `ipc_protocol` goes to 3.1, a compatible change (RFC-0001 §18.49).
+- **The sampling hash (§3.3)** is FNV-1a-64 (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`) over the 16 trace-ID bytes, then the step index as a u64 little-endian. A step is sampled when:
+  - the hash is below ⌊`obs.trace.step_sample` · 2⁶⁴⌋, which is 2⁵⁸ at the default 1/64;
+  - or it is one of the first four decode steps;
+  - or the request is a full trace.
+
+  The step index is the sequence's step counter, counting prefill chunks and decode steps alike. A prefill chunk is sampled by the hash or by a full trace only. The arithmetic is integer only, so the decision is the same on every host and in every replay.
+- **The keys**, all node scope:
+  - `obs.trace.step_sample`, a fraction, default 1/64, hot reload;
+  - `obs.trace.honor_remote_sampled`, a bool, default false, hot reload;
+  - `obs.flight_recorder`, a byte size, default 64 MiB, node reload.
+
+  `obs` declares them, and the binary registers them.
+- **The flight recorder** counts each entry at its record's size (64 bytes for a span, 48 for a log record) and evicts the oldest first. It looks traces up by trace ID.
+- **Ingress** follows §3.2. An unparseable `traceparent` counts as none: a new trace is started, and none is returned. New IDs are never all zero.
+
 #### 3.5 Clocks and hop timing
 
 - **Each node's timestamps** come from `TickSource::now()` on its monotonic `Clock` timeline (§2.1). The daemon maintains its offset to wall time.

@@ -49,13 +49,16 @@ const NET: &[&SectionSchema] = syntropy_net::config::SECTIONS;
 /// `syntropy-cluster`'s sections.
 const CLUSTER: &[&SectionSchema] = syntropy_cluster::config::SECTIONS;
 /// The sections of crates that declare one each: the API's listeners, the debug endpoints, the
-/// node's logging, the scheduler's instance keys and the model's `kv_dtype` instance key.
-const SINGLES: [&SectionSchema; 5] = [
+/// node's logging, the scheduler's instance keys, the model's `kv_dtype` instance key and the
+/// tracing keys.
+const SINGLES: [&SectionSchema; 7] = [
     &ApiSection::SCHEMA,
     &DebugSection::SCHEMA,
     &syntropy_config::logging::LoggingSection::SCHEMA,
     &syntropy_sched::SchedSection::SCHEMA,
     &syntropy_manifest::kv::KvDTypeSection::SCHEMA,
+    &syntropy_obs::trace::config::ObsSection::SCHEMA,
+    &syntropy_obs::trace::config::ObsTraceSection::SCHEMA,
 ];
 
 /// How many sections the binary links.
@@ -851,7 +854,7 @@ mod tests {
         ] {
             assert!(REGISTRY.key(prefix).is_some(), "{prefix}");
         }
-        assert_eq!(COUNT, NET.len() + CLUSTER.len() + 5);
+        assert_eq!(COUNT, NET.len() + CLUSTER.len() + 7);
     }
 
     /// `check` prints its summary as the report after the diagnostics, which holds while
@@ -890,8 +893,9 @@ mod tests {
         assert_eq!(got, want);
         assert_eq!(
             got.len(),
-            34,
-            "the sections the workspace declares on 2026-10-28, `logging` and `kv_dtype` included"
+            36,
+            "the sections the workspace declares on 2026-10-28, `logging`, `kv_dtype`, `obs` and \
+             `obs.trace` included"
         );
     }
 
