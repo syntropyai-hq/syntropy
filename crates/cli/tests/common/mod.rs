@@ -26,10 +26,11 @@ pub const BIN: &str = env!("CARGO_BIN_EXE_syntropy");
 /// The longest any one command may run before the test calls it hung.
 ///
 /// Every command these tests run is a short-lived process. With its files on a tmpfs
-/// ([`temp`]), `config set` took at most 8 ms over 100 runs [measured, debug build, shared WSL2
-/// host, 2026-10-28], and `config show --resolved` at most 62 ms over 204 runs at load averages up
-/// to 86. 20 s is more than 300 times that: it fails only a command that is stuck, and a real hang
-/// still fails well inside CI's job timeout.
+/// ([`temp`]), the slowest `config set` of 63 runs at load averages up to 42 took 782 ms, and
+/// `config show --resolved` at most 62 ms over 204 runs at load averages up to 86 [measured,
+/// 2026-10-28: a debug build of base b6c02c7a, on a shared WSL2 host, Linux x86_64, under other
+/// agents' builds]. 20 s is about 25 times the slowest: it fails only a command that is stuck,
+/// and a real hang still fails well inside CI's job timeout.
 pub const HANG: Duration = Duration::from_secs(20);
 
 /// A command for the binary with `args`, stdin closed, and no variable that could reach a real
@@ -54,10 +55,11 @@ pub fn syntropy(args: &[&str]) -> Command {
 /// (`syntropy_config::write::write_atomic`). On a disk-backed `/tmp`, an fsync waits for the file
 /// system's journal, which a busy host's other writers fill. Over 204 runs on a shared WSL2 host
 /// at load averages up to 86, a 4 KiB write and fsync on ext4 took p99 6.6 s and at most 18.6 s,
-/// and `config set` at most 17.8 s [measured, 2026-10-28]. Several such writes made one test
-/// command overrun [`HANG`]. On tmpfs an fsync has no disk to wait for: at most 3 ms. The writes
-/// these tests check are the same on either file system: the content, the modes, the rename and
-/// the refusal of a symbolic link.
+/// and `config set` at most 17.8 s [measured, 2026-10-28: a debug build of base b6c02c7a, on a
+/// shared WSL2 host, Linux x86_64, under other agents' builds]. Several such writes made one test
+/// command overrun [`HANG`]. On tmpfs an fsync has no disk to wait for. The writes these tests
+/// check are the same on either file system: the content, the modes, the rename and the refusal
+/// of a symbolic link.
 pub fn temp(tag: &str) -> PathBuf {
     let name = format!("syntropy-cli-{tag}-{}", std::process::id());
     for root in scratch_roots() {
