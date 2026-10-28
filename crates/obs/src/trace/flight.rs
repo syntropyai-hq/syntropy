@@ -6,7 +6,11 @@
 //! `syntropy logs` read from it.
 //!
 //! Each entry is counted at its record's encoded size, 64 bytes for a span and 48 for a log
-//! record, so the bound is the records' bytes, not the process's heap overhead.
+//! record, so the bound is the records' bytes, not the heap. In memory each entry is one 72-byte
+//! [`Entry`], 1.125× a span's count and 1.5× a log record's, and the deque may hold spare
+//! capacity as it grows. So the heap is about 1.1–1.5× `obs.flight_recorder` for the entries
+//! alone, by their mix [estimate, from the type sizes], before the deque's spare room
+//! (RFC-0053 §3.4, note of 2026-10-28).
 
 use std::collections::VecDeque;
 

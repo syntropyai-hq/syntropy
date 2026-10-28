@@ -168,7 +168,8 @@ pub struct SpanRecord {
     pub parent_id: [u8; 8],
     /// When it started, on the node's monotonic timeline.
     pub start: MonoTime,
-    /// How long it took, in nanoseconds.
+    /// How long it took, in nanoseconds, at most `u32::MAX` (about 4.29 s); set it through
+    /// [`SpanRecord::dur_ns`], which saturates a longer span there.
     pub dur: u32,
     /// Which span it is.
     pub name: SpanNameId,
@@ -183,6 +184,18 @@ const _: () = assert!(std::mem::size_of::<SpanRecord>() == SpanRecord::BYTES);
 impl SpanRecord {
     /// The bytes of one record.
     pub const BYTES: usize = 64;
+
+    /// A duration of `nanos` nanoseconds as the record's `dur`: `u32::MAX` for a span of
+    /// 4.29 s or more, which the daemon shows as "at least" that. A step or a hop is far shorter;
+    /// a longer root or wait span keeps its true end through its start and its children.
+    #[must_use]
+    pub const fn dur_ns(nanos: u64) -> u32 {
+        if nanos > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            nanos as u32
+        }
+    }
 
     /// The record's encoding (module docs). Part of `ipc_protocol` (RFC-0001 §3.5).
     #[must_use]

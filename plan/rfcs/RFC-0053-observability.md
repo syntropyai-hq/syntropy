@@ -367,7 +367,9 @@ Hot threads write fixed 64-byte `SpanRecord { trace_id, span_id, parent_id, name
   - `obs.flight_recorder`, a byte size, default 64 MiB, node reload.
 
   `obs` declares them, and the binary registers them.
-- **The flight recorder** counts each entry at its record's size (64 bytes for a span, 48 for a log record) and evicts the oldest first. It looks traces up by trace ID.
+- **The flight recorder** counts each entry at its record's size (64 bytes for a span, 48 for a log record) and evicts the oldest first. It looks traces up by trace ID. So `obs.flight_recorder` bounds the records' bytes, not memory. Each entry is a 72-byte value in memory, 1.125× a span's count and 1.5× a log record's, so the Performance model's 64 MiB row is about 72–96 MiB of heap by the mix of spans and logs [estimate, from the type sizes], before the deque's spare capacity.
+- **Span durations** are u32 nanoseconds, at most about 4.29 s; `SpanRecord::dur_ns` saturates a longer span there.
+- **The API side is wired.** `api`'s ingress runs `IngressTrace` on `ClientMeta::traceparent`, puts its context in `SequenceOpen::trace`, and returns `Generation::response_traceparent`. The head's sampler call, the stages' span records and the daemon's flight recorder are PROD-E8-T14's.
 - **Ingress** follows §3.2. An unparseable `traceparent` counts as none: a new trace is started, and none is returned. New IDs are never all zero.
 
 #### 3.5 Clocks and hop timing

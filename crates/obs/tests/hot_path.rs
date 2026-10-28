@@ -155,7 +155,7 @@ fn span_recording_and_step_sampling_allocate_nothing() {
                 span_id: ctx.span_id,
                 parent_id: sequence.span_id,
                 start: MonoTime(step),
-                dur: 1_000,
+                dur: SpanRecord::dur_ns(1_000 + step),
                 name: SpanName::Step.id(),
                 attr_count: 3,
                 attrs: [0, 1, step as u32, 0],

@@ -88,6 +88,17 @@ fn the_span_record_is_64_bytes_at_the_documented_offsets() {
     assert_eq!(SpanRecord::decode(&bytes), Some(record()));
 }
 
+/// A span duration saturates at `u32::MAX` nanoseconds (stand-in N1 on #1948).
+#[test]
+fn a_span_duration_saturates_at_u32_max() {
+    let max = u64::from(u32::MAX);
+    assert_eq!(SpanRecord::dur_ns(0), 0);
+    assert_eq!(SpanRecord::dur_ns(max - 1), u32::MAX - 1);
+    assert_eq!(SpanRecord::dur_ns(max), u32::MAX);
+    assert_eq!(SpanRecord::dur_ns(max + 1), u32::MAX);
+    assert_eq!(SpanRecord::dur_ns(u64::MAX), u32::MAX);
+}
+
 #[test]
 fn a_bad_span_record_is_refused() {
     let good = record().encode();
@@ -415,6 +426,13 @@ fn log(n: u64) -> LogRecord {
         at: MonoTime(n),
         args: [n, 0, 0, 0],
     }
+}
+
+/// The entry sizes the flight recorder's heap estimate rests on (N3 on #1948).
+#[test]
+fn the_flight_recorder_s_entries_are_72_bytes() {
+    assert_eq!(std::mem::size_of::<Entry>(), 72);
+    assert_eq!(std::mem::size_of::<LogRecord>(), 48);
 }
 
 #[test]
