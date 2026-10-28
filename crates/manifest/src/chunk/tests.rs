@@ -513,3 +513,129 @@ fn a_table_matches_only_the_chunks_it_was_built_from() {
     let other = chunk_file(10 << 20, 300, [300, 6 << 20]).unwrap();
     assert!(!table.matches(&other));
 }
+
+// ---- One pass, two hashes (COMP-E11-T14; RFC-0041 §4.3 step 2) ----------------------------------
+
+/// A file in memory that records every read it serves.
+struct Reads {
+    bytes: Vec<u8>,
+    reads: std::sync::Mutex<Vec<(u64, usize)>>,
+}
+
+impl RangeSource for Reads {
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), RangeError> {
+        check_bounds(offset, buf.len() as u64, self.len())?;
+        self.reads.lock().unwrap().push((offset, buf.len()));
+        buf.copy_from_slice(&self.bytes[offset as usize..offset as usize + buf.len()]);
+        Ok(())
+    }
+}
+
+fn reads(bytes: Vec<u8>) -> Reads {
+    Reads {
+        bytes,
+        reads: std::sync::Mutex::new(Vec::new()),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// The pass gives the file's SHA-256 and each chunk's BLAKE3, the same as hashing them apart,
+    /// and reads every byte exactly once, front to back.
+    #[test]
+    fn one_read_gives_the_sha_256_and_every_chunk_s_blake3(
+        len in 0usize..(9 << 20),
+        data_start in 0usize..300,
+        cuts in prop::collection::vec(0usize..(9 << 20), 0..12),
+        seed in any::<u8>(),
+    ) {
+        let data_start = data_start.min(len) as u64;
+        let bytes: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(167).wrapping_add(seed)).collect();
+        let starts: Vec<u64> = cuts.iter().map(|&c| (c.min(len) as u64).max(data_start)).collect();
+        let chunks = chunk_file(len as u64, data_start, starts).unwrap();
+        let source = reads(bytes.clone());
+        let mut seen = 0u64;
+        let (digest, ids) = hash_chunks(&source, &chunks, |n| seen += n).unwrap();
+        prop_assert_eq!(digest, FileDigest::of_bytes(&bytes));
+        prop_assert_eq!(seen, len as u64);
+        prop_assert_eq!(ids.len(), chunks.len());
+        for (c, id) in chunks.iter().zip(&ids) {
+            let want = blake3::hash(&bytes[c.offset as usize..c.end() as usize]);
+            prop_assert_eq!(id.0, *want.as_bytes(), "{:?}", c);
+        }
+        // One sequential pass: each read starts where the last ended, none is over 1 MiB.
+        let log = source.reads.lock().unwrap().clone();
+        let mut at = 0u64;
+        for (offset, n) in log {
+            prop_assert_eq!(offset, at);
+            prop_assert!(n <= 1 << 20 && n > 0);
+            at += n as u64;
+        }
+        prop_assert_eq!(at, len as u64);
+    }
+}
+
+#[test]
+fn chunks_that_do_not_tile_the_file_are_refused() {
+    let source = reads(vec![7; 1000]);
+    let whole = chunk_file(1000, 100, [100]).unwrap();
+    assert!(hash_chunks(&source, &whole, |_| {}).is_ok());
+    let mut gap = whole.clone();
+    gap[1].offset += 1;
+    let short = &whole[..whole.len() - 1];
+    let mut zero = whole.clone();
+    zero.push(Chunk {
+        offset: 1000,
+        len: 0,
+        header: false,
+    });
+    for (name, chunks) in [
+        ("a gap", gap.as_slice()),
+        ("short", short),
+        ("empty", &[][..]),
+        ("a zero chunk", zero.as_slice()),
+    ] {
+        assert_eq!(
+            hash_chunks(&source, chunks, |_| {}),
+            Err(HashError::NotTiled),
+            "{name}"
+        );
+    }
+    // An empty file has no chunks, and hashes to the SHA-256 of nothing.
+    let empty = reads(Vec::new());
+    let (digest, ids) = hash_chunks(&empty, &[], |_| {}).unwrap();
+    assert_eq!(digest, FileDigest::of_bytes(b""));
+    assert!(ids.is_empty());
+}
+
+/// A read that fails is reported, and the chunk hasher stops.
+#[test]
+fn a_failed_read_is_reported() {
+    struct Fails(u64);
+    impl RangeSource for Fails {
+        fn len(&self) -> u64 {
+            self.0
+        }
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), RangeError> {
+            if offset >= 2 << 20 {
+                return Err(RangeError::Io {
+                    kind: std::io::ErrorKind::Other,
+                    message: "the disk went away".into(),
+                });
+            }
+            buf.fill(1);
+            Ok(())
+        }
+    }
+    let chunks = chunk_file(5 << 20, 0, []).unwrap();
+    let err = hash_chunks(&Fails(5 << 20), &chunks, |_| {}).unwrap_err();
+    assert!(
+        matches!(err, HashError::Read(RangeError::Io { .. })),
+        "{err:?}"
+    );
+}

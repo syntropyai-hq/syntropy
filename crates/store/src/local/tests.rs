@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use syntropy_core::{Clock, MonoTime};
 
 use super::*;
+use syntropy_core::Blake3;
+use syntropy_manifest::chunk::{Chunk, EvidenceForm};
 
 /// A clock whose monotonic time moves on 1 ms at each reading, at a fixed virtual wall time.
 struct StepClock {
@@ -96,6 +98,7 @@ fn weights(path: &Path) -> LocalFile {
     LocalFile {
         path: path.to_owned(),
         role: SourceRole::Weights,
+        chunks: None,
     }
 }
 
@@ -125,10 +128,12 @@ fn indexing_gives_the_v1_model_id_and_records_it() {
         LocalFile {
             path: s.file("config.json", &cfg),
             role: SourceRole::Config,
+            chunks: None,
         },
         LocalFile {
             path: s.file("tokenizer.json", b"{}"),
             role: SourceRole::Tokenizer,
+            chunks: None,
         },
     ];
     let root = s.root();
@@ -714,6 +719,7 @@ fn an_empty_tag_or_no_weights_is_refused() {
     let cfg = LocalFile {
         path,
         role: SourceRole::Config,
+        chunks: None,
     };
     let err = index
         .index("llama", &[cfg], &StepClock::new(), &quiet)
@@ -731,4 +737,167 @@ fn an_empty_tag_or_no_weights_is_refused() {
         matches!(err, LocalError::Io { op: "resolve", .. }),
         "{err:?}"
     );
+}
+
+// ---- Chunk tables (COMP-E11-T14; RFC-0041 §4.3 step 2) ------------------------------------------
+
+/// A weights file with a header region and two tensors: chunks as the census would give them.
+fn weights_with_chunks(path: &Path, len: u64) -> LocalFile {
+    LocalFile {
+        path: path.to_owned(),
+        role: SourceRole::Weights,
+        chunks: Some(syntropy_manifest::chunk::chunk_file(len, 100, [100, len / 2 + 3]).unwrap()),
+    }
+}
+
+/// Checks that file `bytes`'s table is complete: it matches `chunks`, and every record holds
+/// the BLAKE3 of its chunk's bytes, computed here apart from the indexer.
+fn assert_table_complete(index: &LocalIndex<'_>, bytes: &[u8], chunks: &[Chunk]) {
+    let table = index.chunk_table(FileDigest::of_bytes(bytes)).unwrap();
+    assert_eq!(table.file_len, bytes.len() as u64);
+    assert!(table.matches(chunks));
+    for record in &table.records {
+        let c = record.chunk;
+        let want = blake3::hash(&bytes[c.offset as usize..c.end() as usize]);
+        assert_eq!(
+            record.committed,
+            Some((Blake3(*want.as_bytes()), EvidenceForm::Provisional)),
+            "{c:?}"
+        );
+    }
+}
+
+#[test]
+fn a_local_source_s_chunk_table_is_complete_at_registration() {
+    let s = Scratch::new("tables");
+    let data = bytes(50, (9 << 20) + 17);
+    let cfg = br#"{"architectures":["LlamaForCausalLM"]}"#.to_vec();
+    let w = weights_with_chunks(&s.file("model.safetensors", &data), data.len() as u64);
+    let files = [
+        w.clone(),
+        LocalFile::side(s.file("config.json", &cfg), SourceRole::Config),
+    ];
+    let root = s.root();
+    let mut index = LocalIndex::open(&root).unwrap();
+    let report = index
+        .index("llama", &files, &StepClock::new(), &quiet)
+        .unwrap();
+    assert_eq!(report.hashed.len(), 2);
+    // The weights file: 1 header chunk, then each run cut every 4 MiB.
+    let chunks = w.chunks.unwrap();
+    assert_table_complete(&index, &data, &chunks);
+    assert!(chunks.len() > 3, "{} chunks", chunks.len());
+    // A side file is all header region.
+    let side =
+        syntropy_manifest::chunk::chunk_file(cfg.len() as u64, cfg.len() as u64, []).unwrap();
+    assert_table_complete(&index, &cfg, &side);
+    assert!(
+        index
+            .chunk_table(FileDigest::of_bytes(&cfg))
+            .unwrap()
+            .records[0]
+            .chunk
+            .header
+    );
+    // On disk where RFC-0041 §4.1 puts it.
+    assert!(
+        root.layout()
+            .chunk_table(&FileDigest::of_bytes(&data).0)
+            .is_file()
+    );
+}
+
+/// A later start reuses a file only with its table: a missing or mismatched table means the
+/// file is read again, and the table restored.
+#[test]
+fn a_later_start_needs_the_table_as_well_as_the_stamp() {
+    let s = Scratch::new("table-reuse");
+    let data = bytes(51, (5 << 20) + 9);
+    let path = s.file("model.gguf", &data);
+    let w = weights_with_chunks(&path, data.len() as u64);
+    let root = s.root();
+    let mut index = LocalIndex::open(&root).unwrap();
+    index
+        .index("llama", std::slice::from_ref(&w), &StepClock::new(), &quiet)
+        .unwrap();
+    // The table is there: nothing is read.
+    let again = index
+        .index("llama", std::slice::from_ref(&w), &StepClock::new(), &quiet)
+        .unwrap();
+    assert_eq!((again.hashed.len(), again.reused), (0, 1));
+    // The table is gone: the file is read again, and the table comes back.
+    let table = root.layout().chunk_table(&FileDigest::of_bytes(&data).0);
+    std::fs::remove_file(&table).unwrap();
+    let mut reopened = LocalIndex::open(&root).unwrap();
+    let rebuilt = reopened
+        .index("llama", std::slice::from_ref(&w), &StepClock::new(), &quiet)
+        .unwrap();
+    assert_eq!(rebuilt.hashed.len(), 1);
+    assert_table_complete(&reopened, &data, w.chunks.as_ref().unwrap());
+    // The census gives other boundaries: the old table does not match, so it is rebuilt too.
+    let mut moved = w.clone();
+    moved.chunks =
+        Some(syntropy_manifest::chunk::chunk_file(data.len() as u64, 100, [100]).unwrap());
+    let rechunked = reopened
+        .index(
+            "llama",
+            std::slice::from_ref(&moved),
+            &StepClock::new(),
+            &quiet,
+        )
+        .unwrap();
+    assert_eq!(rechunked.hashed.len(), 1);
+    assert_table_complete(&reopened, &data, moved.chunks.as_ref().unwrap());
+}
+
+/// The racily-clean rule covers the table: a racy stamp is read again, and its table rewritten
+/// from the bytes the file holds then.
+#[test]
+fn a_racy_stamp_rewrites_the_chunk_table() {
+    let s = Scratch::new("racy-table");
+    let data = bytes(52, 1 << 20);
+    let path = s.file("model.gguf", &data);
+    let written = mtime_ms(&path);
+    let w = weights_with_chunks(&path, data.len() as u64);
+    let root = s.root();
+    let mut index = LocalIndex::open(&root).unwrap();
+    let first = index
+        .index(
+            "llama",
+            std::slice::from_ref(&w),
+            &StepClock::at(written + 500),
+            &quiet,
+        )
+        .unwrap();
+    assert_eq!(first.racy, 1);
+    // A same-tick rewrite at the same size.
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let edited = bytes(53, 1 << 20);
+    {
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.write_all(&edited).unwrap();
+        f.set_modified(mtime).unwrap();
+    }
+    let second = index
+        .index("llama", std::slice::from_ref(&w), &StepClock::new(), &quiet)
+        .unwrap();
+    assert_eq!(second.hashed.len(), 1);
+    assert_table_complete(&index, &edited, w.chunks.as_ref().unwrap());
+}
+
+#[test]
+fn chunks_that_do_not_tile_the_file_are_refused() {
+    let s = Scratch::new("bad-chunks");
+    let data = bytes(54, 4096);
+    let path = s.file("model.gguf", &data);
+    let root = s.root();
+    let mut index = LocalIndex::open(&root).unwrap();
+    let mut w = weights_with_chunks(&path, data.len() as u64);
+    w.chunks.as_mut().unwrap().pop();
+    let err = index
+        .index("llama", &[w], &StepClock::new(), &quiet)
+        .unwrap_err();
+    assert!(matches!(err, LocalError::ChunksNotTiled { .. }), "{err:?}");
+    assert_eq!(err.class(), ErrorClass::Internal);
+    assert_eq!(err.code(), None);
 }
