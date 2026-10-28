@@ -24,15 +24,16 @@ use serde::de::{DeserializeOwned, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::smallvec;
 use syntropy_core::ledger::LedgerGrant;
-use syntropy_core::resource::{TierKind, TransportKind};
+use syntropy_core::resource::{AppleGpuFamily, CpuIsa, DeviceClass, TierKind, TransportKind};
 use syntropy_core::runner::{
     Deadline, Degradation, DegradeDetail, DegradeFlags, DrainReason, RunnerState, RunnerStateKind,
     StopReason, WarmStep,
 };
 use syntropy_core::sequence::SequenceOutcome;
 use syntropy_core::{
-    Blake3, Bytes, CancelReason, DeviceId, ErrorClass, InstanceId, LinkId, LinkKind, Nanos,
-    NetMedium, NodeId, PlanEpoch, PressureLevel, SequenceId, StageIx, TierId,
+    Blake3, Bytes, CancelReason, ChunkId, DeviceId, ErrorClass, FetchPriority, InstanceId,
+    LayoutVersion, LinkId, LinkKind, ModelId, Nanos, NetMedium, NodeId, PackKey, PlanEpoch,
+    PressureLevel, SequenceId, ShardSpec, StageIx, TensorGroupId, TierId,
 };
 
 use super::*;
@@ -276,14 +277,41 @@ fn runner_msgs() -> Vec<RunnerMsg> {
                 to: PlanEpoch { term: 9, seq: 0 },
             },
         },
+        RunnerMsg::FetchShard {
+            spec: shard_spec(),
+            priority: FetchPriority::Urgent,
+        },
+        RunnerMsg::FetchShard {
+            spec: ShardSpec {
+                model: ModelId(Blake3([0; 32])),
+                node: NodeId([0; 32]),
+                groups: vec![],
+                chunks: vec![],
+                digest: Blake3([0; 32]),
+            },
+            priority: FetchPriority::Background,
+        },
+        RunnerMsg::PackCommitted {
+            key: PackKey::for_shard(
+                &shard_spec(),
+                DeviceClass::Metal {
+                    family: AppleGpuFamily::Apple9,
+                    metal4: true,
+                },
+                LayoutVersion(u16::MAX),
+            ),
+            sidecar: Blake3([0x5c; 32]),
+        },
     ]);
-    let mut seen = [false; 4];
+    let mut seen = [false; 6];
     for msg in &all {
         seen[match msg {
             RunnerMsg::Hello(_) => 0,
             RunnerMsg::StateChanged { .. } => 1,
             RunnerMsg::Pong => 2,
             RunnerMsg::SequenceEnded { .. } => 3,
+            RunnerMsg::FetchShard { .. } => 4,
+            RunnerMsg::PackCommitted { .. } => 5,
         }] = true;
     }
     assert!(
@@ -291,6 +319,18 @@ fn runner_msgs() -> Vec<RunnerMsg> {
         "a RunnerMsg variant has no fixture"
     );
     all
+}
+
+/// A shard of three groups and two chunks, its digest a stand-in: `ipc` links no BLAKE3, and
+/// the channel carries the digest as sent.
+fn shard_spec() -> ShardSpec {
+    ShardSpec {
+        model: ModelId(Blake3([0x3d; 32])),
+        node: NodeId([0x4e; 32]),
+        groups: vec![TensorGroupId(0), TensorGroupId(7), TensorGroupId(u32::MAX)],
+        chunks: vec![ChunkId(Blake3([1; 32])), ChunkId(Blake3([2; 32]))],
+        digest: Blake3([0x6f; 32]),
+    }
 }
 
 /// Frames `envelope`, decodes it back, and checks the decode took the whole frame and gave the
@@ -381,6 +421,8 @@ fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
         ("StateChanged", 1),
         ("Pong", 2),
         ("SequenceEnded", 3),
+        ("FetchShard", 4),
+        ("PackCommitted", 5),
     ];
     for msg in runner_msgs() {
         let name = format!("{msg:?}");
@@ -390,7 +432,38 @@ fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
             .expect("a known variant");
         assert_eq!(runner(&msg), *want, "{name}");
     }
-    assert_eq!(PROTOCOL, IpcProtocol { major: 4, minor: 0 });
+    assert_eq!(PROTOCOL, IpcProtocol { major: 5, minor: 0 });
+}
+
+/// Why 5.0 is a major bump: a 4.x daemon's `RunnerMsg` ends at `SequenceEnded`, so it refuses
+/// `FetchShard` and `PackCommitted`, which a 5.0 runner sends in normal operation. The messages
+/// it knows still read as themselves.
+#[test]
+fn a_4_x_daemon_cannot_read_the_messages_5_0_appends() {
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code, reason = "only whether it decodes matters")]
+    enum RunnerMsgV4 {
+        Hello(Hello),
+        StateChanged {
+            state: RunnerState,
+            epoch: PlanEpoch,
+        },
+        Pong,
+        SequenceEnded {
+            seq: SequenceId,
+            outcome: SequenceOutcome,
+        },
+    }
+    for msg in runner_msgs() {
+        let bytes = postcard::to_allocvec(&msg).unwrap();
+        let old = postcard::from_bytes::<RunnerMsgV4>(&bytes);
+        let appended = matches!(
+            msg,
+            RunnerMsg::FetchShard { .. } | RunnerMsg::PackCommitted { .. }
+        );
+        assert_eq!(old.is_err(), appended, "{msg:?}");
+    }
+    assert_ne!(PROTOCOL.major, 4);
 }
 
 /// Why 2.0 is a major bump: a 1.1 `StateChanged` (variant 1, the state's `u32`, the epoch) does
@@ -729,6 +802,65 @@ fn runner_msg() -> impl Strategy<Value = RunnerMsg> {
                 outcome,
             }
         }),
+        (generated_shard_spec(), fetch_priority())
+            .prop_map(|(spec, priority)| RunnerMsg::FetchShard { spec, priority }),
+        (
+            generated_shard_spec(),
+            device_class(),
+            any::<u16>(),
+            any::<[u8; 32]>()
+        )
+            .prop_map(|(spec, class, layout, sidecar)| RunnerMsg::PackCommitted {
+                key: PackKey::for_shard(&spec, class, LayoutVersion(layout)),
+                sidecar: Blake3(sidecar),
+            }),
+    ]
+}
+
+fn generated_shard_spec() -> impl Strategy<Value = ShardSpec> {
+    (
+        any::<[u8; 32]>(),
+        any::<[u8; 32]>(),
+        prop::collection::vec(any::<u32>(), 0..16),
+        prop::collection::vec(any::<[u8; 32]>(), 0..16),
+        any::<[u8; 32]>(),
+    )
+        .prop_map(|(model, node, groups, chunks, digest)| ShardSpec {
+            model: ModelId(Blake3(model)),
+            node: NodeId(node),
+            groups: groups.into_iter().map(TensorGroupId).collect(),
+            chunks: chunks.into_iter().map(|c| ChunkId(Blake3(c))).collect(),
+            digest: Blake3(digest),
+        })
+}
+
+fn fetch_priority() -> impl Strategy<Value = FetchPriority> {
+    prop_oneof![
+        Just(FetchPriority::Urgent),
+        Just(FetchPriority::Normal),
+        Just(FetchPriority::Background),
+    ]
+}
+
+fn device_class() -> impl Strategy<Value = DeviceClass> {
+    prop_oneof![
+        any::<u16>().prop_map(|sm| DeviceClass::Cuda { sm }),
+        any::<u32>().prop_map(|gfx| DeviceClass::Hip { gfx }),
+        any::<bool>().prop_map(|metal4| DeviceClass::Metal {
+            family: AppleGpuFamily::Apple8,
+            metal4,
+        }),
+        (any::<u32>(), any::<bool>(), any::<u8>()).prop_map(|(vendor, coopmat, subgroup)| {
+            DeviceClass::Vulkan {
+                vendor,
+                coopmat,
+                subgroup,
+            }
+        }),
+        Just(DeviceClass::Cpu {
+            isa: CpuIsa::Arm82Dot
+        }),
+        (any::<u32>(), any::<u32>()).prop_map(|(vendor, model)| DeviceClass::Npu { vendor, model }),
     ]
 }
 

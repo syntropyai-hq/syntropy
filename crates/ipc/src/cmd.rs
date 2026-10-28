@@ -112,7 +112,11 @@ pub use fault::{
 /// only when every older reader can read everything a newer writer sends it, so this one moves
 /// the major. Adoption needs equal versions anyway (RFC-0001 §3.5), so the bump changes what the
 /// version claims, not who may connect.
-pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 4, minor: 0 };
+/// 5.0 appends `FetchShard` and `PackCommitted` to [`RunnerMsg`] (COMP-E10-T11; RFC-0001
+/// §18.50). Every earlier message keeps its index and layout, but a 5.0 runner sends them whenever
+/// it fetches a shard or commits a pack, and a 4.x daemon cannot decode either, so by the same rule
+/// the major moves.
+pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 5, minor: 0 };
 
 /// The byte stream a command channel runs over: an OS [`Stream`] between processes, or a
 /// [`memory::MemoryStream`] between threads of one process (RFC-0001 §3.1, `RunnerHost::InProcess`;
