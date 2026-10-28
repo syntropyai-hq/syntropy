@@ -354,8 +354,8 @@ Hot threads write fixed 64-byte `SpanRecord { trace_id, span_id, parent_id, name
   - four u32 attributes at 48–63.
 
   The daemon takes a step's per-term durations from the matching `StepRecord`, so a span's own attributes need at most four. `SpanName::attrs` names them per span.
-- **The span ring is in-process.** Each hot thread owns its ring, through a `SpanWriter` that takes no lock and drops and counts when the ring is full. Housekeeping batches the records into a new last variant, `TelemetryRecord::Spans`, each batch as many records as fit a `telemetry` slot. So no shared-memory ring is added: `ipc_protocol` goes to 3.1, a compatible change (RFC-0001 §18.49).
-- **The sampling hash (§3.3)** is FNV-1a-64 (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`) over the 16 trace-ID bytes, then the step index as a u64 little-endian. A step is sampled when:
+- **The span ring is in-process.** Each hot thread owns its ring, through a `SpanWriter` that takes no lock and drops and counts when the ring is full. Housekeeping batches the records into a new last variant, `TelemetryRecord::Spans`, each batch as many records as fit a `telemetry` slot. So no shared-memory ring is added. A 3.x daemon cannot decode the new variant, so `ipc_protocol` goes to 4.0 (RFC-0001 §18.49).
+- **The sampling hash (§3.3)** is FNV-1a-64 as the FNV specification gives it (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`, checked against its published vectors) over the 16 trace-ID bytes, then the step index as a u64 little-endian. A step is sampled when:
   - the hash is below ⌊`obs.trace.step_sample` · 2⁶⁴⌋, which is 2⁵⁸ at the default 1/64;
   - or it is one of the first four decode steps;
   - or the request is a full trace.

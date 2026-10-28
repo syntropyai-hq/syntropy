@@ -64,7 +64,8 @@ pub enum TelemetryRecord {
         entries: SmallVec<[SeriesEntry; 8]>,
     },
     /// Span records housekeeping drained from the hot threads' span rings (RFC-0053 §3.4). A new
-    /// last variant: every earlier variant keeps its index (RFC-0001 §18.49).
+    /// last variant, so every earlier variant keeps its index; a 3.x reader cannot read it, so
+    /// `ipc_protocol` moved to 4.0 (RFC-0001 §18.49).
     Spans {
         /// The records, in the order drained.
         records: SmallVec<[crate::trace::SpanRecord; 8]>,
@@ -224,8 +225,7 @@ mod tests {
         ]
     }
 
-    /// Each variant keeps its index: `Spans` was appended (ipc_protocol 3.1), so a 3.0 reader
-    /// reads every earlier variant unchanged.
+    /// Each variant keeps its index: `Spans` was appended (ipc_protocol 4.0).
     #[test]
     fn variants_keep_their_indices() {
         let mut out = Vec::new();

@@ -29,7 +29,7 @@ pub mod span;
 
 pub use context::{IngressTrace, Traceparent};
 pub use flight::FlightRecorder;
-pub use sample::{FIRST_DECODE_STEPS, StepKind, StepSampler, step_hash};
+pub use sample::{FIRST_DECODE_STEPS, StepKind, StepSampler, fnv1a_64, step_hash};
 pub use span::{SpanName, SpanNameId, SpanRecord, SpanWriter, span_batches};
 
 #[cfg(test)]

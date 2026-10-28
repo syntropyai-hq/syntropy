@@ -25,24 +25,35 @@ pub const FIRST_DECODE_STEPS: u32 = 4;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-/// FNV-1a-64 over `trace_id` then `step` as a `u64` little-endian (module docs).
+/// FNV-1a-64 of `bytes`, as the FNV specification defines it: for each byte, XOR it into the
+/// hash, then multiply by the prime, starting from the offset basis.
 #[must_use]
-pub const fn step_hash(trace_id: &[u8; 16], step: u64) -> u64 {
+pub const fn fnv1a_64(bytes: &[u8]) -> u64 {
     let mut h = FNV_OFFSET;
     let mut i = 0;
-    while i < 16 {
-        h ^= trace_id[i] as u64;
+    while i < bytes.len() {
+        h ^= bytes[i] as u64;
         h = h.wrapping_mul(FNV_PRIME);
         i += 1;
     }
-    let step = step.to_le_bytes();
-    let mut j = 0;
-    while j < 8 {
-        h ^= step[j] as u64;
-        h = h.wrapping_mul(FNV_PRIME);
-        j += 1;
-    }
     h
+}
+
+/// FNV-1a-64 over `trace_id` then `step` as a `u64` little-endian (module docs).
+#[must_use]
+pub const fn step_hash(trace_id: &[u8; 16], step: u64) -> u64 {
+    let mut input = [0u8; 24];
+    let step = step.to_le_bytes();
+    let mut i = 0;
+    while i < 16 {
+        input[i] = trace_id[i];
+        i += 1;
+    }
+    while i < 24 {
+        input[i] = step[i - 16];
+        i += 1;
+    }
+    fnv1a_64(&input)
 }
 
 /// What a step is, for the sampling rules.

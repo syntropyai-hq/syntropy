@@ -3137,7 +3137,7 @@ PROD-E8-T07 builds local tracing (RFC-0053 §3.1–§3.4).
 
 | Change | Sections touched | Reason |
 |---|---|---|
-| Hot threads write 64-byte `SpanRecord`s into in-process rings, and housekeeping batches them into a new last `TelemetryRecord` variant, `Spans`; `ipc_protocol` goes from 3.0 to 3.1 | §3.5 (the `telemetry` ring's records); RFC-0053 §3.4 (dated note) | RFC-0053 §3.4 has housekeeping batch the spans into `TelemetryRecord::Spans`, so no new shared-memory ring is needed. Appending a variant keeps every earlier variant's index and layout, so the change is compatible and moves the minor |
+| Hot threads write 64-byte `SpanRecord`s into in-process rings, and housekeeping batches them into a new last `TelemetryRecord` variant, `Spans`; `ipc_protocol` goes from 3.0 to 4.0 | §3.5 (the `telemetry` ring's records); RFC-0053 §3.4 (dated note) | RFC-0053 §3.4 has housekeeping batch the spans into `TelemetryRecord::Spans`, so no new shared-memory ring is needed. Appending a variant keeps every earlier variant's index, but a 4.0 runner writes `Spans` whenever it records spans, and a 3.x daemon cannot decode one. A change is compatible only when every older reader can read all a newer writer sends it, so this one moves the major. Adoption needs equal versions anyway (§3.5) |
 | `SpanRecord` holds four attributes, not six, to stay 64 bytes | RFC-0053 §3.4 (dated note) | the six of §3.4 make a 70-byte record; a step's term durations come from its `StepRecord` |
 
 Taken under the maintainers' standing instruction, for the maintainers to confirm.

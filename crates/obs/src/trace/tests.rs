@@ -170,8 +170,16 @@ fn spans_batch_into_telemetry_records_that_fit_a_slot() {
 
 // ---- Sampling -------------------------------------------------------------------------------
 
-/// FNV-1a-64 vectors, computed by an independent implementation (Python) when the test was
-/// written: `trace_id = 00 01 … 0f`, the step as u64 LE.
+/// FNV-1a-64 as published: the FNV test suite's vectors for "", "a" and "foobar".
+#[test]
+fn fnv1a_64_matches_the_published_vectors() {
+    assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
+    assert_eq!(fnv1a_64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    assert_eq!(fnv1a_64(b"foobar"), 0x8594_4171_f739_67e8);
+}
+
+/// The step hash's own vectors, computed by an independent implementation (Python) when the test
+/// was written: `trace_id = 00 01 … 0f`, the step as u64 LE.
 #[test]
 fn the_step_hash_is_fnv_1a_64_and_pinned() {
     let id: [u8; 16] = core::array::from_fn(|i| i as u8);
