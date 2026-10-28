@@ -60,16 +60,43 @@ pub fn syntropy(args: &[&str]) -> Command {
 /// command overrun [`HANG`]. On tmpfs an fsync has no disk to wait for. The writes these tests
 /// check are the same on either file system: the content, the modes, the rename and the refusal
 /// of a symbolic link.
-pub fn temp(tag: &str) -> PathBuf {
+///
+/// The directory is removed when the [`TempDir`] drops, so a test that fails still leaves no
+/// directory behind, which on a tmpfs would hold memory until the host restarts.
+pub fn temp(tag: &str) -> TempDir {
     let name = format!("syntropy-cli-{tag}-{}", std::process::id());
     for root in scratch_roots() {
         let dir = root.join(&name);
         let _ = std::fs::remove_dir_all(&dir);
         if std::fs::create_dir_all(&dir).is_ok() {
-            return dir;
+            return TempDir(dir);
         }
     }
     panic!("no directory for the test's files could be made");
+}
+
+/// A test's directory from [`temp`], removed with everything in it when this drops, a panic
+/// included.
+pub struct TempDir(PathBuf);
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// Where [`temp`] puts its directories, in order of preference.
