@@ -8,9 +8,12 @@
 //!
 //! 1. a boundary at offset 0 and at the start of the data section;
 //! 2. a boundary at every tensor start, every auxiliary-extent start and every expert-slice start.
-//!    Scale, zero-point and global-scale tensors are tensors of the file, so their starts are
-//!    tensor starts; [`gguf_starts`] and [`safetensors_starts`] add the expert slices that
-//!    [`slice`](mod@crate::slice) computes;
+//!    The auxiliary extent of an unstacked weight (its scale, zero-point or global-scale tensor)
+//!    is a tensor of the file, so its start is a tensor start. A stacked expert tensor's auxiliary
+//!    tensor is stacked too (MXFP4's `W_blocks` and `W_scales`), and expert `e`'s auxiliary extent
+//!    is that tensor's `e`-th slice (RFC-0041 §2.1, §2.2), which starts inside it. So the caller
+//!    passes the slices of every stacked tensor, weights and auxiliary tensors alike, and
+//!    [`gguf_starts`] and [`safetensors_starts`] add them to the tensor starts;
 //! 3. inside a run between two such boundaries, a boundary every [`CHUNK_BYTES`] (4 MiB),
 //!    counted from the run's start;
 //! 4. padding between tensors belongs to the preceding chunk, so chunks tile the file exactly.
@@ -409,7 +412,8 @@ impl ChunkTable {
     /// that disagrees with the entry count, a bad record, or records that do not tile the file
     /// from offset 0 in order. A table that decodes says only that it is well formed; a reader
     /// that uses its boundaries checks them against the chunks it computes from the file's
-    /// header ([`gguf_chunks`], [`safetensors_chunks`]), which are the source of truth.
+    /// header ([`gguf_chunks`], [`safetensors_chunks`]), which are the source of truth, with
+    /// [`ChunkTable::matches`].
     pub fn decode(bytes: &[u8]) -> Result<ChunkTable, ChunkError> {
         let header = bytes
             .get(..HEADER_BYTES)
@@ -454,6 +458,15 @@ impl ChunkTable {
             file_len,
             records,
         })
+    }
+
+    /// Whether the table's records are exactly `chunks`: the same offsets, lengths and header
+    /// flags, in order. A table read from disk or from a peer is used only if it matches the
+    /// chunks computed from the file's own header.
+    #[must_use]
+    pub fn matches(&self, chunks: &[Chunk]) -> bool {
+        self.records.len() == chunks.len()
+            && self.records.iter().zip(chunks).all(|(r, c)| r.chunk == *c)
     }
 }
 

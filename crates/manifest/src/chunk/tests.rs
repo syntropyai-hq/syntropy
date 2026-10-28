@@ -268,8 +268,9 @@ fn edge_files_and_bad_starts() {
     assert!(chunk_file(100, 20, [101]).is_err());
 }
 
-/// A safetensors checkpoint with a stacked expert tensor and its scale tensor, an auxiliary
-/// extent: each tensor's and each expert's start is a boundary.
+/// A safetensors checkpoint with a stacked expert tensor and its stacked scale tensor. Each
+/// expert's auxiliary extent is its slice of the scale tensor (RFC-0041 §2.1, §2.2), so each
+/// expert's weight slice and scale slice start a chunk.
 #[test]
 fn safetensors_boundaries_include_experts_and_auxiliary_extents() {
     let experts = 4u64;
@@ -288,7 +289,11 @@ fn safetensors_boundaries_include_experts_and_auxiliary_extents() {
     let stack = header
         .tensor("model.layers.0.mlp.experts.down_proj")
         .unwrap();
-    let slices = safetensors_experts(stack, 0, experts as u16).unwrap();
+    let scale = header
+        .tensor("model.layers.0.mlp.experts.down_proj_scale")
+        .unwrap();
+    let mut slices = safetensors_experts(stack, 0, experts as u16).unwrap();
+    slices.extend(safetensors_experts(scale, 0, experts as u16).unwrap());
     let chunks = safetensors_chunks(&header, &slices).unwrap();
     let cuts: Vec<u64> = header
         .tensors
@@ -298,12 +303,13 @@ fn safetensors_boundaries_include_experts_and_auxiliary_extents() {
         .collect();
     let expected = check_tiling(&chunks, file_len, header.data_start, &cuts);
     assert_eq!(chunks.len() as u64, expected);
-    // One header chunk; each 3 MiB expert one chunk; the scale one chunk.
-    assert_eq!(chunks.len(), 1 + 4 + 1);
-    let scale = header
-        .tensor("model.layers.0.mlp.experts.down_proj_scale")
-        .unwrap();
-    assert_eq!(chunks.last().unwrap().offset, scale.offset);
+    // One header chunk; each 3 MiB expert one chunk; each expert's 4-byte scale slice one chunk.
+    assert_eq!(chunks.len(), 1 + 4 + 4);
+    for e in 0..experts {
+        let at = scale.offset + 4 * e;
+        let chunk = chunks.iter().find(|c| c.offset == at).unwrap();
+        assert_eq!(chunk.len, 4, "expert {e}'s scale");
+    }
 }
 
 /// The table's bytes, written out field by field from RFC-0041 §6.2: the 64-byte header, then
@@ -399,36 +405,111 @@ fn a_bad_table_is_refused() {
         b[at] = byte;
         ChunkTable::decode(&b)
     };
-    let bad = |r: Result<ChunkTable, ChunkError>, why: &str| {
-        assert_eq!(
-            r,
-            Err(ChunkError::BadTable(match r.clone() {
-                Err(ChunkError::BadTable(w)) => w,
-                other => panic!("{why}: {other:?}"),
-            })),
-            "{why}"
-        );
+    // Each refusal names its reason.
+    let bad = |r: Result<ChunkTable, ChunkError>, reason: &'static str| {
+        assert_eq!(r, Err(ChunkError::BadTable(reason)), "{reason}");
     };
-    bad(edit(0, b'X'), "magic");
-    bad(edit(8, 2), "version");
-    bad(edit(13, 1), "reserved");
-    bad(ChunkTable::decode(&good[..good.len() - 1]), "length");
-    bad(ChunkTable::decode(&good[..10]), "short");
-    bad(edit(HEADER_BYTES + 12, 0x10), "an undefined flag bit");
-    bad(edit(HEADER_BYTES + 12, 0x04), "evidence without a commit");
-    bad(edit(HEADER_BYTES + 20, 0x01), "an ID without a commit");
+    bad(edit(0, b'X'), "wrong magic");
+    bad(edit(8, 2), "unknown version");
+    bad(edit(13, 1), "the reserved word is not zero");
+    bad(
+        ChunkTable::decode(&good[..good.len() - 1]),
+        "the length disagrees with the entry count",
+    );
+    bad(ChunkTable::decode(&good[..10]), "shorter than its header");
+    let mut huge = good.clone();
+    huge[56..64].copy_from_slice(&u64::MAX.to_le_bytes());
+    bad(
+        ChunkTable::decode(&huge),
+        "the length disagrees with the entry count",
+    );
+    bad(
+        edit(HEADER_BYTES + 12, 0x10),
+        "a record sets an undefined flag bit",
+    );
+    bad(
+        edit(HEADER_BYTES + 12, 0x04),
+        "an uncommitted record has an evidence form or an ID",
+    );
+    bad(
+        edit(HEADER_BYTES + 20, 0x01),
+        "an uncommitted record has an evidence form or an ID",
+    );
     let mut zero = good.clone();
     zero[HEADER_BYTES + 8..HEADER_BYTES + 12].copy_from_slice(&0u32.to_le_bytes());
-    bad(ChunkTable::decode(&zero), "a zero length");
-    bad(edit(HEADER_BYTES + RECORD_BYTES, 1), "a gap");
-    let mut long = good.clone();
-    long[HEADER_BYTES + 8..HEADER_BYTES + 12].copy_from_slice(&(4u32 << 20 | 1).to_le_bytes());
-    bad(ChunkTable::decode(&long), "a record over 4 MiB");
+    bad(ChunkTable::decode(&zero), "a record has length 0");
+    bad(
+        edit(HEADER_BYTES + RECORD_BYTES, 1),
+        "the records do not tile the file",
+    );
     let mut past = good.clone();
     let last = HEADER_BYTES + 2 * RECORD_BYTES;
     past[last + 8..last + 12].copy_from_slice(&1000u32.to_le_bytes());
-    bad(ChunkTable::decode(&past), "a record past the file");
+    bad(ChunkTable::decode(&past), "a record runs past the file");
     let mut short = good.clone();
     short[48..56].copy_from_slice(&1001u64.to_le_bytes());
-    bad(ChunkTable::decode(&short), "records short of the file");
+    bad(
+        ChunkTable::decode(&short),
+        "the records do not cover the file",
+    );
+}
+
+/// A 5 MiB record in a 12 MiB file tiles it, ends inside it and is otherwise well formed: only the
+/// 4 MiB bound refuses it (review N1 on #1945).
+#[test]
+fn a_record_over_4_mib_is_refused_even_when_it_tiles_the_file() {
+    let mib = 1u32 << 20;
+    let records = [5 * mib, 4 * mib, 3 * mib];
+    let mut at = 0u64;
+    let table = ChunkTable {
+        digest: FileDigest([3; 32]),
+        file_len: 12 << 20,
+        records: records
+            .iter()
+            .map(|&len| {
+                let chunk = Chunk {
+                    offset: at,
+                    len,
+                    header: false,
+                };
+                at += u64::from(len);
+                ChunkRecord {
+                    chunk,
+                    committed: None,
+                }
+            })
+            .collect(),
+    };
+    assert_eq!(
+        ChunkTable::decode(&table.encode()),
+        Err(ChunkError::BadTable("a record is longer than 4 MiB"))
+    );
+    // Exactly 4 MiB is a chunk.
+    let ok = chunk_file(12 << 20, 0, []).unwrap();
+    assert_eq!(ok.len(), 3);
+    assert!(
+        ChunkTable::decode(&ChunkTable::new(FileDigest([3; 32]), 12 << 20, &ok).encode()).is_ok()
+    );
+}
+
+/// A decoded table is used only if it matches the chunks computed from the header (review N2 on
+/// #1945).
+#[test]
+fn a_table_matches_only_the_chunks_it_was_built_from() {
+    let chunks = chunk_file(10 << 20, 300, [300, 5 << 20]).unwrap();
+    let table =
+        ChunkTable::decode(&ChunkTable::new(FileDigest([4; 32]), 10 << 20, &chunks).encode())
+            .unwrap();
+    assert!(table.matches(&chunks));
+    let mut moved = chunks.clone();
+    moved[1].len -= 1;
+    moved[2].offset -= 1;
+    assert!(!table.matches(&moved), "another boundary");
+    let mut flag = chunks.clone();
+    flag[0].header = false;
+    assert!(!table.matches(&flag), "another header flag");
+    assert!(!table.matches(&chunks[..chunks.len() - 1]), "a chunk fewer");
+    // Other starts give other chunks, so a table from them does not match.
+    let other = chunk_file(10 << 20, 300, [300, 6 << 20]).unwrap();
+    assert!(!table.matches(&other));
 }
