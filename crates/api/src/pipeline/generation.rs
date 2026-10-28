@@ -10,6 +10,8 @@ use syntropy_core::{
     SequenceId, SequenceLimits, SequenceOpen, TokenEntry,
 };
 
+use syntropy_obs::trace::IngressTrace;
+
 use super::ingress::{Ingress, SendError};
 use super::stages::{ClientGone, Detokenize, EventSink, NoStops, Route, StopMatch};
 use super::types::{ApiError, GenEvent, GenerateRequest, StopReason, Timings, Usage};
@@ -68,6 +70,7 @@ pub struct Generation<'i, 'r> {
     stops: Box<dyn StopMatch>,
     watch: ClientWatch,
     begun: MonoTime,
+    trace: IngressTrace,
     first_token: Option<MonoTime>,
     completion_tokens: u32,
     announced: bool,
@@ -142,7 +145,15 @@ impl<'r> Ingress<'r> {
         // Stage 9.
         let seed = request.sampling.seed.unwrap_or_else(|| self.entropy.u64());
         let seq = self.minter.mint()?;
-        let open = open(
+        // The request's trace (RFC-0053 §3.2): continued from its `traceparent` or minted, with a
+        // full trace only by Syntropy's policy.
+        let trace = IngressTrace::start(
+            request.client.traceparent.as_deref(),
+            request.trace,
+            self.honor_remote_sampled.load(Ordering::Relaxed),
+            self.entropy,
+        );
+        let mut open = open(
             request,
             seq,
             self.minter.node(),
@@ -151,6 +162,8 @@ impl<'r> Ingress<'r> {
             max_tokens,
             &route,
         );
+        // The head opens the sequence's spans under the root span.
+        open.trace = Some(trace.sequence_context(trace.root_span));
         let detok = stages.detokenizer(&model);
         let stops: Box<dyn StopMatch> = if request.sampling.stop.is_empty() {
             Box::new(NoStops)
@@ -181,6 +194,7 @@ impl<'r> Ingress<'r> {
             stops,
             watch,
             begun,
+            trace,
             first_token: None,
             completion_tokens: 0,
             announced: false,
@@ -248,6 +262,20 @@ fn open(
 }
 
 impl Generation<'_, '_> {
+    /// The `traceparent` the response returns, or `None` when the request carried none (or one
+    /// that did not parse): bit 0 set, bit 1 the request's bit 1, and never the full-trace bit
+    /// (RFC-0053 §3.2). The HTTP layer sends it as the response's `traceparent` header.
+    #[must_use]
+    pub fn response_traceparent(&self) -> Option<String> {
+        self.trace.response_traceparent()
+    }
+
+    /// The request's trace at ingress.
+    #[must_use]
+    pub fn trace(&self) -> &IngressTrace {
+        &self.trace
+    }
+
     /// The sequence.
     #[must_use]
     pub fn seq(&self) -> SequenceId {

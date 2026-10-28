@@ -185,6 +185,7 @@ fn request(prompt: Vec<u32>, stop: &[&str]) -> GenerateRequest {
         deadline: None,
         raw_special_tokens: false,
         client: ClientMeta::default(),
+        trace: false,
     }
 }
 
@@ -894,4 +895,121 @@ fn a_disconnect_between_two_writes_of_one_poll_stops_the_next_write() {
             SequenceControl::Release { seq, persist: None },
         ]
     );
+}
+
+// ---- Trace context through the pipeline (PROD-E8-T07; RFC-0053 §3.2) ----------------------------
+
+const TRACE_ID: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
+const CALLER_SPAN: &str = "00f067aa0ba902b7";
+
+fn traceparent(flags: &str) -> String {
+    format!("00-{TRACE_ID}-{CALLER_SPAN}-{flags}")
+}
+
+/// What one request does to trace context: the `TraceContext` its `SequenceOpen` carried to the
+/// runner, the `traceparent` its response returns, and its root span.
+struct Traced {
+    open: syntropy_core::sequence::TraceContext,
+    response: Option<String>,
+    root_span: [u8; 8],
+}
+
+fn run_traced(incoming: Option<&str>, trace: bool, honour: bool) -> Traced {
+    let world = World::new();
+    let handle = world.clock.handle();
+    let ingress = Ingress::new(
+        world.region.daemon(),
+        &world.minter,
+        &FakeStages,
+        &handle,
+        &world.entropy,
+    )
+    .unwrap();
+    ingress.set_honor_remote_sampled(honour);
+    let mut runner = FakeRunner::new(
+        world.region.runner(),
+        Script::new().otherwise(Stream::new().tokens([1])),
+    )
+    .unwrap();
+    let mut req = request(vec![9], &[]);
+    req.client.traceparent = incoming.map(str::to_owned);
+    req.trace = trace;
+    let generation = ingress.start(&req, ClientWatch::default()).unwrap();
+    runner.step().unwrap();
+    let open = match &runner.log()[0] {
+        SequenceControl::Open(open) => open.trace.expect("SequenceOpen carries the trace"),
+        other => panic!("{other:?}"),
+    };
+    Traced {
+        open,
+        response: generation.response_traceparent(),
+        root_span: generation.trace().root_span,
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A response to a request without `traceparent` carries none; nor does one whose header does
+/// not parse. A request that carried one gets one back.
+#[test]
+fn a_response_returns_traceparent_only_when_the_request_carried_one() {
+    for (incoming, trace, honour) in [(None, false, false), (None, true, true)] {
+        assert_eq!(run_traced(incoming, trace, honour).response, None);
+    }
+    assert_eq!(
+        run_traced(Some("not a traceparent"), false, false).response,
+        None
+    );
+    assert!(
+        run_traced(Some(&traceparent("01")), false, false)
+            .response
+            .is_some()
+    );
+}
+
+/// A returned `traceparent` has bit 0 set, carries bit 1 exactly when the incoming one did, and
+/// never Syntropy's full-trace bit, whatever the request's full-trace state. It continues the
+/// trace under ingress's root span, which the `SequenceOpen` names as the head's parent.
+#[test]
+fn a_returned_traceparent_sets_bit_0_echoes_bit_1_and_never_the_full_trace_bit() {
+    for (flags, want) in [("00", "01"), ("01", "01"), ("02", "03"), ("03", "03")] {
+        for (trace, honour) in [(false, false), (true, false), (false, true), (true, true)] {
+            let t = run_traced(Some(&traceparent(flags)), trace, honour);
+            let back = t.response.unwrap();
+            assert_eq!(
+                back,
+                format!("00-{TRACE_ID}-{}-{want}", hex(&t.root_span)),
+                "incoming {flags}, trace {trace}, honour {honour}"
+            );
+            assert_eq!(hex(&t.open.trace_id), TRACE_ID);
+            assert_eq!(t.open.span_id, t.root_span);
+        }
+    }
+}
+
+/// An incoming sampled `traceparent` does not force full tracing unless the key is set; `02`
+/// never does, key set or not; `03` behaves as `01`; `trace: true` always does. What the head
+/// receives is Syntropy's flags alone.
+#[test]
+fn only_trace_true_or_an_honoured_bit_0_gives_the_head_a_full_trace() {
+    use syntropy_core::sequence::TraceContext;
+    let full = TraceContext::FULL_TRACE | TraceContext::SAMPLED;
+    let flags =
+        |incoming: Option<&str>, trace, honour| run_traced(incoming, trace, honour).open.flags;
+    assert_eq!(flags(Some(&traceparent("01")), false, false), 0);
+    assert_eq!(flags(Some(&traceparent("01")), false, true), full);
+    assert_eq!(flags(Some(&traceparent("02")), false, false), 0);
+    assert_eq!(flags(Some(&traceparent("02")), false, true), 0);
+    assert_eq!(
+        flags(Some(&traceparent("03")), false, false),
+        flags(Some(&traceparent("01")), false, false)
+    );
+    assert_eq!(
+        flags(Some(&traceparent("03")), false, true),
+        flags(Some(&traceparent("01")), false, true)
+    );
+    assert_eq!(flags(None, true, false), full);
+    assert_eq!(flags(None, false, true), 0);
 }
