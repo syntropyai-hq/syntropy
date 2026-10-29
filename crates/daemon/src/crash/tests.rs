@@ -318,9 +318,9 @@ fn a_host_kill_is_recorded_with_its_reason_whatever_the_status() {
 
     // What a kill leaves: SIGKILL on Unix, exit code 1 from `TerminateProcess` on Windows.
     #[cfg(unix)]
-    let (killed, signal) = (ExitStatus::from_raw(9), Some(9));
+    let (killed, signal, exit_code) = (ExitStatus::from_raw(9), Some(9), None);
     #[cfg(windows)]
-    let (killed, signal) = (ExitStatus::from_raw(1), None);
+    let (killed, signal, exit_code) = (ExitStatus::from_raw(1), None, Some(1));
     let clean = ExitStatus::from_raw(0);
 
     let state = StateDir::new("hostkill");
@@ -340,7 +340,8 @@ fn a_host_kill_is_recorded_with_its_reason_whatever_the_status() {
         records[0].1.cause,
         CrashCause::HostKilled {
             reason: stalled,
-            signal
+            signal,
+            exit_code
         }
     );
     let json = serde_json::to_string(&records[0].1.cause).unwrap();

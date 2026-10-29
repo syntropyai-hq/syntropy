@@ -122,6 +122,9 @@ pub enum CrashCause {
         reason: HostKill,
         /// The signal the exit status shows, on Unix.
         signal: Option<i32>,
+        /// The exit code the status shows, if it has one: on Windows the code
+        /// `TerminateProcess` left, on Unix `None` for a death by signal.
+        exit_code: Option<u32>,
     },
 }
 
@@ -436,7 +439,15 @@ impl CrashSink {
             Some(CrashCause::Signal { signal, .. }) => Some(signal),
             _ => None,
         };
-        self.record(pid, CrashCause::HostKilled { reason, signal })
+        let exit_code = status.code().map(i32::cast_unsigned);
+        self.record(
+            pid,
+            CrashCause::HostKilled {
+                reason,
+                signal,
+                exit_code,
+            },
+        )
     }
 
     fn record(&self, pid: u32, cause: CrashCause) -> io::Result<PathBuf> {

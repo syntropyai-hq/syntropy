@@ -388,12 +388,18 @@ fn a_runner_the_host_kills_leaves_a_crash_record_naming_the_reason_on_every_os()
         "one crash record for the killed runner"
     );
     let (name, record) = &listing.records[0];
-    let signal = if cfg!(unix) { Some(9) } else { None };
+    // `SIGKILL` on Unix; on Windows the exit code 1 `TerminateProcess` leaves.
+    let (signal, exit_code) = if cfg!(unix) {
+        (Some(9), None)
+    } else {
+        (None, Some(1))
+    };
     assert_eq!(
         record.cause,
         CrashCause::HostKilled {
             reason: HostKill::Supervisor(KillReason::Hung),
-            signal
+            signal,
+            exit_code
         }
     );
     assert_eq!(
@@ -439,7 +445,7 @@ fn a_runner_whose_handshake_is_refused_leaves_a_crash_record_on_every_os() {
         "one record for the refused runner"
     );
     match &listing.records[0].1.cause {
-        CrashCause::HostKilled { reason, signal } => {
+        CrashCause::HostKilled { reason, signal, .. } => {
             assert_eq!(*reason, HostKill::Refused);
             if cfg!(windows) {
                 assert_eq!(*signal, None);
