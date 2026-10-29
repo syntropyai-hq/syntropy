@@ -1310,6 +1310,14 @@ PROD-E9-T04 (M1a) builds the bundle and the crash records. Two parts of its row 
 | PROD-E9-T03 gains "RUN-001 lists the crash records in `<state>/crashes/` (`CrashStore::list`), newest first, each with its process, cause and time, and names any it cannot read". PROD-E9-T03 → PROD-E9-T04 | PROD-E9-T03 | R9 | RUN-001 is PROD-E9-T03's. M1a → M1a, and PROD-E9-T04 does not reach PROD-E9-T03, so the edge adds no cycle |
 | PROD-E6-T08 gains `POST /v1/syntropy/debug/dump` with `admin` scope, the `--out`, `--with-addresses` and `--max-size` flags, and the criterion that `doctor --bundle` and `debug dump` write the same bundle through the route, which answers 403 without an `admin` key. PROD-E6-T08 → PROD-E9-T04, PROD-E5-T01 | PROD-E6-T08 | R9 | the command wiring is PROD-E6-T08's, and the scope is PROD-E5-T01's. All are M1a, and neither target reaches PROD-E6-T08, so the edges add no cycle |
 
+## TIER-E5-T36's retry criterion names the retry's owner (2026-10-30)
+
+TIER-E5-T36 (M1b) asked that, after a fault on `MacMapped`'s copy, "the retry follows §16". The one retry of RFC-0021 §16 is the I/O thread's, and TIER-E5-T15 (#772, M1a, open) builds it; until then `io_thread.rs` completes a short transfer with `IO_SHORT_READ` and no retry. TIER-E5-T36 does not depend on TIER-E5-T15, and needs none: the engine's part is to return `IO_SHORT_READ` and to read right on the next request. The criterion stands as a scope note: TIER-E5-T36 covers the engine's `IO_SHORT_READ`, its test issues the retry itself, and the I/O thread's one retry stays with TIER-E5-T15. No criterion moves, and no edge is added.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| TIER-E5-T36's "the retry follows §16" becomes "a second read of the same extent (the retry §16 prescribes, which the I/O thread issues once TIER-E5-T15 builds it) is short again while the bytes are gone", and "later reads on the same engine return the right bytes" gains "both of extents the truncation left alone and of the faulted extent once the file holds it again"; no edge | TIER-E5-T36 | — | a scope note: the I/O thread's one retry is TIER-E5-T15's (M1a, before TIER-E5-T36's M1b), and the engine's `IO_SHORT_READ` and its behaviour on the retry are TIER-E5-T36's, tested by issuing the read |
+
 ## The supervisor's kills reach the process host in DIST-E1-T16 (2026-10-30)
 
 PROD-E9-T12 (M1a) records the process host's own kills with the host's reason. The supervisor's kill reaches the host only once the supervisor shell's `Effects::kill` calls `ProcessRunner::kill`, and no row named that wiring. DIST-E1-T16's criterion, a runner killed for a stall through the real header, already needs it. So DIST-E1-T16 names it, and PROD-E9-T12 tests the host's half by driving `ProcessRunner::kill` with a supervisor reason directly.
