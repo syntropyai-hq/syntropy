@@ -18,7 +18,8 @@
 //!   never holds a prompt, an output or token IDs.
 //! - **A panic** is recorded by the hook [`install_panic_hook`] sets, which then runs the hook it
 //!   replaced. **A runner's exit** is recorded by the supervisor's shell from the process's exit
-//!   status ([`CrashCause::from_exit`]); spawning runner processes is DIST-E1-T04's.
+//!   status: the process host does so when it reaps a runner it was given a [`CrashSink`] for
+//!   ([`ProcessRunner::record_crashes`](crate::runner_host::ProcessRunner::record_crashes)).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -346,6 +347,59 @@ pub struct CrashListing {
     pub records: Vec<(String, CrashRecord)>,
     /// The files that could not be read or parsed, by name.
     pub unreadable: Vec<String>,
+}
+
+/// What a runner host needs to record a runner's exit by signal: the store, the build, the
+/// runner's name, the time and the log lines a record carries. Given to
+/// [`ProcessRunner::record_crashes`](crate::runner_host::ProcessRunner::record_crashes), which
+/// calls [`record_exit`](Self::record_exit) when it reaps the runner.
+pub struct CrashSink {
+    /// Where records go.
+    pub store: CrashStore,
+    /// The build's ID, as hex.
+    pub build_id: String,
+    /// Which runner, as the supervisor names it.
+    pub runner: String,
+    /// The time.
+    pub clock: Arc<dyn Clock>,
+    /// The log lines a record carries.
+    pub tail: Arc<LogTail>,
+}
+
+impl std::fmt::Debug for CrashSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrashSink")
+            .field("store", &self.store)
+            .field("runner", &self.runner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CrashSink {
+    /// Writes the record of runner process `pid`, which exited with `status`, when that exit is
+    /// a crash ([`CrashCause::from_exit`]). Returns the record's path, or `None` for an exit that
+    /// is not one.
+    ///
+    /// # Errors
+    ///
+    /// As [`CrashStore::write`].
+    pub fn record_exit(&self, pid: u32, status: &ExitStatus) -> io::Result<Option<PathBuf>> {
+        let Some(cause) = CrashCause::from_exit(status) else {
+            return Ok(None);
+        };
+        let record = CrashRecord {
+            version: CRASH_RECORD_VERSION,
+            at_unix_ms: self.clock.unix_ms(),
+            build_id: self.build_id.clone(),
+            process: CrashProcess::Runner {
+                pid,
+                runner: self.runner.clone(),
+            },
+            cause,
+            last_logs: self.tail.lines(),
+        };
+        self.store.write(&record).map(Some)
+    }
 }
 
 /// What the panic hook needs to write a record.

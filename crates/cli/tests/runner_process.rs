@@ -314,3 +314,85 @@ fn a_frozen_daemon_ends_its_runner_after_the_silence() {
         "the runner ended {took:?} after its daemon froze, well before runner.daemon_silence"
     );
 }
+
+/// A clock at a fixed wall time, for the crash record's timestamp.
+struct FixedClock;
+
+impl syntropy_core::Clock for FixedClock {
+    fn now(&self) -> syntropy_core::MonoTime {
+        syntropy_core::MonoTime(0)
+    }
+
+    fn unix_ms(&self) -> u64 {
+        1_800_000_000_000
+    }
+}
+
+/// A runner process killed by a signal leaves a crash record in the state directory, written by
+/// the host when it reaps the runner, and a diagnostic bundle built afterwards holds it
+/// (PROD-E9-T04; RFC-0053 §6). The kill is the host's own, `SIGKILL`, as the supervisor's for a
+/// hang or a stall. Windows has no signals: a killed process there exits with the code
+/// `TerminateProcess` gives, which `CrashCause::from_exit` does not count as a crash.
+#[cfg(unix)]
+#[test]
+fn a_runner_killed_by_a_signal_leaves_a_crash_record_that_the_bundle_holds() {
+    use std::os::unix::process::ExitStatusExt as _;
+    use std::sync::Arc;
+
+    use syntropy_daemon::bundle::{BundleOptions, Sources, build, verify};
+    use syntropy_daemon::crash::{CrashCause, CrashProcess, CrashSink, CrashStore, LogTail};
+
+    let state =
+        std::env::temp_dir().join(format!("syntropy-cli-runner-crash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    std::fs::create_dir_all(&state).unwrap();
+
+    let mut runner = spawn_ready();
+    let pid = runner.id();
+    runner.record_crashes(CrashSink {
+        store: CrashStore::new(&state),
+        build_id: "ab".repeat(32),
+        runner: "instance 9 stage 0".into(),
+        clock: Arc::new(FixedClock),
+        tail: Arc::new(LogTail::new()),
+    });
+    runner.kill().unwrap();
+    let status = reap_within(&mut runner, Duration::from_secs(30));
+    assert_eq!(status.signal(), Some(9), "{status}");
+
+    let store = CrashStore::new(&state);
+    let listing = store.list().unwrap();
+    assert!(listing.unreadable.is_empty());
+    assert_eq!(
+        listing.records.len(),
+        1,
+        "one crash record for the killed runner"
+    );
+    let (name, record) = &listing.records[0];
+    assert_eq!(
+        record.cause,
+        CrashCause::Signal {
+            signal: 9,
+            name: Some("SIGKILL".into())
+        }
+    );
+    assert_eq!(
+        record.process,
+        CrashProcess::Runner {
+            pid,
+            runner: "instance 9 stage 0".into()
+        }
+    );
+
+    let sources = Sources {
+        crashes: Some(&store),
+        ..Sources::default()
+    };
+    let bundle = build(&sources, &BundleOptions::at(1_800_000_000_500)).unwrap();
+    let files = verify(bundle.bytes()).unwrap();
+    let file = format!("crashes/{name}");
+    assert!(files.contains(&file), "{files:?}");
+    assert!(bundle.manifest().contains(&file));
+    drop(runner);
+    let _ = std::fs::remove_dir_all(&state);
+}
