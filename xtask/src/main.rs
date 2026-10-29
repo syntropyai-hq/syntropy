@@ -40,6 +40,7 @@ mod hot_threads;
 mod instructions;
 mod licences;
 mod loom;
+mod orphan_rule;
 mod plan_tools;
 mod properties;
 mod registry;

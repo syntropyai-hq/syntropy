@@ -71,14 +71,25 @@ fn a_command_not_built_yet_exits_5_and_says_so() {
 }
 
 #[test]
-fn the_hidden_modes_exit_1_until_they_are_built() {
+fn the_hidden_modes_exit_1_without_what_they_need() {
+    // A runner given a command channel it did not inherit refuses it before anything else.
     let runner = finish(&mut syntropy(&[
         "__runner",
         "--ipc",
-        "socket:/nonexistent/cmd.sock",
+        if cfg!(windows) {
+            "handle:4000"
+        } else {
+            "fd:900"
+        },
+        "--region",
+        "name:none",
     ]));
     assert_eq!(code(&runner), 1);
-    assert!(String::from_utf8_lossy(&runner.stderr).contains("runner mode is not available"));
+    let stderr = String::from_utf8_lossy(&runner.stderr);
+    assert!(
+        stderr.starts_with("error[cli/runner]: ") && stderr.contains("inherited command channel"),
+        "{stderr}"
+    );
     let selftest = finish(&mut syntropy(&["__selftest", "--root", "/nonexistent"]));
     assert_eq!(code(&selftest), 1);
     assert!(String::from_utf8_lossy(&selftest.stderr).contains("self-test is not available"));
