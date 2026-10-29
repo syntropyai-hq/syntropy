@@ -104,6 +104,9 @@ pub enum RangeError {
     Origin {
         /// The HTTP status, when the origin answered.
         status: Option<u16>,
+        /// The origin's `Retry-After`, when it gave one in seconds, for the fetch's retry
+        /// (RFC-0041 §7.3).
+        retry_after_secs: Option<u64>,
         /// What failed.
         message: String,
     },
@@ -187,6 +190,7 @@ impl fmt::Display for RangeError {
             Self::Origin {
                 status: Some(status),
                 message,
+                ..
             } => write!(
                 f,
                 "OriginUnavailable (Formats 11): HTTP {status}: {message}"
@@ -194,6 +198,7 @@ impl fmt::Display for RangeError {
             Self::Origin {
                 status: None,
                 message,
+                ..
             } => write!(f, "OriginUnavailable (Formats 11): {message}"),
             Self::NoAccess { status, message } => {
                 write!(f, "GatedNoAccess (Formats 13): HTTP {status}: {message}")

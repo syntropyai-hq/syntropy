@@ -425,10 +425,12 @@ fn remote_errors_carry_their_codes() {
     };
     let origin = RangeError::Origin {
         status: Some(503),
+        retry_after_secs: Some(7),
         message: "busy".into(),
     };
     let unreachable = RangeError::Origin {
         status: None,
+        retry_after_secs: None,
         message: "connection refused".into(),
     };
     let denied = RangeError::NoAccess {

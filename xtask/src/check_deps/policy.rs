@@ -104,8 +104,9 @@ pub struct System {
     pub only_in: &'static str,
     /// Whether only a member's own normal or build dependency on a binding counts. Set for a
     /// system whose binding most crates reach through other packages, such as `getrandom` under
-    /// the TLS stack and test crates, or `reqwest` under `iroh`: the rule then names the one crate that depends on it
-    /// directly, and a binding reached through another package is not a finding.
+    /// the TLS stack and test crates, or `reqwest` under `iroh`: the rule then names the one crate
+    /// that depends on it directly, and a binding reached through another package is not a
+    /// finding.
     pub direct_only: bool,
 }
 
