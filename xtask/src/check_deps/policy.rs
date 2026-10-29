@@ -307,6 +307,12 @@ pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
 /// - `Security`: `security-framework-sys` 2.17.0 (`link(name = "Security", kind = "framework")`,
 ///   `src/lib.rs:3`), through `rustls-platform-verifier` under `reqwest`, which verifies TLS
 ///   certificates against the system trust store.
+///
+/// `IOKit` was added 2026-10-29 (DIST-E1-T04), from what rule 7 reported on the hosted
+/// `macos-26` runner once the core binary gained runner mode, which reads `syntropy-io`'s
+/// `SystemClock` and `SystemTicks` and so links `syntropy-io`. That crate's host-state module reads
+/// the power sources through IOKit (`crates/io/src/os/macos_host.rs:248`, `link(name = "IOKit",
+/// kind = "framework")`). It ships with every macOS.
 pub const MACOS_FRAMEWORKS: &[&str] = &[
     "Metal",
     "Foundation",
@@ -314,6 +320,7 @@ pub const MACOS_FRAMEWORKS: &[&str] = &[
     "CoreGraphics",
     "SystemConfiguration",
     "Security",
+    "IOKit",
 ];
 
 /// Where the system frameworks live.

@@ -11,7 +11,8 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use syntropy_ipc::cmd::Endpoint;
+use syntropy_ipc::cmd::ChannelHandle;
+use syntropy_ipc::shm::RegionHandle;
 
 /// `syntropy`: one binary for the daemon, its runners and every client command (ADR-0015).
 #[derive(Debug, Parser)]
@@ -150,12 +151,16 @@ pub enum Command {
     Selftest(SelftestArgs),
 }
 
-/// `syntropy __runner --ipc <endpoint>`.
+/// `syntropy __runner --ipc <handle> --region <handle>`.
 #[derive(Clone, Debug, Args)]
 pub struct RunnerArgs {
-    /// The daemon's command-channel endpoint: `socket:<path>` or `pipe:<name>`
-    #[arg(long, value_name = "ENDPOINT")]
-    pub ipc: Endpoint,
+    /// The runner's end of the command channel, inherited from the daemon: `fd:<n>` or
+    /// `handle:<n>`
+    #[arg(long, value_name = "HANDLE")]
+    pub ipc: ChannelHandle,
+    /// The runner's shared-memory region: `fd:<n>` (inherited) or `name:<name>`
+    #[arg(long, value_name = "HANDLE")]
+    pub region: RegionHandle,
 }
 
 /// `syntropy __selftest --root <root>`.
