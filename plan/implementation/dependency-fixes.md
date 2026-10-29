@@ -1317,3 +1317,13 @@ TIER-E5-T36 (M1b) asked that, after a fault on `MacMapped`'s copy, "the retry fo
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | TIER-E5-T36's "the retry follows §16" becomes "a second read of the same extent (the retry §16 prescribes, which the I/O thread issues once TIER-E5-T15 builds it) is short again while the bytes are gone", and "later reads on the same engine return the right bytes" gains "both of extents the truncation left alone and of the faulted extent once the file holds it again"; no edge | TIER-E5-T36 | — | a scope note: the I/O thread's one retry is TIER-E5-T15's (M1a, before TIER-E5-T36's M1b), and the engine's `IO_SHORT_READ` and its behaviour on the retry are TIER-E5-T36's, tested by issuing the read |
+
+## QUAL-E16-T24's Windows, macOS and publishing legs split out (2026-10-30)
+
+QUAL-E16-T24 (M0a) builds the Linux build image and its pins. Its row also asked for the MSVC, Xcode and Metal compiler pins and version prints on Windows and macOS. Those versions come with the hosted runner images and can only be pinned from a job's own report. Publishing the image needs a registry account, which is a maintainer's. Each part moves to a new task, and the task that uses the Windows and macOS pins gains an edge to it. #1876 first numbered the new tasks QUAL-E16-T29 and T30, but main has since given QUAL-E16-T29 to the build-ID check through the real runner (#1970), so they are T30 and T31.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New task QUAL-E16-T30 (M0a): the Windows and macOS toolchain pins and version-print jobs. QUAL-E16-T30 → QUAL-E16-T24. QUAL-E16-T24's MSVC, Xcode and Metal compiler pins and its Windows and macOS version prints move to it | QUAL-E16-T24, QUAL-E16-T30 | R9 | a scope split: those pins come from the hosted runner images' own reports, which the Linux image does not need |
+| New task QUAL-E16-T31 (M1a): publish the Linux build image, a **Maintainer action**. QUAL-E16-T31 → QUAL-E16-T24 | QUAL-E16-T31 | R9 | a scope split: publishing needs the registry account and credentials, which are a maintainer's |
+| QUAL-E16-T01's task cell names the Windows and macOS pins and version prints as QUAL-E16-T24's and QUAL-E16-T30's, in place of listing them. QUAL-E16-T01 → QUAL-E16-T30 | QUAL-E16-T01 | R9 | its criterion needs CMake and a C++ compiler at the pinned versions on all three Tier 1 build environments, with a version print in each job, and the Windows and macOS pins are now QUAL-E16-T30's. M0b → M0a, and QUAL-E16-T30 does not reach QUAL-E16-T01, so the edge adds no cycle |
