@@ -129,11 +129,13 @@ impl CrashCause {
         }
         #[cfg(windows)]
         {
-            // NTSTATUS error codes have both high bits set; a program's own exit code does not.
+            // A system NTSTATUS error: severity bits 31–30 both set (error), and the customer
+            // bit 29 and the reserved bit 28 clear. `exit(-1)` is `0xFFFF_FFFF`, which sets both
+            // of those, so a program's own negative exit code is not taken for an exception.
             status
                 .code()
                 .map(i32::cast_unsigned)
-                .filter(|&code| code >= 0xC000_0000)
+                .filter(|&code| code & 0xF000_0000 == 0xC000_0000)
                 .map(|code| CrashCause::Exception { code })
         }
         #[cfg(not(any(unix, windows)))]

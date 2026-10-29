@@ -208,6 +208,25 @@ const COMMITTED_PLAN: Shape = Shape::Fields(&[
     ("summary", Shape::Any),
 ]);
 
+/// `core::InstancePolicy`. Its instance-scope keys (`domain`) are configuration values, replaced
+/// as cluster configuration values are, in case a key is ever secret-typed.
+const INSTANCE_POLICY: Shape = Shape::Fields(&[
+    ("objective", Shape::Any),
+    ("exactness", Shape::Any),
+    ("default_fidelity", Shape::Any),
+    ("resources", Shape::Any),
+    ("pins", Shape::Any),
+    ("tensor_overrides", Shape::Any),
+    ("speculative", Shape::Any),
+    ("domain", Shape::Map(&Shape::Secret)),
+    ("context", Shape::Any),
+    ("nodes", Shape::Any),
+    ("keep_alive", Shape::Any),
+    ("preload", Shape::Any),
+    ("deterministic", Shape::Any),
+    ("dense_on_nvme", Shape::Any),
+]);
+
 /// A member: its description (the node ID so far), status and incarnation. RFC-0030's
 /// certificates and approvals and DIST-E9-T03's roles join here when they are added deliberately.
 const MEMBER: Shape = Shape::Fields(&[
@@ -240,7 +259,7 @@ pub(crate) const CLUSTER_STATE: Shape = Shape::Fields(&[
         "instances",
         Shape::Map(&Shape::Fields(&[
             ("model", Shape::Any),
-            ("policy", Shape::Any),
+            ("policy", INSTANCE_POLICY),
             ("current", Shape::Option(&COMMITTED_PLAN)),
             ("retiring", Shape::Seq(&COMMITTED_PLAN)),
             ("runners", Shape::Any),
@@ -289,7 +308,14 @@ const CLUSTER_EVENT: Shape = Shape::Variants(&[
     ("CoordinatorElected", Shape::Any),
     ("GraphUpdated", Shape::Any),
     ("ModelRegistered", Shape::Any),
-    ("InstanceRequested", Shape::Any),
+    (
+        "InstanceRequested",
+        Shape::Fields(&[
+            ("instance", Shape::Any),
+            ("model", Shape::Any),
+            ("policy", INSTANCE_POLICY),
+        ]),
+    ),
     ("PlanCommitted", Shape::Any),
     ("RunnerStateChanged", Shape::Any),
     ("InstanceRoutable", Shape::Any),

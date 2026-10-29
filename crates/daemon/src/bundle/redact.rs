@@ -8,9 +8,16 @@
 //! - **URLs**, `scheme://…` up to the next space, quote or bracket, which relay URLs and
 //!   endpoint URLs are: `<url-N>`.
 //! - **IP addresses**, alone or with a port, IPv4 or IPv6, bracketed or not, with or without a
-//!   zone: `<addr-N>`. A token is an address when the standard library parses it as one.
+//!   zone, and inside a longer token (`p2p.peers.2001:db8::5.x`, `remote_addr:203.0.113.7`):
+//!   `<addr-N>`. Text is an address when the standard library parses it as one, or when it is
+//!   four dotted decimal octets, zero-padded or not, with an optional port. A candidate with no
+//!   digit counts only when no letter or digit touches it, so `Vec::new` stays.
 //!
-//! Host names that are not in a URL are kept, so a member's name stays readable. The same text
+//! With `--with-addresses` both are kept, except a URL's userinfo (`user:password@`), which is a
+//! credential and is replaced by `[redacted]@`.
+//!
+//! Host names that are not in a URL are kept, with or without a port, so a member's name stays
+//! readable. The same text
 //! gets the same placeholder throughout one bundle, and the numbering starts again in the next,
 //! so placeholders say which records name one address and nothing about the address itself.
 //! Every place a replacement was made is recorded, as `file: path`, for `MANIFEST.txt`.
@@ -27,6 +34,9 @@ pub(crate) struct Redactor {
     urls: usize,
     /// Every `file: path` a replacement was made in.
     pub(crate) fields: BTreeSet<String>,
+    /// Every `file: path` a URL's userinfo (`user:password@`) was removed from. Userinfo is a
+    /// credential, not an address, so it goes even with `--with-addresses`.
+    pub(crate) credentials: BTreeSet<String>,
 }
 
 impl Redactor {
@@ -67,11 +77,14 @@ impl Redactor {
     /// record of redacted fields.
     pub(crate) fn scan(&mut self, text: &str, at: &str) -> String {
         if self.keep {
-            return text.to_owned();
+            let out = self.scan_urls(text);
+            if out != text {
+                self.credentials.insert(at.to_owned());
+            }
+            return out;
         }
         let out = self.scan_urls(text);
         let out = self.scan_ips(&out);
-        let out = self.scan_ipv4_runs(&out);
         if out != text {
             self.fields.insert(at.to_owned());
         }
@@ -104,82 +117,72 @@ impl Redactor {
             // Punctuation that ends a sentence is not part of the URL.
             url = url.trim_end_matches(['.', ',', ';', ')', ']', '}']);
             out.push_str(&rest[..start]);
-            let p = self.placeholder(url, true);
-            out.push_str(&p);
+            if self.keep {
+                out.push_str(&strip_userinfo(url));
+            } else {
+                let p = self.placeholder(url, true);
+                out.push_str(&p);
+            }
             rest = &rest[start + url.len()..];
         }
         out.push_str(rest);
         out
     }
 
+    /// Every IP address in `text`, wherever it starts: alone, inside a longer token such as
+    /// `p2p.peers.2001:db8::5.x` or `remote_addr:203.0.113.7:7433`, bracketed, with a zone or a
+    /// port, and IPv4 with zero-padded octets. A run of characters an address can hold is
+    /// searched from each place an address can start, taking the longest text there that is
+    /// one; a run with no `:` and no `.` holds none and is skipped whole.
     fn scan_ips(&mut self, text: &str) -> String {
-        let mut out = String::with_capacity(text.len());
-        let mut token_start: Option<usize> = None;
-        let is_token =
-            |c: char| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '%' | '[' | ']');
-        let flush = |this: &mut Redactor, out: &mut String, token: &str| {
-            let trimmed = token.trim_end_matches(['.', ':']);
-            if is_address(trimmed) {
-                let p = this.placeholder(trimmed, false);
-                out.push_str(&p);
-                out.push_str(&token[trimmed.len()..]);
-            } else {
-                out.push_str(token);
-            }
-        };
-        for (i, c) in text.char_indices() {
-            if is_token(c) {
-                token_start.get_or_insert(i);
-            } else {
-                if let Some(start) = token_start.take() {
-                    flush(self, &mut out, &text[start..i]);
-                }
-                out.push(c);
-            }
-        }
-        if let Some(start) = token_start {
-            flush(self, &mut out, &text[start..]);
-        }
-        out
-    }
-}
-
-impl Redactor {
-    /// IPv4 addresses inside a longer token, such as `peers.203.0.113.7:7433` in a key path: each
-    /// run of digits and dots that is four octets, with the port that follows it if any.
-    fn scan_ipv4_runs(&mut self, text: &str) -> String {
         let bytes = text.as_bytes();
+        let in_run =
+            |b: u8| b.is_ascii_alphanumeric() || matches!(b, b':' | b'.' | b'%' | b'[' | b']');
+        let starts = |b: u8| b.is_ascii_hexdigit() || matches!(b, b'[' | b':');
         let mut out = String::with_capacity(text.len());
-        let mut i = 0;
         let mut copied = 0;
+        let mut i = 0;
         while i < bytes.len() {
-            if !bytes[i].is_ascii_digit() {
+            if !in_run(bytes[i]) {
                 i += 1;
                 continue;
             }
-            let start = i;
-            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
-                i += 1;
-            }
-            let run = text[start..i].trim_end_matches('.');
-            let mut end = start + run.len();
-            if run.parse::<std::net::Ipv4Addr>().is_err() {
+            // Runs are ASCII, so every index in one is a char boundary.
+            let end = (i..bytes.len())
+                .find(|&j| !in_run(bytes[j]))
+                .unwrap_or(bytes.len());
+            if !bytes[i..end].iter().any(|&b| b == b':' || b == b'.') {
+                i = end;
                 continue;
             }
-            // A port: `:` and digits.
-            if bytes.get(end) == Some(&b':') {
-                let digits = bytes[end + 1..]
-                    .iter()
-                    .take_while(|b| b.is_ascii_digit())
-                    .count();
-                if digits > 0 {
-                    end += 1 + digits;
+            let mut at = i;
+            while at < end {
+                if !starts(bytes[at]) {
+                    at += 1;
+                    continue;
+                }
+                let limit = end.min(at + MAX_ADDRESS_LEN);
+                // A candidate with no digit, such as `ec::` in `Vec::new`, counts only when no
+                // letter or digit touches it, as for `dead::beef` standing alone.
+                let clean = |j: usize| {
+                    (at == 0 || !bytes[at - 1].is_ascii_alphanumeric())
+                        && bytes.get(j).is_none_or(|b| !b.is_ascii_alphanumeric())
+                };
+                let found = (at + 2..=limit).rev().find(|&j| {
+                    let t = &text[at..j];
+                    is_address(t) && (t.bytes().any(|b| b.is_ascii_digit()) || clean(j))
+                });
+                match found {
+                    Some(stop) => {
+                        out.push_str(&text[copied..at]);
+                        let p = self.placeholder(&text[at..stop], false);
+                        out.push_str(&p);
+                        copied = stop;
+                        at = stop;
+                    }
+                    None => at += 1,
                 }
             }
-            out.push_str(&text[copied..start]);
-            let p = self.placeholder(&text[start..end], false);
-            out.push_str(&p);
-            copied = end;
             i = end;
         }
         out.push_str(&text[copied..]);
@@ -187,10 +190,46 @@ impl Redactor {
     }
 }
 
+/// `url` with its userinfo, the `user:password@` before the host, replaced by `[redacted]@`.
+fn strip_userinfo(url: &str) -> String {
+    let Some(after) = url.find("://").map(|i| i + 3) else {
+        return url.to_owned();
+    };
+    let authority_len = url[after..]
+        .find(['/', '?', '#'])
+        .unwrap_or(url.len() - after);
+    match url[after..after + authority_len].rfind('@') {
+        Some(at) => format!("{}[redacted]{}", &url[..after], &url[after + at..]),
+        None => url.to_owned(),
+    }
+}
+
+/// The longest text an address with a zone and a port can take.
+const MAX_ADDRESS_LEN: usize = 64;
+
+/// Whether `token` is four dotted decimal octets, zero-padded or not, with an optional `:port`.
+fn is_dotted_quad(token: &str) -> bool {
+    let host = match token.split_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        Some(_) => return false,
+        None => token,
+    };
+    let octets: Vec<&str> = host.split('.').collect();
+    octets.len() == 4
+        && octets.iter().all(|o| {
+            (1..=3).contains(&o.len())
+                && o.bytes().all(|b| b.is_ascii_digit())
+                && o.parse::<u16>().is_ok_and(|n| n <= 255)
+        })
+}
+
 /// Whether `token` is an IP address, alone or with a port, bracketed or with a zone.
 fn is_address(token: &str) -> bool {
-    if token.is_empty() || !token.contains(['.', ':']) {
+    if !token.contains(['.', ':']) {
         return false;
+    }
+    if is_dotted_quad(token) {
+        return true;
     }
     if token.parse::<IpAddr>().is_ok() || token.parse::<SocketAddr>().is_ok() {
         return true;
@@ -258,10 +297,47 @@ mod tests {
     }
 
     #[test]
-    fn with_addresses_keeps_everything() {
+    fn with_addresses_keeps_addresses_but_not_url_credentials() {
         let mut r = Redactor::new(true);
         let text = "peer 192.0.2.7:7433 via https://relay.example.net";
         assert_eq!(r.scan(text, "f: a"), text);
         assert!(r.fields.is_empty());
+        assert_eq!(
+            r.scan(
+                "pull https://user:tok3n@hub.example.org:443/x?y=1@z",
+                "f: b"
+            ),
+            "pull https://[redacted]@hub.example.org:443/x?y=1@z"
+        );
+        assert_eq!(r.credentials.iter().collect::<Vec<_>>(), ["f: b"]);
+        assert!(r.fields.is_empty());
+    }
+
+    /// The review of #1967, B1: IPv6 inside a longer token, after a `word:` prefix, bracketed,
+    /// with a zone, and IPv4 with zero-padded octets.
+    #[test]
+    fn addresses_inside_longer_tokens_are_found() {
+        let mut r = Redactor::new(false);
+        for (text, want) in [
+            ("p2p.peers.2001:db8::5.x", "p2p.peers.<addr-1>.x"),
+            ("remote_addr:2001:db8::77", "remote_addr:<addr-2>"),
+            ("203.000.113.077", "<addr-3>"),
+            ("peer=203.000.113.077:7433;", "peer=<addr-4>;"),
+            ("k.[2001:db8::9]:443.v", "k.<addr-5>.v"),
+            ("via fe80::1%eth0, done", "via <addr-6>, done"),
+            ("key.198.51.100.4.tail", "key.<addr-7>.tail"),
+            ("dead::beef", "<addr-8>"),
+        ] {
+            assert_eq!(r.scan(text, "f: a"), want, "{text}");
+        }
+        // Paths, times, versions, ratios and digests stay.
+        for text in [
+            "Vec::new and syntropy_daemon::logging",
+            "at 12:30:45.123 on 2026-10-29",
+            "1.99.1 and 3:1 and 0..32",
+            "id 9f86d081884c7d65f9f86d081884c7d65",
+        ] {
+            assert_eq!(r.scan(text, "f: b"), text, "{text}");
+        }
     }
 }

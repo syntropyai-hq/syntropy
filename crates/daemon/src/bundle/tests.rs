@@ -41,6 +41,10 @@ const INVITE: &str = "cnry-invite-Pp27";
 /// A content argument of a hot-thread record: it must not appear as a number either.
 const CONTENT_ARG: u64 = 0x0C0F_FEE5_1234;
 const ADDR: &str = "203.0.113.77";
+/// An IPv6 address, planted inside dotted keys and after a `word:` prefix (review B1).
+const ADDR6: &str = "2001:db8::77";
+/// A zero-padded IPv4 address (review B1).
+const ADDR_PADDED: &str = "203.000.113.088";
 const URL_HOST: &str = "relay.cnry.example.org";
 
 fn canaries() -> Vec<String> {
@@ -149,6 +153,32 @@ fn cluster_state() -> ClusterState {
             set_at: (4, 1),
         },
     );
+    // An IPv6 peer key, the same shape as the IPv4 one.
+    state.config.keys.insert(
+        KeyPath(format!("p2p.peers.{ADDR6}.port")),
+        ClusterValue {
+            value: ConfigValue::Integer(7433),
+            set_at: (5, 1),
+        },
+    );
+    // An instance whose policy carries an instance-scope key holding a key (review N1).
+    let mut policy = syntropy_core::InstancePolicy::default();
+    policy.domain.insert(
+        KeyPath("solver.hint".into()),
+        ConfigValue::String(API_KEY.into()),
+    );
+    state.instances.insert(
+        syntropy_core::InstanceId(9),
+        syntropy_cluster::log::InstanceRecord {
+            model: syntropy_core::ModelId(Blake3([6; 32])),
+            policy,
+            current: None,
+            retiring: Vec::new(),
+            runners: BTreeMap::new(),
+            routable: None,
+            requested_at: 1,
+        },
+    );
     state
 }
 
@@ -177,7 +207,10 @@ fn cluster_log() -> Vec<LogEntry> {
                     KeyPath("hub.token".into()),
                     ConfigValue::String(HUB_TOKEN.into()),
                 )],
-                unset: vec![KeyPath(format!("relay/https://{URL_HOST}:8443/r"))],
+                unset: vec![
+                    KeyPath(format!("relay/https://{URL_HOST}:8443/r")),
+                    KeyPath(format!("peer.{ADDR_PADDED}")),
+                ],
                 origin: Opaque(ciborium::Value::Text(INVITE.into())),
             },
         },
@@ -251,7 +284,7 @@ fn crashes(state: &StateDir) -> CrashStore {
             MonoTime(1),
             Level::Warn,
             "syntropy_net::link",
-            format!("dialling {ADDR}:7433 failed"),
+            format!("dialling {ADDR}:7433 failed; remote_addr:{ADDR6} via {ADDR_PADDED}"),
         )
         .with(Field::content(
             "prompt",
@@ -358,6 +391,8 @@ fn nothing_leaks_into_a_bundle() {
         assert_absent(&files, &canary);
     }
     assert_absent(&files, ADDR);
+    assert_absent(&files, ADDR6);
+    assert_absent(&files, ADDR_PADDED);
     assert_absent(&files, URL_HOST);
     // What was kept is still there.
     let text = |name: &str| String::from_utf8(files[name].clone()).unwrap();
@@ -385,6 +420,8 @@ fn with_addresses_keeps_addresses_and_nothing_else_leaks() {
         assert_absent(&files, &canary);
     }
     assert!(any_holds(&files, ADDR));
+    assert!(any_holds(&files, ADDR6));
+    assert!(any_holds(&files, ADDR_PADDED));
     assert!(any_holds(&files, URL_HOST));
     let manifest = bundle.manifest();
     assert!(manifest.contains("addresses: kept (--with-addresses)"));
@@ -553,4 +590,44 @@ fn non_string_map_keys_become_text() {
         members.keys().collect::<Vec<_>>(),
         ["02".repeat(32).as_str()]
     );
+}
+
+/// The review of #1967, B2: an `IpAddr`, a `SocketAddr` and an `IpNet` in a kept subtree come
+/// out as text through the bundle's serializer, so the projection replaces them. Through a
+/// compact serializer they would be integer arrays no text scan finds.
+#[test]
+fn typed_addresses_in_a_kept_subtree_are_redacted() {
+    #[derive(serde::Serialize)]
+    struct Interface {
+        ip: std::net::IpAddr,
+        endpoint: std::net::SocketAddr,
+        net: syntropy_core::resource::iface::IpNet,
+    }
+    let record = Interface {
+        ip: "203.0.113.77".parse().unwrap(),
+        endpoint: "[2001:db8::5]:9000".parse().unwrap(),
+        net: syntropy_core::resource::iface::IpNet {
+            addr: "198.51.100.0".parse().unwrap(),
+            prefix_len: 24,
+            scope_id: None,
+        },
+    };
+    let value = to_json(&record, "cluster-state.json").unwrap();
+    let mut redactor = Redactor::new(false);
+    let mut omitted = Omitted::default();
+    let kept = project(value, &Shape::Any, "f", "", &mut redactor, &mut omitted);
+    let text = kept.to_string();
+    for needle in [
+        "203.0.113.77",
+        "2001:db8::5",
+        "198.51.100.0",
+        "203,0,113,77",
+        "[32,1,13,184",
+    ] {
+        assert!(!text.contains(needle), "{needle} in {text}");
+    }
+    assert_eq!(kept["ip"], "<addr-1>");
+    assert_eq!(kept["endpoint"], "<addr-2>");
+    assert_eq!(kept["net"]["addr"], "<addr-3>");
+    assert_eq!(kept["net"]["prefix_len"], 24);
 }

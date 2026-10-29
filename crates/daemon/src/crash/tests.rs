@@ -187,6 +187,20 @@ fn an_exception_status_is_a_crash_and_an_exit_code_is_not() {
         Some(CrashCause::Exception { code: 0xC000_0005 })
     );
     assert_eq!(CrashCause::from_exit(&ExitStatus::from_raw(1)), None);
+    // `exit(-1)` and `exit(-2)`: a program's own codes, not NTSTATUS errors.
+    assert_eq!(
+        CrashCause::from_exit(&ExitStatus::from_raw(0xFFFF_FFFF)),
+        None
+    );
+    assert_eq!(
+        CrashCause::from_exit(&ExitStatus::from_raw(0xFFFF_FFFE)),
+        None
+    );
+    // A fast-fail abort, as a Rust `abort` on Windows ends with.
+    assert_eq!(
+        CrashCause::from_exit(&ExitStatus::from_raw(0xC000_0409)),
+        Some(CrashCause::Exception { code: 0xC000_0409 })
+    );
 }
 
 #[test]

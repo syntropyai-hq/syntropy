@@ -23,9 +23,12 @@
 //!   ([`crate::crash::LogTail`]). Prompts, outputs, token IDs, KV pages, weights, API keys, Hub
 //!   tokens, the node's secret key, invite tokens, TLS private keys and stored Responses have no
 //!   record type here.
-//! - **Addresses.** Every string kept passes the address redactor (the private `redact` module):
-//!   interface and endpoint addresses and relay URLs become stable per-bundle placeholders unless
-//!   `--with-addresses` is given, and every place one was replaced is listed in `MANIFEST.txt`.
+//! - **Addresses.** Every string kept, and every map key, passes the address redactor (the
+//!   private `redact` module): IP addresses wherever they occur in a string, inside longer
+//!   tokens too, and URLs become stable per-bundle placeholders unless `--with-addresses` is
+//!   given, and every place one was replaced is listed in `MANIFEST.txt`. A URL's userinfo is a
+//!   credential, so it is removed even with `--with-addresses`. Records are serialised
+//!   human-readable (the private `json` module), so an address type reaches the redactor as text.
 //! - **Size.** At most [`DEFAULT_MAX_SIZE`] (200 MiB) unless `--max-size` says otherwise. The
 //!   flight recorder is truncated first, oldest entries first, then the cluster log; a bundle that
 //!   still does not fit is [`BundleError::TooLarge`]. The cap is checked against the archive
@@ -51,6 +54,7 @@
 //! new field of [`Sources`] and a shape. `--cluster`, which nests every member's bundle, needs the
 //! node-query channel.
 
+mod json;
 mod redact;
 mod shape;
 pub mod tar;
@@ -311,64 +315,13 @@ fn archive_len(lens: impl Iterator<Item = u64>) -> u64 {
     lens.map(|len| 512 + len.div_ceil(512) * 512).sum::<u64>() + 1024
 }
 
-/// `value` as JSON, through CBOR's data model, so maps with keys that are not strings (a
-/// `NodeId`, a tuple) can be written: such a key becomes hex for bytes and small-integer arrays,
-/// and its compact JSON otherwise.
+/// `value` as JSON through the bundle's human-readable serializer ([`json`]): a map key that is
+/// not a string, such as a `NodeId`, is written as text, and an address type as its text form.
 fn to_json<T: Serialize + ?Sized>(value: &T, file: &'static str) -> Result<Value, BundleError> {
-    let cbor = ciborium::Value::serialized(value).map_err(|e| BundleError::Encode {
+    json::to_value(value).map_err(|e| BundleError::Encode {
         file,
         message: e.to_string(),
-    })?;
-    Ok(cbor_to_json(cbor))
-}
-
-fn cbor_to_json(value: ciborium::Value) -> Value {
-    use ciborium::Value as C;
-    match value {
-        C::Integer(i) => {
-            let i = i128::from(i);
-            if let Ok(u) = u64::try_from(i) {
-                Value::from(u)
-            } else if let Ok(s) = i64::try_from(i) {
-                Value::from(s)
-            } else {
-                Value::String(i.to_string())
-            }
-        }
-        C::Bytes(b) => Value::String(hex(&b)),
-        C::Float(f) => serde_json::Number::from_f64(f).map_or(Value::Null, Value::Number),
-        C::Text(t) => Value::String(t),
-        C::Bool(b) => Value::Bool(b),
-        C::Null => Value::Null,
-        C::Tag(_, inner) => cbor_to_json(*inner),
-        C::Array(items) => Value::Array(items.into_iter().map(cbor_to_json).collect()),
-        C::Map(entries) => Value::Object(
-            entries
-                .into_iter()
-                .map(|(k, v)| (key_text(k), cbor_to_json(v)))
-                .collect(),
-        ),
-        _ => Value::Null,
-    }
-}
-
-fn key_text(key: ciborium::Value) -> String {
-    match key {
-        ciborium::Value::Text(t) => t,
-        other => match cbor_to_json(other) {
-            Value::String(s) => s,
-            Value::Array(items)
-                if !items.is_empty()
-                    && items.iter().all(|v| v.as_u64().is_some_and(|n| n <= 255)) =>
-            {
-                items
-                    .iter()
-                    .map(|v| format!("{:02x}", v.as_u64().unwrap_or(0)))
-                    .collect()
-            }
-            v => v.to_string(),
-        },
-    }
+    })
 }
 
 /// One cluster log entry as the bundle writes it, before projection.
@@ -707,7 +660,12 @@ fn manifest_text(
     section(
         &mut out,
         "secrets replaced by [redacted] in (file: field)",
-        &mut omitted.secrets.iter().cloned(),
+        &mut omitted.secrets.iter().cloned().chain(
+            redactor
+                .credentials
+                .iter()
+                .map(|at| format!("{at} (URL userinfo)")),
+        ),
     );
     section(
         &mut out,
