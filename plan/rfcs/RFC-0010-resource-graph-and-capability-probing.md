@@ -334,6 +334,11 @@ The coordinator builds the `ResourceGraph` from the event log; no node builds it
 - `ReportProfile { profile }` replaces that node's `CapabilityProfile`. The coordinator accepts it only if `profile.version` is newer, and then emits `GraphUpdated`. A hardware change after admission (an eGPU unplugged, a volume unmounted) rides the same command in `CapabilityProfileExt::inventory: Option<NodeInventory>`.
 - `ReportLedger` changes `reservations`.
 
+*Note 2026-10-29 (proposed, PLC-E1-T18; for the maintainers):* RFC-0001 §5.2 names `ResourceGraph::reservations: Vec<Reservation>`, "capacity held by running instances, per device and tier", which the solver treats as unavailable except when re-planning the instance that holds it. No RFC defines `Reservation`, and `ReportLedger` carries `LedgerSummary { held: Vec<(TierId, Bytes)> }`, which has no instance. Options:
+- (a) **recommended:** `Reservation { instance: InstanceId, tier: TierId, bytes: Bytes }`. `LedgerSummary` gains per-instance entries with a serde default, so `ReportLedger` can carry them. The exemption needs the instance, and a tier's `affinity` names the devices it serves, so per device follows from per tier.
+- (b) per node and tier, from `LedgerSummary` as it is. It cannot exempt the re-planned instance, so a re-plan would count its own holdings against itself.
+- (c) per instance and device, with tiers derived from devices. It misses host tiers (`HostPinned`, `Nvme`), which have no device.
+
 `GraphDelta`, carried by `GraphUpdated`, is defined here:
 
 ```rust
