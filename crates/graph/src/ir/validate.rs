@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `ir::validate`: rules 1–5 of RFC-0043 §2.2, which run after every family build and in
+//! `ir::validate`: rules 1–6 of RFC-0043 §2.2, which run after every family build and in
 //! tests (ADR-0430 decision 4).
 //!
 //! 1. **SSA**: every value is defined once, before use, and programs are acyclic.
@@ -13,10 +13,14 @@
 //! 4. **Boundaries**: every legal boundary in [`BoundarySet`](super::BoundarySet) satisfies RFC-0043 §6.1: every
 //!    value live across it is a residual stream or declared side data.
 //! 5. **Coverage**: every [`OpKind`] used is in the family's `required_ops` (RFC-0040 §11.1).
+//! 6. **Reserved hooks**: in v1, `encoders` is empty and no node is an `EmbedInject` or of class
+//!    [`NodeClass::Encoder`] (§2.4; COMP-E15-T11). The hooks exist as types so the IR does not
+//!    change when a multimodal family arrives after 1.0; until then a graph that uses one is
+//!    refused.
 //!
-//! Rules 6 (reserved hooks) and 7 (attention direction) of §2.2 come with the tasks that add
-//! encoder-only and multimodal checks. Encoder programs are checked here like any other
-//! program, ordered before the prologue, since they feed it.
+//! Rule 7 (attention direction) of §2.2 comes with the task that adds the encoder-only checks.
+//! Rules 1–5 check encoder programs like any other program, ordered before the prologue, since
+//! they feed it; rule 6 then refuses them in v1.
 //!
 //! [`validate`] checks the rules in order and returns the first violation; [`check`] checks
 //! one. Every check reads the graph defensively, so a graph that breaks one rule never makes
@@ -89,16 +93,19 @@ pub enum Rule {
     Boundaries = 4,
     /// Rule 5: coverage.
     Coverage = 5,
+    /// Rule 6: reserved hooks, unused in v1.
+    ReservedHooks = 6,
 }
 
 impl Rule {
     /// Every rule, in the order [`validate`] checks them.
-    pub const ALL: [Rule; 5] = [
+    pub const ALL: [Rule; 6] = [
         Rule::Ssa,
         Rule::Types,
         Rule::Weights,
         Rule::Boundaries,
         Rule::Coverage,
+        Rule::ReservedHooks,
     ];
 
     /// Its number in RFC-0043 §2.2.
@@ -328,6 +335,27 @@ pub enum Violation {
         /// Its kind.
         op: OpKind,
     },
+
+    // ---- Rule 6: reserved hooks ----
+    /// The graph has an encoder program, which no v1 family produces.
+    EncoderProgram {
+        /// Its index in `encoders`.
+        index: u16,
+    },
+    /// A node is the reserved `EmbedInject`.
+    EmbedInject {
+        /// The program.
+        program: ProgramId,
+        /// The node.
+        node: usize,
+    },
+    /// A node has the reserved class [`NodeClass::Encoder`].
+    EncoderNode {
+        /// The program.
+        program: ProgramId,
+        /// The node.
+        node: usize,
+    },
 }
 
 impl Violation {
@@ -357,6 +385,9 @@ impl Violation {
             | Self::ValueCrossesBoundary { .. }
             | Self::SideDataUndeclared { .. } => Rule::Boundaries,
             Self::OpNotRequired { .. } => Rule::Coverage,
+            Self::EncoderProgram { .. } | Self::EmbedInject { .. } | Self::EncoderNode { .. } => {
+                Rule::ReservedHooks
+            }
         }
     }
 }
@@ -509,13 +540,27 @@ impl fmt::Display for Violation {
                 f,
                 "{program:?} node {node} uses {op:?}, which required_ops does not list"
             ),
+            Self::EncoderProgram { index } => write!(
+                f,
+                "encoder program {index} is a reserved multimodal hook that no v1 family uses"
+            ),
+            Self::EmbedInject { program, node } => write!(
+                f,
+                "{program:?} node {node} is EmbedInject, a reserved multimodal hook that no v1 \
+                 family uses"
+            ),
+            Self::EncoderNode { program, node } => write!(
+                f,
+                "{program:?} node {node} has class Encoder, a reserved multimodal hook that no v1 \
+                 family uses"
+            ),
         }
     }
 }
 
 impl std::error::Error for Violation {}
 
-/// Checks rules 1–5 of RFC-0043 §2.2 in order on `graph`, against its census and its
+/// Checks rules 1–6 of RFC-0043 §2.2 in order on `graph`, against its census and its
 /// family's `required_ops`.
 ///
 /// # Errors
@@ -549,6 +594,7 @@ pub fn check(
         Rule::Weights => check_weights(graph, &programs, census),
         Rule::Boundaries => check_boundaries(graph, &programs),
         Rule::Coverage => check_coverage(&programs, required_ops),
+        Rule::ReservedHooks => check_reserved_hooks(graph, &programs),
     }
 }
 
@@ -973,6 +1019,29 @@ impl Liveness {
             _ => false,
         }
     }
+}
+
+/// Rule 6: no encoder program, no `EmbedInject` node and no `Encoder` node (RFC-0043 §2.4).
+/// Encoder programs are refused first, as a whole, so a graph with one is reported by its
+/// program rather than by the encoder nodes inside it.
+fn check_reserved_hooks(
+    graph: &ModelGraph,
+    programs: &[(ProgramId, &Program)],
+) -> Result<(), Violation> {
+    if !graph.encoders.is_empty() {
+        return Err(Violation::EncoderProgram { index: 0 });
+    }
+    for &(program, body) in programs {
+        for (node, n) in body.nodes.iter().enumerate() {
+            if n.op == OpKind::EmbedInject {
+                return Err(Violation::EmbedInject { program, node });
+            }
+            if n.class == NodeClass::Encoder {
+                return Err(Violation::EncoderNode { program, node });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check_coverage(

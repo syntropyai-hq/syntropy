@@ -814,6 +814,44 @@ const MUTATORS: &[(&str, Mutator)] = &[
         f.ops.remove(&op);
         Some((Rule::Coverage, "OpNotRequired"))
     }),
+    // Rule 6
+    ("give the graph an encoder program", |f, _| {
+        f.graph.encoders.push(crate::ir::EncoderProgram {
+            modality: crate::ir::Modality::Image,
+            body: Program {
+                inputs: SmallVec::new(),
+                nodes: Vec::new(),
+                outputs: SmallVec::new(),
+            },
+            output: ValueType {
+                dtype: DType::F32,
+                dims: SmallVec::new(),
+            },
+        });
+        Some((Rule::ReservedHooks, "EncoderProgram"))
+    }),
+    ("turn an Add into EmbedInject", |f, l| {
+        let node = f.graph.layers[l]
+            .body
+            .nodes
+            .iter_mut()
+            .find(|n| n.op == OpKind::Add)?;
+        node.op = OpKind::EmbedInject;
+        f.ops.insert(OpKind::EmbedInject);
+        Some((Rule::ReservedHooks, "EmbedInject"))
+    }),
+    (
+        "mark a node that reads no weight as an encoder node",
+        |f, l| {
+            let node = f.graph.layers[l]
+                .body
+                .nodes
+                .iter_mut()
+                .find(|n| n.weights.is_empty())?;
+            node.class = NodeClass::Encoder;
+            Some((Rule::ReservedHooks, "EncoderNode"))
+        },
+    ),
 ];
 
 fn push_value(f: &mut Fixture, dtype: DType, dims: SmallVec<[Dim; 4]>, kind: ValueKind) -> ValueId {
@@ -1047,7 +1085,7 @@ fn a_router_group_of_another_layer_is_rejected() {
 #[test]
 fn rules_are_numbered_as_in_the_rfc() {
     let numbers: Vec<u8> = Rule::ALL.iter().map(|r| r.number()).collect();
-    assert_eq!(numbers, [1, 2, 3, 4, 5]);
+    assert_eq!(numbers, [1, 2, 3, 4, 5, 6]);
 }
 
 #[test]
@@ -1212,5 +1250,25 @@ fn op_attrs_look_up_by_name() {
 impl Violation {
     fn variant_name(&self) -> String {
         variant(self)
+    }
+}
+
+/// Rule 6's mutators apply to the small graph, and each refusal names rule 6.
+#[test]
+fn rule_6_refuses_each_reserved_hook() {
+    for (name, mutate) in MUTATORS
+        .iter()
+        .filter(|(n, _)| n.contains("encoder") || n.contains("EmbedInject"))
+    {
+        let mut f = small();
+        let (rule, expected) = mutate(&mut f, 0).unwrap_or_else(|| panic!("{name} did not apply"));
+        assert_eq!(rule, Rule::ReservedHooks);
+        let err = f.validate().expect_err(name);
+        assert_eq!(variant(&err), expected, "{name}");
+        assert!(
+            err.to_string().starts_with("graph rule 6 broken: ")
+                && err.to_string().contains("reserved multimodal hook"),
+            "{err}"
+        );
     }
 }

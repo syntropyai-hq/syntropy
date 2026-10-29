@@ -150,6 +150,11 @@ v1 serves text only. Adding an encoder stage, image-token prefill and per-image 
 | `TensorClass::Encoder { tower }` (RFC-0001 §5.3, proposed) and `ClassSel::Encoder` | the census class for tower and projector tensors: dense, read once per encoded input | family classification rules already recognise tower tensors by name and tag them with their tower (§4.3), but classify them `Ignored` in v1 |
 | API hooks | image content parts and a per-model input-modality list (RFC-0050) | text-only; image parts are rejected as today |
 
+*Note 2026-10-29 (as built, part of COMP-E15-T11):*
+- **Rule 6.** `ir::validate` refuses a graph with an encoder program, an `EmbedInject` node or an `Encoder` node: `Rule::ReservedHooks`, with the violations `EncoderProgram`, `EmbedInject` and `EncoderNode`. Rules 1 to 5 still check encoder programs like any other program.
+- **`EmbedInject`'s semantics.** `kernels::reference::embed_inject` writes encoder row i over the embedding row at the i-th placeholder position. The positions must be strictly increasing and in range, and every other row keeps its bits. It is a move, so it is exact in both reference modes. The positions are an argument; how the request supplies them is the multimodal family's to define.
+- **Still to come.** The task's last criterion has not landed: each v1 family's classification rules tagging tower tensors `Ignored`, checked on recorded headers of its multimodal checkpoints. It waits on the families' own tasks and the fixture store.
+
 **The first multimodal family is `qwen_hybrid`, with image input**, in a release after 1.0. Its Qwen3.5-class checkpoints ship a vision tower, it is an M1 family with small checkpoints, and its Apache-2.0 licence lets the fixtures and the oracle's golden data be public (RFC-0060 §12.3). It is the target that ADR-0502's revisit trigger ("multimodal model families enter the v1 list") points at. Choosing a different family later is an ADR change, not a type change.
 
 ### 3. The block library
