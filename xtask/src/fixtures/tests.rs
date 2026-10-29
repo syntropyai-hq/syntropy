@@ -95,7 +95,8 @@ fn the_cache_never_exceeds_its_cap_and_evicts_least_recently_used_first() {
     let cache = Cache::open(dir.join("cache"), cap).unwrap();
     let objects: Vec<Vec<u8>> = (0u8..6).map(|i| vec![i; 30 + usize::from(i) * 5]).collect();
     let keys: Vec<Key> = objects.iter().map(|o| put(&dir, &store, o)).collect();
-    // A fixed access pattern, with repeats so recency matters.
+    // A fixed access pattern. Each repeat here misses, so this checks the cap; the recency order
+    // is checked by `a_hit_makes_an_object_the_most_recently_used`.
     for &i in &[0usize, 1, 2, 0, 3, 4, 0, 5, 1, 2, 5, 3] {
         cache
             .fetch(&store, &keys[i], objects[i].len() as u64)
@@ -113,6 +114,69 @@ fn the_cache_never_exceeds_its_cap_and_evicts_least_recently_used_first() {
         !names.contains(&keys[4].hex().to_owned()),
         "object 4 was the least recently used"
     );
+}
+
+/// Fetch A, then B, then A again (a hit), then C, which needs one eviction: B goes, because the
+/// hit made A the most recently used. Without the hit's stamp, A would go.
+#[test]
+fn a_hit_makes_an_object_the_most_recently_used() {
+    let dir = scratch("lru");
+    let store = LocalStore::new(dir.join("store"));
+    let objects: Vec<Vec<u8>> = (0u8..3).map(|i| vec![i; 40]).collect();
+    let keys: Vec<Key> = objects.iter().map(|o| put(&dir, &store, o)).collect();
+    let cache = Cache::open(dir.join("cache"), 100).unwrap();
+    for i in [0usize, 1, 0, 2] {
+        cache.fetch(&store, &keys[i], 40).unwrap();
+    }
+    let cached = |i: usize| dir.join("cache").join(keys[i].hex()).is_file();
+    assert!(cached(0), "A was hit, so it stays");
+    assert!(!cached(1), "B was the least recently used");
+    assert!(cached(2));
+}
+
+/// The cache leaves alone every file it did not name: a foreign file is not evicted, not
+/// counted against the cap, and a foreign `.part` survives `open`.
+#[test]
+fn the_cache_never_touches_files_it_did_not_name() {
+    let dir = scratch("foreign");
+    let store = LocalStore::new(dir.join("store"));
+    let cache_dir = dir.join("cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+    fs::write(cache_dir.join("notes.txt"), vec![b'n'; 500]).unwrap();
+    fs::write(cache_dir.join("draft.part"), b"mine").unwrap();
+    let ours = format!("{}.part", hex(b"leftover"));
+    fs::write(cache_dir.join(&ours), b"half").unwrap();
+    let cache = Cache::open(cache_dir.clone(), 100).unwrap();
+    assert!(cache_dir.join("draft.part").is_file());
+    assert!(
+        !cache_dir.join(&ours).is_file(),
+        "our own leftover download is removed"
+    );
+    assert_eq!(cache.size().unwrap(), 0);
+    let objects: Vec<Vec<u8>> = (0u8..3).map(|i| vec![i; 40]).collect();
+    for o in &objects {
+        let key = put(&dir, &store, o);
+        cache.fetch(&store, &key, 40).unwrap();
+    }
+    assert!(cache_dir.join("notes.txt").is_file());
+    assert!(cache_dir.join("draft.part").is_file());
+    assert!(cache.size().unwrap() <= 100);
+}
+
+/// A missing object evicts nothing: the store is asked first.
+#[test]
+fn a_missing_object_leaves_the_cache_as_it_was() {
+    let dir = scratch("missingfull");
+    let store = LocalStore::new(dir.join("store"));
+    let present = put(&dir, &store, &[1u8; 80]);
+    let cache = Cache::open(dir.join("cache"), 100).unwrap();
+    cache.fetch(&store, &present, 80).unwrap();
+    let absent = Key::new(Prefix::Fixtures, &hex(b"absent")).unwrap();
+    assert!(matches!(
+        cache.fetch(&store, &absent, 50),
+        Err(Error::NotFound(_))
+    ));
+    assert!(dir.join("cache").join(present.hex()).is_file());
 }
 
 #[test]

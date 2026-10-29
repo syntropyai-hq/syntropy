@@ -1268,3 +1268,16 @@ The review of #1963 found two gaps next to COMP-E12-T04's `TensorRecord::hash` c
 |---|---|---|---|
 | COMP-E12-T12 writes each verified chunk's `ChunkId` into the model's chunk table as committed, with evidence form 0 (provisional). COMP-E12-T04 → COMP-E12-T12 | COMP-E12-T12, COMP-E12-T04 | R9 | RFC-0041 §6.3's commitment, on one node, happens where a fetched chunk is verified; COMP-E12-T04's "a verified fetch" arm needs that producer |
 | COMP-E11-T05 never forms an `ExtentKey` over a `None` tensor hash: a group that needs an extent but has a `None` hash fails the build with class `Integrity`, and no sidecar is committed | COMP-E11-T05 | R9 | `ExtentKey` (RFC-0041 §1) is built from the group's tensor hashes, so a key over `None` would name bytes nobody can check. Deferring the group can't work: RFC-0001 §3.3 enters `Packing` only once every shard chunk is verified, so every hash is set by then, and a later start with a matching `PackKey` skips `Packing`, so a deferred group would never be built. A `None` there means the table and the shard disagree, the class RFC-0041 §7.3 uses |
+
+## The fixture store's S3 backend splits from its client (2026-10-29)
+
+QUAL-E7-T05's PR (#1871, taken over in a later PR after it stalled) builds the store client, the local backend and the cache; the S3 backend, the anonymous-read grants and the bucket move to QUAL-E7-T15, which needs an HTTP or S3 client a maintainer approves. Proposed in the task's PR, for the maintainers to confirm.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The S3 backend, the per-object public-read rule and the bucket's Maintainer action move from QUAL-E7-T05 to the new QUAL-E7-T15 (M0a). QUAL-E7-T15 → QUAL-E7-T05 | QUAL-E7-T05, QUAL-E7-T15 | R3b | nothing T05 builds needs the bucket; its criteria run on the local backend |
+| QUAL-E7-T06 → QUAL-E7-T15 | QUAL-E7-T06 | R9 | its "a gated checkpoint is readable only with the lab credential" needs the bucket's credential |
+| QUAL-E12-T06 → QUAL-E7-T15 | QUAL-E12-T06 | R9 | its "a write without a credential fails" needs the bucket's write credential |
+| QUAL-E1-T14 → QUAL-E7-T15 | QUAL-E1-T14 | R9 | its artefacts live in the bucket |
+| QUAL-E7-T08 → QUAL-E7-T15 | QUAL-E7-T08 | R9 | its lifecycle dry run follows T15's access rule |
+| No new edge for T05's other dependents (TIER-E5-T04, TIER-E8-T09, QUAL-E4-T05, QUAL-E5-T02, QUAL-E5-T18, QUAL-E5-T22, QUAL-E7-T13, QUAL-E10-T02, QUAL-E16-T04, QUAL-E16-T22) | those tasks | R8 | their criteria name the store's objects, layout or licence records, which the local backend serves; a CI run that needs the bucket names its own dependency when it is written |

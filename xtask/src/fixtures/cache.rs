@@ -7,6 +7,10 @@
 //! later than any other entry's, so the order is exact even on a file system with coarse clocks.
 //! A hit is hashed again before it is used, because the cache directory is outside the store's
 //! control: a cached file that no longer matches is deleted and fetched again.
+//!
+//! The cache manages only the files it names: an object, `<64 lowercase hex>`, and a download in
+//! progress, `<64 lowercase hex>.part`. Any other file in the directory is left alone and does not
+//! count against the cap, so a mistyped `--cache` cannot delete someone's files.
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -17,8 +21,9 @@ use super::hash_file;
 use super::store::{Error, Key, Store, check};
 
 /// One process uses a cache directory at a time; concurrent runners need separate directories.
-/// Eviction happens before a download is verified, so a fetch that fails the integrity check can
-/// leave the cache emptier than it was.
+/// Eviction happens after the store has the object open but before the download is verified, so
+/// a fetch that fails the integrity check can leave the cache emptier than it was; a missing
+/// object or an unreachable store evicts nothing.
 pub struct Cache {
     dir: PathBuf,
     cap: u64,
@@ -30,9 +35,9 @@ impl Cache {
     pub fn open(dir: PathBuf, cap: u64) -> Result<Cache, Error> {
         fs::create_dir_all(&dir)?;
         for entry in fs::read_dir(&dir)? {
-            let path = entry?.path();
-            if path.extension().is_some_and(|e| e == "part") {
-                fs::remove_file(path)?;
+            let entry = entry?;
+            if owned(&entry.file_name()) == Some(Owned::Part) && entry.metadata()?.is_file() {
+                fs::remove_file(entry.path())?;
             }
         }
         Ok(Cache { dir, cap })
@@ -48,7 +53,7 @@ impl Cache {
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
             let meta = entry.metadata()?;
-            if meta.is_file() {
+            if meta.is_file() && owned(&entry.file_name()) == Some(Owned::Object) {
                 entries.push(Entry {
                     path: entry.path(),
                     bytes: meta.len(),
@@ -91,7 +96,10 @@ impl Cache {
                 cap: self.cap,
             });
         }
-        // Make room first, so the cache holds at most `cap` bytes while the download runs.
+        // Open the object before evicting anything, so a missing object or an unreachable store
+        // leaves the cache as it was. Then make room, so the cache holds at most `cap` bytes while
+        // the download runs.
+        let reader = store.open(key)?;
         let mut entries = self.entries()?.into_iter();
         let mut total = self.size()?;
         while total + bytes > self.cap {
@@ -102,7 +110,7 @@ impl Cache {
             total -= victim.bytes;
         }
         let part = path.with_extension("part");
-        let result = self.download(store, key, bytes, &part);
+        let result = self.download(reader, key, bytes, &part);
         if let Err(e) = result {
             let _ = fs::remove_file(&part);
             return Err(e);
@@ -112,8 +120,14 @@ impl Cache {
         Ok(path)
     }
 
-    fn download(&self, store: &dyn Store, key: &Key, bytes: u64, part: &Path) -> Result<(), Error> {
-        let mut reader = store.open(key)?.take(bytes.saturating_add(1));
+    fn download(
+        &self,
+        reader: Box<dyn Read>,
+        key: &Key,
+        bytes: u64,
+        part: &Path,
+    ) -> Result<(), Error> {
+        let mut reader = reader.take(bytes.saturating_add(1));
         let mut file = File::create(part)?;
         let mut hasher = blake3::Hasher::new();
         let mut buf = vec![0u8; 1 << 16];
@@ -135,4 +149,21 @@ struct Entry {
     path: PathBuf,
     bytes: u64,
     used: SystemTime,
+}
+
+/// What a cache file is, by its name: the cache touches nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owned {
+    Object,
+    Part,
+}
+
+fn owned(name: &std::ffi::OsStr) -> Option<Owned> {
+    let name = name.to_str()?;
+    let (hex, kind) = match name.strip_suffix(".part") {
+        Some(hex) => (hex, Owned::Part),
+        None => (name, Owned::Object),
+    };
+    let is_hex = hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    is_hex.then_some(kind)
 }
