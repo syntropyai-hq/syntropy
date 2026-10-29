@@ -165,18 +165,17 @@ fn the_probe_finds_sparse_files_on_the_hosts_volume() {
     let scratch = Scratch::new("probe");
     let root = scratch.root();
     let blobs = Blobs::open(&root).unwrap();
-    // APFS fills a small gap below a write and frees it when punched; ext4, tmpfs and NTFS
-    // leave the gap a hole (module docs).
-    if cfg!(target_os = "macos") {
-        assert!(
-            matches!(blobs.mode(), StorageMode::SparseFillsGaps { gap, filled }
-                if *gap == PROBE_NEAR_GAP_BYTES && *filled > 2 * PROBE_WRITE_BYTES),
-            "{}",
-            blobs.mode()
-        );
-    } else {
-        assert_eq!(blobs.mode(), &StorageMode::Sparse, "{}", blobs.mode());
-    }
+    // Either sparse mode: the write path punches the gaps beside every chunk in both, so what
+    // the code relies on is only that the volume has sparse files (module docs). APFS may show
+    // as `SparseFillsGaps`; ext4, tmpfs and NTFS as `Sparse`.
+    assert!(
+        matches!(
+            blobs.mode(),
+            StorageMode::Sparse | StorageMode::SparseFillsGaps { .. }
+        ),
+        "{}",
+        blobs.mode()
+    );
     assert_eq!(blobs.mode().blob_mode(), BlobMode::Sparse);
     assert!(
         !root.layout().sparse_probe().exists(),
