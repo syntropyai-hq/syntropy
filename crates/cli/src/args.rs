@@ -151,16 +151,20 @@ pub enum Command {
     Selftest(SelftestArgs),
 }
 
-/// `syntropy __runner --ipc <handle> --region <handle>`.
+/// `syntropy __runner --ipc <handle> --region <handle>`, or `syntropy __runner --probe --ipc
+/// <handle>`.
 #[derive(Clone, Debug, Args)]
 pub struct RunnerArgs {
+    /// Probe mode: report the node's measurements and exit, with no region (DIST-E1-T17)
+    #[arg(long, conflicts_with = "region")]
+    pub probe: bool,
     /// The runner's end of the command channel, inherited from the daemon: `fd:<n>` or
     /// `handle:<n>`
     #[arg(long, value_name = "HANDLE")]
     pub ipc: ChannelHandle,
     /// The runner's shared-memory region: `fd:<n>` (inherited) or `name:<name>`
-    #[arg(long, value_name = "HANDLE")]
-    pub region: RegionHandle,
+    #[arg(long, value_name = "HANDLE", required_unless_present = "probe")]
+    pub region: Option<RegionHandle>,
 }
 
 /// `syntropy __selftest --root <root>`.

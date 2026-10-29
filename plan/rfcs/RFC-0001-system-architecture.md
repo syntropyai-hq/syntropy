@@ -162,6 +162,11 @@ On platforms that forbid spawning a child process (iOS, some Android contexts), 
 - **The L0 check.** `cargo xtask ci lint`'s `orphan-rule` step refuses the identifiers `PR_SET_PDEATHSIG`, `PROC_PDEATHSIG_CTL`, `NOTE_EXIT`, `NOTE_EXITSTATUS`, `EVFILT_PROC`, `pidfd_open`, `getppid` and `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` in `runner`, `daemon`, `ipc`, `io` and `cli`. It reads tokens, so it cannot see a constant written as a bare number.
 - **Probe mode** (`--probe`) is DIST-E1-T17, a scope split: it adds `RunnerMsg::ProbeResult` and an `ipc_protocol` bump, which DIST-E1-T04 kept out of the process host. `CapabilityProfile`, which `ProbeResult` carries, is already on main (PLC-E1-T17), so DIST-E1-T17 is ready now that DIST-E1-T04 has merged.
 
+*Note 2026-10-29 (as built, §18.52; DIST-E1-T17): probe mode.*
+- **The command line.** A probe is `syntropy __runner --probe --ipc <handle>`, with no `--region`; `--probe` and `--region` are exclusive. `daemon::runner_host::probe_process` spawns it through the same channel pair as a runner.
+- **The exchange.** The probe sends `Hello`, which the daemon checks as for a runner, then one `ProbeResult { profile }`, and exits 0. It is sent no `Init`, so it holds no plan, loads no model and admits no sequence. Anything else after `Hello` makes the daemon kill and reap it.
+- **The profile.** Until PLC-E1-T07 runs its enumeration in the probe, the profile names no device, storage tier or link. The probe leaves `node` and `version` zero, and the daemon stamps them, since only it knows them. `ProbeRequest` and its suites, and a deadline on a probe, come with PLC-E2-T01.
+
 ### 3.2 What each process owns
 
 | Resource | Daemon | Runner |
@@ -3169,3 +3174,13 @@ COMP-E10-T11 builds the remaining identities of RFC-0041 §1 and the two message
 | `ShardSpec`, `PackKey`, `ChunkId` and `LayoutVersion` are `core` types. `ShardSpec::new_with` takes the hash function, and `PackKey::for_shard` builds a key from a spec. `kernels` and `manifest` re-export them | §5.6 (dated note) | §18.28 moved them to `core` so that `ipc` can carry them. `core` links no hasher, so the digest follows the `InstancePolicy::digest_with` pattern |
 | `RunnerMsg` gains `FetchShard { spec, priority }` and `PackCommitted { key, sidecar }`, and `ipc_protocol` goes from 4.0 to 5.0 | §3.5 (the two rows) | they are the messages §3.5's note of 2026-10-23 assigns to COMP-E10-T11. A 5.0 runner sends them in normal operation and a 4.x daemon cannot decode them. A change is compatible only when every older reader can read everything a newer writer sends it, so the major moves. |
 | `TensorRecord::hash`, `ShardSpec::digest` and `ExtentKey` have fixed byte encodings, with golden values computed apart from the implementation. The tensor hash is a domain-separated binary Merkle tree split at the largest power of two. `ExtentKey`'s "layout ID and its version" are the extent's own layout and the layout-table version | RFC-0041 §1 (dated note) | RFC-0041 §1 named each identity's inputs but not its bytes. Its `ExtentKey` row leaves the version open, and the layout-table version is the one version the plan defines. For the maintainers to confirm |
+
+### 18.52 `ProbeResult`, and probe mode (2026-10-29)
+
+DIST-E1-T17 builds probe mode (§3.1).
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `RunnerMsg` gains `ProbeResult { profile: CapabilityProfile }`, and `ipc_protocol` goes from 5.0 to 6.0 | §3.5 (the row); §3.1 (dated note) | `CapabilityProfile` exists in `core` (PLC-E1-T17); a 5.x daemon cannot decode the new message, so the major moves, as for 5.0 |
+
+Taken under the maintainers' standing instruction, for the maintainers to confirm.
