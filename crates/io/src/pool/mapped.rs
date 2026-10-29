@@ -40,11 +40,13 @@
 //!   bytes.
 //! - **A refused mapping** fails `open` with `IO_ENGINE_UNAVAILABLE` and the OS error: the next
 //!   engine, `MacNoCache`, reads that file (RFC-0021 §16).
-//! - **No gathering.** The copy costs the same per byte at any request size, so contiguous reads
-//!   are not joined, unlike `MacNoCache`.
+//! - **No gathering.** The copy is one buffered `pread` per read, from pages already resident, at
+//!   the same cost per byte at any request size, so contiguous reads are not joined, unlike
+//!   `MacNoCache`.
 //! - `MADV_DONTNEED` on a range drops the mapping's pages there, including a page another
-//!   worker's read shares at an edge. That read then faults the page in again from the cache: it
-//!   costs time, never correctness.
+//!   worker's read shares at an edge. That read's wait may then see the page absent and wait
+//!   for it, or time out to the `F_NOCACHE` `pread`, and its copy's `pread` reads it from the
+//!   cache or the file: it costs time, never correctness. No read loads from the mapping.
 //!
 //! The mapping calls go through the crate-private `MapSys` trait, so a test can record their
 //! order against the real calls; the engine uses `RealMap`. The `F_NOCACHE` calls are
@@ -160,8 +162,8 @@ struct Region {
 impl Drop for Region {
     fn drop(&mut self) {
         // SAFETY: `base` and `len` are the mapping `MapSys::map` returned, and the last handle
-        // to it is going: every worker that copied from it has been joined or dropped its
-        // handle, so nothing reads it after this.
+        // to it is going: every worker that advised it or polled its residency has been joined
+        // or dropped its handle, so no call uses it after this. No read loads from it.
         unsafe { libc::munmap(self.base as *mut libc::c_void, self.len as usize) };
     }
 }
