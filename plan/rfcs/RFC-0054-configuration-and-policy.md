@@ -631,7 +631,10 @@ These keys build an `InstancePolicy` (§4.5). In addition, every instance-scope 
 | `kv.autosave` | bool | `true`: persist a session's KV on release (RFC-0022 §8.1) | hot | a request may override per session (RFC-0050 §9) | 0022 |
 | `sampling.temperature`, `sampling.top_p`, `sampling.top_k`, `sampling.min_p`, `sampling.repetition_penalty` | float/int | the model's own generation config, else `1.0`, `1.0`, `0` (off), `0.0`, `1.0` | hot | via the API's own fields | 0050 |
 | `chat_template` | path or unset | the template in the model's metadata | hot | — | 0050 |
+| `kv_dtype` | `f16` \| `bf16` \| `f32` or unset | unset: the family's reference KV dtype (RFC-0042 §4.2). Set, it replaces only the source's default, never a family requirement or a declared FP8 cache, and never narrows it (RFC-0042 §4.2, note of 2026-10-28) | instance | — | 0043 |
 | `reasoning.default` | `auto` \| `on` \| `off` | `auto` (the template's default) | hot | via the API's own fields | 0050 |
+
+*Note 2026-10-28 (COMP-E13-T06):* `kv_dtype` is RFC-0043 §10's `models.<name>.kv_dtype`, moved into the model policy tables as §5.1 requires of every per-model key, as `chat_template` was. It is instance scope, so every ingress node builds the same instance from it. `manifest`'s `KvDTypeSection` declares it as a top-level instance section, built through `InstanceSection`. It is refused where it would store KV below the reference's dtype, or replace a family requirement or a declared FP8 cache (RFC-0042 §4.2, note of 2026-10-28). Lower KV precision is `approximate.kv_lossy`.
 
 An approximate knob carries its RFC-0042 parameters, for example `approximate.topk_reduce = { experts = 6 }`. Enabling any knob on a model without `fidelity = "approximate"` is a validation error. An instance policy is `Approximate` only when a person has written the word "approximate" for that model (G5), and requests still have to ask for it (§7).
 
@@ -951,6 +954,16 @@ Cluster-scope changes arriving through `ClusterConfigChanged` go through the sam
 - `syntropy config set --cluster <key> <value>` and the dashboard's cluster settings submit `SetClusterConfig` directly and touch no file.
 - Node-scope edits made in the dashboard write the same user file through the same path. There is no hidden settings database: the file is the record.
 - `syntropy config unset`, `get`, `show [--resolved] [--json]`, `edit` (opens `$EDITOR`, validates on save, refuses to keep an invalid file without `--force`), `path`, `check` and `schema` complete the set (RFC-0051 §2).
+
+*Note 2026-10-27 (PROD-E1-T12): how the writes behave where this section is silent.*
+- **The file.** A write edits the user file, the system file under `--system`, or the explicit file that `--config` or `SYNTROPY_CONFIG` names, since that file replaces the other three when a daemon reads its configuration (§1, order 4).
+- **The value.** `set`'s value is read as TOML when it is a TOML value, and as a string otherwise, so `auto` needs no quotes and a number meant as a string does: `'"8080"'`.
+- **What is validated.** The configuration layer is validated as a daemon would read it with the new text in place of that file: phases 1–5 of §8, without `SYNTROPY_*` overrides or flags, which can differ when the daemon starts. An invalid result writes nothing and exits 5.
+- **The rename.** The new text goes to a temporary file in the same directory, flushed to disk, with the old file's permissions (`0600` for a new file on Unix, since a config file can hold a secret), and is renamed over the file. A symbolic link at the path is refused.
+- **A refused edit.** `edit` without `--force` keeps a refused edit beside the file as `<file>.rejected`, so the work is not lost. On a terminal it offers to reopen the editor first. Without a terminal it asks nothing (RFC-0051 §2.2), and the default editor, which needs a terminal, is not started.
+- **Output.** No output of a write holds the value written. Until PROD-E1-T11 builds reload, a write says that a running daemon applies it at its next start.
+- **Line endings.** A file whose lines end in `\r\n` keeps them, and a file that mixes `\r\n` and `\n` is refused.
+- **Secret files (§8, phase 5).** A `{ file = … }` secret whose file does not exist, or whose file its group or others can read, is a warning, like the other paths phase 5 checks. The secret is read when it is first used, so the load does not fail.
 
 #### 10.3 The schema as code
 

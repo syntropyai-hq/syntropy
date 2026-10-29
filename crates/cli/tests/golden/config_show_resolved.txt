@@ -1,0 +1,8 @@
+# node keys: default < config file < environment < flags (1 file read)
+api.allow_plaintext_lan = true  # flag --set api.allow_plaintext_lan
+api.bind = ["127.0.0.1:7499"]  # <file>:2
+api.local_socket = true  # default
+api.tls = "auto"  # default
+discovery.port = 7999  # env SYNTROPY_DISCOVERY__PORT
+# cluster keys: the cluster's value; the default until the cluster sets one
+# instance keys: the schema default; a [policy."<selector>"] table or an explicit value overrides it per model

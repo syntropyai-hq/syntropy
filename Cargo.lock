@@ -135,6 +135,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1409,6 +1415,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
  "foldhash",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
+dependencies = [
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -3856,13 +3871,22 @@ dependencies = [
 name = "syntropy-api"
 version = "0.0.0"
 dependencies = [
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "rcgen",
  "rustls",
  "serde",
  "serde_json",
  "syntropy-config",
+ "syntropy-core",
+ "syntropy-ipc",
  "syntropy-net",
+ "syntropy-obs",
+ "syntropy-spsc",
+ "syntropy-testkit",
  "time",
+ "tokio",
  "toml",
  "x509-parser",
  "zeroize",
@@ -3876,12 +3900,38 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "syntropy-core",
+ "syntropy-manifest",
+ "syntropy-obs",
+ "syntropy-store",
  "toml",
 ]
 
 [[package]]
 name = "syntropy-cli"
 version = "0.0.0"
+dependencies = [
+ "blake3",
+ "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "syntropy-api",
+ "syntropy-cluster",
+ "syntropy-config",
+ "syntropy-core",
+ "syntropy-daemon",
+ "syntropy-io",
+ "syntropy-ipc",
+ "syntropy-manifest",
+ "syntropy-net",
+ "syntropy-obs",
+ "syntropy-runner",
+ "syntropy-sched",
+ "tokio",
+]
 
 [[package]]
 name = "syntropy-cluster"
@@ -3909,6 +3959,7 @@ dependencies = [
  "syntropy-config-derive",
  "syntropy-core",
  "toml",
+ "toml_edit",
  "trybuild",
  "zeroize",
 ]
@@ -3927,6 +3978,7 @@ name = "syntropy-core"
 version = "0.0.0"
 dependencies = [
  "bitflags",
+ "ciborium",
  "postcard",
  "proptest",
  "serde",
@@ -3937,6 +3989,24 @@ dependencies = [
 [[package]]
 name = "syntropy-daemon"
 version = "0.0.0"
+dependencies = [
+ "blake3",
+ "ciborium",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syntropy-api",
+ "syntropy-cluster",
+ "syntropy-config",
+ "syntropy-core",
+ "syntropy-io",
+ "syntropy-ipc",
+ "syntropy-obs",
+ "syntropy-testkit",
+ "tokio",
+ "tracing",
+ "zstd",
+]
 
 [[package]]
 name = "syntropy-exec"
@@ -3983,10 +4053,15 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "loom",
+ "postcard",
+ "proptest",
  "serde",
  "serde_json",
+ "smallvec",
  "syntropy-core",
+ "syntropy-obs",
  "syntropy-spsc",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 
@@ -4056,6 +4131,8 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
+ "syntropy-config",
  "syntropy-core",
  "syntropy-testkit",
 ]
@@ -4089,9 +4166,14 @@ dependencies = [
 name = "syntropy-obs"
 version = "0.0.0"
 dependencies = [
+ "postcard",
+ "proptest",
  "serde",
  "serde_json",
+ "smallvec",
+ "syntropy-config",
  "syntropy-core",
+ "syntropy-testkit",
  "toml",
 ]
 
@@ -4107,6 +4189,13 @@ dependencies = [
 [[package]]
 name = "syntropy-runner"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "smallvec",
+ "syntropy-core",
+ "syntropy-ipc",
+ "tracing",
+]
 
 [[package]]
 name = "syntropy-sched"
@@ -4137,6 +4226,15 @@ dependencies = [
 [[package]]
 name = "syntropy-store"
 version = "0.0.0"
+dependencies = [
+ "blake3",
+ "proptest",
+ "serde",
+ "serde_json",
+ "syntropy-core",
+ "syntropy-io",
+ "syntropy-manifest",
+]
 
 [[package]]
 name = "syntropy-testkit"
@@ -4145,10 +4243,13 @@ dependencies = [
  "blake3",
  "chacha20",
  "serde",
+ "smallvec",
  "syntropy-config",
  "syntropy-core",
  "syntropy-graph",
+ "syntropy-ipc",
  "syntropy-net",
+ "syntropy-spsc",
  "toml",
 ]
 
@@ -4186,10 +4287,13 @@ dependencies = [
 name = "syntropy-xtask"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "proc-macro2",
+ "proptest",
  "serde",
  "serde_json",
  "toml",
+ "yaml-rust2",
 ]
 
 [[package]]
@@ -4530,6 +4634,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
@@ -5308,6 +5413,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
 dependencies = [
  "xml-rs",
+]
+
+[[package]]
+name = "yaml-rust2"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57e5b818a27a4cd30884ea380857a5e56f7ec3ba24a3990a3cc0b95af3238e18"
+dependencies = [
+ "arraydeque",
+ "hashlink",
 ]
 
 [[package]]

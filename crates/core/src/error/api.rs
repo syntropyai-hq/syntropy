@@ -4,7 +4,8 @@
 //! builds the bodies and headers from it.
 //!
 //! RFC-0050 §12.1 ("Distributed error codes", note 2026-10-22) gives every code of the
-//! `Cluster`, `Net`, `Dist`, `Recovery` and `Security` domains one of four outcomes. A code's
+//! `Cluster`, `Net`, `Dist`, `Recovery` and `Security` domains one of four outcomes, and its
+//! note of 2026-10-28 applies the same rules to the `Kernels` and `Exec` domains. A code's
 //! mapping is found in this order:
 //! 1. **Its own §12.1 row.** A code that can reach an API client is named in a row of the
 //!    §12.1 table. [`per_code`] lists those codes with the row each comes from. The rows for
@@ -37,7 +38,7 @@
 //! Security 0x050C–0x050F (a signature or source that does not verify), even though the
 //! shape is `instance_unavailable`.
 
-use super::codes::{self, CodeInfo, cluster, dist, net, recovery, security};
+use super::codes::{self, CodeInfo, cluster, dist, kernels, net, recovery, security};
 use super::{ErrorClass, ErrorCode};
 
 /// The `Retry-After` header a row of RFC-0050 §12.1 sends.
@@ -260,7 +261,8 @@ const PER_CODE: &[(ErrorCode, ApiMapping, &str)] = &[
     ),
 ];
 
-/// RFC-0050 §12.1's exempt list: the codes that never leave the cluster.
+/// RFC-0050 §12.1's exempt list: the codes that never leave the cluster, or for `Kernels`,
+/// the node that raised them.
 const EXEMPT: &[ErrorCode] = &[
     cluster::NODE_CONFLICT,
     cluster::LOCAL_NETWORK_DENIED,
@@ -288,6 +290,16 @@ const EXEMPT: &[ErrorCode] = &[
     security::AUTHORITY_INVALID,
     security::ROTATION_CHAIN_INVALID,
     security::NOT_COORDINATOR_ELIGIBLE,
+    kernels::OP_UNSUPPORTED,
+    kernels::MODULE_MISSING,
+    kernels::MODULE_ABI,
+    kernels::DRIVER_TOO_OLD,
+    kernels::CAPTURE_FAILED,
+    kernels::ALLOC_FAILED,
+    kernels::REGISTER_FAILED,
+    kernels::GGML_IMPORT_FAILED,
+    kernels::AMX_DENIED,
+    kernels::NO_CERTIFIED_CANDIDATE,
 ];
 
 /// The codes RFC-0050 §12.1 names one by one: the code, its mapping and the row it comes

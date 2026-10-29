@@ -18,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 pub mod abi;
+pub mod attn_handoff;
 pub mod delta_ring;
 pub mod device;
 pub mod error;

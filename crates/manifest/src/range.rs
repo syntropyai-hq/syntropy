@@ -193,9 +193,23 @@ impl FileSource {
     ///
     /// [`RangeError::Io`] when the file cannot be opened or its length read.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RangeError> {
-        let file = File::open(path).map_err(io_error)?;
+        Self::from_file(File::open(path).map_err(io_error)?)
+    }
+
+    /// Reads through `file`, already open, and records its length.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Io`] when the file's length cannot be read.
+    pub fn from_file(file: File) -> Result<Self, RangeError> {
         let len = file.metadata().map_err(io_error)?.len();
         Ok(Self { file, len })
+    }
+
+    /// The open file, for a caller that also reads its metadata through the same handle.
+    #[must_use]
+    pub fn file(&self) -> &File {
+        &self.file
     }
 }
 

@@ -48,12 +48,24 @@ const CONFIG_VERSION_KEY: &str = "config_version";
 const POLICY_TABLE: &str = "policy";
 
 /// A config file's path and text.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Its `Debug` shows the path and the text's length, not the text: a file can hold a secret
+/// inline, and a `{:?}` of a load must not put it in a log (RFC-0054 §10.1).
+#[derive(Clone, PartialEq, Eq)]
 pub struct ConfigFile {
     /// The file.
     pub path: PathBuf,
     /// Its text, without a leading byte-order mark.
     pub text: String,
+}
+
+impl fmt::Debug for ConfigFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConfigFile")
+            .field("path", &self.path)
+            .field("bytes", &self.text.len())
+            .finish()
+    }
 }
 
 impl ConfigFile {
@@ -86,29 +98,31 @@ impl ConfigFile {
         let mut files = Vec::new();
         let mut unreadable = Vec::new();
         for path in scan.files() {
-            match std::fs::read(&path) {
-                Ok(bytes) => match String::from_utf8(bytes) {
-                    Ok(text) => files.push(ConfigFile::new(path, text)),
-                    Err(_) => {
-                        let problem = Problem::new(
-                            Code::PathUnusable,
-                            None,
-                            format!("{}: the file is not UTF-8", path.display()),
-                        );
-                        unreadable.push((path, problem));
-                    }
-                },
-                Err(e) => {
-                    let problem = Problem::new(
-                        Code::PathUnusable,
-                        None,
-                        format!("{}: cannot read the file: {e}", path.display()),
-                    );
-                    unreadable.push((path, problem));
-                }
+            match Self::read_one(&path) {
+                Ok(file) => files.push(file),
+                Err(problem) => unreadable.push((path, problem)),
             }
         }
         (files, unreadable)
+    }
+
+    /// Reads one file: its text, or the problem when it cannot be read or is not UTF-8.
+    pub(crate) fn read_one(path: &Path) -> Result<ConfigFile, Problem> {
+        match std::fs::read(path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => Ok(ConfigFile::new(path, text)),
+                Err(_) => Err(Problem::new(
+                    Code::PathUnusable,
+                    None,
+                    format!("{}: the file is not UTF-8", path.display()),
+                )),
+            },
+            Err(e) => Err(Problem::new(
+                Code::PathUnusable,
+                None,
+                format!("{}: cannot read the file: {e}", path.display()),
+            )),
+        }
     }
 }
 
@@ -159,7 +173,7 @@ pub(crate) fn read_and_resolve(
 }
 
 /// One value set on the command line.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct FlagValue {
     path: String,
     text: String,
@@ -169,9 +183,27 @@ struct FlagValue {
 /// The CLI layer: `--set key=value` (repeatable, any key) and the values of the dedicated flags
 /// RFC-0051 §2.3 lists, in the order given. A later flag for the same key wins. `--config` is
 /// not here: it chooses the files, through [`locate`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// Its `Debug` shows each flag and key, not the value, which can be a secret.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Flags {
     values: Vec<FlagValue>,
+}
+
+impl fmt::Debug for FlagValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FlagValue")
+            .field("flag", &self.flag)
+            .field("path", &self.path)
+            .field("text", &crate::value::REDACTED)
+            .finish()
+    }
+}
+
+impl fmt::Debug for Flags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(&self.values).finish()
+    }
 }
 
 impl Flags {
@@ -499,6 +531,8 @@ impl ResolvedConfig {
         };
         // A `debug.*` key that is on is accepted with a warning (RFC-0054 §7.1, §8 phase 4).
         config.warnings.extend(crate::debug::warnings(&config));
+        // So is `logging.include_content` (RFC-0053 §4.3).
+        config.warnings.extend(crate::logging::warnings(&config));
         Ok(config)
     }
 

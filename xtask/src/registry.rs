@@ -24,8 +24,9 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    changes, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom, plan_tools,
-    properties, repo_settings, sim_presets, toolchain,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
+    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
+    runner_build_id, sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -127,6 +128,15 @@ impl Action {
             }
             Action::CargoWith { env, args } => {
                 let mut command = Command::new(cargo());
+                // Cargo prefers `CARGO_ENCODED_RUSTFLAGS` and `CARGO_ENCODED_RUSTDOCFLAGS` to the
+                // plain variables, even when they are empty, so an inherited one would replace the
+                // flags this step sets (`-D warnings` for rustdoc). Clear the encoded form of each
+                // flags variable the step sets.
+                for (name, _) in *env {
+                    if *name == "RUSTFLAGS" || *name == "RUSTDOCFLAGS" {
+                        command.env_remove(format!("CARGO_ENCODED_{name}"));
+                    }
+                }
                 command.envs(env.iter().copied()).args(*args);
                 Some(command)
             }
@@ -189,7 +199,12 @@ pub fn cargo() -> OsString {
 /// `lint`'s `rustdoc` step: the workspace's own crates documented with every rustdoc warning an
 /// error, a broken or ambiguous intra-doc link among them.
 pub const RUSTDOC: Action = Action::CargoWith {
-    env: &[("RUSTDOCFLAGS", "-D warnings")],
+    // `-F` (forbid) on the link lint, so a crate cannot lift it with `#![allow(…)]` or a
+    // manifest `[lints]` entry: rustdoc then fails with E0453 (review of #1884, N4).
+    env: &[(
+        "RUSTDOCFLAGS",
+        "-D warnings -F rustdoc::broken_intra_doc_links",
+    )],
     args: &["doc", "--workspace", "--no-deps", "--locked"],
 };
 
@@ -198,7 +213,8 @@ pub const JOBS: &[Entry] = &[
     Entry {
         name: "lint",
         summary: "the L0 static checks: rustfmt, clippy with the determinism lints, rustdoc, the \
-                  crate dependency rules, CODEOWNERS and the licence policy",
+                  crate dependency rules, CODEOWNERS, the licence policy and the workflow \
+                  security rules",
         defined_in: "RFC-0062 §2.3 and §12.4",
         params: &[],
         steps: &[
@@ -227,8 +243,9 @@ pub const JOBS: &[Entry] = &[
                 ]),
             },
             // Rustdoc with every warning an error, so a broken or ambiguous intra-doc link fails
-            // a PR (RFC-0062 §2.3, note 2026-10-22; QUAL-E1-T31). After clippy, whose check
-            // builds of the dependencies it reuses.
+            // a PR (RFC-0062 §2.3, note 2026-10-22; QUAL-E1-T31). It rebuilds the dependencies'
+            // metadata for rustdoc rather than reusing clippy's: 31.8 s on #1869's cold-cache hosted run
+            // [measured, lint job at 1f96829e].
             Step {
                 name: "rustdoc",
                 action: RUSTDOC,
@@ -241,6 +258,23 @@ pub const JOBS: &[Entry] = &[
                     shown: "the covered crates keep ci/clippy-determinism.toml and lift it only \
                             where listed",
                     run: determinism::step,
+                },
+            },
+            // No `tracing` in hot-thread modules (RFC-0053 Testing; PROD-E8-T01).
+            Step {
+                name: "hot-threads",
+                action: Action::Builtin {
+                    shown: "the hot-thread modules hot_threads::MODULES lists use no tracing",
+                    run: hot_threads::step,
+                },
+            },
+            // RFC-0052 §6.5's orphan rule (DIST-E1-T04).
+            Step {
+                name: "orphan-rule",
+                action: Action::Builtin {
+                    shown: "the crates orphan_rule::CRATES lists set up no parent-death signal, \
+                            exit watch or kill-on-close job",
+                    run: orphan_rule::step,
                 },
             },
             Step {
@@ -324,6 +358,16 @@ pub const JOBS: &[Entry] = &[
                 name: "notices",
                 action: Action::Xtask(&["notices"]),
             },
+            // The workflow security lint and actionlint, over `.github/` (RFC-0062 §12.4;
+            // QUAL-E1-T09).
+            Step {
+                name: "workflows",
+                action: Action::Xtask(&["workflows"]),
+            },
+            Step {
+                name: "actionlint",
+                action: Action::Xtask(&["actionlint"]),
+            },
             // Scenario files, the SC map and RFC-0061 §4.2's table (QUAL-E13-T01, RFC-0061 §4).
             Step {
                 name: "scenarios",
@@ -369,14 +413,10 @@ pub const JOBS: &[Entry] = &[
                 },
             },
         ],
-        // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
-        // further checks to `lint`. The row's DCO
-        // and PR-title checks need a PR's data, so they are the `dco` and `pr-title` jobs, which are
-        // separate required checks (RFC-0062 §2.5).
-        pending: &[Pending {
-            check: "actionlint and the workflow security lint",
-            task: "QUAL-E1-T09",
-        }],
+        // Other task rows add further checks to `lint`. RFC-0062 §2.3's `lint` row also names the
+        // DCO and PR-title checks, which need a PR's data, so they are the `dco` and `pr-title`
+        // jobs, separate required checks (RFC-0062 §2.5).
+        pending: &[],
     },
     Entry {
         name: "dco",
@@ -553,10 +593,22 @@ pub const JOBS: &[Entry] = &[
         params: &[],
         // Until the `pr` profile exists, the PR build is the `dev` profile, which the hosted
         // tests use too.
-        steps: &[Step {
-            name: "dev",
-            action: Action::Xtask(&["build", "--profile", "dev"]),
-        }],
+        steps: &[
+            Step {
+                name: "dev",
+                action: Action::Xtask(&["build", "--profile", "dev"]),
+            },
+            // Rule 7 on this OS's core binary, built with no default features (RFC-0062 §12.1,
+            // QUAL-E1-T28). `lint` runs it with the other rules, on Linux only.
+            Step {
+                name: "rule-7",
+                action: Action::Builtin {
+                    shown: "rule 7 of RFC-0001 §4.2: the core binary, built with no default \
+                            features, loads only system libraries",
+                    run: check_deps::rule_7_step,
+                },
+            },
+        ],
         pending: &[Pending {
             check: "the `pr` profile build, in place of the `dev` build",
             task: "QUAL-E16-T21",
@@ -708,6 +760,20 @@ pub const SUITES: &[Entry] = &[
                     "--locked",
                 ]),
             },
+            // Likewise `ipc`'s fault-plan message on the command channel, which a runner process
+            // installs and fires (DIST-E1-T13). `--workspace` runs its production half: the frame
+            // refused as an unknown variant.
+            Step {
+                name: "ipc-fault-injection",
+                action: Action::Cargo(&[
+                    "test",
+                    "--package",
+                    "syntropy-ipc",
+                    "--features",
+                    "fault-injection",
+                    "--locked",
+                ]),
+            },
         ],
         pending: &[],
     },
@@ -800,6 +866,39 @@ pub const SUITES: &[Entry] = &[
             action: Action::Builtin {
                 shown: "each listed property's tests with PROPTEST_CASES set",
                 run: properties::suite_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "runner-build-id",
+        summary: "a daemon refuses and kills a runner built from another commit at `Hello`, and \
+                  passes its own build's (QUAL-E16-T29): a second syntropy-cli build with another \
+                  SYNTROPY_BUILD_COMMIT, spawned through the daemon's process host",
+        defined_in: "RFC-0001 §3.1",
+        params: &[],
+        steps: &[Step {
+            name: "runner-build-id",
+            action: Action::Builtin {
+                shown: "build syntropy-cli with another commit, copy its binary, rebuild, and run \
+                        cli's ignored runner_build_id test against the copy",
+                run: runner_build_id::suite_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "cache-hit",
+        summary: "a comment-only change in `cli` recompiles `cli` alone (QUAL-E16-T03): two builds \
+                  of syntropy-cli, the second's compiler artifacts read from cargo's JSON",
+        defined_in: "RFC-0062 §8.1",
+        params: &[],
+        steps: &[Step {
+            name: "cache-hit",
+            action: Action::Builtin {
+                shown: "build syntropy-cli, touch its source, rebuild with another commit, and \
+                        check that every recompiled artifact is syntropy-cli's",
+                run: cache_hit::suite_step,
             },
         }],
         pending: &[],
@@ -910,9 +1009,12 @@ mod tests {
                 "xtask: cargo and rustc are the release rust-toolchain.toml pins",
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
-                "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps --locked",
+                "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked",
                 "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
                  listed",
+                "xtask: the hot-thread modules hot_threads::MODULES lists use no tracing",
+                "xtask: the crates orphan_rule::CRATES lists set up no parent-death signal, exit \
+                 watch or kill-on-close job",
                 "cargo xtask check-deps",
                 "xtask: ci/properties.toml matches the property tests, RFC-0060 and the epics",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
@@ -927,6 +1029,8 @@ mod tests {
                 "cargo xtask spdx",
                 "cargo xtask third-party",
                 "cargo xtask notices",
+                "cargo xtask workflows",
+                "cargo xtask actionlint",
                 "cargo run --locked --quiet --package syntropy-bench --bin syntropy-bench -- \
                  scenarios check",
                 "xtask: every simulator preset cites its sources, and labels and sources each \
@@ -972,7 +1076,7 @@ mod tests {
     fn lint_lists_the_checks_later_tasks_add() {
         let lint = find(JOBS, "lint").expect("lint is registered");
         let tasks: Vec<&str> = lint.pending.iter().map(|p| p.task).collect();
-        assert_eq!(tasks, ["QUAL-E1-T09"]);
+        assert!(tasks.is_empty(), "{tasks:?}");
     }
 
     #[test]
@@ -981,8 +1085,8 @@ mod tests {
             let entry = find(JOBS, job).expect("the build jobs are registered");
             let commands: Vec<String> = entry.steps.iter().map(|s| s.action.display()).collect();
             assert_eq!(
-                commands,
-                [format!("cargo xtask build --profile {profile}")],
+                commands[0],
+                format!("cargo xtask build --profile {profile}"),
                 "{job}"
             );
             assert!(
@@ -990,8 +1094,13 @@ mod tests {
                 "{job}: no profile `{profile}`"
             );
         }
-        // `build` names the profile that replaces `dev`.
+        let release = find(JOBS, "build-test-release").unwrap();
+        assert_eq!(release.steps.len(), 1);
+        // `build-<os>` checks rule 7 on each OS's core binary (QUAL-E1-T28).
         let build = find(JOBS, "build").unwrap();
+        let steps: Vec<&str> = build.steps.iter().map(|s| s.name).collect();
+        assert_eq!(steps, ["dev", "rule-7"]);
+        // `build` names the profile that replaces `dev`.
         let tasks: Vec<&str> = build.pending.iter().map(|p| p.task).collect();
         assert_eq!(tasks, ["QUAL-E16-T21"]);
     }
@@ -1043,6 +1152,7 @@ mod tests {
             [
                 "cargo test --workspace --locked",
                 "cargo test --package syntropy-obs --features fault-injection --locked",
+                "cargo test --package syntropy-ipc --features fault-injection --locked",
             ]
         );
     }
@@ -1089,16 +1199,31 @@ mod tests {
         let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
         assert_eq!(
             env,
-            [(
-                std::ffi::OsStr::new("RUSTDOCFLAGS"),
-                Some(std::ffi::OsStr::new("-D warnings"))
-            )]
+            [
+                (std::ffi::OsStr::new("CARGO_ENCODED_RUSTDOCFLAGS"), None),
+                (
+                    std::ffi::OsStr::new("RUSTDOCFLAGS"),
+                    Some(std::ffi::OsStr::new(
+                        "-D warnings -F rustdoc::broken_intra_doc_links"
+                    ))
+                )
+            ]
         );
         let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
         assert_eq!(args, ["doc", "--workspace", "--no-deps", "--locked"]);
         assert_eq!(
             RUSTDOC.display(),
-            "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps --locked"
+            "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked"
+        );
+    }
+
+    #[test]
+    fn the_rustdoc_step_clears_an_inherited_encoded_flags_variable() {
+        let command = RUSTDOC.command().unwrap();
+        let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        assert!(
+            env.contains(&(std::ffi::OsStr::new("CARGO_ENCODED_RUSTDOCFLAGS"), None)),
+            "{env:?}"
         );
     }
 

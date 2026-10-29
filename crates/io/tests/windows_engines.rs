@@ -245,7 +245,8 @@ fn run(
     let mut out = CompletionBuf::with_capacity(64);
     let mut done = Vec::new();
     let mut outcome = None;
-    for _ in 0..100_000 {
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(30) {
         if !batch.is_empty() {
             engine.submit(&mut batch).unwrap();
         }
@@ -260,7 +261,10 @@ fn run(
             return (done, outcome);
         }
     }
-    panic!("only {} of {want} operations completed", done.len());
+    panic!(
+        "only {} of {want} operations completed within 30 s",
+        done.len()
+    );
 }
 
 /// Runs `test` against IOCP and, where the host has it, IoRing.
@@ -380,7 +384,8 @@ fn ioring_makes_a_registration_asked_for_in_flight_once_the_ring_is_idle() {
     );
     // The reap that returns the read finds the ring idle, and registers.
     let mut out = CompletionBuf::with_capacity(4);
-    for _ in 0..10_000 {
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(30) {
         engine.reap(&mut out, Wait::Until(Nanos(1_000_000)));
         if !out.is_empty() {
             break;

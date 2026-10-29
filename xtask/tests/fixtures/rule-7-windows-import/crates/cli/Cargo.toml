@@ -1,0 +1,13 @@
+[package]
+name = "syntropy-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "syntropy"
+path = "src/main.rs"
+
+[dependencies]
+syntropy-kernels-cuda = { path = "../kernels-cuda" }

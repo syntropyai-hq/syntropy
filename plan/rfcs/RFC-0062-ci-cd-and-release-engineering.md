@@ -197,11 +197,13 @@ paths = ["docs/**", "plan/**", "*.md"]
 
 *Note, 2026-10-22 (QUAL-E1-T31).* `lint` will also run rustdoc over the workspace with `-D warnings` (`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`), so a broken or ambiguous intra-doc link fails a PR. Until then no gate checks the docs, which is how #1666's links broke unnoticed. QUAL-E1-T31 adds the step after #1666's fix lands, and keeps `lint` within its budget or moves the step to a job of its own.
 
-*Note, 2026-10-26 (QUAL-E1-T31).* `lint` now runs that step, named `rustdoc`, after `clippy`, whose check builds of the dependencies it reuses. It documents the workspace's own crates only (`--no-deps`), and `cargo xtask ci lint` names it in its verdict.
+*Note, 2026-10-26 (QUAL-E1-T31).* `lint` now runs that step, named `rustdoc`, after `clippy`. It documents the workspace's own crates only (`--no-deps`), clears an inherited `CARGO_ENCODED_RUSTDOCFLAGS`, which cargo would otherwise prefer to the step's flags, and `cargo xtask ci lint` names it in its verdict. On #1869's hosted run (lint job at 1f96829e, cold cache) the step took 31.8 s and the whole `lint` 2 min 29 s [measured, one run], within the budget above. Its flags are `-D warnings -F rustdoc::broken_intra_doc_links`: the link lint is forbidden, not denied, so a crate cannot lift it with `#![allow(…)]` or a manifest `[lints]` entry. It does not reuse clippy's dependency builds: it rebuilds their metadata.
 
 *Note, 2026-10-23 (QUAL-E3-T09).* `hosted-l3` now runs `cargo xtask test loom`: the loom models of RFC-0060 §3.4 in `spsc` and `ipc`, built with `--cfg loom` into `target/loom/`, with a preemption bound of 3. Miri and the sanitizer builds stay with QUAL-E3-T10. Until QUAL-E1-T07 computes the closure (§2.2), `changes` lists `hosted-l3` when the PR's diff from its base, with renames counted at both paths, touches `crates/`, `third_party/`, `.cargo/`, `xtask/`, the workspace `Cargo.toml` or `Cargo.lock`, `rust-toolchain.toml`, `pr.yml` or `.github/actions/`. That runs it more often than the closure rule in the table above would, and skips plan-only PRs. `ci-gate` no longer lists `hosted-l3` as planned; `hosted-parity-nano` stays planned (QUAL-E5-T06).
 
 *Note, 2026-10-23 (QUAL-E1-T07).* `changes` now builds the base's `xtask` with no cache before it decides, as `ci-gate` does. Its budget of < 1 min [target] is checked against the first hosted runs.
+
+*Note, 2026-10-27 (QUAL-E1-T28).* `build-<target>` also runs rule 7 of RFC-0001 §4.2 on the core binary of its own OS, as the step `rule-7` of `cargo xtask ci build`, after the `dev` build (§12.1).
 
 #### 2.4 Platform promises to jobs
 
@@ -308,6 +310,8 @@ GitHub Actions has no job priorities and cannot reserve several runners at once.
   - **Slot B** (R-ULTRA-A, R-ULTRA-B) runs **every night** on R-TB5: the `rdma-tb5` L7 suite, the TB5 collective and hop benchmarks, scenario (b1)'s TP = 2 and PP = 2 runs, and the `Pp2` and `CrossNodeTp2` path arrays over RDMA. This keeps ADR-0020's "RDMA over TB5 nightly".
   - Each rig's nightly budget is the sum of all its roles: own parity, own benchmarks and its composite slot. RFC-0061 §6.4 lists it for every composite member.
 - **Fallback.** If the dispatcher is down, lab jobs do not run, `ci-gate` reports "hardware run pending" (§2.5), and nothing reaches a rig through any other path.
+
+*Note, 2026-10-27 (QUAL-E1-T08).* `nightly.yml` and `weekly.yml` exist as skeletons: a schedule (02:00 UTC daily; 08:00 UTC on Sundays) and `workflow_dispatch`, one concurrency group each with `cancel-in-progress: false`, so a newer run replaces a pending one and a running one finishes, and one hosted placeholder job until the suites land. `cargo xtask workflows`, in `lint`, fails any job in `lab.yml` that names a runner, or any job elsewhere on a lab label (GitHub's default self-hosted OS and architecture labels among them), whose `timeout-minutes` is missing, not a whole number from 1 to 60, or computed by an expression, which enforces the 60-minute chunk above.
 
 ### 4. Build matrix per platform tier
 
@@ -705,6 +709,7 @@ A new direct dependency also passes a registry check that reports its first-publ
 | RFC-0060 A6: no test features in `release` | the resolved feature set of the release build excludes `fault-injection`, `debug-taps` and `guards` |
 
 - *Revised 2026-10-22 (ADR-0022):* rule 6's allow-list gains `getrandom` → `io`. The other entries match a binding reached through any chain of external packages. `getrandom` is matched on a member's own normal and build dependencies only, because most crates reach it through the TLS stack and test crates such as `proptest`, and RFC-0001 §4.2 rule 6's note limits the rule to direct dependencies for it.
+- *Revised 2026-10-27 (QUAL-E1-T28):* rule 7 reads the core binary of each Tier 1 OS, not only Linux's. The binary is built with no default features, and every library it makes the loader load must be on that format's allow-list of system libraries, so a vendor library no list names still fails. On Linux that is the ELF `DT_NEEDED` entries. On Windows it is the PE import and delay-load directories, against the DLLs the binary imports on the hosted `windows-2025` runner and the Universal CRT's API sets. On macOS it is the `LC_LOAD_DYLIB`, `LC_LOAD_WEAK_DYLIB`, `LC_REEXPORT_DYLIB`, `LC_LAZY_LOAD_DYLIB` and `LC_LOAD_UPWARD_DYLIB` commands of every architecture of a universal file, against `libSystem`, which is what the binary loads on the hosted `macos-26` runner, and what the Metal provider links: `Metal.framework`, the frameworks beneath its binding and the Objective-C runtime, because that provider is linked into the core (RFC-0001 §4.2 rule 7). The symbol check reads `.dynsym`, the PE import name tables and the Mach-O undefined symbols. `lint` runs rule 7 with the other rules on Linux, and `build-<target>` runs it alone on each OS as the step `rule-7` of `cargo xtask ci build`. Libraries `kernels-loader` opens at run time are rule 6's, and no load command names them.
 
 #### 12.2 Licences and notices
 
@@ -773,6 +778,8 @@ A new direct dependency also passes a registry check that reports its first-publ
 - `lint` fails any workflow other than `lab.yml` that names a lab label in `runs-on`, and any workflow file that checks out a PR ref in a job holding secrets or a write token.
 - Secrets exist only in environments (§3.3, §7.2).
 - `actionlint` and a workflow security linter run in `lint` on every change to `.github/`.
+
+*Note, 2026-10-26 (QUAL-E1-T09).* `lint` runs both on every PR, a superset of every change to `.github/`. `cargo xtask workflows` checks every rule above that a file can show, over the workflows and every local action they reach: the read-only top level, SHA pins in workflows, reusable workflows and actions (a `docker://` image by digest), no `pull_request_target`, no lab label outside `lab.yml` (a `runs-on` that an expression computes fails unless it reads a matrix the lint can read), and no PR checkout in a job that uses the `secrets` context other than for `GITHUB_TOKEN`, names an environment or passes `secrets: inherit`, or whose token can write. A checkout counts as a PR checkout unless it is of this repository and its ref is known safe: a literal ref, the base, or the default checkout on triggers known to check out the repository's own code. Every other trigger, `workflow_call` and the review triggers among them, counts as a pull request's. A file it cannot parse fails. `cargo xtask actionlint` runs actionlint 1.7.12 with its shellcheck and pyflakes integrations off, so the result does not depend on the host's versions of those. CI installs it from the release archive, checked against a pinned SHA-256, and the step passes its own configuration, so a `.github/actionlint.yaml` in a PR cannot silence it. A file cannot show three things, which the lint therefore does not check: whether a 40-hex pin is a commit rather than a tag or branch of that name, a fork of `actions/checkout` under another name, and a ref that reaches a checkout through `env` or a step's outputs.
 
 #### 12.5 Agent pipeline security
 

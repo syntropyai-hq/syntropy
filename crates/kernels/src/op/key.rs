@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `OpKey`, its fusion bits and `LayoutVersion` (RFC-0001 §5.7; RFC-0040 §3.1, §5.4).
+//! `OpKey`, its fusion bits, and the re-export of `core`'s `LayoutVersion` (RFC-0001 §5.7;
+//! RFC-0040 §3.1, §5.4).
 
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
@@ -10,20 +11,10 @@ use syntropy_core::QuantScheme;
 use super::kind::OpKind;
 
 /// The weight byte layout an op reads (RFC-0040 §3.1, §5.4): [`LayoutVersion::SOURCE`] for
-/// the source format's own layout, or a provider's repack ID.
-///
-/// Every repack is lossless, and a provider that offers a weight-bound op for a scheme also
-/// offers a `SOURCE` variant of it, so `SOURCE` is always a valid choice (RFC-0040 §5.4).
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
-#[serde(transparent)]
-pub struct LayoutVersion(pub u16);
-
-impl LayoutVersion {
-    /// The source format's layout, unchanged (RFC-0040 §5.4, ID 0).
-    pub const SOURCE: Self = Self(0);
-}
+/// the source format's own layout, or a provider's repack ID. It is `core`'s type, because a
+/// `PackKey` on the command channel holds one (RFC-0001 §18.28; COMP-E10-T11); this re-export
+/// keeps `syntropy_kernels::LayoutVersion` and its `SOURCE` constant where they were.
+pub use syntropy_core::LayoutVersion;
 
 bitflags! {
     /// The fusions an [`OpKey`]'s `variant` bitmask names (RFC-0040 §3.1). Bits are assigned

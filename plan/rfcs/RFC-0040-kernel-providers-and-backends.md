@@ -1317,6 +1317,8 @@ Codes are `(Domain::Kernels, n)` and never reused (RFC-0001 §10.4).
 | 16 | `ProviderPanicked` | `Internal` | a provider-library thunk caught a panic (§10.4) | the provider reports `Sticky`; the runner exits and restarts |
 | 17 | `ManifestInvalid` | `Integrity` | the `ConformanceManifest` is missing, or not signed by a key the build's profile accepts | ggml ops plus the CPU provider's native ops for what ggml cannot run, on single-device shapes, with the F32 wire, labelled uncertified (§6.2; ADR-0602 decision 6) |
 
+*Note 2026-10-28 (COMP-E13-T15): the domain's range.* `Domain::Kernels` holds 0x0001–0x00FF, so each code above keeps its published number: `(Domain::Kernels, 1)` is `OpUnsupported`, and so on to 17. `core::error::codes::kernels` lists them. The faults `exec` detects are not kernel faults, so they take a domain of their own, `Domain::Exec` (RFC-0012 §13, note of the same date). How these codes reach an API client is RFC-0050 §12.1's note of the same date.
+
 Fallback chains are declared paths (RFC-0001 §10.2): native kernel → ggml op on the same device → the op on the node's CPU device (level F). None of them changes the numerics contract, because every candidate passed the same parity gate.
 
 ## Performance model and budgets

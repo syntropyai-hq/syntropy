@@ -1018,7 +1018,7 @@ pub enum Dist {
 ```
 
 **Reliable channels** (`Channel` semantics, RFC-0001 §5.8):
-- **Delivery time.** A frame of S bytes sent at t on an up link is delivered at `max(t + α + S/β + ⌈S/mtu⌉·per_packet_overhead + jitter, last_delivery_on_channel)`. FIFO order is preserved.
+- **Delivery time.** A frame of S bytes sent at t on an up link starts going out at `s = max(t, the end of what the link was already sending)`, and is delivered at `max(s + S/β + ⌈S/mtu⌉·per_packet_overhead + α + jitter, last_delivery_on_channel)`. Every stream on the link shares its β, in send order; FIFO order on each channel is preserved (revised 2026-10-23, note below).
 - **Loss.** A packet lost with probability `loss` delays its frame by one QUIC probe timeout, `PTO = srtt + max(4·rttvar, 1 ms) + max_ack_delay` with `max_ack_delay` = 25 ms (the QUIC default), using the link's running α statistics.
 - **Back-pressure.** Credit-based, with the window RFC-0031 specifies. A sender out of credit gets `WouldBlock`, and the time it waits is recorded as `credit_stall`, as in production.
 - **Link down.** Frames in flight are dropped and the channel reports a `Link` error after the transport's failure timeout. That is what production sees when a QUIC connection or RDMA queue pair dies.
@@ -1064,6 +1064,20 @@ pub enum Dist {
   - Handshake time: `connect` and `accept` pair as soon as both are called, and a `connect` with no link up fails at once with `ConnectTimeout`.
   - `reconnect`.
   - Gossip datagrams use the fabric's `send_datagram` directly, not the transport.
+
+**Note, 2026-10-23 (DIST-E7-T13): one serialisation queue per link.**
+- **What changed.** Before, each message on a link got the link's whole β whatever else was on it, so a bulk transfer could not delay a data channel beside it, and RFC-0031 §7.5's pacing had nothing to act on.
+  - Now each directed link has one serialisation queue. A message starts going out when the link has finished what it was given before, by send time; equal times go in the order of the sends, which the run fixes.
+  - Datagrams join the same queue.
+  - A link that goes down drops what it was sending, its queue with it, so after a heal a message does not wait behind bytes that never went out.
+  - A message on an idle link is timed as before.
+- **What moved.** Back-to-back messages on one link now go out one after another, so arrival times move in seven existing tests that send them. In `sim_fabric`, that's `a_one_way_split_drops_a_to_b_and_keeps_b_to_a`. In `sim_transport`, that's `a_link_back_up_before_the_timeout_loses_nothing`, `frames_in_flight_on_a_downed_link_are_dropped_and_the_channel_reports_link`, `a_sender_out_of_credit_gets_would_block_and_records_the_stall`, `a_driver_stepping_on_deadlines_sees_every_event_on_time`, `the_conformance_suite_passes_on_sim_transport` and `a_seed_replays_exactly`. No asserted figure changed. In the replay test (`wifi6_home`, loss 0.05, 60 frames), seed 7's last delivery moves from 1,566,418,047 ns to 1,566,503,327 ns, and seed 8's from 1,958,764,363 ns to 1,958,901,483 ns, with the same retransmits [estimate]. No trace hash depends on the fabric yet.
+- **Bulk frames in a simulation.** A real QUIC connection interleaves at packet granularity, about 1.5 KB. A scenario that runs bulk beside a data channel sends it in small frames, 4 KiB [target], which take about 14 µs on 2.5 GbE [estimate].
+- **`SimNet` gains pacing** (RFC-0031 §7.5):
+  - `pace(from, to, config)` puts a `BulkPacer` on an edge, and `try_send` on its `Bulk` and `Replay` channels returns `WouldBlock` until the pacer has tokens;
+  - `pacing_ready_at` says when it will;
+  - `watch_alpha` and `alpha_log` record the edge's data-channel α samples;
+  - `next_deadline` includes the pacer's window ends.
 
 #### 8.4 Fake devices, tiers and drives
 
@@ -1252,6 +1266,8 @@ pub struct FaultRule {
 }
 ```
 
+*Note 2026-10-27 (DIST-E1-T13):* "pushed over IPC in tests" is the command channel's test-only `SetFaultPlan`, answered by `FaultPlanSet` (RFC-0001 §3.5, note of the same date, and §18.44). The runner's handler, `ipc::cmd::install_fault_plan`, installs the plan with `install` on the runner's clock; an invalid plan is refused in the reply, and the plan before stays.
+
 Every point is named `<crate>.<component>.<operation>`. Each crate's RFC keeps a list of its points, and every point has at least one test that fires it, enforced by a coverage counter the chaos suite checks. Fault points sit on the error paths that matter: I/O submission and completion, channel send and receive, connection setup, kernel launch and device health, allocation, pinning, IPC send, store chunk receive, pack write and atomic rename. With the feature off, the macro compiles to nothing, which L0 checks on release builds (§1.3).
 
 #### 9.3 Lab chaos
@@ -1308,6 +1324,8 @@ ADR-0001 item 4 requires that all untrusted bytes are parsed in safe Rust and fu
 - **Bounded allocation:** total allocation ≤ 4 × input length + 1 MiB unless the format declares a larger size. Declared sizes are checked against the actual input or file length before allocating.
 - **Bounded time:** 1 s per input (libFuzzer `-timeout=1`).
 - **Classified errors:** every rejection returns an `Error` whose class is `Integrity`, `InvalidRequest`, `Auth` or `Unsupported`, never `Internal`.
+
+*Note, 2026-10-27 (QUAL-E10-T01), for the maintainers to confirm.* `testkit::fuzz` reads "total allocation" as the most heap the parse holds at once on its thread (the peak of `testkit::guards`'s live bytes), not the bytes it requests in all: what a hostile input makes the process hold, with churn already bounded by the 1 s limit. A size the format declares is added to the 4 × length + 1 MiB allowance, because a parser that allocates exactly what it declares still needs a little for its own structures. A declared size larger than the input is itself a violation, so the property catches a parser that trusts an unchecked size field.
 
 #### 10.3 Corpus and cadence
 

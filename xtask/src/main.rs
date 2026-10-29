@@ -24,7 +24,9 @@
 
 #![forbid(unsafe_code)]
 
+mod actionlint;
 mod build;
+mod cache_hit;
 mod changes;
 mod check_deps;
 mod ci_gate;
@@ -33,17 +35,22 @@ mod codeowners;
 mod contrib;
 mod dep_diff;
 mod determinism;
+mod fixtures;
+mod hot_threads;
 mod instructions;
 mod licences;
 mod loom;
+mod orphan_rule;
 mod plan_tools;
 mod properties;
 mod registry;
 mod repo_settings;
 mod roster;
 mod run;
+mod runner_build_id;
 mod sim_presets;
 mod toolchain;
+mod workflows;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
@@ -199,6 +206,19 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
                 }
             }
         }
+        Command::Fixtures { action, args } => {
+            let root = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            match fixtures::run(action, &args, &root, &mut io::stdout()) {
+                Ok(()) => Ok(EXIT_PASS),
+                Err(error) => {
+                    eprintln!("fixtures: {error}");
+                    Ok(EXIT_FAIL)
+                }
+            }
+        }
         Command::Spdx { root } => {
             let checkout = match checkout() {
                 Ok(root) => root,
@@ -215,6 +235,24 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
             };
             let root = root.map_or_else(|| checkout.clone(), PathBuf::from);
             let pass = licences::manifest::run(&checkout, &root, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Workflows { root } => {
+            let checkout = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            let root = root.map_or(checkout, PathBuf::from);
+            let pass = workflows::run(&root, &mut io::stderr())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
+        }
+        Command::Actionlint { root } => {
+            let checkout = match checkout() {
+                Ok(root) => root,
+                Err(code) => return Ok(code),
+            };
+            let root = root.map_or(checkout, PathBuf::from);
+            let pass = actionlint::run(&root, &mut io::stderr())?;
             Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
         }
         Command::Notices { manifest_path, out } => {

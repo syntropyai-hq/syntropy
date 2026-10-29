@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 79d70918ac63073115bdd265bf5476f69eecc38201f0568ebc749ad24809238d # shrinks to (s, n_expert) = (Synth { version: 3, kvs: [("general.alignment", U32(32))], tensors: [TensorSpec { name: "blk.0.ffn_up_exps.weight", ne: [256, 1, 1], ggml_type: F32 }, TensorSpec { name: "t0.weight", ne: [256, 1], ggml_type: F32 }] }, 1)
+cc 20722d5ee19e94fd68ba4abda00118b727f247586a30da270da3ceda4069a865 # shrinks to alignment = 32, rows = 257, before_a = [], before_b = [], after = false
