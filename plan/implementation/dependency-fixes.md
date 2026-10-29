@@ -1260,6 +1260,15 @@ The review of #1950 (COMP-E10-T11) found that no task sets `TensorRecord::hash`.
 | COMP-E12-T04 sets `TensorRecord::hash` from `ChunkTable::tensor_hash` once every covering chunk is committed on the node, and leaves it `None` until then. COMP-E12-T04 → COMP-E10-T07 | COMP-E12-T04 | R9, R6 | on one node in M1a, chunk IDs are committed at local registration (COMP-E11-T14) or by a verified fetch, and the fetch planner runs before `Packing` reads the hashes. COMP-E10-T07 is M0a and cannot depend on COMP-E10-T11 (M1a), and at header time no chunk is committed. The edge M1a → M0a keeps R6. COMP-E12-T04 already depends on COMP-E10-T11 |
 | COMP-E12-T06 sets the hash when a node fills its table copy from `ChunkIdsCommitted` | COMP-E12-T06 | R9 | in a cluster, §6.3's commitment is where IDs become committed. COMP-E12-T06 reaches COMP-E12-T04 through COMP-E12-T05, so it needs no new edge |
 
+## COMP-E11-T02's `doctor` flag moves to PROD-E9-T02 (2026-10-29)
+
+COMP-E11-T02 (M1a) asked that an exFAT volume switch to chunk-file mode "and `doctor` flags it". The doctor framework exists (PROD-E9-T01), but no check covered chunk-file mode, and the storage checks STO-001 to STO-004 are PROD-E9-T02's (M1b), which an M1a task cannot depend on. So the flag is split: the store records the mode with the probe's reason in `v1/storage-mode.json` (`read_storage_mode`), and the check that shows it is a new storage check, STO-005, built with the other STO checks.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E11-T02's "`doctor` flags it" becomes "the store reports the mode with the probe's reason for `doctor` (STO-005, PROD-E9-T02)" | COMP-E11-T02 | R9 | the check needs PROD-E9-T02's storage checks, M1b |
+| PROD-E9-T02 gains STO-005 (STO-001–005) and the criterion "STO-005 warns for each writable store root whose start-up probe found no sparse files, naming the root and the probe's reason as the root's `v1/storage-mode.json` records them, read without the writer lock, and reports nothing for a root of sparse blobs". PROD-E9-T02 → COMP-E11-T02; RFC-0053 §5.2 gains the STO-005 row with a dated note | PROD-E9-T02 | R9 | the check reads the probe's record, which COMP-E11-T02 writes. M1b → M1a, and COMP-E11-T02 does not reach PROD-E9-T02, so the edge adds no cycle |
+
 ## Hub-fetched chunk IDs reach the chunk table (2026-10-29)
 
 The review of #1963 found two gaps next to COMP-E12-T04's `TensorRecord::hash` criterion. No M1a task writes a Hub-fetched chunk's `ChunkId` into the chunk table, so on one node a model pulled from the Hub would keep every tensor hash at `None`. And COMP-E11-T05 did not say what a pack build does with a group whose hash is still `None`.
@@ -1290,6 +1299,16 @@ DIST-E1-T04 (#1952) built the runner's process host and moved its probe-mode cri
 |---|---|---|---|
 | New task DIST-E1-T17 (M0a): probe mode, `syntropy __runner --probe`, answering `ProbeResult`. DIST-E1-T17 → DIST-E1-T04, PLC-E1-T17. DIST-E1-T04's `--probe` and "a probe-mode process returns `ProbeResult` and exits" move to it | DIST-E1-T04, DIST-E1-T17 | R9 | a scope split: probe mode adds a message and an `ipc_protocol` bump that the process host does not need |
 | PLC-E1-T07 → DIST-E1-T17 | PLC-E1-T07 | R1 | PLC-E1-T07 runs its enumeration in the probe process |
+
+## PROD-E9-T04's wiring legs move to the tasks that build their inputs (2026-10-29)
+
+PROD-E9-T04 (M1a) builds the bundle and the crash records. Two parts of its row need code it does not build. The API has only `healthz`, `readyz` and `version`, and no `admin` scope until PROD-E5-T01. RUN-001 is PROD-E9-T03's check. Each part moves to the task that builds what it needs, and that task gains an edge to PROD-E9-T04. The third, a real runner killed by a signal, stays: DIST-E1-T04's process host merged (#1952) while the change was in review, so PROD-E9-T04 tests it through that host and gains the edge to DIST-E1-T04.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E9-T04's "a runner killed by a signal leaves a crash record that appears in RUN-001 and the bundle" becomes "a runner killed by a signal, and a panic through the panic hook, leave a crash record in the state directory that appears in the bundle"; its description names `POST /v1/syntropy/debug/dump` as PROD-E6-T08's to wire. PROD-E9-T04 → DIST-E1-T04 | PROD-E9-T04 | R9 | the route and RUN-001 are other tasks'. The runner is spawned through DIST-E1-T04's process host; M1a → M0a, and DIST-E1-T04 does not reach PROD-E9-T04, so the edge adds no cycle |
+| PROD-E9-T03 gains "RUN-001 lists the crash records in `<state>/crashes/` (`CrashStore::list`), newest first, each with its process, cause and time, and names any it cannot read". PROD-E9-T03 → PROD-E9-T04 | PROD-E9-T03 | R9 | RUN-001 is PROD-E9-T03's. M1a → M1a, and PROD-E9-T04 does not reach PROD-E9-T03, so the edge adds no cycle |
+| PROD-E6-T08 gains `POST /v1/syntropy/debug/dump` with `admin` scope, the `--out`, `--with-addresses` and `--max-size` flags, and the criterion that `doctor --bundle` and `debug dump` write the same bundle through the route, which answers 403 without an `admin` key. PROD-E6-T08 → PROD-E9-T04, PROD-E5-T01 | PROD-E6-T08 | R9 | the command wiring is PROD-E6-T08's, and the scope is PROD-E5-T01's. All are M1a, and neither target reaches PROD-E6-T08, so the edges add no cycle |
 
 ## TIER-E5-T36's retry criterion names the retry's owner (2026-10-30)
 

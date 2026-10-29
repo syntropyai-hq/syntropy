@@ -33,6 +33,9 @@
 //!   [`sync_dir`] and [`is_owner_only`].
 //! - [`file_identity`] reads an open file's (device, inode) pair, the volume serial number and
 //!   file index on Windows, for the local index's record of RFC-0041 §4.3 that `store` keeps.
+//! - [`set_sparse`], [`punch_hole`] and [`allocated_bytes`] make a file sparse, free the blocks
+//!   under a range of it, and read the bytes it holds on disk, for the store's sparse source
+//!   blobs (RFC-0041 §4.2, §4.4).
 //! - [`log_sink`] holds the OS log facilities the daemon's log sinks write to: unified logging
 //!   on macOS and the event log on Windows (RFC-0053 §4.2; PROD-E8-T04).
 //!
@@ -47,12 +50,14 @@ pub mod log_sink;
 #[cfg(target_os = "macos")]
 pub mod macos_host;
 mod private;
+mod sparse;
 mod thread;
 #[cfg(windows)]
 pub mod windows_host;
 
 pub use identity::{FileIdentity, file_identity};
 pub use private::{create_private_file, is_owner_only, private_dir, sync_dir};
+pub use sparse::{allocated_bytes, punch_hole, set_sparse};
 pub use thread::{
     Core, CoreId, PinError, Priority, cpu_topology, current_core, pin_current_thread,
     raise_current_thread_priority,

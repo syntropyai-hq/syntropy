@@ -3991,8 +3991,10 @@ name = "syntropy-daemon"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "ciborium",
  "serde",
  "serde_json",
+ "sha2",
  "syntropy-api",
  "syntropy-cluster",
  "syntropy-config",
@@ -4003,6 +4005,7 @@ dependencies = [
  "syntropy-testkit",
  "tokio",
  "tracing",
+ "zstd",
 ]
 
 [[package]]
@@ -4220,6 +4223,7 @@ name = "syntropy-store"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "proptest",
  "serde",
  "serde_json",
  "syntropy-core",

@@ -201,8 +201,9 @@ x509-parser = { version = "0.18.1", default-features = false, features = ["verif
 # (QUAL-E1-T09), xtask only. No `encoding` feature: the workflows are UTF-8.
 yaml-rust2 = { version = "0.13.0", default-features = false }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
-# zstd level 3 for control messages over 64 KiB (RFC-0031 §9.1), `syntropy-net` only. It builds
-# the bundled C library (BSD-3-Clause), so the build needs a C compiler.
+# zstd level 3 for control messages over 64 KiB (RFC-0031 §9.1) in `syntropy-net`, and for the
+# diagnostic bundle's `tar.zst` (RFC-0053 §6) in `syntropy-daemon`. It builds the bundled C
+# library (BSD-3-Clause), so the build needs a C compiler.
 zstd = { version = "0.14.3", default-features = false }
 
 # Build profiles (RFC-0062 §4.4, RFC-0060 §1.3). `cargo xtask build --profile <p>` builds each
