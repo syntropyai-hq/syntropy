@@ -4186,6 +4186,7 @@ dependencies = [
  "smallvec",
  "syntropy-core",
  "syntropy-ipc",
+ "tracing",
 ]
 
 [[package]]

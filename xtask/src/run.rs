@@ -296,6 +296,7 @@ mod tests {
                 "rustdoc",
                 "determinism",
                 "hot-threads",
+                "orphan-rule",
                 "check-deps",
                 "properties",
                 "codeowners",

@@ -10,6 +10,8 @@ publish.workspace = true
 syntropy-core = { path = "../core" }
 # `RunnerMsg::StateChanged`, the message each transition sends (RFC-0001 §3.5).
 syntropy-ipc = { path = "../ipc" }
+# The process's log records: a command this build does not handle yet (RFC-0053 §4).
+tracing.workspace = true
 
 [dev-dependencies]
 proptest = { workspace = true }

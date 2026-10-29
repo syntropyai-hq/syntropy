@@ -14,15 +14,17 @@
 //! - [`prompt`]: questions, which are never asked without a terminal;
 //! - [`error`]: the exit-code table and error rendering with hints;
 //! - [`build_id`]: this binary's `BuildId`, which `build.rs` builds, and its 32-byte build ID
-//!   (QUAL-E16-T03).
+//!   (QUAL-E16-T03);
+//! - [`runner_mode`]: `__runner`, the process the daemon spawns for each model instance
+//!   (DIST-E1-T04).
 //!
 //! Every command of the tree is declared. `-V`/`--version` prints this binary's build with no
 //! daemon; with `--json` it is the native API's `Build`. `version` is served: its `--json` output
 //! is the native API's `VersionInfo`, unchanged. `config show --resolved`, `config check` and
 //! `config path` are served without a daemon, over the binary's section registry ([`config`]). Each other command
-//! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` and
-//! `__selftest` parse their arguments and stop there, because runner mode and the self-test are
-//! not built.
+//! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` serves
+//! the command channel the daemon spawned it with. `__selftest` parses its arguments and stops
+//! there, because the self-test is not built.
 //!
 //! Dispatch reads no configuration, opens no GPU or network library and builds no async runtime
 //! before it knows the command, so a client command prints within RFC-0051's 50 ms \[target\].
@@ -41,6 +43,7 @@ pub mod config;
 pub mod error;
 pub mod output;
 pub mod prompt;
+pub mod runner_mode;
 
 use args::{Cli, Command, ConfigCommand, RunnerArgs, SelftestArgs};
 use error::{CliError, Exit};
@@ -191,19 +194,9 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `syntropy __runner --ipc <endpoint>`: runner mode (ADR-0015 decision 1). The runner process,
-/// its lifecycle and the command channel's runner side are DIST-E1-T04 and DIST-E1-T05; until
-/// they land, this dispatch stops after parsing the endpoint, and opens nothing.
+/// `syntropy __runner --ipc <handle> --region <handle>`: runner mode ([`runner_mode`]).
 fn runner(args: &RunnerArgs) -> Result<(), CliError> {
-    Err(CliError::cli(
-        Exit::Failure,
-        "not_built",
-        format!(
-            "runner mode is not available in this build yet; the daemon's command channel at {} \
-             was not opened",
-            args.ipc
-        ),
-    ))
+    runner_mode::run(args)
 }
 
 /// `syntropy __selftest --root <root>`: a staged build's self-test, which the updater runs
