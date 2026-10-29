@@ -316,6 +316,14 @@ pub struct LinkCapsExt {
 pub struct HopHistogram { pub first: Nanos, pub ratio: f32, pub counts: Vec<u32>, pub samples: u64 }
 ```
 
+*Note 2026-10-29 (as built, proposed; PLC-E1-T17): the base records and `OpClass`.*
+- **The base records.** RFC-0001 §5.2's `CapabilityProfile`, `DeviceCaps` and `StorageCaps` are in `core::resource::caps`. Each holds this section's additions as one field, `ext`, with serde defaults, as `DeviceInfo` holds `DeviceInfoExt`. `LinkCaps` was built earlier.
+- **`OpClass`.** It keys `DeviceCaps::throughput` (F_eff per op class and dtype). RFC-0001 §5.2 and RFC-0060's per-device-class selection map name it, and no RFC defined it. Its variants are a decision for the maintainers. Three options:
+  - (a) **built, the recommended default:** the glossary's op classes plus step M4's GEMM (§3.2): `Gemm`, `QuantGemv`, `ExpertGemv`, `Attention(AttnKind)` and `LinearScan`. It is what the glossary already defines, and every step-M4 measurement maps to one variant.
+  - (b) `KernelClass`'s variants plus `Gemm`, so one enum keys both W_eff and F_eff.
+  - (c) only what step M4 measures: `Gemm` and `Attention(AttnKind)`.
+- **Changing it later.** `OpClass` is `#[non_exhaustive]`, so later variants do not break the crates that match on it. The maintainers confirm or change the choice in PLC-E1-T17's review, and this note records the outcome.
+
 #### 1.4 Graph assembly and versioning
 
 The coordinator builds the `ResourceGraph` from the event log; no node builds its own view.
