@@ -75,9 +75,13 @@ fn probe_mode_and_a_region_are_exclusive() {
         .output()
         .unwrap();
     assert_eq!(both.status.code(), Some(2), "{both:?}");
+    let stderr = String::from_utf8_lossy(&both.stderr);
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
     let neither = Command::new(binary())
         .args(["__runner", "--ipc", "fd:3"])
         .output()
         .unwrap();
     assert_eq!(neither.status.code(), Some(2), "{neither:?}");
+    let stderr = String::from_utf8_lossy(&neither.stderr);
+    assert!(stderr.contains("required"), "{stderr}");
 }

@@ -165,7 +165,8 @@ On platforms that forbid spawning a child process (iOS, some Android contexts), 
 *Note 2026-10-29 (as built, §18.52; DIST-E1-T17): probe mode.*
 - **The command line.** A probe is `syntropy __runner --probe --ipc <handle>`, with no `--region`; `--probe` and `--region` are exclusive. `daemon::runner_host::probe_process` spawns it through the same channel pair as a runner.
 - **The exchange.** The probe sends `Hello`, which the daemon checks as for a runner, then one `ProbeResult { profile }`, and exits 0. It is sent no `Init`, so it holds no plan, loads no model and admits no sequence. Anything else after `Hello` makes the daemon kill and reap it.
-- **The profile.** Until PLC-E1-T07 runs its enumeration in the probe, the profile names no device, storage tier or link. The probe leaves `node` and `version` zero, and the daemon stamps them, since only it knows them. `ProbeRequest` and its suites, and a deadline on a probe, come with PLC-E2-T01.
+- **The profile.** Until PLC-E1-T07 runs its enumeration in the probe, the profile names no device, storage tier or link. The probe leaves `node` and `version` zero, and the daemon stamps them, since only it knows them. `ProbeRequest` and its suites come with PLC-E2-T01, which may send a partial result first and so reworks this one-result exchange; the daemon's deadline on a probe (RFC-0010 §8) is PLC-E3-T10's. Until then a probe that sends nothing blocks its caller, which nothing in the daemon calls yet.
+- **Daemon loss.** A probe never reads its channel, so it does not see the daemon's exit as a runner does. It exits as soon as it has sent; once PLC-E1-T07's enumeration runs in it, a probe stuck in a driver call outlives a lost daemon, which that task handles.
 
 ### 3.2 What each process owns
 
@@ -307,7 +308,7 @@ Command-channel messages:
 | R → D | `SequenceEnded { seq: SequenceId, outcome: SequenceOutcome }` | finished, failed or migrated |
 | R → D | `ErrorReport { error: Error }` | errors that are not tied to one sequence |
 | R → D | `EdgeDemoted { demotion: Demotion, cause: DemotionCause, cost: Nanos }` | a hop moved off its transport: the planned one could not connect (`ConnectFailed`, RFC-0031 §3), or it faulted 3 times in 60 s (`RepeatedFaults`, RFC-0031 §7.4). `cost` is the new transport's `cost_t` at the decode frame size. The daemon forwards it as `ReportEdgeDemoted` (RFC-0033 §11). Added by DIST-E7-T11, with an `ipc_protocol` bump (RFC-0031 §3, note of 2026-10-23) |
-| R → D | `ProbeResult { profile: CapabilityProfile }` | probe output |
+| R → D | `ProbeResult { profile: CapabilityProfile }` | probe output. Added by DIST-E1-T17, with `ipc_protocol` 6.0 (§18.52) |
 | R → D | `Pong` | — |
 
 *Note 2026-10-22 (amendment, §18.9):* `LedgerGrant` is plain data in `core`: the per-tier bytes the daemon grants the runner. `ipc` carries it in `Init`, and `tier` checks an `ArenaPlan` against it (RFC-0020 §3, §12; OQ-IO-27).

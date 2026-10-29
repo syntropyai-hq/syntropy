@@ -596,9 +596,11 @@ impl std::error::Error for ProbeFailure {}
 /// `build_id`, takes its one `ProbeResult`, closes the channel and waits for it to exit.
 ///
 /// The probe gets no `Init`, so it holds no plan, loads no model and admits no sequence. Its
-/// profile comes back as sent: the caller stamps `node` and `version`. A probe that sends
-/// anything else is killed and reaped. A probe that sends nothing blocks this call until it
-/// exits or closes its end; a deadline on probes comes with `ProbeRequest` (PLC-E2-T01).
+/// profile comes back as sent: the caller stamps `node` and `version`, in the merge RFC-0010 §3
+/// describes. A probe that sends anything else is killed and reaped. A probe that sends nothing
+/// blocks this call until it exits or closes its end; the daemon's deadline on a probe
+/// (RFC-0010 §8) is PLC-E3-T10's. A profile followed by a non-zero exit is an error, and the
+/// profile is dropped: a probe that crashed after reporting is not trusted.
 ///
 /// # Errors
 ///
@@ -621,9 +623,15 @@ pub fn probe_process(
     drop(child_end);
     let mut child = spawned.map_err(ProbeFailure::Spawn)?;
     let mut channel: DaemonChannel<Stream> = DaemonChannel::new(daemon_end);
-    channel
-        .handshake(&mut child, &build_id)
-        .map_err(ProbeFailure::Refused)?;
+    if let Err(refused) = channel.handshake(&mut child, &build_id) {
+        // The handshake kills and reaps a refused probe; if its kill failed, try once more, so
+        // no child is left behind.
+        if refused.exit.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        return Err(ProbeFailure::Refused(refused));
+    }
     let kill = |child: &mut Child| {
         let _ = child.kill();
         let _ = child.wait();
