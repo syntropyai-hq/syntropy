@@ -28,9 +28,12 @@
 //! 3. It punches those bytes out again, and checks that the punch freed at least half of them.
 //!
 //! A volume that passes is [`StorageMode::Sparse`], or [`StorageMode::SparseFillsGaps`] when step
-//! 1 filled the gap and the punch freed it. Then every chunk write punches the unheld runs just
-//! before and after its chunk, once the chunk's bytes and bit are synced
-//! (punching the 8 MiB gap of that 64 MiB file left 16,384 bytes held, same source). A volume
+//! 1 filled the gap and the punch freed it. On either, every chunk write punches the unheld runs
+//! just before and after its chunk, once the chunk's bytes and bit are synced. The probe's
+//! finding does not decide it: at commit d15d093 the probe's own file, written in another order,
+//! did not fill on the hosted runner while a blob's did, so the write path punches on every
+//! sparse volume, and where nothing was filled the punch frees nothing (punching the 8 MiB gap of
+//! that 64 MiB file left 16,384 bytes held, same source). A volume
 //! that fails a step is in **chunk-file mode** ([`StorageMode::ChunkFile`]), with the reason
 //! ([`NoSparse`]): exFAT and FAT32 refuse the sparse flag on Windows and allocate the whole
 //! extension on Linux and macOS, and HFS+ allocates it too. The probe file is removed before
@@ -1111,12 +1114,12 @@ impl Blob<'_> {
                 .and_then(|()| file.sync_data())
                 .map_err(|e| BlobError::io("write", &self.data_path, e))?;
             self.set_held(index, true)?;
-            if matches!(self.blobs.mode, StorageMode::SparseFillsGaps { .. }) {
-                // Only now, with the chunk's bytes and bit synced: every range punched is
-                // unheld, so a crash at any point leaves at worst zeros the inventory does not
-                // claim. A failed punch costs only space, which `reclaim` frees later.
-                let _ = self.punch_beside(index);
-            }
+            // On every sparse volume, whatever the probe found: APFS fills a small gap below a
+            // write in ways a probe cannot fully reproduce (module docs), and where nothing was
+            // filled the punch frees nothing. Only now, with the chunk's bytes and bit synced:
+            // every range punched is unheld, so a crash at any point leaves at worst zeros the
+            // inventory does not claim. A failed punch costs only space, which `reclaim` frees.
+            let _ = self.punch_beside(index);
             return Ok(id);
         }
         let blobs = self.blobs;
@@ -1273,8 +1276,8 @@ impl Blob<'_> {
     }
 
     /// Punches the runs of unheld chunks just before and just after chunk `index`, back to the
-    /// nearest held chunk or the file's ends: the gap a volume that fills gaps
-    /// ([`StorageMode::SparseFillsGaps`]) allocated when the chunk was written. The ranges are
+    /// nearest held chunk or the file's ends: the gap a volume that fills gaps allocated when the
+    /// chunk was written, as APFS does. The ranges are
     /// whole chunks that are not held, and `syntropy_io::os::punch_hole` rounds them inward to
     /// whole blocks where the OS punches only blocks, so no byte of a held chunk changes.
     fn punch_beside(&self, index: usize) -> Result<(), BlobError> {
