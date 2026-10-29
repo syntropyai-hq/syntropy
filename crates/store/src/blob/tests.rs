@@ -1212,3 +1212,69 @@ fn a_chunk_written_past_a_gap_keeps_disk_use_near_the_held_bytes() {
     assert_eq!(blob.read_chunk(0).unwrap(), chunk_bytes(&other, &chunks[0]));
     assert_eq!(blob.read_chunk(3).unwrap(), chunk_bytes(&other, &chunks[3]));
 }
+
+/// COMP-E11-T23: the punch after a write tests at most the chunks within `PUNCH_WINDOW_BYTES`
+/// of the written chunk, and punches no further, whatever the file's length. An ascending fetch
+/// is the worst case of an unbounded scan: each write's run of unheld chunks after it reaches the
+/// file's end. Only the inventory's bits matter here, so the files are chunk-file blobs that hold
+/// no data, with the bits set in memory.
+#[test]
+fn the_punch_after_a_write_scans_a_bounded_window_whatever_the_file_length() {
+    let scratch = Scratch::new("window");
+    let root = scratch.root();
+    let blobs = Blobs::open_with(&root, &FatUnix).unwrap();
+    // The chunks within the window either side, plus the one each side that straddles its edge.
+    let bound = 2 * (PUNCH_WINDOW_BYTES / CHUNK_BYTES) as usize + 2;
+    let mut worst = Vec::new();
+    for (file, len) in [64 * MIB, 1 << 30, 16 << 30].into_iter().enumerate() {
+        let chunks = chunk_file(len, 0, []).unwrap();
+        let n = chunks.len();
+        let mut table = ChunkTable::new(FileDigest([0; 32]), len, &chunks);
+        table.digest = FileDigest([file as u8 + 1; 32]);
+        let mut blob = blobs.blob(&table).unwrap();
+        let mut most = 0;
+        let mut total = 0;
+        // An ascending fetch: chunk k is written with chunks 0..k held.
+        for (k, &chunk) in chunks.iter().enumerate() {
+            let (runs, tested) = blob.beside_runs(k);
+            most = most.max(tested);
+            total += tested;
+            assert_eq!(
+                runs[0],
+                chunk.offset..chunk.offset,
+                "chunk {k}: chunk {} is held",
+                k.max(1) - 1
+            );
+            assert!(runs[1].start == chunk.end());
+            assert!(
+                runs[1].end <= chunk.end() + PUNCH_WINDOW_BYTES,
+                "chunk {k}: {:?}",
+                runs[1]
+            );
+            blob.inventory.set(k, true);
+        }
+        assert!(
+            most <= bound,
+            "{len}: {most} chunks tested by one write, bound {bound}"
+        );
+        assert!(total <= n * bound, "{len}: {total} tests over {n} writes");
+        worst.push(most);
+        drop(blob);
+    }
+    // The same worst case at 64 MiB, 1 GiB and 16 GiB.
+    assert_eq!(worst[1], worst[2], "{worst:?}");
+
+    // A write far from anything held punches the window's width on each side, no more.
+    let len = 1 << 30;
+    let chunks = chunk_file(len, 0, []).unwrap();
+    let mut table = ChunkTable::new(FileDigest([0; 32]), len, &chunks);
+    table.digest = FileDigest([0xEE; 32]);
+    let mut blob = blobs.blob(&table).unwrap();
+    blob.inventory.set(0, true);
+    let k = 128;
+    let (runs, tested) = blob.beside_runs(k);
+    let chunk = chunks[k];
+    assert_eq!(runs[0], chunk.offset - PUNCH_WINDOW_BYTES..chunk.offset);
+    assert_eq!(runs[1], chunk.end()..chunk.end() + PUNCH_WINDOW_BYTES);
+    assert!(tested <= bound, "{tested}");
+}
