@@ -717,6 +717,8 @@ pub struct LinkCaps {
 }
 ```
 
+*Note 2026-10-29 (as built, DIST-E2-T10):* `NodeInfo` is in `core::resource::node`, with `HostFingerprint`, `OsKind`, `ProtocolRanges` (its two ranges as `VersionRange`, which refuses `min_supported` above `current` when built or decoded) and `RolePrefs`. `staged_build` and `install` arrive with DIST-E4-T14. `OsKind` has an `Other` that a platform this build does not know decodes as, and an absent `RolePrefs` field is `true`, so records cross adjacent builds in the cluster's CBOR (ADR-0305). `HostFingerprint::NOT_COMPUTED`, the zero digest, stands until PLC-E1-T11 computes the fingerprint, and never matches another node's.
+
 *Note 2026-10-29 (as built, PLC-E1-T17):* `CapabilityProfile`, `DeviceCaps` and `StorageCaps` are in `core::resource::caps`. Each holds RFC-0010 §1.3's additions, and `StorageCaps` also RFC-0021 §10's (`engine`, `chunk`, `dio`, `buffered`, `sqpoll`, `read_around_efficiency`, `shared_lanes`), in one field, `ext`, rather than flat. `OpClass`, which this section names, is defined there, as proposed in RFC-0010 §1.3's note of the same date.
 
 ### 5.3 Model manifest and tensor census (`manifest`)
