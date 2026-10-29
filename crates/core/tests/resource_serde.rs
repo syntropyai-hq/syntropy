@@ -2255,6 +2255,13 @@ fn a_graph_built_twice_encodes_to_the_same_canonical_bytes() {
         canon::to_bytes(&fixture_graph()).unwrap(),
         canon::to_bytes(&fixture_graph()).unwrap()
     );
+    on_big_stack(resource_graph, |graph| {
+        prop_assert_eq!(
+            canon::to_bytes(&graph).unwrap(),
+            canon::to_bytes(&graph.clone()).unwrap()
+        );
+        Ok(())
+    });
     let ledger = LedgerSummary {
         held: vec![(sample_tier_id(0), Bytes(5))],
         entries: vec![],
@@ -2277,10 +2284,11 @@ fn available_saturates_when_reservations_overflow() {
     let a = sample_tier_id(0);
     graph.reservations = vec![
         entry(a, held_by(1, 1), u64::MAX),
-        entry(a, held_by(2, 1), u64::MAX),
+        entry(a, held_by(2, 1), 50),
     ];
+    // A wrapping sum would be 49 and leave 51 of tier a's 100 usable bytes free.
     assert_eq!(graph.available(a, None), Some(Bytes(0)));
-    assert_eq!(graph.available(a, Some(held_by(1, 1))), Some(Bytes(0)));
+    assert_eq!(graph.available(a, Some(held_by(1, 1))), Some(Bytes(50)));
 }
 
 fn epoch(seq: u64) -> PlanEpoch {
