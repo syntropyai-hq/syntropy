@@ -83,7 +83,12 @@ fn a_runner_of_another_build_is_refused_and_this_build_passes() {
     let hello = runner.handshake().unwrap();
     assert_eq!(hello.build_id, ours);
     assert_eq!(hello.pid, runner.id());
-    runner.kill().unwrap();
+    // No crash sink is given, so the reason only labels the host's kill (PROD-E9-T12).
+    runner
+        .kill(syntropy_daemon::crash::HostKill::from(
+            syntropy_daemon::supervisor::KillReason::Hung,
+        ))
+        .unwrap();
     let status = runner.wait().unwrap();
     assert!(!status.success());
 }
