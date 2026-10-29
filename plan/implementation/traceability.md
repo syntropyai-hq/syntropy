@@ -418,7 +418,7 @@ Not GAPs, listed under Gaps for the owning area: 0 SC milestone mismatches and 0
 | RFC-0052 | §2 | Install flows | 7: PROD-E10-T03–T05, PROD-E10-T10, PROD-E10-T21, PROD-E13-T04, QUAL-E16-T23 | ok |
 | RFC-0052 | §3 | `syntropy setup`: detection and first run | 5: PROD-E10-T06, PROD-E10-T09, PROD-E10-T19, PROD-E11-T02, PROD-E13-T04 | ok |
 | RFC-0052 | §4 | Backend modules | 11: PROD-E10-T07, PROD-E11-T01, PROD-E11-T03–T05, PROD-E11-T07–T08, PROD-E11-T11, PROD-E11-T15–T16, PROD-E13-T04 | ok |
-| RFC-0052 | §5 | Platform integration | 5: PROD-E10-T04, PROD-E10-T06, PROD-E10-T14, PROD-E13-T09, PROD-E13-T15 | ok |
+| RFC-0052 | §5 | Platform integration | 6: DIST-E4-T14, PROD-E10-T04, PROD-E10-T06, PROD-E10-T14, PROD-E13-T09, PROD-E13-T15 | ok |
 | RFC-0052 | §6 | Service management | 14: DIST-E1-T04, DIST-E1-T08, DIST-E1-T10, PROD-E10-T11, PROD-E10-T17, PROD-E10-T22, PROD-E12-T02–T03, PROD-E12-T09, PROD-E12-T12–T13, PROD-E12-T17, PROD-E13-T09, PROD-E13-T15 | ok |
 | RFC-0052 | §7 | Updates | 12: PROD-E12-T04–T06, PROD-E12-T08–T11, PROD-E12-T13–T14, PROD-E12-T16, PROD-E12-T18, QUAL-E16-T22 | ok |
 | RFC-0052 | §8 | Containers | 1: PROD-E10-T12 | ok |
