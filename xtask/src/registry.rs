@@ -724,7 +724,7 @@ pub const JOBS: &[Entry] = &[
         pending: &[Pending {
             check: "the Windows and macOS version-print steps, and pins for MSVC, Xcode and \
                         the Metal compiler",
-            task: "QUAL-E16-T24",
+            task: "QUAL-E16-T30",
         }],
     },
     Entry {
