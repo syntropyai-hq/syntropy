@@ -289,7 +289,7 @@ jobs:
   # `docker-container` builder on a pinned BuildKit and makes it the default.
   toolchains-linux:
     needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'toolchains-linux')
+    if: true
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
