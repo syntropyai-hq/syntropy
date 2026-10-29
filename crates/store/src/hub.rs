@@ -52,13 +52,13 @@ pub const HUB_ENDPOINT: &str = "https://huggingface.co";
 pub struct HubConfig {
     /// The Hub token, sent as `Authorization: Bearer <token>`. `None` reads public files only.
     pub token: Option<String>,
-    /// The longest one request may take, body included. The default is 300 s [target]: a
+    /// The longest one request may take, body included. The default is 300 s \[target\]: a
     /// coalesced range of up to 64 MiB (RFC-0041 §7.3) at 2 Mbit/s takes about 270 s
-    /// [estimate: 64 MiB × 8 / 2 Mbit/s].
+    /// \[estimate: 64 MiB × 8 / 2 Mbit/s\].
     pub timeout: Duration,
-    /// The longest a connection may take to open. The default is 30 s [target].
+    /// The longest a connection may take to open. The default is 30 s \[target\].
     pub connect_timeout: Duration,
-    /// The most redirects one request follows. The default is 5 [target]: the Hub redirects a
+    /// The most redirects one request follows. The default is 5 \[target\]: the Hub redirects a
     /// resolve URL once, to its CDN.
     pub max_redirects: usize,
     /// Whether plain HTTP to a loopback address is allowed, for tests against a local server.
