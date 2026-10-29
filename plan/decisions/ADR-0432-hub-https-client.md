@@ -39,7 +39,7 @@ The client, and how it meets the blocking `read_at`:
 
 | Option | For | Against |
 |---|---|---|
-| **`reqwest` with its `blocking` feature** | Matches the blocking trait with no bridge of ours: the blocking client runs its own current-thread runtime on a background thread (confirmed in `reqwest` 0.13.5's `blocking/client.rs`) | Must never be called, built or dropped inside an async runtime, where it panics or blocks, so on the `bulk` runtime every call goes through `spawn_blocking`; one runtime thread carries every connection; whether several calling threads multiplex over one HTTP/2 connection is unconfirmed; the `blocking` feature may add packages |
+| **`reqwest` with its `blocking` feature** | Matches the blocking trait with no bridge of ours: the blocking client runs its own current-thread runtime on a background thread (confirmed in `reqwest` 0.13.5's `blocking/client.rs`) | Must never be called, built or dropped inside an async runtime, where it panics, so on the `bulk` runtime every call goes through `spawn_blocking`; one runtime thread carries every connection; whether several calling threads multiplex over one HTTP/2 connection is unconfirmed; the `blocking` feature may add packages |
 | `reqwest` async, behind a bridge in `store` | Runs natively on the `bulk` runtime RFC-0001 already gives Hub reads; one async client for the Hub source and COMP-E12-T02's concurrent chunk reads | A bridge for the blocking `read_at` (a runtime handle and channels, since `block_on` panics inside a runtime), or `read_at` made async, an RFC-0041 §2 edit that every source and reader follows |
 | `ureq` with `rustls` | Blocking, so it matches the trait; small; reaches nothing else, so rule 6 can check it transitively | HTTP/1.1 only, against §7.2's HTTP/2: one connection per in-flight read; a new crate in the lockfile |
 | `hyper` with `hyper-rustls` | Already in the lockfile and used by `api` and `cli` | Redirects, timeouts, pooling and the blocking bridge are ours to write |
@@ -52,7 +52,7 @@ The client, and how it meets the blocking `read_at`:
 2. **Rule 6.** `reqwest` joins `SYSTEMS` with `only_in: "store"` and `direct_only: true`. It must be `direct_only`, because `net` reaches `reqwest` transitively through `iroh`, which a transitive entry would refuse. COMP-E10-T14's criterion "`check-deps` shows the client linked by exactly one crate" then holds for direct dependencies, and should say "directly".
 3. **What the source must do beyond the client.** COMP-E10-T14 tests these against the local range-serving HTTP server named in RFC-0041's Testing and validation section:
    - keep `Range` across the redirect to the CDN (§7.2);
-   - send the Hub token only in `Authorization` (§7.5). On a cross-host redirect, `reqwest` strips `Authorization`, `Cookie`, `Proxy-Authorization` and `WWW-Authenticate`, and no other header, so a token in any other header would reach the CDN;
+   - send the Hub token only in `Authorization` (§7.5). On a redirect that changes the host, port or scheme, `reqwest` strips `Authorization`, `Cookie`, `Cookie2`, `Proxy-Authorization` and `WWW-Authenticate`, and no other header, so a token in any other header would reach the CDN;
    - bound the redirect count;
    - re-resolve the commit-pinned URL when a signed CDN URL expires mid-download;
    - set the request timeout explicitly. The blocking client's default total timeout is 30 s, and a coalesced range of up to 64 MiB (§7.3) can take longer on a slow link;
