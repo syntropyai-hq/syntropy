@@ -1299,3 +1299,13 @@ DIST-E1-T04 (#1952) built the runner's process host and moved its probe-mode cri
 |---|---|---|---|
 | New task DIST-E1-T17 (M0a): probe mode, `syntropy __runner --probe`, answering `ProbeResult`. DIST-E1-T17 → DIST-E1-T04, PLC-E1-T17. DIST-E1-T04's `--probe` and "a probe-mode process returns `ProbeResult` and exits" move to it | DIST-E1-T04, DIST-E1-T17 | R9 | a scope split: probe mode adds a message and an `ipc_protocol` bump that the process host does not need |
 | PLC-E1-T07 → DIST-E1-T17 | PLC-E1-T07 | R1 | PLC-E1-T07 runs its enumeration in the probe process |
+
+## PROD-E9-T04's wiring legs move to the tasks that build their inputs (2026-10-29)
+
+PROD-E9-T04 (M1a) builds the bundle and the crash records. Two parts of its row need code it does not build. The API has only `healthz`, `readyz` and `version`, and no `admin` scope until PROD-E5-T01. RUN-001 is PROD-E9-T03's check. Each part moves to the task that builds what it needs, and that task gains an edge to PROD-E9-T04. The third, a real runner killed by a signal, stays: DIST-E1-T04's process host merged (#1952) while the change was in review, so PROD-E9-T04 tests it through that host and gains the edge to DIST-E1-T04.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E9-T04's "a runner killed by a signal leaves a crash record that appears in RUN-001 and the bundle" becomes "a runner killed by a signal, and a panic through the panic hook, leave a crash record in the state directory that appears in the bundle"; its description names `POST /v1/syntropy/debug/dump` as PROD-E6-T08's to wire. PROD-E9-T04 → DIST-E1-T04 | PROD-E9-T04 | R9 | the route and RUN-001 are other tasks'. The runner is spawned through DIST-E1-T04's process host; M1a → M0a, and DIST-E1-T04 does not reach PROD-E9-T04, so the edge adds no cycle |
+| PROD-E9-T03 gains "RUN-001 lists the crash records in `<state>/crashes/` (`CrashStore::list`), newest first, each with its process, cause and time, and names any it cannot read". PROD-E9-T03 → PROD-E9-T04 | PROD-E9-T03 | R9 | RUN-001 is PROD-E9-T03's. M1a → M1a, and PROD-E9-T04 does not reach PROD-E9-T03, so the edge adds no cycle |
+| PROD-E6-T08 gains `POST /v1/syntropy/debug/dump` with `admin` scope, the `--out`, `--with-addresses` and `--max-size` flags, and the criterion that `doctor --bundle` and `debug dump` write the same bundle through the route, which answers 403 without an `admin` key. PROD-E6-T08 → PROD-E9-T04, PROD-E5-T01 | PROD-E6-T08 | R9 | the command wiring is PROD-E6-T08's, and the scope is PROD-E5-T01's. All are M1a, and neither target reaches PROD-E6-T08, so the edges add no cycle |

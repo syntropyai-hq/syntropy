@@ -41,6 +41,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use syntropy_core::Entropy;
+
+use crate::crash::CrashSink;
 use syntropy_ipc::cmd::memory::MemoryStream;
 use syntropy_ipc::cmd::{
     DaemonChannel, Hello, PROTOCOL, Refused, RunnerChannel, Stream, memory_channel, spawn_pair,
@@ -293,6 +295,8 @@ pub struct ProcessRunner {
     build_id: [u8; 32],
     /// The exit status, once reaped.
     exited: Option<ExitStatus>,
+    /// Where a crash exit is recorded, when the host was given one (RFC-0053 §6).
+    crashes: Option<CrashSink>,
 }
 
 impl ProcessRunner {
@@ -406,9 +410,22 @@ impl ProcessRunner {
         Ok(status)
     }
 
-    /// The runner has exited: stop its heartbeat and remove the region's name.
+    /// Records the runner's exit in `sink` when it is reaped and the exit is a crash: a signal
+    /// on Unix, a system `NTSTATUS` error on Windows (RFC-0053 §6). The record goes in the state
+    /// directory's `crashes/`, which `doctor` and the diagnostic bundle read.
+    pub fn record_crashes(&mut self, sink: CrashSink) {
+        self.crashes = Some(sink);
+    }
+
+    /// The runner has exited: record a crash exit, stop its heartbeat and remove the region's
+    /// name.
     fn reaped(&mut self, status: ExitStatus) {
         self.exited = Some(status);
+        if let Some(sink) = &self.crashes
+            && let Err(error) = sink.record_exit(self.pid, &status)
+        {
+            tracing::warn!(%error, pid = self.pid, "writing a runner's crash record failed");
+        }
         drop(self.beat.take());
         self.unlink();
     }
@@ -504,6 +521,7 @@ pub fn spawn_process(
         beat: None,
         build_id,
         exited: None,
+        crashes: None,
     };
     // On an error the drop closes the channel, so the runner exits on its own, and removes the
     // region's name.

@@ -28,7 +28,13 @@ tokio = { workspace = true, features = ["net", "sync"] }
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The diagnostic bundle (RFC-0053 §6): its files' SHA-256 in `MANIFEST.txt` and the `tar.zst`'s
+# compression. Both are in the build already, through `syntropy-manifest` and `syntropy-net`.
+sha2.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
+# The `Opaque` CBOR payloads the bundle's canary plants in a cluster log entry (PROD-E9-T04).
+ciborium.workspace = true
 # `SimClock`, the injected time of the logging tests (RFC-0060 §2.1).
 syntropy-testkit = { path = "../testkit" }

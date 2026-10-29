@@ -83,6 +83,11 @@ impl FlightRecorder {
         })
     }
 
+    /// Every entry it holds, oldest first: what the diagnostic bundle copies (RFC-0053 §6).
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = &Entry> {
+        self.entries.iter()
+    }
+
     /// Its log records, oldest first.
     pub fn logs(&self) -> impl Iterator<Item = &LogRecord> {
         self.entries.iter().filter_map(|e| match e {
