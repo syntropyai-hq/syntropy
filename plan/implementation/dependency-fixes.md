@@ -1290,3 +1290,11 @@ DIST-E1-T04 (#1952) built the runner's process host and moved its probe-mode cri
 |---|---|---|---|
 | New task DIST-E1-T17 (M0a): probe mode, `syntropy __runner --probe`, answering `ProbeResult`. DIST-E1-T17 → DIST-E1-T04, PLC-E1-T17. DIST-E1-T04's `--probe` and "a probe-mode process returns `ProbeResult` and exits" move to it | DIST-E1-T04, DIST-E1-T17 | R9 | a scope split: probe mode adds a message and an `ipc_protocol` bump that the process host does not need |
 | PLC-E1-T07 → DIST-E1-T17 | PLC-E1-T07 | R1 | PLC-E1-T07 runs its enumeration in the probe process |
+
+## TIER-E5-T36's retry criterion names the retry's owner (2026-10-30)
+
+TIER-E5-T36 (M1b) asked that, after a fault on `MacMapped`'s copy, "the retry follows §16". The one retry of RFC-0021 §16 is the I/O thread's, and TIER-E5-T15 (#772, M1a, open) builds it; until then `io_thread.rs` completes a short transfer with `IO_SHORT_READ` and no retry. TIER-E5-T36 does not depend on TIER-E5-T15, and needs none: the engine's part is to return `IO_SHORT_READ` and to read right on the next request. So TIER-E5-T36's test issues the retry itself, and the I/O thread's one retry stays with TIER-E5-T15.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| TIER-E5-T36's "the retry follows §16" becomes "a second read of the same extent (the retry §16 prescribes, which the I/O thread issues once TIER-E5-T15 builds it) is short again while the bytes are gone", and "later reads on the same engine return the right bytes" gains "both of extents the truncation left alone and of the faulted extent once the file holds it again" | TIER-E5-T36 | R9 | the I/O thread's one retry is TIER-E5-T15's; the engine's behaviour on that retry is TIER-E5-T36's and is tested by issuing the read |
