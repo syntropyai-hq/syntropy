@@ -40,9 +40,11 @@
 //!   bytes.
 //! - **A refused mapping** fails `open` with `IO_ENGINE_UNAVAILABLE` and the OS error: the next
 //!   engine, `MacNoCache`, reads that file (RFC-0021 §16).
-//! - **No gathering.** The copy is one buffered `pread` per read, from pages already resident, at
-//!   the same cost per byte at any request size, so contiguous reads are not joined, unlike
-//!   `MacNoCache`.
+//! - **No gathering.** Contiguous reads are not joined, unlike `MacNoCache`: each read waits for
+//!   its own pages and is copied by its own buffered `pread`, from pages already resident. Each
+//!   copy is one system call, with a fixed cost per call on top of the per-byte copy, so many
+//!   small contiguous reads cost more calls than one joined read would; whether joining them
+//!   pays is for RFC-0021 §10's A/B to show.
 //! - `MADV_DONTNEED` on a range drops the mapping's pages there, including a page another
 //!   worker's read shares at an edge. That read's wait may then see the page absent and wait
 //!   for it, or time out to the `F_NOCACHE` `pread`, and its copy's `pread` reads it from the
@@ -362,9 +364,11 @@ impl<M: MapSys, S: MacSys> Backend for Mapped<M, S> {
     }
 }
 
-/// The macOS engine that reads through a read-only mapping and copies into owned slots:
-/// `MADV_WILLNEED` on request, a copy once `mincore` shows the pages resident, `MADV_DONTNEED`
-/// after (RFC-0021 §5; ADR-0013 item 5). It never counts the page cache as residency (ADR-0007
+/// The macOS engine that warms the page cache through a read-only mapping and copies into owned
+/// slots with `pread`: `MADV_WILLNEED` on request, a buffered `pread` on a second handle once
+/// `mincore` shows the pages resident, `MADV_DONTNEED` after (RFC-0021 §5; ADR-0013 item 5). No
+/// read loads from the mapping, so a fault on the copy is a short read, never `SIGBUS`
+/// (TIER-E5-T36). It never counts the page cache as residency (ADR-0007
 /// item 6). RFC-0010's probe chooses it over [`MacNoCache`](super::MacNoCache) per volume by
 /// measurement (RFC-0021 §10). See the [module](crate::pool) for the pool's shape.
 pub struct MacMapped {
@@ -395,8 +399,9 @@ impl MacMapped {
     }
 
     /// Why the engine runs buffered: `IO_DIRECT_REFUSED` with the OS error of a refused
-    /// `F_NOCACHE` on a file opened for writing. `None` while every such file has it set. Reads
-    /// through the mapping are this engine's design, not the flagged buffered mode.
+    /// `F_NOCACHE` on a file opened for writing. `None` while every such file has it set. The
+    /// buffered `pread` that copies a mapped file's resident pages into a slot is this engine's
+    /// design, not the flagged buffered mode, and never sets this.
     #[must_use]
     pub fn buffered_reason(&self) -> Option<IoError> {
         self.pool.buffered_reason()
