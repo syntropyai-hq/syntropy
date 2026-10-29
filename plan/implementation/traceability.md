@@ -209,7 +209,7 @@ Not GAPs, listed under Gaps for the owning area: 0 SC milestone mismatches and 0
 | RFC-0011 | §8 | Linearisation techniques | 6: PLC-E5-T04–T06, PLC-E5-T08, PLC-E5-T11, PLC-E6-T25 | ok |
 | RFC-0011 | §9 | HiGHS integration | 4: PLC-E5-T01–T02, PLC-E5-T07, PLC-E5-T14 | ok |
 | RFC-0011 | §10 | DP: the production method, and the MILP's warm start | 2: PLC-E4-T07–T08 | ok |
-| RFC-0011 | §11 | Plan assembly, rounding and validation | 14: PLC-E4-T02, PLC-E4-T06, PLC-E6-T01–T02, PLC-E6-T13, PLC-E6-T15–T18, PLC-E6-T20–T22, PLC-E8-T15, PLC-E8-T17 | ok |
+| RFC-0011 | §11 | Plan assembly, rounding and validation | 15: PLC-E1-T18, PLC-E4-T02, PLC-E4-T06, PLC-E6-T01–T02, PLC-E6-T13, PLC-E6-T15–T18, PLC-E6-T20–T22, PLC-E8-T15, PLC-E8-T17 | ok |
 | RFC-0011 | §12 | Incremental re-solve on churn | 5: PLC-E4-T15, PLC-E6-T03–T04, PLC-E6-T12, DIST-E14-T18 | ok |
 | RFC-0011 | §13 | Fast per-request routing | 3: PLC-E6-T05, PLC-E6-T12, PLC-E6-T19 | ok |
 | RFC-0011 | §14 | Plan explainability | 9: PLC-E4-T13–T14, PLC-E6-T06–T07, PLC-E6-T24–T27, TIER-E10-T16 | ok |
@@ -316,10 +316,10 @@ Not GAPs, listed under Gaps for the owning area: 0 SC milestone mismatches and 0
 | RFC-0032 | §1 | Scope and split with neighbouring RFCs | 1: DIST-E9-T03 | ok |
 | RFC-0032 | §2 | Instance bring-up on the data plane | 1: DIST-E11-T01 | ok |
 | RFC-0032 | §3 | Pipeline ring execution | 21: PLC-E6-T21–T22, PLC-E8-T21, DIST-E1-T14, DIST-E8-T05, DIST-E11-T02–T10, DIST-E11-T14–T19, DIST-E17-T15 | ok |
-| RFC-0032 | §4 | Plan transitions on the data plane | 3: DIST-E11-T11–T13 | ok |
+| RFC-0032 | §4 | Plan transitions on the data plane | 4: PLC-E1-T18, DIST-E11-T11–T13 | ok |
 | RFC-0032 | §5 | Tensor and expert parallelism | 13: DIST-E13-T01–T13 | ok |
 | RFC-0032 | §6 | The cluster event log | 18: DIST-E9-T01–T13, DIST-E9-T15–T16, DIST-E10-T05, DIST-E10-T10, DIST-E18-T03 | ok |
-| RFC-0032 | §7 | Coordinator election and leases | 10: DIST-E9-T13, DIST-E10-T01–T08, DIST-E10-T10 | ok |
+| RFC-0032 | §7 | Coordinator election and leases | 11: PLC-E1-T18, DIST-E9-T13, DIST-E10-T01–T08, DIST-E10-T10 | ok |
 | RFC-0032 | §8 | Two-phase scheduling | 7: DIST-E9-T08–T09, DIST-E10-T06, DIST-E11-T03, DIST-E12-T01–T03 | ok |
 | RFC-0032 | §9 | Configuration | 1: DIST-E18-T01 | ok |
 | RFC-0032 | §10 | Error codes | 1: DIST-E18-T02 | ok |
