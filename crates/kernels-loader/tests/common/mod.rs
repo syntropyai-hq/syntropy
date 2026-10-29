@@ -18,6 +18,18 @@ use syntropy_kernels_loader::HostServices;
 
 thread_local! {
     static CONFIG: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// The metrics the module sent on this thread, by ID, so a test reads only its own calls.
+    static METRICS: RefCell<HashMap<u32, u64>> = RefCell::new(HashMap::new());
+}
+
+/// The test provider's metric IDs for its release work (`examples/test_provider.rs`).
+pub const FREED: u32 = 101;
+pub const CONTEXT_CLOSED: u32 = 102;
+pub const REGISTRAR_CLOSED: u32 = 103;
+
+/// How much the module has sent of metric `id` on the calling thread.
+pub fn metric(id: u32) -> u64 {
+    METRICS.with(|m| m.borrow().get(&id).copied().unwrap_or(0))
 }
 
 /// Log lines and metrics the module sent, process-wide.
@@ -50,8 +62,9 @@ pub fn install_services() {
             |_level, _target, _msg| {
                 LOG_LINES.fetch_add(1, Ordering::Relaxed);
             },
-            |_id, value| {
+            |id, value| {
                 METRIC_TOTAL.fetch_add(value as usize, Ordering::Relaxed);
+                METRICS.with(|m| *m.borrow_mut().entry(id).or_insert(0) += value);
             },
             |key| CONFIG.with(|c| c.borrow().get(key).cloned()),
         )

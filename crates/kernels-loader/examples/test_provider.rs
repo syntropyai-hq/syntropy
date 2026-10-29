@@ -38,6 +38,12 @@ const BUILD_ID: [u8; 32] = [7; 32];
 /// The stream handle that makes structured-argument calls echo what they received.
 const ECHO: u64 = 0xEC40;
 
+/// Metric IDs the provider sends when its release work runs, so the tests can tell that
+/// `free`, `close_ctx` and a registrar's destructor ran, sticky provider or not.
+const FREED: u32 = 101;
+const CONTEXT_CLOSED: u32 = 102;
+const REGISTRAR_CLOSED: u32 = 103;
+
 struct TestProvider {
     host: HostApi,
     ops: OpRegistry,
@@ -55,6 +61,7 @@ impl Drop for Opened {
         if self.host.config("fixture.panic_in").as_deref() == Some("close_ctx") {
             panic!("injected panic in close_ctx");
         }
+        self.host.metric(CONTEXT_CLOSED, 1);
     }
 }
 
@@ -114,6 +121,7 @@ impl Drop for Registrar {
         if self.host.config("fixture.panic_in").as_deref() == Some("registrar_close") {
             panic!("injected panic in registrar_close");
         }
+        self.host.metric(REGISTRAR_CLOSED, 1);
     }
 }
 
@@ -279,6 +287,7 @@ impl KernelProvider for TestProvider {
 
     fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {
         self.hook("free");
+        self.host.metric(FREED, 1);
     }
 
     fn map_segment(

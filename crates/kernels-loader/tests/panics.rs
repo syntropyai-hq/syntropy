@@ -289,10 +289,59 @@ fn a_sticky_provider_still_frees_what_it_holds() {
     let _ = fx.p.event(&fx.ctx);
     common::clear("panic_in");
     let Fixture { p, ctx, buf, .. } = fx;
+    let before = common::metric(common::FREED);
     p.free(&ctx, buf);
-    // `free` ran on the sticky provider and did not fail.
+    // `free` reached the provider on the sticky module, which recorded it, and did not fail.
+    assert_eq!(
+        common::metric(common::FREED),
+        before + 1,
+        "free did not run"
+    );
     assert_eq!(p.fault().expect("the panic").code, PANICKED);
     assert_eq!(p.fault().expect("the panic").class, ErrorClass::Internal);
+}
+
+/// The review of #1881, B2: a sticky provider still closes a context. Dropping the context runs
+/// the module's `close_ctx`, which the provider records.
+#[test]
+fn a_sticky_provider_still_closes_a_context() {
+    common::install_services();
+    let dir = common::TempDir::new("close-after");
+    let fx = fixture(&dir);
+    common::set("panic_in", "event");
+    let _ = fx.p.event(&fx.ctx);
+    common::clear("panic_in");
+    assert!(fx.p.fault().is_some(), "the provider is sticky");
+    let Fixture { p, ctx, .. } = fx;
+    let before = common::metric(common::CONTEXT_CLOSED);
+    drop(ctx);
+    assert_eq!(
+        common::metric(common::CONTEXT_CLOSED),
+        before + 1,
+        "close_ctx did not run"
+    );
+    drop(p);
+}
+
+/// The review of #1881, B2: a sticky provider still runs a registrar's destructor.
+#[test]
+fn a_sticky_provider_still_closes_a_registrar() {
+    common::install_services();
+    let dir = common::TempDir::new("registrar-after");
+    let fx = fixture(&dir);
+    common::set("panic_in", "event");
+    let _ = fx.p.event(&fx.ctx);
+    common::clear("panic_in");
+    assert!(fx.p.fault().is_some(), "the provider is sticky");
+    let Fixture { p, registrar, .. } = fx;
+    let before = common::metric(common::REGISTRAR_CLOSED);
+    drop(registrar);
+    assert_eq!(
+        common::metric(common::REGISTRAR_CLOSED),
+        before + 1,
+        "the registrar's destructor did not run"
+    );
+    drop(p);
 }
 
 #[test]
