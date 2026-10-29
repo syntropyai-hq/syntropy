@@ -1317,6 +1317,99 @@ fn ordinals() -> impl Strategy<Value = Ordinals> {
         .prop_map(|(devices, tiers)| Ordinals { devices, tiers })
 }
 
+fn op_class() -> impl Strategy<Value = OpClass> {
+    prop_oneof![
+        Just(OpClass::Gemm),
+        Just(OpClass::QuantGemv),
+        Just(OpClass::ExpertGemv),
+        attn_kind().prop_map(OpClass::Attention),
+        Just(OpClass::LinearScan),
+    ]
+}
+
+fn device_caps() -> impl Strategy<Value = DeviceCaps> {
+    (
+        device_id(),
+        prop::collection::vec((tier_id(), kernel_class(), m_bps()), 0..3),
+        prop::collection::vec(
+            (op_class(), dtype(), measured(f64s().prop_map(FlopsPerSec))),
+            0..3,
+        ),
+        m_nanos(),
+        prop::option::of(host_link_caps()),
+        prop::collection::vec((tier_id(), bytes()), 0..3),
+        device_caps_ext(),
+    )
+        .prop_map(
+            |(device, tier_bw, throughput, t_fixed, host_link, usable, ext)| DeviceCaps {
+                device,
+                tier_bw,
+                throughput,
+                t_fixed,
+                host_link,
+                usable,
+                ext,
+            },
+        )
+}
+
+fn storage_caps() -> impl Strategy<Value = StorageCaps> {
+    (
+        tier_id(),
+        m_bps(),
+        m_bps(),
+        bytes(),
+        any::<u16>(),
+        m_nanos(),
+        prop::option::of(measured(f32s())),
+        storage_caps_ext(),
+    )
+        .prop_map(
+            |(
+                tier,
+                sustained_read,
+                burst_read,
+                extent,
+                queue_depth,
+                small_read,
+                temperature_c,
+                ext,
+            )| {
+                StorageCaps {
+                    tier,
+                    sustained_read,
+                    burst_read,
+                    extent,
+                    queue_depth,
+                    small_read,
+                    temperature_c,
+                    ext,
+                }
+            },
+        )
+}
+
+fn capability_profile() -> impl Strategy<Value = CapabilityProfile> {
+    (
+        node_id(),
+        any::<u64>(),
+        prop::collection::vec(device_caps(), 0..2),
+        prop::collection::vec(storage_caps(), 0..2),
+        prop::collection::vec(link_caps(), 0..2),
+        capability_profile_ext(),
+    )
+        .prop_map(
+            |(node, version, devices, storage, links, ext)| CapabilityProfile {
+                node,
+                version,
+                devices,
+                storage,
+                links,
+                ext,
+            },
+        )
+}
+
 // ---- Round trips ------------------------------------------------------------------------
 
 fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) {
@@ -1433,6 +1526,8 @@ round_trip_tests! {
     rt_graph_change_cause: graph_change_cause();
     rt_enumerated: enumerated();
     rt_ordinals: ordinals();
+    rt_op_class: op_class();
+    rt_storage_caps: storage_caps();
 }
 
 // ---- Unknown future fields --------------------------------------------------------------
@@ -1852,4 +1947,104 @@ fn link_caps_decodes_as_unmeasured_without_its_figures() {
     let back: LinkCaps = serde_json::from_value(json).unwrap();
     assert_eq!(back, full);
     assert!(!back.is_measured());
+}
+
+// ---- The base capability records (PLC-E1-T17) ---------------------------------------------
+
+/// Runs `check` over `strategy`'s cases on a thread with a 64 MiB stack. `DeviceCaps` and
+/// `CapabilityProfile` nest the largest records, and their generated values overflow the
+/// default test thread's 2 MiB in a debug build.
+fn on_big_stack<S, F>(strategy: fn() -> S, check: F)
+where
+    S: Strategy + 'static,
+    F: Fn(S::Value) -> Result<(), TestCaseError> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(move || {
+            let mut runner = proptest::test_runner::TestRunner::default();
+            if let Err(error) = runner.run(&strategy(), check) {
+                panic!("{error}");
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn rt_device_caps() {
+    on_big_stack(device_caps, |value| {
+        round_trip(&value);
+        Ok(())
+    });
+}
+
+#[test]
+fn rt_capability_profile() {
+    on_big_stack(capability_profile, |value| {
+        round_trip(&value);
+        Ok(())
+    });
+}
+
+/// `ProbeResult` carries a profile over the command channel, which encodes with postcard: a
+/// profile round-trips through it unchanged.
+#[test]
+fn a_capability_profile_round_trips_through_postcard() {
+    on_big_stack(capability_profile, |profile| {
+        let bytes = postcard::to_allocvec(&profile).expect("postcard encode");
+        let back: CapabilityProfile = postcard::from_bytes(&bytes).expect("postcard decode");
+        prop_assert_eq!(back, profile);
+        Ok(())
+    });
+}
+
+/// Every base record decodes when it carries fields this build does not know, on its own and
+/// nested in a profile.
+#[test]
+fn base_records_decode_with_future_fields() {
+    on_big_stack(device_caps, |device| {
+        decodes_with_future_fields(&device);
+        Ok(())
+    });
+    on_big_stack(storage_caps, |storage| {
+        decodes_with_future_fields(&storage);
+        Ok(())
+    });
+    on_big_stack(capability_profile, |profile| {
+        decodes_with_future_fields(&profile);
+        Ok(())
+    });
+}
+
+/// A record written without its `ext` field, as before RFC-0010's additions, decodes with the
+/// additions' defaults.
+#[test]
+fn base_records_without_ext_decode_with_its_defaults() {
+    on_big_stack(device_caps, |device| {
+        let back: DeviceCaps = without_ext(&device);
+        prop_assert_eq!(&back.ext, &DeviceCapsExt::default());
+        prop_assert_eq!(&back.tier_bw, &device.tier_bw);
+        Ok(())
+    });
+    on_big_stack(storage_caps, |storage| {
+        let back: StorageCaps = without_ext(&storage);
+        prop_assert_eq!(&back.ext, &StorageCapsExt::default());
+        prop_assert_eq!(back.sustained_read, storage.sustained_read);
+        Ok(())
+    });
+    on_big_stack(capability_profile, |profile| {
+        let back: CapabilityProfile = without_ext(&profile);
+        prop_assert_eq!(&back.ext, &CapabilityProfileExt::default());
+        prop_assert_eq!(&back.devices, &profile.devices);
+        Ok(())
+    });
+}
+
+/// `value` encoded, its top-level `ext` field removed, and decoded.
+fn without_ext<T: Serialize + DeserializeOwned>(value: &T) -> T {
+    let mut json = serde_json::to_value(value).expect("serialize");
+    json.as_object_mut().expect("a record").remove("ext");
+    serde_json::from_value(json).expect("decodes without ext")
 }

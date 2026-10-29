@@ -717,6 +717,8 @@ pub struct LinkCaps {
 }
 ```
 
+*Note 2026-10-29 (as built, PLC-E1-T17):* `CapabilityProfile`, `DeviceCaps` and `StorageCaps` are in `core::resource::caps`. Each holds RFC-0010 §1.3's additions, and `StorageCaps` also RFC-0021 §10's (`engine`, `chunk`, `dio`, `buffered`, `sqpoll`, `read_around_efficiency`, `shared_lanes`), in one field, `ext`, rather than flat. `OpClass`, which this section names, is defined there, as proposed in RFC-0010 §1.3's note of the same date.
+
 ### 5.3 Model manifest and tensor census (`manifest`)
 
 ```rust
