@@ -211,7 +211,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 
 | Stream | Epic | Tasks | First step | Last step | Waits on (M0a streams) |
 |---|---|---|---|---|---|
-| PLC-E1 | Resource graph types and hardware enumeration | 8 | 2 | 12 | DIST-E1, DIST-E4, COMP-E1, COMP-E3, COMP-E4, QUAL-E1, QUAL-E15 |
+| PLC-E1 | Resource graph types and hardware enumeration | 8 | 2 | 12 | DIST-E1, DIST-E2, COMP-E1, COMP-E3, COMP-E4, QUAL-E1, QUAL-E15 |
 | PLC-E2 | Startup microbenchmark suite | 1 | 12 | 12 | PLC-E1, DIST-E1, QUAL-E3 |
 | PLC-E4 | Solver foundations: inputs, preprocessing, filter, evaluator and DP | 3 | 3 | 13 | PLC-E1, COMP-E10, PROD-E8 |
 | PLC-E7 | Executor: step programs, dispatchers and graph capture | 5 | 6 | 16 | PLC-E4, TIER-E6, DIST-E1, COMP-E1, COMP-E4, COMP-E13, COMP-E15, QUAL-E3, QUAL-E8 |
@@ -221,7 +221,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | TIER-E6 | KV store, paging and tiering | 2 | 8 | 12 | TIER-E1, DIST-E1, COMP-E16, QUAL-E3 |
 | TIER-E8 | Expert cache: slots, policy, slot table and profile | 1 | 8 | 8 | PLC-E4, COMP-E1, QUAL-E1 |
 | DIST-E1 | Process model: rings, IPC, runner spawn, lifecycle and supervision | 8 | 4 | 10 | PLC-E1, PLC-E9, TIER-E1, PROD-E1, QUAL-E1, QUAL-E3, QUAL-E5 |
-| DIST-E4 | Membership and failure detection | 1 | 3 | 3 | PLC-E1 |
+| DIST-E2 | Identity, keys and signed structures | 1 | 3 | 3 | PLC-E1 |
 | DIST-E18 | Configuration keys, error codes, metrics and diagnostics | 1 | 2 | 2 | QUAL-E1 |
 | COMP-E1 | Kernel provider core | 6 | 4 | 12 | COMP-E13, QUAL-E1, QUAL-E3 |
 | COMP-E2 | Op selection, certification, coverage and kernel targets | 1 | 7 | 7 | COMP-E1, COMP-E13 |

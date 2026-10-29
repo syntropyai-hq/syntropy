@@ -190,7 +190,7 @@ Not GAPs, listed under Gaps for the owning area: 0 SC milestone mismatches and 0
 <!-- BEGIN GENERATED: trace-design -->
 | RFC | § | Design subsection | Tasks (Implements column) | Flag |
 |---|---|---|---|---|
-| RFC-0010 | §1 | ResourceGraph data model | 9: PLC-E1-T01, PLC-E1-T08–T09, PLC-E1-T11, PLC-E1-T16–T17, PLC-E2-T08, PLC-E2-T16, TIER-E5-T27 | ok |
+| RFC-0010 | §1 | ResourceGraph data model | 10: PLC-E1-T01, PLC-E1-T08–T09, PLC-E1-T11, PLC-E1-T16–T17, PLC-E2-T08, PLC-E2-T16, TIER-E5-T27, DIST-E2-T10 | ok |
 | RFC-0010 | §2 | Hardware enumeration per OS | 16: PLC-E1-T02–T08, PLC-E1-T10, PLC-E1-T12–T16, PLC-E2-T15, PLC-E2-T17, PLC-E3-T06 | ok |
 | RFC-0010 | §3 | Startup microbenchmark suite | 30: PLC-E1-T07, PLC-E1-T17, PLC-E2-T01–T21, PLC-E2-T23–T26, PLC-E3-T03, DIST-E6-T07, COMP-E4-T17 | ok |
 | RFC-0010 | §4 | Time budgets and probe scheduling | 2: PLC-E2-T01, PLC-E2-T09 | ok |
@@ -292,7 +292,7 @@ Not GAPs, listed under Gaps for the owning area: 0 SC milestone mismatches and 0
 | RFC-0023 | §15 | Configuration | 3: TIER-E10-T01, TIER-E10-T12, TIER-E10-T15 | ok |
 | RFC-0023 | §16 | Failure handling and error codes | 1: TIER-E10-T12 | ok |
 | RFC-0030 | §1 | Scope and split with neighbouring RFCs | 1: DIST-E5-T02 | ok |
-| RFC-0030 | §2 | Node identity and persistent state | 6: DIST-E2-T01, DIST-E2-T03, DIST-E2-T09, DIST-E4-T08, DIST-E4-T17, PROD-E6-T08 | ok |
+| RFC-0030 | §2 | Node identity and persistent state | 5: DIST-E2-T01, DIST-E2-T03, DIST-E2-T09, DIST-E4-T08, PROD-E6-T08 | ok |
 | RFC-0030 | §3 | Endpoints and ports | 1: DIST-E3-T01 | ok |
 | RFC-0030 | §4 | LAN discovery | 10: DIST-E3-T02–T11 | ok |
 | RFC-0030 | §5 | Membership and failure detection | 17: DIST-E4-T01–T13, DIST-E4-T15–T16, DIST-E5-T07, QUAL-E3-T24 | ok |
@@ -310,7 +310,7 @@ Not GAPs, listed under Gaps for the owning area: 0 SC milestone mismatches and 0
 | RFC-0031 | §7 | Flow control, acknowledgement, retransmission and failover | 5: DIST-E7-T02, DIST-E7-T10, DIST-E7-T13, DIST-E7-T16, DIST-E7-T25 | ok |
 | RFC-0031 | §8 | Zero-copy receive and buffer pools | 3: TIER-E2-T25, DIST-E7-T09, DIST-E7-T12 | ok |
 | RFC-0031 | §9 | Control-plane and blob-plane encoding | 2: DIST-E8-T12, DIST-E8-T17 | ok |
-| RFC-0031 | §10 | Versioning and compatibility | 5: DIST-E4-T17, DIST-E8-T04, DIST-E8-T06, DIST-E8-T13–T14 | ok |
+| RFC-0031 | §10 | Versioning and compatibility | 5: DIST-E2-T10, DIST-E8-T04, DIST-E8-T06, DIST-E8-T13–T14 | ok |
 | RFC-0031 | §11 | Configuration | 1: DIST-E18-T01 | ok |
 | RFC-0031 | §12 | Error codes | 1: DIST-E18-T02 | ok |
 | RFC-0032 | §1 | Scope and split with neighbouring RFCs | 1: DIST-E9-T03 | ok |
@@ -418,7 +418,7 @@ Not GAPs, listed under Gaps for the owning area: 0 SC milestone mismatches and 0
 | RFC-0052 | §2 | Install flows | 7: PROD-E10-T03–T05, PROD-E10-T10, PROD-E10-T21, PROD-E13-T04, QUAL-E16-T23 | ok |
 | RFC-0052 | §3 | `syntropy setup`: detection and first run | 5: PROD-E10-T06, PROD-E10-T09, PROD-E10-T19, PROD-E11-T02, PROD-E13-T04 | ok |
 | RFC-0052 | §4 | Backend modules | 11: PROD-E10-T07, PROD-E11-T01, PROD-E11-T03–T05, PROD-E11-T07–T08, PROD-E11-T11, PROD-E11-T15–T16, PROD-E13-T04 | ok |
-| RFC-0052 | §5 | Platform integration | 6: DIST-E4-T17, PROD-E10-T04, PROD-E10-T06, PROD-E10-T14, PROD-E13-T09, PROD-E13-T15 | ok |
+| RFC-0052 | §5 | Platform integration | 5: PROD-E10-T04, PROD-E10-T06, PROD-E10-T14, PROD-E13-T09, PROD-E13-T15 | ok |
 | RFC-0052 | §6 | Service management | 14: DIST-E1-T04, DIST-E1-T08, DIST-E1-T10, PROD-E10-T11, PROD-E10-T17, PROD-E10-T22, PROD-E12-T02–T03, PROD-E12-T09, PROD-E12-T12–T13, PROD-E12-T17, PROD-E13-T09, PROD-E13-T15 | ok |
 | RFC-0052 | §7 | Updates | 12: PROD-E12-T04–T06, PROD-E12-T08–T11, PROD-E12-T13–T14, PROD-E12-T16, PROD-E12-T18, QUAL-E16-T22 | ok |
 | RFC-0052 | §8 | Containers | 1: PROD-E10-T12 | ok |

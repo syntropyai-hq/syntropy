@@ -118,7 +118,7 @@ External gates: `gate:` segments in a Depends cell. They add no edge; the task c
 
 | Task | Milestone | What is needed |
 |---|---|---|
-| PLC-E1-T09 | M0a | the task that defines `ResourceGraph` and its `Reservation`, which no RFC defines yet (#1524) |
+| PLC-E1-T09 | M0a | the task that defines `ResourceGraph` in `core`, whose `Reservation` no RFC defines yet (#1524) |
 
 Plan-rule notes. None of them fails the check; each one is a row for its area to fix under the milestone rules in RFC-0001 §16.
 
