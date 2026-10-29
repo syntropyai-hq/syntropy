@@ -3,7 +3,7 @@
 - Status: Proposed (2026-10-29), for the maintainers; answers OQ-MF-18
 - Date: 2026-10-29
 - Deciders: maintainers (drafted by the compute and models area)
-- Related: RFC-0041 §2 (`RangeSource`, Hub sources), §7.2 (header reads), §7.3 (ranged chunk fetch), §7.5 (credentials), Testing and validation; RFC-0001 §11 (the daemon's runtimes); RFC-0001 §4.1 (crate table), §4.2 rules 3 and 6; ADR-0018 §3 (dependency policy); COMP-E10-T14, COMP-E12-T02
+- Related: RFC-0041 §2 (`RangeSource`, Hub sources), §7.2 (header reads), §7.3 (ranged chunk fetch), §7.5 (credentials), Testing and validation; RFC-0001 §8.1 (async domains); RFC-0001 §4.1 (crate table), §4.2 rules 3 and 6; ADR-0018 §3 (dependency policy); COMP-E10-T14, COMP-E12-T02
 
 ## Context
 
@@ -15,7 +15,7 @@
   - 416 or a length mismatch reported as `Integrity`.
 - COMP-E10-T14 builds the Hub range source, and COMP-E12-T02's Hub client builds on it. Both wait on this choice (`plan/open-questions.md`, OQ-MF-18).
 - `RangeSource::read_at` is **blocking** (`crates/manifest/src/range.rs`). `manifest`'s `FileSource` and its recorded-fixture `Replay` implement it.
-- RFC-0001's runtime table puts Hub range reads on the daemon's `bulk` runtime, a multi-thread async runtime, with a blocking pool for hashing.
+- RFC-0001 §8.1 puts Hub range reads on the daemon's `bulk` runtime, a multi-thread async runtime, with a blocking pool for hashing.
 - RFC-0001 §4.1's crate table gives `store` the Hub range reads. `store` is layer 2 and depends on `manifest`, `io` and `net`.
 - RFC-0001 §4.2 rule 3 bars `tokio` from `io`. Rule 6 lets exactly one crate reach each external system listed in `xtask/src/check_deps/policy.rs`'s `SYSTEMS`, following edges through external packages. An entry marked `direct_only` counts a member's direct edges only; today only the OS random source's entry (`getrandom`) uses it. No HTTP client is listed.
 - A new direct dependency needs a maintainer's approval (AGENTS.md); `cargo xtask ci dep-diff` lists them.
