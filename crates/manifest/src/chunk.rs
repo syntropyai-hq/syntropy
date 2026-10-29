@@ -67,6 +67,15 @@ pub const HEADER_BYTES: usize = 64;
 /// One record's length in bytes.
 pub const RECORD_BYTES: usize = 48;
 
+/// The domain [`ChunkTable::shape_digest`] hashes first.
+pub const SHAPE_DOMAIN: &[u8] = b"syntropy/chunk-table-shape/v1";
+
+/// A chunk's `ChunkId`: the BLAKE3 of its bytes (RFC-0041 §6.2; ADR-0016 decision 1).
+#[must_use]
+pub fn chunk_id(bytes: &[u8]) -> Blake3 {
+    Blake3(*blake3::hash(bytes).as_bytes())
+}
+
 /// One chunk of a file: where it is and whether it lies in the header region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Chunk {
@@ -459,6 +468,27 @@ impl ChunkTable {
             file_len,
             records,
         })
+    }
+
+    /// The digest of the table's shape: its `FileDigest`, its file length, its record count, and
+    /// each record's offset, length and header flag, in order, after [`SHAPE_DOMAIN`]. IDs and evidence are
+    /// not in it, so a table that commits more IDs, or stronger evidence for them, keeps its
+    /// digest. A sparse blob's inventory records it, so its bitmap is read only against a table
+    /// whose chunk `i` is the same range of the same file (RFC-0041 §4.1, §4.2).
+    #[must_use]
+    pub fn shape_digest(&self) -> Blake3 {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(SHAPE_DOMAIN);
+        hasher.update(&self.digest.0);
+        hasher.update(&self.file_len.to_le_bytes());
+        hasher.update(&(self.records.len() as u64).to_le_bytes());
+        for record in &self.records {
+            let c = record.chunk;
+            hasher.update(&c.offset.to_le_bytes());
+            hasher.update(&c.len.to_le_bytes());
+            hasher.update(&[u8::from(c.header)]);
+        }
+        Blake3(*hasher.finalize().as_bytes())
     }
 
     /// Whether the table's records are exactly `chunks`: the same offsets, lengths and header

@@ -1260,6 +1260,15 @@ The review of #1950 (COMP-E10-T11) found that no task sets `TensorRecord::hash`.
 | COMP-E12-T04 sets `TensorRecord::hash` from `ChunkTable::tensor_hash` once every covering chunk is committed on the node, and leaves it `None` until then. COMP-E12-T04 → COMP-E10-T07 | COMP-E12-T04 | R9, R6 | on one node in M1a, chunk IDs are committed at local registration (COMP-E11-T14) or by a verified fetch, and the fetch planner runs before `Packing` reads the hashes. COMP-E10-T07 is M0a and cannot depend on COMP-E10-T11 (M1a), and at header time no chunk is committed. The edge M1a → M0a keeps R6. COMP-E12-T04 already depends on COMP-E10-T11 |
 | COMP-E12-T06 sets the hash when a node fills its table copy from `ChunkIdsCommitted` | COMP-E12-T06 | R9 | in a cluster, §6.3's commitment is where IDs become committed. COMP-E12-T06 reaches COMP-E12-T04 through COMP-E12-T05, so it needs no new edge |
 
+## COMP-E11-T02's `doctor` flag moves to PROD-E9-T02 (2026-10-29)
+
+COMP-E11-T02 (M1a) asked that an exFAT volume switch to chunk-file mode "and `doctor` flags it". The doctor framework exists (PROD-E9-T01), but no check covered chunk-file mode, and the storage checks STO-001 to STO-004 are PROD-E9-T02's (M1b), which an M1a task cannot depend on. So the flag is split: the store records the mode with the probe's reason in `v1/storage-mode.json` (`read_storage_mode`), and the check that shows it is a new storage check, STO-005, built with the other STO checks.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E11-T02's "`doctor` flags it" becomes "the store reports the mode with the probe's reason for `doctor` (STO-005, PROD-E9-T02)" | COMP-E11-T02 | R9 | the check needs PROD-E9-T02's storage checks, M1b |
+| PROD-E9-T02 gains STO-005 (STO-001–005) and the criterion "STO-005 warns for each writable store root whose start-up probe found no sparse files, naming the root and the probe's reason as the root's `v1/storage-mode.json` records them, read without the writer lock, and reports nothing for a root of sparse blobs". PROD-E9-T02 → COMP-E11-T02; RFC-0053 §5.2 gains the STO-005 row with a dated note | PROD-E9-T02 | R9 | the check reads the probe's record, which COMP-E11-T02 writes. M1b → M1a, and COMP-E11-T02 does not reach PROD-E9-T02, so the edge adds no cycle |
+
 ## Hub-fetched chunk IDs reach the chunk table (2026-10-29)
 
 The review of #1963 found two gaps next to COMP-E12-T04's `TensorRecord::hash` criterion. No M1a task writes a Hub-fetched chunk's `ChunkId` into the chunk table, so on one node a model pulled from the Hub would keep every tensor hash at `None`. And COMP-E11-T05 did not say what a pack build does with a group whose hash is still `None`.
