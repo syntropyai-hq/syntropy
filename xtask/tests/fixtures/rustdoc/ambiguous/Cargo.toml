@@ -1,0 +1,11 @@
+# A rustdoc fixture: a crate whose doc comment links to a name that is both a module and a function.
+# xtask's registry tests run the `lint` job's `rustdoc` step on it and expect it to fail
+# (QUAL-E1-T31).
+[workspace]
+
+[package]
+name = "rustdoc-ambiguous"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

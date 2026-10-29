@@ -60,6 +60,9 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+# Structured events for async and other non-hot code (RFC-0053 §4.1). Hot threads never use it
+# (the `hot-threads` lint step). Without default features: no `attributes` proc macro.
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 # The config snapshot swap with lock-free readers (RFC-0054 §9.1).
 arc-swap = "1.9.3"
 bitflags = { version = "2", features = ["serde"] }
@@ -67,11 +70,21 @@ bitflags = { version = "2", features = ["serde"] }
 # in `syntropy-net`. `pure` is the portable Rust code: no C or assembly to build, and the same
 # digest on every target.
 blake3 = { version = "1.8.7", default-features = false, features = ["pure"] }
+# The build-time driver that assembles `syntropy-kernels-cpu`'s SME2 unit (`src/sme2/*.S`) with
+# the platform assembler (ADR-0402 item 3; RFC-0040 §7.3). A build dependency only, of that crate
+# alone; nothing it builds runs outside AArch64 macOS, Linux and Android.
+cc = "1.9.0"
 # `SimEntropy`'s seeded ChaCha20 stream in `testkit` (RFC-0060 §2.1 rule T2). `rng` alone: the
 # block generator over `rand_core`, without the cipher traits.
 chacha20 = { version = "0.10.2", default-features = false, features = ["rng"] }
 # Deterministic CBOR for the control envelope (RFC-0031 §9.1, ADR-0305), `syntropy-net` only.
 ciborium = "0.2.2"
+# The CLI's command tree (RFC-0051 §1), `syntropy-cli` only. MIT OR Apache-2.0. The lock file
+# already held this version, through iroh. Default features off: no colour, terminal-width or
+# environment-variable support in clap itself; the CLI decides colour (RFC-0051 §2.2). `derive`
+# for the tree, `help`, `usage` and `error-context` for its messages, `suggestions` for "did you
+# mean".
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 # CRC32C (Castagnoli) for frame headers and payloads (RFC-0031 §6.1), with SSE4.2 or Armv8 CRC
 # instructions picked at run time and a table fallback; also the beacon, invite and log codecs.
 crc32c = "0.6.8"
@@ -79,6 +92,18 @@ crc32c = "0.6.8"
 # key types use, so the two share one implementation. Pinned exactly: which keys and signatures
 # it accepts is part of the protocol, so a new version is a reviewed change.
 ed25519-dalek = "=3.0.0"
+# `Full`, the whole-body type the API's JSON responses use, and `BoxBody`, which lets later routes
+# stream, `syntropy-api` only. MIT. The lock file already held this version, through iroh.
+http-body-util = { version = "0.1.5", default-features = false }
+# The HTTP API's server (RFC-0050 §1.1, PROD-E2-T01), `syntropy-api` only: HTTP/1.1 and HTTP/2
+# connections over any byte stream, on the daemon's `ctl` runtime. MIT. The lock file already held
+# this version, through iroh. Only the server side and the two protocols: no client, no FFI.
+hyper = { version = "1.12.0", default-features = false, features = ["http1", "http2", "server"] }
+# hyper's tokio glue (`TokioIo`, `TokioExecutor`) and its `auto` connection builder, which serves
+# HTTP/1.1 and HTTP/2 with prior knowledge on one listener by reading the HTTP/2 preface (RFC-0050
+# §1.1), `syntropy-api` only. MIT. The lock file already held this version, through iroh. No
+# client, proxy or graceful-shutdown features.
+hyper-util = { version = "0.1.21", default-features = false, features = ["server-auto", "tokio"] }
 # iroh, ADR-0011's transport library, linked only by `syntropy-net` (RFC-0001 §4.2 rule 6). Pinned
 # exactly because this is the version the daemon builds on: DIST-E7-T23's endpoint and the field
 # probe now, DIST-E7-T03's QUIC backend later, so a bump is a reviewed change. rust-version 1.91,
@@ -129,6 +154,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 # type everywhere, whatever else is in the build. Code whose output must not depend on document
 # order sorts at the boundary (RFC-0060 §2.4 rule T4).
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
+# SHA-256, for `FileDigest` (RFC-0041 §1; ADR-0411 decision 1), `manifest` only: the Hub's object
+# ID is the SHA-256 of the file, and a local file is hashed the same way. Pure Rust; already in the
+# lock through ed25519-dalek.
+sha2 = { version = "0.11.1", default-features = false }
 smallvec = { version = "1", features = ["serde"] }
 # The explicit-state model check of election, lease, replication and heal (RFC-0032 Testing,
 # DIST-E10-T08). A dev-dependency of `cluster` only.
@@ -142,6 +171,13 @@ subtle = "2.6.1"
 syn = { version = "3.0.9", default-features = false, features = ["derive", "parsing", "printing", "proc-macro"] }
 # Certificate validity times, the type rcgen takes (PROD-E5-T03).
 time = { version = "0.3.55", default-features = false, features = ["std"] }
+# The tokenizer engine of `syntropy-text` (RFC-0043 §8.2, ADR-0431 decision 1; COMP-E17-T02),
+# Apache-2.0. Default features off: `onig` links the Oniguruma C regex library, `esaxx_fast` builds
+# C++ through `cc`, and `progressbar` serves training only. `fancy-regex` is its pure-Rust regex
+# backend, so the engine builds for every ADR-0020 target without a C toolchain. Pinned exactly:
+# a new version can change tokens, so a bump is a reviewed change that reruns the tokenizer
+# conformance suite (COMP-E17-T06).
+tokenizers = { version = "=0.23.2", default-features = false, features = ["fancy-regex"] }
 # The `net` domain's runtime (RFC-0031 §4.4): `syntropy-net` runs its QUIC data plane on a
 # single-threaded tokio runtime of its own (DIST-E7-T03, ADR-0012), and its TCP fallback runs its
 # listener and each channel's driver on it (DIST-E7-T05); its endpoint tests drive iroh, whose API
@@ -155,13 +191,21 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring
 # TOML reading only (no writer): the RFC-0042 tolerance tables, `numerics/tolerances-v<N>.toml`,
 # the rig inventory `bench/lab/rigs.toml` (RFC-0061 §6.3) and fault plans (RFC-0060 §9.2).
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
+# Format-preserving TOML edits for `config set`, `unset` and `edit` (RFC-0054 §10.2), `config`
+# only: comments, ordering and spacing survive a write. Already in the lock through
+# proc-macro-crate; `display` adds `toml_writer`, which `toml` already links.
+toml_edit = { version = "0.25.17", default-features = false, features = ["parse", "display"] }
 trybuild = "1.0.122"
 # Reads a stored CA certificate's public key and extensions, and checks its self-signature with
 # ring (`verify`) (PROD-E5-T03). rcgen links the same version for its `x509-parser` feature.
 x509-parser = { version = "0.18.1", default-features = false, features = ["verify"] }
+# YAML 1.2 reading for `cargo xtask workflows`, the workflow security lint of RFC-0062 §12.4
+# (QUAL-E1-T09), xtask only. No `encoding` feature: the workflows are UTF-8.
+yaml-rust2 = { version = "0.13.0", default-features = false }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
-# zstd level 3 for control messages over 64 KiB (RFC-0031 §9.1), `syntropy-net` only. It builds
-# the bundled C library (BSD-3-Clause), so the build needs a C compiler.
+# zstd level 3 for control messages over 64 KiB (RFC-0031 §9.1) in `syntropy-net`, and for the
+# diagnostic bundle's `tar.zst` (RFC-0053 §6) in `syntropy-daemon`. It builds the bundled C
+# library (BSD-3-Clause), so the build needs a C compiler.
 zstd = { version = "0.14.3", default-features = false }
 
 # Build profiles (RFC-0062 §4.4, RFC-0060 §1.3). `cargo xtask build --profile <p>` builds each

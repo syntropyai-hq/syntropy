@@ -158,8 +158,8 @@ pub trait KernelProvider: Send + Sync {
 #### 2.2 Supporting types
 
 ```rust
-pub struct ProviderId(pub &'static str);           // "cuda", "metal", "cpu", "hip", "vulkan", "ggml-cuda", …
-pub struct ProviderBuild { pub version: u32, pub module: Option<Blake3>, pub toolchain: SmallVec<[(&'static str, String); 3]>, pub driver: Option<String> }
+pub struct ProviderId(pub Cow<'static, str>);      // "cuda", "metal", "cpu", "hip", "vulkan", "ggml-cuda", …
+pub struct ProviderBuild { pub version: u32, pub module: Option<Blake3>, pub toolchain: SmallVec<[(Cow<'static, str>, String); 3]>, pub driver: Option<String> }
 pub enum MemoryDomain { Cuda, Hip, Metal, Vulkan, Host, Ggml(GgmlBackend) }
 
 /// One device as a provider sees it. The probe (RFC-0010) merges records from several
@@ -253,6 +253,8 @@ pub trait HostRegistrar: Send {
 bitflags! { pub struct HostRegFlags: u8 { const DMA = 1; const MAPPED = 2; } }   // the tier manager maps its Registrations onto these
 pub struct Segment { pub reservation: u64, pub offset: Bytes, pub bytes: Bytes, pub handle: u64 }
 ```
+
+*Note 2026-10-23 (#1525):* `ProviderId` and the toolchain names in `ProviderBuild` were `&'static str`. §6.5 postcard-encodes `SelectionKey` and `SelectionEntry`, which hold them, to `<state>/kernels/selection.v1`. Decoding a `&'static str` needs a buffer that lives for the whole program, so every cache load would have leaked one. `Cow<'static, str>` decodes owned, and a provider still names itself with a literal without allocating. A `Cow` cannot be `Copy`, because its owned form holds a `String`, so `ProviderId` departs from RFC-0001 §5's default that IDs are `Copy`: it is `Clone` only. RFC-0001 §5.12 makes the same change to `Error::context` (RFC-0001 §18.32). COMP-E13-T15 makes the change in code.
 
 *Revised 2026-10-22 (ADR-0405):* `DeviceClass`, `CpuIsa` and `DeviceFeatures` live in `syntropy-core`, and `kernels` re-exports them (PLC-E1-T16). RFC-0010 §1.2 had its own `DeviceClass` with other variants, and now points here. `AppleFamily` is renamed `AppleGpuFamily`, the name `core` already uses. `Npu` comes from RFC-0010. `ProviderDevice` is unchanged.
 
@@ -924,6 +926,12 @@ The CPU provider is also a correctness tool: `kernels::reference` is separate co
 - **Kernels.** `prepare` looks the op up in the ISA's dispatch table and returns `PreparedOp::with_handle`, whose handle is the kernel's index; `kernels` gained the handle field for this. `query` returns `None`, because each kernel task declares its op's capabilities. `OpArgs` is still COMP-E1-T05's placeholder, so a launch runs with `OpArgs::none()`, and tests add stand-in kernels with `CpuProvider::with_kernel`.
 - **Health.** A kernel's error makes the device's health sticky with that error's code, and every later call fails with class `Device`. A caller's error that no §13 code names, such as a handle from another device or a full ring, is class `Internal` with the unassigned code 0.
 
+*Note 2026-10-25 (COMP-E3-T07):* the SME2 assembly unit, as built in `syntropy_kernels_cpu::sme2`.
+- **Build.** `build.rs` assembles `src/sme2/tiles.S` and `src/sme2/harness.S` through the `cc` crate for AArch64 macOS, Linux and Android only, and sets `cfg(syntropy_sme2)` there. Every other target builds no assembly; its hosts never report SME2.
+- **Who calls the routines.** Only the holder of an `Sme2` token. `Sme2::for_level` gives one only for `Arm92Sme2` on a host whose detection inputs, read once per process with no kill switch, report SME2. `DispatchTable::for_level` stores the token, so a table below `Arm92Sme2`, which the `sme2` kill switch or a host without SME2 yields, has none.
+- **Routines.** `syn_sme2_f32_tile` (one `FMOPA` per k step) and `syn_sme2_i8_tile` (one four-way widening `SMOPA` per group of four k values, exact `i32` sums) each compute a tile of up to 2·SVL_s × 2·SVL_s outputs in ZA tiles 0–3, with predicates at the edges. Each saves d8–d15, which `smstart` and `smstop` zero, and uses no other callee-saved register. The F32 tile equals a scalar chain of fused multiply-adds over k in increasing order bit for bit. `Sme2::gemm_f32` and `Sme2::gemm_i8` tile a whole product and allocate their packed panels; the `Gemm` op kernel will pack into its workspace instead.
+- **ZA lazy saves.** A leaf routine cannot call `__arm_tpidr2_save`. Rust callers hold no ZA state, so TPIDR2_EL0 is zero on entry. If it is not, the routine returns 1 without touching memory or ZA, and the wrapper reports class `Internal`.
+
 #### 7.4 HIP (Tier 2; M3)
 
 - **Binding.** `libamdhip64` loaded dynamically; code objects for every gfx target on AMD's ROCm support list for the pinned release (RDNA3, RDNA4, CDNA2 and newer), plus Strix Halo's iGPU where AMD lists it, embedded in `libsyntropy_provider_rocm` (§10). Launch with `hipModuleLaunchKernel` and the shared `params.h`.
@@ -982,7 +990,7 @@ ADR-0002 gives the ggml provider two jobs: coverage on every backend ggml suppor
 
 #### 8.1 What is linked, and how
 
-- **Only the tensor library.** `vendor/ggml` holds ggml's `ggml/` tree (ggml-base, the CPU backend and the GPU backends) at the commit in `third_party/ggml.lock` (RFC-0062 §4.2). Its model library is never vendored or linked (ADR-0002).
+- **Only the tensor library.** `third_party/ggml/` holds ggml's `ggml/` tree (ggml-base, the CPU backend and the GPU backends) at the commit in `third_party/ggml.lock` (RFC-0062 §4.2). Its model library is never vendored or linked (ADR-0002). *Note 2026-10-23:* this bullet said `vendor/ggml`; RFC-0062 §4.2, the CI path rules and the repository use `third_party/ggml/`, which is the path.
 - **Statically, with one backend per artefact.** ggml is built without its dynamic-backend loader. Each artefact links its own static copy of ggml-base together with the backends it serves:
   - the core: the CPU backend, plus the Metal backend on macOS;
   - each provider library: that module's GPU backend (CUDA, HIP, Vulkan or SYCL);
@@ -1300,6 +1308,8 @@ Codes are `(Domain::Kernels, n)` and never reused (RFC-0001 §10.4).
 | 15 | `NoCertifiedCandidate` | `Unsupported` | candidates exist for (op, shape) on a device but none holds a certificate (§6.2) | as code 1; the dashboard says the kernel exists but is uncertified on this device class |
 | 16 | `ProviderPanicked` | `Internal` | a provider-library thunk caught a panic (§10.4) | the provider reports `Sticky`; the runner exits and restarts |
 | 17 | `ManifestInvalid` | `Integrity` | the `ConformanceManifest` is missing, or not signed by a key the build's profile accepts | ggml ops plus the CPU provider's native ops for what ggml cannot run, on single-device shapes, with the F32 wire, labelled uncertified (§6.2; ADR-0602 decision 6) |
+
+*Note 2026-10-28 (COMP-E13-T15): the domain's range.* `Domain::Kernels` holds 0x0001–0x00FF, so each code above keeps its published number: `(Domain::Kernels, 1)` is `OpUnsupported`, and so on to 17. `core::error::codes::kernels` lists them. The faults `exec` detects are not kernel faults, so they take a domain of their own, `Domain::Exec` (RFC-0012 §13, note of the same date). How these codes reach an API client is RFC-0050 §12.1's note of the same date.
 
 Fallback chains are declared paths (RFC-0001 §10.2): native kernel → ggml op on the same device → the op on the node's CPU device (level F). None of them changes the numerics contract, because every candidate passed the same parity gate.
 

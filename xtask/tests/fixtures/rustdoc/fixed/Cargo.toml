@@ -1,0 +1,11 @@
+# A rustdoc fixture: the two crates above with their links fixed.
+# xtask's registry tests run the `lint` job's `rustdoc` step on it and expect it to pass
+# (QUAL-E1-T31).
+[workspace]
+
+[package]
+name = "rustdoc-fixed"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

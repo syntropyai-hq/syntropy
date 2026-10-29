@@ -55,6 +55,12 @@ The second is ruled out by RFC-0001 invariants 1–2. This RFC makes sure the AP
 - **Local socket** (`api.local_socket`, default on): a Unix-domain socket at `<runtime dir>/api.sock` (mode 0600, in a 0700 directory) or a named pipe `\\.\pipe\syntropy-<sid>-api` with a same-SID ACL on Windows. The CLI prefers it. The peer's identity is checked with the OS peer-credential call, so the local socket needs no API key even when the HTTP listener does.
 - The same routes are served on both. The dashboard's static assets are served at `/` on the HTTP listener (RFC-0051 §5.1).
 
+*Note 2026-10-27 (PROD-E2-T01, as built):* how the listeners start.
+- **A missing address family.** A loopback listener whose address family the host lacks is skipped with a warning when another `api.bind` listener binds. Its bind fails with "address not available" or "address family not supported": `[::1]` in a container without IPv6, or on a kernel booted with `ipv6.disable=1`. So the default `["127.0.0.1:7433", "[::1]:7433"]` still starts on `127.0.0.1` there. Any other bind error, and a start where no listener binds, fails the start.
+- **A stale local socket.** A socket file left by a daemon that was killed without its cleanup is replaced at start. It is replaced only when it refuses connections and is a socket owned by the daemon's user, read without following a link. A socket that accepts a connection belongs to a running daemon, and the start fails.
+- **Header timeout.** Each HTTP/1 connection must send a request's headers within 30 s [target], a chosen budget.
+- **Not served yet.** Listeners beyond loopback, which need TLS and keys (§11.1), are refused at start until PROD-E5-T06 and PROD-E5-T01 serve them.
+
 #### 1.2 Route table
 
 | Surface | Method and path | Purpose | Milestone |
@@ -203,11 +209,21 @@ Steps 1–9 run once per request on the `ctl` runtime. Step 10 runs per `TokenFr
 - `repetition_penalty` (§3.4) counts **prompt plus emitted tokens**. The prompt is the full rendered prompt, including earlier turns restored from a session or prefix cache.
 - The basis is the same for a fresh sequence, for each choice of `n > 1` (each choice keeps its own emitted counts over the shared prompt), for a resumed session, and for a sequence that recovery re-prefills or migrates. Ingress's transcript is what the tail rebuilds the counts from, so a recovered sequence draws from the same distribution it would have drawn from without the failure.
 
+*Note 2026-10-27 (PROD-E2-T02, as built).* `syntropy_api::pipeline` holds the pipeline as a library layer below the HTTP server. A route runs stages 1 and 2, hands the `GenerateRequest` to `Ingress::start` (stages 3 to 9), and polls the `Generation` it returns with the shape's encoder as its `EventSink` (stages 10 and 11). The build fixes what §2.1 and §2.2 leave open:
+- **Seams.** Stages 3, 5, 7 and 8, the detokenizer and the stop matcher sit behind the `Stages`, `Detokenize` and `StopMatch` traits, which their own tasks implement (PROD-E2-T08, PROD-E3-T10, PLC-E6-T19, PROD-E2-T03). Stage 4's overrides (PROD-E1-T10), stage 6's constraint (PROD-E3-T05) and §2.3's range check (PROD-E2-T20) come with their tasks.
+- **M0 fields.** `GenerateRequest` and `GenEvent` hold the fields whose types exist at M0a. `tools`, `tool_choice`, `parallel_tool_calls`, `constraint`, `reasoning`, `overrides`, `ContentPart::Media`, `TextDelta::logprobs`, the `fidelity` reports, `Loading` and `Recovered` arrive with the tasks that build their types. `n > 1` fails with `Unsupported` until PROD-E2-T06.
+- **`deadline`** is a duration from the request's arrival, not an `Instant`. The pipeline reads time only through its `Clock` (RFC-0060 §2.1 rule T1), and the value becomes `SequenceLimits::deadline` unchanged.
+- **Ending.** Each sequence ends with one `Release`, and ingress drops its transcript then. A matched stop string sends `Cancel` first, and so does a client gone. The pipeline checks the client before every write, so the `Cancel` goes before the next write would have, and a failed write counts as a client gone. A dropped `Generation` that has not ended does the same. A tail-reported error (`FinishReason::Error`) becomes `GenEvent::Failed` with `ApiError::Sequence` and a `Release`, with no `Cancel`.
+- **Rings.** A `Cancel` or `Release` that finds `local_sequences` full waits in order and is sent first on the next ring call; an `Open` that finds it full fails with `Capacity`. Nothing waits for room, so the owner of the ingress calls `flush` until no control waits. Entries for a sequence that is not live are dropped and counted.
+- **Sequence IDs.** One `SequenceIdMinter` per node per boot mints every `SequenceId` (RFC-0001 §5.9), and every ingress on the node, one per runner, shares it. After `n = u32::MAX` it refuses with `SequenceIdsExhausted` and never wraps.
+
 #### 2.3 Token IDs are range-checked at ingress
 
 Token IDs reach unsafe device code: the sampler indexes per-sequence count tables in device memory by token ID (RFC-0012 §8.1), and `RowGather` indexes embedding rows (RFC-0040 §3.1). An ID at or above a table's size would be an out-of-bounds read or, through the penalty tables, an out-of-bounds write. So ingress validates every token ID a request can carry, in one place, before routing:
 - prompt `tokens` on the native API, teacher tokens on the parity endpoint (§13.6), `logit_bias` keys, stop token IDs, and the token set of a compiled grammar;
 - each ID must be below `vocab_limit = min(embedding rows, LM-head rows, sampler table size)`, which the model's manifest carries (RFC-0043 §5.2 checks at census that the tokenizer's largest ID and every special-token ID are below the vocabulary).
+
+*Note (2026-10-27):* the list also covers a token-array `prompt` on legacy `/v1/completions` (§3.5) and token-array `input` on embeddings (§14), which take token IDs from the client the same way. The validator is one function; PROD-E2-T20 builds it, and each endpoint task tests it through its own route.
 
 A request with an ID outside the range fails with 400 `token_id_out_of_range`, naming the field, the first offending position and `vocab_limit`. Nothing is clamped or dropped silently. The check costs one pass over the IDs and sits inside the pre-`SequenceOpen` budget (Performance). Debug kernels keep bounds assertions as a second line (RFC-0040); they are not the defence.
 
@@ -872,7 +888,7 @@ Errors become the request shape's own error body:
 | a token ID at or above the model's `vocab_limit` in `tokens`, teacher tokens, `logit_bias` or stop IDs (§2.3) | `InvalidRequest` | 400 | `invalid_request_error` / `token_id_out_of_range` | `invalid_request_error` |
 | gated model without Hub acceptance, or custom licence not accepted on this node (§4.1) | `InvalidRequest` | 400 | `invalid_request_error` / `licence_acceptance_required` | `invalid_request_error` |
 | feature, content type, tool or endpoint not supported | `Unsupported` | 400 (404 for endpoints) | `invalid_request_error` / `unsupported_feature`, `unsupported_content_type`, `unsupported_tool`, `unsupported_endpoint` | `invalid_request_error` (`not_found_error` for endpoints) |
-| exact request whose only instances carry instance-wide approximate knobs | `InvalidRequest` | 400 in vendor shapes (409 in the native API) | `invalid_request_error` / `fidelity_conflict`, naming the knobs | `invalid_request_error` |
+| exact request whose only instances carry instance-wide approximate knobs; approximate request that leaves out a plan's knob (RFC-0054 §7, option (c)) or whose knobs hold a bit this version cannot name (revised 2026-10-23, note below) | `InvalidRequest` | 400 in vendor shapes (409 in the native API) | `invalid_request_error` / `fidelity_conflict`, naming the knobs | `invalid_request_error` |
 | knobs named without `fidelity: "approximate"`; `BenchControls` without `debug.bench_api` | `InvalidRequest` | 400 | `invalid_request_error` / `knobs_need_approximate`, `debug_api_disabled` | `invalid_request_error` |
 | model unknown | `InvalidRequest` | 404 | `invalid_request_error` / `model_not_found` | `not_found_error` |
 | model does not fit anywhere, even after evicting idle instances | `Capacity` | 400 | `invalid_request_error` / `model_does_not_fit` | `invalid_request_error` |
@@ -917,6 +933,10 @@ Errors become the request shape's own error body:
 - *Note 2026-10-22 (#1698):* a join with a revoked invite token, `JoinReject::Revoked`, had neither a code nor a row. RFC-0030 §10 now gives it `TokenRevoked` (0x010F, `Auth`), and the join-refusal row above maps it with `TokenExpired` and `TokenExhausted`, to 403 on the native route. `KeyholderRequired`'s row rests on RFC-0034 §8.3's note of this date, which says when it is raised.
 - **`DuplicateCommand` (0x0305) never appears in `Error::code`.** The coordinator answers a command whose `CommandId` it has seen with the original result (RFC-0032 §6.3), so the code names the dedup, not an error a caller receives.
 - Every other code in these domains maps through a whole-class row above (`Link`, `Device`, `Timeout`, `Correctness`, `Internal`), or through the rule just above for `Integrity`, `Drift` and `Transient`. The one `Cancelled` code, `IngressLost` (0x0404), has no response to carry it, because the client's connection is already gone (RFC-0033 §13).
+- *Note 2026-10-28 (COMP-E13-T15):* the `Kernels` domain (RFC-0040 §13) and the `Exec` domain (RFC-0012 §13) follow the same rules.
+  - Their codes are raised inside a node, and the node handles them there. Selection, the module loader and the tier manager answer the `Unsupported` and `Capacity` ones by choosing another candidate or domain, or by re-planning. None of these is ever the error of a request, so they are exempt:
+  - `Kernels`: 0x0001 `OpUnsupported`, 0x0002 `ModuleMissing`, 0x0004 `ModuleAbi`, 0x0005 `DriverTooOld`, 0x0007 `CaptureFailed`, 0x0009 `AllocFailed`, 0x000A `RegisterFailed`, 0x000C `GgmlImportFailed`, 0x000D `AmxDenied`, 0x000F `NoCertifiedCandidate`;
+  - The other codes map through a whole-class row: `ParityFailed` (`Correctness`), `DeviceSticky` (`Device`), `DoorbellTimeout` (`Timeout`), and `WorkspaceExceeded` and `ProviderPanicked` (`Internal`). `ModuleIntegrity` and `ManifestInvalid` follow the rule for `Integrity`. Every `Exec` code maps the same way: `RingClosed`, `StepStalled` and `PoolBarrierMissed` (`Internal`).
 
 The Anthropic shape uses 529 for overload, as the published API does, because Anthropic SDKs retry it. The OpenAI shape uses 429 and 503, which OpenAI SDKs retry.
 
@@ -924,6 +944,8 @@ The Anthropic shape uses 529 for overload, as the published API does, because An
 - **No 409 in vendor shapes.** A client error that a retry cannot fix uses a 4xx status other than 408, 409 or 429 there. `fidelity_conflict` and `session_mismatch` are 400, and `model_does_not_fit` and `placement_infeasible` are already 400. Server-side errors whose retry hint is `Never`, such as `internal_error` (500) and `no_conforming_instance` (503), keep their status, and `x-should-retry: false` (next item) stops the SDK retries. The native API keeps 409 for conflicts, because its clients follow the `retry` hint in the body.
 - **The header on every error, in every shape.** `x-should-retry: false` when `Error::retry` is `Never`. `x-should-retry: true` on `model_loading`, `instance_unavailable`, `admission_queue_full` and `rate_limited`, together with `Retry-After`.
 - **A conformance case** counts the SDK's attempts per error code: one attempt for every non-retryable code, and the SDK's configured maximum for retryable ones.
+
+**`fidelity_conflict`** (note 2026-10-23, from the review of #1771). `resolve_request` (RFC-0054 §7) returns it in three cases, and §12.1's row now names all three: an exact request whose only instances carry instance-wide approximate knobs; an approximate request that leaves out a knob the instance's plan applies to every sequence (RFC-0054 §7's option (c)); and a request on a plan that holds a knob bit this version cannot name, which it treats as instance-wide and names in hex. Each case is `InvalidRequest`, code 7, 400 in vendor shapes and 409 in the native API, and routing tries another candidate on it.
 
 #### 12.2 After the first token
 

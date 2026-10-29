@@ -8,10 +8,16 @@ publish.workspace = true
 [dependencies]
 bitflags.workspace = true
 serde.workspace = true
+# The `syntropy tune` record in the state directory (`tune`, RFC-0020 §9.1 step 3).
+serde_json.workspace = true
 smallvec.workspace = true
 syntropy-core = { path = "../core" }
 syntropy-io = { path = "../io" }
+syntropy-kernels = { path = "../kernels" }
+syntropy-spsc = { path = "../spsc" }
 
 [dev-dependencies]
 proptest.workspace = true
 serde_json.workspace = true
+# `CountingAlloc`, for the test that the statistics ring allocates nothing in steady state.
+syntropy-testkit = { path = "../testkit" }

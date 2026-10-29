@@ -1,21 +1,118 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Capability records, the probe's measurement output: RFC-0010 §1.3's additions to
-//! RFC-0001 §5.2's `CapabilityProfile`, `DeviceCaps`, `StorageCaps` and `LinkCaps`, and the
-//! types they use.
+//! Capability records, the probe's measurement output: RFC-0001 §5.2's `CapabilityProfile`,
+//! `DeviceCaps` and `StorageCaps` ([`CapabilityProfile`], [`DeviceCaps`], [`StorageCaps`];
+//! PLC-E1-T17), RFC-0010 §1.3's additions to them and to `LinkCaps`, and the types they use.
 //!
-//! The RFC-0001 base records are not here yet; each `*Ext` record is the set of fields
-//! RFC-0010 adds to its base, with serde defaults, ready to be embedded in it.
+//! Each base record holds the fields RFC-0010 adds as one `ext` field with serde defaults, as
+//! [`DeviceInfo`](super::DeviceInfo) holds `DeviceInfoExt`. In a self-describing format such as
+//! JSON, a record written before an addition, or carrying fields this build does not know, still
+//! decodes. Postcard, which the command channel uses, is positional: it decodes only what the
+//! same layout wrote, so a probe process and its daemon pair only as the same build (ADR-0015
+//! item 1). `LinkCaps` is in the link module.
 
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use crate::ids::{Blake3, DeviceId, LinkId, NetMedium, TierId};
+use crate::dtype::DType;
+use crate::ids::{Blake3, DeviceId, LinkId, NetMedium, NodeId, TierId};
 use crate::measured::Measured;
 use crate::quant::QuantScheme;
-use crate::units::{Bytes, BytesPerSec, Nanos};
+use crate::units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};
 
 use super::inventory::NodeInventory;
+use super::link::LinkCaps;
+
+/// Measured numbers for one node's devices, storage and outbound links (RFC-0001 §5.2): what
+/// the startup probes produce and live timings refine. `ProbeResult` carries one from a probe
+/// process to its daemon. Owner: RFC-0010.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapabilityProfile {
+    /// The node it describes.
+    pub node: NodeId,
+    /// Bumped on each change; the coordinator takes a `ReportProfile` only if newer
+    /// (RFC-0010 §1.4).
+    pub version: u64,
+    /// One record per device.
+    pub devices: Vec<DeviceCaps>,
+    /// One record per storage tier.
+    pub storage: Vec<StorageCaps>,
+    /// The links whose source is on this node.
+    pub links: Vec<LinkCaps>,
+    /// RFC-0010 §1.3's additions.
+    #[serde(default)]
+    pub ext: CapabilityProfileExt,
+}
+
+/// One device's measured rates (RFC-0001 §5.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeviceCaps {
+    /// The device.
+    pub device: DeviceId,
+    /// W_eff per (tier, kernel class): weight bytes consumed per second by the kernel that will
+    /// run, not copy bandwidth (cost model §3.2, §5.3). A per-class summary: `ext.quant_bw`,
+    /// keyed by quant scheme too, is the solver's source.
+    pub tier_bw: Vec<(TierId, KernelClass, Measured<BytesPerSec>)>,
+    /// F_eff per (op class, dtype), for prefill, verify windows and n*.
+    pub throughput: Vec<(OpClass, DType, Measured<FlopsPerSec>)>,
+    /// The backend's per-step fixed cost on this device (launch, sync), fitted as an intercept
+    /// (cost model §3.4).
+    pub t_fixed: Measured<Nanos>,
+    /// Pinned and pageable host transfers over PCIe or a Thunderbolt tunnel; `None` on a
+    /// unified-memory device.
+    pub host_link: Option<HostLinkCaps>,
+    /// Capacity per tier that allocation probing confirmed; may be below what the driver
+    /// reports.
+    pub usable: Vec<(TierId, Bytes)>,
+    /// RFC-0010 §1.3's additions.
+    #[serde(default)]
+    pub ext: DeviceCapsExt,
+}
+
+/// One storage tier's measured rates (RFC-0001 §5.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StorageCaps {
+    /// The tier.
+    pub tier: TierId,
+    /// Sustained, thermally throttled read rate at the pack's extent size and queue depth: the
+    /// rate the solver uses (cost model §2.4, §3.3).
+    pub sustained_read: Measured<BytesPerSec>,
+    /// The burst read rate.
+    pub burst_read: Measured<BytesPerSec>,
+    /// The extent size the rates were measured at.
+    pub extent: Bytes,
+    /// The queue depth the rates were measured at.
+    pub queue_depth: u16,
+    /// 4 KiB read latency at queue depth 1.
+    pub small_read: Measured<Nanos>,
+    /// The volume's temperature, where it reports one.
+    pub temperature_c: Option<Measured<f32>>,
+    /// RFC-0010 §1.3's and RFC-0021 §10's additions.
+    #[serde(default)]
+    pub ext: StorageCapsExt,
+}
+
+/// An op class: a group of kernels with the same performance shape, the key of
+/// [`DeviceCaps::throughput`] (F_eff per op class and dtype; glossary "Op class"). RFC-0001
+/// §5.2 and RFC-0060's per-device-class selection map name it.
+///
+/// The variants are option (a) of PLC-E1-T17, proposed for the maintainers in RFC-0010 §1.3:
+/// the glossary's op classes plus step M4's GEMM (RFC-0010 §3.2).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum OpClass {
+    /// Matrix-matrix products: prefill and verify-window projections, in a tensor-core dtype
+    /// or through the dequant path of a quantized scheme (step M4's GEMM).
+    Gemm,
+    /// Quantized matrix-vector products: decode projections over quantized weights.
+    QuantGemv,
+    /// Grouped expert matrix-vector products of a mixture-of-experts layer.
+    ExpertGemv,
+    /// Attention of one kind (step M4 measures each kind the provider implements).
+    Attention(AttnKind),
+    /// The scan of a linear-attention layer.
+    LinearScan,
+}
 
 /// A kernel class the probe measures W_eff for (RFC-0001 §5.2).
 #[non_exhaustive]
@@ -227,6 +324,9 @@ pub struct StorageCapsExt {
     pub shared_lanes: bool,
     /// Smallest queue depth reaching ≥ 95% of the best rate at the dominant request size
     /// (RFC-0021 §3.2).
+    ///
+    /// 0 when unset, as in a record written before this field: read
+    /// [`StorageCaps::queue_depth`] then.
     pub qd_target: u16,
     /// Read-only report of direct-to-GPU paths per GPU (RFC-0021 §9; none is built in v1).
     pub direct_paths: SmallVec<[(DeviceId, DirectPathReport); 2]>,
@@ -432,4 +532,122 @@ pub enum SyncKind {
     Event,
     /// A doorbell in host-mapped memory.
     Doorbell,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The step-M4 measurements (RFC-0010 §3.2) and glossary op classes each variant stands for,
+    /// as RFC-0010 §1.3's note records them: a record, checked for coverage, not a derivation.
+    /// The match has no wildcard, so a new variant fails to compile here until it is given its
+    /// items.
+    fn items(class: OpClass) -> &'static [&'static str] {
+        match class {
+            OpClass::Gemm => &[
+                "step M4: GEMM in a tensor-core dtype",
+                "step M4: GEMM through a quantized scheme's dequant path",
+            ],
+            OpClass::QuantGemv => &["glossary: quantized GEMV"],
+            OpClass::ExpertGemv => &["glossary: grouped expert GEMV"],
+            OpClass::Attention(kind) => {
+                // Every attention kind is its own op class; a new kind fails to compile here.
+                match kind {
+                    AttnKind::Gqa
+                    | AttnKind::Mla
+                    | AttnKind::SlidingGqa { .. }
+                    | AttnKind::BlockSparse
+                    | AttnKind::TopKSparse
+                    | AttnKind::Compressed
+                    | AttnKind::Bidirectional => {}
+                }
+                &["step M4: attention per kind", "glossary: attention"]
+            }
+            OpClass::LinearScan => &["glossary: linear-attention scan"],
+        }
+    }
+
+    const ALL: [OpClass; 5] = [
+        OpClass::Gemm,
+        OpClass::QuantGemv,
+        OpClass::ExpertGemv,
+        OpClass::Attention(AttnKind::Gqa),
+        OpClass::LinearScan,
+    ];
+
+    /// Each step-M4 measurement and each glossary op class belongs to exactly one variant.
+    #[test]
+    fn each_measured_and_named_class_has_one_variant() {
+        let mut seen: Vec<&str> = ALL.iter().flat_map(|&c| items(c).iter().copied()).collect();
+        let total = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), total, "an item belongs to two variants");
+        for item in [
+            "step M4: GEMM in a tensor-core dtype",
+            "step M4: GEMM through a quantized scheme's dequant path",
+            "step M4: attention per kind",
+            "glossary: quantized GEMV",
+            "glossary: grouped expert GEMV",
+            "glossary: attention",
+            "glossary: linear-attention scan",
+        ] {
+            assert!(seen.contains(&item), "{item} has no variant");
+        }
+    }
+
+    /// The RFC-0010 §1.3 note that records the choice names every variant the code has, and the
+    /// glossary still lists the op classes the variants stand for. It reads `plan/`, which a
+    /// crate-only checkout (such as `cargo package --verify`) does not have; there it says so and
+    /// checks nothing.
+    #[test]
+    fn the_design_names_every_variant() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan");
+        let Ok(rfcs) = std::fs::read_dir(root.join("rfcs")) else {
+            eprintln!("skipped: no plan/ beside this crate");
+            return;
+        };
+        let rfc = rfcs
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("RFC-0010-"))
+            })
+            .expect("plan/rfcs holds RFC-0010");
+        let rfc = std::fs::read_to_string(rfc).unwrap();
+        // Option (a) is the first "- (a)" line after the PLC-E1-T17 note's heading.
+        let note = rfc
+            .lines()
+            .skip_while(|l| !(l.contains("PLC-E1-T17") && l.contains("`OpClass`")))
+            .find(|l| l.trim_start().starts_with("- (a)"))
+            .expect("RFC-0010 §1.3's PLC-E1-T17 note records option (a)");
+        for name in [
+            "`Gemm`",
+            "`QuantGemv`",
+            "`ExpertGemv`",
+            "`Attention(AttnKind)`",
+            "`LinearScan`",
+        ] {
+            assert!(
+                note.contains(name),
+                "option (a) does not name {name}: {note}"
+            );
+        }
+        let glossary = std::fs::read_to_string(root.join("glossary.md")).unwrap();
+        let entry = glossary
+            .lines()
+            .find(|l| l.starts_with("**Op class.**"))
+            .expect("the glossary defines op class");
+        for class in [
+            "quantized GEMV,",
+            "grouped expert GEMV,",
+            ", attention or",
+            "linear-attention scan",
+        ] {
+            assert!(
+                entry.contains(class),
+                "the glossary no longer names {class:?}: {entry}"
+            );
+        }
+    }
 }

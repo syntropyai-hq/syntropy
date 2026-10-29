@@ -144,6 +144,24 @@ On Windows the release also ships `syntropyw.exe`, a GUI-subsystem launcher that
 
 On platforms that forbid spawning a child process (iOS, some Android contexts), the runner runs in-process behind the same IPC protocol carried over in-memory channels (`RunnerHost::InProcess`). That gives up crash isolation and nothing else. It is Tier 3 only (ADR-0020).
 
+*Note 2026-10-28 (as built, DIST-E1-T11):*
+- **The transport.** The "same IPC trait" is `ipc::cmd::Transport`, the byte stream a command channel runs over. It has two implementations: the OS `Stream` between processes, and `ipc::cmd::memory::MemoryStream`, a connected pair in one process. `Channel` frames and encodes the same way over either, so the two are interchangeable, and `ipc::cmd::memory_channel` gives a connected daemon end and runner end.
+- **The host.** `daemon::runner_host::RunnerHost::InProcess` runs the runner on a thread of its own, or hands its end to a caller that drives it, as the simulator does (QUAL-E8-T06). `runner` is layer 5 like `daemon`, so the binary's wiring passes the runner's entry point in.
+- **The region.** The shared-memory region is real in-process too. The host creates it on the daemon's side and opens it on the runner's, so the header's words and the supervisor's `RunnerLink::sample_region` work unchanged.
+- **The handshake.** The daemon checks an in-process runner's `Hello` against its own process ID (`DaemonChannel::handshake_in_process`).
+- **The process host** came with DIST-E1-T04 (note of 2026-10-29 below).
+- **The suite.** The runner integration suite DIST-E1-T11's criterion names is this change's `runner_integration` test, `crates/cli/tests/runner_integration.rs`. It runs in the workspace unit job (`cargo test --workspace`, `cargo xtask test unit`) on every hosted OS, Linux included, and no xtask suite of its own is registered. One scenario runs over the in-process host and over an OS socket: the handshake, a real `Lifecycle` to `Ready` through the supervisor, the header's words, a stall kill, and a drain to `Stopped`.
+
+*Note 2026-10-29 (as built, DIST-E1-T04): the process host.*
+- **The command line.** A runner is `syntropy __runner --ipc <handle> --region <handle>`. `--ipc` names the runner's end of its command channel (`fd:<n>`, or `handle:<n>` on Windows, `ipc::cmd::ChannelHandle`). `--region` names its shared-memory region as `ipc::shm::RegionHandle` writes it (`fd:<n>` on Linux, `name:<name>` elsewhere). The region's layout comes in `Init`, so the runner opens the region after the handshake.
+- **The pair.** `daemon::runner_host::spawn_process` builds the channel as §3.4 says, before the spawn (`ipc::cmd::spawn_pair`). On Linux and Apple platforms it is a socket pair: the child's descriptor stays close-on-exec in the daemon, and a hook clears the flag in the runner's child alone. On Windows it is a pipe of a random name, created as its first instance with the owner-only DACL, which the daemon connects to itself and then closes to new clients. Its client handle is inheritable until the spawn. On Apple platforms the pair is made close-on-exec just after `socketpair`, not with it, and on Windows the handle is inheritable for the spawn, so in either window a process the daemon spawns from another thread also inherits an end. The runner then finds the daemon lost by its still heartbeat instead of end-of-file. The runner takes its end once, at start-up (`ipc::cmd::inherited`), only if it looks inherited (not close-on-exec, or inheritable on Windows, which nothing the standard library or the workspace opens is), and makes it close-on-exec, or no longer inheritable. On Windows the runner gets no console window (`CREATE_NO_WINDOW`).
+- **The heartbeats.** The daemon beats its heartbeat in each runner's region every 250 ms \[chosen\] from a thread of its own, `syntropy-daemon-beat`, which never touches the `ctl` runtime. The runner beats its own every `runner.heartbeat` (100 ms) from its one background thread, which also reads the daemon's. `Init` carries no runner configuration until PROD-E1-T07, so the runner uses `runner.heartbeat`'s and `runner.daemon_silence`'s defaults.
+- **Daemon loss.** The runner counts `runner.daemon_silence` in awake time, which stops while the host sleeps, so a suspend never reads as a lost daemon. Its watch starts before the handshake, and the wait for `Init` counts as silence, so a daemon frozen between `Hello` and `Init` is found too; a daemon must send `Init` within `runner.daemon_silence` of the runner's start, which it does as soon as it has checked `Hello`. A reset or broken channel counts as end-of-file. On end-of-file, or that silence, the runner exits; it holds no sequence before a plan is assigned. DIST-E1-T10 and DIST-E1-T08 replace the exit with the drain and orphan mode.
+- **The state word.** `runner::process::begin` and `advance` write the `RunnerState` word on each `Lifecycle` transition. The runner's command loop does not run a `Lifecycle` yet: it starts with a plan (`AssignPlan`), which later tasks handle.
+- **Exit.** When the runner exits, the host removes the region's name (`Region::unlink`), and it removes it on every failed spawn too. Dropping the host's handle closes the channel and never kills the runner; a runner still running after the drop's 2 s wait is reaped by a detached thread when it exits.
+- **The L0 check.** `cargo xtask ci lint`'s `orphan-rule` step refuses the identifiers `PR_SET_PDEATHSIG`, `PROC_PDEATHSIG_CTL`, `NOTE_EXIT`, `NOTE_EXITSTATUS`, `EVFILT_PROC`, `pidfd_open`, `getppid` and `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` in `runner`, `daemon`, `ipc`, `io` and `cli`. It reads tokens, so it cannot see a constant written as a bare number.
+- **Probe mode** (`--probe`) is DIST-E1-T17, a scope split: it adds `RunnerMsg::ProbeResult` and an `ipc_protocol` bump, which DIST-E1-T04 kept out of the process host. `CapabilityProfile`, which `ProbeResult` carries, is already on main (PLC-E1-T17), so DIST-E1-T17 is ready now that DIST-E1-T04 has merged.
+
 ### 3.2 What each process owns
 
 | Resource | Daemon | Runner |
@@ -202,6 +220,16 @@ A restarted runner always re-enters at `Fetching`. `Fetching` and `Packing` comp
 
 An instance becomes routable only when every runner in it is `Ready` and the canary has passed. The coordinator then emits `InstanceRoutable { instance, epoch, context_length }` (§5.10). Bring-up order matters only inside tensor-parallel groups: members open their collective channels in member order, so no member blocks on one that has not started (RFC-0032).
 
+*Note 2026-10-28 (as built, proposed, §18.45; DIST-E1-T05): where the machine lives.*
+- **The edge table is in `core`.** `RunnerStateKind::can_become` holds the diagram's edges as a pure function over plain data, which is what layer 0 may hold. Every party that judges a transition reads the same table: the runner's machine, and DIST-E1-T06's supervisor, which checks the reports it receives against it.
+- **The machine is in `runner`.** `syntropy_runner::lifecycle::Lifecycle` takes the runner's events (a verified shard, a committed pack, `Drain`, a fault) and returns the one `StateChanged` each transition sends. That message is `ipc`'s, which `core` cannot name (rule 2, §4.2), and the events are the runner's own. The machine reads no clock (RFC-0060 §2.1, rule T1): the caller reports a drain's deadline when it passes.
+- **What counts as a transition.** A transition is a change of state kind, or `Ready → Ready` when a plan delta is adopted under a later epoch. A delta whose epoch is not later is refused. Progress inside a state changes its fields and sends nothing. That covers bytes fetched, packed or loaded, a warm step started, the live sequence count, and a change of `degraded`. Byte-level progress travels as RFC-0050 §4.3's `LoadProgress`.
+- **A drain always passes through `Draining`.** That holds even with no live sequence, since `Ready → Stopped` is not an edge. It ends when the caller reports zero live sequences or the deadline.
+- **Restarts and giving up are the supervisor's** (§3.4). A restart is a new process, whose machine starts again at `Fetching` with a restart count of 0. So the supervisor's count is the real one (DIST-E1-T06). The supervisor builds the `Failed` and `Stopped` it reports from `core`'s types, with its own count. A runner that reports a fault before it exits sends `Failed { restarts: 0 }`. The machine's `Restart` and `GiveUp` events model the supervisor's edges for the property test: `Failed → Fetching` re-enters with the same shard and epoch. `Failed → Stopped` happens only when the supervisor gives up: a spent budget stops as `Drained(DrainReason::RestartBudgetSpent)`, and a fatal error as `Fatal` with the last failure's class (§18.34).
+- **Open for the maintainers.**
+  - No message reports a change of `degraded` until the next transition. RFC-0033 §7.1 shows degradation in the dashboard and in response metadata. Whether a degradation change should count as a transition, or have a report of its own, is OQ-NET-36, which DIST-E14-T13 settles.
+  - A runner not yet `Ready` has no clean stop. §3.3 has no edge from `Fetching`, `Packing`, `Loading` or `Warming` to `Draining` or `Stopped`, so a `Drain` or `Shutdown` there is refused. Such a runner can end only through `Failed`, which the supervisor would count as a failure. The options are failing it as `Cancelled` with no restart, or a `→ Stopped { Drained(reason) }` edge from each bring-up state. That choice is the maintainers', with DIST-E1-T06.
+
 ### 3.4 Supervision
 
 - **Spawn.** The daemon creates a socket pair (Unix) or a named-pipe pair (Windows) and a shared-memory region, then spawns the runner with both handles inherited. The runner's first message is `Hello` with its build ID and IPC protocol version (§3.5). A freshly spawned runner whose build ID differs from the daemon's is killed.
@@ -210,6 +238,28 @@ An instance becomes routable only when every runner in it is `Ready` and the can
 - **Restart.** Exponential back-off with jitter per (instance, node), with a restart budget per window. When the budget is spent the supervisor submits `ClusterCommand::ReportRunnerFailed`, and the coordinator re-plans without the faulty devices (§7.4).
 - **Daemon loss: the bounded orphan rule** (RFC-0052 §6.5; supersedes ADR-0015 decision 6, see its revision of 2026-10-19). Runners use no parent-death signal, exit watch or kill-on-close job. A runner detects daemon loss by end-of-file on its command channel, or by the daemon's heartbeat in the shared-memory header not advancing for `runner.daemon_silence` (suspend-aware, RFC-0033 §8.2). It then enters orphan mode: it keeps serving sequences whose ingress is another node, admits nothing new, and listens on its per-instance adoption socket (`<runtime dir>/adopt/<instance>.sock`, owner-only, peer credentials checked). A daemon that connects within `runner.orphan_grace` re-adopts it when the IPC protocol versions are equal and the observability tables are equal or translatable (§3.5). Otherwise the runner drains for at most `recovery.drain_deadline` and exits, so a runner outlives its daemon by at most `runner.orphan_grace + recovery.drain_deadline`. Each OS's service manager is configured so that stopping the daemon process does not kill its runners (RFC-0052 §6.1–§6.3). Where re-adoption is unavailable (containers, embedded mobile runners, a changed IPC protocol, or a Windows logon task whose job forbids breakaway), updates drain and restart instead. Re-adoption is the in-place upgrade path (RFC-0052 §7.3).
 - **Shutdown.** `SIGTERM`, a service stop or `syntropy stop` drains every runner with a deadline, then stops the daemon.
+
+*Note 2026-10-28 (as built, proposed, §18.47; DIST-E1-T06).*
+- **Where it lives.** The restart policy is `syntropy_daemon::supervisor::Supervisor`, a `ProtocolCore` (invariant 12). Its policy comes from `cluster`'s `RunnerSection` (RFC-0033 §8.2). `daemon::runner_link` is its shell: it feeds the core a runner's `StateChanged` messages and the shared-memory counters, and carries out the core's outputs.
+- **Excused time.** At each deadline, every `sample_period` (a sixth of `runner.liveness_timeout`, 500 ms by default [chosen]), the shell reads the heartbeat, the step counter and the live-sequence count from the shared-memory header, with both clocks. A `SuspendDetector` (§5.14) measures the interval. A counter's silence is counted in excused time, which is running time less two things:
+  - the suspend, the gap between the two clocks;
+  - lateness on both clocks past one sample period, which covers a paused VM or a starved daemon.
+
+  So a host's sleep never counts against a runner, as RFC-0030 §5.8 step 5 asks. A hang is killed at the first sample whose counted silence reaches `runner.liveness_timeout`. Silence is counted from the sample that saw the last beat, so the kill comes between the timeout and the timeout plus one period after that beat, never before it. A stall needs live sequences, and the count is the header's (§3.5, note of 2026-10-28). The runner changes its count in place, with no `StateChanged`, so a `Ready` report's own count is out of date as soon as a sequence opens. The stopped-clock reading reaches the core through `core`'s `AwakeClock` trait, which `io`'s `SystemClock` implements, so `daemon` never names `SystemClock` (ADR-0022 decision 2).
+- **Reports.** Each `StateChanged` is checked against §3.3's edges. For `Ready → Ready`, the epoch must also be later, which `can_become` does not check. An accepted report goes to `report::forward_state_changed`. A refused one is logged and not forwarded.
+- **Failures.** A crash is classified as this section says:
+  - `Device` after a `Failed { class: Device }` report;
+  - `Internal` otherwise;
+  - a kill for a hang or a stall is `Timeout` [chosen] (§5.12: "Deadline passed or progress stalled"), unless the runner reported `Device` first: a reported `Device` stays `Device`, so the device is still re-probed.
+
+  The supervisor reports `Failed` for a runner that died without reporting one itself.
+- **Restarts.**
+  - The back-off doubles per failure in the budget's window, from 1 s to 60 s. The jitter draws the delay from [¾ · base, base] [chosen], through the `Entropy` the core is given.
+  - The failure that spends the budget stops the runner with `Drained(RestartBudgetSpent)` (§18.34), and the shell submits `ReportRunnerFailed`. §5.10 gives that command an `ErrorSummary`, which no section defines yet, so the report carries the last failure's class and the failure count [chosen].
+  - A `Device` failure is re-probed first, and a device that is gone stops the runner with `Fatal(Device)`.
+- **Not built here.**
+  - `runner.load_stall`, the bound from `Fetching` to `Warming`: it needs fetch progress that no message carries yet.
+  - A clean stop before `Ready` (§3.3's note of 2026-10-28): such a runner ends only through `Failed`, which the supervisor counts as a failure. That choice is the maintainers'.
 
 ### 3.5 Daemon↔runner IPC
 
@@ -225,6 +275,8 @@ Two channels per runner:
 | `local_tokens` | tail runner → daemon | `TokenFrame`s for sequences whose ingress is this node |
 | `local_sequences` | daemon → head runner | `SequenceOpen` and `SequenceControl` for sequences whose ingress is this node |
 | `log` | runner → daemon | `LogRecord`s with static callsite IDs; the daemon formats them (RFC-0053 §4.1) |
+
+*Note 2026-10-27 (QUAL-E3-T18, as built): the M0 records of `local_sequences` and `local_tokens`.* One slot holds one record: the postcard encoding of one `core::sequence::SequenceControl` on `local_sequences`, or of one `TokenFrame` on `local_tokens`, as the command channel encodes its messages. `syntropy_ipc::shm::records` is the one encoder and decoder; its decoders are total and reserve no memory for a declared length. Ingress (PROD-E2-T02), the head and tail (PLC-E8-T01) and `syntropy-testkit`'s fake runner use it, so a test against the fake runner exercises the encoding ingress uses. RFC-0031 §1 has these rings carry RFC-0031 §6's frame bytes; that codec has no sequence-control frames until DIST-E8-T05 (M2), and §5.8's note of 2026-10-23 already has M0 parity taps travel on `local_tokens` as `core` types, so the move to frame bytes belongs to DIST-E11-T03 (M2). `ipc_protocol` stays 1.0: no build has shipped, and the rings' record types were already declared as these. §18.39 records this, for the maintainers to confirm.
 
 Command-channel messages:
 
@@ -244,11 +296,12 @@ Command-channel messages:
 | D → R | `Ping` | IPC round-trip check |
 | R → D | `Hello { pid, build_id, ipc_protocol, obs_tables: Blake3 }` | handshake. `obs_tables` digests the runner's log-callsite, metric and span-name tables; on a mismatch the runner sends the tables, and the daemon decodes that runner's records with them (RFC-0053 §4.1). On an adoption connection the daemon sends its own `ipc_protocol` and digest first (RFC-0052 §6.5) |
 | R → D | `StateChanged { state: RunnerState, epoch: PlanEpoch }` | every lifecycle transition; the daemon forwards it as `ClusterCommand::ReportRunner` |
-| R → D | `FetchShard { spec: ShardSpec, priority: FetchPriority }` | ask the store for a shard |
-| R → D | `PackCommitted { key: PackKey, sidecar: Blake3 }` | pack ready; the store records it for GC and P2P |
+| R → D | `FetchShard { spec: ShardSpec, priority: FetchPriority }` | ask the store for a shard. Added by COMP-E10-T11, with `ipc_protocol` 5.0 (§18.50) |
+| R → D | `PackCommitted { key: PackKey, sidecar: Blake3 }` | pack ready; the store records it for GC and P2P. Added by COMP-E10-T11, with `ipc_protocol` 5.0 (§18.50) |
 | R → D | `ResidencyDigest { version: u64, digest: ResidencySummary }` | low-rate residency summary for routing and the dashboard |
 | R → D | `SequenceEnded { seq: SequenceId, outcome: SequenceOutcome }` | finished, failed or migrated |
 | R → D | `ErrorReport { error: Error }` | errors that are not tied to one sequence |
+| R → D | `EdgeDemoted { demotion: Demotion, cause: DemotionCause, cost: Nanos }` | a hop moved off its transport: the planned one could not connect (`ConnectFailed`, RFC-0031 §3), or it faulted 3 times in 60 s (`RepeatedFaults`, RFC-0031 §7.4). `cost` is the new transport's `cost_t` at the decode frame size. The daemon forwards it as `ReportEdgeDemoted` (RFC-0033 §11). Added by DIST-E7-T11, with an `ipc_protocol` bump (RFC-0031 §3, note of 2026-10-23) |
 | R → D | `ProbeResult { profile: CapabilityProfile }` | probe output |
 | R → D | `Pong` | — |
 
@@ -262,16 +315,41 @@ Command-channel messages:
   - `SequenceOutcome`: `Finished`, `Failed(ErrorClass)` or `Migrated { to: PlanEpoch }`.
   - `FetchPriority`: RFC-0041 §7's `Urgent`, `Normal` or `Background`, which COMP-E12-T04's fetch planner implements. RFC-0031 §6.10's note of 2026-10-23 maps each to the blob-plane class its chunk requests use.
   - `PressureLevel`, moved from `tier`.
-- **DIST-E1-T05:** `StateChanged` carries `RunnerState` in place of its discriminant. `RunnerState` and its field types are in `core` (§5.11), `Degradation` (RFC-0033 §7.1) among them. `Draining` carries `deadline: Deadline` for `deadline_ms`. `Stopped` carries the runner's own `StopReason`, which §5.11 never defined: `Drained(DrainReason)` from `Draining`, or `Fatal(ErrorClass)` from `Failed`, when the error is fatal or the restart budget is spent (§3.3), with the last failure's class. It is not the API's completion reason.
+- **DIST-E1-T05:** `StateChanged` carries `RunnerState` in place of its discriminant. `RunnerState` and its field types are in `core` (§5.11), `Degradation` (RFC-0033 §7.1) among them. `Draining` carries `deadline: Deadline` for `deadline_ms`. `Stopped` carries the runner's own `StopReason`, which §5.11 never defined: `Drained(DrainReason)` from `Draining`, or `Fatal(ErrorClass)` from `Failed`, when the error is fatal or the restart budget is spent (§3.3), with the last failure's class. It is not the API's completion reason. *Corrected 2026-10-28 (§18.34, §5.11):* a spent restart budget stops as `Drained(DrainReason::RestartBudgetSpent)`, and `Fatal(class)` is for a fatal error only.
 - **PROD-E1-T07:** `Init`'s `config` and `ConfigChanged`. `RunnerConfig` is `ResourcePolicy` plus the resolved node-scope values as `KeyPath → ConfigValue`, and `RunnerConfigPatch` the changed `hot` keys in that form. The typed sections are their crates': `runner.*` is `cluster`'s `RunnerSection` (layer 3), and `tier.*` and `io.*` are `tier`'s and `io`'s. PROD-E1-T07 generalises `config`'s section builder over the key scope: one builder with a scope parameter, of which `InstanceSection` (PROD-E1-T24) is the instance-scope use. Each runner crate builds its node-scope section from the values with it.
 - **DIST-E7-T04:** `Init`'s `grant` and `DataPlaneGrant`, with `DataPlaneCredential` as plain data in `core` (DIST-E2-T05). Its `purposes` stays a `u16` bitmask, its bit layout given as `core` constants, and `net`'s channel-purpose enum stays in `net`.
 - **PLC-E2-T01:** `ProbeRequest`, with `ProbeSuite` and `ModelShapes` in `core`, and every variant but `DevicePath`, which arrives with PLC-E2-T12. `Confirm`'s `ProfileKey` is already in `core`.
 - **COMP-E10-T11:** `FetchShard` and `PackCommitted`, with `ShardSpec` and `PackKey`, and their field types `ChunkId` and `LayoutVersion`, in `core`.
 - **TIER-E1-T09:** `ResidencyDigest`, with `ResidencySummary` and the types it holds in `core`: `TierUsage`, `Purpose` (moved from `tier`), `PinProgress`, `PinState`, `YieldReport`, `YieldOption`, `KvHeadroom`, `PageClass`, `KvSpillOutcome`, `SpillOutcome` and `ExpertCacheDigest`.
+- **DIST-E7-T11:** `EdgeDemoted { demotion, cause, cost }`, with `Demotion` and `DemotionCause` in `core` (RFC-0031 §3, note of 2026-10-23). It reports both demotion paths, the connect-time fallback and DIST-E7-T10's fault-time demotion, and the daemon forwards it as `ReportEdgeDemoted` (RFC-0033 §11).
 - **Two fields hold what `core` cannot.** `RemoteEndpoint`, in `ProbeSuite::DevicePath`, holds transport state: keys, socket addresses, a relay URL. The message carries the remote's `NodeId` and the endpoint as bytes in `net`'s encoding (PLC-E2-T12). `DegradeDetail::Fallback` names an `OpKind` and a `ProviderId`, which are `kernels`'. It carries the provider's `ProviderName` (§5.1), which COMP-E2-T13 defines in `core` with `ReaderId`, and the op's name as owned text (DIST-E14-T13).
-- **No task yet:** `ProbeResult` waits for the task that defines `CapabilityProfile` (#1524), and `ErrorReport` for the task that builds `core`'s `Error` (§5.12). No task row names either yet.
+- **No task yet:** `ProbeResult` waits for the task that defines `CapabilityProfile` (#1524), and `ErrorReport` for the task that builds `core`'s `Error` (§5.12). *Updated 2026-10-29:* PLC-E1-T17 defines `CapabilityProfile`, and DIST-E1-T17, probe mode, sends `ProbeResult`; no task row names `ErrorReport` yet.
 
 Each added message or field changes the postcard layout, so it bumps `ipc_protocol` (§5, note of 2026-10-22).
+
+*Note 2026-10-27 (proposed, §18.44; DIST-E1-T13): a test-only message pair.* RFC-0060 §9.2's fault plans are "pushed over IPC in tests". Builds with the test-only `fault-injection` feature (§4.2 rule 10) add one message each way:
+
+| Direction | Message | Purpose |
+|---|---|---|
+| D → R | `SetFaultPlan(toml: String)` | install a `FaultPlan`, as TOML, with `syntropy_obs::faults::install` on the runner's clock |
+| R → D | `FaultPlanSet(Result<(), String>)` | the install's result; on an error the plan installed before stays |
+
+- **The wire index.** Both sit at a fixed wire index, `TEST_VARIANT` = 2²⁰, far above every production variant. Production variants are numbered by their order from 0, and new ones are appended, so the test messages never move them, and a production message's frame is byte for byte the same in both builds.
+- **The types.** In code they are the `ipc::cmd::DaemonFrame` and `RunnerFrame` enums, which wrap `DaemonMsg` and `RunnerMsg`. The production enums gain no variant.
+- **A production build** has neither type, and reads index 2²⁰ as an unknown variant, so it refuses the frame.
+- **The plan's form.** The plan travels as TOML, the form `FaultPlan::from_toml` reads and checks: the plan's types skip absent fields when they serialize, which postcard cannot read back.
+- **`ipc_protocol`.** Not bumped: no production message or field changes.
+
+*Note 2026-10-28 (as built, proposed, §18.45; DIST-E1-T05): protocol 2.0.*
+- **`StateChanged`'s `state` is a `RunnerState`, and `ipc_protocol` moves from 1.1 to 2.0.** The change replaces a field's type rather than appending a variant. A 1.x peer would read the new variant index and fields as the old `u32`, so it is an incompatible change, and a major bump marks it. `Hello` keeps variant 0 and its layout, so a 1.x peer and a 2.0 peer still reach the version check. An adoption across the bump fails that check, so the runner drains and restarts (§3.4, RFC-0052 §6.5).
+- **The shared-memory header's state word** is `RunnerStateKind::discriminant()`: the kind's position in the declaration order above, from 0.
+- **`DegradeDetail`'s variants are numbered** `Absorbed` 0, `Demoted` 1 and `Reduced` 2. DIST-E14-T13 appends `Fallback` at 3.
+- **The `DIST-E1-T05` bullet above** gave `Fatal(ErrorClass)` for a spent restart budget, against §18.34 and §5.11. It now carries a dated correction, and the built type follows §18.34: `Drained(DrainReason::RestartBudgetSpent)`, and `Fatal` only for a fatal error.
+- **Forwarding.** The daemon forwards each `StateChanged` as `ReportRunner { instance, node, epoch, state: RunnerStateKind }` (§5.10). `ClusterCommand` and its client are DIST-E9's, so the forwarding is built up to a seam: `syntropy_daemon::report`'s `ReportSink`, which that client implements.
+
+*Note 2026-10-28 (as built, proposed, §18.47; DIST-E1-T06): the live-sequence count and protocol 3.0.*
+- **The shared-memory header gains a live-sequence count.** It sits on its own line after the `RunnerState` word. The runner writes it each time its count changes, and the supervisor reads it at each sample for the stall check (§3.4). The runner's machine changes the count in place, with no `StateChanged`, so no other path carries it.
+- **The region's layout version goes to 2, and `ipc_protocol` to 3.0.** The header grows by a line, so the ring table moves, and a reader of layout 1 cannot read the region. That is an incompatible change, so the major moves, by the rule of 2.0 above.
 
 IPC never carries per-token traffic across the network boundary, and no message on the command channel is sent per token. Local token delivery uses `local_tokens`.
 
@@ -305,10 +383,10 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 3 | `exec` | lowers the graph to per-stage step programs; per-device dispatchers; CPU compute pool; doorbells; graph capture | `graph`, `kernels`, `tier` | 0012 (provider contract: 0040) |
 | 3 | `cluster` | discovery, invites, SWIM membership, coordinator lease, event log, pure `apply()`, snapshots, re-placement triggers | `net`, `manifest`, `solver` | 0030 (re-placement and recovery: 0033) |
 | 4 | `sched` | step scheduler: continuous batching, chunked prefill, verify windows, drafting, acceptance, sampler (with token-level stop sets and grammar masks), activation history | `exec`, `tier`, `graph`, `text` | 0012 |
-| 4 | `api` | OpenAI, Anthropic and native HTTP surfaces; ingress routing; sequence channels; dashboard state endpoints | `text`, `cluster`, `solver`, `net` | 0050 (dashboard endpoints: 0051) |
+| 4 | `api` | OpenAI, Anthropic and native HTTP surfaces; ingress routing; sequence channels; dashboard state endpoints | `text`, `cluster`, `solver`, `net`, `ipc` (the local socket's listener, added 2026-10-27, note below), `spsc` (the local rings' ends, added 2026-10-27, note below) | 0050 (dashboard endpoints: 0051) |
 | 5 | `runner` | runner process: lifecycle state machine, wiring of exec, sched, tier, io, net and providers; probe mode; loading backend modules through `kernels-loader` | `ipc`, `manifest`, `graph`, `kernels`, `kernels-cpu`, `kernels-metal` (macOS and iOS), `kernels-ggml`, `kernels-loader`, `io`, `tier`, `net`, `probe`, `store`, `exec`, `sched` | 0001 (distributed behaviour: 0032) |
 | 5 | `daemon` | node daemon: supervisor, device ledger, wiring of cluster, store, api and probe orchestration | `ipc`, `manifest`, `kernels` (types only), `io`, `net`, `solver`, `text`, `probe`, `store`, `cluster`, `api` | 0001 (recovery: 0033) |
-| 6 | `cli` | the `syntropy` binary: argument parsing, mode dispatch, client subcommands, dashboard assets; constructs the `BuildId` value at build time and passes it down (RFC-0062 §8.1) | `daemon`, `runner`, `config`, `obs` | 0051 |
+| 6 | `cli` | the `syntropy` binary: argument parsing, mode dispatch, client subcommands, dashboard assets; constructs the `BuildId` value at build time and passes it down (RFC-0062 §8.1) | `daemon`, `runner`, `config`, `obs`, `api` and `ipc` (the client's API types and local socket, added 2026-10-27, note below), and `cluster`, `net` and `sched` (the configuration sections of the binary's registry, added 2026-10-27, note below) | 0051 |
 | — | `testkit` | simulated fabric (virtual nodes; links with α, β, p99 and loss; fake devices), the deterministic simulator that drives the protocol cores (`SimClock`, `SimEntropy`), fake `KernelProvider`, `RefExecutor` and the parity harness, golden traces | any (dev-dependency only) | 0060 |
 | — | `bench` | benchmark scenarios, result schema, regression gates | `cli` (as a client), `testkit` | 0061 |
 
@@ -316,6 +394,13 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 
 *Note 2026-10-22 (amendment, §18.9):* `spsc` joins layer 1. `io` (its submission rings and RFC-0021 §3.1's rings to the I/O thread), `net` (its rings to the network task, §5.8) and `ipc` all need §8.3's ring, and all three are in layer 1, where rule 2 forbids edges between crates (OQ-IO-29). `spsc` holds the one implementation, with no workspace dependencies, so one set of loom models covers every ring.
 
+*Note 2026-10-27 (amendment, §18.38):* `api` depends on `ipc`. The API's local socket (RFC-0050 §1.1) uses the endpoint and peer check of the daemon-runner channel, in its tokio form (`ipc::cmd::AsyncListener`), and `/v1/syntropy/version` reports `ipc`'s protocol major. The `unsafe` these need stays in `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and neither crate is a compute crate (rule 3).
+
+*Note 2026-10-27 (amendment, §18.40):* `cli` depends on `api` and `ipc`. Its native-API client reads and writes the `syntropy-api` types the server uses, so the two cannot disagree about a field (RFC-0051 §1), and it reaches the local socket through `ipc::cmd::connect_async`. Both edges point to lower layers (rule 2).
+
+*Note 2026-10-27 (amendment, §18.41):* `api` depends on `spsc`. The ingress pipeline (RFC-0050 §2, PROD-E2-T02) holds the daemon side's `local_sequences` producer and `local_tokens` consumer, which `ipc`'s region hands out as `spsc`'s shared ring ends, and it names their types. The `unsafe` stays in `spsc` and `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and `api` is not a compute crate (rule 3).
+
+*Note 2026-10-27 (amendment, §18.42):* `cli` depends on `cluster`, `net` and `sched` for their configuration sections. `config show --resolved`, `config check` and `config path` (RFC-0054 §2.2, §8) resolve over the binary's section registry, which holds every section of the crates the binary links; `cluster`, `net` and `sched` declare theirs, and `cli` is the one crate above all three. All three edges point to lower layers (rule 2).
 *Note 2026-10-22 (amendment, §18.24):* `netprobe` joins layer 2. DIST-E4-T15's probe is a binary that alpha testers run before the product ships, so it is neither a `cli` subcommand (`cli` is the product's single binary) nor a bin target in `net`, which would put a runtime's `main` in a layer-1 library. It reaches iroh only through `net` (rule 6), takes its node key from `io`'s `OsEntropy`, and no crate depends on it.
 
 Packaging, installers, backend modules and update channels (RFC-0052) and CI (RFC-0062) live outside the crate graph, in `packaging/` and `.github/`. A backend module is a directory beside the core binary of the same version holding one provider library and its vendor redistributables (ADR-0507, RFC-0052 §4.3).
@@ -645,6 +730,12 @@ pub struct LinkCaps {
 }
 ```
 
+*Note 2026-10-29 (as built, DIST-E2-T10):* `NodeInfo` is in `core::resource::node`, with `HostFingerprint`, `OsKind`, `ProtocolRanges` (its two ranges as `VersionRange`, which refuses `min_supported` above `current` when built or decoded) and `RolePrefs`. `staged_build` and `install` arrive with DIST-E4-T14. `OsKind` has an `Other` that a platform this build does not know decodes as, and an absent `RolePrefs` field is `true`, so records cross adjacent builds in the cluster's CBOR (ADR-0305). `HostFingerprint::NOT_COMPUTED`, the zero digest, stands until PLC-E1-T11 computes the fingerprint, and never matches another node's under `HostFingerprint::same_host`. `power` has no default: an absent value would rank as mains in the coordinator election.
+
+*Note 2026-10-29 (as built, PLC-E1-T17):* `CapabilityProfile`, `DeviceCaps` and `StorageCaps` are in `core::resource::caps`. Each holds RFC-0010 §1.3's additions, and `StorageCaps` also RFC-0021 §10's (`engine`, `chunk`, `dio`, `buffered`, `sqpoll`, `read_around_efficiency`, `shared_lanes`), in one field, `ext`, rather than flat. `OpClass`, which this section names, is defined there, as proposed in RFC-0010 §1.3's note of the same date.
+
+*Note 2026-10-29 (as built, proposed; PLC-E1-T18):* `ResourceGraph` is in `core::resource::graph`, with two departures from the block above. First, `profiles` stays a `BTreeMap<NodeId, CapabilityProfile>` in memory but travels as a list of `(NodeId, CapabilityProfile)` pairs in node order, because a `NodeId` is a byte array that JSON cannot use as a map key; a node listed twice is refused. Second, `Reservation` takes RFC-0010 §1.4's proposed option (a), `Reservation { tier, holder: Option<Holder>, bytes }` with `Holder { instance, epoch: PlanEpoch }`, which drops the per-device dimension: a host tier's `affinity` lists several devices, so its bytes do not split by device. A reservation with no holder stands for ledger bytes no entry accounts for. `LedgerSummary` gains `entries`, and `LedgerSummary::reservations` derives the reservations; `ResourceGraph::available` gives the bytes of a tier a plan may use, exempting only the holder a break-before-make transition replaces. The maintainers confirm or change option (a) in PLC-E1-T18's review.
+
 ### 5.3 Model manifest and tensor census (`manifest`)
 
 ```rust
@@ -783,6 +874,8 @@ impl KvFormula {
     pub fn read_per_step(&self, layers: Range<LayerIx>, context: u64, dtype: KvDType) -> Bytes;
 }
 ```
+
+*Note 2026-10-28 (owner addition, §18.46; TIER-E6-T01):* `LayerKv::PerToken`, `Sparse` and `Compressed` gain `latent: bool` with a serde default of `false`. It marks an entry that is one latent shared by K and V (MLA, a DSA-class main cache over MLA, a V4-class compressed entry) rather than a K/V pair. The lossy `K8V4` form sizes a latent as `Q8` until OQ-IO-30 is settled (RFC-0022 §2, note of the same date). `KvFormula` lives in `manifest::kv`.
 
 ### 5.4 Placement plan *(core)*
 
@@ -1040,6 +1133,8 @@ pub struct PackKey {
 
 The runner builds packs, through `store::pack` and `KernelProvider::repack`, because only it holds the providers whose layouts the pack uses (§3.3, invariant 3). The pack sidecar records offsets, sizes and hashes of every 4 KiB-aligned extent and the `PlanEpoch` that produced it (ADR-0005). The learned expert-frequency profile, the op-selection entries and the canary's reference digest are side records with their own versions, so they survive a layout or container change that rebuilds the pack (RFC-0041 §5.2). The key uses the shard digest, not the epoch: an epoch change that leaves a node's shard unchanged must reuse the pack, not rebuild it.
 
+*Note 2026-10-28 (COMP-E10-T11, as built; §18.50).* `ShardSpec`, `PackKey`, `ChunkId` and `LayoutVersion` are plain data in `core` (§18.28), and `manifest` re-exports them. `ChunkId` is a newtype over `Blake3`. `LayoutVersion` moved from `kernels`, which re-exports it, so `LayoutVersion::SOURCE` still resolves there; one type serves both `OpKey::layout` (a layout ID) and `PackKey::layout` (the layout-table version, RFC-0041 §1). `core` links no hasher, so `ShardSpec::new_with` takes BLAKE3 as a function, as `InstancePolicy::digest_with` does, and sorts and deduplicates `groups` before hashing them. `syntropy_manifest::identity::shard_spec` passes BLAKE3. RFC-0041 §1's note of the same date gives the bytes. `PackKey::for_shard(spec, class, layout)` builds the key from the spec, so no epoch reaches it.
+
 ### 5.7 `KernelProvider` (`kernels`)
 
 ```rust
@@ -1108,9 +1203,9 @@ pub trait KernelProvider: Send + Sync {
     /// Checks for sticky device errors. A sticky error fails the runner with class Device.
     fn health(&self, ctx: &DeviceCtx) -> DeviceHealth;
 
-    // Added by RFC-0040 §2.1, which gives their full signatures. All but `poll` and
-    // `synchronize` have default bodies (Unsupported, None or a no-op); those two have none,
-    // because every backend implements them.
+    // Added by RFC-0040 §2.1, which gives their full signatures. All but `build`, `domain`,
+    // `poll` and `synchronize` have default bodies (Unsupported, None or a no-op); those four
+    // have none, because every backend implements them (corrected 2026-10-23, §18.32).
     // build() -> ProviderBuild           build identity; part of every selection-cache key
     // domain() -> MemoryDomain           providers that share buffers, streams and events
     // memory_info(ctx)                   free and budgeted memory now; never on a hot path
@@ -1331,6 +1426,10 @@ The head forwards `SequenceOpen` metadata (`SequenceMeta`: every field except th
 - **`net`'s view and the tap block.** `net`'s `TokenEntryView` converts to and from `TokenEntry` for every field but `tap`. The tap block travels as bytes until its codec exists (DIST-E8-T06, M2), and `TokenEntry::tap` is the typed `LogitTap`, so `net` refuses a non-empty tap block either way with a classified `Unsupported` error. M0 loses nothing: PLC-E9-T16's parity taps travel in-process on the `local_tokens` ring as `core` types, never through `net`'s codec.
 - **Field types.** `TokenSlice` is the prompt's owned token IDs. `PrefixKey` and `TailId` are RFC-0022 §7.1's and §7.2's, as plain newtypes in `core`, since `core` cannot name a `tier` type. `GrammarRef` is the BLAKE3 of a compiled grammar. `PoolingMode` is `LastToken`, `Mean` or `Cls`. `PrefixScope` is amendment A7's.
 
+*Note 2026-10-23 (DIST-E8-T05): `Reconcile`, and the prompt's binary form.*
+- **`SequenceControl::Reconcile { seq, emitted: u32, rng_counter: u64, recent: SmallVec<[u32; 8]> }`** is the sixth variant, as RFC-0033 §11 lists it: ingress tells the head what the client has seen of a sequence during recovery (RFC-0033 §4.2). `recent` holds the last emitted tokens, up to 8, in the order they were emitted.
+- **`TokenSlice`'s serde form depends on the format.** A human-readable format such as JSON gets an array of the IDs. A binary one gets a byte string of the IDs as little-endian `u32`s, so a prompt takes 4 bytes a token whatever its IDs, as RFC-0031 §6.6 requires of the `SeqControl` body. That covers CBOR, the IPC's postcard and `canon`. A byte string whose length is not a multiple of 4 is refused. No canonical digest covers a prompt, so no digest changes.
+
 ### 5.9 Sessions, sequences and KV
 
 ```rust
@@ -1540,6 +1639,8 @@ pub enum RunnerState {
 pub enum RunnerStateKind { Fetching, Packing, Loading, Warming, Ready, Draining, Failed, Stopped }
 pub enum DrainReason { Replan { successor: PlanEpoch }, Unload, Shutdown, NodeLeaving, RestartBudgetSpent }
 /// Why a runner stopped (§18.28): after a drain, or from `Failed` (§3.3). Not the API's completion reason.
+/// From `Failed`, a spent restart budget is `Drained(DrainReason::RestartBudgetSpent)` and a fatal error
+/// `Fatal(class)`, so the supervisor and the event log name the same reason (§18.34).
 pub enum StopReason { Drained(DrainReason), Fatal(ErrorClass) }
 ```
 
@@ -1556,7 +1657,7 @@ pub struct Error {
     pub scope: ErrorScope,                      // Sequence(SequenceId) | Stage(StageIx) | Runner
                                                 // | Node(NodeId) | Link(LinkId) | Instance | Cluster
     pub retry: RetryHint,                       // Never | After(Nanos) | OnNewPlan | Backoff
-    pub context: SmallVec<[(&'static str, String); 4]>,
+    pub context: SmallVec<[(Cow<'static, str>, String); 4]>, // Cow since 2026-10-23 (§18.32)
     pub source: Option<Box<Error>>,
 }
 
@@ -1578,6 +1679,10 @@ pub enum ErrorClass {
 ```
 
 §10 defines what each class triggers.
+
+*Note 2026-10-28 (as built, COMP-E13-T15):* two parts of `core::Error`'s behaviour are visible on the wire.
+- **`MAX_SOURCE_DEPTH` = 16.** A decode refuses an error whose `source` chain is deeper than 16 sources below the outermost error. A nested chain decodes by recursion, so without the bound a forged `ErrorReport` frame could exhaust the receiver's stack. `Error::with_source` keeps a chain it builds within the same bound, so a sender never builds an error its receiver refuses. Past the bound it keeps the outermost sources and drops the deepest ones, unlinking them one at a time.
+- **The `sources_dropped` context key** (`core::SOURCES_DROPPED`). The deepest error kept records how many sources were dropped, including any an earlier cut recorded. A received count is untrusted, so the sum saturates at `u64::MAX`.
 
 ### 5.13 Ownership summary
 
@@ -1615,7 +1720,8 @@ pub enum ErrorClass {
 | `GrammarRef` | core (added 2026-10-23; §5.8's note) | 0050 | 0012 (masks) |
 | `ClusterCommand`, `ClusterEvent`, `LogEntry`, `ClusterState` | cluster | 0032 | 0030 (membership, admission), 0011 (placement), 0033 (recovery), 0034 (security), 0041 (store), 0022 (sessions), 0054 (`ConfigPatch`), 0023 and 0012 (`WorkloadReport`) |
 | `RunnerState` | core | 0001 | 0033 (`Degradation`, restart policy) |
-| `Error`, `ErrorClass` | core | 0001 | every RFC (codes) |
+| `ReplanReason`, `DriftTerm`, `WorkloadTerm` | core (added 2026-10-23, §18.33) | 0033 | 0010 (the terms), 0031 (`DriftTerm::Hop`), 0054 (`Config { keys }`) |
+| `Error`, `ErrorClass`, `ErrorCode`, `Domain` | core | 0001 | every RFC (codes in its domain; the `Domain` variant and range come with its table), 0050 (the API shape per code) |
 | Policy objects (`Objective`, `ExactnessPolicy`, `ResourcePolicy`, `ResourceOverlay`, `InstancePolicy`), and the plain-data field types `config` parses into (`Fidelity`, `ApproxParams`, `NetworkScope`, `Reserve`, `Fraction`, the selectors, `PlacementPin`, `TensorOverride`, `KeyPath`, `ConfigValue`; OQ-PRD-27) | core | 0054 | 0011, 0012, 0042 |
 | Canonical encoding (`canon::to_bytes`), behind `InstancePolicy::canonical_bytes` and `digest_with` | core | 0054 (§4.5) | |
 | `MonoTime`, `Clock`, `Entropy`, `TickSource`, `ProtocolCore`, `Outbox` | core | 0060 | 0030, 0032, 0033 (the protocol cores) |
@@ -1662,6 +1768,13 @@ pub struct Outbox<O> { items: SmallVec<[O; 8]> }
 ```
 
 The production sources are in `io` (ADR-0022), and the simulator's are in `testkit`.
+
+*Note 2026-10-28 (owner addition, proposed, §18.47; DIST-E1-T06):* `core::clock` gains three pieces, and `io`'s `SystemClock` implements the trait.
+- `AwakeTime`, a reading of the clock that stops during suspend. It moved from `io`, which re-exports it.
+- `AwakeClock: Clock`, with `awake()` and `tick()`.
+- `SuspendDetector`, which turns two successive observations of both clocks into an `Interval { running, awake }`, with `suspended(slack)` and `late(expected, slack)`.
+
+Code that detects a suspend takes an `AwakeClock`, so it runs on virtual time. That is the runner supervisor (§3.4) and the membership shell's resume detection (RFC-0030 §5.8, DIST-E4-T05).
 
 - *Note 2026-10-22 (amendment, §18.10):* `SystemClock` and `OsEntropy` moved from this block to `syntropy_io::os`. Reading a suspend-aware clock needs an `unsafe` OS call, and the OS CSPRNG needs `getrandom`, which rules 1 and 8 of §4.2 keep out of `core`. Their two rules moved with them: `SystemClock::now` reads a suspend-aware clock (`CLOCK_BOOTTIME`, `mach_continuous_time`, `QueryInterruptTime`), never one that stops during sleep, and key material always comes from `OsEntropy`. The same module also reads the clock that stops during suspend, which RFC-0030 §5.8 compares with `now` to detect a suspend.
 
@@ -1873,6 +1986,7 @@ sequenceDiagram
 | `NodeAdmitted` | deferred | solve in the background; adopt only when the predicted gain passes the hysteresis threshold and the move pays back (below) |
 | Capability drift: a measured term more than `replan.drift_threshold` (default 20%) off the profile for longer than `replan.drift_window` | deferred | `ReportProfile`, `GraphUpdated`, then as for `NodeAdmitted`. The 10% drift event of §7.4 is telemetry only |
 | Workload drift: hit curves, acceptance or context lengths off what the plan assumed (`WorkloadUpdated`, RFC-0010 §7) | deferred | delta solve over budgets only (RFC-0011 §12.3); a delta that improves predicted `t_tok` by at least 2% is adopted in place, since nothing moves; otherwise as for `NodeAdmitted` |
+| A hop demoted to another transport (RFC-0031 §3, §7.4), applied as RFC-0033 §11's `EdgeDemoted` event | deferred | the next solve costs the new transport; solve in the background and adopt as for `NodeAdmitted`, with `ReplanReason::Drift { term: DriftTerm::Hop { link, transport } }`, `transport` the planned one (RFC-0033 §6.1, note of 2026-10-23) |
 | Sustained memory pressure (§10.3) | deferred | first degrade locally; re-plan only when the ladder is exhausted or pressure outlasts `replan.pressure_window` |
 | User: load, unload, policy change; a cluster or `hot` node key the solver reads (headroom, labels, GPU filters) | as requested | new epoch (`ReplanReason::Config`) |
 
@@ -1962,6 +2076,8 @@ All rings are lock-free SPSC with power-of-two capacity, cache-line padded, and 
 6. **The bulk plane yields to the data plane.** Weight and session transfers on a link that carries a ring hop are rate-limited so that hop's measured p99 α stays within its plan prediction (RFC-0031).
 7. **Expert-cache changes never block a step.** Victims are dropped at once; newcomers become visible when their copy lands.
 8. **Telemetry is lossy.** A full `telemetry` ring drops the oldest samples and counts the drops.
+
+*Note 2026-10-27 (PROD-E8-T01, §18.43):* a full lossy ring, `telemetry` or a dispatcher's step ring, drops the **new** record, not the oldest. An SPSC producer cannot take back a record its consumer has not read. The writer counts the drop (`syntropy_obs_ring_dropped_records_total{ring}`), and the write never waits. The telemetry drain keeps its last read for the series a dropped record carried, and sends those deltas again with its next records, so the record is lost but the counts it carried are not.
 
 ## 9. Memory model
 
@@ -2719,7 +2835,9 @@ Changes these passes need in documents this RFC does not edit. The Area column n
 | SC-17's bound is `α_wire + S/β + 2 · t_switch`; Goals item 3 and §5.3 still quote `α_wire + 2 · t_switch`. Done 2026-10-20 | DIST | RFC-0032 Goals, §5.3 |
 | RFC-0062 §12.1: row 1 checks `core`'s normal and build dependencies (rule 1's 2026-10-21 note), and row 7 is named for rule 7 as it now reads (GPU providers ship in backend modules) instead of "backends are cargo features resolved at runtime" | QUAL | RFC-0062 §12.1 |
 
-### 18.6 Core types for the I/O interface (2026-10-21)
+### 18.6a Core types for the I/O interface (2026-10-21)
+
+*Note 2026-10-23:* this entry was headed §18.6, a number §18.6 "Changes requested in other documents" already had. It is §18.6a, so the log keeps its date order without renumbering the entries after it. The two citations of §18.6, in this section's introduction and in §18.2's row on the b2 prefill figure, mean "Changes requested in other documents", and no text cited this entry by number.
 
 `syntropy-io`'s interface (RFC-0021 §2) needs types that other crates share. They are placed in `core`.
 
@@ -2887,7 +3005,7 @@ DIST-E7-T01 defines `net::transport::PoolMemory`, an `unsafe trait`: implementin
 
 | Change | Sections touched | Reason |
 |---|---|---|
-| `AttnKind::Compressed` becomes `Compressed { sinks: bool }`, so `KernelClass::Attention` carries the sink flag. `AttnIndex(CompressedTopK)` runs only on layers whose ratio has an indexer (r = 4), r = 128 layers read every formed entry, and r = 0 layers read the raw window alone. `deepseek4` lists `AttnIndex(CompressedTopK)` as its indexer and no longer lists `SparseIndexed` or a separate `SlidingGqa` | §5.2 (`KernelClass` doc); RFC-0040 §3.1 (dated note); RFC-0043 §3.1, §5.5, open question 2; ADR-0003 (revision note, decision 1 unchanged). In code, `core`'s `AttnKind::Compressed` is still a unit variant, and COMP-E1-T10 moves it, changing its serde form and the IPC schema fingerprint | COMP-E16-T18 settles OQ-MF-16 (a)–(c) from the reference code COMP-E16-T15 read (`deepseek-ai/DeepSeek-V4-Pro` revision `b5968e9190ef611bbf34a7229255be88a0e937c1`). For the maintainers to confirm |
+| `AttnKind::Compressed` becomes `Compressed { sinks: bool }`, so `KernelClass::Attention` carries the sink flag. `AttnIndex(CompressedTopK)` runs only on layers whose ratio has an indexer (r = 4), r = 128 layers read every formed entry, and r = 0 layers read the raw window alone. `deepseek4` lists `AttnIndex(CompressedTopK)` as its indexer and no longer lists `SparseIndexed` or a separate `SlidingGqa`. In code, `core`'s `AttnKind::Compressed` is still a unit variant, and COMP-E1-T10 moves it, changing its serde and postcard forms, so that change bumps `ipc_protocol` (§18.20) and the IPC schema fingerprint changes with it | §5.2 (`KernelClass` doc); RFC-0040 §3.1 (dated note); RFC-0043 §3.1, §5.5, open question 2; ADR-0003 (revision note, decision 1 unchanged) | COMP-E16-T18 settles OQ-MF-16 (a)–(c) from the reference code COMP-E16-T15 read (`deepseek-ai/DeepSeek-V4-Pro` revision `b5968e9190ef611bbf34a7229255be88a0e937c1`). For the maintainers to confirm |
 
 ### 18.28 Types the IPC carries live in `core`, and their messages arrive with them (2026-10-23)
 
@@ -2913,9 +3031,153 @@ DIST-E10-T10 model-checked OQ-NET-34's option (a), which was settled under the m
 |---|---|---|
 | `PrefixRef` and its `PrefixKey` and `TailId`, and `GrammarRef`, are `core` types in `core::sequence`. `TailId` was one of TIER-E6-T02's supporting types, listed in RFC-0022's KV listing; TIER-E6-T02 and TIER-E7-T01 now use `core`'s, and PROD-E3-T05 uses `core`'s `GrammarRef`. `LogprobBlock { k: 0 }` is the chosen tokens' logprobs alone, which `net` cannot encode until OQ-NET-35 settles. `TokenEntry::rng_counter` has no serde default | §5.8 (dated notes of 2026-10-23), §5.13; RFC-0022 §7.1, §7.2; RFC-0031 §6.5 (dated notes); RFC-0050 §3.1 (dated note) | DIST-E1-T14 builds `SequenceOpen` and `SamplingParams`, which hold these types, and `core` cannot name a type of `tier` or `api` (review-1493's N5 on #1780). For the maintainers to confirm |
 
+### 18.31 Link selection's cost, home and demotion report (2026-10-23)
+
+DIST-E7-T11's criteria needed three things RFC-0031 §3 named but no task defined: a cost function the solver could call, a type for the demotion, and a message to report it. They were settled under the maintainers' standing instruction.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `LinkCaps` (§5.2) and `link_cost(caps, size, objective, λ) -> Nanos` live in `core::resource::link`; `net`'s `Transport::cost` delegates to it | RFC-0031 §3 (dated note) | the solver picks a hop's transport by `cost_t` and must not depend on `net`; no task had built §5.2's base `LinkCaps` |
+| `cost_t` is the selection cost between an edge's transports, not the objective's hop term, which stays RFC-0011 §5's `α^plan + S/β` with C14's wireless costing; z defaults per transport [estimate], derived in the note | RFC-0031 §3 (dated note) | λ = 1.0 on Wi-Fi predates C14 (2026-10-20), which costs wireless hops at their mean in the objective |
+| A hop's demotion is reported in one new R → D message, `EdgeDemoted { demotion, cause, cost }`, for both the connect-time fallback (RFC-0031 §3) and the fault-time demotion (RFC-0031 §7.4); `Demotion` and `DemotionCause` are in `core`; the daemon forwards it as RFC-0033 §11's `ReportEdgeDemoted`; its `cost` is §3's drift report, not sent twice; `TRANSPORT_DEMOTED` is set from it by DIST-E14-T13 | §3.5; RFC-0031 §3 (dated note) | §3.5 had no message for either path, and RFC-0033 §11's `ReportEdgeDemoted` names a `cause` no type held. `Degradation` is built at M3, after DIST-E7-T11 (M2). A re-plan for it needs `ReplanReason::Drift` with a `DriftTerm::Hop { link, transport }`, and no task builds `ReplanReason` yet. For the maintainers to confirm |
+
+### 18.32 Default bodies in §5.7, and owned names in `Error` (2026-10-23)
+
+From issue #1525, the review of COMP-E1-T01.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| §5.7's comment says that `build`, `domain`, `poll` and `synchronize` have no default bodies | §5.7 | RFC-0040 §2.1, which §5.7 defers to, gives `build` and `domain` no body; the comment named only `poll` and `synchronize` |
+| `Error::context`'s keys are `Cow<'static, str>`, not `&'static str` | §5.12 | `Error` crosses the IPC in `ErrorReport` (§3.5), and decoding a `&'static str` needs a buffer that lives for the whole program, so every decode would leak one. Code still writes literal keys without allocating. RFC-0040 §2.2 makes the same change to `ProviderId` and `ProviderBuild` (note of the same date) |
+
+### 18.33 `ReplanReason` in `core`, with its term types (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ReplanReason` (RFC-0033 §6.1) is plain data in `core`, built by a new task, DIST-E14-T21, at M1a; `DriftTerm` gets one variant per RFC-0010 §6.2 live estimator (`Bandwidth`, `FixedTime`, `Storage`, `HostLink`, `Hop`) and is `#[non_exhaustive]`; `WorkloadTerm` gets RFC-0010 §7.1's | §5.13; RFC-0033 §6.1 (dated note) | ten tasks, the first at M1a, use it and no task built it; the solver reads it in `SolveInput::reason` and cannot depend on `cluster`. `DriftTerm` was named but never defined. For the maintainers to confirm |
+| A hop demoted to another transport is a deferred trigger, solved in the background and adopted as for `NodeAdmitted`, with `DriftTerm::Hop` naming the planned transport; DIST-E14-T15, which applies RFC-0033 §11's `EdgeDemoted` event, raises it | §7.2; RFC-0011 §12.1 (the matching row) | §7.2 had no row for the demotion, which RFC-0031 §3 and §7.4 raise and RFC-0033 §11 records |
+
+### 18.34 The split heal in ADR-0009, and the stop reason of a spent restart budget (2026-10-23)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| ADR-0009 item 7's "On heal, the higher epoch wins" is replaced by ADR-0304's heal order, now its standings comparison | ADR-0009 (revision of 2026-10-23, item 7 marked) | ADR-0304 has ranked support ahead of the counter since 2026-10-19 (item 3 of its "Revised 2026-10-19, second revision" block), so item 7 had contradicted it since then; RFC-0032 §7.5 and DIST-E10-T05 follow ADR-0304 (the review of #1783) |
+| `Failed → Stopped` on a spent restart budget carries `StopReason::Drained(DrainReason::RestartBudgetSpent)`; on a fatal error, `Fatal(class)` | §5.11 (`StopReason` doc); DIST-E1-T05 | §3.3's edge named both causes, and both variants could carry the first; the supervisor and the event log now name the same one (the review of #1789) |
+
 ### 18.35 Hardware jobs before their rigs run (2026-10-23)
 
 | Change | Sections touched | Reason |
 |---|---|---|
 | A hardware job whose rig and `lab.yml` job do not exist yet is marked `planned` in `ci/jobs.toml`. `ci-gate` does not hold a same-repository PR for it, but still holds a fork PR. QUAL-E2-T02 ends the interim for `hw-cuda-ada`, and QUAL-E2-T08 adds the other Tier 1 rigs' jobs | ADR-0620 decision 3 (dated revision); RFC-0062 §2.5 (dated note) | QUAL-E1-T07 requires hardware for every PR touching the hardware paths, months before the first rig runs. Without the interim, most engine and networking PRs could not merge. Fork PRs keep ADR-0620 decision 4's rule. Taken under the maintainer's standing instruction, for the maintainers to confirm |
 | The direct hardware paths gain `numerics/`, the tolerance tables `kernels` embeds | ADR-0620 decision 3 (dated revision); RFC-0062 §2.2 (dated note) | the op conformance a hardware job runs checks against those tables, so a change to a ceiling alone changes what the rig judges. From the engine-lane review of #1830 |
+
+### 18.38 The API's local socket in `ipc` (2026-10-27)
+
+PROD-E2-T01 builds the HTTP server of RFC-0050 §1.1, with its local socket.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `api` depends on `ipc`; `ipc` gains `AsyncListener`, the owner-only endpoint and peer check of §3.5 for servers on tokio, outside `--cfg loom` | §4.1 (row and dated note) | the local socket needs the same owner-only endpoint and OS peer check as the daemon-runner channel, which need `unsafe`, which rule 8 confines to `ipc`; `/v1/syntropy/version` reports `ipc`'s protocol major. For the maintainers to confirm |
+
+### 18.39 The M0 records of the local rings (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| Until DIST-E11-T03 (M2), each slot of `local_sequences` and `local_tokens` holds one postcard-encoded `SequenceControl` or `TokenFrame`, the `core` types themselves, encoded and decoded by `syntropy_ipc::shm::records` alone. DIST-E11-T03 moves both rings to RFC-0031 §6's frame bytes. `ipc_protocol` stays 1.0 | §3.5 (dated note); RFC-0031 §1 (dated note) | RFC-0031 §1 has these rings carry §6's frame bytes, but §6 has no sequence-control frames until DIST-E8-T05 (M2), and §5.8's note of 2026-10-23 already has M0 parity taps travel on `local_tokens` as `core` types. Ingress (PROD-E2-T02), the one-stage lifecycle (PLC-E8-T01) and the fake runner (QUAL-E3-T18) need one shared encoding at M0a. No build has shipped, and the rings' record types were already declared as these, so the protocol needs no bump. Taken under the maintainers' standing instruction, for the maintainers to confirm |
+
+### 18.40 The CLI's client edges (2026-10-27)
+
+PROD-E6-T01 builds the CLI skeleton of RFC-0051 §1–§2.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `cli` depends on `api` and `ipc` | §4.1 (row and dated note) | the client uses the server's `syntropy-api` types, as RFC-0051 §1 requires, and the local socket's client end in `ipc`. For the maintainers to confirm |
+
+### 18.41 `api` holds the local rings' ends (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `api` depends on `spsc`, beside §18.38's `ipc` | §4.1 (row and note) | the ingress pipeline (RFC-0050 §2, PROD-E2-T02) holds the daemon side's `local_sequences` producer and `local_tokens` consumer, `spsc`'s shared ring ends, which `ipc`'s region hands out. Rules 2, 3 and 8 allow it. For the maintainers to confirm |
+
+### 18.42 The binary's configuration registry (2026-10-27)
+
+PROD-E6-T23 builds `config show --resolved`, `config check` and `config path` in the CLI.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `cli` depends on `cluster`, `net` and `sched` | §4.1 (row and dated note) | the configuration commands resolve over the binary's section registry, which needs every crate that declares a section; `cli` is the one crate above them all. For the maintainers to confirm |
+
+### 18.43 Lossy rings drop the new record, and telemetry records name series (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A full `telemetry` or step ring drops the new record, not the oldest, and counts it; the telemetry drain sends the dropped deltas again with its next records | §8.4 rule 8 (dated note); RFC-0053 §1 (dated revision); PLC-E7-T10's criterion | an SPSC producer cannot take back a record its consumer has not read, so "drops the oldest" cannot be built on the rings of §3.5. Re-sending the deltas keeps the counts a dropped record carried. Found by PROD-E8-T01 and the review of #1922 |
+| `TelemetryRecord`'s deltas name a `SeriesId`, one metric with its label values bound at registration, not a `MetricId`; a new last variant, `Series`, tells the daemon each ID's metric and label values before any record uses it | RFC-0053 §1 (dated revision), §2.1 (note) | a `MetricId` cannot tell two label sets of one metric apart, and labels are bound at registration (RFC-0053 §2.1), so the record needs the bound series' ID. Each change to the record's variants changes the ring's record schema, which `ipc_protocol` covers |
+
+Taken under the maintainers' standing instruction, for the maintainers to confirm.
+
+### 18.44 A test-only fault-plan message on the command channel (2026-10-27)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| With `fault-injection` only, `SetFaultPlan(toml)` daemon → runner and `FaultPlanSet(result)` runner → daemon, at the fixed wire index 2²⁰ above every production variant; production builds have neither and refuse the frame as an unknown variant; `ipc_protocol` unchanged | §3.5 (dated note); RFC-0060 §9.2 (dated note) | RFC-0060 §9.2 pushes fault plans "over IPC in tests", and §3.5 had no message for it (DIST-E1-T13, split from QUAL-E9-T01). A fixed index keeps the production indices, and every frame of a production message, the same whether or not the feature is on, whatever production variants are appended later. Proposed for the maintainers to accept |
+
+### 18.45 The runner lifecycle machine as built (2026-10-28)
+
+DIST-E1-T05 builds RFC-0001 §3.3's machine and moves `StateChanged` to `RunnerState`. Proposed for the maintainers to accept.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| The edge table is `RunnerStateKind::can_become` in `core`; the machine is `runner`'s `lifecycle::Lifecycle`; a transition is a change of kind or `Ready → Ready` under a later epoch, and progress inside a state sends nothing | §3.3 (dated note) | `core` may hold pure functions over plain data, so the supervisor and the runner judge transitions by one table. The machine returns `ipc`'s `RunnerMsg`, which `core` cannot name |
+| `ipc_protocol` 2.0: `StateChanged { state: RunnerState }` replaces the `u32` discriminant | §3.5 (dated note) | a changed field type cannot be read by a 1.x peer, so the bump is major. `Hello` is unchanged, so the version check still runs |
+| The daemon forwards `StateChanged` up to a `ReportSink` seam | §3.5 (dated note) | `ClusterCommand::ReportRunner` and its client are DIST-E9's and not built |
+| A change of `degraded` is in place and sends no message until the next transition | §3.3 (dated note) | left open as OQ-NET-36 for DIST-E14-T13, the task that first sets `degraded`, against RFC-0033 §7.1's dashboard and response metadata |
+| A runner not yet `Ready` has no clean stop: §3.3 has no edge from a bring-up state to `Draining` or `Stopped` | §3.3 (dated note) | not settled here; for the maintainers, with DIST-E1-T06's supervisor (the review of #1932) |
+
+### 18.46 `LayerKv`'s latent flag (2026-10-28)
+
+TIER-E6-T01 builds `KvFormula`. Its owner, RFC-0022, adds a field to three `LayerKv` variants.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `LayerKv::PerToken`, `Sparse` and `Compressed` gain `latent: bool` with a serde default of `false`; the family sets it, and `LayerKv::mla` does | §5.3 (dated note); RFC-0022 §2 (dated note) and its "Proposed amendments to RFC-0001" item 1 | RFC-0022 §9 defines `K8V4` by K and V planes, and a latent is not a K/V pair, so the sizes must tell the two apart. A latent is sized as `Q8` until OQ-IO-30 is settled. Block-sparse and QSA-class layers store K/V pairs, so the flag is per layer, not per variant (the review of #1935) |
+
+### 18.47 The runner supervisor, and the suspend detector in `core` (2026-10-28)
+
+DIST-E1-T06 builds §3.4's supervisor. Proposed for the maintainers to accept.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `core::clock` holds `AwakeTime` (moved from `io`), the `AwakeClock` trait and `SuspendDetector`; `io`'s `SystemClock` implements the trait | §5.14 (dated note); RFC-0030 §5.8 (dated note) | the supervisor and DIST-E4-T05's resume detection both need the stopped-clock reading on virtual time. A trait in `core` lets `daemon` and `cluster` take it without naming `SystemClock` (ADR-0022 decision 2, rule T1) |
+| The supervisor counts silence in excused time; a hang or stall kill is class `Timeout`; the jitter range and the sample period are chosen values; `ReportRunnerFailed` carries a class and a count until `ErrorSummary` is defined | §3.4 (dated note) | as built. All four are labelled [chosen] for review: the class follows §5.12's definition of `Timeout` |
+| The shared-memory header gains a live-sequence count, written by the runner and read by the supervisor's stall check; the region's layout version goes to 2 and `ipc_protocol` to 3.0 | §3.5 (dated note) | the runner's machine changes its live count in place, with no `StateChanged`, so without the word a stall could never be seen (the review of #1937). The header grows by a line and the ring table moves, which a 2.x reader cannot read, so the bump is major |
+| `runner.load_stall` and a clean stop before `Ready` are not built | §3.4 (dated note) | the first needs fetch progress that no message carries; the second is the open point of §3.3's note of 2026-10-28 |
+
+### 18.48 The `kv_dtype` override is a per-model instance key (2026-10-28)
+
+COMP-E13-T06 builds RFC-0042 §4.2's KV dtype rule and its override. The override's key moves to where RFC-0054 puts every per-model setting.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| RFC-0043 §10's node key `models.<name>.kv_dtype` becomes the instance key `kv_dtype` of a `[policy."<selector>"]` table, taking `f16`, `bf16` or `f32` | RFC-0043 §10 (dated note); RFC-0054 §5.4 (a row and a dated note); RFC-0042 §4.2 (dated note on the rule) | RFC-0054 §5.1 keeps per-model policies out of `models.*`, as it did for `chat_template`. A node-scope dtype would let two ingress nodes build different instances of one model, which breaks the idempotence of `EnsureInstance` (RFC-0054 §6.1). The override replaces only the source's default. It is refused where it would narrow that default, or replace a family requirement or a declared FP8 cache, so lower precision stays `approximate.kv_lossy` (D3; RFC-0042 §4.2, note of 2026-10-28) |
+
+### 18.49 Span records reach the daemon through the `telemetry` ring (2026-10-28)
+
+PROD-E8-T07 builds local tracing (RFC-0053 §3.1–§3.4).
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| Hot threads write 64-byte `SpanRecord`s into in-process rings, and housekeeping batches them into a new last `TelemetryRecord` variant, `Spans`; `ipc_protocol` goes from 3.0 to 4.0 | §3.5 (the `telemetry` ring's records); RFC-0053 §3.4 (dated note) | RFC-0053 §3.4 has housekeeping batch the spans into `TelemetryRecord::Spans`, so no new shared-memory ring is needed. Appending a variant keeps every earlier variant's index, but a 4.0 runner writes `Spans` whenever it records spans, and a 3.x daemon cannot decode one. A change is compatible only when every older reader can read all a newer writer sends it, so this one moves the major. Adoption needs equal versions anyway (§3.5) |
+| `SpanRecord` holds four attributes, not six, to stay 64 bytes | RFC-0053 §3.4 (dated note) | the six of §3.4 make a 70-byte record; a step's term durations come from its `StepRecord` |
+
+Taken under the maintainers' standing instruction, for the maintainers to confirm.
+
+### 18.50 Shards and packs in `core`, and their messages (2026-10-28)
+
+COMP-E10-T11 builds the remaining identities of RFC-0041 §1 and the two messages that carry a shard and a pack.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ShardSpec`, `PackKey`, `ChunkId` and `LayoutVersion` are `core` types. `ShardSpec::new_with` takes the hash function, and `PackKey::for_shard` builds a key from a spec. `kernels` and `manifest` re-export them | §5.6 (dated note) | §18.28 moved them to `core` so that `ipc` can carry them. `core` links no hasher, so the digest follows the `InstancePolicy::digest_with` pattern |
+| `RunnerMsg` gains `FetchShard { spec, priority }` and `PackCommitted { key, sidecar }`, and `ipc_protocol` goes from 4.0 to 5.0 | §3.5 (the two rows) | they are the messages §3.5's note of 2026-10-23 assigns to COMP-E10-T11. A 5.0 runner sends them in normal operation and a 4.x daemon cannot decode them. A change is compatible only when every older reader can read everything a newer writer sends it, so the major moves. |
+| `TensorRecord::hash`, `ShardSpec::digest` and `ExtentKey` have fixed byte encodings, with golden values computed apart from the implementation. The tensor hash is a domain-separated binary Merkle tree split at the largest power of two. `ExtentKey`'s "layout ID and its version" are the extent's own layout and the layout-table version | RFC-0041 §1 (dated note) | RFC-0041 §1 named each identity's inputs but not its bytes. Its `ExtentKey` row leaves the version open, and the layout-table version is the one version the plan defines. For the maintainers to confirm |

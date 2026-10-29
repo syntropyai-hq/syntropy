@@ -21,20 +21,51 @@
 //!   is usable (RFC-0060 §2.1, note of 2026-10-22).
 //! - The `thread` functions place hot threads: [`cpu_topology`], [`pin_current_thread`],
 //!   [`raise_current_thread_priority`] and [`current_core`] (ADR-0012 item 2).
+//! - [`checks`] holds OS system calls that need `unsafe`, behind safe functions that `probe`,
+//!   `cluster` and `daemon` call (RFC-0001 §4.2 rule 8, note of 2026-10-22; OQ-PRC-26): so far
+//!   E1's Linux AMX tile-data permission request and `io_uring_setup` check (RFC-0010 §2.2).
+//! - `macos_host` and `windows_host` hold the system calls of E1 host enumeration that
+//!   `probe` makes through safe functions (RFC-0010 §2.2; OQ-PRC-26): sysctl reads,
+//!   `host_statistics64` and IOKit power sources on macOS; processor, memory, NUMA, power,
+//!   working-set and version calls on Windows.
+//! - The `private` functions make the owner-only state directory and node key file of RFC-0030
+//!   §2.1–§2.2 for `cluster` and `daemon` (OQ-PRC-26): [`private_dir`], [`create_private_file`],
+//!   [`sync_dir`] and [`is_owner_only`].
+//! - [`file_identity`] reads an open file's (device, inode) pair, the volume serial number and
+//!   file index on Windows, for the local index's record of RFC-0041 §4.3 that `store` keeps.
+//! - [`set_sparse`], [`punch_hole`] and [`allocated_bytes`] make a file sparse, free the blocks
+//!   under a range of it, and read the bytes it holds on disk, for the store's sparse source
+//!   blobs (RFC-0041 §4.2, §4.4).
+//! - [`log_sink`] holds the OS log facilities the daemon's log sinks write to: unified logging
+//!   on macOS and the event log on Windows (RFC-0053 §4.2; PROD-E8-T04).
 //!
 //! Every `unsafe` block carries a `// SAFETY:` comment with its invariant (ADR-0001 item 4).
 
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+pub mod checks;
+mod identity;
+pub mod log_sink;
+#[cfg(target_os = "macos")]
+pub mod macos_host;
+mod private;
+mod sparse;
 mod thread;
+#[cfg(windows)]
+pub mod windows_host;
 
+pub use identity::{FileIdentity, file_identity};
+pub use private::{create_private_file, is_owner_only, private_dir, sync_dir};
+pub use sparse::{allocated_bytes, punch_hole, set_sparse};
 pub use thread::{
     Core, CoreId, PinError, Priority, cpu_topology, current_core, pin_current_thread,
     raise_current_thread_priority,
 };
 
-use syntropy_core::{Clock, DeviceClockSync, Entropy, MonoTime, Nanos, TickRate, TickSource};
+use syntropy_core::{
+    AwakeClock, Clock, DeviceClockSync, Entropy, MonoTime, Nanos, TickRate, TickSource,
+};
 
 /// The production [`Clock`]: monotonic nanoseconds that include time the host spent suspended,
 /// and the wall clock from [`SystemTime`].
@@ -64,8 +95,9 @@ impl SystemClock {
         AwakeTime(platform::awake_nanos())
     }
 
-    /// One tick of the coarser of the two clocks: the slack a comparison of their differences
-    /// needs, since each reading is a whole number of its clock's ticks.
+    /// One tick of the coarser of the two clocks: a lower bound of the slack a comparison of their
+    /// differences needs. The two differences can disagree by two ticks plus the change in the
+    /// time between the two reads (`syntropy_core::Interval::suspended`).
     #[must_use]
     pub fn tick(&self) -> Nanos {
         Nanos(platform::tick_nanos())
@@ -86,16 +118,20 @@ impl Clock for SystemClock {
     }
 }
 
-/// A reading of the clock that stops while the host is suspended, in nanoseconds since an
-/// arbitrary origin ([`SystemClock::awake`]). It is not on [`MonoTime`]'s timeline.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AwakeTime(pub u64);
+/// A reading of the clock that stops while the host is suspended ([`SystemClock::awake`]).
+/// `core` defines it, beside the [`AwakeClock`] trait, so code that detects a suspend reads it
+/// through the trait and runs on virtual time in tests (DIST-E1-T06).
+pub use syntropy_core::AwakeTime;
 
-impl AwakeTime {
-    /// The awake time from `earlier` to `self`, or zero if `earlier` is later.
-    #[must_use]
-    pub fn saturating_duration_since(self, earlier: AwakeTime) -> Nanos {
-        Nanos(self.0.saturating_sub(earlier.0))
+/// The two readings through `core`'s trait, so the daemon's supervisor and the membership shell
+/// take an [`AwakeClock`] and never name `SystemClock` (rule T1; ADR-0022 decision 2).
+impl AwakeClock for SystemClock {
+    fn awake(&self) -> AwakeTime {
+        SystemClock::awake(self)
+    }
+
+    fn tick(&self) -> Nanos {
+        SystemClock::tick(self)
     }
 }
 
@@ -609,6 +645,33 @@ mod tests {
             let next = clock.now();
             assert!(next >= last, "now went back from {last:?} to {next:?}");
             last = next;
+        }
+    }
+
+    /// Through `core`'s trait, the two readings are the same clocks: a suspend detector sees
+    /// no suspend between back-to-back observations of a host that is awake.
+    #[test]
+    fn the_awake_clock_trait_reads_the_same_clocks() {
+        fn through<C: AwakeClock>(clock: &C) -> (MonoTime, AwakeTime, Nanos) {
+            (clock.now(), clock.awake(), clock.tick())
+        }
+        let clock = SystemClock::new();
+        let (_, a1, tick) = through(&clock);
+        let a2 = SystemClock::awake(&clock);
+        assert!(a2 >= a1);
+        assert_eq!(tick, SystemClock::tick(&clock));
+        // The two readings of an observation are taken one after the other, so their
+        // differences disagree by the time between the reads, not only by a tick: a slack of
+        // 1 ms is far above that and far below any suspend.
+        let mut detector = syntropy_core::SuspendDetector::new();
+        detector.observe_clock(&clock);
+        for _ in 0..1000 {
+            let interval = detector.observe_clock(&clock);
+            assert_eq!(
+                interval.suspended(Nanos(1_000_000)),
+                Nanos(0),
+                "{interval:?}"
+            );
         }
     }
 

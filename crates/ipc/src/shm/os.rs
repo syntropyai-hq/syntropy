@@ -29,6 +29,8 @@ fn random_name(prefix: &str, entropy: &dyn Entropy) -> String {
 }
 
 pub(super) use imp::Segment;
+#[cfg(windows)]
+pub(crate) use imp::{OwnerOnly, UserSid, wide};
 
 /// The mapping both Unix builds share: `mmap` of a descriptor, and the owner-only check.
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
@@ -309,9 +311,8 @@ mod imp {
                     Err(error) => return Err(error),
                 };
                 // SAFETY: `ftruncate` takes the open descriptor and a length, no pointers.
-                if let Err(error) =
-                    check(unsafe { libc::ftruncate(fd.as_raw_fd(), len as libc::off_t) })
-                {
+                let rc = unsafe { libc::ftruncate(fd.as_raw_fd(), len as libc::off_t) };
+                if let Err(error) = check(rc) {
                     // SAFETY: `name` is NUL-terminated; the object was created just above.
                     unsafe { libc::shm_unlink(name.as_ptr()) };
                     return Err(error);
@@ -438,7 +439,8 @@ mod imp {
     // SAFETY: shared access goes through the region's atomics and rings, which synchronise it.
     unsafe impl Sync for Segment {}
 
-    fn wide(text: &str) -> Vec<u16> {
+    /// `text` as NUL-terminated UTF-16.
+    pub(crate) fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
@@ -462,17 +464,24 @@ mod imp {
         string
     }
 
-    /// The current user's SID, from this process's token.
-    struct UserSid {
+    /// A process's user SID, from its token: this process's, or an IPC peer's (`cmd`).
+    pub(crate) struct UserSid {
         /// The `TOKEN_USER` and the SID it points to. `u64`s keep the `TOKEN_USER` aligned.
         buffer: Vec<u64>,
     }
 
     impl UserSid {
-        fn current() -> io::Result<UserSid> {
+        /// This process's user.
+        pub(crate) fn current() -> io::Result<UserSid> {
+            // SAFETY: the pseudo-handle of this process, valid for as long as the process.
+            UserSid::of_process(unsafe { GetCurrentProcess() })
+        }
+
+        /// The user of `process`, a handle with query rights.
+        pub(crate) fn of_process(process: HANDLE) -> io::Result<UserSid> {
             let mut token: HANDLE = std::ptr::null_mut();
-            // SAFETY: the pseudo-handle of this process, a query right, and a live output pointer.
-            if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            // SAFETY: a process handle, a query right, and a live output pointer.
+            if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
                 return Err(io::Error::last_os_error());
             }
             // SAFETY: `token` is the handle `OpenProcessToken` just returned, owned only here.
@@ -506,14 +515,14 @@ mod imp {
         }
 
         /// The SID, which points into `buffer`, so it lives as long as `self`.
-        fn sid(&self) -> PSID {
+        pub(crate) fn sid(&self) -> PSID {
             // SAFETY: `current` filled the buffer with a `TOKEN_USER`, aligned by the `u64`
             // buffer, whose SID pointer points into the same buffer.
             unsafe { (*self.buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid }
         }
 
         /// The SID in its string form, such as `S-1-5-21-…`.
-        fn text(&self) -> io::Result<String> {
+        pub(crate) fn text(&self) -> io::Result<String> {
             let mut text: *mut u16 = std::ptr::null_mut();
             // SAFETY: a valid SID and a live output pointer; on success the string is
             // `LocalAlloc`ed.
@@ -525,12 +534,38 @@ mod imp {
         }
     }
 
-    /// A security descriptor whose protected DACL has one entry: all access for the current user.
-    struct OwnerOnly(PSECURITY_DESCRIPTOR);
+    /// A security descriptor with a protected DACL: in production one entry, all access for the
+    /// current user; the test-only descriptor adds connect access for authenticated users.
+    pub(crate) struct OwnerOnly(PSECURITY_DESCRIPTOR);
+
+    // SAFETY: the descriptor is `LocalAlloc`ed memory that only this value refers to; any thread
+    // may read or free it.
+    unsafe impl Send for OwnerOnly {}
 
     impl OwnerOnly {
-        fn new() -> io::Result<OwnerOnly> {
-            let sddl = wide(&format!("D:P(A;;GA;;;{})", UserSid::current()?.text()?));
+        /// The descriptor, which lives as long as `self`.
+        pub(crate) fn descriptor(&self) -> PSECURITY_DESCRIPTOR {
+            self.0
+        }
+
+        pub(crate) fn new() -> io::Result<OwnerOnly> {
+            OwnerOnly::from_sddl(&format!("D:P(A;;GA;;;{})", UserSid::current()?.text()?))
+        }
+
+        /// Test only, and not owner-only: all access for the current user, and read and write
+        /// for every authenticated user, so a test can reach the IPC peer check from another
+        /// account (`cmd`'s `other_user` test).
+        #[cfg(test)]
+        pub(crate) fn open_to_authenticated_users() -> io::Result<OwnerOnly> {
+            OwnerOnly::from_sddl(&format!(
+                "D:P(A;;GA;;;{})(A;;GRGW;;;AU)",
+                UserSid::current()?.text()?
+            ))
+        }
+
+        /// The descriptor that the SDDL text `sddl` describes.
+        fn from_sddl(sddl: &str) -> io::Result<OwnerOnly> {
+            let sddl = wide(sddl);
             let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
             // SAFETY: a NUL-terminated SDDL string and a live output pointer; on success the
             // descriptor is `LocalAlloc`ed, and `drop` frees it.

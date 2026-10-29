@@ -108,6 +108,18 @@ pub const EXCEPTIONS: &[Exception] = &[
               `MemSnapshot::at`, a std `Instant` (RFC-0020 §3)",
     },
     Exception {
+        file: "crates/tier/src/os/windows.rs",
+        lints: &["clippy::disallowed_methods"],
+        why: "the Windows adapter, on the OS side of tier, not its policy: it stamps \
+              `MemSnapshot::at`, a std `Instant` (RFC-0020 §3)",
+    },
+    Exception {
+        file: "crates/tier/tests/commit_gate.rs",
+        lints: &["clippy::disallowed_methods"],
+        why: "an integration test whose scripted OS builds the std `Instant` that \
+              `MemSnapshot::at` holds",
+    },
+    Exception {
         file: "crates/core/src/canon.rs",
         lints: &["clippy::disallowed_types"],
         why: "a unit test feeds the canonical encoder a `RandomState` `HashMap` to show that \

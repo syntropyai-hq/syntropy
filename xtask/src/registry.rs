@@ -24,8 +24,9 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    changes, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom, plan_tools,
-    properties, repo_settings, sim_presets, toolchain,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
+    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
+    runner_build_id, sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -74,6 +75,12 @@ pub enum Action {
     /// `cargo <args>`, with the cargo that started xtask (`$CARGO`), so the toolchain pinned in
     /// `rust-toolchain.toml` runs every step.
     Cargo(&'static [&'static str]),
+    /// `cargo <args>` as [`Action::Cargo`] runs it, with environment variables set for the
+    /// child, replacing any it would inherit: the `rustdoc` step's `RUSTDOCFLAGS`.
+    CargoWith {
+        env: &'static [(&'static str, &'static str)],
+        args: &'static [&'static str],
+    },
     /// `cargo xtask <args>`: this binary again, as a child process, for a check that lives in
     /// xtask. It inherits the environment, so it checks the same checkout.
     Xtask(&'static [&'static str]),
@@ -90,6 +97,9 @@ impl PartialEq for Action {
     fn eq(&self, other: &Action) -> bool {
         match (self, other) {
             (Action::Cargo(a), Action::Cargo(b)) => a == b,
+            (Action::CargoWith { env: a, args: b }, Action::CargoWith { env: c, args: d }) => {
+                a == c && b == d
+            }
             (Action::Xtask(a), Action::Xtask(b)) => a == b,
             (Action::Builtin { shown: a, .. }, Action::Builtin { shown: b, .. }) => a == b,
             _ => false,
@@ -116,6 +126,20 @@ impl Action {
                 command.args(*args);
                 Some(command)
             }
+            Action::CargoWith { env, args } => {
+                let mut command = Command::new(cargo());
+                // Cargo prefers `CARGO_ENCODED_RUSTFLAGS` and `CARGO_ENCODED_RUSTDOCFLAGS` to the
+                // plain variables, even when they are empty, so an inherited one would replace the
+                // flags this step sets (`-D warnings` for rustdoc). Clear the encoded form of each
+                // flags variable the step sets.
+                for (name, _) in *env {
+                    if *name == "RUSTFLAGS" || *name == "RUSTDOCFLAGS" {
+                        command.env_remove(format!("CARGO_ENCODED_{name}"));
+                    }
+                }
+                command.envs(env.iter().copied()).args(*args);
+                Some(command)
+            }
             Action::Xtask(args) => {
                 // If the path is unknown, the step fails with "could not start".
                 let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("xtask"));
@@ -132,6 +156,22 @@ impl Action {
         match self {
             Action::Cargo(args) => {
                 let mut line = String::from("cargo");
+                for arg in *args {
+                    line.push(' ');
+                    line.push_str(arg);
+                }
+                line
+            }
+            Action::CargoWith { env, args } => {
+                let mut line = String::new();
+                for (name, value) in *env {
+                    if value.contains(' ') {
+                        line.push_str(&format!("{name}=\"{value}\" "));
+                    } else {
+                        line.push_str(&format!("{name}={value} "));
+                    }
+                }
+                line.push_str("cargo");
                 for arg in *args {
                     line.push(' ');
                     line.push_str(arg);
@@ -156,12 +196,25 @@ pub fn cargo() -> OsString {
     std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
+/// `lint`'s `rustdoc` step: the workspace's own crates documented with every rustdoc warning an
+/// error, a broken or ambiguous intra-doc link among them.
+pub const RUSTDOC: Action = Action::CargoWith {
+    // `-F` (forbid) on the link lint, so a crate cannot lift it with `#![allow(…)]` or a
+    // manifest `[lints]` entry: rustdoc then fails with E0453 (review of #1884, N4).
+    env: &[(
+        "RUSTDOCFLAGS",
+        "-D warnings -F rustdoc::broken_intra_doc_links",
+    )],
+    args: &["doc", "--workspace", "--no-deps", "--locked"],
+};
+
 /// The CI jobs, called by `cargo xtask ci <job>`. RFC-0062 §2.3 lists the jobs the plan expects.
 pub const JOBS: &[Entry] = &[
     Entry {
         name: "lint",
-        summary: "the L0 static checks: rustfmt, clippy with the determinism lints, the crate \
-                  dependency rules, CODEOWNERS and the licence policy",
+        summary: "the L0 static checks: rustfmt, clippy with the determinism lints, rustdoc, the \
+                  crate dependency rules, CODEOWNERS, the licence policy and the workflow \
+                  security rules",
         defined_in: "RFC-0062 §2.3 and §12.4",
         params: &[],
         steps: &[
@@ -189,6 +242,14 @@ pub const JOBS: &[Entry] = &[
                     "warnings",
                 ]),
             },
+            // Rustdoc with every warning an error, so a broken or ambiguous intra-doc link fails
+            // a PR (RFC-0062 §2.3, note 2026-10-22; QUAL-E1-T31). It rebuilds the dependencies'
+            // metadata for rustdoc rather than reusing clippy's: 31.8 s on #1869's cold-cache hosted run
+            // [measured, lint job at 1f96829e].
+            Step {
+                name: "rustdoc",
+                action: RUSTDOC,
+            },
             // What clippy cannot check about the determinism lints of RFC-0060 §2.1 and §2.4,
             // which the `clippy` step applies (QUAL-E3-T03).
             Step {
@@ -197,6 +258,23 @@ pub const JOBS: &[Entry] = &[
                     shown: "the covered crates keep ci/clippy-determinism.toml and lift it only \
                             where listed",
                     run: determinism::step,
+                },
+            },
+            // No `tracing` in hot-thread modules (RFC-0053 Testing; PROD-E8-T01).
+            Step {
+                name: "hot-threads",
+                action: Action::Builtin {
+                    shown: "the hot-thread modules hot_threads::MODULES lists use no tracing",
+                    run: hot_threads::step,
+                },
+            },
+            // RFC-0052 §6.5's orphan rule (DIST-E1-T04).
+            Step {
+                name: "orphan-rule",
+                action: Action::Builtin {
+                    shown: "the crates orphan_rule::CRATES lists set up no parent-death signal, \
+                            exit watch or kill-on-close job",
+                    run: orphan_rule::step,
                 },
             },
             Step {
@@ -280,6 +358,16 @@ pub const JOBS: &[Entry] = &[
                 name: "notices",
                 action: Action::Xtask(&["notices"]),
             },
+            // The workflow security lint and actionlint, over `.github/` (RFC-0062 §12.4;
+            // QUAL-E1-T09).
+            Step {
+                name: "workflows",
+                action: Action::Xtask(&["workflows"]),
+            },
+            Step {
+                name: "actionlint",
+                action: Action::Xtask(&["actionlint"]),
+            },
             // Scenario files, the SC map and RFC-0061 §4.2's table (QUAL-E13-T01, RFC-0061 §4).
             Step {
                 name: "scenarios",
@@ -325,14 +413,10 @@ pub const JOBS: &[Entry] = &[
                 },
             },
         ],
-        // The rest of RFC-0062 §2.3's `lint` row and the §12.4 workflow checks. Other task rows add
-        // further checks to `lint`. The row's DCO
-        // and PR-title checks need a PR's data, so they are the `dco` and `pr-title` jobs, which are
-        // separate required checks (RFC-0062 §2.5).
-        pending: &[Pending {
-            check: "actionlint and the workflow security lint",
-            task: "QUAL-E1-T09",
-        }],
+        // Other task rows add further checks to `lint`. RFC-0062 §2.3's `lint` row also names the
+        // DCO and PR-title checks, which need a PR's data, so they are the `dco` and `pr-title`
+        // jobs, separate required checks (RFC-0062 §2.5).
+        pending: &[],
     },
     Entry {
         name: "dco",
@@ -509,10 +593,22 @@ pub const JOBS: &[Entry] = &[
         params: &[],
         // Until the `pr` profile exists, the PR build is the `dev` profile, which the hosted
         // tests use too.
-        steps: &[Step {
-            name: "dev",
-            action: Action::Xtask(&["build", "--profile", "dev"]),
-        }],
+        steps: &[
+            Step {
+                name: "dev",
+                action: Action::Xtask(&["build", "--profile", "dev"]),
+            },
+            // Rule 7 on this OS's core binary, built with no default features (RFC-0062 §12.1,
+            // QUAL-E1-T28). `lint` runs it with the other rules, on Linux only.
+            Step {
+                name: "rule-7",
+                action: Action::Builtin {
+                    shown: "rule 7 of RFC-0001 §4.2: the core binary, built with no default \
+                            features, loads only system libraries",
+                    run: check_deps::rule_7_step,
+                },
+            },
+        ],
         pending: &[Pending {
             check: "the `pr` profile build, in place of the `dev` build",
             task: "QUAL-E16-T21",
@@ -664,6 +760,20 @@ pub const SUITES: &[Entry] = &[
                     "--locked",
                 ]),
             },
+            // Likewise `ipc`'s fault-plan message on the command channel, which a runner process
+            // installs and fires (DIST-E1-T13). `--workspace` runs its production half: the frame
+            // refused as an unknown variant.
+            Step {
+                name: "ipc-fault-injection",
+                action: Action::Cargo(&[
+                    "test",
+                    "--package",
+                    "syntropy-ipc",
+                    "--features",
+                    "fault-injection",
+                    "--locked",
+                ]),
+            },
         ],
         pending: &[],
     },
@@ -756,6 +866,39 @@ pub const SUITES: &[Entry] = &[
             action: Action::Builtin {
                 shown: "each listed property's tests with PROPTEST_CASES set",
                 run: properties::suite_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "runner-build-id",
+        summary: "a daemon refuses and kills a runner built from another commit at `Hello`, and \
+                  passes its own build's (QUAL-E16-T29): a second syntropy-cli build with another \
+                  SYNTROPY_BUILD_COMMIT, spawned through the daemon's process host",
+        defined_in: "RFC-0001 §3.1",
+        params: &[],
+        steps: &[Step {
+            name: "runner-build-id",
+            action: Action::Builtin {
+                shown: "build syntropy-cli with another commit, copy its binary, rebuild, and run \
+                        cli's ignored runner_build_id test against the copy",
+                run: runner_build_id::suite_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "cache-hit",
+        summary: "a comment-only change in `cli` recompiles `cli` alone (QUAL-E16-T03): two builds \
+                  of syntropy-cli, the second's compiler artifacts read from cargo's JSON",
+        defined_in: "RFC-0062 §8.1",
+        params: &[],
+        steps: &[Step {
+            name: "cache-hit",
+            action: Action::Builtin {
+                shown: "build syntropy-cli, touch its source, rebuild with another commit, and \
+                        check that every recompiled artifact is syntropy-cli's",
+                run: cache_hit::suite_step,
             },
         }],
         pending: &[],
@@ -866,8 +1009,12 @@ mod tests {
                 "xtask: cargo and rustc are the release rust-toolchain.toml pins",
                 "cargo fmt --all --check",
                 "cargo clippy --workspace --all-targets --locked -- -D warnings",
+                "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked",
                 "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
                  listed",
+                "xtask: the hot-thread modules hot_threads::MODULES lists use no tracing",
+                "xtask: the crates orphan_rule::CRATES lists set up no parent-death signal, exit \
+                 watch or kill-on-close job",
                 "cargo xtask check-deps",
                 "xtask: ci/properties.toml matches the property tests, RFC-0060 and the epics",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
@@ -882,6 +1029,8 @@ mod tests {
                 "cargo xtask spdx",
                 "cargo xtask third-party",
                 "cargo xtask notices",
+                "cargo xtask workflows",
+                "cargo xtask actionlint",
                 "cargo run --locked --quiet --package syntropy-bench --bin syntropy-bench -- \
                  scenarios check",
                 "xtask: every simulator preset cites its sources, and labels and sources each \
@@ -927,7 +1076,7 @@ mod tests {
     fn lint_lists_the_checks_later_tasks_add() {
         let lint = find(JOBS, "lint").expect("lint is registered");
         let tasks: Vec<&str> = lint.pending.iter().map(|p| p.task).collect();
-        assert_eq!(tasks, ["QUAL-E1-T09"]);
+        assert!(tasks.is_empty(), "{tasks:?}");
     }
 
     #[test]
@@ -936,8 +1085,8 @@ mod tests {
             let entry = find(JOBS, job).expect("the build jobs are registered");
             let commands: Vec<String> = entry.steps.iter().map(|s| s.action.display()).collect();
             assert_eq!(
-                commands,
-                [format!("cargo xtask build --profile {profile}")],
+                commands[0],
+                format!("cargo xtask build --profile {profile}"),
                 "{job}"
             );
             assert!(
@@ -945,8 +1094,13 @@ mod tests {
                 "{job}: no profile `{profile}`"
             );
         }
-        // `build` names the profile that replaces `dev`.
+        let release = find(JOBS, "build-test-release").unwrap();
+        assert_eq!(release.steps.len(), 1);
+        // `build-<os>` checks rule 7 on each OS's core binary (QUAL-E1-T28).
         let build = find(JOBS, "build").unwrap();
+        let steps: Vec<&str> = build.steps.iter().map(|s| s.name).collect();
+        assert_eq!(steps, ["dev", "rule-7"]);
+        // `build` names the profile that replaces `dev`.
         let tasks: Vec<&str> = build.pending.iter().map(|p| p.task).collect();
         assert_eq!(tasks, ["QUAL-E16-T21"]);
     }
@@ -998,6 +1152,7 @@ mod tests {
             [
                 "cargo test --workspace --locked",
                 "cargo test --package syntropy-obs --features fault-injection --locked",
+                "cargo test --package syntropy-ipc --features fault-injection --locked",
             ]
         );
     }
@@ -1036,6 +1191,92 @@ mod tests {
     #[test]
     fn names_keeps_registry_order() {
         assert_eq!(names(JOBS), JOBS.iter().map(|e| e.name).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn cargo_with_action_sets_its_environment_and_shows_it() {
+        let command = RUSTDOC.command().unwrap();
+        let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        assert_eq!(
+            env,
+            [
+                (std::ffi::OsStr::new("CARGO_ENCODED_RUSTDOCFLAGS"), None),
+                (
+                    std::ffi::OsStr::new("RUSTDOCFLAGS"),
+                    Some(std::ffi::OsStr::new(
+                        "-D warnings -F rustdoc::broken_intra_doc_links"
+                    ))
+                )
+            ]
+        );
+        let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+        assert_eq!(args, ["doc", "--workspace", "--no-deps", "--locked"]);
+        assert_eq!(
+            RUSTDOC.display(),
+            "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked"
+        );
+    }
+
+    #[test]
+    fn the_rustdoc_step_clears_an_inherited_encoded_flags_variable() {
+        let command = RUSTDOC.command().unwrap();
+        let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        assert!(
+            env.contains(&(std::ffi::OsStr::new("CARGO_ENCODED_RUSTDOCFLAGS"), None)),
+            "{env:?}"
+        );
+    }
+
+    /// `lint`'s `rustdoc` step, run on the fixture crate `tests/fixtures/rustdoc/<fixture>` with
+    /// a target directory of its own: whether it passed, and what cargo and rustdoc printed.
+    fn rustdoc_on(fixture: &str) -> (bool, String) {
+        let lint = find(JOBS, "lint").expect("lint is registered");
+        let step = lint
+            .steps
+            .iter()
+            .find(|s| s.name == "rustdoc")
+            .expect("lint has a rustdoc step");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/rustdoc")
+            .join(fixture);
+        let target = std::env::temp_dir().join(format!(
+            "syntropy-xtask-rustdoc-{}-{fixture}",
+            std::process::id()
+        ));
+        let output = step
+            .action
+            .command()
+            .expect("the step starts cargo")
+            .current_dir(&dir)
+            .env("CARGO_TARGET_DIR", &target)
+            .output()
+            .expect("cargo runs");
+        let _ = std::fs::remove_dir_all(&target);
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    #[test]
+    fn the_rustdoc_step_fails_an_unresolved_intra_doc_link() {
+        let (passed, log) = rustdoc_on("unresolved");
+        assert!(!passed, "{log}");
+        assert!(log.contains("unresolved link to `Missing`"), "{log}");
+    }
+
+    #[test]
+    fn the_rustdoc_step_fails_an_ambiguous_intra_doc_link() {
+        let (passed, log) = rustdoc_on("ambiguous");
+        assert!(!passed, "{log}");
+        assert!(log.contains("`thing` is both a"), "{log}");
+        assert!(log.contains("ambiguous link"), "{log}");
+    }
+
+    #[test]
+    fn the_rustdoc_step_passes_the_crate_with_its_links_fixed() {
+        let (passed, log) = rustdoc_on("fixed");
+        assert!(passed, "{log}");
     }
 
     #[test]

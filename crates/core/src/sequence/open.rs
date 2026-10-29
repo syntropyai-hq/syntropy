@@ -3,9 +3,11 @@
 //! Sequence control: [`SequenceControl`], [`SequenceOpen`] and what an open carries (RFC-0001
 //! §5.8; RFC-0032 §3.6, which owns `SequenceControl`).
 
+use std::fmt;
 use std::ops::Deref;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
 
 use super::{Priority, TraceContext};
@@ -13,7 +15,8 @@ use crate::{
     Blake3, ExactnessPolicy, Nanos, NodeId, ParityTapSpec, PlanEpoch, SequenceId, SessionId,
 };
 
-/// Sequence control on the data plane (RFC-0001 §5.8). Owner: RFC-0032.
+/// Sequence control on the data plane (RFC-0001 §5.8, and RFC-0033 §11's `Reconcile`). Owner:
+/// RFC-0032.
 // `Open` is far larger than the other variants. Control messages are sent once or twice per
 // sequence, not per step, so the size costs nothing, and the variant keeps RFC-0001 §5.8's
 // `Open(SequenceOpen)` shape.
@@ -51,6 +54,22 @@ pub enum SequenceControl {
         /// The session to persist the KV as; `None` frees it.
         persist: Option<SessionId>,
     },
+    /// Ingress → head, in recovery: what the client has seen of the sequence, from the ingress
+    /// transcript (RFC-0033 §4.2, §11). Ingress sends it once the repair `PlanCommitted` is
+    /// applied and the new epoch's head reports `Ready`. Every stage then holds positions up to
+    /// `prompt_len + emitted − 1`, and the head resumes there. A new head, which has no
+    /// sequences, gets an `Open` with `resume` set instead (RFC-0033 §4.4).
+    Reconcile {
+        /// The sequence.
+        seq: SequenceId,
+        /// Tokens the client has received.
+        emitted: u32,
+        /// The sequence's draw counter after the last emitted token, from the last `TokenEntry`
+        /// ingress received (RFC-0032 §3.7).
+        rng_counter: u64,
+        /// The last emitted tokens, up to 8, in the order they were emitted.
+        recent: SmallVec<[u32; 8]>,
+    },
 }
 
 /// Why ingress cancels a sequence (RFC-0001 §5.8, `SequenceControl::Cancel`; RFC-0001 §5.8's
@@ -80,9 +99,60 @@ pub enum CancelReason {
 
 /// The prompt's token IDs, tokenized at ingress (`SequenceOpen::prompt`). Owned, so `core` stays
 /// plain data; a zero-copy view of a ring slot belongs to `ipc` or `net`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+///
+/// **Serde form.** A human-readable format, such as JSON, gets an array of the IDs. A binary
+/// format gets a byte string of the IDs as little-endian `u32`s, 4 bytes each, so a prompt's size
+/// depends only on its length: a 128K-token prompt is 512 KiB (RFC-0031 §6.6). That covers CBOR
+/// on the wire, the IPC's postcard and [`canon`](crate::canon). A byte string whose length is not
+/// a multiple of 4 is refused.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct TokenSlice(pub Vec<u32>);
+
+impl Serialize for TokenSlice {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            self.0.serialize(serializer)
+        } else {
+            let bytes: Vec<u8> = self.0.iter().flat_map(|id| id.to_le_bytes()).collect();
+            serializer.serialize_bytes(&bytes)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TokenSlice {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<TokenSlice, D::Error> {
+        if deserializer.is_human_readable() {
+            Vec::deserialize(deserializer).map(TokenSlice)
+        } else {
+            deserializer.deserialize_byte_buf(TokenBytes)
+        }
+    }
+}
+
+/// Reads a binary format's byte string of little-endian `u32` token IDs.
+struct TokenBytes;
+
+impl Visitor<'_> for TokenBytes {
+    type Value = TokenSlice;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a byte string of little-endian u32 token IDs, 4 bytes each")
+    }
+
+    fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<TokenSlice, E> {
+        let (ids, rest) = bytes.as_chunks::<4>();
+        if !rest.is_empty() {
+            return Err(E::invalid_length(bytes.len(), &self));
+        }
+        Ok(TokenSlice(
+            ids.iter().map(|id| u32::from_le_bytes(*id)).collect(),
+        ))
+    }
+
+    fn visit_byte_buf<E: de::Error>(self, bytes: Vec<u8>) -> Result<TokenSlice, E> {
+        self.visit_bytes(&bytes)
+    }
+}
 
 impl TokenSlice {
     /// The token IDs.
@@ -106,8 +176,8 @@ impl From<Vec<u32>> for TokenSlice {
 }
 
 /// A page key of the prefix index: `k_b`, the BLAKE3 chain over a prefix's pages (RFC-0022
-/// §7.1), named in `PrefixRef::Cached` for the last full page a sequence shares. TIER-E7-T01
-/// computes it. Owner: RFC-0022.
+/// §7.1), named in `PrefixRef::Cached` for the last full page a sequence shares.
+/// [`PrefixKeyChain`](crate::prefix::PrefixKeyChain) computes it. Owner: RFC-0022.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PrefixKey(pub Blake3);

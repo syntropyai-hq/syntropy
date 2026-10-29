@@ -8,8 +8,9 @@
 //! [`WriteRequest`], [`ReadCompletion`]), the [`IoEngine`] trait that each engine implements,
 //! and the preallocated [`SubmitBatch`] and [`CompletionBuf`] the I/O thread passes to it; and
 //! the I/O thread loop of RFC-0021 §3.1 ([`IoLoop`], with an [`IoClient`] per producer). The
-//! engines so far are Windows': the `windows` module, built on Windows only, holds IoRing and
-//! IOCP (RFC-0021 §7).
+//! Windows engines are in the `windows` module, built on Windows only, which holds IoRing and
+//! IOCP (RFC-0021 §7). The thread-pool engines of RFC-0021 §4.2 and §5 are in `pool`:
+//! `PreadPool` on Linux and Windows, `MacNoCache` and `MacMapped` on macOS.
 //!
 //! The [`conformance`] module is the harness every engine's tests run (RFC-0021 Testing, "Every
 //! engine returns the right bytes"): it checks any [`IoEngine`] against `std::fs` reads of the
@@ -29,6 +30,11 @@
 //! rule 6 allows here only, and on `libc` (Linux and Android) and `windows-sys` (Windows) for the
 //! clock calls.
 //!
+//! The [`os`] module also holds OS system calls that crates without `unsafe` need, behind safe
+//! functions: E1's AMX permission and io_uring checks ([`os::checks`]), and the owner-only
+//! directory and file helpers of the state directory (RFC-0030 §2.1–§2.2), such as
+//! [`os::private_dir`].
+//!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
 
@@ -42,6 +48,15 @@ pub mod engine;
 pub mod error;
 pub mod io_thread;
 pub mod os;
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    target_os = "macos",
+    windows
+))]
+pub mod pool;
 pub mod request;
 #[cfg(windows)]
 pub mod windows;

@@ -439,6 +439,22 @@ fn side_files_are_source_files_with_roles() {
     assert!(!SourceRole::Tokenizer.in_model_id());
     assert!(!SourceRole::TokenizerConfig.in_model_id());
     assert!(!SourceRole::SpecialTokensMap.in_model_id());
+    // `ALL` lists every role once, and each name reads back to its role.
+    for role in SourceRole::ALL {
+        let listed = match role {
+            SourceRole::Weights
+            | SourceRole::WeightIndex
+            | SourceRole::Config
+            | SourceRole::GenerationConfig
+            | SourceRole::Tokenizer
+            | SourceRole::TokenizerConfig
+            | SourceRole::SpecialTokensMap => true,
+        };
+        assert!(listed);
+        assert_eq!(SourceRole::from_name(role.name()), Some(role));
+        assert_eq!(SourceRole::ALL.iter().filter(|&&r| r == role).count(), 1);
+    }
+    assert_eq!(SourceRole::from_name("lora"), None);
     let files = source_files([
         ("tokenizer.json", 9),
         ("README.md", 1),

@@ -193,9 +193,23 @@ impl FileSource {
     ///
     /// [`RangeError::Io`] when the file cannot be opened or its length read.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RangeError> {
-        let file = File::open(path).map_err(io_error)?;
+        Self::from_file(File::open(path).map_err(io_error)?)
+    }
+
+    /// Reads through `file`, already open, and records its length.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Io`] when the file's length cannot be read.
+    pub fn from_file(file: File) -> Result<Self, RangeError> {
         let len = file.metadata().map_err(io_error)?.len();
         Ok(Self { file, len })
+    }
+
+    /// The open file, for a caller that also reads its metadata through the same handle.
+    #[must_use]
+    pub fn file(&self) -> &File {
+        &self.file
     }
 }
 
@@ -354,6 +368,9 @@ impl<S: RangeSource> HeaderReader<S> {
                 cap: self.cap,
             })?;
             let start = self.prefix.len();
+            // Exactly the target: the doubling above already sets the growth, and an amortised
+            // reserve on top could hold up to twice the source's length.
+            self.prefix.reserve_exact(extra);
             self.prefix.resize(start + extra, 0);
             if let Err(e) = self.source.read_at(have, &mut self.prefix[start..]) {
                 self.prefix.truncate(start);
