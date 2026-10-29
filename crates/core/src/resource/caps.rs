@@ -615,10 +615,11 @@ mod tests {
             })
             .expect("plan/rfcs holds RFC-0010");
         let rfc = std::fs::read_to_string(rfc).unwrap();
+        // Option (a) is the first "- (a)" line after the PLC-E1-T17 note's heading.
         let note = rfc
             .lines()
-            .find(|l| l.contains("PLC-E1-T17") && l.contains("`OpClass`"))
-            .and_then(|_| rfc.lines().find(|l| l.trim_start().starts_with("- (a)")))
+            .skip_while(|l| !(l.contains("PLC-E1-T17") && l.contains("`OpClass`")))
+            .find(|l| l.trim_start().starts_with("- (a)"))
             .expect("RFC-0010 §1.3's PLC-E1-T17 note records option (a)");
         for name in [
             "`Gemm`",
