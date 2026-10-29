@@ -5,24 +5,34 @@
 //! A file opened for reading is mapped read-only and whole (`mmap(PROT_READ, MAP_SHARED)`), and
 //! the mapping is marked `madvise(MADV_RANDOM)`. A read runs on a pool thread in three steps:
 //! `madvise(MADV_WILLNEED)` on the pages the extent covers; `mincore` polled every 50 µs
-//! ([`RESIDENT_POLL`]) until every page is resident; a copy from the mapping into the
-//! destination slot. `madvise(MADV_DONTNEED)` then releases the range from the mapping. The
+//! ([`RESIDENT_POLL`]) until every page is resident; a copy into the destination slot.
+//! `madvise(MADV_DONTNEED)` then releases the range from the mapping.
+//!
+//! **The copy is a `pread`, not a load from the mapping** (TIER-E5-T36). A load from a mapping
+//! that meets a page the file no longer has, or a page whose read fails, raises `SIGBUS`, which
+//! ends the process: no handler can turn it into an error soundly. So the copy reads the extent
+//! with `pread` on a second, buffered handle on the file, served from the page cache the advice
+//! and the wait filled. A truncation then gives a short count and a failed page read its errno,
+//! which the I/O thread reports as `IO_SHORT_READ` (RFC-0021 §16). The copy count is the same:
+//! the kernel copies from the cache into the slot. A page evicted between `mincore` and the
+//! `pread` is read synchronously, which is slower and still right. The second handle is a second
+//! open of the path, because `F_NOCACHE` belongs to the open file and a duplicate would share it;
+//! a path that names another file by then fails `open` with `IO_ENGINE_UNAVAILABLE`. The
 //! clean file pages that remain are the OS's cache. The engine never counts them, and it has no
 //! way to report them: a completion reports only the bytes copied into the slot, which the tier
 //! manager owns (ADR-0007 item 6). `MacMapped` is a read mechanism, not a cache.
 //!
 //! Choices RFC-0021 §5 leaves open:
 //! - **The wait is bounded.** If the pages are not all resident after [`RESIDENT_WAIT_MAX`], or
-//!   `mincore` fails, the read is a `pread` of the file instead. A copy that faults a page in and
-//!   meets an I/O error raises `SIGBUS`; a `pread` returns the error, which the I/O thread
-//!   handles as RFC-0021 §16 says.
+//!   `mincore` fails, the read is a `pread` on the `F_NOCACHE` handle instead. Either `pread`
+//!   returns an error as an errno, which the I/O thread handles as RFC-0021 §16 says.
 //! - **Reads past the end of the file are short.** The mapping covers the file's length when it
 //!   is opened. A read from or past that end returns 0 bytes, and one that crosses it returns
 //!   the bytes before it, as `pread` does. A pack file does not change once it is committed
 //!   (RFC-0041), so the length holds. If a file is truncated while it is mapped, `mincore`
 //!   reports the lost pages absent, the wait times out, and the `pread` after it returns a short
-//!   count or 0. Only a truncation in the window between a `mincore` that saw the pages and the
-//!   copy raises `SIGBUS`.
+//!   count or 0. A truncation between a `mincore` that saw the pages and the copy gives the
+//!   copy's `pread` a short count too.
 //! - **Writes go through `F_NOCACHE`,** as in `MacNoCache` (RFC-0021 §13: writes use the same
 //!   engines and never the page cache). A file opened for writing is not mapped, because it
 //!   grows while it is written; its reads are `pread`s on the `F_NOCACHE` handle too. An empty
@@ -157,11 +167,24 @@ impl Drop for Region {
 }
 
 /// An open file as the workers use it: the file, and its mapping when it was opened for reading
-/// and is not empty.
+/// and is not empty, with the buffered handle a read copies through.
 #[derive(Debug)]
 pub(crate) struct MappedFile {
+    /// The `F_NOCACHE` handle: the mapping is made from it, and a read whose pages did not
+    /// become resident in time, and every read and write of a file opened for writing, go
+    /// through it.
     file: std::fs::File,
     map: Option<Region>,
+    /// A second, buffered handle on the same file, present with the mapping: the copy into the
+    /// slot is a `pread` on it, served from the page cache the mapping warmed (module docs).
+    buffered: Option<std::fs::File>,
+}
+
+/// Whether two open files are the same file: the same device and inode.
+fn same_file(a: &std::fs::File, b: &std::fs::File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt as _;
+    let (a, b) = (a.metadata()?, b.metadata()?);
+    Ok(a.dev() == b.dev() && a.ino() == b.ino())
 }
 
 /// The `MacMapped` backend over a set of mapping calls and `MacNoCache`'s file calls.
@@ -250,14 +273,37 @@ impl<M: MapSys, S: MacSys> Backend for Mapped<M, S> {
             // A refused `MADV_RANDOM` changes only speed.
             // SAFETY: the whole mapping just made, shared and read-only.
             let _ = unsafe { self.map.advise(base, size, libc::MADV_RANDOM) };
-            // A mapped file is read through the mapping, so a refused `F_NOCACHE` does not make
-            // it the flagged buffered mode; it affects only the `pread` after a timed-out wait.
-            (Some(region), None)
+            // The buffered handle the copy reads through. `F_NOCACHE` belongs to the open file,
+            // so a duplicate of `file` would share it: this is a second open of the path. A path
+            // that now names another file, swapped between the two opens, must never feed that
+            // file's bytes into a slot, so the two handles must be one file.
+            let buffered = std::fs::File::open(path).map_err(|e| super::open_error(&e, &[]))?;
+            if !same_file(&file, &buffered).map_err(|e| super::open_error(&e, &[]))? {
+                return Err(IoError::new(IoErrorCode::EngineUnavailable));
+            }
+            // Read-ahead off, as on the `F_NOCACHE` handle: the mapping's advice decides what
+            // is read. A refusal changes only speed.
+            let _ = self
+                .nocache
+                .sys
+                .fcntl(buffered.as_raw_fd(), super::macos::sys::F_RDAHEAD, 0);
+            // A mapped file is copied through its buffered handle, so a refused `F_NOCACHE` does
+            // not make it the flagged buffered mode; it affects only the `pread` after a
+            // timed-out wait.
+            (Some((region, buffered)), None)
         } else {
             (None, refused)
         };
+        let (map, buffered) = match map {
+            Some((region, buffered)) => (Some(region), Some(buffered)),
+            None => (None, None),
+        };
         Ok(Opened {
-            handles: vec![Arc::new(MappedFile { file, map })],
+            handles: vec![Arc::new(MappedFile {
+                file,
+                map,
+                buffered,
+            })],
             refused,
             dio,
         })
@@ -283,24 +329,16 @@ impl<M: MapSys, S: MacSys> Backend for Mapped<M, S> {
         let _ = unsafe { self.map.advise(addr, span, libc::MADV_WILLNEED) };
         // SAFETY: as above; `addr` and `span` are page multiples, since `base` is.
         let result = if unsafe { self.wait_resident(addr, span) } {
-            let mut src = map.base + offset as usize;
-            let mut left = end - offset;
-            for s in segs {
-                let n = s.len.min(left);
-                // SAFETY: the source lies in `[offset, end)`, inside the mapping, and is
-                // readable; the destination is the caller's segment, valid for writes over
-                // `s.len >= n` bytes and used by nothing else until the call returns. A
-                // read-only mapping and tier-manager memory do not overlap.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(src as *const u8, s.addr as *mut u8, n as usize);
-                }
-                src += n as usize;
-                left -= n;
-                if left == 0 {
-                    break;
-                }
-            }
-            Ok(end - offset)
+            // The copy is a `pread` on the buffered handle, served from the pages the wait saw
+            // resident, never a load from the mapping: a load that met a truncated file or an
+            // I/O error would raise `SIGBUS`, which cannot be recovered soundly, while `pread`
+            // returns a short count or the errno (module docs; TIER-E5-T36).
+            let buffered = h
+                .buffered
+                .as_ref()
+                .expect("a mapped file has its buffered handle");
+            // SAFETY: the caller's guarantee, passed on unchanged.
+            unsafe { self.nocache.read(buffered, offset, segs) }
         } else {
             // SAFETY: the caller's guarantee, passed on unchanged.
             unsafe { self.nocache.read(&h.file, offset, segs) }
@@ -407,27 +445,49 @@ mod tests {
 
     /// Forwards to [`RealMap`] and records each call, in order. `refuse_map` makes `mmap` fail
     /// with `ENODEV` without calling the OS; `never_resident` reports every page absent, so each
-    /// wait times out. The pool built from it also counts the `pread`s on the file in `preads`,
-    /// and `refuse_nocache` makes `F_NOCACHE` fail there (see [`Files`]).
+    /// wait times out. The pool built from it also counts the reads of the file (see [`Files`]):
+    /// `copies`, the copies into slots through the buffered handle once the pages were resident,
+    /// and `preads`, the reads on the `F_NOCACHE` handle after a wait timed out. `refuse_nocache`
+    /// makes `F_NOCACHE` fail there, and `fault` arms a fault for the next copy.
     #[derive(Default)]
     struct Recorder {
         calls: Arc<Mutex<Vec<Call>>>,
         refuse_map: bool,
         never_resident: bool,
         preads: Arc<AtomicUsize>,
+        copies: Arc<AtomicUsize>,
+        fault: Arc<Mutex<Option<CopyFault>>>,
         refuse_nocache: bool,
     }
 
-    /// Forwards `MacNoCache`'s file calls to [`RealSys`], counting each `pread` or `preadv`, so a
-    /// test can tell a copy from the mapping from a read of the file. `refuse_nocache` makes
-    /// `F_NOCACHE` fail with `EINVAL` without calling the OS.
+    /// A fault the next copy meets, after `mincore` saw its pages resident and before its read:
+    /// the window in which a load from the mapping raised `SIGBUS` (TIER-E5-T36).
+    #[derive(Clone, Debug)]
+    enum CopyFault {
+        /// The file is truncated to this length first.
+        Truncate(std::path::PathBuf, u64),
+        /// The read fails with this errno, as a page that cannot be read does.
+        Errno(i32),
+    }
+
+    /// Forwards `MacNoCache`'s file calls to [`RealSys`]. A read on a handle given `F_NOCACHE`
+    /// is a `pread` after a timed-out wait, counted in `preads`; a read on any other handle is a
+    /// copy through the buffered handle, counted in `copies`, which first meets the armed
+    /// `fault` if there is one. `refuse_nocache` makes `F_NOCACHE` fail with `EINVAL` without
+    /// calling the OS.
     struct Files {
         preads: Arc<AtomicUsize>,
+        copies: Arc<AtomicUsize>,
+        fault: Arc<Mutex<Option<CopyFault>>>,
+        nocache_fds: Mutex<Vec<c_int>>,
         refuse_nocache: bool,
     }
 
     impl MacSys for Files {
         fn fcntl(&self, fd: c_int, cmd: c_int, arg: c_int) -> Result<(), i32> {
+            if cmd == sys::F_NOCACHE {
+                self.nocache_fds.lock().unwrap().push(fd);
+            }
             if self.refuse_nocache && cmd == sys::F_NOCACHE {
                 return Err(sys::EINVAL);
             }
@@ -435,7 +495,23 @@ mod tests {
         }
 
         unsafe fn read(&self, fd: c_int, offset: i64, segs: &[Seg]) -> Result<u64, i32> {
-            self.preads.fetch_add(1, Ordering::SeqCst);
+            if self.nocache_fds.lock().unwrap().contains(&fd) {
+                self.preads.fetch_add(1, Ordering::SeqCst);
+            } else {
+                self.copies.fetch_add(1, Ordering::SeqCst);
+                match self.fault.lock().unwrap().take() {
+                    Some(CopyFault::Truncate(path, len)) => {
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(path)
+                            .unwrap()
+                            .set_len(len)
+                            .unwrap();
+                    }
+                    Some(CopyFault::Errno(os)) => return Err(os),
+                    None => {}
+                }
+            }
             // SAFETY: the caller's guarantee, passed on unchanged.
             unsafe { RealSys.read(fd, offset, segs) }
         }
@@ -482,6 +558,9 @@ mod tests {
     fn pool(threads: usize, rec: Recorder) -> TestPool {
         let files = Files {
             preads: Arc::clone(&rec.preads),
+            copies: Arc::clone(&rec.copies),
+            fault: Arc::clone(&rec.fault),
+            nocache_fds: Mutex::new(Vec::new()),
             refuse_nocache: rec.refuse_nocache,
         };
         let backend = Mapped {
@@ -606,7 +685,7 @@ mod tests {
         let p = page as usize;
         assert!(contents(&blocks)[..2 * p] == bytes[3 * p..5 * p]);
         drop(pool);
-        // The bytes came from the mapping: the file was never read.
+        // The pages were resident: the bytes came through the copy, not a timed-out read.
         assert_eq!(preads.load(Ordering::SeqCst), 0);
 
         let calls = calls.lock().unwrap().clone();
@@ -665,7 +744,7 @@ mod tests {
             assert!(blocks[i].0[..] == bytes[off..off + 16384]);
         }
         drop(pool);
-        // Every byte was copied from the mapping, none read from the file.
+        // Every byte came through the copy, none from a timed-out read.
         assert_eq!(preads.load(Ordering::SeqCst), 0);
         let calls = calls.lock().unwrap().clone();
         let mut willneed = advised(&calls, libc::MADV_WILLNEED);
@@ -763,9 +842,132 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Submits `op` to the I/O loop and turns the loop until its completion arrives: the
+    /// completion a producer sees, after the loop has judged a short transfer.
+    fn through_loop(
+        io: &mut crate::IoLoop<TestPool>,
+        client: &mut crate::IoClient,
+        op: IoOp,
+    ) -> crate::ReadCompletion {
+        client.submit(op).unwrap();
+        let start = Instant::now();
+        loop {
+            io.poll_once();
+            if let Ok(c) = client.poll() {
+                return c;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "no completion within 30 s"
+            );
+        }
+    }
+
+    /// TIER-E5-T36: the file is truncated after `mincore` saw the extent's pages resident and
+    /// before the copy, forced through the `MacSys` seam, the window in which a load from the
+    /// mapping raised `SIGBUS`. The read completes with `IO_SHORT_READ` and the process goes on.
+    /// The retry RFC-0021 §16 prescribes, which the I/O thread's TIER-E5-T15 will issue and this
+    /// test issues itself, is short again while the bytes are gone. A read of an extent the
+    /// truncation left alone returns the right bytes, and once the file holds its bytes again
+    /// the faulted extent does too, on the same engine.
+    #[test]
+    fn a_truncation_between_mincore_and_the_copy_is_io_short_read_and_reads_go_on() {
+        let page = align::os_page_size();
+        let (path, bytes) = fixture("copyfault", 8 * page as usize);
+        let rec = Recorder::default();
+        let (copies, preads, fault) = (
+            Arc::clone(&rec.copies),
+            Arc::clone(&rec.preads),
+            Arc::clone(&rec.fault),
+        );
+        let mut engine = pool(1, rec);
+        engine.open(&path, OpenMode::Read).unwrap();
+        let (mut io, mut clients) = crate::IoLoop::new(engine, &crate::LoopConfig::new(1)).unwrap();
+        let client = &mut clients[0];
+        let len = 2 * page;
+        let mut blocks = vec![Block([0; 16384]); (len as usize).div_ceil(16384)];
+        let base = blocks.as_mut_ptr() as u64;
+        let (p, l) = (page as usize, len as usize);
+
+        // Pages 4 and 5, truncated away in the window: the file keeps its first two pages.
+        *fault.lock().unwrap() = Some(CopyFault::Truncate(path.clone(), 2 * page));
+        let c = through_loop(&mut io, client, read_op(1, 4 * page, len, base));
+        assert_eq!(c.result, Err(IoError::new(IoErrorCode::ShortRead)), "{c:?}");
+        assert_eq!(
+            copies.load(Ordering::SeqCst),
+            1,
+            "the read reached the copy"
+        );
+
+        // The §16 retry: the same extent, once more. Its pages are gone, so it is short again,
+        // which TIER-E5-T15 turns into IO_EXTENT_BAD.
+        let c = through_loop(&mut io, client, read_op(2, 4 * page, len, base));
+        assert_eq!(c.result, Err(IoError::new(IoErrorCode::ShortRead)), "{c:?}");
+
+        // An extent the truncation did not touch.
+        let c = through_loop(&mut io, client, read_op(3, 0, len, base));
+        assert_eq!(c.result, Ok(Bytes(len)), "{c:?}");
+        assert!(contents(&blocks)[..l] == bytes[..l]);
+
+        // The file holds its bytes again: the faulted extent reads right on the same engine.
+        std::fs::write(&path, &bytes).unwrap();
+        let c = through_loop(&mut io, client, read_op(4, 4 * page, len, base));
+        assert_eq!(c.result, Ok(Bytes(len)), "{c:?}");
+        assert!(contents(&blocks)[..l] == bytes[4 * p..4 * p + l]);
+        assert!(
+            preads.load(Ordering::SeqCst) >= 1,
+            "the retry's wait timed out to a pread"
+        );
+        drop(io);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// TIER-E5-T36: a page that cannot be read makes the copy's `pread` fail with `EIO`, which
+    /// is `IO_SHORT_READ` with the errno; the process goes on, and the retry reads right.
+    #[test]
+    fn an_eio_on_the_copy_is_io_short_read_and_the_retry_reads_right() {
+        let page = align::os_page_size();
+        let (path, bytes) = fixture("copyeio", 4 * page as usize);
+        let rec = Recorder::default();
+        let fault = Arc::clone(&rec.fault);
+        let mut engine = pool(1, rec);
+        engine.open(&path, OpenMode::Read).unwrap();
+        let (mut io, mut clients) = crate::IoLoop::new(engine, &crate::LoopConfig::new(1)).unwrap();
+        let client = &mut clients[0];
+        let mut blocks = vec![Block([0; 16384]); (page as usize).div_ceil(16384)];
+        let base = blocks.as_mut_ptr() as u64;
+        const EIO: i32 = 5;
+        *fault.lock().unwrap() = Some(CopyFault::Errno(EIO));
+        let c = through_loop(&mut io, client, read_op(1, page, page, base));
+        assert_eq!(
+            c.result,
+            Err(IoError::with_os_error(IoErrorCode::ShortRead, EIO)),
+            "{c:?}"
+        );
+        let c = through_loop(&mut io, client, read_op(2, page, page, base));
+        assert_eq!(c.result, Ok(Bytes(page)), "{c:?}");
+        let p = page as usize;
+        assert!(contents(&blocks)[..p] == bytes[p..2 * p]);
+        drop(io);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The copy's buffered handle is a second open of the path, used only if it is the same
+    /// file as the first: the same device and inode.
+    #[test]
+    fn the_buffered_handle_must_be_the_same_file() {
+        let (a, _) = fixture("same-a", 4096);
+        let (b, _) = fixture("same-b", 4096);
+        let first = std::fs::File::open(&a).unwrap();
+        assert!(same_file(&first, &std::fs::File::open(&a).unwrap()).unwrap());
+        assert!(!same_file(&first, &std::fs::File::open(&b).unwrap()).unwrap());
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
+
     /// A file truncated while it is mapped: `mincore` reports the lost pages absent, so the wait
     /// times out and the `pread` after it returns what the file still holds, here nothing. No
-    /// copy touches the lost pages, so no `SIGBUS`.
+    /// copy runs, since the pages never showed resident.
     #[test]
     fn a_read_of_pages_truncated_away_while_mapped_is_short() {
         let page = align::os_page_size();
