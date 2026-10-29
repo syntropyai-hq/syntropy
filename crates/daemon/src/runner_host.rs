@@ -359,9 +359,19 @@ impl ProcessRunner {
         if let Err(refused) = &result
             && let Ok(status) = &refused.exit
         {
-            // The refusal killed the runner (RFC-0001 §3.4: a spawned runner of another build is
-            // killed), so its exit is the host's kill.
-            self.killed = Some(HostKill::Refused);
+            // A `Hello` the host refused (RFC-0001 §3.4: a spawned runner of another build is
+            // killed) makes the exit the host's kill. A channel that failed before any `Hello`,
+            // such as a runner that exited on its own, is recorded from the runner's status.
+            use syntropy_ipc::cmd::HandshakeError;
+            if matches!(
+                refused.cause,
+                HandshakeError::Build { .. }
+                    | HandshakeError::Protocol { .. }
+                    | HandshakeError::Pid { .. }
+                    | HandshakeError::Unexpected { .. }
+            ) {
+                self.killed = Some(HostKill::Refused);
+            }
             self.reaped(*status);
         }
         result

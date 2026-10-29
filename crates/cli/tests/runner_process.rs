@@ -468,6 +468,28 @@ fn until_closed(runner: &mut ProcessRunner) {
     }
 }
 
+/// The review of #1973, B1(b): a runner that exits on its own before its `Hello` fails the
+/// handshake with a channel error, not a refusal, and is recorded from its own status: here an
+/// ordinary exit, so no record. Only a `Hello` the host refuses is the host's kill.
+#[test]
+fn a_runner_that_exits_before_hello_is_not_recorded_as_refused() {
+    use syntropy_daemon::crash::CrashStore;
+    use syntropy_ipc::cmd::HandshakeError;
+
+    let state = State::new("exit-before-hello");
+    let mut runner = spawn_quitter(build_id());
+    runner.record_crashes(sink(&state));
+    let refused = runner.handshake().expect_err("no Hello comes");
+    assert!(
+        matches!(refused.cause, HandshakeError::Recv(_)),
+        "{}",
+        refused.cause
+    );
+    let listing = CrashStore::new(&state.0).list().unwrap();
+    assert!(listing.records.is_empty(), "{:?}", listing.records);
+    drop(runner);
+}
+
 /// The review of #1973, B1(a): a kill of a runner that has already exited, not yet reaped, is
 /// not the host's kill. The kill reaps it, and its exit is recorded from its status: here an
 /// ordinary exit, so no record at all.
