@@ -2048,3 +2048,41 @@ fn without_ext<T: Serialize + DeserializeOwned>(value: &T) -> T {
     json.as_object_mut().expect("a record").remove("ext");
     serde_json::from_value(json).expect("decodes without ext")
 }
+
+/// A `NodeInfo` with a full inventory, the field that holds the device, tier, link and host-pool
+/// records, round-trips through the cluster's CBOR (ADR-0305) and JSON (DIST-E2-T10). The rest of
+/// `NodeInfo`'s tests are in `node_serde.rs`.
+#[test]
+fn node_info_with_an_inventory_round_trips() {
+    on_big_stack(node_inventory, |inventory| {
+        let info = NodeInfo {
+            id: NodeId([3; 32]),
+            host: HostFingerprint(Blake3([4; 32])),
+            os: OsKind::Linux,
+            arch: CpuArch::X86_64,
+            build: syntropy_core::build::BuildId {
+                version: "0.4.1".parse().unwrap(),
+                commit: [5; 20],
+                profile: syntropy_core::build::BuildProfile::Release,
+                target: syntropy_core::build::TargetTriple("x86_64-unknown-linux-gnu".into()),
+                toolchain: Blake3([6; 32]),
+            },
+            protocol: ProtocolRanges {
+                proto_major: 1,
+                wire_minor: VersionRange::new(0, 2).unwrap(),
+                feature_level: VersionRange::new(1, 3).unwrap(),
+                capabilities: 0b1011,
+            },
+            power: PowerSource::Mains,
+            labels: Default::default(),
+            roles: RolePrefs::default(),
+            inventory,
+        };
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&info, &mut bytes).unwrap();
+        let back: NodeInfo = ciborium::from_reader(bytes.as_slice()).unwrap();
+        prop_assert_eq!(&back, &info);
+        round_trip(&info);
+        Ok(())
+    });
+}

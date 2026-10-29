@@ -12,6 +12,7 @@ pub mod device;
 pub mod iface;
 pub mod inventory;
 pub mod link;
+pub mod node;
 pub mod ordinal;
 pub mod tier;
 
@@ -20,4 +21,5 @@ pub use device::*;
 pub use iface::*;
 pub use inventory::*;
 pub use link::*;
+pub use node::*;
 pub use tier::*;

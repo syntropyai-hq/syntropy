@@ -11,6 +11,8 @@ serde.workspace = true
 smallvec.workspace = true
 
 [dev-dependencies]
+# `NodeInfo` decodes across versions in the cluster's deterministic CBOR (ADR-0305; DIST-E2-T10).
+ciborium.workspace = true
 # The plan and policy types round-trip through the IPC's encoding (RFC-0001 §3.5, §18.20).
 postcard.workspace = true
 proptest.workspace = true
