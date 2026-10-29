@@ -193,16 +193,31 @@ fn an_inverted_range_is_refused() {
         serde_json::from_str::<VersionRange<u8>>(r#"{"min_supported":5,"current":4}"#).is_err()
     );
 
-    // Inside a whole `ProtocolRanges`, too.
-    let protocol = serde_json::json!({
-        "proto_major": 1,
-        "wire_minor": {"min_supported": 0, "current": 3},
-        "feature_level": {"min_supported": 9, "current": 2},
-        "capabilities": 0
-    });
-    assert!(serde_json::from_value::<ProtocolRanges>(protocol.clone()).is_err());
-    let cbor = to_cbor(&protocol);
-    assert!(from_cbor::<ProtocolRanges>(&cbor).is_err());
+    // Inside a whole `ProtocolRanges`, for either range, against a valid control that decodes,
+    // so a refusal is the range check and not a misnamed field.
+    let protocol = |wire: (u8, u8), level: (u32, u32)| {
+        serde_json::json!({
+            "proto_major": 1,
+            "wire_minor": {"min_supported": wire.0, "current": wire.1},
+            "feature_level": {"min_supported": level.0, "current": level.1},
+            "capabilities": 0
+        })
+    };
+    let decodes = |value: &serde_json::Value| {
+        let json = serde_json::from_value::<ProtocolRanges>(value.clone()).is_ok();
+        let cbor = from_cbor::<ProtocolRanges>(&to_cbor(value)).is_ok();
+        assert_eq!(json, cbor, "JSON and CBOR agree on {value}");
+        json
+    };
+    assert!(decodes(&protocol((0, 3), (2, 9))), "the control decodes");
+    assert!(
+        !decodes(&protocol((4, 3), (2, 9))),
+        "an inverted wire_minor"
+    );
+    assert!(
+        !decodes(&protocol((0, 3), (9, 2))),
+        "an inverted feature_level"
+    );
 }
 
 /// Absent role fields take RFC-0054's defaults: every role allowed.
@@ -242,4 +257,52 @@ fn an_uncomputed_fingerprint_never_matches() {
     assert!(a.same_host(&HostFingerprint(Blake3([1; 32]))));
     assert!(!a.same_host(&HostFingerprint(Blake3([2; 32]))));
     assert!(!a.same_host(&zero));
+}
+
+/// One `NodeInfo` drawn from the strategy with a fixed seed.
+fn sample() -> NodeInfo {
+    use proptest::strategy::ValueTree;
+    node_info()
+        .new_tree(&mut proptest::test_runner::TestRunner::deterministic())
+        .unwrap()
+        .current()
+}
+
+/// One value always encodes to the same bytes: encoding, decoding and encoding again gives the
+/// same CBOR, and `labels` come out in key order whatever order they were inserted in.
+#[test]
+fn a_node_info_encodes_to_stable_bytes() {
+    let mut info = sample();
+    info.labels = [("zone", "b"), ("aa", "x"), ("b", "y")]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+    let first = to_cbor(&info);
+    let again = to_cbor(&from_cbor::<NodeInfo>(&first).unwrap());
+    assert_eq!(first, again);
+    let keys: Vec<&String> = info.labels.keys().collect();
+    assert_eq!(keys, ["aa", "b", "zone"]);
+}
+
+/// The fields with defaults may be absent: `labels`, `roles` and `inventory` take theirs. `power`
+/// is required, since an absent value would rank as mains in the coordinator election.
+#[test]
+fn absent_optional_fields_take_defaults_and_power_is_required() {
+    let info = sample();
+    let mut json = serde_json::to_value(&info).unwrap();
+    let object = json.as_object_mut().unwrap();
+    for key in ["labels", "roles", "inventory"] {
+        object.remove(key);
+    }
+    let back: NodeInfo = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(back.labels, BTreeMap::new());
+    assert_eq!(back.roles, RolePrefs::default());
+    assert_eq!(back.inventory, NodeInventory::default());
+    assert_eq!(
+        (back.id, back.os, back.power),
+        (info.id, info.os, info.power)
+    );
+    json.as_object_mut().unwrap().remove("power");
+    let err = serde_json::from_value::<NodeInfo>(json).unwrap_err();
+    assert!(err.to_string().contains("power"), "{err}");
 }

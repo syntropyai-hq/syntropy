@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc e3a78f50cc03bc3c398586623cb2895e0a18ecec0ac15f119c894ea41a8ce534 # shrinks to info = NodeInfo { id: NodeId([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), host: HostFingerprint(Blake3([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])), os: Linux, arch: X86_64, build: BuildId { version: SemVer { major: 0, minor: 4, patch: 1, pre: None }, commit: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], profile: Release, target: TargetTriple("aarch64-unknown-linux-gnu"), toolchain: Blake3([7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]) }, protocol: ProtocolRanges { proto_major: 0, wire_minor: VersionRange { min_supported: 0, current: 0 }, feature_level: VersionRange { min_supported: 0, current: 0 }, capabilities: 0 }, power: Mains, labels: {}, roles: RolePrefs { may_coordinate: false, may_ingress: false, may_host_stages: false }, inventory: NodeInventory { devices: [], tiers: [], links: [], host_pools: [] } }

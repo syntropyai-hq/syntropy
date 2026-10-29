@@ -9,6 +9,11 @@
 //! this type. The cluster carries it in deterministic CBOR (ADR-0305), so a newer node's
 //! additions must not break an older node's decode: unknown fields are ignored, and an `OsKind`
 //! this build does not know decodes as [`OsKind::Other`].
+//!
+//! This crate guarantees what the encoding's order depends on in these types: struct fields in
+//! declaration order and `labels` as a `BTreeMap`, so one value always encodes to the same bytes
+//! through one encoder. The canonical-form rules of the cluster's encoder, such as key order
+//! across maps, are the cluster crate's (DIST-E9).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -39,8 +44,8 @@ pub struct NodeInfo {
     /// The protocol versions it speaks, in RFC-0031 §10's terms, so admission and the solver can
     /// check compatibility before any data channel opens (RFC-0062 §10).
     pub protocol: ProtocolRanges,
-    /// Mains or battery.
-    #[serde(default)]
+    /// Mains or battery. Required: an absent value has no safe default, since mains ranks above
+    /// battery in the coordinator election (RFC-0032).
     pub power: PowerSource,
     /// The user's labels, for filter rules (RFC-0054).
     #[serde(default)]
@@ -54,7 +59,8 @@ pub struct NodeInfo {
 }
 
 /// The host's fingerprint: the one BLAKE3 digest RFC-0010 §1.4 defines over the host's sorted
-/// raw values. Each daemon computes it (PLC-E1-T11). Until then it is the zero digest,
+/// raw values. Compare hosts with [`same_host`](Self::same_host), not `==`: every uncomputed
+/// fingerprint is equal, so a map keyed by it would group uncomputed nodes as one host. Each daemon computes it (PLC-E1-T11). Until then it is the zero digest,
 /// [`HostFingerprint::NOT_COMPUTED`], which never makes two nodes co-located.
 ///
 /// RFC-0030 §2.3's per-component hashes, which clone detection compares one by one, are a
@@ -97,7 +103,10 @@ pub enum OsKind {
     Android,
     /// iOS.
     Ios,
-    /// A platform this build does not know: what a newer node's platform decodes as here.
+    /// A platform this build does not know: what a newer node's platform decodes as here. It is
+    /// lossy, so a node never re-encodes a record it decoded with `Other` in place of the original
+    /// (ADR-0305's cluster feature level keeps a newer variant from reaching an older node in the
+    /// log).
     #[serde(other)]
     Other,
 }
@@ -208,9 +217,9 @@ pub struct ProtocolRanges {
 }
 
 /// Which roles a node may take (RFC-0001 §5.2), from RFC-0054's `node.roles` keys and RFC-0032's
-/// coordinator eligibility. An absent field takes its default, `true`. A mobile OS is ineligible
-/// to coordinate by default (ADR-0304, RFC-0032); that default is the configuration layer's,
-/// applied before this record is built, not this record's.
+/// coordinator eligibility. An absent field takes its default, `true`. These are the node's
+/// preferences only: the coordinator election also rules a mobile OS ineligible by default
+/// whatever `may_coordinate` says (RFC-0032's capability class 0; ADR-0304).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RolePrefs {
