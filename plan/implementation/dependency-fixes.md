@@ -1281,3 +1281,12 @@ QUAL-E7-T05 builds the store client, the local backend and the cache; the S3 bac
 | QUAL-E1-T14 → QUAL-E7-T15 | QUAL-E1-T14 | R9 | its artefacts live in the bucket |
 | QUAL-E7-T08 → QUAL-E7-T15 | QUAL-E7-T08 | R9 | its lifecycle dry run follows T15's access rule |
 | No new edge for T05's other dependents (TIER-E5-T04, TIER-E8-T09, QUAL-E4-T05, QUAL-E5-T02, QUAL-E5-T18, QUAL-E5-T22, QUAL-E7-T13, QUAL-E10-T02, QUAL-E16-T04, QUAL-E16-T22) | those tasks | R8 | their criteria name the store's objects, layout or licence records, which the local backend serves; a CI run that needs the bucket names its own dependency when it is written |
+
+## Probe mode splits from the process host (2026-10-29)
+
+DIST-E1-T04 (#1952) built the runner's process host and moved its probe-mode criterion to a new task, DIST-E1-T17, without an entry here. Its review (comment 6493515550) found the stated reason stale: `CapabilityProfile` was already defined by PLC-E1-T17 (#1955). The split stands as a scope split.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New task DIST-E1-T17 (M0a): probe mode, `syntropy __runner --probe`, answering `ProbeResult`. DIST-E1-T17 → DIST-E1-T04, PLC-E1-T17. DIST-E1-T04's `--probe` and "a probe-mode process returns `ProbeResult` and exits" move to it | DIST-E1-T04, DIST-E1-T17 | R9 | a scope split: probe mode adds a message and an `ipc_protocol` bump that the process host does not need |
+| PLC-E1-T07 → DIST-E1-T17 | PLC-E1-T07 | R1 | PLC-E1-T07 runs its enumeration in the probe process |

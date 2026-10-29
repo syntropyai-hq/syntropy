@@ -160,7 +160,7 @@ On platforms that forbid spawning a child process (iOS, some Android contexts), 
 - **The state word.** `runner::process::begin` and `advance` write the `RunnerState` word on each `Lifecycle` transition. The runner's command loop does not run a `Lifecycle` yet: it starts with a plan (`AssignPlan`), which later tasks handle.
 - **Exit.** When the runner exits, the host removes the region's name (`Region::unlink`), and it removes it on every failed spawn too. Dropping the host's handle closes the channel and never kills the runner; a runner still running after the drop's 2 s wait is reaped by a detached thread when it exits.
 - **The L0 check.** `cargo xtask ci lint`'s `orphan-rule` step refuses the identifiers `PR_SET_PDEATHSIG`, `PROC_PDEATHSIG_CTL`, `NOTE_EXIT`, `NOTE_EXITSTATUS`, `EVFILT_PROC`, `pidfd_open`, `getppid` and `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` in `runner`, `daemon`, `ipc`, `io` and `cli`. It reads tokens, so it cannot see a constant written as a bare number.
-- **Probe mode** (`--probe`) moved to DIST-E1-T17, because `ProbeResult` carries `CapabilityProfile`, which PLC-E1-T17 defines.
+- **Probe mode** (`--probe`) is DIST-E1-T17, a scope split: it adds `RunnerMsg::ProbeResult` and an `ipc_protocol` bump, which DIST-E1-T04 kept out of the process host. `CapabilityProfile`, which `ProbeResult` carries, is already on main (PLC-E1-T17), so DIST-E1-T17 is ready now that DIST-E1-T04 has merged.
 
 ### 3.2 What each process owns
 
