@@ -13,6 +13,7 @@ use super::event::{Context, Field, LogEvent, Value};
 use super::format::WallClock;
 use super::sink::Sink;
 use super::suppress::Suppressor;
+use crate::crash::LogTail;
 
 /// What the `[logging]` section sets, as the pipeline applies it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,6 +105,8 @@ pub struct Logger {
     clock: Arc<dyn Clock>,
     wall: WallClock,
     inner: Mutex<Inner>,
+    /// The last lines written, with no content, for crash records (RFC-0053 §6).
+    tail: Arc<LogTail>,
 }
 
 impl std::fmt::Debug for Logger {
@@ -131,6 +134,7 @@ impl Logger {
                 suppressor: Suppressor::default(),
                 sinks,
             }),
+            tail: Arc::new(LogTail::new()),
         };
         logger.warn_if_content();
         logger
@@ -168,6 +172,12 @@ impl Logger {
         &self.clock
     }
 
+    /// The last [`TAIL_LINES`](crate::crash::TAIL_LINES) records written, as text with no content
+    /// whatever `logging.include_content` says, for crash records.
+    pub fn tail(&self) -> &Arc<LogTail> {
+        &self.tail
+    }
+
     /// Whether a record at `at` from `target` would be written.
     pub fn enabled(&self, at: Level, target: &str) -> bool {
         at <= self.inner().settings.level_for(target)
@@ -192,6 +202,7 @@ impl Logger {
             for sink in &mut inner.sinks {
                 sink.write(event, &wall);
             }
+            self.tail.push(event, &wall);
         }
     }
 
@@ -206,6 +217,7 @@ impl Logger {
             for sink in &mut inner.sinks {
                 sink.write(event, &wall);
             }
+            self.tail.push(event, &wall);
         }
     }
 
@@ -218,6 +230,7 @@ impl Logger {
             for sink in &mut inner.sinks {
                 sink.write(event, &wall);
             }
+            self.tail.push(event, &wall);
         }
         for sink in &mut inner.sinks {
             sink.flush();
