@@ -59,9 +59,11 @@ pub struct NodeInfo {
 }
 
 /// The host's fingerprint: the one BLAKE3 digest RFC-0010 §1.4 defines over the host's sorted
-/// raw values. Compare hosts with [`same_host`](Self::same_host), not `==`: every uncomputed
-/// fingerprint is equal, so a map keyed by it would group uncomputed nodes as one host. Each daemon computes it (PLC-E1-T11). Until then it is the zero digest,
+/// raw values. Each daemon computes it (PLC-E1-T11). Until then it is the zero digest,
 /// [`HostFingerprint::NOT_COMPUTED`], which never makes two nodes co-located.
+///
+/// Compare hosts with [`same_host`](Self::same_host), not `==`: every uncomputed fingerprint is
+/// equal, so a map keyed by it would group uncomputed nodes as one host.
 ///
 /// RFC-0030 §2.3's per-component hashes, which clone detection compares one by one, are a
 /// different record (DIST-E2-T03).
@@ -104,9 +106,9 @@ pub enum OsKind {
     /// iOS.
     Ios,
     /// A platform this build does not know: what a newer node's platform decodes as here. It is
-    /// lossy, so a node never re-encodes a record it decoded with `Other` in place of the original
-    /// (ADR-0305's cluster feature level keeps a newer variant from reaching an older node in the
-    /// log).
+    /// lossy, so a node never re-encodes a record it decoded with `Other` in place of the original:
+    /// a contract on the cluster's encoder (DIST-E9). ADR-0305's cluster feature level keeps a
+    /// newer variant from reaching an older node in the log.
     #[serde(other)]
     Other,
 }
