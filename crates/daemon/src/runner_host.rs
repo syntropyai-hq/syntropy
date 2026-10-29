@@ -511,8 +511,10 @@ impl Drop for ProcessRunner {
 /// runner and the status is what that kill leaves, else `None`, so the exit is recorded from its
 /// own status. On Unix the kill is `SIGKILL` (`Child::kill`), so any other status means the
 /// runner ended another way first, in the window between the host's `try_wait` and its kill. On
-/// Windows `TerminateProcess` leaves an exit code the runner could have chosen itself, so a kill
-/// is taken as the host's whatever the code; that residual window is accepted (RFC-0053 §6).
+/// Windows `Child::kill` is `TerminateProcess` with exit code 1, so any other code means the
+/// runner exited on its own first. A runner that itself exits with code 1 in that window is
+/// taken as killed, since the two cannot be told apart; that residual window is accepted
+/// (RFC-0053 §6).
 fn host_caused(killed: Option<HostKill>, status: &ExitStatus) -> Option<HostKill> {
     #[cfg(unix)]
     {
@@ -523,8 +525,9 @@ fn host_caused(killed: Option<HostKill>, status: &ExitStatus) -> Option<HostKill
     }
     #[cfg(not(unix))]
     {
-        let _ = status;
-        killed
+        // The exit code std's `Child::kill` passes to `TerminateProcess`.
+        const TERMINATED: i32 = 1;
+        killed.filter(|_| status.code() == Some(TERMINATED))
     }
 }
 
@@ -636,9 +639,10 @@ mod tests {
         }
     }
 
-    /// The review of #1973, B1: a kill counts as the host's only when the status is what the
-    /// kill leaves. On Unix a runner that died of another signal, or exited, in the window
-    /// before the host's `SIGKILL` is recorded from its own status.
+    /// The review of #1973, B1 and N1: a kill counts as the host's only when the status is what
+    /// the kill leaves. A runner that died of another signal, or exited, in the window before
+    /// the host's kill is recorded from its own status: on Unix anything but `SIGKILL`, on
+    /// Windows any exit code but 1.
     #[test]
     fn a_host_kill_is_attributed_only_when_the_status_is_the_kills() {
         #[cfg(unix)]
@@ -656,8 +660,13 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            // `TerminateProcess(1)`: the residual window is accepted.
+            // Exit code 1 is what `TerminateProcess` leaves: the host's kill. Any other code,
+            // such as the 101 a runner that exits on its own leaves, is the runner's own exit
+            // (the hosted Windows failure of #1973, job 123759468519).
             assert_eq!(host_caused(hung, &ExitStatus::from_raw(1)), hung);
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(101)), None);
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(0)), None);
+            assert_eq!(host_caused(None, &ExitStatus::from_raw(1)), None);
         }
     }
 

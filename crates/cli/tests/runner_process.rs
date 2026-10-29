@@ -514,6 +514,9 @@ fn a_kill_after_the_runner_exited_is_not_recorded_as_the_hosts() {
         !status.success(),
         "the quitter exits with an error code: {status}"
     );
+    // Not 1, the code the host's `TerminateProcess` leaves on Windows: with 1 this test could
+    // not tell the quitter's own exit from the host's kill there.
+    assert_ne!(status.code(), Some(1), "the quitter's exit code: {status}");
     let listing = CrashStore::new(&state.0).list().unwrap();
     assert!(listing.records.is_empty(), "{:?}", listing.records);
     drop(runner);
