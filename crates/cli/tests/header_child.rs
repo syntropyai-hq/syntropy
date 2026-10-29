@@ -312,6 +312,23 @@ fn a_childs_reply_is_checked() {
     short.extend_from_slice(&file[..header - 16]);
     let reason = invalid_reason(run(&replying(&dir, &short, 0)));
     assert!(!reason.is_empty());
+    // Bytes past the header: the daemon's parse must end where the vetted bytes end.
+    let mut long = len.to_le_bytes().to_vec();
+    long.extend_from_slice(&file[..header + 16]);
+    let reason = invalid_reason(run(&replying(&dir, &long, 0)));
+    assert!(reason.contains("not at the"), "{reason}");
+    // A reply longer than the cap allows.
+    let reason = invalid_reason(parse_in_child(
+        &replying(&dir, &good, 0),
+        HeaderKind::Gguf,
+        &path,
+        &HeaderLimits {
+            max_header_bytes: 16,
+            ..HeaderLimits::default()
+        },
+        &wall(),
+    ));
+    assert!(reason.contains("too long"), "{reason}");
     // A child that could not confine itself.
     match run(&script(&dir, "echo 'no seccomp here' >&2; exit 5")) {
         Err(HeaderChildError::Confinement(m)) => assert!(m.contains("no seccomp"), "{m}"),

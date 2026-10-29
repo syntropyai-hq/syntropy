@@ -54,8 +54,11 @@ impl HeaderKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeaderLimits {
     /// Memory: address space on Linux, and set but not confirmed enforced as the data segment on
-    /// macOS and process memory on Windows. Default 1 GiB \[target\]: room for the binary and a
-    /// header at the cap, read into memory.
+    /// macOS and process memory on Windows. Default 1 GiB \[target\]. At its peak the child
+    /// holds about 4 to 5 copies of the header \[estimate: the reader's prefix, the bytes it
+    /// sends and their re-validation\], so a header in the top fifth of
+    /// [`max_header_bytes`](Self::max_header_bytes) can be refused by this limit. That refusal
+    /// fails safe: the file is reported invalid.
     pub memory: u64,
     /// CPU time (user time on Windows). Default 30 s \[target\].
     pub cpu_secs: u64,
@@ -208,7 +211,7 @@ pub fn parse_in_child(
     if bytes.len() as u64 >= max_reply {
         return Err(invalid("the header child's reply is too long".into()));
     }
-    let Some((len, header)) = bytes.split_first_chunk::<8>() else {
+    let Some((len, _)) = bytes.split_first_chunk::<8>() else {
         return Err(invalid("the header child's reply has no length".into()));
     };
     let seen = u64::from_le_bytes(*len);
@@ -217,7 +220,10 @@ pub fn parse_in_child(
             "the file changed while its header was read: {file_len} bytes, then {seen}"
         )));
     }
-    parse_vetted(kind, header.to_vec(), file_len, limits.max_header_bytes).map_err(invalid)
+    // The header's bytes, moved down in place rather than copied.
+    let mut header = bytes;
+    header.drain(..8);
+    parse_vetted(kind, header, file_len, limits.max_header_bytes).map_err(invalid)
 }
 
 /// Waits for `child` until `wall` passes on `clock`, then kills it. `Ok(None)` when it was killed
@@ -242,19 +248,20 @@ fn wait(child: &mut Child, clock: &dyn Clock, wall: Nanos) -> io::Result<Option<
     }
 }
 
-/// The child's stderr as a reason: control characters escaped, at most [`MAX_REASON`] bytes.
+/// The child's stderr as a reason: control characters escaped, at most [`MAX_REASON`] bytes, cut
+/// only between characters.
 fn reason_text(bytes: &[u8]) -> String {
     let mut out = String::new();
     for c in String::from_utf8_lossy(bytes).trim().chars() {
-        if c.is_control() {
-            out.extend(c.escape_default());
+        let piece: String = if c.is_control() {
+            c.escape_default().collect()
         } else {
-            out.push(c);
-        }
-        if out.len() >= MAX_REASON {
-            out.truncate(MAX_REASON);
+            c.into()
+        };
+        if out.len() + piece.len() > MAX_REASON {
             break;
         }
+        out.push_str(&piece);
     }
     out
 }
@@ -333,6 +340,22 @@ mod tests {
     fn a_reason_is_escaped_and_capped() {
         assert_eq!(reason_text(b"bad \x1b[31mname\n"), "bad \\u{1b}[31mname");
         assert_eq!(reason_text(&[b'x'; 5000]).len(), MAX_REASON);
+        // A character that would cross the cap is left out whole, never split. A hostile file
+        // chooses the text: a parser's error quotes its names.
+        for c in ['\u{e9}', '\u{1f600}'] {
+            for before in MAX_REASON - 4..=MAX_REASON {
+                let mut text = "x".repeat(before);
+                text.push(c);
+                text.push_str("tail");
+                let reason = reason_text(text.as_bytes());
+                assert!(reason.len() <= MAX_REASON, "{before} {c}");
+                assert!(text.starts_with(&reason), "{before} {c}");
+            }
+        }
+        // An escape that would cross the cap is left out whole too.
+        let mut text = "x".repeat(MAX_REASON - 2);
+        text.push('\x1b');
+        assert_eq!(reason_text(text.as_bytes()), "x".repeat(MAX_REASON - 2));
     }
 
     #[test]
