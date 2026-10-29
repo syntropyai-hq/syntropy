@@ -104,7 +104,7 @@ pub struct System {
     pub only_in: &'static str,
     /// Whether only a member's own normal or build dependency on a binding counts. Set for a
     /// system whose binding most crates reach through other packages, such as `getrandom` under
-    /// the TLS stack and test crates: the rule then names the one crate that depends on it
+    /// the TLS stack and test crates, or `reqwest` under `iroh`: the rule then names the one crate that depends on it
     /// directly, and a binding reached through another package is not a finding.
     pub direct_only: bool,
 }
@@ -113,7 +113,8 @@ pub struct System {
 /// until the task that adopts one lists it here. IoRing and IOCP are calls through the Windows API
 /// crates that the async ecosystem also uses, so a package name cannot single them out, and the
 /// Thunderbolt RDMA API has no binding crate yet. `getrandom` is checked on direct dependencies
-/// only (RFC-0001 §4.2 rule 6's 2026-10-22 note).
+/// only (RFC-0001 §4.2 rule 6's 2026-10-22 note), and so is `reqwest`, which `net` reaches
+/// through `iroh` (ADR-0432, proposed).
 pub const SYSTEMS: &[System] = &[
     System {
         name: "iroh",
@@ -189,6 +190,15 @@ pub const SYSTEMS: &[System] = &[
         packages: &["getrandom"],
         links: &[],
         only_in: "io",
+        direct_only: true,
+    },
+    // ADR-0432 (proposed): the Hub's HTTPS client, linked by `store` (COMP-E10-T14). Direct
+    // dependencies only, because `net` reaches `reqwest` through `iroh`.
+    System {
+        name: "the Hub's HTTPS client",
+        packages: &["reqwest"],
+        links: &[],
+        only_in: "store",
         direct_only: true,
     },
 ];

@@ -7,7 +7,7 @@
 //! - [`FileSource`] reads a local file.
 //! - [`replay::Replay`] serves a recorded Hub fixture, so tests and fuzz seeds read Hub
 //!   responses without a network. The HTTP range source against the live Hub is COMP-E10-T14,
-//!   which waits on the maintainers' choice of HTTPS client (OQ-MF-18).
+//!   in `syntropy-store`'s `hub` module.
 //! - [`HeaderReader`] is the one header-read routine. It bounds every read by
 //!   `store.header_max_bytes` ([`HeaderLimit`](RangeError::HeaderLimit), RFC-0041 §10 code 5)
 //!   and coalesces the parser's many small reads into a few requests against the source: it
@@ -88,6 +88,33 @@ pub enum RangeError {
         /// The OS error's message.
         message: String,
     },
+    /// `HeaderInvalid`, `(Formats, 6)`, class `Integrity`: a remote origin's reply does not
+    /// match the read: a 416, a body shorter or longer than the range, a `Content-Range` naming
+    /// other bytes, or a whole-file reply to a range request (RFC-0041 §7.2).
+    BadResponse {
+        /// The read's offset.
+        offset: u64,
+        /// The read's length.
+        len: u64,
+        /// What the reply got wrong.
+        message: String,
+    },
+    /// `OriginUnavailable`, `(Formats, 11)`, class `Link`: a remote origin could not be reached,
+    /// timed out, or failed the request (a 404, 429 or 5xx, say).
+    Origin {
+        /// The HTTP status, when the origin answered.
+        status: Option<u16>,
+        /// What failed.
+        message: String,
+    },
+    /// `GatedNoAccess`, `(Formats, 13)`, class `Auth`: a remote origin refused the request
+    /// with a 401 or 403, as for a gated repository without a token (RFC-0041 §7.5).
+    NoAccess {
+        /// The HTTP status.
+        status: u16,
+        /// The origin's reason.
+        message: String,
+    },
     /// A replayed recording holds no response covering the read: the fixture does not match
     /// the reader. Class `Internal`.
     NotRecorded {
@@ -111,7 +138,9 @@ impl RangeError {
     pub fn code(&self) -> Option<u16> {
         match self {
             Self::HeaderLimit { .. } => Some(5),
-            Self::OutOfRange { .. } => Some(6),
+            Self::OutOfRange { .. } | Self::BadResponse { .. } => Some(6),
+            Self::Origin { .. } => Some(11),
+            Self::NoAccess { .. } => Some(13),
             _ => None,
         }
     }
@@ -120,9 +149,12 @@ impl RangeError {
     #[must_use]
     pub fn class(&self) -> ErrorClass {
         match self {
-            Self::HeaderLimit { .. } | Self::OutOfRange { .. } | Self::Io { .. } => {
-                ErrorClass::Integrity
-            }
+            Self::HeaderLimit { .. }
+            | Self::OutOfRange { .. }
+            | Self::Io { .. }
+            | Self::BadResponse { .. } => ErrorClass::Integrity,
+            Self::Origin { .. } => ErrorClass::Link,
+            Self::NoAccess { .. } => ErrorClass::Auth,
             Self::NotRecorded { .. } | Self::Recording { .. } => ErrorClass::Internal,
         }
     }
@@ -144,6 +176,28 @@ impl fmt::Display for RangeError {
                 "HeaderInvalid (Formats 6): {len} bytes at {offset} pass the source's end at {source_len}"
             ),
             Self::Io { kind, message } => write!(f, "read failed ({kind:?}): {message}"),
+            Self::BadResponse {
+                offset,
+                len,
+                message,
+            } => write!(
+                f,
+                "HeaderInvalid (Formats 6): the origin's reply to {len} bytes at {offset}: {message}"
+            ),
+            Self::Origin {
+                status: Some(status),
+                message,
+            } => write!(
+                f,
+                "OriginUnavailable (Formats 11): HTTP {status}: {message}"
+            ),
+            Self::Origin {
+                status: None,
+                message,
+            } => write!(f, "OriginUnavailable (Formats 11): {message}"),
+            Self::NoAccess { status, message } => {
+                write!(f, "GatedNoAccess (Formats 13): HTTP {status}: {message}")
+            }
             Self::NotRecorded { offset, len } => {
                 write!(
                     f,
