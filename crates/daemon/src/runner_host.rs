@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use syntropy_core::Entropy;
 
-use crate::crash::CrashSink;
+use crate::crash::{CrashSink, HostKill};
 use syntropy_ipc::cmd::memory::MemoryStream;
 use syntropy_ipc::cmd::{
     DaemonChannel, Hello, PROTOCOL, Refused, RunnerChannel, Stream, memory_channel, spawn_pair,
@@ -297,6 +297,8 @@ pub struct ProcessRunner {
     exited: Option<ExitStatus>,
     /// Where a crash exit is recorded, when the host was given one (RFC-0053 §6).
     crashes: Option<CrashSink>,
+    /// Why the host killed the runner, once it has (PROD-E9-T12).
+    killed: Option<HostKill>,
 }
 
 impl ProcessRunner {
@@ -357,6 +359,9 @@ impl ProcessRunner {
         if let Err(refused) = &result
             && let Ok(status) = &refused.exit
         {
+            // The refusal killed the runner (RFC-0001 §3.4: a spawned runner of another build is
+            // killed), so its exit is the host's kill.
+            self.killed = Some(HostKill::Refused);
             self.reaped(*status);
         }
         result
@@ -367,16 +372,20 @@ impl ProcessRunner {
         drop(self.channel.take());
     }
 
-    /// Kills the runner's process, as the supervisor does for a hang or a stall (RFC-0001 §3.4).
-    /// Reap it with [`wait`](Self::wait) or [`try_wait`](Self::try_wait).
+    /// Kills the runner's process for `reason`, as the supervisor does for a hang or a stall
+    /// (RFC-0001 §3.4; `HostKill::Supervisor`, which DIST-E1-T16 wires from the supervisor
+    /// shell's `Effects::kill`). Reap it with [`wait`](Self::wait) or
+    /// [`try_wait`](Self::try_wait). With a [`CrashSink`], the reap records the kill with its
+    /// reason, on every OS (PROD-E9-T12). A second kill keeps the first reason.
     ///
     /// # Errors
     ///
     /// The OS error. Killing a process that has already exited is not one.
-    pub fn kill(&mut self) -> io::Result<()> {
+    pub fn kill(&mut self, reason: HostKill) -> io::Result<()> {
         if self.exited.is_some() {
             return Ok(());
         }
+        self.killed.get_or_insert(reason);
         self.child().kill()
     }
 
@@ -410,9 +419,11 @@ impl ProcessRunner {
         Ok(status)
     }
 
-    /// Records the runner's exit in `sink` when it is reaped and the exit is a crash: a signal
-    /// on Unix, a system `NTSTATUS` error on Windows (RFC-0053 §6). The record goes in the state
-    /// directory's `crashes/`, which `doctor` and the diagnostic bundle read.
+    /// Records the runner's exit in `sink` when it is reaped and the exit is a crash: a kill the
+    /// host made ([`kill`](Self::kill), or a refused handshake), with its reason, on every OS;
+    /// otherwise a signal on Unix or a system `NTSTATUS` error on Windows (RFC-0053 §6). A clean
+    /// exit records nothing. The record goes in the state directory's `crashes/`, which `doctor`
+    /// and the diagnostic bundle read.
     pub fn record_crashes(&mut self, sink: CrashSink) {
         self.crashes = Some(sink);
     }
@@ -421,10 +432,16 @@ impl ProcessRunner {
     /// name.
     fn reaped(&mut self, status: ExitStatus) {
         self.exited = Some(status);
-        if let Some(sink) = &self.crashes
-            && let Err(error) = sink.record_exit(self.pid, &status)
-        {
-            tracing::warn!(%error, pid = self.pid, "writing a runner's crash record failed");
+        if let Some(sink) = &self.crashes {
+            // A kill the host made is recorded with its reason on every OS; any other exit only
+            // when its status shows a crash.
+            let written = match self.killed {
+                Some(reason) => sink.record_host_kill(self.pid, reason, &status).map(Some),
+                None => sink.record_exit(self.pid, &status),
+            };
+            if let Err(error) = written {
+                tracing::warn!(%error, pid = self.pid, "writing a runner's crash record failed");
+            }
         }
         drop(self.beat.take());
         self.unlink();
@@ -522,6 +539,7 @@ pub fn spawn_process(
         build_id,
         exited: None,
         crashes: None,
+        killed: None,
     };
     // On an error the drop closes the channel, so the runner exits on its own, and removes the
     // region's name.

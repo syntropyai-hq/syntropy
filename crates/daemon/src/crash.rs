@@ -34,6 +34,7 @@ use syntropy_core::Clock;
 
 use crate::logging::LogEvent;
 use crate::logging::format::{self, WallClock};
+use crate::supervisor::KillReason;
 
 /// The directory under the state directory that holds the records.
 pub const CRASH_DIR: &str = "crashes";
@@ -113,6 +114,35 @@ pub enum CrashCause {
         /// The device error report.
         report: String,
     },
+    /// The process host killed the runner, for a reason RFC-0001 §3.4 gives (PROD-E9-T12). On
+    /// every OS: a host kill is recorded from the host's own reason, never from how the exit
+    /// status reads, since on Windows `TerminateProcess` leaves an ordinary exit code.
+    HostKilled {
+        /// Why the host killed it.
+        reason: HostKill,
+        /// The signal the exit status shows, on Unix.
+        signal: Option<i32>,
+    },
+}
+
+/// Why the process host killed a runner (RFC-0001 §3.4): the host's own type. These are the
+/// only kills the host makes: a shutdown drains runners and never kills them, and dropping a
+/// runner's host closes its channel without a kill. In a record it reads
+/// `{"supervisor": "hung"}`, `{"supervisor": "stalled"}` or `"refused"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostKill {
+    /// The supervisor's kill, with its reason: a hang or a stall. The supervisor shell's
+    /// `Effects::kill` passes it to `ProcessRunner::kill`, which DIST-E1-T16 wires.
+    Supervisor(KillReason),
+    /// The freshly spawned runner's `Hello` was refused: another build, protocol or process.
+    Refused,
+}
+
+impl From<KillReason> for HostKill {
+    fn from(reason: KillReason) -> HostKill {
+        HostKill::Supervisor(reason)
+    }
 }
 
 impl CrashCause {
@@ -384,9 +414,32 @@ impl CrashSink {
     ///
     /// As [`CrashStore::write`].
     pub fn record_exit(&self, pid: u32, status: &ExitStatus) -> io::Result<Option<PathBuf>> {
-        let Some(cause) = CrashCause::from_exit(status) else {
-            return Ok(None);
+        match CrashCause::from_exit(status) {
+            Some(cause) => self.record(pid, cause).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Writes the record of runner process `pid`, which the process host killed for `reason`
+    /// and which then exited with `status`. Always a record, on every OS (PROD-E9-T12).
+    ///
+    /// # Errors
+    ///
+    /// As [`CrashStore::write`].
+    pub fn record_host_kill(
+        &self,
+        pid: u32,
+        reason: HostKill,
+        status: &ExitStatus,
+    ) -> io::Result<PathBuf> {
+        let signal = match CrashCause::from_exit(status) {
+            Some(CrashCause::Signal { signal, .. }) => Some(signal),
+            _ => None,
         };
+        self.record(pid, CrashCause::HostKilled { reason, signal })
+    }
+
+    fn record(&self, pid: u32, cause: CrashCause) -> io::Result<PathBuf> {
         let record = CrashRecord {
             version: CRASH_RECORD_VERSION,
             at_unix_ms: self.clock.unix_ms(),
@@ -398,7 +451,7 @@ impl CrashSink {
             cause,
             last_logs: self.tail.lines(),
         };
-        self.store.write(&record).map(Some)
+        self.store.write(&record)
     }
 }
 
