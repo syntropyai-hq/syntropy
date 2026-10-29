@@ -29,7 +29,8 @@
 //!
 //! A volume that passes is [`StorageMode::Sparse`], or [`StorageMode::SparseFillsGaps`] when step
 //! 1 filled the gap and the punch freed it. On either, every chunk write punches the unheld runs
-//! just before and after its chunk, once the chunk's bytes and bit are synced. The probe's
+//! just before and after its chunk, within [`PUNCH_WINDOW_BYTES`] of it, once the chunk's bytes
+//! and bit are synced. The probe's
 //! finding does not decide it: at commit d15d093 the probe's own file, written in another order,
 //! did not fill on the hosted runner while a blob's did, so the write path punches on every
 //! sparse volume, and where nothing was filled the punch frees nothing (punching the 8 MiB gap of
@@ -133,6 +134,14 @@ pub const PROBE_NEAR_GAP_BYTES: u64 = 8 << 20;
 /// The length the probe first extends its file to, for that write: 64 MiB, as in the measured
 /// APFS case (module docs). It is extended to [`PROBE_BYTES`] after.
 pub const PROBE_NEAR_LEN: u64 = 64 << 20;
+
+/// How far either side of a written chunk the punch after the write reaches: 32 MiB \[chosen\]
+/// (COMP-E11-T23). APFS zero-fills a gap below a write only when the gap is small. On the hosted
+/// runner a gap of 8 MiB was filled, and gaps of 24 MiB and 32 MiB were not \[measured, hosted
+/// macos-26, APFS, commit 318a01c\] (module docs). The window covers every gap seen filled, with
+/// room, and bounds the work a write does, whatever the file's length: the punch used to scan to
+/// the nearest held chunk, so an ascending fetch scanned to the file's end after every write.
+pub const PUNCH_WINDOW_BYTES: u64 = 32 << 20;
 
 /// The inventory's magic.
 pub const INVENTORY_MAGIC: [u8; 8] = *b"SYNCINV1";
@@ -1276,26 +1285,17 @@ impl Blob<'_> {
     }
 
     /// Punches the runs of unheld chunks just before and just after chunk `index`, back to the
-    /// nearest held chunk or the file's ends: the gap a volume that fills gaps allocated when the
-    /// chunk was written, as APFS does. The ranges are
+    /// nearest held chunk, the file's ends or [`PUNCH_WINDOW_BYTES`], whichever is nearest
+    /// ([`Blob::beside_runs`]): the gap a volume that fills gaps allocated when the chunk was
+    /// written, as APFS does. The ranges are
     /// whole chunks that are not held, and `syntropy_io::os::punch_hole` rounds them inward to
     /// whole blocks where the OS punches only blocks, so no byte of a held chunk changes.
     fn punch_beside(&self, index: usize) -> Result<(), BlobError> {
         let Some(file) = &self.data else {
             return Ok(());
         };
-        let records = &self.table.records;
-        let mut first = index;
-        while first > 0 && !self.is_held(first - 1) {
-            first -= 1;
-        }
-        let mut last = index + 1;
-        while last < records.len() && !self.is_held(last) {
-            last += 1;
-        }
-        let before = records[first].chunk.offset..records[index].chunk.offset;
-        let after = records[index].chunk.end()..records[last - 1].chunk.end();
-        for run in [before, after] {
+        let (runs, _) = self.beside_runs(index);
+        for run in runs {
             if run.start < run.end {
                 self.blobs
                     .ops
@@ -1305,6 +1305,52 @@ impl Blob<'_> {
         }
         file.sync_data()
             .map_err(|e| BlobError::io("sync", &self.data_path, e))
+    }
+
+    /// The two ranges [`Blob::punch_beside`] punches after chunk `index` is written, and how
+    /// many chunks' bits it tested to find them (COMP-E11-T23). Each range runs from the chunk
+    /// over the unheld chunks beside it, and stops at the nearest held chunk or at
+    /// [`PUNCH_WINDOW_BYTES`] from the chunk, whichever comes first. A range may end inside an
+    /// unheld chunk at the window's edge, which is safe: it covers no held byte. So a write tests
+    /// at most the chunks within the window, whatever the file's length.
+    fn beside_runs(&self, index: usize) -> ([Range<u64>; 2], usize) {
+        let records = &self.table.records;
+        let chunk = records[index].chunk;
+        let lo = chunk.offset.saturating_sub(PUNCH_WINDOW_BYTES);
+        let hi = chunk
+            .end()
+            .saturating_add(PUNCH_WINDOW_BYTES)
+            .min(self.table.file_len);
+        let mut tested = 0;
+        let mut start = chunk.offset;
+        let mut i = index;
+        while i > 0 {
+            let prev = records[i - 1].chunk;
+            if prev.end() <= lo {
+                break;
+            }
+            tested += 1;
+            if self.is_held(i - 1) {
+                break;
+            }
+            start = prev.offset.max(lo);
+            i -= 1;
+        }
+        let mut end = chunk.end();
+        let mut j = index + 1;
+        while j < records.len() {
+            let next = records[j].chunk;
+            if next.offset >= hi {
+                break;
+            }
+            tested += 1;
+            if self.is_held(j) {
+                break;
+            }
+            end = next.end().min(hi);
+            j += 1;
+        }
+        ([start..chunk.offset, chunk.end()..end], tested)
     }
 
     /// Frees the blocks of every chunk that is not held: the ranges a crash between clearing a
