@@ -47,11 +47,11 @@ Rows are the dependent task's area, columns the prerequisite's. 1550 of the 4070
 |---|---|---|---|---|---|---|---|---|
 | PLC | 309 | 48 | 64 | 85 | 25 | 33 | 564 | 255 |
 | TIER | 40 | 279 | 38 | 63 | 16 | 46 | 482 | 203 |
-| DIST | 49 | 20 | 390 | 32 | 39 | 61 | 591 | 201 |
+| DIST | 49 | 20 | 390 | 32 | 38 | 61 | 590 | 200 |
 | COMP | 30 | 12 | 14 | 627 | 13 | 121 | 817 | 190 |
-| PROD | 42 | 27 | 66 | 51 | 335 | 49 | 570 | 235 |
+| PROD | 42 | 27 | 67 | 51 | 335 | 49 | 571 | 236 |
 | QUAL | 75 | 68 | 117 | 160 | 46 | 580 | 1046 | 466 |
-| Total | 545 | 454 | 689 | 1018 | 474 | 890 | 4070 | 1550 |
+| Total | 545 | 454 | 690 | 1018 | 473 | 890 | 4070 | 1550 |
 
 Area pairs by number of cross-area edges:
 
@@ -63,7 +63,7 @@ Area pairs by number of cross-area edges:
 | PLC | COMP | 85 |
 | QUAL | PLC | 75 |
 | QUAL | TIER | 68 |
-| PROD | DIST | 66 |
+| PROD | DIST | 67 |
 | PLC | DIST | 64 |
 | TIER | COMP | 63 |
 | DIST | QUAL | 61 |
@@ -75,8 +75,8 @@ Area pairs by number of cross-area edges:
 | QUAL | PROD | 46 |
 | PROD | PLC | 42 |
 | TIER | PLC | 40 |
-| DIST | PROD | 39 |
 | TIER | DIST | 38 |
+| DIST | PROD | 38 |
 | PLC | QUAL | 33 |
 | DIST | COMP | 32 |
 | COMP | PLC | 30 |
@@ -98,7 +98,7 @@ Rows are the dependent task's milestone, columns the prerequisite's, in delivery
 |---|---|---|---|---|---|---|---|
 | M0a | 506 | 0 | 0 | 0 | 0 | 0 | 0 |
 | M0b | 242 | 103 | 0 | 0 | 0 | 0 | 0 |
-| M1a | 383 | 171 | 815 | 0 | 0 | 0 | 0 |
+| M1a | 384 | 171 | 814 | 0 | 0 | 0 | 0 |
 | M1b | 27 | 31 | 96 | 105 | 0 | 0 | 0 |
 | M2 | 97 | 27 | 169 | 6 | 565 | 0 | 0 |
 | M3 | 56 | 15 | 126 | 14 | 147 | 252 | 0 |

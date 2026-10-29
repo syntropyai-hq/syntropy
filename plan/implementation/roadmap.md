@@ -455,7 +455,7 @@ Zero-slack tasks by area: PLC 10, TIER 4, COMP 5, PROD 1, QUAL 1.
 
 **Longest chain from project start to an M1a task:** 43 tasks: QUAL-E1-T01 (M0a) → QUAL-E1-T02 → QUAL-E1-T03 → DIST-E1-T12 → DIST-E1-T01 → DIST-E1-T02 → DIST-E1-T03 → DIST-E1-T15 → DIST-E1-T05 → DIST-E1-T04 → DIST-E1-T17 → PLC-E1-T07 → PLC-E1-T09 → PLC-E4-T02 → PLC-E7-T02 → PLC-E7-T03 → PLC-E7-T04 → PLC-E9-T02 → PLC-E9-T16 → PROD-E4-T01 → QUAL-E12-T02 → QUAL-E12-T03 → QUAL-E2-T02 → QUAL-E4-T06 → QUAL-E6-T04 → COMP-E16-T02 → COMP-E16-T14 → COMP-E16-T06 (M1a) → COMP-E16-T07 → QUAL-E7-T09 → TIER-E8-T02 → TIER-E10-T07 → PLC-E4-T03 → PLC-E4-T04 → PLC-E4-T06 → PLC-E5-T06 → PLC-E6-T02 → PLC-E6-T13 → TIER-E6-T15 → TIER-E6-T17 → PROD-E4-T03 → PLC-E8-T16 → PLC-E8-T20.
 
-**Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 108, 2: 65, 3: 52, 4: 41, 5: 22, 6: 31, 7: 37, 8: 20, 9: 17, 10: 10, 11: 9, 12: 19, 13: 6, 14: 17, 15: 13, 16: 11, 17: 2, 18: 3, 19: 1. 108 tasks can start as soon as M1a opens.
+**Parallel work.** Tasks per step, where a task's step is 1 + its longest chain of prerequisites inside the milestone: 1: 108, 2: 66, 3: 51, 4: 41, 5: 22, 6: 31, 7: 37, 8: 20, 9: 17, 10: 10, 11: 9, 12: 19, 13: 6, 14: 17, 15: 13, 16: 11, 17: 2, 18: 3, 19: 1. 108 tasks can start as soon as M1a opens.
 
 Work streams are the epics with tasks in this milestone. "First step" and "last step" are the steps of the stream's earliest and latest tasks. Streams whose step ranges overlap, and that do not wait on each other, can run in parallel.
 
@@ -480,7 +480,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | TIER-E8 | Expert cache: slots, policy, slot table and profile | 8 | 1 | 8 | TIER-E3, TIER-E5, COMP-E4, COMP-E11, QUAL-E7 |
 | TIER-E9 | The MoE step: three sites, CPU execute-in-place and the balancer | 9 | 6 | 14 | PLC-E6, PLC-E7, PLC-E8, PLC-E9, TIER-E3, TIER-E5, TIER-E8, TIER-E10, COMP-E3, COMP-E4, COMP-E5, QUAL-E15 |
 | TIER-E10 | Prediction, prefetch, solver curves and approximate knobs | 10 | 6 | 9 | PLC-E3, TIER-E1, TIER-E5, TIER-E8, TIER-E9, DIST-E14, COMP-E3, COMP-E5, QUAL-E7 |
-| DIST-E1 | Process model: rings, IPC, runner spawn, lifecycle and supervision | 6 | 1 | 3 | PLC-E7, PROD-E9, QUAL-E9 |
+| DIST-E1 | Process model: rings, IPC, runner spawn, lifecycle and supervision | 6 | 1 | 2 | PLC-E7, QUAL-E9 |
 | DIST-E4 | Membership and failure detection | 2 | 2 | 3 | DIST-E7 |
 | DIST-E5 | Admission, invites, revocation and key rotation | 1 | 1 | 1 | – |
 | DIST-E7 | Transports, channels and link management | 1 | 1 | 1 | – |
