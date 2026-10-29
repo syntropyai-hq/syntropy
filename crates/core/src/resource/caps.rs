@@ -5,8 +5,11 @@
 //! PLC-E1-T17), RFC-0010 §1.3's additions to them and to `LinkCaps`, and the types they use.
 //!
 //! Each base record holds the fields RFC-0010 adds as one `ext` field with serde defaults, as
-//! [`DeviceInfo`](super::DeviceInfo) holds `DeviceInfoExt`, so a record written before an
-//! addition still decodes. `LinkCaps` is in the link module.
+//! [`DeviceInfo`](super::DeviceInfo) holds `DeviceInfoExt`. In a self-describing format such as
+//! JSON, a record written before an addition, or carrying fields this build does not know, still
+//! decodes. Postcard, which the command channel uses, is positional: it decodes only what the
+//! same layout wrote, so a probe process and its daemon pair only as the same build (ADR-0015
+//! item 1). `LinkCaps` is in the link module.
 
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -321,6 +324,8 @@ pub struct StorageCapsExt {
     pub shared_lanes: bool,
     /// Smallest queue depth reaching ≥ 95% of the best rate at the dominant request size
     /// (RFC-0021 §3.2).
+    /// 0 when unset, as in a record written before this field: read
+    /// [`StorageCaps::queue_depth`] then.
     pub qd_target: u16,
     /// Read-only report of direct-to-GPU paths per GPU (RFC-0021 §9; none is built in v1).
     pub direct_paths: SmallVec<[(DeviceId, DirectPathReport); 2]>,
@@ -526,4 +531,111 @@ pub enum SyncKind {
     Event,
     /// A doorbell in host-mapped memory.
     Doorbell,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The step-M4 measurements (RFC-0010 §3.2) and glossary op classes each variant stands for.
+    /// The match has no wildcard, so a new variant fails to compile here until it is given its
+    /// items.
+    fn items(class: OpClass) -> &'static [&'static str] {
+        match class {
+            OpClass::Gemm => &[
+                "step M4: GEMM in a tensor-core dtype",
+                "step M4: GEMM through a quantized scheme's dequant path",
+            ],
+            OpClass::QuantGemv => &["glossary: quantized GEMV"],
+            OpClass::ExpertGemv => &["glossary: grouped expert GEMV"],
+            OpClass::Attention(kind) => {
+                // Every attention kind is its own op class; a new kind fails to compile here.
+                match kind {
+                    AttnKind::Gqa
+                    | AttnKind::Mla
+                    | AttnKind::SlidingGqa { .. }
+                    | AttnKind::BlockSparse
+                    | AttnKind::TopKSparse
+                    | AttnKind::Compressed
+                    | AttnKind::Bidirectional => {}
+                }
+                &["step M4: attention per kind", "glossary: attention"]
+            }
+            OpClass::LinearScan => &["glossary: linear-attention scan"],
+        }
+    }
+
+    const ALL: [OpClass; 5] = [
+        OpClass::Gemm,
+        OpClass::QuantGemv,
+        OpClass::ExpertGemv,
+        OpClass::Attention(AttnKind::Gqa),
+        OpClass::LinearScan,
+    ];
+
+    /// Each step-M4 measurement and each glossary op class belongs to exactly one variant.
+    #[test]
+    fn each_measured_and_named_class_has_one_variant() {
+        let mut seen: Vec<&str> = ALL.iter().flat_map(|&c| items(c).iter().copied()).collect();
+        let total = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), total, "an item belongs to two variants");
+        for item in [
+            "step M4: GEMM in a tensor-core dtype",
+            "step M4: GEMM through a quantized scheme's dequant path",
+            "step M4: attention per kind",
+            "glossary: quantized GEMV",
+            "glossary: grouped expert GEMV",
+            "glossary: attention",
+            "glossary: linear-attention scan",
+        ] {
+            assert!(seen.contains(&item), "{item} has no variant");
+        }
+    }
+
+    /// The RFC-0010 §1.3 note that records the choice names every variant the code has, and the
+    /// glossary still lists the op classes the variants stand for.
+    #[test]
+    fn the_design_names_every_variant() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan");
+        let rfc = std::fs::read_dir(root.join("rfcs"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("RFC-0010"))
+            })
+            .unwrap();
+        let rfc = std::fs::read_to_string(rfc).unwrap();
+        let note = rfc
+            .lines()
+            .find(|l| l.contains("built, the recommended default"))
+            .expect("RFC-0010 §1.3 records the choice");
+        for name in [
+            "`Gemm`",
+            "`QuantGemv`",
+            "`ExpertGemv`",
+            "`Attention(AttnKind)`",
+            "`LinearScan`",
+        ] {
+            assert!(note.contains(name), "the note does not name {name}: {note}");
+        }
+        let glossary = std::fs::read_to_string(root.join("glossary.md")).unwrap();
+        let entry = glossary
+            .lines()
+            .find(|l| l.starts_with("**Op class.**"))
+            .expect("the glossary defines op class");
+        for class in [
+            "quantized GEMV",
+            "grouped expert GEMV",
+            "attention",
+            "linear-attention scan",
+        ] {
+            assert!(
+                entry.contains(class),
+                "the glossary no longer names {class}"
+            );
+        }
+    }
 }

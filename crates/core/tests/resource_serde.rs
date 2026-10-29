@@ -2000,9 +2000,18 @@ fn a_capability_profile_round_trips_through_postcard() {
     });
 }
 
-/// Every base record decodes when it carries fields this build does not know.
+/// Every base record decodes when it carries fields this build does not know, on its own and
+/// nested in a profile.
 #[test]
-fn a_capability_profile_decodes_with_future_fields() {
+fn base_records_decode_with_future_fields() {
+    on_big_stack(device_caps, |device| {
+        decodes_with_future_fields(&device);
+        Ok(())
+    });
+    on_big_stack(storage_caps, |storage| {
+        decodes_with_future_fields(&storage);
+        Ok(())
+    });
     on_big_stack(capability_profile, |profile| {
         decodes_with_future_fields(&profile);
         Ok(())
@@ -2038,56 +2047,4 @@ fn without_ext<T: Serialize + DeserializeOwned>(value: &T) -> T {
     let mut json = serde_json::to_value(value).expect("serialize");
     json.as_object_mut().expect("a record").remove("ext");
     serde_json::from_value(json).expect("decodes without ext")
-}
-
-/// Each F_eff measurement of step M4 (RFC-0010 §3.2) and each op class the glossary names maps
-/// to exactly one `OpClass` variant, and every variant is reached.
-#[test]
-fn every_measured_and_named_op_class_maps_to_one_variant() {
-    let kinds = [
-        AttnKind::Gqa,
-        AttnKind::Mla,
-        AttnKind::SlidingGqa { sinks: false },
-        AttnKind::SlidingGqa { sinks: true },
-        AttnKind::BlockSparse,
-        AttnKind::TopKSparse,
-        AttnKind::Compressed,
-        AttnKind::Bidirectional,
-    ];
-    let mut table: Vec<(String, OpClass)> = vec![
-        ("step M4: GEMM in a tensor-core dtype".into(), OpClass::Gemm),
-        (
-            "step M4: GEMM through a quantized scheme's dequant path".into(),
-            OpClass::Gemm,
-        ),
-        ("glossary: quantized GEMV".into(), OpClass::QuantGemv),
-        ("glossary: grouped expert GEMV".into(), OpClass::ExpertGemv),
-        (
-            "glossary: linear-attention scan".into(),
-            OpClass::LinearScan,
-        ),
-    ];
-    for kind in kinds {
-        table.push((
-            format!("step M4 and glossary: attention, {kind:?}"),
-            OpClass::Attention(kind),
-        ));
-    }
-    let mut reached = std::collections::BTreeSet::new();
-    for (name, class) in &table {
-        // One variant per entry: the table holds no entry twice.
-        assert_eq!(table.iter().filter(|(n, _)| n == name).count(), 1, "{name}");
-        reached.insert(match class {
-            OpClass::Gemm => "Gemm",
-            OpClass::QuantGemv => "QuantGemv",
-            OpClass::ExpertGemv => "ExpertGemv",
-            OpClass::Attention(_) => "Attention",
-            OpClass::LinearScan => "LinearScan",
-            _ => panic!("a variant this table does not know: {class:?}"),
-        });
-    }
-    assert_eq!(
-        reached.into_iter().collect::<Vec<_>>(),
-        ["Attention", "ExpertGemv", "Gemm", "LinearScan", "QuantGemv"]
-    );
 }
