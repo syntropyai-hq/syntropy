@@ -1260,3 +1260,11 @@ The review of #1950 (COMP-E10-T11) found that no task sets `TensorRecord::hash`.
 | COMP-E12-T04 sets `TensorRecord::hash` from `ChunkTable::tensor_hash` once every covering chunk is committed on the node, and leaves it `None` until then. COMP-E12-T04 → COMP-E10-T07 | COMP-E12-T04 | R9, R6 | on one node in M1a, chunk IDs are committed at local registration (COMP-E11-T14) or by a verified fetch, and the fetch planner runs before `Packing` reads the hashes. COMP-E10-T07 is M0a and cannot depend on COMP-E10-T11 (M1a), and at header time no chunk is committed. The edge M1a → M0a keeps R6. COMP-E12-T04 already depends on COMP-E10-T11 |
 | COMP-E12-T06 sets the hash when a node fills its table copy from `ChunkIdsCommitted` | COMP-E12-T06 | R9 | in a cluster, §6.3's commitment is where IDs become committed. COMP-E12-T06 reaches COMP-E12-T04 through COMP-E12-T05, so it needs no new edge |
 
+## Hub-fetched chunk IDs reach the chunk table (2026-10-29)
+
+The review of #1963 found two gaps next to COMP-E12-T04's `TensorRecord::hash` criterion. No M1a task writes a Hub-fetched chunk's `ChunkId` into the chunk table, so on one node a model pulled from the Hub would keep every tensor hash at `None`. And COMP-E11-T05 did not say what a pack build does with a group whose hash is still `None`.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E12-T12 writes each verified chunk's `ChunkId` into the model's chunk table as committed, with evidence form 0 (provisional). COMP-E12-T04 → COMP-E12-T12 | COMP-E12-T12, COMP-E12-T04 | R9 | RFC-0041 §6.3's commitment, on one node, happens where a fetched chunk is verified; COMP-E12-T04's "a verified fetch" arm needs that producer |
+| COMP-E11-T05 never forms an `ExtentKey` over a `None` tensor hash: a group that needs an extent but has a `None` hash fails the build with class `Integrity`, and no sidecar is committed | COMP-E11-T05 | R9 | `ExtentKey` (RFC-0041 §1) is built from the group's tensor hashes, so a key over `None` would name bytes nobody can check. Deferring the group can't work: RFC-0001 §3.3 enters `Packing` only once every shard chunk is verified, so every hash is set by then, and a later start with a matching `PackKey` skips `Packing`, so a deferred group would never be built. A `None` there means the table and the shard disagree, the class RFC-0041 §7.3 uses |
