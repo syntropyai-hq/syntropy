@@ -59,7 +59,9 @@ pub struct LedgerSummary {
     /// Bytes held per tier.
     pub held: Vec<(TierId, Bytes)>,
     /// Who holds them: one entry per instance, epoch and tier, each with a holder. A node that
-    /// does not report entries sends none, and its `held` bytes stay unattributed.
+    /// does not report entries sends none, and its `held` bytes stay unattributed. An empty
+    /// list is not encoded, so a ledger without entries keeps the bytes it had before the field.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<Reservation>,
 }
 

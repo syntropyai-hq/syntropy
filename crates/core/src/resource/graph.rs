@@ -171,9 +171,14 @@ impl LedgerSummary {
     /// The reservations this ledger stands for: every entry, plus one reservation with no
     /// holder for each tier whose `held` bytes the entries do not all account for. A ledger
     /// without entries, as from a node that does not report them, yields one such reservation
-    /// per tier it holds. Tiers held at zero bytes yield nothing. The result is sorted by tier, then
-    /// holder, with the unattributed reservation first, so it does not depend on the order the
-    /// node listed its tiers or entries in.
+    /// per tier it holds. Tiers held at zero bytes yield nothing. The result is sorted by tier,
+    /// then holder, with the unattributed reservation first, so it does not depend on the order
+    /// the node listed its tiers or entries in.
+    ///
+    /// The checks run here, not on decode, so a graph can carry a ledger as reported. A caller
+    /// that gets an error must fail closed: dropping the node's ledger would make its held
+    /// capacity look free. The tiers are the reporting node's own; nothing here checks that
+    /// `TierId::node` is the node that reported the ledger, so the coordinator does (PLC-E1-T11).
     ///
     /// # Errors
     ///
@@ -216,7 +221,6 @@ impl LedgerSummary {
             })
             .collect();
         for (&tier, &bytes) in &held {
-            // The check above keeps every tier's entries within its `held` bytes.
             // The check above keeps each tier's entries within its `held` bytes, so `rest` is
             // at most `bytes`.
             let rest = u128::from(bytes) - attributed.get(&tier).copied().unwrap_or(0);
@@ -250,13 +254,21 @@ mod profile_pairs {
         pairs.serialize(serializer)
     }
 
-    /// A node listed twice is refused: which profile holds would depend on list order.
+    /// A node listed twice is refused, since which profile holds would depend on list order, and
+    /// so is a profile listed under a node other than its own.
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<BTreeMap<NodeId, CapabilityProfile>, D::Error> {
         let pairs = Vec::<(NodeId, CapabilityProfile)>::deserialize(deserializer)?;
         let mut map = BTreeMap::new();
         for (node, profile) in pairs {
+            if profile.node != node {
+                return Err(D::Error::custom(format!(
+                    "the profile listed under node {:016x} is node {:016x}'s",
+                    node.short(),
+                    profile.node.short()
+                )));
+            }
             if map.insert(node, profile).is_some() {
                 return Err(D::Error::custom(format!(
                     "node {:016x} has two capability profiles",

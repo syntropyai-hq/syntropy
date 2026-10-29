@@ -2177,6 +2177,9 @@ fn a_resource_graph_round_trips() {
         for r in json["reservations"].as_array_mut().unwrap() {
             r["from_a_newer_build"] = serde_json::json!(1);
         }
+        for pair in json["profiles"].as_array_mut().unwrap() {
+            pair[1]["from_a_newer_build"] = serde_json::json!(1);
+        }
         let back: ResourceGraph = serde_json::from_value(json).unwrap();
         prop_assert_eq!(&back, &graph);
         Ok(())
@@ -2197,7 +2200,8 @@ proptest! {
     }
 }
 
-/// `profiles` travels as a list of pairs in node order, and a node listed twice is refused.
+/// `profiles` travels as a list of pairs in node order. A node listed twice is refused, and so
+/// is a profile listed under another node.
 #[test]
 fn profiles_travel_as_pairs_and_a_repeated_node_is_refused() {
     on_big_stack(resource_graph, |graph| {
@@ -2215,6 +2219,11 @@ fn profiles_travel_as_pairs_and_a_repeated_node_is_refused() {
             "{}",
             err
         );
+        let mut swapped = json.clone();
+        swapped["profiles"][0][0] = json["profiles"][1][0].clone();
+        swapped["profiles"][1][0] = json["profiles"][0][0].clone();
+        let err = serde_json::from_value::<ResourceGraph>(swapped).unwrap_err();
+        prop_assert!(err.to_string().contains("is node"), "{}", err);
         Ok(())
     });
 }
@@ -2236,6 +2245,42 @@ fn absent_profiles_reservations_and_entries_take_defaults() {
     });
     let ledger: LedgerSummary = serde_json::from_value(serde_json::json!({ "held": [] })).unwrap();
     assert!(ledger.entries.is_empty());
+}
+
+/// One graph built twice from the same records in the same order gives the same canonical
+/// bytes (`core::canon`), and a ledger without entries encodes as it did before `entries`.
+#[test]
+fn a_graph_built_twice_encodes_to_the_same_canonical_bytes() {
+    assert_eq!(
+        canon::to_bytes(&fixture_graph()).unwrap(),
+        canon::to_bytes(&fixture_graph()).unwrap()
+    );
+    let ledger = LedgerSummary {
+        held: vec![(sample_tier_id(0), Bytes(5))],
+        entries: vec![],
+    };
+    let json = serde_json::to_value(&ledger).unwrap();
+    assert_eq!(
+        json.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["held"]
+    );
+    assert_eq!(
+        serde_json::from_value::<LedgerSummary>(json).unwrap(),
+        ledger
+    );
+}
+
+/// Reservations that add up past `u64::MAX` on one tier saturate, leaving nothing free.
+#[test]
+fn available_saturates_when_reservations_overflow() {
+    let mut graph = fixture_graph();
+    let a = sample_tier_id(0);
+    graph.reservations = vec![
+        entry(a, held_by(1, 1), u64::MAX),
+        entry(a, held_by(2, 1), u64::MAX),
+    ];
+    assert_eq!(graph.available(a, None), Some(Bytes(0)));
+    assert_eq!(graph.available(a, Some(held_by(1, 1))), Some(Bytes(0)));
 }
 
 fn epoch(seq: u64) -> PlanEpoch {
