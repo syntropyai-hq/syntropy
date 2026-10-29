@@ -234,6 +234,10 @@ ADR-0013 defines two engines and chooses between them per volume by measurement 
 - **Residency.** A completion reports only the bytes copied into the slot, and the engine has no other report. RFC-0020 §3 keys a home's `Loading` state to the read's `IoTicket`, so the residency map (TIER-E1-T04) learns of a read only from its completion and never records a mapped page. The unit check is the engine's half: every range advised in is released once its read completes.
 - Contiguous reads are not gathered, since the copy costs the same per byte at any size.
 
+*Note 2026-10-30 (TIER-E5-T36): the copy is a buffered `pread`.* The copy into the slot is no longer a load from the mapping. `open` makes a second, buffered handle on the file, and once `mincore` shows the extent's pages resident, the read is a `pread` on that handle, served from the page cache the `MADV_WILLNEED` and the wait filled. The reason: a load from the mapping that meets a page the file no longer has, after a truncation between `mincore` and the copy, or a page whose read from storage fails, raises `SIGBUS` and ends the process. No handler can turn that signal into an error soundly, since jumping out of it crosses Rust frames, and a fault-fixup copy would need per-architecture assembly and a process-wide handler. A `pread` returns a short count or the errno instead. The copy count is unchanged, because the kernel copies from the cache into the slot. A page evicted between `mincore` and the `pread` is read synchronously by the `pread`, which is slower and still right. The mapping is kept for the advice and the residency wait, as above.
+- The second handle is a second open of the path, because `F_NOCACHE` belongs to the open file and a duplicate descriptor would share it. `open` checks that both handles are the same file (device and inode), and fails with `IO_ENGINE_UNAVAILABLE` if a path swapped between the two opens names another file, so `MacNoCache` reads it; another file's bytes never reach a slot. Read-ahead is off on the second handle too.
+- §10's A/B still measures `MacMapped` as its own engine, now as built: advice, the residency wait and a buffered `pread`, against `MacNoCache`. If the A/B shows the two as indistinguishable on a volume, that is a finding for §10 to act on; this note does not settle it.
+
 ### 6. Alignment rules and the pack contract
 
 **Volume alignment.** Per open file, the engine determines `DioAlign { mem, offset }`:
@@ -500,6 +504,8 @@ Domain `Io`.
 | `IO_CANCELLED` (10) | `Cancelled` | a prefetch cancelled or dropped as no longer useful | completion discarded |
 
 A demand read that fails after retries fails the step's sequence set with `Integrity` only if the group has no other readable copy; if a RAM or VRAM copy exists (a cached copy of an `Nvme`-homed expert), the step uses it.
+
+*Note 2026-10-30 (TIER-E5-T36): faults on `MacMapped`'s copy path.* A fault on the copy no longer raises `SIGBUS` (§5, note of the same date). A file truncated between `mincore` and the copy gives the copy's `pread` a short count, and a page that cannot be read gives it `EIO`. Both reach the I/O thread as an ordinary short read or errno, mapped to `IO_SHORT_READ`, retried once, then `IO_EXTENT_BAD`, as for every engine. The I/O thread's one retry is TIER-E5-T15's.
 
 ## Performance model and budgets
 
