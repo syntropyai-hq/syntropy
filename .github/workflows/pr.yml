@@ -289,7 +289,7 @@ jobs:
   # `docker-container` builder of its own on the BuildKit image `ci/toolchains.toml` pins.
   toolchains-linux:
     needs: changes
-    if: true
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'toolchains-linux')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
