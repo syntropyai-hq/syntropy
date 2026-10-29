@@ -1317,3 +1317,11 @@ TIER-E5-T36 (M1b) asked that, after a fault on `MacMapped`'s copy, "the retry fo
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | TIER-E5-T36's "the retry follows §16" becomes "a second read of the same extent (the retry §16 prescribes, which the I/O thread issues once TIER-E5-T15 builds it) is short again while the bytes are gone", and "later reads on the same engine return the right bytes" gains "both of extents the truncation left alone and of the faulted extent once the file holds it again"; no edge | TIER-E5-T36 | — | a scope note: the I/O thread's one retry is TIER-E5-T15's (M1a, before TIER-E5-T36's M1b), and the engine's `IO_SHORT_READ` and its behaviour on the retry are TIER-E5-T36's, tested by issuing the read |
+
+## The supervisor's kills reach the process host in DIST-E1-T16 (2026-10-30)
+
+PROD-E9-T12 (M1a) records the process host's own kills with the host's reason. The supervisor's kill reaches the host only once the supervisor shell's `Effects::kill` calls `ProcessRunner::kill`, and no row named that wiring. DIST-E1-T16's criterion, a runner killed for a stall through the real header, already needs it. So DIST-E1-T16 names it, and PROD-E9-T12 tests the host's half by driving `ProcessRunner::kill` with a supervisor reason directly.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T16 gains "the supervisor shell's `Effects::kill(reason)` calls `ProcessRunner::kill(HostKill::Supervisor(reason))`, so the supervisor's kills reach the process host and leave PROD-E9-T12's crash record". DIST-E1-T16 → PROD-E9-T12 | DIST-E1-T16 | R9 | the sentence uses `HostKill` and the reasoned `ProcessRunner::kill`, which PROD-E9-T12 builds. M1a → M1a, and PROD-E9-T12 (on PROD-E9-T04 and DIST-E1-T04) does not reach DIST-E1-T16, so the edge adds no cycle |

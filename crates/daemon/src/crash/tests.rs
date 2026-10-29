@@ -306,3 +306,51 @@ fn a_panic_is_recorded_by_the_hook_and_still_reaches_the_previous_one() {
     assert!(record.last_logs[0].contains("before the panic"));
     assert!(!record.last_logs[0].contains("OUTPUT-CANARY"));
 }
+
+/// PROD-E9-T12: a kill the host made is recorded with its reason whatever its exit status
+/// reads, on every OS, and a clean exit is not recorded.
+#[test]
+fn a_host_kill_is_recorded_with_its_reason_whatever_the_status() {
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt as _;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt as _;
+
+    // What a kill leaves: SIGKILL on Unix, exit code 1 from `TerminateProcess` on Windows.
+    #[cfg(unix)]
+    let (killed, signal, exit_code) = (ExitStatus::from_raw(9), Some(9), None);
+    #[cfg(windows)]
+    let (killed, signal, exit_code) = (ExitStatus::from_raw(1), None, Some(1));
+    let clean = ExitStatus::from_raw(0);
+
+    let state = StateDir::new("hostkill");
+    let sink = CrashSink {
+        store: CrashStore::new(&state.0),
+        build_id: "ab".repeat(32),
+        runner: "instance 3 stage 0".into(),
+        clock: Arc::new(FixedClock::at(1_800_000_000_000)),
+        tail: Arc::new(LogTail::new()),
+    };
+    let stalled = HostKill::Supervisor(crate::supervisor::KillReason::Stalled);
+    sink.record_host_kill(7, stalled, &killed).unwrap();
+    assert_eq!(sink.record_exit(8, &clean).unwrap(), None);
+    let CrashListing { records, .. } = sink.store.list().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].1.cause,
+        CrashCause::HostKilled {
+            reason: stalled,
+            signal,
+            exit_code
+        }
+    );
+    let json = serde_json::to_string(&records[0].1.cause).unwrap();
+    assert!(
+        json.contains("\"host_killed\"") && json.contains("{\"supervisor\":\"stalled\"}"),
+        "{json}"
+    );
+    assert_eq!(
+        serde_json::to_string(&HostKill::Refused).unwrap(),
+        "\"refused\""
+    );
+}
