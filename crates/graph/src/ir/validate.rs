@@ -18,7 +18,8 @@
 //!    change when a multimodal family arrives after 1.0; until then a graph that uses one is
 //!    refused.
 //!
-//! Rule 7 (attention direction) of §2.2 comes with the task that adds the encoder-only checks.
+//! Rule 7 (attention direction) of §2.2 comes with COMP-E15-T12, which adds the encoder-only
+//! checks.
 //! Rules 1–5 check encoder programs like any other program, ordered before the prologue, since
 //! they feed it; rule 6 then refuses them in v1.
 //!

@@ -10,9 +10,9 @@
 //! The op moves values and computes none, so it is exact. [`embed_inject`] is generic over the
 //! element type, so it serves both [`RefMode`](super::RefMode)s, F32 storage for `F32Fixed` and
 //! F64 for `F64`, with the same result, and every row it does not write keeps its bits, NaN
-//! payloads and signed zeros included. Where the placeholder positions come from (the request's placeholder
-//! token IDs, RFC-0022 §7.1) is the multimodal family's to define after 1.0; here they are an
-//! argument.
+//! payloads and signed zeros included. Where the placeholder positions come from (the
+//! request's placeholder token IDs, RFC-0022 §7.1) is the multimodal family's to define after
+//! 1.0; here they are an argument.
 
 use std::fmt;
 
@@ -255,7 +255,8 @@ mod tests {
             bits in proptest::collection::vec(any::<u32>(), 144),
         ) {
             let mut positions: Vec<u32> = picks.into_iter().filter(|&p| (p as usize) < n_rows).collect();
-            // A deterministic shuffle, so positions arrive out of order.
+            // A deterministic shuffle, so positions arrive out of order. Its slight bias does not
+            // matter: any order is valid input.
             let len = positions.len();
             for i in (1..len).rev() {
                 let j = (shuffle.rotate_left(i as u32) % (i as u64 + 1)) as usize;
