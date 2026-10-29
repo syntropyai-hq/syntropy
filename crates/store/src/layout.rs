@@ -23,6 +23,9 @@
 //!   packs/<device-class>/side/<pack-key>.<kind>    Layout::side_record
 //!   packs/<device-class>/build/<pack-key>.intent   Layout::build_intent
 //!   staging/<sha256>/<chunk>.part       Layout::staging_part
+//!   staging/sparse-probe                Layout::sparse_probe; the start-up probe (§4.2), only
+//!                                       while it runs
+//!   chunks/<id[0..2]>/<id>              Layout::chunk_file; a chunk in chunk-file mode (§4.2)
 //!   sessions/                           Layout::sessions_dir
 //!   locks/                              Layout::locks_dir
 //!   locks/writer.lock                   Layout::writer_lock; the writer lock (not named by §4.1)
@@ -30,7 +33,8 @@
 //! ```
 //!
 //! `<sha256>` (a file's `FileDigest`) and `<model-id>` (a `ModelId`, BLAKE3) are 32-byte
-//! digests, written as 64 lowercase hex digits. `<n>` and `<chunk>` are decimal integers; a
+//! digests, written as 64 lowercase hex digits, and so is `<id>` (a `ChunkId`, BLAKE3), whose
+//! first two digits name its directory. `<n>` and `<chunk>` are decimal integers; a
 //! staged part is named by the chunk's index in its file (RFC-0041 §7.3). Every other
 //! component is a caller-supplied [`Name`].
 
@@ -446,6 +450,25 @@ impl Layout {
         self.staging_file_dir(sha256).join(format!("{index}.part"))
     }
 
+    /// `staging/sparse-probe`: the file a writable root's start allocates sparse to learn
+    /// whether its volume has sparse files (§4.2), removed again at once. Its name is not hex,
+    /// so it cannot be a staged file's directory.
+    pub fn sparse_probe(&self) -> PathBuf {
+        self.staging_dir().join("sparse-probe")
+    }
+
+    /// `chunks/`: one file per chunk, for a root on a volume without sparse files (§4.2). Not a
+    /// fixed directory: only a root in chunk-file mode creates it.
+    pub fn chunks_dir(&self) -> PathBuf {
+        self.base.join("chunks")
+    }
+
+    /// `chunks/<id[0..2]>/<id>`: the chunk whose `ChunkId` is `id`, in chunk-file mode (§4.2).
+    pub fn chunk_file(&self, id: &[u8; 32]) -> PathBuf {
+        let name = hex(id);
+        self.chunks_dir().join(&name[..2]).join(name)
+    }
+
     /// `sessions/`: persisted session KV (RFC-0022).
     pub fn sessions_dir(&self) -> PathBuf {
         self.base.join("sessions")
@@ -556,6 +579,8 @@ mod tests {
                 l.staging_part(&SHA, 12),
                 format!("v1/staging/{SHA_HEX}/12.part"),
             ),
+            (l.sparse_probe(), "v1/staging/sparse-probe".into()),
+            (l.chunk_file(&SHA), format!("v1/chunks/00/{SHA_HEX}")),
             (l.sessions_dir(), "v1/sessions".into()),
             (l.locks_dir(), "v1/locks".into()),
             (l.writer_lock(), "v1/locks/writer.lock".into()),

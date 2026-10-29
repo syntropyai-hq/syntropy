@@ -11,7 +11,8 @@ serde.workspace = true
 serde_json.workspace = true
 # `Clock`, `ModelId` and the units (RFC-0001 §5).
 syntropy-core = { path = "../core" }
-# A file's (device, inode) through `os::file_identity`, and syncing the record's directory.
+# A file's (device, inode) through `os::file_identity`, syncing a directory, and the sparse-file
+# calls of `os::sparse` (marking a file sparse, punching holes, allocated bytes; RFC-0041 §4.2).
 syntropy-io = { path = "../io" }
 # `FileDigest`, `ModelId`'s formula and `SourceRole` (RFC-0041 §1).
 syntropy-manifest = { path = "../manifest" }
@@ -19,3 +20,5 @@ syntropy-manifest = { path = "../manifest" }
 [dev-dependencies]
 # The chunk tables' IDs, recomputed apart from the indexer (COMP-E11-T14).
 blake3.workspace = true
+# The "holes are never read" property test over random partial inventories (COMP-E11-T02).
+proptest.workspace = true

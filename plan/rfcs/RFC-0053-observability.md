@@ -489,6 +489,7 @@ pub struct Fix {
 | STO-002 | filesystem refuses `O_DIRECT` or reports no direct-I/O alignment; buffered mode active | volume, filesystem |
 | STO-003 | store on a network filesystem or rotational disk | volume type |
 | STO-004 | pack spot check: sample extents re-hashed against the sidecar | mismatches |
+| STO-005 | a writable store root in chunk-file mode: its volume has no sparse files (exFAT, FAT32, HFS+), so each chunk is its own file and reads that span chunks are slower (RFC-0041 §4.2) | the root, and what the start-up probe found; move `store.dirs` to a volume with sparse files |
 | NET-001 | LAN discovery blocked: multicast filtered, firewall profile, macOS Local Network permission denied | per interface; the exact firewall command or settings path |
 | NET-002 | node on Wi-Fi while wired is available; links with p99 above 4 × p50 | link figures |
 | NET-003 | MTU mismatch or fragmentation on data-plane links | path MTU |
@@ -520,6 +521,8 @@ pub struct Fix {
 | RUN-005 | KV admission rejections or queue timeouts | counts |
 | RUN-006 | daemon heartbeat stalls that put runners into orphan mode without a restart (RFC-0052 §6.5) | count and longest stall in the last 24 h |
 | PRV-001 | what leaves this node: exporters, update checks, relays | destinations (§8); with `doctor --network`, every outbound destination contacted in the last 24 hours with byte counts (RFC-0034 §13) |
+
+**Revision note, 2026-10-29 (COMP-E11-T02): STO-005.** RFC-0041 §4.2 says chunk-file mode "is flagged in `syntropy doctor`", and no check in this list did so. STO-005 is that check. It reads `syntropy_store::Blobs::mode`, the result of the root's start-up sparse probe, which names the reason the volume has no sparse files. PROD-E9-T02 builds it with the other STO checks.
 
 ### 6. Debug state dump
 
