@@ -328,39 +328,58 @@ impl syntropy_core::Clock for FixedClock {
     }
 }
 
-/// A runner process killed by a signal leaves a crash record in the state directory, written by
-/// the host when it reaps the runner, and a diagnostic bundle built afterwards holds it
-/// (PROD-E9-T04; RFC-0053 §6). The kill is the host's own, `SIGKILL`, as the supervisor's for a
-/// hang or a stall. Windows has no signals: a killed process there exits with the code
-/// `TerminateProcess` gives, which `CrashCause::from_exit` does not count as a crash.
-#[cfg(unix)]
-#[test]
-fn a_runner_killed_by_a_signal_leaves_a_crash_record_that_the_bundle_holds() {
-    use std::os::unix::process::ExitStatusExt as _;
+/// A fresh state directory, removed on drop.
+struct State(std::path::PathBuf);
+
+impl State {
+    fn new(tag: &str) -> State {
+        let dir = std::env::temp_dir().join(format!(
+            "syntropy-cli-runner-crash-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        State(dir)
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A crash sink over `state`, as the daemon's wiring gives the host one.
+fn sink(state: &State) -> syntropy_daemon::crash::CrashSink {
     use std::sync::Arc;
-
-    use syntropy_daemon::bundle::{BundleOptions, Sources, build, verify};
-    use syntropy_daemon::crash::{CrashCause, CrashProcess, CrashSink, CrashStore, LogTail};
-
-    let state =
-        std::env::temp_dir().join(format!("syntropy-cli-runner-crash-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&state);
-    std::fs::create_dir_all(&state).unwrap();
-
-    let mut runner = spawn_ready();
-    let pid = runner.id();
-    runner.record_crashes(CrashSink {
-        store: CrashStore::new(&state),
+    syntropy_daemon::crash::CrashSink {
+        store: syntropy_daemon::crash::CrashStore::new(&state.0),
         build_id: "ab".repeat(32),
         runner: "instance 9 stage 0".into(),
         clock: Arc::new(FixedClock),
-        tail: Arc::new(LogTail::new()),
-    });
-    runner.kill().unwrap();
-    let status = reap_within(&mut runner, Duration::from_secs(30));
-    assert_eq!(status.signal(), Some(9), "{status}");
+        tail: Arc::new(syntropy_daemon::crash::LogTail::new()),
+    }
+}
 
-    let store = CrashStore::new(&state);
+/// A runner the host kills for the supervisor's reason leaves a crash record that names the
+/// reason, on every OS, and a diagnostic bundle built afterwards holds it (PROD-E9-T12;
+/// RFC-0053 §6). The record comes from the host's own reason, not from the exit status: on
+/// Windows `TerminateProcess` leaves exit code 1, which is no crash by its status alone.
+#[test]
+fn a_runner_the_host_kills_leaves_a_crash_record_naming_the_reason_on_every_os() {
+    use syntropy_daemon::bundle::{BundleOptions, Sources, build, verify};
+    use syntropy_daemon::crash::{CrashCause, CrashProcess, CrashStore, HostKill};
+    use syntropy_daemon::supervisor::KillReason;
+
+    let state = State::new("host-kill");
+    let mut runner = spawn_ready();
+    let pid = runner.id();
+    runner.record_crashes(sink(&state));
+    runner.kill(HostKill::from(KillReason::Hung)).unwrap();
+    let status = reap_within(&mut runner, Duration::from_secs(30));
+    assert!(!status.success(), "{status}");
+
+    let store = CrashStore::new(&state.0);
     let listing = store.list().unwrap();
     assert!(listing.unreadable.is_empty());
     assert_eq!(
@@ -369,11 +388,18 @@ fn a_runner_killed_by_a_signal_leaves_a_crash_record_that_the_bundle_holds() {
         "one crash record for the killed runner"
     );
     let (name, record) = &listing.records[0];
+    // `SIGKILL` on Unix; on Windows the exit code 1 `TerminateProcess` leaves.
+    let (signal, exit_code) = if cfg!(unix) {
+        (Some(9), None)
+    } else {
+        (None, Some(1))
+    };
     assert_eq!(
         record.cause,
-        CrashCause::Signal {
-            signal: 9,
-            name: Some("SIGKILL".into())
+        CrashCause::HostKilled {
+            reason: HostKill::Supervisor(KillReason::Hung),
+            signal,
+            exit_code
         }
     );
     assert_eq!(
@@ -394,5 +420,190 @@ fn a_runner_killed_by_a_signal_leaves_a_crash_record_that_the_bundle_holds() {
     assert!(files.contains(&file), "{files:?}");
     assert!(bundle.manifest().contains(&file));
     drop(runner);
-    let _ = std::fs::remove_dir_all(&state);
+}
+
+/// A freshly spawned runner whose `Hello` the host refuses, here for another build ID, is
+/// killed (RFC-0001 §3.4) and leaves a crash record naming the refusal, on every OS
+/// (PROD-E9-T12).
+#[test]
+fn a_runner_whose_handshake_is_refused_leaves_a_crash_record_on_every_os() {
+    use syntropy_daemon::crash::{CrashCause, CrashStore, HostKill};
+
+    let state = State::new("refused");
+    let mut wrong = build_id();
+    wrong[0] ^= 0xff;
+    let mut runner = spawn_process(binary(), &ShmLayout::default(), wrong, &Varying).unwrap();
+    runner.record_crashes(sink(&state));
+    assert!(
+        runner.handshake().is_err(),
+        "a Hello of another build is refused"
+    );
+    let listing = CrashStore::new(&state.0).list().unwrap();
+    assert_eq!(
+        listing.records.len(),
+        1,
+        "one record for the refused runner"
+    );
+    match &listing.records[0].1.cause {
+        CrashCause::HostKilled { reason, signal, .. } => {
+            assert_eq!(*reason, HostKill::Refused);
+            if cfg!(windows) {
+                assert_eq!(*signal, None);
+            }
+        }
+        other => panic!("expected a host kill, got {other:?}"),
+    }
+    drop(runner);
+}
+
+/// Spawns this test binary as the runner: given the runner's arguments, it refuses them and
+/// exits at once, without a `Hello`, standing in for `/bin/false` on every OS.
+fn spawn_quitter(build: [u8; 32]) -> ProcessRunner {
+    let quitter = std::env::current_exe().unwrap();
+    spawn_process(&quitter, &ShmLayout::default(), build, &Varying).unwrap()
+}
+
+/// Reads the runner's channel until it ends: the runner has exited, and is not reaped yet.
+fn until_closed(runner: &mut ProcessRunner) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while runner.channel().recv().is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "the runner's channel stayed open"
+        );
+    }
+}
+
+/// The review of #1973, B1(b): a runner that exits on its own before its `Hello` fails the
+/// handshake with a channel error, not a refusal, and is recorded from its own status: here an
+/// ordinary exit, so no record. Only a `Hello` the host refuses is the host's kill.
+#[test]
+fn a_runner_that_exits_before_hello_is_not_recorded_as_refused() {
+    use syntropy_daemon::crash::CrashStore;
+    use syntropy_ipc::cmd::HandshakeError;
+
+    let state = State::new("exit-before-hello");
+    let mut runner = spawn_quitter(build_id());
+    runner.record_crashes(sink(&state));
+    let refused = runner.handshake().expect_err("no Hello comes");
+    assert!(
+        matches!(refused.cause, HandshakeError::Recv(_)),
+        "{}",
+        refused.cause
+    );
+    let listing = CrashStore::new(&state.0).list().unwrap();
+    assert!(listing.records.is_empty(), "{:?}", listing.records);
+    drop(runner);
+}
+
+/// The review of #1973, B1(a): a kill of a runner that has already exited, not yet reaped, is
+/// not the host's kill. The kill reaps it, and its exit is recorded from its status: here an
+/// ordinary exit, so no record at all.
+#[test]
+fn a_kill_after_the_runner_exited_is_not_recorded_as_the_hosts() {
+    use syntropy_daemon::crash::{CrashStore, HostKill};
+    use syntropy_daemon::supervisor::KillReason;
+
+    let state = State::new("kill-after-exit");
+    let mut runner = spawn_quitter(build_id());
+    runner.record_crashes(sink(&state));
+    until_closed(&mut runner);
+    runner.kill(HostKill::from(KillReason::Hung)).unwrap();
+    let status = reap_within(&mut runner, Duration::from_secs(30));
+    assert!(
+        !status.success(),
+        "the quitter exits with an error code: {status}"
+    );
+    // Not 1, the code the host's `TerminateProcess` leaves on Windows: with 1 this test could
+    // not tell the quitter's own exit from the host's kill there.
+    assert_ne!(status.code(), Some(1), "the quitter's exit code: {status}");
+    let listing = CrashStore::new(&state.0).list().unwrap();
+    assert!(listing.records.is_empty(), "{:?}", listing.records);
+    drop(runner);
+}
+
+/// The review of #1973, B1(a): a runner that crashed just before the host's kill is recorded
+/// as that crash, not as the host's kill. Deterministic: the runner dies of `SIGABRT` from
+/// outside, the test waits for its channel to close, and only then does the host kill it.
+/// Unix only, for the signal.
+#[cfg(unix)]
+#[test]
+fn a_runner_that_crashed_just_before_the_kill_is_recorded_as_its_crash() {
+    use syntropy_daemon::crash::{CrashCause, CrashStore, HostKill};
+    use syntropy_daemon::supervisor::KillReason;
+
+    let state = State::new("crash-before-kill");
+    let mut runner = spawn_ready();
+    runner.record_crashes(sink(&state));
+    let sent = Command::new("kill")
+        .args(["-ABRT", &runner.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    until_closed(&mut runner);
+    runner.kill(HostKill::from(KillReason::Stalled)).unwrap();
+    reap_within(&mut runner, Duration::from_secs(30));
+    let listing = CrashStore::new(&state.0).list().unwrap();
+    assert_eq!(listing.records.len(), 1, "{:?}", listing.records);
+    assert_eq!(
+        listing.records[0].1.cause,
+        CrashCause::Signal {
+            signal: 6,
+            name: Some("SIGABRT".into())
+        }
+    );
+    drop(runner);
+}
+
+/// A runner that drains and exits cleanly leaves no crash record, on every OS.
+#[test]
+fn a_runner_that_exits_cleanly_leaves_no_crash_record() {
+    let state = State::new("clean");
+    let mut runner = spawn_ready();
+    runner.record_crashes(sink(&state));
+    runner
+        .channel()
+        .send(&DaemonMsg::Drain {
+            reason: DrainReason::Unload,
+            deadline: Deadline::within(Nanos(1_000_000_000)),
+        })
+        .unwrap();
+    let status = reap_within(&mut runner, Duration::from_secs(30));
+    assert!(status.success(), "{status}");
+    let listing = syntropy_daemon::crash::CrashStore::new(&state.0)
+        .list()
+        .unwrap();
+    assert!(listing.records.is_empty(), "{:?}", listing.records);
+    drop(runner);
+}
+
+/// A runner killed by a signal from outside the host, not by the host, is recorded from its
+/// exit status, as `Signal` (RFC-0053 §6). Unix only: Windows has no signals.
+#[cfg(unix)]
+#[test]
+fn a_runner_killed_by_another_process_is_recorded_from_its_signal() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    use syntropy_daemon::crash::{CrashCause, CrashStore};
+
+    let state = State::new("external");
+    let mut runner = spawn_ready();
+    runner.record_crashes(sink(&state));
+    let killed = Command::new("kill")
+        .args(["-KILL", &runner.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let status = reap_within(&mut runner, Duration::from_secs(30));
+    assert_eq!(status.signal(), Some(9), "{status}");
+    let listing = CrashStore::new(&state.0).list().unwrap();
+    assert_eq!(listing.records.len(), 1);
+    assert_eq!(
+        listing.records[0].1.cause,
+        CrashCause::Signal {
+            signal: 9,
+            name: Some("SIGKILL".into())
+        }
+    );
+    drop(runner);
 }

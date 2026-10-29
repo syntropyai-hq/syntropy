@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use syntropy_core::Entropy;
 
-use crate::crash::CrashSink;
+use crate::crash::{CrashSink, HostKill};
 use syntropy_ipc::cmd::memory::MemoryStream;
 use syntropy_ipc::cmd::{
     DaemonChannel, Hello, PROTOCOL, Refused, RunnerChannel, Stream, memory_channel, spawn_pair,
@@ -297,6 +297,8 @@ pub struct ProcessRunner {
     exited: Option<ExitStatus>,
     /// Where a crash exit is recorded, when the host was given one (RFC-0053 §6).
     crashes: Option<CrashSink>,
+    /// Why the host killed the runner, once it has (PROD-E9-T12).
+    killed: Option<HostKill>,
 }
 
 impl ProcessRunner {
@@ -357,6 +359,19 @@ impl ProcessRunner {
         if let Err(refused) = &result
             && let Ok(status) = &refused.exit
         {
+            // A `Hello` the host refused (RFC-0001 §3.4: a spawned runner of another build is
+            // killed) makes the exit the host's kill. A channel that failed before any `Hello`,
+            // such as a runner that exited on its own, is recorded from the runner's status.
+            use syntropy_ipc::cmd::HandshakeError;
+            if matches!(
+                refused.cause,
+                HandshakeError::Build { .. }
+                    | HandshakeError::Protocol { .. }
+                    | HandshakeError::Pid { .. }
+                    | HandshakeError::Unexpected { .. }
+            ) {
+                self.killed = Some(HostKill::Refused);
+            }
             self.reaped(*status);
         }
         result
@@ -367,17 +382,27 @@ impl ProcessRunner {
         drop(self.channel.take());
     }
 
-    /// Kills the runner's process, as the supervisor does for a hang or a stall (RFC-0001 §3.4).
-    /// Reap it with [`wait`](Self::wait) or [`try_wait`](Self::try_wait).
+    /// Kills the runner's process for `reason`, as the supervisor does for a hang or a stall
+    /// (RFC-0001 §3.4; `HostKill::Supervisor`, which DIST-E1-T16 wires from the supervisor
+    /// shell's `Effects::kill`). Reap it with [`wait`](Self::wait) or
+    /// [`try_wait`](Self::try_wait). With a [`CrashSink`], the reap records the kill with its
+    /// reason, on every OS (PROD-E9-T12). A second kill keeps the first reason.
+    ///
+    /// A runner that has already exited, reaped or not, is not killed: it is reaped here, and
+    /// its exit is recorded from its status, never as the host's kill. The kill counts as the
+    /// host's only once `Child::kill` succeeds, and at the reap only if the status is the one
+    /// the kill leaves (the private `host_caused`).
     ///
     /// # Errors
     ///
     /// The OS error. Killing a process that has already exited is not one.
-    pub fn kill(&mut self) -> io::Result<()> {
-        if self.exited.is_some() {
+    pub fn kill(&mut self, reason: HostKill) -> io::Result<()> {
+        if self.exited.is_some() || self.try_wait()?.is_some() {
             return Ok(());
         }
-        self.child().kill()
+        self.child().kill()?;
+        self.killed.get_or_insert(reason);
+        Ok(())
     }
 
     /// Whether the runner has exited, reaping it if it has.
@@ -410,9 +435,11 @@ impl ProcessRunner {
         Ok(status)
     }
 
-    /// Records the runner's exit in `sink` when it is reaped and the exit is a crash: a signal
-    /// on Unix, a system `NTSTATUS` error on Windows (RFC-0053 §6). The record goes in the state
-    /// directory's `crashes/`, which `doctor` and the diagnostic bundle read.
+    /// Records the runner's exit in `sink` when it is reaped and the exit is a crash: a kill the
+    /// host made ([`kill`](Self::kill), or a refused handshake), with its reason, on every OS;
+    /// otherwise a signal on Unix or a system `NTSTATUS` error on Windows (RFC-0053 §6). A clean
+    /// exit records nothing. The record goes in the state directory's `crashes/`, which `doctor`
+    /// and the diagnostic bundle read.
     pub fn record_crashes(&mut self, sink: CrashSink) {
         self.crashes = Some(sink);
     }
@@ -421,10 +448,16 @@ impl ProcessRunner {
     /// name.
     fn reaped(&mut self, status: ExitStatus) {
         self.exited = Some(status);
-        if let Some(sink) = &self.crashes
-            && let Err(error) = sink.record_exit(self.pid, &status)
-        {
-            tracing::warn!(%error, pid = self.pid, "writing a runner's crash record failed");
+        if let Some(sink) = &self.crashes {
+            // A kill the host made is recorded with its reason on every OS; any other exit only
+            // when its status shows a crash.
+            let written = match host_caused(self.killed, &status) {
+                Some(reason) => sink.record_host_kill(self.pid, reason, &status).map(Some),
+                None => sink.record_exit(self.pid, &status),
+            };
+            if let Err(error) = written {
+                tracing::warn!(%error, pid = self.pid, "writing a runner's crash record failed");
+            }
         }
         drop(self.beat.take());
         self.unlink();
@@ -471,6 +504,30 @@ impl Drop for ProcessRunner {
                 tracing::warn!(%error, pid = self.pid, "the runner's reaper did not start");
             }
         }
+    }
+}
+
+/// The host's kill that `status` shows, if it shows one: `killed` when the host killed the
+/// runner and the status is what that kill leaves, else `None`, so the exit is recorded from its
+/// own status. On Unix the kill is `SIGKILL` (`Child::kill`), so any other status means the
+/// runner ended another way first, in the window between the host's `try_wait` and its kill. On
+/// Windows `Child::kill` is `TerminateProcess` with exit code 1, so any other code means the
+/// runner exited on its own first. A runner that itself exits with code 1 in that window is
+/// taken as killed, since the two cannot be told apart; that residual window is accepted
+/// (RFC-0053 §6).
+fn host_caused(killed: Option<HostKill>, status: &ExitStatus) -> Option<HostKill> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        // `SIGKILL` is 9 on Linux and on macOS.
+        const SIGKILL: i32 = 9;
+        killed.filter(|_| status.signal() == Some(SIGKILL))
+    }
+    #[cfg(not(unix))]
+    {
+        // The exit code std's `Child::kill` passes to `TerminateProcess`.
+        const TERMINATED: i32 = 1;
+        killed.filter(|_| status.code() == Some(TERMINATED))
     }
 }
 
@@ -522,6 +579,7 @@ pub fn spawn_process(
         build_id,
         exited: None,
         crashes: None,
+        killed: None,
     };
     // On an error the drop closes the channel, so the runner exits on its own, and removes the
     // region's name.
@@ -578,6 +636,37 @@ mod tests {
                 x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
                 *byte = (x >> 56) as u8;
             }
+        }
+    }
+
+    /// The review of #1973, B1 and N1: a kill counts as the host's only when the status is what
+    /// the kill leaves. A runner that died of another signal, or exited, in the window before
+    /// the host's kill is recorded from its own status: on Unix anything but `SIGKILL`, on
+    /// Windows any exit code but 1.
+    #[test]
+    fn a_host_kill_is_attributed_only_when_the_status_is_the_kills() {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+        let hung = Some(HostKill::Supervisor(crate::supervisor::KillReason::Hung));
+        assert_eq!(host_caused(None, &ExitStatus::from_raw(9)), None);
+        #[cfg(unix)]
+        {
+            // A wait status of 9 is death by SIGKILL; 15, by SIGTERM; 3 << 8, `exit(3)`.
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(9)), hung);
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(15)), None);
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(3 << 8)), None);
+        }
+        #[cfg(windows)]
+        {
+            // Exit code 1 is what `TerminateProcess` leaves: the host's kill. Any other code,
+            // such as the 101 a runner that exits on its own leaves, is the runner's own exit
+            // (the hosted Windows failure of #1973, job 123759468519).
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(1)), hung);
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(101)), None);
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(0)), None);
+            assert_eq!(host_caused(None, &ExitStatus::from_raw(1)), None);
         }
     }
 
