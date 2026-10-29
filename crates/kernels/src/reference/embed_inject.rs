@@ -7,9 +7,10 @@
 //! uses it, and `ir::validate` rule 6 refuses a graph that does; no provider implements it. Its
 //! semantics are defined now so that the op's meaning is fixed before the IR freezes.
 //!
-//! The op moves values and computes none, so it is exact: the result is the same in every
-//! [`RefMode`](super::RefMode), and every row it does not write keeps its bits, NaN payloads and
-//! signed zeros included. Where the placeholder positions come from (the request's placeholder
+//! The op moves values and computes none, so it is exact. [`embed_inject`] is generic over the
+//! element type, so it serves both [`RefMode`](super::RefMode)s, F32 storage for `F32Fixed` and
+//! F64 for `F64`, with the same result, and every row it does not write keeps its bits, NaN
+//! payloads and signed zeros included. Where the placeholder positions come from (the request's placeholder
 //! token IDs, RFC-0022 §7.1) is the multimodal family's to define after 1.0; here they are an
 //! argument.
 
@@ -43,10 +44,10 @@ pub enum EmbedInjectError {
         /// The embedding rows.
         rows: usize,
     },
-    /// Positions that do not strictly increase: a repeated or out-of-order placeholder.
-    PositionsNotIncreasing {
-        /// The index in `positions` of the first one not above its predecessor.
-        at: usize,
+    /// A position given twice: two encoder rows for one placeholder, which has no meaning.
+    DuplicatePosition {
+        /// The position.
+        position: u32,
     },
 }
 
@@ -71,10 +72,9 @@ impl fmt::Display for EmbedInjectError {
                 f,
                 "EmbedInject: position {position} is past the {rows} embedding rows"
             ),
-            Self::PositionsNotIncreasing { at } => write!(
-                f,
-                "EmbedInject: position {at} does not follow its predecessor in increasing order"
-            ),
+            Self::DuplicatePosition { position } => {
+                write!(f, "EmbedInject: position {position} is given twice")
+            }
         }
     }
 }
@@ -86,16 +86,20 @@ impl std::error::Error for EmbedInjectError {}
 ///
 /// - `rows`: the embedding rows of one sequence's tokens, row-major, `width` values each;
 /// - `encoded`: the encoder's output rows, one per position, `width` values each;
-/// - `positions`: the row of each placeholder token, strictly increasing.
+/// - `positions`: the row of each placeholder token, in the encoder's row order. They need not
+///   increase, since a family may encode its inputs in another order than they appear, but each
+///   names a different row.
+///
+/// A `width` of zero is refused even with no rows: a row has at least one value.
 ///
 /// # Errors
 ///
-/// [`EmbedInjectError`] when the shapes disagree or a position is out of range or out of order.
-/// `rows` is untouched then.
-pub fn embed_inject(
-    rows: &mut [f32],
+/// [`EmbedInjectError`] when the shapes disagree, a position is out of range or a position is
+/// given twice. `rows` is untouched then.
+pub fn embed_inject<T: Copy>(
+    rows: &mut [T],
     width: usize,
-    encoded: &[f32],
+    encoded: &[T],
     positions: &[u32],
 ) -> Result<(), EmbedInjectError> {
     if width == 0 {
@@ -115,15 +119,16 @@ pub fn embed_inject(
         });
     }
     let n_rows = rows.len() / width;
-    for (at, &position) in positions.iter().enumerate() {
+    let mut seen = std::collections::BTreeSet::new();
+    for &position in positions {
         if position as usize >= n_rows {
             return Err(EmbedInjectError::PositionOutOfRange {
                 position,
                 rows: n_rows,
             });
         }
-        if at > 0 && position <= positions[at - 1] {
-            return Err(EmbedInjectError::PositionsNotIncreasing { at });
+        if !seen.insert(position) {
+            return Err(EmbedInjectError::DuplicatePosition { position });
         }
     }
     for (row, &position) in encoded.chunks_exact(width).zip(positions) {
@@ -207,7 +212,7 @@ mod tests {
                 2,
                 &[9.0, 9.0, 8.0, 8.0],
                 &[2, 2],
-                EmbedInjectError::PositionsNotIncreasing { at: 1 },
+                EmbedInjectError::DuplicatePosition { position: 2 },
             ),
         ];
         for (width, encoded, positions, expected) in cases {
@@ -218,28 +223,47 @@ mod tests {
             );
             assert_eq!(rows, [1.0f32; 6]);
         }
-        let mut rows = vec![1.0f32; 6];
-        assert!(embed_inject(&mut rows, 2, &[9.0, 9.0, 8.0, 8.0], &[2, 1]).is_err());
-        assert_eq!(rows, [1.0f32; 6]);
+    }
+
+    /// Positions in another order than the rows: each encoder row still goes to its own
+    /// position.
+    #[test]
+    fn positions_may_come_in_any_order() {
+        let mut rows = vec![0.0f32; 6];
+        embed_inject(&mut rows, 2, &[9.0, 9.5, 8.0, 8.5], &[2, 0]).unwrap();
+        assert_eq!(rows, [8.0, 8.5, 0.0, 0.0, 9.0, 9.5]);
+    }
+
+    /// The F64 reference mode stores F64; the same move serves it.
+    #[test]
+    fn f64_rows_move_the_same_way() {
+        let mut rows = vec![0.0f64, 1.0, 2.0, 3.0];
+        embed_inject(&mut rows, 2, &[7.0f64, 7.5], &[1]).unwrap();
+        assert_eq!(rows, [0.0, 1.0, 7.0, 7.5]);
     }
 
     proptest! {
-        /// Against a direct transcription of the definition: row r is `encoded`'s row i when
-        /// `positions[i] == r`, and its old value otherwise.
+        /// Against a direct transcription of the definition, with arbitrary bit patterns (NaN
+        /// payloads, infinities and signed zeros among them) and positions in any order: row r
+        /// is `encoded`'s row i when `positions[i] == r`, and its old bits otherwise.
         #[test]
         fn matches_the_definition(
             width in 1usize..6,
             n_rows in 0usize..12,
-            mask in any::<u16>(),
-            seed in any::<u32>(),
+            picks in proptest::sample::subsequence((0u32..12).collect::<Vec<_>>(), 0..12),
+            shuffle in any::<u64>(),
+            bits in proptest::collection::vec(any::<u32>(), 144),
         ) {
-            let rows: Vec<f32> = (0..n_rows * width).map(|i| i as f32 + 0.25).collect();
-            let positions: Vec<u32> = (0..n_rows)
-                .filter(|r| mask >> r & 1 == 1)
-                .map(|r| r as u32)
-                .collect();
+            let mut positions: Vec<u32> = picks.into_iter().filter(|&p| (p as usize) < n_rows).collect();
+            // A deterministic shuffle, so positions arrive out of order.
+            let len = positions.len();
+            for i in (1..len).rev() {
+                let j = (shuffle.rotate_left(i as u32) % (i as u64 + 1)) as usize;
+                positions.swap(i, j);
+            }
+            let rows: Vec<f32> = (0..n_rows * width).map(|i| f32::from_bits(bits[i % 144])).collect();
             let encoded: Vec<f32> = (0..positions.len() * width)
-                .map(|i| -(i as f32) - f32::from_bits(seed % 1000 + 1))
+                .map(|i| f32::from_bits(bits[(i * 7 + 3) % 144]))
                 .collect();
             let mut got = rows.clone();
             embed_inject(&mut got, width, &encoded, &positions).unwrap();
@@ -251,6 +275,22 @@ mod tests {
                 let got_bits: Vec<u32> = got[r * width..(r + 1) * width].iter().map(|v| v.to_bits()).collect();
                 let expect_bits: Vec<u32> = expect.iter().map(|v| v.to_bits()).collect();
                 prop_assert_eq!(got_bits, expect_bits, "row {}", r);
+            }
+        }
+
+        /// Any refused input leaves `rows` exactly as it was.
+        #[test]
+        fn a_refused_input_writes_nothing(
+            width in 0usize..4,
+            n_values in 0usize..16,
+            encoded_len in 0usize..16,
+            positions in proptest::collection::vec(0u32..8, 0..6),
+        ) {
+            let rows: Vec<f32> = (0..n_values).map(|i| i as f32).collect();
+            let encoded: Vec<f32> = (0..encoded_len).map(|i| -(i as f32) - 1.0).collect();
+            let mut got = rows.clone();
+            if embed_inject(&mut got, width, &encoded, &positions).is_err() {
+                prop_assert_eq!(got, rows);
             }
         }
     }

@@ -830,6 +830,8 @@ const MUTATORS: &[(&str, Mutator)] = &[
         });
         Some((Rule::ReservedHooks, "EncoderProgram"))
     }),
+    // EmbedInject's signature is two floats in, one out, with no shape link between them, so
+    // it admits every Add node's values and rule 2 still passes.
     ("turn an Add into EmbedInject", |f, l| {
         let node = f.graph.layers[l]
             .body
@@ -1256,13 +1258,16 @@ impl Violation {
 /// Rule 6's mutators apply to the small graph, and each refusal names rule 6.
 #[test]
 fn rule_6_refuses_each_reserved_hook() {
-    for (name, mutate) in MUTATORS
-        .iter()
-        .filter(|(n, _)| n.contains("encoder") || n.contains("EmbedInject"))
-    {
+    let mut applied = 0;
+    for (name, mutate) in MUTATORS {
         let mut f = small();
-        let (rule, expected) = mutate(&mut f, 0).unwrap_or_else(|| panic!("{name} did not apply"));
-        assert_eq!(rule, Rule::ReservedHooks);
+        let Some((rule, expected)) = mutate(&mut f, 0) else {
+            continue;
+        };
+        if rule != Rule::ReservedHooks {
+            continue;
+        }
+        applied += 1;
         let err = f.validate().expect_err(name);
         assert_eq!(variant(&err), expected, "{name}");
         assert!(
@@ -1271,4 +1276,22 @@ fn rule_6_refuses_each_reserved_hook() {
             "{err}"
         );
     }
+    assert_eq!(applied, 3, "each rule-6 mutator applies to the small graph");
+}
+
+/// Rule 5 comes before rule 6: an `EmbedInject` node that `required_ops` does not list is
+/// reported as rule 5; once listed, as rule 6.
+#[test]
+fn rule_5_is_reported_before_rule_6() {
+    let mut f = small();
+    let node = f.graph.layers[0]
+        .body
+        .nodes
+        .iter_mut()
+        .find(|n| n.op == OpKind::Add)
+        .expect("the small graph has an Add");
+    node.op = OpKind::EmbedInject;
+    assert_eq!(f.validate().unwrap_err().rule(), Rule::Coverage);
+    f.ops.insert(OpKind::EmbedInject);
+    assert_eq!(f.validate().unwrap_err().rule(), Rule::ReservedHooks);
 }

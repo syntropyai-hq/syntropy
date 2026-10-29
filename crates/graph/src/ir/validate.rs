@@ -339,7 +339,7 @@ pub enum Violation {
     // ---- Rule 6: reserved hooks ----
     /// The graph has an encoder program, which no v1 family produces.
     EncoderProgram {
-        /// Its index in `encoders`.
+        /// The first encoder program's index in `encoders`: always 0, since any is refused.
         index: u16,
     },
     /// A node is the reserved `EmbedInject`.
