@@ -324,6 +324,7 @@ pub struct StorageCapsExt {
     pub shared_lanes: bool,
     /// Smallest queue depth reaching ≥ 95% of the best rate at the dominant request size
     /// (RFC-0021 §3.2).
+    ///
     /// 0 when unset, as in a record written before this field: read
     /// [`StorageCaps::queue_depth`] then.
     pub qd_target: u16,
@@ -537,7 +538,8 @@ pub enum SyncKind {
 mod tests {
     use super::*;
 
-    /// The step-M4 measurements (RFC-0010 §3.2) and glossary op classes each variant stands for.
+    /// The step-M4 measurements (RFC-0010 §3.2) and glossary op classes each variant stands for,
+    /// as RFC-0010 §1.3's note records them: a record, checked for coverage, not a derivation.
     /// The match has no wildcard, so a new variant fails to compile here until it is given its
     /// items.
     fn items(class: OpClass) -> &'static [&'static str] {
@@ -595,23 +597,29 @@ mod tests {
     }
 
     /// The RFC-0010 §1.3 note that records the choice names every variant the code has, and the
-    /// glossary still lists the op classes the variants stand for.
+    /// glossary still lists the op classes the variants stand for. It reads `plan/`, which a
+    /// crate-only checkout (such as `cargo package --verify`) does not have; there it says so and
+    /// checks nothing.
     #[test]
     fn the_design_names_every_variant() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan");
-        let rfc = std::fs::read_dir(root.join("rfcs"))
-            .unwrap()
+        let Ok(rfcs) = std::fs::read_dir(root.join("rfcs")) else {
+            eprintln!("skipped: no plan/ beside this crate");
+            return;
+        };
+        let rfc = rfcs
             .map(|e| e.unwrap().path())
             .find(|p| {
                 p.file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("RFC-0010"))
+                    .is_some_and(|n| n.to_string_lossy().starts_with("RFC-0010-"))
             })
-            .unwrap();
+            .expect("plan/rfcs holds RFC-0010");
         let rfc = std::fs::read_to_string(rfc).unwrap();
         let note = rfc
             .lines()
-            .find(|l| l.contains("built, the recommended default"))
-            .expect("RFC-0010 §1.3 records the choice");
+            .find(|l| l.contains("PLC-E1-T17") && l.contains("`OpClass`"))
+            .and_then(|_| rfc.lines().find(|l| l.trim_start().starts_with("- (a)")))
+            .expect("RFC-0010 §1.3's PLC-E1-T17 note records option (a)");
         for name in [
             "`Gemm`",
             "`QuantGemv`",
@@ -619,7 +627,10 @@ mod tests {
             "`Attention(AttnKind)`",
             "`LinearScan`",
         ] {
-            assert!(note.contains(name), "the note does not name {name}: {note}");
+            assert!(
+                note.contains(name),
+                "option (a) does not name {name}: {note}"
+            );
         }
         let glossary = std::fs::read_to_string(root.join("glossary.md")).unwrap();
         let entry = glossary
@@ -627,14 +638,14 @@ mod tests {
             .find(|l| l.starts_with("**Op class.**"))
             .expect("the glossary defines op class");
         for class in [
-            "quantized GEMV",
-            "grouped expert GEMV",
-            "attention",
+            "quantized GEMV,",
+            "grouped expert GEMV,",
+            ", attention or",
             "linear-attention scan",
         ] {
             assert!(
                 entry.contains(class),
-                "the glossary no longer names {class}"
+                "the glossary no longer names {class:?}: {entry}"
             );
         }
     }
