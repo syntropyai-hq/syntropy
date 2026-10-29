@@ -215,14 +215,19 @@ impl SparseOps for Scripted {
     }
 }
 
-/// The far write allocates the 512 MiB below it.
-static FILLS_FAR: Scripted = Scripted::new(&[0, 513 * MIB]);
-/// APFS as measured: the far write holds 1 MiB, the near one 9 MiB, and the punched gap frees.
-static FILLS_NEAR: Scripted = Scripted::new(&[0, MIB, 0, 9 * MIB, MIB]);
+// The figures, in the order the probe reads them: after the 64 MiB extension, after the near
+// write, after punching its gap (only when it filled), after the 1 GiB extension, after the far
+// write, after punching it.
+
+/// The near write fills nothing; the far one allocates the 512 MiB below it.
+static FILLS_FAR: Scripted = Scripted::new(&[0, MIB, MIB, 513 * MIB]);
+/// APFS as measured: the near write holds 9 MiB and its punched gap frees; the far write holds
+/// 1 MiB, and punching it frees it.
+static FILLS_NEAR: Scripted = Scripted::new(&[0, 9 * MIB, MIB, MIB, 2 * MIB, MIB]);
 /// The near write fills its gap, and the punch frees nothing.
-static FILLS_NEAR_KEPT: Scripted = Scripted::new(&[0, MIB, 0, 9 * MIB, 9 * MIB]);
+static FILLS_NEAR_KEPT: Scripted = Scripted::new(&[0, 9 * MIB, 9 * MIB]);
 /// Neither write fills.
-static FILLS_NOTHING: Scripted = Scripted::new(&[0, MIB, 0, MIB]);
+static FILLS_NOTHING: Scripted = Scripted::new(&[0, MIB, MIB, 2 * MIB, MIB]);
 
 /// The probe checks that a write allocates about what it wrote (the review of #1965, B3).
 #[test]
@@ -233,9 +238,9 @@ fn the_probe_checks_that_a_write_allocates_what_it_wrote() {
     assert_eq!(
         mode(&FILLS_FAR),
         StorageMode::ChunkFile(NoSparse::WriteFillsGap {
-            gap: PROBE_BYTES / 2,
+            gap: PROBE_BYTES / 2 - PROBE_NEAR_GAP_BYTES - PROBE_WRITE_BYTES,
             written: PROBE_WRITE_BYTES,
-            allocated: 513 * MIB,
+            allocated: 512 * MIB,
         })
     );
     assert_eq!(
@@ -364,11 +369,17 @@ fn a_volume_that_cannot_punch_or_free_is_chunk_file_mode() {
     drop(blobs);
     let blobs = Blobs::open_with(&root, &PunchKeeps).unwrap();
     match blobs.mode() {
+        // APFS fills the near write's gap, and this volume's punch cannot free it.
+        StorageMode::ChunkFile(NoSparse::GapPunchKeptBlocks { filled, .. })
+            if cfg!(target_os = "macos") =>
+        {
+            assert!(*filled > 2 * PROBE_WRITE_BYTES, "{filled}");
+        }
         StorageMode::ChunkFile(NoSparse::PunchKeptBlocks { before, after }) => {
             assert!(before >= &PROBE_WRITE_BYTES, "{before}");
             assert_eq!(before, after);
         }
-        other => panic!("expected PunchKeptBlocks, got {other:?}"),
+        other => panic!("expected the punch to be found wanting, got {other:?}"),
     }
 }
 

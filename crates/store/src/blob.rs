@@ -12,20 +12,23 @@
 //! # Start: the sparse probe
 //!
 //! [`Blobs::open`] runs at a writable root's start. It creates `staging/sparse-probe`, marks it
-//! sparse, extends it to [`PROBE_BYTES`] (1 GiB) and reads the bytes it holds on disk. Then:
+//! sparse, extends it to [`PROBE_NEAR_LEN`] (64 MiB) and reads the bytes it holds. Then:
 //!
-//! 1. It writes [`PROBE_WRITE_BYTES`] in the middle, and checks that the write allocated about
-//!    what it wrote, not the gap below it.
-//! 2. It punches those bytes out again, and checks that the punch freed at least half of them.
-//! 3. It writes the same bytes [`PROBE_NEAR_GAP_BYTES`] (8 MiB) into the file. A volume that
-//!    zero-fills a small gap below a write allocates the gap as well. APFS does: on the hosted
-//!    `macos-26` runner, a 4 KiB write 8 MiB into a file extended to 64 MiB held 8,404,992 bytes,
-//!    and one 1 MiB in held 1,064,960, while one 32 MiB in held 16,384 and 1 MiB written 512 MiB
-//!    into a 1 GiB file held 1,048,576 [measured, hosted macos-26, APFS, commit 318a01c]. On such
-//!    a volume the probe punches the gap and checks that it frees.
+//! 1. It writes [`PROBE_WRITE_BYTES`] [`PROBE_NEAR_GAP_BYTES`] (8 MiB) into the file, before
+//!    anything else is written. A volume that zero-fills a small gap below a write allocates
+//!    the gap as well. APFS does, for a write past everything written so far: on the hosted
+//!    `macos-26` runner, a 4 KiB write 8 MiB into a file extended to 64 MiB held 8,404,992
+//!    bytes and one 1 MiB in held 1,064,960, while one 32 MiB in held 16,384, 1 MiB written
+//!    512 MiB into a 1 GiB file held 1,048,576, and after the write at 8 MiB a second at 32 MiB
+//!    added only its own 16 KiB [measured, hosted macos-26, APFS, commit 318a01c]. On such a
+//!    volume the probe punches the gap and checks that it frees.
+//! 2. It extends the file to [`PROBE_BYTES`] (1 GiB), and checks that the extension allocated less
+//!    than half of it. It writes the same bytes in the middle, and checks that the write allocated
+//!    about what it wrote, not the gap below it.
+//! 3. It punches those bytes out again, and checks that the punch freed at least half of them.
 //!
 //! A volume that passes is [`StorageMode::Sparse`], or [`StorageMode::SparseFillsGaps`] when step
-//! 3 filled the gap and the punch freed it. Then every chunk write punches the unheld runs just
+//! 1 filled the gap and the punch freed it. Then every chunk write punches the unheld runs just
 //! before and after its chunk, once the chunk's bytes and bit are synced
 //! (punching the 8 MiB gap of that 64 MiB file left 16,384 bytes held, same source). A volume
 //! that fails a step is in **chunk-file mode** ([`StorageMode::ChunkFile`]), with the reason
@@ -120,9 +123,13 @@ pub const PROBE_BYTES: u64 = 1 << 30;
 /// The bytes the probe writes and then punches out again: 1 MiB.
 pub const PROBE_WRITE_BYTES: u64 = 1 << 20;
 
-/// Where the probe's second write goes: 8 MiB into the file, past a gap small enough that APFS
+/// Where the probe's first write goes: 8 MiB into the file, past a gap small enough that APFS
 /// zero-fills it (module docs).
 pub const PROBE_NEAR_GAP_BYTES: u64 = 8 << 20;
+
+/// The length the probe first extends its file to, for that write: 64 MiB, as in the measured
+/// APFS case (module docs). It is extended to [`PROBE_BYTES`] after.
+pub const PROBE_NEAR_LEN: u64 = 64 << 20;
 
 /// The inventory's magic.
 pub const INVENTORY_MAGIC: [u8; 8] = *b"SYNCINV1";
@@ -551,7 +558,7 @@ fn probe_file(file: &File, ops: &dyn SparseOps) -> io::Result<StorageMode> {
             message: e.to_string(),
         });
     }
-    if let Err(e) = file.set_len(PROBE_BYTES) {
+    if let Err(e) = file.set_len(PROBE_NEAR_LEN) {
         return match e.kind() {
             io::ErrorKind::StorageFull
             | io::ErrorKind::QuotaExceeded
@@ -563,12 +570,6 @@ fn probe_file(file: &File, ops: &dyn SparseOps) -> io::Result<StorageMode> {
     }
     file.sync_all()?;
     let allocated = ops.allocated_bytes(file)?;
-    if allocated >= PROBE_BYTES / 2 {
-        return refuse(NoSparse::ExtendAllocates {
-            len: PROBE_BYTES,
-            allocated,
-        });
-    }
     // Bytes no file system compresses or deduplicates away, so the punch's effect shows.
     let mut state = 0x9E37_79B9_7F4A_7C15_u64;
     let bytes: Vec<u8> = (0..PROBE_WRITE_BYTES)
@@ -579,15 +580,64 @@ fn probe_file(file: &File, ops: &dyn SparseOps) -> io::Result<StorageMode> {
             state.to_le_bytes()[0]
         })
         .collect();
-    // A write far into the extension must allocate about what it wrote, not the gap below it.
+    // First a write a short way into the file, past nothing written yet. APFS zero-fills a gap
+    // this small below a write that lands beyond everything written so far (module docs), so
+    // this write must come before any other. If it fills the gap, the gap must punch out again.
+    write_all_at(file, PROBE_NEAR_GAP_BYTES, &bytes)?;
+    file.sync_all()?;
+    let near = ops.allocated_bytes(file)?;
+    let near_grew = near.saturating_sub(allocated);
+    let mut fills_gaps = None;
+    let mut base = near;
+    if near_grew > 2 * PROBE_WRITE_BYTES {
+        if let Err(e) = ops.punch_hole(file, 0, PROBE_NEAR_GAP_BYTES) {
+            return refuse(NoSparse::PunchRefused {
+                message: e.to_string(),
+            });
+        }
+        file.sync_all()?;
+        let punched = ops.allocated_bytes(file)?;
+        let filled = near_grew.saturating_sub(PROBE_WRITE_BYTES);
+        if punched.saturating_sub(allocated) > 2 * PROBE_WRITE_BYTES {
+            return refuse(NoSparse::GapPunchKeptBlocks {
+                gap: PROBE_NEAR_GAP_BYTES,
+                filled,
+                after: punched.saturating_sub(allocated),
+            });
+        }
+        fills_gaps = Some(filled);
+        base = punched;
+    }
+    // The full extension: no volume with sparse files allocates it.
+    if let Err(e) = file.set_len(PROBE_BYTES) {
+        return match e.kind() {
+            io::ErrorKind::StorageFull
+            | io::ErrorKind::QuotaExceeded
+            | io::ErrorKind::FileTooLarge => refuse(NoSparse::ExtendRefused {
+                message: e.to_string(),
+            }),
+            _ => Err(e),
+        };
+    }
+    file.sync_all()?;
+    let extended = ops.allocated_bytes(file)?;
+    if extended >= PROBE_BYTES / 2 {
+        return refuse(NoSparse::ExtendAllocates {
+            len: PROBE_BYTES,
+            allocated: extended,
+        });
+    }
+    let base = extended.max(base);
+    // Then a write far into the extension: it must allocate about what it wrote, not the gap
+    // below it.
     let at = PROBE_BYTES / 2;
     write_all_at(file, at, &bytes)?;
     file.sync_all()?;
     let before = ops.allocated_bytes(file)?;
-    let grew = before.saturating_sub(allocated);
+    let grew = before.saturating_sub(base);
     if grew > 2 * PROBE_WRITE_BYTES {
         return refuse(NoSparse::WriteFillsGap {
-            gap: at,
+            gap: at - PROBE_NEAR_GAP_BYTES - PROBE_WRITE_BYTES,
             written: PROBE_WRITE_BYTES,
             allocated: grew,
         });
@@ -602,32 +652,12 @@ fn probe_file(file: &File, ops: &dyn SparseOps) -> io::Result<StorageMode> {
     if before.saturating_sub(after) < PROBE_WRITE_BYTES / 2 {
         return refuse(NoSparse::PunchKeptBlocks { before, after });
     }
-    // A write a short way past the file's start: APFS zero-fills a gap this small below a write
-    // (module docs). If it does, the filled gap must punch out again.
-    write_all_at(file, PROBE_NEAR_GAP_BYTES, &bytes)?;
-    file.sync_all()?;
-    let near = ops.allocated_bytes(file)?;
-    let grew = near.saturating_sub(after);
-    if grew <= 2 * PROBE_WRITE_BYTES {
-        return Ok(StorageMode::Sparse);
-    }
-    if let Err(e) = ops.punch_hole(file, 0, PROBE_NEAR_GAP_BYTES) {
-        return refuse(NoSparse::PunchRefused {
-            message: e.to_string(),
-        });
-    }
-    file.sync_all()?;
-    let punched = ops.allocated_bytes(file)?;
-    if punched.saturating_sub(after) > 2 * PROBE_WRITE_BYTES {
-        return refuse(NoSparse::GapPunchKeptBlocks {
+    Ok(match fills_gaps {
+        None => StorageMode::Sparse,
+        Some(filled) => StorageMode::SparseFillsGaps {
             gap: PROBE_NEAR_GAP_BYTES,
-            filled: grew.saturating_sub(PROBE_WRITE_BYTES),
-            after: punched.saturating_sub(after),
-        });
-    }
-    Ok(StorageMode::SparseFillsGaps {
-        gap: PROBE_NEAR_GAP_BYTES,
-        filled: grew.saturating_sub(PROBE_WRITE_BYTES),
+            filled,
+        },
     })
 }
 
