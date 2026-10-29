@@ -96,7 +96,10 @@ impl Default for HubConfig {
 impl fmt::Debug for HubConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HubConfig")
-            .field("endpoint", &self.endpoint)
+            .field(
+                "endpoint",
+                &Url::parse(&self.endpoint).map_or_else(|_| "<unparsed>".into(), |u| redact(&u)),
+            )
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("timeout", &self.timeout)
             .field("connect_timeout", &self.connect_timeout)
@@ -175,11 +178,16 @@ impl HubClient {
     /// built.
     pub fn new(config: &HubConfig) -> Result<Self, HubError> {
         let endpoint = Url::parse(&config.endpoint)
-            .map_err(|e| HubError::Url(format!("endpoint {}: {e}", config.endpoint)))?;
+            .map_err(|e| HubError::Url(format!("an endpoint that does not parse: {e}")))?;
+        if !endpoint.username().is_empty() || endpoint.password().is_some() {
+            return Err(HubError::Url(
+                "an endpoint with a user name or password".into(),
+            ));
+        }
         if !scheme_allowed(&endpoint, config.allow_loopback_http) {
             return Err(HubError::Url(format!(
                 "endpoint {} is not HTTPS",
-                config.endpoint
+                redact(&endpoint)
             )));
         }
         let credential = config
@@ -443,7 +451,15 @@ impl RangeSource for HubSource {
                 Ok(n) if filled < buf.len() => filled += n,
                 Ok(_) => return Err(bad(offset, len, "the body is longer than the range")),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                // A body cut off before its `Content-Length` is a short read.
+                // A stalled body is the link's failure, which the fetch may retry.
+                Err(e) if timed_out(&e) => {
+                    return Err(origin(
+                        None,
+                        format!("the body timed out after {filled} of {len} bytes"),
+                    ));
+                }
+                // A body cut off before its `Content-Length` is a short read. A reset link
+                // looks the same at this layer.
                 Err(e) => {
                     return Err(bad(
                         offset,
@@ -588,6 +604,14 @@ fn transport(e: reqwest::Error) -> RangeError {
         None => format!("{what}: {}", chain(&e)),
     };
     origin(status, message)
+}
+
+/// Whether a body read failed because the read timed out.
+fn timed_out(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::TimedOut
+        || e.get_ref()
+            .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
+            .is_some_and(reqwest::Error::is_timeout)
 }
 
 /// An error and its causes, joined with ": ".

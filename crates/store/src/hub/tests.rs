@@ -37,7 +37,8 @@ impl Seen {
 /// - `/downgrade` redirects to plain HTTP on a non-loopback address;
 /// - `/loop` redirects to itself;
 /// - `/short` and `/long` send one byte fewer or more than the range;
-/// - `/cut` promises the range's length and closes the connection halfway;
+/// - `/cut` promises the range's length and closes the connection halfway, and `/stall`
+///   promises it and goes silent halfway, for a range that does not start at 0;
 /// - `/whole` ignores `Range` and sends the whole file with a 200;
 /// - `/shifted` answers a range that does not start at 0 with the bytes one past those asked
 ///   for, and says so;
@@ -115,6 +116,11 @@ fn serve(stream: TcpStream, body: &[u8], peer: u16, log: &Mutex<Vec<Seen>>) {
             // The reply promised more than it sent: close, as a dropped connection would.
             return;
         }
+        if seen.path == "/stall" {
+            // The reply promised more than it sent: hold the connection open, silent.
+            thread::sleep(std::time::Duration::from_secs(5));
+            return;
+        }
     }
 }
 
@@ -188,7 +194,7 @@ fn respond(seen: &Seen, body: &[u8], peer: u16) -> Vec<u8> {
         &[("Content-Range", format!("bytes {first}-{last}/{total}"))],
         &part,
     );
-    if seen.path == "/cut" {
+    if (seen.path == "/cut" || seen.path == "/stall") && first > 0 {
         reply.truncate(reply.len() - part.len() / 2);
     }
     reply
@@ -345,6 +351,27 @@ fn a_mismatched_reply_is_integrity() {
     assert_eq!(err.class(), ErrorClass::Integrity);
 }
 
+/// A body that stops arriving is the link's failure, `OriginUnavailable` (class `Link`), so the
+/// fetch may retry it; a body cut off is a short read (`a_mismatched_reply_is_integrity`).
+#[test]
+fn a_stalled_body_is_link() {
+    let server = Server::start(sample());
+    let hub = HubClient::new(&HubConfig {
+        allow_loopback_http: true,
+        timeout: std::time::Duration::from_secs(1),
+        ..HubConfig::default()
+    })
+    .unwrap();
+    let source = hub.open(&server.url("/stall")).unwrap();
+    let err = read(&source, 10, 100).unwrap_err();
+    assert_eq!(
+        (err.code(), err.class()),
+        (Some(11), ErrorClass::Link),
+        "{err}"
+    );
+    assert!(err.to_string().contains("timed out"), "{err}");
+}
+
 #[test]
 fn statuses_map_to_their_codes() {
     let server = Server::start(sample());
@@ -433,6 +460,13 @@ fn plain_http_is_refused_by_default() {
         })
         .is_err()
     );
+    let with_user = HubConfig {
+        endpoint: "https://me:pw@example.com".into(),
+        ..HubConfig::default()
+    };
+    assert!(!format!("{with_user:?}").contains("pw"));
+    let err = HubClient::new(&with_user).unwrap_err();
+    assert!(!err.to_string().contains("pw"), "{err}");
 }
 
 /// The one header-read routine over a Hub source returns the same bytes as over the recorded
