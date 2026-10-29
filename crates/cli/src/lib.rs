@@ -41,6 +41,7 @@ pub mod build_id;
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod header_child;
 pub mod output;
 pub mod prompt;
 pub mod runner_mode;
@@ -123,6 +124,7 @@ fn dispatch(command: Command, path: &str, output: Output) -> Result<Exit, CliErr
         Command::Config(ConfigCommand::Edit(args)) => config::edit(&args, output),
         Command::Runner(args) => runner(&args).map(|()| Exit::Success),
         Command::Selftest(args) => selftest(&args).map(|()| Exit::Success),
+        Command::Header(args) => header_child::run(&args).map(|()| Exit::Success),
         _ => Err(CliError::not_built(path)),
     }
 }

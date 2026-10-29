@@ -136,6 +136,7 @@ There is one executable, `syntropy` (ADR-0015). It runs in one of three modes:
 | Daemon | `syntropy serve` (user-facing; `syntropy run`, `pull` and `chat` start or reach one) | long-lived, one per node | control plane, API, discovery, model store, supervision |
 | Runner | `syntropy __runner --ipc <handle>` (hidden; spawned by the daemon re-executing `current_exe()`) | one model instance on this node, `Fetching` to `Stopped` | devices, tiers, data plane, execution |
 | Probe | `syntropy __runner --probe --ipc <handle>` (hidden) | seconds | device enumeration that needs a driver context, startup microbenchmarks (RFC-0010) |
+| Header | `syntropy __header --kind <kind> --path <file> …` (hidden) | seconds | a newly added model file's header, parsed confined (RFC-0034 §10.4; DIST-E17-T16, added 2026-10-29) |
 | Self-test | `syntropy __selftest --root <root>` (hidden; run by the updater on a staged build) | ≤ 20 s | config parse, a state-migration dry run on a copy, module load and device enumeration, the CPU parity smoke test on a fixture model; no network and no GPU context in-process (RFC-0052 §7.3) |
 
 Runner and probe processes are the only ones that load GPU backend modules (§4.2 rule 7). Client subcommands (`ls`, `run`, `chat`, `ps`, `plan`, `cluster`, `doctor` and the rest of the command tree in RFC-0051 §2.1) talk to the local daemon over its API and are owned by RFC-0051.

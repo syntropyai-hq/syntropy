@@ -45,6 +45,7 @@ use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub mod checks;
+pub mod confine;
 mod identity;
 pub mod log_sink;
 #[cfg(target_os = "macos")]

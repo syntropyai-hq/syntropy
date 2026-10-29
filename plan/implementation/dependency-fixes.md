@@ -1362,3 +1362,10 @@ COMP-E11-T14 (M1a) asked that "throughput stays at the volume's sequential read 
 |---|---|---|---|
 | COMP-E11-T14's "throughput stays at the volume's sequential read rate" becomes "the chunk hashes add at most 15 % [target] to the time of the SHA-256 pass alone, page cache". New task COMP-E11-T24 (M1a): the cold-cache indexing benchmark on R-ADA, within 10 % [target] of RFC-0041 §4.3's `t_index`. COMP-E11-T24 → COMP-E11-T14, QUAL-E15-T02 | COMP-E11-T14, COMP-E11-T24 | R9 | the drive-bound check needs R-ADA's NVMe (QUAL-E15-T02, M0a, before M1a), and neither target reaches COMP-E11-T24, so the edges add no cycle |
 
+## DIST-E17-T16's network ban is Linux's at M1 (2026-10-29)
+
+RFC-0034 §10.4 asks for a header-parsing child with no network access from M1, and keeps the OS sandbox profiles that ban the network at M4. On Linux, a seccomp filter that refuses new sockets works unprivileged everywhere, where an unprivileged network namespace does not (Ubuntu 24.04 denies it by default). The maintainers chose seccomp for Linux now and the rest at M4.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E17-T16's "a connect attempt from the child fails on each Tier 1 OS" narrows to Linux; the macOS and Windows criterion moves to DIST-E17-T08 (M4) | DIST-E17-T16, DIST-E17-T08 | R9 | the macOS sandbox profile and Windows AppContainer that ban the network are DIST-E17-T08's |

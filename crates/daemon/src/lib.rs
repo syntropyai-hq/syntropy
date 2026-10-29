@@ -22,6 +22,7 @@ pub mod bundle;
 pub mod crash;
 pub mod ctl;
 pub mod doctor;
+pub mod header_child;
 pub mod host_changes;
 pub mod logging;
 pub mod report;
