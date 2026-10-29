@@ -286,8 +286,8 @@ Command-channel messages:
 | D → R | `Ping` | IPC round-trip check |
 | R → D | `Hello { pid, build_id, ipc_protocol, obs_tables: Blake3 }` | handshake. `obs_tables` digests the runner's log-callsite, metric and span-name tables; on a mismatch the runner sends the tables, and the daemon decodes that runner's records with them (RFC-0053 §4.1). On an adoption connection the daemon sends its own `ipc_protocol` and digest first (RFC-0052 §6.5) |
 | R → D | `StateChanged { state: RunnerState, epoch: PlanEpoch }` | every lifecycle transition; the daemon forwards it as `ClusterCommand::ReportRunner` |
-| R → D | `FetchShard { spec: ShardSpec, priority: FetchPriority }` | ask the store for a shard |
-| R → D | `PackCommitted { key: PackKey, sidecar: Blake3 }` | pack ready; the store records it for GC and P2P |
+| R → D | `FetchShard { spec: ShardSpec, priority: FetchPriority }` | ask the store for a shard. Added by COMP-E10-T11, with `ipc_protocol` 5.0 (§18.50) |
+| R → D | `PackCommitted { key: PackKey, sidecar: Blake3 }` | pack ready; the store records it for GC and P2P. Added by COMP-E10-T11, with `ipc_protocol` 5.0 (§18.50) |
 | R → D | `ResidencyDigest { version: u64, digest: ResidencySummary }` | low-rate residency summary for routing and the dashboard |
 | R → D | `SequenceEnded { seq: SequenceId, outcome: SequenceOutcome }` | finished, failed or migrated |
 | R → D | `ErrorReport { error: Error }` | errors that are not tied to one sequence |
@@ -1119,6 +1119,8 @@ pub struct PackKey {
 ```
 
 The runner builds packs, through `store::pack` and `KernelProvider::repack`, because only it holds the providers whose layouts the pack uses (§3.3, invariant 3). The pack sidecar records offsets, sizes and hashes of every 4 KiB-aligned extent and the `PlanEpoch` that produced it (ADR-0005). The learned expert-frequency profile, the op-selection entries and the canary's reference digest are side records with their own versions, so they survive a layout or container change that rebuilds the pack (RFC-0041 §5.2). The key uses the shard digest, not the epoch: an epoch change that leaves a node's shard unchanged must reuse the pack, not rebuild it.
+
+*Note 2026-10-28 (COMP-E10-T11, as built; §18.50).* `ShardSpec`, `PackKey`, `ChunkId` and `LayoutVersion` are plain data in `core` (§18.28), and `manifest` re-exports them. `ChunkId` is a newtype over `Blake3`. `LayoutVersion` moved from `kernels`, which re-exports it, so `LayoutVersion::SOURCE` still resolves there; one type serves both `OpKey::layout` (a layout ID) and `PackKey::layout` (the layout-table version, RFC-0041 §1). `core` links no hasher, so `ShardSpec::new_with` takes BLAKE3 as a function, as `InstancePolicy::digest_with` does, and sorts and deduplicates `groups` before hashing them. `syntropy_manifest::identity::shard_spec` passes BLAKE3. RFC-0041 §1's note of the same date gives the bytes. `PackKey::for_shard(spec, class, layout)` builds the key from the spec, so no epoch reaches it.
 
 ### 5.7 `KernelProvider` (`kernels`)
 
@@ -3147,3 +3149,13 @@ PROD-E8-T07 builds local tracing (RFC-0053 §3.1–§3.4).
 | `SpanRecord` holds four attributes, not six, to stay 64 bytes | RFC-0053 §3.4 (dated note) | the six of §3.4 make a 70-byte record; a step's term durations come from its `StepRecord` |
 
 Taken under the maintainers' standing instruction, for the maintainers to confirm.
+
+### 18.50 Shards and packs in `core`, and their messages (2026-10-28)
+
+COMP-E10-T11 builds the remaining identities of RFC-0041 §1 and the two messages that carry a shard and a pack.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `ShardSpec`, `PackKey`, `ChunkId` and `LayoutVersion` are `core` types. `ShardSpec::new_with` takes the hash function, and `PackKey::for_shard` builds a key from a spec. `kernels` and `manifest` re-export them | §5.6 (dated note) | §18.28 moved them to `core` so that `ipc` can carry them. `core` links no hasher, so the digest follows the `InstancePolicy::digest_with` pattern |
+| `RunnerMsg` gains `FetchShard { spec, priority }` and `PackCommitted { key, sidecar }`, and `ipc_protocol` goes from 4.0 to 5.0 | §3.5 (the two rows) | they are the messages §3.5's note of 2026-10-23 assigns to COMP-E10-T11. A 5.0 runner sends them in normal operation and a 4.x daemon cannot decode them. A change is compatible only when every older reader can read everything a newer writer sends it, so the major moves. |
+| `TensorRecord::hash`, `ShardSpec::digest` and `ExtentKey` have fixed byte encodings, with golden values computed apart from the implementation. The tensor hash is a domain-separated binary Merkle tree split at the largest power of two. `ExtentKey`'s "layout ID and its version" are the extent's own layout and the layout-table version | RFC-0041 §1 (dated note) | RFC-0041 §1 named each identity's inputs but not its bytes. Its `ExtentKey` row leaves the version open, and the layout-table version is the one version the plan defines. For the maintainers to confirm |

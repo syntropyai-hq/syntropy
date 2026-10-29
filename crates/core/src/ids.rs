@@ -172,6 +172,14 @@ pub struct StageIx(pub u16);
 #[serde(transparent)]
 pub struct TensorGroupId(pub u32);
 
+/// BLAKE3 of one chunk's bytes (RFC-0001 §5.6; RFC-0041 §1, §6). Known after the chunk's first
+/// fetch, or at registration for a local file (RFC-0041 §6.3). Owner: RFC-0041.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct ChunkId(pub Blake3);
+
 #[cfg(test)]
 mod tests {
     use super::*;

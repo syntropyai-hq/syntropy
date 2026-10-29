@@ -32,6 +32,7 @@ pub mod resource;
 pub mod runner;
 pub mod sequence;
 pub mod session;
+pub mod shard;
 pub mod tick;
 pub mod transfer;
 pub mod units;
@@ -46,8 +47,8 @@ pub use error::{
 };
 pub use fetch::FetchPriority;
 pub use ids::{
-    Blake3, DeviceId, Endpoint, ExpertIx, GraphVersion, InstanceId, LayerIx, LinkId, LinkKind,
-    ModelId, NetMedium, NodeId, RdmaKind, StageIx, TensorGroupId, TierId,
+    Blake3, ChunkId, DeviceId, Endpoint, ExpertIx, GraphVersion, InstanceId, LayerIx, LinkId,
+    LinkKind, ModelId, NetMedium, NodeId, RdmaKind, StageIx, TensorGroupId, TierId,
 };
 pub use measured::{DerivedFrom, MeasureSource, Measured};
 pub use numerics::{AccumKind, ActQuant, Numerics};
@@ -73,6 +74,7 @@ pub use sequence::{
     TokenSlice, TraceContext,
 };
 pub use session::{ParseSessionIdError, SequenceId, SessionId};
+pub use shard::{LayoutVersion, PackKey, SHARD_DIGEST_DOMAIN, ShardSpec};
 pub use tick::{DeviceClockSync, TickRate, TickSource};
 pub use transfer::{BufferView, ExtentRef, FileIx, HostRegion, StepLayer, ViewKind};
 pub use units::{Bytes, BytesPerSec, FlopsPerSec, Nanos};

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `FileDigest` and `ModelId` (RFC-0041 §1; ADR-0411 decisions 1 and 2; COMP-E10-T06).
+//! `FileDigest` and `ModelId` (RFC-0041 §1; ADR-0411 decisions 1 and 2; COMP-E10-T06), and the
+//! identities derived from chunk IDs and the plan: `TensorRecord::hash`, `ShardSpec::digest` and
+//! `ExtentKey` (ADR-0411 decision 3; COMP-E10-T11, in `derived`).
 //!
 //! - [`FileDigest`] is the SHA-256 of a whole source file. For a Hub file it is the object ID the
 //!   revision's file listing publishes, read with [`FileDigest::from_hex`] before any download.
@@ -38,6 +40,13 @@ use syntropy_core::{Blake3, ModelId};
 
 use crate::range::{RangeError, RangeSource};
 use crate::safetensors::side::SourceRole;
+
+mod derived;
+
+pub use derived::{
+    EXTENT_KEY_DOMAIN, ExtentKey, TENSOR_HASH_DOMAIN, TensorHashError, blake3_digest, shard_digest,
+    shard_spec, tensor_hash,
+};
 
 /// The domain tag of the v1 `ModelId`.
 pub const MODEL_ID_DOMAIN: &[u8] = b"syntropy/model-id/v1";

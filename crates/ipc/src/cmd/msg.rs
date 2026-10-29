@@ -2,7 +2,9 @@
 
 //! The command channel's messages (RFC-0001 §3.5): the ones whose field types exist at M0a.
 //! DIST-E1-T03 built the first set; DIST-E1-T15 appended `Drain`, `Shutdown`, `MemoryPressure`
-//! and `SequenceEnded`, whose field types it put in `core` (protocol 1.1).
+//! and `SequenceEnded`, whose field types it put in `core` (protocol 1.1). COMP-E10-T11
+//! appended `FetchShard` and `PackCommitted`, with `ShardSpec` and `PackKey` in `core`
+//! (protocol 5.0).
 //!
 //! The tasks that own the other messages' field types add those messages (RFC-0001 §3.5, note of
 //! 2026-10-23). Postcard writes a variant as its index and a struct's fields in order, with no
@@ -17,8 +19,8 @@ use syntropy_core::ledger::LedgerGrant;
 use syntropy_core::runner::{Deadline, DrainReason};
 use syntropy_core::sequence::SequenceOutcome;
 use syntropy_core::{
-    Blake3, Bytes, CancelReason, InstanceId, NodeId, PlacementPlan, PlanDelta, PlanEpoch,
-    PressureLevel, RunnerState, SequenceId, StageIx, TierId,
+    Blake3, Bytes, CancelReason, FetchPriority, InstanceId, NodeId, PackKey, PlacementPlan,
+    PlanDelta, PlanEpoch, PressureLevel, RunnerState, SequenceId, ShardSpec, StageIx, TierId,
 };
 
 use crate::shm::{IpcProtocol, ShmLayout};
@@ -139,6 +141,23 @@ pub enum RunnerMsg {
         seq: SequenceId,
         /// How it ended.
         outcome: SequenceOutcome,
+    },
+    /// Ask the store for a shard (RFC-0041 §7). The daemon hands it to the store's fetch planner
+    /// (COMP-E12-T04), which answers with `ShardProgress`. Added with protocol 5.0
+    /// (COMP-E10-T11).
+    FetchShard {
+        /// The shard: the node's groups and the chunks covering them.
+        spec: ShardSpec,
+        /// How urgently to fetch it, ahead of the node's other fetches.
+        priority: FetchPriority,
+    },
+    /// A pack is committed (RFC-0041 §5.2's commit protocol); the store records it for garbage
+    /// collection and for serving its extents to peers. Added with protocol 5.0 (COMP-E10-T11).
+    PackCommitted {
+        /// The pack.
+        key: PackKey,
+        /// BLAKE3 of the sidecar file's bytes.
+        sidecar: Blake3,
     },
 }
 
