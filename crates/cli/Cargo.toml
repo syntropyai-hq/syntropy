@@ -36,8 +36,13 @@ syntropy-manifest = { path = "../manifest" }
 syntropy-obs = { path = "../obs" }
 syntropy-net = { path = "../net" }
 syntropy-sched = { path = "../sched" }
-# The local socket's client end, and the runner's `--ipc` endpoint (RFC-0051 §1; ADR-0015).
+# The local socket's client end, and the runner's inherited command channel and region (RFC-0051
+# §1; ADR-0015).
 syntropy-ipc = { path = "../ipc", features = ["async"] }
+# Runner mode (DIST-E1-T04): the runner's command loop, and `io`'s `SystemClock` and
+# `SystemTicks`, which only a binary's crate may build (ADR-0022; RFC-0060 §2.1 rule T1).
+syntropy-runner = { path = "../runner" }
+syntropy-io = { path = "../io" }
 # The client's HTTP/1.1 exchange on a single-threaded tokio runtime.
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["client"] }
@@ -52,9 +57,6 @@ syntropy-core = { path = "../core" }
 [dev-dependencies]
 # The contract tests serve the API in-process, as a daemon would.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "time", "sync"] }
-# The supervisor's laptop-sleep rig test (DIST-E1-T06) runs `daemon`'s supervisor on `io`'s
-# `SystemClock`, which only a binary's crate may build (ADR-0022; RFC-0060 §2.1 rule T1).
+# The supervisor's laptop-sleep rig test (DIST-E1-T06), and the runner-process tests
+# (DIST-E1-T04), which spawn runners through `daemon`'s process host.
 syntropy-daemon = { path = "../daemon" }
-syntropy-io = { path = "../io" }
-# The supervisor's end-to-end stall test drives a real runner `Lifecycle` (DIST-E1-T06).
-syntropy-runner = { path = "../runner" }

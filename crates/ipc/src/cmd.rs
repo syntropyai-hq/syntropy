@@ -41,6 +41,11 @@
 //! [`RunnerChannel::handshake`] checks that its build ID is the runner's own. Adopting a runner of
 //! another build, which needs an equal protocol instead, is RFC-0052 §6.5's (DIST-E1-T08).
 //!
+//! **A spawned runner's channel.** The daemon spawns a runner with its end of a connected pair
+//! already open: a socket pair, or on Windows a pipe the daemon connected to itself
+//! ([`spawn_pair`]). The runner finds its end at the [`ChannelHandle`] its command line names,
+//! and takes it with [`inherited`] (RFC-0001 §3.4; DIST-E1-T04).
+//!
 //! **In-process transport.** A channel runs over a [`Transport`]: the OS [`Stream`] above, or
 //! [`memory::MemoryStream`], a connected pair in one process, for a runner the daemon hosts on its
 //! own threads (`RunnerHost::InProcess`, RFC-0001 §3.1; ADR-0015 item 7; DIST-E1-T11). The framing
@@ -73,11 +78,13 @@ mod frame;
 pub mod memory;
 mod msg;
 mod os;
+mod spawn;
 
 pub(crate) use frame::NoPrealloc;
 pub use frame::{EncodeError, FrameError, HEADER, MAX_FRAME, decode_frame, encode_frame};
 pub use msg::{DaemonMsg, Envelope, Hello, Init, RequestId, RunnerMsg};
 pub use os::{AcceptError, Endpoint, EndpointParseError, Listener, Peer, Stream, connect};
+pub use spawn::{ChannelHandle, ChannelHandleParseError, ChildEnd, inherited, pair, spawn_pair};
 // The async half, on tokio, with the `async` feature: not under loom, which tokio does not build
 // under.
 #[cfg(all(windows, feature = "async", not(loom)))]

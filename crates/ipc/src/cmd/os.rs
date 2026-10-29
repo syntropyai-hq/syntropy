@@ -140,6 +140,26 @@ impl std::error::Error for AcceptError {
 #[derive(Debug)]
 pub struct Stream(imp::Stream);
 
+impl Stream {
+    /// Wraps the OS's stream: a Unix-domain socket, or a pipe's handle on Windows.
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    pub(super) fn from_os(stream: std::os::unix::net::UnixStream) -> Stream {
+        Stream(stream)
+    }
+
+    /// Wraps the OS's stream: a Unix-domain socket, or a pipe's handle on Windows.
+    #[cfg(windows)]
+    pub(super) fn from_os(stream: std::fs::File) -> Stream {
+        Stream(stream)
+    }
+
+    /// The pipe's handle.
+    #[cfg(windows)]
+    pub(super) fn into_os(self) -> std::fs::File {
+        self.0
+    }
+}
+
 impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)

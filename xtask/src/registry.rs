@@ -25,7 +25,8 @@ use std::process::Command;
 use crate::run::Context;
 use crate::{
     cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
-    hot_threads, instructions, loom, plan_tools, properties, repo_settings, sim_presets, toolchain,
+    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
+    sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -265,6 +266,15 @@ pub const JOBS: &[Entry] = &[
                 action: Action::Builtin {
                     shown: "the hot-thread modules hot_threads::MODULES lists use no tracing",
                     run: hot_threads::step,
+                },
+            },
+            // RFC-0052 §6.5's orphan rule (DIST-E1-T04).
+            Step {
+                name: "orphan-rule",
+                action: Action::Builtin {
+                    shown: "the crates orphan_rule::CRATES lists set up no parent-death signal, \
+                            exit watch or kill-on-close job",
+                    run: orphan_rule::step,
                 },
             },
             Step {
@@ -986,6 +996,8 @@ mod tests {
                 "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
                  listed",
                 "xtask: the hot-thread modules hot_threads::MODULES lists use no tracing",
+                "xtask: the crates orphan_rule::CRATES lists set up no parent-death signal, exit \
+                 watch or kill-on-close job",
                 "cargo xtask check-deps",
                 "xtask: ci/properties.toml matches the property tests, RFC-0060 and the epics",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
