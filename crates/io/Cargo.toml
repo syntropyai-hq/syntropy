@@ -22,7 +22,8 @@ syntropy-testkit = { path = "../testkit" }
 # The clocks of `os::SystemClock` (ADR-0022 decision 4: binding crates for the clock calls), and
 # on macOS the `sysctlbyname`, `host_statistics64` and `getrlimit` calls of `os::macos_host`
 # (E1 host enumeration, PLC-E1-T03; OQ-PRC-26) and the `mmap`, `madvise` and `mincore` calls of
-# `MacMapped` (RFC-0021 §5).
+# `MacMapped` (RFC-0021 §5), and `geteuid` and `O_DIRECTORY` for the owner-only state directory
+# (`os::private`, RFC-0030 §2.1).
 [target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))'.dependencies]
 libc = "0.2.191"
 
@@ -32,5 +33,8 @@ libc = "0.2.191"
 # `Win32_System_IO` for the IoRing and IOCP engines (`windows`, RFC-0021 §7), which also wait on
 # events through `Win32_System_Threading`. `Win32_System_Memory`, `Win32_System_Power` and
 # `Wdk_System_SystemServices` (for `RtlGetVersion`) for E1 host enumeration (`os::windows_host`,
-# PLC-E1-T03).
-windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Power", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+# PLC-E1-T03). `Win32_Security` and `Win32_Security_Authorization` for the owner-only DACLs of the
+# state directory and node key (`os::private`, RFC-0030 §2.1–§2.2; OQ-PRC-26). `Win32_System_Ioctl`
+# for `FSCTL_SET_SPARSE` and `FSCTL_SET_ZERO_DATA`, the store's sparse blobs (`os::sparse`,
+# RFC-0041 §4.2, §4.4).
+windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_EventLog", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_JobObjects", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_Power", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }

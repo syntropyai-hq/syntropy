@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The thread-pool engines: [`PreadPool`] on Linux and Windows (RFC-0021 §4.2; ADR-0013
+//! The thread-pool engines: `PreadPool` on Linux and Windows (RFC-0021 §4.2; ADR-0013
 //! item 3), and `MacNoCache` and `MacMapped` on macOS (RFC-0021 §5; ADR-0013 item 5).
 //!
 //! All are one pool: the I/O thread keeps its queues and depth rules (RFC-0021 §3) and hands
@@ -12,13 +12,14 @@
 //!
 //! What differs per OS sits behind the crate-private `Backend` trait: how a file is opened
 //! (`O_DIRECT`, `FILE_FLAG_NO_BUFFERING`, or `F_NOCACHE` and `F_RDAHEAD`, and for `MacMapped` a
-//! read-only mapping), how a read and a write are issued, and what a buffered fallback does after a read (`POSIX_FADV_DONTNEED` on
-//! Linux). A file whose direct open or first aligned read is refused is opened buffered, and the
+//! read-only mapping and a second, buffered handle that its copies `pread` through), how a read
+//! and a write are issued, and what a buffered fallback does after a read
+//! (`POSIX_FADV_DONTNEED` on Linux). A file whose direct open or first aligned read is refused is opened buffered, and the
 //! engine reports [`EngineCaps::direct`] `false`: the `buffered` volume flag of RFC-0021 §4.2,
-//! which the probe copies into `StorageCapsExt::buffered`. [`PreadPool::buffered_reason`],
-//! `MacNoCache::buffered_reason` and `MacMapped::buffered_reason` say why. The macOS engines
-//! exist only in a macOS build, so they are not links: rustdoc on Linux, where `lint` runs,
-//! could not resolve them.
+//! which the probe copies into `StorageCapsExt::buffered`. `PreadPool::buffered_reason`,
+//! `MacNoCache::buffered_reason` and `MacMapped::buffered_reason` say why. Each engine exists
+//! only in the builds of its own OS, so none of them is a link: rustdoc on any one OS could not
+//! resolve the others, and `lint` runs on Linux in CI and on macOS locally.
 //!
 //! **Cancellation** (RFC-0021 §4.2) removes an operation a worker has not started: it completes
 //! with `IO_CANCELLED` and no system call. An operation already in the kernel completes

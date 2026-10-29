@@ -1150,3 +1150,170 @@ The review of #1811 (review-1474's N2) found that DIST-E14-T15 (M3) builds the c
 | DIST-E7-T10 gains "a demotion of either cause, `RepeatedFaults` from this task's fault count or `ConnectFailed` from DIST-E7-T11's `connect_hop`, reaches the coordinator as `ReportEdgeDemoted` and is applied as `EdgeDemoted`"; no new edge | DIST-E7-T10 | Definition of done | nothing showed a `ConnectFailed` demotion reaching the coordinator. DIST-E7-T10 already depends on DIST-E7-T11 and DIST-E14-T22, so its test can raise both causes and check both arrive (review-plan3's N2 on #1832) |
 | DIST-E4-T13 → DIST-E14-T01 | DIST-E4-T13 | R9 | its criterion asserts that a planned restart raises no `RecoveryStarted`, which DIST-E14-T01 raises. M3 → M2, with no cycle (review-plan3's N1 on #1832) |
 | `DriftTerm::Bandwidth` gains `scheme: QuantScheme`, and DIST-E14-T21 → COMP-E13-T01 | DIST-E14-T21 | R9 | RFC-0010 §7.2's rule runs per observed quantity, and §6.2's W_eff estimator is keyed by (device, tier, class, scheme), so the term names the scheme that drifted. `QuantScheme` is COMP-E13-T01's (M0a), which DIST-E14-T21 did not reach |
+
+## DIST-E7-T25: bulk pacing in the real backends, and the rig check moved there (2026-10-23)
+
+DIST-E7-T13 builds the bulk pacer (`net::transport::pacing`) and paces the simulator's bulk sends. Nothing in it paces a real transport, so its rig criterion could not run even on a rig. Its independent review (issuecomment-6352911884) found that no row paced the TCP fallback's bulk channels either, and that QUAL-E13-T10, which measures the data hop under bulk, reached the pacing only through COMP-E12-T05. These are plan corrections under R9, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Added DIST-E7-T25 (M2) → DIST-E7-T13, DIST-E7-T03, DIST-E7-T05 | DIST-E7-T25 | R9 | the pacer in the QUIC backend's bulk connection and the TCP fallback, each with a loopback test; it needs the pacer and both backends |
+| DIST-E7-T13's rig criterion, "a 10 GB blob transfer on the same 2.5 GbE edge as a live ring keeps the hop's p99 within 1.2 × its idle p99", moves to DIST-E7-T25; DIST-E7-T13 keeps simulator criteria | DIST-E7-T13, DIST-E7-T25 | R9 | the rig run needs pacing in a real backend, which DIST-E7-T25 is the first task to build |
+| DIST-E11-T13 → DIST-E7-T25; COMP-E12-T05 → DIST-E7-T25; QUAL-E13-T10 → DIST-E7-T25 | DIST-E11-T13, COMP-E12-T05, QUAL-E13-T10 | R9 | each sends bulk on, or measures the data hop under bulk on, a real transport: KV migration, peer chunk serving, and `net.hop.p99_under_bulk`. QUAL-E13-T10's edge, once reached only through COMP-E12-T05, is now explicit. M3 → M2 and M2 → M2, so no `LATER` and no cycle |
+
+
+## PROD-E2-T20 moves to M0a, ahead of M0's token-input endpoint (2026-10-27)
+
+The review of #1917 (review-1889's N3) found that PROD-E4-T13, M0's native generate with token input, did not depend on PROD-E2-T20, the token-ID range check. RFC-0050 §2.3 and §6.4 require every token ID a request supplies to be range-checked at ingress, because an out-of-range ID is an out-of-bounds read or write on the device. PROD-E2-T20 was M0b, so the edge would have been `LATER`. Every task PROD-E2-T20 depends on is M0a. This is a plan correction under R9 and the definition of done, written by the lead under the maintainer's standing instruction; the lead is also the author, so the independent review of #1918 is its check.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E2-T20 moves from M0b to M0a | PROD-E2-T20 | R9 | M0's token-input endpoint needs it. Its dependencies, PROD-E2-T02 and COMP-E10-T07, are both M0a, so the move adds no `LATER` edge |
+| PROD-E2-T20's criterion: the validator is fuzzed through PROD-E2-T02's pipeline with the fake-runner counter, not through API routes; its field list gains the legacy completions and embeddings token arrays | PROD-E2-T20 | Definition of done | as first written, the criterion needed routes for its fields, and none exists when PROD-E2-T20 is done: native `tokens` is PROD-E4-T13's, teacher tokens PROD-E4-T01's, `logit_bias` PROD-E2-T06's and stop IDs PROD-E4-T02's. By R9 that would need edges from PROD-E2-T20 to them, a cycle with the edges below (review of #1918, B1). RFC-0050 §2.3 gains a dated note for the two token arrays (N1) |
+| PROD-E4-T13, PROD-E4-T01, PROD-E2-T06, PROD-E4-T02, PROD-E2-T15 each gain an API fuzz case for their own field, and each → PROD-E2-T20; PROD-E4-T09, which already had the edge, gains the case for a token-array `input` | PROD-E4-T13, PROD-E4-T01, PROD-E2-T06, PROD-E4-T02, PROD-E2-T15 | R9 | each route takes client token IDs (`tokens`, teacher tokens, `logit_bias` keys, stop IDs, a token-array `prompt`), and its new criterion runs PROD-E2-T20's validator through that route. PROD-E2-T06 and PROD-E2-T15 reached PROD-E2-T20 through nothing (review of #1918, B2). M0a → M0a and M1a → M0a, with no cycle |
+
+## PROD-E8-T01's criteria that need later tasks, and the lossy-ring rule (2026-10-27)
+
+The review of #1922 (PROD-E8-T01) found two of its criteria needed work no M0b task builds. The first was the simulator's device timeline, which is QUAL-E3-T16's (M2), with step and span records on it, which are PLC-E7-T10's (M1a) and PROD-E8-T07's (M1a). The second was a measurement of step times under full rings, which needs PLC-E7-T10's step loop (M1a). It also found that "a full ring drops the oldest" cannot be built on an SPSC ring, whose producer cannot take back a record the consumer has not read. RFC-0001 §8.4 rule 8 gains a dated note, and §18.43 records the rule and the `TelemetryRecord` change for the maintainers to confirm. These are plan corrections under R9 and the definition of done, taken by the lead under the maintainers' standing instruction. PLC-E7-T10 is an engine-lane row, which that lane's review of #1922 checks.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E8-T01's device-timeline criterion, "on the simulator's device timeline, step and span timestamps and GPU-event mappings match the virtual clock exactly", moves to QUAL-E3-T16 (M2). PROD-E8-T01 keeps a `SimTicks` timeline-exactness criterion: durations, `now()` timestamps and `DeviceClockSync` mappings | PROD-E8-T01, QUAL-E3-T16 | R9 | the device timeline is QUAL-E3-T16's, and `StepRecord` and `SpanRecord` are PLC-E7-T10's and PROD-E8-T07's, all later than M0b. QUAL-E3-T16 already depends on PLC-E7-T10 |
+| QUAL-E3-T16 → PROD-E8-T07 (`SpanRecord`) | QUAL-E3-T16 | R9 | its new criterion stamps span records, which PROD-E8-T07 builds. M2 → M1a, and PROD-E8-T07 does not reach QUAL-E3-T16, so the edge adds no cycle |
+| PROD-E8-T01's "step times are unaffected" moves to PLC-E7-T10 (M1a), as an A/B of the step loop with the `telemetry` and step rings full and with them drained. PROD-E8-T01 keeps "drops the new record and counts it, and a write never waits" | PROD-E8-T01, PLC-E7-T10 | R9, definition of done | a step time can be measured only on a step loop, and PLC-E7-T10 builds the one that writes these rings. By the definition of done a criterion is demonstrated, not argued, so it moves rather than holding by construction |
+| PLC-E7-T10's criterion "a full ring drops oldest records and counts drops" becomes "a full ring drops the new record and counts it" | PLC-E7-T10 | Definition of done | as written it could not be met on an SPSC ring; RFC-0001 §8.4 rule 8's note of 2026-10-27 and §18.43 |
+
+## DIST-E1-T05's forwarding criterion, at a seam (2026-10-28)
+
+The review of #1932 (DIST-E1-T05) found its criterion "the daemon forwards `ReportRunner` (DIST-E9)" could be met at M0a only up to a seam. `daemon::report::forward_state_changed` maps each `StateChanged` to one `RunnerReport`, with `ClusterCommand::ReportRunner`'s fields (RFC-0001 §5.10), and hands it to a `ReportSink`. No daemon loop calls it yet: the runner-channel loop is DIST-E1-T06's (M1a). No sink submits a `ClusterCommand` yet: that is DIST-E9-T02's (M2). The two missing halves move to the tasks that build them.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T05's criterion becomes "the daemon maps each `StateChanged` to one `ReportRunner` at a `ReportSink` seam (unit test through real frames)" | DIST-E1-T05 | R9 | the loop that calls the mapping and the client behind the sink are M1a and M2 work, which an M0a task cannot depend on |
+| DIST-E1-T06 gains "the daemon's runner-channel loop passes every `StateChanged` to `forward_state_changed`" | DIST-E1-T06 | R9 | DIST-E1-T06 builds that loop, and already depends on DIST-E1-T05 |
+| DIST-E9-T02 → DIST-E1-T05 (`ReportSink`), and DIST-E9-T02 gains "the `ClusterCommand` client implements `ReportSink`, and a `RunnerReport` submitted through it applies as `RunnerStateChanged`" | DIST-E9-T02 | R9 | `ReportRunner` is one of RFC-0001 §5.10's base commands, which DIST-E9-T02 builds. M2 → M0a, and DIST-E1-T05 does not reach DIST-E9-T02, so the edge adds no cycle |
+
+## QUAL-E16-T29: the build-ID check through the real runner (2026-10-27)
+
+The review of #1924 (QUAL-E16-T03, B2) found that QUAL-E16-T03's third criterion needs work no task owns. The criterion was "the runner's `Hello` check rejects a mismatched `BuildId` on a fresh spawn (integration test with DIST/PROD)". The PR's tests exercise `DaemonChannel::handshake` with the real build IDs, but they re-execute the test binary as the runner. Runner mode (DIST-E1-T05) and the daemon's spawn path (DIST-E1-T04) don't exist yet. Moving the criterion to DIST-E1-T04 or DIST-E1-T05 (M0a) would give them a criterion that uses QUAL-E16-T03's M0b work, a `LATER` edge. Keeping it on QUAL-E16-T03 would need both in its Depends-on, and would hold QUAL-E16-T03 open until runner mode exists. So the criterion moves to a new task. These are plan corrections under R9 and the definition of done, approved by the lead under the maintainer's standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E16-T03's third criterion now reads "`DaemonChannel::handshake` refuses and kills a freshly spawned process whose `Hello` carries another commit's build ID, and accepts this build's (re-exec test with the real build IDs)" | QUAL-E16-T03 | Definition of done | this is what the task can check before runner mode exists (#1924's review, B2) |
+| Added QUAL-E16-T29 (M0b) → QUAL-E16-T03, DIST-E1-T04, DIST-E1-T05: a daemon spawning `syntropy __runner` from a binary built with another `SYNTROPY_BUILD_COMMIT` kills it at `Hello`, and the daemon's own binary passes | QUAL-E16-T29 | R9 | the criterion needs the `BuildId` value (QUAL-E16-T03), the spawn path (DIST-E1-T04) and runner mode (DIST-E1-T05). All three are M0a or M0b, so the edges are not `LATER`. It also catches a binary replaced on disk under a running daemon, whose `current_exe()` then re-executes another build |
+
+## COMP-E10-T06's Hub and sparse-blob criteria (2026-10-28)
+
+COMP-E10-T06 (M0a) asked that the same file give one `ModelId` through a local path, a Hub fixture and a sparse blob. No M0a task produces either of the last two. A recorded Hub listing with its LFS SHA-256 oids is COMP-E12-T02's (M0b), and sparse source blobs are COMP-E11-T02's (M1a). Under R9 each leg moves to its producer, which gains an edge to COMP-E10-T06. COMP-E10-T06 keeps the local path on the three OSes, and the part of the Hub leg it can check without a fixture: a Hub LFS SHA-256 oid, given as 64 hex digits, parses to the same `FileDigest` as the local SHA-256 of the same bytes. Both producers are engine-lane rows, which that lane's review checks.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T06's criterion "the same file through a local path, a Hub fixture and a sparse blob gives one `ModelId`" keeps the local path on Linux, macOS and Windows, and adds "a Hub object ID given as 64 hex digits parses to the same `FileDigest` as the local SHA-256 of those bytes" | COMP-E10-T06 | R9 | the Hub fixture and the sparse blob are built by later tasks; by the definition of done a criterion is demonstrated where its inputs exist |
+| The Hub-fixture leg moves to COMP-E12-T02 (M0b): "a recorded Hub fixture's listed LFS SHA-256 oids give the same `ModelId` as the same files read through a local path, and a file the listing gives only a 40-hex Git SHA-1 is hashed locally, never taken as a `FileDigest`". COMP-E12-T02 → COMP-E10-T06 | COMP-E12-T02 | R9 | COMP-E12-T02 records the listing with its oids. Small files stored in Git itself are listed with a 40-hex SHA-1, which is not a `FileDigest`, so the criterion names the LFS oids. M0b → M0a, and COMP-E10-T06 does not reach COMP-E12-T02, so the edge adds no cycle |
+| The sparse-blob leg moves to COMP-E11-T02 (M1a): "a file assembled in a sparse blob gives the same `FileDigest` and `ModelId` as the file read through a local path, on Linux, macOS and Windows". COMP-E11-T02 → COMP-E10-T06 | COMP-E11-T02 | R9 | COMP-E11-T02 builds the sparse blobs. M1a → M0a, and COMP-E10-T06 does not reach COMP-E11-T02, so the edge adds no cycle |
+
+## TIER-E6-T01's shared-functions criterion (2026-10-28)
+
+TIER-E6-T01 builds `KvFormula::stored` and `read_per_step` in `manifest`. Its criterion "PLC's solver uses the same functions (shared crate)" needs a solver call site, and `solver` has no KV term until PLC-E4-T03 (M1a), which already depends on TIER-E6-T01 for these functions. The call-site half moves there.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| TIER-E6-T01's criterion becomes "the functions live in `manifest`, the crate `solver` and `tier` both depend on (RFC-0001 §4.1), so PLC's solver uses the same functions: PLC-E4-T03's KV terms call them" | TIER-E6-T01 | R9 | the solver's KV terms are PLC-E4-T03's, later than M0a |
+| PLC-E4-T03 gains "the KV read and store terms come from TIER-E6-T01's `KvFormula::read_per_step` and `stored` in `manifest`, with no second KV formula in `solver`" | PLC-E4-T03 | R9 | PLC-E4-T03 builds those terms, and its edge to TIER-E6-T01 already exists |
+
+## The runner's header writes get criteria (2026-10-28)
+
+The review of #1937 (DIST-E1-T06) found that nothing in production writes the shared-memory header's runner-side words: the heartbeat, the step counter, the `RunnerState` word, and the live-sequence count #1937 adds. The supervisor reads all four, so a wiring task that left one out would silently disable a liveness or stall check. No task row named the writes. DIST-E1-T04 wires the runner process, but it is M0a, and the live-count word (DIST-E1-T06) and the step loop (PLC-E7-T10) are M1a. So the writes are split by milestone.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E1-T04 gains "the runner bumps its heartbeat … and writes the `RunnerState` word on each `Lifecycle` transition, and a test over a real region shows the daemon side reads each", and DIST-E1-T04 → DIST-E1-T05 (`Lifecycle`) | DIST-E1-T04 | R9 | both words exist at M0a (DIST-E1-T02's region), and the state word comes from DIST-E1-T05's machine. M0a → M0a, and DIST-E1-T05 does not reach DIST-E1-T04, so the edge adds no cycle |
+| Added DIST-E1-T16 (M1a) → DIST-E1-T04, DIST-E1-T06, PLC-E7-T10, PLC-E8-T01: the step counter and the live-sequence count, with a real-region test through `RunnerLink::sample_region` and an end-to-end stall kill | DIST-E1-T16 | R9 | the live-count word and `sample_region` are DIST-E1-T06's and the step loop is PLC-E7-T10's, both M1a, which an M0a task cannot depend on |
+
+## COMP-E13-T06 moves to M0a; its family and hash criteria move to their producers (2026-10-28)
+
+COMP-E13-T06 (M0b) asked for "family tests per source" and for the override to change "the KV-settings hash". No family module exists yet. `llama` and `qwen_moe` come with COMP-E16-T03 and COMP-E16-T04 (M0a), whose rows already list "KV formula and dtype" as theirs. Under R6 an M0a family task could not use an M0b rule. `kv_settings_hash` is TIER-E7-T01's (M1a), and its criterion already names the dtype among the settings that change the key. So COMP-E13-T06 moves to M0a, which R6 allows: all three of its dependencies are M0a. It delivers the rule and the override, and each part of its criteria that needs a later producer moves to that producer. The override's key also changes, from `models.<name>.kv_dtype` to the per-model instance key `kv_dtype`, as RFC-0054 §5.1 requires (RFC-0001 §18.48). These are plan corrections under R6, R9 and the definition of done, taken by the lead under the maintainers' standing instruction. All three rows are engine-lane rows, which that lane's review checks.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E13-T06 moves from M0b to M0a, and its override becomes the instance key `kv_dtype` (`f16`, `bf16` or `f32`) of a `[policy."<selector>"]` table | COMP-E13-T06 | R6 | COMP-E16-T03 (M0a) needs the rule; COMP-E13-T01, COMP-E16-T01 and TIER-E6-T01 are all M0a, so the closure stays in M0a |
+| COMP-E13-T06's criteria become: the rule gives every (source, declared cache, family requirement) case its dtype in a case table; the override changes the resolved `KvDTypeSpec`; `config check` takes `kv_dtype` in a policy table and refuses any other value | COMP-E13-T06 | R9, definition of done | its old criteria used family modules and a hash that later tasks build |
+| "`KvFormula::dtype` is F16 for a GGUF source and BF16 for a BF16 safetensors source, by COMP-E13-T06's rule" joins COMP-E16-T03's criteria, and "the KV dtype per source" joins COMP-E16-T04's. COMP-E16-T03 → COMP-E13-T06 | COMP-E16-T03, COMP-E16-T04 | R9 | the per-family assertion belongs to the task that builds the family's `kv_formula`. M0a → M0a, and COMP-E13-T06 does not reach COMP-E16-T03, so the edge adds no cycle. COMP-E16-T04 reaches the rule through COMP-E16-T03 |
+| TIER-E7-T01's "changing any KV-affecting setting (dtype, …) changes the root key" names the `kv_dtype` override among them. TIER-E7-T01 → COMP-E13-T06 | TIER-E7-T01 | R9 | the KV-settings hash is TIER-E7-T01's. M1a → M0a, and COMP-E13-T06 does not reach TIER-E7-T01, so the edge adds no cycle |
+
+## PROD-E8-T07's wiring through the head and the daemon gets a task (2026-10-28)
+
+The review of #1948 (PROD-E8-T07) found that no task wires local tracing through the runner and the daemon: only PROD-E8-T07's row names `traceparent`, `obs.trace.step_sample` or the flight recorder. PROD-E8-T07 builds the types and the decisions, and wires the API side, where `traceparent` comes in and goes out. The head's call of `StepSampler` on every step, the stages' span records, housekeeping's batching into `TelemetryRecord::Spans`, and the daemon's flight recorder need the step loop (PLC-E7-T10, M1a) and the daemon's `telemetry` consumer (PROD-E8-T05, M1a), which PROD-E8-T07 does not depend on. So under R9 a new task, PROD-E8-T14 (M1a), takes them, with the end-to-end part of PROD-E8-T07's `trace: true` criterion. These are plan corrections under R9 and the definition of done, taken by the lead under the maintainers' standing instruction.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New task PROD-E8-T14 (M1a): local tracing wired through the runner and the daemon. PROD-E8-T14 → PROD-E8-T07, PLC-E7-T10, PROD-E8-T05 | PROD-E8-T14 | R9 | it uses the step loop PLC-E7-T10 builds and the `telemetry` consumer PROD-E8-T05 builds, both M1a, and PROD-E8-T07's types. None of them reaches PROD-E8-T14, so the edges add no cycle |
+| PROD-E8-T14 also takes the HTTP edge: the body's `syntropy.trace` and the `Syntropy-Trace: 1` header map to `GenerateRequest::trace`, the response carries `Generation::response_traceparent` as its `traceparent` header, and `obs.trace.honor_remote_sampled` reaches `Ingress` on every reload. PROD-E8-T14 → PROD-E2-T04, PROD-E1-T11 | PROD-E8-T14 | R9 | the second delta review of #1948 found no owner for the HTTP edge. No generation route exists until PROD-E2-T04 (M0a), and hot reload is PROD-E1-T11, so the wiring cannot be done in PROD-E8-T07. PROD-E2-T04 is M0a and cannot depend on an M1a task (R6), so the clause goes to PROD-E8-T14 (M1a). Neither target reaches PROD-E8-T14, so the edges add no cycle |
+| PROD-E8-T07's criterion "a request with `trace: true` records every step span" becomes "a request with `trace: true` carries a full-trace context to the head through the API pipeline, and the head's `StepSampler` then samples every step"; recording the spans moves to PROD-E8-T14 | PROD-E8-T07, PROD-E8-T14 | R9, definition of done | recording a step span needs the step loop and the daemon, which PROD-E8-T07 does not build; by the definition of done the criterion is demonstrated where its inputs exist |
+
+## `TensorRecord::hash` gets an owner (2026-10-28)
+
+The review of #1950 (COMP-E10-T11) found that no task sets `TensorRecord::hash`. COMP-E10-T11 builds `ChunkTable::tensor_hash`, the value RFC-0041 §1 gives the field once every chunk covering the tensor is committed. COMP-E10-T07 defines `TensorRecord`, but says nothing about the field. COMP-E11-T05's pack build (M1a) builds `ExtentKey`s from the hashes, so on one node they must be set by M1a.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E12-T04 sets `TensorRecord::hash` from `ChunkTable::tensor_hash` once every covering chunk is committed on the node, and leaves it `None` until then. COMP-E12-T04 → COMP-E10-T07 | COMP-E12-T04 | R9, R6 | on one node in M1a, chunk IDs are committed at local registration (COMP-E11-T14) or by a verified fetch, and the fetch planner runs before `Packing` reads the hashes. COMP-E10-T07 is M0a and cannot depend on COMP-E10-T11 (M1a), and at header time no chunk is committed. The edge M1a → M0a keeps R6. COMP-E12-T04 already depends on COMP-E10-T11 |
+| COMP-E12-T06 sets the hash when a node fills its table copy from `ChunkIdsCommitted` | COMP-E12-T06 | R9 | in a cluster, §6.3's commitment is where IDs become committed. COMP-E12-T06 reaches COMP-E12-T04 through COMP-E12-T05, so it needs no new edge |
+
+## COMP-E11-T02's `doctor` flag moves to PROD-E9-T02 (2026-10-29)
+
+COMP-E11-T02 (M1a) asked that an exFAT volume switch to chunk-file mode "and `doctor` flags it". The doctor framework exists (PROD-E9-T01), but no check covered chunk-file mode, and the storage checks STO-001 to STO-004 are PROD-E9-T02's (M1b), which an M1a task cannot depend on. So the flag is split: the store records the mode with the probe's reason in `v1/storage-mode.json` (`read_storage_mode`), and the check that shows it is a new storage check, STO-005, built with the other STO checks.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E11-T02's "`doctor` flags it" becomes "the store reports the mode with the probe's reason for `doctor` (STO-005, PROD-E9-T02)" | COMP-E11-T02 | R9 | the check needs PROD-E9-T02's storage checks, M1b |
+| PROD-E9-T02 gains STO-005 (STO-001–005) and the criterion "STO-005 warns for each writable store root whose start-up probe found no sparse files, naming the root and the probe's reason as the root's `v1/storage-mode.json` records them, read without the writer lock, and reports nothing for a root of sparse blobs". PROD-E9-T02 → COMP-E11-T02; RFC-0053 §5.2 gains the STO-005 row with a dated note | PROD-E9-T02 | R9 | the check reads the probe's record, which COMP-E11-T02 writes. M1b → M1a, and COMP-E11-T02 does not reach PROD-E9-T02, so the edge adds no cycle |
+
+## Hub-fetched chunk IDs reach the chunk table (2026-10-29)
+
+The review of #1963 found two gaps next to COMP-E12-T04's `TensorRecord::hash` criterion. No M1a task writes a Hub-fetched chunk's `ChunkId` into the chunk table, so on one node a model pulled from the Hub would keep every tensor hash at `None`. And COMP-E11-T05 did not say what a pack build does with a group whose hash is still `None`.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E12-T12 writes each verified chunk's `ChunkId` into the model's chunk table as committed, with evidence form 0 (provisional). COMP-E12-T04 → COMP-E12-T12 | COMP-E12-T12, COMP-E12-T04 | R9 | RFC-0041 §6.3's commitment, on one node, happens where a fetched chunk is verified; COMP-E12-T04's "a verified fetch" arm needs that producer |
+| COMP-E11-T05 never forms an `ExtentKey` over a `None` tensor hash: a group that needs an extent but has a `None` hash fails the build with class `Integrity`, and no sidecar is committed | COMP-E11-T05 | R9 | `ExtentKey` (RFC-0041 §1) is built from the group's tensor hashes, so a key over `None` would name bytes nobody can check. Deferring the group can't work: RFC-0001 §3.3 enters `Packing` only once every shard chunk is verified, so every hash is set by then, and a later start with a matching `PackKey` skips `Packing`, so a deferred group would never be built. A `None` there means the table and the shard disagree, the class RFC-0041 §7.3 uses |
+
+## The fixture store's S3 backend splits from its client (2026-10-29)
+
+QUAL-E7-T05 builds the store client, the local backend and the cache; the S3 backend, the anonymous-read grants and the bucket move to QUAL-E7-T15, which needs an HTTP or S3 client a maintainer approves. Proposed in the task's PR, for the maintainers to confirm.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The S3 backend, the per-object public-read rule and the bucket's Maintainer action move from QUAL-E7-T05 to the new QUAL-E7-T15 (M0a). QUAL-E7-T15 → QUAL-E7-T05 | QUAL-E7-T05, QUAL-E7-T15 | R9 | nothing T05 builds needs the bucket, and its criteria run on the local backend; T15 stays in M0a, so this is a split by producer, not R3b's split by milestone |
+| QUAL-E7-T06 → QUAL-E7-T15 | QUAL-E7-T06 | R9 | its "a gated checkpoint is readable only with the lab credential" needs the bucket's credential |
+| QUAL-E12-T06 → QUAL-E7-T15 | QUAL-E12-T06 | R9 | its "a write without a credential fails" needs the bucket's write credential |
+| QUAL-E1-T14 → QUAL-E7-T15 | QUAL-E1-T14 | R9 | its artefacts live in the bucket |
+| QUAL-E7-T08 → QUAL-E7-T15 | QUAL-E7-T08 | R9 | its lifecycle dry run follows T15's access rule |
+| No new edge for T05's other dependents (TIER-E5-T04, TIER-E8-T09, QUAL-E4-T05, QUAL-E5-T02, QUAL-E5-T18, QUAL-E5-T22, QUAL-E7-T13, QUAL-E10-T02, QUAL-E16-T04, QUAL-E16-T22) | those tasks | R8 | their criteria name the store's objects, layout or licence records, which the local backend serves; a CI run that needs the bucket names its own dependency when it is written |
+
+## Probe mode splits from the process host (2026-10-29)
+
+DIST-E1-T04 (#1952) built the runner's process host and moved its probe-mode criterion to a new task, DIST-E1-T17, without an entry here. Its review (comment 6493515550) found the stated reason stale: `CapabilityProfile` was already defined by PLC-E1-T17 (#1955). The split stands as a scope split.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New task DIST-E1-T17 (M0a): probe mode, `syntropy __runner --probe`, answering `ProbeResult`. DIST-E1-T17 → DIST-E1-T04, PLC-E1-T17. DIST-E1-T04's `--probe` and "a probe-mode process returns `ProbeResult` and exits" move to it | DIST-E1-T04, DIST-E1-T17 | R9 | a scope split: probe mode adds a message and an `ipc_protocol` bump that the process host does not need |
+| PLC-E1-T07 → DIST-E1-T17 | PLC-E1-T07 | R1 | PLC-E1-T07 runs its enumeration in the probe process |
+
+## PROD-E9-T04's wiring legs move to the tasks that build their inputs (2026-10-29)
+
+PROD-E9-T04 (M1a) builds the bundle and the crash records. Two parts of its row need code it does not build. The API has only `healthz`, `readyz` and `version`, and no `admin` scope until PROD-E5-T01. RUN-001 is PROD-E9-T03's check. Each part moves to the task that builds what it needs, and that task gains an edge to PROD-E9-T04. The third, a real runner killed by a signal, stays: DIST-E1-T04's process host merged (#1952) while the change was in review, so PROD-E9-T04 tests it through that host and gains the edge to DIST-E1-T04.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E9-T04's "a runner killed by a signal leaves a crash record that appears in RUN-001 and the bundle" becomes "a runner killed by a signal, and a panic through the panic hook, leave a crash record in the state directory that appears in the bundle"; its description names `POST /v1/syntropy/debug/dump` as PROD-E6-T08's to wire. PROD-E9-T04 → DIST-E1-T04 | PROD-E9-T04 | R9 | the route and RUN-001 are other tasks'. The runner is spawned through DIST-E1-T04's process host; M1a → M0a, and DIST-E1-T04 does not reach PROD-E9-T04, so the edge adds no cycle |
+| PROD-E9-T03 gains "RUN-001 lists the crash records in `<state>/crashes/` (`CrashStore::list`), newest first, each with its process, cause and time, and names any it cannot read". PROD-E9-T03 → PROD-E9-T04 | PROD-E9-T03 | R9 | RUN-001 is PROD-E9-T03's. M1a → M1a, and PROD-E9-T04 does not reach PROD-E9-T03, so the edge adds no cycle |
+| PROD-E6-T08 gains `POST /v1/syntropy/debug/dump` with `admin` scope, the `--out`, `--with-addresses` and `--max-size` flags, and the criterion that `doctor --bundle` and `debug dump` write the same bundle through the route, which answers 403 without an `admin` key. PROD-E6-T08 → PROD-E9-T04, PROD-E5-T01 | PROD-E6-T08 | R9 | the command wiring is PROD-E6-T08's, and the scope is PROD-E5-T01's. All are M1a, and neither target reaches PROD-E6-T08, so the edges add no cycle |
+
+## TIER-E5-T36's retry criterion names the retry's owner (2026-10-30)
+
+TIER-E5-T36 (M1b) asked that, after a fault on `MacMapped`'s copy, "the retry follows §16". The one retry of RFC-0021 §16 is the I/O thread's, and TIER-E5-T15 (#772, M1a, open) builds it; until then `io_thread.rs` completes a short transfer with `IO_SHORT_READ` and no retry. TIER-E5-T36 does not depend on TIER-E5-T15, and needs none: the engine's part is to return `IO_SHORT_READ` and to read right on the next request. The criterion stands as a scope note: TIER-E5-T36 covers the engine's `IO_SHORT_READ`, its test issues the retry itself, and the I/O thread's one retry stays with TIER-E5-T15. No criterion moves, and no edge is added.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| TIER-E5-T36's "the retry follows §16" becomes "a second read of the same extent (the retry §16 prescribes, which the I/O thread issues once TIER-E5-T15 builds it) is short again while the bytes are gone", and "later reads on the same engine return the right bytes" gains "both of extents the truncation left alone and of the faulted extent once the file holds it again"; no edge | TIER-E5-T36 | — | a scope note: the I/O thread's one retry is TIER-E5-T15's (M1a, before TIER-E5-T36's M1b), and the engine's `IO_SHORT_READ` and its behaviour on the retry are TIER-E5-T36's, tested by issuing the read |

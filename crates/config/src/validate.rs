@@ -145,6 +145,13 @@ pub trait Environment {
     /// has no such permission bits, or the file cannot be read.
     fn readable_by_others(&self, path: &Path) -> Option<bool>;
 
+    /// Whether `path` is a regular file, after symbolic links; `None` if not known. Phase 5 warns
+    /// when a `{ file = … }` secret names no file (PROD-E1-T12).
+    fn is_file(&self, path: &Path) -> Option<bool> {
+        let _ = path;
+        None
+    }
+
     /// Whether the volume holding `path` supports direct I/O; `None` if not known.
     fn direct_io(&self, path: &Path) -> Option<bool> {
         let _ = path;
@@ -212,6 +219,10 @@ impl Environment for HostEnvironment {
                 },
             }
         }
+    }
+
+    fn is_file(&self, path: &Path) -> Option<bool> {
+        Some(path.is_file())
     }
 
     fn readable_by_others(&self, path: &Path) -> Option<bool> {
@@ -358,8 +369,24 @@ fn holds_inline_secret(value: &toml::Value) -> bool {
     }
 }
 
-/// Phase 5: a config file that holds a secret inline is not readable by its group or others
-/// (a warning on Unix; RFC-0054 §8, §10.1). The file and variable forms are not flagged.
+/// The files a value's `{ file = … }` secrets name, at any depth.
+fn secret_files(value: &toml::Value) -> Vec<&str> {
+    match value {
+        toml::Value::Table(table) if table.len() == 1 => match table.get("file") {
+            Some(toml::Value::String(path)) => vec![path.as_str()],
+            _ => table.values().flat_map(secret_files).collect(),
+        },
+        toml::Value::Table(table) => table.values().flat_map(secret_files).collect(),
+        toml::Value::Array(items) => items.iter().flat_map(secret_files).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Phase 5: a secret is not readable by others where it sits (a warning on Unix; RFC-0054 §8,
+/// §10.1). That is the config file, for a secret written inline, and the named file, for the
+/// `{ file = … }` form (PROD-E1-T12). A `{ file = … }` secret whose file does not exist is a
+/// warning too, like the other paths phase 5 checks: the secret is read when it is first used,
+/// so the load itself does not fail. The variable form is not flagged.
 fn secret_file_private(input: &RuleInput<'_>, findings: &mut Findings) {
     let mut flagged: Vec<&Path> = Vec::new();
     let sources = input
@@ -376,6 +403,46 @@ fn secret_file_private(input: &RuleInput<'_>, findings: &mut Findings) {
                 .map(|p| (p.path.as_str(), p.raw_value(), &p.origin)),
         );
     for (key, value, origin) in sources {
+        for named in secret_files(value) {
+            let named = Path::new(named);
+            if flagged.contains(&named) {
+                continue;
+            }
+            if input.environment.is_file(named) == Some(false) {
+                flagged.push(named);
+                findings.warnings.push(
+                    Problem::uncoded(
+                        Some(origin.clone()),
+                        format!(
+                            "`{key}` reads its secret from `{}`, which does not exist or is not \
+                             a file",
+                            named.display()
+                        ),
+                    )
+                    .about(key)
+                    .hint(Some(String::from(
+                        "create the file, or correct the path; the secret is read when it is \
+                         first used",
+                    ))),
+                );
+                continue;
+            }
+            if input.environment.readable_by_others(named) == Some(true) {
+                flagged.push(named);
+                findings.warnings.push(
+                    Problem::uncoded(
+                        Some(origin.clone()),
+                        format!(
+                            "`{key}` reads its secret from `{}`, and its group or others can \
+                             read it",
+                            named.display()
+                        ),
+                    )
+                    .about(key)
+                    .hint(Some(String::from("restrict the file (`chmod 600`)"))),
+                );
+            }
+        }
         let Origin::File { path, .. } = origin else {
             continue;
         };
@@ -430,6 +497,13 @@ impl Checked {
     }
 
     /// Every error, then every warning, in RFC-0054 §8's format, never showing a secret.
+    ///
+    /// The text quotes the configuration's own sources: a value from a file, the environment or
+    /// a flag, and an unknown variable's name, any of which can hold a control character such as
+    /// ESC. A caller that prints it to a terminal escapes it first. The CLI's `config show` and
+    /// `config check` do, line by line, and so must the daemon's `serve` startup report
+    /// (PROD-E6-T02). This crate is layer 0 and leaves the escaping to its callers, which share
+    /// `syntropy_api::printable`.
     pub fn render(&self, registry: &Registry) -> String {
         render_all(self.errors(), self.warnings(), &self.files, registry)
     }

@@ -434,3 +434,29 @@ proptest! {
         prop_assert_ne!(x.id(), y.id());
     }
 }
+
+/// `TokenizerId`'s bytes, pinned (COMP-E10-T11): a golden computed apart from this crate, by a
+/// pure-Python BLAKE3 that matches the published BLAKE3 test vectors, over `compute_id`'s
+/// encoding: the length-prefixed tag and model, the seven optional specials, the end-of-turn
+/// set, the two flags and the template in use.
+#[test]
+fn tokenizer_id_golden() {
+    let specials = SpecialTokens {
+        bos: Some(1),
+        eos: Some(2),
+        end_of_turn: vec![7, 2, 7],
+        ..SpecialTokens::default()
+    };
+    let spec = TokenizerSpec::new(
+        br#"{"model":{"type":"BPE"}}"#.to_vec(),
+        specials,
+        true,
+        false,
+        Some("{{ messages }}".to_owned()),
+        TemplateSource::Shipped,
+    );
+    assert_eq!(
+        spec.id().to_string(),
+        "217943fe1c49c20a7f7ba46bddb9cc5ee87cdd542975625930a92ac8d0330bd2"
+    );
+}

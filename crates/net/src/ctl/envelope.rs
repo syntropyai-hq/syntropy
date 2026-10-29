@@ -367,16 +367,33 @@ pub fn decode_body<T: DeserializeOwned>(
     let Some((&enc, body)) = enc_and_body.split_first() else {
         return Err(DecodeError::Truncated { needed: 1, got: 0 });
     };
+    // The size first, as before the split: an oversized body is refused whatever its `enc`.
     if body.len() > limit.bytes() {
         return Err(DecodeError::TooLarge {
             len: body.len(),
             limit: limit.bytes(),
         });
     }
-    match Encoding::from_byte(enc) {
-        Some(Encoding::Cbor) => from_cbor(body),
-        Some(Encoding::ZstdCbor) => from_cbor(&decompress(body, limit)?),
-        None => Err(DecodeError::UnknownEncoding(enc)),
+    let encoding = Encoding::from_byte(enc).ok_or(DecodeError::UnknownEncoding(enc))?;
+    decode_encoded(encoding, body, limit)
+}
+
+/// Reads a body whose encoding travels apart from it, as a `SeqControl` frame's `body_enc` does
+/// in its extension (RFC-0031 §6.6), with no body, before or after decompression, over `limit`.
+pub fn decode_encoded<T: DeserializeOwned>(
+    encoding: Encoding,
+    body: &[u8],
+    limit: BodyLimit,
+) -> Result<T, DecodeError> {
+    if body.len() > limit.bytes() {
+        return Err(DecodeError::TooLarge {
+            len: body.len(),
+            limit: limit.bytes(),
+        });
+    }
+    match encoding {
+        Encoding::Cbor => from_cbor(body),
+        Encoding::ZstdCbor => from_cbor(&decompress(body, limit)?),
     }
 }
 

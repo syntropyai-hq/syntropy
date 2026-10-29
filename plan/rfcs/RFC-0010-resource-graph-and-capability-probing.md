@@ -4,7 +4,7 @@
 - Area: placement and scheduling
 - Depends on: RFC-0001, RFC-0020 (§2, §5, §9), RFC-0021 (§10, §11), RFC-0023 (§13), ADR-0100, ADR-0006, ADR-0007, ADR-0008, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0015, ADR-0020
 - Date: 2026-10-19
-- Revised: 2026-10-20: link mean, hop histogram and periodic-stall flag for wireless hops (§6.2); battery presence for the solver's departure margin (§1.3); a read-only direct-path report (§1.3); open questions 4 (FileVault part) and 5 answered; 2026-10-21: Linux E1 sources as built and the system-call split to PLC-E1-T14 (§2.2 revision note); 2026-10-22: one `DeviceClass`, defined in RFC-0040 §2.2, and the fields that leave it (§1.2 revision note, §2.1, §2.2; ADR-0405)
+- Revised: 2026-10-20: link mean, hop histogram and periodic-stall flag for wireless hops (§6.2); battery presence for the solver's departure margin (§1.3); a read-only direct-path report (§1.3); open questions 4 (FileVault part) and 5 answered; 2026-10-21: Linux E1 sources as built and the system-call split to PLC-E1-T14 (§2.2 revision note); 2026-10-22: one `DeviceClass`, defined in RFC-0040 §2.2, and the fields that leave it (§1.2 revision note, §2.1, §2.2; ADR-0405); 2026-10-29: the base capability records and `OpClass`, proposed (§1.3 note, PLC-E1-T17)
 
 ## Summary
 
@@ -316,12 +316,29 @@ pub struct LinkCapsExt {
 pub struct HopHistogram { pub first: Nanos, pub ratio: f32, pub counts: Vec<u32>, pub samples: u64 }
 ```
 
+*Note 2026-10-29 (as built, proposed; PLC-E1-T17): the base records and `OpClass`.*
+- **The base records.** RFC-0001 §5.2's `CapabilityProfile`, `DeviceCaps` and `StorageCaps` are in `core::resource::caps`. Each holds this section's additions as one field, `ext`, with serde defaults, as `DeviceInfo` holds `DeviceInfoExt`. `LinkCaps` was built earlier.
+- **`OpClass`.** It keys `DeviceCaps::throughput` (F_eff per op class and dtype). RFC-0001 §5.2 and RFC-0060's per-device-class selection map name it, and no RFC defined it. Its variants are a decision for the maintainers. Three options:
+  - (a) **built, the recommended default:** the glossary's op classes plus step M4's GEMM (§3.2): `Gemm`, `QuantGemv`, `ExpertGemv`, `Attention(AttnKind)` and `LinearScan`. It is what the glossary already defines, and every step-M4 measurement maps to one variant.
+  - (b) `KernelClass`'s variants plus `Gemm`, so one enum keys both W_eff and F_eff.
+  - (c) only what step M4 measures: `Gemm` and `Attention(AttnKind)`.
+- **Two questions with it, for the maintainers.**
+  - *The GEMM key.* Step M4 measures GEMM in each tensor-core dtype and through the dequant path of quantized schemes. With the key `(OpClass, DType)`, a native F16 GEMM and a dequant-to-F16 GEMM are both `(Gemm, F16)`, so one rate would replace the other. Ways out: a `DequantGemm` variant, or a key with the quant scheme, as `DeviceCapsExt::quant_bw` keys W_eff.
+  - *Breadth.* RFC-0060's per-device-class selection map is `BTreeMap<OpClass, ProviderId>`, which needs a class for every op a provider is chosen for, norms and sampling among them. These five variants are F_eff's classes, not that list.
+- **Changing it later.** `OpClass` is `#[non_exhaustive]`, so later variants do not break the crates that match on it. A unit test in `core` matches on every variant and every `AttnKind` with no wildcard, and checks that this note names each variant, so a new one fails until it is mapped and recorded here. The maintainers confirm or change the choice in PLC-E1-T17's review, and this note records the outcome.
+
 #### 1.4 Graph assembly and versioning
 
 The coordinator builds the `ResourceGraph` from the event log; no node builds its own view.
 - `NodeAdmitted { info }` adds a `NodeInfo` and the node's `DeviceInfo`, `TierInfo` and `LinkInfo` records, carried in a field this RFC adds: `NodeInfo::inventory: NodeInventory { devices, tiers, links }`. RFC-0001 gives no other path for device and tier records to reach the graph (amendment A1).
 - `ReportProfile { profile }` replaces that node's `CapabilityProfile`. The coordinator accepts it only if `profile.version` is newer, and then emits `GraphUpdated`. A hardware change after admission (an eGPU unplugged, a volume unmounted) rides the same command in `CapabilityProfileExt::inventory: Option<NodeInventory>`.
 - `ReportLedger` changes `reservations`.
+
+*Note 2026-10-29 (proposed, PLC-E1-T18; for the maintainers):* RFC-0001 §5.2 names `ResourceGraph::reservations: Vec<Reservation>`, "capacity held by running instances, per device and tier", which the solver treats as unavailable except when re-planning the instance that holds it. No RFC defines `Reservation`, and `ReportLedger` carries `LedgerSummary { held: Vec<(TierId, Bytes)> }`, which has no instance. Two other rules bind the choice. Under make-before-break the old epoch's reservation still counts while the new plan is checked (RFC-0011 §11.2, `transition`; RFC-0032 §4.2). An orphan runner's reservation counts against capacity even though the coordinator does not know its instance (RFC-0032 §7.5). Options:
+- (a) **recommended:** `Reservation { tier: TierId, holder: Option<Holder>, bytes: Bytes }`, with `Holder { instance: InstanceId, epoch: PlanEpoch }`. `LedgerSummary` keeps `held` and gains `entries: Vec<Reservation>` with a serde default, so `ReportLedger` can carry them; an entry must have a holder. Bytes in `held` that no entry accounts for become a reservation with no holder, which is never exempt. A break-before-make re-plan exempts the reservations of exactly one holder, the instance and epoch of the plan it replaces; a make-before-break re-plan exempts none. So another epoch of the same instance, such as an orphan runner's, still counts; the maintainers confirm this epoch-exact exemption with the option. This drops RFC-0001's per-device dimension: a host tier's `affinity` lists several devices, so a tier's bytes do not split by device. The glossary's device ledger, "which instance holds how much of each device and tier", supports keying by instance. *As built 2026-10-29 (PLC-E1-T18):* `core::resource::graph`, with `LedgerSummary::reservations` and `ResourceGraph::available`.
+- (b) per node and tier, from `LedgerSummary` as it is. The ledger cannot say which bytes belong to the re-planned instance.
+- (c) per instance and device. A host-tier reservation then has to be split across the devices in the tier's `affinity`, and no rule gives that split.
+- (d) per node and tier as in (b), with the solver subtracting the footprint of the current plan it already receives on a re-plan. This needs no ledger change, but an orphan runner's bytes and any drift between the plan and the ledger are then counted twice or not at all.
 
 `GraphDelta`, carried by `GraphUpdated`, is defined here:
 

@@ -78,6 +78,8 @@ Non-goals:
 - Runners have their own iroh endpoints, keyed by a per-runner Ed25519 key that the daemon delegates with a `DataPlaneCredential` (RFC-0034 §6). The node's secret key never enters a runner (RFC-0001 §3.2). Ring neighbours exchange runner endpoint addresses through their daemons (RFC-0030 §8.3).
 - When the head runner and the ingress daemon share a node, sequence channels use the IPC rings `local_sequences` and `local_tokens` (RFC-0001 §3.5). Those rings carry the **same frame bytes** defined in §6, so the head and tail code paths do not branch on locality.
 
+*Note 2026-10-27 (QUAL-E3-T18): the rings' records until M2.* Until DIST-E11-T03 (M2), `local_sequences` and `local_tokens` carry one postcard-encoded `SequenceControl` or `TokenFrame` per slot, the `core` types themselves, as RFC-0001 §5.8's note of 2026-10-23 already has M0 parity taps do. §6 has no sequence-control frames until DIST-E8-T05 (M2). `syntropy_ipc::shm::records` is the one encoder and decoder, which ingress, the runner and `syntropy-testkit`'s fake runner share. DIST-E11-T03 moves both rings to the frame bytes above. RFC-0001 §3.5's note and §18.39 record this, for the maintainers to confirm.
+
 ### 2. The `Transport` trait and `Channel` in full
 
 RFC-0001 §5.8 fixes the trait's methods. This section adds types and default-bodied methods only.
@@ -703,6 +705,13 @@ Tokens travel tail → head (ring return, all of the step's sequences) and tail 
 
 The extension is `kind: u8` (1 Open, 2 Cancel, 3 Pause, 4 Resume, 5 Release, 6 ResumeOpen, 7 Reconcile), `body_enc: u8` (0 CBOR, 1 zstd-compressed CBOR), `reserved[6]`. The payload is the CBOR body of the matching `SequenceControl` variant (RFC-0001 §5.8, extended by RFC-0032 §3.6). The prompt in `Open` is a CBOR byte string of u32 token IDs, so a 128K-token prompt is 512 KiB. Bodies above `slot_size` are a protocol error, and the ingress daemon sizes the head's sequence slots for the instance's maximum context.
 
+*Note 2026-10-23 (DIST-E8-T05): what the codec fixes.* The paragraph above leaves four points open, and DIST-E8-T05 fixes them as follows:
+- **`ResumeOpen` (kind 6) is an `Open` with `resume` set.** `SequenceControl` has no variant of its own for it. The re-open after migration or recovery is `SequenceOpen { resume: Some(..) }` (RFC-0033 §4.4), so the encoder sends kind 6 exactly when `resume` is set, and kind 1 otherwise. The decoder refuses kind 1 with `resume` set and kind 6 without it (`InvalidRequest`). The head can tell a re-open from the kind byte without reading the body.
+- **`Reconcile` (kind 7)** carries RFC-0033 §11's `{ seq, emitted, rng_counter, recent }`, with at most 8 tokens in `recent`. `core` gains the variant (RFC-0001 §5.8, note of 2026-10-23).
+- **The body** is the variant's fields as a CBOR map, written with §9.1's deterministic encoder. Decoders ignore map keys they do not know, as on the control plane (ADR-0305 item 3). The prompt is a byte string of little-endian `u32`s, which `core`'s `TokenSlice` writes in every binary format.
+- **Size.** The sender passes the receiver's `slot_size`. It writes plain CBOR (`body_enc` 0) when the frame fits, and compresses with zstd at level 3 (`body_enc` 1) only when it does not. A message that does not fit even compressed is refused before it is sent (`Capacity`). The receiver refuses a frame over its slot with `FrameTooLarge`.
+- **Declared body sizes** (RFC-0060 §10.2). Each kind's body has a ceiling, before and after decompression, which both ends check. A small compressed frame therefore cannot make the receiver hold a large body. Every kind but `Open` and `ResumeOpen` has a ceiling of 1 KiB [target], since their bodies are small fixed maps; a `Reconcile` with 8 recent tokens is under 100 bytes. `Open` and `ResumeOpen` have the receiver's `slot_size` plus 1 MiB [target] for a grammar sent inline, within §9.1's 64 MiB. The sender refuses a body over its ceiling before it compresses anything (`Capacity`), and the receiver refuses one with `InvalidRequest`. These are the sizes the format declares, so §10.2's bound for this decoder is the ceiling, not 4 × the input. The ingress daemon sizes the head's sequence slots as `sequence_slot_size(max_context)` = 64 (header) + 64 (extension) + 4 × `max_context` + 64 KiB [target] for the open's other fields, rounded up to 64 bytes. That is 589 952 bytes [target] for a 128K-token context, inside the 1 MiB slot limit of the `local_sequences` ring, which carries the same frames (§4). An inline grammar can exceed the allowance. It is then compressed, and refused if it still does not fit.
+
 #### 6.7 `Credit` frame
 
 ```text
@@ -1018,10 +1027,26 @@ on fault(ch):                        // QP error, QUIC connection lost, TCP rese
 
 Bulk transfers yield to the data plane (RFC-0001 §8.4 rule 6; ADR-0011 item 8):
 - Every 250 ms, a node that carries both a live data channel and a blob stream on the same physical edge compares the data channel's α p99 over that window with its idle p99, which RFC-0010 records.
-- If the ratio exceeds `net.bulk_p99_ratio` (1.2), the blob send rate halves. Otherwise it grows by 5 % of the edge's β.
-- The rate never drops below `net.bulk_floor` (5 % of β). Progress is guaranteed, and a 100 GB fetch cannot starve.
+- If the ratio exceeds `net.bulk_p99_ratio` (1.2), the blob send rate halves, and growth then stops two steps, 10 % of β [target], below the rate that broke the bound. Otherwise it grows by 5 % of the edge's β, up to that ceiling, or β.
+- The ceiling rises one step after 64 windows (16 s) within the bound [target]. That wait doubles after each breach that follows a rise, up to 1,024 windows [target].
+- The rate starts at the floor and never drops below it: `net.bulk_floor`, 5 % of β. Progress is guaranteed, and a 100 GB fetch cannot starve.
 
 The limiter is a token bucket in the daemon's `bulk` runtime. It applies to `BlobData` sends and to `KvChunk` sends on Bulk channels.
+
+**Note, 2026-10-23 (DIST-E7-T13): the ceiling, the start at the floor, and where the pacer lives.** The task lead took these under the maintainer's standing instruction.
+- **Why a ceiling.** As first written, the rule climbs back into saturation every few seconds. In the simulator, the p99 of each window but the probe windows stays within 1.2 × idle, but each probe window holds enough samples above the bound that the p99 over a long transfer exceeds it.
+  - The figures are [estimate]s from RFC-0060 §8.3's `lan_2_5g`, seed 1. The data channel sends 16 KiB every 2 ms; bulk goes in 4 KiB frames; the transfer is 10 GiB, 47 s simulated.
+  - Without the ceiling: 1.515 × idle over the transfer, with 17 halvings.
+  - With a ceiling that re-probes every 8 windows: 1.333 ×, with 4 halvings.
+  - With the rule above: 1.046 ×, with 2 halvings, and the rate settles at 90 % of β. Seed 3 gives 1.076 ×, with 3 halvings.
+  - **Caveat, for the maintainers.** The first climb from the floor always breaks the bound once, in one window. That window drops below 1 % of a transfer's samples only beyond about 100 windows, 25 s [estimate], which a 10 GB transfer on 2.5 GbE reaches. A transfer shorter than that can show a p99 over the transfer above 1.2 × idle, while every window but that one stays within it. A non-probing pacer, held at β less the measured data rate, would avoid the breach but needs that rate measured.
+- **The start at the floor.** A transfer that starts beside a live ring never begins by taking the whole link.
+- **The pacer** is `net::transport::pacing::BulkPacer`, sans I/O. It holds the token bucket, in whole bytes and nanoseconds. Its AIMD takes the nearest-rank p99 of each window's α samples from the edge's other channels; a window with no sample, when no data channel is live, counts as within the bound.
+  - 1,024 such windows in a row, 256 s [target], the longest re-probe wait, also reset the ceiling to β and the re-probe wait to 64 windows. The data channel has gone away or gone idle, so its old breaches no longer hold the rate down. A ring that pauses that long meets the rule as first written when it comes back, and the first window after its pause can break the bound.
+  - A shorter pause keeps them, because the ring that comes back saturates the link where the last breach found. On the unit tests' model edge, over 4,000 windows [estimate]: a reset after one empty window let the first window after each pause break the bound, 444 times with 8 windows on and 1 off, against 6 without a reset. A reset after 64 did the same for longer pauses: 33 times with 40 on and 200 off, against 5.
+  - In the simulator, `SimNet::pace` gates `Bulk` and `Replay` sends on an edge with it.
+  - In the QUIC and TCP backends, DIST-E7-T25 gates their bulk sends with it, and holds the rig check of ADR-0011 item 8's bound, the first task where it can run.
+  - ADR-0011 item 8 states only the 1.2 × bound, which this keeps, so it needs no revision.
 
 ### 8. Zero-copy receive and buffer pools
 

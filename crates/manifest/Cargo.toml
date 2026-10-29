@@ -9,6 +9,10 @@ publish.workspace = true
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# `FileDigest`: a source file's SHA-256 (RFC-0041 §1).
+sha2.workspace = true
+# The `kv_dtype` instance key, declared as a section (RFC-0054 §5.4; RFC-0043 §10).
+syntropy-config = { path = "../config" }
 syntropy-core = { path = "../core" }
 
 [dev-dependencies]

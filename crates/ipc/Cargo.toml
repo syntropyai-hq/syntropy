@@ -6,15 +6,37 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The command channel's frames (RFC-0001 §3.5).
+postcard = { workspace = true }
 # `ShmLayout` travels in the command channel's `Init` (RFC-0001 §3.5).
 serde = { workspace = true }
+# `AssignPlan`'s stage list (RFC-0001 §3.5).
+smallvec = { workspace = true }
 # `Entropy`, for the segment names' random part (`getrandom` itself is only in `io`, rule 6).
 syntropy-core = { path = "../core" }
 # The shared rings (RFC-0001 §4.2 rule 2, note of 2026-10-22: `ipc` may depend on `spsc`).
 syntropy-spsc = { path = "../spsc" }
+# Fault plans over the command channel, with `fault-injection` only (RFC-0060 §9.2; DIST-E1-T13).
+syntropy-obs = { path = "../obs", optional = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 serde_json = { workspace = true }
+# `obs`'s ring writers and drain on a region's rings, as the runner joins them (PROD-E8-T01).
+syntropy-obs = { path = "../obs" }
+
+# `AsyncListener`, the owner-only endpoint for servers on tokio: the API's local socket on the
+# daemon's `ctl` runtime (RFC-0050 §1.1, PROD-E2-T01). `net` gives its Unix socket and named
+# pipe types. `ipc` is not a compute crate, so rule 3 of RFC-0001 §4.2 allows it. Optional, behind
+# the `async` feature, so the runner, which only speaks the command channel, does not link it
+# through `ipc`. Not under `--cfg loom`, which tokio does not build under: the loom suite leaves
+# the async half out.
+[target.'cfg(not(loom))'.dependencies]
+tokio = { workspace = true, features = ["net"], optional = true }
+
+# The async listener's tests read and write through `AsyncReadExt` and `AsyncWriteExt`.
+[target.'cfg(not(loom))'.dev-dependencies]
+tokio = { workspace = true, features = ["io-util"] }
 
 # Only under `RUSTFLAGS="--cfg loom"`: the model checker for the region's loom model (RFC-0060
 # §3.4; QUAL-E3-T09). `syntropy-spsc` then builds its rings on loom's atomics. The same version.
@@ -22,7 +44,9 @@ serde_json = { workspace = true }
 loom = "0.7.2"
 
 # The segment's OS calls: memfd on Linux, `shm_open` on Apple platforms, a file mapping on Windows
-# (ADR-0015 item 4). The same versions as `syntropy-io`'s and `syntropy-spsc`'s.
+# (ADR-0015 item 4); and the command channel's: a Unix-domain socket and its peer's credentials,
+# or a named pipe and its client's token. The same versions as `syntropy-io`'s and
+# `syntropy-spsc`'s.
 [target.'cfg(any(target_os = "linux", target_vendor = "apple"))'.dependencies]
 libc = "0.2.191"
 
@@ -31,9 +55,22 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
     "Win32_System_Memory",
+    "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
+
+[features]
+# The async endpoint and stream on tokio (`cmd::AsyncListener`, `cmd::connect_async`), which the
+# API's local socket uses. Off by default; `syntropy-api` turns it on.
+async = ["dep:tokio"]
+# Test-only (RFC-0001 §4.2 rule 10): the command channel's fault-plan message, `DaemonFrame::
+# SetFaultPlan`, and its handler, which installs the plan with `obs`'s fault points compiled in
+# (RFC-0060 §9.2; DIST-E1-T13). Release artefacts never enable it; `cargo xtask check-deps` rule 10
+# checks that.
+fault-injection = ["dep:syntropy-obs", "syntropy-obs/fault-injection"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }

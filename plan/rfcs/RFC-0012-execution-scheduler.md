@@ -743,6 +743,16 @@ Acceptance is learned per (drafter, model) and per request kind (greedy or sampl
 | A step stalls because a waiter parked on a source that cannot wake it | the stall watchdog; the CI test with a 10 ms CPU segment (§3.3) | a bug: `Internal`; the rule of §3.3 makes it impossible by construction, and the test guards it |
 | KV exhausted mid-sequence | `KvStore::append` returns `Capacity` | pause the sequence (§10.3); if pausing is not allowed by policy, end it with `Capacity` |
 
+*Note 2026-10-28 (COMP-E13-T15): the `Exec` codes.* The faults the dispatchers and the CPU pools detect are codes of `Domain::Exec`, 0x0600–0x06FF. Codes are never reused (RFC-0001 §10.4).
+
+| Code | Name | Class | Raised when |
+|---|---|---|---|
+| 0x0601 | `RingClosed` | `Internal` | a dispatcher's outbound ring, the runner-internal ring to its own `net` domain, has closed because that domain is gone, so a step can never be sent (PLC-E7-T17). It is not a link fault: no transport failover or re-plan can reopen it, so the runner fails and its supervisor restarts it |
+| 0x0602 | `StepStalled` | `Internal` | the stall watchdog finds a step whose waiter is parked on a source that cannot wake it (§3.3, the row above) |
+| 0x0603 | `PoolBarrierMissed` | `Internal` | the CPU pool's barrier misses its deadline because a pool thread panicked or hung (the row above); the runner exits |
+
+The device faults in the first row keep their kernel codes: `DeviceSticky` and `DoorbellTimeout` (RFC-0040 §13).
+
 
 ## Performance model and budgets
 

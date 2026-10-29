@@ -3,7 +3,8 @@
 //! The sequence types of RFC-0001 §5.8 and RFC-0032 §3.6: what ingress sends to open and control
 //! a sequence, and what the tail sends back (DIST-E1-T14).
 //!
-//! - **Control.** [`SequenceControl`] and [`SequenceOpen`], with the types an open carries:
+//! - **Control.** [`SequenceControl`], RFC-0033 §11's `Reconcile` among its variants, and
+//!   [`SequenceOpen`], with the types an open carries:
 //!   [`SamplingParams`], [`SequenceLimits`], [`PrefixRef`], [`PrefixScope`], [`ResumePoint`],
 //!   [`Priority`] and the rest. [`SequenceMeta`] is an open without its prompt tokens, which
 //!   travels downstream on the sequence's first frame.
@@ -61,6 +62,23 @@ pub enum Priority {
     Normal,
     /// Runs when the others leave room, such as OpenAI's `service_tier = "flex"`.
     Background,
+}
+
+/// How a sequence ended on a runner, which the runner reports in `SequenceEnded` (RFC-0001 §3.5,
+/// note of 2026-10-23; DIST-E1-T15). Over the command channel it is postcard-encoded, so a variant
+/// is only ever appended. Owner: RFC-0001.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SequenceOutcome {
+    /// It finished.
+    Finished,
+    /// It failed, with the error's class (RFC-0001 §5.12).
+    Failed(crate::ErrorClass),
+    /// It moved to the plan epoch `to` (RFC-0033 §5), where it continues.
+    Migrated {
+        /// The epoch it continues on.
+        to: crate::PlanEpoch,
+    },
 }
 
 #[cfg(test)]

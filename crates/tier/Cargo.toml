@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 bitflags.workspace = true
 serde.workspace = true
+# The `syntropy tune` record in the state directory (`tune`, RFC-0020 §9.1 step 3).
+serde_json.workspace = true
 smallvec.workspace = true
 syntropy-core = { path = "../core" }
 syntropy-io = { path = "../io" }

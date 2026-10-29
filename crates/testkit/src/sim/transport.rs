@@ -40,12 +40,14 @@ use std::task::{Poll, Waker};
 use syntropy_core::ids::LinkId;
 use syntropy_core::resource::TransportKind;
 use syntropy_core::{Bytes, Clock, ErrorClass, MonoTime, Nanos, NodeId};
-use syntropy_net::frame::WIRE_MINOR;
+use syntropy_net::frame::{HEADER_LEN, WIRE_MINOR};
 use syntropy_net::transport::core::CRC_STORM_COUNT;
+use syntropy_net::transport::pacing::{BulkPacer, PacingConfig};
 use syntropy_net::transport::{
-    BufferPool, Channel, ChannelBackend, ChannelCore, ChannelKey, ChannelSpec, ChannelStats,
-    CloseReason, CoreConfig, CreditCadence, InFrame, OutFrame, PoolId, PoolRegistration,
-    RemoteEndpoint, SendConfig, SendError, SendTicket, Transmit, Transport, TransportCaps,
+    BufferPool, Channel, ChannelBackend, ChannelCore, ChannelKey, ChannelPurpose, ChannelSpec,
+    ChannelStats, CloseReason, CoreConfig, CreditCadence, InFrame, OutFrame, PoolId,
+    PoolRegistration, RemoteEndpoint, SendConfig, SendError, SendTicket, Transmit, Transport,
+    TransportCaps,
 };
 use syntropy_net::{Error, ErrorCode};
 
@@ -120,6 +122,23 @@ struct State {
     order: u64,
     /// Connects and accepts waiting for their other half, in the order they were called.
     waiting: Vec<(Open, Waiting)>,
+    /// Edges whose data channels' α samples are logged, and those whose bulk sends are paced.
+    edges: BTreeMap<LinkId, Edge>,
+}
+
+/// One watched or paced edge.
+#[derive(Default)]
+struct Edge {
+    /// Every α sample of the edge's data channels, and when it came.
+    log: Vec<(MonoTime, Nanos)>,
+    /// The pacer of the edge's bulk sends, once it is paced.
+    pacer: Option<BulkPacer>,
+}
+
+/// Whether a channel of `purpose` sends bulk, which pacing gates; every other purpose is a data
+/// channel, whose α samples set the pace (RFC-0031 §7.5).
+fn is_bulk(purpose: ChannelPurpose) -> bool {
+    matches!(purpose, ChannelPurpose::Bulk | ChannelPurpose::Replay)
 }
 
 /// One node's transport: it opens that node's channels on a [`SimNet`].
@@ -157,6 +176,7 @@ impl SimNet {
                 in_flight: BTreeMap::new(),
                 order: 0,
                 waiting: Vec::new(),
+                edges: BTreeMap::new(),
             })),
         }
     }
@@ -220,7 +240,72 @@ impl SimNet {
                 .map(|since| since.saturating_add(state.failure_timeout));
             [failover, side.core.next_deadline()]
         });
-        arrival.into_iter().chain(timers.flatten()).min()
+        let windows = state
+            .edges
+            .values()
+            .filter_map(|edge| edge.pacer.as_ref().map(BulkPacer::window_end));
+        arrival
+            .into_iter()
+            .chain(timers.flatten())
+            .chain(windows)
+            .min()
+    }
+
+    /// Logs the α samples of the data channels from `from` to `to` from now on, for
+    /// [`alpha_log`](Self::alpha_log): an edge's idle p99, before it is paced, and its p99 under
+    /// bulk, after.
+    pub fn watch_alpha(&self, from: NodeId, to: NodeId) {
+        let mut state = self.lock();
+        if let Some(link) = state.routes.get(&(from, to)).copied() {
+            state.edges.entry(link).or_default();
+        }
+    }
+
+    /// Every α sample of the data channels from `from` to `to` since the edge was watched or
+    /// paced, and when it came.
+    pub fn alpha_log(&self, from: NodeId, to: NodeId) -> Vec<(MonoTime, Nanos)> {
+        let state = self.lock();
+        state
+            .routes
+            .get(&(from, to))
+            .and_then(|link| state.edges.get(link))
+            .map(|edge| edge.log.clone())
+            .unwrap_or_default()
+    }
+
+    /// Paces the bulk sends from `from` to `to` from now on (RFC-0031 §7.5): a send on a `Bulk`
+    /// or `Replay` channel there waits for the edge's [`BulkPacer`], whose rate the α samples of
+    /// the edge's other channels set. While it waits, `try_send` returns `WouldBlock`, and
+    /// [`pacing_ready_at`](Self::pacing_ready_at) says when to try again. Logs α as
+    /// [`watch_alpha`](Self::watch_alpha) does.
+    pub fn pace(&self, from: NodeId, to: NodeId, config: PacingConfig) {
+        let mut state = self.lock();
+        let now = state.now();
+        if let Some(link) = state.routes.get(&(from, to)).copied() {
+            state.edges.entry(link).or_default().pacer = Some(BulkPacer::new(config, now));
+        }
+    }
+
+    /// A copy of the pacer of the bulk sends from `from` to `to`, if they are paced.
+    pub fn pacer(&self, from: NodeId, to: NodeId) -> Option<BulkPacer> {
+        let state = self.lock();
+        state
+            .routes
+            .get(&(from, to))
+            .and_then(|link| state.edges.get(link))
+            .and_then(|edge| edge.pacer.clone())
+    }
+
+    /// When a bulk send of `bytes` from `from` to `to` can go: now, if the edge is not paced.
+    pub fn pacing_ready_at(&self, from: NodeId, to: NodeId, bytes: u64) -> MonoTime {
+        let state = self.lock();
+        let now = state.now();
+        state
+            .routes
+            .get(&(from, to))
+            .and_then(|link| state.edges.get(link))
+            .and_then(|edge| edge.pacer.as_ref())
+            .map_or(now, |pacer| pacer.ready_at(bytes, now))
     }
 
     /// Frames in flight.
@@ -265,6 +350,11 @@ impl State {
             let frame = entry.remove();
             self.deliver(frame);
         }
+        for edge in self.edges.values_mut() {
+            if let Some(pacer) = edge.pacer.as_mut() {
+                pacer.on_tick(now);
+            }
+        }
         let ids: Vec<u64> = self.sides.keys().copied().collect();
         for id in ids {
             self.watch_links(id, now);
@@ -292,7 +382,20 @@ impl State {
         };
         let len = frame.bytes.len().min(slot.bytes_mut().len());
         slot.bytes_mut()[..len].copy_from_slice(&frame.bytes[..len]);
+        let samples = side.core.stats().alpha_samples;
         side.core.on_receive(slot.freeze(), len, at);
+        // A data channel's new α sample goes to its edge's log and pacer.
+        let stats = side.core.stats();
+        if stats.alpha_samples != samples
+            && !is_bulk(side.key.purpose)
+            && let Some(alpha) = stats.alpha_last
+            && let Some(edge) = self.edges.get_mut(&side.out_link)
+        {
+            edge.log.push((at, alpha));
+            if let Some(pacer) = edge.pacer.as_mut() {
+                pacer.on_alpha(alpha, at);
+            }
+        }
         // Its answers, credits above all, leave when it lands.
         self.flush(frame.to, at);
     }
@@ -635,6 +738,23 @@ impl ChannelBackend for SimChannel {
         let (Some(ext), Some(payload)) = (ext, payload) else {
             return Err(SendError::Invalid);
         };
+        let side = state
+            .sides
+            .get(&self.side)
+            .expect("a channel's side lives with the net");
+        // A bulk send on a paced edge waits for the pacer, once the credit lets it go.
+        if is_bulk(side.key.purpose) && side.core.credit() > 0 {
+            let bytes = (HEADER_LEN + ext.len() + payload.len()) as u64;
+            let link = side.out_link;
+            if let Some(pacer) = state
+                .edges
+                .get_mut(&link)
+                .and_then(|edge| edge.pacer.as_mut())
+                && pacer.try_send(bytes, now).is_err()
+            {
+                return Err(SendError::WouldBlock);
+            }
+        }
         let side = state
             .sides
             .get_mut(&self.side)

@@ -1,0 +1,306 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! What the CLI's integration tests share: running the built binary, a daemon served in-process,
+//! and a fake daemon that answers with scripted responses.
+
+#![allow(dead_code, reason = "each test binary uses a different part")]
+
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use syntropy_api::config::{ApiSection, TlsSource};
+use syntropy_api::routes::{ApiState, NodeStatus};
+use syntropy_api::server::Server;
+use syntropy_api::version::{Build, ProtocolMajors, SupportTier, VersionInfo};
+use syntropy_core::build::{BuildId, BuildProfile, TargetTriple};
+use syntropy_core::ids::Blake3;
+use syntropy_ipc::cmd::Endpoint;
+
+/// The `syntropy` binary under test.
+pub const BIN: &str = env!("CARGO_BIN_EXE_syntropy");
+
+/// The longest any one command may run before the test calls it hung.
+///
+/// Every command these tests run is a short-lived process. With its files on a tmpfs
+/// ([`temp`]), the slowest `config set` of 63 runs at load averages up to 42 took 782 ms, and
+/// `config show --resolved` at most 62 ms over 204 runs at load averages up to 86 [measured,
+/// 2026-10-28: a debug build of base b6c02c7a, on a shared WSL2 host, Linux x86_64, under other
+/// agents' builds]. 20 s is about 25 times the slowest: it fails only a command that is stuck,
+/// and a real hang still fails well inside CI's job timeout.
+pub const HANG: Duration = Duration::from_secs(20);
+
+/// A command for the binary with `args`, stdin closed, and no variable that could reach a real
+/// daemon on this machine: `SYNTROPY_HOST` and `SYNTROPY_API_KEY` removed.
+pub fn syntropy(args: &[&str]) -> Command {
+    let mut command = Command::new(BIN);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_remove("SYNTROPY_HOST")
+        .env_remove("SYNTROPY_API_KEY")
+        .env_remove("NO_COLOR");
+    command
+}
+
+/// A fresh, empty directory for one test, named by `tag` and this process.
+///
+/// On Linux it is under `/dev/shm`, a tmpfs, when that is usable, and otherwise under the system's
+/// temporary directory. The CLI's writes fsync the file and its directory
+/// (`syntropy_config::write::write_atomic`). On a disk-backed `/tmp`, an fsync waits for the file
+/// system's journal, which a busy host's other writers fill. Over 204 runs on a shared WSL2 host
+/// at load averages up to 86, a 4 KiB write and fsync on ext4 took p99 6.6 s and at most 18.6 s,
+/// and `config set` at most 17.8 s [measured, 2026-10-28: a debug build of base b6c02c7a, on a
+/// shared WSL2 host, Linux x86_64, under other agents' builds]. Several such writes made one test
+/// command overrun [`HANG`]. On tmpfs an fsync has no disk to wait for. The writes these tests
+/// check are the same on either file system: the content, the modes, the rename and the refusal
+/// of a symbolic link.
+///
+/// The directory is removed when the [`TempDir`] drops, so a test that fails still leaves no
+/// directory behind, which on a tmpfs would hold memory until the host restarts.
+pub fn temp(tag: &str) -> TempDir {
+    let name = format!("syntropy-cli-{tag}-{}", std::process::id());
+    for root in scratch_roots() {
+        let dir = root.join(&name);
+        let _ = std::fs::remove_dir_all(&dir);
+        if std::fs::create_dir_all(&dir).is_ok() {
+            return TempDir(dir);
+        }
+    }
+    panic!("no directory for the test's files could be made");
+}
+
+/// A test's directory from [`temp`], removed with everything in it when this drops, a panic
+/// included.
+pub struct TempDir(PathBuf);
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Where [`temp`] puts its directories, in order of preference.
+fn scratch_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if cfg!(target_os = "linux") {
+        roots.push(PathBuf::from("/dev/shm"));
+    }
+    roots.push(std::env::temp_dir());
+    roots
+}
+
+/// [`syntropy`] isolated from this machine's configuration: every `SYNTROPY_*` variable of the
+/// test's own environment removed, the home, `%LOCALAPPDATA%`, `%PROGRAMDATA%`, `TMPDIR` and XDG
+/// runtime locations moved into `home`, the other XDG locations unset, and no `EDITOR` or
+/// `VISUAL`, so no command reads or writes this machine's own files or starts its editor.
+pub fn isolated(args: &[&str], home: &Path) -> Command {
+    let mut command = syntropy(args);
+    isolate(&mut command, home);
+    command
+}
+
+/// [`isolated`]'s environment, for any command that runs the binary, such as `script` running it
+/// on a pseudo-terminal.
+pub fn isolate(command: &mut Command, home: &Path) {
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("SYNTROPY_") {
+            command.env_remove(name);
+        }
+    }
+    for var in [
+        "HOME",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "TMPDIR",
+        "XDG_RUNTIME_DIR",
+    ] {
+        command.env(var, home.join(var.to_ascii_lowercase()));
+    }
+    for var in [
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_DATA_HOME",
+        "EDITOR",
+        "VISUAL",
+    ] {
+        command.env_remove(var);
+    }
+}
+
+/// Runs `command` to completion, failing the test if it runs past [`HANG`].
+pub fn finish(command: &mut Command) -> Output {
+    let mut child = command.spawn().expect("spawn syntropy");
+    let start = Instant::now();
+    loop {
+        if child.try_wait().expect("wait").is_some() {
+            return child.wait_with_output().expect("read the output");
+        }
+        if start.elapsed() > HANG {
+            let _ = child.kill();
+            let output = child.wait_with_output().expect("read the output");
+            panic!(
+                "{command:?} ran past {HANG:?}; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The exit code of `output`.
+pub fn code(output: &Output) -> i32 {
+    output.status.code().expect("an exit code, not a signal")
+}
+
+/// A loopback address nothing listens on.
+pub fn closed_addr() -> SocketAddr {
+    let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+    socket.local_addr().unwrap()
+}
+
+/// The version a test daemon reports.
+pub fn test_version() -> VersionInfo {
+    VersionInfo {
+        build: Build {
+            build_id: BuildId {
+                version: "0.0.0-test".parse().unwrap(),
+                commit: [0x1c; 20],
+                profile: BuildProfile::Release,
+                target: TargetTriple("x86_64-unknown-linux-gnu".into()),
+                toolchain: Blake3([0x70; 32]),
+            },
+            features: Vec::new(),
+            id: [0x5a; 32],
+        },
+        protocols: ProtocolMajors::current(),
+        support_tier: SupportTier::Tier2,
+    }
+}
+
+struct Solo;
+
+impl NodeStatus for Solo {
+    fn has_state_replica(&self) -> bool {
+        true
+    }
+}
+
+/// A daemon's API, served in-process on loopback and, when `local` is given, its local socket.
+pub struct Daemon {
+    /// The loopback address.
+    pub addr: SocketAddr,
+    runtime: Option<tokio::runtime::Runtime>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Daemon {
+    /// Serves the API.
+    pub fn start(local: Option<&Endpoint>) -> Daemon {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let api = ApiSection {
+            bind: vec!["127.0.0.1:0".parse().unwrap()],
+            tls: TlsSource::Auto,
+            allow_plaintext_lan: false,
+            local_socket: local.is_some(),
+        };
+        let state = ApiState {
+            version: test_version(),
+            node: Arc::new(Solo),
+        };
+        let server = {
+            let _context = runtime.enter();
+            Server::bind(&api, local, false, state).expect("serve the API")
+        };
+        let addr = server.local_addrs()[0];
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        runtime.spawn(server.serve(async {
+            let _ = stopped.await;
+        }));
+        Daemon {
+            addr,
+            runtime: Some(runtime),
+            stop: Some(stop),
+        }
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_timeout(Duration::from_secs(5));
+        }
+    }
+}
+
+/// A fake daemon on loopback that answers every request with `status` and `body`, and records
+/// each request's head.
+pub struct Fake {
+    /// Its address.
+    pub addr: SocketAddr,
+    /// The request heads it received.
+    pub heads: std::sync::mpsc::Receiver<String>,
+}
+
+impl Fake {
+    /// Answers `answers` connections, one HTTP/1.1 response each, then stops.
+    pub fn start(status: u16, body: String, answers: usize) -> Fake {
+        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = socket.local_addr().unwrap();
+        let (sent, heads) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..answers {
+                let Ok((mut stream, _)) = socket.accept() else {
+                    return;
+                };
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                // A probe that only connects sends nothing.
+                if head.is_empty() {
+                    continue;
+                }
+                let _ = sent.send(String::from_utf8_lossy(&head).into_owned());
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: \
+                     {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        Fake { addr, heads }
+    }
+}

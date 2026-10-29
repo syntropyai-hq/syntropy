@@ -150,6 +150,12 @@ v1 serves text only. Adding an encoder stage, image-token prefill and per-image 
 | `TensorClass::Encoder { tower }` (RFC-0001 §5.3, proposed) and `ClassSel::Encoder` | the census class for tower and projector tensors: dense, read once per encoded input | family classification rules already recognise tower tensors by name and tag them with their tower (§4.3), but classify them `Ignored` in v1 |
 | API hooks | image content parts and a per-model input-modality list (RFC-0050) | text-only; image parts are rejected as today |
 
+*Note 2026-10-29 (as built, part of COMP-E15-T11):*
+- **Rule 6.** `ir::validate` refuses a graph with an encoder program, an `EmbedInject` node or an `Encoder` node: `Rule::ReservedHooks`, with the violations `EncoderProgram`, `EmbedInject` and `EncoderNode`. Rules 1 to 5 still check encoder programs like any other program.
+- **`EmbedInject`'s semantics.** `kernels::reference::embed_inject` writes encoder row i over the embedding row at the i-th placeholder position, and every other row keeps its bits. The positions must be in range and distinct. They may come in any order, since a family may encode its inputs in another order than they appear. The function is generic over the element type and only moves values, so it gives the same result in both reference modes, F32 and F64. The positions are an argument; how the request supplies them is the multimodal family's to define.
+- **The census class.** `TensorClass::Encoder { tower }` is already in `manifest`'s census, and `ClassSel::Encoder` in `graph`'s classification rules.
+- **Still to come.** The task's last criterion has not landed: each v1 family's classification rules tagging tower tensors `Ignored`, checked on recorded headers of its multimodal checkpoints. It waits on the families' own tasks and the fixture store.
+
 **The first multimodal family is `qwen_hybrid`, with image input**, in a release after 1.0. Its Qwen3.5-class checkpoints ship a vision tower, it is an M1 family with small checkpoints, and its Apache-2.0 licence lets the fixtures and the oracle's golden data be public (RFC-0060 §12.3). It is the target that ADR-0502's revisit trigger ("multimodal model families enter the v1 list") points at. Choosing a different family later is an ADR change, not a type change.
 
 ### 3. The block library
@@ -242,6 +248,15 @@ pub enum Classification {
 
 `classify` matches the name, then checks the shape against the hyperparameters: a `Q` projection must be `[n_heads·d_head, hidden]` in source order, and a stacked expert tensor must have `n_experts` in its outermost dimension. A name that matches with the wrong shape is `Unknown`, not a guess. RFC-0041 §3 turns the result into records and groups.
 
+*Note 2026-10-23 (COMP-E16-T01, as built):* `syntropy_graph::classify` holds the engine. The choices this section leaves open:
+
+- `ClassRule` has a `shape` field, one `ShapeDim` per dimension (`Const`, `Hp(name)`, `Mul(a, b)`, `Any`), written in the source's order: ggml's `ne`, innermost first, for GGUF, and outermost first for safetensors. Each `RuleTable` states its order.
+- Patterns use `{L}` (a decoder layer, or for an MTP rule the module's layer `n_layers + n`), `{E}` (a routed expert, bounded by the `n_experts` hyperparameter) and `{N}` (any other index, such as a tower layer, matched but not read). Each matches a decimal number with no leading zero. `Matcher::new` refuses a pattern that could be read two ways, and placeholders that do not fit the rule's block and class.
+- The first rule whose pattern matches decides. A failed shape, layer or expert check gives `Unknown`, and no later rule is tried.
+- `Classification::Classified` also carries the rule's `BlockSel`, because the census groups norms with their block (RFC-0041 §3.1). For a stacked expert tensor, `class` is the first slice's class, `Expert { layer, id: 0 }`, and `stacked_experts` gives the count.
+- `ClassSel` has one more variant, `Ignored { reason }`, for training-only tensors.
+- `classify_tensors` returns a `TensorPlan` built from names and shapes alone. It lists the tensors to fetch, the ignored tensors with their reasons, and the unknown ones. A fetch reads only `TensorPlan::fetch`.
+
 #### 4.2 Special cases
 
 - **Tied embeddings**: no head tensor present, or the family's flag says tied. The census emits one record and two groups (`RowLookup` at the head, `Head` at the tail) linked by `shared_with` (RFC-0041 §3.1).
@@ -286,6 +301,22 @@ pub trait Family: Send + Sync {
 `MetaView` is a typed view over GGUF key-values or `config.json` plus `generation_config.json`, with the same accessors for both, so `parse_hparams` is written once per family. Families are compiled in and registered statically. There are no plugins.
 
 **Family tags are frozen.** `name()` is hashed into `ModelId` (RFC-0041 §1). A tag is never renamed and never reused for a different module; a module that changes what it computes for the same files keeps its tag only if the change is a bug fix certified by the harness, and otherwise registers a new tag. The registry test fails if a tag in the checked-in tag list disappears or is reassigned.
+
+*Note 2026-10-23 (COMP-E16-T01, as built):* `syntropy_graph::families` holds the trait, the registry and the list.
+
+- **The frozen list.** `FROZEN_TAGS` lists §5.5's ten module names in table order. Each tag is bound to the module path it registers from (`syntropy_graph::families::<tag>`). The tags are fixed before COMP-E10-T06 hashes any of them into `ModelId`. A listed tag may have no registered module yet.
+- **The checks.** `Registry::check` fails in five cases:
+  - a registered tag is unlisted;
+  - a registered tag is bound to another module;
+  - two registrations share a tag;
+  - two families accept one architecture name;
+  - the list repeats a tag or a module.
+
+  `crates/graph/tests/family_tags.rs` pins the list, so the test fails if an entry is removed, renamed, reordered or rebound.
+- **The trait.** The trait has the methods whose types exist: `name`, `accepts`, `version`, `parse_hparams`, `classify` and `required_ops`. The others are added with the tasks that add their types.
+- **`MetaView`.** `MetaView` is an enum over the GGUF reader's metadata and `syntropy_manifest::config::HfConfig`. A family names each value once as a `Key`, with its GGUF key (`{arch}` reads as `general.architecture`) and its `config.json` or `generation_config.json` path.
+- **Errors.** `UnknownArchitecture` (1) and `HyperParamInvalid` (3) are `FamilyError` variants, and `code()` gives the number. A wrong type, a missing required key and a value outside the family's range are all code 3. `core` has no `Domain::Graph` yet.
+- **`HyperParams`.** `HyperParams` lives in `syntropy_manifest::hparams`, with the shared fields and `extra`. `LayerSpec` is added with the blocks.
 
 #### 5.2 Hyperparameters
 
@@ -568,6 +599,8 @@ pub struct FamilyCert { pub family: ArchFamily, pub code: Blake3, pub quants: Sm
 | `models.experimental_family` | `false` | allow one family without a `FamilyCert` on one device (§9.4) |
 | `models.<name>.chat_template` | unset | template override (RFC-0054 §5.3) |
 | `models.<name>.kv_dtype` | family default | force BF16 KV where F16 overflows (RFC-0042 §4.2); changes `KvFormula::dtype` and therefore prefix and session keys |
+
+*Note 2026-10-28 (COMP-E13-T06):* RFC-0054 §5.1 keeps per-model settings out of `models.*`, so `models.<name>.kv_dtype` is the instance key `kv_dtype` of a `[policy."<selector>"]` table (RFC-0054 §5.4), as `models.<name>.chat_template` is `chat_template` there. It takes `f16`, `bf16` or `f32`; unset, the family's reference dtype stands. It replaces only the source's default dtype in `KvFormula::dtype` (`KvDTypeRule::resolve`). It never replaces a family's requirement, for every layer or per layer, or a declared FP8 cache. It never narrows the default, where F16 over a BF16 default counts as narrowing; BF16 over F16, this key's sanctioned use, does not (RFC-0042 §4.2, note of 2026-10-28). Each of those is refused with an error that names `approximate.kv_lossy` where it applies. The row above keeps its old name for the record.
 
 Codes are `(Domain::Graph, n)`:
 

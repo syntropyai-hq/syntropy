@@ -35,6 +35,12 @@ Commands:
   third-party [--root <dir>]
                           check that third_party/licences.toml lists every vendored file
                           (ADR-0018 §3, RFC-0062 §12.2); `lint` runs it
+  workflows [--root <dir>]
+                          check the workflows and composite actions under .github against
+                          RFC-0062 §12.4's security rules; `lint` runs it
+  actionlint [--root <dir>]
+                          run the pinned actionlint on the workflows under .github/workflows
+                          (RFC-0062 §12.4); `lint` runs it
   notices [--manifest-path <path>] [--out <file>]
                           generate THIRD-PARTY-NOTICES for the release build (ADR-0018 §6) and
                           write it to <file>; without --out, only check it can be generated,
@@ -44,6 +50,12 @@ Commands:
                           (RFC-0062 §12.3); with --ref, the list and the file come from <rev>
   instructions --list [--ref <rev>]
                           print the files agents load as instructions or configuration
+  fixtures fetch|import|verify [--manifest <file>] --store <dir> [options]
+                          the fixture store (RFC-0060 §12.3): `fetch` [--name <fixture>]
+                          --cache <dir> --cap <bytes> copies verified objects into a capped
+                          cache; `import` --name <fixture> --file <file> --licence-file <file>
+                          publishes a file and fills its `blake3` and `bytes`; `verify`
+                          [--name <fixture>] checks the store against the manifest
   help                    print this message
 
 An option is `--name <value>` or `--name=<value>`, given at most once.
@@ -60,8 +72,11 @@ const COMMANDS: &[&str] = &[
     "deny",
     "spdx",
     "third-party",
+    "workflows",
+    "actionlint",
     "notices",
     "instructions",
+    "fixtures",
     "help",
 ];
 
@@ -99,6 +114,14 @@ pub enum Command<'r> {
     ThirdParty {
         root: Option<String>,
     },
+    /// `workflows`: the workflow security lint under `root`, else under this checkout.
+    Workflows {
+        root: Option<String>,
+    },
+    /// `actionlint`: the pinned actionlint on the workflows under `root`, else this checkout's.
+    Actionlint {
+        root: Option<String>,
+    },
     /// `notices`: generate `THIRD-PARTY-NOTICES`, writing it to `out` when given.
     Notices {
         manifest_path: Option<String>,
@@ -109,6 +132,11 @@ pub enum Command<'r> {
     Instructions {
         show: Option<String>,
         rev: Option<String>,
+    },
+    /// `fixtures`: the fixture store client (QUAL-E7-T05).
+    Fixtures {
+        action: crate::fixtures::Action,
+        args: crate::fixtures::Args,
     },
 }
 
@@ -326,6 +354,16 @@ pub fn parse<'r>(
                 root: o.value("--root"),
             })
         }),
+        "workflows" => parse_options(rest, &["--root"], &[]).map(|o| {
+            o.or_help(|o| Command::Workflows {
+                root: o.value("--root"),
+            })
+        }),
+        "actionlint" => parse_options(rest, &["--root"], &[]).map(|o| {
+            o.or_help(|o| Command::Actionlint {
+                root: o.value("--root"),
+            })
+        }),
         "notices" => parse_options(rest, &["--manifest-path", "--out"], &[]).map(|o| {
             o.or_help(|o| Command::Notices {
                 manifest_path: o.value("--manifest-path"),
@@ -349,9 +387,59 @@ pub fn parse<'r>(
                 rev: o.value("--ref"),
             })
         }
+        "fixtures" => parse_fixtures(rest),
         other if other.starts_with('-') => Err(UsageError::UnknownOption(other.to_owned())),
         other => Err(UsageError::UnknownCommand(other.to_owned())),
     }
+}
+
+/// `fixtures <fetch|import|verify> [options]`.
+fn parse_fixtures<'r>(args: &[String]) -> Result<Command<'r>, UsageError> {
+    use crate::fixtures::{Action, Args};
+    let Some((word, rest)) = args.split_first() else {
+        return Err(UsageError::OneOf {
+            command: "fixtures",
+            options: &["fetch", "import", "verify"],
+        });
+    };
+    if matches!(word.as_str(), "-h" | "--help") {
+        no_more(rest)?;
+        return Ok(Command::Help);
+    }
+    let Some(action) = Action::parse(word) else {
+        return Err(UsageError::OneOf {
+            command: "fixtures",
+            options: &["fetch", "import", "verify"],
+        });
+    };
+    let o = parse_options(
+        rest,
+        &[
+            "--manifest",
+            "--store",
+            "--cache",
+            "--cap",
+            "--name",
+            "--file",
+            "--licence-file",
+        ],
+        &[],
+    )?;
+    if o.help {
+        return Ok(Command::Help);
+    }
+    Ok(Command::Fixtures {
+        action,
+        args: Args {
+            manifest: o.value("--manifest"),
+            store: o.value("--store"),
+            cache: o.value("--cache"),
+            cap: o.value("--cap"),
+            name: o.value("--name"),
+            file: o.value("--file"),
+            licence_file: o.value("--licence-file"),
+        },
+    })
 }
 
 /// `ci <job> [options]`, `ci --list`, `test <suite> [options]` and `test --list`.
@@ -844,6 +932,33 @@ mod tests {
     }
 
     #[test]
+    fn fixtures_takes_a_subcommand_and_its_options() {
+        use crate::fixtures::{Action, Args};
+        assert_eq!(
+            parse_real("fixtures verify --store s --name n"),
+            Ok(Command::Fixtures {
+                action: Action::Verify,
+                args: Args {
+                    store: Some("s".into()),
+                    name: Some("n".into()),
+                    ..Args::default()
+                },
+            })
+        );
+        let one_of = Err(UsageError::OneOf {
+            command: "fixtures",
+            options: &["fetch", "import", "verify"],
+        });
+        assert_eq!(parse_real("fixtures"), one_of);
+        assert_eq!(parse_real("fixtures frob"), one_of);
+        assert_eq!(parse_real("fixtures --help"), Ok(Command::Help));
+        assert_eq!(
+            parse_real("fixtures fetch --frob"),
+            Err(UsageError::UnknownOption("--frob".into()))
+        );
+    }
+
+    #[test]
     fn no_command_and_unknown_command() {
         assert_eq!(parse_real(""), Err(UsageError::NoCommand));
         assert_eq!(
@@ -853,7 +968,7 @@ mod tests {
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
             "unknown command `frob`; valid commands: ci, test, check-deps, build, deny, spdx, \
-             third-party, notices, instructions, help"
+             third-party, workflows, actionlint, notices, instructions, fixtures, help"
         );
         assert_eq!(
             parse_real("--frob"),
@@ -1201,6 +1316,20 @@ mod tests {
                 "third-party --root=x",
                 Command::ThirdParty {
                     root: Some("x".into()),
+                },
+            ),
+            ("workflows", Command::Workflows { root: None }),
+            (
+                "workflows --root fixtures/w",
+                Command::Workflows {
+                    root: Some("fixtures/w".into()),
+                },
+            ),
+            ("actionlint", Command::Actionlint { root: None }),
+            (
+                "actionlint --root=w",
+                Command::Actionlint {
+                    root: Some("w".into()),
                 },
             ),
             (

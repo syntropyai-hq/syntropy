@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The `[api]` section's listener keys (RFC-0054 §5.2, RFC-0050 §11.1).
+//! The `[api]` section's listener keys (RFC-0054 §5.2, RFC-0050 §1.1 and §11.1).
 //!
 //! The section holds the keys the bind policy reads. The other `api.*` keys of RFC-0054 §5.2
 //! join it with the tasks that use them.
@@ -13,7 +13,8 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use syntropy_config::{ConfigSection, HoldsSecret};
 
-/// The HTTP API's listeners (RFC-0050 §11.1). Node scope; every key reloads hot.
+/// The HTTP API's listeners (RFC-0050 §1.1, §11.1). Node scope. Every key reloads hot except
+/// `api.local_socket`, which takes a daemon restart.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, ConfigSection)]
 #[config(section = "api", scope = Node, owner = "RFC-0050")]
 pub struct ApiSection {
@@ -33,6 +34,12 @@ pub struct ApiSection {
     /// it as insecure for as long as it is set (RFC-0001 §12).
     #[config(reload = Hot, default = false)]
     pub allow_plaintext_lan: bool,
+    /// Serves the API on the local socket too: `<runtime dir>/api.sock` (mode 0600, in a 0700
+    /// directory), or the named pipe `\\.\pipe\syntropy-<user SID>-api` on Windows. The CLI
+    /// prefers it, and it needs no API key: the OS tells the daemon who connected (RFC-0050
+    /// §1.1).
+    #[config(reload = Node, default = true)]
+    pub local_socket: bool,
 }
 
 /// `api.tls`: where a non-loopback listener's certificate comes from (RFC-0050 §11.1). Loopback
