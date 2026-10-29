@@ -5,8 +5,8 @@
 //! Layer 6 in RFC-0001 §4.1, designed in RFC-0051 §1–§2. One binary runs the daemon, each
 //! runner and every client command (ADR-0015 decision 1). Built so far (PROD-E6-T01):
 //!
-//! - [`args`]: the command tree of RFC-0051 §2.1 and the hidden `__runner` and `__selftest`
-//!   modes;
+//! - [`args`]: the command tree of RFC-0051 §2.1 and the hidden `__runner`, `__header` and
+//!   `__selftest` modes;
 //! - [`client`]: the typed native-API client, over the local socket, then loopback HTTP, or the
 //!   remote daemon `SYNTROPY_HOST` names;
 //! - [`autostart`]: when a command may start a daemon, and how;
@@ -16,14 +16,16 @@
 //! - [`build_id`]: this binary's `BuildId`, which `build.rs` builds, and its 32-byte build ID
 //!   (QUAL-E16-T03);
 //! - [`runner_mode`]: `__runner`, the process the daemon spawns for each model instance
-//!   (DIST-E1-T04).
+//!   (DIST-E1-T04);
+//! - [`header_child`]: `__header`, the confined child that validates a newly added model's
+//!   header (RFC-0034 §10.4; DIST-E17-T16).
 //!
 //! Every command of the tree is declared. `-V`/`--version` prints this binary's build with no
 //! daemon; with `--json` it is the native API's `Build`. `version` is served: its `--json` output
 //! is the native API's `VersionInfo`, unchanged. `config show --resolved`, `config check` and
 //! `config path` are served without a daemon, over the binary's section registry ([`config`]). Each other command
 //! fails with "not available in this build yet" (exit 5) until its task builds it. `__runner` serves
-//! the command channel the daemon spawned it with. `__selftest` parses its arguments and stops
+//! the command channel the daemon spawned it with. `__header` confines itself, then validates one file's header and writes it to stdout. `__selftest` parses its arguments and stops
 //! there, because the self-test is not built.
 //!
 //! Dispatch reads no configuration, opens no GPU or network library and builds no async runtime

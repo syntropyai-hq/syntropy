@@ -12,9 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use syntropy_core::{Clock, MonoTime, Nanos};
-use syntropy_daemon::header_child::{
-    HeaderChildError, HeaderKind, HeaderLimits, ParsedHeader, parse_in_child,
-};
+use syntropy_daemon::header_child::{HeaderChildError, HeaderKind, HeaderLimits, ParsedHeader};
 use syntropy_manifest::gguf::{GgufHeader, Limits as GgufLimits};
 use syntropy_manifest::range::FileSource;
 use syntropy_manifest::range::replay::Recording;
@@ -23,6 +21,31 @@ use syntropy_manifest::safetensors::read_header_default;
 /// The `syntropy` binary cargo built for this test.
 fn binary() -> &'static Path {
     Path::new(env!("CARGO_BIN_EXE_syntropy"))
+}
+
+/// The daemon's `parse_in_child`, run again while the program is busy. A stand-in script this
+/// test just wrote can be refused with `ETXTBSY` for a moment: another test thread may have
+/// forked while the script's write descriptor was open, and that child holds a copy until it
+/// execs.
+fn parse_in_child(
+    program: &Path,
+    kind: HeaderKind,
+    path: &Path,
+    limits: &HeaderLimits,
+    clock: &dyn Clock,
+) -> Result<ParsedHeader, HeaderChildError> {
+    let mut tries = 0;
+    loop {
+        match syntropy_daemon::header_child::parse_in_child(program, kind, path, limits, clock) {
+            Err(HeaderChildError::Io(e))
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 =>
+            {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            other => return other,
+        }
+    }
 }
 
 /// A fresh directory of this test's own.
@@ -124,7 +147,7 @@ fn a_bad_header_is_invalid() {
         &path,
         &HeaderLimits::default(),
     ));
-    assert!(reason.contains("exited with code 1"), "{reason}");
+    assert!(reason.contains("exited with code 8"), "{reason}");
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -205,13 +228,16 @@ fn a_confined_child_cannot_connect() {
             "30",
             "--open-files",
             "32",
+            "--max-header-bytes",
+            "268435456",
         ])
         .args(["--check-network", &addr.to_string()])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
-    assert!(stderr.contains("refused"), "{stderr}");
+    // The seccomp filter's EACCES on socket(), not some other failure.
+    assert!(stderr.contains("PermissionDenied"), "{stderr}");
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -231,11 +257,89 @@ fn a_header_over_the_memory_limit_is_refused() {
     let big = safetensors(&big_dir, 96 << 20);
     let reason = invalid_reason(parse(HeaderKind::Safetensors, &big, &limits));
     assert!(
-        reason.contains("signal") || reason.contains("exited"),
+        reason.contains("signal 6") || reason.contains("memory allocation"),
         "{reason}"
     );
     // The same header parses with room for it.
     assert!(parse(HeaderKind::Safetensors, &big, &HeaderLimits::default()).is_ok());
     fs::remove_dir_all(&dir).ok();
     fs::remove_dir_all(&big_dir).ok();
+}
+
+/// A stand-in child that writes `reply` to stdout and exits with `code`.
+#[cfg(unix)]
+fn replying(dir: &Path, reply: &[u8], code: i32) -> PathBuf {
+    let file = dir.join("reply.bin");
+    fs::write(&file, reply).unwrap();
+    script(dir, &format!("cat '{}'\nexit {code}", file.display()))
+}
+
+/// The daemon checks what a child sends: no length, a length that is not the file's, and a
+/// header cut short are refused, and a confinement failure is the platform's, not the file's.
+#[cfg(unix)]
+#[test]
+fn a_childs_reply_is_checked() {
+    let dir = scratch("reply");
+    let path = gguf(&dir);
+    let file = fs::read(&path).unwrap();
+    let len = file.len() as u64;
+    let header = GgufHeader::read(FileSource::open(&path).unwrap(), &GgufLimits::DEFAULT)
+        .unwrap()
+        .header_bytes as usize;
+    let run = |child: &Path| {
+        parse_in_child(
+            child,
+            HeaderKind::Gguf,
+            &path,
+            &HeaderLimits::default(),
+            &wall(),
+        )
+    };
+    // The true reply passes, through a stand-in child too.
+    let mut good = len.to_le_bytes().to_vec();
+    good.extend_from_slice(&file[..header]);
+    assert!(run(&replying(&dir, &good, 0)).is_ok());
+    // Nothing at all.
+    let reason = invalid_reason(run(&replying(&dir, b"", 0)));
+    assert!(reason.contains("no length"), "{reason}");
+    // Another file's length: the file changed between the daemon's look and the child's read.
+    let mut other = (len + 1).to_le_bytes().to_vec();
+    other.extend_from_slice(&file[..header]);
+    let reason = invalid_reason(run(&replying(&dir, &other, 0)));
+    assert!(reason.contains("changed"), "{reason}");
+    // The header cut short: the daemon's reader would need bytes the child did not vet.
+    let mut short = len.to_le_bytes().to_vec();
+    short.extend_from_slice(&file[..header - 16]);
+    let reason = invalid_reason(run(&replying(&dir, &short, 0)));
+    assert!(!reason.is_empty());
+    // A child that could not confine itself.
+    match run(&script(&dir, "echo 'no seccomp here' >&2; exit 5")) {
+        Err(HeaderChildError::Confinement(m)) => assert!(m.contains("no seccomp"), "{m}"),
+        other => panic!("expected a confinement error, got {other:?}"),
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// The child runs with an empty environment: a variable of the daemon's does not reach it.
+#[cfg(unix)]
+#[test]
+fn the_child_sees_no_environment() {
+    let dir = scratch("env");
+    let path = safetensors(&dir, 16);
+    // The stand-in child prints its environment as its reason. `/bin/sh` sets `PWD` itself;
+    // nothing of the test's environment, such as `HOME` or `PATH`, may be there.
+    assert!(std::env::var_os("HOME").is_some() && std::env::var_os("PATH").is_some());
+    let child = script(&dir, "env >&2; exit 8");
+    let reason = invalid_reason(parse_in_child(
+        &child,
+        HeaderKind::Safetensors,
+        &path,
+        &HeaderLimits::default(),
+        &wall(),
+    ));
+    assert!(
+        !reason.contains("HOME=") && !reason.contains("PATH="),
+        "{reason}"
+    );
+    fs::remove_dir_all(&dir).ok();
 }

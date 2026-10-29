@@ -12,8 +12,9 @@
 //! (RFC-0001 §3.5; [`report`]), and the runner supervisor: its restart policy as a protocol core
 //! ([`supervisor`]) and the shell that feeds it a runner's channel and counters
 //! ([`runner_link`]; RFC-0001 §3.4, RFC-0033 §8.2), and the in-process runner host
-//! ([`runner_host`]; RFC-0001 §3.1, ADR-0015 item 7), and the diagnostic bundle with crash
-//! records in the state directory (RFC-0053 §6; [`bundle`], [`crash`]).
+//! ([`runner_host`]; RFC-0001 §3.1, ADR-0015 item 7), the diagnostic bundle with crash records in
+//! the state directory (RFC-0053 §6; [`bundle`], [`crash`]), and the confined child that parses a
+//! newly added model's header ([`header_child`]; RFC-0034 §10.4).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

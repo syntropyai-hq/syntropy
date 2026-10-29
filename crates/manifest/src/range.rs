@@ -263,6 +263,55 @@ fn read_exact_at(file: &File, offset: u64, buf: &mut [u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// The first bytes of a file of `len` bytes, held in memory, as a source: reads within them get
+/// the bytes, reads past them get zeros. It re-validates a header from the bytes a header child
+/// sent (RFC-0034 §10.4; DIST-E17-T16): the GGUF reader reads ahead in large steps before it knows
+/// where the header ends, so a caller must check that the header ends within the held bytes.
+#[derive(Clone, Debug)]
+pub struct Prefix {
+    bytes: Vec<u8>,
+    len: u64,
+}
+
+impl Prefix {
+    /// `bytes`, the start of a file of `len` bytes.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>, len: u64) -> Prefix {
+        Prefix { bytes, len }
+    }
+
+    /// How many bytes it holds.
+    #[must_use]
+    pub fn held(&self) -> u64 {
+        len_u64(&self.bytes)
+    }
+
+    /// The bytes it holds.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl RangeSource for Prefix {
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), RangeError> {
+        check_bounds(offset, len_u64(buf), self.len)?;
+        buf.fill(0);
+        if let Some(have) = usize::try_from(offset)
+            .ok()
+            .and_then(|o| self.bytes.get(o..))
+        {
+            let n = have.len().min(buf.len());
+            buf[..n].copy_from_slice(&have[..n]);
+        }
+        Ok(())
+    }
+}
+
 /// Merges `ranges` into as few requests as possible: sorted by start, a range joins the
 /// request before it when it starts at most `max_gap` bytes after that request's end and the
 /// merged request stays at most `max_len` bytes long. A range that overlaps a request it cannot

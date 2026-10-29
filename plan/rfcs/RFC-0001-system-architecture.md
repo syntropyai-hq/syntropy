@@ -3189,3 +3189,13 @@ DIST-E1-T17 builds probe mode (§3.1).
 | `RunnerMsg` gains `ProbeResult { profile: CapabilityProfile }`, and `ipc_protocol` goes from 5.0 to 6.0 | §3.5 (the row); §3.1 (dated note) | `CapabilityProfile` exists in `core` (PLC-E1-T17); a 5.x daemon cannot decode the new message, so the major moves, as for 5.0 |
 
 Taken under the maintainers' standing instruction, for the maintainers to confirm.
+
+### 18.53 The header child is a mode of the binary (2026-10-29)
+
+DIST-E17-T16 builds RFC-0034 §10.4's child that parses a newly added model's header.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A fourth process mode, `syntropy __header`, parses one file's header confined, and `daemon::header_child::parse_in_child` spawns it | §3.1 (the Header row); RFC-0034 §10.4 (dated note) | ADR-0015 decision 1 has one binary run every role, so the child is a hidden mode, as `__runner` is. It needs no shared-memory region and no plan. Proposed, for the maintainers to confirm |
+| The child returns the file's length and the header's bytes on its stdout, not over an IPC channel, and the daemon re-parses those bytes | RFC-0034 §10.4 (dated note) | the child sends one reply and exits, so a pipe is enough; re-parsing the vetted bytes in the daemon needs no new `ipc` message. Proposed, for the maintainers to confirm |
+| On Linux the child's network ban is a seccomp filter at M1, and the macOS and Windows bans stay at M4 with DIST-E17-T08 | RFC-0034 §10.4 (dated note); DIST-E17-T16 and DIST-E17-T08's criteria | accepted by the maintainers on 2026-10-29. A network namespace needs a privilege Ubuntu 24.04 does not give unprivileged processes by default |

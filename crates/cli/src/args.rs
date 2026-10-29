@@ -155,15 +155,16 @@ pub enum Command {
 }
 
 /// `syntropy __header --kind <kind> --path <file> --memory <bytes> --cpu-secs <n> --open-files
-/// <n>`: parse one file's header under the limits, write the validated header's bytes to
-/// stdout, and exit 0, or exit 1 naming why it was refused (DIST-E17-T16).
+/// <n> --max-header-bytes <bytes>`: parse one file's header under the limits, write the file's
+/// length and the validated header's bytes to stdout, and exit 0; exit 8 when the header is
+/// refused, or 5 when the child cannot be confined (DIST-E17-T16).
 #[derive(Clone, Debug, Args)]
 pub struct HeaderArgs {
     /// The file's format: `gguf` or `safetensors`
     #[arg(long, value_name = "KIND")]
     pub kind: HeaderKind,
     /// The file
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
     pub path: PathBuf,
     /// The memory limit, in bytes
     #[arg(long, value_name = "BYTES")]
@@ -174,6 +175,9 @@ pub struct HeaderArgs {
     /// The open-files limit
     #[arg(long, value_name = "N")]
     pub open_files: u64,
+    /// The longest header accepted, in bytes
+    #[arg(long, value_name = "BYTES")]
+    pub max_header_bytes: u64,
     /// Instead of parsing, try to connect to this address once confined, and exit 0 only if the
     /// attempt is refused: the check that the child has no network
     #[arg(long, value_name = "ADDR", hide = true)]
