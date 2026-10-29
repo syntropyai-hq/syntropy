@@ -514,6 +514,48 @@ fn a_table_matches_only_the_chunks_it_was_built_from() {
     assert!(!table.matches(&other));
 }
 
+/// The shape digest covers the file and the boundaries, and not the IDs or their evidence
+/// (COMP-E11-T02): an inventory's bitmap stays valid while IDs are committed.
+#[test]
+fn the_shape_digest_covers_boundaries_and_not_ids() {
+    let chunks = chunk_file(10 << 20, 300, [300, 5 << 20]).unwrap();
+    let table = ChunkTable::new(FileDigest([4; 32]), 10 << 20, &chunks);
+    let digest = table.shape_digest();
+
+    let mut committed = table.clone();
+    committed.records[1].committed = Some((Blake3([9; 32]), EvidenceForm::OriginHashes));
+    assert_eq!(
+        committed.shape_digest(),
+        digest,
+        "an ID is not in the shape"
+    );
+
+    let mut other_file = table.clone();
+    other_file.digest = FileDigest([5; 32]);
+    assert_ne!(other_file.shape_digest(), digest, "another file");
+    let other = chunk_file(10 << 20, 300, [300, 6 << 20]).unwrap();
+    let moved = ChunkTable::new(FileDigest([4; 32]), 10 << 20, &other);
+    assert_ne!(moved.shape_digest(), digest, "another boundary");
+    let mut flag = table.clone();
+    flag.records[0].chunk.header = false;
+    assert_ne!(flag.shape_digest(), digest, "another header flag");
+
+    // Pinned, so the inventory files written with it stay readable.
+    assert_eq!(
+        digest
+            .0
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        "5db6b36c1d4d05458806f57282040c2d012f8705c5a5d17f73b6901ca84550ea"
+    );
+}
+
+#[test]
+fn a_chunk_id_is_the_blake3_of_its_bytes() {
+    assert_eq!(chunk_id(b"abc").0, *blake3::hash(b"abc").as_bytes());
+}
+
 // ---- One pass, two hashes (COMP-E11-T14; RFC-0041 §4.3 step 2) ----------------------------------
 
 /// A file in memory that records every read it serves.

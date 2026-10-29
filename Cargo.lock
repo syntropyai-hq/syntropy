@@ -4220,6 +4220,7 @@ name = "syntropy-store"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "proptest",
  "serde",
  "serde_json",
  "syntropy-core",
