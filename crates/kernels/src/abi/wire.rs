@@ -55,6 +55,27 @@ fn ggml_of_code(code: u32) -> Option<GgmlBackend> {
     })
 }
 
+/// `s` as a `&'static str` the process keeps once: the first call with a given text allocates
+/// it, and every later call returns that same allocation. A loaded module's provider ID and its
+/// build's toolchain keys are `&'static str` in the types they fill (`ProviderId`,
+/// `ProviderBuild`), so the loader interns them instead of leaking a copy per load: the set grows
+/// only with the distinct texts, and every string in it stays reachable from a static, so a leak
+/// checker reports none.
+#[must_use]
+pub fn intern(s: &str) -> &'static str {
+    static INTERNED: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut set = INTERNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(&kept) = set.get(s) {
+        return kept;
+    }
+    let kept: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    set.insert(kept);
+    kept
+}
+
 /// The code of a [`Backend`]: 1 CUDA, 2 HIP, 3 Metal, 4 Vulkan, 5 CPU, 16 + n for ggml's
 /// backend n.
 #[must_use]
@@ -645,8 +666,8 @@ impl BuildWire {
         }
     }
 
-    /// The `ProviderBuild`. Its toolchain keys are `&'static str`, so this leaks each key; call
-    /// it once per provider, at load.
+    /// The `ProviderBuild`. Its toolchain keys are `&'static str`, interned ([`intern`]), so
+    /// each distinct key is allocated once for the process however many providers are loaded.
     #[must_use]
     pub fn into_build(self) -> ProviderBuild {
         ProviderBuild {
@@ -655,7 +676,7 @@ impl BuildWire {
             toolchain: self
                 .toolchain
                 .into_iter()
-                .map(|(k, v)| (&*Box::leak(k.into_boxed_str()), v))
+                .map(|(k, v)| (intern(&k), v))
                 .collect(),
             driver: self.driver,
         }

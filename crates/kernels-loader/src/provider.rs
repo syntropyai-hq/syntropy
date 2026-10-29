@@ -179,8 +179,9 @@ fn abi_error(message: String) -> ModuleError {
 impl ModuleProvider {
     /// Wraps `vt`, reading the provider's identity, build and op registry.
     ///
-    /// The provider ID is leaked (it is a `&'static str` in `ProviderId`), as are the toolchain
-    /// keys of its build: a few bytes per provider loaded, and a process loads each module once.
+    /// The provider ID is interned (it is a `&'static str` in `ProviderId`), as are the toolchain
+    /// keys of its build ([`syntropy_kernels::abi::wire::intern`]): each distinct text is
+    /// allocated once for the process, however many times a module is loaded.
     pub(crate) fn new(vt: SynProviderVtbl, lib: Arc<RawLibrary>) -> Result<Self, ModuleError> {
         if vt.id.is_null() {
             return Err(abi_error("a provider table has no ID".into()));
@@ -189,7 +190,7 @@ impl ModuleProvider {
         let id = unsafe { CStr::from_ptr(vt.id) }
             .to_string_lossy()
             .into_owned();
-        let id = ProviderId(Box::leak(id.into_boxed_str()));
+        let id = ProviderId(syntropy_kernels::abi::wire::intern(&id));
         let backend = backend_of_code(vt.backend).ok_or_else(|| {
             abi_error(format!(
                 "provider `{}` has backend code {}",
