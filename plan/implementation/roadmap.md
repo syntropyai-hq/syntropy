@@ -184,7 +184,7 @@ Success criteria first required at this exit: none.
 | 8 | DIST-E1-T15 | Runner lifecycle types in `core` and their IPC messages (split from DIST-E1-T03) |
 | 9 | DIST-E1-T05 | Runner lifecycle machine as a pure state machine… |
 | 10 | DIST-E1-T04 | Runner spawn by re-executing `current_exe()` with `__runner --ipc <handle>`, with handle inheritance; a daemon… |
-| 11 | DIST-E1-T17 | Probe mode, `syntropy __runner --probe --ipc <handle>` (split from DIST-E1-T04, whose `ProbeResult` needs… |
+| 11 | DIST-E1-T17 | Probe mode, `syntropy __runner --probe --ipc <handle>` (split from DIST-E1-T04 to keep that change to the process host… |
 | 12 | PLC-E1-T07 | Probe-runner enumeration (E5) and merge: spawn `__runner --probe`, `KernelProvider::enumerate` and `open` per provider… |
 | 13 | PLC-E1-T09 | Single-node `ResourceGraph` built by the daemon from E1–E5 output, with `GraphVersion` and `assumptions` for unmeasured… |
 | 14 | PLC-E4-T02 | M0 placement rule for one device: all dense groups in the fastest tier that fits after KV, scratch and reserves, else… |
