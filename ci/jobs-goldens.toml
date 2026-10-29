@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:f4ffe4ce911147ae"
+jobs_toml = "fnv1a:53e6ba14863f4774"
 
 [[golden]]
 name = "plan only"
@@ -563,6 +563,14 @@ name = "toolchain pins"
 source = "constructed: the pins file alone, as a CUDA bump edits it (QUAL-E16-T24)"
 paths = ["ci/toolchains.toml"]
 jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "toolchain step"
+source = "constructed: the step that builds and checks the image alone (QUAL-E16-T24)"
+paths = ["xtask/src/toolchains.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint", "toolchains-linux"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 

@@ -89,14 +89,15 @@ when = "closure"
 planned = "QUAL-E5-T06"
 
 # The Linux build image rebuilds byte for byte from its pins, and carries the pinned nvcc, CMake
-# and C++ compiler (RFC-0062 §4.1 and §4.2; QUAL-E16-T24). Only the files that define the image or
-# its pins start it: a Docker build is too slow to run on every change.
+# and C++ compiler (RFC-0062 §4.1 and §4.2; QUAL-E16-T24). Only the files that define the image,
+# its pins or the step that builds it start it: a Docker build is too slow to run on every change.
 [job.toolchains-linux]
 runner = "hosted"
 when = "direct"
 paths = [
     "ci/images/**",
     "ci/toolchains.toml",
+    "xtask/src/toolchains.rs",
 ]
 
 # Op conformance, parity smoke and the `pr-quick` bench on R-ADA (RFC-0062 §2.3). The paths are

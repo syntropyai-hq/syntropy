@@ -6,7 +6,8 @@
 //! `ci/toolchains.toml` repeats the pins of the Linux build image, `ci/images/cuda-13/Dockerfile`.
 //! This step fails unless:
 //! - `ci/toolchains.toml` parses with no unknown key, every checksum is 64 lowercase hex digits,
-//!   and every pin is either set or marked `verified = false` with no value;
+//!   every pin is either set or marked `verified = false` with no value, and the BuildKit image
+//!   is pinned by digest;
 //! - each Linux pin appears in the Dockerfile: the base image, the syntax frontend, the archive
 //!   snapshot, the epoch, the compiler version, the CMake version and checksum, and the CUDA
 //!   release and each component's checksum;
@@ -54,6 +55,7 @@ struct Image {
     apt_snapshot: String,
     source_date_epoch: u64,
     glibc: String,
+    buildkit: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +188,15 @@ pub fn check(toolchains: &str, dockerfile: &str, arch_sets: &str) -> Vec<String>
                 }
             }
             let i = &t.linux.image;
+            if !i
+                .buildkit
+                .split_once("@sha256:")
+                .is_some_and(|(_, digest)| is_sha256(digest))
+            {
+                problems.push(format!(
+                    "{TOOLCHAINS}: `linux.image.buildkit` is not pinned by a sha256 digest"
+                ));
+            }
             let mut wants: Vec<(String, String)> = vec![
                 ("base".into(), i.base.clone()),
                 ("syntax".into(), i.syntax.clone()),
@@ -363,6 +374,11 @@ fn version_problems(printed: &str, pins: &Toolchains) -> Vec<String> {
 /// Builds the Linux image twice with no cache, as the Dockerfile's header says, and fails unless
 /// the two OCI archives are byte-identical. Then it loads the image and prints `nvcc`, CMake and
 /// the C++ compiler from inside it (RFC-0062 §4.1; QUAL-E16-T24). Needs `docker buildx`.
+///
+/// The builds run on a `docker-container` builder of its own, on the pinned BuildKit image
+/// (`linux.image.buildkit`), because buildx's default `docker` driver cannot export an OCI
+/// archive. The step creates it, leaves the default builder as it was, and removes it at the
+/// end, so a local run and the hosted job build the same way.
 pub fn linux_step(context: &Context) -> Result<(), String> {
     let toolchains = fs::read_to_string(context.root.join(TOOLCHAINS))
         .map_err(|e| format!("{TOOLCHAINS}: {e}"))?;
@@ -385,7 +401,44 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
             Err(format!("`docker {}`: {status}", args.join(" ")))
         }
     };
+    let builder = format!("syntropy-oci-{}", std::process::id());
+    let driver_opt = format!("image={}", pins.linux.image.buildkit);
+    docker(&[
+        "buildx",
+        "create",
+        "--name",
+        &builder,
+        "--driver",
+        "docker-container",
+        "--driver-opt",
+        &driver_opt,
+        "--bootstrap",
+    ])?;
+    let built = build_and_print(&pins, dir, &work, &builder, &docker);
+    fs::remove_dir_all(&work).ok();
+    docker(&["buildx", "rm", &builder]).ok();
+    let printed = built?;
+    let problems = version_problems(&printed, &pins);
+    if problems.is_empty() {
+        eprintln!("toolchains-linux: nvcc, cmake, g++ and glibc match ci/toolchains.toml");
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
+/// The two no-cache builds on `builder`, their comparison, and the version print from inside the
+/// image: what the image printed. `work` holds the archives; the caller removes it and the
+/// builder.
+fn build_and_print(
+    pins: &Toolchains,
+    dir: &Path,
+    work: &Path,
+    builder: &str,
+    docker: &dyn Fn(&[&str]) -> Result<(), String>,
+) -> Result<String, String> {
     let epoch = format!("SOURCE_DATE_EPOCH={}", pins.linux.image.source_date_epoch);
+    let context = dir.display().to_string();
     let mut archives = Vec::new();
     for n in 1..=2 {
         let archive = work.join(format!("cuda-13-{n}.tar"));
@@ -393,6 +446,8 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
         docker(&[
             "buildx",
             "build",
+            "--builder",
+            builder,
             "--platform",
             "linux/amd64",
             "--no-cache",
@@ -400,7 +455,7 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
             &epoch,
             "--output",
             &output,
-            &dir.display().to_string(),
+            &context,
         ])?;
         archives.push(archive);
     }
@@ -415,6 +470,8 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
     docker(&[
         "buildx",
         "build",
+        "--builder",
+        builder,
         "--platform",
         "linux/amd64",
         "--build-arg",
@@ -422,7 +479,7 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
         "--load",
         "-t",
         tag,
-        &dir.display().to_string(),
+        &context,
     ])?;
     let run = Command::new("docker")
         .args([
@@ -437,20 +494,13 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
         ])
         .output()
         .map_err(|e| format!("could not start `docker run`: {e}"))?;
+    docker(&["image", "rm", tag]).ok();
     if !run.status.success() {
         return Err(format!("the version print failed: {}", run.status));
     }
-    let printed = String::from_utf8_lossy(&run.stdout);
+    let printed = String::from_utf8_lossy(&run.stdout).into_owned();
     eprintln!("{printed}");
-    fs::remove_dir_all(&work).ok();
-    docker(&["image", "rm", tag]).ok();
-    let problems = version_problems(&printed, &pins);
-    if problems.is_empty() {
-        eprintln!("toolchains-linux: nvcc, cmake, g++ and glibc match ci/toolchains.toml");
-        Ok(())
-    } else {
-        Err(problems.join("\n"))
-    }
+    Ok(printed)
 }
 
 #[cfg(test)]
@@ -550,6 +600,21 @@ ldd (Ubuntu GLIBC 2.35-0ubuntu3.15) 2.35
             check(&format!("{t}\nextra = 1\n"), &d, &a)
                 .iter()
                 .any(|p| p.contains("extra"))
+        );
+    }
+
+    #[test]
+    fn a_buildkit_image_without_a_digest_is_refused() {
+        let (t, d, a) = real();
+        let tag_only = t.replace(
+            "moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c",
+            "moby/buildkit:v0.34.1",
+        );
+        assert_ne!(tag_only, t);
+        assert!(
+            check(&tag_only, &d, &a)
+                .iter()
+                .any(|p| p.contains("linux.image.buildkit"))
         );
     }
 
