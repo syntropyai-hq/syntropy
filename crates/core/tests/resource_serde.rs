@@ -6,6 +6,7 @@
 //! it carries fields this build does not know. JSON stands in for any self-describing
 //! format; the property is serde's, not the format's.
 
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
 
@@ -1222,8 +1223,31 @@ fn link_caps_ext() -> impl Strategy<Value = LinkCapsExt> {
         )
 }
 
+fn plan_epoch() -> impl Strategy<Value = PlanEpoch> {
+    (any::<u64>(), any::<u64>()).prop_map(|(term, seq)| PlanEpoch { term, seq })
+}
+
+fn holder() -> impl Strategy<Value = Holder> {
+    (any::<u64>(), plan_epoch()).prop_map(|(instance, epoch)| Holder {
+        instance: InstanceId(instance),
+        epoch,
+    })
+}
+
+fn reservation() -> impl Strategy<Value = Reservation> {
+    (tier_id(), prop::option::of(holder()), bytes()).prop_map(|(tier, holder, bytes)| Reservation {
+        tier,
+        holder,
+        bytes,
+    })
+}
+
 fn ledger_summary() -> impl Strategy<Value = LedgerSummary> {
-    prop::collection::vec((tier_id(), bytes()), 0..3).prop_map(|held| LedgerSummary { held })
+    (
+        prop::collection::vec((tier_id(), bytes()), 0..3),
+        prop::collection::vec(reservation(), 0..3),
+    )
+        .prop_map(|(held, entries)| LedgerSummary { held, entries })
 }
 
 fn link_change() -> impl Strategy<Value = LinkChange> {
@@ -2049,40 +2073,414 @@ fn without_ext<T: Serialize + DeserializeOwned>(value: &T) -> T {
     serde_json::from_value(json).expect("decodes without ext")
 }
 
+/// A `NodeInfo` for node `id` with the given inventory and fixed other fields.
+fn sample_node_info(id: NodeId, inventory: NodeInventory) -> NodeInfo {
+    NodeInfo {
+        id,
+        host: HostFingerprint(Blake3([4; 32])),
+        os: OsKind::Linux,
+        arch: CpuArch::X86_64,
+        build: syntropy_core::build::BuildId {
+            version: "0.4.1".parse().unwrap(),
+            commit: [5; 20],
+            profile: syntropy_core::build::BuildProfile::Release,
+            target: syntropy_core::build::TargetTriple("x86_64-unknown-linux-gnu".into()),
+            toolchain: Blake3([6; 32]),
+        },
+        protocol: ProtocolRanges {
+            proto_major: 1,
+            wire_minor: VersionRange::new(0, 2).unwrap(),
+            feature_level: VersionRange::new(1, 3).unwrap(),
+            capabilities: 0b1011,
+        },
+        power: PowerSource::Mains,
+        labels: Default::default(),
+        roles: RolePrefs::default(),
+        inventory,
+    }
+}
+
+fn to_cbor<T: Serialize>(value: &T) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    ciborium::into_writer(value, &mut bytes).expect("CBOR encode");
+    bytes
+}
+
+fn from_cbor<T: DeserializeOwned>(bytes: &[u8]) -> T {
+    ciborium::from_reader(bytes).expect("CBOR decode")
+}
+
 /// A `NodeInfo` with a full inventory, the field that holds the device, tier, link and host-pool
 /// records, round-trips through the cluster's CBOR (ADR-0305) and JSON (DIST-E2-T10). The rest of
 /// `NodeInfo`'s tests are in `node_serde.rs`.
 #[test]
 fn node_info_with_an_inventory_round_trips() {
     on_big_stack(node_inventory, |inventory| {
-        let info = NodeInfo {
-            id: NodeId([3; 32]),
-            host: HostFingerprint(Blake3([4; 32])),
-            os: OsKind::Linux,
-            arch: CpuArch::X86_64,
-            build: syntropy_core::build::BuildId {
-                version: "0.4.1".parse().unwrap(),
-                commit: [5; 20],
-                profile: syntropy_core::build::BuildProfile::Release,
-                target: syntropy_core::build::TargetTriple("x86_64-unknown-linux-gnu".into()),
-                toolchain: Blake3([6; 32]),
-            },
-            protocol: ProtocolRanges {
-                proto_major: 1,
-                wire_minor: VersionRange::new(0, 2).unwrap(),
-                feature_level: VersionRange::new(1, 3).unwrap(),
-                capabilities: 0b1011,
-            },
-            power: PowerSource::Mains,
-            labels: Default::default(),
-            roles: RolePrefs::default(),
-            inventory,
-        };
-        let mut bytes = Vec::new();
-        ciborium::into_writer(&info, &mut bytes).unwrap();
-        let back: NodeInfo = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let info = sample_node_info(NodeId([3; 32]), inventory);
+        let back: NodeInfo = from_cbor(&to_cbor(&info));
         prop_assert_eq!(&back, &info);
         round_trip(&info);
         Ok(())
     });
+}
+
+// ---- ResourceGraph and Reservation (PLC-E1-T18) ------------------------------------------
+
+/// A graph with two nodes, each with an inventory and a profile, and reservations. The
+/// profiles are keyed by their own node, so the map holds both.
+fn resource_graph() -> impl Strategy<Value = ResourceGraph> {
+    (
+        any::<u64>(),
+        node_inventory(),
+        prop::collection::vec(tier_info(), 0..3),
+        (capability_profile(), capability_profile()),
+        prop::collection::vec(reservation(), 0..4),
+    )
+        .prop_map(
+            |(version, inventory, tiers, (mut p1, mut p2), reservations)| {
+                p1.node = NodeId([1; 32]);
+                p2.node = NodeId([2; 32]);
+                ResourceGraph {
+                    version: GraphVersion(version),
+                    nodes: vec![
+                        sample_node_info(p1.node, inventory.clone()),
+                        sample_node_info(p2.node, NodeInventory::default()),
+                    ],
+                    devices: inventory.devices,
+                    tiers,
+                    links: inventory.links,
+                    profiles: [(p1.node, p1), (p2.node, p2)].into_iter().collect(),
+                    reservations,
+                }
+            },
+        )
+}
+
+/// `ResourceGraph` round-trips through deterministic CBOR (ADR-0305) and JSON with two
+/// profiles, re-encoding gives the same bytes, and it decodes with unknown fields.
+#[test]
+fn a_resource_graph_round_trips() {
+    on_big_stack(resource_graph, |graph| {
+        prop_assert_eq!(graph.profiles.len(), 2);
+        let first = to_cbor(&graph);
+        let back: ResourceGraph = from_cbor(&first);
+        prop_assert_eq!(&back, &graph);
+        prop_assert_eq!(to_cbor(&back), first);
+        round_trip(&graph);
+        let json = serde_json::to_string(&graph).unwrap();
+        let again: ResourceGraph = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(serde_json::to_string(&again).unwrap(), json);
+        // Unknown fields on the graph and on each reservation. The records inside nodes,
+        // devices, tiers, links and profiles have their own future-field tests above.
+        let mut json = serde_json::to_value(&graph).unwrap();
+        json["from_a_newer_build"] = serde_json::json!({"x": [1, 2]});
+        for r in json["reservations"].as_array_mut().unwrap() {
+            r["from_a_newer_build"] = serde_json::json!(1);
+        }
+        for pair in json["profiles"].as_array_mut().unwrap() {
+            pair[1]["from_a_newer_build"] = serde_json::json!(1);
+        }
+        let back: ResourceGraph = serde_json::from_value(json).unwrap();
+        prop_assert_eq!(&back, &graph);
+        Ok(())
+    });
+}
+
+proptest! {
+    #[test]
+    fn a_reservation_round_trips(value in reservation()) {
+        round_trip(&value);
+        prop_assert_eq!(from_cbor::<Reservation>(&to_cbor(&value)), value);
+        decodes_with_future_fields(&value);
+    }
+
+    #[test]
+    fn a_ledger_summary_round_trips_in_cbor(value in ledger_summary()) {
+        prop_assert_eq!(from_cbor::<LedgerSummary>(&to_cbor(&value)), value);
+    }
+}
+
+/// `profiles` travels as a list of pairs in node order. A node listed twice is refused, and so
+/// is a profile listed under another node.
+#[test]
+fn profiles_travel_as_pairs_and_a_repeated_node_is_refused() {
+    on_big_stack(resource_graph, |graph| {
+        let json = serde_json::to_value(&graph).unwrap();
+        let pairs = json["profiles"].as_array().expect("a list");
+        prop_assert_eq!(pairs.len(), 2);
+        let node = |i: usize| serde_json::from_value::<NodeId>(pairs[i][0].clone()).unwrap();
+        prop_assert!(node(0) < node(1));
+        let mut doubled = json.clone();
+        let first = doubled["profiles"][0].clone();
+        doubled["profiles"].as_array_mut().unwrap().push(first);
+        let err = serde_json::from_value::<ResourceGraph>(doubled).unwrap_err();
+        prop_assert!(
+            err.to_string().contains("two capability profiles"),
+            "{}",
+            err
+        );
+        let mut swapped = json.clone();
+        swapped["profiles"][0][0] = json["profiles"][1][0].clone();
+        swapped["profiles"][1][0] = json["profiles"][0][0].clone();
+        let err = serde_json::from_value::<ResourceGraph>(swapped).unwrap_err();
+        prop_assert!(err.to_string().contains("is node"), "{}", err);
+        Ok(())
+    });
+}
+
+/// A graph from a build before `profiles` or `reservations` existed decodes with them empty,
+/// and a ledger from a node that does not report entries decodes with none.
+#[test]
+fn absent_profiles_reservations_and_entries_take_defaults() {
+    on_big_stack(resource_graph, |graph| {
+        let mut json = serde_json::to_value(&graph).unwrap();
+        let object = json.as_object_mut().unwrap();
+        object.remove("profiles");
+        object.remove("reservations");
+        let back: ResourceGraph = serde_json::from_value(json).unwrap();
+        prop_assert!(back.profiles.is_empty());
+        prop_assert!(back.reservations.is_empty());
+        prop_assert_eq!(back.nodes, graph.nodes);
+        Ok(())
+    });
+    let ledger: LedgerSummary = serde_json::from_value(serde_json::json!({ "held": [] })).unwrap();
+    assert!(ledger.entries.is_empty());
+}
+
+/// One graph built twice from the same records in the same order gives the same canonical
+/// bytes (`core::canon`), and a ledger without entries encodes as it did before `entries`.
+#[test]
+fn a_graph_built_twice_encodes_to_the_same_canonical_bytes() {
+    assert_eq!(
+        canon::to_bytes(&fixture_graph()).unwrap(),
+        canon::to_bytes(&fixture_graph()).unwrap()
+    );
+    on_big_stack(resource_graph, |graph| {
+        prop_assert_eq!(
+            canon::to_bytes(&graph).unwrap(),
+            canon::to_bytes(&graph.clone()).unwrap()
+        );
+        Ok(())
+    });
+    let ledger = LedgerSummary {
+        held: vec![(sample_tier_id(0), Bytes(5))],
+        entries: vec![],
+    };
+    let json = serde_json::to_value(&ledger).unwrap();
+    assert_eq!(
+        json.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["held"]
+    );
+    assert_eq!(
+        serde_json::from_value::<LedgerSummary>(json).unwrap(),
+        ledger
+    );
+}
+
+/// Reservations that add up past `u64::MAX` on one tier saturate, leaving nothing free.
+#[test]
+fn available_saturates_when_reservations_overflow() {
+    let mut graph = fixture_graph();
+    let a = sample_tier_id(0);
+    graph.reservations = vec![
+        entry(a, held_by(1, 1), u64::MAX),
+        entry(a, held_by(2, 1), 50),
+    ];
+    // A wrapping sum would be 49 and leave 51 of tier a's 100 usable bytes free.
+    assert_eq!(graph.available(a, None), Some(Bytes(0)));
+    assert_eq!(graph.available(a, Some(held_by(1, 1))), Some(Bytes(50)));
+}
+
+fn epoch(seq: u64) -> PlanEpoch {
+    PlanEpoch { term: 1, seq }
+}
+
+fn held_by(instance: u64, seq: u64) -> Holder {
+    Holder {
+        instance: InstanceId(instance),
+        epoch: epoch(seq),
+    }
+}
+
+fn entry(tier: TierId, holder: Holder, bytes: u64) -> Reservation {
+    Reservation {
+        tier,
+        holder: Some(holder),
+        bytes: Bytes(bytes),
+    }
+}
+
+/// A ledger without entries, as from a node that does not report them, yields one reservation
+/// with no holder per tier it holds; a tier held at zero yields none.
+#[test]
+fn a_ledger_without_entries_yields_unattributed_reservations() {
+    let (a, b, c) = (sample_tier_id(0), sample_tier_id(1), sample_tier_id(2));
+    let ledger = LedgerSummary {
+        held: vec![(b, Bytes(70)), (a, Bytes(30)), (c, Bytes(0))],
+        entries: vec![],
+    };
+    assert_eq!(
+        ledger.reservations().unwrap(),
+        vec![
+            Reservation {
+                tier: a,
+                holder: None,
+                bytes: Bytes(30)
+            },
+            Reservation {
+                tier: b,
+                holder: None,
+                bytes: Bytes(70)
+            },
+        ]
+    );
+}
+
+/// Entries become reservations with their holder, and what they leave of `held` becomes one
+/// with none. The result does not depend on the order the node listed things in.
+#[test]
+fn entries_are_attributed_and_the_rest_is_not() {
+    let (a, b) = (sample_tier_id(0), sample_tier_id(1));
+    let ledger = LedgerSummary {
+        held: vec![(a, Bytes(100)), (b, Bytes(40))],
+        entries: vec![
+            entry(a, held_by(7, 2), 60),
+            entry(b, held_by(7, 2), 40),
+            entry(a, held_by(7, 1), 25),
+        ],
+    };
+    let got = ledger.reservations().unwrap();
+    assert_eq!(
+        got,
+        vec![
+            Reservation {
+                tier: a,
+                holder: None,
+                bytes: Bytes(15)
+            },
+            entry(a, held_by(7, 1), 25),
+            entry(a, held_by(7, 2), 60),
+            entry(b, held_by(7, 2), 40),
+        ]
+    );
+    let mut shuffled = ledger.clone();
+    shuffled.held.reverse();
+    shuffled.entries.reverse();
+    assert_eq!(shuffled.reservations().unwrap(), got);
+}
+
+/// Entries that exceed `held`, an entry for a tier `held` does not name, a repeated holder
+/// and tier, a repeated tier in `held`, and an entry with no holder are refused.
+#[test]
+fn a_malformed_ledger_is_refused() {
+    let (a, b) = (sample_tier_id(0), sample_tier_id(1));
+    let over = LedgerSummary {
+        held: vec![(a, Bytes(50))],
+        entries: vec![entry(a, held_by(1, 1), 30), entry(a, held_by(2, 1), 30)],
+    };
+    assert_eq!(
+        over.reservations(),
+        Err(LedgerError::EntriesExceedHeld {
+            tier: a,
+            held: Bytes(50),
+            entries: Bytes(60)
+        })
+    );
+    let unknown_tier = LedgerSummary {
+        held: vec![(a, Bytes(50))],
+        entries: vec![entry(b, held_by(1, 1), 1)],
+    };
+    assert!(matches!(
+        unknown_tier.reservations(),
+        Err(LedgerError::EntriesExceedHeld { tier, .. }) if tier == b
+    ));
+    let repeated = LedgerSummary {
+        held: vec![(a, Bytes(50))],
+        entries: vec![entry(a, held_by(1, 1), 10), entry(a, held_by(1, 1), 10)],
+    };
+    assert_eq!(
+        repeated.reservations(),
+        Err(LedgerError::DuplicateEntry(a, held_by(1, 1)))
+    );
+    let twice = LedgerSummary {
+        held: vec![(a, Bytes(50)), (a, Bytes(50))],
+        entries: vec![],
+    };
+    assert_eq!(twice.reservations(), Err(LedgerError::DuplicateTier(a)));
+    let no_holder = LedgerSummary {
+        held: vec![(a, Bytes(50))],
+        entries: vec![Reservation {
+            tier: a,
+            holder: None,
+            bytes: Bytes(5),
+        }],
+    };
+    assert_eq!(no_holder.reservations(), Err(LedgerError::NoHolder(a)));
+    let huge = LedgerSummary {
+        held: vec![(a, Bytes(u64::MAX))],
+        entries: vec![
+            entry(a, held_by(1, 1), u64::MAX),
+            entry(a, held_by(2, 1), 1),
+        ],
+    };
+    assert!(matches!(
+        huge.reservations(),
+        Err(LedgerError::EntriesExceedHeld {
+            entries: Bytes(u64::MAX),
+            ..
+        })
+    ));
+}
+
+/// A fixture graph: tier `a` with 100 usable bytes and tier `b` with 50, which is
+/// over-reserved.
+fn fixture_graph() -> ResourceGraph {
+    let (a, b) = (sample_tier_id(0), sample_tier_id(1));
+    let tier = |id: TierId, usable: u64| TierInfo {
+        id,
+        kind: TierKind::Vram,
+        capacity: Bytes(usable),
+        usable: Bytes(usable),
+        affinity: SmallVec::new(),
+        pin_limit: None,
+        volume: None,
+        ext: TierInfoExt::default(),
+    };
+    let ledger = LedgerSummary {
+        held: vec![(a, Bytes(70)), (b, Bytes(80))],
+        entries: vec![
+            entry(a, held_by(7, 2), 30),
+            entry(a, held_by(7, 1), 20),
+            entry(a, held_by(9, 1), 10),
+            entry(b, held_by(7, 2), 40),
+        ],
+    };
+    ResourceGraph {
+        version: GraphVersion(1),
+        nodes: vec![sample_node_info(NodeId([3; 32]), NodeInventory::default())],
+        devices: vec![],
+        tiers: vec![tier(a, 100), tier(b, 50)],
+        links: vec![],
+        profiles: BTreeMap::new(),
+        reservations: ledger.reservations().unwrap(),
+    }
+}
+
+/// A first plan and a make-before-break re-plan see every reservation; a break-before-make
+/// re-plan of instance 7 at epoch 2 exempts only that holder's bytes, never epoch 1's (an
+/// orphan's, say), another instance's, or the unattributed rest. An over-reserved tier
+/// saturates at zero, and an unknown tier has no figure.
+#[test]
+fn available_capacity_exempts_only_the_replaced_plan() {
+    let graph = fixture_graph();
+    let (a, b) = (sample_tier_id(0), sample_tier_id(1));
+    // Tier a: 100 usable; held 70 = 30 (7@2) + 20 (7@1) + 10 (9@1) + 10 unattributed.
+    assert_eq!(graph.available(a, None), Some(Bytes(30)));
+    assert_eq!(graph.available(a, Some(held_by(7, 2))), Some(Bytes(60)));
+    assert_eq!(graph.available(a, Some(held_by(7, 1))), Some(Bytes(50)));
+    assert_eq!(graph.available(a, Some(held_by(8, 1))), Some(Bytes(30)));
+    // Tier b: 50 usable; held 80 = 40 (7@2) + 40 unattributed.
+    assert_eq!(graph.available(b, None), Some(Bytes(0)));
+    assert_eq!(graph.available(b, Some(held_by(7, 2))), Some(Bytes(10)));
+    assert_eq!(graph.available(sample_tier_id(9), None), None);
 }

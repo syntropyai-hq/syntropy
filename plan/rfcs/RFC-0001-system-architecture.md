@@ -721,6 +721,8 @@ pub struct LinkCaps {
 
 *Note 2026-10-29 (as built, PLC-E1-T17):* `CapabilityProfile`, `DeviceCaps` and `StorageCaps` are in `core::resource::caps`. Each holds RFC-0010 §1.3's additions, and `StorageCaps` also RFC-0021 §10's (`engine`, `chunk`, `dio`, `buffered`, `sqpoll`, `read_around_efficiency`, `shared_lanes`), in one field, `ext`, rather than flat. `OpClass`, which this section names, is defined there, as proposed in RFC-0010 §1.3's note of the same date.
 
+*Note 2026-10-29 (as built, proposed; PLC-E1-T18):* `ResourceGraph` is in `core::resource::graph`, with two departures from the block above. First, `profiles` stays a `BTreeMap<NodeId, CapabilityProfile>` in memory but travels as a list of `(NodeId, CapabilityProfile)` pairs in node order, because a `NodeId` is a byte array that JSON cannot use as a map key; a node listed twice is refused. Second, `Reservation` takes RFC-0010 §1.4's proposed option (a), `Reservation { tier, holder: Option<Holder>, bytes }` with `Holder { instance, epoch: PlanEpoch }`, which drops the per-device dimension: a host tier's `affinity` lists several devices, so its bytes do not split by device. A reservation with no holder stands for ledger bytes no entry accounts for. `LedgerSummary` gains `entries`, and `LedgerSummary::reservations` derives the reservations; `ResourceGraph::available` gives the bytes of a tier a plan may use, exempting only the holder a break-before-make transition replaces. The maintainers confirm or change option (a) in PLC-E1-T18's review.
+
 ### 5.3 Model manifest and tensor census (`manifest`)
 
 ```rust

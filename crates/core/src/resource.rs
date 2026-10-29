@@ -9,6 +9,7 @@
 
 pub mod caps;
 pub mod device;
+pub mod graph;
 pub mod iface;
 pub mod inventory;
 pub mod link;
@@ -18,6 +19,7 @@ pub mod tier;
 
 pub use caps::*;
 pub use device::*;
+pub use graph::*;
 pub use iface::*;
 pub use inventory::*;
 pub use link::*;
