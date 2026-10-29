@@ -378,15 +378,21 @@ impl ProcessRunner {
     /// [`try_wait`](Self::try_wait). With a [`CrashSink`], the reap records the kill with its
     /// reason, on every OS (PROD-E9-T12). A second kill keeps the first reason.
     ///
+    /// A runner that has already exited, reaped or not, is not killed: it is reaped here, and
+    /// its exit is recorded from its status, never as the host's kill. The kill counts as the
+    /// host's only once `Child::kill` succeeds, and at the reap only if the status is the one
+    /// the kill leaves (the private `host_caused`).
+    ///
     /// # Errors
     ///
     /// The OS error. Killing a process that has already exited is not one.
     pub fn kill(&mut self, reason: HostKill) -> io::Result<()> {
-        if self.exited.is_some() {
+        if self.exited.is_some() || self.try_wait()?.is_some() {
             return Ok(());
         }
+        self.child().kill()?;
         self.killed.get_or_insert(reason);
-        self.child().kill()
+        Ok(())
     }
 
     /// Whether the runner has exited, reaping it if it has.
@@ -435,7 +441,7 @@ impl ProcessRunner {
         if let Some(sink) = &self.crashes {
             // A kill the host made is recorded with its reason on every OS; any other exit only
             // when its status shows a crash.
-            let written = match self.killed {
+            let written = match host_caused(self.killed, &status) {
                 Some(reason) => sink.record_host_kill(self.pid, reason, &status).map(Some),
                 None => sink.record_exit(self.pid, &status),
             };
@@ -488,6 +494,27 @@ impl Drop for ProcessRunner {
                 tracing::warn!(%error, pid = self.pid, "the runner's reaper did not start");
             }
         }
+    }
+}
+
+/// The host's kill that `status` shows, if it shows one: `killed` when the host killed the
+/// runner and the status is what that kill leaves, else `None`, so the exit is recorded from its
+/// own status. On Unix the kill is `SIGKILL` (`Child::kill`), so any other status means the
+/// runner ended another way first, in the window between the host's `try_wait` and its kill. On
+/// Windows `TerminateProcess` leaves an exit code the runner could have chosen itself, so a kill
+/// is taken as the host's whatever the code; that residual window is accepted (RFC-0053 §6).
+fn host_caused(killed: Option<HostKill>, status: &ExitStatus) -> Option<HostKill> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        // `SIGKILL` is 9 on Linux and on macOS.
+        const SIGKILL: i32 = 9;
+        killed.filter(|_| status.signal() == Some(SIGKILL))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        killed
     }
 }
 
@@ -596,6 +623,31 @@ mod tests {
                 x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
                 *byte = (x >> 56) as u8;
             }
+        }
+    }
+
+    /// The review of #1973, B1: a kill counts as the host's only when the status is what the
+    /// kill leaves. On Unix a runner that died of another signal, or exited, in the window
+    /// before the host's `SIGKILL` is recorded from its own status.
+    #[test]
+    fn a_host_kill_is_attributed_only_when_the_status_is_the_kills() {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+        let hung = Some(HostKill::Supervisor(crate::supervisor::KillReason::Hung));
+        assert_eq!(host_caused(None, &ExitStatus::from_raw(9)), None);
+        #[cfg(unix)]
+        {
+            // A wait status of 9 is death by SIGKILL; 15, by SIGTERM; 3 << 8, `exit(3)`.
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(9)), hung);
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(15)), None);
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(3 << 8)), None);
+        }
+        #[cfg(windows)]
+        {
+            // `TerminateProcess(1)`: the residual window is accepted.
+            assert_eq!(host_caused(hung, &ExitStatus::from_raw(1)), hung);
         }
     }
 

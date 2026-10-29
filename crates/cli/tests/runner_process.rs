@@ -450,6 +450,80 @@ fn a_runner_whose_handshake_is_refused_leaves_a_crash_record_on_every_os() {
     drop(runner);
 }
 
+/// Spawns this test binary as the runner: given the runner's arguments, it refuses them and
+/// exits at once, without a `Hello`, standing in for `/bin/false` on every OS.
+fn spawn_quitter(build: [u8; 32]) -> ProcessRunner {
+    let quitter = std::env::current_exe().unwrap();
+    spawn_process(&quitter, &ShmLayout::default(), build, &Varying).unwrap()
+}
+
+/// Reads the runner's channel until it ends: the runner has exited, and is not reaped yet.
+fn until_closed(runner: &mut ProcessRunner) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while runner.channel().recv().is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "the runner's channel stayed open"
+        );
+    }
+}
+
+/// The review of #1973, B1(a): a kill of a runner that has already exited, not yet reaped, is
+/// not the host's kill. The kill reaps it, and its exit is recorded from its status: here an
+/// ordinary exit, so no record at all.
+#[test]
+fn a_kill_after_the_runner_exited_is_not_recorded_as_the_hosts() {
+    use syntropy_daemon::crash::{CrashStore, HostKill};
+    use syntropy_daemon::supervisor::KillReason;
+
+    let state = State::new("kill-after-exit");
+    let mut runner = spawn_quitter(build_id());
+    runner.record_crashes(sink(&state));
+    until_closed(&mut runner);
+    runner.kill(HostKill::from(KillReason::Hung)).unwrap();
+    let status = reap_within(&mut runner, Duration::from_secs(30));
+    assert!(
+        !status.success(),
+        "the quitter exits with an error code: {status}"
+    );
+    let listing = CrashStore::new(&state.0).list().unwrap();
+    assert!(listing.records.is_empty(), "{:?}", listing.records);
+    drop(runner);
+}
+
+/// The review of #1973, B1(a): a runner that crashed just before the host's kill is recorded
+/// as that crash, not as the host's kill. Deterministic: the runner dies of `SIGABRT` from
+/// outside, the test waits for its channel to close, and only then does the host kill it.
+/// Unix only, for the signal.
+#[cfg(unix)]
+#[test]
+fn a_runner_that_crashed_just_before_the_kill_is_recorded_as_its_crash() {
+    use syntropy_daemon::crash::{CrashCause, CrashStore, HostKill};
+    use syntropy_daemon::supervisor::KillReason;
+
+    let state = State::new("crash-before-kill");
+    let mut runner = spawn_ready();
+    runner.record_crashes(sink(&state));
+    let sent = Command::new("kill")
+        .args(["-ABRT", &runner.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    until_closed(&mut runner);
+    runner.kill(HostKill::from(KillReason::Stalled)).unwrap();
+    reap_within(&mut runner, Duration::from_secs(30));
+    let listing = CrashStore::new(&state.0).list().unwrap();
+    assert_eq!(listing.records.len(), 1, "{:?}", listing.records);
+    assert_eq!(
+        listing.records[0].1.cause,
+        CrashCause::Signal {
+            signal: 6,
+            name: Some("SIGABRT".into())
+        }
+    );
+    drop(runner);
+}
+
 /// A runner that drains and exits cleanly leaves no crash record, on every OS.
 #[test]
 fn a_runner_that_exits_cleanly_leaves_no_crash_record() {
