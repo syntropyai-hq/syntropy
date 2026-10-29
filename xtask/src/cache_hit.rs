@@ -71,7 +71,7 @@ pub fn suite_step(context: &Context) -> Result<(), String> {
 
 /// Builds `syntropy-cli` with `--message-format=json`, with `SYNTROPY_BUILD_COMMIT` set to
 /// `commit` or removed, and returns stdout's lines.
-fn build(root: &Path, commit: Option<&str>) -> Result<Vec<String>, String> {
+pub(crate) fn build(root: &Path, commit: Option<&str>) -> Result<Vec<String>, String> {
     let mut command = Command::new(cargo());
     command
         .current_dir(root)

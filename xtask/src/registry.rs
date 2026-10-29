@@ -26,7 +26,7 @@ use crate::run::Context;
 use crate::{
     cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
     hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
-    sim_presets, toolchain,
+    runner_build_id, sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -866,6 +866,23 @@ pub const SUITES: &[Entry] = &[
             action: Action::Builtin {
                 shown: "each listed property's tests with PROPTEST_CASES set",
                 run: properties::suite_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "runner-build-id",
+        summary: "a daemon refuses and kills a runner built from another commit at `Hello`, and \
+                  passes its own build's (QUAL-E16-T29): a second syntropy-cli build with another \
+                  SYNTROPY_BUILD_COMMIT, spawned through the daemon's process host",
+        defined_in: "RFC-0001 §3.1",
+        params: &[],
+        steps: &[Step {
+            name: "runner-build-id",
+            action: Action::Builtin {
+                shown: "build syntropy-cli with another commit, copy its binary, rebuild, and run \
+                        cli's ignored runner_build_id test against the copy",
+                run: runner_build_id::suite_step,
             },
         }],
         pending: &[],
