@@ -1168,3 +1168,48 @@ fn a_full_disk_is_a_capacity_error() {
         ErrorClass::Integrity
     );
 }
+
+/// The review of #1965, B3: a chunk written 8 MiB past the last held one, in a fresh blob, is
+/// the case APFS fills (module docs). Disk use stays near the held bytes on every OS: within
+/// 1 MiB, which covers the inventory and block rounding (APFS held 16 KiB beyond the bytes
+/// written in the measured case).
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn a_chunk_written_past_a_gap_keeps_disk_use_near_the_held_bytes() {
+    let scratch = Scratch::new("gap");
+    let root = scratch.root();
+    let blobs = Blobs::open(&root).unwrap();
+    let len = 16 * CHUNK_BYTES;
+    let bytes = source_bytes(len, 41);
+    let chunks = chunk_file(len, 0, []).unwrap();
+    let slack = MIB;
+
+    // Nothing held: chunk 2 starts 8 MiB into the file.
+    let first = table_of(&bytes, &chunks);
+    let mut blob = blobs.blob(&first).unwrap();
+    blob.write_chunk(2, chunk_bytes(&bytes, &chunks[2]))
+        .unwrap();
+    let held = blob.allocated_bytes().unwrap();
+    assert!(
+        held <= CHUNK_BYTES + slack,
+        "{held} bytes held for one 4 MiB chunk 8 MiB in"
+    );
+    drop(blob);
+
+    // Chunk 0 held, then chunk 3, 8 MiB past chunk 0's end. Another file, so a fresh blob.
+    let mut other = bytes.clone();
+    other[0] ^= 1;
+    let second = table_of(&other, &chunks);
+    let mut blob = blobs.blob(&second).unwrap();
+    blob.write_chunk(0, chunk_bytes(&other, &chunks[0]))
+        .unwrap();
+    blob.write_chunk(3, chunk_bytes(&other, &chunks[3]))
+        .unwrap();
+    let held = blob.allocated_bytes().unwrap();
+    assert!(
+        held <= 2 * CHUNK_BYTES + slack,
+        "{held} bytes held for two 4 MiB chunks 8 MiB apart"
+    );
+    assert_eq!(blob.read_chunk(0).unwrap(), chunk_bytes(&other, &chunks[0]));
+    assert_eq!(blob.read_chunk(3).unwrap(), chunk_bytes(&other, &chunks[3]));
+}
