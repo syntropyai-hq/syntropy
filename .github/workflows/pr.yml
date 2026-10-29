@@ -210,7 +210,9 @@ jobs:
           exit 1
 
   # The Linux build image: two no-cache builds are byte-identical, and the pinned tools print their
-  # versions from inside it (RFC-0062 §4.1; QUAL-E16-T24). `docker buildx` is on the hosted runner.
+  # versions from inside it (RFC-0062 §4.1; QUAL-E16-T24). `docker buildx` is on the hosted runner,
+  # but its default `docker` driver cannot export an OCI archive, so the job first creates a
+  # `docker-container` builder on a pinned BuildKit and makes it the default.
   toolchains-linux:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'toolchains-linux')
@@ -224,6 +226,11 @@ jobs:
         with:
           cache-key: toolchains-linux
           cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver: docker-container
+          driver-opts: image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+          use: true
       - run: cargo xtask ci toolchains-linux
 
   # The required check. It always runs, even when the run is cancelled: a skipped job reports
