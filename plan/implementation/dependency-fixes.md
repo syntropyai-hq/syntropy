@@ -1268,3 +1268,12 @@ COMP-E11-T02 (M1a) asked that an exFAT volume switch to chunk-file mode "and `do
 |---|---|---|---|
 | COMP-E11-T02's "`doctor` flags it" becomes "the store reports the mode with the probe's reason for `doctor` (STO-005, PROD-E9-T02)" | COMP-E11-T02 | R9 | the check needs PROD-E9-T02's storage checks, M1b |
 | PROD-E9-T02 gains STO-005 (STO-001–005) and the criterion "STO-005 warns for each writable store root whose start-up probe found no sparse files, naming the root and the probe's reason, and reports nothing for a root of sparse blobs". PROD-E9-T02 → COMP-E11-T02; RFC-0053 §5.2 gains the STO-005 row with a dated note | PROD-E9-T02 | R9 | the check reads `Blobs::mode`, which COMP-E11-T02 builds. M1b → M1a, and COMP-E11-T02 does not reach PROD-E9-T02, so the edge adds no cycle |
+
+## Hub-fetched chunk IDs reach the chunk table (2026-10-29)
+
+The review of #1963 found two gaps next to COMP-E12-T04's `TensorRecord::hash` criterion. No M1a task writes a Hub-fetched chunk's `ChunkId` into the chunk table, so on one node a model pulled from the Hub would keep every tensor hash at `None`. And COMP-E11-T05 did not say what a pack build does with a group whose hash is still `None`.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E12-T12 writes each verified chunk's `ChunkId` into the model's chunk table as committed, with evidence form 0 (provisional). COMP-E12-T04 → COMP-E12-T12 | COMP-E12-T12, COMP-E12-T04 | R9 | RFC-0041 §6.3's commitment, on one node, happens where a fetched chunk is verified; COMP-E12-T04's "a verified fetch" arm needs that producer |
+| COMP-E11-T05 never forms an `ExtentKey` over a `None` tensor hash: a group that needs an extent but has a `None` hash fails the build with class `Integrity`, and no sidecar is committed | COMP-E11-T05 | R9 | `ExtentKey` (RFC-0041 §1) is built from the group's tensor hashes, so a key over `None` would name bytes nobody can check. Deferring the group can't work: RFC-0001 §3.3 enters `Packing` only once every shard chunk is verified, so every hash is set by then, and a later start with a matching `PackKey` skips `Packing`, so a deferred group would never be built. A `None` there means the table and the shard disagree, the class RFC-0041 §7.3 uses |
