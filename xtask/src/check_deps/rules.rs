@@ -945,7 +945,7 @@ tools = ["xtask"]
 
     #[test]
     fn rule_6_checks_reqwest_on_direct_dependencies_only() {
-        // `store` names it; `net` reaches it through `iroh` (ADR-0432, proposed).
+        // `store` names it; `net` reaches it through `iroh` (ADR-0432).
         let allowed = run(
             &["reqwest", "iroh"],
             &[

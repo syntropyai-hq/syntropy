@@ -112,7 +112,9 @@ External gates: `gate:` segments in a Depends cell. They add no edge; the task c
 
 | Task | Milestone | Gate as written | State |
 |---|---|---|---|
-| COMP-E10-T14 | M0b | gate: OQ-MF-18 (the HTTPS client crate and the crate that links it, a maintainer decision) | open (needed by M0b; decision (maintainers)) |
+| COMP-E10-T14 | M0b | gate: OQ-MF-18 (the HTTPS client crate and the crate that links it, a maintainer decision) | **settled** by ADR-0432; still open: whether the Hub source honours the system proxy (ADR-0432 decision 4) |
+
+1 gate(s) cite a settled question. They no longer gate their task, and the area can drop the segment.
 
 No `TBD:` dependencies.
 

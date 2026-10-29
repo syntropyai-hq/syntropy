@@ -142,7 +142,7 @@ rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "x
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }
-# The Hub's HTTPS client (ADR-0432, proposed), `syntropy-store` only: blocking, HTTP/2, and rustls
+# The Hub's HTTPS client (ADR-0432), `syntropy-store` only: blocking, HTTP/2, and rustls
 # with the provider and roots `store` passes in, so no aws-lc, no OpenSSL and no system proxy.
 # Already in the lockfile through iroh.
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "http2", "rustls-no-provider"] }

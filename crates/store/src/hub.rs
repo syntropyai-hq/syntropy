@@ -3,8 +3,8 @@
 //! The Hub's HTTP range source (RFC-0041 §2, §7.2; COMP-E10-T14): a [`RangeSource`] over a
 //! file on the Hub, read with HTTP range requests against its commit-pinned resolve URL.
 //!
-//! `store` is the one crate that links the HTTPS client, `reqwest` (ADR-0432, proposed, which
-//! answers OQ-MF-18; RFC-0001 §4.2 rule 6). `reqwest`'s blocking client matches the blocking
+//! `store` is the one crate that links the HTTPS client, `reqwest` (ADR-0432, which answers
+//! OQ-MF-18; RFC-0001 §4.2 rule 6). `reqwest`'s blocking client matches the blocking
 //! [`RangeSource::read_at`]. It runs its own runtime on a background thread, so a [`HubClient`]
 //! must be built, used and dropped on a blocking thread, never inside an async task, where it
 //! panics: on the daemon's `bulk` runtime every call goes through `spawn_blocking`.

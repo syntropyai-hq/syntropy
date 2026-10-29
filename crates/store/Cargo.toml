@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 # The Hub's HTTPS client, blocking to match `RangeSource::read_at`; `store` is the one crate that
-# links it (ADR-0432, proposed; RFC-0001 §4.2 rule 6). Default features off: no system proxy, no
+# links it (ADR-0432; RFC-0001 §4.2 rule 6). Default features off: no system proxy, no
 # OpenSSL, and no crypto provider of its own.
 reqwest.workspace = true
 # The TLS config the Hub client uses, on `ring`'s provider (ADR-0018 §3).

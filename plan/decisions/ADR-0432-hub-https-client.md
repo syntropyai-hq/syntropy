@@ -1,6 +1,6 @@
-# ADR-0432: Proposed: the Hub's HTTPS client and the crate that links it
+# ADR-0432: The Hub's HTTPS client and the crate that links it
 
-- Status: Proposed (2026-10-29), for the maintainers; answers OQ-MF-18
+- Status: Accepted (2026-10-29): option (a), `store` with `reqwest`'s blocking client and `rustls`, as proposed; answers OQ-MF-18. Decision 4 (whether the Hub source honours the system proxy) stays open
 - Date: 2026-10-29
 - Deciders: maintainers (drafted by the compute and models area)
 - Related: RFC-0041 §2 (`RangeSource`, Hub sources), §7.2 (header reads), §7.3 (ranged chunk fetch), §7.5 (credentials), Testing and validation; RFC-0001 §8.1 (async domains); RFC-0001 §4.1 (crate table), §4.2 rules 3 and 6; ADR-0018 §3 (dependency policy); COMP-E10-T14, COMP-E12-T02
