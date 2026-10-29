@@ -322,16 +322,37 @@ mod tests {
         out
     }
 
-    /// A file extended past what it holds keeps its length and holds less than it.
+    /// What the store's probe and its writes rely on, on every supported OS: a file extended to
+    /// 1 GiB holds less than half of it; 1 MiB written far into it allocates about 1 MiB; and a
+    /// gap a write left allocated below it is free once punched. APFS zero-fills a small gap
+    /// below a write (`syntropy-store`'s blob docs give the figures), so that last step is what
+    /// keeps a sparse blob sparse there.
     #[test]
-    fn an_extended_sparse_file_holds_less_than_its_length() {
+    fn an_extended_file_holds_what_was_written_once_gaps_are_punched() {
         let dir = Scratch::new("extend");
-        let file = sparse_file(&dir.0.join("f"), 64 * MIB);
+        let file = sparse_file(&dir.0.join("f"), 1 << 30);
+        file.sync_all().unwrap();
+        let empty = allocated_bytes(&file).unwrap();
+        assert!(empty < 1 << 29, "{empty} bytes held by an empty 1 GiB file");
+        write_at(&file, 512 * MIB, &vec![7u8; 1 << 20]);
+        let far = allocated_bytes(&file).unwrap() - empty;
+        assert!(
+            far <= 2 * MIB,
+            "{far} bytes held for 1 MiB written 512 MiB in"
+        );
+
+        let file = sparse_file(&dir.0.join("g"), 64 * MIB);
         write_at(&file, 8 * MIB, &[7u8; 4096]);
         assert_eq!(file.metadata().unwrap().len(), 64 * MIB);
+        punch_hole(&file, 0, 8 * MIB).unwrap();
+        file.sync_all().unwrap();
         let held = allocated_bytes(&file).unwrap();
         assert!(held > 0, "the written block is held");
-        assert!(held < 8 * MIB, "{held} bytes held for 4 KiB written");
+        assert!(
+            held < MIB,
+            "{held} bytes held for 4 KiB written, the gap punched"
+        );
+        assert_eq!(read_at(&file, 8 * MIB, 4096), vec![7u8; 4096]);
     }
 
     /// Punching frees the blocks under the range, keeps the length, and leaves every byte
@@ -369,93 +390,6 @@ mod tests {
         let last = end / block * block;
         let inner = &now[usize::try_from(first).unwrap()..usize::try_from(last).unwrap()];
         assert!(inner.iter().all(|&b| b == 0), "a punched block is not zero");
-    }
-
-    /// TEMPORARY, for the review of #1965: how APFS allocates a file extended with `ftruncate`
-    /// and written past a gap. It fails on purpose so the hosted macOS job prints the table.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn apfs_allocation_table() {
-        let dir = Scratch::new("apfs");
-        let mut rows = Vec::new();
-        let mut n = 0;
-        let mut case = |what: &str, f: &dyn Fn(&File)| {
-            n += 1;
-            let file = File::options()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(dir.0.join(format!("f{n}")))
-                .unwrap();
-            f(&file);
-            file.sync_all().unwrap();
-            rows.push(format!(
-                "{what}: len {} allocated {}",
-                file.metadata().unwrap().len(),
-                allocated_bytes(&file).unwrap()
-            ));
-        };
-        let kib4 = [7u8; 4096];
-        case("A set_len 64M, write 4K @ 8M", &|f| {
-            f.set_len(64 * MIB).unwrap();
-            write_at(f, 8 * MIB, &kib4);
-        });
-        case("B write 4K @ 8M past EOF, then set_len 64M", &|f| {
-            write_at(f, 8 * MIB, &kib4);
-            f.set_len(64 * MIB).unwrap();
-        });
-        case("C set_len 64M, write 4K @ 32M", &|f| {
-            f.set_len(64 * MIB).unwrap();
-            write_at(f, 32 * MIB, &kib4);
-        });
-        case("D set_len 64M, write 4K @ 1M", &|f| {
-            f.set_len(64 * MIB).unwrap();
-            write_at(f, MIB, &kib4);
-        });
-        case("E as A, then punch [0, 8M)", &|f| {
-            f.set_len(64 * MIB).unwrap();
-            write_at(f, 8 * MIB, &kib4);
-            punch_hole(f, 0, 8 * MIB).unwrap();
-        });
-        case("F set_len 1G, write 1M @ 512M", &|f| {
-            f.set_len(1 << 30).unwrap();
-            write_at(f, 512 * MIB, &vec![9u8; 1 << 20]);
-        });
-        case("G set_len 64M, write 4K @ 8M, then 4K @ 32M", &|f| {
-            f.set_len(64 * MIB).unwrap();
-            write_at(f, 8 * MIB, &kib4);
-            write_at(f, 32 * MIB, &kib4);
-        });
-        case("H write 4K @ 0, set_len 64M, write 4K @ 32M", &|f| {
-            write_at(f, 0, &kib4);
-            f.set_len(64 * MIB).unwrap();
-            write_at(f, 32 * MIB, &kib4);
-        });
-        case(
-            "I set_len 64M, write 4K @ 8M without sync between, then punch [0, 8M)",
-            &|f| {
-                f.set_len(64 * MIB).unwrap();
-                let mut g = f;
-                g.seek(SeekFrom::Start(8 * MIB)).unwrap();
-                g.write_all(&kib4).unwrap();
-                punch_hole(f, 0, 8 * MIB).unwrap();
-            },
-        );
-        let mut fs = std::mem::MaybeUninit::<libc::statfs>::uninit();
-        let probe = File::open(&dir.0).unwrap();
-        // SAFETY: test only; `fs` is a live output of the struct's size.
-        let rc = unsafe { libc::fstatfs(std::os::fd::AsRawFd::as_raw_fd(&probe), fs.as_mut_ptr()) };
-        assert_eq!(rc, 0);
-        // SAFETY: the call succeeded.
-        let fs = unsafe { fs.assume_init() };
-        let name: String = fs
-            .f_fstypename
-            .iter()
-            .take_while(|&&c| c != 0)
-            .map(|&c| c as u8 as char)
-            .collect();
-        rows.push(format!("fs {name}, f_bsize {}", fs.f_bsize));
-        panic!("APFS allocation table:\n{}", rows.join("\n"));
     }
 
     #[test]

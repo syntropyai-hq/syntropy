@@ -165,11 +165,149 @@ fn the_probe_finds_sparse_files_on_the_hosts_volume() {
     let scratch = Scratch::new("probe");
     let root = scratch.root();
     let blobs = Blobs::open(&root).unwrap();
-    assert_eq!(blobs.mode(), &StorageMode::Sparse, "{}", blobs.mode());
+    // APFS fills a small gap below a write and frees it when punched; ext4, tmpfs and NTFS
+    // leave the gap a hole (module docs).
+    if cfg!(target_os = "macos") {
+        assert!(
+            matches!(blobs.mode(), StorageMode::SparseFillsGaps { gap, filled }
+                if *gap == PROBE_NEAR_GAP_BYTES && *filled > 2 * PROBE_WRITE_BYTES),
+            "{}",
+            blobs.mode()
+        );
+    } else {
+        assert_eq!(blobs.mode(), &StorageMode::Sparse, "{}", blobs.mode());
+    }
+    assert_eq!(blobs.mode().blob_mode(), BlobMode::Sparse);
     assert!(
         !root.layout().sparse_probe().exists(),
         "the probe file was left"
     );
+}
+
+/// A volume whose allocation the probe sees step by step: each `allocated_bytes` call returns
+/// the next figure, so the probe's decisions can be checked for volumes this host is not.
+struct Scripted {
+    figures: &'static [u64],
+    next: AtomicUsize,
+}
+
+impl Scripted {
+    const fn new(figures: &'static [u64]) -> Scripted {
+        Scripted {
+            figures,
+            next: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl SparseOps for Scripted {
+    fn set_sparse(&self, _file: &File) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn punch_hole(&self, _file: &File, _offset: u64, _len: u64) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn allocated_bytes(&self, _file: &File) -> io::Result<u64> {
+        let i = self.next.fetch_add(1, Ordering::Relaxed);
+        Ok(self.figures[i.min(self.figures.len() - 1)])
+    }
+}
+
+/// The far write allocates the 512 MiB below it.
+static FILLS_FAR: Scripted = Scripted::new(&[0, 513 * MIB]);
+/// APFS as measured: the far write holds 1 MiB, the near one 9 MiB, and the punched gap frees.
+static FILLS_NEAR: Scripted = Scripted::new(&[0, MIB, 0, 9 * MIB, MIB]);
+/// The near write fills its gap, and the punch frees nothing.
+static FILLS_NEAR_KEPT: Scripted = Scripted::new(&[0, MIB, 0, 9 * MIB, 9 * MIB]);
+/// Neither write fills.
+static FILLS_NOTHING: Scripted = Scripted::new(&[0, MIB, 0, MIB]);
+
+/// The probe checks that a write allocates about what it wrote (the review of #1965, B3).
+#[test]
+fn the_probe_checks_that_a_write_allocates_what_it_wrote() {
+    let scratch = Scratch::new("scripted");
+    let root = scratch.root();
+    let mode = |ops: &'static dyn SparseOps| Blobs::open_with(&root, ops).unwrap().mode().clone();
+    assert_eq!(
+        mode(&FILLS_FAR),
+        StorageMode::ChunkFile(NoSparse::WriteFillsGap {
+            gap: PROBE_BYTES / 2,
+            written: PROBE_WRITE_BYTES,
+            allocated: 513 * MIB,
+        })
+    );
+    assert_eq!(
+        mode(&FILLS_NEAR),
+        StorageMode::SparseFillsGaps {
+            gap: PROBE_NEAR_GAP_BYTES,
+            filled: 8 * MIB,
+        }
+    );
+    assert_eq!(
+        mode(&FILLS_NEAR_KEPT),
+        StorageMode::ChunkFile(NoSparse::GapPunchKeptBlocks {
+            gap: PROBE_NEAR_GAP_BYTES,
+            filled: 8 * MIB,
+            after: 9 * MIB,
+        })
+    );
+    assert_eq!(mode(&FILLS_NOTHING), StorageMode::Sparse);
+    assert!(!root.layout().sparse_probe().exists());
+}
+
+/// On a volume that fills gaps, a chunk write punches the unheld runs beside it, and no byte of
+/// a held chunk changes, including chunks whose ends share a block with the punched range.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn a_write_on_a_gap_filling_volume_punches_beside_its_chunk_and_keeps_held_bytes() {
+    let scratch = Scratch::new("straddle");
+    let root = scratch.root();
+    let blobs = Blobs::open_as(
+        &root,
+        &OsSparse,
+        StorageMode::SparseFillsGaps {
+            gap: PROBE_NEAR_GAP_BYTES,
+            filled: 8 * MIB,
+        },
+    );
+    // Boundaries that fall inside blocks on every file system here.
+    let len = 3 * MIB + 5_000;
+    let bytes = source_bytes(len, 31);
+    let chunks = chunk_file(len, 0, [10_001, 700_003, 1_400_005, 2_100_007]).unwrap();
+    assert_eq!(chunks.len(), 5);
+    let table = table_of(&bytes, &chunks);
+    let mut blob = blobs.blob(&table).unwrap();
+    // Canary bytes where chunks 2 and 4 would be, then chunks 1 and 3: each write punches the
+    // unheld runs beside it, which share a block with a held chunk at every boundary.
+    plant_canary(&mut blob, 2);
+    plant_canary(&mut blob, 4);
+    blob.write_chunk(1, chunk_bytes(&bytes, &chunks[1]))
+        .unwrap();
+    blob.write_chunk(3, chunk_bytes(&bytes, &chunks[3]))
+        .unwrap();
+    for i in [1, 3] {
+        assert_eq!(
+            blob.read_chunk(i).unwrap(),
+            chunk_bytes(&bytes, &chunks[i]),
+            "chunk {i}"
+        );
+    }
+    blob.write_chunk(0, chunk_bytes(&bytes, &chunks[0]))
+        .unwrap();
+    blob.write_chunk(2, chunk_bytes(&bytes, &chunks[2]))
+        .unwrap();
+    blob.write_chunk(4, chunk_bytes(&bytes, &chunks[4]))
+        .unwrap();
+    for (i, chunk) in chunks.iter().enumerate() {
+        assert_eq!(
+            blob.read_chunk(i).unwrap(),
+            chunk_bytes(&bytes, chunk),
+            "chunk {i}"
+        );
+    }
+    assert_eq!(blob.complete().unwrap(), table.digest);
 }
 
 /// An exFAT volume switches the root to chunk-file mode, on each OS's behaviour, with a reason
@@ -859,4 +997,163 @@ fn a_blob_opens_through_one_handle_at_a_time() {
     ));
     drop(blob);
     drop(blobs.blob(&table).unwrap());
+}
+
+// ---- Review of #1965: re-verification, rewrites, the recorded mode, the error class ------------
+
+/// Corrupts one byte of chunk `index` where it is stored: in the sparse file, or in its chunk
+/// file, keeping the length.
+fn corrupt(blob: &Blob<'_>, index: usize) {
+    let chunk = blob.table.records[index].chunk;
+    match &blob.data {
+        Some(file) => {
+            let mut byte = [0u8];
+            read_exact_at(file, chunk.offset, &mut byte).unwrap();
+            write_all_at(file, chunk.offset, &[byte[0] ^ 0xff]).unwrap();
+        }
+        None => {
+            let path = blob
+                .blobs
+                .root
+                .layout()
+                .chunk_file(&blob.inventory.ids[index]);
+            let mut bytes = fs::read(&path).unwrap();
+            bytes[0] ^= 0xff;
+            fs::write(&path, bytes).unwrap();
+        }
+    }
+}
+
+/// B1: a blob that completed once and then fails a re-verification is cleared, flag first, so
+/// it still opens and can be refetched.
+#[test]
+fn a_failed_reverification_clears_the_complete_flag_and_the_blob_reopens() {
+    for ops in [&OsSparse as &'static dyn SparseOps, &FatUnix] {
+        let scratch = Scratch::new("reverify");
+        let root = scratch.root();
+        let blobs = Blobs::open_with(&root, ops).unwrap();
+        let bytes = source_bytes(3000, 21);
+        let table = table_of(&bytes, &chunk_file(3000, 0, [1000, 2000]).unwrap());
+        let mut blob = blobs.blob(&table).unwrap();
+        fill(&mut blob, &bytes);
+        blob.complete().unwrap();
+        assert!(blob.is_complete());
+
+        corrupt(&blob, 1);
+        let error = blob.complete().unwrap_err();
+        assert_eq!(error.code(), Some(8), "{error}");
+        assert!(!blob.is_complete());
+        assert_eq!(blob.held_count(), 0);
+        drop(blob);
+
+        // The inventory on disk is valid, and the refetch can go ahead.
+        let mut blob = blobs.blob(&table).unwrap();
+        assert!(!blob.is_complete());
+        assert_eq!(blob.held_count(), 0);
+        fill(&mut blob, &bytes);
+        assert_eq!(blob.complete().unwrap(), table.digest);
+    }
+}
+
+/// B2: rewriting a held chunk evicts it first. The complete flag goes, the new bytes are what
+/// is read, a restart sees the same, and in chunk-file mode the replaced bytes' file is freed.
+///
+/// The order is what makes a crash safe. In both modes the chunk's bit and the complete flag
+/// are cleared and synced before any new byte is written. A crash during the rewrite therefore
+/// leaves the chunk unheld, so the torn range is never read, and leaves the blob not complete, so
+/// no digest is claimed over bytes that were not hashed. A crash after the new bytes and their
+/// ID are synced but before the bit is set leaves the same state. In chunk-file mode the old file
+/// is deleted only after the new bit is set; a crash before that leaves an orphaned chunk file,
+/// which COMP-E11-T09's sweep frees (module docs).
+#[test]
+fn rewriting_a_held_chunk_evicts_it_first() {
+    for ops in [&OsSparse as &'static dyn SparseOps, &FatUnix] {
+        let scratch = Scratch::new("rewrite");
+        let root = scratch.root();
+        let blobs = Blobs::open_with(&root, ops).unwrap();
+        let bytes = source_bytes(3000, 22);
+        let table = table_of(&bytes, &chunk_file(3000, 0, [1000, 2000]).unwrap());
+        let mut blob = blobs.blob(&table).unwrap();
+        fill(&mut blob, &bytes);
+        blob.complete().unwrap();
+        let old_file = root.layout().chunk_file(&chunk_id(&bytes[1000..2000]).0);
+
+        // The state a crash right after the eviction step leaves: unheld, not complete.
+        blob.set_complete(false).unwrap();
+        blob.set_held(1, false).unwrap();
+        drop(blob);
+        let mut blob = blobs.blob(&table).unwrap();
+        assert!(!blob.is_held(1) && !blob.is_complete());
+        blob.write_chunk(1, &bytes[1000..2000]).unwrap();
+        blob.complete().unwrap();
+
+        // A rewrite with other bytes.
+        let other = vec![0x11u8; 1000];
+        blob.write_chunk(1, &other).unwrap();
+        assert!(!blob.is_complete(), "the complete flag survived a rewrite");
+        assert!(blob.is_held(1));
+        assert_eq!(blob.read_chunk(1).unwrap(), other);
+        if blob.mode() == BlobMode::ChunkFiles {
+            assert!(!old_file.exists(), "the replaced chunk file leaked");
+            assert!(root.layout().chunk_file(&chunk_id(&other).0).is_file());
+        }
+        drop(blob);
+        let mut blob = blobs.blob(&table).unwrap();
+        assert!(!blob.is_complete());
+        assert_eq!(blob.held_count(), 3);
+        assert_eq!(blob.read_chunk(1).unwrap(), other);
+        // Its digest now fails, and the blob is cleared, flag first.
+        assert_eq!(blob.complete().unwrap_err().code(), Some(8));
+    }
+}
+
+/// N1: the probe's outcome is recorded under `v1/` and reads back without the writer lock.
+#[test]
+fn the_probe_outcome_is_recorded_for_an_offline_doctor() {
+    let scratch = Scratch::new("mode-record");
+    let root = scratch.root();
+    assert_eq!(read_storage_mode(root.layout()).unwrap(), None);
+    drop(Blobs::open_with(&root, &FatUnix).unwrap());
+    let found = read_storage_mode(root.layout()).unwrap().unwrap();
+    assert!(matches!(
+        found,
+        StorageMode::ChunkFile(NoSparse::ExtendAllocates { .. })
+    ));
+    let text = fs::read_to_string(root.layout().storage_mode()).unwrap();
+    assert!(text.contains("\"version\": 1"), "{text}");
+    assert!(text.contains("\"mode\": \"chunk_file\""), "{text}");
+    assert!(text.contains("\"kind\": \"extend_allocates\""), "{text}");
+    // A later start replaces it.
+    drop(Blobs::open_with(&root, &FatWindows).unwrap());
+    assert!(matches!(
+        read_storage_mode(root.layout()).unwrap(),
+        Some(StorageMode::ChunkFile(NoSparse::SetSparseRefused { .. }))
+    ));
+    // Read from a read-only open of the same root, as an offline doctor would.
+    let reader = crate::ReadOnlyRoot::open(root.path()).unwrap();
+    assert!(read_storage_mode(reader.layout()).unwrap().is_some());
+    fs::write(root.layout().storage_mode(), b"{\"version\": 2}").unwrap();
+    assert!(matches!(
+        read_storage_mode(root.layout()),
+        Err(BlobError::BadInventory { .. })
+    ));
+}
+
+/// N3: a full disk is `Capacity`, other OS errors `Integrity`.
+#[test]
+fn a_full_disk_is_a_capacity_error() {
+    let io = |kind: io::ErrorKind| BlobError::Io {
+        op: "write",
+        path: PathBuf::from("/x"),
+        source: kind.into(),
+    };
+    assert_eq!(io(io::ErrorKind::StorageFull).class(), ErrorClass::Capacity);
+    assert_eq!(
+        io(io::ErrorKind::QuotaExceeded).class(),
+        ErrorClass::Capacity
+    );
+    assert_eq!(
+        io(io::ErrorKind::PermissionDenied).class(),
+        ErrorClass::Integrity
+    );
 }

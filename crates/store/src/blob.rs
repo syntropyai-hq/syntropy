@@ -12,13 +12,30 @@
 //! # Start: the sparse probe
 //!
 //! [`Blobs::open`] runs at a writable root's start. It creates `staging/sparse-probe`, marks it
-//! sparse, extends it to [`PROBE_BYTES`] (1 GiB) and reads the bytes it holds on disk. It then
-//! writes [`PROBE_WRITE_BYTES`] in the middle, punches them out again, and reads the bytes held
-//! once more. The volume has sparse files only when the extension allocated less than half its
-//! length and the punch freed at least half of what was written. Otherwise the root is in
-//! **chunk-file mode** ([`StorageMode::ChunkFile`]), with the reason ([`NoSparse`]): exFAT and
-//! FAT32 refuse the sparse flag on Windows and allocate the whole extension on Linux and macOS,
-//! and HFS+ allocates it too. The probe file is removed before `open` returns.
+//! sparse, extends it to [`PROBE_BYTES`] (1 GiB) and reads the bytes it holds on disk. Then:
+//!
+//! 1. It writes [`PROBE_WRITE_BYTES`] in the middle, and checks that the write allocated about
+//!    what it wrote, not the gap below it.
+//! 2. It punches those bytes out again, and checks that the punch freed at least half of them.
+//! 3. It writes the same bytes [`PROBE_NEAR_GAP_BYTES`] (8 MiB) into the file. A volume that
+//!    zero-fills a small gap below a write allocates the gap as well. APFS does: on the hosted
+//!    `macos-26` runner, a 4 KiB write 8 MiB into a file extended to 64 MiB held 8,404,992 bytes,
+//!    and one 1 MiB in held 1,064,960, while one 32 MiB in held 16,384 and 1 MiB written 512 MiB
+//!    into a 1 GiB file held 1,048,576 [measured, hosted macos-26, APFS, commit 318a01c]. On such
+//!    a volume the probe punches the gap and checks that it frees.
+//!
+//! A volume that passes is [`StorageMode::Sparse`], or [`StorageMode::SparseFillsGaps`] when step
+//! 3 filled the gap and the punch freed it. Then every chunk write punches the unheld runs just
+//! before and after its chunk, once the chunk's bytes and bit are synced
+//! (punching the 8 MiB gap of that 64 MiB file left 16,384 bytes held, same source). A volume
+//! that fails a step is in **chunk-file mode** ([`StorageMode::ChunkFile`]), with the reason
+//! ([`NoSparse`]): exFAT and FAT32 refuse the sparse flag on Windows and allocate the whole
+//! extension on Linux and macOS, and HFS+ allocates it too. The probe file is removed before
+//! `open` returns.
+//!
+//! What the probe found is written to `v1/storage-mode.json` (under a temporary name, synced,
+//! renamed and its directory synced), so an offline `syntropy doctor` reads it with
+//! [`read_storage_mode`] without opening the root for writing (STO-005, PROD-E9-T02).
 //!
 //! # Chunk-file mode
 //!
@@ -56,6 +73,8 @@
 //!   temporary name, renamed into place and its directory synced), in chunk-file mode the ID is
 //!   written and synced, and only then is the chunk's bit set and synced. A crash before the bit
 //!   leaves bytes the inventory does not claim, which a later write overwrites.
+//!   Writing a chunk that is already held clears the complete flag and the chunk's bit, synced,
+//!   before anything else.
 //! - **Evicting a chunk** (garbage collection, §4.4): the bit is cleared and synced first, then the
 //!   chunk's range is punched ([`syntropy_io::os::punch_hole`]: `fallocate(FALLOC_FL_PUNCH_HOLE)`
 //!   on Linux, `F_PUNCHHOLE` on macOS, `FSCTL_SET_ZERO_DATA` on Windows), or its chunk file
@@ -67,6 +86,11 @@
 //! is then byte-identical to the origin's file. A mismatch is `FileDigestMismatch` (8): every
 //! chunk is evicted, so nothing of the file is served, and the caller revokes its table (§6.3)
 //! and refetches.
+//!
+//! Two leftovers of a crash in chunk-file mode are not freed here: a chunk file renamed into place
+//! whose ID was never written to the inventory, and a `chunks/<xx>/<id>.part` file whose write
+//! did not finish. No inventory names either, so COMP-E11-T09's garbage collection must sweep
+//! `chunks/` for them, as it sweeps unnamed extents.
 //!
 //! Disk use is counted in allocated blocks, not file lengths ([`Blobs::disk_usage`],
 //! [`Blob::allocated_bytes`]).
@@ -83,17 +107,22 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use serde::{Deserialize, Serialize};
 use syntropy_core::{Blake3, ErrorClass};
 use syntropy_manifest::chunk::{ChunkTable, chunk_id};
 use syntropy_manifest::{FileDigest, RangeError, RangeSource};
 
-use crate::WritableRoot;
+use crate::{Layout, WritableRoot};
 
 /// The length the start-up probe extends its file to: 1 GiB (RFC-0041 §4.2).
 pub const PROBE_BYTES: u64 = 1 << 30;
 
 /// The bytes the probe writes and then punches out again: 1 MiB.
 pub const PROBE_WRITE_BYTES: u64 = 1 << 20;
+
+/// Where the probe's second write goes: 8 MiB into the file, past a gap small enough that APFS
+/// zero-fills it (module docs).
+pub const PROBE_NEAR_GAP_BYTES: u64 = 8 << 20;
 
 /// The inventory's magic.
 pub const INVENTORY_MAGIC: [u8; 8] = *b"SYNCINV1";
@@ -133,10 +162,20 @@ impl BlobMode {
 }
 
 /// What the start-up probe found (module docs).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "reason", rename_all = "snake_case")]
 pub enum StorageMode {
     /// The volume has sparse files: new source files are sparse blobs.
     Sparse,
+    /// The volume has sparse files, but a write past a small gap zero-fills the gap, as APFS
+    /// does: new source files are sparse blobs, and each chunk write then punches the unheld
+    /// ranges beside the chunk (module docs).
+    SparseFillsGaps {
+        /// The gap the probe wrote past.
+        gap: u64,
+        /// The bytes that write allocated beyond what it wrote.
+        filled: u64,
+    },
     /// It does not, and why: new source files are stored one file per chunk.
     ChunkFile(NoSparse),
 }
@@ -146,7 +185,7 @@ impl StorageMode {
     #[must_use]
     pub fn blob_mode(&self) -> BlobMode {
         match self {
-            StorageMode::Sparse => BlobMode::Sparse,
+            StorageMode::Sparse | StorageMode::SparseFillsGaps { .. } => BlobMode::Sparse,
             StorageMode::ChunkFile(_) => BlobMode::ChunkFiles,
         }
     }
@@ -156,6 +195,11 @@ impl fmt::Display for StorageMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StorageMode::Sparse => f.write_str("sparse blobs"),
+            StorageMode::SparseFillsGaps { gap, filled } => write!(
+                f,
+                "sparse blobs; a write past a {gap}-byte gap allocated {filled} bytes more than it \
+                 wrote, so each chunk write punches the holes beside it"
+            ),
             StorageMode::ChunkFile(why) => write!(
                 f,
                 "chunk-file mode, one file per chunk, which is slower: the volume has no \
@@ -166,7 +210,8 @@ impl fmt::Display for StorageMode {
 }
 
 /// Why the probe found no sparse-file support.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NoSparse {
     /// The volume refused to mark the probe sparse, as Windows does on FAT32 and exFAT.
     SetSparseRefused {
@@ -190,6 +235,24 @@ pub enum NoSparse {
     PunchRefused {
         /// The OS error's text.
         message: String,
+    },
+    /// A write far past the end of the data allocated the gap below it too.
+    WriteFillsGap {
+        /// The gap.
+        gap: u64,
+        /// The bytes written.
+        written: u64,
+        /// The bytes the write allocated.
+        allocated: u64,
+    },
+    /// A write past a small gap filled it, and punching the gap did not free it.
+    GapPunchKeptBlocks {
+        /// The gap.
+        gap: u64,
+        /// The bytes the write allocated beyond what it wrote.
+        filled: u64,
+        /// The bytes still held beyond the write after the punch.
+        after: u64,
     },
     /// A punch succeeded but freed less than half of the bytes written.
     PunchKeptBlocks {
@@ -216,6 +279,19 @@ impl fmt::Display for NoSparse {
             NoSparse::PunchRefused { message } => {
                 write!(f, "punching a hole failed: {message}")
             }
+            NoSparse::WriteFillsGap {
+                gap,
+                written,
+                allocated,
+            } => write!(
+                f,
+                "writing {written} bytes past a {gap}-byte gap allocated {allocated} bytes"
+            ),
+            NoSparse::GapPunchKeptBlocks { gap, filled, after } => write!(
+                f,
+                "a write past a {gap}-byte gap filled {filled} bytes of it, and punching the gap \
+                 left {after} bytes allocated"
+            ),
             NoSparse::PunchKeptBlocks { before, after } => write!(
                 f,
                 "punching a hole left {after} of {before} bytes allocated"
@@ -341,6 +417,15 @@ impl BlobError {
     #[must_use]
     pub fn class(&self) -> ErrorClass {
         match self {
+            // A full disk or quota is `Capacity`, as RFC-0041 §10's `NoSpace` is, not corruption.
+            BlobError::Io { source, .. }
+                if matches!(
+                    source.kind(),
+                    io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+                ) =>
+            {
+                ErrorClass::Capacity
+            }
             BlobError::ChunkMismatch { .. }
             | BlobError::FileDigestMismatch { .. }
             | BlobError::BadInventory { .. }
@@ -494,10 +579,19 @@ fn probe_file(file: &File, ops: &dyn SparseOps) -> io::Result<StorageMode> {
             state.to_le_bytes()[0]
         })
         .collect();
+    // A write far into the extension must allocate about what it wrote, not the gap below it.
     let at = PROBE_BYTES / 2;
     write_all_at(file, at, &bytes)?;
     file.sync_all()?;
     let before = ops.allocated_bytes(file)?;
+    let grew = before.saturating_sub(allocated);
+    if grew > 2 * PROBE_WRITE_BYTES {
+        return refuse(NoSparse::WriteFillsGap {
+            gap: at,
+            written: PROBE_WRITE_BYTES,
+            allocated: grew,
+        });
+    }
     if let Err(e) = ops.punch_hole(file, at, PROBE_WRITE_BYTES) {
         return refuse(NoSparse::PunchRefused {
             message: e.to_string(),
@@ -508,7 +602,82 @@ fn probe_file(file: &File, ops: &dyn SparseOps) -> io::Result<StorageMode> {
     if before.saturating_sub(after) < PROBE_WRITE_BYTES / 2 {
         return refuse(NoSparse::PunchKeptBlocks { before, after });
     }
-    Ok(StorageMode::Sparse)
+    // A write a short way past the file's start: APFS zero-fills a gap this small below a write
+    // (module docs). If it does, the filled gap must punch out again.
+    write_all_at(file, PROBE_NEAR_GAP_BYTES, &bytes)?;
+    file.sync_all()?;
+    let near = ops.allocated_bytes(file)?;
+    let grew = near.saturating_sub(after);
+    if grew <= 2 * PROBE_WRITE_BYTES {
+        return Ok(StorageMode::Sparse);
+    }
+    if let Err(e) = ops.punch_hole(file, 0, PROBE_NEAR_GAP_BYTES) {
+        return refuse(NoSparse::PunchRefused {
+            message: e.to_string(),
+        });
+    }
+    file.sync_all()?;
+    let punched = ops.allocated_bytes(file)?;
+    if punched.saturating_sub(after) > 2 * PROBE_WRITE_BYTES {
+        return refuse(NoSparse::GapPunchKeptBlocks {
+            gap: PROBE_NEAR_GAP_BYTES,
+            filled: grew.saturating_sub(PROBE_WRITE_BYTES),
+            after: punched.saturating_sub(after),
+        });
+    }
+    Ok(StorageMode::SparseFillsGaps {
+        gap: PROBE_NEAR_GAP_BYTES,
+        filled: grew.saturating_sub(PROBE_WRITE_BYTES),
+    })
+}
+
+/// The format version of `v1/storage-mode.json`.
+pub const STORAGE_MODE_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct StorageModeRecord {
+    version: u32,
+    storage: StorageMode,
+}
+
+/// Writes what the probe found to `v1/storage-mode.json`, replacing the last start's.
+fn write_storage_mode(layout: &Layout, mode: &StorageMode) -> Result<(), BlobError> {
+    let record = StorageModeRecord {
+        version: STORAGE_MODE_VERSION,
+        storage: mode.clone(),
+    };
+    let mut bytes = serde_json::to_vec_pretty(&record)
+        .map_err(io::Error::other)
+        .map_err(|e| BlobError::io("encode", &layout.storage_mode(), e))?;
+    bytes.push(b'\n');
+    write_synced(&layout.storage_mode(), &bytes)
+}
+
+/// What the last start-up probe of the root at `layout` found, read without the writer lock, so
+/// an offline `doctor` can show it (STO-005). `Ok(None)` when no writable start has probed the
+/// root yet.
+///
+/// # Errors
+///
+/// [`BlobError::Io`] when the file cannot be read, and [`BlobError::BadInventory`] when it is not
+/// a version-1 record.
+pub fn read_storage_mode(layout: &Layout) -> Result<Option<StorageMode>, BlobError> {
+    let path = layout.storage_mode();
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(BlobError::io("read", &path, e)),
+    };
+    let record: StorageModeRecord = serde_json::from_slice(&bytes).map_err(|_| {
+        bad(
+            &path,
+            "the storage-mode record is not valid JSON of its format",
+        )
+    })?;
+    if record.version != STORAGE_MODE_VERSION {
+        return Err(bad(&path, "the storage-mode record's version is not 1"));
+    }
+    Ok(Some(record.storage))
 }
 
 /// The source blobs of one writable root.
@@ -542,11 +711,28 @@ impl<'r> Blobs<'r> {
         Blobs::open_with(root, &OsSparse)
     }
 
+    /// A root's blobs as if its probe had found `mode`, for tests of a volume this host is not.
+    #[cfg(test)]
+    pub(crate) fn open_as(
+        root: &'r WritableRoot,
+        ops: &'static dyn SparseOps,
+        mode: StorageMode,
+    ) -> Blobs<'r> {
+        Blobs {
+            root,
+            mode,
+            ops,
+            chunk_files: Mutex::new(()),
+            open: Mutex::new(BTreeSet::new()),
+        }
+    }
+
     pub(crate) fn open_with(
         root: &'r WritableRoot,
         ops: &'static dyn SparseOps,
     ) -> Result<Blobs<'r>, BlobError> {
         let mode = probe(&root.layout().sparse_probe(), ops)?;
+        write_storage_mode(root.layout(), &mode)?;
         Ok(Blobs {
             root,
             mode,
@@ -850,6 +1036,12 @@ impl Blob<'_> {
     /// Writes chunk `index`'s verified `bytes` and marks it held (module docs). Returns the
     /// chunk's `ChunkId`, the BLAKE3 of the bytes, for the caller's pending batch (RFC-0041 §6.3).
     ///
+    /// A chunk that is already held is evicted first: the blob's complete flag and the chunk's bit
+    /// are cleared and synced, then the new bytes are written as for any chunk, so a rewrite with
+    /// other bytes, such as a refetch after corruption, is never read half-written and never
+    /// leaves the blob marked complete over bytes that were not hashed. In chunk-file mode the
+    /// replaced chunk's file is deleted when no inventory holds it any more.
+    ///
     /// # Errors
     ///
     /// - [`BlobError::NoSuchChunk`] or [`BlobError::WrongLength`] for an index or length the table
@@ -876,15 +1068,30 @@ impl Blob<'_> {
                 actual: id,
             });
         }
+        // A held chunk is evicted before it is written again: its bit, and the complete flag,
+        // are cleared and synced first, so a crash during the new write never leaves a bit over
+        // bytes that are neither the old chunk nor the new one.
+        let replaced = self.is_held(index);
+        if replaced {
+            self.set_complete(false)?;
+            self.set_held(index, false)?;
+        }
         if let Some(file) = &self.data {
             write_all_at(file, record.chunk.offset, bytes)
                 .and_then(|()| file.sync_data())
                 .map_err(|e| BlobError::io("write", &self.data_path, e))?;
             self.set_held(index, true)?;
+            if matches!(self.blobs.mode, StorageMode::SparseFillsGaps { .. }) {
+                // Only now, with the chunk's bytes and bit synced: every range punched is
+                // unheld, so a crash at any point leaves at worst zeros the inventory does not
+                // claim. A failed punch costs only space, which `reclaim` frees later.
+                let _ = self.punch_beside(index);
+            }
             return Ok(id);
         }
         let blobs = self.blobs;
         let _guard = lock(&blobs.chunk_files);
+        let old = self.inventory.ids[index];
         self.write_chunk_file(&id.0, bytes)?;
         self.inventory.ids[index] = id.0;
         let at = self.inventory.id_offset(index);
@@ -892,6 +1099,10 @@ impl Blob<'_> {
             .and_then(|()| self.inv_file.sync_data())
             .map_err(|e| BlobError::io("write", &self.inv_path, e))?;
         self.set_held(index, true)?;
+        // The chunk file the replaced bytes were in, when nothing else holds it any more.
+        if replaced && old != id.0 {
+            self.delete_unheld_chunk_files(&[old])?;
+        }
         Ok(id)
     }
 
@@ -1031,6 +1242,38 @@ impl Blob<'_> {
         self.free(&[index])
     }
 
+    /// Punches the runs of unheld chunks just before and just after chunk `index`, back to the
+    /// nearest held chunk or the file's ends: the gap a volume that fills gaps
+    /// ([`StorageMode::SparseFillsGaps`]) allocated when the chunk was written. The ranges are
+    /// whole chunks that are not held, and `syntropy_io::os::punch_hole` rounds them inward to
+    /// whole blocks where the OS punches only blocks, so no byte of a held chunk changes.
+    fn punch_beside(&self, index: usize) -> Result<(), BlobError> {
+        let Some(file) = &self.data else {
+            return Ok(());
+        };
+        let records = &self.table.records;
+        let mut first = index;
+        while first > 0 && !self.is_held(first - 1) {
+            first -= 1;
+        }
+        let mut last = index + 1;
+        while last < records.len() && !self.is_held(last) {
+            last += 1;
+        }
+        let before = records[first].chunk.offset..records[index].chunk.offset;
+        let after = records[index].chunk.end()..records[last - 1].chunk.end();
+        for run in [before, after] {
+            if run.start < run.end {
+                self.blobs
+                    .ops
+                    .punch_hole(file, run.start, run.end - run.start)
+                    .map_err(|e| BlobError::io("punch", &self.data_path, e))?;
+            }
+        }
+        file.sync_data()
+            .map_err(|e| BlobError::io("sync", &self.data_path, e))
+    }
+
     /// Frees the blocks of every chunk that is not held: the ranges a crash between clearing a
     /// bit and punching left allocated, or chunk files no inventory holds any more.
     ///
@@ -1067,20 +1310,26 @@ impl Blob<'_> {
             }
             None => {
                 let _guard = lock(&self.blobs.chunk_files);
-                let mut held = self.blobs.held_chunk_ids(Some(&self.inv_path))?;
-                held.extend(self.inventory.held_ids());
-                let layout = self.blobs.root.layout();
-                for &i in chunks {
-                    let id = self.inventory.ids[i];
-                    if id == [0; 32] || held.contains(&id) {
-                        continue;
-                    }
-                    let path = layout.chunk_file(&id);
-                    remove_if_present(&path).map_err(|e| BlobError::io("remove", &path, e))?;
-                }
-                Ok(())
+                let ids: Vec<[u8; 32]> = chunks.iter().map(|&i| self.inventory.ids[i]).collect();
+                self.delete_unheld_chunk_files(&ids)
             }
         }
+    }
+
+    /// Deletes each chunk file of `ids` that no inventory on the root holds, this one included.
+    /// The caller holds `chunk_files`.
+    fn delete_unheld_chunk_files(&self, ids: &[[u8; 32]]) -> Result<(), BlobError> {
+        let mut held = self.blobs.held_chunk_ids(Some(&self.inv_path))?;
+        held.extend(self.inventory.held_ids());
+        let layout = self.blobs.root.layout();
+        for id in ids {
+            if *id == [0; 32] || held.contains(id) {
+                continue;
+            }
+            let path = layout.chunk_file(id);
+            remove_if_present(&path).map_err(|e| BlobError::io("remove", &path, e))?;
+        }
+        Ok(())
     }
 
     /// Hashes the whole file and compares it with the table's `FileDigest` (module docs). On a
@@ -1108,6 +1357,9 @@ impl Blob<'_> {
             self.set_complete(true)?;
             return Ok(actual);
         }
+        // The flag first: a complete flag over a bitmap that is not full is a malformed
+        // inventory, which could not be opened again for the refetch.
+        self.set_complete(false)?;
         let all: Vec<usize> = (0..self.chunk_count()).collect();
         for &i in &all {
             self.inventory.set(i, false);

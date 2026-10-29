@@ -28,7 +28,9 @@ pub mod layout;
 pub mod local;
 pub mod root;
 
-pub use blob::{Blob, BlobError, BlobMode, Blobs, DiskUsage, NoSparse, StorageMode};
+pub use blob::{
+    Blob, BlobError, BlobMode, Blobs, DiskUsage, NoSparse, StorageMode, read_storage_mode,
+};
 pub use error::StoreError;
 pub use layout::{Layout, Name, NameError};
 pub use local::{LocalError, LocalFile, LocalIndex};

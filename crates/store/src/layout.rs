@@ -23,6 +23,7 @@
 //!   packs/<device-class>/side/<pack-key>.<kind>    Layout::side_record
 //!   packs/<device-class>/build/<pack-key>.intent   Layout::build_intent
 //!   staging/<sha256>/<chunk>.part       Layout::staging_part
+//!   storage-mode.json                   Layout::storage_mode; what the start-up probe found
 //!   staging/sparse-probe                Layout::sparse_probe; the start-up probe (§4.2), only
 //!                                       while it runs
 //!   chunks/<id[0..2]>/<id>              Layout::chunk_file; a chunk in chunk-file mode (§4.2)
@@ -450,6 +451,12 @@ impl Layout {
         self.staging_file_dir(sha256).join(format!("{index}.part"))
     }
 
+    /// `storage-mode.json`: what the last start-up probe found (§4.2), which an offline `doctor`
+    /// reads without the writer lock (STO-005).
+    pub fn storage_mode(&self) -> PathBuf {
+        self.base.join("storage-mode.json")
+    }
+
     /// `staging/sparse-probe`: the file a writable root's start allocates sparse to learn
     /// whether its volume has sparse files (§4.2), removed again at once. Its name is not hex,
     /// so it cannot be a staged file's directory.
@@ -579,6 +586,7 @@ mod tests {
                 l.staging_part(&SHA, 12),
                 format!("v1/staging/{SHA_HEX}/12.part"),
             ),
+            (l.storage_mode(), "v1/storage-mode.json".into()),
             (l.sparse_probe(), "v1/staging/sparse-probe".into()),
             (l.chunk_file(&SHA), format!("v1/chunks/00/{SHA_HEX}")),
             (l.sessions_dir(), "v1/sessions".into()),

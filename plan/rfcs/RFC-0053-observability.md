@@ -522,7 +522,7 @@ pub struct Fix {
 | RUN-006 | daemon heartbeat stalls that put runners into orphan mode without a restart (RFC-0052 §6.5) | count and longest stall in the last 24 h |
 | PRV-001 | what leaves this node: exporters, update checks, relays | destinations (§8); with `doctor --network`, every outbound destination contacted in the last 24 hours with byte counts (RFC-0034 §13) |
 
-**Revision note, 2026-10-29 (COMP-E11-T02): STO-005.** RFC-0041 §4.2 says chunk-file mode "is flagged in `syntropy doctor`", and no check in this list did so. STO-005 is that check. It reads `syntropy_store::Blobs::mode`, the result of the root's start-up sparse probe, which names the reason the volume has no sparse files. PROD-E9-T02 builds it with the other STO checks.
+**Revision note, 2026-10-29 (COMP-E11-T02): STO-005.** RFC-0041 §4.2 says chunk-file mode "is flagged in `syntropy doctor`", and no check in this list did so. STO-005 is that check. It reads `v1/storage-mode.json`, which the store writes after each writable start's sparse probe, with `syntropy_store::read_storage_mode`. The record names the mode and the reason the volume has no sparse files, and reading it needs no writer lock, so the check runs under `--offline` while a daemon holds the root. PROD-E9-T02 builds it with the other STO checks.
 
 ### 6. Debug state dump
 

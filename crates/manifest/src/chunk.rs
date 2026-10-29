@@ -470,8 +470,8 @@ impl ChunkTable {
         })
     }
 
-    /// The digest of the table's shape: its `FileDigest`, its file length, and each record's
-    /// offset, length and header flag, in order, after [`SHAPE_DOMAIN`]. IDs and evidence are
+    /// The digest of the table's shape: its `FileDigest`, its file length, its record count, and
+    /// each record's offset, length and header flag, in order, after [`SHAPE_DOMAIN`]. IDs and evidence are
     /// not in it, so a table that commits more IDs, or stronger evidence for them, keeps its
     /// digest. A sparse blob's inventory records it, so its bitmap is read only against a table
     /// whose chunk `i` is the same range of the same file (RFC-0041 §4.1, §4.2).
