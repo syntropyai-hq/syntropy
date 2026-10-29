@@ -7,7 +7,11 @@
 //!
 //! The test is ignored: it needs a second build of `syntropy-cli`, which
 //! `cargo xtask test runner-build-id` makes and names in `SYNTROPY_OTHER_BUILD_RUNNER`. This test
-//! binary plays the daemon, through `daemon`'s real spawn path, with this build's ID.
+//! binary plays the daemon, through `daemon`'s real spawn path, with this build's ID; the suite
+//! removes `SYNTROPY_BUILD_COMMIT` when it builds this test, so `CARGO_BIN_EXE_syntropy` is the
+//! checkout's own commit.
+
+#![cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -62,12 +66,17 @@ fn a_runner_of_another_build_is_refused_and_this_build_passes() {
         unreachable!()
     };
     assert_ne!(theirs, ours, "the other build reports another ID");
-    // The handshake killed and reaped it.
+    // The handshake killed and reaped it, and removed its region's name.
     let status = refused.exit.expect("the refused runner was reaped");
-    assert!(
-        !status.success(),
-        "runner {pid} was killed, not left running: {status}"
-    );
+    assert!(!status.success(), "runner {pid}: {status}");
+    // Killed, not exited: SIGKILL on Unix. On Windows `TerminateProcess` exits with code 1, which
+    // the runner's own failure exit also uses, so there only the reap is shown.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(9), "runner {pid}: {status}");
+    }
+    assert!(runner.region_unlinked());
 
     // The daemon's own build passes, and is shut down.
     let mut runner = spawn_process(this_build(), &layout, ours, &Varying).unwrap();
@@ -75,4 +84,6 @@ fn a_runner_of_another_build_is_refused_and_this_build_passes() {
     assert_eq!(hello.build_id, ours);
     assert_eq!(hello.pid, runner.id());
     runner.kill().unwrap();
+    let status = runner.wait().unwrap();
+    assert!(!status.success());
 }
