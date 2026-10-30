@@ -338,6 +338,7 @@ fn the_generator_refuses_what_it_cannot_lay_out() {
         "struct a {\n    uint32_t x;\n};\n",
         "struct syn_a {\n    uint32_t x; /* c */\n};\n",
         "#define OTHER 3\n",
+        "#define SYN_WIDE 4294967296\n",
         "struct syn_a {\n",
     ] {
         assert!(cgen::parse(bad).is_err(), "accepted: {bad:?}");

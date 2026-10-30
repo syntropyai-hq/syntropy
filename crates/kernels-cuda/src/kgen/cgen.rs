@@ -66,7 +66,7 @@ impl CType {
     }
 }
 
-/// `#define SYN_NAME <decimal>`.
+/// `#define SYN_NAME <decimal>`, a value that fits the `u32` constant it becomes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Define {
     /// Its doc lines.
@@ -74,7 +74,7 @@ pub struct Define {
     /// The name, with its `SYN_` prefix.
     pub name: String,
     /// The value.
-    pub value: u64,
+    pub value: u32,
 }
 
 /// One struct member, at the offset C gives it.
@@ -218,7 +218,7 @@ pub fn parse(text: &str) -> Result<Header, String> {
                             .trim()
                             .trim_end_matches(['u', 'U'])
                             .parse()
-                            .map_err(|_| at("a constant that is not a decimal integer"))?;
+                            .map_err(|_| at("a constant that is not a decimal u32"))?;
                         defines.push(Define {
                             docs: std::mem::take(&mut docs),
                             name: name.to_owned(),

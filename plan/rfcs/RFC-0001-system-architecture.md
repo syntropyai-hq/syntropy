@@ -3073,7 +3073,7 @@ From issue #1525, the review of COMP-E1-T01.
 
 | Change | Sections touched | Reason |
 |---|---|---|
-| **Accepted by the maintainers on 2026-10-25.** For the CUDA provider, `cargo xtask kgen` generates the `#[repr(C)]` mirrors of `csrc/params.h` into a checked-in `src/params.rs`, in place of `bindgen` in `build.rs`. Until a CUDA toolchain gate exists, the layout test compares against the host C and C++ compilers rather than the kernel compiler | RFC-0040 §1 (dated revision, Accepted), §10.2 (dated note) | no `bindgen` dependency and no compiler in the build of a crate that contributors without device toolchains build (RFC-0040 §10.2 rule 4). nvcc lays out structs of 32- and 64-bit integer and `float` members as the host compiler does. The nvcc comparison waits for the toolchain gate (COMP-E9-T02). COMP-E9-T01, #1729 |
+| **Accepted by the maintainers on 2026-10-25.** For the CUDA provider, `cargo xtask kgen` generates the `#[repr(C)]` mirrors of `csrc/params.h` into a checked-in `src/params.rs`, in place of `bindgen` in `build.rs`. Until a CUDA toolchain gate exists, the layout test compares against the host C and C++ compilers rather than the kernel compiler | RFC-0040 §1 (dated revision, Accepted), §10.2 (dated note) | no `bindgen` dependency and no compiler in the build of a crate that contributors without device toolchains build (RFC-0040 §10.2 rule 4). nvcc lays out structs of 32- and 64-bit integer and `float` members as the host compiler does. The nvcc comparison is COMP-E9-T18's. COMP-E9-T01, #1729 |
 
 ### 18.38 The API's local socket in `ipc` (2026-10-27)
 
