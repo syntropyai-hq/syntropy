@@ -36,6 +36,10 @@
 //! - **Timeouts.** A dial or a handshake that outlasts `link.connect_timeout` fails with
 //!   `ConnectTimeout` (0x020A). A refusal, such as an unaccepted ALPN or a `HelloAck` with a
 //!   §12 status, keeps its own error: a refusal is `Link` with no code, or the status's code.
+//! - **Bulk pacing** (§4.2, §7.5). [`QuicTransport::pacing`] holds one
+//!   [`BulkPacer`](crate::transport::pacing::BulkPacer) per peer: once the owner paces a peer,
+//!   the `Bulk` and `Replay` channels on its bulk connection send at the pacer's rate, set by the
+//!   α samples of the channels on its latency connection.
 //!
 //! The connect and accept futures are `Send` and may run on any runtime: they hand the work to the
 //! domain's thread and wait for its answer.
@@ -65,6 +69,7 @@ use crate::error::{Error, ErrorCode};
 use crate::transport::buffer::{BufferPool, PoolRegistration};
 use crate::transport::core::{CONTROL_RECEIVES, MAX_CONTROL_FRAME};
 use crate::transport::domain::DomainHandle;
+use crate::transport::pacing::PacedEdges;
 use crate::transport::registration::RegistrationTable;
 use crate::transport::stream::{self, ChannelAuth, HelloIn, StreamSpec};
 use crate::transport::{
@@ -266,6 +271,7 @@ struct Inner {
     pools: RegistrationTable,
     conns: Mutex<Conns>,
     routes: Mutex<Routes>,
+    pacing: PacedEdges,
 }
 
 /// The QUIC backend of RFC-0031 §4: endpoints, two connections per peer, a stream per channel,
@@ -332,12 +338,18 @@ impl QuicTransport {
                     pools: RegistrationTable::new(),
                     conns: Mutex::new(HashMap::new()),
                     routes: Mutex::new(Routes::default()),
+                    pacing: PacedEdges::default(),
                 });
                 task_domain.spawn(accept_connections(Arc::downgrade(&inner)));
                 Ok(QuicTransport { inner })
             })
             .await
             .map_err(|error| link(format!("the net domain stopped: {error}")))?
+    }
+
+    /// The bulk pacing of each peer edge, by the peer's endpoint key (RFC-0031 §7.5).
+    pub fn pacing(&self) -> &PacedEdges {
+        &self.inner.pacing
     }
 
     /// The endpoint's key, which peers dial.
@@ -679,7 +691,8 @@ impl Inner {
         .await?;
         let agreed = agreed
             .map_err(|code| Error::new(code, format!("refused the channel {:?}", spec.key)))?;
-        let opened = stream::open(recv, send, spec, agreed, &self.domain)?;
+        let opened =
+            stream::open(recv, send, spec, agreed, &self.domain)?.paced(self.pacing.edge(&peer));
         Ok(opened.spawn_with(&self.domain, credited))
     }
 }
@@ -852,7 +865,8 @@ impl Transport for QuicTransport {
                         ));
                     }
                 };
-                let opened = stream::open(recv, send, spec_in, agreed, &inner.domain)?;
+                let opened = stream::open(recv, send, spec_in, agreed, &inner.domain)?
+                    .paced(inner.pacing.edge(&remote.key));
                 Ok(opened.spawn_with(&inner.domain, credited))
             })
             .await

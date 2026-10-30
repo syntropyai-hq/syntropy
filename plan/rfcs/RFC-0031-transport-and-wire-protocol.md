@@ -954,6 +954,7 @@ One mechanism runs on every backend (ADR-0307), so failover between backends nee
 - **When credits are sent.**
   - **Activations and Tokens channels:** a `Credit` follows every received *data* frame (control frames never trigger credits), with `echo_seq` set to it. A 64-byte credit per 16–32 KiB frame is 0.2–0.4 % overhead. It gives the sender an RTT sample per frame and releases its retention slot as early as possible.
   - **Replay, Bulk and the prefill lanes of Collective:** a credit every `max(1, recv_slots / 4)` frames, or when the remaining credit drops below half.
+  - *Note 2026-10-31 (DIST-E7-T25): a batched receiver that goes idle sends its credit.* On the stream backends, a batched receiver that has read everything that arrived, and is about to wait, sends the credit it was holding back for a fuller batch (`ChannelCore::on_idle`). A burst read in one pass still takes one credit per batch. Without it, a sender whose frames come too sparsely to fill a batch, as a bulk channel held by its edge's pacer (§7.5) does, got each acknowledgement only by its ack timeout: the oldest frame was sent again, unpaced, and in the loopback tests a `net` thread starved under load let three timeouts in a row fault the channel with `AckTimeout`. The simulator delivers each frame at its arrival time and does not call it.
 - **α sampling.** `rtt = now − sent_at(echo_seq) − echo_delay`. The one-way α estimate is `rtt / 2`, refined by RFC-0010 into `LinkCaps::alpha` with `MeasureSource::Online`. These samples come free on every edge carrying traffic.
 
 **Sizing [derivation].** A channel needs enough credit to cover one round trip of frames in flight:
@@ -1047,6 +1048,15 @@ The limiter is a token bucket in the daemon's `bulk` runtime. It applies to `Blo
   - In the simulator, `SimNet::pace` gates `Bulk` and `Replay` sends on an edge with it.
   - In the QUIC and TCP backends, DIST-E7-T25 gates their bulk sends with it, and holds the rig check of ADR-0011 item 8's bound, the first task where it can run.
   - ADR-0011 item 8 states only the 1.2 × bound, which this keeps, so it needs no revision.
+
+**Note, 2026-10-31 (DIST-E7-T25): the pacer in the QUIC and TCP backends.**
+- **One pacer per peer edge.** `QuicTransport::pacing` and `TcpTransport::pacing` each hold a `PacedEdges`, by the peer's endpoint key. The owner paces an edge with `PacedEdges::pace`, from `net.bulk_p99_ratio`, `net.bulk_floor`, the edge's β and its idle p99 (`PacingConfig::new`), and a clock. Every channel to that peer, open or opened later, shares it. On QUIC that is the bulk connection's channels and the latency connection's together; on TCP, each channel's own connection.
+- **The gate.** `try_send` on a `Bulk` or `Replay` channel takes the frame's bytes, header included, from the pacer once the channel's credit allows the frame. Without the tokens it returns `WouldBlock`, and the new `Channel::paced_until` says when they will be there, on the pacer's clock. A wait for the pacer is not counted as a credit stall.
+- **The samples.** The `net` task of each of the peer's other channels hands the pacer each α sample its core takes, as the frame that gave it lands.
+- **One clock.** The pacer reads the clock `pace` was given, so the dispatcher's sends and the `net` task's samples are on one timeline, and the loopback tests drive it by hand.
+- **No lock wait on a send.** The edge's state sits behind a mutex that bulk sends, α samples and the owner's calls take for one pacer step each. A bulk send only tries it: while the `net` task holds it, the send returns `WouldBlock` with a time already past, and may go again at once. A send to an edge that is not paced is one atomic load.
+- **No reset of the ceiling when the edge's last data channel closes.** The task weighed it and declined it. A relink closes every channel of the old epoch and opens the new epoch's at once, so the ring that comes back is usually the one the last breach measured. A reset on close would let its first window climb back into that saturation, as a reset after a short pause does in the simulator (note of 2026-10-23 above). The reset after 1,024 windows with no sample still runs. An owner that knows an edge has no data plane left can pace it again, which starts a new pacer at the floor.
+- **The rig check** of ADR-0011 item 8's bound, a 10 GB transfer beside a live ring on one 2.5 GbE edge, moved to DIST-E7-T26, since loopback cannot load a physical edge.
 
 ### 8. Zero-copy receive and buffer pools
 

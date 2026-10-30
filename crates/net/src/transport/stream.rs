@@ -26,6 +26,10 @@
 //! - **Closing.** [`Channel::close`] travels on the out ring behind the frames already sent, so
 //!   they arrive first. The task finishes its half of the stream once its `Close` has gone, and
 //!   ends when the peer has finished its half. A dropped [`Channel`] closes the same way.
+//! - **Bulk pacing** (RFC-0031 §7.5). A channel opened with its peer's edge
+//!   (`Opened::paced`) shares the edge's [`BulkPacer`](super::pacing::BulkPacer): a `Bulk` or
+//!   `Replay` channel's `try_send` takes each frame's bytes from it once the credit allows the
+//!   frame, and any other channel's task hands it each α sample its core takes.
 //!
 //! **The handshake** (§6.9). The side that connects sends `Hello`, with its key, wire dtype,
 //! receive slots and slot size; the side that accepts answers `HelloAck` with its own, or a
@@ -53,6 +57,7 @@ use super::core::{
     CreditCadence, MAX_CONTROL_FRAME, SendConfig, Transmit,
 };
 use super::domain::{DomainHandle, DomainState, wake};
+use super::pacing::Edge;
 use crate::error::{Error, ErrorCode};
 use crate::frame::{
     self, Control, ControlSpec, CredKind, Flags, Frame, FrameType, HEADER_LEN, Hello, HelloAck,
@@ -492,6 +497,10 @@ struct HotSide {
     credit_stalls: u64,
     credit_stall: u64,
     stalled_since: Option<Instant>,
+    /// The peer edge's pacer, on a `Bulk` or `Replay` channel to a peer whose edge is paced.
+    pacing: Option<Arc<Edge>>,
+    /// When the send the pacer held can go, if the last `try_send` was held by the pacer.
+    paced_until: Option<MonoTime>,
 }
 
 impl HotSide {
@@ -502,6 +511,7 @@ impl HotSide {
 
 impl ChannelBackend for HotSide {
     fn try_send(&mut self, frame: OutFrame) -> Result<SendTicket, SendError> {
+        self.paced_until = None;
         if self.closed {
             return Err(SendError::Closed);
         }
@@ -537,6 +547,15 @@ impl ChannelBackend for HotSide {
         ) else {
             return Err(SendError::Invalid);
         };
+        // A bulk send waits for the edge's pacer once the credit lets it go (RFC-0031 §7.5). If
+        // the ring then refuses the frame, its tokens are spent unsent: the edge sends less, never
+        // more.
+        if let Some(edge) = &self.pacing
+            && let Err(when) = edge.try_send(len)
+        {
+            self.paced_until = Some(when);
+            return Err(SendError::WouldBlock);
+        }
         match self.out.push(Outbound::Frame {
             ftype: frame.ftype,
             step: frame.step,
@@ -599,6 +618,10 @@ impl ChannelBackend for HotSide {
         // anyway once the dispatcher drops it.
         let _ = self.out.push(Outbound::Close(reason));
     }
+
+    fn paced_until(&self) -> Option<MonoTime> {
+        self.paced_until
+    }
 }
 
 // ---- The net task ----
@@ -606,7 +629,7 @@ impl ChannelBackend for HotSide {
 /// A channel opened over `r` and `w` after the handshake: the dispatcher's [`Channel`] and the
 /// task that drives it, which [`Opened::spawn`] runs in the domain.
 pub struct Opened<R, W> {
-    pub channel: Channel,
+    hot: HotSide,
     driver: Driver<R, W>,
 }
 
@@ -615,6 +638,18 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    /// The channel to a peer whose edge is `edge` (RFC-0031 §7.5): a `Bulk` or `Replay` channel
+    /// takes its sends from the edge's pacer, and any other gives it its α samples. Either does
+    /// nothing while the edge is not paced.
+    pub(crate) fn paced(mut self, edge: Arc<Edge>) -> Self {
+        if is_bulk(self.driver.core.key().purpose) {
+            self.hot.pacing = Some(edge);
+        } else {
+            self.driver.alpha_to = Some(edge);
+        }
+        self
+    }
+
     /// Runs the channel's task in `domain`, and returns the channel.
     pub fn spawn(self, domain: &DomainHandle) -> Channel {
         self.spawn_with(domain, ())
@@ -623,7 +658,8 @@ where
     /// [`Opened::spawn`], keeping `keep` alive until the task ends and then dropping it: a
     /// backend's hold on what the channel uses, such as its share of a connection's window.
     pub fn spawn_with<K: Send + 'static>(self, domain: &DomainHandle, keep: K) -> Channel {
-        let Opened { channel, driver } = self;
+        let Opened { hot, driver } = self;
+        let channel = Channel::new(*driver.core.key(), Box::new(hot));
         domain.spawn(async move {
             driver.run().await;
             drop(keep);
@@ -688,6 +724,8 @@ pub fn open<R, W>(
         credit_stalls: 0,
         credit_stall: 0,
         stalled_since: None,
+        pacing: None,
+        paced_until: None,
     };
     let driver = Driver {
         core,
@@ -712,11 +750,15 @@ pub fn open<R, W>(
         hot_gone: false,
         last_busy: epoch,
         last_tick: epoch,
+        alpha_to: None,
     };
-    Ok(Opened {
-        channel: Channel::new(spec.key, Box::new(hot)),
-        driver,
-    })
+    Ok(Opened { hot, driver })
+}
+
+/// Whether a channel of `purpose` sends bulk, which pacing holds; every other purpose is a data
+/// channel, whose α samples set the pace (RFC-0031 §7.5).
+fn is_bulk(purpose: ChannelPurpose) -> bool {
+    matches!(purpose, ChannelPurpose::Bulk | ChannelPurpose::Replay)
 }
 
 /// A ring of at least `capacity` slots between the task and the dispatcher, which polls it.
@@ -765,6 +807,8 @@ struct Driver<R, W> {
     hot_gone: bool,
     last_busy: Instant,
     last_tick: Instant,
+    /// The peer edge whose bulk pacer this data channel's α samples go to.
+    alpha_to: Option<Arc<Edge>>,
 }
 
 /// What one read step did.
@@ -822,7 +866,9 @@ where
                 self.core.on_tick(self.now());
                 self.last_tick = now;
             }
-            if busy {
+            // Before it waits, a batched receiver sends the credit it holds back (§7.1), so a
+            // sparse sender, such as a paced bulk channel, is not left to its ack timeout.
+            if busy || self.core.on_idle() {
                 continue;
             }
             self.wait(now).await?;
@@ -1054,8 +1100,18 @@ where
                     unreachable!("matched a body above");
                 };
                 let now = self.now();
+                let samples = self.core.stats().alpha_samples;
                 self.core.on_receive(slot.freeze(), len, now);
                 self.last_busy = Instant::now();
+                // A frame gives at most one α sample: a credit echo or a ping's reply.
+                if let Some(edge) = &self.alpha_to {
+                    let stats = self.core.stats();
+                    if stats.alpha_samples != samples
+                        && let Some(alpha) = stats.alpha_last
+                    {
+                        edge.on_alpha(alpha);
+                    }
+                }
             }
             _ => {}
         }

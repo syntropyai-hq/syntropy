@@ -42,6 +42,11 @@
 //! **The listener** takes at most [`MAX_HANDSHAKES`] connections through TLS and `Hello` at once,
 //! and [`MAX_HANDSHAKES_PER_ADDRESS`] from one source; a connection over either is closed at
 //! once, and the listener keeps accepting. TLS has [`TLS_TIMEOUT`], shorter than the handshake's.
+//!
+//! **Bulk pacing** (RFC-0031 §7.5). [`TcpTransport::pacing`] holds one
+//! [`BulkPacer`](super::pacing::BulkPacer) per peer, shared by every connection to it: once the
+//! owner paces a peer, its `Bulk` and `Replay` channels send at the pacer's rate, set by the α
+//! samples of its other channels.
 
 pub mod tls;
 
@@ -64,6 +69,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 
 use self::tls::AllowedKeys;
 use super::domain::DomainHandle;
+use super::pacing::PacedEdges;
 use super::registration::RegistrationTable;
 use super::stream::{self, ChannelAuth, HelloIn, StreamSpec};
 use super::{
@@ -303,6 +309,7 @@ struct Inner {
     stats: Counters,
     local_addr: SocketAddr,
     domain: DomainHandle,
+    pacing: PacedEdges,
 }
 
 /// Locks `mutex`, past a panic of another holder: the state it guards stays consistent between
@@ -381,6 +388,7 @@ impl TcpTransport {
                     stats: Counters::default(),
                     local_addr,
                     domain: task_domain.clone(),
+                    pacing: PacedEdges::default(),
                 });
                 let listener = task_domain.spawn(listen(Arc::clone(&inner), listener, acceptor));
                 Ok(TcpTransport { inner, listener })
@@ -412,6 +420,13 @@ impl TcpTransport {
     /// keeps current.
     pub fn allowed(&self) -> &AllowedKeys {
         &self.inner.allowed
+    }
+
+    /// The bulk pacing of each peer edge, by the peer's key (RFC-0031 §7.5): the `Bulk` and
+    /// `Replay` channels to a paced peer, each on its own connection, send at the pacer's rate,
+    /// set by the α samples of the peer's other channels.
+    pub fn pacing(&self) -> &PacedEdges {
+        &self.inner.pacing
     }
 }
 
@@ -533,7 +548,9 @@ impl Inner {
             self.autotuned();
         }
         let (r, w) = tokio::io::split(tls);
-        Ok(stream::open(r, w, spec, agreed, &self.domain)?.spawn(&self.domain))
+        Ok(stream::open(r, w, spec, agreed, &self.domain)?
+            .paced(self.pacing.edge(&remote.key))
+            .spawn(&self.domain))
     }
 
     /// The acceptor's end of the handshake on `early`'s connection, then the channel. The key is
@@ -565,7 +582,9 @@ impl Inner {
         let agreed = agreed
             .map_err(|code| Error::new(code, format!("refused the channel {:?}", spec.key)))?;
         let (r, w) = tokio::io::split(stream);
-        Ok(stream::open(r, w, spec, agreed, &self.domain)?.spawn(&self.domain))
+        Ok(stream::open(r, w, spec, agreed, &self.domain)?
+            .paced(self.pacing.edge(&peer))
+            .spawn(&self.domain))
     }
 
     /// Hands an arrived connection to the `accept` waiting for its key, or holds it for one, for

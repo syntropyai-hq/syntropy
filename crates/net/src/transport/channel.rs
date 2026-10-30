@@ -6,7 +6,7 @@
 use std::fmt;
 
 use syntropy_core::plan::WireDType;
-use syntropy_core::{Bytes, InstanceId, Nanos, PlanEpoch, StageIx};
+use syntropy_core::{Bytes, InstanceId, MonoTime, Nanos, PlanEpoch, StageIx};
 
 use super::buffer::{ExtBuf, ExtRef, PayloadRef, PayloadSlice, PoolRegistration};
 use crate::error::ErrorCode;
@@ -157,7 +157,9 @@ pub struct SendTicket {
 pub enum SendError {
     /// Send credit is exhausted: the next `chan_seq` is past the peer's `limit_seq` (RFC-0031
     /// §7.1). Nothing was sent; send the frame again once credit returns. The time held counts as
-    /// `credit_stall`.
+    /// `credit_stall`. On a `Bulk` or `Replay` channel of a paced edge, it also means the edge's
+    /// bulk pacer does not have the tokens yet (§7.5), and [`Channel::paced_until`] says when it will;
+    /// that wait is not a credit stall.
     WouldBlock,
     /// The frame is larger than the peer's slot or the transport's `max_frame` (RFC-0031 §12
     /// `FrameTooLarge`).
@@ -278,6 +280,10 @@ pub trait ChannelBackend: Send {
     fn nack(&mut self, seq: u64);
     /// See [`Channel::close`].
     fn close(&mut self, reason: CloseReason);
+    /// See [`Channel::paced_until`]. A backend that does not pace returns `None`.
+    fn paced_until(&self) -> Option<MonoTime> {
+        None
+    }
 }
 
 /// One ordered, lossless, authenticated stream of data frames between two endpoints (RFC-0001
@@ -343,6 +349,14 @@ impl Channel {
     /// A frame this side already received is never handed to the caller twice.
     pub fn nack(&mut self, seq: u64) {
         self.backend.nack(seq)
+    }
+
+    /// When the send this channel's bulk pacer held can go, on the pacer's clock: `Some` when
+    /// the last `try_send` returned [`SendError::WouldBlock`] for want of the pacer's tokens
+    /// (RFC-0031 §7.5). A time already past means at once. `None` otherwise, and always on a
+    /// channel that is not paced.
+    pub fn paced_until(&self) -> Option<MonoTime> {
+        self.backend.paced_until()
     }
 
     /// Closes the channel gracefully once the peer has acknowledged everything sent; the reason
