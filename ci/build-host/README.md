@@ -5,6 +5,7 @@ A self-hosted machine that runs `pr.yml`'s Linux jobs for PRs from branches of t
 | File | What it does |
 |---|---|
 | `Dockerfile` | The job image: Ubuntu 24.04, the pinned runner release, a C toolchain, Python 3, sudo, and the toolchain `rust-toolchain.toml` pins |
+| `job-started.sh` | The runner's job-started hook, baked into the image: it fails any job that isn't this repository's `pr.yml` on a PR from a branch of this repository, before the job's first step |
 | `runner-slot.sh` | One slot run: mints a single-use just-in-time runner configuration labelled `syntropy-build`, then runs one job in a fresh container |
 | `syntropy-build-runner@.service` | The systemd unit for one slot; it restarts the slot after each job |
 | `egress.sh` | The job network: containers reach the internet, but no private, link-local or tailnet address and not the host |
@@ -19,6 +20,14 @@ runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && github.event.pull_request.head
 ```
 
 While the repository variable `SYNTROPY_BUILD_HOST` is not `on`, every job runs on hosted runners.
+
+## What protects the host
+
+- **Only same-repository PRs.** The `pr.yml` gate sends only them, the workflow lint refuses the label anywhere else, and the job-started hook refuses any other job before its first step, even one a maintainer approved by mistake.
+- **One job per container.** Each job gets a fresh container and a single-use registration, and the container is removed afterwards, so nothing a job does persists.
+- **No credential in a job.** The token stays on the host, readable only by root, and reaches `curl` on stdin. A container gets only its own single-use configuration.
+- **No LAN.** Job containers reach the internet and nothing else: no private, link-local or tailnet address, and not the host.
+- **Least privilege.** Containers drop every capability but the few the jobs need, with no `NET_RAW`. The slot unit runs with only the capabilities iptables needs, behind a system-call filter (`systemd-analyze security` rates it 2.0).
 
 ## Setting it up (Maintainer action)
 
