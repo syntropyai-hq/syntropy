@@ -16,6 +16,12 @@
 //!
 //! A job's minutes are its run time rounded up to whole minutes, as GitHub bills them. Lab rigs
 //! are owned hardware, so lab hours are reported by rig and job class but need no entry.
+//!
+//! Both lint checks are text scans, not proofs. The larger-runner check finds labels by their
+//! shape (a size token or a core count), so a larger runner with a plain name or a runner group
+//! gets past it, and a list containing `self-hosted` is a lab runner it skips. The reader check
+//! looks for the ledger's name and the keywords that would branch on it, so a step that builds
+//! the path from pieces gets past it. Review still owns both rules.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -185,6 +191,8 @@ pub fn is_larger_label(label: &str) -> bool {
 /// `labels` (a scalar, an inline list or a block list), and any token that begins with an OS name
 /// and has an OS-version shape, which catches matrix `os` lists. Comments are ignored; `${{ }}`
 /// expressions are skipped, because the matrix values they read are found where they are written.
+/// A list that contains `self-hosted` names a lab runner, whose labels are not billed, so none of
+/// its labels is returned.
 fn runner_labels(text: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = text.lines().collect();
     let mut found: Vec<(usize, String)> = Vec::new();
@@ -216,9 +224,10 @@ fn runner_labels(text: &str) -> Vec<(usize, String)> {
             continue;
         }
         let value = value.trim();
-        if let Some(list) = value.strip_prefix('[') {
-            for item in list.trim_end_matches(']').split(',') {
-                push(i + 1, item);
+        let mut list: Vec<(usize, &str)> = Vec::new();
+        if let Some(inline) = value.strip_prefix('[') {
+            for item in inline.trim_end_matches(']').split(',') {
+                list.push((i + 1, item));
             }
         } else if value.is_empty() {
             let indent = line.len() - line.trim_start().len();
@@ -230,12 +239,20 @@ fn runner_labels(text: &str) -> Vec<(usize, String)> {
                 }
                 let deeper = next.len() - next.trim_start().len() > indent;
                 match item.strip_prefix("- ") {
-                    Some(label) if deeper => push(j + 1, label),
+                    Some(label) if deeper => list.push((j + 1, label)),
                     _ => break,
                 }
             }
         } else if !value.starts_with('{') {
-            push(i + 1, value);
+            list.push((i + 1, value));
+        }
+        let lab = list
+            .iter()
+            .any(|(_, l)| l.trim().trim_matches(['"', '\'']).trim() == "self-hosted");
+        if !lab {
+            for (n, label) in list {
+                push(n, label);
+            }
         }
     }
     found

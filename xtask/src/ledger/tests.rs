@@ -174,7 +174,6 @@ fn lint_fails_a_larger_label_without_an_entry() {
     assert!(larger_runner_problems("w.yml", covered, &cost).is_empty());
     for (workflow, label) in [
         ("    runs-on: ubuntu-24.04-32core\n", "ubuntu-24.04-32core"),
-        ("    runs-on: [self-hosted, linux-large]\n", "linux-large"),
         ("    runs-on:\n      - macos-26-xlarge\n", "macos-26-xlarge"),
         ("        runner: \"windows-2025-gpu\"\n", "windows-2025-gpu"),
         (
@@ -189,6 +188,25 @@ fn lint_fails_a_larger_label_without_an_entry() {
     // A comment is not a use, and a standard label needs no entry.
     let quiet = "    runs-on: ubuntu-24.04 # not ubuntu-24.04-32core\n";
     assert!(larger_runner_problems("w.yml", quiet, &cost).is_empty());
+}
+
+#[test]
+fn lab_runner_labels_are_not_larger_runners() {
+    // A list with `self-hosted` is a lab runner, which the report counts from the lab metrics
+    // and which GitHub does not bill, so none of its labels needs a `larger-runner` entry.
+    let cost = Cost::parse(COST_TEXT).unwrap();
+    for workflow in [
+        "    runs-on: [self-hosted, r-ada, gpu]\n",
+        "    runs-on: [\"self-hosted\", linux-large]\n",
+        "    runs-on:\n      - self-hosted\n      - r-ada\n      - gpu\n",
+        "    runs-on:\n      labels: [self-hosted, gpu]\n",
+    ] {
+        let problems = larger_runner_problems("w.yml", workflow, &cost);
+        assert!(problems.is_empty(), "{workflow}: {problems:?}");
+    }
+    // `self-hosted` in one list does not exempt a hosted larger label in another.
+    let mixed = "    runs-on: [self-hosted, gpu]\n  b:\n    runs-on: ubuntu-24.04-32core\n";
+    assert_eq!(larger_runner_problems("w.yml", mixed, &cost).len(), 1);
 }
 
 #[test]
