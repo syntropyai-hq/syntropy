@@ -6,7 +6,7 @@
 use syntropy_core::{Blake3, Bytes, ErrorClass, Nanos, Numerics};
 
 use super::key::LayoutVersion;
-use crate::error::{Error, ErrorCode};
+use crate::error::Error;
 
 /// A provider's answer to `query` for one (`OpKey`, `ShapeSig`) on one device (RFC-0040
 /// §3.2).
@@ -79,13 +79,13 @@ impl PreparedOp {
         if self.workspace <= caps.workspace {
             return Ok(());
         }
-        Err(Error {
-            class: ErrorClass::Internal,
-            code: ErrorCode::WORKSPACE_EXCEEDED,
-            message: format!(
+        Err(Error::new(
+            ErrorClass::Internal,
+            crate::error::codes::WORKSPACE_EXCEEDED,
+            format!(
                 "prepared op asks for {} bytes of workspace; query declared {}",
                 self.workspace.0, caps.workspace.0
             ),
-        })
+        ))
     }
 }

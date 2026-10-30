@@ -4,6 +4,11 @@
 //! real host buffers. No CPU kernel exists yet, so the launches run stand-in kernels that
 //! [`CpuProvider::with_kernel`] adds.
 
+#![allow(
+    clippy::result_large_err,
+    reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
+)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
@@ -13,9 +18,8 @@ use smallvec::smallvec;
 use syntropy_core::{Bytes, DType, DeviceId, ErrorClass, HostRegion, NodeId, QuantScheme};
 use syntropy_kernels::{
     AllocRequest, BufferSlice, DeviceClass, DeviceCtx, DeviceFeatures, DeviceHealth, Error,
-    ErrorCode, KernelProvider, LayoutVersion, MemKind, MemoryDomain, OpArgs, OpKey, OpKind,
-    OpenOptions, PowerHint, ShapeClass, ShapeSig, Stream, StreamPlan, StreamPriority, WaitCmp,
-    unsupported,
+    KernelProvider, LayoutVersion, MemKind, MemoryDomain, OpArgs, OpKey, OpKind, OpenOptions,
+    PowerHint, ShapeClass, ShapeSig, Stream, StreamPlan, StreamPriority, WaitCmp, unsupported,
 };
 use syntropy_kernels_cpu::{CpuProvider, CpuWaker, KillSwitches, Parked, Run, STREAM_CAPACITY};
 
@@ -149,7 +153,10 @@ fn host_memory_is_allocated_registered_and_imported_as_it_is() {
     let error = provider.alloc(&ctx, empty).unwrap_err();
     assert_eq!(
         (error.class, error.code),
-        (ErrorClass::Capacity, ErrorCode::ALLOC_FAILED)
+        (
+            ErrorClass::Capacity,
+            syntropy_kernels::error::codes::ALLOC_FAILED
+        )
     );
 
     let mut owned = vec![7u8; 128];
@@ -471,11 +478,11 @@ fn stand_in(_: &OpArgs<'_>) -> Result<(), Error> {
 }
 
 fn failing(_: &OpArgs<'_>) -> Result<(), Error> {
-    Err(Error {
-        class: ErrorClass::Device,
-        code: ErrorCode::DEVICE_STICKY,
-        message: "the stand-in failed".to_owned(),
-    })
+    Err(Error::new(
+        ErrorClass::Device,
+        syntropy_kernels::error::codes::DEVICE_STICKY,
+        "the stand-in failed".to_owned(),
+    ))
 }
 
 #[test]
@@ -519,7 +526,7 @@ fn a_failed_kernel_makes_the_device_sticky() {
     assert_eq!(
         provider.health(&ctx),
         DeviceHealth::Sticky {
-            code: ErrorCode::DEVICE_STICKY
+            code: syntropy_kernels::error::codes::DEVICE_STICKY
         }
     );
     let later = provider.signal_host(&ctx, &s, syntropy_kernels::HostFlag { page: 0, slot: 0 }, 1);

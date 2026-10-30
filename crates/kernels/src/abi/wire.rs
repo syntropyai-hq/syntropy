@@ -6,6 +6,8 @@
 //! has no code (`None`), which the caller reports as an error rather than guessing. Records
 //! that are not plain integers cross as JSON.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use syntropy_core::resource::{Backend, GgmlBackend};
 use syntropy_core::{
@@ -53,27 +55,6 @@ fn ggml_of_code(code: u32) -> Option<GgmlBackend> {
         5 => GgmlBackend::Sycl,
         _ => return None,
     })
-}
-
-/// `s` as a `&'static str` the process keeps once: the first call with a given text allocates
-/// it, and every later call returns that same allocation. A loaded module's provider ID and its
-/// build's toolchain keys are `&'static str` in the types they fill (`ProviderId`,
-/// `ProviderBuild`), so the loader interns them instead of leaking a copy per load: the set grows
-/// only with the distinct texts, and every string in it stays reachable from a static, so a leak
-/// checker reports none.
-#[must_use]
-pub fn intern(s: &str) -> &'static str {
-    static INTERNED: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
-        std::sync::Mutex::new(std::collections::BTreeSet::new());
-    let mut set = INTERNED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(&kept) = set.get(s) {
-        return kept;
-    }
-    let kept: &'static str = Box::leak(s.to_owned().into_boxed_str());
-    set.insert(kept);
-    kept
 }
 
 /// The code of a [`Backend`]: 1 CUDA, 2 HIP, 3 Metal, 4 Vulkan, 5 CPU, 16 + n for ggml's
@@ -465,9 +446,14 @@ impl SynHealth {
     #[must_use]
     pub fn of(health: DeviceHealth) -> Option<Self> {
         Some(match health {
-            DeviceHealth::Ok => Self { kind: 0, detail: 0 },
+            DeviceHealth::Ok => Self {
+                kind: 0,
+                domain: 0,
+                detail: 0,
+            },
             DeviceHealth::Throttled { reason } => Self {
                 kind: 1,
+                domain: 0,
                 detail: match reason {
                     ThrottleReason::Thermal => 0,
                     ThrottleReason::Power => 1,
@@ -476,12 +462,13 @@ impl SynHealth {
             },
             DeviceHealth::Sticky { code } => Self {
                 kind: 2,
-                detail: u32::from(code.0),
+                domain: super::domain_code(code.domain)?,
+                detail: u32::from(code.code),
             },
         })
     }
 
-    /// The `DeviceHealth`, or `None` for an unknown code.
+    /// The `DeviceHealth`, or `None` for an unknown variant, reason or domain number.
     #[must_use]
     pub fn to_health(&self) -> Option<DeviceHealth> {
         Some(match self.kind {
@@ -495,7 +482,10 @@ impl SynHealth {
                 },
             },
             2 => DeviceHealth::Sticky {
-                code: ErrorCode(u16::try_from(self.detail).ok()?),
+                code: ErrorCode::new(
+                    super::domain_of_code(self.domain)?,
+                    u16::try_from(self.detail).ok()?,
+                ),
             },
             _ => return None,
         })
@@ -617,24 +607,24 @@ pub fn from_json<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Error>
 
 /// An `Internal` error: a bug in a provider, the loader or this ABI. RFC-0040 §13 numbers no
 /// code for a boundary violation, so the code is 0; a caught panic is
-/// [`ErrorCode::PROVIDER_PANICKED`] (see [`panicked`]).
+/// [`crate::error::codes::PROVIDER_PANICKED`] (see [`panicked`]).
 #[must_use]
 pub fn internal(message: String) -> Error {
-    Error {
-        class: ErrorClass::Internal,
-        code: ErrorCode(0),
+    Error::new(
+        ErrorClass::Internal,
+        ErrorCode::new(syntropy_core::Domain::Kernels, 0),
         message,
-    }
+    )
 }
 
 /// The error a thunk returns after it caught a panic (RFC-0040 §13 code 16).
 #[must_use]
 pub fn panicked(message: String) -> Error {
-    Error {
-        class: ErrorClass::Internal,
-        code: ErrorCode::PROVIDER_PANICKED,
+    Error::new(
+        ErrorClass::Internal,
+        crate::error::codes::PROVIDER_PANICKED,
         message,
-    }
+    )
 }
 
 /// [`ProviderBuild`] as it crosses: the toolchain keys are owned strings.
@@ -660,14 +650,13 @@ impl BuildWire {
             toolchain: build
                 .toolchain
                 .iter()
-                .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect(),
             driver: build.driver.clone(),
         }
     }
 
-    /// The `ProviderBuild`. Its toolchain keys are `&'static str`, interned ([`intern`]), so
-    /// each distinct key is allocated once for the process however many providers are loaded.
+    /// The `ProviderBuild`, owning its toolchain keys.
     #[must_use]
     pub fn into_build(self) -> ProviderBuild {
         ProviderBuild {
@@ -676,7 +665,7 @@ impl BuildWire {
             toolchain: self
                 .toolchain
                 .into_iter()
-                .map(|(k, v)| (intern(&k), v))
+                .map(|(k, v)| (Cow::Owned(k), v))
                 .collect(),
             driver: self.driver,
         }
@@ -933,7 +922,7 @@ mod tests {
                 reason: ThrottleReason::Power,
             },
             DeviceHealth::Sticky {
-                code: ErrorCode::PROVIDER_PANICKED,
+                code: crate::error::codes::PROVIDER_PANICKED,
             },
         ] {
             assert_eq!(SynHealth::of(health).unwrap().to_health(), Some(health));

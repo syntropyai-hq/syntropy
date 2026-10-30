@@ -38,6 +38,8 @@ pub mod wire;
 
 mod export;
 
+use syntropy_core::Domain;
+
 #[doc(inline)]
 pub use crate::__abi_export as export;
 
@@ -67,5 +69,37 @@ pub const VERSION_NODE: &str = "SYNTROPY_PROVIDER_1";
 /// The signature of the entry symbol.
 pub type EntryFn = unsafe extern "C" fn(host: *const SynHostApi) -> *const SynModule;
 
-/// The `Kernels` domain's number in a [`SynStatus`].
+/// The `Kernels` domain's number in a [`SynStatus`] and a [`SynHealth`].
 pub const DOMAIN_KERNELS: u32 = 1;
+
+/// Every error domain's number on the boundary, in a [`SynStatus`] and a `Sticky`
+/// [`SynHealth`] (RFC-0040 §10.4, note of 2026-10-30). The table only grows: a domain keeps its
+/// number, and a domain added to `core` takes the next one. `Kernels` keeps the 1 the ABI
+/// published first. `tests/abi_domains.rs` fails unless every `Domain` has a number here.
+pub const DOMAIN_CODES: [(Domain, u32); 7] = [
+    (Domain::Kernels, DOMAIN_KERNELS),
+    (Domain::Cluster, 2),
+    (Domain::Net, 3),
+    (Domain::Dist, 4),
+    (Domain::Recovery, 5),
+    (Domain::Security, 6),
+    (Domain::Exec, 7),
+];
+
+/// The boundary number of `domain`, or `None` for a domain this build has no number for.
+#[must_use]
+pub fn domain_code(domain: Domain) -> Option<u32> {
+    DOMAIN_CODES
+        .iter()
+        .find(|(d, _)| *d == domain)
+        .map(|&(_, n)| n)
+}
+
+/// The domain numbered `code`, or `None` for a number this build does not know.
+#[must_use]
+pub fn domain_of_code(code: u32) -> Option<Domain> {
+    DOMAIN_CODES
+        .iter()
+        .find(|(_, n)| *n == code)
+        .map(|&(d, _)| d)
+}
