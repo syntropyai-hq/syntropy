@@ -1335,3 +1335,12 @@ Two open questions are settled with their recommended options, under the maintai
 | TIER-E7-T14 gains "under `K8V4` a latent entry is stored as `Q8`" and the criterion that a latent layer under `K8V4` stores `Q8` pages of the size `KvFormula::stored` gives; no edge | TIER-E7-T14 | — | a scope note: OQ-IO-30's answer is this task's storage rule |
 | DIST-E14-T13 gains `RunnerMsg::DegradationChanged` in its `ipc_protocol` bump, and the criterion that a change of `degraded` inside `Ready` reaches the daemon as one `DegradationChanged` and no `StateChanged`; no edge | DIST-E14-T13 | — | a scope note: OQ-NET-36's answer; this task first sets `degraded` |
 | PROD-E6-T02 gains the criterion that the daemon binds its local socket before it spawns any child process, on start and on restart; no edge | PROD-E6-T02 | — | a scope note: `serve` both binds the listeners and starts the probe's process, so the order is its to keep |
+
+## COMP-E11-T14's throughput leg moves to a cold-cache benchmark (2026-10-30)
+
+COMP-E11-T14 (M1a) asked that "throughput stays at the volume's sequential read rate". RFC-0041 §4.3's own bound makes an unsplit file SHA-bound, since its SHA-256 is one chain on one core, so on a fast NVMe drive the criterion contradicts the RFC. Checking the drive bound also needs an NVMe rig, which COMP-E11-T14 does not depend on. #1949 measured the cost the chunk hashes add at 1.11–1.13× [measured: commit e0091294, AMD Ryzen 9 5950X, WSL2, page cache]. COMP-E11-T14 keeps a bound on that cost, and the cold-cache check moves to a new task on R-ADA. This was taken under the maintainers' standing instruction of 2026-10-22, 2026-10-30.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E11-T14's "throughput stays at the volume's sequential read rate" becomes "the chunk hashes add at most 15 % [target] to the time of the SHA-256 pass alone, page cache". New task COMP-E11-T24 (M1a): the cold-cache indexing benchmark on R-ADA, within 10 % [target] of RFC-0041 §4.3's `t_index`. COMP-E11-T24 → COMP-E11-T14, QUAL-E15-T02 | COMP-E11-T14, COMP-E11-T24 | R9 | the drive-bound check needs R-ADA's NVMe (QUAL-E15-T02, M0a, before M1a), and neither target reaches COMP-E11-T24, so the edges add no cycle |
+
