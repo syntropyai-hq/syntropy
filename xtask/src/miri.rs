@@ -3,12 +3,14 @@
 //! `cargo xtask test miri`: Miri over the unit tests RFC-0060 §3.4 names (QUAL-E3-T10), on the
 //! pinned test nightly ([`crate::nightly`]).
 //!
-//! - **What runs.** The unit tests of `tier`, of `ipc`, whose shared-memory region runs on a heap
-//!   allocation in place of the OS segment under `cfg(miri)` (`ipc::shm::os`), and of `net`'s
-//!   frame codecs and transport core. `net`'s QUIC and TCP transports and its endpoint, interface
-//!   and crypto modules call the OS or run an async runtime over sockets, which Miri cannot do,
-//!   so its run is filtered to [`NET_FILTERS`]. A unit test that needs the OS in the crates that
-//!   run whole is marked `#[cfg_attr(miri, ignore = "<why>")]` where it is written.
+//! - **What runs.** The unit tests of `tier` but its file-backed `tune` module, of `ipc`'s
+//!   shared-memory region, which runs on a heap allocation in place of the OS segment under
+//!   `cfg(miri)` (`ipc::shm::os`), and of `net`'s frame codecs and transport core. `ipc`'s
+//!   command channel, and `net`'s QUIC and TCP transports and its endpoint, interface and crypto
+//!   modules, call the OS or run an async runtime over sockets, which Miri cannot do, so those
+//!   runs are filtered to [`IPC_FILTERS`] and [`NET_FILTERS`], and each [`Package`] says what
+//!   it skips and why. A unit test that needs the OS elsewhere is marked
+//!   `#[cfg_attr(miri, ignore = "<why>")]` where it is written.
 //! - **How.** `cargo miri test --lib` for each crate, with Miri's default isolation, into
 //!   `miri/` under the target directory. The caller's `MIRIFLAGS` pass through.
 //! - **Named tests.** The tests of [`REQUIRED`] must pass, so a run that left a crate out, or
@@ -32,6 +34,10 @@ pub struct Package {
     pub skips: &'static [&'static str],
 }
 
+/// `ipc`'s module that runs under Miri: the shared-memory region. Its command channel (`cmd`)
+/// is sockets, process spawning and account checks, all calls into the OS.
+pub const IPC_FILTERS: &[&str] = &["shm::"];
+
 /// `net`'s modules that run under Miri: the frame codecs, and the transport core.
 pub const NET_FILTERS: &[&str] = &["frame::", "transport::"];
 
@@ -40,18 +46,27 @@ pub const PACKAGES: &[Package] = &[
     Package {
         name: "syntropy-tier",
         filters: &[],
-        skips: &[],
+        // `tune` forbids `unsafe`, and its tests write and read files, which Miri's isolation
+        // refuses.
+        skips: &["tune::"],
     },
     Package {
         name: "syntropy-ipc",
-        filters: &[],
-        skips: &[],
+        filters: IPC_FILTERS,
+        // `records` has no `unsafe`, and its proptest reads the working directory, which Miri's
+        // isolation refuses, for 4,096 cases.
+        skips: &["shm::records::"],
     },
     Package {
         name: "syntropy-net",
         filters: NET_FILTERS,
-        // Each runs a tokio runtime over real sockets.
-        skips: &["transport::quic::", "transport::tcp::"],
+        // `quic` and `tcp` each run a tokio runtime over real sockets. `pacing` has no `unsafe`,
+        // and one of its tests feeds the pacer three million samples, hours under Miri.
+        skips: &[
+            "transport::quic::",
+            "transport::tcp::",
+            "transport::pacing::",
+        ],
     },
 ];
 
@@ -243,17 +258,40 @@ mod tests {
                 "transport::quic::",
                 "--skip",
                 "transport::tcp::",
+                "--skip",
+                "transport::pacing::",
             ]
         );
-        for (package, test) in REQUIRED {
-            if *package == "syntropy-net" {
-                assert!(
-                    net.filters.iter().any(|f| test.starts_with(f))
-                        && !net.skips.iter().any(|s| test.starts_with(s)),
-                    "{test} is filtered out"
-                );
-            }
+    }
+
+    /// Filters and skips narrow a crate's run, but never past a test it must pass.
+    #[test]
+    fn no_filter_or_skip_drops_a_required_test() {
+        for (name, test) in REQUIRED {
+            let package = PACKAGES.iter().find(|p| p.name == *name).unwrap();
+            assert!(
+                (package.filters.is_empty() || package.filters.iter().any(|f| test.starts_with(f)))
+                    && !package.skips.iter().any(|s| test.starts_with(s)),
+                "{test} is filtered out"
+            );
         }
+        let ipc = PACKAGES.iter().find(|p| p.name == "syntropy-ipc").unwrap();
+        assert_eq!(
+            &args(ipc)[6..],
+            [
+                "--",
+                "--color",
+                "never",
+                "shm::",
+                "--skip",
+                "shm::records::"
+            ]
+        );
+        let tier = PACKAGES.iter().find(|p| p.name == "syntropy-tier").unwrap();
+        assert_eq!(
+            &args(tier)[6..],
+            ["--", "--color", "never", "--skip", "tune::"]
+        );
     }
 
     #[test]

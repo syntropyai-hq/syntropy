@@ -274,6 +274,13 @@ jobs:
         with:
           cache-key: hosted-l3-${{ matrix.suite }}
           cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
+      # The sanitizer suites run `syntropy-ipc`'s peer test, which needs the second OS account
+      # as in `hosted-test` (DIST-E1-T03, RFC-0034 §6.4). Miri and loom do not run it.
+      - if: matrix.suite == 'asan' || matrix.suite == 'tsan'
+        name: Add a second OS account for the IPC peer test
+        run: |
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin syntropy-peer
+          echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
       - run: cargo xtask test ${{ matrix.suite }}
 
   # L5 nano parity smoke on the CPU provider (RFC-0060 §5). Planned: QUAL-E5-T06. `changes` does
