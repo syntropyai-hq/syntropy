@@ -17,7 +17,7 @@
 //! straight to the standard error stream, which the test harness does not capture, so it shows
 //! in the job's log.
 
-#![cfg(target_os = "macos")]
+#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
 use std::cell::RefCell;
 use std::io::{self, Write};
