@@ -428,7 +428,9 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
 }
 
 /// The two no-cache builds on `builder`, their comparison, and the version print from inside the
-/// image: what the image printed. `work` holds the archives; the caller removes it and the
+/// image: what the image printed. The print runs in the first of the two compared archives,
+/// loaded with `docker load`, so the versions shown are those of the bytes shown to rebuild
+/// identically, not of a third build. `work` holds the archives; the caller removes it and the
 /// builder.
 fn build_and_print(
     pins: &Toolchains,
@@ -442,7 +444,12 @@ fn build_and_print(
     let mut archives = Vec::new();
     for n in 1..=2 {
         let archive = work.join(format!("cuda-13-{n}.tar"));
-        let output = format!("type=oci,dest={},rewrite-timestamp=true", archive.display());
+        // `name` is an annotation of the archive's index, the same in both builds, so `docker
+        // load` tags the image it loads.
+        let output = format!(
+            "type=oci,dest={},rewrite-timestamp=true,name={CHECK_TAG}",
+            archive.display()
+        );
         docker(&[
             "buildx",
             "build",
@@ -466,21 +473,23 @@ fn build_and_print(
         );
     }
     eprintln!("toolchains-linux: two no-cache builds are byte-identical");
-    let tag = "syntropy-build-check:local";
-    docker(&[
-        "buildx",
-        "build",
-        "--builder",
-        builder,
-        "--platform",
-        "linux/amd64",
-        "--build-arg",
-        &epoch,
-        "--load",
-        "-t",
-        tag,
-        &context,
-    ])?;
+    let load = Command::new("docker")
+        .args(["load", "--input"])
+        .arg(&archives[0])
+        .output()
+        .map_err(|e| format!("could not start `docker load`: {e}"))?;
+    if !load.status.success() {
+        return Err(format!(
+            "`docker load` of the compared archive failed ({}): {}",
+            load.status,
+            String::from_utf8_lossy(&load.stderr)
+        ));
+    }
+    let loaded = String::from_utf8_lossy(&load.stdout);
+    let tag = loaded_image(&loaded)
+        .ok_or_else(|| format!("`docker load` named no image it loaded: {loaded}"))?;
+    eprintln!("toolchains-linux: the version print runs in the compared archive, loaded as {tag}");
+    let tag = tag.as_str();
     let run = Command::new("docker")
         .args([
             "run",
@@ -503,9 +512,45 @@ fn build_and_print(
     Ok(printed)
 }
 
+/// The name `docker load` gives the image the compared archive holds (the archive's `name`).
+const CHECK_TAG: &str = "syntropy-build-check:local";
+
+/// The image `docker load` reports it loaded: the last `Loaded image: <name>` line, or else the
+/// last `Loaded image ID: <id>` line for an image that came without a name.
+fn loaded_image(stdout: &str) -> Option<String> {
+    let last = |prefix: &str| {
+        stdout
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix(prefix))
+            .map(|rest| rest.trim().to_owned())
+            .rfind(|image| !image.is_empty())
+    };
+    last("Loaded image: ").or_else(|| last("Loaded image ID: "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_loaded_image_is_read_from_docker_loads_report() {
+        assert_eq!(
+            loaded_image("Loaded image: syntropy-build-check:local\n").as_deref(),
+            Some("syntropy-build-check:local")
+        );
+        assert_eq!(
+            loaded_image("Loaded image ID: sha256:0123abcd\n").as_deref(),
+            Some("sha256:0123abcd")
+        );
+        // A name wins over an ID, and the last of each counts.
+        assert_eq!(
+            loaded_image("Loaded image ID: sha256:aa\nLoaded image: a:1\nLoaded image: b:2\n")
+                .as_deref(),
+            Some("b:2")
+        );
+        assert_eq!(loaded_image("nothing loaded\n"), None);
+        assert_eq!(loaded_image("Loaded image: \n"), None);
+    }
 
     fn real() -> (String, String, String) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
