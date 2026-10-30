@@ -24,8 +24,8 @@ source_date_epoch = 1792454400
 # ADR-0020's floor.
 glibc = "2.35"
 # The BuildKit image of the `docker-container` builder that `cargo xtask ci toolchains-linux`
-# creates for the OCI export, by digest, so the builder that makes the byte-identical comparison
-# is pinned too. buildx's default `docker` driver cannot export an OCI archive.
+# creates for the image export, by digest, so the builder that makes the byte-identical
+# comparison is pinned too. buildx's default `docker` driver cannot export an image tarball.
 buildkit = "moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c"
 
 [linux.compiler]

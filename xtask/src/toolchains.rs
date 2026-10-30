@@ -372,12 +372,12 @@ fn version_problems(printed: &str, pins: &Toolchains) -> Vec<String> {
 /// The build, twice, and the tools it must carry: `cargo xtask ci toolchains-linux`.
 ///
 /// Builds the Linux image twice with no cache, as the Dockerfile's header says, and fails unless
-/// the two OCI archives are byte-identical. Then it loads the image and prints `nvcc`, CMake and
+/// the two image tarballs are byte-identical. Then it loads the first and prints `nvcc`, CMake and
 /// the C++ compiler from inside it (RFC-0062 §4.1; QUAL-E16-T24). Needs `docker buildx`.
 ///
 /// The builds run on a `docker-container` builder of its own, on the pinned BuildKit image
-/// (`linux.image.buildkit`), because buildx's default `docker` driver cannot export an OCI
-/// archive. The step creates it, leaves the default builder as it was, and removes it at the
+/// (`linux.image.buildkit`), because buildx's default `docker` driver cannot export an image
+/// tarball. The step creates it, leaves the default builder as it was, and removes it at the
 /// end, so a local run and the hosted job build the same way.
 pub fn linux_step(context: &Context) -> Result<(), String> {
     let toolchains = fs::read_to_string(context.root.join(TOOLCHAINS))
@@ -401,7 +401,7 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
             Err(format!("`docker {}`: {status}", args.join(" ")))
         }
     };
-    let builder = format!("syntropy-oci-{}", std::process::id());
+    let builder = format!("syntropy-image-{}", std::process::id());
     let driver_opt = format!("image={}", pins.linux.image.buildkit);
     docker(&[
         "buildx",
@@ -428,7 +428,10 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
 }
 
 /// The two no-cache builds on `builder`, their comparison, and the version print from inside the
-/// image: what the image printed. `work` holds the archives; the caller removes it and the
+/// image: what the image printed. Both builds export Docker image tarballs. The print runs in the
+/// first of the two compared tarballs,
+/// loaded with `docker load`, so the versions shown are those of the bytes shown to rebuild
+/// identically, not of a third build. `work` holds the archives; the caller removes it and the
 /// builder.
 fn build_and_print(
     pins: &Toolchains,
@@ -442,7 +445,13 @@ fn build_and_print(
     let mut archives = Vec::new();
     for n in 1..=2 {
         let archive = work.join(format!("cuda-13-{n}.tar"));
-        let output = format!("type=oci,dest={},rewrite-timestamp=true", archive.display());
+        // A Docker image tarball, which carries the `manifest.json` the daemon's classic image
+        // store needs to load it (an OCI-layout tarball has none). `name` is the same in both
+        // builds, so the comparison is unaffected and `docker load` tags the image it loads.
+        let output = format!(
+            "type=docker,dest={},rewrite-timestamp=true,name={CHECK_TAG}",
+            archive.display()
+        );
         docker(&[
             "buildx",
             "build",
@@ -466,35 +475,40 @@ fn build_and_print(
         );
     }
     eprintln!("toolchains-linux: two no-cache builds are byte-identical");
-    let tag = "syntropy-build-check:local";
-    docker(&[
-        "buildx",
-        "build",
-        "--builder",
-        builder,
-        "--platform",
-        "linux/amd64",
-        "--build-arg",
-        &epoch,
-        "--load",
-        "-t",
-        tag,
-        &context,
-    ])?;
+    let load = Command::new("docker")
+        .args(["load", "--input"])
+        .arg(&archives[0])
+        .output()
+        .map_err(|e| format!("could not start `docker load`: {e}"))?;
+    if !load.status.success() {
+        return Err(format!(
+            "`docker load` of the compared archive failed ({}): {}",
+            load.status,
+            String::from_utf8_lossy(&load.stderr)
+        ));
+    }
+    let loaded = String::from_utf8_lossy(&load.stdout);
+    let Some(tag) = loaded_image(&loaded) else {
+        // The load may still have stored the image under the archive's name.
+        docker(&["image", "rm", CHECK_TAG]).ok();
+        return Err(format!("`docker load` named no image it loaded: {loaded}"));
+    };
+    eprintln!("toolchains-linux: the version print runs in the compared archive, loaded as {tag}");
     let run = Command::new("docker")
         .args([
             "run",
             "--rm",
             "--platform",
             "linux/amd64",
-            tag,
+            &tag,
             "sh",
             "-c",
             "nvcc --version && cmake --version | head -1 && g++ --version | head -1 && ldd --version | head -1",
         ])
-        .output()
-        .map_err(|e| format!("could not start `docker run`: {e}"))?;
-    docker(&["image", "rm", tag]).ok();
+        .output();
+    // Removed whether or not the print ran, so no image is left behind.
+    docker(&["image", "rm", &tag]).ok();
+    let run = run.map_err(|e| format!("could not start `docker run`: {e}"))?;
     if !run.status.success() {
         return Err(format!("the version print failed: {}", run.status));
     }
@@ -503,9 +517,45 @@ fn build_and_print(
     Ok(printed)
 }
 
+/// The name `docker load` gives the image the compared tarball holds (the export's `name`).
+const CHECK_TAG: &str = "syntropy-build-check:local";
+
+/// The image `docker load` reports it loaded: the last `Loaded image: <name>` line, or else the
+/// last `Loaded image ID: <id>` line for an image that came without a name.
+fn loaded_image(stdout: &str) -> Option<String> {
+    let last = |prefix: &str| {
+        stdout
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix(prefix))
+            .map(|rest| rest.trim().to_owned())
+            .rfind(|image| !image.is_empty())
+    };
+    last("Loaded image: ").or_else(|| last("Loaded image ID: "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_loaded_image_is_read_from_docker_loads_report() {
+        assert_eq!(
+            loaded_image("Loaded image: syntropy-build-check:local\n").as_deref(),
+            Some("syntropy-build-check:local")
+        );
+        assert_eq!(
+            loaded_image("Loaded image ID: sha256:0123abcd\n").as_deref(),
+            Some("sha256:0123abcd")
+        );
+        // A name wins over an ID, and the last of each counts.
+        assert_eq!(
+            loaded_image("Loaded image ID: sha256:aa\nLoaded image: a:1\nLoaded image: b:2\n")
+                .as_deref(),
+            Some("b:2")
+        );
+        assert_eq!(loaded_image("nothing loaded\n"), None);
+        assert_eq!(loaded_image("Loaded image: \n"), None);
+    }
 
     fn real() -> (String, String, String) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
