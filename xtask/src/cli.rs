@@ -45,6 +45,9 @@ Commands:
                           generate THIRD-PARTY-NOTICES for the release build (ADR-0018 §6) and
                           write it to <file>; without --out, only check it can be generated,
                           which is what `lint` runs
+  kgen [--check]          write the CUDA provider's generated files (RFC-0040 §10.2 rule 2):
+                          each translation unit's instantiation list and the Rust mirror
+                          of csrc/params.h; with --check, fail if any is stale
   instructions --show <path> [--ref <rev>]
                           print one file ci/agent-instructions.toml lists, and refuse any other
                           (RFC-0062 §12.3); with --ref, the list and the file come from <rev>
@@ -75,6 +78,7 @@ const COMMANDS: &[&str] = &[
     "workflows",
     "actionlint",
     "notices",
+    "kgen",
     "instructions",
     "fixtures",
     "help",
@@ -126,6 +130,10 @@ pub enum Command<'r> {
     Notices {
         manifest_path: Option<String>,
         out: Option<String>,
+    },
+    /// `kgen`: regenerate the CUDA provider's generated files, or with `check` only check them.
+    Kgen {
+        check: bool,
     },
     /// `instructions`: one listed file when `show` is set, else the list, read from `rev` when
     /// given, else from the working tree.
@@ -368,6 +376,11 @@ pub fn parse<'r>(
             o.or_help(|o| Command::Notices {
                 manifest_path: o.value("--manifest-path"),
                 out: o.value("--out"),
+            })
+        }),
+        "kgen" => parse_options(rest, &[], &["--check"]).map(|o| {
+            o.or_help(|o| Command::Kgen {
+                check: o.flag("--check"),
             })
         }),
         "instructions" => {
@@ -968,7 +981,7 @@ mod tests {
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
             "unknown command `frob`; valid commands: ci, test, check-deps, build, deny, spdx, \
-             third-party, workflows, actionlint, notices, instructions, fixtures, help"
+             third-party, workflows, actionlint, notices, kgen, instructions, fixtures, help"
         );
         assert_eq!(
             parse_real("--frob"),
@@ -1346,6 +1359,9 @@ mod tests {
                     out: Some("target/THIRD-PARTY-NOTICES".into()),
                 },
             ),
+            ("kgen", Command::Kgen { check: false }),
+            ("kgen --check", Command::Kgen { check: true }),
+            ("kgen --help", Command::Help),
             ("deny --help", Command::Help),
             ("notices -h", Command::Help),
         ] {
@@ -1379,6 +1395,8 @@ mod tests {
                 UsageError::RepeatedOption("--root"),
             ),
             ("notices --out", UsageError::MissingValue("--out")),
+            ("kgen --write", UsageError::UnknownOption("--write".into())),
+            ("kgen x", UsageError::UnexpectedArgument("x".into())),
             ("notices --out --check", UsageError::MissingValue("--out")),
             (
                 "notices --help x",

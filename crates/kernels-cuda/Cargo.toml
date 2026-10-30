@@ -4,3 +4,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[[bin]]
+# The generator `cargo xtask kgen` runs (RFC-0040 §10.2 rule 2): the instantiation lists of
+# `csrc/instantiate/` and the Rust mirror of `csrc/params.h`.
+name = "syntropy-kgen"
+path = "src/bin/kgen.rs"
+
+[dependencies]
+# The kernel object cache keys of ADR-0623 decision 1.
+blake3.workspace = true
+serde.workspace = true
+syntropy-core = { path = "../core" }
+# The op registry and `OpKey`, which `support.toml` lists (RFC-0040 §3.1, §10.2 rule 2).
+syntropy-kernels = { path = "../kernels" }
+toml.workspace = true
