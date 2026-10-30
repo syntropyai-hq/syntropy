@@ -21,9 +21,12 @@ pub struct Imports {
     /// Every name imported by name from either directory, in file order. Imports by ordinal have
     /// no name, and are left out.
     pub symbols: Vec<String>,
+    /// The names of the export directory: what the binary exports by name, in table order.
+    pub exports: Vec<String>,
 }
 
 /// The data directory entries this reader uses (PE format, "Optional Header Data Directories").
+const EXPORT_DIRECTORY: u32 = 0;
 const IMPORT_DIRECTORY: u32 = 1;
 const DELAY_IMPORT_DIRECTORY: u32 = 13;
 const PE32_MAGIC: u16 = 0x10b;
@@ -73,6 +76,24 @@ pub fn read(bytes: &[u8]) -> Result<Imports, String> {
             imports.delayed.push(pe.string(name)?);
             if names != 0 {
                 pe.names(names, &mut imports.symbols)?;
+            }
+        }
+    }
+    if let Some(directory) = pe.directory(EXPORT_DIRECTORY)? {
+        // `IMAGE_EXPORT_DIRECTORY`: `NumberOfNames` at 24, `AddressOfNames` at 32, an array of
+        // name RVAs.
+        let at = pe.offset(directory)?;
+        let count = u64::from(pe.u32(at + 24)?);
+        if count > pe.max_entries(4) {
+            return Err(format!(
+                "the export directory names {count} exports, more than the file holds"
+            ));
+        }
+        if count > 0 {
+            let names = pe.offset(pe.u32(at + 32)?)?;
+            for index in 0..count {
+                let name = pe.u32(names.saturating_add(index * 4))?;
+                imports.exports.push(pe.string(name)?);
             }
         }
     }
@@ -295,6 +316,17 @@ pub mod fixture {
     /// `imports` and whose delay-load directory lists `delayed`. With `delay_rva` false, the
     /// delay-load entries hold virtual addresses, as old linkers wrote them.
     pub fn build(wide: bool, imports: &[Dll], delayed: &[Dll], delay_rva: bool) -> Vec<u8> {
+        build_with_exports(wide, imports, delayed, delay_rva, &[])
+    }
+
+    /// As [`build`], and an export directory that names `exports`.
+    pub fn build_with_exports(
+        wide: bool,
+        imports: &[Dll],
+        delayed: &[Dll],
+        delay_rva: bool,
+        exports: &[&str],
+    ) -> Vec<u8> {
         let entry = if wide { 8 } else { 4 };
         let base = if wide { IMAGE_BASE } else { 0x40_0000 };
         // The section: the two directories, then the lookup tables, then the strings.
@@ -353,6 +385,19 @@ pub mod fixture {
             put(&mut data, at + 4, address(name));
             put(&mut data, at + 16, address(lookup));
         }
+        // The export directory, its name-RVA array, then the names.
+        let export_table = data.len();
+        if !exports.is_empty() {
+            data.extend(vec![0u8; 40 + exports.len() * 4]);
+            put(&mut data, export_table + 24, exports.len() as u32);
+            put(&mut data, export_table + 32, rva(export_table + 40));
+            for (index, name) in exports.iter().enumerate() {
+                let at = data.len();
+                data.extend(name.as_bytes());
+                data.push(0);
+                put(&mut data, export_table + 40 + index * 4, rva(at));
+            }
+        }
 
         let mut file = vec![0u8; SECTION_OFFSET];
         file[..2].copy_from_slice(b"MZ");
@@ -379,6 +424,9 @@ pub mod fixture {
             file[at..at + 4].copy_from_slice(&address.to_le_bytes());
             file[at + 4..at + 8].copy_from_slice(&size.to_le_bytes());
         };
+        if !exports.is_empty() {
+            directory(0, rva(export_table), 40);
+        }
         if !imports.is_empty() {
             directory(1, rva(0), ((imports.len() + 1) * 20) as u32);
         }
@@ -446,6 +494,7 @@ mod tests {
                     dlls: vec!["KERNEL32.dll".into(), "nvcuda.dll".into()],
                     delayed: vec![],
                     symbols: vec!["GetLastError".into(), "ExitProcess".into(), "cuInit".into()],
+                    exports: vec![],
                 },
                 "wide: {wide}"
             );
@@ -467,9 +516,30 @@ mod tests {
                         "ExitProcess".into(),
                         "vkCreateInstance".into()
                     ],
+                    exports: vec![],
                 },
                 "wide: {wide}, rva: {delay_rva}"
             );
+        }
+    }
+
+    #[test]
+    fn reads_the_export_directory_of_either_width() {
+        for wide in [true, false] {
+            let file = super::fixture::build_with_exports(
+                wide,
+                &[kernel32()],
+                &[],
+                true,
+                &["syntropy_provider_entry_v1", "ggml_init"],
+            );
+            let read = read(&file).unwrap();
+            assert_eq!(
+                read.exports,
+                ["syntropy_provider_entry_v1", "ggml_init"],
+                "wide: {wide}"
+            );
+            assert_eq!(read.dlls, ["KERNEL32.dll"], "wide: {wide}");
         }
     }
 

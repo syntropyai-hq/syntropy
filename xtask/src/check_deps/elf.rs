@@ -15,11 +15,15 @@ pub struct Dynamic {
     pub needed: Vec<String>,
     /// Every named entry of `.dynsym`, defined or not, in file order.
     pub symbols: Vec<String>,
+    /// The named entries of `.dynsym` the file defines (a section index other than `SHN_UNDEF`):
+    /// what it exports to the dynamic linker, in file order.
+    pub exports: Vec<String>,
 }
 
 const SHT_SYMTAB: u32 = 2;
 const SHT_DYNAMIC: u32 = 6;
 const SHT_DYNSYM: u32 = 11;
+const SHN_UNDEF: u16 = 0;
 const DT_NULL: u64 = 0;
 const DT_NEEDED: u64 = 1;
 
@@ -56,6 +60,12 @@ pub fn read(bytes: &[u8]) -> Result<Dynamic, String> {
                 {
                     let name = elf.string(&strings, u64::from(elf.u32(at)?))?;
                     if !name.is_empty() {
+                        // `st_shndx`: after `st_name`, `st_info` and `st_other` in a 64-bit
+                        // entry; after `st_value` and `st_size` too in a 32-bit one.
+                        let shndx = elf.u16(at.saturating_add(if elf.wide { 6 } else { 14 }))?;
+                        if shndx != SHN_UNDEF {
+                            dynamic.exports.push(name.clone());
+                        }
                         dynamic.symbols.push(name);
                     }
                 }

@@ -203,7 +203,20 @@ pub const CORE_BINARY: &str = "syntropy";
 /// not know still fails. A library added here must be a system library the core binary needs on
 /// every Linux host, never a vendor GPU runtime (ADR-0018 decision 5), and the change needs a
 /// maintainer's review.
-pub const SYSTEM_LIBRARIES: &[&str] = &["libc", "libm", "libpthread", "libdl", "librt", "libgcc_s"];
+///
+/// `libstdc++` was added 2026-10-31 (COMP-E7-T01), when the core gained its static ggml copy,
+/// whose CPU backend is C++ (RFC-0040 §8.1): the GNU C++ runtime ships with every glibc Linux
+/// distribution, and a binary built in the glibc 2.35 build image with g++ 11 needs only the
+/// symbol versions that release carries (RFC-0062 §4.1).
+pub const SYSTEM_LIBRARIES: &[&str] = &[
+    "libc",
+    "libm",
+    "libpthread",
+    "libdl",
+    "librt",
+    "libgcc_s",
+    "libstdc++",
+];
 
 /// Rule 7: the dynamic loader, named per architecture: `ld-linux-x86-64.so.2`,
 /// `ld-linux-aarch64.so.1`.
@@ -611,6 +624,12 @@ pub fn named_crates() -> Vec<&'static str> {
     names
 }
 
+/// Whether `symbol` is one of ggml's, by the prefixes its C API uses (`ggml_`, `gguf_`), so an
+/// exported one is a leak of the core's static, hidden ggml copy (ADR-0403 item 6).
+pub fn is_ggml_symbol(symbol: &str) -> bool {
+    symbol.starts_with("ggml_") || symbol.starts_with("gguf_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +683,8 @@ mod tests {
             "libgcc_s.so.1",
             "libpthread.so.0",
             "libdl.so",
+            // The GNU C++ runtime, since the core's static ggml copy (COMP-E7-T01).
+            "libstdc++.so.6",
             "ld-linux-x86-64.so.2",
             "ld-linux-aarch64.so.1",
             "ld-linux.so.2",
@@ -676,7 +697,7 @@ mod tests {
             "libnccl.so.2",
             "libcrypt.so.1",
             "libmagic.so.1",
-            "libstdc++.so.6",
+            "libstdc++fs.so",
             "ld-linuxish.so",
             "libc",
         ] {
