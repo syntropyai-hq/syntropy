@@ -251,12 +251,19 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "SYNTROPY_IPC_PEER_PASSWORD=$password"
       - run: cargo xtask test unit
 
-  # L3: loom models, Miri and the sanitizer builds (RFC-0060 §3.4), when `changes` lists it. The
-  # loom models run now, as `cargo xtask test loom` (QUAL-E3-T09); Miri and the sanitizer builds
-  # join them with QUAL-E3-T10.
+  # L3: loom models, Miri and the sanitizer builds (RFC-0060 §3.4), when `changes` lists it: the
+  # loom models (QUAL-E3-T09), and Miri, AddressSanitizer and ThreadSanitizer (QUAL-E3-T10), one
+  # suite per runner, so the job takes as long as its slowest suite. Miri and the sanitizers run on
+  # the test nightly of `ci/nightly-toolchain.toml`, which each suite installs with rustup; every
+  # build that ships stays on `rust-toolchain.toml`'s stable release (ADR-0001 item 1).
   hosted-l3:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-l3')
+    name: hosted-l3-${{ matrix.suite }}
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [loom, miri, asan, tsan]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -265,9 +272,9 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: hosted-l3
+          cache-key: hosted-l3-${{ matrix.suite }}
           cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
-      - run: cargo xtask test loom
+      - run: cargo xtask test ${{ matrix.suite }}
 
   # L5 nano parity smoke on the CPU provider (RFC-0060 §5). Planned: QUAL-E5-T06. `changes` does
   # not list it until it has a suite, so it shows as skipped, and `ci-gate` names the task.

@@ -699,6 +699,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "opens a file, which Miri's isolation refuses")]
     fn reclaim_stalls_sample_of_a_missing_file_is_none() {
         let mut r = ReclaimStalls::new();
         let missing = Path::new("/nonexistent/syntropy-tier-test/vmstat");
@@ -740,6 +741,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "writes and reads a directory tree, which Miri's isolation refuses"
+    )]
     fn read_numa_available_reads_each_node_in_numeric_order() {
         let dir = std::env::temp_dir().join(format!("syntropy-tier-numa-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -803,6 +808,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "reads a directory, which Miri's isolation refuses")]
     fn read_numa_available_of_a_missing_dir_is_empty() {
         let missing = Path::new("/nonexistent/syntropy-tier-test/node");
         assert!(read_numa_available(missing, Bytes(GIB)).is_empty());

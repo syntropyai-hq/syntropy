@@ -3,18 +3,18 @@
 //! The shared-memory segment each OS provides (ADR-0015 item 4): created owner-only, sized once,
 //! mapped read-write and shared.
 
-#[cfg(any(target_vendor = "apple", windows))]
+#[cfg(all(any(target_vendor = "apple", windows), not(miri)))]
 use syntropy_core::Entropy;
 
 /// How many names to try when one is already taken by another segment.
-#[cfg(any(target_vendor = "apple", windows))]
+#[cfg(all(any(target_vendor = "apple", windows), not(miri)))]
 const NAME_ATTEMPTS: u32 = 64;
 
 /// A fresh segment name: `prefix`, then 128 random bits from `entropy` as 26 lowercase base32
 /// characters, so another process can neither guess the name nor take it first. With Apple's
 /// prefix, `/syn`, the name is 30 characters, inside the 31-character limit on POSIX
 /// shared-memory names.
-#[cfg(any(target_vendor = "apple", windows))]
+#[cfg(all(any(target_vendor = "apple", windows), not(miri)))]
 fn random_name(prefix: &str, entropy: &dyn Entropy) -> String {
     const DIGITS: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut bits = [0u8; 16];
@@ -33,7 +33,7 @@ pub(super) use imp::Segment;
 pub(crate) use imp::{OwnerOnly, UserSid, wide};
 
 /// The mapping both Unix builds share: `mmap` of a descriptor, and the owner-only check.
-#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[cfg(all(any(target_os = "linux", target_vendor = "apple"), not(miri)))]
 mod unix {
     use std::io;
     use std::os::fd::{AsRawFd, OwnedFd};
@@ -128,7 +128,7 @@ mod unix {
 }
 
 /// Linux: a sealed memfd, which has no name and lives while a descriptor or mapping of it does.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 mod imp {
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -275,7 +275,7 @@ mod imp {
 }
 
 /// Apple platforms: a POSIX shared-memory object, named until `shm_unlink`.
-#[cfg(target_vendor = "apple")]
+#[cfg(all(target_vendor = "apple", not(miri)))]
 mod imp {
     use std::ffi::CString;
     use std::io;
@@ -396,7 +396,7 @@ mod imp {
 
 /// Windows: a named file mapping backed by the paging file, in the session's `Local\` namespace,
 /// with a DACL that allows only the user who created it.
-#[cfg(windows)]
+#[cfg(all(windows, not(miri)))]
 mod imp {
     use std::io;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -827,6 +827,139 @@ mod imp {
                     Value: self.base.as_ptr().cast(),
                 })
             };
+        }
+    }
+}
+
+/// Under Miri: the OS calls stubbed (RFC-0060 §3.4; QUAL-E3-T10). Miri cannot call `memfd_create`,
+/// `shm_open` or `CreateFileMappingW`, nor map a descriptor shared, so each segment is a zeroed,
+/// page-aligned heap allocation that every `open` of its handle shares, and the region's own
+/// layout, header and ring code above it runs unchanged. The handle is `fd:<n>` on every OS, with
+/// `n` a counter of this process, not a descriptor. The segment lives while any `Segment` for it
+/// does, as a memfd lives while a descriptor or mapping of it does.
+#[cfg(miri)]
+mod imp {
+    use std::alloc::Layout;
+    use std::collections::BTreeMap;
+    use std::io;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::{Arc, Mutex, Weak};
+
+    use syntropy_core::Entropy;
+
+    use super::super::RegionHandle;
+
+    /// A page, the alignment `mmap` gives.
+    const PAGE: usize = 4096;
+
+    /// The allocation behind one segment.
+    struct Memory {
+        base: NonNull<u8>,
+        layout: Layout,
+    }
+
+    // SAFETY: the allocation is plain memory, freed only by `drop`; nothing in it is tied to the
+    // thread that made it.
+    unsafe impl Send for Memory {}
+    // SAFETY: shared access goes through the region's atomics and rings, which synchronise it.
+    unsafe impl Sync for Memory {}
+
+    impl Drop for Memory {
+        fn drop(&mut self) {
+            // SAFETY: `base` came from `alloc_zeroed` with `layout` and is freed only here, once
+            // the last `Segment` sharing it is gone.
+            unsafe { std::alloc::dealloc(self.base.as_ptr(), self.layout) };
+        }
+    }
+
+    /// The live segments by handle number, as the kernel's table of open memfds.
+    static SEGMENTS: Mutex<BTreeMap<i32, Weak<Memory>>> = Mutex::new(BTreeMap::new());
+    static NEXT: AtomicI32 = AtomicI32::new(1);
+
+    fn segments() -> std::sync::MutexGuard<'static, BTreeMap<i32, Weak<Memory>>> {
+        SEGMENTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(in super::super) struct Segment {
+        memory: Arc<Memory>,
+        number: i32,
+    }
+
+    impl Segment {
+        pub(in super::super) fn create(len: usize, _entropy: &dyn Entropy) -> io::Result<Segment> {
+            let layout = Layout::from_size_align(len.max(1), PAGE)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "segment too large"))?;
+            // SAFETY: `layout` has a nonzero size.
+            let base = NonNull::new(unsafe { std::alloc::alloc_zeroed(layout) })
+                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            let memory = Arc::new(Memory { base, layout });
+            let number = NEXT.fetch_add(1, Ordering::Relaxed);
+            segments().insert(number, Arc::downgrade(&memory));
+            Ok(Segment { memory, number })
+        }
+
+        pub(in super::super) fn open(handle: &RegionHandle, len: usize) -> io::Result<Segment> {
+            let RegionHandle::Fd(number) = handle else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a region under Miri is opened by its number",
+                ));
+            };
+            let memory = segments()
+                .get(number)
+                .and_then(Weak::upgrade)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            if memory.layout.size() < len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the region is smaller than its layout",
+                ));
+            }
+            Ok(Segment {
+                memory,
+                number: *number,
+            })
+        }
+
+        pub(in super::super) fn base(&self) -> NonNull<u8> {
+            self.memory.base
+        }
+
+        pub(in super::super) fn handle(&self) -> RegionHandle {
+            RegionHandle::Fd(self.number)
+        }
+
+        /// Miri runs no second process.
+        pub(in super::super) fn configure_spawn(
+            &self,
+            _command: &mut std::process::Command,
+        ) -> io::Result<RegionHandle> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Miri cannot hand a region to a child process",
+            ))
+        }
+
+        /// Drops the name, as `shm_unlink` does; the memory lives while a `Segment` holds it.
+        pub(in super::super) fn unlink(&self) -> io::Result<()> {
+            segments().remove(&self.number);
+            Ok(())
+        }
+
+        pub(in super::super) fn unlink_after_open(&self) -> io::Result<()> {
+            Ok(())
+        }
+
+        /// Only this process can reach the allocation.
+        pub(in super::super) fn is_owner_only(&self) -> io::Result<bool> {
+            Ok(true)
+        }
+
+        pub(in super::super) fn permissions(&self) -> io::Result<String> {
+            Ok("an in-process allocation standing in for the segment under Miri".to_owned())
         }
     }
 }

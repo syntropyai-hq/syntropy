@@ -25,8 +25,8 @@ use std::process::Command;
 use crate::run::Context;
 use crate::{
     cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
-    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
-    runner_build_id, sim_presets, toolchain, toolchains,
+    hot_threads, instructions, loom, miri, orphan_rule, plan_tools, properties, repo_settings,
+    runner_build_id, sanitizers, sim_presets, toolchain, toolchains,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -854,6 +854,99 @@ pub const SUITES: &[Entry] = &[
         }],
     },
     Entry {
+        name: "miri",
+        summary: "L3: Miri over the unit tests of tier, ipc (OS segment stubbed) and net's codecs \
+                  and transport core (QUAL-E3-T10), on the test nightly, then a planted \
+                  out-of-bounds read it must report",
+        defined_in: "RFC-0060 §1.1 and §3.4",
+        params: &[],
+        steps: &[
+            Step {
+                name: "toolchain",
+                action: Action::Builtin {
+                    shown: "the nightly of ci/nightly-toolchain.toml, installed if missing",
+                    run: miri::toolchain_step,
+                },
+            },
+            Step {
+                name: "miri",
+                action: Action::Builtin {
+                    shown: "`cargo miri test --lib` for syntropy-tier, syntropy-ipc and \
+                            syntropy-net, then a check that the named tests passed",
+                    run: miri::suite_step,
+                },
+            },
+            Step {
+                name: "planted",
+                action: Action::Builtin {
+                    shown: "tier's planted out-of-bounds arena read under Miri, which must \
+                            report it",
+                    run: miri::planted_step,
+                },
+            },
+        ],
+        pending: &[],
+    },
+    Entry {
+        name: "asan",
+        summary: "L3: the unsafe crates and the CPU provider built with AddressSanitizer and \
+                  tested (QUAL-E3-T10), on the test nightly, then a planted out-of-bounds read \
+                  it must report",
+        defined_in: "RFC-0060 §1.1 and §3.4",
+        params: &[],
+        steps: &[
+            Step {
+                name: "toolchain",
+                action: Action::Builtin {
+                    shown: "the nightly of ci/nightly-toolchain.toml, installed if missing",
+                    run: sanitizers::toolchain_step,
+                },
+            },
+            Step {
+                name: "asan",
+                action: Action::Builtin {
+                    shown: "the library and integration tests of the unsafe crates and \
+                            syntropy-kernels-cpu with -Zsanitizer=address and -Zbuild-std",
+                    run: sanitizers::asan_step,
+                },
+            },
+            Step {
+                name: "planted",
+                action: Action::Builtin {
+                    shown: "tier's planted out-of-bounds arena read with AddressSanitizer, \
+                            which must report it",
+                    run: sanitizers::asan_planted_step,
+                },
+            },
+        ],
+        pending: &[],
+    },
+    Entry {
+        name: "tsan",
+        summary: "L3: the unsafe crates and the CPU provider built with ThreadSanitizer and \
+                  tested (QUAL-E3-T10), on the test nightly",
+        defined_in: "RFC-0060 §1.1 and §3.4",
+        params: &[],
+        steps: &[
+            Step {
+                name: "toolchain",
+                action: Action::Builtin {
+                    shown: "the nightly of ci/nightly-toolchain.toml, installed if missing",
+                    run: sanitizers::toolchain_step,
+                },
+            },
+            Step {
+                name: "tsan",
+                action: Action::Builtin {
+                    shown: "the library and integration tests of the unsafe crates and \
+                            syntropy-kernels-cpu with -Zsanitizer=thread and -Zbuild-std",
+                    run: sanitizers::tsan_step,
+                },
+            },
+        ],
+        pending: &[],
+    },
+    Entry {
         name: "pairing-grind",
         summary: "L2: the full grinding-relay runs of the pairing model (DIST-E5-T14): 20 first-draft \
                   trials, ten million honest-reveal attempts and 20 cheating reveals, \
@@ -1099,6 +1192,39 @@ mod tests {
                  generated sections are current",
             ]
         );
+    }
+
+    /// `hosted-l3` runs the loom, Miri and sanitizer suites, so its closure rule in
+    /// `ci/jobs.toml` must name every crate they build and test (QUAL-E3-T10). The crates they
+    /// build beside those, such as `core`, are dependencies of a named crate, and the closure of a
+    /// change to one holds the crate that depends on it.
+    #[test]
+    fn hosted_l3s_rule_names_every_crate_its_suites_test() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let jobs: toml::Table = std::fs::read_to_string(root.join("ci/jobs.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let crates: Vec<&str> = jobs["job"]["hosted-l3"]["crates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap())
+            .collect();
+        let tested = loom::PACKAGES
+            .iter()
+            .copied()
+            .chain(miri::PACKAGES.iter().map(|package| package.name))
+            .chain(sanitizers::PACKAGES.iter().copied());
+        for package in tested {
+            let short = package.strip_prefix("syntropy-").unwrap();
+            assert!(crates.contains(&short), "hosted-l3 does not name {short}");
+        }
+        for suite in ["loom", "miri", "asan", "tsan"] {
+            assert!(find(SUITES, suite).is_some(), "{suite}");
+        }
     }
 
     #[test]

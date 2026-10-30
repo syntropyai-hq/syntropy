@@ -115,6 +115,15 @@ fn each_profile_builds_with_its_test_features_and_debug_assertions() {
             .collect();
         assert_eq!(ran, expected, "{profile}: {lines:#?}");
         assert_eq!(lines.last().map(String::as_str), Some(verdict), "{profile}");
+        // Only a release build checks the compiler it recorded (QUAL-E3-T10).
+        let compiler = lines
+            .iter()
+            .filter(|line| {
+                line.starts_with("the compiler cargo recorded in ")
+                    && line.ends_with(".rustc_info.json is the pinned stable release")
+            })
+            .count();
+        assert_eq!(compiler, usize::from(profile == "release"), "{profile}");
     }
 }
 
@@ -139,7 +148,11 @@ fn a_build_that_differs_from_its_profile_fails() {
     assert_eq!(
         lines
             .iter()
-            .filter(|line| !line.starts_with("profile ") && !line.starts_with("cargo "))
+            .filter(|line| {
+                !line.starts_with("profile ")
+                    && !line.starts_with("cargo ")
+                    && !line.starts_with("the compiler cargo recorded in ")
+            })
             .map(String::as_str)
             .collect::<Vec<_>>(),
         [

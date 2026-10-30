@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The nightly toolchain for tests only (RFC-0060 §3.4; QUAL-E3-T10): Miri, and the AddressSanitizer
+# and ThreadSanitizer builds, which need unstable compiler flags. ADR-0001 item 1 forbids nightly
+# compilers for release builds only. Every build that ships uses `rust-toolchain.toml`'s stable
+# release, and `cargo xtask build --profile release` fails when the compiler its build recorded is
+# not that release.
+#
+# `cargo xtask test miri`, `asan` and `tsan` read this file, install the toolchain with these
+# components when it is missing, and run it with `rustup run`, each into a target directory of
+# its own. It is a dated nightly, so a run is reproducible; a bump is a PR that passes the three
+# suites. The file is not named `rust-toolchain.toml`, so no directory switches to it.
+
+[toolchain]
+channel = "nightly-2026-10-10"
+profile = "minimal"
+components = ["miri", "rust-src"]

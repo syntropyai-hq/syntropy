@@ -47,6 +47,11 @@ no_crate = [
 "third_party/ggml.lock" = ["kernels-ggml"]
 "third_party/licences.toml" = ["xtask"]
 "bench/**" = ["bench"]
+# The test nightly that Miri and the sanitizer suites build these crates with, and the
+# ThreadSanitizer suppressions their `tsan` run reads (QUAL-E3-T10), so a change to either runs
+# `hosted-l3`.
+"ci/nightly-toolchain.toml" = ["io", "ipc", "kernels-cpu", "net", "spsc", "tier"]
+"ci/tsan-suppressions.txt" = ["io", "ipc", "kernels-cpu", "net", "spsc", "tier"]
 "ci/**" = ["xtask"]
 "governance/**" = ["xtask"]
 # The workflows: `xtask` checks them, and `testkit` checks that no release build names it.
@@ -75,10 +80,12 @@ when = "closure"
 runner = "hosted"
 when = "closure"
 
-# L3: the loom models now (QUAL-E3-T09), and Miri and the sanitizer builds with QUAL-E3-T10
-# (RFC-0060 §3.4). RFC-0062 §2.3's five crates, and `spsc`, whose ring the loom models cover, and
-# `kernels-cpu`, the CPU provider RFC-0060 §3.4 builds with the sanitizers. QUAL-E3-T10 adds any
-# other crate its jobs build.
+# L3: the loom models (QUAL-E3-T09), Miri and the ASan and TSan builds (QUAL-E3-T10; RFC-0060
+# §3.4). RFC-0062 §2.3's five crates, and `spsc`, whose ring the loom models cover, and
+# `kernels-cpu`, the CPU provider the sanitizers build. Every crate the suites test is listed:
+# loom's `spsc` and `ipc`, Miri's `tier`, `ipc` and `net`, and the sanitizers' `io`, `ipc`,
+# `kernels-cpu`, `net`, `spsc` and `tier`, as an `xtask` test checks. The crates they build
+# besides are dependencies of these, so their closure holds a listed crate.
 [job.hosted-l3]
 runner = "hosted"
 when = "closure"

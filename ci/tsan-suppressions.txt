@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# ThreadSanitizer suppressions for `cargo xtask test tsan` (RFC-0060 §3.4; QUAL-E3-T10). Each
+# entry is a race report that comes from a synchronisation ThreadSanitizer cannot see, never one in
+# Syntropy's own code. Every entry has its reason on the line above it, which an `xtask` test
+# checks. Remove an entry when its reason no longer holds.
+#
+# tokio's I/O driver: a task allocates a `ScheduledIo` and registers its address with epoll as
+# the event token; the driver thread later reads it in `dispatch_event`. The kernel orders the
+# registration before the event, but ThreadSanitizer does not model epoll, so each read of a
+# `ScheduledIo` on the driver thread is reported as racing with its allocation (16 reports in
+# `net`'s TCP tests on the first hosted run, PR #1859).
+race:tokio::runtime::io::driver::dispatch_event

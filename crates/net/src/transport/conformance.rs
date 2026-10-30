@@ -82,6 +82,14 @@ pub trait Fabric {
     /// it can; a fabric over a real link waits a little.
     fn pump(&mut self);
 
+    /// How long, in wall-clock time, a check keeps pumping for an event after its `PUMPS` are
+    /// spent. A fabric over a real link on a loaded or instrumented machine needs this: its pumps
+    /// sleep, so a count of them is a duration that slows with the machine. A check that passes
+    /// never waits it out; the default, none, leaves a simulated fabric on its count.
+    fn patience(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
     /// Holds (`true`) or resumes (`false`) delivery from the sending side to the receiving side,
     /// frames already in flight included. Returns whether the fabric can; it does nothing when it
     /// cannot.
@@ -405,15 +413,22 @@ fn send_ok(pool: &BufferPool, channel: &mut Channel, n: u32) -> Result<Attempt, 
     }
 }
 
-/// Pumps until `done` holds, at most [`PUMPS`] times.
+/// Pumps until `done` holds: at least [`PUMPS`] times, and then until the fabric's
+/// [`patience`](Fabric::patience) has run out.
 fn pump_until(fabric: &mut dyn Fabric, mut done: impl FnMut() -> bool) -> bool {
-    for _ in 0..PUMPS {
+    let start = std::time::Instant::now();
+    let patience = fabric.patience();
+    let mut pumps = 0;
+    loop {
         if done() {
             return true;
         }
+        if pumps >= PUMPS && start.elapsed() >= patience {
+            return false;
+        }
         fabric.pump();
+        pumps += 1;
     }
-    done()
 }
 
 /// Receives into `frames` until it holds `count`; false if they never come.
@@ -792,7 +807,12 @@ fn exchange(fabric: &mut dyn Fabric, key: ChannelKey) -> Result<Exchange, Broken
     let mut tickets = Vec::new();
     let mut would_block = 0;
     let mut next = 0;
-    for _ in 0..PUMPS {
+    let start = std::time::Instant::now();
+    let patience = fabric.patience();
+    let mut pumps = 0;
+    // The count first, then the fabric's patience, as in `pump_until`.
+    while pumps < PUMPS || start.elapsed() < patience {
+        pumps += 1;
         while next < FRAMES {
             let Some(attempt) = send(&pool, &mut sender, next)? else {
                 break;

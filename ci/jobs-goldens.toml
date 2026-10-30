@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:fec496af00cc6773"
+jobs_toml = "fnv1a:f344ace2bec87d30"
 
 [[golden]]
 name = "plan only"
@@ -597,3 +597,19 @@ paths = ["ci/images/cuda-12/Dockerfile"]
 jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "test nightly pin"
+source = "constructed: a bump of the test nightly alone (QUAL-E3-T10); the file is new"
+paths = ["ci/nightly-toolchain.toml"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "ThreadSanitizer suppressions"
+source = "constructed: a change to the suppressions alone (QUAL-E3-T10); the file is new"
+paths = ["ci/tsan-suppressions.txt"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]

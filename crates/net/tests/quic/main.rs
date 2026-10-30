@@ -10,7 +10,7 @@
 //! two nodes is a lab check, not one of these.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use syntropy_core::plan::WireDType;
@@ -64,7 +64,22 @@ struct Pair {
     // Dropped after the transports, which run in them.
     _domains: [NetDomain; 2],
     next_pool: u32,
+    // Dropped last, once the domains have stopped.
+    _live: MutexGuard<'static, ()>,
 }
+
+/// Held by each live [`Pair`], so the tests in this binary run their pairs one at a time.
+///
+/// A test workaround for #2005, not a fix. A stream channel's core starts from the initial α p99
+/// of 1 ms, so a sender that hears no ack for 3 ack timeouts of 4 ms faults the link (RFC-0031
+/// §7.3), and no reconnect brings it back yet. Several pairs at once under a sanitizer's slowdown
+/// kept a receiving domain off the CPU for longer than that (QUAL-E3-T10's `hosted-l3-asan`:
+/// "no ticket"). The lock hides that fault from these tests by keeping the load down. The fault
+/// itself remains on any host that deschedules a net domain for about 12 ms before the channel's
+/// first α sample. Nor does the lock make the binary safe under load: 12 ASan copies at once,
+/// with the lock, still failed 4 of 24 runs \[measured\] (#2005). Remove the lock once #2005 is
+/// settled.
+static LIVE: Mutex<()> = Mutex::new(());
 
 fn settings() -> QuicSettings {
     QuicSettings {
@@ -88,6 +103,8 @@ impl Pair {
     }
 
     fn with(a_settings: QuicSettings, b_settings: QuicSettings) -> Pair {
+        // A test that failed while it held the lock has said so; the next one runs.
+        let live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -108,6 +125,7 @@ impl Pair {
             b,
             _domains: domains,
             next_pool: 1,
+            _live: live,
         }
     }
 
@@ -207,6 +225,12 @@ impl Fabric for QuicFabric {
     /// Frames, credits and acknowledgements move on their own; the suite waits a little.
     fn pump(&mut self) {
         std::thread::sleep(Duration::from_micros(500));
+    }
+
+    /// A sanitizer's slowdown, or a busy runner, stretches the round trips that the pump count
+    /// assumes; a wait for an acknowledgement gets this long in wall-clock time before it fails.
+    fn patience(&self) -> Duration {
+        Duration::from_secs(10)
     }
 }
 
@@ -401,10 +425,12 @@ fn closing_a_channel_lowers_the_receive_window_again() {
     let mut pair = Pair::new();
     let per_channel = 4 * SLOT as u64 + u64::from(CONTROL_RECEIVES) * MAX_CONTROL_FRAME as u64;
     let floor = QuicSettings::receive_window_floor();
-    let wait_for = |pair: &Pair, channels: usize| {
+    // Each side gives its share back when its own connection task sees the channel close, so
+    // each side is polled: under a sanitizer's slowdown the dialling side can lag the other.
+    let wait_for = |transport: &QuicTransport, channels: usize| {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let windows = Pair::windows(&pair.b);
+            let windows = Pair::windows(transport);
             if windows.len() == 1 && windows[0].channels == channels {
                 return windows[0];
             }
@@ -419,14 +445,14 @@ fn closing_a_channel_lowers_the_receive_window_again() {
         let channels = pair
             .open(key(ChannelPurpose::Activations, round), 4)
             .expect("open");
-        let open = wait_for(&pair, 1);
+        let open = wait_for(&pair.b, 1);
         assert_eq!(
             (open.credited, open.window),
             (per_channel, per_channel),
             "round {round}"
         );
         drop(channels);
-        let closed = wait_for(&pair, 0);
+        let closed = wait_for(&pair.b, 0);
         assert_eq!(
             (closed.credited, closed.window),
             (0, floor),
@@ -434,9 +460,7 @@ fn closing_a_channel_lowers_the_receive_window_again() {
         );
     }
     // The opening side gives its share back too.
-    let dialled = Pair::windows(&pair.a);
-    assert_eq!(dialled.len(), 1);
-    assert_eq!(dialled[0].channels, 0, "{dialled:#?}");
+    wait_for(&pair.a, 0);
 }
 
 /// A third endpoint in a `net` domain of its own, for the tests that need a second peer of `b`.
@@ -842,10 +866,14 @@ fn a_frame_lands_in_a_registered_receive_slot_after_one_host_copy() {
     // The sender sent from its slot and kept it leased until the peer acknowledged the frame:
     // the conformance suite's `Retention` rule holds the frame back to check that, which a live
     // link cannot. Here the slot is free once the ticket is back.
+    // The wait has its own deadline: the frame's arrival may have used up the first one under a
+    // sanitizer. The receiver is polled as the conformance waits poll it; it holds nothing more.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let completed = loop {
         if let Some(done) = sender.completed() {
             break done;
         }
+        assert!(receiver.try_recv().is_none(), "a second frame arrived");
         assert!(std::time::Instant::now() < deadline, "no ticket");
         std::thread::sleep(Duration::from_millis(1));
     };

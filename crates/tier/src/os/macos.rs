@@ -83,6 +83,7 @@ mod tests {
 
     /// `hw.memsize` exists on every Mac, as an 8-byte value.
     #[test]
+    #[cfg_attr(miri, ignore = "calls sysctlbyname, which Miri does not model (FFI)")]
     fn a_sysctl_reads_without_a_write() {
         let ram = sysctl_u64("hw.memsize").unwrap();
         assert!(ram >= 1 << 30, "{ram}");

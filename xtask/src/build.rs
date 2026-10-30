@@ -27,6 +27,11 @@
 //!   profile's. Build scripts and proc macros are not checked, because they run on the host and
 //!   cargo may build them with build-override settings. So a passing run shows what the profile
 //!   built, not only what `Cargo.toml` declares.
+//! - **The compiler** (`release` only; QUAL-E3-T10). Cargo records the `rustc -vV` of the compiler
+//!   that built a target directory in its `.rustc_info.json`. After a release build, that
+//!   compiler must be the stable release `rust-toolchain.toml` pins (ADR-0001 item 1), and not a
+//!   nightly, such as the test toolchain of `ci/nightly-toolchain.toml`, nor a beta or a
+//!   development build.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
@@ -111,6 +116,73 @@ struct Metadata {
     packages: Vec<MetaPackage>,
     workspace_members: Vec<String>,
     workspace_root: PathBuf,
+    /// Where cargo builds, which `CARGO_TARGET_DIR` can move.
+    #[serde(default)]
+    target_directory: Option<PathBuf>,
+}
+
+/// The `release:` values of every `rustc -vV` output cargo recorded in a target directory's
+/// `.rustc_info.json`: the compiler the builds there used, as cargo itself saw it.
+fn recorded_releases(json: &str) -> Result<BTreeSet<String>, String> {
+    #[derive(Deserialize)]
+    struct Info {
+        outputs: BTreeMap<String, Output>,
+    }
+    #[derive(Deserialize)]
+    struct Output {
+        stdout: String,
+    }
+    let info: Info = serde_json::from_str(json)
+        .map_err(|error| format!("cannot read .rustc_info.json: {error}"))?;
+    let releases: BTreeSet<String> = info
+        .outputs
+        .values()
+        .flat_map(|output| output.stdout.lines())
+        .filter_map(|line| line.strip_prefix("release: "))
+        .map(|release| release.trim().to_owned())
+        .collect();
+    if releases.is_empty() {
+        return Err(".rustc_info.json records no `rustc -vV` output".to_owned());
+    }
+    Ok(releases)
+}
+
+/// The release check of QUAL-E3-T10 (ADR-0001 item 1): every compiler the release build
+/// recorded is `pinned`, the stable release of `rust-toolchain.toml`, and none is a nightly, beta
+/// or development build, such as the test nightly of `ci/nightly-toolchain.toml`.
+fn check_release_compiler(releases: &BTreeSet<String>, pinned: &str) -> Vec<String> {
+    releases
+        .iter()
+        .filter(|release| {
+            release.contains('-') || !crate::toolchain::matches(pinned, release.as_str())
+        })
+        .map(|release| {
+            format!(
+                "the release build was compiled by rustc {release}, but rust-toolchain.toml pins \
+                 the stable release {pinned}, and only that release may build a release \
+                 (ADR-0001 item 1)"
+            )
+        })
+        .collect()
+}
+
+/// Reads the compiler the build under `target` recorded and checks it against the pin that
+/// applies to the workspace at `root`: the nearest `rust-toolchain.toml` at or above it, the file
+/// rustup follows.
+fn release_compiler(root: &Path, target: &Path) -> Result<Vec<String>, String> {
+    let file = root
+        .ancestors()
+        .map(|dir| dir.join("rust-toolchain.toml"))
+        .find(|file| file.is_file())
+        .ok_or("no rust-toolchain.toml at or above the workspace")?;
+    let toolchain = std::fs::read_to_string(&file)
+        .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+    let pinned = crate::toolchain::channel(&toolchain)
+        .ok_or("rust-toolchain.toml has no `channel` in its `[toolchain]` table")?;
+    let info = target.join(".rustc_info.json");
+    let json = std::fs::read_to_string(&info)
+        .map_err(|error| format!("cannot read {}: {error}", info.display()))?;
+    Ok(check_release_compiler(&recorded_releases(&json)?, &pinned))
 }
 
 #[derive(Deserialize)]
@@ -374,10 +446,18 @@ pub fn run(manifest: &Path, profile: &Profile, log: &mut dyn Write) -> io::Resul
             Scope::Production => Some(Layers::load(&metadata.workspace_root)?),
             _ => None,
         };
-        plan(profile, &metadata, layers.as_ref())
+        let target = metadata
+            .target_directory
+            .clone()
+            .unwrap_or_else(|| metadata.workspace_root.join("target"));
+        Ok((
+            plan(profile, &metadata, layers.as_ref())?,
+            metadata.workspace_root,
+            target,
+        ))
     });
-    let plan = match planned {
-        Ok(plan) => plan,
+    let (plan, root, target) = match planned {
+        Ok(planned) => planned,
         Err(error) => {
             writeln!(log, "build: FAIL: {error}")?;
             return Ok(false);
@@ -427,6 +507,17 @@ pub fn run(manifest: &Path, profile: &Profile, log: &mut dyn Write) -> io::Resul
         }
     }
     checked.finish();
+    if profile.scope == Scope::ReleaseCrates {
+        match release_compiler(&root, &target) {
+            Ok(problems) if problems.is_empty() => writeln!(
+                log,
+                "build: the compiler cargo recorded in {} is the pinned stable release",
+                target.join(".rustc_info.json").display()
+            )?,
+            Ok(problems) => checked.problems.extend(problems),
+            Err(error) => checked.problems.push(error),
+        }
+    }
     for problem in &checked.problems {
         writeln!(log, "build: {problem}")?;
     }
@@ -690,5 +781,49 @@ mod tests {
         assert_eq!(listed(&[]), "none");
         assert_eq!(listed(&strings(&["a"])), "a");
         assert_eq!(listed(&strings(&["a", "b", "c"])), "a, b and c");
+    }
+
+    /// The shape cargo writes: one entry per query, keyed by a hash; the `-vV` query is the one
+    /// with a `release:` line.
+    fn rustc_info(version: &str) -> String {
+        format!(
+            r#"{{"rustc_fingerprint": 1, "outputs": {{
+                "1": {{"success": true, "status": "", "code": 0,
+                       "stdout": "rustc {version} (58cf8f9c3 2026-10-13)\nbinary: rustc\nhost: x86_64-unknown-linux-gnu\nrelease: {version}\nLLVM version: 23.1.1\n",
+                       "stderr": ""}},
+                "2": {{"success": true, "status": "", "code": 0,
+                       "stdout": "___\nlib___.rlib\ndebug_assertions\n", "stderr": ""}}
+            }}, "successes": {{}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_release_build_by_the_pinned_stable_compiler_passes() {
+        let releases = recorded_releases(&rustc_info("1.99.1")).unwrap();
+        assert_eq!(releases, BTreeSet::from(["1.99.1".to_owned()]));
+        assert!(check_release_compiler(&releases, "1.99.1").is_empty());
+    }
+
+    #[test]
+    fn a_release_build_by_the_test_nightly_or_another_release_fails() {
+        for version in ["1.101.0-nightly", "1.100.0-beta.3", "1.99.1-dev", "1.98.0"] {
+            let releases = recorded_releases(&rustc_info(version)).unwrap();
+            let problems = check_release_compiler(&releases, "1.99.1");
+            assert_eq!(problems.len(), 1, "{version}");
+            assert!(problems[0].contains(version), "{}", problems[0]);
+        }
+        // A two-part pin matches any patch of its release, so only the suffix check stops a
+        // nightly of that release.
+        assert!(crate::toolchain::matches("1.99", "1.99.1-nightly"));
+        let nightly = BTreeSet::from(["1.99.1-nightly".to_owned()]);
+        assert_eq!(check_release_compiler(&nightly, "1.99").len(), 1);
+        assert!(check_release_compiler(&BTreeSet::from(["1.99.1".to_owned()]), "1.99").is_empty());
+    }
+
+    #[test]
+    fn a_target_directory_without_a_recorded_compiler_fails() {
+        let none = r#"{"rustc_fingerprint": 1, "outputs": {}, "successes": {}}"#;
+        assert!(recorded_releases(none).is_err());
+        assert!(recorded_releases("not json").is_err());
     }
 }

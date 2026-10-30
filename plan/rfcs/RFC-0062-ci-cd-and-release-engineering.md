@@ -203,6 +203,8 @@ paths = ["docs/**", "plan/**", "*.md"]
 
 *Note, 2026-10-23 (QUAL-E1-T07).* `changes` now builds the base's `xtask` with no cache before it decides, as `ci-gate` does. Its budget of < 1 min [target] is checked against the first hosted runs.
 
+*Note, 2026-10-25 (QUAL-E3-T10).* `hosted-l3` runs one suite per runner, as a matrix: `cargo xtask test loom`, `miri`, `asan` and `tsan` (RFC-0060 §3.4, note of 2026-10-25). Its budget of ≤ 15 min [target] then applies to the slowest suite, and is checked against the first hosted runs. Miri and the sanitizers run on the test nightly pinned in `ci/nightly-toolchain.toml` (§4.2), which each suite installs with rustup. The rule in `ci/jobs.toml` already names every crate the suites test, so it gains no crate, and an `xtask` test keeps the rule and the suites' crate lists in step. `inputs` maps `ci/nightly-toolchain.toml` to those crates, so a bump of the pin alone runs `hosted-l3`, with a golden for it.
+
 *Note, 2026-10-27 (QUAL-E1-T28).* `build-<target>` also runs rule 7 of RFC-0001 §4.2 on the core binary of its own OS, as the step `rule-7` of `cargo xtask ci build`, after the `dev` build (§12.1).
 
 #### 2.4 Platform promises to jobs
@@ -333,6 +335,7 @@ Per ADR-0018 §5 and ADR-0014, vendor GPU runtimes live only in backend modules,
 | Toolchain | Pin | Bumped by |
 |---|---|---|
 | Rust | stable, in `rust-toolchain.toml` (ADR-0001) | Renovate, minor releases, with a full nightly before merge |
+| Rust, tests only (added 2026-10-25, QUAL-E3-T10) | a dated nightly, in `ci/nightly-toolchain.toml`, for Miri and the sanitizer builds (RFC-0060 §3.4); never builds an artefact, and `cargo xtask build --profile release` fails on any compiler but the stable pin | manual PR that passes `cargo xtask test miri`, `asan` and `tsan` |
 | CUDA 13 | one `13.x` minor, in the CUDA build image | manual PR; full-architecture build plus full parity before merge (§11.3) |
 | CUDA 12 legacy | one `12.x` minor | manual |
 | ROCm / HIP | builds against the current release (10.1.0 as of 2026-10); runtime minimum 7.2 (ADR-0020) | manual; weekly Tier 2 parity before merge |
