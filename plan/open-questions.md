@@ -1,6 +1,6 @@
 # Open questions
 
-This register lists the technical questions the Syntropy plan still leaves open, and the answers to the ones it has settled. It collects RFC-0001 §17, the "Open questions" sections of the 24 domain RFCs, the measurements that ADR revisit clauses still wait on, and the spike and decision tasks in `plan/implementation/epics/`. 142 questions are open. Answered questions are in [Settled](#settled) at the end, each with the ADR or RFC section that holds the answer.
+This register lists the technical questions the Syntropy plan still leaves open, and the answers to the ones it has settled. It collects RFC-0001 §17, the "Open questions" sections of the 24 domain RFCs, the measurements that ADR revisit clauses still wait on, and the spike and decision tasks in `plan/implementation/epics/`. 143 questions are open. Answered questions are in [Settled](#settled) at the end, each with the ADR or RFC section that holds the answer.
 
 How to read it:
 - **RFC** is the RFC that records the answer. Where two are listed, the first one holds it.
@@ -183,6 +183,7 @@ When a question closes, move it to Settled with the ADR or RFC section that answ
 | OQ-PKG-10 | Does the `rocm` module ship the all-architecture ROCm user space, or require a system ROCm install? | Module size and support burden against zero-config. Licensing is not the obstacle: ROCm's user space is MIT and NCSA; RCCL, ROCgdb and the binary-only pieces are excluded, and hipCUB's notice ships if its headers are compiled in (RFC-0052 §4.4). | RFC-0052 | decision from M3 measurements of size and support issues (RFC-0052 OQ6) | PROD-E11-T08 | M3 |
 | OQ-PKG-13 | Does the TUF client follow a path-scoped delegated `nightly` targets role whose key is online in the KMS? | If not, nightlies use a separate TUF repository whose root is embedded only in nightly builds. | RFC-0052 §7.2 | spike | PROD-E12-T11 | M1a |
 | OQ-PKG-14 | Does Task Scheduler's job for a logon task allow `CREATE_BREAKAWAY_FROM_JOB` on Windows 11? | Decides whether runners survive a daemon restart and are re-adopted on logon-task installs. | RFC-0052 §6.5 | spike on Windows 11 and Windows Server CI images | PROD-E12-T12 | M1b |
+| OQ-PKG-15 | Does `THIRD-PARTY-NOTICES` carry a notice for the GNU C++ runtime, which the Linux core links statically for ggml's C++ code? Options: (a) no notice: the GCC Runtime Library Exception 3.1 covers static linking of `libstdc++` from an eligible compilation process [recommended]; (b) a notice entry with the runtime's licence texts in `third_party/licences.toml`, which needs a licence-policy change: `deny.toml`'s allow list and ADR-0018 §3 deny GPL-*, and the entry's licence is `GPL-3.0-or-later WITH GCC-exception-3.1`. | COMP-E7-T01 links the runtime statically so that the core needs no `libstdc++.so` (RFC-0042 §4.1 rule 7). Today the notices carry nothing for it. This is a licence question, so it is for the maintainers, not an agent. | RFC-0040 §8.1, ADR-0018 | decision, by the maintainers under ADR-0018. Recommended default: (a) | QUAL-E16-T13 | M1a |
 
 ## Product, API and operations
 
