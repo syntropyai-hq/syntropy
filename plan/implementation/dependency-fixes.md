@@ -1369,3 +1369,4 @@ RFC-0034 §10.4 asks for a header-parsing child with no network access from M1, 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E17-T16's "a connect attempt from the child fails on each Tier 1 OS" narrows to Linux; the macOS and Windows criterion moves to DIST-E17-T08 (M4) | DIST-E17-T16, DIST-E17-T08 | R9 | the macOS sandbox profile and Windows AppContainer that ban the network are DIST-E17-T08's |
+| DIST-E17-T16's "a header over the memory limit is refused" is tested on Linux, and on Windows the job object sets the limit; on macOS the criterion moves to DIST-E17-T08's profile | DIST-E17-T16, DIST-E17-T08 | R1 | the hosted macOS runner refused `setrlimit(RLIMIT_DATA)` with `EINVAL` (2026-10-30), and macOS does not enforce `RLIMIT_AS`. Until DIST-E17-T08, the 256 MiB header cap bounds the parse there. Proposed, for the maintainers to confirm |

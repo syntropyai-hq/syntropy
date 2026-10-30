@@ -5,10 +5,12 @@
 //!
 //! [`confine_self`] is called by the child itself, first thing, before it opens the file:
 //! - **Resources.** On Linux, `setrlimit` caps the address space, CPU seconds, open files and core
-//!   dumps, and is tested here. On macOS it sets the data segment (macOS does not enforce the
-//!   address-space limit), CPU seconds, open files and core dumps; on Windows the process puts
-//!   itself in a job with a per-process memory and user-time limit, and open files have no
-//!   limit. The macOS and Windows limits are set but not confirmed enforced on those systems.
+//!   dumps, and is tested here. On macOS it caps CPU seconds, open files and core dumps, but not
+//!   memory: macOS does not enforce the address-space limit, and it refuses the data-segment
+//!   limit with `EINVAL` (hosted macOS CI, 2026-10-30), so the macOS sandbox profile of
+//!   DIST-E17-T08 owns that limit. On Windows the process puts itself in a job with a
+//!   per-process memory and user-time limit, and open files have no limit. The macOS and Windows
+//!   limits are set but not confirmed enforced on those systems.
 //! - **Inherited descriptors.** On Linux, every descriptor from 3 up is closed, so a socket or
 //!   channel end the child inherited cannot be used.
 //! - **System calls.** On Linux, a seccomp filter, installed with `no_new_privs`, makes `socket()`
@@ -26,7 +28,8 @@ use std::io;
 /// The limits a confined child runs under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Address space (Linux), data segment (macOS) or process memory (Windows), in bytes.
+    /// Address space (Linux) or process memory (Windows), in bytes. Not set on macOS (module
+    /// docs).
     pub memory: u64,
     /// CPU time, in seconds.
     pub cpu_secs: u64,
@@ -90,9 +93,6 @@ mod imp {
         set("RLIMIT_CORE", libc::RLIMIT_CORE as libc::c_int, 0)?;
         #[cfg(target_os = "linux")]
         set("RLIMIT_AS", libc::RLIMIT_AS as libc::c_int, limits.memory)?;
-        // macOS does not enforce RLIMIT_AS; the data segment is what it does enforce.
-        #[cfg(target_os = "macos")]
-        set("RLIMIT_DATA", libc::RLIMIT_DATA, limits.memory)?;
         set(
             "RLIMIT_CPU",
             libc::RLIMIT_CPU as libc::c_int,
