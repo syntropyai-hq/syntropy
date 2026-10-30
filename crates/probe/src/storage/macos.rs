@@ -27,6 +27,8 @@ pub fn classify(raw: &MacVolume) -> VolumeInfo {
         Some("USB") => StorageBus::Usb,
         Some("SATA" | "ATA") => StorageBus::Sata,
         Some("Virtual Interface" | "Disk Image") => StorageBus::Virtual,
+        // A virtual machine's disk can carry no protocol at all; it is still a virtual disk.
+        None if raw.hypervisor => StorageBus::Virtual,
         _ => StorageBus::Unknown,
     };
     let block = raw.media_block.unwrap_or(raw.fs_block);

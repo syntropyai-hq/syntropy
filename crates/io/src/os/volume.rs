@@ -218,6 +218,9 @@ pub struct MacVolume {
     pub media_block: Option<u32>,
     /// DiskArbitration `DAMediaEncrypted`.
     pub encrypted: Option<bool>,
+    /// `kern.hv_vmm_present` is 1: the host is a virtual machine, whose disk may report no
+    /// protocol.
+    pub hypervisor: bool,
 }
 
 #[cfg(target_os = "macos")]

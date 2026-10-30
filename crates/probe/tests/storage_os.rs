@@ -75,6 +75,7 @@ fn mac(protocol: Option<&str>) -> MacVolume {
         protocol: protocol.map(str::to_owned),
         media_block: Some(4096),
         encrypted: Some(true),
+        hypervisor: false,
     }
 }
 
@@ -107,14 +108,28 @@ fn macos_protocols_map() {
     }
 }
 
+#[test]
+fn a_virtual_machines_disk_without_a_protocol_is_virtual() {
+    // The hosted macOS runner's system volume: no `DADeviceProtocol`, `kern.hv_vmm_present` 1.
+    let vm = |protocol: Option<&str>| {
+        let mut raw = mac(protocol);
+        raw.hypervisor = true;
+        classify_macos(&raw).bus
+    };
+    assert_eq!(vm(None), StorageBus::Virtual);
+    // A protocol the disk does report still decides the bus.
+    assert_eq!(vm(Some("USB")), StorageBus::Usb);
+}
+
 /// The hosted macOS runner (and a developer Mac): the system volume's disk description gives a
-/// protocol and a block size, and the protocol maps to a known bus.
+/// block size, and the bus is known. On physical hardware the disk must report a protocol; the
+/// hosted runner is a virtual machine whose disk reports none, so its bus is `Virtual`.
 #[cfg(target_os = "macos")]
 #[test]
 fn live_macos_system_volume() {
     let raw = syntropy_io::os::volume::macos_volume(Path::new("/")).unwrap();
     eprintln!("{raw:?}");
-    assert!(raw.protocol.is_some(), "{raw:?}");
+    assert!(raw.protocol.is_some() || raw.hypervisor, "{raw:?}");
     assert!(raw.media_block.is_some(), "{raw:?}");
     let v = macos_live(Path::new("/")).unwrap();
     assert_ne!(v.bus, StorageBus::Unknown, "{v:?} from {raw:?}");

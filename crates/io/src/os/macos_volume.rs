@@ -2,7 +2,8 @@
 
 //! The macOS system calls of E3 storage-volume enumeration (RFC-0010 §2.2 "NVMe volume";
 //! PLC-E1-T06): `statfs` for the file system and free space, then DiskArbitration's
-//! description of the volume's disk for the storage protocol and the media block size.
+//! description of the volume's disk for the storage protocol and the media block size, and the
+//! `kern.hv_vmm_present` sysctl, since a virtual machine's disk can report no protocol.
 //!
 //! RFC-0010 §2.2 names IOKit's `IONVMeController` and `IOBlockStorageDevice` properties. The
 //! DiskArbitration description carries the same protocol and block-size facts for a BSD disk
@@ -62,6 +63,11 @@ pub fn query(path: &Path) -> io::Result<MacVolume> {
         protocol: None,
         media_block: None,
         encrypted: None,
+        // A 4-byte integer, nonzero in a virtual machine; absent on older kernels.
+        hypervisor: super::macos_host::sysctl("kern.hv_vmm_present")
+            .ok()
+            .flatten()
+            .is_some_and(|bytes| bytes.iter().any(|&b| b != 0)),
     };
     if let Some(bsd) = device.strip_prefix("/dev/")
         && let Ok(bsd) = CString::new(bsd)

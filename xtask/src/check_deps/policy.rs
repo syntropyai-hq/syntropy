@@ -316,7 +316,7 @@ pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
 ///
 /// `DiskArbitration` was added 2026-10-30 (PLC-E1-T06), from what rule 7 reported on the hosted
 /// `macos-26` runner once the core binary linked `syntropy-io`'s storage-volume module, which asks
-/// it for a BSD disk's bus and block size (`crates/io/src/os/macos_volume.rs:22`,
+/// it for a BSD disk's bus and block size (`crates/io/src/os/macos_volume.rs`,
 /// `link(name = "DiskArbitration", kind = "framework")`). It ships with every macOS.
 pub const MACOS_FRAMEWORKS: &[&str] = &[
     "Metal",
