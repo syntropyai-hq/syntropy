@@ -153,16 +153,15 @@ fn get_rows_picks_f32_rows_in_index_order() {
 
 #[test]
 fn get_rows_dequantises_quantised_rows() {
-    // Three Q8_0 rows of one block each.
-    let matrix: Vec<u8> = [-128i8, -10, 90]
-        .iter()
-        .flat_map(|&f| q8_0_block(f))
-        .collect();
+    // Three Q8_0 rows of one block each: scale 0.5 and the codes first, first + 1, …, wrapping
+    // as i8. The expected values are computed here, not with ggml's own dequantisation.
+    let firsts = [-128i8, -10, 90];
+    let matrix: Vec<u8> = firsts.iter().flat_map(|&f| q8_0_block(f)).collect();
     let got = get_rows(GgmlType::Q8_0, &matrix, 32, &[1, 2, 1]).unwrap();
-    let mut want = Vec::new();
-    for r in [1usize, 2, 1] {
-        want.extend(dequantize(GgmlType::Q8_0, &matrix[r * 34..(r + 1) * 34]).unwrap());
-    }
+    let want: Vec<f32> = [1usize, 2, 1]
+        .iter()
+        .flat_map(|&r| (0..32).map(move |i| f32::from(firsts[r].wrapping_add(i)) * 0.5))
+        .collect();
     assert_eq!(got, want);
 }
 
