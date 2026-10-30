@@ -1419,6 +1419,20 @@ mod unix {
     /// A listener of either kind, as the stale-socket cases bind it.
     pub(super) type Bind<'a> = &'a dyn Fn(&Endpoint) -> std::io::Result<Box<dyn Any>>;
 
+    /// Held while a test creates sockets whose liveness it asserts, and while a test spawns a
+    /// process. On Apple platforms std sets close-on-exec on a new socket only after `socket()`
+    /// returns, so a process another test thread spawns in that instant inherits the socket and
+    /// keeps it open past its `exec`. A "stale" socket a child holds is a live listener, and the
+    /// takeover rightly refuses it: the macOS failure of #1972's hosted run, job 123735904097.
+    pub(super) static FORK_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes [`FORK_GUARD`], whether or not a test that held it panicked.
+    pub(super) fn fork_guard() -> std::sync::MutexGuard<'static, ()> {
+        FORK_GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// The error of a bind that must fail; `what` names what a success would mean.
     fn refused(result: std::io::Result<Box<dyn Any>>, what: &str) -> std::io::Error {
         match result {
@@ -1433,6 +1447,8 @@ mod unix {
     /// - a live listener's socket keeps the bind failing with `AddrInUse`, and stays;
     /// - a regular file, and a link to a stale socket, are left in place and the bind fails.
     pub(super) fn stale_socket_cases(bind: Bind<'_>) {
+        // No process is spawned while these sockets exist (`FORK_GUARD`).
+        let _guard = fork_guard();
         // 1. A stale socket: a std listener dropped without removing its file.
         let endpoint = endpoint();
         let path = socket_path(&endpoint).to_owned();

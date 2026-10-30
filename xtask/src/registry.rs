@@ -26,7 +26,7 @@ use crate::run::Context;
 use crate::{
     cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
     hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
-    runner_build_id, sim_presets, toolchain,
+    runner_build_id, sim_presets, toolchain, toolchains,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -393,6 +393,15 @@ pub const JOBS: &[Entry] = &[
                     run: sim_presets::step,
                 },
             },
+            // The build toolchain pins and architecture sets (QUAL-E16-T24, RFC-0062 §4.2-§4.3).
+            Step {
+                name: "toolchains",
+                action: Action::Builtin {
+                    shown: "ci/toolchains.toml and ci/arch-sets.toml are well formed, and the Linux \
+                            pins are in the build image's Dockerfile",
+                    run: toolchains::step,
+                },
+            },
             // The affected-job rules and their golden suite (RFC-0062 §2.2; QUAL-E1-T07).
             Step {
                 name: "jobs",
@@ -696,6 +705,26 @@ pub const JOBS: &[Entry] = &[
         pending: &[Pending {
             check: "on a merge group, the `hw/<job>` statuses of members labelled `hw:queue`",
             task: "QUAL-E1-T11",
+        }],
+    },
+    Entry {
+        name: "toolchains-linux",
+        summary: "the Linux build image rebuilds byte for byte from its pins, and carries the \
+                  pinned nvcc, CMake and C++ compiler",
+        defined_in: "RFC-0062 §4.1 and §4.2",
+        params: &[],
+        steps: &[Step {
+            name: "toolchains-linux",
+            action: Action::Builtin {
+                shown: "two no-cache builds of the Linux build image are byte-identical; print \
+                        nvcc, CMake and the C++ compiler from inside it",
+                run: toolchains::linux_step,
+            },
+        }],
+        pending: &[Pending {
+            check: "the Windows and macOS version-print steps, and pins for MSVC, Xcode and \
+                        the Metal compiler",
+            task: "QUAL-E16-T30",
         }],
     },
     Entry {
@@ -1035,6 +1064,8 @@ mod tests {
                  scenarios check",
                 "xtask: every simulator preset cites its sources, and labels and sources each \
                  figure",
+                "xtask: ci/toolchains.toml and ci/arch-sets.toml are well formed, and the Linux \
+                 pins are in the build image's Dockerfile",
                 "xtask: ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its expected \
                  jobs, and covers pr.yml's jobs",
                 "xtask: the plan tools: every task row parses, the task graph checks, and the \
