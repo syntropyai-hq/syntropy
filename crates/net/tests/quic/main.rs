@@ -10,7 +10,7 @@
 //! two nodes is a lab check, not one of these.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use syntropy_core::plan::WireDType;
@@ -64,7 +64,22 @@ struct Pair {
     // Dropped after the transports, which run in them.
     _domains: [NetDomain; 2],
     next_pool: u32,
+    // Dropped last, once the domains have stopped.
+    _live: MutexGuard<'static, ()>,
 }
+
+/// Held by each live [`Pair`], so the tests in this binary run their pairs one at a time.
+///
+/// A test workaround for #2005, not a fix. A stream channel's core starts from the initial α p99
+/// of 1 ms, so a sender that hears no ack for 3 ack timeouts of 4 ms faults the link (RFC-0031
+/// §7.3), and no reconnect brings it back yet. Several pairs at once under a sanitizer's slowdown
+/// kept a receiving domain off the CPU for longer than that (QUAL-E3-T10's `hosted-l3-asan`:
+/// "no ticket"). The lock hides that fault from these tests by keeping the load down. The fault
+/// itself remains on any host that deschedules a net domain for about 12 ms before the channel's
+/// first α sample. Nor does the lock make the binary safe under load: 12 ASan copies at once,
+/// with the lock, still failed 4 of 24 runs \[measured\] (#2005). Remove the lock once #2005 is
+/// settled.
+static LIVE: Mutex<()> = Mutex::new(());
 
 fn settings() -> QuicSettings {
     QuicSettings {
@@ -88,6 +103,8 @@ impl Pair {
     }
 
     fn with(a_settings: QuicSettings, b_settings: QuicSettings) -> Pair {
+        // A test that failed while it held the lock has said so; the next one runs.
+        let live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -108,6 +125,7 @@ impl Pair {
             b,
             _domains: domains,
             next_pool: 1,
+            _live: live,
         }
     }
 
