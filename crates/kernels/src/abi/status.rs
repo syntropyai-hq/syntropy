@@ -169,16 +169,17 @@ mod tests {
         assert_eq!(error_of_status(status, error.message.clone()), Some(error));
     }
 
-    /// A code of another domain crosses with its domain: here a `Net` code and an `Exec` code.
+    /// A code of any domain crosses with its domain: every `Domain`, and `Exec`'s `RingClosed`.
     #[test]
-    fn an_error_of_another_domain_keeps_its_domain() {
-        for code in [
-            ErrorCode::new(Domain::Net, 0x0207),
-            syntropy_core::error::codes::exec::RING_CLOSED,
-        ] {
+    fn an_error_of_any_domain_keeps_its_domain() {
+        for code in Domain::ALL
+            .into_iter()
+            .map(|domain| ErrorCode::new(domain, 0x0042))
+            .chain([syntropy_core::error::codes::exec::RING_CLOSED])
+        {
             let error = Error::new(ErrorClass::Link, code, "elsewhere");
             let status = status_of_error(&error);
-            assert_ne!(status.domain, super::super::DOMAIN_KERNELS);
+            assert_eq!(Some(status.domain), super::super::domain_code(code.domain));
             assert_eq!(error_of_status(status, error.message.clone()), Some(error));
         }
     }

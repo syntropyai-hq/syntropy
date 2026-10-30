@@ -277,16 +277,8 @@ fn throttle_reason() -> impl Strategy<Value = ThrottleReason> {
 /// A code of any domain, not only `Kernels`: a `Sticky` health and an `Error` carry another
 /// domain's code unchanged (COMP-E13-T15).
 fn error_code() -> impl Strategy<Value = ErrorCode> {
-    let domain = prop_oneof![
-        Just(Domain::Cluster),
-        Just(Domain::Net),
-        Just(Domain::Dist),
-        Just(Domain::Recovery),
-        Just(Domain::Security),
-        Just(Domain::Kernels),
-        Just(Domain::Exec),
-    ];
-    (domain, any::<u16>()).prop_map(|(domain, code)| ErrorCode::new(domain, code))
+    (prop::sample::select(Domain::ALL.to_vec()), any::<u16>())
+        .prop_map(|(domain, code)| ErrorCode::new(domain, code))
 }
 
 fn device_health() -> impl Strategy<Value = DeviceHealth> {

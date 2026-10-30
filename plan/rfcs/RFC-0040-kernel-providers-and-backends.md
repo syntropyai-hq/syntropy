@@ -1220,7 +1220,7 @@ const SynModule* syntropy_provider_entry_v1(const SynHostApi* host);   /* N = 1 
 - **Unknown numbers.** A status whose domain number this build does not know decodes as an `Internal` error naming the number and the code, as an unknown class does. A health record with one decodes as no health, which the core's proxy reports as an unknown health.
 - **`SynHealth`** is `{ uint32_t kind, domain, detail; }`, 12 bytes. `domain` is 0 for `Ok` and `Throttled`. For `Sticky`, `domain` is the code's domain number and `detail` the code.
 - **`SynProviderVtbl`** gains a last field, `uint32_t health_size`: the size of the `SynHealth` the provider's `health` writes. The core refuses a table whose `health_size` differs from its own, with `(Kernels, 4)`. A library built before this change has a table 8 bytes shorter, which the size check refuses first.
-- **The ABI stays version 1.** No provider library of the earlier layout has shipped, so the entry symbol, `SYNTROPY_PROVIDER_1` and `ABI_MAJOR` 1 are unchanged.
+- **The ABI stays version 1.** No provider library or core of the earlier layout has shipped, so the entry symbol, `SYNTROPY_PROVIDER_1` and `ABI_MAJOR` 1 are unchanged. `SynHealth` changed size in place only for that reason: a core of the 8-byte layout would accept a library of this one, whose table is larger, and hand its `health` an 8-byte buffer. Once v1 has shipped, resizing an existing record needs `ABI_MAJOR` 2; `health_size` guards a mismatch in either direction.
 
 #### 10.5 Driver census and loading
 
