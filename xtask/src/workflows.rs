@@ -11,6 +11,7 @@
 //! | Allowed actions | a `uses:` of an action or reusable workflow that the repository's actions policy, as [`SELECTED_ACTIONS`] records it, does not allow: GitHub would refuse the whole workflow at startup, so no job runs |
 //! | No `pull_request_target` | a workflow triggered by it, in any form of `on:` |
 //! | No lab label | a job outside `lab.yml` whose `runs-on` names a lab label (§3.2) |
+//! | Build host behind its gate | a job whose `runs-on` names the build-host label other than as the gated operand of the build-host form (ADR-0625) |
 //! | No PR checkout beside a secret | a job that checks out a PR ref and holds a secret, an environment or a write token |
 //! | Lab jobs in chunks | a job in `lab.yml`, or on a lab label anywhere, without a `timeout-minutes` from 1 to 60, or with one an expression computes (§3.4) |
 //!
@@ -21,6 +22,12 @@
 //! `unified`). A runner `group` counts as a label. A `runs-on` computed by an expression is read
 //! through the job's matrix when it is `${{ matrix.<key> }}`, and otherwise fails, because the
 //! labels it yields cannot be checked.
+//!
+//! **The build host.** One other computed form is read: `${{ (<gate>) && <a> || <b> }}`, where
+//! `<gate>` is exactly [`BUILD_HOST_GATE`] (runs of whitespace aside) and `<a>` and `<b>` are each
+//! a quoted label or `matrix.<key>`. Only `<a>` may yield [`BUILD_HOST_LABEL`]; `<b>`, the label a
+//! fork's PR and every other event get, is checked like any plain label. Both are checked for lab
+//! labels.
 //!
 //! **PR checkouts.** The rule allows only what it knows is safe. A step that is `actions/checkout`
 //! (in any case) checks out a PR ref unless its `ref` is one of these, compared without case or
@@ -108,6 +115,16 @@ const LAB_LABELS: &[&str] = &[
     "arm",
     "arm64",
 ];
+
+/// The label of the Linux build host's job runners (ADR-0625). It is not a lab label: the build
+/// host is not a rig, and it runs builds and hardware-independent suites only.
+pub const BUILD_HOST_LABEL: &str = "syntropy-build";
+
+/// When a job may run on the build host: the repository variable that switches it on, and a pull
+/// request from a branch of this repository. A fork's PR, a merge group and every other event get
+/// the fallback label, and so does every run while the variable is not `on` (ADR-0625).
+pub const BUILD_HOST_GATE: &str = "vars.SYNTROPY_BUILD_HOST == 'on' && \
+                                   github.event.pull_request.head.repo.full_name == github.repository";
 
 /// Prefixes of lab labels, matched without case.
 const LAB_PREFIXES: &[&str] = &[
@@ -373,8 +390,42 @@ fn matrix_values(job: &Yaml, key: &str) -> Result<Vec<String>, String> {
     Ok(values)
 }
 
-/// The labels `runs-on` names, read through the matrix where needed.
-fn runs_on_labels(report: &mut Report<'_>, at: &str, job: &Yaml, runs_on: &Yaml) -> Vec<String> {
+/// The operands of a build-host `runs-on`, `${{ (<BUILD_HOST_GATE>) && <a> || <b> }}`, compared
+/// with runs of whitespace collapsed, or `None` when `label` is not that form.
+fn build_host_operands(label: &str) -> Option<(&str, &str)> {
+    let inner = label.trim().strip_prefix("${{")?.strip_suffix("}}")?.trim();
+    let gate = format!("({BUILD_HOST_GATE}) && ");
+    let mut rest = inner;
+    for word in gate.split_whitespace() {
+        rest = rest.trim_start().strip_prefix(word)?;
+    }
+    let (a, b) = rest.split_once("||")?;
+    Some((a.trim(), b.trim()))
+}
+
+/// The labels one operand of a build-host `runs-on` yields: a quoted literal, or a
+/// `matrix.<key>` read through the matrix.
+fn operand_labels(job: &Yaml, operand: &str) -> Result<Vec<String>, String> {
+    if let Some(literal) = operand.strip_prefix('\'').and_then(|o| o.strip_suffix('\'')) {
+        if literal.is_empty() || literal.contains('\'') {
+            return Err(format!("`{operand}` is not a plain label"));
+        }
+        return Ok(vec![literal.to_owned()]);
+    }
+    match matrix_key(&format!("${{{{ {operand} }}}}")) {
+        Some(key) => matrix_values(job, key),
+        None => Err(format!("`{operand}` is neither a quoted label nor `matrix.<key>`")),
+    }
+}
+
+/// The labels `runs-on` names, read through the matrix where needed, each with whether it is the
+/// gated operand of a build-host `runs-on`.
+fn runs_on_labels(
+    report: &mut Report<'_>,
+    at: &str,
+    job: &Yaml,
+    runs_on: &Yaml,
+) -> Vec<(String, bool)> {
     let mut named = Vec::new();
     match runs_on {
         Yaml::Hash(_) => {
@@ -389,11 +440,18 @@ fn runs_on_labels(report: &mut Report<'_>, at: &str, job: &Yaml, runs_on: &Yaml)
     let mut labels = Vec::new();
     for label in named {
         if !label.contains("${{") {
-            labels.push(label);
+            labels.push((label, false));
         } else if let Some(key) = matrix_key(&label) {
             match matrix_values(job, key) {
-                Ok(values) => labels.extend(values),
+                Ok(values) => labels.extend(values.into_iter().map(|v| (v, false))),
                 Err(why) => report.add(at, format!("`{label}`: {why}")),
+            }
+        } else if let Some((gated, fallback)) = build_host_operands(&label) {
+            for (operand, is_gated) in [(gated, true), (fallback, false)] {
+                match operand_labels(job, operand) {
+                    Ok(values) => labels.extend(values.into_iter().map(|v| (v, is_gated))),
+                    Err(why) => report.add(at, format!("`{label}`: {why}")),
+                }
             }
         } else {
             report.add(
@@ -795,6 +853,21 @@ pub fn check_workflow(
         if let Some(runs_on) = get(job, "runs-on") {
             let runs_at = format!("{at}.runs-on");
             let labels = runs_on_labels(&mut report, &runs_at, job, runs_on);
+            // The build host only behind its gate, so a fork's PR or a plain label never
+            // reaches it (ADR-0625).
+            for (label, _) in labels
+                .iter()
+                .filter(|(l, gated)| !gated && l.trim().eq_ignore_ascii_case(BUILD_HOST_LABEL))
+            {
+                report.add(
+                    &runs_at,
+                    format!(
+                        "names the build-host label `{label}` outside the gated form \
+                         `${{{{ ({BUILD_HOST_GATE}) && … || … }}}}` (ADR-0625)"
+                    ),
+                );
+            }
+            let labels: Vec<String> = labels.into_iter().map(|(l, _)| l).collect();
             if !lab {
                 for label in labels.iter().filter(|l| is_lab_label(l)) {
                     report.add(

@@ -260,6 +260,8 @@ Standard GitHub-hosted runners run every PR job that needs no special hardware: 
 
 Hosted macOS runners are reported to expose no Metal device. So hosted macOS jobs build the Metal provider and its shader libraries, and run CPU tests. Metal execution happens only on lab rigs.
 
+> **Note (2026-10-30, ADR-0625, Proposed).** A self-hosted Linux build host, which is not a lab rig, takes `lint`, `build-linux`, `hosted-test-linux` and `hosted-l3` for PRs from branches of this repository while the repository variable `SYNTROPY_BUILD_HOST` is `on`. Fork PRs, merge groups and every other run stay on hosted runners. Each job runs in a fresh container from a single-use just-in-time configuration, with no credential and no route to the LAN. The workflow lint allows the label `syntropy-build` only behind that gate (§12.4).
+
 #### 3.2 Lab runners and the lab dispatcher
 
 Rigs are bare-metal machines with real GPUs, so a job that runs untrusted code can persist on them. GitHub's own guidance warns that self-hosted runners in public repositories can be persistently compromised by untrusted workflow code. The design below therefore does not trust any workflow file a PR can edit, any credential stored on a rig, or the rig's state after it has run fork-derived code.

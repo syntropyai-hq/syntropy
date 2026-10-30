@@ -11,7 +11,10 @@
 # - permissions stay read-only, and no job holds a secret;
 # - every action is pinned by its full commit SHA;
 # - every job runs on a standard hosted runner, never on a lab label: lab jobs run only in
-#   `lab.yml`, through the lab dispatcher;
+#   `lab.yml`, through the lab dispatcher. The one exception is the Linux build host (ADR-0625):
+#   a job may name `syntropy-build` only in the gated form below, which sends a PR from a branch
+#   of this repository there while the `SYNTROPY_BUILD_HOST` variable is `on`, and every fork's
+#   PR, merge group and other run to the hosted label. The workflow lint checks the form;
 # - `ci-gate` waits for every other job, and a new job is added to its `needs`.
 
 name: pr
@@ -101,7 +104,7 @@ jobs:
   lint:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'lint')
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,14 +131,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `build-host` is the label a trusted run gets (ADR-0625): the build host for Linux,
+        # the hosted label for the others.
         include:
           - os: linux
             runner: ubuntu-24.04
+            build-host: syntropy-build
           - os: macos
             runner: macos-26
+            build-host: macos-26
           - os: windows
             runner: windows-2025
-    runs-on: ${{ matrix.runner }}
+            build-host: windows-2025
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && matrix.build-host || matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -157,14 +165,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `build-host` is the label a trusted run gets (ADR-0625): the build host for Linux,
+        # the hosted label for the others.
         include:
           - os: linux
             runner: ubuntu-24.04
+            build-host: syntropy-build
           - os: macos
             runner: macos-26
+            build-host: macos-26
           - os: windows
             runner: windows-2025
-    runs-on: ${{ matrix.runner }}
+            build-host: windows-2025
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && matrix.build-host || matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -257,7 +270,7 @@ jobs:
   hosted-l3:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-l3')
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
