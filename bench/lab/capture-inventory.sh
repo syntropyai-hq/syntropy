@@ -142,9 +142,11 @@ for tool in uname lscpu dmidecode nvidia-smi lspci ethtool awk sed; do need "$to
 
 kernel="$(uname -r)"
 power_plan="$(read_file "$root/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")"
-cpu_model="$(lscpu | awk -F: '/^Model name:/ { print $2; exit }')"
+# Every "key: value" read below drops only the text up to the first colon: a value may hold more
+# colons (a NIC firmware "2017:888d").
+cpu_model="$(lscpu | awk '/^Model name:/ { sub(/^[^:]*:[ \t]*/, ""); print; exit }')"
 cpu_model="$(trim "$cpu_model")"
-microcode="$(awk -F: '/^microcode/ { gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit }' \
+microcode="$(awk '/^microcode/ { sub(/^[^:]*:[ \t]*/, ""); gsub(/[ \t]+$/, ""); print; exit }' \
     "$root/proc/cpuinfo")"
 bios_version="$(trim "$(dmidecode -s bios-version)")"
 smt_active="$(read_file "$root/sys/devices/system/cpu/smt/active")"
@@ -164,25 +166,35 @@ fi
 
 # Memory: one record per populated module.
 modules=0
-while IFS='|' read -r slot size speed part; do
+while IFS='|' read -r slot size speed clock part; do
     [ -n "$slot" ] || continue
     case "$size" in
         *GB) size_gib="${size% GB}" ;;
         *) die "memory module $slot has size '$size'; expected whole GB" ;;
     esac
+    # "Configured Memory Speed" is the label of current dmidecode. The older "Configured Clock
+    # Speed" is taken only when the newer label is absent, or when both name the same speed.
+    if [ -z "$speed" ]; then
+        speed="$clock"
+    elif [ -n "$clock" ] && [ "$clock" != "$speed" ]; then
+        die "memory module $slot: configured speeds disagree ('$speed' and '$clock')"
+    fi
+    [ -n "$speed" ] || die "memory module $slot reports no configured speed"
     speed_mts="${speed% MT/s}"
-    case "$size_gib$speed_mts" in *[!0-9]*) die "memory module $slot: size '$size', speed '$speed'" ;; esac
+    case "$size_gib" in "" | *[!0-9]*) die "memory module $slot: size '$size' is not a whole number of GB" ;; esac
+    case "$speed_mts" in "" | *[!0-9]*) die "memory module $slot: speed '$speed' is not a whole number of MT/s" ;; esac
     printf '\n[[rig.memory]]\nslot = %s\nsize_gib = %s\nspeed_mts = %s\npart = %s\n' \
         "$(quote "$slot" memory.slot)" "$size_gib" "$speed_mts" "$(quote "$part" memory.part)"
     modules=$((modules + 1))
-done < <(dmidecode -t memory | awk -F: '
-    function t(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
-    function flush() { if (size != "" && size != "No Module Installed") print loc "|" size "|" spd "|" pn }
-    /^Memory Device/ { flush(); loc = ""; size = ""; spd = ""; pn = "" }
-    /^\tLocator:/ { loc = t($2) }
-    /^\tSize:/ { size = t($2) }
-    /^\tConfigured Memory Speed:/ { spd = t($2) }
-    /^\tPart Number:/ { pn = t($2) }
+done < <(dmidecode -t memory | awk '
+    function v(s) { sub(/^[^:]*:/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    function flush() { if (size != "" && size != "No Module Installed") print loc "|" size "|" spd "|" clk "|" pn }
+    /^Memory Device/ { flush(); loc = ""; size = ""; spd = ""; clk = ""; pn = "" }
+    /^\tLocator:/ { loc = v($0) }
+    /^\tSize:/ { size = v($0) }
+    /^\tConfigured Memory Speed:/ { spd = v($0) }
+    /^\tConfigured Clock Speed:/ { clk = v($0) }
+    /^\tPart Number:/ { pn = v($0) }
     END { flush() }')
 [ "$modules" -gt 0 ] || die "dmidecode lists no populated memory module"
 
@@ -228,12 +240,23 @@ for ctrl in "$root"/sys/class/nvme/nvme*; do
 done
 
 # NICs on PCI.
+nic_slots=""
 for dev in "$root"/sys/class/net/*; do
     [ -e "$dev/device" ] || continue
     ifname="$(basename "$dev")"
-    addr="$(basename "$(readlink "$dev/device")")"
-    model="$(lspci -s "$addr" -mm | awk -F'"' '{ print $6 }')"
-    fw="$(ethtool -i "$ifname" | awk -F: '/^firmware-version:/ { print $2; exit }')"
+    target="$(readlink "$dev/device")" || die "$ifname: cannot read its device link"
+    addr="$(basename "$target")"
+    case "$addr" in
+        [0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f].[0-7]) ;;
+        *) die "$ifname: its device link points at '$addr', not a PCI function; remove or exclude this network device" ;;
+    esac
+    case " $nic_slots " in
+        *" $addr "*) die "$ifname: PCI function $addr is already recorded for another network device" ;;
+    esac
+    nic_slots="$nic_slots $addr"
+    model="$(lspci -s "$addr" -mm | awk -F'"' '{ print $6 }')" || die "lspci failed for $addr"
+    fw="$(ethtool -i "$ifname" | awk '/^firmware-version:/ { sub(/^[^:]*:[ \t]*/, ""); print; exit }')" \
+        || die "ethtool -i $ifname failed"
     printf '\n[[rig.nic]]\nslot = %s\nmodel = %s\nfirmware = %s\npcie = %s\n' \
         "$(quote "$addr" nic.slot)" "$(quote "$(trim "$model")" nic.model)" \
         "$(quote "$(trim "$fw")" "nic.firmware of $ifname")" \

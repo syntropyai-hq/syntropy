@@ -319,6 +319,87 @@ mod on_unix {
     }
 
     #[test]
+    fn a_colon_inside_a_value_is_kept() {
+        let fake = Fake::new("colon");
+        fake.tool("ethtool", "echo 'firmware-version: 2017:888d'");
+        fake.tool(
+            "lscpu",
+            "echo 'Model name:            Fixture CPU: Rev 2 @ 3:1'",
+        );
+        let memory = DMIDECODE_MEMORY.replace("FIXTURE-PART-64G", "FIXTURE:PART:64G");
+        fake.file("dmidecode-memory.txt", &memory);
+        let rig = captured(&fake).rigs.remove(0);
+        assert!(rig.nic.iter().all(|n| n.firmware == "2017:888d"));
+        assert_eq!(rig.cpu.model, "Fixture CPU: Rev 2 @ 3:1");
+        assert!(rig.memory.iter().all(|m| m.part == "FIXTURE:PART:64G"));
+    }
+
+    #[test]
+    fn an_empty_configured_memory_speed_is_refused() {
+        let fake = Fake::new("emptyspeed");
+        let memory = DMIDECODE_MEMORY.replacen(
+            "Configured Memory Speed: 6000 MT/s",
+            "Configured Memory Speed:",
+            1,
+        );
+        fake.file("dmidecode-memory.txt", &memory);
+        refused(&fake, GOOD, "reports no configured speed");
+    }
+
+    #[test]
+    fn an_unreadable_memory_speed_is_refused_on_its_own() {
+        let fake = Fake::new("badspeed");
+        let memory = DMIDECODE_MEMORY.replacen("6000 MT/s", "Unknown", 1);
+        fake.file("dmidecode-memory.txt", &memory);
+        refused(&fake, GOOD, "not a whole number of MT/s");
+    }
+
+    #[test]
+    fn the_older_clock_speed_label_is_accepted_when_unambiguous() {
+        let fake = Fake::new("clocklabel");
+        let memory = DMIDECODE_MEMORY.replace("Configured Memory Speed", "Configured Clock Speed");
+        fake.file("dmidecode-memory.txt", &memory);
+        assert!(
+            captured(&fake).rigs[0]
+                .memory
+                .iter()
+                .all(|m| m.speed_mts == 6000)
+        );
+
+        // Both labels, naming different speeds: ambiguous.
+        let both = DMIDECODE_MEMORY.replace(
+            "\tConfigured Memory Speed: 6000 MT/s",
+            "\tConfigured Memory Speed: 6000 MT/s\n\tConfigured Clock Speed: 4800 MT/s",
+        );
+        fake.file("dmidecode-memory.txt", &both);
+        refused(&fake, GOOD, "configured speeds disagree");
+    }
+
+    #[test]
+    fn a_network_device_that_is_not_a_pci_function_is_refused() {
+        let fake = Fake::new("virtio");
+        let virtio = fake.dir.join("sys/devices/virtio0");
+        fs::create_dir_all(&virtio).unwrap();
+        let net = fake.dir.join("sys/class/net/eth9");
+        fs::create_dir_all(&net).unwrap();
+        symlink(&virtio, net.join("device")).unwrap();
+        refused(&fake, GOOD, "not a PCI function");
+    }
+
+    #[test]
+    fn two_network_devices_on_one_pci_function_are_refused() {
+        let fake = Fake::new("dupslot");
+        let net = fake.dir.join("sys/class/net/eth2");
+        fs::create_dir_all(&net).unwrap();
+        symlink(
+            fake.dir.join("sys/devices/pci/0000:02:00.0"),
+            net.join("device"),
+        )
+        .unwrap();
+        refused(&fake, GOOD, "already recorded");
+    }
+
+    #[test]
     fn the_script_is_executable_and_strict() {
         let mode = fs::metadata(SCRIPT).unwrap().permissions().mode();
         assert!(mode & 0o111 != 0);
