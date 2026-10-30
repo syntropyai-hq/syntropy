@@ -3,7 +3,8 @@
   "description": [
     "Renovate policy of RFC-0062 section 11.1 (QUAL-E1-T10).",
     "This file is strict JSON, which JSON5 accepts, so that `cargo xtask ci lint` reads it with serde_json: it holds no comments and no trailing commas.",
-    "Rules apply in order and a later rule overrides an earlier one, so the never-auto-merge rules come last."
+    "Rules apply in order and a later rule overrides an earlier one, so the never-auto-merge rules come last.",
+    "ignorePaths keeps the test fixtures out: they are inputs to xtask's tests, not dependencies, and the lint step fails if a package file outside the repository's own is left uncovered."
   ],
   "extends": [],
   "enabledManagers": ["cargo", "github-actions", "dockerfile", "custom.regex"],
@@ -17,6 +18,7 @@
   "prConcurrentLimit": 10,
   "rebaseWhen": "conflicted",
   "lockFileMaintenance": { "enabled": false },
+  "ignorePaths": ["**/tests/fixtures/**"],
   "customManagers": [
     {
       "description": "The Rust release pinned in rust-toolchain.toml (ADR-0001 item 1).",
