@@ -111,6 +111,10 @@ fn main() {
     if static_stdlib {
         link_static_stdlib(&cxx);
     }
+    if target_os == "windows" {
+        // The CPU backend reads the processor's name from the registry.
+        println!("cargo:rustc-link-lib=advapi32");
+    }
 }
 
 /// Links `libstdc++.a`, from the directory the C++ compiler itself names for it.
