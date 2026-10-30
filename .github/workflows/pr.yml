@@ -307,7 +307,7 @@ jobs:
   # `ci/toolchains.toml`, and prints every tool's version against its pin.
   toolchains-windows:
     needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'toolchains-windows')
+    if: true
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -322,7 +322,7 @@ jobs:
 
   toolchains-macos:
     needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'toolchains-macos')
+    if: true
     runs-on: macos-26
     timeout-minutes: 30
     steps:
