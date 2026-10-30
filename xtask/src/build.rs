@@ -812,6 +812,12 @@ mod tests {
             assert_eq!(problems.len(), 1, "{version}");
             assert!(problems[0].contains(version), "{}", problems[0]);
         }
+        // A two-part pin matches any patch of its release, so only the suffix check stops a
+        // nightly of that release.
+        assert!(crate::toolchain::matches("1.99", "1.99.1-nightly"));
+        let nightly = BTreeSet::from(["1.99.1-nightly".to_owned()]);
+        assert_eq!(check_release_compiler(&nightly, "1.99").len(), 1);
+        assert!(check_release_compiler(&BTreeSet::from(["1.99.1".to_owned()]), "1.99").is_empty());
     }
 
     #[test]

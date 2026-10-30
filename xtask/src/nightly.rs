@@ -11,13 +11,17 @@
 //! - each runs cargo through `rustup run <channel>`, which overrides `rust-toolchain.toml` for
 //!   that command alone, and drops `RUSTC` and `RUSTDOC`, which could name the stable tools;
 //! - each builds into a target directory of its own under the usual one, so a nightly artefact
-//!   never lands where a stable build looks, and the stable build is not rebuilt.
+//!   never lands where a stable build looks, and the stable build is not rebuilt;
+//! - each streams cargo's output as it comes and stops a run still going at [`STEP_LIMIT`], so a
+//!   hung test fails the step with its output and exit status, not the job at its time limit.
 //!
 //! `cargo xtask build --profile release` checks the other side: the compiler its build recorded
 //! is the stable release (`crate::build`).
 
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// The pin, relative to the workspace root.
 pub const PIN_FILE: &str = "ci/nightly-toolchain.toml";
@@ -224,6 +228,16 @@ pub fn target_dir(root: &Path, var: impl Fn(&str) -> Option<String>, name: &str)
         .join(name)
 }
 
+/// How long one suite step may run before it is stopped: 20 minutes \[target\], chosen to leave
+/// `hosted-l3`'s 30-minute job limit time for the checkout, the cache and the verdict. A step
+/// that hangs then fails with everything it printed, rather than being killed with the job.
+pub const STEP_LIMIT: Duration = Duration::from_secs(20 * 60);
+
+/// When a step that starts now must have finished.
+pub fn deadline() -> Instant {
+    Instant::now() + STEP_LIMIT
+}
+
 /// What a finished child process printed.
 pub struct Output {
     pub success: bool,
@@ -231,17 +245,73 @@ pub struct Output {
     pub stderr: String,
 }
 
-/// Runs `command`, then echoes what it printed, so the log shows it as it would have.
-pub fn run(mut command: Command) -> Result<Output, String> {
-    let output = command
-        .output()
-        .map_err(|e| format!("cannot start rustup: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    eprint!("{stderr}");
-    print!("{stdout}");
+/// Copies `from` to `to` line by line as it arrives, and returns all of it.
+fn tee(from: impl Read, mut to: impl Write) -> String {
+    let mut reader = BufReader::new(from);
+    let mut all = Vec::new();
+    let mut line = Vec::new();
+    while matches!(reader.read_until(b'\n', &mut line), Ok(n) if n > 0) {
+        // A closed terminal must not stop the capture the verdict reads.
+        let _ = to.write_all(&line).and_then(|()| to.flush());
+        all.append(&mut line);
+    }
+    String::from_utf8_lossy(&all).into_owned()
+}
+
+/// Stops the child and, on Unix, every process in its group: the test binaries cargo started and
+/// any symbolizer a sanitizer started. Each of those holds the output pipes open.
+fn stop(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
+    }
+    let _ = child.kill();
+}
+
+/// Runs `command`, echoing what it prints as it prints it, so a log shows how far it got even if
+/// it never ends. A run still going at `deadline` is stopped, with the processes it started, and
+/// is an error. A run that fails prints its exit status.
+pub fn run(mut command: Command, deadline: Instant) -> Result<Output, String> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("cannot start {program}: {e}"))?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let stdout = std::thread::spawn(move || tee(stdout, std::io::stdout()));
+    let stderr = std::thread::spawn(move || tee(stderr, std::io::stderr()));
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() >= deadline => {
+                stop(&mut child);
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(format!("cannot wait for {program}: {e}")),
+        }
+    };
+    // The run has ended, so the pipes close once its last process has gone. A process that left
+    // the group can still hold them; that is a hang past what this function can bound.
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    let Some(status) = status else {
+        return Err(format!(
+            "{program} was still running at the step limit of {} min [target] and was stopped; \
+             its output up to then is above",
+            STEP_LIMIT.as_secs() / 60
+        ));
+    };
+    if !status.success() {
+        eprintln!("nightly: {program} exited with {status}");
+    }
     Ok(Output {
-        success: output.status.success(),
+        success: status.success(),
         stdout,
         stderr,
     })
@@ -368,6 +438,42 @@ mod tests {
         assert_eq!(
             target_dir(Path::new("/w"), vars(&[("CARGO_TARGET_DIR", "/c")]), "asan"),
             PathBuf::from("/c/asan")
+        );
+    }
+
+    #[cfg(unix)]
+    fn sh(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_captures_both_streams_and_its_verdict() {
+        let far = Instant::now() + Duration::from_secs(60);
+        let output = run(sh("echo out; echo err >&2"), far).unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout, "out\n");
+        assert_eq!(output.stderr, "err\n");
+        assert!(!run(sh("exit 3"), far).unwrap().success);
+    }
+
+    /// The hang the step limit is for: a child that never ends, and a grandchild that holds the
+    /// pipes. Both are stopped, and what was printed before survives in the error's log.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_past_its_deadline_is_stopped_with_what_it_started() {
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(1);
+        let error = run(sh("echo started; sleep 60 & wait"), deadline)
+            .err()
+            .expect("a run past its deadline is an error");
+        assert!(error.contains("step limit"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the run took {:?}: the sleep it started was not stopped",
+            started.elapsed()
         );
     }
 

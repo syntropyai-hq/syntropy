@@ -162,7 +162,7 @@ fn run(context: &Context, sanitizer: Sanitizer) -> Result<(), String> {
     );
     let mut command = cargo(&pin, &context.root, sanitizer, sanitizer.name(), &[]);
     command.args(&args);
-    if nightly::run(command)?.success {
+    if nightly::run(command, nightly::deadline())?.success {
         Ok(())
     } else {
         Err(format!(
@@ -224,7 +224,7 @@ pub fn asan_planted_step(context: &Context) -> Result<(), String> {
     );
     command.args(&args);
     nightly::reported(
-        &nightly::run(command)?,
+        &nightly::run(command, nightly::deadline())?,
         "AddressSanitizer",
         &["ERROR: AddressSanitizer: heap-buffer-overflow"],
     )

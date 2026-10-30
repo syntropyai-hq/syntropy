@@ -146,13 +146,14 @@ pub fn toolchain_step(context: &Context) -> Result<(), String> {
 /// The `miri` step: each crate's tests under Miri, then the check that [`REQUIRED`] passed.
 pub fn suite_step(context: &Context) -> Result<(), String> {
     let pin = nightly::read(&context.root)?;
+    let deadline = nightly::deadline();
     let mut problems = Vec::new();
     for package in PACKAGES {
         let args = args(package);
         eprintln!("miri: rustup run {} cargo {}", pin.channel, args.join(" "));
         let mut command = cargo(&pin, &context.root, "miri", &[]);
         command.args(&args);
-        let output = nightly::run(command)?;
+        let output = nightly::run(command, deadline)?;
         if !output.success {
             problems.push(format!("{}'s tests failed under Miri", package.name));
         }
@@ -201,7 +202,11 @@ pub fn planted_step(context: &Context) -> Result<(), String> {
         &["--cfg", "syntropy_planted"],
     );
     command.args(args);
-    nightly::reported(&nightly::run(command)?, "Miri", MARKERS)
+    nightly::reported(
+        &nightly::run(command, nightly::deadline())?,
+        "Miri",
+        MARKERS,
+    )
 }
 
 #[cfg(test)]
