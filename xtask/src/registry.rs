@@ -24,9 +24,9 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
-    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
-    runner_build_id, sim_presets, toolchain, toolchains,
+    agent_tooling, cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff,
+    determinism, hot_threads, instructions, loom, orphan_rule, plan_tools, properties,
+    repo_settings, runner_build_id, sim_presets, toolchain, toolchains,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -445,13 +445,25 @@ pub const JOBS: &[Entry] = &[
                 required: true,
             },
         ],
-        steps: &[Step {
-            name: "dco",
-            action: Action::Builtin {
-                shown: "every commit is signed off by its author",
-                run: contrib::dco_step,
+        steps: &[
+            Step {
+                name: "dco",
+                action: Action::Builtin {
+                    shown: "every commit is signed off by its author",
+                    run: contrib::dco_step,
+                },
             },
-        }],
+            // No commit message, and not the PR's title or body, names an agent tool with a
+            // version (QUAL-E1-T24). The lock is the base branch's, since the job checks out the
+            // base.
+            Step {
+                name: "agent-tooling",
+                action: Action::Builtin {
+                    shown: "no commit message, PR title or PR body holds an agent tooling version or digest",
+                    run: agent_tooling::commits_step,
+                },
+            },
+        ],
         pending: &[],
     },
     Entry {
@@ -555,6 +567,50 @@ pub const JOBS: &[Entry] = &[
                 action: Action::Builtin {
                     shown: "every new crate resolves on crates.io, with its publisher printed",
                     run: dep_diff::registry_step,
+                },
+            },
+        ],
+        pending: &[],
+    },
+    Entry {
+        name: "agent-tooling",
+        summary: "ci/agent-tooling.lock is well formed, and the tooling a run starts with is the \
+                  tooling it pins",
+        defined_in: "ADR-0624 decision 5 and RFC-0062 §12.5",
+        params: &[
+            Param {
+                name: "--observed",
+                value: "<file>",
+                help: "the tools the agent run is about to start with; any difference refuses the run",
+                required: false,
+            },
+            Param {
+                name: "--provenance",
+                value: "<file>",
+                help: "where to write the pinned tooling, as JSON, for the run's provenance record",
+                required: false,
+            },
+        ],
+        steps: &[
+            Step {
+                name: "lock",
+                action: Action::Builtin {
+                    shown: "ci/agent-tooling.lock is well formed",
+                    run: agent_tooling::lock_step,
+                },
+            },
+            Step {
+                name: "verify",
+                action: Action::Builtin {
+                    shown: "the observed tooling is exactly the pinned tooling",
+                    run: agent_tooling::verify_step,
+                },
+            },
+            Step {
+                name: "record",
+                action: Action::Builtin {
+                    shown: "the pinned tooling is written to the provenance record",
+                    run: agent_tooling::record_step,
                 },
             },
         ],
