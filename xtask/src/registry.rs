@@ -453,12 +453,13 @@ pub const JOBS: &[Entry] = &[
                     run: contrib::dco_step,
                 },
             },
-            // No commit message names a pinned agent tool with its version (QUAL-E1-T24). The lock is
-            // the base branch's, since the job checks out the base.
+            // No commit message, and not the PR's title or body, names an agent tool with a
+            // version (QUAL-E1-T24). The lock is the base branch's, since the job checks out the
+            // base.
             Step {
                 name: "agent-tooling",
                 action: Action::Builtin {
-                    shown: "no commit message holds a pinned agent tooling version or digest",
+                    shown: "no commit message, PR title or PR body holds an agent tooling version or digest",
                     run: agent_tooling::commits_step,
                 },
             },

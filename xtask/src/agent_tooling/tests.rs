@@ -124,6 +124,18 @@ fn a_commit_that_names_a_tool_with_its_version_fails() {
         "chore: fixture-server v4.7.2.",
         "fixture-server-4.7.2",
         &format!("chore: pin {DIGEST_A}"),
+        // The phrasings a bump writes, including a version the base lock does not hold yet.
+        "chore(deps): bump fixture-server from 4.7.1 to 4.7.2",
+        "chore(deps): bump fixture-server to 4.7.2",
+        "update fixture-server (4.7.2)",
+        "chore(deps): bump fixture-server from 4.7.2 to 4.8.0",
+        "fix: fixture-server 4.7.20 is another thing",
+        "chore: fixture-server version 4.7.2",
+        "chore: fixture-server: pin to 4.7.2",
+        // A planned tool's first pin.
+        "chore: pin fixture-plugin to 1.0.0",
+        // The tool named on one line and its pinned version on another.
+        "chore: update fixture-server\n\nIt is now 4.7.2.",
     ] {
         let problems = commit_problems(&lock(), &[commit(message)]);
         assert_eq!(problems.len(), 1, "{message}: {problems:?}");
@@ -137,10 +149,11 @@ fn a_plain_version_number_or_a_bare_name_passes() {
         "chore: bump serde to 4.7.2",
         "fix: handle 4.7.2 as a release tag",
         "feat: ask fixture-server for its tools",
-        "fix: fixture-server 4.7.20 is another thing",
         "fix: fixture-servers 4.7.2",
         "fix: myfixture-server 4.7.2",
-        "docs: fixture-plugin 1.0.0",
+        "fix: fixture-server-ext 4.7.2",
+        "docs: fixture-server follows RFC-0062 §12.5",
+        "fix: fixture-server\n\nSee 4.7.20, which is another thing.",
     ] {
         assert_eq!(
             commit_problems(&lock(), &[commit(message)]),
@@ -168,7 +181,35 @@ fn a_v_prefixed_pin_is_matched_with_or_without_the_v() {
             "{message}"
         );
     }
-    assert!(commit_problems(&lock, &[commit("bump fixture-server v1.2.30")]).is_empty());
+    // The pinned version is matched whole: on a line of its own, `v1.2.30` is another version.
+    assert!(
+        commit_problems(
+            &lock,
+            &[commit("bump fixture-server\n\nv1.2.30 is another thing")]
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn the_pr_title_and_body_are_checked_like_a_commit_message() {
+    let pr = |title: &str, body: &str| PullRequest {
+        title: title.to_owned(),
+        body: body.to_owned(),
+        labels: Vec::new(),
+        commits: 1,
+    };
+    assert_eq!(
+        pull_request_problems(&lock(), &pr("chore(deps): bump fixture-server 4.7.2", "")).len(),
+        1
+    );
+    let problems = pull_request_problems(
+        &lock(),
+        &pr("chore: tidy", "Moves fixture-server to 4.7.3."),
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].starts_with("the PR body"), "{problems:?}");
+    assert!(pull_request_problems(&lock(), &pr("chore: tidy", "No tooling here.")).is_empty());
 }
 
 #[test]

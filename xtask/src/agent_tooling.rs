@@ -30,8 +30,11 @@
 //!   pinned ones, by version and digest. Anything else is refused, so a run does not start;
 //! - `record`: with `--provenance <file>`, the verified tooling is written as JSON, for the run's
 //!   provenance record (RFC-0062 §6.3);
-//! - `agent-tooling` in `dco`: no commit message names a pinned tool with its version, or holds
-//!   a digest. Tooling versions belong in provenance, not in commit messages (ADR-0021 decision 1).
+//! - `agent-tooling` in `dco`: no commit message, and not the PR's title or body (the squash
+//!   commit on `main`), names a tool of the lock on a line with a version, names a pinned tool
+//!   and holds its version, or holds a pinned digest. Tooling versions belong in provenance, not
+//!   in commit messages (ADR-0021 decision 1). The lock is the base branch's, so a tool the PR
+//!   itself adds to the lock is not known to the check until it merges.
 //!
 //! The observed file has the same `[[tool]]` tables with `name`, `version` and `digest`. The
 //! lock and the observed file come from the base branch's checkout and the agent runner, never
@@ -39,7 +42,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::contrib::{self, Commit};
+use crate::contrib::{self, Commit, PullRequest};
 use crate::run::Context;
 
 /// The lock, relative to the workspace root.
@@ -273,64 +276,143 @@ pub fn provenance(lock: &[Tool]) -> String {
     out
 }
 
-/// Whether `message` names the tool together with its pinned version: the name, then any of
-/// ` @-_:=/`, then the version, with or without a `v`, which does not run on into more version characters. A plain
-/// version number, or a name alone, does not match.
-fn names_with_version(message: &str, name: &str, version: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    let version = version.to_ascii_lowercase();
-    let word = |b: u8| b.is_ascii_alphanumeric() || b"-_.".contains(&b);
-    let bytes = lower.as_bytes();
+fn word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"-_.".contains(&b)
+}
+
+/// Whether `line` (lower case) names the tool: the name, not inside a longer word. A `-` or `_`
+/// after it counts as an end only before a version (`tool-1.2.3`), and a `.` only at a sentence
+/// end, so `tool-ext` and `tool.conf` are other names.
+fn names_tool(line: &str, name: &str) -> bool {
+    let bytes = line.as_bytes();
     let mut from = 0;
-    while let Some(at) = lower[from..].find(name) {
+    while let Some(at) = line[from..].find(name) {
         let start = from + at;
         let end = start + name.len();
         from = start + 1;
         if start > 0 && word(bytes[start - 1]) {
             continue;
         }
-        let rest = lower[end..].trim_start_matches(|c| " @-_:=/".contains(c));
-        if rest.len() == lower.len() - end {
-            continue;
-        }
-        // A `v` before the number is the same version, whether or not the pin spells it.
-        let bare = version.strip_prefix('v').unwrap_or(&version);
-        let tail = rest.strip_prefix('v').unwrap_or(rest);
-        if let Some(after) = tail.strip_prefix(bare) {
-            // A closing full stop ends a sentence; `.0` or `-rc1` makes it another version.
-            let sentence_end = after.strip_prefix('.').is_some_and(|rest| {
-                !rest
-                    .bytes()
-                    .next()
-                    .is_some_and(|b| b.is_ascii_alphanumeric())
-            });
-            if sentence_end || !after.bytes().next().is_some_and(word) {
-                return true;
-            }
+        let rest = &bytes[end..];
+        let digit_at = |i: usize| rest.get(i).is_some_and(u8::is_ascii_digit);
+        let ends = match rest.first() {
+            None => true,
+            Some(b'-' | b'_') => digit_at(1) || (rest.get(1) == Some(&b'v') && digit_at(2)),
+            Some(b'.') => !rest.get(1).is_some_and(u8::is_ascii_alphanumeric),
+            Some(b) => !b.is_ascii_alphanumeric(),
+        };
+        if ends {
+            return true;
         }
     }
     false
 }
 
-/// The commits whose message holds a pinned tool's version or digest.
+/// Whether `line` holds a version token: digits and at least one `.digits` group, with or
+/// without a leading `v`, not inside a longer word or number, and not a section number (`§12.5`).
+fn has_version_token(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    (0..bytes.len()).any(|i| {
+        let digits = if bytes[i] == b'v' { i + 1 } else { i };
+        if !bytes.get(digits).is_some_and(u8::is_ascii_digit) {
+            return false;
+        }
+        // `§` is two bytes in UTF-8, ending in 0xa7.
+        if i > 0 && ((word(bytes[i - 1]) && !b"-_".contains(&bytes[i - 1])) || bytes[i - 1] == 0xa7)
+        {
+            return false;
+        }
+        let mut at = digits;
+        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+        }
+        bytes.get(at) == Some(&b'.') && bytes.get(at + 1).is_some_and(u8::is_ascii_digit)
+    })
+}
+
+/// Whether `text` (lower case) holds `version` as a whole token, with or without a `v`: not run
+/// on into more version characters, though a closing full stop may end a sentence.
+fn holds_version(text: &str, version: &str) -> bool {
+    let bare = version.strip_prefix('v').unwrap_or(version);
+    let bytes = text.as_bytes();
+    let mut from = 0;
+    while let Some(at) = text[from..].find(bare) {
+        let start = from + at;
+        let end = start + bare.len();
+        from = start + 1;
+        let before = match start.checked_sub(1).map(|i| bytes[i]) {
+            Some(b'v') => start.checked_sub(2).map(|i| bytes[i]),
+            other => other,
+        };
+        if before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'.') {
+            continue;
+        }
+        let after = &bytes[end..];
+        let runs_on = match after.first() {
+            None => false,
+            Some(b'.') => after.get(1).is_some_and(u8::is_ascii_alphanumeric),
+            Some(&b) => word(b),
+        };
+        if !runs_on {
+            return true;
+        }
+    }
+    false
+}
+
+/// The tools whose version `text` holds, by name. A message holds a tool's version when:
+/// - a line names a tool of the lock, pinned or planned, and holds any version token, which
+///   catches the version a bump PR introduces, since the lock read is the base branch's;
+/// - the message names a pinned tool anywhere and holds its pinned version anywhere;
+/// - it holds a pinned tool's digest, with or without `sha256:`.
+///
+/// A plain version number, or a name alone, does not match.
+fn tools_named_with_version<'l>(lock: &'l [Tool], text: &str) -> Vec<&'l str> {
+    let lower = text.to_ascii_lowercase();
+    lock.iter()
+        .filter(|tool| {
+            let on_a_line = lower
+                .lines()
+                .any(|line| names_tool(line, &tool.name) && has_version_token(line));
+            let pinned = tool.pin.as_ref().is_some_and(|pin| {
+                let digest = pin.digest.to_ascii_lowercase();
+                let hex = digest.strip_prefix("sha256:").unwrap_or(&digest);
+                lower.contains(hex)
+                    || (names_tool(&lower, &tool.name)
+                        && holds_version(&lower, &pin.version.to_ascii_lowercase()))
+            });
+            on_a_line || pinned
+        })
+        .map(|tool| tool.name.as_str())
+        .collect()
+}
+
+fn problem(what: &str, tool: &str) -> String {
+    format!(
+        "{what} names the version of agent tooling `{tool}`; tooling versions go in the run's \
+         provenance, not in commit messages (ADR-0021 decision 1)"
+    )
+}
+
+/// The commits whose message holds a tool's version or a pinned digest.
 pub fn commit_problems(lock: &[Tool], commits: &[Commit]) -> Vec<String> {
     let mut problems = Vec::new();
     for commit in commits {
         let short = commit.sha.get(..12).unwrap_or(&commit.sha);
-        for tool in lock {
-            let Some(pin) = &tool.pin else { continue };
-            let digest = pin.digest.to_ascii_lowercase();
-            let hex = digest.strip_prefix("sha256:").unwrap_or(&digest);
-            if commit.message.to_ascii_lowercase().contains(hex)
-                || names_with_version(&commit.message, &tool.name, &pin.version)
-            {
-                problems.push(format!(
-                    "commit {short}: the message names the version of agent tooling `{}`; \
-                     tooling versions go in the run's provenance, not in commit messages \
-                     (ADR-0021 decision 1)",
-                    tool.name
-                ));
-            }
+        for tool in tools_named_with_version(lock, &commit.message) {
+            problems.push(problem(&format!("commit {short}: the message"), tool));
+        }
+    }
+    problems
+}
+
+/// The same check on the PR's title and body, which become the squash commit on `main`
+/// (`ci/repo-settings/repository.json`: `PR_TITLE` and `PR_BODY`).
+pub fn pull_request_problems(lock: &[Tool], pr: &PullRequest) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (what, text) in [("the PR title", &pr.title), ("the PR body", &pr.body)] {
+        for tool in tools_named_with_version(lock, text) {
+            problems.push(problem(what, tool));
         }
     }
     problems
@@ -359,6 +441,8 @@ pub fn lock_step(context: &Context) -> Result<(), String> {
 pub fn verify_step(context: &Context) -> Result<(), String> {
     let lock = load(context)?;
     let Some(path) = context.args.get("--observed") else {
+        // Said aloud, so a passing step is not read as a verified run.
+        eprintln!("agent-tooling: verify: no `--observed` given, so no run's tooling was checked");
         return Ok(());
     };
     let source = std::fs::read_to_string(path).map_err(|e| format!("--observed {path}: {e}"))?;
@@ -389,15 +473,24 @@ pub fn record_step(context: &Context) -> Result<(), String> {
     std::fs::write(path, provenance(&lock)).map_err(|e| format!("--provenance {path}: {e}"))
 }
 
-/// The `dco` job's step: no commit message holds a pinned tooling version.
+/// The `dco` job's step: no commit message, and not the PR's title or body, holds a tooling
+/// version.
 pub fn commits_step(context: &Context) -> Result<(), String> {
     let lock = load(context)?;
-    let path = context
-        .args
-        .get("--commits")
-        .ok_or_else(|| "`--commits` is required".to_owned())?;
-    let source = std::fs::read_to_string(path).map_err(|e| format!("--commits {path}: {e}"))?;
-    report(commit_problems(&lock, &contrib::parse_commits(&source)?))
+    let read = |flag: &str| {
+        let path = context
+            .args
+            .get(flag)
+            .ok_or_else(|| format!("`{flag}` is required"))?;
+        std::fs::read_to_string(path).map_err(|e| format!("{flag} {path}: {e}"))
+    };
+    let pr = contrib::parse_pull_request(&read("--event")?)?;
+    let mut problems = pull_request_problems(&lock, &pr);
+    problems.extend(commit_problems(
+        &lock,
+        &contrib::parse_commits(&read("--commits")?)?,
+    ));
+    report(problems)
 }
 
 #[cfg(test)]
