@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Quarantined tests (RFC-0060 §13; QUAL-E3-T14). A non-deterministic test (L7, L8) that fails and
+# then passes on the same commit may be taken out of the gates here by a maintainer. It still runs
+# and reports, and the release checklist lists it (`cargo xtask ci quarantine` prints the lines).
+#
+# An agent may propose an entry in a PR but never applies one: `/ci/` is code-owned, so the change
+# needs a maintainer's review, and `approved_by` must name that maintainer from
+# governance/maintainers.toml.
+#
+# The `quarantine` step of `cargo xtask ci lint` checks every entry (xtask/src/quarantine.rs):
+# - `layer` is `L7` or `L8`: a deterministic test is never quarantined;
+# - `issue` links the tracking issue: https://github.com/syntropyai-hq/syntropy/issues/<n>;
+# - `added` and `expires` are YYYY-MM-DD, at most 14 days apart, and `expires` is today or later.
+#   After `expires` the test is back in the required set, and `lint` fails until the entry is
+#   removed or a maintainer renews it;
+# - no parity gate and no SC checker: a test or suite naming parity or a success criterion, a
+#   checker whose source in RFC-0060 §8.6 is a success criterion, or a scenario bench/sc-map.toml
+#   maps to one.
+#
+# An entry looks like this:
+#
+# [[quarantine]]
+# test = "lab::soak::two_node_failover"   # the test's full name, as its suite reports it
+# suite = "lab-soak"                      # the suite or job that runs it
+# layer = "L8"
+# issue = "https://github.com/syntropyai-hq/syntropy/issues/<n>"
+# added = "2026-10-20"
+# expires = "2026-11-03"
+# approved_by = "<maintainer login>"
+# reason = "fails then passes on the same commit; see the issue"
+#
+# No test is quarantined.

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::cli::{Args, Kind};
+use crate::flake::{self, Class, End, Outcome};
 use crate::registry::{Action, Entry, Step};
 
 /// What every step of one run sees.
@@ -18,10 +19,44 @@ pub struct Context {
     pub args: Args,
 }
 
+/// Why a step did not pass, and whether the failure is the code's or the infrastructure's
+/// (RFC-0060 §13).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Failure {
+    pub class: Class,
+    pub reason: String,
+}
+
+impl Failure {
+    /// A failure of the infrastructure, not of the code under test.
+    pub fn infra(reason: String) -> Failure {
+        Failure {
+            class: Class::Infra,
+            reason,
+        }
+    }
+}
+
+/// A check's own failure is a `test` failure.
+impl From<String> for Failure {
+    fn from(reason: String) -> Failure {
+        Failure {
+            class: Class::Test,
+            reason,
+        }
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(reason: &str) -> Failure {
+        Failure::from(reason.to_owned())
+    }
+}
+
 /// Runs one step. The real implementation is [`System`]; tests substitute a fake.
 pub trait Exec {
     /// Runs `step` in `context`. `Err` carries why it did not pass.
-    fn exec(&mut self, step: &Step, context: &Context) -> Result<(), String>;
+    fn exec(&mut self, step: &Step, context: &Context) -> Result<(), Failure>;
 }
 
 /// Runs a `cargo` step as a child process from the workspace root, inheriting stdout and
@@ -29,25 +64,38 @@ pub trait Exec {
 pub struct System;
 
 impl Exec for System {
-    fn exec(&mut self, step: &Step, context: &Context) -> Result<(), String> {
+    fn exec(&mut self, step: &Step, context: &Context) -> Result<(), Failure> {
         match (&step.action, step.action.command()) {
-            (Action::Builtin { run, .. }, _) => run(context),
-            (_, Some(mut command)) => {
+            (Action::Builtin { run, .. }, _) => run(context).map_err(Failure::from),
+            (action, Some(mut command)) => {
                 command.current_dir(&context.root);
-                outcome(&mut command, &step.action.display())
+                // Only xtask's own exit codes carry its classes; cargo's do not.
+                let ours = matches!(action, Action::Xtask(_));
+                outcome(&mut command, &step.action.display(), ours)
             }
-            (_, None) => Err(format!("`{}` starts no process", step.action.display())),
+            (_, None) => Err(format!("`{}` starts no process", step.action.display()).into()),
         }
     }
 }
 
-/// Runs `command` to completion. A zero exit status passes; anything else, including a program
-/// that cannot start, fails with the reason. `shown` is the command as progress lines print it.
-fn outcome(command: &mut Command, shown: &str) -> Result<(), String> {
+/// Runs `command` to completion. A zero exit status passes; anything else fails with the reason.
+/// A program that cannot start is an `infra` failure, and so is a child xtask (`ours`) that
+/// exits with [`flake::EXIT_INFRA`]; every other failure is a `test` failure. `shown` is the
+/// command as progress lines print it.
+fn outcome(command: &mut Command, shown: &str, ours: bool) -> Result<(), Failure> {
     match command.status() {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(status.to_string()),
-        Err(error) => Err(format!("could not start `{shown}`: {error}")),
+        Ok(status)
+            if ours
+                && flake::classify(status.code().map_or(End::Signalled, End::Exited))
+                    == Outcome::Fail(Class::Infra) =>
+        {
+            Err(Failure::infra(status.to_string()))
+        }
+        Ok(status) => Err(status.to_string().into()),
+        Err(error) => Err(Failure::infra(format!(
+            "could not start `{shown}`: {error}"
+        ))),
     }
 }
 
@@ -55,8 +103,11 @@ fn outcome(command: &mut Command, shown: &str) -> Result<(), String> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
     Pass,
-    /// The names of the steps that failed, in order.
+    /// The names of the steps that failed, in order. At least one was a `test` failure.
     Fail(Vec<&'static str>),
+    /// The names of the steps that failed, in order, every one an `infra` failure
+    /// (RFC-0060 §13).
+    Infra(Vec<&'static str>),
 }
 
 /// Runs every step of `entry` in `context` and returns the verdict. A failed step does not stop
@@ -71,6 +122,7 @@ pub fn run(
     let label = format!("xtask {} {}{}", kind.command(), entry.name, context.args);
     let total = entry.steps.len();
     let mut failed = Vec::new();
+    let mut class = Class::Infra;
     for (index, step) in entry.steps.iter().enumerate() {
         writeln!(
             log,
@@ -83,17 +135,24 @@ pub fn run(
         log.flush()?;
         match exec.exec(step, context) {
             Ok(()) => writeln!(log, "{label}: {} passed", step.name)?,
-            Err(reason) if reason.contains('\n') => {
-                // A check that found several problems: one indented line each.
-                writeln!(log, "{label}: {} failed:", step.name)?;
-                for line in reason.lines() {
-                    writeln!(log, "  {line}")?;
+            Err(Failure {
+                class: this,
+                reason,
+            }) => {
+                if this == Class::Test {
+                    class = Class::Test;
                 }
+                let infra = if this == Class::Infra { " (infra)" } else { "" };
                 failed.push(step.name);
-            }
-            Err(reason) => {
-                writeln!(log, "{label}: {} failed: {reason}", step.name)?;
-                failed.push(step.name);
+                if reason.contains('\n') {
+                    // A check that found several problems: one indented line each.
+                    writeln!(log, "{label}: {} failed{infra}:", step.name)?;
+                    for line in reason.lines() {
+                        writeln!(log, "  {line}")?;
+                    }
+                } else {
+                    writeln!(log, "{label}: {} failed{infra}: {reason}", step.name)?;
+                }
             }
         }
     }
@@ -101,12 +160,18 @@ pub fn run(
     if failed.is_empty() {
         writeln!(log, "{label}: PASS ({})", ran.join(", "))?;
     } else {
+        let infra = if class == Class::Infra { "infra: " } else { "" };
         writeln!(
             log,
-            "{label}: FAIL ({} of {total} failed: {})",
+            "{label}: FAIL ({infra}{} of {total} failed: {})",
             failed.len(),
             failed.join(", ")
         )?;
+        // A failed suite says whether it is retried, so the job log shows it (RFC-0060 §13).
+        // xtask itself never retries.
+        if kind == Kind::Suite {
+            writeln!(log, "{label}: {}", flake::decision_line(entry.name, class))?;
+        }
     }
     // `pending` covers what `defined_in` names, not every check later tasks add.
     if !entry.pending.is_empty() {
@@ -123,6 +188,8 @@ pub fn run(
     log.flush()?;
     Ok(if failed.is_empty() {
         Verdict::Pass
+    } else if class == Class::Infra {
+        Verdict::Infra(failed)
     } else {
         Verdict::Fail(failed)
     })
@@ -161,7 +228,7 @@ mod tests {
     }
 
     impl Exec for Fake {
-        fn exec(&mut self, step: &Step, _context: &Context) -> Result<(), String> {
+        fn exec(&mut self, step: &Step, _context: &Context) -> Result<(), Failure> {
             self.ran.push(step.name);
             if self.fail.contains(&step.name) {
                 Err("exit status: 1".into())
@@ -248,10 +315,109 @@ mod tests {
     }
 
     #[test]
+    fn a_deterministic_suite_failure_is_run_once_and_the_log_says_it_is_not_retried() {
+        let unit = find(crate::registry::SUITES, "unit").unwrap();
+        let mut fake = Fake {
+            fail: &["test"],
+            ran: Vec::new(),
+        };
+        let mut log = Vec::new();
+        let verdict = run(Kind::Suite, unit, &here(), &mut fake, &mut log).unwrap();
+        let log = String::from_utf8(log).unwrap();
+        assert_eq!(verdict, Verdict::Fail(vec!["test"]));
+        // Each step ran once: nothing ran the failed step again.
+        assert_eq!(fake.ran, ["test", "fault-injection", "ipc-fault-injection"]);
+        assert!(
+            log.contains(
+                "xtask test unit: FAIL (1 of 3 failed: test)\n\
+                 xtask test unit: not retried: `unit` is a deterministic suite, and a failure in \
+                 it is a failure (RFC-0060 §13)\n"
+            ),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_job_failure_carries_no_retry_line() {
+        let (_, _, log) = run_fake(&THREE, &["two"]);
+        assert!(!log.contains("retried"), "{log}");
+    }
+
+    /// Fails the steps in `infra` as infrastructure failures and those in `test` as test failures.
+    struct Mixed {
+        infra: &'static [&'static str],
+        test: &'static [&'static str],
+    }
+
+    impl Exec for Mixed {
+        fn exec(&mut self, step: &Step, _context: &Context) -> Result<(), Failure> {
+            if self.infra.contains(&step.name) {
+                Err(Failure::infra("could not start `cargo`: not found".into()))
+            } else if self.test.contains(&step.name) {
+                Err("exit status: 1".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn only_infra_failures_make_an_infra_verdict() {
+        let unit = find(crate::registry::SUITES, "unit").unwrap();
+        let mut log = Vec::new();
+        let mut infra = Mixed {
+            infra: &["test"],
+            test: &[],
+        };
+        let verdict = run(Kind::Suite, unit, &here(), &mut infra, &mut log).unwrap();
+        let log = String::from_utf8(log).unwrap();
+        assert_eq!(verdict, Verdict::Infra(vec!["test"]));
+        assert!(
+            log.contains("xtask test unit: test failed (infra): could not start"),
+            "{log}"
+        );
+        assert!(
+            log.contains("xtask test unit: FAIL (infra: 1 of 3 failed: test)\n"),
+            "{log}"
+        );
+        assert!(
+            log.contains("xtask test unit: infra failure (exit 3): "),
+            "{log}"
+        );
+        // One real failure makes the whole run a test failure, which is never retried.
+        let mut log = Vec::new();
+        let mut both = Mixed {
+            infra: &["test"],
+            test: &["fault-injection"],
+        };
+        let verdict = run(Kind::Suite, unit, &here(), &mut both, &mut log).unwrap();
+        let log = String::from_utf8(log).unwrap();
+        assert_eq!(verdict, Verdict::Fail(vec!["test", "fault-injection"]));
+        assert!(log.contains("xtask test unit: not retried: "), "{log}");
+    }
+
+    #[test]
+    fn a_child_xtask_infra_exit_stays_infra_and_cargo_codes_do_not() {
+        // A shell stands in for the child: exit 3 from an xtask step is infra, from cargo it is
+        // not.
+        if cfg!(windows) {
+            return;
+        }
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 3"]);
+        let failure = outcome(&mut command, "cargo xtask x", true).unwrap_err();
+        assert_eq!(failure.class, Class::Infra);
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 3"]);
+        let failure = outcome(&mut command, "cargo x", false).unwrap_err();
+        assert_eq!(failure.class, Class::Test);
+    }
+
+    #[test]
     fn a_multi_line_reason_prints_one_indented_line_each() {
         struct Two;
         impl Exec for Two {
-            fn exec(&mut self, _step: &Step, _context: &Context) -> Result<(), String> {
+            fn exec(&mut self, _step: &Step, _context: &Context) -> Result<(), Failure> {
                 Err("first problem\nsecond problem".into())
             }
         }
@@ -314,6 +480,8 @@ mod tests {
                 "sim-presets",
                 "toolchains",
                 "jobs",
+                "retries",
+                "quarantine",
                 "plan",
             ]
         );
@@ -412,7 +580,14 @@ mod tests {
             .command()
             .unwrap();
         command.stderr(std::process::Stdio::null());
-        let reason = outcome(&mut command, "cargo syntropy-xtask-no-such-subcommand").unwrap_err();
+        let failure = outcome(
+            &mut command,
+            "cargo syntropy-xtask-no-such-subcommand",
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(failure.class, Class::Test);
+        let reason = failure.reason;
         // `ExitStatus` prints as "exit status: N" on Unix and "exit code: N" on Windows.
         assert!(
             reason.contains("exit status") || reason.contains("exit code"),
@@ -423,7 +598,10 @@ mod tests {
     #[test]
     fn a_program_that_cannot_start_fails_with_a_reason() {
         let mut command = Command::new("syntropy-xtask-no-such-program");
-        let reason = outcome(&mut command, "syntropy-xtask-no-such-program").unwrap_err();
+        let failure = outcome(&mut command, "syntropy-xtask-no-such-program", false).unwrap_err();
+        // The runner could not run the check at all: that is the infrastructure's failure.
+        assert_eq!(failure.class, Class::Infra);
+        let reason = failure.reason;
         assert!(
             reason.starts_with("could not start `syntropy-xtask-no-such-program`: "),
             "{reason}"

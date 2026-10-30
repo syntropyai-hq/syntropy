@@ -61,7 +61,8 @@ Commands:
 An option is `--name <value>` or `--name=<value>`, given at most once.
 
 Exit status: 0 when every step passes, 1 when a step fails, 2 on a usage error or when xtask
-was not started by `cargo xtask`.";
+was not started by `cargo xtask`, 3 when every failed step was an infrastructure failure, such
+as a program that could not start (RFC-0060 §13).";
 
 /// The top-level commands, in the order `USAGE` lists them.
 const COMMANDS: &[&str] = &[
