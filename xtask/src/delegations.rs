@@ -123,7 +123,6 @@ pub struct Delegation {
 impl Delegation {
     /// Whether the delegation holds on `on`: granted on or before it, and not yet revoked,
     /// `revoked` being the first day the delegation no longer holds.
-    #[cfg_attr(not(test), allow(dead_code))] // read by QUAL-E1-T18 and QUAL-E2-T03
     pub fn active_on(&self, on: Date) -> bool {
         self.granted <= on && self.revoked.is_none_or(|revoked| on < revoked)
     }
