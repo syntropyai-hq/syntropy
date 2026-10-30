@@ -203,6 +203,11 @@ paths = ["docs/**", "plan/**", "*.md"]
 
 *Note, 2026-10-23 (QUAL-E1-T07).* `changes` now builds the base's `xtask` with no cache before it decides, as `ci-gate` does. Its budget of < 1 min [target] is checked against the first hosted runs.
 
+*Note, 2026-10-25 (PROD-E13-T01).* `docs` joins `pr.yml` as a hosted job on Linux, with §2.2's direct rule: `docs/**`, `plan/**` and the top-level `*.md`, which the pages link to, and the generator, `xtask/src/docs.rs` and `xtask/src/docs/**`. So a docs-only or plan-only change runs `docs` and `lint`, as §2.2 says.
+- **What it runs.** `cargo xtask ci docs`, with cargo offline after `cargo fetch`. Its steps check the generated sections, build the site from `docs/` into `target/docs-site/`, failing on any link or anchor that does not resolve, and check the built files statically for anything fetched from another origin, any script and any font (RFC-0051 §4 rule 8, ADR-0510). `xtask/src/docs.rs` documents the rules.
+- **Not yet.** A headless-browser load of every page that records its requests needs a browser on the runner, which needs a maintainer's approval. The job lists it as pending until then.
+- **The first run.** `changes` and `ci-gate` run from the base (§2.2), so the PR that adds the job is judged by a base without its rule: `docs` is not listed there and shows as skipped. It runs from the next PR that touches its paths.
+
 *Note, 2026-10-27 (QUAL-E1-T28).* `build-<target>` also runs rule 7 of RFC-0001 §4.2 on the core binary of its own OS, as the step `rule-7` of `cargo xtask ci build`, after the `dev` build (§12.1).
 
 #### 2.4 Platform promises to jobs

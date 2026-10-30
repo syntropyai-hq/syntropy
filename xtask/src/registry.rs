@@ -24,7 +24,7 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, docs,
     hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
     runner_build_id, sim_presets, toolchain, toolchains,
 };
@@ -595,6 +595,50 @@ pub const JOBS: &[Entry] = &[
         }],
         pending: &[],
     },
+    // The docs site (PROD-E13-T01): `pr.yml`'s `docs` job, which `ci/jobs.toml` runs when a
+    // change touches the pages, what they link to, or the generator.
+    Entry {
+        name: "docs",
+        summary: "the docs site: its generated sections are current, it builds offline with every \
+                  link and anchor resolved, and it fetches nothing from another origin",
+        defined_in: "RFC-0051 §4 rule 8, ADR-0510 and RFC-0062 §2.2",
+        params: &[Param {
+            name: "--out",
+            value: "<dir>",
+            help: "where to write the site; else target/docs-site",
+            required: false,
+        }],
+        steps: &[
+            Step {
+                name: "generated",
+                action: Action::Builtin {
+                    shown: "every generated section of docs/ matches its generator",
+                    run: docs::generated_step,
+                },
+            },
+            Step {
+                name: "build",
+                action: Action::Builtin {
+                    shown: "build the site from docs/, failing on a broken link or anchor",
+                    run: docs::build_step,
+                },
+            },
+            Step {
+                name: "origins",
+                action: Action::Builtin {
+                    shown: "no file of the built site fetches from another origin, and it has no \
+                            scripts or fonts (a static check)",
+                    run: docs::origins_step,
+                },
+            },
+        ],
+        pending: &[Pending {
+            check: "a headless-browser load of every page that records no request to another \
+                    origin; needs a browser on the runner, which a maintainer approves, and keeps \
+                    PROD-E13-T01 (#1300) open",
+            task: "PROD-E13-T01",
+        }],
+    },
     Entry {
         name: "build",
         summary: "`build-<os>` in `pr.yml`: the PR build of the workspace on each Tier 1 OS",
@@ -1161,6 +1205,15 @@ mod tests {
         // `build` names the profile that replaces `dev`.
         let tasks: Vec<&str> = build.pending.iter().map(|p| p.task).collect();
         assert_eq!(tasks, ["QUAL-E16-T21"]);
+    }
+
+    /// `docs` keeps its origin check, which PROD-E13-T01's criterion 3 rests on. A change to
+    /// this file runs `hosted-test` but not `docs`, so this test is what notices a dropped step.
+    #[test]
+    fn docs_runs_the_generated_build_and_origin_steps() {
+        let docs = find(JOBS, "docs").expect("docs is registered");
+        let steps: Vec<&str> = docs.steps.iter().map(|s| s.name).collect();
+        assert_eq!(steps, ["generated", "build", "origins"]);
     }
 
     #[test]

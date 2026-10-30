@@ -30,6 +30,8 @@ Commands:
                           run cargo-deny with deny.toml (ADR-0018 §3, RFC-0062 §11.2): the
                           licence, ban and source checks, or with --advisories the RustSec
                           advisories, which need network access; `lint` runs both
+  docs-generate           rewrite the generated sections of the docs pages from their
+                          generators (PROD-E13-T01); `ci docs` checks they are current
   spdx [--root <dir>]     check the SPDX header of every source file (ADR-0018 §1); `lint`
                           runs it
   third-party [--root <dir>]
@@ -70,6 +72,7 @@ const COMMANDS: &[&str] = &[
     "check-deps",
     "build",
     "deny",
+    "docs-generate",
     "spdx",
     "third-party",
     "workflows",
@@ -106,6 +109,8 @@ pub enum Command<'r> {
         manifest_path: Option<String>,
         advisories: bool,
     },
+    /// `docs-generate`: rewrite the docs pages' generated sections.
+    DocsGenerate,
     /// `spdx`: the SPDX headers under `root`, else under this checkout.
     Spdx {
         root: Option<String>,
@@ -344,6 +349,10 @@ pub fn parse<'r>(
                 advisories: o.flag("--advisories"),
             })
         }),
+        "docs-generate" => {
+            no_more(rest)?;
+            Ok(Command::DocsGenerate)
+        }
         "spdx" => parse_options(rest, &["--root"], &[]).map(|o| {
             o.or_help(|o| Command::Spdx {
                 root: o.value("--root"),
@@ -967,8 +976,9 @@ mod tests {
         );
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
-            "unknown command `frob`; valid commands: ci, test, check-deps, build, deny, spdx, \
-             third-party, workflows, actionlint, notices, instructions, fixtures, help"
+            "unknown command `frob`; valid commands: ci, test, check-deps, build, deny, \
+             docs-generate, spdx, third-party, workflows, actionlint, notices, instructions, \
+             fixtures, help"
         );
         assert_eq!(
             parse_real("--frob"),
@@ -1387,6 +1397,15 @@ mod tests {
         ] {
             assert_eq!(parse_real(line), Err(error), "`{line}`");
         }
+    }
+
+    #[test]
+    fn docs_generate_takes_no_arguments() {
+        assert_eq!(parse_real("docs-generate"), Ok(Command::DocsGenerate));
+        assert_eq!(
+            parse_real("docs-generate --check"),
+            Err(UsageError::UnexpectedArgument("--check".into()))
+        );
     }
 
     #[test]

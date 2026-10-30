@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The docs site (PROD-E13-T01). `cargo xtask ci docs` builds every Markdown page under `docs/`
+# into a static site, by default in `target/docs-site/`, and checks its links, its anchors and
+# that it fetches nothing from another origin (ADR-0510). The site is English only (RFC-0051 §4
+# rule 8).
+
+# The site's name, in every page's title.
+title = "Syntropy"
+
+# Where a link out of `docs/` to another file of the repository goes: the file on the forge, at
+# `<repository>/blob/<branch>/<path>`. The build checks that the file and its anchor exist first.
+repository = "https://github.com/syntropyai-hq/syntropy"
+branch = "main"
+
+# The pages in the navigation, in order, as paths under `docs/`. The home page comes first.
+nav = ["index.md", "HOW_IT_WORKS.md"]

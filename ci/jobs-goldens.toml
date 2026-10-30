@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:fec496af00cc6773"
+jobs_toml = "fnv1a:655c769db285712b"
 
 [[golden]]
 name = "plan only"
@@ -34,7 +34,7 @@ paths = [
     "plan/implementation/roadmap.md",
     "plan/implementation/traceability.md",
 ]
-jobs = ["lint"]
+jobs = ["docs", "lint"]
 hw_required = []
 
 [[golden]]
@@ -55,14 +55,14 @@ paths = [
     "docs/media/milestones-dark.svg",
     "docs/media/milestones-light.svg",
 ]
-jobs = ["lint"]
+jobs = ["docs", "lint"]
 hw_required = []
 
 [[golden]]
 name = "git hooks"
 source = "db13189e on main, \"fix(quality): let commit-msg accept an amended merge commit (#1677)\": the commit's paths, from `git show --no-renames --name-only`"
 paths = [".githooks/commit-msg", "plan/implementation/tools/test_naming_check.py"]
-jobs = ["lint"]
+jobs = ["docs", "lint"]
 hw_required = []
 
 [[golden]]
@@ -109,7 +109,7 @@ paths = [
     "plan/rfcs/RFC-0042-quantization-and-numerical-fidelity.md",
 ]
 lock = ["equivalent", "hashbrown", "indexmap", "serde_spanned", "toml", "toml_datetime", "toml_parser", "toml_writer", "winnow"]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -130,7 +130,7 @@ paths = [
     "plan/rfcs/RFC-0001-system-architecture.md",
     "plan/rfcs/RFC-0040-kernel-providers-and-backends.md",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -146,7 +146,7 @@ paths = [
     "third_party/bip39/english.txt",
     "third_party/licences.toml",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -171,7 +171,7 @@ paths = [
     "third_party/licences.toml",
 ]
 lock = ["block-buffer", "crypto-common", "curve25519-dalek", "curve25519-dalek-derive", "digest", "ed25519", "ed25519-dalek", "fiat-crypto", "hybrid-array", "sha2", "signature", "subtle", "syn", "typenum"]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -194,7 +194,7 @@ paths = [
     "plan/rfcs/RFC-0050-api-surface.md",
     "xtask/src/check_deps/rules.rs",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -210,7 +210,7 @@ paths = [
     "plan/implementation/epics/PLC.md",
     "plan/implementation/roadmap.md",
 ]
-jobs = ["build", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -242,7 +242,7 @@ paths = [
     "plan/implementation/traceability.md",
     "plan/rfcs/RFC-0020-tier-manager-and-residency.md",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
 
@@ -258,7 +258,7 @@ paths = [
     "plan/rfcs/RFC-0001-system-architecture.md",
     "plan/rfcs/RFC-0041-model-formats-packs-weight-distribution.md",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -278,7 +278,7 @@ paths = [
     "xtask/src/registry.rs",
     "xtask/src/run.rs",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -296,7 +296,7 @@ paths = [
     "testdata/corpus/attribution/taskmaster-2.txt",
     "testdata/corpus/attribution/taskmaster-3.txt",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -312,7 +312,7 @@ paths = [
     "plan/implementation/epics/PROD.md",
     "plan/rfcs/RFC-0054-configuration-and-policy.md",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -325,7 +325,7 @@ paths = [
     "plan/rfcs/RFC-0062-ci-cd-and-release-engineering.md",
     "xtask/src/codeowners.rs",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -345,7 +345,7 @@ paths = [
     "xtask/src/run.rs",
 ]
 lock = ["syntropy-xtask"]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -382,7 +382,7 @@ paths = [
     "xtask/src/main.rs",
     "xtask/src/registry.rs",
 ]
-jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -597,3 +597,26 @@ paths = ["ci/images/cuda-12/Dockerfile"]
 jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "docs page"
+source = "constructed: one docs page alone; every commit on main that touched docs/ also touched a top-level README"
+paths = ["docs/HOW_IT_WORKS.md"]
+jobs = ["docs", "lint"]
+hw_required = []
+
+[[golden]]
+name = "docs site generator"
+source = "constructed: the docs site's build module alone (PROD-E13-T01)"
+paths = ["xtask/src/docs.rs"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "docs site renderer"
+source = "constructed: the docs site's Markdown renderer alone (PROD-E13-T01)"
+paths = ["xtask/src/docs/markdown.rs"]
+jobs = ["build", "docs", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
