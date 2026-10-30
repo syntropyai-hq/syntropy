@@ -300,6 +300,8 @@ mod tests {
                 "check-deps",
                 "properties",
                 "codeowners",
+                "delegations",
+                "maintainer-actions",
                 "agent-instructions",
                 "rigs",
                 "specs",

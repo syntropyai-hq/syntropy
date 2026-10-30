@@ -24,9 +24,9 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
-    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
-    runner_build_id, sim_presets, toolchain, toolchains,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, delegations, dep_diff,
+    determinism, hot_threads, instructions, loom, maintainer_actions, orphan_rule, plan_tools,
+    properties, repo_settings, runner_build_id, sim_presets, toolchain, toolchains,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -294,6 +294,23 @@ pub const JOBS: &[Entry] = &[
                 action: Action::Builtin {
                     shown: "CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
                     run: codeowners::step,
+                },
+            },
+            // The delegation registry of ADR-0021 decision 4 (QUAL-E1-T17).
+            Step {
+                name: "delegations",
+                action: Action::Builtin {
+                    shown: "governance/delegations.toml names maintainers, known scopes and dates, \
+                            within the custody limits",
+                    run: delegations::step,
+                },
+            },
+            Step {
+                name: "maintainer-actions",
+                action: Action::Builtin {
+                    shown: "governance/maintainer-actions.toml records each completion with \
+                            evidence, for a queued task",
+                    run: maintainer_actions::step,
                 },
             },
             Step {
@@ -1074,6 +1091,10 @@ mod tests {
                 "cargo xtask check-deps",
                 "xtask: ci/properties.toml matches the property tests, RFC-0060 and the epics",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
+                "xtask: governance/delegations.toml names maintainers, known scopes and dates, \
+                 within the custody limits",
+                "xtask: governance/maintainer-actions.toml records each completion with evidence, \
+                 for a queued task",
                 "xtask: ci/agent-instructions.toml is well formed and CODEOWNERS owns every file it \
                  lists",
                 "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- rigs \
