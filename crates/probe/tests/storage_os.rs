@@ -107,20 +107,17 @@ fn macos_protocols_map() {
     }
 }
 
-/// The hosted macOS runner (and a developer Mac): the system volume's disk description is read,
-/// and `live` is the classifier over that reading. The bus is not asserted known: the hosted
-/// runner is a virtual machine whose disk reports a protocol the map leaves `Unknown`.
+/// The hosted macOS runner (and a developer Mac): the system volume's disk description gives a
+/// protocol and a block size, and the protocol maps to a known bus.
 #[cfg(target_os = "macos")]
 #[test]
 fn live_macos_system_volume() {
     let raw = syntropy_io::os::volume::macos_volume(Path::new("/")).unwrap();
     eprintln!("{raw:?}");
-    assert!(
-        raw.media_block.is_some() || raw.encrypted.is_some(),
-        "{raw:?}"
-    );
+    assert!(raw.protocol.is_some(), "{raw:?}");
+    assert!(raw.media_block.is_some(), "{raw:?}");
     let v = macos_live(Path::new("/")).unwrap();
-    assert_eq!(v.bus, classify_macos(&raw).bus, "{v:?}");
+    assert_ne!(v.bus, StorageBus::Unknown, "{v:?} from {raw:?}");
     assert_eq!(v.fs, FsKind::Apfs, "{v:?}");
     assert!(
         matches!(v.direct_io, DirectIoSupport::Supported { .. }),
@@ -129,10 +126,8 @@ fn live_macos_system_volume() {
     assert!(v.logical_block > 0 && v.free.0 > 0);
 }
 
-/// The hosted Windows runner: the system volume answers the bus and alignment queries, and
-/// `live` is the classifier over that reading. The bus is not asserted known: the hosted runner
-/// is a virtual machine whose disk may report a bus type, such as SAS or SCSI, the map leaves
-/// `Unknown`.
+/// The hosted Windows runner: the system volume answers the bus and alignment queries and
+/// reports a known bus.
 #[cfg(windows)]
 #[test]
 fn live_windows_system_volume() {
@@ -140,7 +135,7 @@ fn live_windows_system_volume() {
     eprintln!("{raw:?}");
     assert!(raw.bus_type.is_some(), "{raw:?}");
     let v = windows_live(Path::new(r"C:\")).unwrap();
-    assert_eq!(v.bus, classify_windows(&raw).bus, "{v:?}");
+    assert_ne!(v.bus, StorageBus::Unknown, "{v:?} from {raw:?}");
     assert!(
         matches!(v.direct_io, DirectIoSupport::Supported { .. }),
         "{v:?}"
