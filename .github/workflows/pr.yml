@@ -285,7 +285,7 @@ jobs:
 
   # The Linux build image: two no-cache builds are byte-identical, and the pinned tools print their
   # versions from inside it (RFC-0062 §4.1; QUAL-E16-T24). `docker buildx` is on the hosted runner.
-  # Its default `docker` driver cannot export an OCI archive, so the step creates a
+  # Its default `docker` driver cannot export an image tarball, so the step creates a
   # `docker-container` builder of its own on the BuildKit image `ci/toolchains.toml` pins.
   toolchains-linux:
     needs: changes

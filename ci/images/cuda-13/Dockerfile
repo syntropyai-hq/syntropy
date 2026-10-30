@@ -19,7 +19,7 @@
 #
 #   docker buildx build --platform linux/amd64 --no-cache \
 #     --build-arg SOURCE_DATE_EPOCH=1792454400 \
-#     --output type=oci,dest=cuda-13.tar,rewrite-timestamp=true ci/images/cuda-13
+#     --output type=docker,dest=cuda-13.tar,rewrite-timestamp=true ci/images/cuda-13
 
 ARG BASE=ubuntu:jammy-20260930@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
 
