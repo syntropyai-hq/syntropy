@@ -14,6 +14,11 @@
 //! Then the dispatcher polls the event and checks the device's health. The device's thread and
 //! a runner on it both count their own allocations.
 
+#![allow(
+    clippy::result_large_err,
+    reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
+)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

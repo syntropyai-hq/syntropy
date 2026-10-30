@@ -2,18 +2,19 @@
 
 //! [`SynStatus`], the result of every vtable function, and its mapping to [`Error`].
 
-use syntropy_core::ErrorClass;
+use syntropy_core::{Domain, ErrorClass};
 
 use crate::error::{Error, ErrorCode};
 
 /// The result of a boundary call (RFC-0040 §10.4). `class` 0 is success. A failure carries the
-/// error's class and its `Kernels` code; the message is fetched with `last_error`.
+/// error's class and its code, with the code's domain as its boundary number
+/// ([`DOMAIN_CODES`](super::DOMAIN_CODES)); the message is fetched with `last_error`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SynStatus {
     /// `ErrorClass` code ([`class_code`]), 0 for success.
     pub class: u32,
-    /// [`DOMAIN_KERNELS`](super::DOMAIN_KERNELS).
+    /// The code's domain, as its boundary number ([`DOMAIN_CODES`](super::DOMAIN_CODES)).
     pub domain: u32,
     /// The code in the domain.
     pub code: u16,
@@ -83,21 +84,40 @@ pub fn class_of_code(code: u32) -> Option<ErrorClass> {
 /// The status that reports `error`.
 #[must_use]
 pub fn status_of_error(error: &Error) -> SynStatus {
-    SynStatus {
-        class: class_code(error.class),
-        domain: super::DOMAIN_KERNELS,
-        code: error.code.0,
-        retry: u8::from(error.class == ErrorClass::Transient),
+    match super::domain_code(error.code.domain) {
+        Some(domain) => SynStatus {
+            class: class_code(error.class),
+            domain,
+            code: error.code.code,
+            retry: u8::from(error.class == ErrorClass::Transient),
+        },
+        // Every `Domain` has a number (`tests/abi_domains.rs`); a domain without one would be a
+        // build that skipped that test, and crosses as an internal error rather than a guess.
+        None => SynStatus {
+            class: class_code(ErrorClass::Internal),
+            domain: super::DOMAIN_KERNELS,
+            code: 0,
+            retry: 0,
+        },
     }
 }
 
 /// The error `status` reports, with `message` (fetched with `last_error`); `None` for success.
+/// A domain number this build does not know is reported as an `Internal` error that names the
+/// number and the code, as an unknown class is (RFC-0040 §10.4, note of 2026-10-30).
 #[must_use]
 pub fn error_of_status(status: SynStatus, message: String) -> Option<Error> {
-    Some(Error {
-        class: class_of_code(status.class)?,
-        code: ErrorCode(status.code),
-        message,
+    let class = class_of_code(status.class)?;
+    Some(match super::domain_of_code(status.domain) {
+        Some(domain) => Error::new(class, ErrorCode::new(domain, status.code), message),
+        None => Error::new(
+            ErrorClass::Internal,
+            ErrorCode::new(Domain::Kernels, 0),
+            format!(
+                "a status of domain number {} this build does not know, code {}: {message}",
+                status.domain, status.code
+            ),
+        ),
     })
 }
 
@@ -136,13 +156,46 @@ mod tests {
 
     #[test]
     fn an_error_keeps_its_class_and_code() {
-        let error = Error {
-            class: ErrorClass::Capacity,
-            code: ErrorCode::ALLOC_FAILED,
-            message: "no memory".into(),
-        };
+        let error = Error::new(
+            ErrorClass::Capacity,
+            crate::error::codes::ALLOC_FAILED,
+            "no memory",
+        );
         let status = status_of_error(&error);
-        assert_eq!((status.class, status.code, status.retry), (3, 9, 0));
+        assert_eq!(
+            (status.class, status.domain, status.code, status.retry),
+            (3, 1, 9, 0)
+        );
         assert_eq!(error_of_status(status, error.message.clone()), Some(error));
+    }
+
+    /// A code of another domain crosses with its domain: here a `Net` code and an `Exec` code.
+    #[test]
+    fn an_error_of_another_domain_keeps_its_domain() {
+        for code in [
+            ErrorCode::new(Domain::Net, 0x0207),
+            syntropy_core::error::codes::exec::RING_CLOSED,
+        ] {
+            let error = Error::new(ErrorClass::Link, code, "elsewhere");
+            let status = status_of_error(&error);
+            assert_ne!(status.domain, super::super::DOMAIN_KERNELS);
+            assert_eq!(error_of_status(status, error.message.clone()), Some(error));
+        }
+    }
+
+    /// A domain number this build does not know decodes as `Internal`, naming the number.
+    #[test]
+    fn an_unknown_domain_number_is_internal() {
+        let status = SynStatus {
+            class: class_code(ErrorClass::Capacity),
+            domain: 99,
+            code: 0x0042,
+            retry: 0,
+        };
+        let error = error_of_status(status, "far away".into()).expect("a failure");
+        assert_eq!(error.class, ErrorClass::Internal);
+        assert_eq!(error.code, ErrorCode::new(Domain::Kernels, 0));
+        assert!(error.message.contains("domain number 99"), "{error}");
+        assert!(error.message.contains("far away"), "{error}");
     }
 }

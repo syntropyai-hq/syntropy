@@ -471,16 +471,16 @@ mod tests {
     }
 
     fn not_needed<T>() -> Result<T, Error> {
-        Err(Error {
-            class: ErrorClass::Internal,
-            code: ErrorCode(0),
-            message: String::from("not used by this test"),
-        })
+        Err(Error::new(
+            ErrorClass::Internal,
+            ErrorCode::new(syntropy_core::Domain::Kernels, 0),
+            String::from("not used by this test"),
+        ))
     }
 
     impl KernelProvider for Minimal {
         fn id(&self) -> ProviderId {
-            ProviderId("minimal")
+            ProviderId::new("minimal")
         }
         fn backend(&self) -> Backend {
             Backend::Cpu
@@ -664,7 +664,7 @@ mod tests {
 
         let err = unsupported();
         assert_eq!(err.class, ErrorClass::Unsupported);
-        assert_eq!(err.code, ErrorCode(1));
+        assert_eq!(err.code, ErrorCode::new(syntropy_core::Domain::Kernels, 1));
     }
 
     /// The default `copy_batch` issues one `copy` per pair, in order, and stops at the first

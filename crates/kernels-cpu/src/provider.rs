@@ -198,10 +198,12 @@ impl CpuProvider {
 
     /// The NUMA nodes of the cores this process may run on, in order.
     fn nodes() -> Result<Vec<u16>, Error> {
-        let cores = syntropy_io::os::cpu_topology().map_err(|error| Error {
-            class: ErrorClass::Unsupported,
-            code: ErrorCode::OP_UNSUPPORTED,
-            message: format!("the cores this process may run on: {error}"),
+        let cores = syntropy_io::os::cpu_topology().map_err(|error| {
+            Error::new(
+                ErrorClass::Unsupported,
+                syntropy_kernels::error::codes::OP_UNSUPPORTED,
+                format!("the cores this process may run on: {error}"),
+            )
         })?;
         let nodes: BTreeSet<u16> = cores.iter().map(|core| core.numa_node).collect();
         Ok(nodes.into_iter().collect())
@@ -210,7 +212,7 @@ impl CpuProvider {
 
 impl KernelProvider for CpuProvider {
     fn id(&self) -> ProviderId {
-        ProviderId("cpu")
+        ProviderId::new("cpu")
     }
 
     fn backend(&self) -> Backend {
@@ -265,15 +267,19 @@ impl KernelProvider for CpuProvider {
     /// level's dispatch table, allocates the doorbell pages and creates the planned streams.
     fn open(&self, dev: DeviceId, opts: &OpenOptions) -> Result<DeviceCtx, Error> {
         let nodes = Self::nodes()?;
-        let node = *nodes.get(usize::from(dev.ordinal)).ok_or_else(|| Error {
-            class: ErrorClass::Unsupported,
-            code: ErrorCode::OP_UNSUPPORTED,
-            message: format!("no CPU device {} on this host", dev.ordinal),
+        let node = *nodes.get(usize::from(dev.ordinal)).ok_or_else(|| {
+            Error::new(
+                ErrorClass::Unsupported,
+                syntropy_kernels::error::codes::OP_UNSUPPORTED,
+                format!("no CPU device {} on this host", dev.ordinal),
+            )
         })?;
-        let detection = isa::detect(&self.kill).ok_or_else(|| Error {
-            class: ErrorClass::Unsupported,
-            code: ErrorCode::OP_UNSUPPORTED,
-            message: "this CPU is below X86V2, the provider's lowest level".to_owned(),
+        let detection = isa::detect(&self.kill).ok_or_else(|| {
+            Error::new(
+                ErrorClass::Unsupported,
+                syntropy_kernels::error::codes::OP_UNSUPPORTED,
+                "this CPU is below X86V2, the provider's lowest level".to_owned(),
+            )
         })?;
         let mut table = isa::table_for_class(detection.isa, &detection)?;
         for (kind, kernel) in &self.extra {
@@ -652,16 +658,16 @@ impl KernelProvider for CpuProvider {
         match self.device(ctx).ok().and_then(|d| d.health.sticky()) {
             None => DeviceHealth::Ok,
             Some(code) => DeviceHealth::Sticky {
-                code: ErrorCode(code),
+                code: ErrorCode::new(syntropy_core::Domain::Kernels, code),
             },
         }
     }
 }
 
 fn alloc_failed(what: String) -> Error {
-    Error {
-        class: ErrorClass::Capacity,
-        code: ErrorCode::ALLOC_FAILED,
-        message: format!("cannot allocate {what}"),
-    }
+    Error::new(
+        ErrorClass::Capacity,
+        syntropy_kernels::error::codes::ALLOC_FAILED,
+        format!("cannot allocate {what}"),
+    )
 }
