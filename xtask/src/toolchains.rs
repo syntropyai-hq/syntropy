@@ -105,7 +105,9 @@ struct Windows {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Msvc {
-    /// Visual Studio's `installationVersion`, as the image report lists it.
+    /// Visual Studio's servicing line, `<major>.<minor>`: the `installationVersion`'s first two
+    /// parts must equal it. The full build differs between the images a label serves during a
+    /// rollout, while the toolset and `cl` below stay exact (RFC-0062 §4.2, note 2026-10-31).
     visual_studio: String,
     /// The default MSVC toolset, `Microsoft.VCToolsVersion.default.txt`.
     toolset: String,
@@ -164,6 +166,15 @@ fn is_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// Whether `text` is `<major>.<minor>`, two runs of digits.
+fn is_servicing_line(text: &str) -> bool {
+    text.split_once('.').is_some_and(|(major, minor)| {
+        [major, minor]
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
 fn is_arch(text: &str, prefix: &str) -> bool {
     text.strip_prefix(prefix).is_some_and(|rest| {
         let digits = rest.trim_end_matches(['a', 'f']);
@@ -218,6 +229,13 @@ pub fn check(toolchains: &str, dockerfile: &str, arch_sets: &str) -> Vec<String>
                 if pin.trim().is_empty() {
                     problems.push(format!("{TOOLCHAINS}: `{name}` is empty"));
                 }
+            }
+            if !is_servicing_line(&t.windows.msvc.visual_studio) {
+                problems.push(format!(
+                    "{TOOLCHAINS}: `windows.msvc.visual_studio` is `{}`, not a servicing line \
+                     `<major>.<minor>` such as `18.11`",
+                    t.windows.msvc.visual_studio
+                ));
             }
             let i = &t.linux.image;
             if !i
@@ -721,6 +739,24 @@ ldd (Ubuntu GLIBC 2.35-0ubuntu3.15) 2.35
                 .iter()
                 .any(|p| p.contains("windows.msvc.cl"))
         );
+    }
+
+    #[test]
+    fn the_visual_studio_pin_is_a_servicing_line() {
+        let (t, d, a) = real();
+        let pin = t
+            .lines()
+            .find(|l| l.starts_with("visual_studio = "))
+            .expect("the pin");
+        for bad in ["18.11.12328.437", "18", "18.x", ".11"] {
+            let file = t.replace(pin, &format!("visual_studio = \"{bad}\""));
+            assert!(
+                check(&file, &d, &a)
+                    .iter()
+                    .any(|p| p.contains("servicing line")),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

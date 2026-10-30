@@ -22,9 +22,10 @@
 # A hosted image update can change these. The jobs then fail, and the pin is bumped from the new
 # image's report and print.
 #
-# The Windows image carries no CUDA compiler, and its CMake is 4.4.5, not the 4.4.4 pinned here.
-# The macOS image carries a Homebrew CMake. So both jobs fetch Kitware's archives at the pin and
-# check their checksums before they run them (QUAL-E16-T30).
+# The Windows image carries no CUDA compiler, and its CMake varies with the image version (4.4.4
+# on 20261021.278.1, 4.4.5 on 20261030.294.1). The macOS image carries a Homebrew CMake. So both
+# jobs fetch Kitware's 4.4.4 archives at the pin and check their checksums before they run them,
+# whatever the image holds (QUAL-E16-T30).
 
 format = 1
 
@@ -110,8 +111,11 @@ version = "13.3.4.3.1"
 sha256 = "17d0ca1592c0dfc974a5fc39f470a6b7bae40da239e3e19bd0752017735acbca"
 
 [windows.msvc]
-# "Visual Studio Enterprise 2026 | 18.11.12328.437" in the image report.
-visual_studio = "18.11.12328.437"
+# Visual Studio's servicing line: "Visual Studio Enterprise 2026 | 18.11.12328.437" in the report
+# of image 20261030.294.1, and 18.11.12315.225 in that of 20261021.278.1 (tag
+# win25-vs2026/20261021.278, commit ca1c9228ba0c). The label served both on 2026-10-30, so the pin
+# is the line both share; the toolset and `cl` below stay exact (RFC-0062 §4.2, note 2026-10-31).
+visual_studio = "18.11"
 # The report lists neither the default toolset nor `cl`'s version; job 124315799952 printed both.
 toolset = "14.51.36231"
 cl = "19.51.36260"

@@ -124,12 +124,21 @@ pub fn windows_problems(printed: &WindowsPrinted, pins: &Toolchains) -> Vec<Stri
             problems.push(format!("`{what}` is `{got}`, but the pin is `{want}`"));
         }
     };
-    exact(
-        &mut problems,
-        "Visual Studio",
-        &printed.visual_studio,
-        &w.msvc.visual_studio,
-    );
+    // Visual Studio by its servicing line: the first two parts of `installationVersion`.
+    let installed = printed.visual_studio.trim();
+    let line = installed
+        .splitn(3, '.')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".");
+    if installed.is_empty() {
+        problems.push("`Visual Studio` printed nothing".to_owned());
+    } else if line != w.msvc.visual_studio {
+        problems.push(format!(
+            "`Visual Studio` is `{installed}` (servicing line `{line}`), but the pin is `{}`",
+            w.msvc.visual_studio
+        ));
+    }
     exact(
         &mut problems,
         "the MSVC toolset",
@@ -546,6 +555,38 @@ Thread model: posix
         let p = pins();
         assert_eq!(windows_problems(&windows(), &p), Vec::<String>::new());
         assert_eq!(macos_problems(&macos(), &p), Vec::<String>::new());
+    }
+
+    #[test]
+    fn visual_studio_matches_by_servicing_line() {
+        let p = pins();
+        // Both builds the `windows-2025` label served on 2026-10-30 and 31: image
+        // 20261030.294.1 (job 124319147016) and 20261021.278.1 (job 124348916970).
+        for build in ["18.11.12328.437", "18.11.12315.225", "18.11.0"] {
+            let mut printed = windows();
+            printed.visual_studio = format!("{build}\r\n");
+            assert_eq!(
+                windows_problems(&printed, &p),
+                Vec::<String>::new(),
+                "{build}"
+            );
+        }
+        for other in [
+            "18.12.10000.1",
+            "17.14.37806.7",
+            "18.110.1",
+            "18",
+            "19.11.1",
+        ] {
+            let mut printed = windows();
+            printed.visual_studio = other.into();
+            let problems = windows_problems(&printed, &p);
+            assert_eq!(problems.len(), 1, "{other}: {problems:?}");
+            assert!(
+                problems[0].contains("Visual Studio"),
+                "{other}: {problems:?}"
+            );
+        }
     }
 
     #[test]
