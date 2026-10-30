@@ -24,7 +24,7 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, freeze,
     hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
     runner_build_id, sim_presets, toolchain, toolchains,
 };
@@ -753,6 +753,58 @@ pub const JOBS: &[Entry] = &[
             },
         }],
         pending: &[],
+    },
+    Entry {
+        name: "freeze",
+        summary: "the release freeze: whether it is set after an event log, whether it holds a \
+                  PR, and each freeze window's duration",
+        defined_in: "RFC-0062 §9.2 (step 2.1); ADR-0621 decision 4",
+        params: &[
+            Param {
+                name: "--events",
+                value: "<file>",
+                help: "the freeze's event log: a JSON array of set and lift events",
+                required: true,
+            },
+            Param {
+                name: "--pr",
+                value: "<file>",
+                help: "a PR as {number, base, labels, head?, author?}; the job fails if the \
+                       freeze holds it",
+                required: false,
+            },
+            Param {
+                name: "--release-app",
+                value: "<login>",
+                help: "the release App's login; its PR from release-please's branch merges \
+                       while frozen",
+                required: false,
+            },
+            Param {
+                name: "--durations-out",
+                value: "<file>",
+                help: "write each freeze window's start, end and seconds as JSON",
+                required: false,
+            },
+        ],
+        steps: &[Step {
+            name: "freeze",
+            action: Action::Builtin {
+                shown: "whether the release freeze holds the PR, and the freeze durations",
+                run: freeze::step,
+            },
+        }],
+        pending: &[
+            Pending {
+                check: "`rc:start` and publish or abort write the event log; ci-gate consults it, \
+                        passing the release App's login as `--release-app`",
+                task: "QUAL-E17-T05",
+            },
+            Pending {
+                check: "the merge queue holds PRs not labelled `rc:fix` while the freeze is set",
+                task: "QUAL-E17-T17",
+            },
+        ],
     },
     Entry {
         name: "repo-settings",
