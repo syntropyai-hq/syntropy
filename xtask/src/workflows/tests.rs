@@ -389,6 +389,10 @@ fn each_acceptance_fixture_fails_for_its_fault() {
             "local-action-unpinned",
             "ci/act/action.yml: runs.steps[0].uses",
         ),
+        (
+            "disallowed-action",
+            "`docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069` is not allowed",
+        ),
     ] {
         let (pass, log) = lint_fixture(fixture);
         assert!(!pass, "{fixture}: {log}");
@@ -787,4 +791,123 @@ fn index_syntax_names_the_pr_head_too() {
         );
     }
     assert_eq!(dotted_index("a['b'][\"c\"].d[0]"), "a.b.c.d[0]");
+}
+
+/// The policy the repository records today: GitHub-owned actions, no verified creators, no
+/// patterns.
+fn github_owned_only() -> AllowedActions {
+    AllowedActions {
+        github_owned: true,
+        verified: false,
+        patterns: Vec::new(),
+    }
+}
+
+/// `*` stands for any run of characters, case is ignored, and a pattern with no `*` matches
+/// only itself.
+#[test]
+fn allowed_patterns_match_as_globs() {
+    assert!(glob_match(
+        "astral-sh/setup-uv@*",
+        &format!("astral-sh/setup-uv@{SHA}")
+    ));
+    assert!(glob_match("Astral-SH/*", "astral-sh/setup-uv@v6"));
+    assert!(glob_match("octo/*/sub@*", "octo/repo/sub@abc"));
+    assert!(glob_match("octo/repo@abc", "octo/repo@abc"));
+    assert!(!glob_match("octo/repo@abc", "octo/repo@abcd"));
+    assert!(!glob_match(
+        "astral-sh/setup-uv@*",
+        "astral-sh/setup-python@v1"
+    ));
+    assert!(!glob_match("octo/*", "other/repo@v1"));
+}
+
+/// The allowed-actions rule: local, GitHub-owned and matched actions pass; others fail, in a
+/// workflow's steps, a reusable workflow's job and a composite action's steps.
+#[test]
+fn an_action_the_policy_does_not_allow_is_refused() {
+    let policy = github_owned_only();
+    let workflow = format!(
+        "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@{SHA}\n      \
+         - uses: github/codeql-action/init@{SHA}\n      - uses: ./.github/actions/setup\n      \
+         - uses: docker://alpine@sha256:{0}\n      - uses: astral-sh/setup-uv@{SHA}\n  \
+         b:\n    uses: octo/repo/.github/workflows/w.yml@{SHA}\n",
+        "0".repeat(64)
+    );
+    let found = check_allowed("w.yml", &workflow, &policy);
+    let at: Vec<&str> = found.iter().map(|f| f.at.as_str()).collect();
+    assert_eq!(at, ["jobs.a.steps[4].uses", "jobs.b.uses"], "{found:#?}");
+    assert!(
+        found[0].message.contains("would refuse the whole workflow"),
+        "{found:#?}"
+    );
+
+    let allowing = AllowedActions {
+        patterns: vec!["astral-sh/setup-uv@*".into(), "octo/*".into()],
+        ..github_owned_only()
+    };
+    assert!(check_allowed("w.yml", &workflow, &allowing).is_empty());
+
+    let none_owned = AllowedActions {
+        github_owned: false,
+        ..allowing
+    };
+    let found = check_allowed("w.yml", &workflow, &none_owned);
+    assert_eq!(found.len(), 2, "{found:#?}");
+    assert_eq!(found[0].at, "jobs.a.steps[0].uses");
+
+    let composite = format!("runs:\n  using: composite\n  steps:\n    - uses: other/act@{SHA}\n");
+    let found = check_allowed("a/action.yml", &composite, &policy);
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].at, "runs.steps[0].uses");
+
+    let verified = AllowedActions {
+        verified: true,
+        ..github_owned_only()
+    };
+    let found = check_allowed("a/action.yml", &composite, &verified);
+    assert!(found[0].message.contains("cannot be read"), "{found:#?}");
+}
+
+/// The policy file parses with its three fields, and any missing or mistyped one fails.
+#[test]
+fn the_policy_file_needs_its_three_fields() {
+    let policy = AllowedActions::parse(
+        r#"{"github_owned_allowed": true, "verified_allowed": false, "patterns_allowed": ["a/*"]}"#,
+    )
+    .expect("parses");
+    assert_eq!(policy.patterns, ["a/*"]);
+    assert!(policy.github_owned && !policy.verified);
+    for bad in [
+        "{",
+        r#"{"verified_allowed": false, "patterns_allowed": []}"#,
+        r#"{"github_owned_allowed": true, "verified_allowed": false}"#,
+        r#"{"github_owned_allowed": true, "verified_allowed": false, "patterns_allowed": [1]}"#,
+        r#"{"github_owned_allowed": "yes", "verified_allowed": false, "patterns_allowed": []}"#,
+    ] {
+        assert!(AllowedActions::parse(bad).is_err(), "{bad}");
+    }
+    let checked_in = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(SELECTED_ACTIONS),
+    )
+    .expect("the policy file is checked in");
+    assert!(AllowedActions::parse(&checked_in).is_ok());
+}
+
+/// A tree without the policy file fails: the lint never passes what it could not check.
+#[test]
+fn a_tree_without_the_policy_file_fails() {
+    let dir = std::env::temp_dir().join(format!("syntropy-workflows-{}", std::process::id()));
+    let workflows = dir.join(".github/workflows");
+    std::fs::create_dir_all(&workflows).unwrap();
+    std::fs::write(workflows.join("ci.yml"), clean()).unwrap();
+    let mut log = Vec::new();
+    let pass = run(&dir, &mut log).expect("readable");
+    let log = String::from_utf8(log).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(!pass, "{log}");
+    assert!(log.contains(SELECTED_ACTIONS), "{log}");
+    assert!(log.contains("the allowed-actions check needs it"), "{log}");
 }
