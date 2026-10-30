@@ -8,6 +8,7 @@
 //! |---|---|
 //! | Read-only top level | a workflow whose top-level `permissions:` is missing, `write-all`, or grants any scope `write`; a job may widen its own |
 //! | Pinned actions | a `uses:` that is not a local path (`./…`), an action or reusable workflow at a 40-hex commit SHA, or a `docker://` image at a `sha256:` digest (§11.1) |
+//! | Allowed actions | a `uses:` of an action or reusable workflow that the repository's actions policy, as [`SELECTED_ACTIONS`] records it, does not allow: GitHub would refuse the whole workflow at startup, so no job runs |
 //! | No `pull_request_target` | a workflow triggered by it, in any form of `on:` |
 //! | No lab label | a job outside `lab.yml` whose `runs-on` names a lab label (§3.2) |
 //! | No PR checkout beside a secret | a job that checks out a PR ref and holds a secret, an environment or a write token |
@@ -52,7 +53,23 @@
 //! `secrets: inherit`. It holds a write token when its own `permissions`, or the workflow's where
 //! it sets none, grant any scope `write`.
 //!
+//! **Allowed actions.** A local action (`./…`) is always allowed, and so is one of this
+//! repository's own organization (the owner of [`REPOSITORY`]), as GitHub allows its own
+//! organization's actions under a selected-actions policy. An action whose owner is `actions` or
+//! `github`, without case, is allowed when the file's `github_owned_allowed` is true. Any other
+//! must match one of its `patterns_allowed`, in which `*` stands for any run of characters and
+//! case is ignored throughout, the `@ref` included, as `owner/repo@*` or `owner/*`. A `!` block
+//! pattern makes the file fail to parse: GitHub lets a block override a broader allow, and this
+//! lint does not evaluate blocks, so it fails rather than approve what GitHub refuses. A `docker://` image is not an
+//! action, so the policy does not reach it (the pin rule does), and a computed `uses:` already
+//! fails the pin rule. When `verified_allowed` is true, an action no pattern matches fails, since
+//! whether its creator is verified cannot be read from the repository. A missing or malformed
+//! [`SELECTED_ACTIONS`] fails the lint. The file records the live policy (`cargo xtask ci
+//! repo-settings` compares the two), so this lint reads only the file.
+//!
 //! **Limits.** A file cannot show these, so the lint does not check them:
+//! - the actions a remote reusable workflow or a remote composite action uses inside it, which
+//!   GitHub also checks against the allowed-actions policy;
 //! - whether a 40-hex `@` is a commit, rather than a tag or branch of that name;
 //! - a fork of `actions/checkout` under another name;
 //! - a ref that reaches a checkout through `env` or a step's outputs, unless it is an expression
@@ -67,6 +84,11 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use yaml_rust2::{Yaml, YamlLoader};
+
+/// The repository's allowed-actions policy, relative to the root: what
+/// `/actions/permissions/selected-actions` returns, which `cargo xtask ci repo-settings` checks
+/// against the live repository (RFC-0062 §12.6; ADR-0620 decision 4).
+pub const SELECTED_ACTIONS: &str = "ci/repo-settings/actions-selected-actions.json";
 
 /// The one workflow that may name a lab label (RFC-0062 §3.2).
 pub const LAB_WORKFLOW: &str = "lab.yml";
@@ -848,6 +870,151 @@ pub fn check_action(file: &str, source: &str) -> Vec<Finding> {
     report.findings
 }
 
+/// The repository's allowed-actions policy, from [`SELECTED_ACTIONS`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllowedActions {
+    /// `github_owned_allowed`: actions of the `actions` and `github` owners are allowed.
+    pub github_owned: bool,
+    /// `verified_allowed`: actions of verified Marketplace creators are allowed.
+    pub verified: bool,
+    /// `patterns_allowed`: the other actions allowed, with `*` for any run of characters.
+    pub patterns: Vec<String>,
+}
+
+impl AllowedActions {
+    /// Reads the policy from the file's JSON. Each of the three fields must be present with its
+    /// type.
+    pub fn parse(json: &str) -> Result<Self, String> {
+        let value: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| format!("does not parse: {e}"))?;
+        let flag = |key: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| format!("has no boolean `{key}`"))
+        };
+        let patterns = value
+            .get("patterns_allowed")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("has no list `patterns_allowed`")?
+            .iter()
+            .map(|p| match p.as_str() {
+                None => Err("has a `patterns_allowed` entry that is not a string".to_owned()),
+                Some(block) if block.trim_start().starts_with('!') => Err(format!(
+                    "has a block pattern `{block}`, which this lint does not evaluate; GitHub \
+                     lets a block override a broader allow, so passing it could approve what \
+                     GitHub refuses"
+                )),
+                Some(pattern) => Ok(pattern.to_owned()),
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            github_owned: flag("github_owned_allowed")?,
+            verified: flag("verified_allowed")?,
+            patterns,
+        })
+    }
+
+    /// Why the policy refuses `uses`, if it does.
+    fn refuses(&self, uses: &str) -> Option<String> {
+        if uses.starts_with("./") || uses.starts_with("docker://") || uses.contains("${{") {
+            return None;
+        }
+        let owner = uses.split('/').next().unwrap_or_default();
+        let own_org = REPOSITORY.split('/').next().unwrap_or_default();
+        if owner.eq_ignore_ascii_case(own_org) {
+            return None;
+        }
+        if self.github_owned
+            && (owner.eq_ignore_ascii_case("actions") || owner.eq_ignore_ascii_case("github"))
+        {
+            return None;
+        }
+        if self.patterns.iter().any(|p| glob_match(p, uses)) {
+            return None;
+        }
+        Some(if self.verified {
+            format!(
+                "matches no pattern in {SELECTED_ACTIONS}, and whether its creator is verified \
+                 cannot be read from the repository"
+            )
+        } else {
+            format!(
+                "is not allowed by the repository's actions policy ({SELECTED_ACTIONS}): it is \
+                 not GitHub-owned and matches no allowed pattern, so GitHub would refuse the \
+                 whole workflow at startup"
+            )
+        })
+    }
+}
+
+/// Whether `text` matches `pattern`, where `*` stands for any run of characters, ignoring case.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let (pattern, text) = (pattern.to_ascii_lowercase(), text.to_ascii_lowercase());
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = text.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    rest.ends_with(last)
+}
+
+/// The items of a `steps:` list, or none when `node` is absent or not a list (the other checks
+/// report that).
+fn step_list(node: Option<&Yaml>) -> &[Yaml] {
+    match node {
+        Some(Yaml::Array(steps)) => steps,
+        _ => &[],
+    }
+}
+
+/// Checks the `uses:` of every job and step of a workflow, or every step of a composite action,
+/// against `allowed`.
+pub fn check_allowed(file: &str, source: &str, allowed: &AllowedActions) -> Vec<Finding> {
+    let mut report = Report {
+        file,
+        findings: Vec::new(),
+    };
+    let Ok(yaml) = parse(source) else {
+        // The other checks report a file that does not parse.
+        return report.findings;
+    };
+    let mut check = |at: String, node: Option<&Yaml>| {
+        if let Some(uses) = node.and_then(text)
+            && let Some(problem) = allowed.refuses(&uses)
+        {
+            report.add(at, format!("`{uses}` {problem}"));
+        }
+    };
+    if let Some(Yaml::Hash(jobs)) = get(&yaml, "jobs") {
+        for (name, job) in jobs {
+            let at = format!("jobs.{}", text(name).unwrap_or_default());
+            check(format!("{at}.uses"), get(job, "uses"));
+            for (n, step) in step_list(get(job, "steps")).iter().enumerate() {
+                check(format!("{at}.steps[{n}].uses"), get(step, "uses"));
+            }
+        }
+    }
+    let runs = get(&yaml, "runs");
+    for (n, step) in step_list(runs.and_then(|r| get(r, "steps")))
+        .iter()
+        .enumerate()
+    {
+        check(format!("runs.steps[{n}].uses"), get(step, "uses"));
+    }
+    report.findings
+}
+
 /// Every `uses:` under `node` that names a local action: `./…`, but not a reusable workflow
 /// (`.yml` or `.yaml`).
 fn local_uses(node: &Yaml, out: &mut Vec<String>) {
@@ -980,18 +1147,43 @@ pub fn run(root: &Path, log: &mut dyn Write) -> io::Result<bool> {
     actions.dedup();
 
     let resolve = |uses: &str| local_action(root, uses).and_then(|path| read(&path).ok());
+    let allowed = match read(&root.join(SELECTED_ACTIONS)) {
+        Ok(json) => AllowedActions::parse(&json),
+        Err(error) => Err(format!("cannot be read: {error}")),
+    };
+    let allowed = match allowed {
+        Ok(allowed) => Some(allowed),
+        Err(message) => {
+            findings.push(Finding {
+                file: SELECTED_ACTIONS.to_owned(),
+                at: String::new(),
+                message: format!("{message}; the allowed-actions check needs it"),
+            });
+            None
+        }
+    };
     for path in &workflows {
         let file = shown(path);
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         match read(path) {
-            Ok(source) => findings.extend(check_workflow(&file, &name, &source, &resolve)),
+            Ok(source) => {
+                findings.extend(check_workflow(&file, &name, &source, &resolve));
+                if let Some(allowed) = &allowed {
+                    findings.extend(check_allowed(&file, &source, allowed));
+                }
+            }
             Err(error) => findings.push(unreadable(file, error)),
         }
     }
     for path in &actions {
         let file = shown(path);
         match read(path) {
-            Ok(source) => findings.extend(check_action(&file, &source)),
+            Ok(source) => {
+                findings.extend(check_action(&file, &source));
+                if let Some(allowed) = &allowed {
+                    findings.extend(check_allowed(&file, &source, allowed));
+                }
+            }
             Err(error) => findings.push(unreadable(file, error)),
         }
     }
