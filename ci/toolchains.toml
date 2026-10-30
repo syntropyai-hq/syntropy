@@ -7,10 +7,16 @@
 # `ci/images/cuda-13/Dockerfile`, so the two cannot drift apart. A checksum is the SHA-256 the
 # publisher lists: NVIDIA's `redistrib_13.4.3.json` and Kitware's `cmake-4.4.4-SHA-256.txt`.
 #
-# A pin whose value cannot be known before the environment runs carries `verified = false` and no
-# value: the Windows MSVC toolset and the macOS Xcode and Metal compiler come with the hosted
-# runner image. The version-print job reports what each runner has (RFC-0062 §4.1); a later change
-# pins it from that report.
+# The Windows MSVC toolchain and the macOS Xcode come with the hosted runner images that `pr.yml`
+# names, `windows-2025` and `macos-26`. Their pins are taken from the images' own reports, the
+# readmes in actions/runner-images (images/windows/Windows2025-Readme.md, image 20261021.299.1, and
+# images/macos/macos-26-arm64-Readme.md, image 20261026.0455.2, both at commit 4da2307112a0). A pin
+# that the report does not give carries `verified = false` and no value until the version-print
+# job (`toolchains-windows`, `toolchains-macos`) reports it from the runner (RFC-0062 §4.1).
+#
+# The Windows image carries no CUDA compiler and CMake 3.31.6, and the macOS image carries a
+# Homebrew CMake, so both jobs fetch the archives pinned here and check their checksums before they
+# run them (QUAL-E16-T30).
 
 format = 1
 
@@ -96,14 +102,23 @@ version = "13.3.4.3.1"
 sha256 = "17d0ca1592c0dfc974a5fc39f470a6b7bae40da239e3e19bd0752017735acbca"
 
 [windows.msvc]
-verified = false
+# "Visual Studio Enterprise 2022 | 17.14.37806.7" in the image report.
+visual_studio = "17.14.37806.7"
+# The report lists neither the default toolset nor `cl`'s version.
+toolset = { verified = false }
+cl = { verified = false }
 
 [macos.cmake]
 version = "4.4.4"
 sha256 = "4b7b73704b1db9b374e5c9ab8e17ac6148b817b6396ee75cd94a852cbac9d305"
 
 [macos.xcode]
-verified = false
+# "26.6 (default) | 17F113" in the image report.
+version = "26.6"
+build = "17F113"
+# The report lists "Clang/LLVM 21.0.0", not the full version line.
+clang = { verified = false }
 
+# From Xcode 26 the Metal toolchain is a component of its own, and the report does not list it.
 [macos.metal]
 verified = false

@@ -26,6 +26,10 @@ blake3.workspace = true
 # YAML: the workflows and composite actions under `.github/`, which `workflows` checks against
 # RFC-0062 §12.4 (QUAL-E1-T09).
 yaml-rust2.workspace = true
+# SHA-256 for the toolchain archives `toolchains-windows` and `toolchains-macos` fetch: the
+# publishers list SHA-256 digests (QUAL-E16-T30). The workspace's version, already in the build
+# through `syntropy-manifest`.
+sha2.workspace = true
 
 [dev-dependencies]
 # The cache cap property of QUAL-E7-T05 (pre-approved crate).

@@ -13,6 +13,9 @@
 //!   release and each component's checksum;
 //! - `ci/arch-sets.toml` parses, and its `pr` profile lists `sm_89` (R-ADA, the M0 rig) and no
 //!   PTX.
+//!
+//! `cargo xtask ci toolchains-linux` builds the image and prints its tools here; the Windows and
+//! macOS jobs, which check the hosted runners' tools, are in [`hosted`] (QUAL-E16-T30).
 
 use std::fs;
 use std::path::Path;
@@ -21,6 +24,10 @@ use std::process::Command;
 use serde::Deserialize;
 
 use crate::run::Context;
+
+mod hosted;
+
+pub use hosted::{macos_step, windows_step};
 
 /// The pins file, relative to the workspace root.
 pub const TOOLCHAINS: &str = "ci/toolchains.toml";
@@ -91,15 +98,38 @@ struct Component {
 struct Windows {
     cmake: Cmake,
     cuda: Cuda,
-    msvc: Unpinned,
+    msvc: Msvc,
+}
+
+/// The MSVC toolchain of the hosted Windows image.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Msvc {
+    /// Visual Studio's `installationVersion`, as the image report lists it.
+    visual_studio: String,
+    /// The default MSVC toolset, `Microsoft.VCToolsVersion.default.txt`.
+    toolset: Unpinned,
+    /// The version in `cl`'s banner.
+    cl: Unpinned,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Macos {
     cmake: Cmake,
-    xcode: Unpinned,
+    xcode: Xcode,
     metal: Unpinned,
+}
+
+/// The default Xcode of the hosted macOS image.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Xcode {
+    /// As `xcodebuild -version` and the image report give it.
+    version: String,
+    build: String,
+    /// What follows `Apple clang version` in `xcrun clang --version`.
+    clang: Unpinned,
 }
 
 /// A pin that only the hosted runner's report can fill in.
@@ -177,8 +207,9 @@ pub fn check(toolchains: &str, dockerfile: &str, arch_sets: &str) -> Vec<String>
                 }
             }
             for (name, pin) in [
-                ("windows.msvc", &t.windows.msvc),
-                ("macos.xcode", &t.macos.xcode),
+                ("windows.msvc.toolset", &t.windows.msvc.toolset),
+                ("windows.msvc.cl", &t.windows.msvc.cl),
+                ("macos.xcode.clang", &t.macos.xcode.clang),
                 ("macos.metal", &t.macos.metal),
             ] {
                 if pin.verified == pin.version.is_none() {
@@ -672,13 +703,14 @@ ldd (Ubuntu GLIBC 2.35-0ubuntu3.15) 2.35
     fn an_unverified_pin_with_a_value_is_refused() {
         let (t, d, a) = real();
         let bad = t.replace(
-            "[windows.msvc]\nverified = false",
-            "[windows.msvc]\nverified = false\nversion = \"14\"",
+            "[macos.metal]\nverified = false",
+            "[macos.metal]\nverified = false\nversion = \"1\"",
         );
+        assert_ne!(bad, t);
         assert!(
             check(&bad, &d, &a)
                 .iter()
-                .any(|p| p.contains("windows.msvc"))
+                .any(|p| p.contains("macos.metal"))
         );
     }
 
