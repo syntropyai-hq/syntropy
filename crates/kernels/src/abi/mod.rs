@@ -63,7 +63,9 @@ pub const MAGIC: [u8; 8] = *b"SYNPROV1";
 /// The one symbol a provider library exports.
 pub const ENTRY_SYMBOL: &str = "syntropy_provider_entry_v1";
 
-/// The ELF version node the Linux version script exports the entry symbol under.
+/// The ELF version node the Linux version script exports the entry symbol under:
+/// `ci/link/provider.map`, which `ci/link/provider-cc` passes to the
+/// linker in place of rustc's anonymous script (COMP-E9-T19).
 pub const VERSION_NODE: &str = "SYNTROPY_PROVIDER_1";
 
 /// The signature of the entry symbol.
