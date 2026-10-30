@@ -3,27 +3,32 @@
 //! Serde round trips of the provider data types (COMP-E1-T01, RFC-0040 §2.2).
 //!
 //! Every data type goes through JSON and back unchanged. JSON stands in for any
-//! self-describing format; the property is serde's, not the format's. `ProviderId` and
-//! `ProviderBuild` hold `&'static str`, so they decode only from input that lives for the
-//! whole program and holds the name unescaped; the helper leaks each encoding to give it that
-//! lifetime.
+//! self-describing format; the property is serde's, not the format's. Each decode reads a
+//! buffer that is dropped afterwards, through `DeserializeOwned`, so no type needs input that
+//! lives for the whole program: `ProviderId` and `ProviderBuild`'s names are owned when decoded
+//! (COMP-E13-T15).
 
 use std::borrow::Cow;
 use std::fmt::Debug;
 
 use proptest::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
 use syntropy_core::resource::{AppleGpuFamily, DeviceKind, GgmlBackend, PciAddress};
 use syntropy_core::{Blake3, Bytes, Domain, ErrorClass};
 use syntropy_kernels::*;
 
+/// Encodes `value`, decodes it from a buffer that is dropped before the comparison, and checks
+/// the two are equal. `DeserializeOwned` admits no type that borrows from its input, so every
+/// type here decodes with no `'static` input (COMP-E13-T15).
 fn round_trip<T>(value: &T) -> Result<(), TestCaseError>
 where
-    T: Serialize + Deserialize<'static> + PartialEq + Debug,
+    T: Serialize + DeserializeOwned + PartialEq + Debug,
 {
-    let json: &'static str = String::leak(serde_json::to_string(value).expect("encodes"));
-    let back: T = serde_json::from_str(json).expect("decodes");
+    let json = serde_json::to_string(value).expect("encodes");
+    let back: T = serde_json::from_str(&json).expect("decodes");
+    drop(json);
     prop_assert_eq!(&back, value);
     Ok(())
 }
