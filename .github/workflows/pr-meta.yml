@@ -17,7 +17,7 @@
 # on every PR event: a job skipped on a label event would post a passing check over a failing one.
 #
 # The same rules as `pr.yml` hold: read-only permissions, actions pinned by SHA, hosted runners
-# only.
+# or the build host behind its gate (ADR-0625) only.
 
 name: pr-meta
 
@@ -40,7 +40,7 @@ defaults:
 
 jobs:
   dco:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -79,7 +79,7 @@ jobs:
           --commits "$RUNNER_TEMP/commits.json"
 
   pr-title:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -132,7 +132,7 @@ jobs:
           --version-file "$GITHUB_WORKSPACE/version.txt"
 
   dep-diff:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -242,7 +242,7 @@ jobs:
   # A property removed from `ci/properties.toml` needs a reason in the PR description (RFC-0060
   # §3.2; QUAL-E3-T05). It judges the description, so it is here and re-runs on every edit.
   properties-removal:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 15
     permissions:
       contents: read

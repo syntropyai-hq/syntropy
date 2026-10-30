@@ -2,8 +2,8 @@
 
 # The job image of the Linux build host (ADR-0625). Each job runs in a fresh container of this
 # image, as an ephemeral runner from a single-use just-in-time configuration, and the container is
-# removed when the job ends. The image has what `pr.yml`'s Linux jobs expect from `ubuntu-24.04`:
-# git, a C toolchain, Python 3, curl, `ip`, sudo and rustup. The toolchain `rust-toolchain.toml`
+# removed when the job ends. The image has what the workflows' Linux jobs expect from `ubuntu-24.04`:
+# git, a C toolchain, Python 3, curl, `ip`, sudo, the GitHub CLI and rustup. The toolchain `rust-toolchain.toml`
 # pins is installed here, so a job's `setup-rust` step finds it and downloads nothing.
 #
 # Build it from the repository root, so `rust-toolchain.toml` is in the context:
@@ -16,6 +16,8 @@ FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce
 # correctness; bump both together.
 ARG RUNNER_VERSION=2.338.2
 ARG RUNNER_SHA256=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
 ARG RUSTUP_VERSION=1.29.2
 ARG RUSTUP_SHA256=5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4
 
@@ -25,6 +27,15 @@ RUN apt-get update \
       build-essential ca-certificates curl git iproute2 jq pkg-config python3 sudo tar unzip \
       xz-utils zstd \
  && rm -rf /var/lib/apt/lists/*
+
+# The GitHub CLI, which `ci-gate`, the `pr-meta.yml` jobs and `dep-approval.yml` call.
+RUN curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 \
+      --output /tmp/gh.tar.gz \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+ && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum --check --strict \
+ && tar -xzf /tmp/gh.tar.gz -C /tmp \
+ && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+ && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_amd64"
 
 # The job user. Passwordless sudo, as on a hosted runner: `hosted-test` adds a second OS account
 # for the IPC peer test. The container is unprivileged and removed after the job, so sudo reaches
@@ -43,7 +54,7 @@ RUN curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --re
  && rm -rf /var/lib/apt/lists/* \
  && chown -R runner:runner /home/runner
 
-# The job-started hook refuses any job but `pr.yml` on a PR from a branch of this repository
+# The job-started hook refuses any job but this repository's workflows, and any fork's PR
 # (ADR-0625 decision 6). Root owns it, and the runner runs it before the job's first step.
 COPY --chmod=0755 ci/build-host/job-started.sh /opt/build-host/job-started.sh
 ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/build-host/job-started.sh

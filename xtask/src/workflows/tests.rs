@@ -290,6 +290,7 @@ fn the_build_host_is_reached_only_through_its_gate() {
         "vars.SYNTROPY_BUILD_HOST == 'on'",
         "github.event.pull_request.head.repo.full_name == github.repository",
         "(vars.SYNTROPY_BUILD_HOST == 'on' || github.event.pull_request.head.repo.full_name == github.repository)",
+        "(vars.SYNTROPY_BUILD_HOST == 'on' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))",
     ] {
         let runs_on = format!("${{{{ {gate} && 'syntropy-build' || 'ubuntu-24.04' }}}}");
         assert_one(

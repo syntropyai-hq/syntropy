@@ -26,7 +26,7 @@
 //! **The build host.** One other computed form is read: `${{ (<gate>) && <a> || <b> }}`, where
 //! `<gate>` is exactly [`BUILD_HOST_GATE`] (runs of whitespace aside) and `<a>` and `<b>` are each
 //! a quoted label or `matrix.<key>`. Only `<a>` may yield [`BUILD_HOST_LABEL`]; `<b>`, the label a
-//! fork's PR and every other event get, is checked like any plain label. Both are checked for lab
+//! fork's PR gets, is checked like any plain label. Both are checked for lab
 //! labels.
 //!
 //! **PR checkouts.** The rule allows only what it knows is safe. A step that is `actions/checkout`
@@ -120,11 +120,13 @@ const LAB_LABELS: &[&str] = &[
 /// host is not a rig, and it runs builds and hardware-independent suites only.
 pub const BUILD_HOST_LABEL: &str = "syntropy-build";
 
-/// When a job may run on the build host: the repository variable that switches it on, and a pull
-/// request from a branch of this repository. A fork's PR, a merge group and every other event get
-/// the fallback label, and so does every run while the variable is not `on` (ADR-0625).
+/// When a job may run on the build host: the repository variable that switches it on, and an
+/// event with no pull request in its payload or a pull request from a branch of this repository.
+/// A fork's PR gets the fallback label, and so does every run while the variable is not `on`
+/// (ADR-0625, revised 2026-10-31).
 pub const BUILD_HOST_GATE: &str = "vars.SYNTROPY_BUILD_HOST == 'on' && \
-                                   github.event.pull_request.head.repo.full_name == github.repository";
+                                   (!github.event.pull_request || \
+                                   github.event.pull_request.head.repo.full_name == github.repository)";
 
 /// Prefixes of lab labels, matched without case.
 const LAB_PREFIXES: &[&str] = &[

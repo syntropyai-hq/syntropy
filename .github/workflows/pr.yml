@@ -12,9 +12,9 @@
 # - every action is pinned by its full commit SHA;
 # - every job runs on a standard hosted runner, never on a lab label: lab jobs run only in
 #   `lab.yml`, through the lab dispatcher. The one exception is the Linux build host (ADR-0625):
-#   a job may name `syntropy-build` only in the gated form below, which sends a PR from a branch
-#   of this repository there while the `SYNTROPY_BUILD_HOST` variable is `on`, and every fork's
-#   PR, merge group and other run to the hosted label. The workflow lint checks the form;
+#   a job may name `syntropy-build` only in the gated form below, which sends every run but a
+#   fork's PR there while the `SYNTROPY_BUILD_HOST` variable is `on`, and a fork's PR to the
+#   hosted label. The workflow lint checks the form;
 # - `ci-gate` waits for every other job, and a new job is added to its `needs`.
 
 name: pr
@@ -43,7 +43,7 @@ jobs:
   # cannot make it list nothing and skip every job (note 2026-10-22). It reads the PR's files
   # through git, as data: none of the PR's code runs in this job.
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 15
     outputs:
       jobs: ${{ steps.jobs.outputs.jobs }}
@@ -104,7 +104,7 @@ jobs:
   lint:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'lint')
-    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'syntropy-build' || 'ubuntu-24.04' }}
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -143,7 +143,7 @@ jobs:
           - os: windows
             runner: windows-2025
             build-host: windows-2025
-    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && matrix.build-host || matrix.runner }}
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && matrix.build-host || matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,7 +177,7 @@ jobs:
           - os: windows
             runner: windows-2025
             build-host: windows-2025
-    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && matrix.build-host || matrix.runner }}
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && matrix.build-host || matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -270,7 +270,7 @@ jobs:
   hosted-l3:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-l3')
-    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'syntropy-build' || 'ubuntu-24.04' }}
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -288,7 +288,7 @@ jobs:
   hosted-parity-nano:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-parity-nano')
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - name: No nano parity suite yet
@@ -323,7 +323,7 @@ jobs:
   ci-gate:
     needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano, toolchains-linux]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 15
     permissions:
       contents: read
