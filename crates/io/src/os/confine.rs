@@ -64,7 +64,9 @@ mod imp {
 
     use super::Limits;
 
-    fn set(resource: libc::c_int, value: u64) -> io::Result<()> {
+    /// Sets `resource`'s soft and hard limits to `value`. A failure names the resource, so a
+    /// platform that refuses one says which.
+    fn set(name: &str, resource: libc::c_int, value: u64) -> io::Result<()> {
         let limit = libc::rlimit {
             rlim_cur: value as libc::rlim_t,
             rlim_max: value as libc::rlim_t,
@@ -75,20 +77,32 @@ mod imp {
         if rc == 0 {
             Ok(())
         } else {
-            Err(io::Error::last_os_error())
+            let e = io::Error::last_os_error();
+            Err(io::Error::new(
+                e.kind(),
+                format!("setrlimit({name}, {value}): {e}"),
+            ))
         }
     }
 
     pub(super) fn limit(limits: &Limits) -> io::Result<()> {
         // No core dump of hostile content.
-        set(libc::RLIMIT_CORE as libc::c_int, 0)?;
+        set("RLIMIT_CORE", libc::RLIMIT_CORE as libc::c_int, 0)?;
         #[cfg(target_os = "linux")]
-        set(libc::RLIMIT_AS as libc::c_int, limits.memory)?;
+        set("RLIMIT_AS", libc::RLIMIT_AS as libc::c_int, limits.memory)?;
         // macOS does not enforce RLIMIT_AS; the data segment is what it does enforce.
         #[cfg(target_os = "macos")]
-        set(libc::RLIMIT_DATA, limits.memory)?;
-        set(libc::RLIMIT_CPU as libc::c_int, limits.cpu_secs)?;
-        set(libc::RLIMIT_NOFILE as libc::c_int, limits.open_files)?;
+        set("RLIMIT_DATA", libc::RLIMIT_DATA, limits.memory)?;
+        set(
+            "RLIMIT_CPU",
+            libc::RLIMIT_CPU as libc::c_int,
+            limits.cpu_secs,
+        )?;
+        set(
+            "RLIMIT_NOFILE",
+            libc::RLIMIT_NOFILE as libc::c_int,
+            limits.open_files,
+        )?;
         Ok(())
     }
 
