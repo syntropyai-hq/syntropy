@@ -396,6 +396,41 @@ fn memoryless_node_has_no_host_tiers() {
     assert_eq!(t.pools, vec![pool(0, 1, DUAL_N0, DUAL_N0)]);
 }
 
+/// With node 0 memoryless the host has no domain 0, so a GPU whose NUMA node is unknown, or
+/// is node 0, attaches to the lowest domain, 1. Ordinals: GPUs 0 and 1, CPUs 2 and 3; `Vram`
+/// 0 and 1, then domain 1's pair at 2 and 3.
+#[test]
+fn without_domain_0_gpus_attach_to_the_lowest_domain() {
+    let mut tree = Tree::new("dual-socket");
+    tree.set(
+        "sys/devices/system/node/node0/meminfo",
+        "Node 0 MemTotal: 0 kB\nNode 0 MemFree: 0 kB\n",
+    );
+    let host = tree.host();
+    assert_eq!(host.mem.len(), 1);
+    let gpus = [gpu(0x17, None), gpu(0x65, Some(0))];
+    let t = build(HostOs::Linux, &host, &gpus, &[]).unwrap();
+    assert_eq!(t.tiers, pair(2, &host.mem[0], DUAL_N1, DUAL_N1, &[0, 1, 3]));
+    assert_eq!(t.pools, vec![pool(1, 2, DUAL_N1, DUAL_N1)]);
+}
+
+/// An integrated GPU without a unified pool of its own (no `Unified` tier) computes on host
+/// memory, so it is in its domain's affinity like a discrete GPU. Ordinals: the iGPU 0, CPU
+/// 1; no `Vram` tier, so the pair is at 0 and 1.
+#[test]
+fn integrated_gpu_is_in_the_affinity() {
+    let host = linux("desktop");
+    let igpu = DeviceCandidate {
+        kind: DeviceKind::IntegratedGpu,
+        ..gpu(0x00, None)
+    };
+    let t = build(HostOs::Linux, &host, &[igpu], &[]).unwrap();
+    for tier in &t.tiers {
+        assert_eq!(tier.affinity.as_slice(), &[dev(0), dev(1)]);
+    }
+    assert_eq!(t.pools, vec![pool(0, 0, DESKTOP_USABLE, 8 * MIB)]);
+}
+
 /// Criterion 2: a kernel without NUMA (no `sys/devices/system/node`) is one domain, whose
 /// estimate comes from `/proc/meminfo`: (241_002_316 + 3_100_456 + 4_091_976 + 1_011_160)
 /// KiB − 1 GiB = 254_113_107_968, above host_usable.
@@ -651,6 +686,12 @@ fn own_memory_is_added_back_per_domain() {
     // Node 0's estimate + 4 GiB, below host_usable + 4 GiB. Node 1 is unchanged.
     let (n0, n1) = (DUAL_N0 + 4 * GIB, DUAL_N1);
     assert_eq!(t.pools, vec![pool(0, 0, n0, n0), pool(1, 2, n1, n1)]);
+
+    // Where `host_usable` binds, only the host-wide add-back raises it: the desktop's
+    // DESKTOP_USABLE + 1 GiB = 23_526_256_640, below node 0's 23_918_186_496 + 1 GiB.
+    let host = linux("desktop");
+    let t = build(HostOs::Linux, &host, &[], &[(0, Bytes(GIB))]).unwrap();
+    assert_eq!(single(&t), (8 * MIB, 23_526_256_640));
 
     // In a cgroup v2 container, `own` is added back to the cgroup headroom as well.
     let host = linux("docker");

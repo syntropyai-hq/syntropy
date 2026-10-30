@@ -142,7 +142,7 @@ pub fn host_tiers(inputs: &HostTierInputs<'_>) -> Result<HostTiers, HostTierErro
     let home = |numa: Option<u16>| -> Option<u16> {
         match numa {
             Some(n) if domains.contains(&n) => Some(n),
-            _ if domains.contains(&0) => Some(0),
+            // `domains` is sorted, so this is domain 0 when the host has one.
             _ => domains.first().copied(),
         }
     };
