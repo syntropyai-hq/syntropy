@@ -59,8 +59,10 @@ const BETA: u64 = 1_000_000;
 const STEP: u64 = BETA / 20;
 const BURST: u64 = 16 * 1024;
 
-/// One test at a time: each runs two `net` domains and sends without pause, and on a small
-/// host several at once can starve a domain's thread past the ack timeout of its channels.
+/// One test at a time, a test workaround for #2005: a stream channel faults when its `net`
+/// domain's thread is starved for about 12 ms with no α sample, and these tests each run two
+/// domains and send without pause, so several at once on a small host can starve one. Remove it
+/// once #2005 is fixed.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial() -> MutexGuard<'static, ()> {
@@ -227,6 +229,12 @@ struct Tcp {
 
 impl Tcp {
     fn new() -> Tcp {
+        Tcp::with_alpha(Nanos(1_000_000))
+    }
+
+    /// A pair whose channels start from an α p99 of `alpha_p99`, so their first ack timeout is
+    /// four times it (RFC-0031 §7.3).
+    fn with_alpha(alpha_p99: Nanos) -> Tcp {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -240,7 +248,7 @@ impl Tcp {
             seed: [seed; 32],
             auth: Arc::new(AnyPeer),
             capabilities: 0,
-            alpha_p99: Nanos(1_000_000),
+            alpha_p99,
             handshake_timeout: Duration::from_secs(5),
         };
         let bind = |domain: &NetDomain, seed| {
@@ -316,6 +324,11 @@ struct Edge<P> {
 
 impl<P: Pair> Edge<P> {
     fn open(pair: P) -> Edge<P> {
+        Edge::open_with(pair, ChannelPurpose::Bulk)
+    }
+
+    /// The edge with its bulk channel of `bulk`, `Bulk` or `Replay`.
+    fn open_with(pair: P, bulk: ChannelPurpose) -> Edge<P> {
         let send_pool = BufferPool::heap(PoolId(1), PAYLOAD as usize, 512).expect("a send pool");
         pair.register(true, &send_pool);
         let mut next_pool = 2;
@@ -332,7 +345,7 @@ impl<P: Pair> Edge<P> {
                 pool,
                 slot_size: Bytes(SLOT as u64),
                 recv_slots,
-                priority: if purpose == ChannelPurpose::Bulk {
+                priority: if matches!(purpose, ChannelPurpose::Bulk | ChannelPurpose::Replay) {
                     ChannelPriority::Bulk
                 } else {
                     ChannelPriority::Data
@@ -350,7 +363,7 @@ impl<P: Pair> Edge<P> {
             (sender.expect("A's end"), receiver.expect("B's end"))
         };
         let (data, data_in) = open(ChannelPurpose::Activations, 8);
-        let (bulk, bulk_in) = open(ChannelPurpose::Bulk, BULK_SLOTS);
+        let (bulk, bulk_in) = open(bulk, BULK_SLOTS);
         Edge {
             pair,
             data,
@@ -565,6 +578,63 @@ fn unpaced_bulk_is_not_held(pair: impl Pair) {
     let (sent, held) = edge.send_until_paced(frames, MonoTime(0));
     assert_eq!((sent, held), (frames, None), "unpaced");
     assert_eq!(edge.bulk.paced_until(), None);
+}
+
+/// A `Replay` channel is paced as a `Bulk` one is: at one instant of the clock it sends within
+/// the burst, then the pacer holds it until a later time.
+fn replay_is_paced(pair: impl Pair) {
+    let mut edge = Edge::open_with(pair, ChannelPurpose::Replay);
+    let (_clock, handle) = clock();
+    edge.pair
+        .pacing()
+        .pace(&edge.pair.peer(), config(Nanos(1_000_000_000)), handle);
+    let (sent, held) = edge.send_until_paced((4 * BURST / FRAME) as usize, MonoTime(0));
+    assert_eq!(sent as u64, BURST / FRAME, "the burst's whole frames go");
+    assert!(held.is_some_and(|when| when > MonoTime(0)), "{held:?}");
+    assert_eq!(edge.bulk.paced_until(), held);
+}
+
+/// The stream driver sends a batched receiver's held-back credit when it goes idle (RFC-0031
+/// §7.1, note of 2026-10-31): one bulk frame, a sixteenth of a batch, is acknowledged without a
+/// resend, well before its 400 ms ack timeout. Without it, the frame is acknowledged only after
+/// the ack timeout sends it again.
+#[test]
+fn tcp_an_idle_receiver_acknowledges_a_sparse_bulk_frame() {
+    let _serial = serial();
+    let mut edge = Edge::open(Tcp::with_alpha(Nanos(100_000_000)));
+    edge.send(true).expect("one bulk frame");
+    let start = Instant::now();
+    let deadline = start + PATIENCE;
+    while edge.bulk.completed().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the frame was never acknowledged"
+        );
+        while edge.bulk_in.try_recv().is_some() {}
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        edge.bulk.stats().retransmits,
+        0,
+        "acknowledged without a resend"
+    );
+    assert!(
+        start.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn quic_replay_is_paced() {
+    let _serial = serial();
+    replay_is_paced(Quic::new());
+}
+
+#[test]
+fn tcp_replay_is_paced() {
+    let _serial = serial();
+    replay_is_paced(Tcp::new());
 }
 
 #[test]

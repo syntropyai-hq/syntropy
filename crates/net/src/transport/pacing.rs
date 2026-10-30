@@ -40,6 +40,12 @@
 //!   channel's `net` task, as the frame that gave it lands.
 //! - The pacer reads one [`Clock`], the one `pace` was given: the dispatcher's sends and the
 //!   `net` task's samples are on one timeline, and a test can drive it by hand.
+//! - **Resends are not paced.** The gate is `try_send`, as RFC-0031 §7.5 and DIST-E7-T25 place
+//!   it, so a frame's bytes are charged once, when it is first sent. A resend after an ack
+//!   timeout or a NACK (§7.3) goes from the channel core in the `net` task, unpaced. On QUIC and
+//!   TCP the transport repairs packet loss below the channel, so a resend is rare, and a batched
+//!   receiver's credit on idle (§7.1, note of 2026-10-31) keeps a sparse paced sender from
+//!   resending at every ack timeout.
 //! - The edge's state sits behind a mutex that only bulk sends, α samples and the owner's calls
 //!   take, each for one pacer step. A bulk send never waits on it: if the `net` task holds it,
 //!   the send returns `WouldBlock` and may go again at once. An edge that is not paced is one
