@@ -98,8 +98,42 @@ fn main() {
     c.files(c_files.iter().map(|f| root.join(f)));
     c.compile("syntropy_ggml_c");
     let mut cxx = configured(&root, &out, &arch, true);
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("set by cargo");
+    let static_stdlib = target_os == "linux" && !msvc;
+    if static_stdlib {
+        // The core binary needs no C++ runtime library on Linux (rule 7 refuses `libstdc++`):
+        // the GNU C++ runtime is linked statically, as its GCC Runtime Library Exception
+        // allows. `cc` would otherwise ask for the shared `-lstdc++`.
+        cxx.cpp_link_stdlib(None);
+    }
     cxx.files(cxx_files.iter().map(|f| root.join(f)));
     cxx.compile("syntropy_ggml_cxx");
+    if static_stdlib {
+        link_static_stdlib(&cxx);
+    }
+}
+
+/// Links `libstdc++.a`, from the directory the C++ compiler itself names for it.
+fn link_static_stdlib(cxx: &cc::Build) {
+    let compiler = cxx.get_compiler();
+    let output = compiler
+        .to_command()
+        .arg("-print-file-name=libstdc++.a")
+        .output()
+        .expect("the C++ compiler runs");
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let dir = path
+        .parent()
+        .filter(|_| path.is_absolute() && path.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "syntropy-kernels-ggml: the C++ compiler names no libstdc++.a ({}); install the \
+                 static C++ runtime (libstdc++-dev)",
+                path.display()
+            )
+        });
+    println!("cargo:rustc-link-search=native={}", dir.display());
+    println!("cargo:rustc-link-lib=static=stdc++");
 }
 
 /// A `cc` build with ggml's include paths, definitions and Syntropy's flags.

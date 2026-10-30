@@ -1008,6 +1008,7 @@ ADR-0002 gives the ggml provider two jobs: coverage on every backend ggml suppor
   - `-fvisibility=hidden` and `-fvisibility-inlines-hidden`.
 
   An optional CPU sub-backend is left out, and the CPU backend's weight-repacking buffer type is not registered (`GGML_USE_CPU_REPACK` is not defined), so weights stay in their stored layout.
+- **No C++ runtime library on Linux.** The CPU backend is C++. So that the core needs no `libstdc++` (rule 7 refuses it), `build.rs` links the GNU C++ runtime statically, which the GCC Runtime Library Exception allows with no notice in the binary's `THIRD-PARTY-NOTICES`. On macOS, `libc++` is a system library. On Windows the build uses the Visual C++ runtime that the rest of the workspace links.
 - **The bindings.** `crates/kernels-ggml/src/bindings.rs` is generated once by a pinned `bindgen` and checked in, so a build needs no libclang. `ggml.lock` and the file's header record the version and the command.
 - **Hidden symbols are checked on the core binary.** `syntropy` links the copy, and `--version` reports its commit. Rule 7 of `cargo xtask ci build` fails if the binary exports any `ggml_` or `gguf_` symbol (ELF `.dynsym`, the PE export directory, the Mach-O external symbols). `crates/cli/tests/ggml_symbols.rs` checks that the binary does hold ggml's functions, local to it, so that check is never vacuous.
 
