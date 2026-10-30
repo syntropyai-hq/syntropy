@@ -55,7 +55,8 @@ impl HeaderKind {
 pub struct HeaderLimits {
     /// Memory: address space on Linux, and set but not confirmed enforced as process memory on
     /// Windows. Not set on macOS, which refuses the data-segment limit (`io::os::confine`); there
-    /// [`max_header_bytes`](Self::max_header_bytes) alone bounds the parse until DIST-E17-T08.
+    /// the child's memory is bounded only through [`max_header_bytes`](Self::max_header_bytes)
+    /// (about 4 to 5 copies of the header \[estimate\]) until DIST-E17-T08.
     /// Default 1 GiB \[target\]. At its peak the child
     /// holds about 4 to 5 copies of the header \[estimate: the reader's prefix, the bytes it
     /// sends and their re-validation\], so a header in the top fifth of

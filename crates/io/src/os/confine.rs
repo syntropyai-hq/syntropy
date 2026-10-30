@@ -40,7 +40,7 @@ pub struct Limits {
 /// What [`confine_self`] put in place, for the caller to report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Confined {
-    /// The resource limits are set.
+    /// The resource limits are set: on macOS, all but memory (module docs).
     pub limits: bool,
     /// New sockets are refused (Linux only, for now).
     pub network: bool,
