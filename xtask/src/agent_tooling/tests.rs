@@ -230,3 +230,45 @@ fn a_provenance_record_needs_the_observed_tooling() {
     let error = record_step(&context).unwrap_err();
     assert!(error.contains("needs `--observed`"), "{error}");
 }
+
+#[test]
+fn the_dco_step_checks_the_title_the_body_and_the_commits() {
+    let root = std::env::temp_dir().join(format!("syntropy-agent-tooling-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("ci")).unwrap();
+    std::fs::write(
+        root.join(LOCK),
+        format!(
+            "[[tool]]\nname = \"fixture-server\"\nkind = \"toolserver\"\nversion = \"4.7.2\"\n\
+             digest = \"{DIGEST_A}\"\nabout = \"a fixture\"\n"
+        ),
+    )
+    .unwrap();
+    let run = |title: &str, body: &str, message: &str| {
+        let event = root.join("event.json");
+        let commits = root.join("commits.json");
+        let pr = serde_json::json!({ "pull_request": {
+            "title": title, "body": body, "labels": [], "commits": 1 } });
+        std::fs::write(&event, pr.to_string()).unwrap();
+        let list = serde_json::json!([{ "sha": "0123456789abcdef", "commit": {
+            "author": { "name": "a", "email": "a@example.invalid" }, "message": message } }]);
+        std::fs::write(&commits, list.to_string()).unwrap();
+        let (event, commits) = (event.display().to_string(), commits.display().to_string());
+        commits_step(&Context {
+            root: root.clone(),
+            args: crate::cli::Args::from_pairs(&[("--event", &event), ("--commits", &commits)]),
+        })
+    };
+    let clean = run("chore: tidy", "", "chore: tidy");
+    let title = run("chore(deps): bump fixture-server 4.7.3", "", "chore: tidy");
+    let body = run(
+        "chore: tidy",
+        "Moves fixture-server to 4.7.3.",
+        "chore: tidy",
+    );
+    let commit = run("chore: tidy", "", "chore: bump fixture-server 4.7.3");
+    std::fs::remove_dir_all(&root).unwrap();
+    clean.unwrap();
+    assert!(title.unwrap_err().contains("the PR title"));
+    assert!(body.unwrap_err().contains("the PR body"));
+    assert!(commit.unwrap_err().contains("commit 0123456789ab"));
+}
