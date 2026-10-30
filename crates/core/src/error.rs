@@ -109,6 +109,20 @@ impl Domain {
             Self::Exec => "RFC-0012 §13",
         }
     }
+
+    /// Every domain, in declaration order. A table keyed by domain outside this crate, such as
+    /// the provider ABI's domain numbers (RFC-0040 §10.4), is checked against this list, since
+    /// `Domain` is `non_exhaustive` there. `tests/error_codes.rs` counts the variants through their
+    /// serde index and fails unless this list holds every one.
+    pub const ALL: [Self; 7] = [
+        Self::Cluster,
+        Self::Net,
+        Self::Dist,
+        Self::Recovery,
+        Self::Security,
+        Self::Kernels,
+        Self::Exec,
+    ];
 }
 
 /// A stable, machine-readable error code: `(Domain, u16)` (RFC-0001 §5.12). Codes are never

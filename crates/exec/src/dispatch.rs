@@ -70,8 +70,9 @@ pub enum PollOutcome {
         next_wake: Option<MonoTime>,
     },
     /// A sticky device error or a compute-pool failure. The runner reports it and exits with its
-    /// class (RFC-0012 §13). Every later pass returns it again.
-    Fault(Error),
+    /// class (RFC-0012 §13). Every later pass returns it again. Boxed, so the outcome of every
+    /// pass stays small: `core::Error` is RFC-0001 §5.12's struct with its fields inline.
+    Fault(Box<Error>),
 }
 
 /// How a thread parked inside a step can be woken for the step's next doorbell (RFC-0012 §3.3).
@@ -96,7 +97,7 @@ pub enum StepProgress {
     /// `DoorbellTimeout` (RFC-0040 §4.5 item 2, §13 code 11; RFC-0012 §7.6). The dispatcher
     /// hands the step to [`StepScheduler::abandoned`]. A device error the stage cannot survive is
     /// an `Err` from [`StepDevice::service`] instead.
-    Abandoned(Error),
+    Abandoned(Box<Error>),
     /// The step's next doorbell has not fired.
     Pending {
         /// When that doorbell is predicted.
@@ -290,7 +291,7 @@ where
 
     fn pass(&mut self, now: MonoTime) -> PollOutcome {
         if let Some(fault) = &self.fault {
-            return PollOutcome::Fault(fault.clone());
+            return PollOutcome::Fault(Box::new(fault.clone()));
         }
         // 1. Control and inbound, never blocking.
         let mut progress = self.scheduler.ingest(now);
@@ -313,7 +314,7 @@ where
                             StepProgress::Pending { expect, wake } => {
                                 flight.next = Some((expect, wake));
                             }
-                            StepProgress::Abandoned(error) => abandoned = Some(error),
+                            StepProgress::Abandoned(error) => abandoned = Some(*error),
                         }
                     }
                     Err(error) => return self.faulted(error),
@@ -372,7 +373,7 @@ where
     /// Keeps `error`, so every later pass returns it too.
     fn faulted(&mut self, error: Error) -> PollOutcome {
         self.fault = Some(error.clone());
-        PollOutcome::Fault(error)
+        PollOutcome::Fault(Box::new(error))
     }
 
     /// Whether a step is in flight.
