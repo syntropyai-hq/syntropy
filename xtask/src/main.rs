@@ -48,6 +48,7 @@ mod repo_settings;
 mod roster;
 mod run;
 mod runner_build_id;
+mod self_check;
 mod sim_presets;
 mod toolchain;
 mod toolchains;
