@@ -41,11 +41,13 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use syntropy_core::Entropy;
+use syntropy_core::resource::CapabilityProfile;
 
 use crate::crash::{CrashSink, HostKill};
 use syntropy_ipc::cmd::memory::MemoryStream;
 use syntropy_ipc::cmd::{
-    DaemonChannel, Hello, PROTOCOL, Refused, RunnerChannel, Stream, memory_channel, spawn_pair,
+    DaemonChannel, Hello, PROTOCOL, RecvError, Refused, RunnerChannel, RunnerMsg, Stream,
+    memory_channel, spawn_pair,
 };
 use syntropy_ipc::shm::{Region, ShmError, ShmLayout, Side};
 
@@ -610,6 +612,108 @@ fn spawn_with(
     drop(command);
     drop(child_end);
     Ok((spawned?, daemon_end))
+}
+
+/// Why a probe gave no profile (DIST-E1-T17).
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum ProbeFailure {
+    /// The probe process could not be spawned, or its channel built.
+    Spawn(io::Error),
+    /// The probe's `Hello` was refused; it was killed and reaped.
+    Refused(Refused),
+    /// The channel failed before `ProbeResult` arrived; the probe was killed and reaped.
+    Recv(RecvError),
+    /// The probe sent something other than `ProbeResult` after `Hello`; it was killed and reaped.
+    Unexpected,
+    /// The probe sent its profile but did not exit cleanly.
+    Exit(ExitStatus),
+    /// Waiting for the probe to exit failed.
+    Wait(io::Error),
+}
+
+impl std::fmt::Display for ProbeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProbeFailure::Spawn(e) => write!(f, "the probe could not be spawned: {e}"),
+            ProbeFailure::Refused(r) => write!(f, "the probe's handshake was refused: {r}"),
+            ProbeFailure::Recv(e) => write!(f, "the probe's channel failed: {e}"),
+            ProbeFailure::Unexpected => {
+                f.write_str("the probe sent a message other than ProbeResult")
+            }
+            ProbeFailure::Exit(s) => write!(f, "the probe exited with {s}"),
+            ProbeFailure::Wait(e) => write!(f, "waiting for the probe failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ProbeFailure {}
+
+/// Runs a probe process: re-executes `program` as `__runner --probe --ipc <handle>` with a
+/// command channel and no region (RFC-0001 §3.1; DIST-E1-T17), checks its `Hello` against
+/// `build_id`, takes its one `ProbeResult`, closes the channel and waits for it to exit.
+///
+/// The probe gets no `Init`, so it holds no plan, loads no model and admits no sequence. Its
+/// profile comes back as sent: the caller stamps `node` and `version`, in the merge RFC-0010 §3
+/// describes. A probe that sends anything else is killed and reaped. A probe that sends nothing
+/// blocks this call until it exits or closes its end; the daemon's deadline on a probe
+/// (RFC-0010 §8) is PLC-E3-T10's. A profile followed by a non-zero exit is an error, and the
+/// profile is dropped: a probe that crashed after reporting is not trusted.
+///
+/// # Errors
+///
+/// [`ProbeFailure`], as its variants say.
+pub fn probe_process(
+    program: &Path,
+    build_id: [u8; 32],
+    entropy: &dyn Entropy,
+) -> Result<CapabilityProfile, ProbeFailure> {
+    let mut command = Command::new(program);
+    command.arg("__runner").arg("--probe").stdin(Stdio::null());
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut command, CREATE_NO_WINDOW);
+    let (daemon_end, child_end) = spawn_pair(&mut command, entropy).map_err(ProbeFailure::Spawn)?;
+    command.arg("--ipc").arg(child_end.handle().to_string());
+    let spawned = command.spawn();
+    // As for a runner: the command and its hook go first, then the daemon's copy of the child's
+    // end, so the probe's exit closes the pair.
+    drop(command);
+    drop(child_end);
+    let mut child = spawned.map_err(ProbeFailure::Spawn)?;
+    let mut channel: DaemonChannel<Stream> = DaemonChannel::new(daemon_end);
+    if let Err(refused) = channel.handshake(&mut child, &build_id) {
+        // The handshake kills and reaps a refused probe; if its kill failed, try once more, so
+        // no child is left behind.
+        if refused.exit.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        return Err(ProbeFailure::Refused(refused));
+    }
+    let kill = |child: &mut Child| {
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    let profile = match channel.recv() {
+        Ok(envelope) => match envelope.msg {
+            RunnerMsg::ProbeResult { profile } => profile,
+            _ => {
+                kill(&mut child);
+                return Err(ProbeFailure::Unexpected);
+            }
+        },
+        Err(error) => {
+            kill(&mut child);
+            return Err(ProbeFailure::Recv(error));
+        }
+    };
+    drop(channel);
+    let status = child.wait().map_err(ProbeFailure::Wait)?;
+    if status.success() {
+        Ok(profile)
+    } else {
+        Err(ProbeFailure::Exit(status))
+    }
 }
 
 #[cfg(test)]
