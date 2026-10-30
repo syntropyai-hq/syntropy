@@ -38,10 +38,12 @@ docker rm --force "syntropy-build-$slot" >/dev/null 2>&1 || true
 
 # Public DNS: the network cannot reach the LAN resolver (egress.sh). Capabilities: every one is
 # dropped, then the job gets back only what sudo, `useradd` and the IPC peer test need, and
-# `SYS_NICE`, with which Docker's default seccomp profile allows `mbind` for `syntropy-tier`'s
-# NUMA tests; each reaches only the container's own namespaces. No `NET_RAW`, so a job cannot
-# forge packets on the bridge. The configuration reaches the container through the environment,
-# by name, not through docker's arguments.
+# `SYS_NICE` for `mbind` in `syntropy-tier`'s NUMA tests; each reaches only the container's own
+# namespaces. No `NET_RAW`, so a job cannot forge packets on the bridge. No seccomp filter, as on
+# a hosted runner: `syntropy-io`'s io_uring seccomp test installs its own filter and needs an
+# unfiltered process for its control, and Docker's default profile also blocks io_uring. AppArmor
+# stays on. The configuration reaches the container through the environment, by name, not
+# through docker's arguments.
 export JITCONFIG="$jit"
 exec docker run --rm --init \
   --name "syntropy-build-$slot" \
@@ -50,7 +52,7 @@ exec docker run --rm --init \
   --cap-drop ALL \
   --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID \
   --cap-add KILL --cap-add AUDIT_WRITE --cap-add SYS_NICE \
-  --security-opt apparmor=docker-default \
+  --security-opt apparmor=docker-default --security-opt seccomp=unconfined \
   --memory "$memory" --memory-swap "$memory" --pids-limit 16384 \
   --env JITCONFIG \
   "$image"
