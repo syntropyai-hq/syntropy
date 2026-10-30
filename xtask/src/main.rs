@@ -38,6 +38,7 @@ mod determinism;
 mod fixtures;
 mod hot_threads;
 mod instructions;
+mod ledger;
 mod licences;
 mod loom;
 mod orphan_rule;

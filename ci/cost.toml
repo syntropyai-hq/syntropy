@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The CI cost ledger (RFC-0062 §3.1, "Performance model and budgets", Ledger; QUAL-E1-T13).
+#
+# One `[[resource]]` table per billed or budgeted resource, with its reason:
+#
+#   kind   = "hosted"         # "hosted", "larger-runner" or "storage"
+#   name   = "..."            # the runner label for "larger-runner", the bucket for "storage"
+#   reason = "..."            # why the project spends it
+#
+# `cargo xtask ci lint` (its `cost` step) fails when a workflow uses a larger-runner label with no
+# `larger-runner` entry here, and when anything under `.github/` or `ci/` reads the ledger.
+#
+# The ledger is an operational report. It never stops a job: no workflow, dispatcher rule or agent
+# run definition reads a total from it. A runaway agent run is bounded by the agent sandbox and its
+# wall-clock limit (RFC-0062 §12.5; QUAL-E2-T11).
+#
+# `cargo xtask ci cost-report` builds the monthly report from the Actions API job listings and the
+# bucket, cache and lab metrics. A line that grew by more than 20% over the previous month needs a
+# `[[note]]` here for that line and month:
+#
+#   [[note]]
+#   line  = "storage/results"   # the report's line key
+#   month = "2026-10"
+#   text  = "why it grew"
+
+[[resource]]
+kind = "hosted"
+name = "standard-hosted-runners"
+reason = "every PR job and the nightly hosted jobs run on standard hosted runners, which carry no per-minute charge on a public repository (RFC-0062, Hosted runners); their minutes are reported to watch the budgets of §2.3"
+
+# No larger runner is in use. A workflow that adds one adds its `kind = "larger-runner"` entry in
+# the same change, with the reason RFC-0062 §3.1 requires.
+
+[[resource]]
+kind = "storage"
+name = "artefacts"
+reason = "per-commit builds at rig architectures for bisection, kept 30 days, and nightly builds, kept 30 days (RFC-0062, Storage)"
+
+[[resource]]
+kind = "storage"
+name = "kcache"
+reason = "the kernel object cache, pruned of objects unused for 90 days (ADR-0623; RFC-0062, Storage)"
+
+[[resource]]
+kind = "storage"
+name = "fixtures"
+reason = "fixtures and references that rigs read on every job (RFC-0060; RFC-0062, Storage)"
+
+[[resource]]
+kind = "storage"
+name = "results"
+reason = "step traces and benchmark results over the retention window (RFC-0061; RFC-0062, Storage)"

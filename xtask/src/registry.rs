@@ -25,7 +25,7 @@ use std::process::Command;
 use crate::run::Context;
 use crate::{
     cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
-    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
+    hot_threads, instructions, ledger, loom, orphan_rule, plan_tools, properties, repo_settings,
     runner_build_id, sim_presets, toolchain, toolchains,
 };
 
@@ -304,6 +304,15 @@ pub const JOBS: &[Entry] = &[
                     run: instructions::step,
                 },
             },
+            // The cost ledger of RFC-0062 §3.1 (QUAL-E1-T13).
+            Step {
+                name: "cost",
+                action: Action::Builtin {
+                    shown: "ci/cost.toml is well formed, every larger-runner label has an entry, \
+                            and nothing reads the ledger to stop a job",
+                    run: ledger::lint_step,
+                },
+            },
             // The rig inventory of RFC-0061 §6.3 (QUAL-E15-T01).
             Step {
                 name: "rigs",
@@ -558,6 +567,66 @@ pub const JOBS: &[Entry] = &[
                 },
             },
         ],
+        pending: &[],
+    },
+    // The monthly cost report (QUAL-E1-T13). It makes no network call: the workflow that runs it
+    // records the Actions API answers and the bucket metrics first.
+    Entry {
+        name: "cost-report",
+        summary: "the monthly CI cost report from recorded Actions API jobs and bucket metrics; \
+                  a line that grew over 20% without a note fails",
+        defined_in: "RFC-0062 §3.1 and \"Performance model and budgets\" (Ledger)",
+        params: &[
+            Param {
+                name: "--month",
+                value: "<YYYY-MM>",
+                help: "the month to report",
+                required: true,
+            },
+            Param {
+                name: "--jobs",
+                value: "<file>",
+                help: "the pages of GET /repos/{owner}/{repo}/actions/runs/{id}/jobs, as a JSON array",
+                required: true,
+            },
+            Param {
+                name: "--metrics",
+                value: "<file>",
+                help: "the month's lab hours, cache hit counts and bucket sizes, as JSON",
+                required: true,
+            },
+            Param {
+                name: "--previous",
+                value: "<file>",
+                help: "the previous month's totals, as --out wrote them",
+                required: false,
+            },
+            Param {
+                name: "--freeze",
+                value: "<file>",
+                help: "release-freeze windows, as `ci freeze --durations-out` writes them",
+                required: false,
+            },
+            Param {
+                name: "--cost",
+                value: "<file>",
+                help: "the ledger to read, ci/cost.toml by default",
+                required: false,
+            },
+            Param {
+                name: "--out",
+                value: "<file>",
+                help: "where to write this month's totals, for next month's --previous",
+                required: false,
+            },
+        ],
+        steps: &[Step {
+            name: "cost-report",
+            action: Action::Builtin {
+                shown: "the report, and each line with over 20% growth has a note",
+                run: ledger::report_step,
+            },
+        }],
         pending: &[],
     },
     // The removal half of the property registry (QUAL-E3-T05). It reads the PR description, so
@@ -1076,6 +1145,8 @@ mod tests {
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
                 "xtask: ci/agent-instructions.toml is well formed and CODEOWNERS owns every file it \
                  lists",
+                "xtask: ci/cost.toml is well formed, every larger-runner label has an entry, and \
+                 nothing reads the ledger to stop a job",
                 "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- rigs \
                  check",
                 "cargo run --quiet --locked --package syntropy-bench --bin syntropy-bench -- specs \

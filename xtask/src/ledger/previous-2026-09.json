@@ -1,0 +1,9 @@
+{
+  "month": "2026-09",
+  "lines": {
+    "hosted/lint": 5.0,
+    "larger/ubuntu-24.04-8core": 10.0,
+    "storage/artefacts": 440.0,
+    "storage/results": 90.0
+  }
+}
