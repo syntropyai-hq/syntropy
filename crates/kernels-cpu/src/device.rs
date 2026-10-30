@@ -305,9 +305,9 @@ impl Drop for CpuDevice {
 /// A caller's error the RFC-0040 §13 codes do not name, such as a handle from another device
 /// or a full ring: class `Internal`, code 0, which no RFC-0040 code uses.
 pub(crate) fn internal(message: String) -> Error {
-    Error {
-        class: ErrorClass::Internal,
-        code: ErrorCode(0),
+    Error::new(
+        ErrorClass::Internal,
+        ErrorCode::new(syntropy_core::Domain::Kernels, 0),
         message,
-    }
+    )
 }

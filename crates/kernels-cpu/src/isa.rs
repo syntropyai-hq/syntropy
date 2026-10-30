@@ -19,7 +19,7 @@
 //! kernels in v1, ADR-0402 item 4), is never reported.
 
 use syntropy_core::ErrorClass;
-use syntropy_kernels::{CpuIsa, DeviceFeatures, Error, ErrorCode};
+use syntropy_kernels::{CpuIsa, DeviceFeatures, Error};
 
 use crate::dispatch::DispatchTable;
 
@@ -490,27 +490,27 @@ pub fn table_for_class(class: CpuIsa, detected: &Detection) -> Result<DispatchTa
         && detected.isa != CpuIsa::X86V4Amx
         && let AmxPermission::Denied { errno } = detected.amx
     {
-        return Err(Error {
-            class: ErrorClass::Unsupported,
-            code: ErrorCode::AMX_DENIED,
-            message: format!(
+        return Err(Error::new(
+            ErrorClass::Unsupported,
+            syntropy_kernels::error::codes::AMX_DENIED,
+            format!(
                 "the device class is X86V4Amx, but the OS refused this process AMX tile \
                  permission (errno {errno}), so detection here gives {:?}; re-probe the node",
                 detected.isa
             ),
-        });
+        ));
     }
     if covers(detected.isa, class) {
         Ok(DispatchTable::for_level(class))
     } else {
-        Err(Error {
-            class: ErrorClass::Unsupported,
-            code: ErrorCode::OP_UNSUPPORTED,
-            message: format!(
+        Err(Error::new(
+            ErrorClass::Unsupported,
+            syntropy_kernels::error::codes::OP_UNSUPPORTED,
+            format!(
                 "the device class is {class:?}, but detection in this process gives {:?}; \
                  re-probe the node",
                 detected.isa
             ),
-        })
+        ))
     }
 }

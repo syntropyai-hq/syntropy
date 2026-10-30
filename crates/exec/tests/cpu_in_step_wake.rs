@@ -14,6 +14,11 @@
 //! predicted 100 ms out, far past the real 10 ms, so a park that a wake did not end would show
 //! as a timed-out park of about 100 ms. Every park must instead end with the wake.
 
+#![allow(
+    clippy::result_large_err,
+    reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
+)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;

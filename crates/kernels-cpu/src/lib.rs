@@ -24,6 +24,14 @@
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
 
 #![deny(clippy::undocumented_unsafe_blocks)]
+// `core::Error` is RFC-0001 §5.12's struct with its fields inline: 344 B [measured: `size_of`,
+// debug build, x86-64 Linux, `core` at ce2044ae, unchanged by COMP-E13-T15], over clippy's
+// 128-byte limit for an `Err`. An error is the cold path, and the Ok value of a `Result` is
+// written in place.
+#![allow(
+    clippy::result_large_err,
+    reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
+)]
 
 mod device;
 pub mod dispatch;
