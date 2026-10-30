@@ -3,9 +3,9 @@
 //! The maintainer-action queue (ADR-0021 decision 4, RFC-0062 §12.3; QUAL-E1-T17).
 //!
 //! The epic files hold the tasks, one table row each. A task whose task cell opens a human-only
-//! step with `**Maintainer action**:`, `**Maintainer action:**` or `**Maintainer action, ...**`
-//! is on the queue. A cell that only mentions the phrase, as in `is a **Maintainer action**
-//! (QUAL-E1-T26)`, is not. The state of each queued task comes from the completion records in
+//! step with `**Maintainer action**:`, `**Maintainer action:**` or `**Maintainer action, ...**`,
+//! or names the plural `**Maintainer actions**`, is on the queue. A cell that only mentions the
+//! singular phrase, as in `is a **Maintainer action** (QUAL-E1-T26)`, is not. The state of each queued task comes from the completion records in
 //! `governance/maintainer-actions.toml`:
 //!
 //! ```toml
@@ -60,7 +60,12 @@ pub fn marks_action(task_cell: &str) -> bool {
     const MARKER: &str = "**Maintainer action";
     task_cell.match_indices(MARKER).any(|(at, _)| {
         let rest = &task_cell[at + MARKER.len()..];
-        rest.starts_with("**:") || rest.starts_with(":**") || rest.starts_with(',')
+        // The plural `**Maintainer actions**` names the human-only steps a task defers to
+        // people (QUAL-E16-T20), so it queues the task; the bare singular mention does not.
+        rest.starts_with("**:")
+            || rest.starts_with(":**")
+            || rest.starts_with(',')
+            || rest.starts_with("s**")
     })
 }
 
@@ -335,8 +340,23 @@ Some prose with **Maintainer action**: here.
         let actions = queue(&[EPIC]);
         assert_eq!(
             ids(&actions),
-            ["QUAL-E1-T01", "QUAL-E1-T02", "QUAL-E1-T03", "QUAL-E1-T07"]
+            [
+                "QUAL-E1-T01",
+                "QUAL-E1-T02",
+                "QUAL-E1-T03",
+                "QUAL-E1-T07",
+                "QUAL-E1-T06"
+            ]
         );
+    }
+
+    #[test]
+    fn the_plural_form_queues_a_task_and_the_bare_mention_does_not() {
+        let plural = "| QUAL-E16-T20 | Tooling to build and test; the ceremonies themselves are \
+                      **Maintainer actions**); a re-sign | M0a |\n";
+        assert!(marks_action(plural));
+        assert_eq!(ids(&queue(&[plural])), ["QUAL-E16-T20"]);
+        assert!(!marks_action("is a **Maintainer action** (QUAL-E1-T26)"));
     }
 
     #[test]
