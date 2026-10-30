@@ -14,7 +14,8 @@
 //!   `--target`, the host's. Each kind builds into `asan/` or `tsan/` under the target directory.
 //!   A report makes the instrumented test binary fail, and the step with it.
 //! - **What each kind leaves out.** [`SKIPS`] lists the tests that cannot pass under any
-//!   sanitizer, each with its reason. AddressSanitizer runs with `detect_leaks=0`: leak checking
+//!   sanitizer, or need what `hosted-l3` lacks, each with its reason; the suite prints each.
+//!   AddressSanitizer runs with `detect_leaks=0`: leak checking
 //!   is not in RFC-0060 §3.4, and `net`'s frame tests leak their fixtures on purpose to borrow
 //!   them for `'static`. ThreadSanitizer reads [`TSAN_SUPPRESSIONS`], which says why each entry
 //!   is there. The caller's `ASAN_OPTIONS` and `TSAN_OPTIONS` are kept, with these added.
@@ -38,11 +39,18 @@ pub const PACKAGES: &[&str] = &[
 ];
 
 /// Tests left out of both sanitizer runs, by name, with why.
-pub const SKIPS: &[(&str, &str)] = &[(
-    "a_lock_within_memlock_is_taken_and_released",
-    "the sanitizer runtimes replace mlock and munlock with no-ops, so the locked size it checks \
-     in /proc/self/status never moves",
-)];
+pub const SKIPS: &[(&str, &str)] = &[
+    (
+        "a_lock_within_memlock_is_taken_and_released",
+        "the sanitizer runtimes replace mlock and munlock with no-ops, so the locked size it \
+         checks in /proc/self/status never moves",
+    ),
+    (
+        "cmd::tests::other_user::",
+        "connects from a second OS account, which `hosted-test` creates and `hosted-l3` does \
+         not; `hosted-test` runs it on every OS",
+    ),
+];
 
 /// ThreadSanitizer's suppressions, relative to the workspace root.
 pub const TSAN_SUPPRESSIONS: &str = "ci/tsan-suppressions.txt";
@@ -160,6 +168,9 @@ fn run(context: &Context, sanitizer: Sanitizer) -> Result<(), String> {
         pin.channel,
         args.join(" ")
     );
+    for (test, why) in SKIPS {
+        eprintln!("{}: notice: {test} does not run: {why}", sanitizer.name());
+    }
     let mut command = cargo(&pin, &context.root, sanitizer, sanitizer.name(), &[]);
     command.args(&args);
     if nightly::run(command, nightly::deadline())?.success {
@@ -267,6 +278,8 @@ mod tests {
                 "never",
                 "--skip",
                 "a_lock_within_memlock_is_taken_and_released",
+                "--skip",
+                "cmd::tests::other_user::",
             ]
         );
         assert_eq!(Sanitizer::Address.flag(), "-Zsanitizer=address");

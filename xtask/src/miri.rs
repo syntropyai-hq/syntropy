@@ -8,8 +8,8 @@
 //!   `cfg(miri)` (`ipc::shm::os`), and of `net`'s frame codecs and transport core. `ipc`'s
 //!   command channel, and `net`'s QUIC and TCP transports and its endpoint, interface and crypto
 //!   modules, call the OS or run an async runtime over sockets, which Miri cannot do, so those
-//!   runs are filtered to [`IPC_FILTERS`] and [`NET_FILTERS`], and each [`Package`] says what
-//!   it skips and why. A unit test that needs the OS elsewhere is marked
+//!   runs are filtered to [`IPC_FILTERS`] and [`NET_FILTERS`]. Each [`Package`] lists what it
+//!   skips and why, and the suite prints it. A unit test that needs the OS elsewhere is marked
 //!   `#[cfg_attr(miri, ignore = "<why>")]` where it is written.
 //! - **How.** `cargo miri test --lib` for each crate, with Miri's default isolation, into
 //!   `miri/` under the target directory. The caller's `MIRIFLAGS` pass through.
@@ -30,8 +30,8 @@ pub struct Package {
     pub name: &'static str,
     /// Test name filters, as libtest takes them; none runs every unit test.
     pub filters: &'static [&'static str],
-    /// Test paths left out, as `--skip` takes them.
-    pub skips: &'static [&'static str],
+    /// Test paths left out, as `--skip` takes them, each with why. The suite prints each.
+    pub skips: &'static [(&'static str, &'static str)],
 }
 
 /// `ipc`'s module that runs under Miri: the shared-memory region. Its command channel (`cmd`)
@@ -46,26 +46,35 @@ pub const PACKAGES: &[Package] = &[
     Package {
         name: "syntropy-tier",
         filters: &[],
-        // `tune` forbids `unsafe`, and its tests write and read files, which Miri's isolation
-        // refuses.
-        skips: &["tune::"],
+        skips: &[(
+            "tune::",
+            "`tune` forbids `unsafe`, and its tests write and read files, which Miri's isolation \
+             refuses",
+        )],
     },
     Package {
         name: "syntropy-ipc",
         filters: IPC_FILTERS,
-        // `records` has no `unsafe`, and its proptest reads the working directory, which Miri's
-        // isolation refuses, for 4,096 cases.
-        skips: &["shm::records::"],
+        skips: &[(
+            "shm::records::",
+            "`records` has no `unsafe`, and its proptest reads the working directory, which \
+             Miri's isolation refuses",
+        )],
     },
     Package {
         name: "syntropy-net",
         filters: NET_FILTERS,
-        // `quic` and `tcp` each run a tokio runtime over real sockets. `pacing` has no `unsafe`,
-        // and one of its tests feeds the pacer three million samples, hours under Miri.
         skips: &[
-            "transport::quic::",
-            "transport::tcp::",
-            "transport::pacing::",
+            (
+                "transport::quic::",
+                "runs a tokio runtime over real sockets",
+            ),
+            ("transport::tcp::", "runs a tokio runtime over real sockets"),
+            (
+                "transport::pacing::",
+                "`pacing` has no `unsafe`, and one of its tests feeds the pacer three million \
+                 samples, hours under Miri",
+            ),
         ],
     },
 ];
@@ -122,7 +131,7 @@ pub fn args(package: &Package) -> Vec<String> {
     .collect();
     args.extend(["--", "--color", "never"].map(str::to_owned));
     args.extend(package.filters.iter().map(|filter| (*filter).to_owned()));
-    for skip in package.skips {
+    for (skip, _) in package.skips {
         args.extend(["--skip".to_owned(), (*skip).to_owned()]);
     }
     args
@@ -165,6 +174,12 @@ pub fn suite_step(context: &Context) -> Result<(), String> {
     let mut problems = Vec::new();
     for package in PACKAGES {
         let args = args(package);
+        for (skip, why) in package.skips {
+            eprintln!(
+                "miri: notice: {}'s {skip} tests do not run: {why}",
+                package.name
+            );
+        }
         eprintln!("miri: rustup run {} cargo {}", pin.channel, args.join(" "));
         let mut command = cargo(&pin, &context.root, "miri", &[]);
         command.args(&args);
@@ -271,7 +286,7 @@ mod tests {
             let package = PACKAGES.iter().find(|p| p.name == *name).unwrap();
             assert!(
                 (package.filters.is_empty() || package.filters.iter().any(|f| test.starts_with(f)))
-                    && !package.skips.iter().any(|s| test.starts_with(s)),
+                    && !package.skips.iter().any(|(s, _)| test.starts_with(s)),
                 "{test} is filtered out"
             );
         }
