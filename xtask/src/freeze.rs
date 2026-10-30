@@ -1,17 +1,27 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `cargo xtask ci freeze --events <file> [--pr <file>] [--durations-out <file>]`: the release
-//! freeze of RFC-0062 §9.2 step 3 (QUAL-E17-T04, ADR-0621 decision 4).
+//! `cargo xtask ci freeze --events <file> [--pr <file>] [--release-app <login>]
+//! [--durations-out <file>]`: the release freeze of RFC-0062 §9.2 step 3 (QUAL-E17-T04, ADR-0621
+//! decision 4).
 //!
 //! `rc:start` sets the freeze on `main`. While it is set, a PR merges only if it carries the
-//! `rc:fix` label. A publish or an abort lifts it. A failed RC does not lift it: the next patch's
+//! `rc:fix` label, or if it is the release PR itself: §9.2 step 3 has the maintainer merge the
+//! release PR under the freeze, and step 5 does the same for the `X.Y.(Z+1)` release PR, so
+//! holding it would stop every release before its tag. A publish or an abort lifts the freeze. A failed RC does not lift it: the next patch's
 //! `rc:fix` PRs merge under the same freeze (§9.2 step 5).
 //!
 //! This module is the rule, over data. `--events` is the freeze's event log, a JSON array in time
 //! order of `{"at": <unix seconds>, "kind": "set" | "lift", "version": "X.Y.Z"}`; a `lift` also
 //! has `"reason": "publish" | "abort"`. `--pr` is
-//! `{"number": <n>, "base": "<branch>", "labels": ["rc:fix", ...]}`. The freeze is on `main`
-//! only: a PR to another branch, such as a backport to `release/vX.Y` (§9.2 step 8), is not held.
+//! `{"number": <n>, "base": "<branch>", "labels": ["rc:fix", ...]}`, with optional `"head"` (the
+//! head branch) and `"author"` (the PR author's login). A base given as `refs/heads/<branch>`, as
+//! a `merge_group` payload gives it, is read as `<branch>`. The freeze is on `main` only: a PR to
+//! another branch, such as a backport to `release/vX.Y` (§9.2 step 8), is not held.
+//!
+//! The release PR is recognised by two properties of the PR payload, never by a label, since
+//! anyone with triage can label: its head branch is release-please's
+//! `release-please--branches--main`, and its author is the release App (§8.2), whose login
+//! `--release-app` names. Without `--release-app` no PR is treated as the release PR.
 //! With `--pr` the command fails when the freeze holds that PR. With `--durations-out` it writes
 //! each freeze window as JSON, for the CI cost report (QUAL-E1-T13).
 //!
@@ -29,6 +39,9 @@ pub const FROZEN_BRANCH: &str = "main";
 
 /// The label that lets a PR merge during a freeze.
 pub const FIX_LABEL: &str = "rc:fix";
+
+/// The head branch of release-please's release PR on [`FROZEN_BRANCH`].
+pub const RELEASE_HEAD: &str = "release-please--branches--main";
 
 /// Why a freeze was lifted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,12 +187,27 @@ pub fn is_frozen(events: &[Event]) -> Result<bool, String> {
     Ok(durations(events)?.last().is_some_and(|w| w.end.is_none()))
 }
 
+/// Whether `pr` is the release PR on [`FROZEN_BRANCH`]: release-please's head branch, opened by
+/// the release App `release_app`. Both must match; with no `release_app` nothing does.
+pub fn is_release_pr(pr: &Pr, release_app: Option<&str>) -> bool {
+    let Some(app) = release_app.filter(|a| !a.is_empty()) else {
+        return false;
+    };
+    pr.base == FROZEN_BRANCH
+        && pr.head.as_deref() == Some(RELEASE_HEAD)
+        && pr.author.as_deref() == Some(app)
+}
+
 /// The freeze's verdict on one PR: `Ok` if it may merge, else why it is held.
-pub fn evaluate(frozen: bool, base: &str, labels: &[String]) -> Result<(), String> {
-    if frozen && base == FROZEN_BRANCH && !labels.iter().any(|l| l == FIX_LABEL) {
+pub fn evaluate(frozen: bool, pr: &Pr, release_app: Option<&str>) -> Result<(), String> {
+    if frozen
+        && pr.base == FROZEN_BRANCH
+        && !pr.labels.iter().any(|l| l == FIX_LABEL)
+        && !is_release_pr(pr, release_app)
+    {
         return Err(format!(
-            "held: a release freeze is set on `{FROZEN_BRANCH}` and the PR is not labelled \
-             `{FIX_LABEL}`"
+            "held: a release freeze is set on `{FROZEN_BRANCH}` and the PR is neither labelled \
+             `{FIX_LABEL}` nor the release PR"
         ));
     }
     Ok(())
@@ -191,10 +219,15 @@ pub struct Pr {
     pub number: u64,
     pub base: String,
     pub labels: Vec<String>,
+    /// The head branch, if the file gives it.
+    pub head: Option<String>,
+    /// The author's login, if the file gives it.
+    pub author: Option<String>,
 }
 
-/// Reads a PR file: `{"number": <n>, "base": "<branch>", "labels": [...]}`. A missing `base` is
-/// an error, so a PR is never let through for want of it.
+/// Reads a PR file: `{"number": <n>, "base": "<branch>", "labels": [...]}`, with optional
+/// `head` and `author` strings. A missing `base` is an error, so a PR is never let through for
+/// want of it. A `refs/heads/` prefix on `base` is dropped, so a full ref compares as its branch.
 pub fn parse_pr(text: &str) -> Result<Pr, String> {
     let value: Value = serde_json::from_str(text).map_err(|e| format!("pr: not JSON: {e}"))?;
     let number = value
@@ -204,8 +237,17 @@ pub fn parse_pr(text: &str) -> Result<Pr, String> {
     let base = value
         .get("base")
         .and_then(Value::as_str)
-        .ok_or_else(|| "pr: no `base` branch".to_owned())?
-        .to_owned();
+        .ok_or_else(|| "pr: no `base` branch".to_owned())?;
+    let base = base.strip_prefix("refs/heads/").unwrap_or(base).to_owned();
+    let optional = |key: &str| -> Result<Option<String>, String> {
+        match value.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(format!("pr: `{key}` is not a string")),
+        }
+    };
+    let head = optional("head")?;
+    let author = optional("author")?;
     let labels = value
         .get("labels")
         .and_then(Value::as_array)
@@ -221,6 +263,8 @@ pub fn parse_pr(text: &str) -> Result<Pr, String> {
         number,
         base,
         labels,
+        head,
+        author,
     })
 }
 
@@ -245,13 +289,14 @@ pub fn step(context: &Context) -> Result<(), String> {
     if context.args.get("--pr").is_none() {
         return Ok(());
     }
-    let Pr {
-        number,
-        base,
-        labels,
-    } = parse_pr(&read("--pr")?)?;
-    let verdict = evaluate(frozen, &base, &labels);
+    let pr = parse_pr(&read("--pr")?)?;
+    let release_app = context.args.get("--release-app");
+    let verdict = evaluate(frozen, &pr, release_app);
+    let number = pr.number;
     match &verdict {
+        Ok(()) if frozen && is_release_pr(&pr, release_app) => {
+            eprintln!("freeze: PR #{number} is the release PR and may merge")
+        }
         Ok(()) => eprintln!("freeze: PR #{number} may merge"),
         Err(why) => eprintln!("freeze: PR #{number} {why}"),
     }
@@ -279,12 +324,32 @@ mod tests {
         parse_events(text).expect("events parse")
     }
 
+    fn pr(base: &str, items: &[&str]) -> Pr {
+        Pr {
+            number: 1,
+            base: base.to_owned(),
+            labels: labels(items),
+            head: None,
+            author: None,
+        }
+    }
+
+    const APP: &str = "syntropy-release[bot]";
+
+    fn release_pr(head: &str, author: &str) -> Pr {
+        Pr {
+            head: Some(head.to_owned()),
+            author: Some(author.to_owned()),
+            ..pr("main", &["autorelease: pending"])
+        }
+    }
+
     #[test]
     fn an_unlabelled_pr_is_held_while_frozen_and_an_rc_fix_merges() {
-        assert!(evaluate(true, "main", &labels(&["area:ci"])).is_err());
-        assert!(evaluate(true, "main", &[]).is_err());
+        assert!(evaluate(true, &pr("main", &["area:ci"]), None).is_err());
+        assert!(evaluate(true, &pr("main", &[]), None).is_err());
         assert_eq!(
-            evaluate(true, "main", &labels(&["rc:fix", "area:ci"])),
+            evaluate(true, &pr("main", &["rc:fix", "area:ci"]), None),
             Ok(())
         );
     }
@@ -292,14 +357,42 @@ mod tests {
     #[test]
     fn a_frozen_main_does_not_hold_a_backport_to_a_release_branch() {
         assert_eq!(
-            evaluate(true, "release/v0.1", &labels(&["backport:v0.1"])),
+            evaluate(true, &pr("release/v0.1", &["backport:v0.1"]), None),
             Ok(())
         );
     }
 
     #[test]
     fn every_pr_merges_when_no_freeze_is_set() {
-        assert_eq!(evaluate(false, "main", &[]), Ok(()));
+        assert_eq!(evaluate(false, &pr("main", &[]), None), Ok(()));
+    }
+
+    #[test]
+    fn the_release_pr_merges_while_frozen() {
+        let release = release_pr(RELEASE_HEAD, APP);
+        assert_eq!(evaluate(true, &release, Some(APP)), Ok(()));
+    }
+
+    #[test]
+    fn the_release_pr_needs_both_its_branch_and_the_release_app() {
+        // Another author on release-please's branch, or the App on another branch, is held.
+        assert!(evaluate(true, &release_pr(RELEASE_HEAD, "someone"), Some(APP)).is_err());
+        assert!(evaluate(true, &release_pr("feature", APP), Some(APP)).is_err());
+        // A PR file without head or author is never the release PR.
+        assert!(evaluate(true, &pr("main", &["autorelease: pending"]), Some(APP)).is_err());
+        // Without `--release-app`, or with an empty one, nothing is the release PR.
+        let release = release_pr(RELEASE_HEAD, APP);
+        assert!(evaluate(true, &release, None).is_err());
+        assert!(evaluate(true, &release_pr(RELEASE_HEAD, ""), Some("")).is_err());
+        // A label alone does not make a PR the release PR.
+        assert!(
+            evaluate(
+                true,
+                &pr("main", &["autorelease: pending", "rc:start"]),
+                Some(APP)
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -322,7 +415,10 @@ mod tests {
         ];
         let merged: Vec<&str> = queue
             .iter()
-            .filter(|(_, l)| evaluate(true, "main", l).is_ok())
+            .filter(|(_, l)| {
+                let l: Vec<&str> = l.iter().map(String::as_str).collect();
+                evaluate(true, &pr("main", &l), None).is_ok()
+            })
             .map(|(name, _)| *name)
             .collect();
         assert_eq!(merged, ["fix-a", "fix-b"]);
@@ -360,9 +456,20 @@ mod tests {
             Ok(Pr {
                 number: 7,
                 base: "main".to_owned(),
-                labels: labels(&["rc:fix"])
+                labels: labels(&["rc:fix"]),
+                head: None,
+                author: None,
             })
         );
+        let full = parse_pr(
+            r#"{"number": 8, "base": "refs/heads/main", "labels": [],
+                "head": "release-please--branches--main", "author": "app[bot]"}"#,
+        )
+        .expect("parses");
+        assert_eq!(full.base, "main");
+        assert_eq!(full.head.as_deref(), Some(RELEASE_HEAD));
+        assert_eq!(full.author.as_deref(), Some("app[bot]"));
+        assert!(parse_pr(r#"{"number": 7, "base": "main", "labels": [], "head": 3}"#).is_err());
         assert!(parse_pr(r#"{"number": 7, "labels": []}"#).is_err());
         assert!(parse_pr(r#"{"number": 7, "base": "main"}"#).is_err());
     }

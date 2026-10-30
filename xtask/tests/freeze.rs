@@ -13,6 +13,15 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn run(events: &str, pr: Option<&str>, out: Option<&Path>) -> (Option<i32>, String) {
+    run_with(events, pr, out, &[])
+}
+
+fn run_with(
+    events: &str,
+    pr: Option<&str>,
+    out: Option<&Path>,
+    extra: &[&str],
+) -> (Option<i32>, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
     command
         .args(["ci", "freeze", "--events"])
@@ -23,6 +32,7 @@ fn run(events: &str, pr: Option<&str>, out: Option<&Path>) -> (Option<i32>, Stri
     if let Some(out) = out {
         command.arg("--durations-out").arg(out);
     }
+    command.args(extra);
     let output = command.output().expect("xtask runs");
     let log = String::from_utf8_lossy(&output.stderr).into_owned();
     (output.status.code(), log)
@@ -45,6 +55,23 @@ fn a_frozen_main_lets_an_rc_fix_pr_merge() {
 fn a_frozen_main_does_not_hold_a_backport_pr() {
     let (code, log) = run("frozen.json", Some("pr-backport.json"), None);
     assert_eq!(code, Some(0), "{log}");
+}
+
+#[test]
+fn a_frozen_main_lets_the_release_pr_merge() {
+    let app = ["--release-app", "syntropy-release[bot]"];
+    let (code, log) = run_with("frozen.json", Some("pr-release.json"), None, &app);
+    assert_eq!(code, Some(0), "{log}");
+    assert!(log.contains("PR #20 is the release PR"), "{log}");
+}
+
+#[test]
+fn the_release_pr_is_held_when_its_author_is_not_the_release_app() {
+    let other = ["--release-app", "another-app[bot]"];
+    let (code, log) = run_with("frozen.json", Some("pr-release.json"), None, &other);
+    assert_eq!(code, Some(1), "{log}");
+    let (code, log) = run("frozen.json", Some("pr-release.json"), None);
+    assert_eq!(code, Some(1), "{log}");
 }
 
 #[test]

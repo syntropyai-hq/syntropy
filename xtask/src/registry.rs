@@ -742,7 +742,15 @@ pub const JOBS: &[Entry] = &[
             Param {
                 name: "--pr",
                 value: "<file>",
-                help: "a PR as {number, base, labels}; the job fails if the freeze holds it",
+                help: "a PR as {number, base, labels, head?, author?}; the job fails if the \
+                       freeze holds it",
+                required: false,
+            },
+            Param {
+                name: "--release-app",
+                value: "<login>",
+                help: "the release App's login; its PR from release-please's branch merges \
+                       while frozen",
                 required: false,
             },
             Param {
@@ -761,7 +769,8 @@ pub const JOBS: &[Entry] = &[
         }],
         pending: &[
             Pending {
-                check: "`rc:start` and publish or abort write the event log; ci-gate consults it",
+                check: "`rc:start` and publish or abort write the event log; ci-gate consults it, \
+                        passing the release App's login as `--release-app`",
                 task: "QUAL-E17-T05",
             },
             Pending {
