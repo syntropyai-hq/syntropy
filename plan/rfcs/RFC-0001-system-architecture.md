@@ -227,7 +227,7 @@ An instance becomes routable only when every runner in it is `Ready` and the can
 - **A drain always passes through `Draining`.** That holds even with no live sequence, since `Ready → Stopped` is not an edge. It ends when the caller reports zero live sequences or the deadline.
 - **Restarts and giving up are the supervisor's** (§3.4). A restart is a new process, whose machine starts again at `Fetching` with a restart count of 0. So the supervisor's count is the real one (DIST-E1-T06). The supervisor builds the `Failed` and `Stopped` it reports from `core`'s types, with its own count. A runner that reports a fault before it exits sends `Failed { restarts: 0 }`. The machine's `Restart` and `GiveUp` events model the supervisor's edges for the property test: `Failed → Fetching` re-enters with the same shard and epoch. `Failed → Stopped` happens only when the supervisor gives up: a spent budget stops as `Drained(DrainReason::RestartBudgetSpent)`, and a fatal error as `Fatal` with the last failure's class (§18.34).
 - **Open for the maintainers.**
-  - No message reports a change of `degraded` until the next transition. RFC-0033 §7.1 shows degradation in the dashboard and in response metadata. Whether a degradation change should count as a transition, or have a report of its own, is OQ-NET-36, which DIST-E14-T13 settles.
+  - A change of `degraded` is not a transition and sends no `StateChanged`. It has a report of its own, `RunnerMsg::DegradationChanged`, which DIST-E14-T13 adds (RFC-0033 §7.1, OQ-NET-36, settled 2026-10-30).
   - A runner not yet `Ready` has no clean stop. §3.3 has no edge from `Fetching`, `Packing`, `Loading` or `Warming` to `Draining` or `Stopped`, so a `Drain` or `Shutdown` there is refused. Such a runner can end only through `Failed`, which the supervisor would count as a failure. The options are failing it as `Cancelled` with no restart, or a `→ Stopped { Drained(reason) }` edge from each bring-up state. That choice is the maintainers', with DIST-E1-T06.
 
 ### 3.4 Supervision
@@ -296,6 +296,7 @@ Command-channel messages:
 | D → R | `Ping` | IPC round-trip check |
 | R → D | `Hello { pid, build_id, ipc_protocol, obs_tables: Blake3 }` | handshake. `obs_tables` digests the runner's log-callsite, metric and span-name tables; on a mismatch the runner sends the tables, and the daemon decodes that runner's records with them (RFC-0053 §4.1). On an adoption connection the daemon sends its own `ipc_protocol` and digest first (RFC-0052 §6.5) |
 | R → D | `StateChanged { state: RunnerState, epoch: PlanEpoch }` | every lifecycle transition; the daemon forwards it as `ClusterCommand::ReportRunner` |
+| R → D | `DegradationChanged { degraded: Option<Degradation> }` | a change of `Ready`'s `degraded`, which is not a transition, so no `StateChanged` (RFC-0033 §7.1, OQ-NET-36). Added by DIST-E14-T13, with its `ipc_protocol` bump |
 | R → D | `FetchShard { spec: ShardSpec, priority: FetchPriority }` | ask the store for a shard. Added by COMP-E10-T11, with `ipc_protocol` 5.0 (§18.50) |
 | R → D | `PackCommitted { key: PackKey, sidecar: Blake3 }` | pack ready; the store records it for GC and P2P. Added by COMP-E10-T11, with `ipc_protocol` 5.0 (§18.50) |
 | R → D | `ResidencyDigest { version: u64, digest: ResidencySummary }` | low-rate residency summary for routing and the dashboard |
@@ -3121,7 +3122,7 @@ DIST-E1-T05 builds RFC-0001 §3.3's machine and moves `StateChanged` to `RunnerS
 | The edge table is `RunnerStateKind::can_become` in `core`; the machine is `runner`'s `lifecycle::Lifecycle`; a transition is a change of kind or `Ready → Ready` under a later epoch, and progress inside a state sends nothing | §3.3 (dated note) | `core` may hold pure functions over plain data, so the supervisor and the runner judge transitions by one table. The machine returns `ipc`'s `RunnerMsg`, which `core` cannot name |
 | `ipc_protocol` 2.0: `StateChanged { state: RunnerState }` replaces the `u32` discriminant | §3.5 (dated note) | a changed field type cannot be read by a 1.x peer, so the bump is major. `Hello` is unchanged, so the version check still runs |
 | The daemon forwards `StateChanged` up to a `ReportSink` seam | §3.5 (dated note) | `ClusterCommand::ReportRunner` and its client are DIST-E9's and not built |
-| A change of `degraded` is in place and sends no message until the next transition | §3.3 (dated note) | left open as OQ-NET-36 for DIST-E14-T13, the task that first sets `degraded`, against RFC-0033 §7.1's dashboard and response metadata |
+| A change of `degraded` is in place and sends no message until the next transition | §3.3 (dated note) | left open as OQ-NET-36 for DIST-E14-T13, the task that first sets `degraded`, against RFC-0033 §7.1's dashboard and response metadata. Settled 2026-10-30, option (a): a report of its own, `RunnerMsg::DegradationChanged` (RFC-0033 §7.1) |
 | A runner not yet `Ready` has no clean stop: §3.3 has no edge from a bring-up state to `Draining` or `Stopped` | §3.3 (dated note) | not settled here; for the maintainers, with DIST-E1-T06's supervisor (the review of #1932) |
 
 ### 18.46 `LayerKv`'s latent flag (2026-10-28)
