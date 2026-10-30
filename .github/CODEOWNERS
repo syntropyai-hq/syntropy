@@ -24,6 +24,7 @@
 /.release-please-manifest.json  @devdaviddr @xunholy
 /version.txt                    @devdaviddr @xunholy
 /deny.toml                      @devdaviddr @xunholy
+/renovate.json5                 @devdaviddr @xunholy
 /supply-chain/                  @devdaviddr @xunholy
 /governance/                    @devdaviddr @xunholy
 

@@ -44,6 +44,7 @@ mod orphan_rule;
 mod plan_tools;
 mod properties;
 mod registry;
+mod renovate;
 mod repo_settings;
 mod roster;
 mod run;

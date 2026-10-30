@@ -1,0 +1,151 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Renovate policy of RFC-0062 section 11.1 (QUAL-E1-T10).",
+    "This file is strict JSON, which JSON5 accepts, so that `cargo xtask ci lint` reads it with serde_json: it holds no comments and no trailing commas.",
+    "Rules apply in order and a later rule overrides an earlier one, so the never-auto-merge rules come last.",
+    "ignorePaths keeps the test fixtures out: they are inputs to xtask's tests, not dependencies, and the lint step fails if a package file outside the repository's own is left uncovered."
+  ],
+  "extends": [],
+  "enabledManagers": ["cargo", "github-actions", "dockerfile", "custom.regex"],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "minimumReleaseAge": "3 days",
+  "labels": ["dependencies"],
+  "automerge": false,
+  "platformAutomerge": true,
+  "dependencyDashboard": true,
+  "prConcurrentLimit": 10,
+  "rebaseWhen": "conflicted",
+  "lockFileMaintenance": { "enabled": false },
+  "ignorePaths": ["**/tests/fixtures/**"],
+  "customManagers": [
+    {
+      "description": "The Rust release pinned in rust-toolchain.toml (ADR-0001 item 1).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^rust-toolchain\\.toml$/"],
+      "matchStrings": ["channel\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      "depNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "description": "Advisories bypass the schedule and the release-age delay (RFC-0062 section 11.1). The never-auto-merge rules below still apply to a critical crate or a toolchain.",
+    "enabled": true,
+    "schedule": ["at any time"],
+    "minimumReleaseAge": "0 days",
+    "groupName": null,
+    "dependencyDashboardApproval": false,
+    "labels": ["dependencies", "security"]
+  },
+  "packageRules": [
+    {
+      "description": "Ordinary Rust crates, minor and patch: one weekly PR, auto-merged through the merge queue once ci-gate passes. From M1 only versions that cargo vet covers (QUAL-E17-T10).",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "rust crates",
+      "automerge": true
+    },
+    {
+      "description": "One PR per crate family (RFC-0062 section 11.1).",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchPackageNames": ["tokio", "tokio-*"],
+      "groupName": "tokio"
+    },
+    {
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchPackageNames": ["serde", "serde_*"],
+      "groupName": "serde"
+    },
+    {
+      "description": "Ordinary Rust crates, major: held until a maintainer approves it on the dependency dashboard.",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "description": "GitHub Actions: pinned by commit SHA; minor and patch auto-merge.",
+      "matchManagers": ["github-actions"],
+      "pinDigests": true,
+      "groupName": "github actions"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "automerge": true
+    },
+    {
+      "description": "CI container images in ci/images/: pinned by digest; patch auto-merge, minor reviewed because toolchains sit inside.",
+      "matchManagers": ["dockerfile"],
+      "pinDigests": true,
+      "groupName": "ci images"
+    },
+    {
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
+      "automerge": true
+    },
+    {
+      "description": "Numerics- or protocol-critical crates, any update: never auto-merge, and request every hardware job and the nightly suites with full-validate (applied by QUAL-E1-T29). Each stays its own PR.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "ggml*",
+        "*-ggml",
+        "highs",
+        "highs-*",
+        "iroh",
+        "iroh-*",
+        "noq",
+        "noq-*",
+        "quinn",
+        "quinn-*",
+        "rustls",
+        "rustls-*",
+        "tokio-rustls",
+        "ring",
+        "rcgen",
+        "webpki-*",
+        "rdma*",
+        "*-rdma",
+        "ibverbs*",
+        "cudarc",
+        "cuda-*",
+        "cudart*",
+        "hip*",
+        "rocm*",
+        "ash",
+        "metal",
+        "objc2-metal",
+        "vulkano",
+        "wgpu*",
+        "half",
+        "float8",
+        "tokenizers",
+        "tiktoken*",
+        "sentencepiece*"
+      ],
+      "groupName": null,
+      "automerge": false,
+      "addLabels": ["full-validate"]
+    },
+    {
+      "description": "Toolchains: Rust stable, CUDA, ROCm, Xcode, Slang, NDK. Never auto-merge; full-validate. A Rust minor bump also runs the RFC-0061 nightly set (QUAL-E1-T29).",
+      "matchPackageNames": [
+        "rust-lang/rust",
+        "rust",
+        "nvidia/cuda",
+        "rocm/*",
+        "xcode",
+        "shader-slang/slang",
+        "android-ndk",
+        "android/ndk"
+      ],
+      "groupName": null,
+      "automerge": false,
+      "addLabels": ["full-validate"]
+    }
+  ]
+}

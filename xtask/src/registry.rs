@@ -25,7 +25,7 @@ use std::process::Command;
 use crate::run::Context;
 use crate::{
     cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
-    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
+    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, renovate, repo_settings,
     runner_build_id, sim_presets, toolchain, toolchains,
 };
 
@@ -409,6 +409,14 @@ pub const JOBS: &[Entry] = &[
                     shown: "ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its \
                             expected jobs, and covers pr.yml's jobs",
                     run: changes::goldens_step,
+                },
+            },
+            // The Renovate policy of RFC-0062 §11.1 (QUAL-E1-T10).
+            Step {
+                name: "renovate",
+                action: Action::Builtin {
+                    shown: "renovate.json5 carries the RFC-0062 §11.1 policy",
+                    run: renovate::step,
                 },
             },
             // The task-graph check, so a plan-only diff, which runs `lint` alone, is checked
@@ -1095,6 +1103,7 @@ mod tests {
                  pins are in the build image's Dockerfile",
                 "xtask: ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its expected \
                  jobs, and covers pr.yml's jobs",
+                "xtask: renovate.json5 carries the RFC-0062 §11.1 policy",
                 "xtask: the plan tools: every task row parses, the task graph checks, and the \
                  generated sections are current",
             ]

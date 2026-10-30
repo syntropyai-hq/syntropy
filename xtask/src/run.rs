@@ -314,6 +314,7 @@ mod tests {
                 "sim-presets",
                 "toolchains",
                 "jobs",
+                "renovate",
                 "plan",
             ]
         );

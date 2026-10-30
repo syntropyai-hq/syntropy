@@ -84,6 +84,7 @@ pub const CLASSES: &[PathClass] = &[
             ".cargo/config.toml",
             "release-please-config.json",
             "deny.toml",
+            "renovate.json5",
             "supply-chain/audits.toml",
             "governance/delegations.toml",
             "governance/maintainers.toml",
