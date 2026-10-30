@@ -312,6 +312,7 @@ mod tests {
                 "actionlint",
                 "scenarios",
                 "sim-presets",
+                "toolchains",
                 "jobs",
                 "plan",
             ]

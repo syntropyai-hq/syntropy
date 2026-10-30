@@ -283,13 +283,32 @@ jobs:
           echo "::error::hosted-parity-nano has no suite yet (planned: QUAL-E5-T06)"
           exit 1
 
+  # The Linux build image: two no-cache builds are byte-identical, and the pinned tools print their
+  # versions from inside it (RFC-0062 §4.1; QUAL-E16-T24). `docker buildx` is on the hosted runner.
+  # Its default `docker` driver cannot export an OCI archive, so the step creates a
+  # `docker-container` builder of its own on the BuildKit image `ci/toolchains.toml` pins.
+  toolchains-linux:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'toolchains-linux')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: toolchains-linux
+          cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
+      - run: cargo xtask ci toolchains-linux
+
   # The required check. It always runs, even when the run is cancelled: a skipped job reports
   # success to branch protection, so a skipped gate would let a PR merge with nothing checked.
   #
   # The verdict comes from the base branch's `xtask`, built with no cache, as in `pr-meta.yml`,
   # so a PR cannot change how its own jobs are judged (RFC-0062 §2.2, note 2026-10-22).
   ci-gate:
-    needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano]
+    needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano, toolchains-linux]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15
