@@ -409,6 +409,36 @@ fn dm_crypt_over_a_partition_is_marked_encrypted() {
 }
 
 #[test]
+fn an_old_kernel_under_dm_crypt_takes_the_mapped_devices_block_size() {
+    // dm-crypt with 4096-byte sectors over a 512-byte drive: `O_DIRECT` on the mapped device
+    // needs 4096.
+    let mut t = cpu_attached();
+    t.mount("/srv/store", "253:0", "ext4", "/dev/mapper/synthetic")
+        .put(
+            "sys/dev/block/253:0/uevent",
+            "MAJOR=253\nMINOR=0\nDEVNAME=dm-0",
+        )
+        .put("sys/block/dm-0/dm/uuid", "CRYPT-LUKS2-0000-synthetic")
+        .put("sys/block/dm-0/queue/logical_block_size", "4096")
+        .put("sys/block/dm-0/slaves/nvme0n1p2/.keep", "");
+    let shim = Shim {
+        fs_type: EXT4,
+        free: 1,
+        dev: (253, 0),
+        dio: DioReport::NotReported,
+    };
+    let v = run(&t, &shim).unwrap();
+    assert_eq!(
+        v.direct_io,
+        DirectIoSupport::Supported {
+            mem_align: 4096,
+            offset_align: 4096
+        }
+    );
+    assert_eq!(v.logical_block, 512);
+}
+
+#[test]
 fn the_deepest_mount_holds_the_path() {
     let mut t = cpu_attached();
     t.put(

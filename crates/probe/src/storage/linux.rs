@@ -227,7 +227,7 @@ pub fn volume(
             .map(str::to_owned)
     };
     let mut crypt = false;
-    let Some(disk) = name.and_then(|n| disk_of(fs, &n, &mut crypt)) else {
+    let Some(disk) = name.as_deref().and_then(|n| disk_of(fs, n, &mut crypt)) else {
         return Ok(info);
     };
     info.bus = bus_of(fs, &disk);
@@ -236,9 +236,19 @@ pub fn volume(
     }
     info.logical_block = number(fs, &format!("sys/block/{disk}/queue/logical_block_size"))?;
     if sx.dio == DioReport::NotReported && !memory_backed {
+        // `O_DIRECT` goes to the device the file system sits on. A device-mapper layer such as
+        // dm-crypt can have a larger logical block than the disk below it, so its own size
+        // counts; a partition has no `queue/` and shares its disk's.
+        let top = name
+            .map(|n| format!("sys/block/{n}/queue/logical_block_size"))
+            .filter(|path| fs.exists(path));
+        let block = match top {
+            Some(path) => number(fs, &path)?,
+            None => info.logical_block,
+        };
         info.direct_io = DirectIoSupport::Supported {
-            mem_align: info.logical_block,
-            offset_align: info.logical_block,
+            mem_align: block,
+            offset_align: block,
         };
     }
     info.physical_block = number(fs, &format!("sys/block/{disk}/queue/physical_block_size"))?;
