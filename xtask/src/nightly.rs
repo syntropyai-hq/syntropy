@@ -20,7 +20,8 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// The pin, relative to the workspace root.
@@ -258,20 +259,30 @@ fn tee(from: impl Read, mut to: impl Write) -> String {
     String::from_utf8_lossy(&all).into_owned()
 }
 
-/// Stops the child and, on Unix, every process in its group: the test binaries cargo started and
-/// any symbolizer a sanitizer started. Each of those holds the output pipes open.
-fn stop(child: &mut Child) {
+/// How long the output pipes may stay open after the run has ended and its group was stopped.
+const PIPE_GRACE: Duration = Duration::from_secs(5);
+
+/// On Unix, stops every process left in the group of the child whose ID is `id`: the test
+/// binaries cargo started and any symbolizer a sanitizer started. Each holds the output pipes
+/// open. Elsewhere it does nothing.
+fn stop_group(id: u32) {
     #[cfg(unix)]
     {
-        let group = format!("-{}", child.id());
-        let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
+        let group = format!("-{id}");
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &group])
+            .stderr(Stdio::null())
+            .status();
     }
-    let _ = child.kill();
+    #[cfg(not(unix))]
+    let _ = id;
 }
 
 /// Runs `command`, echoing what it prints as it prints it, so a log shows how far it got even if
-/// it never ends. A run still going at `deadline` is stopped, with the processes it started, and
-/// is an error. A run that fails prints its exit status.
+/// it never ends. A run still going at `deadline` is stopped and is an error. Whether it ended or
+/// was stopped, any process it started that is still running is stopped too, so a leftover
+/// process neither outlives the step nor holds its output open. A run that fails prints its exit
+/// status.
 pub fn run(mut command: Command, deadline: Instant) -> Result<Output, String> {
     let program = command.get_program().to_string_lossy().into_owned();
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -280,15 +291,19 @@ pub fn run(mut command: Command, deadline: Instant) -> Result<Output, String> {
     let mut child = command
         .spawn()
         .map_err(|e| format!("cannot start {program}: {e}"))?;
-    let stdout = child.stdout.take().expect("stdout is piped");
-    let stderr = child.stderr.take().expect("stderr is piped");
-    let stdout = std::thread::spawn(move || tee(stdout, std::io::stdout()));
-    let stderr = std::thread::spawn(move || tee(stderr, std::io::stderr()));
+    let id = child.id();
+    let (sender, received) = mpsc::channel();
+    let out = child.stdout.take().expect("stdout is piped");
+    let err = child.stderr.take().expect("stderr is piped");
+    let to_out = sender.clone();
+    std::thread::spawn(move || to_out.send((true, tee(out, std::io::stdout()))));
+    std::thread::spawn(move || sender.send((false, tee(err, std::io::stderr()))));
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() >= deadline => {
-                stop(&mut child);
+                stop_group(id);
+                let _ = child.kill();
                 let _ = child.wait();
                 break None;
             }
@@ -296,14 +311,27 @@ pub fn run(mut command: Command, deadline: Instant) -> Result<Output, String> {
             Err(e) => return Err(format!("cannot wait for {program}: {e}")),
         }
     };
-    // The run has ended, so the pipes close once its last process has gone. A process that left
-    // the group can still hold them; that is a hang past what this function can bound.
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
+    stop_group(id);
+    // The pipes close once the last process holding them has gone. One that left the group can
+    // still hold them, so the wait for them is bounded too.
+    let until = deadline.max(Instant::now()) + PIPE_GRACE;
+    let (mut stdout, mut stderr) = (String::new(), String::new());
+    for _ in 0..2 {
+        match received.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok((true, text)) => stdout = text,
+            Ok((false, text)) => stderr = text,
+            Err(_) => {
+                return Err(format!(
+                    "{program} ended, but a process it started still held its output open \
+                     after the step limit; its output up to then is above"
+                ));
+            }
+        }
+    }
     let Some(status) = status else {
         return Err(format!(
-            "{program} was still running at the step limit of {} min [target] and was stopped; \
-             its output up to then is above",
+            "{program} was still running at the step limit of {} min [target] and was \
+             stopped; its output up to then is above",
             STEP_LIMIT.as_secs() / 60
         ));
     };
@@ -475,6 +503,28 @@ mod tests {
             "the run took {:?}: the sleep it started was not stopped",
             started.elapsed()
         );
+    }
+
+    /// A run that ends while a process it started keeps running: the leftover is stopped, so the
+    /// run returns at once, not when the leftover ends or at its deadline.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_left_running_after_the_run_ends_is_stopped() {
+        for limit in [2, 60] {
+            let started = Instant::now();
+            let output = run(
+                sh("echo hi; sleep 30 &"),
+                started + Duration::from_secs(limit),
+            )
+            .unwrap();
+            assert!(output.success);
+            assert_eq!(output.stdout, "hi\n");
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the run took {:?} with a {limit} s deadline",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]
