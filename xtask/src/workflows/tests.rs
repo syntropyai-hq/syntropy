@@ -259,7 +259,7 @@ fn the_build_host_is_reached_only_through_its_gate() {
     let matrix = "        include:\n          - runner: ubuntu-24.04\n            \
                   build-host: syntropy-build\n          - runner: macos-26\n            \
                   build-host: macos-26\n";
-    let reflowed = gated("matrix.build-host", "matrix.runner").replace(" && ", "\n  &&  ");
+    let reflowed = gated("matrix.build-host", "matrix.runner").replace(" && ", "\n      &&  ");
     assert_clean("pr.yml", &runs_on_job(matrix, &format!("\"{reflowed}\"")));
 
     // The label outside the gate: plain, in a list, through a plain matrix reference, or as the

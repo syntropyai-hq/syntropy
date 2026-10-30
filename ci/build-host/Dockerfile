@@ -3,8 +3,8 @@
 # The job image of the Linux build host (ADR-0625). Each job runs in a fresh container of this
 # image, as an ephemeral runner from a single-use just-in-time configuration, and the container is
 # removed when the job ends. The image has what `pr.yml`'s Linux jobs expect from `ubuntu-24.04`:
-# git, a C toolchain, Python 3, curl, sudo and rustup. The toolchain `rust-toolchain.toml` pins is
-# installed here, so a job's `setup-rust` step finds it and downloads nothing.
+# git, a C toolchain, Python 3, curl, `ip`, sudo and rustup. The toolchain `rust-toolchain.toml`
+# pins is installed here, so a job's `setup-rust` step finds it and downloads nothing.
 #
 # Build it from the repository root, so `rust-toolchain.toml` is in the context:
 #   docker build -f ci/build-host/Dockerfile -t syntropy-build:latest .
@@ -22,7 +22,8 @@ ARG RUSTUP_SHA256=5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      build-essential ca-certificates curl git jq pkg-config python3 sudo tar unzip xz-utils zstd \
+      build-essential ca-certificates curl git iproute2 jq pkg-config python3 sudo tar unzip \
+      xz-utils zstd \
  && rm -rf /var/lib/apt/lists/*
 
 # The job user. Passwordless sudo, as on a hosted runner: `hosted-test` adds a second OS account

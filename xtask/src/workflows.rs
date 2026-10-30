@@ -406,7 +406,10 @@ fn build_host_operands(label: &str) -> Option<(&str, &str)> {
 /// The labels one operand of a build-host `runs-on` yields: a quoted literal, or a
 /// `matrix.<key>` read through the matrix.
 fn operand_labels(job: &Yaml, operand: &str) -> Result<Vec<String>, String> {
-    if let Some(literal) = operand.strip_prefix('\'').and_then(|o| o.strip_suffix('\'')) {
+    if let Some(literal) = operand
+        .strip_prefix('\'')
+        .and_then(|o| o.strip_suffix('\''))
+    {
         if literal.is_empty() || literal.contains('\'') {
             return Err(format!("`{operand}` is not a plain label"));
         }
@@ -414,7 +417,9 @@ fn operand_labels(job: &Yaml, operand: &str) -> Result<Vec<String>, String> {
     }
     match matrix_key(&format!("${{{{ {operand} }}}}")) {
         Some(key) => matrix_values(job, key),
-        None => Err(format!("`{operand}` is neither a quoted label nor `matrix.<key>`")),
+        None => Err(format!(
+            "`{operand}` is neither a quoted label nor `matrix.<key>`"
+        )),
     }
 }
 

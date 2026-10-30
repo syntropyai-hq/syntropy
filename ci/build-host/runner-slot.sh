@@ -34,11 +34,14 @@ unset token
 # A container left by a killed run would hold the name.
 docker rm --force "syntropy-build-$slot" >/dev/null 2>&1 || true
 
-# Public DNS: the network cannot reach the LAN resolver (egress.sh).
+# Public DNS: the network cannot reach the LAN resolver (egress.sh). `SYS_NICE` lets Docker's
+# default seccomp profile allow `mbind`, which `syntropy-tier`'s NUMA tests call; it reaches only
+# processes in the container's own PID namespace.
 exec docker run --rm --init \
   --name "syntropy-build-$slot" \
   --network syntropy-build \
   --dns 1.1.1.1 --dns 9.9.9.9 \
+  --cap-add SYS_NICE \
   --memory "$memory" --pids-limit 16384 \
   --env JITCONFIG="$jit" \
   "$image"
