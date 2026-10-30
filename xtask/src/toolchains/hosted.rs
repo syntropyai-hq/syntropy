@@ -292,7 +292,14 @@ fn verdict(job: &str, printed: &[(&str, &str)], problems: Vec<String>) -> Result
         eprintln!("{job}: every printed version matches {TOOLCHAINS}");
         Ok(())
     } else {
-        Err(problems.join("\n"))
+        // The image the runner reported, so a pin that drifts with an image update names it.
+        let image = |var| std::env::var(var).unwrap_or_else(|_| "unknown".into());
+        Err(format!(
+            "{}\n(runner image: ImageOS {}, ImageVersion {})",
+            problems.join("\n"),
+            image("ImageOS"),
+            image("ImageVersion")
+        ))
     }
 }
 

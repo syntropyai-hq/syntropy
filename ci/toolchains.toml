@@ -13,18 +13,18 @@
 # does not give a version, from that job's print on the runner (RFC-0062 §4.1; QUAL-E16-T30, PR
 # #2002, jobs 124315799952 and 124315799909 on 2026-10-30):
 # - `windows-2025` serves the "Windows Server 2025 with Visual Studio 2026" image (runner-images
-#   issue 14017, completed 2026-06-15; the job's log names `windows-2025-vs2026`, image
-#   20261030.294.1): images/windows/Windows2025-VS2026-Readme.md at tag win25-vs2026/20261030.294
-#   (commit 0dfe95c53f99).
+#   issue 14017, which announced the move for June 2026 and closed on 2026-07-06; the job's log
+#   names `windows-2025-vs2026`, image 20261030.294.1): images/windows/Windows2025-VS2026-Readme.md
+#   at tag win25-vs2026/20261030.294 (commit 0dfe95c53f99).
 # - `macos-26` served image 20261013.0424.1: images/macos/macos-26-arm64-Readme.md at tag
 #   macos-26-arm64/20261013.0424 (commit 49bfbe040355).
 #
 # A hosted image update can change these. The jobs then fail, and the pin is bumped from the new
 # image's report and print.
 #
-# The Windows image carries no CUDA compiler and CMake 3.31.6, and the macOS image carries a
-# Homebrew CMake, so both jobs fetch the archives pinned here and check their checksums before they
-# run them (QUAL-E16-T30).
+# The Windows image carries no CUDA compiler, and its CMake is 4.4.5, not the 4.4.4 pinned here.
+# The macOS image carries a Homebrew CMake. So both jobs fetch Kitware's archives at the pin and
+# check their checksums before they run them (QUAL-E16-T30).
 
 format = 1
 
