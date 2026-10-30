@@ -1681,6 +1681,8 @@ pub enum ErrorClass {
 - **`MAX_SOURCE_DEPTH` = 16.** A decode refuses an error whose `source` chain is deeper than 16 sources below the outermost error. A nested chain decodes by recursion, so without the bound a forged `ErrorReport` frame could exhaust the receiver's stack. `Error::with_source` keeps a chain it builds within the same bound, so a sender never builds an error its receiver refuses. Past the bound it keeps the outermost sources and drops the deepest ones, unlinking them one at a time.
 - **The `sources_dropped` context key** (`core::SOURCES_DROPPED`). The deepest error kept records how many sources were dropped, including any an earlier cut recorded. A received count is untrusted, so the sum saturates at `u64::MAX`.
 
+*Note 2026-10-30 (COMP-E13-T15, under the maintainers' standing instruction of 2026-10-22):* `kernels` returns this `Error` from the provider trait and from every call that returned its stand-in. Its layout and file parsers keep their own typed validation errors, which name the exact fault, as RFC-0040 §13 publishes no code for them.
+
 ### 5.13 Ownership summary
 
 | Interface | Crate | Owning RFC | Also expanded by |

@@ -1325,3 +1325,11 @@ PROD-E9-T12 (M1a) records the process host's own kills with the host's reason. T
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E1-T16 gains "the supervisor shell's `Effects::kill(reason)` calls `ProcessRunner::kill(HostKill::Supervisor(reason))`, so the supervisor's kills reach the process host and leave PROD-E9-T12's crash record". DIST-E1-T16 → PROD-E9-T12 | DIST-E1-T16 | R9 | the sentence uses `HostKill` and the reasoned `ProcessRunner::kill`, which PROD-E9-T12 builds. M1a → M1a, and PROD-E9-T12 (on PROD-E9-T04 and DIST-E1-T04) does not reach DIST-E1-T16, so the edge adds no cycle |
+
+## COMP-E13-T15's "no other error type" criterion names what it covers (2026-10-30)
+
+COMP-E13-T15 (M0a) folds `kernels::Error`, COMP-E1-T01's stand-in, into `core::Error`. Its criterion read "no `kernels` API returns another error type". Read literally, that covers 12 typed validation errors that `kernels`' layout and file parsers return (the doorbell, delta ring, hand-off and step-descriptor layouts, the MoE tables, the op registry, the tolerance file and others), about 50 functions. Folding them would need new RFC-0040 §13 codes for faults the row does not ask about, and would lose the exact fault each type names. The criterion now says what is built. This is a scope note, taken under the maintainers' standing instruction of 2026-10-22.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E13-T15's "no `kernels` API returns another error type" becomes "`kernels` defines no error type of its own besides typed validation errors of its layout and file parsers, and the provider trait and every former `kernels::Error` site return `core::Error`"; no edge | COMP-E13-T15 | — | a scope note: the stand-in is gone, and the parsers' typed errors stay, as RFC-0040 §13 publishes no codes for them |
