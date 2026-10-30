@@ -1325,3 +1325,13 @@ PROD-E9-T12 (M1a) records the process host's own kills with the host's reason. T
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E1-T16 gains "the supervisor shell's `Effects::kill(reason)` calls `ProcessRunner::kill(HostKill::Supervisor(reason))`, so the supervisor's kills reach the process host and leave PROD-E9-T12's crash record". DIST-E1-T16 → PROD-E9-T12 | DIST-E1-T16 | R9 | the sentence uses `HostKill` and the reasoned `ProcessRunner::kill`, which PROD-E9-T12 builds. M1a → M1a, and PROD-E9-T12 (on PROD-E9-T04 and DIST-E1-T04) does not reach DIST-E1-T16, so the edge adds no cycle |
+
+## QUAL-E16-T24's Windows, macOS and publishing legs split out (2026-10-30)
+
+QUAL-E16-T24 (M0a) builds the Linux build image and its pins. Its row also asked for the MSVC, Xcode and Metal compiler pins and version prints on Windows and macOS. Those versions come with the hosted runner images and can only be pinned from a job's own report. Publishing the image needs a registry account, which is a maintainer's. Each part moves to a new task, and the task that uses the Windows and macOS pins gains an edge to it. #1876 first numbered the new tasks QUAL-E16-T29 and T30, but main has since given QUAL-E16-T29 to the build-ID check through the real runner (#1970), so they are T30 and T31.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New task QUAL-E16-T30 (M0a): the Windows and macOS toolchain pins and version-print jobs. QUAL-E16-T30 → QUAL-E16-T24. QUAL-E16-T24's MSVC, Xcode and Metal compiler pins and its Windows and macOS version prints move to it | QUAL-E16-T24, QUAL-E16-T30 | R9 | a scope split: those pins come from the hosted runner images' own reports, which the Linux image does not need |
+| New task QUAL-E16-T31 (M1a): publish the Linux build image, a **Maintainer action**. QUAL-E16-T31 → QUAL-E16-T24 | QUAL-E16-T31 | R9 | a scope split: publishing needs the registry account and credentials, which are a maintainer's |
+| QUAL-E16-T01's task cell names the Windows and macOS pins and version prints as QUAL-E16-T24's and QUAL-E16-T30's, in place of listing them. QUAL-E16-T01 → QUAL-E16-T30 | QUAL-E16-T01 | R9 | its criterion needs CMake and a C++ compiler at the pinned versions on all three Tier 1 build environments, with a version print in each job, and the Windows and macOS pins are now QUAL-E16-T30's. M0b → M0a, and QUAL-E16-T30 does not reach QUAL-E16-T01, so the edge adds no cycle |
