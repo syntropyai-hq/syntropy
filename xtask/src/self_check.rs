@@ -10,9 +10,10 @@
 //! when
 //!
 //! - a pattern of a rule matches no tracked file (a removed or moved path);
-//! - a file under a pattern does not make its job required, alone in its own diff;
-//! - the combined diff does not require exactly the direct jobs, or does not run exactly the
-//!   hosted jobs the rules give it.
+//! - a file under a pattern does not select its job, alone in its own diff: a lab job must be
+//!   required, a hosted job must run, and a planned hosted job must be listed as planned;
+//! - the combined diff does not require exactly the lab direct jobs, or does not run exactly the
+//!   hosted jobs the rules give it, hosted direct jobs included.
 //!
 //! A pattern with no tracked file under a rule whose job is `planned` is reported and passes: the
 //! suite or rig the rule is for does not exist yet, and its task adds the paths.
@@ -44,6 +45,16 @@ fn direct_rules(config: &Config) -> impl Iterator<Item = (&Job, &Vec<Glob>)> {
     })
 }
 
+/// Whether `affected` selects `job`: a lab job is required, a planned hosted job is listed as
+/// planned, and any other hosted job runs.
+fn selects(affected: &changes::Affected, job: &Job) -> bool {
+    match (job.runner, &job.planned) {
+        (Runner::Lab, _) => affected.hw_required.contains(&job.name),
+        (Runner::Hosted, Some(_)) => affected.planned.iter().any(|(name, _)| *name == job.name),
+        (Runner::Hosted, None) => affected.jobs.contains(&job.name),
+    }
+}
+
 /// The crate that owns `path` for the closure: its member, or the readers of the input it is.
 fn owners(config: &Config, workspace: &Workspace, path: &str) -> BTreeSet<String> {
     if let Some(name) = workspace.crate_of(path) {
@@ -69,6 +80,7 @@ type Rules = dyn Fn(&Config, &Workspace, &[String], &BTreeSet<String>) -> change
 fn check_with(config: &Config, workspace: &Workspace, files: &[String], apply: &Rules) -> Outcome {
     let mut out = Outcome::default();
     let mut required = BTreeSet::new();
+    let mut hosted_direct = BTreeSet::new();
     let mut picked = BTreeSet::new();
     for (job, patterns) in direct_rules(config) {
         let mut met = false;
@@ -92,9 +104,9 @@ fn check_with(config: &Config, workspace: &Workspace, files: &[String], apply: &
                 std::slice::from_ref(file),
                 &BTreeSet::new(),
             );
-            if !alone.hw_required.contains(&job.name) {
+            if !selects(&alone, job) {
                 out.problems.push(format!(
-                    "rule `{}`: `{file}`, under pattern `{}`, does not require `{}`",
+                    "rule `{}`: `{file}`, under pattern `{}`, does not select `{}`",
                     job.name,
                     pattern.as_str(),
                     job.name
@@ -103,8 +115,16 @@ fn check_with(config: &Config, workspace: &Workspace, files: &[String], apply: &
             out.diff.push((file.clone(), job.name.clone()));
             picked.insert(file.clone());
         }
-        if met {
-            required.insert(job.name.clone());
+        match (met, job.runner, &job.planned) {
+            (false, ..) => {}
+            (true, Runner::Lab, _) => {
+                required.insert(job.name.clone());
+            }
+            (true, Runner::Hosted, None) => {
+                hosted_direct.insert(job.name.clone());
+            }
+            // A planned hosted job does not run; the per-file check saw it listed as planned.
+            (true, Runner::Hosted, Some(_)) => {}
         }
     }
 
@@ -137,7 +157,7 @@ fn check_with(config: &Config, workspace: &Workspace, files: &[String], apply: &
             When::Closure {
                 crates: Some(crates),
             } => crates.iter().any(|c| closure.contains(c)),
-            When::Direct { .. } => false,
+            When::Direct { .. } => hosted_direct.contains(&job.name),
         })
         .map(|job| job.name.clone())
         .collect();

@@ -123,7 +123,7 @@ fn a_file_that_does_not_require_its_job_fails_and_names_the_rule_and_pattern() {
     let problems = run(&tweaked(1, |a| a.hw_required.retain(|j| j != "hw-a")));
     assert!(
         problems.iter().any(|p| p.contains("rule `hw-a`")
-            && p.contains("does not require `hw-a`")
+            && p.contains("does not select `hw-a`")
             && p.contains("crates/kernels/**")),
         "{problems:?}"
     );
@@ -155,4 +155,82 @@ fn a_hosted_job_that_ran_and_no_rule_expects_fails_and_names_it() {
     let problems = run(&tweaked(3, |a| a.jobs.push("extra".to_owned())));
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("`extra`") && problems[0].contains("no rule expects"));
+}
+
+const HOSTED_RULES: &str = r#"
+[job.tool-check]
+runner = "hosted"
+when = "direct"
+paths = ["ci/tools.toml", "xtask/src/tools.rs"]
+[job.tool-later]
+runner = "hosted"
+when = "direct"
+paths = ["ci/later.toml"]
+planned = "QUAL-E9-T99"
+"#;
+
+fn hosted_config() -> Config {
+    Config::parse(&format!("{RULES}{HOSTED_RULES}")).unwrap()
+}
+
+fn hosted_tree() -> Vec<String> {
+    let mut tree = files(TREE);
+    tree.extend(files(&[
+        "ci/tools.toml",
+        "xtask/src/tools.rs",
+        "ci/later.toml",
+    ]));
+    tree
+}
+
+#[test]
+fn a_hosted_direct_rule_passes_when_its_files_run_its_job() {
+    let out = check(&hosted_config(), &workspace(), &hosted_tree());
+    assert_eq!(out.problems, Vec::<String>::new());
+    assert!(
+        out.diff
+            .iter()
+            .any(|(f, r)| f == "xtask/src/tools.rs" && r == "tool-check")
+    );
+    assert!(
+        out.diff
+            .iter()
+            .any(|(f, r)| f == "ci/later.toml" && r == "tool-later")
+    );
+}
+
+#[test]
+fn a_hosted_direct_rule_whose_file_does_not_run_its_job_fails() {
+    // The engine no longer runs `tool-check` for a lone file: as if its pattern were dropped.
+    let apply = tweaked(1, |a| a.jobs.retain(|j| j != "tool-check"));
+    let problems = check_with(&hosted_config(), &workspace(), &hosted_tree(), &apply).problems;
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("rule `tool-check`") && p.contains("ci/tools.toml")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_hosted_direct_job_missing_from_the_combined_diff_fails() {
+    let len = check(&hosted_config(), &workspace(), &hosted_tree())
+        .diff
+        .len();
+    let apply = tweaked(len, |a| a.jobs.retain(|j| j != "tool-check"));
+    let problems = check_with(&hosted_config(), &workspace(), &hosted_tree(), &apply).problems;
+    assert_eq!(
+        problems,
+        ["hosted job `tool-check` did not run on the combined diff"]
+    );
+}
+
+#[test]
+fn a_planned_hosted_direct_rule_that_is_not_listed_as_planned_fails() {
+    let apply = tweaked(1, |a| a.planned.retain(|(j, _)| j != "tool-later"));
+    let problems = check_with(&hosted_config(), &workspace(), &hosted_tree(), &apply).problems;
+    assert!(
+        problems.iter().any(|p| p.contains("rule `tool-later`")),
+        "{problems:?}"
+    );
 }
