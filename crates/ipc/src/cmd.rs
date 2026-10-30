@@ -123,7 +123,9 @@ pub use fault::{
 /// §18.50). Every earlier message keeps its index and layout, but a 5.0 runner sends them whenever
 /// it fetches a shard or commits a pack, and a 4.x daemon cannot decode either, so by the same rule
 /// the major moves.
-pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 5, minor: 0 };
+/// 6.0 appends `ProbeResult` to [`RunnerMsg`] (DIST-E1-T17; RFC-0001 §3.5). A probe-mode process
+/// sends it after `Hello`, and a 5.x daemon cannot decode it, so the major moves again.
+pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 6, minor: 0 };
 
 /// The byte stream a command channel runs over: an OS [`Stream`] between processes, or a
 /// [`memory::MemoryStream`] between threads of one process (RFC-0001 §3.1, `RunnerHost::InProcess`;

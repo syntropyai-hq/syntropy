@@ -1362,6 +1362,23 @@ COMP-E11-T14 (M1a) asked that "throughput stays at the volume's sequential read 
 |---|---|---|---|
 | COMP-E11-T14's "throughput stays at the volume's sequential read rate" becomes "the chunk hashes add at most 15 % [target] to the time of the SHA-256 pass alone, page cache". New task COMP-E11-T24 (M1a): the cold-cache indexing benchmark on R-ADA, within 10 % [target] of RFC-0041 §4.3's `t_index`. COMP-E11-T24 → COMP-E11-T14, QUAL-E15-T02 | COMP-E11-T14, COMP-E11-T24 | R9 | the drive-bound check needs R-ADA's NVMe (QUAL-E15-T02, M0a, before M1a), and neither target reaches COMP-E11-T24, so the edges add no cycle |
 
+## DIST-E17-T16's network ban is Linux's at M1 (2026-10-29)
+
+RFC-0034 §10.4 asks for a header-parsing child with no network access from M1, and keeps the OS sandbox profiles that ban the network at M4. On Linux, a seccomp filter that refuses new sockets works unprivileged everywhere, where an unprivileged network namespace does not (Ubuntu 24.04 denies it by default). The maintainers chose seccomp for Linux now and the rest at M4.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| DIST-E17-T16's "a connect attempt from the child fails on each Tier 1 OS" narrows to Linux; the macOS and Windows criterion moves to DIST-E17-T08 (M4) | DIST-E17-T16, DIST-E17-T08 | R9 | the macOS sandbox profile and Windows AppContainer that ban the network are DIST-E17-T08's |
+| DIST-E17-T16's "a header over the memory limit is refused" is tested on Linux, and on Windows the job object sets the limit; on macOS the criterion moves to DIST-E17-T08's profile | DIST-E17-T16, DIST-E17-T08 | R1 | the hosted macOS runner refused `setrlimit(RLIMIT_DATA)` with `EINVAL` (2026-10-30), and macOS does not enforce `RLIMIT_AS`. Until DIST-E17-T08, the child's memory there is bounded only by the 256 MiB header cap, about 1 GiB at its peak [estimate: 4 to 5 copies of a header at the cap], and by the CPU and wall-clock limits. Proposed, for the maintainers to confirm |
+
+## COMP-E9-T19's `cuda13` check moves to the task that builds the library (2026-10-30)
+
+COMP-E9-T19 (M1a) puts the provider entry symbol under `SYNTROPY_PROVIDER_1`, and its row asked for `readelf -V` of the test provider library and of the `cuda13` provider library. No `cuda13` provider library exists until COMP-E9-T08 assembles it, and COMP-E9-T08 already depends on COMP-E9-T19.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E9-T19's criterion keeps the test provider library; the `cuda13` library's `readelf -V` check moves to COMP-E9-T08 | COMP-E9-T19, COMP-E9-T08 | R1 | the library a criterion checks must exist when the task closes. Proposed, for the maintainers to confirm |
+
 ## COMP-E7-T01's bit-exact leg moves to the tasks that build the reference (2026-10-30)
 
 COMP-E7-T01 (M0a) vendors ggml and builds the core's static copy. Its criterion asked that "ggml CPU dequantisation and `get_rows` match `kernels::reference` bit for bit on x86-64 and arm64 builds". `kernels::reference` has neither yet. The reference dequantisers are COMP-E13-T02, whose own criterion is "bit-exact against ggml's `dequantize_row_*` at the pinned commit", and which depends on COMP-E7-T01, so an edge back would be a cycle. `RowGather`'s reference is COMP-E1-T03, which COMP-E7-T01 does not depend on. Each comparison moves to the task that builds its reference side, and COMP-E7-T01 keeps a check that its bindings run the two operations. This was taken under the maintainers' standing instruction of 2026-10-22, 2026-10-30.

@@ -28,10 +28,12 @@ use super::link::LinkCaps;
 /// process to its daemon. Owner: RFC-0010.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CapabilityProfile {
-    /// The node it describes.
+    /// The node it describes. A probe process leaves it zero, and the daemon stamps it
+    /// (DIST-E1-T17).
     pub node: NodeId,
     /// Bumped on each change; the coordinator takes a `ReportProfile` only if newer
-    /// (RFC-0010 §1.4).
+    /// (RFC-0010 §1.4). A probe process leaves it 0, which is never newer, and the daemon stamps
+    /// it.
     pub version: u64,
     /// One record per device.
     pub devices: Vec<DeviceCaps>,

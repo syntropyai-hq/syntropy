@@ -1223,8 +1223,15 @@ fn the_punch_after_a_write_scans_a_bounded_window_whatever_the_file_length() {
     let scratch = Scratch::new("window");
     let root = scratch.root();
     let blobs = Blobs::open_with(&root, &FatUnix).unwrap();
-    // The chunks within the window either side, plus the one each side that straddles its edge.
-    let bound = 2 * (PUNCH_WINDOW_BYTES / CHUNK_BYTES) as usize + 2;
+    // The chunks within the window either side, plus the one each side that straddles its edge:
+    // 2 × (32 MiB / 4 MiB) + 2. Pinned, so a change to either constant fails here rather than
+    // moving the bound with it; RFC-0041 §4.2's note states 18.
+    let bound = 18;
+    assert_eq!(
+        2 * (PUNCH_WINDOW_BYTES / CHUNK_BYTES) as usize + 2,
+        bound,
+        "PUNCH_WINDOW_BYTES or CHUNK_BYTES changed; update RFC-0041 §4.2's note and this bound"
+    );
     let mut worst = Vec::new();
     for (file, len) in [64 * MIB, 1 << 30, 16 << 30].into_iter().enumerate() {
         let chunks = chunk_file(len, 0, []).unwrap();

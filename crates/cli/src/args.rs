@@ -149,18 +149,64 @@ pub enum Command {
     /// A staged build's self-test, which the updater runs (RFC-0052 §7.3)
     #[command(name = "__selftest", hide = true)]
     Selftest(SelftestArgs),
+    /// A newly added model file's header, parsed in a confined child (RFC-0034 §10.4)
+    #[command(name = "__header", hide = true)]
+    Header(HeaderArgs),
 }
 
-/// `syntropy __runner --ipc <handle> --region <handle>`.
+/// `syntropy __header --kind <kind> --path <file> --memory <bytes> --cpu-secs <n> --open-files
+/// <n> --max-header-bytes <bytes>`: parse one file's header under the limits, write the file's
+/// length and the validated header's bytes to stdout, and exit 0; exit 8 when the header is
+/// refused, or 5 when the child cannot be confined (DIST-E17-T16).
+#[derive(Clone, Debug, Args)]
+pub struct HeaderArgs {
+    /// The file's format: `gguf` or `safetensors`
+    #[arg(long, value_name = "KIND")]
+    pub kind: HeaderKind,
+    /// The file
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
+    pub path: PathBuf,
+    /// The memory limit, in bytes
+    #[arg(long, value_name = "BYTES")]
+    pub memory: u64,
+    /// The CPU-time limit, in seconds
+    #[arg(long, value_name = "SECONDS")]
+    pub cpu_secs: u64,
+    /// The open-files limit
+    #[arg(long, value_name = "N")]
+    pub open_files: u64,
+    /// The longest header accepted, in bytes
+    #[arg(long, value_name = "BYTES")]
+    pub max_header_bytes: u64,
+    /// Instead of parsing, try to connect to this address once confined, and exit 0 only if the
+    /// attempt is refused: the check that the child has no network
+    #[arg(long, value_name = "ADDR", hide = true)]
+    pub check_network: Option<std::net::SocketAddr>,
+}
+
+/// A header's format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum HeaderKind {
+    /// GGUF, v2 or v3.
+    Gguf,
+    /// safetensors.
+    Safetensors,
+}
+
+/// `syntropy __runner --ipc <handle> --region <handle>`, or `syntropy __runner --probe --ipc
+/// <handle>`.
 #[derive(Clone, Debug, Args)]
 pub struct RunnerArgs {
+    /// Probe mode: report the node's measurements and exit, with no region (DIST-E1-T17)
+    #[arg(long, conflicts_with = "region")]
+    pub probe: bool,
     /// The runner's end of the command channel, inherited from the daemon: `fd:<n>` or
     /// `handle:<n>`
     #[arg(long, value_name = "HANDLE")]
     pub ipc: ChannelHandle,
     /// The runner's shared-memory region: `fd:<n>` (inherited) or `name:<name>`
-    #[arg(long, value_name = "HANDLE")]
-    pub region: RegionHandle,
+    #[arg(long, value_name = "HANDLE", required_unless_present = "probe")]
+    pub region: Option<RegionHandle>,
 }
 
 /// `syntropy __selftest --root <root>`.

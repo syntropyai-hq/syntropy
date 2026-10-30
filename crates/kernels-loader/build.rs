@@ -7,9 +7,11 @@
 //! The single export needs no flag. For every `cdylib`, rustc passes the linker an export list of
 //! the `#[no_mangle]` symbols (a version script on Linux, `-exported_symbols_list` on macOS, an
 //! export file on Windows) and makes everything else local, so `export!`'s entry symbol is the
-//! only one the library exports. `tests/exports.rs` checks that on each OS. A named ELF version
-//! node (`SYNTROPY_PROVIDER_1`) cannot be added with a second script: rustc's script is
-//! anonymous, and GNU ld refuses to combine an anonymous version tag with a named one.
+//! only one the library exports. `tests/exports.rs` checks that on each OS. On Linux the named ELF
+//! version node (`SYNTROPY_PROVIDER_1`) cannot be added with a second script, because rustc's is
+//! anonymous and GNU ld and lld refuse to combine an anonymous version tag with a named one. So
+//! `.cargo/config.toml` links through `ci/link/provider-cc`, which swaps rustc's
+//! script for `provider.map` when it lists the entry symbol (COMP-E9-T19).
 //!
 //! `cargo::rustc-link-arg-examples` does not reach an example built as a `cdylib`, so this uses
 //! `cargo::rustc-link-arg`, which applies to every binary-like target of the package: the test

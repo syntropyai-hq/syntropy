@@ -18,6 +18,9 @@ syntropy-cluster = { path = "../cluster" }
 syntropy-ipc = { path = "../ipc" }
 # Unified logging and the Windows event log, the OS log facilities `io` alone links (RFC-0053 §4.2).
 syntropy-io = { path = "../io" }
+# The GGUF and safetensors header readers, run on the bytes a confined header child vetted
+# (RFC-0034 §10.4; DIST-E17-T16).
+syntropy-manifest = { path = "../manifest" }
 # Hot-thread `LogRecord`s and their callsites, which the daemon formats (RFC-0053 §4.1).
 syntropy-obs = { path = "../obs" }
 # The subscriber for async code's events (RFC-0053 §4.1).

@@ -302,8 +302,11 @@ fn runner_msgs() -> Vec<RunnerMsg> {
             ),
             sidecar: Blake3([0x5c; 32]),
         },
+        RunnerMsg::ProbeResult {
+            profile: probe_profile(),
+        },
     ]);
-    let mut seen = [false; 6];
+    let mut seen = [false; 7];
     for msg in &all {
         seen[match msg {
             RunnerMsg::Hello(_) => 0,
@@ -312,6 +315,7 @@ fn runner_msgs() -> Vec<RunnerMsg> {
             RunnerMsg::SequenceEnded { .. } => 3,
             RunnerMsg::FetchShard { .. } => 4,
             RunnerMsg::PackCommitted { .. } => 5,
+            RunnerMsg::ProbeResult { .. } => 6,
         }] = true;
     }
     assert!(
@@ -319,6 +323,19 @@ fn runner_msgs() -> Vec<RunnerMsg> {
         "a RunnerMsg variant has no fixture"
     );
     all
+}
+
+/// A probe's profile as a probe-mode process sends it: `node` and `version` unset, for the
+/// daemon to stamp, and no devices measured yet (PLC-E1-T07 adds them).
+fn probe_profile() -> syntropy_core::resource::CapabilityProfile {
+    syntropy_core::resource::CapabilityProfile {
+        node: NodeId([0; 32]),
+        version: 0,
+        devices: vec![],
+        storage: vec![],
+        links: vec![],
+        ext: Default::default(),
+    }
 }
 
 /// A shard of three groups and two chunks, its digest a stand-in: `ipc` links no BLAKE3, and
@@ -423,6 +440,7 @@ fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
         ("SequenceEnded", 3),
         ("FetchShard", 4),
         ("PackCommitted", 5),
+        ("ProbeResult", 6),
     ];
     for msg in runner_msgs() {
         let name = format!("{msg:?}");
@@ -432,7 +450,43 @@ fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
             .expect("a known variant");
         assert_eq!(runner(&msg), *want, "{name}");
     }
-    assert_eq!(PROTOCOL, IpcProtocol { major: 5, minor: 0 });
+    assert_eq!(PROTOCOL, IpcProtocol { major: 6, minor: 0 });
+}
+
+/// Why 6.0 is a major bump: a 5.x daemon's `RunnerMsg` ends at `PackCommitted`, so it refuses
+/// `ProbeResult`, which a 6.0 probe-mode process sends. The messages it knows still read as
+/// themselves.
+#[test]
+fn a_5_x_daemon_cannot_read_the_message_6_0_appends() {
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code, reason = "only whether it decodes matters")]
+    enum RunnerMsgV5 {
+        Hello(Hello),
+        StateChanged {
+            state: RunnerState,
+            epoch: PlanEpoch,
+        },
+        Pong,
+        SequenceEnded {
+            seq: SequenceId,
+            outcome: SequenceOutcome,
+        },
+        FetchShard {
+            spec: ShardSpec,
+            priority: FetchPriority,
+        },
+        PackCommitted {
+            key: PackKey,
+            sidecar: Blake3,
+        },
+    }
+    for msg in runner_msgs() {
+        let bytes = postcard::to_allocvec(&msg).unwrap();
+        let old = postcard::from_bytes::<RunnerMsgV5>(&bytes);
+        let appended = matches!(msg, RunnerMsg::ProbeResult { .. });
+        assert_eq!(old.is_err(), appended, "{msg:?}");
+    }
+    assert_ne!(PROTOCOL.major, 5);
 }
 
 /// Why 5.0 is a major bump: a 4.x daemon's `RunnerMsg` ends at `SequenceEnded`, so it refuses
@@ -459,7 +513,9 @@ fn a_4_x_daemon_cannot_read_the_messages_5_0_appends() {
         let old = postcard::from_bytes::<RunnerMsgV4>(&bytes);
         let appended = matches!(
             msg,
-            RunnerMsg::FetchShard { .. } | RunnerMsg::PackCommitted { .. }
+            RunnerMsg::FetchShard { .. }
+                | RunnerMsg::PackCommitted { .. }
+                | RunnerMsg::ProbeResult { .. }
         );
         assert_eq!(old.is_err(), appended, "{msg:?}");
     }
