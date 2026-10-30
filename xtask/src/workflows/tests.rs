@@ -880,6 +880,7 @@ fn the_policy_file_needs_its_three_fields() {
     assert!(policy.github_owned && !policy.verified);
     for bad in [
         "{",
+        r#"{"github_owned_allowed": true, "verified_allowed": false, "patterns_allowed": ["space-org/*", "!space-org/action@*"]}"#,
         r#"{"verified_allowed": false, "patterns_allowed": []}"#,
         r#"{"github_owned_allowed": true, "verified_allowed": false}"#,
         r#"{"github_owned_allowed": true, "verified_allowed": false, "patterns_allowed": [1]}"#,
@@ -910,4 +911,59 @@ fn a_tree_without_the_policy_file_fails() {
     assert!(!pass, "{log}");
     assert!(log.contains(SELECTED_ACTIONS), "{log}");
     assert!(log.contains("the allowed-actions check needs it"), "{log}");
+}
+
+/// review-b's probe on #1991: a policy that allows `space-org/*` and blocks
+/// `space-org/action@*`. GitHub refuses that action, so the lint must not pass it: the file
+/// with a block pattern fails to parse, and the tree fails.
+#[test]
+fn a_block_pattern_fails_closed() {
+    let json = r#"{"github_owned_allowed":true,"verified_allowed":false,"patterns_allowed":["space-org/*","!space-org/action@*"]}"#;
+    let error = AllowedActions::parse(json).expect_err("a block pattern");
+    assert!(
+        error.contains("block pattern `!space-org/action@*`"),
+        "{error}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("syntropy-workflows-block-{}", std::process::id()));
+    let workflows = dir.join(".github/workflows");
+    std::fs::create_dir_all(&workflows).unwrap();
+    std::fs::create_dir_all(dir.join("ci/repo-settings")).unwrap();
+    std::fs::write(dir.join(SELECTED_ACTIONS), json).unwrap();
+    std::fs::write(
+        workflows.join("ci.yml"),
+        format!(
+            "on: [push]\npermissions:\n  contents: read\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    \
+             steps:\n      - uses: space-org/action@{SHA}\n"
+        ),
+    )
+    .unwrap();
+    let mut log = Vec::new();
+    let pass = run(&dir, &mut log).expect("readable");
+    let log = String::from_utf8(log).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(!pass, "{log}");
+    assert!(log.contains("block pattern"), "{log}");
+}
+
+/// GitHub allows the repository's own organization's actions under a selected-actions policy,
+/// so the lint does too, in any case.
+#[test]
+fn the_repositorys_own_organization_is_allowed() {
+    let policy = AllowedActions {
+        github_owned: false,
+        ..github_owned_only()
+    };
+    for uses in [
+        format!("syntropyai-hq/some-action@{SHA}"),
+        format!("SyntropyAI-HQ/other/.github/workflows/w.yml@{SHA}"),
+    ] {
+        let workflow = format!("jobs:\n  a:\n    steps:\n      - uses: {uses}\n");
+        assert!(
+            check_allowed("w.yml", &workflow, &policy).is_empty(),
+            "{uses}"
+        );
+    }
+    let other = format!("jobs:\n  a:\n    steps:\n      - uses: syntropyai-hq-fork/act@{SHA}\n");
+    assert_eq!(check_allowed("w.yml", &other, &policy).len(), 1);
 }

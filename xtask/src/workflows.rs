@@ -53,10 +53,14 @@
 //! `secrets: inherit`. It holds a write token when its own `permissions`, or the workflow's where
 //! it sets none, grant any scope `write`.
 //!
-//! **Allowed actions.** A local action (`./…`) is always allowed. An action whose owner is
-//! `actions` or `github`, without case, is allowed when the file's `github_owned_allowed` is
-//! true. Any other must match one of its `patterns_allowed`, in which `*` stands for any run of
-//! characters and case is ignored, as `owner/repo@*` or `owner/*`. A `docker://` image is not an
+//! **Allowed actions.** A local action (`./…`) is always allowed, and so is one of this
+//! repository's own organization (the owner of [`REPOSITORY`]), as GitHub allows its own
+//! organization's actions under a selected-actions policy. An action whose owner is `actions` or
+//! `github`, without case, is allowed when the file's `github_owned_allowed` is true. Any other
+//! must match one of its `patterns_allowed`, in which `*` stands for any run of characters and
+//! case is ignored throughout, the `@ref` included, as `owner/repo@*` or `owner/*`. A `!` block
+//! pattern makes the file fail to parse: GitHub lets a block override a broader allow, and this
+//! lint does not evaluate blocks, so it fails rather than approve what GitHub refuses. A `docker://` image is not an
 //! action, so the policy does not reach it (the pin rule does), and a computed `uses:` already
 //! fails the pin rule. When `verified_allowed` is true, an action no pattern matches fails, since
 //! whether its creator is verified cannot be read from the repository. A missing or malformed
@@ -64,6 +68,8 @@
 //! repo-settings` compares the two), so this lint reads only the file.
 //!
 //! **Limits.** A file cannot show these, so the lint does not check them:
+//! - the actions a remote reusable workflow or a remote composite action uses inside it, which
+//!   GitHub also checks against the allowed-actions policy;
 //! - whether a 40-hex `@` is a commit, rather than a tag or branch of that name;
 //! - a fork of `actions/checkout` under another name;
 //! - a ref that reaches a checkout through `env` or a step's outputs, unless it is an expression
@@ -892,10 +898,14 @@ impl AllowedActions {
             .and_then(serde_json::Value::as_array)
             .ok_or("has no list `patterns_allowed`")?
             .iter()
-            .map(|p| {
-                p.as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| "has a `patterns_allowed` entry that is not a string".to_owned())
+            .map(|p| match p.as_str() {
+                None => Err("has a `patterns_allowed` entry that is not a string".to_owned()),
+                Some(block) if block.trim_start().starts_with('!') => Err(format!(
+                    "has a block pattern `{block}`, which this lint does not evaluate; GitHub \
+                     lets a block override a broader allow, so passing it could approve what \
+                     GitHub refuses"
+                )),
+                Some(pattern) => Ok(pattern.to_owned()),
             })
             .collect::<Result<_, _>>()?;
         Ok(Self {
@@ -911,6 +921,10 @@ impl AllowedActions {
             return None;
         }
         let owner = uses.split('/').next().unwrap_or_default();
+        let own_org = REPOSITORY.split('/').next().unwrap_or_default();
+        if owner.eq_ignore_ascii_case(own_org) {
+            return None;
+        }
         if self.github_owned
             && (owner.eq_ignore_ascii_case("actions") || owner.eq_ignore_ascii_case("github"))
         {
