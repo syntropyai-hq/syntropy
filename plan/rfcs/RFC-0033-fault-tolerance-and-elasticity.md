@@ -503,6 +503,8 @@ pub enum DegradeDetail {
 }
 ```
 
+*Settled 2026-10-30 (OQ-NET-36, option (a), taken under the maintainers' standing instruction of 2026-10-22, 2026-10-30):* a change of `degraded` while a runner stays `Ready` is not a transition of RFC-0001 §3.3, and sends no `StateChanged`. The runner reports it in a message of its own, `RunnerMsg::DegradationChanged { degraded: Option<Degradation> }`, sent each time the set changes, and the daemon forwards it as it forwards `StateChanged` (RFC-0001 §3.5), so the dashboard and response metadata show it. One `StateChanged` per transition stays the rule its property test pins. DIST-E14-T13, the task that first sets `degraded`, adds the message with the `ipc_protocol` bump it already makes.
+
 #### 7.2 Absorbing a lost stage
 
 - `Absorb` gives one or two survivors an extra stage through `ExtendShard` (RFC-0032 §4.1). The survivor's runner keeps its own stage, unchanged, and loads the new layers into whatever tiers the repair plan assigns. Those are usually `HostPinned` with CPU execute-in-place, or `Nvme` with an expert cache for MoE layers.

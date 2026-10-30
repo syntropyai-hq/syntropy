@@ -1325,3 +1325,13 @@ PROD-E9-T12 (M1a) records the process host's own kills with the host's reason. T
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | DIST-E1-T16 gains "the supervisor shell's `Effects::kill(reason)` calls `ProcessRunner::kill(HostKill::Supervisor(reason))`, so the supervisor's kills reach the process host and leave PROD-E9-T12's crash record". DIST-E1-T16 → PROD-E9-T12 | DIST-E1-T16 | R9 | the sentence uses `HostKill` and the reasoned `ProcessRunner::kill`, which PROD-E9-T12 builds. M1a → M1a, and PROD-E9-T12 (on PROD-E9-T04 and DIST-E1-T04) does not reach DIST-E1-T16, so the edge adds no cycle |
+
+## OQ-IO-30 and OQ-NET-36 settled, and the daemon's bind before its first spawn (2026-10-30)
+
+Two open questions are settled with their recommended options, under the maintainers' standing instruction of 2026-10-22, 2026-10-30: OQ-IO-30 in RFC-0022 §9 and OQ-NET-36 in RFC-0033 §7.1. Each answer is built by the task the register already named, so each row gains the criterion that checks it, and no edge. A third row gains an ordering criterion found while fixing a macOS test flake (#1987). On Apple platforms std marks a new socket close-on-exec only after `socket()` returns, so a child process spawned while the daemon binds its local socket would hold the listener.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| TIER-E7-T14 gains "under `K8V4` a latent entry is stored as `Q8`" and the criterion that a latent layer under `K8V4` stores `Q8` pages of the size `KvFormula::stored` gives; no edge | TIER-E7-T14 | — | a scope note: OQ-IO-30's answer is this task's storage rule |
+| DIST-E14-T13 gains `RunnerMsg::DegradationChanged` in its `ipc_protocol` bump, and the criterion that a change of `degraded` inside `Ready` reaches the daemon as one `DegradationChanged` and no `StateChanged`; no edge | DIST-E14-T13 | — | a scope note: OQ-NET-36's answer; this task first sets `degraded` |
+| PROD-E6-T02 gains the criterion that the daemon binds its local socket before it spawns any child process, on start and on restart; no edge | PROD-E6-T02 | — | a scope note: `serve` both binds the listeners and starts the probe's process, so the order is its to keep |
