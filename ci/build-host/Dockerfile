@@ -43,6 +43,11 @@ RUN curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --re
  && rm -rf /var/lib/apt/lists/* \
  && chown -R runner:runner /home/runner
 
+# The job-started hook refuses any job but `pr.yml` on a PR from a branch of this repository
+# (ADR-0625 decision 6). Root owns it, and the runner runs it before the job's first step.
+COPY --chmod=0755 ci/build-host/job-started.sh /opt/build-host/job-started.sh
+ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/build-host/job-started.sh
+
 USER runner
 ENV PATH=/home/runner/.cargo/bin:$PATH
 COPY --chown=runner:runner rust-toolchain.toml /tmp/toolchain/rust-toolchain.toml

@@ -20,9 +20,11 @@ token="$(cat "${CREDENTIALS_DIRECTORY:?run under systemd with LoadCredential=tok
 name="$(hostname -s)-${slot}-$(date +%s)"
 request="$(jq -n --arg name "$name" --arg label "$label" \
   '{name: $name, runner_group_id: 1, labels: [$label], work_folder: "_work"}')"
-jit="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 --retry 3 \
+# The token goes to curl on stdin, never in its arguments, which any local user can read.
+jit="$(printf 'Authorization: Bearer %s\n' "$token" |
+  curl --fail --silent --show-error --proto '=https' --tlsv1.2 --retry 3 \
   -X POST \
-  -H "Authorization: Bearer $token" \
+  -H @- \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
   --data "$request" \
@@ -34,14 +36,21 @@ unset token
 # A container left by a killed run would hold the name.
 docker rm --force "syntropy-build-$slot" >/dev/null 2>&1 || true
 
-# Public DNS: the network cannot reach the LAN resolver (egress.sh). `SYS_NICE` lets Docker's
-# default seccomp profile allow `mbind`, which `syntropy-tier`'s NUMA tests call; it reaches only
-# processes in the container's own PID namespace.
+# Public DNS: the network cannot reach the LAN resolver (egress.sh). Capabilities: every one is
+# dropped, then the job gets back only what sudo, `useradd` and the IPC peer test need, and
+# `SYS_NICE`, with which Docker's default seccomp profile allows `mbind` for `syntropy-tier`'s
+# NUMA tests; each reaches only the container's own namespaces. No `NET_RAW`, so a job cannot
+# forge packets on the bridge. The configuration reaches the container through the environment,
+# by name, not through docker's arguments.
+export JITCONFIG="$jit"
 exec docker run --rm --init \
   --name "syntropy-build-$slot" \
   --network syntropy-build \
   --dns 1.1.1.1 --dns 9.9.9.9 \
-  --cap-add SYS_NICE \
-  --memory "$memory" --pids-limit 16384 \
-  --env JITCONFIG="$jit" \
+  --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID \
+  --cap-add KILL --cap-add AUDIT_WRITE --cap-add SYS_NICE \
+  --security-opt apparmor=docker-default \
+  --memory "$memory" --memory-swap "$memory" --pids-limit 16384 \
+  --env JITCONFIG \
   "$image"
