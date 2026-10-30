@@ -120,5 +120,9 @@ build = "17F113"
 clang = { verified = false }
 
 # From Xcode 26 the Metal toolchain is a component of its own, and the report does not list it.
+# When the image lacks it, `toolchains-macos` fetches it with `xcodebuild -downloadComponent
+# MetalToolchain`, and says so in its log. That download has no checksum pin of ours: Apple serves
+# it as a signed Xcode component, under the same trust root as Xcode itself, and publishes no
+# digest to pin. The job checks the compiler's printed version against this pin instead.
 [macos.metal]
 verified = false

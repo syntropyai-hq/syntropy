@@ -13,7 +13,9 @@
 //!   version and build, Apple clang's version and the Metal compiler's version against the pins.
 //!   From Xcode 26 the Metal toolchain is a component of its own, which the image does not always
 //!   hold; when `metal` reports it missing, the job fetches it with `xcodebuild
-//!   -downloadComponent MetalToolchain` and asks again.
+//!   -downloadComponent MetalToolchain`, logs that it did, and asks again. That download has no
+//!   checksum pin of ours: it is Apple's signed component, under Xcode's own trust root, with no
+//!   published digest, so the printed version is what the job checks.
 //!
 //! Each job prints every version it read, then fails if any differs from its pin. The checks are
 //! pure functions of what the tools printed, so the tests run them on recorded output.
@@ -448,9 +450,14 @@ fn macos_print(pins: &Toolchains, work: &Path) -> Result<MacosPrinted, String> {
     let metal_args = ["-sdk", "macosx", "metal", "--version"];
     let (ok, out, err) = output(Path::new("xcrun"), &metal_args)?;
     let metal = if ok {
+        eprintln!("toolchains-macos: the image holds the Metal toolchain; nothing fetched");
         out
     } else if err.contains("missing Metal Toolchain") {
-        eprintln!("toolchains-macos: the image lacks the Metal toolchain; fetching it");
+        // Apple's signed component, with no digest to pin: the version check below is the check.
+        eprintln!(
+            "toolchains-macos: the image lacks the Metal toolchain; fetching it with \
+             `xcodebuild -downloadComponent MetalToolchain`"
+        );
         stdout_of(
             Path::new("xcodebuild"),
             &["-downloadComponent", "MetalToolchain"],
