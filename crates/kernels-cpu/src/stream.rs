@@ -274,7 +274,7 @@ impl StreamRunner {
         match item {
             Item::Launch(kernel) => {
                 if let Err(error) = kernel(&OpArgs::none()) {
-                    self.shared.health.stick(error.code.0);
+                    self.shared.health.stick(error.code.code);
                     return Err(error);
                 }
             }
@@ -342,9 +342,9 @@ pub struct Parks {
 
 /// The error a device with a sticky error returns.
 pub(crate) fn sticky(code: u16) -> Error {
-    Error {
-        class: syntropy_core::ErrorClass::Device,
-        code: syntropy_kernels::ErrorCode(code),
-        message: "the CPU device has a sticky error from an earlier kernel".to_owned(),
-    }
+    Error::new(
+        syntropy_core::ErrorClass::Device,
+        syntropy_kernels::ErrorCode::new(syntropy_core::Domain::Kernels, code),
+        "the CPU device has a sticky error from an earlier kernel".to_owned(),
+    )
 }

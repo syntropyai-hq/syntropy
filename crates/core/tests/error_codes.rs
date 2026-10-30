@@ -351,7 +351,7 @@ fn is_note(mapping: ApiMapping) -> bool {
     matches!(mapping, ApiMapping::NeverSurfaces | ApiMapping::NoResponse)
 }
 
-const DOMAINS: [Domain; 7] = [Cluster, Net, Dist, Recovery, Security, Kernels, Exec];
+const DOMAINS: [Domain; 7] = Domain::ALL;
 
 /// Every `ErrorClass` of RFC-0001 §5.12.
 const CLASSES: [ErrorClass; 13] = [
@@ -372,6 +372,17 @@ const CLASSES: [ErrorClass; 13] = [
 
 fn registry() -> Vec<&'static CodeInfo> {
     codes::all().collect()
+}
+
+/// `Domain::ALL` lists every variant once, in declaration order. Postcard writes a variant as
+/// its index, so the indices that decode are exactly the variants: a variant added to `Domain`
+/// and not to `ALL` fails here.
+#[test]
+fn domain_all_lists_every_variant() {
+    let decoded: Vec<Domain> = (0u8..=127)
+        .map_while(|i| postcard::from_bytes::<Domain>(&[i]).ok())
+        .collect();
+    assert_eq!(decoded, Domain::ALL);
 }
 
 #[test]

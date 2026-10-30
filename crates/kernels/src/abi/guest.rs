@@ -7,9 +7,9 @@
 //! one function of this module. Everything else lives here, where `unsafe` is forbidden:
 //!
 //! - [`call`] runs a body under `catch_unwind`. A caught panic makes the provider
-//!   [`Sticky`](DeviceHealth::Sticky) with [`ErrorCode::PROVIDER_PANICKED`] and is reported as
+//!   [`Sticky`](DeviceHealth::Sticky) with [`crate::error::codes::PROVIDER_PANICKED`] and is reported as
 //!   `Internal`; later calls other than `health`, `free` and `close_ctx` fail with
-//!   [`ErrorCode::DEVICE_STICKY`], so the runner exits and restarts cleanly (RFC-0001 §3.4).
+//!   [`crate::error::codes::DEVICE_STICKY`], so the runner exits and restarts cleanly (RFC-0001 §3.4).
 //! - Failures keep their message in a per-thread store, which `last_error` reads.
 //! - Device contexts live in a per-thread table, keyed by the handle `open` returned. A
 //!   `DeviceCtx` is not `Send`, so a context handle used on another thread finds no entry and
@@ -125,7 +125,7 @@ impl<P: KernelProvider> Instance<P> {
     /// If the provider's ID holds a NUL byte, a bug in the provider.
     #[must_use]
     pub fn new(provider: P, host: HostApi) -> Self {
-        let id = CString::new(provider.id().0).expect("a provider ID holds no NUL byte");
+        let id = CString::new(provider.id().as_str()).expect("a provider ID holds no NUL byte");
         Self {
             provider,
             host,
@@ -160,7 +160,7 @@ impl<P: KernelProvider> Instance<P> {
     pub fn sticky(&self) -> Option<ErrorCode> {
         match self.sticky.load(Ordering::Acquire) {
             0 => None,
-            code => Some(ErrorCode(code)),
+            code => Some(ErrorCode::new(syntropy_core::Domain::Kernels, code)),
         }
     }
 
@@ -206,14 +206,14 @@ where
     if let Some(code) = inst.sticky()
         && !ALLOWED_WHEN_STICKY.contains(&name)
     {
-        let error = Error {
-            class: syntropy_core::ErrorClass::Device,
-            code: ErrorCode::DEVICE_STICKY,
-            message: format!(
+        let error = Error::new(
+            syntropy_core::ErrorClass::Device,
+            crate::error::codes::DEVICE_STICKY,
+            format!(
                 "`{name}` refused: the provider is sticky after code {}",
-                code.0
+                code.code
             ),
-        };
+        );
         inst.set_message(error.message.clone());
         return status_of_error(&error);
     }
@@ -221,8 +221,10 @@ where
         Ok(Ok(())) => return SynStatus::OK,
         Ok(Err(error)) => error,
         Err(payload) => {
-            inst.sticky
-                .store(ErrorCode::PROVIDER_PANICKED.0, Ordering::Release);
+            inst.sticky.store(
+                crate::error::codes::PROVIDER_PANICKED.code,
+                Ordering::Release,
+            );
             panicked(format!(
                 "the provider panicked in `{name}`: {}",
                 panic_text(&*payload)

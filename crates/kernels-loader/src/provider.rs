@@ -3,6 +3,7 @@
 //! [`ModuleProvider`]: a `KernelProvider` that calls through a module's function table
 //! (RFC-0040 §10.4).
 
+use std::borrow::Cow;
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -21,10 +22,10 @@ use syntropy_kernels::abi::wire::{
 use syntropy_kernels::abi::{SynProviderVtbl, SynStatus};
 use syntropy_kernels::{
     AllocRequest, BufferSlice, CapturedGraph, DeviceBuffer, DeviceCtx, DeviceHealth,
-    DeviceMemoryInfo, Error, ErrorCode, Event, HostFlag, HostRegFlags, HostRegion, HostRegistrar,
-    HostWaker, KernelProvider, LayoutVersion, MemoryDomain, OpArgs, OpCaps, OpKey, OpRegistry,
-    OpenOptions, PreparedOp, ProviderBuild, ProviderDevice, ProviderId, Registration, Segment,
-    ShapeSig, Stream, StreamPriority, WaitCmp,
+    DeviceMemoryInfo, Error, Event, HostFlag, HostRegFlags, HostRegion, HostRegistrar, HostWaker,
+    KernelProvider, LayoutVersion, MemoryDomain, OpArgs, OpCaps, OpKey, OpRegistry, OpenOptions,
+    PreparedOp, ProviderBuild, ProviderDevice, ProviderId, Registration, Segment, ShapeSig, Stream,
+    StreamPriority, WaitCmp,
 };
 
 use crate::module::ModuleError;
@@ -169,19 +170,19 @@ impl std::fmt::Debug for ModuleProvider {
 }
 
 fn abi_error(message: String) -> ModuleError {
-    ModuleError(Error {
-        class: ErrorClass::Unsupported,
-        code: ErrorCode(4),
+    // `ModuleAbi` (RFC-0040 §13 code 4): the library is not a provider library of this ABI.
+    ModuleError(Error::new(
+        ErrorClass::Unsupported,
+        syntropy_kernels::error::codes::MODULE_ABI,
         message,
-    })
+    ))
 }
 
 impl ModuleProvider {
     /// Wraps `vt`, reading the provider's identity, build and op registry.
     ///
-    /// The provider ID is interned (it is a `&'static str` in `ProviderId`), as are the toolchain
-    /// keys of its build ([`syntropy_kernels::abi::wire::intern`]): each distinct text is
-    /// allocated once for the process, however many times a module is loaded.
+    /// The provider ID and its build's toolchain keys are owned (`Cow::Owned`), and dropped with
+    /// the provider.
     pub(crate) fn new(vt: SynProviderVtbl, lib: Arc<RawLibrary>) -> Result<Self, ModuleError> {
         if vt.id.is_null() {
             return Err(abi_error("a provider table has no ID".into()));
@@ -190,7 +191,7 @@ impl ModuleProvider {
         let id = unsafe { CStr::from_ptr(vt.id) }
             .to_string_lossy()
             .into_owned();
-        let id = ProviderId(syntropy_kernels::abi::wire::intern(&id));
+        let id = ProviderId(Cow::Owned(id));
         let backend = backend_of_code(vt.backend).ok_or_else(|| {
             abi_error(format!(
                 "provider `{}` has backend code {}",
@@ -272,7 +273,7 @@ fn unknown(what: &str) -> Error {
 
 impl KernelProvider for ModuleProvider {
     fn id(&self) -> ProviderId {
-        self.id
+        self.id.clone()
     }
 
     fn backend(&self) -> Backend {
@@ -792,7 +793,11 @@ impl KernelProvider for ModuleProvider {
             Ok(ctx) => ctx,
             Err(e) => return sticky(&e),
         };
-        let mut out = SynHealth { kind: 0, detail: 0 };
+        let mut out = SynHealth {
+            kind: 0,
+            domain: 0,
+            detail: 0,
+        };
         let status = (self.vt().health)(self.vt().slf, ctx, &mut out);
         if let Err(e) = self.done(status, ctx) {
             return sticky(&e);

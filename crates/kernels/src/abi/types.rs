@@ -193,12 +193,17 @@ pub struct SynRegistration {
 }
 
 /// `DeviceHealth`: `kind` 0 is `Ok`, 1 is `Throttled` (`detail` is the reason: 0 thermal, 1
-/// power, 2 other), 2 is `Sticky` (`detail` is the `ErrorCode`).
+/// power, 2 other), 2 is `Sticky` (`domain` is the code's domain as its boundary number,
+/// [`DOMAIN_CODES`](super::DOMAIN_CODES), and `detail` the code in it). `domain` is 0 for the
+/// other variants. 12 bytes; a provider table states the size it writes
+/// ([`SynProviderVtbl::health_size`]).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SynHealth {
     /// The variant.
     pub kind: u32,
+    /// For `Sticky`, the code's domain number; else 0.
+    pub domain: u32,
     /// The variant's payload.
     pub detail: u32,
 }
@@ -525,6 +530,9 @@ pub struct SynProviderVtbl {
     ) -> SynStatus,
     /// The provider's state.
     pub slf: *mut c_void,
+    /// The size of the [`SynHealth`] the provider's `health` writes. The core refuses a table
+    /// whose size differs from its own (RFC-0040 §10.4, note of 2026-10-30).
+    pub health_size: u32,
 }
 
 /// What `syntropy_provider_entry_v1` returns.
