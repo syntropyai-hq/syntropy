@@ -283,10 +283,17 @@ pub const WINDOWS_CRT_API_SETS: &[&str] = &[
 /// `cfg_attr(not(feature = "rustc-dep-of-std"), link(name = "iconv"))`), so the standard
 /// library's own copy does not, and an empty binary never loaded it. `syntropy-ipc`,
 /// `syntropy-spsc`, `mio` and `socket2` use `libc`. It ships with every macOS.
+///
+/// `libc++` was added 2026-10-31 (COMP-E7-T01), from what rule 7 reported on the hosted
+/// `macos-26` runner, when the core gained its static ggml copy, whose CPU backend is C++
+/// (RFC-0040 §8.1). It is the system C++ runtime, part of every macOS, and Apple ships no static
+/// copy to link instead. On Linux the C++ runtime is linked statically, so `libstdc++` stays off
+/// [`SYSTEM_LIBRARIES`].
 pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
     "/usr/lib/libSystem.B.dylib",
     "/usr/lib/libobjc.A.dylib",
     "/usr/lib/libiconv.2.dylib",
+    "/usr/lib/libc++.1.dylib",
 ];
 
 /// Rule 7: the system frameworks the core binary may load on macOS, by name: `Metal` matches
@@ -746,6 +753,7 @@ mod tests {
             "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
             "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
             "/usr/lib/libiconv.2.dylib",
+            "/usr/lib/libc++.1.dylib",
             "/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration",
             "/System/Library/Frameworks/Security.framework/Versions/A/Security",
         ] {
@@ -755,7 +763,7 @@ mod tests {
             "@rpath/libvulkan.1.dylib",
             "/usr/local/lib/libMoltenVK.dylib",
             "/usr/lib/libSystem.dylib",
-            "/usr/lib/libc++.1.dylib",
+            "/usr/local/lib/libc++.1.dylib",
             "/System/Library/Frameworks/OpenCL.framework/Versions/A/OpenCL",
             "/System/Library/Frameworks/Metal.framework/Versions/A/Other",
             "/System/Library/Frameworks/Metal.framework/Versions/../Metal",
