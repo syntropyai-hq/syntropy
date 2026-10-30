@@ -5,9 +5,9 @@
 //!
 //! `ci/toolchains.toml` repeats the pins of the Linux build image, `ci/images/cuda-13/Dockerfile`.
 //! This step fails unless:
-//! - `ci/toolchains.toml` parses with no unknown key, every checksum is 64 lowercase hex digits,
-//!   every pin is either set or marked `verified = false` with no value, and the BuildKit image
-//!   is pinned by digest;
+//! - `ci/toolchains.toml` parses with no unknown key and no missing pin (so a `verified = false`
+//!   placeholder does not parse), every checksum is 64 lowercase hex digits, and the BuildKit
+//!   image is pinned by digest;
 //! - each Linux pin appears in the Dockerfile: the base image, the syntax frontend, the archive
 //!   snapshot, the epoch, the compiler version, the CMake version and checksum, and the CUDA
 //!   release and each component's checksum;
@@ -108,9 +108,9 @@ struct Msvc {
     /// Visual Studio's `installationVersion`, as the image report lists it.
     visual_studio: String,
     /// The default MSVC toolset, `Microsoft.VCToolsVersion.default.txt`.
-    toolset: Unpinned,
+    toolset: String,
     /// The version in `cl`'s banner.
-    cl: Unpinned,
+    cl: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,7 +118,7 @@ struct Msvc {
 struct Macos {
     cmake: Cmake,
     xcode: Xcode,
-    metal: Unpinned,
+    metal: Metal,
 }
 
 /// The default Xcode of the hosted macOS image.
@@ -129,15 +129,15 @@ struct Xcode {
     version: String,
     build: String,
     /// What follows `Apple clang version` in `xcrun clang --version`.
-    clang: Unpinned,
+    clang: String,
 }
 
-/// A pin that only the hosted runner's report can fill in.
+/// The Metal compiler, a component of its own from Xcode 26.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Unpinned {
-    verified: bool,
-    version: Option<String>,
+struct Metal {
+    /// What follows `Apple metal version` in `xcrun -sdk macosx metal --version`.
+    version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,15 +207,16 @@ pub fn check(toolchains: &str, dockerfile: &str, arch_sets: &str) -> Vec<String>
                 }
             }
             for (name, pin) in [
+                ("windows.msvc.visual_studio", &t.windows.msvc.visual_studio),
                 ("windows.msvc.toolset", &t.windows.msvc.toolset),
                 ("windows.msvc.cl", &t.windows.msvc.cl),
+                ("macos.xcode.version", &t.macos.xcode.version),
+                ("macos.xcode.build", &t.macos.xcode.build),
                 ("macos.xcode.clang", &t.macos.xcode.clang),
-                ("macos.metal", &t.macos.metal),
+                ("macos.metal.version", &t.macos.metal.version),
             ] {
-                if pin.verified == pin.version.is_none() {
-                    problems.push(format!(
-                        "{TOOLCHAINS}: `{name}` needs a `version` when verified, and none when not"
-                    ));
+                if pin.trim().is_empty() {
+                    problems.push(format!("{TOOLCHAINS}: `{name}` is empty"));
                 }
             }
             let i = &t.linux.image;
@@ -700,17 +701,25 @@ ldd (Ubuntu GLIBC 2.35-0ubuntu3.15) 2.35
     }
 
     #[test]
-    fn an_unverified_pin_with_a_value_is_refused() {
+    fn an_unverified_or_empty_pin_is_refused() {
         let (t, d, a) = real();
-        let bad = t.replace(
-            "[macos.metal]\nverified = false",
-            "[macos.metal]\nverified = false\nversion = \"1\"",
-        );
-        assert_ne!(bad, t);
+        let metal = t
+            .lines()
+            .find(|l| l.starts_with("version = \"32023"))
+            .expect("the metal pin");
+        // QUAL-E16-T30: no pin may be a `verified = false` placeholder any more.
+        let unverified = t.replace(metal, "verified = false");
+        assert_ne!(unverified, t);
+        assert!(!check(&unverified, &d, &a).is_empty());
+        let cl = t
+            .lines()
+            .find(|l| l.starts_with("cl = "))
+            .expect("the cl pin");
+        let empty = t.replace(cl, "cl = \" \"");
         assert!(
-            check(&bad, &d, &a)
+            check(&empty, &d, &a)
                 .iter()
-                .any(|p| p.contains("macos.metal"))
+                .any(|p| p.contains("windows.msvc.cl"))
         );
     }
 

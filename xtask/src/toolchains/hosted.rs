@@ -26,7 +26,7 @@ use std::process::Command;
 
 use sha2::{Digest as _, Sha256};
 
-use super::{Component, TOOLCHAINS, Toolchains, Unpinned};
+use super::{Component, TOOLCHAINS, Toolchains};
 use crate::run::Context;
 
 /// NVIDIA's redistributable archives, by component, platform and version.
@@ -74,37 +74,17 @@ fn line_with<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
     text.lines().map(str::trim).find(|l| l.contains(marker))
 }
 
-/// A problem when `tool`'s line holding `marker` in `printed` lacks `want`.
+/// A problem unless `tool`'s line holding `marker` in `printed` ends with `want`, so a longer
+/// version that starts with the pin does not pass.
 fn expect_line(problems: &mut Vec<String>, tool: &str, printed: &str, marker: &str, want: &str) {
     match line_with(printed, marker) {
         None => problems.push(format!("`{tool}` printed no version line")),
-        Some(line) if !line.contains(want) => {
+        Some(line) if !line.ends_with(want) => {
             problems.push(format!(
                 "`{tool}` prints `{line}`, but the pin needs `{want}`"
             ));
         }
         Some(_) => {}
-    }
-}
-
-/// As [`expect_line`] for a pin that may still be `verified = false`: an unverified pin is a
-/// problem that quotes what the runner printed, so the job's log is the report a later change
-/// pins it from.
-fn expect_pinned_line(
-    problems: &mut Vec<String>,
-    tool: &str,
-    printed: &str,
-    marker: &str,
-    pin_name: &str,
-    pin: &Unpinned,
-    want: impl Fn(&str) -> String,
-) {
-    match &pin.version {
-        Some(version) => expect_line(problems, tool, printed, marker, &want(version)),
-        None => problems.push(format!(
-            "{TOOLCHAINS}: `{pin_name}` is not pinned yet (`verified = false`); `{tool}` prints `{}`",
-            line_with(printed, marker).unwrap_or("nothing")
-        )),
     }
 }
 
@@ -150,22 +130,21 @@ pub fn windows_problems(printed: &WindowsPrinted, pins: &Toolchains) -> Vec<Stri
         &printed.visual_studio,
         &w.msvc.visual_studio,
     );
-    match &w.msvc.toolset.version {
-        Some(toolset) => exact(&mut problems, "the MSVC toolset", &printed.toolset, toolset),
-        None => problems.push(format!(
-            "{TOOLCHAINS}: `windows.msvc.toolset` is not pinned yet (`verified = false`); the \
-             default toolset is `{}`",
-            printed.toolset.trim()
-        )),
-    }
-    expect_pinned_line(
+    exact(
+        &mut problems,
+        "the MSVC toolset",
+        &printed.toolset,
+        &w.msvc.toolset,
+    );
+    expect_line(
         &mut problems,
         "cl",
         &printed.cl,
         "Compiler Version",
-        "windows.msvc.cl",
-        &w.msvc.cl,
-        |v| format!("Compiler Version {v} for x64"),
+        &format!(
+            "Microsoft (R) C/C++ Optimizing Compiler Version {} for x64",
+            w.msvc.cl
+        ),
     );
     problems
 }
@@ -200,23 +179,19 @@ pub fn macos_problems(printed: &MacosPrinted, pins: &Toolchains) -> Vec<String> 
         }
         Some(_) => {}
     }
-    expect_pinned_line(
+    expect_line(
         &mut problems,
         "clang",
         &printed.clang,
         "clang version",
-        "macos.xcode.clang",
-        &m.xcode.clang,
-        |v| format!("Apple clang version {v}"),
+        &format!("Apple clang version {}", m.xcode.clang),
     );
-    expect_pinned_line(
+    expect_line(
         &mut problems,
         "metal",
         &printed.metal,
         "metal version",
-        "macos.metal",
-        &m.metal,
-        |v| format!("Apple metal version {v}"),
+        &format!("Apple metal version {}", m.metal.version),
     );
     problems
 }
@@ -484,133 +459,133 @@ mod tests {
         toml::from_str(&text).expect("pins parse")
     }
 
-    /// Output in each tool's format, built from the pins (`pin` stands in for an unverified
-    /// one): the checks, not the versions, are under test.
-    fn windows(p: &Toolchains, pin: &str) -> WindowsPrinted {
-        let w = &p.windows;
-        let nvcc = nvcc_component(&w.cuda.component).expect("nvcc");
+    /// What the `windows-2025` runner printed on 2026-10-30: PR #2002, job 124315799952 (image
+    /// `windows-2025-vs2026` 20261030.294.1).
+    fn windows() -> WindowsPrinted {
         WindowsPrinted {
-            nvcc: format!(
-                "nvcc: NVIDIA (R) Cuda compiler driver\nCuda compilation tools, release 13.4, V{}\n",
-                nvcc.version
-            ),
-            cmake: format!(
-                "cmake version {}\n\nCMake suite maintained and supported by Kitware.\n",
-                w.cmake.version
-            ),
-            visual_studio: format!("{}\r\n", w.msvc.visual_studio),
-            toolset: format!("{}\r\n", w.msvc.toolset.version.as_deref().unwrap_or(pin)),
-            cl: format!(
-                "Microsoft (R) C/C++ Optimizing Compiler Version {} for x64\nusage: cl [ option... ] filename... [ /link linkoption... ]\n",
-                w.msvc.cl.version.as_deref().unwrap_or(pin)
-            ),
+            nvcc: "nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2026 NVIDIA Corporation
+Built on Sun_Sep_01_02:23:07_Pacific_Standard_Time_2026
+Cuda compilation tools, release 13.4, V13.4.92
+Build cuda_13.4.r13.4/compiler.38855100_0
+"
+            .into(),
+            cmake: "cmake version 4.4.4
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+"
+            .into(),
+            visual_studio: "18.11.12328.437\r\n".into(),
+            toolset: "14.51.36231\r\n".into(),
+            cl: "Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36260 for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+usage: cl [ option... ] filename... [ /link linkoption... ]
+"
+            .into(),
         }
     }
 
-    fn macos(p: &Toolchains, pin: &str) -> MacosPrinted {
-        let m = &p.macos;
+    /// What the `macos-26` runner printed on 2026-10-30: PR #2002, job 124315799909 (image
+    /// `macos-26-arm64` 20261013.0424.1), with the Metal toolchain already on the image.
+    fn macos() -> MacosPrinted {
         MacosPrinted {
-            cmake: format!("cmake version {}\n", m.cmake.version),
-            xcode: format!(
-                "Xcode {}\nBuild version {}\n",
-                m.xcode.version, m.xcode.build
-            ),
-            clang: format!(
-                "Apple clang version {}\nTarget: arm64-apple-darwin25.6.0\n",
-                m.xcode.clang.version.as_deref().unwrap_or(pin)
-            ),
-            metal: format!(
-                "Apple metal version {}\nTarget: air64-apple-darwin25.6.0\n",
-                m.metal.version.as_deref().unwrap_or(pin)
-            ),
+            cmake: "cmake version 4.4.4
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+"
+            .into(),
+            xcode: "Xcode 26.6\nBuild version 17F113\n".into(),
+            clang: "Apple clang version 21.0.0 (clang-2100.1.1.101)
+Target: arm64-apple-darwin25.6.0
+Thread model: posix
+InstalledDir: /Applications/Xcode_26.6.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+"
+            .into(),
+            metal: "Apple metal version 32023.883 (metalfe-32023.883)
+Target: air64-apple-darwin25.6.0
+Thread model: posix
+"
+            .into(),
         }
     }
 
-    /// The problems that are not about a pin still `verified = false`.
-    fn real(problems: Vec<String>) -> Vec<String> {
-        problems
-            .into_iter()
-            .filter(|p| !p.contains("not pinned yet"))
-            .collect()
+    #[test]
+    fn the_recorded_prints_match_the_pins() {
+        let p = pins();
+        assert_eq!(windows_problems(&windows(), &p), Vec::<String>::new());
+        assert_eq!(macos_problems(&macos(), &p), Vec::<String>::new());
     }
 
     #[test]
-    fn printed_versions_that_match_the_pins_pass() {
+    fn windows_line_endings_pass() {
         let p = pins();
-        assert_eq!(
-            real(windows_problems(&windows(&p, "X"), &p)),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            real(macos_problems(&macos(&p, "X"), &p)),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn an_unverified_pin_fails_and_quotes_what_the_runner_printed() {
-        let p = pins();
-        let problems = macos_problems(&macos(&p, "9.9.9 (stand-in)"), &p);
-        if p.macos.metal.version.is_none() {
-            assert!(
-                problems
-                    .iter()
-                    .any(|x| x.contains("macos.metal") && x.contains("Apple metal version 9.9.9")),
-                "{problems:?}"
-            );
-        } else {
-            assert!(
-                problems.iter().all(|x| !x.contains("macos.metal")),
-                "{problems:?}"
-            );
-        }
+        let mut printed = windows();
+        printed.nvcc = printed.nvcc.replace('\n', "\r\n");
+        printed.cl = printed.cl.replace('\n', "\r\n");
+        assert_eq!(windows_problems(&printed, &p), Vec::<String>::new());
     }
 
     #[test]
     fn a_windows_version_that_differs_from_its_pin_is_named() {
         let p = pins();
-        let nvcc = nvcc_component(&p.windows.cuda.component).unwrap();
-        let mut printed = windows(&p, "X");
-        printed.nvcc = printed.nvcc.replace(&nvcc.version, "0.0.0");
-        printed.cmake = printed.cmake.replace(&p.windows.cmake.version, "3.31.6");
-        printed.visual_studio = "17.14.1.1".into();
-        let problems = real(windows_problems(&printed, &p));
-        for tool in ["nvcc", "cmake", "Visual Studio"] {
+        // The job's first run read Visual Studio 2026 where the first pin, from the VS 2022
+        // image's report, said 17.14.37806.7.
+        let mut printed = windows();
+        printed.nvcc = printed.nvcc.replace("V13.4.92", "V13.4.91");
+        printed.cmake = printed.cmake.replace("4.4.4", "3.31.6");
+        printed.visual_studio = "17.14.37806.7".into();
+        printed.toolset = "14.44.35207".into();
+        printed.cl = printed.cl.replace("19.51.36260", "19.51.362601");
+        let problems = windows_problems(&printed, &p);
+        for tool in ["nvcc", "cmake", "Visual Studio", "MSVC toolset", "`cl`"] {
             assert!(
                 problems.iter().any(|x| x.contains(tool)),
                 "{tool}: {problems:?}"
             );
         }
-        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert_eq!(problems.len(), 5, "{problems:?}");
+        let mut silent = windows();
+        silent.toolset = String::new();
+        assert_eq!(
+            windows_problems(&silent, &p),
+            ["`the MSVC toolset` printed nothing"]
+        );
     }
 
     #[test]
     fn a_macos_version_that_differs_from_its_pin_is_named() {
         let p = pins();
-        let mut printed = macos(&p, "X");
-        printed.xcode = printed.xcode.replace(&p.macos.xcode.build, "17F42");
+        let mut printed = macos();
+        printed.xcode = "Xcode 26.6.1\nBuild version 17F42\n".into();
+        printed.clang = printed.clang.replace("2100.1.1.101", "2100.1.1.102");
+        printed.metal = printed.metal.replace(
+            "32023.883 (metalfe-32023.883)",
+            "32023.884 (metalfe-32023.884)",
+        );
         printed.cmake = String::new();
-        let problems = real(macos_problems(&printed, &p));
+        let problems = macos_problems(&printed, &p);
         assert!(
-            problems.iter().any(|x| x.contains("Build version")),
+            problems.iter().any(|x| x.contains("`Xcode 26.6`")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|x| x.contains("Build version 17F113")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|x| x.contains("`clang`")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|x| x.contains("`metal`")),
             "{problems:?}"
         );
         assert!(
             problems.contains(&"`cmake` printed no version line".to_owned()),
             "{problems:?}"
         );
-        assert_eq!(problems.len(), 2, "{problems:?}");
-        // A newer Xcode whose version starts with the pin is still a different version.
-        let mut printed = macos(&p, "X");
-        printed.xcode = printed.xcode.replace(
-            &format!("Xcode {}", p.macos.xcode.version),
-            &format!("Xcode {}.1", p.macos.xcode.version),
-        );
-        assert!(
-            real(macos_problems(&printed, &p))
-                .iter()
-                .any(|x| x.contains("`Xcode "))
-        );
+        assert_eq!(problems.len(), 5, "{problems:?}");
     }
 
     #[test]
