@@ -896,3 +896,210 @@ fn a_tls_directory_that_is_a_link_is_refused() {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+
+/// PROD-E5-T04: the certificate a client receives parses to the node's own fingerprint, comes
+/// back out as the same PEM, and lists what the CA may issue for.
+#[test]
+fn a_client_reads_the_served_ca_with_the_nodes_fingerprint() {
+    let dir = Dir::new("client-read");
+    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    let got = CaCertificate::from_pem(ca.certificate_pem()).unwrap();
+    assert_eq!(got.fingerprint(), ca.fingerprint());
+    assert_eq!(got.fingerprint_hex(), hex(&ca.fingerprint()));
+    assert_eq!(got.pem(), ca.certificate_pem());
+    assert_eq!(got.der(), ca.certificate_der().as_ref());
+    assert_eq!(
+        got.fingerprint_words(),
+        syntropy_net::fingerprint::fingerprint(ca.spki_der())
+    );
+    assert_eq!(got.fingerprint_words().split('-').count(), 6);
+    assert!(got.subject().starts_with("Syntropy local CA "), "{got:?}");
+    for want in [
+        "box.local",
+        "llm.home.arpa",
+        "192.168.1.0/24",
+        "100.101.102.103/32",
+    ] {
+        assert!(
+            got.permitted().iter().any(|p| p == want),
+            "{:?}",
+            got.permitted()
+        );
+    }
+    // White space and CRLF line ends around and inside the block are accepted.
+    let crlf = format!("\n\n{}\n", ca.certificate_pem().replace('\n', "\r\n"));
+    assert_eq!(CaCertificate::from_pem(&crlf).unwrap(), got);
+    // The one-line base64 is the DER.
+    let b64 = got.base64();
+    assert!(!b64.contains('\n'));
+    assert!(ca.certificate_pem().replace('\n', "").contains(&b64));
+}
+
+/// PROD-E5-T04: anything but one constrained CA certificate is refused before the user is asked
+/// anything: an unconstrained CA, a leaf, two blocks, a key beside the certificate, and text that
+/// is not PEM.
+#[test]
+fn a_client_refuses_anything_but_one_constrained_ca() {
+    let dir = Dir::new("client-refuse");
+    let (ca, _) = LocalCa::open(&dir.path(), &scope(), &node_key(1), now()).unwrap();
+    let refused = |text: &str| CaCertificate::from_pem(text).unwrap_err().0;
+
+    // A CA without name constraints: a grant over every name.
+    let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+    let open_ca = params.self_signed(&key).unwrap();
+    assert_eq!(
+        refused(&super::ca::certificate_pem(open_ca.der())),
+        "the certificate has no name constraints"
+    );
+
+    // Constrained CAs that a node would never mint.
+    let constrained = |permitted: Vec<rcgen::GeneralSubtree>,
+                       excluded: Vec<rcgen::GeneralSubtree>| {
+        let mut params = CertificateParams::default();
+        params.distinguished_name = super::ca::common_name("Syntropy local CA 0123456789abcdef");
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        params.name_constraints = Some(rcgen::NameConstraints {
+            permitted_subtrees: permitted,
+            excluded_subtrees: excluded,
+        });
+        super::ca::certificate_pem(params.self_signed(&key).unwrap().der())
+    };
+    let dns = |n: &str| rcgen::GeneralSubtree::DnsName(n.into());
+    let v4 = |a: [u8; 4], p: u8| {
+        rcgen::GeneralSubtree::IpAddress(rcgen::CidrSubnet::from_v4_prefix(a, p))
+    };
+    let v6_all = || rcgen::GeneralSubtree::IpAddress(rcgen::CidrSubnet::from_v6_prefix([0; 16], 0));
+    let v4_all = || v4([0; 4], 0);
+    for (permitted, excluded, why) in [
+        (
+            vec![v4([8, 8, 8, 0], 24)],
+            vec![v6_all()],
+            "the CA may issue for a public address",
+        ),
+        // A local base address with a short mask covers public addresses: refused, not read as 10/8.
+        (
+            vec![v4([10, 0, 0, 0], 0)],
+            vec![v6_all()],
+            "the CA may issue for a public address",
+        ),
+        (
+            vec![v4([10, 0, 0, 0], 7)],
+            vec![v6_all()],
+            "the CA may issue for a public address",
+        ),
+        (
+            vec![rcgen::GeneralSubtree::IpAddress(rcgen::CidrSubnet::V4(
+                [10, 0, 0, 0],
+                [255, 0, 255, 0],
+            ))],
+            vec![v6_all()],
+            "a name-constraint address is malformed",
+        ),
+        // A family neither permitted nor excluded is unconstrained.
+        (
+            vec![dns("box.local"), v4([192, 168, 1, 0], 24)],
+            vec![],
+            "the CA may issue for any IPv6 address",
+        ),
+        (
+            vec![dns("box.local")],
+            vec![v6_all()],
+            "the CA may issue for any IPv4 address",
+        ),
+        // Addresses only: every DNS name unconstrained.
+        (
+            vec![v4([192, 168, 1, 0], 24)],
+            vec![v6_all()],
+            "the CA may issue for any DNS name",
+        ),
+        // A single label covers a whole top-level domain.
+        (
+            vec![dns("box")],
+            vec![v4_all(), v6_all()],
+            "the CA may issue for a whole top-level domain",
+        ),
+        (
+            vec![],
+            vec![v4_all(), v6_all()],
+            "the CA may issue for any DNS name",
+        ),
+        // Names no node mints, which would reach the user's screen beside the fingerprint:
+        // terminal escape codes, a wildcard, a space and a slash.
+        (
+            vec![dns("box\u{1b}[1A\u{1b}[2K.local")],
+            vec![v4_all(), v6_all()],
+            "a permitted name is not a host name a node mints",
+        ),
+        (
+            vec![dns("*.com")],
+            vec![v4_all(), v6_all()],
+            "a permitted name is not a host name a node mints",
+        ),
+        (
+            vec![dns("a b/c.lan")],
+            vec![v4_all(), v6_all()],
+            "a permitted name is not a host name a node mints",
+        ),
+        (
+            vec![dns("Box.Local")],
+            vec![v4_all(), v6_all()],
+            "a permitted name is not a host name a node mints",
+        ),
+    ] {
+        assert_eq!(refused(&constrained(permitted, excluded)), why);
+    }
+    // A common name with terminal escape codes, or any name but a node CA's, with constraints a
+    // node would mint.
+    for cn in [
+        "Syntropy local CA \u{1b}[1A\u{1b}[2K0123456789",
+        "Syntropy local CA 0123456789ABCDEF",
+        "Syntropy local CA 0123456789abcdef0",
+        "Totally Legit CA",
+    ] {
+        let mut params = CertificateParams::default();
+        params.distinguished_name = super::ca::common_name(cn);
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        params.name_constraints = Some(rcgen::NameConstraints {
+            permitted_subtrees: vec![dns("box.local")],
+            excluded_subtrees: vec![v4_all(), v6_all()],
+        });
+        let pem = super::ca::certificate_pem(params.self_signed(&key).unwrap().der());
+        assert_eq!(
+            refused(&pem),
+            "the certificate is not named as a node's CA (`Syntropy local CA <16 hex digits>`)",
+            "{cn:?}"
+        );
+    }
+    // Names only, with both families excluded, as a node that serves no local address mints.
+    let names_only = constrained(vec![dns("box.local")], vec![v4_all(), v6_all()]);
+    assert_eq!(
+        CaCertificate::from_pem(&names_only).unwrap().permitted(),
+        ["box.local"]
+    );
+
+    // A leaf the CA issued.
+    let names = LeafNames::new(["box.local"], [ip("192.168.1.37")]);
+    let leaf = ca.issue_leaf(&names, now()).unwrap();
+    let leaf_pem = super::ca::certificate_pem(leaf.certificate_der());
+    assert_eq!(refused(&leaf_pem), "the certificate is not self-signed");
+
+    let two = format!("{}{}", ca.certificate_pem(), ca.certificate_pem());
+    assert_eq!(refused(&two), "the text is not exactly one PEM certificate");
+    let with_key = format!(
+        "{}-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+        ca.certificate_pem()
+    );
+    assert_eq!(
+        refused(&with_key),
+        "the text is not exactly one PEM certificate"
+    );
+    assert_eq!(
+        refused("<html>not found</html>"),
+        "the text is not exactly one PEM certificate"
+    );
+    let mangled = ca.certificate_pem().replacen("MII", "MIJ", 1);
+    assert!(CaCertificate::from_pem(&mangled).is_err());
+}

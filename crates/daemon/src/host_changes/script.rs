@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use super::revert::describe;
 use super::{
     ChangeState, FirewallKind, HostChange, HostChangeKind, HostChangeLedger, LedgerError,
-    PriorState, ServiceManager, replace_atomically,
+    PriorState, ServiceManager, TrustStore, replace_atomically,
 };
 
 /// The Unix script's file name in the state directory.
@@ -26,7 +26,7 @@ pub const PS1_FILE: &str = "revert-host-changes.ps1";
 
 /// `s` as one single-quoted `sh` word. A NUL cannot be in a path or a shell line, so it is
 /// dropped rather than passed to the shell.
-fn sh_quote(s: &str) -> String {
+pub(crate) fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\0', "").replace('\'', r"'\''"))
 }
 
@@ -35,7 +35,7 @@ const PS_SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '
 
 /// `s` as one single-quoted PowerShell string: every character PowerShell reads as a single quote
 /// is doubled, so none can end the string. A NUL is dropped.
-fn ps_quote(s: &str) -> String {
+pub(crate) fn ps_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars().filter(|&c| c != '\0') {
@@ -431,6 +431,90 @@ sysctl -w \"$s=$v\" >/dev/null && ok \"restored $s to $v\"
             "note \"not on this OS: registry key \"{}\n",
             sh_quote(&format!("{hive}\\{key}"))
         ),
+        HostChangeKind::TrustAnchor {
+            store,
+            location,
+            label,
+            certificate,
+            ..
+        } => sh_trust_anchor(change, *store, location, label, certificate),
+    }
+}
+
+/// The `sh` revert of a trust-store entry. Each store is checked for exactly the recorded
+/// certificate, compared as its base64 DER, before anything is removed.
+fn sh_trust_anchor(
+    change: &HostChange,
+    store: TrustStore,
+    location: &Path,
+    label: &str,
+    certificate: &str,
+) -> String {
+    let loc = sh_quote(&path_str(location));
+    let n = sh_quote(label);
+    let b = sh_quote(certificate);
+    match store {
+        TrustStore::LinuxUserNss => format!(
+            "d={loc}; n={n}; b={b}
+if ! command -v certutil >/dev/null 2>&1; then
+  note \"left in place: certutil is not installed, so the CA $n cannot be removed from the NSS database $d\"; left=$((left + 1))
+elif certutil -d \"sql:$d\" -L -n \"$n\" >/dev/null 2>&1; then
+  if [ \"$(certutil -d \"sql:$d\" -L -n \"$n\" -a 2>/dev/null | sed '/^-----/d' | tr -d '\\r\\n')\" = \"$b\" ]; then
+    certutil -d \"sql:$d\" -D -n \"$n\" && ok \"removed the CA $n from the NSS database $d\"
+  else
+    {other}
+  fi
+else
+  {absent}
+fi
+",
+            other = sh_not_ours(change, "the CA $n in the NSS database $d"),
+            absent = sh_absent(change, "the CA $n in the NSS database $d"),
+        ),
+        TrustStore::MacosLoginKeychain => format!(
+            "k={loc}; n={n}; b={b}
+h=$(security find-certificate -a -Z -p \"$k\" 2>/dev/null | awk -v want=\"$b\" '/^SHA-1 hash:/ {{ h = $3 }} /^-----BEGIN CERTIFICATE-----/ {{ p = 1; s = \"\"; next }} /^-----END CERTIFICATE-----/ {{ p = 0; if (s == want) print h; next }} p {{ s = s $0 }}' | head -n 1)
+if [ -n \"$h\" ]; then
+  security delete-certificate -Z \"$h\" -t \"$k\" >/dev/null && ok \"removed the CA $n from the keychain $k\"
+else
+  {absent}
+fi
+",
+            absent = sh_absent(change, "the CA in the keychain $k"),
+        ),
+        TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust
+            if !store.holds_anchor(location) =>
+        {
+            // The revert runs as root here: nothing outside the store's anchor directory.
+            format!(
+                "p={loc}\nnote \"left in place: $p is not a Syntropy anchor file in {dir}\"; left=$((left + 1))\n",
+                dir = store.anchor_dir().map_or_else(String::new, path_str),
+            )
+        }
+        TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust => {
+            let tool = if store == TrustStore::LinuxSystemCaCertificates {
+                "update-ca-certificates"
+            } else {
+                "update-ca-trust extract"
+            };
+            format!(
+                "p={loc}; b={b}; s=
+[ \"$(id -u)\" -eq 0 ] || s=sudo
+if [ ! -e \"$p\" ] && [ ! -L \"$p\" ]; then
+  {absent}
+elif [ ! -L \"$p\" ] && [ -f \"$p\" ] && [ \"$(sed '/^-----/d' \"$p\" | tr -d '\\r\\n')\" = \"$b\" ]; then
+  $s rm -f -- \"$p\" && $s {tool} >/dev/null && ok \"removed the system trust anchor: $p\"
+else
+  {other}
+fi
+",
+                absent = sh_absent(change, "$p"),
+                other = sh_not_ours(change, "$p"),
+            )
+        }
+        TrustStore::WindowsCurrentUserRoot => {
+            format!("note \"not on this OS: Windows Root store entry \"{n}\n")
+        }
     }
 }
 
@@ -651,6 +735,32 @@ else {{ Gone \"system user $n\" }}
         HostChangeKind::BootTimeSetting { name } => format!(
             "Note (\"not on this OS: boot-time setting \" + {})\n",
             ps_quote(name)
+        ),
+        HostChangeKind::TrustAnchor {
+            store: TrustStore::WindowsCurrentUserRoot,
+            label,
+            certificate,
+            ..
+        } => format!(
+            "$b = {b}; $n = {n}
+$st = New-Object Security.Cryptography.X509Certificates.X509Store('Root', 'CurrentUser')
+try {{
+  $st.Open('ReadWrite')
+  $hit = @($st.Certificates | Where-Object {{ [Convert]::ToBase64String($_.RawData) -ceq $b }})
+  if ($hit.Count -gt 0) {{
+    foreach ($c in $hit) {{ $st.Remove($c) }}
+    Reverted \"removed the CA $n from the current user's Root store\"
+  }} else {{ {absent} }}
+}} catch {{ Note \"left in place, the Root store refused the change: $n\"; $script:left++ }}
+finally {{ $st.Close() }}
+",
+            b = ps_quote(certificate),
+            n = ps_quote(label),
+            absent = ps_absent(change, "the CA $n in the current user's Root store"),
+        ),
+        HostChangeKind::TrustAnchor { store, label, .. } => format!(
+            "Note (\"not on this OS: {store:?} entry \" + {})\n",
+            ps_quote(label)
         ),
     }
 }
@@ -1145,6 +1255,48 @@ mod tests {
                 "sysctl -w \"$s=$v\"",
                 "not on this OS: boot-time setting",
             ),
+            (
+                trust_anchor(TrustStore::LinuxUserNss, "/u/.pki/nssdb"),
+                None,
+                "certutil -d \"sql:$d\" -D -n \"$n\"",
+                "not on this OS: LinuxUserNss entry",
+            ),
+            (
+                trust_anchor(
+                    TrustStore::MacosLoginKeychain,
+                    "/u/Library/Keychains/login.keychain-db",
+                ),
+                None,
+                "security delete-certificate -Z \"$h\" -t \"$k\"",
+                "not on this OS: MacosLoginKeychain entry",
+            ),
+            (
+                trust_anchor(
+                    TrustStore::LinuxSystemCaCertificates,
+                    "/usr/local/share/ca-certificates/syntropy-box.local-0123456789abcdef.crt",
+                ),
+                None,
+                "$s rm -f -- \"$p\" && $s update-ca-certificates",
+                "not on this OS: LinuxSystemCaCertificates entry",
+            ),
+            (
+                trust_anchor(
+                    TrustStore::LinuxSystemCaTrust,
+                    "/etc/pki/ca-trust/source/anchors/syntropy-box.local-0123456789abcdef.pem",
+                ),
+                None,
+                "$s rm -f -- \"$p\" && $s update-ca-trust extract",
+                "not on this OS: LinuxSystemCaTrust entry",
+            ),
+            (
+                trust_anchor(
+                    TrustStore::WindowsCurrentUserRoot,
+                    r"Cert:\CurrentUser\Root",
+                ),
+                None,
+                "not on this OS: Windows Root store entry",
+                "[Convert]::ToBase64String($_.RawData) -ceq $b",
+            ),
         ];
         for (kind, prior, in_sh, in_ps1) in cases {
             let ledger = ledger_with(vec![(kind.clone(), prior)]);
@@ -1153,6 +1305,187 @@ mod tests {
             assert!(sh.contains(in_sh), "{kind:?}: sh lacks {in_sh}\n{sh}");
             assert!(ps1.contains(in_ps1), "{kind:?}: ps1 lacks {in_ps1}\n{ps1}");
         }
+    }
+
+    fn trust_anchor(store: TrustStore, location: &str) -> HostChangeKind {
+        HostChangeKind::TrustAnchor {
+            store,
+            location: location.into(),
+            label: "Syntropy CA box.local 0123456789abcdef".into(),
+            node: "box.local".into(),
+            certificate: "MIIBhjCCASygAwIBAgIU+/A=".into(),
+        }
+    }
+
+    /// A trust-store entry is removed only where the store holds exactly the recorded
+    /// certificate: both scripts compare it as base64 DER before they remove anything, and the
+    /// system store goes through sudo when the script is not root.
+    #[test]
+    fn trust_anchors_are_matched_by_their_certificate() {
+        let ledger = ledger_with(vec![
+            (
+                trust_anchor(TrustStore::LinuxUserNss, "/u/.pki/nssdb"),
+                None,
+            ),
+            (
+                trust_anchor(
+                    TrustStore::LinuxSystemCaCertificates,
+                    "/usr/local/share/ca-certificates/syntropy-box.local-0123456789abcdef.crt",
+                ),
+                None,
+            ),
+            (
+                trust_anchor(
+                    TrustStore::WindowsCurrentUserRoot,
+                    r"Cert:\CurrentUser\Root",
+                ),
+                None,
+            ),
+        ]);
+        let sh = render_sh(&ledger, "v");
+        assert!(sh.contains("b='MIIBhjCCASygAwIBAgIU+/A='"), "{sh}");
+        assert!(sh.contains("tr -d '\\r\\n')\" = \"$b\""), "{sh}");
+        assert!(sh.contains("[ \"$(id -u)\" -eq 0 ] || s=sudo"), "{sh}");
+        let ps1 = render_ps1(&ledger, "v");
+        assert!(ps1.contains("$b = 'MIIBhjCCASygAwIBAgIU+/A='"), "{ps1}");
+        assert!(ps1.contains("$st.Remove($c)"), "{ps1}");
+    }
+
+    /// The values a `TrustAnchor` gives the scripts, each with a payload that would run if it
+    /// escaped its quoting in either shell. Every payload appears only in the comment line and
+    /// inside the field's own single-quoted literal, in both scripts and for every store.
+    fn hostile_anchor(store: TrustStore, dir: &Path) -> HostChangeKind {
+        HostChangeKind::TrustAnchor {
+            store,
+            location: dir.join("it's $(touch PWN-L) `touch PWN-L` \u{2019}; touch PWN-L; \u{2019}"),
+            label: "CA' \"$(touch PWN-N)\" `touch PWN-N` ; touch PWN-N; '".into(),
+            node: "box'$(touch PWN-O)\u{2018}; touch PWN-O".into(),
+            certificate: "QUJD".into(),
+        }
+    }
+
+    /// A system-store entry whose location is not an anchor file in that store's directory, as
+    /// a tampered ledger could hold, is reported, never removed: the removal would run as root.
+    #[test]
+    fn a_system_anchor_outside_its_directory_is_left() {
+        for location in [
+            "/etc/passwd",
+            "/usr/local/share/ca-certificates/../../../etc/shadow",
+            "/usr/local/share/ca-certificates/other.crt",
+            "/usr/local/share/ca-certificates/sub/syntropy-a.crt",
+        ] {
+            let ledger = ledger_with(vec![(
+                trust_anchor(TrustStore::LinuxSystemCaCertificates, location),
+                None,
+            )]);
+            let sh = render_sh(&ledger, "v");
+            assert!(!sh.contains("rm -f -- \"$p\""), "{location}\n{sh}");
+            assert!(
+                sh.contains("is not a Syntropy anchor file in"),
+                "{location}"
+            );
+        }
+        assert!(
+            TrustStore::LinuxSystemCaCertificates.holds_anchor(Path::new(
+                "/usr/local/share/ca-certificates/syntropy-box.local-0123456789abcdef.crt"
+            ))
+        );
+        assert!(!TrustStore::LinuxSystemCaTrust.holds_anchor(Path::new(
+            "/usr/local/share/ca-certificates/syntropy-box.local-0123456789abcdef.crt"
+        )));
+        assert!(!TrustStore::LinuxUserNss.holds_anchor(Path::new("/u/.pki/nssdb")));
+    }
+
+    #[test]
+    fn trust_anchor_values_cannot_escape_their_quoting() {
+        let stores = [
+            TrustStore::LinuxUserNss,
+            TrustStore::MacosLoginKeychain,
+            TrustStore::LinuxSystemCaCertificates,
+            TrustStore::LinuxSystemCaTrust,
+            TrustStore::WindowsCurrentUserRoot,
+        ];
+        for store in stores {
+            let state = temp_state();
+            let kind = hostile_anchor(store, &state);
+            let mut ledger = HostChangeLedger::open(&state).unwrap();
+            let id = ledger.begin(kind.clone(), None, None, 0, "v").unwrap();
+            ledger.applied(id).unwrap();
+            let HostChangeKind::TrustAnchor {
+                location, label, ..
+            } = &kind
+            else {
+                unreachable!()
+            };
+            let location = path_str(location);
+            for (script, quote) in [
+                (render_sh(&ledger, "v"), sh_quote as fn(&str) -> String),
+                (render_ps1(&ledger, "v"), ps_quote as fn(&str) -> String),
+            ] {
+                let comment_line = script
+                    .lines()
+                    .find(|l| l.starts_with("# change 1"))
+                    .unwrap();
+                for (marker, field) in [("PWN-L", &location), ("PWN-N", label)] {
+                    let literal = quote(field);
+                    let per_value = field.matches(marker).count();
+                    let expected = comment_line.matches(marker).count()
+                        + script.matches(literal.as_str()).count() * per_value;
+                    assert_eq!(
+                        script.matches(marker).count(),
+                        expected,
+                        "{store:?}: {marker} outside its quoting\n{script}"
+                    );
+                }
+                // The node is never passed to a command, only described in the comment.
+                assert_eq!(
+                    script.matches("PWN-O").count(),
+                    comment_line.matches("PWN-O").count(),
+                    "{store:?}\n{script}"
+                );
+            }
+        }
+    }
+
+    /// Run for real: the sh script over hostile trust-store values runs none of their payloads.
+    /// Every store's tool is absent or finds nothing here, so each entry is reported gone, and
+    /// no command reaches sudo.
+    #[cfg(unix)]
+    #[test]
+    fn the_sh_script_runs_no_trust_anchor_payload() {
+        let state = temp_state();
+        let mut ledger = HostChangeLedger::open(&state).unwrap();
+        for store in [
+            TrustStore::LinuxUserNss,
+            TrustStore::MacosLoginKeychain,
+            TrustStore::LinuxSystemCaCertificates,
+            TrustStore::WindowsCurrentUserRoot,
+        ] {
+            let id = ledger
+                .begin(hostile_anchor(store, &state), None, None, 0, "v")
+                .unwrap();
+            ledger.applied(id).unwrap();
+        }
+        let script = write_revert_script(&ledger, "v").unwrap();
+        let out = std::process::Command::new("sh")
+            .arg(&script)
+            .current_dir(&state)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let made: Vec<_> = std::fs::read_dir(&state)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("PWN"))
+            .collect();
+        assert!(made.is_empty(), "a payload ran: {made:?}\n{stdout}");
+        assert!(!stdout.contains("sudo"), "{stdout}");
     }
 
     #[test]
