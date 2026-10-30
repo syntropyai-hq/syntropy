@@ -283,8 +283,31 @@ fn pins(context: &Context) -> Result<Toolchains, String> {
     toml::from_str(&text).map_err(|e| format!("{TOOLCHAINS}: {e}"))
 }
 
-/// Prints `printed`'s fields, then passes or lists `problems`.
-fn verdict(job: &str, printed: &[(&str, &str)], problems: Vec<String>) -> Result<(), String> {
+/// The image a hosted runner reports through its `ImageOS` and `ImageVersion` variables. A
+/// mismatch names it, so a pin that drifts with an image update says which image moved.
+#[derive(Debug, Default)]
+struct RunnerImage {
+    os: Option<String>,
+    version: Option<String>,
+}
+
+impl RunnerImage {
+    /// Reads the two variables once, at the job's entry point.
+    fn from_env() -> RunnerImage {
+        RunnerImage {
+            os: std::env::var("ImageOS").ok(),
+            version: std::env::var("ImageVersion").ok(),
+        }
+    }
+}
+
+/// Prints `printed`'s fields, then passes or lists `problems`, ending with `image`.
+fn verdict(
+    job: &str,
+    image: &RunnerImage,
+    printed: &[(&str, &str)],
+    problems: Vec<String>,
+) -> Result<(), String> {
     for (tool, text) in printed {
         eprintln!("--- {tool}\n{}", text.trim_end());
     }
@@ -292,13 +315,12 @@ fn verdict(job: &str, printed: &[(&str, &str)], problems: Vec<String>) -> Result
         eprintln!("{job}: every printed version matches {TOOLCHAINS}");
         Ok(())
     } else {
-        // The image the runner reported, so a pin that drifts with an image update names it.
-        let image = |var| std::env::var(var).unwrap_or_else(|_| "unknown".into());
+        let or_unknown = |v: &Option<String>| v.as_deref().unwrap_or("unknown").to_owned();
         Err(format!(
             "{}\n(runner image: ImageOS {}, ImageVersion {})",
             problems.join("\n"),
-            image("ImageOS"),
-            image("ImageVersion")
+            or_unknown(&image.os),
+            or_unknown(&image.version)
         ))
     }
 }
@@ -313,6 +335,7 @@ pub fn windows_step(context: &Context) -> Result<(), String> {
     let problems = windows_problems(&printed, &pins);
     verdict(
         "toolchains-windows",
+        &RunnerImage::from_env(),
         &[
             ("nvcc --version", &printed.nvcc),
             ("cmake --version", &printed.cmake),
@@ -405,6 +428,7 @@ pub fn macos_step(context: &Context) -> Result<(), String> {
     let problems = macos_problems(&printed, &pins);
     verdict(
         "toolchains-macos",
+        &RunnerImage::from_env(),
         &[
             ("cmake --version", &printed.cmake),
             ("xcodebuild -version", &printed.xcode),
@@ -593,6 +617,35 @@ Thread model: posix
             "{problems:?}"
         );
         assert_eq!(problems.len(), 5, "{problems:?}");
+    }
+
+    #[test]
+    fn a_mismatch_names_the_runner_image_or_says_it_is_unknown() {
+        let problems = || vec!["`cmake` printed no version line".to_owned()];
+        let unset = verdict("t", &RunnerImage::default(), &[], problems());
+        assert_eq!(
+            unset,
+            Err("`cmake` printed no version line\n(runner image: ImageOS unknown, ImageVersion unknown)".into())
+        );
+        let image = RunnerImage {
+            os: Some("win25".into()),
+            version: Some("20261030.294.1".into()),
+        };
+        let set = verdict("t", &image, &[("cmake --version", "")], problems());
+        assert_eq!(
+            set,
+            Err("`cmake` printed no version line\n(runner image: ImageOS win25, ImageVersion 20261030.294.1)".into())
+        );
+        // No problem: the job passes, and the image is not part of a pass.
+        assert_eq!(
+            verdict(
+                "t",
+                &image,
+                &[("cmake --version", "cmake version 4.4.4")],
+                vec![]
+            ),
+            Ok(())
+        );
     }
 
     #[test]
