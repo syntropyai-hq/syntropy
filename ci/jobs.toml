@@ -18,6 +18,8 @@ workspace = [
     "Cargo.lock",
     "rust-toolchain.toml",
     ".cargo/**",
+    # The Linux linker driver `.cargo/config.toml` sets: every Linux link runs it (COMP-E9-T19).
+    "ci/link/**",
     "xtask/**",
     ".github/workflows/pr.yml",
     ".github/actions/**",

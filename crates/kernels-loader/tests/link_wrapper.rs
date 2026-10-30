@@ -89,7 +89,11 @@ fn any_other_script_is_passed_unchanged() {
         ("plain", &["some_c_api"][..]),
     ] {
         let script = rustc_script(&dir.0, name, globals);
-        assert_eq!(run(&dir.0, &[&script]), [script.clone()], "{name}");
+        assert_eq!(
+            run(&dir.0, &[&script]),
+            std::slice::from_ref(&script),
+            "{name}"
+        );
     }
     let missing = "-Wl,--version-script=/nonexistent/list";
     assert_eq!(run(&dir.0, &[missing]), [missing]);

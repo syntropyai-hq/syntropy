@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:53e6ba14863f4774"
+jobs_toml = "fnv1a:9fb64c281610b6db"
 
 [[golden]]
 name = "plan only"
@@ -345,6 +345,14 @@ paths = [
     "xtask/src/run.rs",
 ]
 lock = ["syntropy-xtask"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "linker wrapper"
+source = "constructed: COMP-E9-T19's linker driver alone, which every Linux link runs, so it counts as a change to every crate"
+paths = ["ci/link/provider-cc"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
