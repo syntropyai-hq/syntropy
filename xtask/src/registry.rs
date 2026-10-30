@@ -1207,6 +1207,15 @@ mod tests {
         assert_eq!(tasks, ["QUAL-E16-T21"]);
     }
 
+    /// `docs` keeps its origin check, which PROD-E13-T01's criterion 3 rests on. A change to
+    /// this file runs `hosted-test` but not `docs`, so this test is what notices a dropped step.
+    #[test]
+    fn docs_runs_the_generated_build_and_origin_steps() {
+        let docs = find(JOBS, "docs").expect("docs is registered");
+        let steps: Vec<&str> = docs.steps.iter().map(|s| s.name).collect();
+        assert_eq!(steps, ["generated", "build", "origins"]);
+    }
+
     #[test]
     fn ci_gate_needs_the_needs_context_and_repo_settings_needs_nothing() {
         let gate = find(JOBS, "ci-gate").expect("ci-gate is registered");

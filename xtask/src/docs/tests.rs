@@ -326,6 +326,11 @@ fn svg_css_and_file_types_are_checked_too() {
             "p { content: '*/\\'' } /* note */ q { background: url(//x.example/b.png) }",
             "url(//x.example/b.png)",
         ),
+        // An escaped quote does not end the string, so the `/*` after it starts no comment.
+        (
+            "p { content: \"a\\\"/*\" } q { background: url(https://x.example/a.png) } r { content: \"*/\" }",
+            "url(https://x.example/a.png)",
+        ),
         (
             "p { background: image-set(\"a.png\" 1x, \"https://x.example/b.png\" 2x) }",
             "image-set(\"https://x.example/b.png\")",
