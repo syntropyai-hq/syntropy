@@ -156,6 +156,7 @@ fn a_wildcard_bind_is_never_served_plain() {
             bind: vec![wildcard.parse().unwrap()],
             tls: TlsSource::None,
             allow_plaintext_lan: true,
+            local_socket: true,
         };
         let refusal = plan_binds(&api, true).unwrap_err();
         assert!(
@@ -199,6 +200,7 @@ fn tls_none_on_a_public_bind_fails_even_with_the_opt_in() {
         bind: vec!["8.8.8.8:7433".parse().unwrap()],
         tls: TlsSource::None,
         allow_plaintext_lan: true,
+        local_socket: true,
     };
     assert!(matches!(
         plan_binds(&api, true),

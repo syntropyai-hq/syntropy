@@ -9,6 +9,7 @@ use crate::ids::{Blake3, LinkId, NodeId, TierId};
 use crate::units::Bytes;
 
 use super::device::DeviceInfo;
+use super::graph::Reservation;
 use super::link::LinkInfo;
 use super::tier::{HostPoolInfo, TierInfo};
 
@@ -48,14 +49,20 @@ pub struct GraphDelta {
 
 /// A node's device ledger as the coordinator sees it (RFC-0001 §5.10 `ReportLedger`).
 ///
-/// RFC-0001 names the type without fields. The minimal reading is the capacity running
-/// instances hold per tier, which is what `ResourceGraph::reservations` needs; RFC-0030 and
-/// RFC-0033 may add fields with serde defaults.
+/// RFC-0001 names the type without fields. `held` is the capacity running instances hold per
+/// tier; `entries` says which instance and epoch hold it (PLC-E1-T18; RFC-0010 §1.4, note of
+/// 2026-10-29). [`LedgerSummary::reservations`] turns both into `ResourceGraph::reservations`.
+/// RFC-0030 and RFC-0033 may add fields with serde defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LedgerSummary {
     /// Bytes held per tier.
     pub held: Vec<(TierId, Bytes)>,
+    /// Who holds them: one entry per instance, epoch and tier, each with a holder. A node that
+    /// does not report entries sends none, and its `held` bytes stay unattributed. An empty
+    /// list is not encoded, so a ledger without entries keeps the bytes it had before the field.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<Reservation>,
 }
 
 /// How a link changed (RFC-0010 §1.4).

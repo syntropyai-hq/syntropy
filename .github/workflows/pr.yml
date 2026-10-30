@@ -177,6 +177,78 @@ jobs:
       # The licence fixtures run cargo-deny on Linux, and in CI they must.
       - if: matrix.os == 'linux'
         uses: ./.github/actions/install-cargo-deny
+      # The second OS account that `syntropy-ipc`'s peer test connects from (DIST-E1-T03,
+      # RFC-0034 §6.4). In CI the test fails without it.
+      - if: matrix.os == 'linux'
+        name: Add a second OS account for the IPC peer test
+        run: |
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin syntropy-peer
+          echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
+      - if: matrix.os == 'macos'
+        name: Add a second OS account for the IPC peer test
+        run: |
+          id=599
+          while dscl . -search /Users UniqueID "$id" | grep -q .; do id=$((id - 1)); done
+          sudo dscl . -create /Users/syntropy-peer
+          sudo dscl . -create /Users/syntropy-peer UserShell /usr/bin/false
+          sudo dscl . -create /Users/syntropy-peer UniqueID "$id"
+          sudo dscl . -create /Users/syntropy-peer PrimaryGroupID 20
+          sudo dscl . -create /Users/syntropy-peer NFSHomeDirectory /var/empty
+          id syntropy-peer
+          echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
+      # On Windows the test starts its copy with `CreateProcessWithLogonW`, so it needs the
+      # account's password: a random one, made here, masked in the log and never printed.
+      # Letters and digits only: the test step runs under Git Bash, which rewrites an
+      # environment value that starts with `/` into a Windows path (`C:/Program Files/Git/…`)
+      # for the native programs it starts. A base64 password began with `/` one run in 64, and
+      # the test's logon then failed with error 1326.
+      - if: matrix.os == 'windows'
+        name: Add a second OS account for the IPC peer test
+        # Windows PowerShell, whose LocalAccounts module loads natively.
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 32 characters from [A-Za-z0-9] by rejection sampling, unbiased; `aA1` keeps the
+          # upper, lower and digit classes that the complexity policy asks for.
+          $alphabet = [char[]]'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+          $chars = New-Object System.Collections.Generic.List[char]
+          $buffer = New-Object byte[] 64
+          while ($chars.Count -lt 32) {
+            $rng.GetBytes($buffer)
+            foreach ($b in $buffer) {
+              if ($b -lt 248 -and $chars.Count -lt 32) { $chars.Add($alphabet[$b % 62]) }
+            }
+          }
+          $password = (-join $chars) + 'aA1'
+          if ($password -cnotmatch '^[A-Za-z0-9]{35}$') { throw 'the generated password is not 35 letters and digits' }
+          Write-Output "::add-mask::$password"
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name syntropy-peer -Password $secure -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          # BUILTIN\Users, which may log on locally.
+          if (-not (Get-LocalGroupMember -SID S-1-5-32-545 -Member syntropy-peer -ErrorAction SilentlyContinue)) {
+            Add-LocalGroupMember -SID S-1-5-32-545 -Member syntropy-peer
+          }
+          Get-LocalUser -Name syntropy-peer | Format-List Name, Enabled, SID, PasswordExpires, PasswordRequired
+          # The account logs on with this password now, as the test's will, or this step fails
+          # with the Win32 error: a policy, an account flag or a missing logon right shows here,
+          # not as a failed test later.
+          Add-Type -Namespace SyntropyCi -Name Logon -MemberDefinition @'
+          [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+          public static extern bool LogonUser(string user, string domain, string password, int type, int provider, out IntPtr token);
+          [DllImport("kernel32.dll", SetLastError = true)]
+          public static extern bool CloseHandle(IntPtr handle);
+          '@
+          $token = [IntPtr]::Zero
+          # LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT.
+          if (-not [SyntropyCi.Logon]::LogonUser('syntropy-peer', '.', $password, 2, 0, [ref]$token)) {
+            $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "syntropy-peer cannot log on with its new password: Win32 error $code"
+          }
+          [void][SyntropyCi.Logon]::CloseHandle($token)
+          Write-Output 'syntropy-peer logs on with its password'
+          Add-Content -Path $env:GITHUB_ENV -Value "SYNTROPY_IPC_PEER_USER=syntropy-peer"
+          Add-Content -Path $env:GITHUB_ENV -Value "SYNTROPY_IPC_PEER_PASSWORD=$password"
       - run: cargo xtask test unit
 
   # L3: loom models, Miri and the sanitizer builds (RFC-0060 §3.4), when `changes` lists it. The

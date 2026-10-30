@@ -60,7 +60,7 @@ runner process                                       daemon process
 
 - **Runners never export anything.** They write into shared-memory rings (RFC-0001 §3.5: `telemetry`, `log`). Only the daemon talks to exporters, files or other nodes. This keeps async runtimes and network code off runner hot threads (ADR-0012), and it means a runner crash loses at most one drain period (250 ms) of metric deltas.
 - **One producer per ring.** The `telemetry` ring's only producer is the drain task. Each dispatcher writes its `StepRecord`s into its **own** SPSC step ring in the shared-memory region (one per dispatcher, declared in `ShmLayout`), which the daemon reads directly. The proposed RFC-0001 §3.5 amendment A3 lists both rings.
-- **Rings are lossy** (RFC-0001 §8.4 rule 8). A full ring drops the oldest records and increments a drop counter, which is itself exported. Losing telemetry never slows a step.
+- **Rings are lossy** (RFC-0001 §8.4 rule 8). A full ring drops the oldest records and increments a drop counter, which is itself exported. Losing telemetry never slows a step. *Revised 2026-10-27 (RFC-0001 §18.43):* a full ring drops the new record, not the oldest, since an SPSC producer cannot take back a record its consumer has not read; the drain sends the dropped deltas again (§2.1's note).
 - **Nothing per token enters the event log** (ADR-0009). Telemetry reaches other nodes only through the node-query channel (RFC-0050 amendment A4), and only while something asks: a dashboard view, `doctor --cluster`, `debug dump --cluster`, or a trace lookup.
 
 ```rust
@@ -73,6 +73,8 @@ pub enum TelemetryRecord {
     Notice { at: Nanos, kind: NoticeKind },   // degradations, demotions, pressure steps, cache events
 }
 ```
+
+*Revised 2026-10-27 (PROD-E8-T01; RFC-0001 §18.43):* the deltas name a `SeriesId`, one metric with its label values bound at registration (§2.1), not a `MetricId`, which cannot tell two label sets apart. A new last variant, `Series { entries }`, tells the daemon each ID's metric and label values before any record uses it. As built, `at` is a `MonoTime` from `TickSource::now()`, and `Spans` and `Notice` come with the tasks that define their payloads, after `Series`. §2.1's note gives the rest.
 
 ### 2. Metrics
 
@@ -104,6 +106,16 @@ impl LocalMetrics {
   - `obs` reads no clock directly.
 - **Labels are resolved at registration**, not on each record. A hot thread holds `CounterIx` handles already bound to their label set: (stage, device, layer…). Recording never hashes a label.
 - **The drain.** A task on the runner's `net` runtime snapshots all cells every 250 ms (RFC-0001 §13), computes deltas, and writes `TelemetryRecord`s into the `telemetry` ring. Hot threads never take part. The daemon folds deltas into its store. For the series the dashboard draws (≤ 2,000), it keeps 1-second resolution for 15 minutes and 1-minute resolution for 24 hours in memory. Every other series keeps only its current value. Longer retention is the exporters' job.
+
+*Revised 2026-10-27 (PROD-E8-T01, as built; RFC-0001 §18.43).* `syntropy-obs` holds the registry, the cells, the histograms, the `TelemetryRecord` codec and the drain. The build revises §1's record listing and lossy-ring rule, and settles how this section is built:
+- **Series, not metrics, in records** (revises §1). A record names a `SeriesId`: one metric with its label values bound at registration. §1's listing names a `MetricId`, which cannot tell two label sets apart. A new last variant, `TelemetryRecord::Series`, tells the daemon each ID's metric and label values. The first drain sends every one before any record uses it. `Spans` and `Notice` come with the tasks that define their payloads (PROD-E8-T07 for spans), appended after `Series`.
+- **Timestamps** are `MonoTime`, from `TickSource::now()`. `Gauges` carries no thread, as listed, so a gauge series has one writing thread: the drain sends the latest value it reads from each thread's cells.
+- **Histograms** take `Nanos` and `Bytes` units only, as this section gives ranges for those two. Each also keeps the sum of recorded values, so an exporter can report one.
+- **Cells.** A thread's cells are packed into 128-byte lines of their own, rather than one padded line per cell, so no two threads share a line. The single writer is asserted on every write in debug builds.
+- **The drain** is a value the runner drives: its `net` runtime calls `Drain::poll` from a timer, since `obs`, at layer 0, cannot depend on `net` or `tokio`. `poll` drains once per 250 ms of the `TickSource`'s time, however often it is called.
+- **A full ring** (revises §1). An SPSC producer cannot take back a record the consumer has not read, so a full ring drops the new record, not the oldest, and counts it in `syntropy_obs_ring_dropped_records_total{ring}`. The drain keeps its last read for the series a dropped record carried, so the next drain sends those deltas again. A crash still loses at most one period, as long as the ring has room.
+- **One writer per ring.** `obs::ring::RingWriter` claims its ring (`telemetry`, or one step ring per dispatcher) in the region's `RingClaims`. A second claim of the same ring fails a debug assertion.
+- **No `tracing` on hot threads.** The `hot-threads` step of `cargo xtask ci lint` reads the Rust tokens of the modules `xtask/src/hot_threads.rs` lists, and rejects `tracing` there.
 
 #### 2.2 Cost terms: predicted against measured
 
@@ -334,6 +346,32 @@ pub struct TraceContext {
 
 Hot threads write fixed 64-byte `SpanRecord { trace_id, span_id, parent_id, name: SpanNameId, start: Nanos (monotonic), dur: u32 ns, attrs: [u32; 6] }` into a per-thread SPSC ring. Recording allocates nothing and touches no strings. Housekeeping batches the records into `TelemetryRecord::Spans`. The daemon turns them into full spans: it resolves name IDs, converts monotonic time to wall time with the node's offset, and attaches the per-term durations from the matching `StepRecord`.
 
+*Note 2026-10-28 (PROD-E8-T07, as built): `syntropy_obs::trace`.* Each point below is **for the maintainers to confirm**.
+- **The record is 64 bytes with four attributes.** The fields listed above sum to 70 bytes, not 64. `SpanRecord` is `repr(C)`, held to 64 bytes by a build-time assertion, and encoded little-endian at the same offsets:
+  - `trace_id` 0–15, `span_id` 16–23, `parent_id` 24–31;
+  - `start` (monotonic nanoseconds) 32–39, `dur` (u32 ns) 40–43;
+  - `name` (`SpanNameId`, u16) 44–45, `attr_count` (u16, at most 4) 46–47;
+  - four u32 attributes at 48–63.
+
+  The daemon takes a step's per-term durations from the matching `StepRecord`, so a span's own attributes need at most four. `SpanName::attrs` names them per span.
+- **The span ring is in-process.** Each hot thread owns its ring, through a `SpanWriter` that takes no lock and drops and counts when the ring is full. Housekeeping batches the records into a new last variant, `TelemetryRecord::Spans`, each batch as many records as fit a `telemetry` slot. So no shared-memory ring is added. A 3.x daemon cannot decode the new variant, so `ipc_protocol` goes to 4.0 (RFC-0001 §18.49).
+- **The sampling hash (§3.3)** is FNV-1a-64 as the FNV specification gives it (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`, checked against its published vectors) over the 16 trace-ID bytes, then the step index as a u64 little-endian. A step is sampled when:
+  - the hash is below ⌊`obs.trace.step_sample` · 2⁶⁴⌋, which is 2⁵⁸ at the default 1/64;
+  - or it is one of the first four decode steps;
+  - or the request is a full trace.
+
+  The step index is the sequence's step counter, counting prefill chunks and decode steps alike. A prefill chunk is sampled by the hash or by a full trace only. The arithmetic is integer only, so the decision is the same on every host and in every replay.
+- **The keys**, all node scope:
+  - `obs.trace.step_sample`, a fraction, default 1/64, hot reload;
+  - `obs.trace.honor_remote_sampled`, a bool, default false, hot reload;
+  - `obs.flight_recorder`, a byte size, default 64 MiB, node reload.
+
+  `obs` declares them, and the binary registers them.
+- **The flight recorder** counts each entry at its record's size (64 bytes for a span, 48 for a log record) and evicts the oldest first. It looks traces up by trace ID. So `obs.flight_recorder` bounds the records' bytes, not memory. Each entry is a 72-byte value in memory, 1.125× a span's count and 1.5× a log record's, so the Performance model's 64 MiB row is about 72–96 MiB of heap by the mix of spans and logs [estimate, from the type sizes], before the deque's spare capacity.
+- **Span durations** are u32 nanoseconds, at most about 4.29 s; `SpanRecord::dur_ns` saturates a longer span there.
+- **The API side is wired.** `api`'s ingress runs `IngressTrace` on `ClientMeta::traceparent`, puts its context in `SequenceOpen::trace`, and returns `Generation::response_traceparent`. The head's sampler call, the stages' span records and the daemon's flight recorder are PROD-E8-T14's.
+- **Ingress** follows §3.2. An unparseable `traceparent` counts as none: a new trace is started, and none is returned. New IDs are never all zero.
+
 #### 3.5 Clocks and hop timing
 
 - **Each node's timestamps** come from `TickSource::now()` on its monotonic `Clock` timeline (§2.1). The daemon maintains its offset to wall time.
@@ -353,7 +391,9 @@ Hot threads write fixed 64-byte `SpanRecord { trace_id, span_id, parent_id, name
 - **Daemon and runner non-hot code** (tokio tasks, the runner's `net` domain) use the `tracing` crate's events with structured fields.
 - **Hot threads** never format. They push `LogRecord { callsite: CallsiteId, level, at: Nanos, args: [u64; 4] }` into the runner's `log` ring (RFC-0001 §3.5). The callsite table (format string, field names, file and line) is static per build. The daemon and runner may be different builds after an update re-adopts runners (RFC-0052 §6.5). So each runner sends a digest of its callsite, metric and span-name tables in `Hello`, and on a mismatch sends the tables themselves; the daemon decodes that runner's records with them. The ring record schemas (`TelemetryRecord`, `StepRecord`, `LogRecord`, `SpanRecord`) are part of `ipc_protocol`, so a schema change disables re-adoption for that update. The daemon formats on receipt.
 - **Every record carries**: timestamp (UTC, microseconds), level, target (crate and module), node, and where applicable instance, stage, sequence (as an opaque short ID), trace ID, error code, plus event fields.
-- **Repeat suppression.** Identical (callsite, level, key fields) records within 10 s collapse into one with `repeated=N`, so a flapping link cannot flood the log.
+- **Repeat suppression.** Identical (callsite, level, key fields) records within 10 s collapse into one with `repeated=N`, so a flapping link cannot flood the log. *Note 2026-10-27 (PROD-E8-T04):* the first record of a run is written at once, and the repeats in its window become one summary record with `repeated = N`, the number it stands for, when the window closes. 1,000 identical warnings in 10 s therefore write the first and one record with `repeated = 999`. Holding the first back for 10 s would delay every log line.
+
+*Note (2026-10-27, open for the maintainers):* the M0 shared-memory layout has one `log` ring per runner, and an SPSC ring has exactly one writer. Several hot threads can't share that writer without a lock, which ADR-0012 forbids on hot threads. So today only one hot thread per runner writes `LogRecord`s. The recommended default is one `log` ring per hot thread, as amendment A3 gives each dispatcher its own step ring, with the daemon draining them all. That changes `ShmLayout` and so `ipc_protocol`. Until it is decided, other hot threads report through metrics, which are per-thread already.
 
 #### 4.2 Sinks
 
@@ -375,6 +415,18 @@ The rotating file is `<state>/logs/daemon.log`, 16 MiB × 5 files. Runner logs g
 - **Content.** Prompts, outputs and token IDs are logged only with `logging.include_content = true`, only at `debug`, and the daemon then prints a warning at start and on every reload. Secrets are typed `Secret<T>` (RFC-0054 §10.1) and print as `[redacted]` at every level.
 
 `syntropy logs` reads through the API: the daemon serves the recent tail from its flight recorder and follows live records.
+
+*Note 2026-10-27 (PROD-E8-T04, as built).* The build settles what §4.1–§4.3 leave open:
+- **Where it lives.** `LogRecord`, `Callsite` and the `log` ring's `LogWriter` are in `syntropy_obs::log`, a hot-thread module under the `hot-threads` lint. The record is a fixed 48-byte little-endian encoding: callsite `u32`, level `u8`, three zero bytes, `at: MonoTime`, then the four `u64` arguments. The daemon's pipeline, formats and sinks are in `syntropy_daemon::logging`. The `[logging]` section is `syntropy_config::logging`, beside the `debug.*` keys, with RFC-0054 §5.2's five keys.
+- **Content** travels in fields marked as content: a `tracing` field named `content.<name>`, or a callsite argument whose bit is set in `Callsite::content`. Messages never carry content, so a runner callsite's content argument shows as `[content]` in its message. The pipeline drops content fields unless `logging.include_content` is on and the record is at `debug` or `trace`. While it is on, the logger warns at start and on every reload, and so does the resolved configuration.
+- **Repeat suppression** (§4.1). The first record of a run is written at once and opens a 10 s window, timed on the record's own `MonoTime` and the logger's injected `Clock`. Records in the window that share the callsite, the level and the key fields are counted, not written. When the window closes, one record stands for them, carrying `repeated = N`, the number it replaces. So 1,000 identical warnings in 10 s are written as the first one and one record with `repeated = 999`. At most 4,096 runs are tracked; past that, the oldest run's summary is written early.
+- **Timestamps** are UTC with microseconds. They come from one sample of the `Clock`'s wall time and monotonic time, then monotonic differences, so every record's time comes from the injected `Clock`.
+- **Sinks** follow §4.2's table: `JOURNAL_STREAM` means systemd, a `XPC_SERVICE_NAME` other than `0` means launchd, and a Windows service is told by its own start path.
+  - journald gets its native protocol over `/run/systemd/journal/socket`, with every field as `SYNTROPY_<NAME>`.
+  - Unified logging gets one `os_log_t` per crate, written as `%{public}s` through the call the `os_log` macros make.
+  - The Windows event log gets warnings and errors from source `Syntropy`, without a message file, which is packaging's.
+  - Both OS facilities are linked by `syntropy-io` alone (`io::os::log_sink`), from `libSystem` and `advapi32.dll`, which rule 7 already allows.
+  - A user-named `logging.file` is written in every situation; `auto` writes `<state>/logs/daemon.log` only where the table keeps a file.
 
 ### 5. `syntropy doctor`
 
@@ -437,6 +489,7 @@ pub struct Fix {
 | STO-002 | filesystem refuses `O_DIRECT` or reports no direct-I/O alignment; buffered mode active | volume, filesystem |
 | STO-003 | store on a network filesystem or rotational disk | volume type |
 | STO-004 | pack spot check: sample extents re-hashed against the sidecar | mismatches |
+| STO-005 | a writable store root in chunk-file mode: its volume has no sparse files (exFAT, FAT32, HFS+), so each chunk is its own file and reads that span chunks are slower (RFC-0041 §4.2) | the root, and what the start-up probe found; move `store.dirs` to a volume with sparse files |
 | NET-001 | LAN discovery blocked: multicast filtered, firewall profile, macOS Local Network permission denied | per interface; the exact firewall command or settings path |
 | NET-002 | node on Wi-Fi while wired is available; links with p99 above 4 × p50 | link figures |
 | NET-003 | MTU mismatch or fragmentation on data-plane links | path MTU |
@@ -469,6 +522,8 @@ pub struct Fix {
 | RUN-006 | daemon heartbeat stalls that put runners into orphan mode without a restart (RFC-0052 §6.5) | count and longest stall in the last 24 h |
 | PRV-001 | what leaves this node: exporters, update checks, relays | destinations (§8); with `doctor --network`, every outbound destination contacted in the last 24 hours with byte counts (RFC-0034 §13) |
 
+**Revision note, 2026-10-29 (COMP-E11-T02): STO-005.** RFC-0041 §4.2 says chunk-file mode "is flagged in `syntropy doctor`", and no check in this list did so. STO-005 is that check. It reads `v1/storage-mode.json`, which the store writes after each writable start's sparse probe, with `syntropy_store::read_storage_mode`. The record names the mode and the reason the volume has no sparse files, and reading it needs no writer lock, so the check runs under `--offline` while a daemon holds the root. PROD-E9-T02 builds it with the other STO checks.
+
 ### 6. Debug state dump
 
 `syntropy doctor --bundle [--cluster] [--out FILE]`, the name RFC-0034 §13 uses, writes one `tar.zst` file locally. `syntropy debug dump` is an alias, and the API form is `POST /v1/syntropy/debug/dump` with `admin` scope. The bundle is never uploaded.
@@ -497,6 +552,16 @@ pub struct Fix {
 - **On finish** the command prints the path, size and SHA-256, plus a reminder to read `MANIFEST.txt` before sharing.
 
 **Crash records.** A panic in the daemon or a runner, and a runner's exit by signal or with a sticky device error (RFC-0001 §3.4), write a record to `<state>/crashes/`: build ID, panic message and backtrace, the last 200 log lines, and the device error report if any. The 20 most recent are kept. They are shown by `doctor` (RUN-001) and included in dumps, and nothing sends them anywhere.
+
+**Revision note, 2026-10-29 (PROD-E9-T04): the bundle and crash records, as built.** `syntropy_daemon::bundle` builds the bundle and `syntropy_daemon::crash` keeps the records.
+- **Files.** `MANIFEST.txt`, `build.json`, `config.txt` (`config show`'s text, secrets redacted), `cluster-state.json`, `cluster-log.jsonl`, `flight-recorder.jsonl`, `doctor.json` and `crashes/<name>.json`, in a POSIX ustar archive compressed with zstd level 3. `MANIFEST.txt` lists each other file as `<SHA-256>  <bytes>  <path>`, then where addresses were replaced, where secrets were replaced by `[redacted]`, what was left out, what was truncated, and what was not collected. `bundle::verify` checks a bundle against it.
+- **The allow-list is of record types and of fields.** Each record is serialised, then projected through a declared shape: at every level the shape names field by field, a field or enum variant it does not name is left out, and only its name is listed in `MANIFEST.txt`. So a field a record type gains later, such as RFC-0032 §6.2's `api_keys` or `invites` in `ClusterState`, is excluded until someone adds it deliberately. Below a level the shape keeps whole, new fields are kept too, and every string in them passes the address redactor; such subtrees are plain data (identifiers, counts, enums). A payload the log keeps as `Opaque` (a CBOR value no RFC has fixed yet) is left out wherever it occurs. Configuration values are replaced by `[redacted]` wherever the state and the log hold them: cluster keys, a config patch, and an instance policy's instance-scope keys (`domain`), since such a key may be secret-typed; `config.txt` shows them with `config show`'s redaction. Hot-thread log records keep only their non-content arguments, through the build's callsite table; a record whose callsite is unknown keeps no arguments. Records are serialised human-readable, so an address type is its text (`203.0.113.7`, `[2001:db8::5]:9000`), never an integer array no text scan would find; a map key that is not a string is written as text.
+- **Addresses.** Every string kept, and every map key, is scanned. URLs (`scheme://…`) become `<url-N>`. IP addresses become `<addr-N>` wherever they occur: alone, with a port, bracketed, with a zone, inside a longer token such as a dotted key (`p2p.peers.2001:db8::5.x`) or after a `word:` prefix, and IPv4 with zero-padded octets. A candidate with no digit counts only when no letter or digit touches it, so `Vec::new` and `daemon::logging` stay. A host name outside a URL is kept, with or without a port (`relay.example.net:3478`); the maintainers decide whether such endpoints are replaced too. With `--with-addresses` addresses are kept, but a URL's userinfo (`user:password@`) is replaced by `[redacted]@`, since it is a credential, and `MANIFEST.txt` lists where.
+- **Size.** The cap is checked against the archive before compression, less 256 KiB kept for `MANIFEST.txt`, and against the compressed file. The flight recorder is truncated first, then the cluster log, oldest entries first; `TooLarge` if it still does not fit. The metrics history is not collected yet, so it is not truncated.
+- **Crash records** are one owner-only JSON file each, `<unix ms, 20 digits>-<pid>-<n>.json`. Their log lines come from the logger's tail of the last 200 records, formatted as text with every content field removed whatever `logging.include_content` says. A panic is recorded by a hook that then runs the hook it replaced. A runner's exit is recorded from its exit status: a signal on Unix, and on Windows a system `NTSTATUS` error code (severity bits set, customer and reserved bits clear), so `exit(-1)` is not an exception. A runner's exit with a sticky device error, and the device error report, have no record field yet and no owning task; the task that wires device errors to the supervisor should add them.
+- **Wiring.** The command and `POST /v1/syntropy/debug/dump` are PROD-E6-T08's, and RUN-001's listing is PROD-E9-T03's. A runner's exit is recorded by the process host (`ProcessRunner::record_crashes`) when it reaps a runner it was given a `CrashSink` for; a runner killed with `SIGKILL` through that host leaves a record that the next bundle holds. `--cluster` waits for the node-query channel.
+
+**Revision note, 2026-10-30 (PROD-E9-T12): the process host's own kills.** A kill the host makes is recorded from the host's reason, on every OS, not from how the exit status reads: on Windows `TerminateProcess` leaves exit code 1, which no status rule can tell from a program's own exit. RFC-0001 §3.4 gives the host two kills, and both are abnormal: the supervisor's kill of a hung or stalled runner, and the kill of a freshly spawned runner whose `Hello` is refused. `ProcessRunner::kill` takes the host's own reason type, `HostKill`: `Supervisor(KillReason)` (`hung` or `stalled`) or `Refused`. The reap writes `CrashCause::HostKilled { reason, signal, exit_code }`, with the signal on Unix and the exit code where the status has one (on Windows, the code `TerminateProcess` left), in place of a plain `Signal` record. The supervisor's kills reach `ProcessRunner::kill` through the supervisor shell's `Effects::kill`, which DIST-E1-T16 wires. A shutdown drains runners and never kills them, and dropping a runner's host closes its channel without a kill, so neither leaves a record; nor does a clean exit. An exit the host did not cause is recorded from its status as before: a signal on Unix, a system `NTSTATUS` error on Windows. A kill counts as the host's only if `Child::kill` succeeded on a runner that had not already exited, and only if the status is what the kill leaves: on Unix the `SIGKILL` the host sent, on Windows exit code 1, the code `Child::kill` passes to `TerminateProcess`. A runner that exits on its own between the host's check and its kill, with any other status, is recorded from that status. Revised 2026-10-30 after hosted Windows CI caught a runner's own exit code 101 recorded as the host's kill: the residual window is now only a runner that itself exits with code 1 in it, which cannot be told from the kill, and is accepted.
 
 ### 7. Optional export: Prometheus and OpenTelemetry
 

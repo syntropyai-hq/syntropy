@@ -217,11 +217,28 @@ pub const LOADER_PREFIX: &str = "ld-linux";
 /// [`WINDOWS_CRT_API_SETS`]. A DLL added here must ship with every supported Windows, or with
 /// the Visual C++ runtime, never a vendor GPU runtime (ADR-0018 decision 5), and the change needs a
 /// maintainer's review.
+///
+/// Added 2026-10-27, when the core binary gained the CLI's client and the API (PROD-E6-T01), from
+/// what rule 7 reported on the hosted `windows-2025` runner. Each with the crate that imports it:
+/// - `ws2_32.dll`, Winsock: `mio` 1.2.4, tokio's I/O driver, whose `sys/windows/net.rs` and
+///   `selector.rs` call it through `windows-sys`'s `Win32_Networking_WinSock` feature (its
+///   `Cargo.toml` line 140); every TCP socket of the client and the API's listeners;
+/// - `advapi32.dll`: `syntropy-ipc`'s owner-only pipe and peer check, whose calls
+///   `windows-sys` 0.61.2 declares from `advapi32.dll` (`OpenProcessToken`, `GetTokenInformation`,
+///   `EqualSid`, `ConvertSidToStringSidW`, `ConvertStringSecurityDescriptorToSecurityDescriptorW`);
+///   and `getrandom` 0.2.17 under `ring`, whose `RtlGenRandom` fallback is
+///   `#[link(name = "advapi32")]` (`src/windows.rs:19`);
+/// - `bcryptprimitives.dll`: `getrandom` 0.4.3's `ProcessPrng`,
+///   `link(name = "bcryptprimitives", kind = "raw-dylib")` (`src/backends/windows.rs:40`), reached
+///   through `rand` 0.10, `igd-next` and `portmapper` under `iroh` (`syntropy-net`).
 pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
     "kernel32.dll",
     "ntdll.dll",
     "api-ms-win-core-synch-l1-2-0.dll",
     "vcruntime140.dll",
+    "ws2_32.dll",
+    "advapi32.dll",
+    "bcryptprimitives.dll",
 ];
 
 /// Rule 7: the Universal CRT's API sets the core binary may import, compared without case. The
@@ -229,6 +246,17 @@ pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
 /// `llvm-readobj --coff-imports`). Every Universal CRT set ships with Windows 10 and later, but
 /// only these are allowed, so a dependency that pulls in another one, such as `time`, fails rule 7
 /// until a maintainer adds it here, as for [`WINDOWS_SYSTEM_LIBRARIES`].
+///
+/// `api-ms-win-crt-utility-l1-1-0.dll` was added 2026-10-27 (PROD-E6-T01), when the core binary
+/// gained the API. `zstd-sys`'s bundled zstd imports it, and nothing else does. On the hosted
+/// `windows-2025` runner, `llvm-readobj --coff-imports` on the core binary listed three functions
+/// from it: `_byteswap_ulong`, `_byteswap_uint64` and `_rotl64`. `llvm-nm --undefined-only` over
+/// all 328 rlibs and build-script outputs found them referenced only by `zstd-sys`'s objects (its
+/// `zstd.lib`, `libzstd.a` and the per-file `.o`s, and the rlib that bundles them). Under MSVC its
+/// `xxhash.h` maps `XXH_swap32`, `XXH_swap64` and `XXH_rotl64` to those functions (lines
+/// 2732–3282). `ring` references none: it declares `_byteswap_ulong` an intrinsic
+/// (`crypto/internal.h:354`). `zstd-sys` is `syntropy-net`'s control-message compression
+/// (RFC-0031 §9.1).
 pub const WINDOWS_CRT_API_SETS: &[&str] = &[
     "api-ms-win-crt-heap-l1-1-0.dll",
     "api-ms-win-crt-locale-l1-1-0.dll",
@@ -236,6 +264,7 @@ pub const WINDOWS_CRT_API_SETS: &[&str] = &[
     "api-ms-win-crt-runtime-l1-1-0.dll",
     "api-ms-win-crt-stdio-l1-1-0.dll",
     "api-ms-win-crt-string-l1-1-0.dll",
+    "api-ms-win-crt-utility-l1-1-0.dll",
 ];
 
 /// Rule 7: the libraries the core binary may load on macOS, by install name. `libSystem` is what
@@ -247,8 +276,18 @@ pub const WINDOWS_CRT_API_SETS: &[&str] = &[
 /// COMP-E6-T01 lands it, and drop any entry it does not load. Rule 7 rejects every other library but [`MACOS_FRAMEWORKS`]. A library added here must
 /// ship with every supported macOS, never a vendor GPU runtime (ADR-0018 decision 5), and the
 /// change needs a maintainer's review.
-pub const MACOS_SYSTEM_LIBRARIES: &[&str] =
-    &["/usr/lib/libSystem.B.dylib", "/usr/lib/libobjc.A.dylib"];
+///
+/// `libiconv` was added 2026-10-27 (PROD-E6-T01), when the core binary gained the CLI's client
+/// and the API, from what rule 7 reported on the hosted `macos-26` runner. The `libc` crate 0.2.191
+/// links it on Apple platforms (`src/unix/bsd/apple/mod.rs:5545`,
+/// `cfg_attr(not(feature = "rustc-dep-of-std"), link(name = "iconv"))`), so the standard
+/// library's own copy does not, and an empty binary never loaded it. `syntropy-ipc`,
+/// `syntropy-spsc`, `mio` and `socket2` use `libc`. It ships with every macOS.
+pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
+    "/usr/lib/libSystem.B.dylib",
+    "/usr/lib/libobjc.A.dylib",
+    "/usr/lib/libiconv.2.dylib",
+];
 
 /// Rule 7: the system frameworks the core binary may load on macOS, by name: `Metal` matches
 /// `/System/Library/Frameworks/Metal.framework/Versions/A/Metal`. The Metal provider is linked into
@@ -257,7 +296,32 @@ pub const MACOS_SYSTEM_LIBRARIES: &[&str] =
 /// come from, and `CoreGraphics` is the one `MTLCreateSystemDefaultDevice` needs linked to find a
 /// device on macOS. RFC-0040 names only the binding and that call, so the three are a forecast, as
 /// [`MACOS_SYSTEM_LIBRARIES`] says. The same review rule applies.
-pub const MACOS_FRAMEWORKS: &[&str] = &["Metal", "Foundation", "CoreFoundation", "CoreGraphics"];
+///
+/// `SystemConfiguration` and `Security` were added 2026-10-27 (PROD-E6-T01), from what rule 7
+/// reported on the hosted `macos-26` runner once the core binary gained the API. Both ship with
+/// macOS, and both come from `iroh` under `syntropy-net`:
+/// - `SystemConfiguration`: `system-configuration-sys` 0.6.0's build script
+///   (`cargo:rustc-link-lib=framework=SystemConfiguration`, `build.rs:11`), through
+///   `system-configuration`, `n0-dns-resolver` and `iroh-dns`, which read the system's DNS
+///   configuration; and `objc2-system-configuration`, through `netdev` under `netwatch`;
+/// - `Security`: `security-framework-sys` 2.17.0 (`link(name = "Security", kind = "framework")`,
+///   `src/lib.rs:3`), through `rustls-platform-verifier` under `reqwest`, which verifies TLS
+///   certificates against the system trust store.
+///
+/// `IOKit` was added 2026-10-29 (DIST-E1-T04), from what rule 7 reported on the hosted
+/// `macos-26` runner once the core binary gained runner mode, which reads `syntropy-io`'s
+/// `SystemClock` and `SystemTicks` and so links `syntropy-io`. That crate's host-state module reads
+/// the power sources through IOKit (`crates/io/src/os/macos_host.rs:248`, `link(name = "IOKit",
+/// kind = "framework")`). It ships with every macOS.
+pub const MACOS_FRAMEWORKS: &[&str] = &[
+    "Metal",
+    "Foundation",
+    "CoreFoundation",
+    "CoreGraphics",
+    "SystemConfiguration",
+    "Security",
+    "IOKit",
+];
 
 /// Where the system frameworks live.
 const MACOS_FRAMEWORK_DIR: &str = "/System/Library/Frameworks/";
@@ -629,6 +693,10 @@ mod tests {
             "VCRUNTIME140.dll",
             "api-ms-win-crt-runtime-l1-1-0.dll",
             "API-MS-WIN-CRT-HEAP-L1-1-0.DLL",
+            "WS2_32.dll",
+            "advapi32.dll",
+            "bcryptprimitives.dll",
+            "api-ms-win-crt-utility-l1-1-0.dll",
         ] {
             assert!(is_windows_system_library(dll), "{dll}");
         }
@@ -641,7 +709,8 @@ mod tests {
             "api-ms-win-crt-evil-l1-1-0.dll",
             "api-ms-win-crt-time-l1-1-0.dll",
             "api-ms-win-core-file-l1-1-0.dll",
-            "bcryptprimitives.dll",
+            "bcrypt.dll",
+            "ws2_32.dll.evil.dll",
             "libc.so.6",
         ] {
             assert!(!is_windows_system_library(dll), "{dll}");
@@ -670,6 +739,9 @@ mod tests {
             "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
             "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
             "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+            "/usr/lib/libiconv.2.dylib",
+            "/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration",
+            "/System/Library/Frameworks/Security.framework/Versions/A/Security",
         ] {
             assert!(is_macos_system_library(name), "{name}");
         }

@@ -6,13 +6,26 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The `telemetry` ring's records are postcard (RFC-0053 §1).
+postcard = { workspace = true }
 serde = { workspace = true }
+# The records' delta lists (RFC-0053 §1).
+smallvec = { workspace = true }
 syntropy-core = { path = "../core" }
+# The `obs` and `obs.trace` configuration sections (RFC-0053 §3; PROD-E8-T07). One way only:
+# `config` never depends on `obs`, so the two layer-0 crates cannot form a cycle.
+syntropy-config = { path = "../config" }
 # Fault plans are TOML files (RFC-0060 §9.2); only the `fault-injection` build reads them.
-toml = { workspace = true, optional = true }
+# `display` writes them too, for `FaultPlan::to_toml` (DIST-E1-T13); its `toml_writer` is in the
+# lock already.
+toml = { workspace = true, optional = true, features = ["display"] }
 
 [dev-dependencies]
+# The codec's totality property.
+proptest = { workspace = true }
 serde_json = { workspace = true }
+# `SimTicks` on a `SimClock`, and the counting allocator of the hot-path test (RFC-0060 §3.5).
+syntropy-testkit = { path = "../testkit" }
 
 [features]
 # Test-only (RFC-0001 §4.2 rule 10): compiles the fault points of `fault_point!` and their plans

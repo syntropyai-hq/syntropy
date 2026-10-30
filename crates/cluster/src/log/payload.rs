@@ -51,28 +51,10 @@ pub struct NodeInfo {
     pub id: NodeId,
 }
 
-/// A runner's state without its fields, as the log records it (RFC-0001 §5.11). §5.11 puts
-/// `RunnerState` in `core`, and no task has added it there; this is §5.11's `RunnerStateKind`,
-/// with its variants in its order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum RunnerStateKind {
-    /// Fetching shards.
-    Fetching,
-    /// Packing shards into packs.
-    Packing,
-    /// Loading packs onto devices.
-    Loading,
-    /// Warming: prepare, capture, cache fill, link probe, canary.
-    Warming,
-    /// Serving.
-    Ready,
-    /// Finishing its live sequences before it stops.
-    Draining,
-    /// Failed.
-    Failed,
-    /// Stopped.
-    Stopped,
-}
+/// A runner's state without its fields, as the log records it (RFC-0001 §5.11): `core`'s, since
+/// DIST-E1-T05 put `RunnerState` there. Re-exported here, with its variants in the same order, so
+/// the log's encoding is unchanged.
+pub use syntropy_core::RunnerStateKind;
 
 /// A model manifest's digest (RFC-0041): `RegisterModel` fetches the body by it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

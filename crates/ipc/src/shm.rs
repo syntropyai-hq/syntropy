@@ -7,7 +7,7 @@
 //!
 //! | Part | Contents |
 //! |---|---|
-//! | Header | magic, layout version, ring count, size, the daemon's build ID, `ipc_protocol`; then, each on its own cache line, the runner's heartbeat, the daemon's heartbeat, the step counter and the `RunnerState` discriminant |
+//! | Header | magic, layout version, ring count, size, the daemon's build ID, `ipc_protocol`; then, each on its own cache line, the runner's heartbeat, the daemon's heartbeat, the step counter, the `RunnerState` discriminant and the live-sequence count |
 //! | Ring table | each ring's role, slot count, slot size and offset |
 //! | Rings | one [`syntropy_spsc::shared`] ring per [`RingSpec`], fixed at creation: a ring is never resized |
 //!
@@ -37,7 +37,8 @@
 //! bounds-check it (see [`syntropy_spsc::shared`]).
 //!
 //! The record types the rings carry belong to the rings' owners (RFC-0053 for telemetry, steps and
-//! logs; RFC-0031 for `TokenFrame`; RFC-0001 §3.5 for the sequence controls). `BuildId`
+//! logs; RFC-0031 for `TokenFrame`; RFC-0001 §3.5 for the sequence controls). [`records`] encodes
+//! and decodes the `local_sequences` and `local_tokens` records. `BuildId`
 //! (QUAL-E16-T03) and `RunnerState` (DIST-E1-T05) are given here as their encodings: 32 bytes and
 //! a `u32` discriminant.
 
@@ -51,13 +52,20 @@ use syntropy_core::Entropy;
 use syntropy_spsc::shared::{LayoutError, SharedConsumer, SharedLayout, SharedProducer};
 
 mod os;
+pub mod records;
+
+#[cfg(windows)]
+pub(crate) use os::{OwnerOnly, UserSid, wide};
 
 /// The first 8 bytes of every region.
 pub const MAGIC: [u8; 8] = *b"SYNTRSHM";
 
 /// The version of the region's own layout: the header and the ring table. A change to either
 /// changes `ipc_protocol` too (RFC-0001 §3.5).
-pub const LAYOUT_VERSION: u32 = 1;
+///
+/// 2 adds the live-sequence count's line after the state word (DIST-E1-T06). The header grows
+/// by a line, so the ring table moves and a reader of version 1 cannot read the region.
+pub const LAYOUT_VERSION: u32 = 2;
 
 /// The most rings a region holds.
 pub const MAX_RINGS: usize = 256;
@@ -371,6 +379,7 @@ struct Header {
     daemon_heartbeat: Line<AtomicU64>,
     step_counter: Line<AtomicU64>,
     runner_state: Line<AtomicU32>,
+    live_sequences: Line<AtomicU32>,
 }
 
 /// One row of the ring table, after the header.
@@ -517,6 +526,7 @@ impl Region {
                 daemon_heartbeat: Line(AtomicU64::new(0)),
                 step_counter: Line(AtomicU64::new(0)),
                 runner_state: Line(AtomicU32::new(0)),
+                live_sequences: Line(AtomicU32::new(0)),
             });
             let table = base.add(table_offset()).cast::<TableEntry>();
             for (at, placed) in placement.rings.iter().enumerate() {
@@ -636,6 +646,11 @@ impl Region {
     fn state_word(&self) -> &AtomicU32 {
         // SAFETY: as in `runner_heartbeat`.
         unsafe { &(*self.header()).runner_state.0 }
+    }
+
+    fn live_word(&self) -> &AtomicU32 {
+        // SAFETY: as in `runner_heartbeat`.
+        unsafe { &(*self.header()).live_sequences.0 }
     }
 
     /// The side this region is open on.
@@ -767,6 +782,19 @@ impl Region {
     /// Records the runner's current `RunnerState` discriminant.
     pub fn set_runner_state(&self, discriminant: u32) {
         self.state_word().store(discriminant, Ordering::Release);
+    }
+
+    /// The runner's live-sequence count, which the daemon's supervisor reads for stall
+    /// detection: a `Ready` runner with live sequences must step (RFC-0001 §3.4). The runner
+    /// changes it in place, with no `StateChanged`, so it travels here (DIST-E1-T06).
+    #[must_use]
+    pub fn live_sequences(&self) -> u32 {
+        self.live_word().load(Ordering::Acquire)
+    }
+
+    /// Records the runner's live-sequence count, each time it changes.
+    pub fn set_live_sequences(&self, live: u32) {
+        self.live_word().store(live, Ordering::Release);
     }
 
     /// The producing end of the ring `role`, which this side writes.

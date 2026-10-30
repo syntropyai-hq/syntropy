@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The fixture manifest (RFC-0060 §12.3, QUAL-E7-T05): every object in the fixture store that a
+# test reads, by its BLAKE3. `cargo xtask fixtures import` fills `blake3` and `bytes`; `fetch`
+# and `verify` refuse any object whose bytes differ. No fixture is listed yet: the first ones
+# arrive with QUAL-E7-T06 and the generators of QUAL-E7.
+#
+# [[fixture]]
+# name    = "..."
+# blake3  = ""              # content address; also the cache key
+# bytes   = 0               # filled by the import tool
+# source  = { hub = "...", revision = "...", file = "..." }
+# licence = "apache-2.0"
+# gated   = false
+# used_by = ["..."]

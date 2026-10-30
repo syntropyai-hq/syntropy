@@ -3871,13 +3871,22 @@ dependencies = [
 name = "syntropy-api"
 version = "0.0.0"
 dependencies = [
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "rcgen",
  "rustls",
  "serde",
  "serde_json",
  "syntropy-config",
+ "syntropy-core",
+ "syntropy-ipc",
  "syntropy-net",
+ "syntropy-obs",
+ "syntropy-spsc",
+ "syntropy-testkit",
  "time",
+ "tokio",
  "toml",
  "x509-parser",
  "zeroize",
@@ -3891,12 +3900,38 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "syntropy-core",
+ "syntropy-manifest",
+ "syntropy-obs",
+ "syntropy-store",
  "toml",
 ]
 
 [[package]]
 name = "syntropy-cli"
 version = "0.0.0"
+dependencies = [
+ "blake3",
+ "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "syntropy-api",
+ "syntropy-cluster",
+ "syntropy-config",
+ "syntropy-core",
+ "syntropy-daemon",
+ "syntropy-io",
+ "syntropy-ipc",
+ "syntropy-manifest",
+ "syntropy-net",
+ "syntropy-obs",
+ "syntropy-runner",
+ "syntropy-sched",
+ "tokio",
+]
 
 [[package]]
 name = "syntropy-cluster"
@@ -3924,6 +3959,7 @@ dependencies = [
  "syntropy-config-derive",
  "syntropy-core",
  "toml",
+ "toml_edit",
  "trybuild",
  "zeroize",
 ]
@@ -3942,6 +3978,7 @@ name = "syntropy-core"
 version = "0.0.0"
 dependencies = [
  "bitflags",
+ "ciborium",
  "postcard",
  "proptest",
  "serde",
@@ -3954,11 +3991,22 @@ name = "syntropy-daemon"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "ciborium",
  "serde",
  "serde_json",
+ "sha2",
  "syntropy-api",
+ "syntropy-cluster",
+ "syntropy-config",
  "syntropy-core",
+ "syntropy-io",
+ "syntropy-ipc",
  "syntropy-net",
+ "syntropy-obs",
+ "syntropy-testkit",
+ "tokio",
+ "tracing",
+ "zstd",
 ]
 
 [[package]]
@@ -4006,10 +4054,15 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "loom",
+ "postcard",
+ "proptest",
  "serde",
  "serde_json",
+ "smallvec",
  "syntropy-core",
+ "syntropy-obs",
  "syntropy-spsc",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 
@@ -4054,6 +4107,11 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-kernels-loader"
 version = "0.0.0"
+dependencies = [
+ "smallvec",
+ "syntropy-core",
+ "syntropy-kernels",
+]
 
 [[package]]
 name = "syntropy-kernels-metal"
@@ -4074,6 +4132,8 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
+ "syntropy-config",
  "syntropy-core",
  "syntropy-testkit",
 ]
@@ -4107,9 +4167,14 @@ dependencies = [
 name = "syntropy-obs"
 version = "0.0.0"
 dependencies = [
+ "postcard",
+ "proptest",
  "serde",
  "serde_json",
+ "smallvec",
+ "syntropy-config",
  "syntropy-core",
+ "syntropy-testkit",
  "toml",
 ]
 
@@ -4125,6 +4190,13 @@ dependencies = [
 [[package]]
 name = "syntropy-runner"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "smallvec",
+ "syntropy-core",
+ "syntropy-ipc",
+ "tracing",
+]
 
 [[package]]
 name = "syntropy-sched"
@@ -4155,6 +4227,15 @@ dependencies = [
 [[package]]
 name = "syntropy-store"
 version = "0.0.0"
+dependencies = [
+ "blake3",
+ "proptest",
+ "serde",
+ "serde_json",
+ "syntropy-core",
+ "syntropy-io",
+ "syntropy-manifest",
+]
 
 [[package]]
 name = "syntropy-testkit"
@@ -4163,10 +4244,13 @@ dependencies = [
  "blake3",
  "chacha20",
  "serde",
+ "smallvec",
  "syntropy-config",
  "syntropy-core",
  "syntropy-graph",
+ "syntropy-ipc",
  "syntropy-net",
+ "syntropy-spsc",
  "toml",
 ]
 
@@ -4204,7 +4288,9 @@ dependencies = [
 name = "syntropy-xtask"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "proc-macro2",
+ "proptest",
  "serde",
  "serde_json",
  "toml",
@@ -4549,6 +4635,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

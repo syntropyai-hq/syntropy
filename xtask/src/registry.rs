@@ -24,8 +24,9 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, instructions, loom,
-    plan_tools, properties, repo_settings, sim_presets, toolchain,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
+    hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
+    runner_build_id, sim_presets, toolchain,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -257,6 +258,23 @@ pub const JOBS: &[Entry] = &[
                     shown: "the covered crates keep ci/clippy-determinism.toml and lift it only \
                             where listed",
                     run: determinism::step,
+                },
+            },
+            // No `tracing` in hot-thread modules (RFC-0053 Testing; PROD-E8-T01).
+            Step {
+                name: "hot-threads",
+                action: Action::Builtin {
+                    shown: "the hot-thread modules hot_threads::MODULES lists use no tracing",
+                    run: hot_threads::step,
+                },
+            },
+            // RFC-0052 §6.5's orphan rule (DIST-E1-T04).
+            Step {
+                name: "orphan-rule",
+                action: Action::Builtin {
+                    shown: "the crates orphan_rule::CRATES lists set up no parent-death signal, \
+                            exit watch or kill-on-close job",
+                    run: orphan_rule::step,
                 },
             },
             Step {
@@ -742,6 +760,20 @@ pub const SUITES: &[Entry] = &[
                     "--locked",
                 ]),
             },
+            // Likewise `ipc`'s fault-plan message on the command channel, which a runner process
+            // installs and fires (DIST-E1-T13). `--workspace` runs its production half: the frame
+            // refused as an unknown variant.
+            Step {
+                name: "ipc-fault-injection",
+                action: Action::Cargo(&[
+                    "test",
+                    "--package",
+                    "syntropy-ipc",
+                    "--features",
+                    "fault-injection",
+                    "--locked",
+                ]),
+            },
         ],
         pending: &[],
     },
@@ -834,6 +866,39 @@ pub const SUITES: &[Entry] = &[
             action: Action::Builtin {
                 shown: "each listed property's tests with PROPTEST_CASES set",
                 run: properties::suite_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "runner-build-id",
+        summary: "a daemon refuses and kills a runner built from another commit at `Hello`, and \
+                  passes its own build's (QUAL-E16-T29): a second syntropy-cli build with another \
+                  SYNTROPY_BUILD_COMMIT, spawned through the daemon's process host",
+        defined_in: "RFC-0001 §3.1",
+        params: &[],
+        steps: &[Step {
+            name: "runner-build-id",
+            action: Action::Builtin {
+                shown: "build syntropy-cli with another commit, copy its binary, rebuild, and run \
+                        cli's ignored runner_build_id test against the copy",
+                run: runner_build_id::suite_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "cache-hit",
+        summary: "a comment-only change in `cli` recompiles `cli` alone (QUAL-E16-T03): two builds \
+                  of syntropy-cli, the second's compiler artifacts read from cargo's JSON",
+        defined_in: "RFC-0062 §8.1",
+        params: &[],
+        steps: &[Step {
+            name: "cache-hit",
+            action: Action::Builtin {
+                shown: "build syntropy-cli, touch its source, rebuild with another commit, and \
+                        check that every recompiled artifact is syntropy-cli's",
+                run: cache_hit::suite_step,
             },
         }],
         pending: &[],
@@ -947,6 +1012,9 @@ mod tests {
                 "RUSTDOCFLAGS=\"-D warnings -F rustdoc::broken_intra_doc_links\" cargo doc --workspace --no-deps --locked",
                 "xtask: the covered crates keep ci/clippy-determinism.toml and lift it only where \
                  listed",
+                "xtask: the hot-thread modules hot_threads::MODULES lists use no tracing",
+                "xtask: the crates orphan_rule::CRATES lists set up no parent-death signal, exit \
+                 watch or kill-on-close job",
                 "cargo xtask check-deps",
                 "xtask: ci/properties.toml matches the property tests, RFC-0060 and the epics",
                 "xtask: CODEOWNERS names only maintainers and covers RFC-0062 §12.3's paths",
@@ -1084,6 +1152,7 @@ mod tests {
             [
                 "cargo test --workspace --locked",
                 "cargo test --package syntropy-obs --features fault-injection --locked",
+                "cargo test --package syntropy-ipc --features fault-injection --locked",
             ]
         );
     }

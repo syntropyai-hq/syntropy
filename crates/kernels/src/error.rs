@@ -28,6 +28,9 @@ impl ErrorCode {
     pub const DEVICE_STICKY: Self = Self(8);
     /// `AllocFailed` (RFC-0040 §13 code 9): `alloc`, `map_segment` or `import` failed.
     pub const ALLOC_FAILED: Self = Self(9);
+    /// `ProviderPanicked` (RFC-0040 §13 code 16): a provider-library thunk caught a panic
+    /// (§10.4). The provider then reports `Sticky`, and the runner exits and restarts.
+    pub const PROVIDER_PANICKED: Self = Self(16);
     /// `AmxDenied` (RFC-0040 §13 code 13): the OS refused AMX tile permission to a process
     /// opening a device whose class is `X86V4Amx` (RFC-0040 §7.3; ADR-0405 decision 3).
     pub const AMX_DENIED: Self = Self(13);

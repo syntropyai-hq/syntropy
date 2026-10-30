@@ -8,10 +8,10 @@ publish.workspace = true
 [dependencies]
 bitflags.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 smallvec.workspace = true
 syntropy-core = { path = "../core" }
 toml.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-serde_json.workspace = true

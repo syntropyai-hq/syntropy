@@ -5,6 +5,58 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "syntropy"
 path = "src/main.rs"
+
+[dependencies]
+# The 32-byte build ID, a BLAKE3 digest of the `BuildId` that `build.rs` builds (RFC-0062 §8.1).
+blake3.workspace = true
+# The command tree (RFC-0051 §1: argument parsing with clap's derive).
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The native API's types, which the client reads and writes, and the local socket's name
+# (RFC-0051 §1: "the client library is the same `syntropy-api` types the server uses").
+syntropy-api = { path = "../api" }
+# `ErrorClass`, which the exit-code table maps (RFC-0051 §2.2).
+syntropy-core = { path = "../core" }
+# The runtime location, `SYNTROPY_HOST` and `SYNTROPY_API_KEY` (RFC-0054 §1, §2.4), and the
+# `config show`, `check` and `path` commands with their layering and validation (RFC-0054 §2, §8).
+syntropy-config = { path = "../config" }
+# The configuration sections the binary's registry holds (`config::REGISTRY`): `net`'s and
+# `cluster`'s, the scheduler's instance keys and `manifest`'s `kv_dtype`. The API's are in
+# `syntropy-api`.
+syntropy-cluster = { path = "../cluster" }
+syntropy-manifest = { path = "../manifest" }
+# The tracing keys, `obs.flight_recorder` and `obs.trace.*` (RFC-0053 §3).
+syntropy-obs = { path = "../obs" }
+syntropy-net = { path = "../net" }
+syntropy-sched = { path = "../sched" }
+# The local socket's client end, and the runner's inherited command channel and region (RFC-0051
+# §1; ADR-0015).
+syntropy-ipc = { path = "../ipc", features = ["async"] }
+# Runner mode (DIST-E1-T04): the runner's command loop, and `io`'s `SystemClock` and
+# `SystemTicks`, which only a binary's crate may build (ADR-0022; RFC-0060 §2.1 rule T1).
+syntropy-runner = { path = "../runner" }
+syntropy-io = { path = "../io" }
+# The client's HTTP/1.1 exchange on a single-threaded tokio runtime.
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client"] }
+hyper-util.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+
+[build-dependencies]
+# `SemVer`'s parser, so the build refuses exactly the `version.txt` the binary would refuse at
+# run time (RFC-0062 §8.1).
+syntropy-core = { path = "../core" }
+
+[dev-dependencies]
+# The contract tests serve the API in-process, as a daemon would.
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "time", "sync"] }
+# The supervisor's laptop-sleep rig test (DIST-E1-T06), and the runner-process tests
+# (DIST-E1-T04), which spawn runners through `daemon`'s process host.
+syntropy-daemon = { path = "../daemon" }

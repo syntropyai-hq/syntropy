@@ -227,6 +227,22 @@ pub struct Numerics {
 
 **The model's KV dtype** is what the reference stores, recorded per layer in `KvFormula::dtype` by the family module (RFC-0043 §5; RFC-0022 §2): FP8 where the model's own configuration specifies an FP8 cache (ADR-0019's revisit case); otherwise BF16 for safetensors sources whose weights are BF16 or lower, F16 for GGUF sources (matching ggml's default cache type, so the calibration baseline agrees), and F32 only when a family module requires it. RFC-0022 stores KV in this dtype in exact mode; anything lower is the `kv_lossy` knob (§10).
 
+**Revision note, 2026-10-28 (COMP-E13-T06): the rule as `manifest::kv::dtype` applies it.** `KvDTypeRule::reference` takes the source, the declared cache, and the family's requirements, for every layer or per layer, and applies them in this order: a declared FP8 cache sets every layer; otherwise a family requirement (F16, BF16 or F32) wins over the source; otherwise the source decides. Two parts are not in the text above:
+- **Safetensors checkpoints that are not quantised and whose compute dtype is F16 or F32** take that dtype. One with no compute dtype takes BF16. Quantised weights below 16 bits take BF16, as the text says. This follows a reading, not yet checked against the publishers' code, that the reference stores KV in its compute dtype (`config.json`'s `torch_dtype`).
+- **Which configuration fields declare an FP8 cache** is left to the caller, the family module or the census. The rule takes the declared dtype and refuses one that is not FP8.
+
+An instance's `kv_dtype` override (RFC-0043 §10; RFC-0054 §5.4) is applied inside the rule, by `KvDTypeRule::resolve`, where the family's requirements are still known. It replaces only what the source gives. It never moves a family requirement: an override that differs from a family's requirement for every layer is refused, and per-layer requirements keep their dtype. It is refused where it would store KV below the source default. Below means:
+- **fewer bits per element**, such as F16 or BF16 over an F32 default;
+- **F16 over a BF16 default.** It is the same width but has less range. It is refused for now, and whether it should be allowed is **open for the maintainers**.
+- **Not below: BF16 over an F16 default.** It is the same width with more range, and it is RFC-0043 §10's sanctioned "force BF16 where F16 overflows". Allowed.
+- **Below 16 bits** is always the `kv_lossy` knob of §10, which needs `fidelity = "approximate"` (D3). No `kv_dtype` value is below 16 bits.
+
+The override also never changes a declared FP8 cache, even to a wider dtype. That cache's rounding is part of the reference, which ADR-0019 compares against, and no test bounds what removing it does to the output. Whether raising a declared cache should be allowed is likewise **open for the maintainers**.
+
+**Revision note, 2026-10-28 (after COMP-E13-T06; the review of #1939): what BF16 over F16, and a widening override, cost.**
+- **BF16 over an F16 default is not a precision gain.** BF16 has more range than F16 but 3 fewer significand bits: 7 stored bits, against F16's 10. So every K, V and latent is rounded more coarsely than the reference stores it. RFC-0043 §10 sanctions it, to stop F16 overflow. It sits against ADR-0019 decision 5, "No exact-mode path lowers stored KV precision". How the two are reconciled is **open for the maintainers**.
+- **A widening override is not bit-exact with the reference** (review-1889's N2). F32 over a 16-bit default, or BF16 over F16, changes the stored KV, so the output differs from the reference's. ADR-0019 decision 4 classifies a path by measurement. No parity task measures an overridden KV dtype yet, so whether such an instance stays within tolerance is unmeasured.
+
 #### 4.3 Activation quantisation inside a matrix product
 
 A kernel that converts its activation input to a narrower type before multiplying changes the result. The rule (ADR-0421):

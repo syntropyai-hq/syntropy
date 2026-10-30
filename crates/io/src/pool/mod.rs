@@ -12,8 +12,9 @@
 //!
 //! What differs per OS sits behind the crate-private `Backend` trait: how a file is opened
 //! (`O_DIRECT`, `FILE_FLAG_NO_BUFFERING`, or `F_NOCACHE` and `F_RDAHEAD`, and for `MacMapped` a
-//! read-only mapping), how a read and a write are issued, and what a buffered fallback does after a read (`POSIX_FADV_DONTNEED` on
-//! Linux). A file whose direct open or first aligned read is refused is opened buffered, and the
+//! read-only mapping and a second, buffered handle that its copies `pread` through), how a read
+//! and a write are issued, and what a buffered fallback does after a read
+//! (`POSIX_FADV_DONTNEED` on Linux). A file whose direct open or first aligned read is refused is opened buffered, and the
 //! engine reports [`EngineCaps::direct`] `false`: the `buffered` volume flag of RFC-0021 §4.2,
 //! which the probe copies into `StorageCapsExt::buffered`. `PreadPool::buffered_reason`,
 //! `MacNoCache::buffered_reason` and `MacMapped::buffered_reason` say why. Each engine exists

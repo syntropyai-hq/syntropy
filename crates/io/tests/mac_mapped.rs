@@ -23,6 +23,10 @@ const BLOCK: u64 = 16384;
 #[derive(Clone)]
 struct Block([u8; BLOCK as usize]);
 
+/// How long a test waits for completions before it fails [target]. A wait ends as soon as the
+/// completions arrive, so the budget costs nothing when they do.
+const DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The conformance harness over a generated 8 MiB file, on an engine with `threads` workers
 /// built on the harness's thread.
 fn conformance_run(name: &str, threads: usize) -> Report {
@@ -123,7 +127,8 @@ fn the_io_loop_drives_the_engine() {
             .unwrap();
     }
     let mut done = Vec::new();
-    for _ in 0..1_000_000 {
+    let start = std::time::Instant::now();
+    while start.elapsed() < DEADLINE {
         let p = io.poll_once();
         while let Ok(c) = client.poll() {
             done.push(c);
@@ -131,9 +136,17 @@ fn the_io_loop_drives_the_engine() {
         if done.len() == 8 && p == Poll::Idle {
             break;
         }
+        if p != Poll::Busy {
+            std::thread::yield_now();
+        }
     }
     drop(io);
-    assert_eq!(done.len(), 8);
+    assert_eq!(
+        done.len(),
+        8,
+        "only {} of 8 completed within {DEADLINE:?}",
+        done.len()
+    );
     let got: Vec<u8> = mem.iter().flat_map(|b| b.0).collect();
     for c in &done {
         let i = c.ticket.0;

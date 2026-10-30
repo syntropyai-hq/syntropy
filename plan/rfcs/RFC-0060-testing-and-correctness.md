@@ -1266,6 +1266,8 @@ pub struct FaultRule {
 }
 ```
 
+*Note 2026-10-27 (DIST-E1-T13):* "pushed over IPC in tests" is the command channel's test-only `SetFaultPlan`, answered by `FaultPlanSet` (RFC-0001 §3.5, note of the same date, and §18.44). The runner's handler, `ipc::cmd::install_fault_plan`, installs the plan with `install` on the runner's clock; an invalid plan is refused in the reply, and the plan before stays.
+
 Every point is named `<crate>.<component>.<operation>`. Each crate's RFC keeps a list of its points, and every point has at least one test that fires it, enforced by a coverage counter the chaos suite checks. Fault points sit on the error paths that matter: I/O submission and completion, channel send and receive, connection setup, kernel launch and device health, allocation, pinning, IPC send, store chunk receive, pack write and atomic rename. With the feature off, the macro compiles to nothing, which L0 checks on release builds (§1.3).
 
 #### 9.3 Lab chaos
@@ -1322,6 +1324,8 @@ ADR-0001 item 4 requires that all untrusted bytes are parsed in safe Rust and fu
 - **Bounded allocation:** total allocation ≤ 4 × input length + 1 MiB unless the format declares a larger size. Declared sizes are checked against the actual input or file length before allocating.
 - **Bounded time:** 1 s per input (libFuzzer `-timeout=1`).
 - **Classified errors:** every rejection returns an `Error` whose class is `Integrity`, `InvalidRequest`, `Auth` or `Unsupported`, never `Internal`.
+
+*Note, 2026-10-27 (QUAL-E10-T01), for the maintainers to confirm.* `testkit::fuzz` reads "total allocation" as the most heap the parse holds at once on its thread (the peak of `testkit::guards`'s live bytes), not the bytes it requests in all: what a hostile input makes the process hold, with churn already bounded by the 1 s limit. A size the format declares is added to the 4 × length + 1 MiB allowance, because a parser that allocates exactly what it declares still needs a little for its own structures. A declared size larger than the input is itself a violation, so the property catches a parser that trusts an unchecked size field.
 
 #### 10.3 Corpus and cadence
 
