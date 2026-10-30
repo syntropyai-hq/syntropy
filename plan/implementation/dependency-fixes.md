@@ -1370,3 +1370,11 @@ RFC-0034 §10.4 asks for a header-parsing child with no network access from M1, 
 |---|---|---|---|
 | DIST-E17-T16's "a connect attempt from the child fails on each Tier 1 OS" narrows to Linux; the macOS and Windows criterion moves to DIST-E17-T08 (M4) | DIST-E17-T16, DIST-E17-T08 | R9 | the macOS sandbox profile and Windows AppContainer that ban the network are DIST-E17-T08's |
 | DIST-E17-T16's "a header over the memory limit is refused" is tested on Linux, and on Windows the job object sets the limit; on macOS the criterion moves to DIST-E17-T08's profile | DIST-E17-T16, DIST-E17-T08 | R1 | the hosted macOS runner refused `setrlimit(RLIMIT_DATA)` with `EINVAL` (2026-10-30), and macOS does not enforce `RLIMIT_AS`. Until DIST-E17-T08, the child's memory there is bounded only by the 256 MiB header cap, about 1 GiB at its peak [estimate: 4 to 5 copies of a header at the cap], and by the CPU and wall-clock limits. Proposed, for the maintainers to confirm |
+
+## COMP-E9-T19's `cuda13` check moves to the task that builds the library (2026-10-30)
+
+COMP-E9-T19 (M1a) puts the provider entry symbol under `SYNTROPY_PROVIDER_1`, and its row asked for `readelf -V` of the test provider library and of the `cuda13` provider library. No `cuda13` provider library exists until COMP-E9-T08 assembles it, and COMP-E9-T08 already depends on COMP-E9-T19.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E9-T19's criterion keeps the test provider library; the `cuda13` library's `readelf -V` check moves to COMP-E9-T08 | COMP-E9-T19, COMP-E9-T08 | R1 | the library a criterion checks must exist when the task closes. Proposed, for the maintainers to confirm |

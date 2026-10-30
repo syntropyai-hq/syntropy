@@ -19,9 +19,11 @@
 //!   `.clippy.toml` sits beside it, since clippy would read that file instead;
 //! - no covered crate's `[lints]` table, and not the workspace's, sets the lints;
 //! - the repository's cargo config (`.cargo/config.toml`, `.cargo/config`), parsed as TOML, holds
-//!   only the `cargo xtask` alias. Much else in it reaches clippy-driver: lint-level `rustflags`
-//!   (CI sets `RUSTFLAGS` only for the loom suite's own test build, never for clippy), `[env]`,
-//!   compiler wrappers, and an alias that shadows `cargo clippy`;
+//!   only the `cargo xtask` alias and, for the Linux triples of [`LINKER_TRIPLES`], `linker` set
+//!   to [`PROVIDER_LINKER`] and nothing else (COMP-E9-T19). Much else in it reaches
+//!   clippy-driver: lint-level `rustflags` (CI sets `RUSTFLAGS` only for the loom suite's own test
+//!   build, never for clippy), `[env]`, compiler wrappers, and an alias that shadows
+//!   `cargo clippy`. A linker sees only link arguments, after the lints have run;
 //! - an attribute in a covered crate that sets a level below `deny` (`allow`, `expect`, `warn`,
 //!   `force_warn`) names one of the lints, a group that holds them (`warnings`, `clippy::all`,
 //!   `clippy::style`) or one of their old names only in a file of [`EXCEPTIONS`], and only for the
@@ -493,6 +495,13 @@ fn split_commas(stream: TokenStream) -> Vec<TokenStream> {
 /// calls (`.cargo/config.toml`). Its value is pinned by [`xtask_alias_problem`].
 const XTASK_ALIAS: &str = "xtask";
 
+/// The linker driver the cargo config may set: the wrapper that puts a provider library's export
+/// under its ELF version node (RFC-0040 §10.4; COMP-E9-T19).
+const PROVIDER_LINKER: &str = "ci/link/provider-cc";
+
+/// The targets whose `linker` the cargo config may set to [`PROVIDER_LINKER`].
+const LINKER_TRIPLES: [&str; 2] = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+
 /// Whether `value`, the `xtask` alias, is `run`, then `--package syntropy-xtask`, `--quiet`,
 /// `--locked` and `--target-dir <dir>` in any order, then `--` at the end, and nothing else.
 ///
@@ -565,11 +574,39 @@ fn cargo_config_problems(file: &str, text: &str) -> Vec<String> {
     let mut problems = Vec::new();
     let refuse = |key: &str| {
         format!(
-            "{file}: `{key}` is outside the allowlist (only `alias.{XTASK_ALIAS}`): the \
-             repository's cargo config reaches every clippy run of the covered crates"
+            "{file}: `{key}` is outside the allowlist (only `alias.{XTASK_ALIAS}` and the Linux \
+             `target.<triple>.linker`): the repository's cargo config reaches every clippy run of \
+             the covered crates"
         )
     };
     for (key, value) in &table {
+        if key == "target" {
+            let Some(targets) = value.as_table() else {
+                problems.push(refuse(key));
+                continue;
+            };
+            for (triple, settings) in targets {
+                let full = format!("target.{triple}");
+                let Some(settings) = settings
+                    .as_table()
+                    .filter(|_| LINKER_TRIPLES.contains(&triple.as_str()))
+                else {
+                    problems.push(refuse(&full));
+                    continue;
+                };
+                for (name, setting) in settings {
+                    if name != "linker" {
+                        problems.push(refuse(&format!("{full}.{name}")));
+                    } else if setting.as_str() != Some(PROVIDER_LINKER) {
+                        problems.push(format!(
+                            "{file}: `{full}.linker` must be `{PROVIDER_LINKER}`, the provider \
+                             libraries' link wrapper"
+                        ));
+                    }
+                }
+            }
+            continue;
+        }
         let Some(aliases) = value.as_table().filter(|_| key == "alias") else {
             problems.push(refuse(key));
             continue;
@@ -848,9 +885,10 @@ let s = "#[allow(warnings)]";
     }
 
     /// Review B2 and its follow-ups: the repository's cargo config holds the `xtask` alias and
-    /// nothing else, read as TOML, so no table, key form or flag gets past it.
+    /// the Linux provider linker and nothing else, read as TOML, so no table, key form or flag
+    /// gets past it.
     #[test]
-    fn the_cargo_config_holds_only_the_xtask_alias() {
+    fn the_cargo_config_holds_only_the_xtask_alias_and_the_linker() {
         let real = std::fs::read_to_string(root().join(".cargo/config.toml")).unwrap();
         assert_eq!(
             cargo_config_problems(".cargo/config.toml", &real),
@@ -876,8 +914,21 @@ let s = "#[allow(warnings)]";
             ),
             (
                 "[target.'cfg(all())']\nrustflags = [\"--cap-lints\", \"allow\"]\n",
-                "`target` is outside the allowlist",
+                "`target.cfg(all())` is outside the allowlist",
             ),
+            (
+                "[target.x86_64-unknown-linux-gnu]\nrustflags = [\"--cap-lints\", \"allow\"]\n",
+                "`target.x86_64-unknown-linux-gnu.rustflags` is outside the allowlist",
+            ),
+            (
+                "[target.x86_64-unknown-linux-gnu]\nlinker = \"clippy-driver\"\n",
+                "`target.x86_64-unknown-linux-gnu.linker` must be `ci/link/provider-cc`",
+            ),
+            (
+                "[target.x86_64-pc-windows-msvc]\nlinker = \"ci/link/provider-cc\"\n",
+                "`target.x86_64-pc-windows-msvc` is outside the allowlist",
+            ),
+            ("target = \"x\"\n", "`target` is outside the allowlist"),
             (
                 "[env]\nCLIPPY_ARGS = { value = \"\", force = true }\n",
                 "`env` is outside the allowlist",
