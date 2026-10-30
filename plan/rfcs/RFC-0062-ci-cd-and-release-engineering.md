@@ -3,7 +3,7 @@
 - Status: Draft
 - Area: quality, performance assurance and release engineering
 - Depends on: RFC-0001 (§4, §5.6, §5.8, §16), RFC-0060, RFC-0061, RFC-0040, RFC-0052, RFC-0034; ADR-0001, ADR-0002, ADR-0005, ADR-0014, ADR-0018, ADR-0019, ADR-0020, ADR-0021; ADR-0620, ADR-0621, ADR-0622, ADR-0623, ADR-0624
-- Revised: 2026-10-20 (the dispatcher and release Apps, environment rules, fork-run timing, `cargo vet` from M1, build and sign separation, security releases, vulnerability handling, the organisation baseline, agent pipeline security, recurring operations, storage retention); 2026-10-22 (§4.4: the `release` panic strategy from RFC-0040 §10.4, and the first profile named `dev` in RFC-0060 §1.3 too; §12.1: `getrandom` in rule 6's allow-list, ADR-0022; §12.3: the base checkout the `scenarios` step needs)
+- Revised: 2026-10-20 (the dispatcher and release Apps, environment rules, fork-run timing, `cargo vet` from M1, build and sign separation, security releases, vulnerability handling, the organisation baseline, agent pipeline security, recurring operations, storage retention); 2026-10-22 (§4.4: the `release` panic strategy from RFC-0040 §10.4, and the first profile named `dev` in RFC-0060 §1.3 too; §12.1: `getrandom` in rule 6's allow-list, ADR-0022; §12.3: the base checkout the `scenarios` step needs); 2026-10-26 (§2.3: `hosted-election-model`, direct on `cluster`, and the per-PR estimate, maintainers' decision on PR #1862)
 - Expanded by: RFC-0052 (installers and the update client consume the artefacts and manifests this pipeline produces), RFC-0034 (key hierarchy behind the signing steps)
 - Date: 2026-10-19
 
@@ -180,6 +180,7 @@ paths = ["docs/**", "plan/**", "*.md"]
 | `hosted-test-<os>` | hosted Linux, macOS, Windows | closure | L1 and L2 | ≤ 8 min |
 | `hosted-l3` | hosted Linux | closure includes `ipc`, `tier`, `exec`, `io` or `net` | loom models, Miri, and the ASan and TSan builds (RFC-0060 §3.4) | ≤ 15 min, outside the 15-min p50 critical path |
 | `hosted-parity-nano` | hosted Linux | closure | L5 nano parity smoke on the CPU provider | ≤ 5 min |
+| `hosted-election-model` | hosted Linux | direct: `crates/cluster/**` | the full coordinator-election model check (RFC-0032 Testing), release-optimised | ≤ 15 min [target], outside the 15-min p50 critical path |
 | `sim-pr` | hosted Linux, standard runner (4 vCPUs) | closure includes a simulated crate | L6 PR seeds, derived per RFC-0060 "Simulator throughput" and capped at 64 per scenario, and the regression corpus | ≤ 5 min |
 | `emulated-fabric` | hosted Linux | closure includes `net`, `cluster`, `api`, `daemon`, `runner` | L7 netns + netem scenarios | ≤ 8 min |
 | `fuzz-smoke` | hosted Linux | a target's parser changed | 60 s per affected target, in parallel | ≤ 3 min |
@@ -845,7 +846,7 @@ CI cost has three currencies: hosted-runner wall time, lab rig hours and storage
 
 ### Hosted runners
 
-- **Per PR.** A change whose closure covers the whole workspace runs roughly `changes` 1 + `lint` 3 + 3 × `build` 8 + 3 × `hosted-test` 8 + `hosted-l3` 15 + `hosted-parity-nano` 5 + `sim-pr` 5 + `emulated-fabric` 8 + `fuzz-smoke` 3 + `cross-build-t2t3` 10 ≈ 98 runner-minutes [estimate from the §2.3 budgets; `build` times to be replaced by M0 measurements]. They run in parallel within RFC-0060's 15-minute p50 wall-clock target. Narrower changes run fewer jobs, and docs-only changes run about 4 runner-minutes.
+- **Per PR.** A change whose closure covers the whole workspace runs roughly `changes` 1 + `lint` 3 + 3 × `build` 8 + 3 × `hosted-test` 8 + `hosted-l3` 15 + `hosted-parity-nano` 5 + `sim-pr` 5 + `emulated-fabric` 8 + `fuzz-smoke` 3 + `cross-build-t2t3` 10 ≈ 98 runner-minutes [estimate from the §2.3 budgets; `build` times to be replaced by M0 measurements]. They run in parallel within RFC-0060's 15-minute p50 wall-clock target. A change inside `crates/cluster/` also runs `hosted-election-model`, about 15 more runner-minutes [estimate from its §2.3 budget], outside the critical path. Narrower changes run fewer jobs, and docs-only changes run about 4 runner-minutes.
 - **Charges.** Standard hosted runners on a public repository carry no per-minute charge. Larger runners are billed and are used only under §3.1's rule.
 - **The unknown input** is the clean full-architecture CUDA build time. It decides whether the nightly needs larger runners or per-architecture fan-out (§5.5). It is measured at M0, and every run records its kernel-cache hit rate.
 

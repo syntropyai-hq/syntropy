@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:fec496af00cc6773"
+jobs_toml = "fnv1a:8968ddee9b530f20"
 
 [[golden]]
 name = "plan only"
@@ -55,6 +55,13 @@ paths = [
     "docs/media/milestones-dark.svg",
     "docs/media/milestones-light.svg",
 ]
+jobs = ["lint"]
+hw_required = []
+
+[[golden]]
+name = "docs only"
+source = "constructed: a documentation file alone, which no crate's build or tests read"
+paths = ["docs/HOW_IT_WORKS.md"]
 jobs = ["lint"]
 hw_required = []
 
@@ -467,6 +474,14 @@ name = "ipc only"
 source = "constructed: a change to `ipc` alone; no commit has touched only `ipc`"
 paths = ["crates/ipc/src/lib.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "cluster only"
+source = "constructed: a change to `cluster` alone; nothing depends on it, so its closure is itself"
+paths = ["crates/cluster/src/lib.rs"]
+jobs = ["build", "hosted-election-model", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 

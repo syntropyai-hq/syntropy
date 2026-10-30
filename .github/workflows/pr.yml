@@ -269,6 +269,23 @@ jobs:
           cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
       - run: cargo xtask test loom
 
+  # L2: the coordinator election model of RFC-0032 Testing and validation (DIST-E10-T09), when
+  # `changes` lists it: the full 3- and 4-node runs, which `hosted-test`'s bounded default skips.
+  hosted-election-model:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-election-model')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: hosted-election-model
+          cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
+      - run: cargo xtask test election-model
+
   # L5 nano parity smoke on the CPU provider (RFC-0060 §5). Planned: QUAL-E5-T06. `changes` does
   # not list it until it has a suite, so it shows as skipped, and `ci-gate` names the task.
   # Listed before then, it fails rather than passing on nothing.
@@ -341,7 +358,7 @@ jobs:
   # The verdict comes from the base branch's `xtask`, built with no cache, as in `pr-meta.yml`,
   # so a PR cannot change how its own jobs are judged (RFC-0062 §2.2, note 2026-10-22).
   ci-gate:
-    needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano, toolchains-linux, toolchains-windows, toolchains-macos]
+    needs: [changes, lint, build, hosted-test, hosted-l3, hosted-election-model, hosted-parity-nano, toolchains-linux, toolchains-windows, toolchains-macos]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15

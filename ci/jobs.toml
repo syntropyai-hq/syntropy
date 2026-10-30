@@ -84,6 +84,16 @@ runner = "hosted"
 when = "closure"
 crates = ["ipc", "tier", "exec", "io", "net", "spsc", "kernels-cpu"]
 
+# L2: the coordinator election model of RFC-0032 Testing and validation (DIST-E10-T09), the full
+# 3- and 4-node runs with partitions and message loss, which `hosted-test`'s bounded default does
+# not cover. Direct on `cluster` per the maintainers' decision of 2026-10-26 on PR #1862: only a
+# change inside `crates/cluster/` runs it on a PR. Dependency regressions are caught by the nightly
+# run (QUAL-E1-T33).
+[job.hosted-election-model]
+runner = "hosted"
+when = "direct"
+paths = ["crates/cluster/**"]
+
 # L5 nano parity smoke on the CPU provider (RFC-0060 §5).
 [job.hosted-parity-nano]
 runner = "hosted"
