@@ -296,6 +296,7 @@ Command-channel messages:
 | D → R | `Ping` | IPC round-trip check |
 | R → D | `Hello { pid, build_id, ipc_protocol, obs_tables: Blake3 }` | handshake. `obs_tables` digests the runner's log-callsite, metric and span-name tables; on a mismatch the runner sends the tables, and the daemon decodes that runner's records with them (RFC-0053 §4.1). On an adoption connection the daemon sends its own `ipc_protocol` and digest first (RFC-0052 §6.5) |
 | R → D | `StateChanged { state: RunnerState, epoch: PlanEpoch }` | every lifecycle transition; the daemon forwards it as `ClusterCommand::ReportRunner` |
+| R → D | `DegradationChanged { degraded: Option<Degradation> }` | a change of `Ready`'s `degraded`, which is not a transition, so no `StateChanged` (RFC-0033 §7.1, OQ-NET-36). Added by DIST-E14-T13, with its `ipc_protocol` bump |
 | R → D | `FetchShard { spec: ShardSpec, priority: FetchPriority }` | ask the store for a shard. Added by COMP-E10-T11, with `ipc_protocol` 5.0 (§18.50) |
 | R → D | `PackCommitted { key: PackKey, sidecar: Blake3 }` | pack ready; the store records it for GC and P2P. Added by COMP-E10-T11, with `ipc_protocol` 5.0 (§18.50) |
 | R → D | `ResidencyDigest { version: u64, digest: ResidencySummary }` | low-rate residency summary for routing and the dashboard |
