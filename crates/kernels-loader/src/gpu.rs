@@ -131,10 +131,12 @@ impl GpuRecord {
 /// fails: a library that is missing or unusable contributes no GPU.
 #[must_use]
 pub fn enumerate() -> Vec<GpuRecord> {
-    let mut gpus = nvml::enumerate(&SystemLoader, &nvml::sysfs_numa).gpus;
+    let nvidia = nvml::enumerate(&SystemLoader, &nvml::sysfs_numa).gpus;
     #[cfg(target_os = "macos")]
-    if let Ok(accelerators) = iokit::live_accelerators() {
-        gpus.extend(iokit::apple_gpus(&accelerators));
-    }
-    gpus
+    let apple = iokit::live_accelerators()
+        .map(|accelerators| iokit::apple_gpus(&accelerators))
+        .unwrap_or_default();
+    #[cfg(not(target_os = "macos"))]
+    let apple = Vec::new();
+    [nvidia, apple].concat()
 }
