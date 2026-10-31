@@ -1410,6 +1410,13 @@ Op conformance compares a kernel with `kernels::reference` and with the referenc
 | COMP-E3-T07 → COMP-E1-T03 | COMP-E3-T07 | R9 | "on an SME2 rig, conformance passes" for the outer-product GEMM tiles, which are checked against the reference `Gemm`; the row depended only on COMP-E3-T01 |
 | COMP-E3-T11 → COMP-E13-T10 | COMP-E3-T11 | R9 | conformance for every M1 scheme includes MXFP4 run as doubled INT8 over the transcribed GGUF `MXFP4` type, whose reference dequantiser is COMP-E13-T10's; COMP-E13-T04's widening tables cover the other schemes |
 
+## `doctor` reports a stray `libcuda.so` (2026-10-31)
+
+Building COMP-E4-T01 on a WSL2 development host found that the unversioned `libcuda.so` resolved to a native-Linux driver copied into `/lib/x86_64-linux-gnu`, not to WSL's driver, which `libcuda.so.1` resolves to. The provider now opens only `libcuda.so.1` (RFC-0040 §7.1, note 2026-10-31). Other CUDA programs may still load the copy, so `doctor` reports it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New PROD-E9-T13 (M1a), `doctor` check DRV-008 → PROD-E9-T01, COMP-E4-T01 | PROD-E9-T13 | R9 | the check is a `DoctorCheck` in PROD-E9-T01's framework, and its warning names the provider's rule that COMP-E4-T01 sets. It is Linux only, so it is M1a under R7, beside PROD-E9-T01 |
 ## The `qwen_moe` weights wait for the lab store (2026-10-31)
 
 QUAL-E7-T06 confirmed Qwen/Qwen3-30B-A3B as the `qwen_moe` checkpoint. It is the smallest Qwen3-MoE checkpoint its publisher releases, and its 16 BF16 shards come to 61.08 GB [measured: the Hub's sizes]. Import copies each file into the store, so the importing host needs about twice that free, and the host that ran QUAL-E7-T06 did not have it. Every file of the checkpoint is recorded in `fixtures.toml` with its Hub hash; the configuration, tokenizer and shard index are imported, and the shards wait for the lab store.
