@@ -877,6 +877,25 @@ impl ChannelCore {
         (self.expected - 1) + u64::from(self.recv_slots).saturating_sub(in_use)
     }
 
+    /// The receiving side has read everything that has arrived and is about to wait: a
+    /// [`CreditCadence::Batched`] receiver sends the credit it was holding back for a fuller
+    /// batch, if any, at the next [`poll_transmit`](Self::poll_transmit). Returns whether one is
+    /// now due. A sender whose frames come too sparsely to fill a batch, such as a bulk channel
+    /// held by its edge's pacer, then gets its acknowledgement at once rather than at its ack
+    /// timeout, and resends nothing (RFC-0031 §7.1, note of 2026-10-31). A burst read in one
+    /// pass still takes one credit per batch. A backend that reads a byte stream calls it before
+    /// it waits; the simulator, which delivers each frame at its arrival time, does not.
+    pub fn on_idle(&mut self) -> bool {
+        if self.recv_slots == 0 || self.credit_due || self.fault.is_some() {
+            return false;
+        }
+        self.reap_released();
+        if self.frames_since_credit > 0 || self.grantable() > self.granted {
+            self.credit_due = true;
+        }
+        self.credit_due
+    }
+
     /// Whether the sender's remaining credit has fallen below half the window.
     fn below_half(&self) -> bool {
         let remaining = self

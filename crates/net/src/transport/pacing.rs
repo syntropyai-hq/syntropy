@@ -28,7 +28,42 @@
 //!   window break the bound.
 //!
 //! Rates and tokens are whole bytes and nanoseconds, so a run paces the same on every host.
+//!
+//! **In the real backends** (DIST-E7-T25), the QUIC backend and the TCP fallback each keep a
+//! [`PacedEdges`]: one [`BulkPacer`] per peer edge, set with [`PacedEdges::pace`] from
+//! `net.bulk_p99_ratio`, `net.bulk_floor`, the edge's β and its idle p99
+//! ([`PacingConfig::new`]). Every channel to that peer shares the edge:
+//! - `try_send` on a `Bulk` or `Replay` channel takes the frame's bytes from the pacer, after the
+//!   channel's credit check. Without the tokens it returns `WouldBlock`, and
+//!   `Channel::paced_until` says when they will be there.
+//! - Each α sample the core of one of the peer's other channels takes goes to the pacer, in the
+//!   channel's `net` task, as the frame that gave it lands.
+//! - The pacer reads one [`Clock`], the one `pace` was given: the dispatcher's sends and the
+//!   `net` task's samples are on one timeline, and a test can drive it by hand.
+//! - **Resends are not paced.** The gate is `try_send`, as RFC-0031 §7.5 and DIST-E7-T25 place
+//!   it, so a frame's bytes are charged once, when it is first sent. A resend after an ack
+//!   timeout or a NACK (§7.3) goes from the channel core in the `net` task, unpaced. On QUIC and
+//!   TCP the transport repairs packet loss below the channel, so a resend is rare, and a batched
+//!   receiver's credit on idle (§7.1, note of 2026-10-31) keeps a sparse paced sender from
+//!   resending at every ack timeout.
+//! - The edge's state sits behind a mutex that only bulk sends, α samples and the owner's calls
+//!   take, each for one pacer step. A bulk send never waits on it: if the `net` task holds it,
+//!   the send returns `WouldBlock` and may go again at once. An edge that is not paced is one
+//!   atomic load on the send.
+//! - **No reset when the last data channel closes** (weighed, and declined). A relink closes
+//!   every channel of the old epoch and opens the new epoch's at once, and a ring between two
+//!   requests closes nothing, so the ring that comes back is usually the one the last breach
+//!   measured. A reset on close would let the first window after it climb into the saturation that
+//!   breach found, as a reset after a short pause does in the simulator (RFC-0031 §7.5, note of
+//!   2026-10-23). The reset after [`RESET_AFTER`] windows with no sample still runs, and an owner
+//!   that knows an edge has no data plane left can call [`PacedEdges::pace`] again, which starts
+//!   a new pacer.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+
+use syntropy_core::clock::Clock;
 use syntropy_core::policy::Fraction;
 use syntropy_core::{BytesPerSec, MonoTime, Nanos};
 
@@ -157,6 +192,25 @@ pub struct PacingConfig {
     pub floor: Fraction,
     /// The bucket's burst, in bytes: what may go at once.
     pub burst: u64,
+}
+
+impl PacingConfig {
+    /// An edge's config from `net.bulk_p99_ratio` and `net.bulk_floor` in `net`, the edge's β
+    /// and idle p99 from its link profile (RFC-0010), and the bucket's burst.
+    pub fn new(
+        net: &crate::config::NetSection,
+        beta: BytesPerSec,
+        idle_p99: Nanos,
+        burst: u64,
+    ) -> PacingConfig {
+        PacingConfig {
+            beta,
+            idle_p99,
+            p99_ratio: net.bulk_p99_ratio,
+            floor: net.bulk_floor,
+            burst,
+        }
+    }
 }
 
 /// What a [`BulkPacer`] did, for telemetry and tests.
@@ -337,6 +391,116 @@ impl BulkPacer {
     pub fn next_deadline(&self, bytes: u64, now: MonoTime) -> MonoTime {
         let window_end = self.window_start.saturating_add(WINDOW);
         self.bucket.ready_at(bytes, now).min(window_end)
+    }
+}
+
+/// The bulk pacing of a real backend's peer edges (see the [module](self) docs): at most one
+/// [`BulkPacer`] for each peer, by the peer's endpoint key, shared by every channel to it.
+#[derive(Debug, Default)]
+pub struct PacedEdges {
+    edges: Mutex<HashMap<[u8; 32], Arc<Edge>>>,
+}
+
+/// One peer edge: its pacer, if it is paced, and the clock the pacer reads.
+#[derive(Debug, Default)]
+pub(crate) struct Edge {
+    /// Whether `state` holds a pacer, so an edge that is not paced costs a send one load.
+    paced: AtomicBool,
+    state: Mutex<Option<Paced>>,
+}
+
+struct Paced {
+    pacer: BulkPacer,
+    clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for Paced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Paced")
+            .field("pacer", &self.pacer)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Locks `mutex` past a panic of another holder: each pacer step leaves it consistent.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl PacedEdges {
+    /// The edge to `peer`, made unpaced if it has none yet. Channels hold it for their lives.
+    pub(crate) fn edge(&self, peer: &[u8; 32]) -> Arc<Edge> {
+        Arc::clone(lock(&self.edges).entry(*peer).or_default())
+    }
+
+    /// Paces the bulk sends to `peer` from now on with a new pacer of `config`, at its floor,
+    /// reading `clock`: every `Bulk` and `Replay` channel to the peer, open or opened later. A
+    /// pacer the edge had is replaced.
+    pub fn pace(&self, peer: &[u8; 32], config: PacingConfig, clock: Arc<dyn Clock>) {
+        let edge = self.edge(peer);
+        let pacer = BulkPacer::new(config, clock.now());
+        *lock(&edge.state) = Some(Paced { pacer, clock });
+        edge.paced.store(true, Ordering::Release);
+    }
+
+    /// Stops pacing the bulk sends to `peer`: they are no longer held.
+    pub fn unpace(&self, peer: &[u8; 32]) {
+        let mut edges = lock(&self.edges);
+        if let Some(edge) = edges.get(peer) {
+            edge.paced.store(false, Ordering::Release);
+            *lock(&edge.state) = None;
+            // An edge no channel holds goes; one a channel holds stays, so pacing it again
+            // reaches that channel.
+            if Arc::strong_count(edge) == 1 {
+                edges.remove(peer);
+            }
+        }
+    }
+
+    /// A copy of the pacer of the bulk sends to `peer`, its windows closed up to its clock's
+    /// time, if the edge is paced.
+    pub fn pacer(&self, peer: &[u8; 32]) -> Option<BulkPacer> {
+        let edge = lock(&self.edges).get(peer).cloned()?;
+        let mut state = lock(&edge.state);
+        let paced = state.as_mut()?;
+        let now = paced.clock.now();
+        paced.pacer.on_tick(now);
+        Some(paced.pacer.clone())
+    }
+}
+
+impl Edge {
+    /// Takes `bytes` of bulk send from the edge's pacer: `Ok` if the edge is not paced or the
+    /// tokens are there; otherwise when to try again, on the pacer's clock. While the `net` task
+    /// holds the edge, that is a time already past: try again at once.
+    pub(crate) fn try_send(&self, bytes: u64) -> Result<(), MonoTime> {
+        if !self.paced.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            // Held for one pacer step.
+            Err(TryLockError::WouldBlock) => return Err(MonoTime(0)),
+        };
+        let Some(paced) = state.as_mut() else {
+            return Ok(());
+        };
+        let now = paced.clock.now();
+        paced.pacer.try_send(bytes, now)
+    }
+
+    /// An α sample of one of the edge's data channels, taken now.
+    pub(crate) fn on_alpha(&self, sample: Nanos) {
+        if !self.paced.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(paced) = lock(&self.state).as_mut() {
+            let now = paced.clock.now();
+            paced.pacer.on_alpha(sample, now);
+        }
     }
 }
 

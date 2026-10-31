@@ -927,6 +927,43 @@ fn batched_credits_come_every_quarter_window() {
     }
 }
 
+/// A batched receiver that has read all that arrived sends the credit it held back for a fuller
+/// batch (RFC-0031 §7.1, note of 2026-10-31): one frame of a sparse sender is acknowledged at
+/// once, not at the sender's ack timeout, and nothing is resent. With nothing held back, idling
+/// sends nothing.
+#[test]
+fn an_idle_batched_receiver_sends_the_credit_it_held_back() {
+    let shape = Shape {
+        recv_slots: 8,
+        retention: 8,
+        cadence: CreditCadence::Batched,
+        ..Shape::SMALL
+    };
+    let pool = send_pool(10, 1024);
+    let mut a = sender(shape, ALPHA, RFC);
+    let mut b = receiver(shape, ALPHA, RFC);
+    assert!(!b.on_idle(), "nothing received, nothing held back");
+    send(&mut a, &pool, 0, &[2; 16], at(0)).unwrap();
+    let out = drain(&mut a, at(0));
+    deliver(&mut b, &out[0], at(1));
+    assert!(
+        credits_in(&drain(&mut b, at(1))).is_empty(),
+        "one frame fills no batch"
+    );
+    while b.recv().is_some() {}
+    assert!(b.on_idle());
+    let back = drain(&mut b, at(2));
+    assert_eq!(credits_in(&back).len(), 1);
+    assert_eq!(credits_in(&back)[0].ack_seq, 1);
+    for bytes in &back {
+        deliver(&mut a, bytes, at(3));
+    }
+    assert_eq!(a.completed().map(|ticket| ticket.chan_seq), Some(1));
+    assert_eq!(a.stats().retransmits, 0);
+    assert!(!b.on_idle(), "the credit went; nothing is held back");
+    assert!(drain(&mut b, at(4)).is_empty());
+}
+
 /// α samples come from credit echoes (RFC-0031 §7.1): `rtt = now − sent_at − echo_delay`, and
 /// α is half of it. A frame sent twice gives none, since its echo cannot be matched to a send.
 #[test]

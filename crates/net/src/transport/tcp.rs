@@ -13,7 +13,11 @@
 //!   larger `slot_size` of the channel's two sides where the OS allows it (the connector's
 //!   receive buffer before `connect`, from its own slot), and otherwise left to the kernel's
 //!   autotuning, which [`TcpStats::buffers_autotuned`] counts: on Linux an unprivileged request
-//!   over `net.core.wmem_max` or `rmem_max` is clamped, and turns autotuning off. On Linux,
+//!   over `net.core.wmem_max` or `rmem_max` is clamped, and turns autotuning off. A buffer the
+//!   socket already has at that size or more is left alone: on Linux, setting
+//!   a buffer smaller than the default also turns autotuning off, and a receive buffer of a few
+//!   KiB under the loopback MSS stalled each paced channel's stream for a 200 ms persist timer
+//!   (RFC-0031 §5.3, note of 2026-10-31). On Linux,
 //!   `TCP_QUICKACK` is re-armed after every read off the socket (`QuickAck`), since the kernel
 //!   clears it.
 //!
@@ -42,6 +46,11 @@
 //! **The listener** takes at most [`MAX_HANDSHAKES`] connections through TLS and `Hello` at once,
 //! and [`MAX_HANDSHAKES_PER_ADDRESS`] from one source; a connection over either is closed at
 //! once, and the listener keeps accepting. TLS has [`TLS_TIMEOUT`], shorter than the handshake's.
+//!
+//! **Bulk pacing** (RFC-0031 §7.5). [`TcpTransport::pacing`] holds one
+//! [`BulkPacer`](super::pacing::BulkPacer) per peer, shared by every connection to it: once the
+//! owner paces a peer, its `Bulk` and `Replay` channels send at the pacer's rate, set by the α
+//! samples of its other channels.
 
 pub mod tls;
 
@@ -64,6 +73,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 
 use self::tls::AllowedKeys;
 use super::domain::DomainHandle;
+use super::pacing::PacedEdges;
 use super::registration::RegistrationTable;
 use super::stream::{self, ChannelAuth, HelloIn, StreamSpec};
 use super::{
@@ -303,6 +313,7 @@ struct Inner {
     stats: Counters,
     local_addr: SocketAddr,
     domain: DomainHandle,
+    pacing: PacedEdges,
 }
 
 /// Locks `mutex`, past a panic of another holder: the state it guards stays consistent between
@@ -381,6 +392,7 @@ impl TcpTransport {
                     stats: Counters::default(),
                     local_addr,
                     domain: task_domain.clone(),
+                    pacing: PacedEdges::default(),
                 });
                 let listener = task_domain.spawn(listen(Arc::clone(&inner), listener, acceptor));
                 Ok(TcpTransport { inner, listener })
@@ -412,6 +424,13 @@ impl TcpTransport {
     /// keeps current.
     pub fn allowed(&self) -> &AllowedKeys {
         &self.inner.allowed
+    }
+
+    /// The bulk pacing of each peer edge, by the peer's key (RFC-0031 §7.5): the `Bulk` and
+    /// `Replay` channels to a paced peer, each on its own connection, send at the pacer's rate,
+    /// set by the α samples of the peer's other channels.
+    pub fn pacing(&self) -> &PacedEdges {
+        &self.inner.pacing
     }
 }
 
@@ -479,7 +498,10 @@ impl Inner {
         let mut autotuned = false;
         match buffer_request(Bytes(u64::from(spec.slot_size)), buffer_caps().1) {
             Some(size) => {
-                let _ = socket.set_recv_buffer_size(u32::try_from(size).unwrap_or(u32::MAX));
+                let current = socket.recv_buffer_size().map(|size| size as usize);
+                if let Some(size) = buffer_set(current, size) {
+                    let _ = socket.set_recv_buffer_size(u32::try_from(size).unwrap_or(u32::MAX));
+                }
             }
             None => autotuned = true,
         }
@@ -525,7 +547,10 @@ impl Inner {
         let largest = spec.slot_size.max(agreed.peer_slot_size);
         match buffer_request(Bytes(u64::from(largest)), buffer_caps().0) {
             Some(size) => {
-                let _ = socket2::SockRef::from(tls.get_ref().0.tcp()).set_send_buffer_size(size);
+                let socket = socket2::SockRef::from(tls.get_ref().0.tcp());
+                if let Some(size) = buffer_set(socket.send_buffer_size(), size) {
+                    let _ = socket.set_send_buffer_size(size);
+                }
             }
             None => autotuned = true,
         }
@@ -533,7 +558,9 @@ impl Inner {
             self.autotuned();
         }
         let (r, w) = tokio::io::split(tls);
-        Ok(stream::open(r, w, spec, agreed, &self.domain)?.spawn(&self.domain))
+        Ok(stream::open(r, w, spec, agreed, &self.domain)?
+            .paced(self.pacing.edge(&remote.key))
+            .spawn(&self.domain))
     }
 
     /// The acceptor's end of the handshake on `early`'s connection, then the channel. The key is
@@ -565,7 +592,9 @@ impl Inner {
         let agreed = agreed
             .map_err(|code| Error::new(code, format!("refused the channel {:?}", spec.key)))?;
         let (r, w) = tokio::io::split(stream);
-        Ok(stream::open(r, w, spec, agreed, &self.domain)?.spawn(&self.domain))
+        Ok(stream::open(r, w, spec, agreed, &self.domain)?
+            .paced(self.pacing.edge(&peer))
+            .spawn(&self.domain))
     }
 
     /// Hands an arrived connection to the `accept` waiting for its key, or holds it for one, for
@@ -706,6 +735,19 @@ fn buffer_request(slot_size: Bytes, cap: Option<usize>) -> Option<usize> {
     }
 }
 
+/// The size to set a buffer to, given the size the socket reports now: `want`, or `None` when the
+/// socket already has at least that much. A default buffer that is large enough is kept, since on
+/// Linux setting one turns the kernel's autotuning off for the socket, and a few KiB under the
+/// loopback MSS makes the receiver hold back its window updates until the sender's persist timer
+/// probes, 200 ms at least (RFC-0031 §5.3, note of 2026-10-31). A size that cannot be read is
+/// set.
+fn buffer_set(current: std::io::Result<usize>, want: usize) -> Option<usize> {
+    match current {
+        Ok(current) if current >= want => None,
+        _ => Some(want),
+    }
+}
+
 /// The send and receive buffer sizes to request for `slot_size`, and whether either was left to
 /// autotuning.
 fn buffer_plan(slot_size: Bytes) -> (Option<usize>, Option<usize>, bool) {
@@ -721,10 +763,10 @@ fn buffer_plan(slot_size: Bytes) -> (Option<usize>, Option<usize>, bool) {
 fn size_buffers(tcp: &TcpStream, slot_size: Bytes) -> bool {
     let (send, recv, autotuned) = buffer_plan(slot_size);
     let socket = socket2::SockRef::from(tcp);
-    if let Some(size) = send {
+    if let Some(size) = send.and_then(|size| buffer_set(socket.send_buffer_size(), size)) {
         let _ = socket.set_send_buffer_size(size);
     }
-    if let Some(size) = recv {
+    if let Some(size) = recv.and_then(|size| buffer_set(socket.recv_buffer_size(), size)) {
         let _ = socket.set_recv_buffer_size(size);
     }
     autotuned
@@ -984,6 +1026,41 @@ mod tests {
         let want = 2 * (48 << 10);
         assert!(socket.send_buffer_size().unwrap() >= want);
         assert!(socket.recv_buffer_size().unwrap() >= want);
+    }
+
+    /// A buffer is set only when the socket's own is smaller than asked for, or unreadable.
+    #[test]
+    fn a_buffer_is_set_only_when_the_socket_has_less() {
+        assert_eq!(buffer_set(Ok(128 << 10), 8 << 10), None);
+        assert_eq!(buffer_set(Ok(8 << 10), 8 << 10), None);
+        assert_eq!(buffer_set(Ok(4 << 10), 8 << 10), Some(8 << 10));
+        assert_eq!(
+            buffer_set(Err(std::io::Error::other("unreadable")), 8 << 10),
+            Some(8 << 10)
+        );
+    }
+
+    /// A slot whose two-fold fits in the socket's default buffers leaves both as they were, so
+    /// Linux keeps autotuning them.
+    #[tokio::test]
+    async fn a_small_slot_keeps_the_default_buffers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        let (_client, (server, _)) = (client.unwrap(), accepted.unwrap());
+        let socket = socket2::SockRef::from(&server);
+        let before = (
+            socket.send_buffer_size().unwrap(),
+            socket.recv_buffer_size().unwrap(),
+        );
+        let slot = Bytes(1 << 10);
+        assert!(before.0 >= 2 << 10 && before.1 >= 2 << 10, "{before:?}");
+        assert!(!size_buffers(&server, slot));
+        let after = (
+            socket.send_buffer_size().unwrap(),
+            socket.recv_buffer_size().unwrap(),
+        );
+        assert_eq!(after, before);
     }
 
     /// 2 × `slot_size` is requested where the cap allows it, and left to autotuning where it does
