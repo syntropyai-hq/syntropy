@@ -1497,6 +1497,16 @@ PLC-E1-T04's criteria use NVML and IOKit only, and none of its development evide
 | New PLC-E1-T20 (M0a), "DXGI adapters with local budget and LUID for E2 (split from PLC-E1-T04)" → PLC-E1-T04; PLC-E1-T04's task text drops the DXGI adapters | PLC-E1-T04, PLC-E1-T20 | R3b, R9 | the DXGI part moves with a fixture test through the trait and development evidence on a Windows host with a GPU. It stays M0a because PLC-E1-T07 (M0a) uses its budget |
 | PLC-E1-T07 → PLC-E1-T20 | PLC-E1-T07 | R9 | "on Windows D2 never exceeds the DXGI budget" uses the local budget PLC-E1-T20 produces; before the split it came through PLC-E1-T04 |
 
+## COMP-E10-T07's recorded-header golden moves to the families (2026-10-31)
+
+COMP-E10-T07 (M0a) builds the census. Its criterion asked for "golden census tests on recorded headers". Classifying the recorded M0 headers' real tensor names needs the `llama` and `qwen_moe` families' rules, COMP-E16-T03 and COMP-E16-T04. Both already carry a golden census on the recorded headers, but neither depended on the builder they run through. So COMP-E10-T07 keeps golden censuses on synthetic headers with a test-only family, and the two families gain the edge to it. All three are M0a, and the change came from #2034's review.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T07's "golden census tests on recorded headers" becomes golden censuses on synthetic GGUF and safetensors headers through a test-only family; the recorded-header golden is named as COMP-E16-T03's and COMP-E16-T04's | COMP-E10-T07 | R9 | the real-name classification it needs is the families' work, which COMP-E10-T07 does not depend on |
+| COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | "golden census on recorded headers" runs the `llama` family through COMP-E10-T07's builder |
+| COMP-E16-T04 → COMP-E10-T07 | COMP-E16-T04 | R9 | "on the `qwen_moe` checkpoint, the golden census … run[s] on its recorded safetensors headers" through the same builder; the edge was only transitive, through COMP-E16-T03 |
+
 ## COMP-E4-T02's arena-test leg moves to the task that builds the arena tests (2026-10-31)
 
 COMP-E4-T02 (M0a) asked that "TIER's arena tests pass on a CUDA device". No arena-construction tests exist in `syntropy-tier` until TIER-E1-T07 builds `Vram` arenas through `KernelProvider::alloc`, and TIER-E1-T07 already depends on COMP-E4-T02, both M0a. `tier` cannot use `kernels-cuda` either, since both are layer 2 (RFC-0001 §4.2 rule 2).
