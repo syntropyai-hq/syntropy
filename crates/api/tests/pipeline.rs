@@ -483,6 +483,69 @@ fn tokens_after_a_matched_stop_are_discarded_and_not_counted() {
     assert_eq!(ingress.stray_entries(), 0);
 }
 
+/// With `return_tokens` (PROD-E4-T13), each entry's counted tokens follow its text in one
+/// `Tokens` event, and a matched stop string cuts them where it cuts the count: the tokens in the
+/// events add up to the usage. Off, no `Tokens` event is sent.
+#[test]
+fn returned_tokens_add_up_to_the_usage_even_past_a_stop() {
+    for on in [true, false] {
+        let world = World::new();
+        let handle = world.clock.handle();
+        let ingress = Ingress::new(
+            world.region.daemon(),
+            &world.minter,
+            &FakeStages,
+            &handle,
+            &world.entropy,
+        )
+        .unwrap();
+        let mut runner = FakeRunner::new(
+            world.region.runner(),
+            Script::new().otherwise(Stream::new().tokens([1, 2]).window([3, 4, 5, 6])),
+        )
+        .unwrap();
+        let mut generation = ingress
+            .start(&request(vec![9], &[" world"]), ClientWatch::default())
+            .unwrap();
+        generation.return_tokens(on);
+        let mut sink = Sink::default();
+        runner.run_until_idle(10).unwrap();
+        while generation.poll(&mut sink) == Progress::Pending {
+            runner.step().unwrap();
+        }
+        let returned: Vec<Vec<u32>> = sink
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                GenEvent::Tokens { tokens, .. } => Some(tokens.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sink.finished().map(|(_, usage)| usage.completion_tokens),
+            Some(4)
+        );
+        if on {
+            assert_eq!(returned, [vec![1], vec![2], vec![3, 4]]);
+            // Each `Tokens` event comes after the text its tokens released.
+            let last_text = sink
+                .events
+                .iter()
+                .rposition(|e| matches!(e, GenEvent::TextDelta { .. }))
+                .unwrap();
+            let last_tokens = sink
+                .events
+                .iter()
+                .rposition(|e| matches!(e, GenEvent::Tokens { .. }))
+                .unwrap();
+            assert!(last_text < last_tokens);
+        } else {
+            assert!(returned.is_empty());
+        }
+        assert_eq!(sink.text(), "Hello");
+    }
+}
+
 /// A stop string that ends in the middle of a token: the token is counted, its text after the
 /// stop is not delivered, and the stop matcher's hold-back keeps a partial match out of the
 /// stream until it fails.

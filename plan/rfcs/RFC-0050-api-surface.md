@@ -1023,6 +1023,17 @@ Native messages may carry `cache_control` like Anthropic content blocks, marking
 
 The non-streaming response contains `choices[]` (text, reasoning, tool calls, token IDs when asked, logprobs, stop reason), `usage`, and every `SyntropyMeta` field (§10) as first-class fields, plus `trace_id` when the request was traced. A streaming response can be re-attached within the detach grace at `GET /v1/syntropy/generate/{sequence}/events` with `Last-Event-ID` (§5.5, M3).
 
+*Note 2026-10-31 (PROD-E4-T13, as built).* `syntropy_api::native` serves the M0 subset that the benchmark driver needs. PROD-E4-T02 opens the full endpoint in M1. Until then:
+- **Gate.** The route answers only while `debug.bench_api` is on, through §13.6's loopback predicate (`DebugSection::allows`). Otherwise it gives the same 404 `unsupported_endpoint` as a path with no route.
+- **Request.** `model`, `tokens`, `sampling.temperature`, `sampling.seed`, `sampling.max_tokens`, `stream` and `return_tokens`, with `?format=ndjson`.
+- **Refusals.** `messages`, `prompt`, `stream: false` and SSE get 400 `unsupported_feature`. Any other field gets 400 `invalid_request`. A body over `api.max_body`'s default of 32 MiB gets 413 `request_too_large`.
+- **Range check.** `tokens` passes §2.3's check in `Ingress::start`, before routing.
+- **Stream.** The events are `started`, `text`, `done` and `error`, each with `id: "<sequence>:<n>"`.
+- **Sequence ID text.** A sequence ID is written `<ingress short ID as 16 hex digits>-<boot>-<n>`, a form this RFC had not fixed.
+- **Token IDs.** With `return_tokens`, each `text` event carries the `tokens` that released its text, so the IDs across a stream add up to `done.usage.completion_tokens`.
+- **Pipeline changes.** For this, §2.1's `GenEvent` gains `Tokens { choice, tokens }`, which the pipeline sends after each entry's text when `Generation::return_tokens` is on, and `StreamMode` gains `Ndjson`.
+- **Driver.** `native::drive` runs on the thread that owns the runner's `Ingress`. It starts queued requests and polls every live generation without sleeping while one is live, so a token reaches its stream as soon as it reaches `local_tokens`.
+
 #### 13.2 Models
 
 | Endpoint | Behaviour |
