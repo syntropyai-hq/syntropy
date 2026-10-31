@@ -1,0 +1,5 @@
+# The job image's build context is the repository root (README.md), but it reads only these two
+# files, so nothing else, `target/` and `.git` included, goes to the daemon.
+*
+!rust-toolchain.toml
+!ci/build-host/job-started.sh

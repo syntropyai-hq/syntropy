@@ -69,6 +69,7 @@ Hardware runners are owned lab machines (ADR-0610). Those machines are bare meta
 - GitHub offers per-workflow runner-group restrictions on the organisation's plan. Then add them, and keep the random per-run label anyway.
 
 ## Revisions
+- Revised 2026-10-30: ADR-0625 (Proposed) adds a self-hosted Linux build host for decision 1's Linux jobs of every run except a fork's PR (widened 2026-10-31 from same-repository PRs only), behind a repository variable and a gate the workflow lint checks. Fork PRs, `toolchains-linux`, `dep-approval.yml` and the macOS and Windows jobs keep decision 1's hosted runners, and decision 2's lab rigs are unchanged: the build host is not a rig and never runs a lab job.
 - Revised 2026-10-23: decision 3's direct hardware paths gain `numerics/`. `kernels` embeds the tolerance tables there, and the op conformance a hardware job runs checks against them, so a change to a ceiling alone needs the rig as a kernel change does (ADR-0019).
 - Revised 2026-10-23: decision 3's `pull_request` clause gains an interim for same-repository PRs.
   - **The rule.** While a hardware job's rig and its `lab.yml` job do not exist, `ci/jobs.toml` marks the job `planned` with the task that brings it. `ci-gate` then does not hold a same-repository PR for it, and the summary names the task.

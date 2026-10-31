@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# One job slot of the Linux build host (ADR-0625). Enable one instance per slot:
+#   systemctl enable --now syntropy-build-runner@1 syntropy-build-runner@2 syntropy-build-runner@3
+
+[Unit]
+Description=Syntropy build host job slot %i
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+LoadCredential=token:/etc/syntropy-build/token
+ExecStartPre=/opt/syntropy-build/egress.sh
+ExecStart=/opt/syntropy-build/runner-slot.sh %i
+# `-`: when the job ends on its own, `--rm` has already removed the container.
+ExecStop=-/usr/bin/docker stop --time 30 syntropy-build-%i
+Restart=always
+RestartSec=5
+# The slot needs the Docker socket, the token and iptables, and nothing else on the host.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+UMask=0077
+# Root for the Docker socket, which root owns, but with no capability except what iptables needs.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+PrivateDevices=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target
