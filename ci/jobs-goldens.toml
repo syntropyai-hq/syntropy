@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:43e7430935fc5c61"
+jobs_toml = "fnv1a:65847383eb94a6d2"
 
 [[golden]]
 name = "plan only"

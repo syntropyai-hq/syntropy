@@ -71,9 +71,9 @@ when = "always"
 runner = "hosted"
 when = "closure"
 
-# Advisory until M1a (ADR-0626): the job runs when its rule says, and `ci-gate` neither waits for
-# it nor fails on it. At M1a's start the marks below go, and the jobs rejoin `ci-gate`'s `needs`
-# in `pr.yml`.
+# Advisory during M0a (ADR-0626): the job runs when its rule says, and `ci-gate` neither waits for
+# it nor fails on it. At M0b's start, unless a revision of ADR-0626 extends it, the marks below
+# go, and the jobs rejoin `ci-gate`'s `needs` in `pr.yml`.
 [job.build-macos-windows]
 runner = "hosted"
 when = "closure"

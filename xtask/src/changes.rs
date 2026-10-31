@@ -29,8 +29,8 @@
 //! hosted one is not listed, and `ci-gate` does not hold a same-repository PR for a hardware one.
 //!
 //! A hosted job marked `advisory`, with the ADR that makes it so, is listed and runs as any other,
-//! but `ci-gate` neither waits for it nor fails on it: the macOS and Windows jobs until M1a
-//! (ADR-0626).
+//! but `ci-gate` neither waits for it nor fails on it: the macOS and Windows jobs during
+//! M0a (ADR-0626).
 //!
 //! The crate graph is read from the manifests as TOML at both revisions, and the closure is taken
 //! over the union of the two graphs, so an edge the PR adds or removes counts. Nothing from the PR

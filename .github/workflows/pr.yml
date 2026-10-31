@@ -145,8 +145,8 @@ jobs:
         run: cargo xtask ci build-test-release
 
   # The macOS and Windows legs of `build`, on the same rule. `ci/jobs.toml` marks them advisory
-  # until M1a (ADR-0626): `ci-gate` does not wait for them, so it is not in its `needs`. At M1a
-  # the mark goes and the job rejoins `ci-gate`'s `needs`.
+  # during M0a (ADR-0626): `ci-gate` does not wait for them, so it is not in its `needs`. At M0b's
+  # start, unless a revision of ADR-0626 extends it, the mark goes and the job rejoins `needs`.
   build-macos-windows:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'build-macos-windows')
@@ -196,7 +196,7 @@ jobs:
           echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
       - run: cargo xtask test unit
 
-  # The macOS and Windows legs of `hosted-test`, advisory until M1a as `build-macos-windows` is.
+  # The macOS and Windows legs of `hosted-test`, advisory during M0a as `build-macos-windows` is.
   hosted-test-macos-windows:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-test-macos-windows')

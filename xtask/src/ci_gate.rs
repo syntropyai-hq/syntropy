@@ -40,7 +40,7 @@
 //!
 //! **Advisory jobs** (ADR-0626; QUAL-E1-T37). A hosted job `ci/jobs.toml` marks `advisory` runs
 //! when `changes` lists it, but does not gate: `ci-gate` need not wait for it, and when it does,
-//! the job's failure, cancellation or skip is reported and not counted. Until M1a these are the
+//! the job's failure, cancellation or skip is reported and not counted. During M0a these are the
 //! macOS and Windows jobs. The base branch's rules decide which jobs are advisory, so a PR cannot
 //! mark its own failing job advisory.
 
