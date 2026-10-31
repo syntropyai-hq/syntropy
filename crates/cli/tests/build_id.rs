@@ -93,6 +93,7 @@ fn version_json_prints_every_field() {
         format!("profile    {}", build.build_id.profile),
         format!("target     {}", build.build_id.target),
         "features   none".to_owned(),
+        format!("ggml       {}", syntropy_kernels_ggml::COMMIT),
         format!(
             "build      {}",
             build

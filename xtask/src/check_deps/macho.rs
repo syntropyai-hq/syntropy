@@ -22,6 +22,9 @@ pub struct Loads {
     /// Every undefined external symbol, without the leading `_` of C names, in file order and
     /// listed once.
     pub symbols: Vec<String>,
+    /// Every external symbol the file defines in a section, without the leading `_`: what it
+    /// exports, in file order and listed once.
+    pub exports: Vec<String>,
 }
 
 /// One library and the load command that names it.
@@ -71,10 +74,11 @@ const MH_MAGIC_64: u32 = 0xfeed_facf;
 const FAT_MAGIC: u32 = 0xcafe_babe;
 const FAT_MAGIC_64: u32 = 0xcafe_babf;
 const LC_SYMTAB: u32 = 0x2;
-/// `nlist` type bits: debugging entries, the type mask, undefined, external.
+/// `nlist` type bits: debugging entries, the type mask, undefined, defined in a section, external.
 const N_STAB: u8 = 0xe0;
 const N_TYPE: u8 = 0x0e;
 const N_UNDF: u8 = 0x0;
+const N_SECT: u8 = 0x0e;
 const N_EXT: u8 = 0x01;
 /// More architectures than any universal file holds; a larger count is a corrupt header.
 const MAX_ARCHITECTURES: u32 = 64;
@@ -97,6 +101,7 @@ const NAME_SLACK: u64 = 1 << 20;
 struct Seen {
     dylibs: BTreeSet<(String, &'static str)>,
     symbols: BTreeSet<String>,
+    exports: BTreeSet<String>,
 }
 
 /// Reads the load commands and undefined symbols of the Mach-O file `bytes`.
@@ -190,21 +195,22 @@ fn thin(
                 loads.dylibs.push(Dylib { name, command });
             }
         } else if cmd == LC_SYMTAB {
-            symbols(&file, at, wide, &mut loads.symbols, &mut seen.symbols)?;
+            symbols(&file, at, wide, loads, seen)?;
         }
         at += cmdsize;
     }
     Ok(())
 }
 
-/// Appends the undefined external symbols of the `LC_SYMTAB` command at `at` to `names`, each one
-/// not yet in `seen`.
+/// Appends the undefined external symbols of the `LC_SYMTAB` command at `at` to `loads.symbols`,
+/// and the external symbols it defines in a section to `loads.exports`, each one not yet in
+/// `seen`.
 fn symbols(
     file: &Reader,
     at: u64,
     wide: bool,
-    names: &mut Vec<String>,
-    seen: &mut BTreeSet<String>,
+    loads: &mut Loads,
+    seen: &mut Seen,
 ) -> Result<(), String> {
     let table = u64::from(file.u32(at + 8)?);
     let count = u64::from(file.u32(at + 12)?);
@@ -214,9 +220,11 @@ fn symbols(
     for index in 0..count {
         let symbol = table + index * entry;
         let kind = file.bytes_at::<1>(symbol + 4)?[0];
-        let undefined = kind & N_STAB == 0 && kind & N_TYPE == N_UNDF && kind & N_EXT != 0;
+        let external = kind & N_STAB == 0 && kind & N_EXT != 0;
+        let undefined = external && kind & N_TYPE == N_UNDF;
+        let defined = external && kind & N_TYPE == N_SECT;
         let name_at = u64::from(file.u32(symbol)?);
-        if !undefined || name_at == 0 {
+        if !(undefined || defined) || name_at == 0 {
             continue;
         }
         let start = strings + name_at;
@@ -225,8 +233,13 @@ fn symbols(
         }
         let name = file.string(start, strings_end)?;
         let name = name.strip_prefix('_').map(str::to_owned).unwrap_or(name);
-        if !name.is_empty() && seen.insert(name.clone()) {
-            names.push(name);
+        if name.is_empty() {
+            continue;
+        }
+        if undefined && seen.symbols.insert(name.clone()) {
+            loads.symbols.push(name);
+        } else if defined && seen.exports.insert(name.clone()) {
+            loads.exports.push(name);
         }
     }
     Ok(())
@@ -449,6 +462,7 @@ mod tests {
                         .map(|&(name, command)| dylib(name, command))
                         .collect(),
                     symbols: vec!["malloc".into(), "vkCreateInstance".into()],
+                    exports: vec!["main".into()],
                 },
                 "wide: {wide}, little: {little}"
             );
@@ -470,6 +484,7 @@ mod tests {
                 Loads {
                     dylibs: vec![dylib(SYSTEM, Command::Load), dylib(VULKAN, Command::Load)],
                     symbols: vec!["malloc".into(), "vkCreateInstance".into()],
+                    exports: vec!["main".into()],
                 },
                 "wide: {wide}"
             );

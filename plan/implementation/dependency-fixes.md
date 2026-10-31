@@ -1417,6 +1417,13 @@ Building COMP-E4-T01 on a WSL2 development host found that the unversioned `libc
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | New PROD-E9-T13 (M1a), `doctor` check DRV-008 → PROD-E9-T01, COMP-E4-T01 | PROD-E9-T13 | R9 | the check is a `DoctorCheck` in PROD-E9-T01's framework, and its warning names the provider's rule that COMP-E4-T01 sets. It is Linux only, so it is M1a under R7, beside PROD-E9-T01 |
+## COMP-E7-T01's bit-exact leg moves to the tasks that build the reference (2026-10-30)
+
+COMP-E7-T01 (M0a) vendors ggml and builds the core's static copy. Its criterion asked that "ggml CPU dequantisation and `get_rows` match `kernels::reference` bit for bit on x86-64 and arm64 builds". `kernels::reference` has neither yet. The reference dequantisers are COMP-E13-T02, whose own criterion is "bit-exact against ggml's `dequantize_row_*` at the pinned commit", and which depends on COMP-E7-T01, so an edge back would be a cycle. `RowGather`'s reference is COMP-E1-T03, which COMP-E7-T01 does not depend on. Each comparison moves to the task that builds its reference side, and COMP-E7-T01 keeps a check that its bindings run the two operations. This was taken under the maintainers' standing instruction of 2026-10-22, 2026-10-30.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E7-T01's "ggml CPU dequantisation and `get_rows` match `kernels::reference` bit for bit on x86-64 and arm64 builds" becomes "the bindings run ggml's CPU dequantisation (Q4_K, Q8_0, Q4_0, F16, BF16) and `get_rows` on fixed blocks, built at the baseline ISA with contraction off". The dequantisation comparison stays COMP-E13-T02's, where it already is. COMP-E1-T03 gains "`RowGather` matches ggml's CPU `get_rows` at the pinned commit bit for bit, on x86-64 and arm64 builds". COMP-E1-T03 → COMP-E7-T01 | COMP-E7-T01, COMP-E1-T03 | R9 | the comparison needs the reference side, which those tasks build. COMP-E1-T03 already reaches COMP-E7-T01 through COMP-E13-T02, so the edge adds no cycle; M0a → M0a |
 
 ## The reference ops the GPU kernel tasks are checked against (2026-10-31)
 
