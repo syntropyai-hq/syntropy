@@ -14,8 +14,9 @@ struct Fake {
     devices: Vec<RawDevice>,
     retained: std::sync::Arc<std::sync::atomic::AtomicI32>,
     streams: stream::fake::Shared,
-    /// The streams and events still live at each memory free, from [`FreeWatch`].
-    frees: std::sync::Arc<std::sync::Mutex<Vec<(usize, usize)>>>,
+    /// At each memory free, from [`FreeWatch`]: the streams and events still live, and the
+    /// primary context's retain count.
+    frees: std::sync::Arc<std::sync::Mutex<Vec<(usize, usize, i32)>>>,
 }
 
 struct FakeContext(std::sync::Arc<std::sync::atomic::AtomicI32>);
@@ -66,23 +67,27 @@ impl crate::memory::MemoryDriver for Fake {
         Ok(std::sync::Arc::new(FreeWatch {
             rec: crate::memory::tests::Recorder::default(),
             streams: self.streams.clone(),
+            retained: self.retained.clone(),
             frees: self.frees.clone(),
         }))
     }
 }
 
-/// The recorder's memory calls, noting how many streams and events are live at each free, so a
-/// test sees whether memory is freed before or after the streams are destroyed.
+/// The recorder's memory calls, noting at each free how many streams and events are live and
+/// whether the primary context is still retained, so a test sees where the frees fall between
+/// the streams' destruction and the context's release.
 struct FreeWatch {
     rec: crate::memory::tests::Recorder,
     streams: stream::fake::Shared,
-    frees: std::sync::Arc<std::sync::Mutex<Vec<(usize, usize)>>>,
+    retained: std::sync::Arc<std::sync::atomic::AtomicI32>,
+    frees: std::sync::Arc<std::sync::Mutex<Vec<(usize, usize, i32)>>>,
 }
 
 impl FreeWatch {
     fn note(&self) {
-        let live = self.streams.lock().unwrap().live();
-        self.frees.lock().unwrap().push(live);
+        let (streams, events) = self.streams.lock().unwrap().live();
+        let retained = self.retained.load(std::sync::atomic::Ordering::SeqCst);
+        self.frees.lock().unwrap().push((streams, events, retained));
     }
 }
 
@@ -382,9 +387,9 @@ fn open_creates_the_plan_and_drop_destroys_it_before_the_context() {
     assert_eq!(p.driver.streams.lock().unwrap().live(), (0, 0));
 }
 
-/// Closing a device drains and destroys its streams before it frees the buffers the tier
-/// manager left allocated, so no copy still queued reads or writes freed memory (`CudaDevice`'s
-/// field order).
+/// Closing a device drains and destroys its streams, then frees the buffers the tier manager
+/// left allocated, then releases the primary context (`CudaDevice`'s field order): no copy still
+/// queued touches freed memory, and nothing is freed in a released context.
 #[test]
 fn closing_a_device_destroys_its_streams_before_freeing_its_memory() {
     use syntropy_kernels::{AllocRequest, MemKind};
@@ -417,11 +422,35 @@ fn closing_a_device_destroys_its_streams_before_freeing_its_memory() {
     }
     p.event(&ctx).unwrap();
     assert_eq!(p.driver.streams.lock().unwrap().live(), (2, 1));
+    p.driver.streams.lock().unwrap().log.clear();
     drop(ctx);
     assert_eq!(
         *p.driver.frees.lock().unwrap(),
-        [(0, 0); 2],
-        "both buffers freed after every stream and event was destroyed"
+        [(0, 0, 1); 2],
+        "both buffers freed after every stream and event was destroyed, before the release"
+    );
+    let log = p.driver.streams.lock().unwrap().log.clone();
+    let syncs = log
+        .iter()
+        .position(|c| matches!(c, stream::fake::Call::Sync(_)));
+    let destroys = log.iter().position(|c| {
+        matches!(
+            c,
+            stream::fake::Call::DestroyStream(..) | stream::fake::Call::DestroyEvent(..)
+        )
+    });
+    assert!(
+        syncs.unwrap() < destroys.unwrap(),
+        "drained, then destroyed"
+    );
+    let drained = log
+        .iter()
+        .filter(|c| matches!(c, stream::fake::Call::Sync(_)))
+        .count();
+    assert_eq!(drained, 2, "every stream drained");
+    assert_eq!(
+        p.driver.retained.load(std::sync::atomic::Ordering::SeqCst),
+        0
     );
 }
 
