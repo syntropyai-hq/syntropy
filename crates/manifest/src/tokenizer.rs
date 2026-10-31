@@ -63,6 +63,11 @@ pub const CHAT_TEMPLATE_FILE: &str = "chat_template.jinja";
 /// The domain tag that starts the `TokenizerId` preimage.
 const ID_TAG: &[u8] = b"syntropy/tokenizer-id/v1";
 
+/// The `model.type` values of a `tokenizer.json` the engine loads (RFC-0043 §8.2). A file
+/// without a `type` is read as before; one naming any other type is refused, because no
+/// request could load it.
+pub const MODEL_TYPES: [&str; 4] = ["BPE", "Unigram", "WordLevel", "WordPiece"];
+
 /// The token spellings read as FIM prefix, middle and suffix. Matched against every added
 /// token, marked special or not; a set is taken only when all three of its spellings are
 /// added tokens.
@@ -216,8 +221,9 @@ impl TokenizerSpec {
     ///
     /// # Errors
     ///
-    /// [`TokenizerSpecError`] when a file is not valid JSON, has a field of the wrong kind, or
-    /// names a special token the tokenizer does not hold.
+    /// [`TokenizerSpecError`] when a file is not valid JSON, has a field of the wrong kind,
+    /// names a special token the tokenizer does not hold, or `tokenizer.json` names a model type
+    /// outside [`MODEL_TYPES`].
     pub fn from_sources(src: TokenizerSources<'_>) -> Result<Self, TokenizerSpecError> {
         let tok = object(TOKENIZER_JSON, src.tokenizer_json)?;
         let cfg = src
@@ -579,6 +585,16 @@ impl<'a> Vocab<'a> {
         }
         let (mut vocab, mut unigram) = (None, None);
         if let Some(Json::Object(model)) = get(tok, "model") {
+            match get(model, "type") {
+                None => {}
+                Some(Json::Str(t)) if MODEL_TYPES.contains(&t.as_str()) => {}
+                Some(Json::Str(t)) => {
+                    return Err(bad(format!(
+                        "model type {t:?} is not one of {MODEL_TYPES:?}"
+                    )));
+                }
+                Some(other) => return Err(bad(format!("model type is {}", other.kind()))),
+            }
             match get(model, "vocab") {
                 Some(Json::Object(v)) => vocab = Some(v),
                 Some(Json::Array(v)) => unigram = Some(v.as_slice()),
