@@ -164,6 +164,7 @@ pub fn enumerate(
                 // Measured by step H5 (RFC-0010 §3.2), not E1.
                 lock: None,
             },
+            node_mem: d.node_mem,
         })
         .collect();
 

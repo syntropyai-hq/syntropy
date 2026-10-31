@@ -11,7 +11,8 @@
 use syntropy_api::pipeline::{
     ApiError, ApiShape, ClientGone, ClientMeta, ClientWatch, Detokenize, EventSink, GenEvent,
     GenerateRequest, Ingress, Input, ModelInfo, ModelRef, Outcome, Progress, Route,
-    SamplingRequest, SequenceIdMinter, Stages, StopMatch, StopReason, StopStep, StreamMode, Usage,
+    SamplingRequest, SequenceIdMinter, Stages, StopMatch, StopReason, StopStep, StreamMode,
+    TailChannels, Usage,
 };
 use syntropy_core::{
     CancelReason, FinishReason, InstanceId, Nanos, NodeId, PlanEpoch, SequenceControl,
@@ -53,6 +54,7 @@ impl Stages for FakeStages {
             epoch: PlanEpoch { term: 1, seq: 1 },
             prefill_chunk: 0,
             initial_window: None,
+            tail: TailChannels::default(),
         })
     }
 
@@ -667,6 +669,89 @@ fn the_open_carries_the_request() {
     assert_eq!(second.sampling.seed, drawn.seed());
     assert_eq!(second.choice_index, None);
     assert_eq!(second.limits.max_tokens, CONTEXT - 1);
+}
+
+/// [`FakeStages`] with the route's tail on other nodes, its channels to the ingress and to the
+/// head with these capabilities.
+struct RemoteTail(TailChannels);
+
+impl Stages for RemoteTail {
+    fn resolve_model(&self, model: &ModelRef) -> Result<ModelInfo, ApiError> {
+        FakeStages.resolve_model(model)
+    }
+
+    fn tokenize(&self, model: &ModelInfo, input: &Input, raw: bool) -> Result<Vec<u32>, ApiError> {
+        FakeStages.tokenize(model, input, raw)
+    }
+
+    fn route(&self, model: &ModelInfo, prompt: &[u32], need: u64) -> Result<Route, ApiError> {
+        Ok(Route {
+            tail: self.0,
+            ..FakeStages.route(model, prompt, need)?
+        })
+    }
+
+    fn admit(&self, route: &Route, prompt_tokens: u32, max_tokens: u32) -> Result<(), ApiError> {
+        FakeStages.admit(route, prompt_tokens, max_tokens)
+    }
+
+    fn detokenizer(&self, model: &ModelInfo) -> Box<dyn Detokenize> {
+        FakeStages.detokenizer(model)
+    }
+
+    fn stop_matcher(&self, stops: &[String]) -> Box<dyn StopMatch> {
+        FakeStages.stop_matcher(stops)
+    }
+}
+
+/// DIST-E8-T18: stage 9 asks the tail for the chosen tokens' logprobs alone (`Some(0)`) only
+/// when the tail's channels to the ingress and to the head both negotiated capability bit 16
+/// `CHOSEN_LOGPROBS`, or do not cross `net`. With the bit missing at the ingress only, or at the
+/// head only, it asks for one alternative (RFC-0050 §3.1). Other requests go as they came.
+#[test]
+fn the_open_asks_for_chosen_logprobs_only_where_both_channels_carry_them() {
+    let bit = syntropy_net::frame::capability::CHOSEN_LOGPROBS;
+    let remote = |to_ingress, to_head| TailChannels {
+        to_ingress: Some(to_ingress),
+        to_head: Some(to_head),
+    };
+    let cases = [
+        ("in process", TailChannels::default(), Some(0), Some(0)),
+        ("both channels", remote(bit, bit), Some(0), Some(0)),
+        (
+            "missing at the ingress",
+            remote(!bit, bit),
+            Some(0),
+            Some(1),
+        ),
+        ("missing at the head", remote(bit, !bit), Some(0), Some(1)),
+        ("alternatives", remote(0, 0), Some(3), Some(3)),
+        ("no logprobs", remote(0, 0), None, None),
+    ];
+    for (name, tail, requested, asked) in cases {
+        let world = World::new();
+        let handle = world.clock.handle();
+        let stages = RemoteTail(tail);
+        let ingress = Ingress::new(
+            world.region.daemon(),
+            &world.minter,
+            &stages,
+            &handle,
+            &world.entropy,
+        )
+        .unwrap();
+        let mut runner = FakeRunner::new(world.region.runner(), Script::new()).unwrap();
+        let mut req = request(vec![4], &[]);
+        req.logprobs = requested;
+        let _generation = ingress.start(&req, ClientWatch::default()).unwrap();
+        runner.step().unwrap();
+        match runner.log() {
+            [SequenceControl::Open(open)] => {
+                assert_eq!(open.sampling.logprobs, asked, "{name}");
+            }
+            other => panic!("{name}: {other:?}"),
+        }
+    }
 }
 
 /// `Started` comes first, with the route and the prompt length; `Finished` carries the times on

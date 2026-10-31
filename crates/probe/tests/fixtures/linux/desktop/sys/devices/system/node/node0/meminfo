@@ -1,4 +1,7 @@
 Node 0 MemTotal:       32562044 kB
 Node 0 MemFree:        18304412 kB
 Node 0 MemUsed:        14257632 kB
+Node 0 Active(file):    2310456 kB
+Node 0 Inactive(file):  3402108 kB
+Node 0 SReclaimable:     389204 kB
 Node 0 HugePages_Total:     0
