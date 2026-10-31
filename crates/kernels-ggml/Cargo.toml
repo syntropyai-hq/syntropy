@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[build-dependencies]
+# Builds the vendored ggml sources (`third_party/ggml/`) into one static library with Syntropy's
+# flags: the baseline ISA, no floating-point contraction, hidden symbols (ADR-0403 item 6).
+cc.workspace = true

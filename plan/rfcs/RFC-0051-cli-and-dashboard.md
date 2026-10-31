@@ -78,6 +78,8 @@ The client library is the same `syntropy-api` types the server uses, so CLI and 
 - `serve`, `config check`, `config path`, `version`, `completions`, `doctor --offline`;
 - the lifecycle commands of RFC-0052: `setup`, `service`, `update`, `uninstall`.
 
+*Note, 2026-10-31 (COMP-E7-T01):* `syntropy --version`, the binary's own report, adds a line `ggml <commit>`, the commit of the static ggml copy it carries (RFC-0040 §8.1). Its `--json` form, the native API's `Build`, is unchanged.
+
 **Reaching a daemon.** A client command tries, in order:
 1. the local socket (`api.local_socket`);
 2. `http://127.0.0.1:7433` (or `SYNTROPY_HOST`, for a remote daemon with `SYNTROPY_API_KEY`);
