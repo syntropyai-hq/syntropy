@@ -673,6 +673,11 @@ fn a_second_stream_for_a_held_key_from_its_peer_replaces_the_first() {
 
 /// A stream for a held key from another peer is refused at once, and leaves the held one in
 /// place.
+///
+/// Which of the two peers' streams b holds is the order in which it routes them, each on a task
+/// of its own, which the order of the two connects does not fix. So the test waits for the
+/// refusal itself, one connect failing, and only then accepts, which the other connect's stream
+/// must answer.
 #[test]
 fn a_held_stream_is_not_replaced_by_another_peer() {
     let mut pair = Pair::new();
@@ -683,29 +688,24 @@ fn a_held_stream_is_not_replaced_by_another_peer() {
     let to_b = pair.remote_b();
     let channel = key(ChannelPurpose::Activations, 22);
     let hold = settings().early_hold();
-    let (first, (other, took), receiver) = pair.runtime.block_on(async {
-        tokio::join!(
-            pair.a.connect(&to_b, channel_spec(channel, a_pool, 0)),
-            async {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                let started = std::time::Instant::now();
-                let refused = c
-                    .transport
-                    .connect(&to_b, channel_spec(channel, c_pool, 0))
-                    .await;
-                (refused, started.elapsed())
-            },
-            async {
-                // Late enough for c's dial and its refusal.
-                tokio::time::sleep(Duration::from_millis(1000)).await;
-                pair.b.accept(channel_spec(channel, b_pool, 4)).await
-            }
-        )
+    let ((refused, took), held, receiver) = pair.runtime.block_on(async {
+        let started = std::time::Instant::now();
+        let mut from_a = std::pin::pin!(pair.a.connect(&to_b, channel_spec(channel, a_pool, 0)));
+        let mut from_c =
+            std::pin::pin!(c.transport.connect(&to_b, channel_spec(channel, c_pool, 0)));
+        let (refused, survivor) = tokio::select! {
+            refused = &mut from_a => (refused, from_c),
+            refused = &mut from_c => (refused, from_a),
+        };
+        let took = started.elapsed();
+        let (held, receiver) =
+            tokio::join!(survivor, pair.b.accept(channel_spec(channel, b_pool, 4)));
+        ((refused, took), held, receiver)
     });
-    let refused = other.expect_err("c's stream for a's key");
+    let refused = refused.expect_err("the other peer's stream for the held key");
     assert_eq!(refused.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{refused}");
-    assert!(took < hold, "c's stream was held: {took:?}");
-    assert_eq!(*first.expect("a's channel").key(), channel);
+    assert!(took < hold, "the other peer's stream was held: {took:?}");
+    assert_eq!(*held.expect("the held stream's channel").key(), channel);
     assert_eq!(*receiver.expect("the channel at b").key(), channel);
 }
 
