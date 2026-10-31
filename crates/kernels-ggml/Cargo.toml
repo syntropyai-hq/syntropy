@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[dependencies]
+# The op mapping layer's template tensor lists.
+smallvec.workspace = true
+syntropy-core = { path = "../core" }
+# `OpKey`, `ShapeSig`, `OpArgs`, `OpCaps` and `PreparedOp`: what the mapping layer maps (RFC-0040
+# §8.2).
+syntropy-kernels = { path = "../kernels" }
+
 [build-dependencies]
 # Builds the vendored ggml sources (`third_party/ggml/`) into one static library with Syntropy's
 # flags: the baseline ISA, no floating-point contraction, hidden symbols (ADR-0403 item 6).
@@ -12,8 +20,9 @@ cc.workspace = true
 
 [dev-dependencies]
 # The tests check `kernels::reference`'s dequantisers bit for bit against this build's ggml, and
-# `manifest`'s RFC-0042 §2.1 geometry table against ggml's type traits (COMP-E13-T02).
+# `manifest`'s RFC-0042 §2.1 geometry table against ggml's type traits (COMP-E13-T02). `core` and
+# `kernels`, which those tests also use, are normal dependencies since COMP-E7-T02.
 proptest.workspace = true
-syntropy-core = { path = "../core" }
-syntropy-kernels = { path = "../kernels" }
 syntropy-manifest = { path = "../manifest" }
+# `CountingAlloc`, for the test that a launch allocates nothing (COMP-E7-T02).
+syntropy-testkit = { path = "../testkit" }

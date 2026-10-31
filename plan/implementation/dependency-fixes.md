@@ -1515,3 +1515,11 @@ COMP-E16-T03 (the `llama` family) required RFC-0060 §7.2 checks 1–3 on the `n
 |---|---|---|---|
 | RFC-0060 §7.2 checks 1–2 on the real `llama` checkpoint's (Qwen3-0.6B) recorded headers, and check 3 on its weights, move to QUAL-E6-T06 | COMP-E16-T03, QUAL-E6-T06 | R9 | check 1's groups and byte total come from the census builder (COMP-E10-T07), check 2 needs the KV byte counters (TIER-E6-T02), and check 3 needs the parity driver (QUAL-E5-T06) and the providers' kernels. QUAL-E6-T06 already depends on all of them. QUAL-E6-T06 named the real-checkpoint checks for `qwen_moe` only, so the `llama` leg had no owner |
 | COMP-E16-T03's checks 1–3 on the `nano` and `micro` fixtures are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T03 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T03's `FamilySpec` |
+
+## COMP-E7-T02's conformance leg (2026-10-31)
+
+COMP-E7-T02's criterion "ggml CPU ops pass conformance against `kernels::reference`" uses `kernels::reference`'s op functions, which COMP-E1-T03 builds. COMP-E7-T02 does not depend on COMP-E1-T03, and COMP-E1-T03 has not landed. The leg moves to COMP-E7-T19, which COMP-E7-T02 split off for the attention, RoPE and MoE mappings and which already depends on COMP-E1-T03. Until then, COMP-E7-T02's tests compare each mapped op with an F64 evaluation of its definition, bit for bit where it is one IEEE operation per element and within a derived F32 rounding bound otherwise. Those tests stay as interim evidence.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Moved: conformance of COMP-E7-T02's mappings against `kernels::reference`'s op functions → COMP-E7-T19 (M0b), which depends on COMP-E7-T02 and COMP-E1-T03 | COMP-E7-T02, COMP-E7-T19 | R9 | the criterion uses COMP-E1-T03's op functions, which no edge of COMP-E7-T02 reaches; COMP-E7-T19 reaches them |
