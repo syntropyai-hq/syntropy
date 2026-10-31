@@ -19,7 +19,6 @@ pub(crate) enum Call {
     Register {
         host: u64,
         bytes: u64,
-        mapped: bool,
     },
     Unregister(u64),
     DevicePointer(u64),
@@ -97,15 +96,8 @@ impl MemoryOps for Recorder {
     fn host_free(&self, host: u64) -> Result<(), Fault> {
         self.call(Call::HostFree(host), "cuMemFreeHost")
     }
-    fn host_register(&self, host: u64, bytes: u64, mapped: bool) -> Result<(), Fault> {
-        self.call(
-            Call::Register {
-                host,
-                bytes,
-                mapped,
-            },
-            "cuMemHostRegister_v2",
-        )
+    fn host_register(&self, host: u64, bytes: u64) -> Result<(), Fault> {
+        self.call(Call::Register { host, bytes }, "cuMemHostRegister_v2")
     }
     fn host_unregister(&self, host: u64) -> Result<(), Fault> {
         self.call(Call::Unregister(host), "cuMemHostUnregister")
@@ -121,6 +113,8 @@ impl MemoryOps for Recorder {
 struct MemFake {
     rec: Recorder,
     retained: Arc<AtomicI32>,
+    /// Devices beyond the first.
+    more: i32,
 }
 
 struct MemFakeContext(Recorder, Arc<AtomicI32>);
@@ -144,20 +138,22 @@ impl Driver for MemFake {
         Ok(13_000)
     }
     fn devices(&self) -> Result<Vec<RawDevice>, Fault> {
-        Ok(vec![RawDevice {
-            ordinal: 0,
-            name: "GPU 0".into(),
-            uuid: [7; 16],
-            cc: (8, 9),
-            pci: (0, 1, 0),
-            total: 16 << 30,
-            free: 15 << 30,
-            integrated: false,
-            vmm: true,
-            host_register: true,
-            peer: false,
-            numa: None,
-        }])
+        Ok((0..=self.more)
+            .map(|ordinal| RawDevice {
+                ordinal,
+                name: format!("GPU {ordinal}"),
+                uuid: [7 + ordinal as u8; 16],
+                cc: (8, 9),
+                pci: (0, 1 + ordinal as u32, 0),
+                total: 16 << 30,
+                free: 15 << 30,
+                integrated: false,
+                vmm: true,
+                host_register: true,
+                peer: false,
+                numa: None,
+            })
+            .collect())
     }
     fn retain(&self, _: i32) -> Result<MemFakeContext, Fault> {
         self.retained.fetch_add(1, Ordering::SeqCst);
@@ -166,8 +162,8 @@ impl Driver for MemFake {
 }
 
 impl MemoryDriver for MemFake {
-    fn memory(&self, _: &MemFakeContext) -> Result<Box<dyn MemoryOps>, Fault> {
-        Ok(Box::new(self.rec.clone()))
+    fn memory(&self, _: &MemFakeContext) -> Result<Arc<dyn MemoryOps>, Fault> {
+        Ok(Arc::new(self.rec.clone()))
     }
 }
 
@@ -306,7 +302,7 @@ fn host_mapped_alloc_gives_device_mapped_pages() {
     let Call::HostAlloc(taken) = calls[0] else {
         panic!("{calls:?}")
     };
-    assert_eq!(taken, HOST_PAGE);
+    assert_eq!(taken, host_page());
     let Call::DevicePointer(host) = calls[1] else {
         panic!("{calls:?}")
     };
@@ -326,20 +322,26 @@ fn slice(buf: &DeviceBuffer, offset: u64, bytes: u64) -> BufferSlice {
 }
 
 /// A request the provider cannot meet fails before any driver call: `AllocFailed` for a bad
-/// size or alignment, `Unsupported` for kinds and modes later tasks add.
+/// size, `Internal` for an alignment that is not a power of two (a caller's error), and
+/// `Unsupported` for kinds and modes later tasks add.
 #[test]
 fn bad_requests_fail_without_a_driver_call() {
     let (p, rec, _, ctx) = setup();
     for bad in [
         req(MemKind::Device, 0, 256),
-        req(MemKind::Device, 4096, 384),
         req(MemKind::Device, u64::MAX, 1 << 20),
         req(MemKind::HostMapped, 0, 64),
-        req(MemKind::HostMapped, 4096, 3),
     ] {
         let e = p.alloc(&ctx, bad).unwrap_err();
         assert_eq!(e.code, codes::ALLOC_FAILED, "{bad:?}");
         assert_eq!(e.class, ErrorClass::Capacity);
+    }
+    for bad in [
+        req(MemKind::Device, 4096, 384),
+        req(MemKind::HostMapped, 4096, 3),
+    ] {
+        let e = p.alloc(&ctx, bad).unwrap_err();
+        assert_eq!(e.class, ErrorClass::Internal, "{bad:?}");
     }
     let reserve = AllocRequest {
         reserve_only: true,
@@ -486,8 +488,8 @@ fn registrations_are_whole_pages_and_never_overlap() {
     rec.log.lock().unwrap().clear();
     for overlapping in [
         region(ARENA, 16 * MIB),
-        region(ARENA + 4096, 4096),
-        region(ARENA - 4096, 8192),
+        region(ARENA + host_page(), host_page()),
+        region(ARENA - host_page(), 2 * host_page()),
         region(ARENA + 15 * MIB, 2 * MIB),
         region(ARENA - MIB, 64 * MIB),
     ] {
@@ -565,7 +567,6 @@ fn import_maps_the_tier_managers_memory() {
             Call::Register {
                 host: ARENA,
                 bytes: 8 * MIB,
-                mapped: true
             },
             Call::DevicePointer(ARENA)
         ]
@@ -581,13 +582,121 @@ fn import_maps_the_tier_managers_memory() {
     p.free(&ctx, buf);
     assert_eq!(rec.calls().last(), Some(&Call::Unregister(ARENA)));
     assert_eq!(p.registration_for(&ctx, ARENA, 4096), None);
+}
 
-    // `register_host` is DMA-only: not device-mapped.
-    p.register_host(&ctx, region(ARENA, MIB)).unwrap();
-    assert!(matches!(
-        rec.calls().last(),
-        Some(Call::Register { mapped: false, .. })
-    ));
+/// RFC-0020 §6 registers each unit once per device in `dma_devices`. Registrations are
+/// portable, so the driver registers a range once: the second device shares it with a handle
+/// of its own, one device's release or close leaves the other's in place, and the driver
+/// unregisters the range after the last release. A range that overlaps another device's
+/// without being exactly it is refused.
+#[test]
+fn devices_share_one_driver_registration_per_range() {
+    let fake = MemFake {
+        more: 1,
+        ..MemFake::default()
+    };
+    let rec = fake.rec.clone();
+    let p = CudaProvider::with_driver(fake);
+    let a = p.open(dev0(), &opts()).unwrap();
+    let b = p
+        .open(
+            DeviceId {
+                ordinal: 1,
+                ..dev0()
+            },
+            &opts(),
+        )
+        .unwrap();
+    let registers = |rec: &Recorder| {
+        rec.calls()
+            .iter()
+            .filter(|c| matches!(c, Call::Register { .. }))
+            .count()
+    };
+    let unregisters = |rec: &Recorder| {
+        rec.calls()
+            .iter()
+            .filter(|c| matches!(c, Call::Unregister(_)))
+            .count()
+    };
+    let ra = p.register_host(&a, region(ARENA, 16 * MIB)).unwrap();
+    let rb = p.register_host(&b, region(ARENA, 16 * MIB)).unwrap();
+    assert_ne!(ra.handle, rb.handle);
+    assert_eq!(registers(&rec), 1);
+    assert_eq!(p.host_ranges.users(ARENA), 2);
+    // Each device sees its own registration.
+    assert_eq!(p.registration_for(&a, ARENA, MIB), Some(ra.handle));
+    assert_eq!(p.registration_for(&b, ARENA, MIB), Some(rb.handle));
+    // A partial overlap with the other device's unit is refused before the driver.
+    let e = p
+        .register_host(&b, region(ARENA + 8 * MIB, 16 * MIB))
+        .unwrap_err();
+    assert_eq!(e.class, ErrorClass::Internal, "{e}");
+    assert!(p.import(&b, region(ARENA - MIB, 2 * MIB)).is_err());
+    assert_eq!(registers(&rec), 1);
+
+    // A's release keeps B's registration; B's release unregisters.
+    p.unregister_host(&a, ra).unwrap();
+    assert_eq!(unregisters(&rec), 0);
+    assert_eq!(p.host_ranges.users(ARENA), 1);
+    p.unregister_host(&b, rb).unwrap();
+    assert_eq!(unregisters(&rec), 1);
+    assert_eq!(p.host_ranges.users(ARENA), 0);
+
+    // An import on both devices: each reads its own device pointer; A's close leaves B's.
+    let ia = p.import(&a, region(ARENA, 8 * MIB)).unwrap();
+    let ib = p.import(&b, region(ARENA, 8 * MIB)).unwrap();
+    assert_eq!(registers(&rec), 2);
+    assert_eq!(
+        rec.calls()
+            .iter()
+            .filter(|c| matches!(c, Call::DevicePointer(h) if *h == ARENA))
+            .count(),
+        2
+    );
+    drop(a);
+    assert_eq!(unregisters(&rec), 1);
+    assert_eq!(p.host_ranges.users(ARENA), 1);
+    assert!(p.resolve(&b, slice(&ib, 0, MIB)).is_some());
+    p.free(&b, ib);
+    assert_eq!(unregisters(&rec), 2);
+    let _ = ia;
+}
+
+#[test]
+fn the_page_size_comes_from_the_auxiliary_vector() {
+    let w = std::mem::size_of::<usize>();
+    let pair = |t: usize, v: usize| [t.to_ne_bytes(), v.to_ne_bytes()].concat();
+    let auxv = [pair(3, 0x40), pair(6, 65536), pair(0, 0)].concat();
+    assert_eq!(auxv.len(), 6 * w);
+    assert_eq!(auxv_page_size(&auxv), Some(65536));
+    assert_eq!(auxv_page_size(&pair(6, 4096)), Some(4096));
+    assert_eq!(auxv_page_size(&pair(6, 3000)), None);
+    assert_eq!(auxv_page_size(&pair(3, 4096)), None);
+    assert_eq!(auxv_page_size(&[]), None);
+    let page = host_page();
+    assert!(page >= MIN_HOST_PAGE && page.is_power_of_two(), "{page}");
+}
+
+/// A `HostMapped` buffer aligned above the page starts inside the pages the driver gave, and
+/// its device address is the device's mapping of that same byte.
+#[test]
+fn host_mapped_alignment_moves_host_and_device_addresses_together() {
+    let (p, rec, _, ctx) = setup();
+    // The next pages start one page past a 64 KiB boundary.
+    *rec.next.lock().unwrap() = host_page();
+    let buf = p
+        .alloc(&ctx, req(MemKind::HostMapped, 4096, 64 << 10))
+        .unwrap();
+    let base = HOST_BASE + host_page();
+    let host = p.resolve(&ctx, slice(&buf, 0, 1)).unwrap().host.unwrap();
+    assert_eq!(host % (64 << 10), 0);
+    assert!(host > base);
+    assert_eq!(buf.addr, host + MAPPED_OFFSET);
+    let Call::HostAlloc(taken) = rec.calls()[0] else {
+        panic!("{:?}", rec.calls())
+    };
+    assert!(host + 4096 <= base + taken);
 }
 
 /// `resolve` refuses a slice past the buffer's end, a registration, and a handle it does not

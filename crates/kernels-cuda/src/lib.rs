@@ -40,13 +40,15 @@ use syntropy_kernels::{
 
 use crate::describe::{check_driver, describe, driver_text};
 use crate::driver::{Driver, Fault, RawDevice, SystemDriver};
-use crate::memory::{AllocHook, DeviceMemory, MemoryDriver};
+use crate::memory::{AllocHook, DeviceMemory, HostRanges, MemoryDriver};
 
 /// The CUDA provider, over a [`Driver`]: the real one by default, a fake in tests.
 pub struct CudaProvider<D: Driver = SystemDriver> {
     driver: D,
     ops: OpRegistry,
     hook: Option<AllocHook>,
+    /// Host ranges registered with the driver, shared by every device this provider opens.
+    host_ranges: std::sync::Arc<HostRanges>,
 }
 
 impl<D: Driver + std::fmt::Debug> std::fmt::Debug for CudaProvider<D> {
@@ -96,6 +98,7 @@ impl<D: Driver> CudaProvider<D> {
             driver,
             ops: OpRegistry::new(),
             hook: None,
+            host_ranges: std::sync::Arc::default(),
         }
     }
 
@@ -200,7 +203,11 @@ where
         Ok(DeviceCtx::new(CudaDevice {
             ordinal: claimed.raw.ordinal,
             record: claimed.record,
-            memory: DeviceMemory::new(memory, self.hook.clone()),
+            memory: DeviceMemory::new(
+                memory,
+                self.hook.clone(),
+                std::sync::Arc::clone(&self.host_ranges),
+            ),
             _context: context,
         }))
     }
