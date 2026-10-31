@@ -277,6 +277,23 @@ fn device_alloc_is_one_aligned_slab() {
     assert_eq!((s.device_buffers, s.device_bytes), (2, 1000 + 3 * MIB));
 }
 
+/// A driver address aligned less than the driver documents is caught: the padded slab
+/// cannot hold the buffer at its aligned start, so the slab goes back and `alloc` fails.
+#[test]
+fn a_slab_too_small_for_its_aligned_start_is_returned() {
+    let (p, rec, events, ctx) = setup();
+    // The next slab starts 128 bytes past a 256-byte boundary.
+    *rec.next.lock().unwrap() = 0xF80;
+    let e = p.alloc(&ctx, req(MemKind::Device, MIB, 4096)).unwrap_err();
+    assert_eq!(e.code, codes::ALLOC_FAILED);
+    assert!(
+        matches!(rec.calls()[..], [Call::DeviceAlloc(_), Call::DeviceFree(_)]),
+        "{:?}",
+        rec.calls()
+    );
+    assert!(events.lock().unwrap().is_empty());
+}
+
 /// `HostMapped` doorbell pages come from `cuMemHostAlloc` in whole pages, and the buffer's
 /// address is the device's mapping of them.
 #[test]

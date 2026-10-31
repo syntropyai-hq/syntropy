@@ -416,7 +416,10 @@ impl DeviceMemory {
                         f.call, f.error
                     ))
                 })?;
-                let Some(addr) = round_up(base, align) else {
+                // The aligned start must leave `bytes` inside the slab: true for the alignment
+                // the driver documents, and checked rather than assumed.
+                let fits = |a: u64| a - base + bytes <= take;
+                let Some(addr) = round_up(base, align).filter(|&a| fits(a)) else {
                     let _ = self.ops.device_free(base);
                     return Err(alloc_failed(format!(
                         "device address {base:#x} cannot be aligned to {align}"
@@ -460,7 +463,8 @@ impl DeviceMemory {
                 };
                 let base = self.ops.host_alloc(take).map_err(fail)?;
                 let mapped = self.ops.device_pointer(base).map_err(fail);
-                let (host, device) = match (mapped, round_up(base, align)) {
+                let fits = |h: u64| h - base + bytes <= take;
+                let (host, device) = match (mapped, round_up(base, align).filter(|&h| fits(h))) {
                     (Ok(device), Some(host)) => (host, device + (host - base)),
                     (mapped, _) => {
                         let _ = self.ops.host_free(base);
