@@ -74,6 +74,7 @@ pub struct Generation<'i, 'r> {
     trace: IngressTrace,
     first_token: Option<MonoTime>,
     completion_tokens: u32,
+    return_tokens: bool,
     announced: bool,
     ended: Option<Outcome>,
 }
@@ -202,6 +203,7 @@ impl<'r> Ingress<'r> {
             trace,
             first_token: None,
             completion_tokens: 0,
+            return_tokens: false,
             announced: false,
             ended: None,
         })
@@ -293,6 +295,12 @@ impl Generation<'_, '_> {
         self.seed
     }
 
+    /// Asks for a [`GenEvent::Tokens`] event after the text of each entry, with the tokens it
+    /// counted, as the native API's `return_tokens` does (RFC-0050 §13.1). Off by default.
+    pub fn return_tokens(&mut self, on: bool) {
+        self.return_tokens = on;
+    }
+
     /// Tokens emitted and counted so far.
     #[must_use]
     pub fn completion_tokens(&self) -> u32 {
@@ -348,18 +356,25 @@ impl Generation<'_, '_> {
 
     /// Delivers one entry; `Some` when the generation ended in it.
     fn entry(&mut self, entry: TokenEntry, sink: &mut dyn EventSink) -> Option<Progress> {
+        let mut counted = Vec::new();
         for &token in &entry.tokens {
             if self.first_token.is_none() {
                 self.first_token = Some(self.ingress.clock.now());
             }
             self.completion_tokens += 1;
             self.ingress.record(self.seq, token);
+            if self.return_tokens {
+                counted.push(token);
+            }
             let text = self.detok.push(token);
             let step = self.stops.push(&text);
             if !step.release.is_empty() && self.text(sink, step.release).is_err() {
                 return Some(self.abandon());
             }
             if let Some(stop) = step.matched {
+                if self.tokens(sink, counted).is_err() {
+                    return Some(self.abandon());
+                }
                 // Later tokens of this entry, and of any frame still in flight, are discarded.
                 self.control(SequenceControl::Cancel {
                     seq: self.seq,
@@ -367,6 +382,9 @@ impl Generation<'_, '_> {
                 });
                 return Some(self.finish(StopReason::StopSequence(stop), sink));
             }
+        }
+        if self.tokens(sink, counted).is_err() {
+            return Some(self.abandon());
         }
         self.ingress.record_counter(self.seq, entry.rng_counter);
         let reason = match entry.finish? {
@@ -396,6 +414,14 @@ impl Generation<'_, '_> {
 
     fn text(&mut self, sink: &mut dyn EventSink, text: String) -> Result<(), ClientGone> {
         self.emit(sink, GenEvent::TextDelta { choice: 0, text })
+    }
+
+    /// The `Tokens` event for `tokens`, when the generation was asked for them and there are any.
+    fn tokens(&mut self, sink: &mut dyn EventSink, tokens: Vec<u32>) -> Result<(), ClientGone> {
+        if tokens.is_empty() {
+            return Ok(());
+        }
+        self.emit(sink, GenEvent::Tokens { choice: 0, tokens })
     }
 
     /// Writes `event`, unless the client is gone.

@@ -175,6 +175,8 @@ pub enum StreamMode {
         /// Whether a final usage chunk is sent (OpenAI's `stream_options.include_usage`).
         include_usage: bool,
     },
+    /// One JSON object per event and line: the native API's `?format=ndjson` (RFC-0050 §5.1).
+    Ndjson,
 }
 
 /// Who sent a request (RFC-0050 §2.1). Authentication (§11) fills it in before the pipeline runs.
@@ -224,6 +226,16 @@ pub enum GenEvent {
         choice: u8,
         /// The text.
         text: String,
+    },
+    /// The tokens a choice emitted and counted since its last `Tokens` event, after the text
+    /// they released. Sent only when the generation was asked for them
+    /// ([`Generation::return_tokens`](super::Generation::return_tokens)): the native API's
+    /// `return_tokens` (RFC-0050 §13.1).
+    Tokens {
+        /// The choice.
+        choice: u8,
+        /// The token IDs, in order.
+        tokens: Vec<u32>,
     },
     /// A tool call begins (RFC-0050 §6).
     ToolCallStart {
