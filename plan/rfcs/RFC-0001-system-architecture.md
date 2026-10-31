@@ -3218,3 +3218,10 @@ The dev-GPU decision is the maintainers', made on 2026-10-31. The R9 splits and 
 |---|---|---|
 | Every Linux job of every workflow may run on a self-hosted Linux build host, label `syntropy-build`, behind the repository variable `SYNTROPY_BUILD_HOST` and a gate the workflow lint checks, for every event except a PR from a fork. Fork PRs, `toolchains-linux`, `dep-approval.yml` and the macOS and Windows jobs stay hosted (revised 2026-10-31; first proposed for four `pr.yml` jobs of same-repository PRs only) | ADR-0625 (new, Proposed); ADR-0620 (dated revision); RFC-0062 §3.1 (dated note) | hosted Linux jobs waited 6 to 10 minutes on average for a runner [measured: GitHub Actions API, the 8 `pr.yml` runs before 2026-10-30]. Each job runs in a fresh container from a single-use just-in-time configuration, with no credential and no route to the LAN, and a job-started hook refuses a fork's PR, so the fork defence of ADR-0620 decision 4 is unchanged. Binds no task until a maintainer accepts ADR-0625 |
 
+### 18.57 RFC-0011's plan additions in `core` (2026-10-31)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `PlacementPlan` gains `ext: PlacementPlanExt`, and `PredictedCost` gains `stages: Vec<StageCost>`, both with serde defaults. `StageCost` is keyed by `core::plan::StageTerm`, a mirror of `obs::CostTerm` with the same discriminants, which `obs` converts | §5.4 (through RFC-0011 §2's note of 2026-10-31) | RFC-0011 §2 adds both to the plan. `core` cannot name `obs`'s `CostTerm` (§4.2), so a mirror holds the key, and `obs` checks that it matches (PLC-E4-T01) |
+| The IPC protocol goes to 7.0 | §3.5 | the plan in `AssignPlan`, and the cost in a delta's `Predicted` item, change their postcard layout |
+
