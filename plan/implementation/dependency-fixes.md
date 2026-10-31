@@ -1417,6 +1417,15 @@ Building COMP-E4-T01 on a WSL2 development host found that the unversioned `libc
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | New PROD-E9-T13 (M1a), `doctor` check DRV-008 → PROD-E9-T01, COMP-E4-T01 | PROD-E9-T13 | R9 | the check is a `DoctorCheck` in PROD-E9-T01's framework, and its warning names the provider's rule that COMP-E4-T01 sets. It is Linux only, so it is M1a under R7, beside PROD-E9-T01 |
+## The `qwen_moe` weights wait for the lab store (2026-10-31)
+
+QUAL-E7-T06 confirmed Qwen/Qwen3-30B-A3B as the `qwen_moe` checkpoint. It is the smallest Qwen3-MoE checkpoint its publisher releases, and its 16 BF16 shards come to 61.08 GB [measured: the Hub's sizes]. Import copies each file into the store, so the importing host needs about twice that free, and the host that ran QUAL-E7-T06 did not have it. Every file of the checkpoint is recorded in `fixtures.toml` with its Hub hash; the configuration, tokenizer and shard index are imported, and the shards wait for the lab store.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E7-T15 gains a criterion: the `qwen_moe` checkpoint's 16 weight shards are imported into the bucket and verified | QUAL-E7-T06, QUAL-E7-T15 | R9 | the shards' entries are QUAL-E7-T06's, and the store that can hold them is QUAL-E7-T15's |
+| COMP-E16-T13 → QUAL-E7-T15 | COMP-E16-T13 | R9 | its `qwen_moe` golden set comes from the checkpoint's weights, which are in the lab store. The other tasks that run those weights (QUAL-E5-T06, QUAL-E5-T10, COMP-E5-T24, TIER-E8-T18, QUAL-E7-T09) already reach QUAL-E7-T15 |
+| COMP-E16-T04's check 3 (single-device parity) on the real `qwen_moe` checkpoint moves to QUAL-E6-T06; COMP-E16-T04 keeps the census and checks 1–2 on the checkpoint's recorded safetensors headers, and everything on the Qwen-MoE fixtures | COMP-E16-T04, QUAL-E6-T06 | R9 | check 3 runs the checkpoint's weights, which wait for the lab store (QUAL-E7-T15). The family conformance runner QUAL-E6-T06 already reaches QUAL-E7-T15, and the headers give the census and checks 1–2 without the weights, so the `qwen_moe` family module does not wait for the store. Review of #2013 (2026-10-31) |
 ## COMP-E7-T01's bit-exact leg moves to the tasks that build the reference (2026-10-30)
 
 COMP-E7-T01 (M0a) vendors ggml and builds the core's static copy. Its criterion asked that "ggml CPU dequantisation and `get_rows` match `kernels::reference` bit for bit on x86-64 and arm64 builds". `kernels::reference` has neither yet. The reference dequantisers are COMP-E13-T02, whose own criterion is "bit-exact against ggml's `dequantize_row_*` at the pinned commit", and which depends on COMP-E7-T01, so an edge back would be a cycle. `RowGather`'s reference is COMP-E1-T03, which COMP-E7-T01 does not depend on. Each comparison moves to the task that builds its reference side, and COMP-E7-T01 keeps a check that its bindings run the two operations. This was taken under the maintainers' standing instruction of 2026-10-22, 2026-10-30.
