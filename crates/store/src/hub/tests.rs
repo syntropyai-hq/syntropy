@@ -330,7 +330,7 @@ fn a_redirect_to_plain_http_is_refused() {
 fn a_mismatched_reply_is_integrity() {
     let server = Server::start(sample());
     let hub = client();
-    for path in ["/short", "/long", "/shifted", "/cut"] {
+    for path in ["/short", "/long", "/shifted"] {
         // Each opens, since the one-byte probe is answered correctly, and fails on the read.
         let source = hub.open(&server.url(path)).unwrap();
         let err = read(&source, 10, 100).unwrap_err();
@@ -351,8 +351,10 @@ fn a_mismatched_reply_is_integrity() {
     assert_eq!(err.class(), ErrorClass::Integrity);
 }
 
-/// A body that stops arriving is the link's failure, `OriginUnavailable` (class `Link`), so the
-/// fetch may retry it; a body cut off is a short read (`a_mismatched_reply_is_integrity`).
+/// A body that stops arriving, or a connection cut partway, is the link's failure,
+/// `OriginUnavailable` (class `Link`), so the fetch may retry it (RFC-0041 §7.3: "resets
+/// retry"). A body that ends cleanly short is the origin's mismatch
+/// (`a_mismatched_reply_is_integrity`).
 #[test]
 fn a_stalled_body_is_link() {
     let server = Server::start(sample());
@@ -370,6 +372,21 @@ fn a_stalled_body_is_link() {
         "{err}"
     );
     assert!(err.to_string().contains("timed out"), "{err}");
+    // The test server closes `/cut` partway, as a dropped connection would.
+    let source = HubClient::new(&HubConfig {
+        allow_loopback_http: true,
+        ..HubConfig::default()
+    })
+    .unwrap()
+    .open(&server.url("/cut"))
+    .unwrap();
+    let err = read(&source, 10, 100).unwrap_err();
+    assert_eq!(
+        (err.code(), err.class()),
+        (Some(11), ErrorClass::Link),
+        "{err}"
+    );
+    assert!(err.to_string().contains("failed after"), "{err}");
 }
 
 #[test]

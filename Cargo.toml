@@ -148,7 +148,9 @@ regex = { version = "1.13.1", default-features = false, features = ["std", "unic
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "http2", "rustls-no-provider"] }
 # TLS 1.3 with the ring provider only (RFC-0034 §3), the build iroh links: `syntropy-api` serves
 # the local CA's leaves through its certificate resolver (PROD-E5-T03). No `aws_lc_rs` and no
-# TLS 1.2 here; the API's listener (PROD-E5-T06) decides the versions it offers.
+# TLS 1.2 here; the API's listener (PROD-E5-T06) decides the versions it offers. `reqwest`'s
+# `hyper-rustls` (the Hub client in `syntropy-store`) turns on `rustls`'s `tls12` feature for the
+# whole build, so every `rustls` config must pin TLS 1.3 itself, as `net` and the Hub client do.
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 # The OS's certificate roots for the Hub client (`syntropy-store`); already in the lockfile.
 rustls-platform-verifier = "0.7.1"

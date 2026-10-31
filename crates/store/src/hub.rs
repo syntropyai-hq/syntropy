@@ -16,9 +16,10 @@
 //! - asks for exactly the read's bytes with one `Range` request, and accepts only a
 //!   `206 Partial Content` whose `Content-Range` names those bytes and whose body is exactly
 //!   that long. Anything else is [`RangeError::BadResponse`] (`HeaderInvalid`, class
-//!   `Integrity`): a 416, a short, cut-off or long body, a `Content-Range` for other bytes, and a
-//!   `200` with the whole file, since every origin RFC-0041 §7.1 reads by range must honour
-//!   `Range`;
+//!   `Integrity`): a 416, a body that ends cleanly short or runs long, a `Content-Range` for
+//!   other bytes, and a `200` with the whole file, since every origin RFC-0041 §7.1 reads by
+//!   range must honour `Range`. A body whose connection fails or stalls partway is the link's
+//!   failure instead, [`RangeError::Origin`] (class `Link`), since RFC-0041 §7.3 retries resets;
 //! - starts from the resolve URL and follows its redirects itself, up to
 //!   [`HubConfig::max_redirects`], with `Range` on every hop and never from HTTPS to plain HTTP.
 //!   Each read re-resolves, so a signed CDN URL that expires between reads is never reused;
@@ -458,12 +459,12 @@ impl RangeSource for HubSource {
                         format!("the body timed out after {filled} of {len} bytes"),
                     ));
                 }
-                // A body cut off before its `Content-Length` is a short read. A reset link
-                // looks the same at this layer.
+                // A connection that fails partway is the link's failure, which RFC-0041 §7.3
+                // retries ("resets retry"): the headers matched the request, and the transport
+                // broke. A body that ends cleanly short is the origin's mismatch, below.
                 Err(e) => {
-                    return Err(bad(
-                        offset,
-                        len,
+                    return Err(origin(
+                        None,
                         format!(
                             "the body failed after {filled} of {len} bytes: {}",
                             chain(&e)
@@ -535,13 +536,16 @@ fn origin_of(url: &Url) -> Url {
     origin
 }
 
-/// `rustls` on `ring`'s provider with the platform's verifier, offering HTTP/2 and HTTP/1.1.
+/// `rustls` on `ring`'s provider with the platform's verifier, TLS 1.3 only (RFC-0034 §3, as
+/// `net` pins it), offering HTTP/2 and HTTP/1.1. The Hub and its CDN hosts all offer TLS 1.3.
+/// The version is pinned here rather than left to the defaults: `reqwest`'s `hyper-rustls`
+/// enables `rustls`'s `tls12` feature, so the defaults would allow TLS 1.2.
 fn tls_config() -> Result<rustls::ClientConfig, HubError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = rustls_platform_verifier::Verifier::new(provider.clone())
         .map_err(|e| HubError::Tls(e.to_string()))?;
     let mut config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
+        .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| HubError::Tls(e.to_string()))?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
