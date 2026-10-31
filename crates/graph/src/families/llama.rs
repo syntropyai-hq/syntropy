@@ -287,7 +287,7 @@ const GGUF_BASE: &[ClassRule] = &[
         "output_norm.weight",
         BlockSel::Epilogue,
         TensorRole::Norm,
-        ClassSel::Head,
+        DENSE,
         &[Hp("hidden")],
     ),
 ];
@@ -424,7 +424,7 @@ const ST_BASE: &[ClassRule] = &[
         "model.norm.weight",
         BlockSel::Epilogue,
         TensorRole::Norm,
-        ClassSel::Head,
+        DENSE,
         &[Hp("hidden")],
     ),
 ];

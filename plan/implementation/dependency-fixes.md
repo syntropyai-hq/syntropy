@@ -1410,6 +1410,13 @@ Op conformance compares a kernel with `kernels::reference` and with the referenc
 | COMP-E3-T07 → COMP-E1-T03 | COMP-E3-T07 | R9 | "on an SME2 rig, conformance passes" for the outer-product GEMM tiles, which are checked against the reference `Gemm`; the row depended only on COMP-E3-T01 |
 | COMP-E3-T11 → COMP-E13-T10 | COMP-E3-T11 | R9 | conformance for every M1 scheme includes MXFP4 run as doubled INT8 over the transcribed GGUF `MXFP4` type, whose reference dequantiser is COMP-E13-T10's; COMP-E13-T04's widening tables cover the other schemes |
 
+## `doctor` reports a stray `libcuda.so` (2026-10-31)
+
+Building COMP-E4-T01 on a WSL2 development host found that the unversioned `libcuda.so` resolved to a native-Linux driver copied into `/lib/x86_64-linux-gnu`, not to WSL's driver, which `libcuda.so.1` resolves to. The provider now opens only `libcuda.so.1` (RFC-0040 §7.1, note 2026-10-31). Other CUDA programs may still load the copy, so `doctor` reports it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New PROD-E9-T13 (M1a), `doctor` check DRV-008 → PROD-E9-T01, COMP-E4-T01 | PROD-E9-T13 | R9 | the check is a `DoctorCheck` in PROD-E9-T01's framework, and its warning names the provider's rule that COMP-E4-T01 sets. It is Linux only, so it is M1a under R7, beside PROD-E9-T01 |
 ## The `qwen_moe` weights wait for the lab store (2026-10-31)
 
 QUAL-E7-T06 confirmed Qwen/Qwen3-30B-A3B as the `qwen_moe` checkpoint. It is the smallest Qwen3-MoE checkpoint its publisher releases, and its 16 BF16 shards come to 61.08 GB [measured: the Hub's sizes]. Import copies each file into the store, so the importing host needs about twice that free, and the host that ran QUAL-E7-T06 did not have it. Every file of the checkpoint is recorded in `fixtures.toml` with its Hub hash; the configuration, tokenizer and shard index are imported, and the shards wait for the lab store.
@@ -1481,12 +1488,30 @@ The R9 pass over the remaining areas. Each criterion below uses a harness, a pro
 | DIST-E6-T03 → PLC-E2-T11 | DIST-E6-T03 | R9 | "plugging a cable produces exactly one `InterfacesChanged` and new probes (PLC-E2-T11) within 3 s"; the L1 link probes are PLC-E2-T11's; both are M2 |
 | TIER-E9-T04 → COMP-E5-T02 | TIER-E9-T04 | R9 | "on the CUDA rig with a Q4_K pack and an i-quant pack, the fitted split's layer time is within 5% of the best fixed split"; CUDA i-quant GEMV is COMP-E5-T02's, and the row reached no CUDA kernel beyond `Timestamp`; both are M1a |
 
+## DXGI leaves PLC-E1-T04 for its own M0a task (2026-10-31)
+
+PLC-E1-T04's criteria use NVML and IOKit only, and none of its development evidence reaches a Windows host with a GPU, so the DXGI adapters it listed would have closed without a test that runs them. PLC-E1-T07's criterion "on Windows D2 never exceeds the DXGI budget" reads the DXGI local budget that E2 produces, so the DXGI part keeps an M0a producer of its own. Narrowing PLC-E1-T04's task text needs a maintainer's sign-off on the change that closes it (#91).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New PLC-E1-T20 (M0a), "DXGI adapters with local budget and LUID for E2 (split from PLC-E1-T04)" → PLC-E1-T04; PLC-E1-T04's task text drops the DXGI adapters | PLC-E1-T04, PLC-E1-T20 | R3b, R9 | the DXGI part moves with a fixture test through the trait and development evidence on a Windows host with a GPU. It stays M0a because PLC-E1-T07 (M0a) uses its budget |
+| PLC-E1-T07 → PLC-E1-T20 | PLC-E1-T07 | R9 | "on Windows D2 never exceeds the DXGI budget" uses the local budget PLC-E1-T20 produces; before the split it came through PLC-E1-T04 |
+
+## COMP-E10-T07's recorded-header golden moves to the families (2026-10-31)
+
+COMP-E10-T07 (M0a) builds the census. Its criterion asked for "golden census tests on recorded headers". Classifying the recorded M0 headers' real tensor names needs the `llama` and `qwen_moe` families' rules, COMP-E16-T03 and COMP-E16-T04. Both already carry a golden census on the recorded headers, but neither depended on the builder they run through. So COMP-E10-T07 keeps golden censuses on synthetic headers with a test-only family, and the two families gain the edge to it. All three are M0a, and the change came from #2034's review.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T07's "golden census tests on recorded headers" becomes golden censuses on synthetic GGUF and safetensors headers through a test-only family; the recorded-header golden is named as COMP-E16-T03's and COMP-E16-T04's | COMP-E10-T07 | R9 | the real-name classification it needs is the families' work, which COMP-E10-T07 does not depend on |
+| COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | "golden census on recorded headers" runs the `llama` family through COMP-E10-T07's builder |
+| COMP-E16-T04 → COMP-E10-T07 | COMP-E16-T04 | R9 | "on the `qwen_moe` checkpoint, the golden census … run[s] on its recorded safetensors headers" through the same builder; the edge was only transitive, through COMP-E16-T03 |
+
 ## COMP-E16-T03's conformance checks re-homed (2026-10-31)
 
 COMP-E16-T03 (the `llama` family) required RFC-0060 §7.2 checks 1–3 on the `nano` and `micro` fixtures and on the nightly checkpoint, but its row reached none of the tasks those checks need. The fixture generators (QUAL-E7-T01, QUAL-E7-T04) and the conformance runner (QUAL-E6-T06) depend on COMP-E16-T03, so edges to them would make a cycle. The checks move to the runner, which already reaches the census builder, the KV byte counters and the parity driver. COMP-E16-T03 keeps the golden census and the KV dtype rule, which its own module shows. Review of #2037 (2026-10-31).
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | the golden census on the recorded headers runs through the census builder; both are M0a. COMP-E10-T07's own change (#2034) adds the same edge |
 | RFC-0060 §7.2 checks 1–2 on the real `llama` checkpoint's (Qwen3-0.6B) recorded headers, and check 3 on its weights, move to QUAL-E6-T06 | COMP-E16-T03, QUAL-E6-T06 | R9 | check 1's groups and byte total come from the census builder (COMP-E10-T07), check 2 needs the KV byte counters (TIER-E6-T02), and check 3 needs the parity driver (QUAL-E5-T06) and the providers' kernels. QUAL-E6-T06 already depends on all of them. QUAL-E6-T06 named the real-checkpoint checks for `qwen_moe` only, so the `llama` leg had no owner |
 | COMP-E16-T03's checks 1–3 on the `nano` and `micro` fixtures are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T03 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T03's `FamilySpec` |

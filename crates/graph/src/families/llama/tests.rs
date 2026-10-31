@@ -3,8 +3,8 @@
 //! Tests of the `llama` family against COMP-E16-T03's acceptance criteria and RFC-0043 §4,
 //! §5.3 and §5.5.
 //!
-//! - **Golden census.** The census of Qwen3-0.6B is compared with `golden/qwen3-0.6b.txt`
-//!   twice. In CI it runs on a configuration and a safetensors header *derived* here from
+//! - **Golden census.** The family's classification of Qwen3-0.6B and the manifest the census
+//!   builder (COMP-E10-T07) makes from it are compared with `golden/qwen3-0.6b.txt` twice. In CI it runs on a configuration and a safetensors header *derived* here from
 //!   Qwen3-0.6B's published `config.json`: names and shapes only, written by this file, with
 //!   no file of the checkpoint copied. With `SYNTROPY_QWEN3_0_6B_DIR` set to a directory of
 //!   the real files, fetched and verified with `cargo xtask fixtures` at the revision
@@ -22,16 +22,21 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use syntropy_core::TensorGroupId;
 use syntropy_core::{DType, LayerIx};
 use syntropy_kernels::{AttnKind, GatedAct, OpKind};
-use syntropy_manifest::census::TensorClass;
+use syntropy_manifest::census::{ModelManifest, TensorClass, TensorId};
 use syntropy_manifest::config::HfConfig;
 use syntropy_manifest::gguf::{GgufHeader, Limits};
+use syntropy_manifest::identity::{FileDigest, SourceFile};
 use syntropy_manifest::kv::KvDTypeOverride;
 use syntropy_manifest::range::{FileSource, RangeError, RangeSource};
+use syntropy_manifest::safetensors::SafetensorsHeader;
 use syntropy_manifest::safetensors::read_header_default;
+use syntropy_manifest::safetensors::side::SourceRole;
 
 use super::*;
+use crate::census::{self, Sources, Weights};
 use crate::classify::{TensorPlan, classify_tensors};
 use crate::families::{FROZEN_TAGS, Registry, families};
 
@@ -350,6 +355,69 @@ fn render(hp: &HyperParams, plan: &TensorPlan, kv: &KvFormula) -> String {
     out
 }
 
+/// The census builder's manifest (COMP-E10-T07), without the parts that depend on the file's
+/// bytes or digest (`ModelId`, source extents): records, groups, ignored tensors and totals.
+fn render_manifest(m: &ModelManifest) -> String {
+    let mut out = String::new();
+    writeln!(out, "# manifest").unwrap();
+    writeln!(out, "family={} format={:?}", m.family, m.format).unwrap();
+    let name = |id: TensorId| {
+        m.census
+            .tensors
+            .iter()
+            .find(|t| t.id == id)
+            .map_or("?", |t| t.name.as_str())
+    };
+    let group_key = |id: TensorGroupId| {
+        m.census
+            .groups
+            .iter()
+            .find(|g| g.id == id)
+            .map(|g| format!("{:?}@{:?}", g.class, g.layer))
+    };
+    writeln!(out, "# records ({})", m.census.tensors.len()).unwrap();
+    let mut records: Vec<_> = m.census.tensors.iter().collect();
+    records.sort_by(|a, b| a.name.cmp(&b.name));
+    for r in records {
+        writeln!(
+            out,
+            "{} class={:?} layer={:?} shape={:?} quant={:?} bytes={:?} aux={}",
+            r.name,
+            r.class,
+            r.layer,
+            r.shape,
+            r.quant,
+            r.bytes,
+            r.aux.len()
+        )
+        .unwrap();
+    }
+    writeln!(out, "# groups ({})", m.census.groups.len()).unwrap();
+    for g in &m.census.groups {
+        let mut members: Vec<&str> = g.tensors.iter().map(|&t| name(t)).collect();
+        members.sort_unstable();
+        writeln!(
+            out,
+            "{:?}@{:?} bytes={:?} read_per_token={:?} shared_with={:?} tensors={members:?}",
+            g.class,
+            g.layer,
+            g.bytes,
+            g.read_per_token,
+            g.shared_with.and_then(group_key)
+        )
+        .unwrap();
+    }
+    writeln!(out, "# manifest ignored ({})", m.ignored.len()).unwrap();
+    for (n, reason) in &m.ignored {
+        writeln!(out, "{n}: {reason}").unwrap();
+    }
+    writeln!(out, "# totals").unwrap();
+    for (kind, total) in &m.census.totals.by_class {
+        writeln!(out, "{kind:?}: {total:?}").unwrap();
+    }
+    out
+}
+
 /// Whether this run rewrites the golden file: only when `SYNTROPY_UPDATE_SNAPSHOTS` is set,
 /// and never under CI.
 fn update_golden() -> bool {
@@ -364,9 +432,16 @@ fn update_golden() -> bool {
     }
 }
 
-/// Resolves, parses and classifies a Qwen3-0.6B checkpoint from `config` and `tensors`, and
-/// checks the census against the golden file. `rewrite` lets this run regenerate it.
-fn check_qwen3_census(config: &HfConfig, tensors: &[(String, Vec<u64>)], rewrite: bool) {
+/// Resolves, parses and classifies a Qwen3-0.6B checkpoint from `config` and its safetensors
+/// `header`, builds its manifest with the census builder (COMP-E10-T07), and checks both
+/// against the golden file. `rewrite` lets this run regenerate it.
+fn check_qwen3_census(config: &HfConfig, header: &SafetensorsHeader, rewrite: bool) {
+    let tensors: Vec<(String, Vec<u64>)> = header
+        .tensors
+        .iter()
+        .map(|t| (t.name.clone(), t.shape.clone()))
+        .collect();
+    let tensors = &tensors[..];
     let meta = MetaView::Config(config);
     let family = families().resolve(&meta).unwrap();
     assert_eq!(family.name(), "llama");
@@ -380,7 +455,29 @@ fn check_qwen3_census(config: &HfConfig, tensors: &[(String, Vec<u64>)], rewrite
             quantized: false,
         },
     );
-    let actual = render(&hp, &plan, &kv);
+    let files = [SourceFile {
+        role: SourceRole::Weights,
+        digest: FileDigest([0; 32]),
+        len: header.file_len,
+    }];
+    let manifest = census::build(&Sources {
+        meta,
+        weights: Weights::Safetensors(std::slice::from_ref(header)),
+        kv_source: KvSource::Safetensors {
+            compute: Some(DType::BF16),
+            quantized: false,
+        },
+        tokenizer: None,
+        files: &files,
+    })
+    .unwrap();
+    assert_eq!(manifest.family, "llama");
+    assert_eq!(
+        manifest.hparams, hp,
+        "the builder's hyperparameters are the family's"
+    );
+    assert_eq!(manifest.kv, kv, "the builder's KV formula is the family's");
+    let actual = render(&hp, &plan, &kv) + &render_manifest(&manifest);
     if rewrite && update_golden() {
         let path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("src/families/llama/golden/qwen3-0.6b.txt");
@@ -410,6 +507,30 @@ fn check_qwen3_census(config: &HfConfig, tensors: &[(String, Vec<u64>)], rewrite
     assert_eq!(hp.count(D_FFN), Some(3072));
     assert!(flag(&hp, QK_NORM) && !flag(&hp, QKV_BIAS) && flag(&hp, TIED_EMBEDDINGS));
     assert_eq!(kv.layers, vec![LayerKv::gqa(8, 128, None); 28]);
+    // RFC-0060 §7.2 check 1's facts, as the builder gives them: every tensor recorded or
+    // ignored, the head and embedding as `Head` and `RowLookup`, and the tied head sharing
+    // the embedding's record.
+    assert_eq!(manifest.census.tensors.len(), 310);
+    assert_eq!(manifest.ignored.len(), 1);
+    let head = manifest
+        .census
+        .groups
+        .iter()
+        .find(|g| g.class == TensorClass::Head)
+        .unwrap();
+    let lookup = manifest
+        .census
+        .groups
+        .iter()
+        .find(|g| g.class == TensorClass::RowLookup)
+        .unwrap();
+    assert_eq!(
+        head.shared_with,
+        Some(lookup.id),
+        "tied: the head reads the token table"
+    );
+    assert_eq!(lookup.shared_with, Some(head.id));
+    assert_eq!(manifest.census.groups.len(), 1 + 28 * 2 + 1);
     let embed = plan
         .fetch
         .iter()
@@ -430,7 +551,8 @@ fn check_qwen3_census(config: &HfConfig, tensors: &[(String, Vec<u64>)], rewrite
 /// whole result matches the golden file.
 #[test]
 fn golden_census_on_qwen3_0_6b_derived_headers() {
-    check_qwen3_census(&qwen3_config(), &qwen3_tensors(), true);
+    let header = read_header_default(safetensors_header(&qwen3_derived_tensors())).unwrap();
+    check_qwen3_census(&qwen3_config(), &header, true);
 }
 
 /// COMP-E16-T03's first criterion on the recorded files themselves (QUAL-E7-T06), opt-in:
@@ -462,12 +584,7 @@ fn golden_census_on_the_recorded_qwen3_0_6b_fixtures() {
         .max()
         .unwrap();
     assert_eq!(end, source.len(), "the header covers the whole file");
-    let tensors: Vec<_> = header
-        .tensors
-        .into_iter()
-        .map(|t| (t.name, t.shape))
-        .collect();
-    check_qwen3_census(&config, &tensors, false);
+    check_qwen3_census(&config, &header, false);
     eprintln!("ran on {}", dir.display());
 }
 
