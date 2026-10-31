@@ -88,7 +88,7 @@ impl fmt::Display for TokenizerId {
 }
 
 /// The tokenizer's special token IDs (RFC-0043 §8.1).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpecialTokens {
     /// Beginning of sequence.
     pub bos: Option<u32>,
@@ -112,7 +112,7 @@ pub struct SpecialTokens {
 
 /// Where the template in use comes from (RFC-0043 §8.5).
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TemplateSource {
     /// The template the checkpoint ships, [`TokenizerSpec::chat_template`].
     Shipped,
@@ -171,8 +171,11 @@ impl fmt::Display for TokenizerSpecError {
 
 impl std::error::Error for TokenizerSpecError {}
 
-/// A model's tokenizer data (RFC-0043 §8.1).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A model's tokenizer data (RFC-0043 §8.1). It serializes as its parts, without `id`, and
+/// deserializes through [`TokenizerSpec::new`], which computes `id` again, so a stored spec can
+/// never carry an ID that does not match what it covers (the manifest stores it, RFC-0041 §3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "TokenizerSpecParts", from = "TokenizerSpecParts")]
 pub struct TokenizerSpec {
     model: Vec<u8>,
     specials: SpecialTokens,
@@ -181,6 +184,43 @@ pub struct TokenizerSpec {
     chat_template: Option<String>,
     template_source: TemplateSource,
     id: TokenizerId,
+}
+
+/// [`TokenizerSpec`]'s stored form: its parts, without the ID.
+#[derive(Clone, Serialize, Deserialize)]
+struct TokenizerSpecParts {
+    model: Vec<u8>,
+    specials: SpecialTokens,
+    add_bos: bool,
+    add_eos: bool,
+    chat_template: Option<String>,
+    template_source: TemplateSource,
+}
+
+impl From<TokenizerSpec> for TokenizerSpecParts {
+    fn from(spec: TokenizerSpec) -> Self {
+        Self {
+            model: spec.model,
+            specials: spec.specials,
+            add_bos: spec.add_bos,
+            add_eos: spec.add_eos,
+            chat_template: spec.chat_template,
+            template_source: spec.template_source,
+        }
+    }
+}
+
+impl From<TokenizerSpecParts> for TokenizerSpec {
+    fn from(parts: TokenizerSpecParts) -> Self {
+        Self::new(
+            parts.model,
+            parts.specials,
+            parts.add_bos,
+            parts.add_eos,
+            parts.chat_template,
+            parts.template_source,
+        )
+    }
 }
 
 impl TokenizerSpec {

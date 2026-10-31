@@ -1480,3 +1480,14 @@ The R9 pass over the remaining areas. Each criterion below uses a harness, a pro
 | PLC-E9-T23 → PLC-E9-T09 | PLC-E9-T23 | R9 | "sampled output passes PLC-E9-T09's harness" with a project-synthetic draft head (M3 → M1a) |
 | DIST-E6-T03 → PLC-E2-T11 | DIST-E6-T03 | R9 | "plugging a cable produces exactly one `InterfacesChanged` and new probes (PLC-E2-T11) within 3 s"; the L1 link probes are PLC-E2-T11's; both are M2 |
 | TIER-E9-T04 → COMP-E5-T02 | TIER-E9-T04 | R9 | "on the CUDA rig with a Q4_K pack and an i-quant pack, the fitted split's layer time is within 5% of the best fixed split"; CUDA i-quant GEMV is COMP-E5-T02's, and the row reached no CUDA kernel beyond `Timestamp`; both are M1a |
+
+## COMP-E10-T07's recorded-header golden moves to the families (2026-10-31)
+
+COMP-E10-T07 (M0a) builds the census. Its criterion asked for "golden census tests on recorded headers". Classifying the recorded M0 headers' real tensor names needs the `llama` and `qwen_moe` families' rules, COMP-E16-T03 and COMP-E16-T04. Both already carry a golden census on the recorded headers, but neither depended on the builder they run through. So COMP-E10-T07 keeps golden censuses on synthetic headers with a test-only family, and the two families gain the edge to it. All three are M0a, and the change came from #2034's review.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T07's "golden census tests on recorded headers" becomes golden censuses on synthetic GGUF and safetensors headers through a test-only family; the recorded-header golden is named as COMP-E16-T03's and COMP-E16-T04's | COMP-E10-T07 | R9 | the real-name classification it needs is the families' work, which COMP-E10-T07 does not depend on |
+| COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | "golden census on recorded headers" runs the `llama` family through COMP-E10-T07's builder |
+| COMP-E16-T04 → COMP-E10-T07 | COMP-E16-T04 | R9 | "on the `qwen_moe` checkpoint, the golden census … run[s] on its recorded safetensors headers" through the same builder; the edge was only transitive, through COMP-E16-T03 |
+

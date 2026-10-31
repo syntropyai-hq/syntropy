@@ -9,18 +9,20 @@
 //! and side data computed from value liveness ([`boundary`], RFC-0043 §6.1), the reference
 //! interpreter's contract with its driver ([`reference`](mod@reference), RFC-0060 §4.1), the
 //! family trait, its metadata view, the static registry and the frozen tag list ([`families`],
-//! RFC-0043 §5.1), and the census classification engine ([`classify`], RFC-0043 §4). The other
+//! RFC-0043 §5.1), the census classification engine ([`classify`], RFC-0043 §4), and the census
+//! builder ([`census`], RFC-0041 §3), which turns a checkpoint's headers into its manifest. The other
 //! blocks, the family modules, segments, sharding, tokenizers and the interpreter itself come
 //! with later tasks.
 //!
 //! From `manifest`, the families use `HyperParams`, `TensorClass` and the metadata readers.
-//! The census groups are not in `manifest` yet, so the facts [`ir::validate()`] needs are
-//! passed as [`ir::CensusGroup`]s.
+//! [`ir::validate()`] takes the census facts it needs as [`ir::CensusGroup`]s; deriving them from
+//! a `TensorCensus` comes with the family builds that call it.
 
 #![forbid(unsafe_code)]
 
 pub mod blocks;
 pub mod boundary;
+pub mod census;
 pub mod classify;
 pub mod families;
 pub mod ir;
