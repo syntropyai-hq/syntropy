@@ -4049,10 +4049,12 @@ name = "syntropy-graph"
 version = "0.0.0"
 dependencies = [
  "proptest",
+ "serde_json",
  "smallvec",
  "syntropy-core",
  "syntropy-kernels",
  "syntropy-manifest",
+ "tokenizers",
 ]
 
 [[package]]

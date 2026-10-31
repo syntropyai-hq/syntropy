@@ -21,7 +21,9 @@
 //! 6. Auxiliary extents. The M0 schemes have none (GGUF scales are inline, BF16 has none), so
 //!    every record's `aux` is empty; quantised safetensors schemes bind theirs with their task.
 //! 7. **Groups** by §3.1's rules, below, with `bytes` and `read_per_token`.
-//! 8. **KV formula and tokenizer** through the family.
+//! 8. **KV formula and tokenizer** through the family. A GGUF source given no tokenizer side
+//!    files has its tokenizer converted from its metadata ([`tokenize::from_gguf`],
+//!    RFC-0043 §8.3).
 //! 10. **`ModelId`** and the totals. Steps 9 (speculative support) and 11 (the summary), and the
 //!     siblings, come with their tasks.
 //!
@@ -65,6 +67,7 @@ use syntropy_manifest::tokenizer::{TokenizerSources, TokenizerSpecError};
 use crate::classify::{BlockSel, Classification};
 use crate::families::{Family, FamilyError, MetaView, Registry, families};
 use crate::ir::{Block, TensorRole};
+use crate::tokenize::{self, TokenizeError};
 
 /// Where the weights' headers come from.
 #[derive(Clone, Copy, Debug)]
@@ -84,14 +87,16 @@ pub struct Sources<'a> {
     pub weights: Weights<'a>,
     /// What RFC-0042 §4.2's KV dtype rule needs to know of the source.
     pub kv_source: KvSource,
-    /// The tokenizer side files, for a safetensors checkpoint.
+    /// The tokenizer side files, for a safetensors checkpoint. When they are given they are
+    /// used; a GGUF source without them has its tokenizer converted from its metadata.
     pub tokenizer: Option<TokenizerSources<'a>>,
     /// Every source file the census reads, for `ModelId` (RFC-0041 §1).
     pub files: &'a [SourceFile],
 }
 
 /// Why the census refuses a model. Codes are `(Domain::Formats, n)` from RFC-0041 §10, except
-/// `HyperParamInvalid`, which is `(Domain::Graph, 3)` (RFC-0043 §10).
+/// `HyperParamInvalid`, which is `(Domain::Graph, 3)`, and `TokenizerUnsupported`, which is
+/// `(Domain::Graph, 6)` (RFC-0043 §10).
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CensusError {
@@ -134,17 +139,22 @@ pub enum CensusError {
     },
     /// The tokenizer side files cannot be read (class `Integrity`; no code yet).
     Tokenizer(TokenizerSpecError),
+    /// The GGUF tokenizer cannot be converted: `TokenizerUnsupported`, `(Graph, 6)`, or
+    /// metadata that does not describe a tokenizer (class `Integrity`; no code yet).
+    GgufTokenizer(TokenizeError),
     /// `ModelId` cannot be formed: no weights file, or no family tag.
     Identity(IdentityError),
 }
 
 impl CensusError {
-    /// RFC-0041 §10's code, or RFC-0043 §10's for `HyperParams`; `None` where none is assigned.
+    /// RFC-0041 §10's code, or RFC-0043 §10's for `HyperParams` and `GgufTokenizer`; `None`
+    /// where none is assigned.
     #[must_use]
     pub fn code(&self) -> Option<u16> {
         match self {
             Self::UnknownFamily { .. } | Self::AmbiguousFamily { .. } => Some(1),
             Self::HyperParams(e) => Some(e.code()),
+            Self::GgufTokenizer(e) => e.code(),
             Self::UnknownTensor { .. } => Some(3),
             Self::UnknownQuant { .. } => Some(4),
             Self::Slice(_) | Self::Incomplete { .. } => Some(6),
@@ -162,6 +172,7 @@ impl CensusError {
             | Self::UnknownTensor { .. }
             | Self::UnknownQuant { .. } => ErrorClass::Unsupported,
             Self::Slice(_) | Self::Incomplete { .. } | Self::Tokenizer(_) => ErrorClass::Integrity,
+            Self::GgufTokenizer(e) => e.class(),
             Self::Identity(_) => ErrorClass::InvalidRequest,
         }
     }
@@ -190,6 +201,7 @@ impl fmt::Display for CensusError {
             Self::Slice(e) => write!(f, "HeaderInvalid (Formats 6): {e}"),
             Self::Incomplete { reason } => write!(f, "HeaderInvalid (Formats 6): {reason}"),
             Self::Tokenizer(e) => write!(f, "the tokenizer cannot be read: {e}"),
+            Self::GgufTokenizer(e) => write!(f, "the tokenizer cannot be converted: {e}"),
             Self::Identity(e) => write!(f, "no model ID: {e}"),
         }
     }
@@ -311,11 +323,17 @@ pub fn build_in(registry: &Registry, sources: &Sources<'_>) -> Result<ModelManif
     }
 
     let kv = family.kv_formula(&hp, sources.kv_source);
-    let tokenizer = sources
-        .tokenizer
-        .map(|files| family.tokenizer_spec(files))
-        .transpose()
-        .map_err(CensusError::Tokenizer)?;
+    let tokenizer = match (sources.tokenizer, sources.weights) {
+        (Some(files), _) => Some(
+            family
+                .tokenizer_spec(files)
+                .map_err(CensusError::Tokenizer)?,
+        ),
+        (None, Weights::Gguf(h)) => {
+            tokenize::from_gguf(&h.metadata).map_err(CensusError::GgufTokenizer)?
+        }
+        (None, Weights::Safetensors(_)) => None,
+    };
     let id = model_id(family.name(), sources.files).map_err(CensusError::Identity)?;
     Ok(ModelManifest {
         id,
