@@ -274,11 +274,11 @@ prop_compose! {
         union in prop::collection::vec(union_curve(), 0..4),
         tier_hit in prop::collection::vec((tier(), any::<u16>(), measured()), 0..4),
     ) -> WorkloadStats {
-        let mut stats = WorkloadStats::default();
-        stats.hit_curves = hit_curves;
-        stats.union = union;
-        stats.tier_hit = tier_hit.into_iter().map(|(t, l, m)| (t, LayerIx(l), m)).collect();
-        stats
+        WorkloadStats {
+            hit_curves,
+            union,
+            tier_hit: tier_hit.into_iter().map(|(t, l, m)| (t, LayerIx(l), m)).collect(),
+        }
     }
 }
 
@@ -340,12 +340,15 @@ prop_compose! {
         infeasible in any::<bool>(),
         wall in any::<u64>(),
     ) -> SolveOutcome {
-        let mut explanation = PlanExplanation::default();
-        explanation.epoch = PlanEpoch { term, seq: 1 };
-        let mut report = InfeasibilityReport::default();
-        report.degraded_option = Some(DegradedReason::DenseOnNvme);
-        let mut predicted = PredictedCost::default();
-        predicted.stages = stages;
+        let explanation = PlanExplanation {
+            epoch: PlanEpoch { term, seq: 1 },
+            ..PlanExplanation::default()
+        };
+        let report = InfeasibilityReport {
+            degraded_option: Some(DegradedReason::DenseOnNvme),
+            ..InfeasibilityReport::default()
+        };
+        let predicted = PredictedCost { stages, ..PredictedCost::default() };
         SolveOutcome {
             plan: with_plan.then(|| PlacementPlan { predicted, ..plan() }),
             keep_current,
@@ -393,12 +396,13 @@ proptest! {
         session in proptest::option::of(any::<[u8; 16]>()),
         greedy in any::<bool>(),
     ) {
-        let mut request = RouteRequest::default();
-        request.prompt_tokens = prompt_tokens;
-        request.session = session.map(SessionId);
-        request.greedy = greedy;
-        request.priority = Priority::default();
-        round_trip(&request);
+        round_trip(&RouteRequest {
+            prompt_tokens,
+            session: session.map(SessionId),
+            greedy,
+            priority: Priority::Background,
+            ..RouteRequest::default()
+        });
     }
 
     #[test]
