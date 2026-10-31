@@ -145,7 +145,7 @@ Not GAPs, listed under Gaps for the owning area: 0 SC milestone mismatches and 0
 | [ADR-0623](../decisions/ADR-0623-kernel-object-cache-and-reproducible-builds.md) | Content-addressed kernel object cache with a trust split, and reproducible core builds | Accepted | RFC-0034 header, §12; RFC-0040 Summary, §3, §10, Rollout / milestones; RFC-0060 §6; RFC-0062 header, Summary, §5, Alternatives considered | 8: COMP-E9-T10, QUAL-E4-T09, QUAL-E16-T04–T05, QUAL-E16-T07–T09, QUAL-E16-T15 | ok |
 | [ADR-0624](../decisions/ADR-0624-agent-pipeline-trust-tiers.md) | Agent runs get trust by what they read: tiers, no secrets, pinned tooling and planted injections | Accepted | RFC-0001 §16; RFC-0062 header, Summary, §3, §11, §12, Testing and validation | 10: QUAL-E1-T16, QUAL-E1-T19, QUAL-E1-T21–T22, QUAL-E1-T24, QUAL-E2-T11–T13, QUAL-E12-T19, QUAL-E15-T16 | ok |
 | [ADR-0625](../decisions/ADR-0625-linux-build-host.md) | A self-hosted Linux build host for this repository's own runs, behind a gate, with fork PRs left on hosted runners | Proposed | RFC-0001 §18; RFC-0062 §3 | 1: QUAL-E1-T33 | ok |
-| [ADR-0626](../decisions/ADR-0626-m0a-linux-only-gating.md) | Linux alone gates merges during M0a; the macOS and Windows hosted jobs run as advisory, revisited at M0b's start | Proposed | RFC-0001 §18; RFC-0062 §2 | 1: QUAL-E1-T37 | ok |
+| [ADR-0626](../decisions/ADR-0626-m0a-linux-only-gating.md) | Linux alone gates merges during M0a; the macOS and Windows hosted jobs run as advisory, revisited at M0b's start | Accepted | RFC-0001 §16, §18; RFC-0062 §2 | 1: QUAL-E1-T37 | ok |
 <!-- END GENERATED -->
 
 ## Success criteria
