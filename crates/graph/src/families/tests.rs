@@ -9,7 +9,9 @@ use syntropy_manifest::census::TowerIx;
 use syntropy_manifest::config::HfConfig;
 use syntropy_manifest::gguf::{GgufHeader, Limits};
 use syntropy_manifest::hparams::{HParamValue, HyperParams};
+use syntropy_manifest::kv::{KvDTypeRule, KvFormula, KvSource, LayerKv};
 use syntropy_manifest::range::{HeaderReader, RangeError, RangeSource};
+use syntropy_manifest::tokenizer::{TokenizerSources, TokenizerSpec};
 
 use super::*;
 use crate::classify::{
@@ -141,6 +143,21 @@ impl Family for Toy {
                 .expect("the test rules compile")
             })
             .classify(name, shape, hp)
+    }
+    fn kv_formula(&self, hp: &HyperParams, source: KvSource) -> KvFormula {
+        // GQA with every head a KV head: `2 · n_heads · d_head` elements per token and layer.
+        let elems_per_token =
+            u32::try_from(2 * hp.count("n_heads").unwrap_or(0) * hp.count("d_head").unwrap_or(0))
+                .unwrap_or(u32::MAX);
+        let layer = LayerKv::PerToken {
+            elems_per_token,
+            window: None,
+            latent: false,
+        };
+        KvFormula::new(
+            vec![layer; usize::from(hp.n_layers)],
+            KvDTypeRule::source_default(source),
+        )
     }
     fn required_ops(&self, _: &HyperParams) -> OpSet {
         OpSet::new()
@@ -714,4 +731,65 @@ fn vision_tower_tensors_are_ignored_and_never_fetched() {
             );
         }
     }
+}
+
+/// A family's `kv_formula` takes the source, so the reference's KV dtype follows RFC-0042 §4.2's
+/// rule: F16 for GGUF, the compute dtype for a BF16 safetensors checkpoint.
+#[test]
+fn kv_formula_takes_the_source() {
+    let hp = HyperParams::new(2, 64, 32)
+        .with("n_heads", HParamValue::U64(4))
+        .with("d_head", HParamValue::U64(16));
+    let gguf = TOY.kv_formula(&hp, KvSource::Gguf);
+    assert_eq!(gguf.layers.len(), 2);
+    assert_eq!(
+        gguf,
+        KvFormula::new(
+            vec![
+                LayerKv::PerToken {
+                    elems_per_token: 128,
+                    window: None,
+                    latent: false,
+                };
+                2
+            ],
+            syntropy_core::DType::F16,
+        )
+    );
+    let bf16 = TOY.kv_formula(
+        &hp,
+        KvSource::Safetensors {
+            compute: Some(syntropy_core::DType::BF16),
+            quantized: false,
+        },
+    );
+    assert_eq!(
+        bf16.dtype,
+        KvFormula::new(Vec::new(), syntropy_core::DType::BF16).dtype
+    );
+}
+
+/// The default `tokenizer_spec` is the manifest crate's reading of the side files.
+#[test]
+fn the_default_tokenizer_spec_reads_the_side_files() {
+    macro_rules! side {
+        ($file:literal) => {
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../manifest/tests/data/tokenizer/llama-like/",
+                $file
+            ))
+        };
+    }
+    let sources = || TokenizerSources {
+        tokenizer_json: side!("tokenizer.json"),
+        tokenizer_config: Some(side!("tokenizer_config.json")),
+        generation_config: Some(side!("generation_config.json")),
+        chat_template_file: None,
+    };
+    assert_eq!(
+        TOY.tokenizer_spec(sources()),
+        TokenizerSpec::from_sources(sources())
+    );
+    assert!(TOY.tokenizer_spec(sources()).is_ok());
 }
