@@ -19,6 +19,17 @@ use std::sync::{Arc, OnceLock};
 
 use cudarc::driver::sys::{CUcontext, CUdevice, CUdevice_attribute, CUresult, CUuuid};
 
+/// A driver call's status, as the driver returns it: a plain integer. It is never read as
+/// `cudarc`'s `CUresult` enum, which lists only the codes CUDA 13.4 defines, so a newer driver's
+/// code is a value, not an invalid enum.
+pub type Status = c_uint;
+
+/// `CUDA_SUCCESS`.
+pub const SUCCESS: Status = CUresult::CUDA_SUCCESS as Status;
+
+/// `CUDA_ERROR_NO_DEVICE`.
+pub const NO_DEVICE: Status = CUresult::CUDA_ERROR_NO_DEVICE as Status;
+
 /// The driver library the provider opens, and the only name it asks the loader for.
 pub const DRIVER_LIBRARY: &str = if cfg!(windows) {
     "nvcuda.dll"
@@ -86,27 +97,27 @@ pub trait Driver {
 /// The entry points used after the version check.
 #[derive(Clone, Copy)]
 struct Calls {
-    init: unsafe extern "C" fn(c_uint) -> CUresult,
-    count: unsafe extern "C" fn(*mut c_int) -> CUresult,
-    get: unsafe extern "C" fn(*mut CUdevice, c_int) -> CUresult,
-    name: unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUresult,
-    uuid: unsafe extern "C" fn(*mut CUuuid, CUdevice) -> CUresult,
-    total: unsafe extern "C" fn(*mut usize, CUdevice) -> CUresult,
-    attribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> CUresult,
-    can_access_peer: unsafe extern "C" fn(*mut c_int, CUdevice, CUdevice) -> CUresult,
-    retain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUresult,
-    release: unsafe extern "C" fn(CUdevice) -> CUresult,
-    get_current: unsafe extern "C" fn(*mut CUcontext) -> CUresult,
-    set_current: unsafe extern "C" fn(CUcontext) -> CUresult,
-    mem_info: unsafe extern "C" fn(*mut usize, *mut usize) -> CUresult,
+    init: unsafe extern "C" fn(c_uint) -> Status,
+    count: unsafe extern "C" fn(*mut c_int) -> Status,
+    get: unsafe extern "C" fn(*mut CUdevice, c_int) -> Status,
+    name: unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> Status,
+    uuid: unsafe extern "C" fn(*mut CUuuid, CUdevice) -> Status,
+    total: unsafe extern "C" fn(*mut usize, CUdevice) -> Status,
+    attribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> Status,
+    can_access_peer: unsafe extern "C" fn(*mut c_int, CUdevice, CUdevice) -> Status,
+    retain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> Status,
+    release: unsafe extern "C" fn(CUdevice) -> Status,
+    get_current: unsafe extern "C" fn(*mut CUcontext) -> Status,
+    set_current: unsafe extern "C" fn(CUcontext) -> Status,
+    mem_info: unsafe extern "C" fn(*mut usize, *mut usize) -> Status,
 }
 
 /// The open driver library and its entry points. The pointers stay valid while `_lib` lives,
 /// and every holder of a pointer holds the `Api` through an `Arc`.
 struct Api {
     _lib: libloading::Library,
-    version: unsafe extern "C" fn(*mut c_int) -> CUresult,
-    error_name: Option<unsafe extern "C" fn(CUresult, *mut *const c_char) -> CUresult>,
+    version: unsafe extern "C" fn(*mut c_int) -> Status,
+    error_name: Option<unsafe extern "C" fn(Status, *mut *const c_char) -> Status>,
     /// The other entry points, or the first one the library lacks.
     calls: Result<Calls, &'static str>,
 }
@@ -114,7 +125,8 @@ struct Api {
 /// One entry point of `lib`, as a plain function pointer of type `F`.
 fn sym<F: Copy>(lib: &libloading::Library, name: &'static str) -> Result<F, &'static str> {
     // SAFETY: `F` is the entry point's C signature from the CUDA 13 driver API, as `cudarc`'s
-    // bindings declare it; the pointer is used only while `lib` is loaded (see `Api`).
+    // bindings declare it, with the status returned as `c_uint` (`CUresult` is `#[repr(u32)]`, so
+    // the ABI is the same); the pointer is used only while `lib` is loaded (see `Api`).
     unsafe { lib.get::<F>(name.as_bytes()) }
         .map(|s| *s)
         .map_err(|_| name)
@@ -151,30 +163,40 @@ fn load<E>(open: &mut dyn FnMut(&str) -> Result<libloading::Library, E>) -> Opti
     })
 }
 
+/// The fault for a failed `call`: the driver's name for `status` where it has one, else the raw
+/// number.
+fn fault(call: &'static str, status: Status, name: Option<String>) -> Fault {
+    Fault {
+        call,
+        error: name.unwrap_or_else(|| format!("CUDA error {status}")),
+        no_device: status == NO_DEVICE,
+    }
+}
+
 impl Api {
     /// `Ok` for `CUDA_SUCCESS`, else the fault for `call`.
-    fn check(&self, call: &'static str, status: CUresult) -> Result<(), Fault> {
-        if status == CUresult::CUDA_SUCCESS {
+    fn check(&self, call: &'static str, status: Status) -> Result<(), Fault> {
+        if status == SUCCESS {
             return Ok(());
         }
+        Err(fault(call, status, self.error_name(status)))
+    }
+
+    /// `cuGetErrorName`'s text for `status`, when the driver knows the code.
+    fn error_name(&self, status: Status) -> Option<String> {
+        let f = self.error_name?;
         let mut text: *const c_char = std::ptr::null();
-        let named = self.error_name.is_some_and(|f| {
-            // SAFETY: `cuGetErrorName` writes a pointer to a static string, or fails.
-            unsafe { f(status, &raw mut text) == CUresult::CUDA_SUCCESS && !text.is_null() }
-        });
-        let error = if named {
-            // SAFETY: on success the driver returned a NUL-terminated static string.
+        // SAFETY: `cuGetErrorName` takes any integer code and writes a pointer to a static
+        // string, or returns an error for a code it does not know.
+        if unsafe { f(status, &raw mut text) } != SUCCESS || text.is_null() {
+            return None;
+        }
+        // SAFETY: on success the driver returned a NUL-terminated static string.
+        Some(
             unsafe { CStr::from_ptr(text) }
                 .to_string_lossy()
-                .into_owned()
-        } else {
-            format!("{status:?}")
-        };
-        Err(Fault {
-            call,
-            error,
-            no_device: status == CUresult::CUDA_ERROR_NO_DEVICE,
-        })
+                .into_owned(),
+        )
     }
 
     fn calls(&self) -> Result<&Calls, Fault> {
@@ -183,6 +205,28 @@ impl Api {
             error: "the driver library lacks this entry point".into(),
             no_device: false,
         })
+    }
+}
+
+/// Opens the driver library `name`. On Windows only `System32` is searched
+/// (`LOAD_LIBRARY_SEARCH_SYSTEM32`), where the display driver installs `nvcuda.dll`, so a copy in
+/// the working or application directory is never loaded. Elsewhere the dynamic linker's search
+/// order applies to the soname.
+///
+/// # Safety
+///
+/// Loading runs the library's initialisers, as any `dlopen` or `LoadLibraryExW` does.
+unsafe fn open_driver(name: &str) -> Result<libloading::Library, libloading::Error> {
+    #[cfg(windows)]
+    {
+        use libloading::os::windows::{LOAD_LIBRARY_SEARCH_SYSTEM32, Library};
+        // SAFETY: the caller's contract: the driver's initialisers run.
+        unsafe { Library::load_with_flags(name, LOAD_LIBRARY_SEARCH_SYSTEM32) }.map(Into::into)
+    }
+    #[cfg(not(windows))]
+    {
+        // SAFETY: the caller's contract: the driver's initialisers run.
+        unsafe { libloading::Library::new(name) }
     }
 }
 
@@ -206,7 +250,7 @@ impl SystemDriver {
             .get_or_init(|| {
                 // SAFETY: opening the driver runs its initialisers, which the driver supports;
                 // the library stays open while `Api` lives.
-                load(&mut |name| unsafe { libloading::Library::new(name) }).map(Arc::new)
+                load(&mut |name| unsafe { open_driver(name) }).map(Arc::new)
             })
             .as_ref()
     }
@@ -431,6 +475,19 @@ mod tests {
         assert!(api.is_none());
         assert_eq!(asked, [DRIVER_LIBRARY]);
         assert!(asked.iter().all(|n| n != "libcuda.so"));
+    }
+
+    /// A code newer than the CUDA 13.4 list is kept as a number: it is never turned into
+    /// `cudarc`'s enum, where it would be an invalid value.
+    #[test]
+    fn an_unknown_status_code_is_reported_by_number() {
+        let f = fault("cuInit", 0xFFFF, None);
+        assert_eq!(f.error, "CUDA error 65535");
+        assert!(!f.no_device);
+        let f = fault("cuInit", NO_DEVICE, Some("CUDA_ERROR_NO_DEVICE".into()));
+        assert_eq!(f.error, "CUDA_ERROR_NO_DEVICE");
+        assert!(f.no_device);
+        assert_eq!((SUCCESS, NO_DEVICE), (0, 100));
     }
 
     #[test]
