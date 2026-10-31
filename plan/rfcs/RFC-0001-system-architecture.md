@@ -3210,5 +3210,5 @@ R-ADA (QUAL-E15-T02), the other M0 rigs (QUAL-E15-T17) and the fixture store's S
 | The M0 CUDA tasks no longer depend on the rigs; their R-ADA, R-BW and pool-host legs move to one task, COMP-E4-T21, at the same milestone | the COMP, PLC, TIER and PROD epics; `dependency-fixes.md` | each leg still runs on the rig it names before M0a closes, so no gate moves off the lab |
 | QUAL-E7-T06 imports ungated checkpoints through the local fixture store; the gated and lab-only imports, and the lab-credential read, move to QUAL-E7-T15 | the QUAL and COMP epics; `dependency-fixes.md` | the real-checkpoint chain (tokenizers, families, census, templates and the OpenAI API) needed the S3 backend only for gated files |
 
-Taken under the maintainers' decision of 2026-10-31 and their standing instruction, for the maintainers to confirm.
+The dev-GPU decision is the maintainers', made on 2026-10-31. The R9 splits and the R8 cut that follow from it are taken under their standing instruction and are proposals for the maintainers to confirm.
 
