@@ -16,8 +16,10 @@ use crate::sme2::Sme2;
 
 /// The kernels for one [`CpuIsa`] level, by op kind.
 ///
-/// Today no kernel exists, so every level's table is empty. COMP-E3-T03 and the later kernel
-/// tasks add their entries in [`DispatchTable::for_level`], one arm per level.
+/// Every level has `Gemv` (COMP-E3-T03, [`crate::gemv`]): its own SIMD kernels at `X86V3`,
+/// `X86V4`, `Arm82Dot` and `Arm86I8mm`, the next level down's at `X86V4Amx` and `Arm92Sme2`,
+/// and the portable kernels at `X86V2` and `Arm80`. The later kernel tasks add their entries in
+/// [`DispatchTable::for_level`].
 ///
 /// It has no `PartialEq`: function-pointer equality is not reliable across codegen units.
 /// Compare tables by [`isa`](Self::isa) and [`len`](Self::len).
@@ -34,9 +36,11 @@ impl DispatchTable {
     pub fn for_level(isa: CpuIsa) -> Self {
         // Each kernel picks its own code for the level, falling back to the next level down
         // where it has none, and never above what the live host runs.
+        let mut ops = BTreeMap::new();
+        ops.insert(OpKind::Gemv, crate::gemv::entry::kernel(isa));
         Self {
             isa,
-            ops: BTreeMap::new(),
+            ops,
             sme2: Sme2::for_level(isa),
         }
     }

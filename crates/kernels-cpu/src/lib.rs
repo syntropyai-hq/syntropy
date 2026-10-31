@@ -21,7 +21,10 @@
 //!   `src/sme2/*.S`, reachable only through an [`Sme2`] token that an `Arm92Sme2` table on an
 //!   SME2 host holds (ADR-0402 item 3).
 //!
-//! The kernels come with later tasks, starting with COMP-E3-T03.
+//! - [`gemv`]: decode GEMV over GGUF `Q4_K`, `Q8_0`, `Q4_0`, `BF16` and `F16` weights at each
+//!   level, and the `Gemv` op every dispatch table holds (COMP-E3-T03).
+//!
+//! The other kernels come with later tasks.
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
@@ -39,6 +42,7 @@
 mod device;
 pub mod dispatch;
 pub mod doorbell;
+pub mod gemv;
 pub mod isa;
 pub mod launch;
 pub mod provider;

@@ -2,7 +2,7 @@
 
 //! COMP-E3-T02's first criterion: the CPU provider's shell holds to RFC-0040 §2's contract over
 //! real host buffers. The launches run stand-in kernels that [`CpuProvider::with_kernel`] adds;
-//! `tests/launch_binding.rs` launches with real operands.
+//! `tests/gemv_provider.rs` and `tests/launch_binding.rs` launch with real operands.
 
 #![allow(
     clippy::result_large_err,
