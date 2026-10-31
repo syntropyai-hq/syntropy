@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The core side of the provider-library ABI: module loading, the `ModuleProvider` proxy, and
-//! (with later tasks) the ABI and build-ID checks and the driver census.
+//! (with later tasks) the ABI and build-ID checks and the driver census. [`gpu`] is E2's GPU
+//! inventory from the management APIs, which the runner's probe mode runs (RFC-0010 §2.1).
 //!
 //! Layer 2 in RFC-0001 §4.1, designed in RFC-0040 §10.4, §10.5. A provider library is a `cdylib`
 //! that exports one symbol (`syntropy_provider_entry_v1`) and returns a table of function
@@ -36,6 +37,7 @@
     reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
 )]
 
+pub mod gpu;
 mod host;
 mod module;
 mod provider;
