@@ -330,12 +330,17 @@ fn undeclared_reasoning_is_refused() {
     );
 }
 
-/// The tool-call tag is never taken as the reasoning tag, even when content is split on it.
+/// The tool-call tag is never taken as the reasoning tag, even when content is split on it or
+/// the generation prompt writes it.
 #[test]
 fn the_tool_call_tag_is_not_reasoning() {
     let t = "{{- '<tool_call>\\n{\"name\": \"' }}{{ '</tool_call>' }}{{ c.split('</tool_call>') }}";
     let f = resolve(&LLAMA, &spec(QWEN_ADDED, 151_645, &[], Some(t))).unwrap();
     assert_eq!(f.tool_calls, ToolCallFormat::TaggedJson);
+    assert_eq!(f.reasoning, None);
+    // Nor when the generation prompt writes it.
+    let t = format!("{t}{{%- if add_generation_prompt %}}{{{{- '<tool_call>' }}}}{{%- endif %}}");
+    let f = resolve(&LLAMA, &spec(QWEN_ADDED, 151_645, &[], Some(&t))).unwrap();
     assert_eq!(f.reasoning, None);
 }
 
