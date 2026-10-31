@@ -474,6 +474,11 @@ fn each_acceptance_fixture_fails_for_its_fault() {
             "disallowed-action",
             "`docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069` is not allowed",
         ),
+        (
+            "release-please-github-token",
+            "passes release-please `${{ secrets.GITHUB_TOKEN }}`, not the release App's \
+             installation token",
+        ),
     ] {
         let (pass, log) = lint_fixture(fixture);
         assert!(!pass, "{fixture}: {log}");
@@ -1047,4 +1052,194 @@ fn the_repositorys_own_organization_is_allowed() {
     }
     let other = format!("jobs:\n  a:\n    steps:\n      - uses: syntropyai-hq-fork/act@{SHA}\n");
     assert_eq!(check_allowed("w.yml", &other, &policy).len(), 1);
+}
+
+const RP: &str = "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7";
+const APP: &str = "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510";
+
+/// A `release-please.yml` that meets the rule: the release App's token, minted in the
+/// `release-please` environment and narrowed to Contents and Pull requests write.
+fn release_please() -> String {
+    format!(
+        "on:\n  push:\n    branches: [main, 'release/*']\n\
+         permissions:\n  contents: read\n\
+         jobs:\n  release-please:\n    runs-on: ubuntu-24.04\n    \
+         environment: release-please\n    steps:\n      \
+         - id: release-app\n        uses: {APP}\n        with:\n          \
+         client-id: ${{{{ vars.RELEASE_APP_CLIENT_ID }}}}\n          \
+         private-key: ${{{{ secrets.RELEASE_APP_PRIVATE_KEY }}}}\n          \
+         permission-contents: write\n          permission-pull-requests: write\n      \
+         - uses: {RP}\n        with:\n          \
+         token: ${{{{ steps.release-app.outputs.token }}}}\n"
+    )
+}
+
+#[test]
+fn release_please_with_the_release_apps_token_passes() {
+    assert_clean(RELEASE_PLEASE_WORKFLOW, &release_please());
+    // Whitespace and case in the expressions do not matter.
+    let spaced = release_please()
+        .replace(
+            "${{ steps.release-app.outputs.token }}",
+            "${{steps.Release-App.outputs.token}}",
+        )
+        .replace(
+            "${{ secrets.RELEASE_APP_PRIVATE_KEY }}",
+            "${{   secrets.release_app_private_key }}",
+        );
+    assert_clean(RELEASE_PLEASE_WORKFLOW, &spaced);
+    // The environment may be given as a map.
+    let mapped = release_please().replace(
+        "environment: release-please\n",
+        "environment:\n      name: release-please\n",
+    );
+    assert_clean(RELEASE_PLEASE_WORKFLOW, &mapped);
+}
+
+/// The task's criterion: `release-please.yml` passing `GITHUB_TOKEN`, in any form, fails.
+#[test]
+fn release_please_with_github_token_fails() {
+    let at = "jobs.release-please.steps[1].with.token";
+    for token in [
+        "${{ secrets.GITHUB_TOKEN }}",
+        "${{ github.token }}",
+        "${{ steps.release-app.outputs.token || github.token }}",
+        "${{ secrets.RELEASE_PAT }}",
+    ] {
+        let source = release_please().replace("${{ steps.release-app.outputs.token }}", token);
+        let findings = found(RELEASE_PLEASE_WORKFLOW, &source);
+        assert!(
+            findings.iter().any(|(f_at, message)| f_at == at
+                && message.contains("not the release App's installation token")),
+            "{token}: {findings:#?}"
+        );
+    }
+    // No token at all: the action falls back to GITHUB_TOKEN.
+    let source = release_please().replace(
+        "        with:\n          token: ${{ steps.release-app.outputs.token }}\n",
+        "",
+    );
+    assert_one(
+        RELEASE_PLEASE_WORKFLOW,
+        &source,
+        at,
+        "passes release-please no `token`, so it gets `GITHUB_TOKEN`",
+    );
+}
+
+#[test]
+fn release_please_needs_a_token_minted_for_the_release_app() {
+    let at = "jobs.release-please.steps[1].with.token";
+    // Another key.
+    let source = release_please().replace("RELEASE_APP_PRIVATE_KEY", "DISPATCHER_APP_KEY");
+    let findings = found(RELEASE_PLEASE_WORKFLOW, &source);
+    assert!(
+        findings
+            .iter()
+            .any(|(f_at, m)| f_at == at && m.contains("minted without `private-key")),
+        "{findings:#?}"
+    );
+    // A missing or read-only permission, and a wider one.
+    let source = release_please().replace("permission-pull-requests: write", "");
+    assert_one(
+        RELEASE_PLEASE_WORKFLOW,
+        &source,
+        at,
+        "minted without `permission-pull-requests: write`",
+    );
+    let source =
+        release_please().replace("permission-contents: write", "permission-contents: read");
+    assert_one(
+        RELEASE_PLEASE_WORKFLOW,
+        &source,
+        at,
+        "minted without `permission-contents: write`",
+    );
+    let source = release_please().replace(
+        "permission-contents: write\n",
+        "permission-contents: write\n          permission-workflows: write\n",
+    );
+    assert_one(
+        RELEASE_PLEASE_WORKFLOW,
+        &source,
+        at,
+        "minted with `permission-workflows`",
+    );
+    // A step of that id that is not the App token action.
+    let source = release_please().replace(APP, &format!("actions/cache@{SHA}"));
+    assert_one(
+        RELEASE_PLEASE_WORKFLOW,
+        &source,
+        at,
+        "the output of a step that does not use `actions/create-github-app-token`",
+    );
+    // A token minted after release-please runs is not one it can get.
+    let source = release_please().replace("${{ steps.release-app.", "${{ steps.later.");
+    assert_one(
+        RELEASE_PLEASE_WORKFLOW,
+        &source,
+        at,
+        "not the release App's installation token",
+    );
+}
+
+#[test]
+fn release_please_runs_in_the_release_please_environment() {
+    for job in [
+        release_please().replace("    environment: release-please\n", ""),
+        release_please().replace("environment: release-please", "environment: production"),
+    ] {
+        assert_one(
+            RELEASE_PLEASE_WORKFLOW,
+            &job,
+            "jobs.release-please.steps[1]",
+            "whose `environment` is not `release-please`",
+        );
+    }
+}
+
+#[test]
+fn release_please_runs_only_where_its_token_can_be_read() {
+    // Not at all.
+    let none = release_please().replace(RP, &format!("actions/cache@{SHA}"));
+    assert_one(RELEASE_PLEASE_WORKFLOW, &none, "jobs", "no step uses");
+    // From a script.
+    let script = format!(
+        "{}      - run: npx release-please release-pr --token \"$TOKEN\"\n",
+        release_please()
+    );
+    assert_one(
+        RELEASE_PLEASE_WORKFLOW,
+        &script,
+        "jobs.release-please.steps[2].run",
+        "runs release-please from a script",
+    );
+    // Through a reusable workflow.
+    let called = format!(
+        "{}  called:\n    uses: syntropyai-hq/syntropy/.github/workflows/rp.yml@{SHA}\n",
+        release_please()
+    );
+    assert_one(
+        RELEASE_PLEASE_WORKFLOW,
+        &called,
+        "jobs.called.uses",
+        "calls a reusable workflow",
+    );
+    // From any other workflow, whatever its token.
+    assert_one(
+        "ci.yml",
+        &release_please(),
+        "jobs.release-please.steps[1].uses",
+        "runs release-please outside `release-please.yml`",
+    );
+    // From an action.
+    let action = format!("runs:\n  using: composite\n  steps:\n    - uses: {RP}\n");
+    let findings = check_action("a/action.yml", &action);
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(findings[0].at, "runs.steps[0].uses");
+    assert!(
+        findings[0]
+            .message
+            .contains("runs release-please in an action")
+    );
 }

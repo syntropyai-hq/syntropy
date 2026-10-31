@@ -14,6 +14,7 @@
 //! | Build host behind its gate | a job whose `runs-on` names the build-host label other than as the gated operand of the build-host form (ADR-0625) |
 //! | No PR checkout beside a secret | a job that checks out a PR ref and holds a secret, an environment or a write token |
 //! | Lab jobs in chunks | a job in `lab.yml`, or on a lab label anywhere, without a `timeout-minutes` from 1 to 60, or with one an expression computes (§3.4) |
+//! | release-please gets the release App's token | `release-please.yml` passing release-please any token but the release App's installation token, or running it where the token cannot be read; release-please anywhere else (§8.2, "Testing and validation" item 9) |
 //!
 //! **Lab labels.** A label is a lab label, compared without case, when it is `self-hosted` or
 //! `syntropy-lab`; starts with `lab-` (the per-run `lab-run-<uuid>`), or `r-` (a rig ID such as
@@ -73,6 +74,20 @@
 //! whether its creator is verified cannot be read from the repository. A missing or malformed
 //! [`SELECTED_ACTIONS`] fails the lint. The file records the live policy (`cargo xtask ci
 //! repo-settings` compares the two), so this lint reads only the file.
+//!
+//! **release-please.** GitHub starts no workflow for a push made with `GITHUB_TOKEN`, so a tag
+//! release-please made with it would never start `release.yml` (RFC-0062 §8.2). Every step of
+//! [`RELEASE_PLEASE_WORKFLOW`] that uses [`RELEASE_PLEASE_ACTION`] must therefore:
+//! - run in a job whose `environment` is [`RELEASE_ENVIRONMENT`], which alone holds the key;
+//! - pass `token: ${{ steps.<id>.outputs.token }}` (whitespace and case aside), since the action
+//!   falls back to `GITHUB_TOKEN` when `token` is unset;
+//! - where `<id>` is an earlier step of the same job that uses [`APP_TOKEN_ACTION`] with
+//!   `private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}`, `permission-contents: write`,
+//!   `permission-pull-requests: write`, and no other `permission-*` input.
+//!
+//! The file must run release-please at least once. In it, a job that calls a reusable workflow
+//! and a `run` script that names `release-please` fail, because the token they hand on cannot be
+//! read. Any other workflow or action that uses [`RELEASE_PLEASE_ACTION`] fails.
 //!
 //! **Limits.** A file cannot show these, so the lint does not check them:
 //! - the actions a remote reusable workflow or a remote composite action uses inside it, which
@@ -177,6 +192,24 @@ const BASE_REFS: &[&str] = &[
     "${{github.event.merge_group.base_sha}}",
     "${{github.event.repository.default_branch}}",
 ];
+
+/// The one workflow that runs release-please (RFC-0062 §8.2).
+pub const RELEASE_PLEASE_WORKFLOW: &str = "release-please.yml";
+
+/// The release-please action, without its `@ref`, in lower case.
+pub const RELEASE_PLEASE_ACTION: &str = "googleapis/release-please-action";
+
+/// The action that mints a GitHub App's installation token, without its `@ref`, in lower case.
+pub const APP_TOKEN_ACTION: &str = "actions/create-github-app-token";
+
+/// The environment that holds the release App's key, restricted to `main` and `release/*`.
+pub const RELEASE_ENVIRONMENT: &str = "release-please";
+
+/// The `private-key` the release App's token is minted with, without whitespace, in lower case.
+const RELEASE_APP_KEY: &str = "${{secrets.release_app_private_key}}";
+
+/// The only permissions the release App's token is narrowed to (RFC-0062 §8.2).
+const RELEASE_APP_PERMISSIONS: &[&str] = &["permission-contents", "permission-pull-requests"];
 
 /// How deep a chain of local composite actions is followed.
 const LOCAL_DEPTH: usize = 8;
@@ -920,7 +953,207 @@ pub fn check_workflow(
             }
         }
     }
+    check_release_please(&mut report, name, jobs);
     report.findings
+}
+
+/// An action's name: its `uses:` without the `@ref`, in lower case.
+fn action_name(uses: &str) -> String {
+    uses.split('@')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// An expression's text without whitespace, in lower case, for comparing.
+fn squeezed(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+/// Whether a step uses the release-please action.
+fn uses_release_please(step: &Yaml) -> bool {
+    get(step, "uses")
+        .and_then(text)
+        .is_some_and(|uses| action_name(&uses) == RELEASE_PLEASE_ACTION)
+}
+
+/// release-please runs only in [`RELEASE_PLEASE_WORKFLOW`], and there only with the release App's
+/// installation token (RFC-0062 §8.2, "Testing and validation" item 9).
+fn check_release_please(report: &mut Report<'_>, name: &str, jobs: &yaml_rust2::yaml::Hash) {
+    let release = name == RELEASE_PLEASE_WORKFLOW;
+    let mut runs = 0;
+    for (id, job) in jobs {
+        let at = format!("jobs.{}", text(id).unwrap_or_default());
+        if release && get(job, "uses").is_some() {
+            report.add(
+                format!("{at}.uses"),
+                format!(
+                    "calls a reusable workflow from `{RELEASE_PLEASE_WORKFLOW}`, so the lint \
+                     cannot see the token release-please gets; run it in a job of this file \
+                     (RFC-0062 §8.2)"
+                ),
+            );
+        }
+        let steps = step_list(get(job, "steps"));
+        for (n, step) in steps.iter().enumerate() {
+            let step_at = format!("{at}.steps[{n}]");
+            if !uses_release_please(step) {
+                if release
+                    && get(step, "run")
+                        .and_then(text)
+                        .is_some_and(|run| run.to_ascii_lowercase().contains("release-please"))
+                {
+                    report.add(
+                        format!("{step_at}.run"),
+                        "runs release-please from a script, where the lint cannot see its \
+                         token; use the release-please action with the release App's token \
+                         (RFC-0062 §8.2)",
+                    );
+                }
+                continue;
+            }
+            if !release {
+                report.add(
+                    format!("{step_at}.uses"),
+                    format!(
+                        "runs release-please outside `{RELEASE_PLEASE_WORKFLOW}`, the one \
+                         workflow whose token the lint checks (RFC-0062 §8.2)"
+                    ),
+                );
+                continue;
+            }
+            runs += 1;
+            for (field, problem) in release_token_problems(job, &steps[..n], step) {
+                report.add(format!("{step_at}{field}"), problem);
+            }
+        }
+    }
+    if release && runs == 0 {
+        report.add(
+            "jobs",
+            format!(
+                "no step uses `{RELEASE_PLEASE_ACTION}`, so `{RELEASE_PLEASE_WORKFLOW}` runs no \
+                 release-please the lint can check (RFC-0062 §8.2)"
+            ),
+        );
+    }
+}
+
+/// Every way a release-please step does not get the release App's token: the place under the
+/// step (or under the job, for the environment), and what is wrong. `earlier` are the job's
+/// steps before it.
+fn release_token_problems(job: &Yaml, earlier: &[Yaml], step: &Yaml) -> Vec<(String, String)> {
+    let mut problems = Vec::new();
+    let environment = match get(job, "environment") {
+        Some(environment @ Yaml::Hash(_)) => get(environment, "name").and_then(text),
+        Some(other) => text(other),
+        None => None,
+    };
+    if environment.as_deref() != Some(RELEASE_ENVIRONMENT) {
+        problems.push((
+            String::new(),
+            format!(
+                "runs release-please in a job whose `environment` is not `{RELEASE_ENVIRONMENT}`, \
+                 the one environment that holds the release App's key (RFC-0062 §8.2)"
+            ),
+        ));
+    }
+    let want = "`${{ steps.<id>.outputs.token }}` of an earlier `actions/create-github-app-token` \
+                step";
+    let Some(token) = get(step, "with").and_then(|with| get(with, "token")) else {
+        problems.push((
+            ".with.token".to_owned(),
+            format!(
+                "passes release-please no `token`, so it gets `GITHUB_TOKEN`, whose tag push \
+                 starts no workflow; pass the release App's installation token, {want} \
+                 (RFC-0062 §8.2)"
+            ),
+        ));
+        return problems;
+    };
+    let shown = text(token).unwrap_or_else(|| format!("{token:?}"));
+    let id = text(token).and_then(|token| {
+        squeezed(&token)
+            .strip_prefix("${{steps.")
+            .and_then(|rest| rest.strip_suffix(".outputs.token}}"))
+            .filter(|id| {
+                !id.is_empty()
+                    && id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            })
+            .map(str::to_owned)
+    });
+    let minted = id.as_ref().and_then(|id| {
+        earlier.iter().find(|candidate| {
+            get(candidate, "id")
+                .and_then(text)
+                .is_some_and(|candidate| candidate.to_ascii_lowercase() == *id)
+        })
+    });
+    let Some(minted) = minted else {
+        problems.push((
+            ".with.token".to_owned(),
+            format!(
+                "passes release-please `{shown}`, not the release App's installation token, \
+                 {want} (RFC-0062 §8.2)"
+            ),
+        ));
+        return problems;
+    };
+    let uses = get(minted, "uses").and_then(text).unwrap_or_default();
+    if action_name(&uses) != APP_TOKEN_ACTION {
+        problems.push((
+            ".with.token".to_owned(),
+            format!(
+                "passes release-please the output of a step that does not use \
+                 `{APP_TOKEN_ACTION}`, so it is not the release App's installation token \
+                 (RFC-0062 §8.2)"
+            ),
+        ));
+        return problems;
+    }
+    let with = get(minted, "with");
+    let input = |key: &str| with.and_then(|with| get(with, key)).and_then(text);
+    if input("private-key").as_deref().map(squeezed).as_deref() != Some(RELEASE_APP_KEY) {
+        problems.push((
+            ".with.token".to_owned(),
+            "passes release-please a token minted without `private-key: ${{ \
+             secrets.RELEASE_APP_PRIVATE_KEY }}`, so it is not the release App's (RFC-0062 §8.2)"
+                .to_owned(),
+        ));
+    }
+    for key in RELEASE_APP_PERMISSIONS {
+        if input(key).as_deref().map(str::trim) != Some("write") {
+            problems.push((
+                ".with.token".to_owned(),
+                format!(
+                    "passes release-please a token minted without `{key}: write`; the release \
+                     App's token is narrowed to Contents write and Pull requests write \
+                     (RFC-0062 §8.2)"
+                ),
+            ));
+        }
+    }
+    if let Some(Yaml::Hash(inputs)) = with {
+        for key in inputs.keys().filter_map(text) {
+            if key.starts_with("permission-") && !RELEASE_APP_PERMISSIONS.contains(&key.as_str()) {
+                problems.push((
+                    ".with.token".to_owned(),
+                    format!(
+                        "passes release-please a token minted with `{key}`; the release App's \
+                         token holds only Contents write and Pull requests write (RFC-0062 §8.2)"
+                    ),
+                ));
+            }
+        }
+    }
+    problems
 }
 
 /// Checks one action: a composite action's steps' `uses:` are pinned, and a Docker action's
@@ -933,6 +1166,21 @@ pub fn check_action(file: &str, source: &str) -> Vec<Finding> {
     match parse(source) {
         Ok(action) => {
             let runs = get(&action, "runs");
+            for (n, step) in step_list(runs.and_then(|r| get(r, "steps")))
+                .iter()
+                .enumerate()
+            {
+                if uses_release_please(step) {
+                    report.add(
+                        format!("runs.steps[{n}].uses"),
+                        format!(
+                            "runs release-please in an action; it runs only in \
+                             `{RELEASE_PLEASE_WORKFLOW}`, whose token the lint checks (RFC-0062 \
+                             §8.2)"
+                        ),
+                    );
+                }
+            }
             check_steps_pinned(
                 &mut report,
                 "runs.steps",

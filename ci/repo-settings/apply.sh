@@ -48,6 +48,12 @@
 #    adds a dev-dependency no manifest uses yet to one crate. `dep-diff` fails and the PR cannot
 #    merge. A maintainer's comment `dep-diff approved <head SHA>` turns `dep-diff` green, through
 #    dep-approval.yml's re-run; a push after it turns it red again. Close it and remove the role.
+# 6. Tags `v*` are created only by the release App (QUAL-E17-T01; RFC-0062 §8.3). First record
+#    the release App's ID as the `actor_id` of `ruleset-tags.json`'s one bypass actor: until then
+#    it is `0`, and this script refuses to apply. As the test account with the Write role, run
+#        git tag v0.0.0-probe && git push origin v0.0.0-probe
+#    Expect `GH013: Repository rule violations found` naming the creation rule, and no tag. Then
+#    `cargo xtask ci tag-ruleset` passes, from a token that can edit rulesets.
 
 set -euo pipefail
 
@@ -99,6 +105,15 @@ send() {
     gh "${args[@]}" >/dev/null
   fi
 }
+
+# The tag ruleset's bypass actor is the release App, by its ID (RFC-0062 §8.3). The ID is `0`
+# until a maintainer records it, and a ruleset sent with `0` would protect tags from everyone,
+# the App included, so release-please could never tag a release.
+placeholder="$(jq '[.bypass_actors[]? | select(.actor_id == 0)] | length' "$here/ruleset-tags.json")"
+if [ "$placeholder" != 0 ]; then
+  echo "error: ruleset-tags.json names bypass actor 0: record the release App's ID first" >&2
+  [ "$apply" = true ] && exit 2
+fi
 
 if [ "$apply" = true ]; then
   echo "Applying the settings in ${here#"$PWD"/} to $repo as $(gh api user --jq .login)."
