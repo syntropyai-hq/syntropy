@@ -19,6 +19,8 @@ Rules, as cited in the "Rule applied" column:
 
 Read "A → B" as "A depends on B".
 
+Adding a section: start its heading with the ID of the task it is about, for example `## COMP-E16-T04: …` (with the date at the end), and insert it among the dated sections in task-ID order, before the first section whose leading ID sorts after it. Don't append at the end of the file. Pull requests that each add a section then touch different places, and git merges them without a conflict. Sections written before 2026-10-31 stay where they are.
+
 ## Changes
 
 | Change | Tasks | Rule applied | Reason |
