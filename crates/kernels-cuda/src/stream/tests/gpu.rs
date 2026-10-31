@@ -343,6 +343,7 @@ fn copy_batch_moves_the_same_bytes_as_a_loop_of_copies() {
     }
     let untouched = (0..N).filter(|&i| !written[i]).collect::<Vec<_>>();
     assert!(untouched.iter().all(|&i| batch_out[i] == SENTINEL));
+    assert!(untouched.iter().all(|&i| loop_out[i] == SENTINEL));
     eprintln!(
         "{} u32s written by the pairs, {} left at the sentinel",
         N - untouched.len(),
