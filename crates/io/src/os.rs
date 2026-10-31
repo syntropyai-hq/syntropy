@@ -50,11 +50,16 @@ mod identity;
 pub mod log_sink;
 #[cfg(target_os = "macos")]
 pub mod macos_host;
+#[cfg(target_os = "macos")]
+mod macos_volume;
 mod private;
 mod sparse;
 mod thread;
+pub mod volume;
 #[cfg(windows)]
 pub mod windows_host;
+#[cfg(windows)]
+mod windows_volume;
 
 pub use identity::{FileIdentity, file_identity};
 pub use private::{create_private_file, is_owner_only, private_dir, sync_dir};

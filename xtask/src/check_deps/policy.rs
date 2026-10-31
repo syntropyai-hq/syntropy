@@ -313,6 +313,11 @@ pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
 /// `SystemClock` and `SystemTicks` and so links `syntropy-io`. That crate's host-state module reads
 /// the power sources through IOKit (`crates/io/src/os/macos_host.rs:248`, `link(name = "IOKit",
 /// kind = "framework")`). It ships with every macOS.
+///
+/// `DiskArbitration` was added 2026-10-30 (PLC-E1-T06), from what rule 7 reported on the hosted
+/// `macos-26` runner once the core binary linked `syntropy-io`'s storage-volume module, which asks
+/// it for a BSD disk's bus and block size (`crates/io/src/os/macos_volume.rs`,
+/// `link(name = "DiskArbitration", kind = "framework")`). It ships with every macOS.
 pub const MACOS_FRAMEWORKS: &[&str] = &[
     "Metal",
     "Foundation",
@@ -321,6 +326,7 @@ pub const MACOS_FRAMEWORKS: &[&str] = &[
     "SystemConfiguration",
     "Security",
     "IOKit",
+    "DiskArbitration",
 ];
 
 /// Where the system frameworks live.
