@@ -3,7 +3,7 @@
 //! The `KernelProvider` for NVIDIA GPUs (RFC-0040 §7.1): binding and enumeration
 //! (COMP-E4-T01).
 //!
-//! The provider loads the CUDA driver at run time through `cudarc`'s dynamic loading and links no
+//! The provider opens the CUDA driver, `libcuda.so.1` or `nvcuda.dll`, at run time and links no
 //! NVIDIA library, so a host without the driver builds, loads it and sees no CUDA device. It
 //! needs a driver with CUDA 13.0's API, driver branch 580 or newer (ADR-0014); an older driver
 //! fails `enumerate` with `DriverTooOld`, `(Kernels, 5)`, and the backend is skipped. `open`
@@ -37,24 +37,24 @@ use syntropy_kernels::{
 };
 
 use crate::describe::{check_driver, describe, driver_text};
-use crate::driver::{Cudarc, Driver, Fault, RawDevice};
+use crate::driver::{Driver, Fault, RawDevice, SystemDriver};
 
 /// The CUDA provider, over a [`Driver`]: the real one by default, a fake in tests.
 #[derive(Debug)]
-pub struct CudaProvider<D: Driver = Cudarc> {
+pub struct CudaProvider<D: Driver = SystemDriver> {
     driver: D,
     ops: OpRegistry,
 }
 
-impl CudaProvider<Cudarc> {
+impl CudaProvider<SystemDriver> {
     /// The provider over the system's CUDA driver.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_driver(Cudarc)
+        Self::with_driver(SystemDriver::default())
     }
 }
 
-impl Default for CudaProvider<Cudarc> {
+impl Default for CudaProvider<SystemDriver> {
     fn default() -> Self {
         Self::new()
     }

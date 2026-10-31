@@ -6,6 +6,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The driver API's types (RFC-0040 §7.1). The driver itself is opened by name with `libloading`.
 cudarc.workspace = true
+# Opens exactly `libcuda.so.1` or `nvcuda.dll` (RFC-0040 §7.1, note 2026-10-31).
+libloading.workspace = true
 syntropy-core = { path = "../core" }
 syntropy-kernels = { path = "../kernels" }

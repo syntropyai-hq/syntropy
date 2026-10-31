@@ -1378,3 +1378,12 @@ COMP-E9-T19 (M1a) puts the provider entry symbol under `SYNTROPY_PROVIDER_1`, an
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | COMP-E9-T19's criterion keeps the test provider library; the `cuda13` library's `readelf -V` check moves to COMP-E9-T08 | COMP-E9-T19, COMP-E9-T08 | R1 | the library a criterion checks must exist when the task closes. Proposed, for the maintainers to confirm |
+
+## `doctor` reports a stray `libcuda.so` (2026-10-31)
+
+Building COMP-E4-T01 on a WSL2 development host found that the unversioned `libcuda.so` resolved to a native-Linux driver copied into `/lib/x86_64-linux-gnu`, not to WSL's driver, which `libcuda.so.1` resolves to. The provider now opens only `libcuda.so.1` (RFC-0040 §7.1, note 2026-10-31). Other CUDA programs may still load the copy, so `doctor` reports it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New PROD-E9-T13 (M1a), `doctor` check DRV-008 → PROD-E9-T01, COMP-E4-T01 | PROD-E9-T13 | R9 | the check is a `DoctorCheck` in PROD-E9-T01's framework, and its warning names the provider's rule that COMP-E4-T01 sets. It is Linux only, so it is M1a under R7, beside PROD-E9-T01 |
+
