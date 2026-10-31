@@ -51,11 +51,17 @@ pub trait VendorLoader {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemLoader;
 
-// SAFETY: the library was opened by its vendor's file name, and a loaded library is never
-// unloaded (`RawLibrary`), so a symbol is the vendor's function for as long as it is used.
-unsafe impl VendorLibrary for RawLibrary {
+/// A vendor library [`SystemLoader`] opened by its vendor's file name. Only such a library is a
+/// [`VendorLibrary`]: a provider module, which `Module::load` opens as a `RawLibrary` too, makes
+/// no promise about its symbols' signatures.
+struct SystemLibrary(RawLibrary);
+
+// SAFETY: the library was opened by its vendor's file name ([`SystemLoader`]), so a symbol is
+// the vendor's published function, and a loaded library is never unloaded (`RawLibrary`), so
+// it stays valid for as long as it is used.
+unsafe impl VendorLibrary for SystemLibrary {
     fn symbol(&self, name: &str) -> Option<*mut c_void> {
-        RawLibrary::symbol(self, name).ok()
+        self.0.symbol(name).ok()
     }
 }
 
@@ -63,7 +69,7 @@ impl VendorLoader for SystemLoader {
     fn open(&self, name: &str) -> Option<Box<dyn VendorLibrary>> {
         RawLibrary::open_system(name)
             .ok()
-            .map(|lib| Box::new(lib) as Box<dyn VendorLibrary>)
+            .map(|lib| Box::new(SystemLibrary(lib)) as Box<dyn VendorLibrary>)
     }
 }
 
@@ -132,11 +138,11 @@ impl GpuRecord {
 #[must_use]
 pub fn enumerate() -> Vec<GpuRecord> {
     let nvidia = nvml::enumerate(&SystemLoader, &nvml::sysfs_numa).gpus;
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let apple = iokit::live_accelerators()
         .map(|accelerators| iokit::apple_gpus(&accelerators))
         .unwrap_or_default();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     let apple = Vec::new();
     [nvidia, apple].concat()
 }

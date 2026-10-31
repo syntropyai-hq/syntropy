@@ -118,10 +118,11 @@ pub fn parse_fixture(text: &str) -> Result<Vec<Accelerator>, String> {
     Ok(out)
 }
 
-#[cfg(target_os = "macos")]
+// Apple silicon only: ADR-0020 supports no Intel Mac, whose GPUs IOKit lists differently.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use live::live_accelerators;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod live {
     use std::ffi::{CStr, c_char, c_void};
     use std::ptr;

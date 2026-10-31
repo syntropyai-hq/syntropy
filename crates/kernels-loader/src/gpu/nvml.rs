@@ -163,6 +163,7 @@ struct Api {
 /// `F` must be the C signature NVML documents for `name`, which [`VendorLibrary`]'s contract
 /// then makes the symbol's.
 unsafe fn resolve<F: Copy>(lib: &dyn VendorLibrary, name: &str) -> Option<F> {
+    const { assert!(size_of::<F>() == size_of::<*mut c_void>()) };
     let address = lib.symbol(name)?;
     if address.is_null() {
         return None;

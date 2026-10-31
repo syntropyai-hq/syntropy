@@ -78,7 +78,7 @@ fn fixture_text_round_trips_and_refuses_bad_lines() {
 
 /// On a Mac, the live registry has one accelerator with a model and a core count. Set
 /// `SYNTROPY_RECORD_IOKIT=1` to print it as fixture text.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn live_registry_reads_on_macos() {
     let live = syntropy_kernels_loader::gpu::iokit::live_accelerators().unwrap();

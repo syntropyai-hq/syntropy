@@ -1470,5 +1470,5 @@ PLC-E1-T04's criteria use NVML and IOKit only, and none of its development evide
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| New PLC-E1-T19 (M0a), "DXGI adapters with local budget and LUID for E2 (split from PLC-E1-T04)" → PLC-E1-T04; PLC-E1-T04's task text drops the DXGI adapters | PLC-E1-T04, PLC-E1-T19 | R3b, R9 | the DXGI part moves with a fixture test through the trait and development evidence on a Windows host with a GPU. It stays M0a because PLC-E1-T07 (M0a) uses its budget |
-| PLC-E1-T07 → PLC-E1-T19 | PLC-E1-T07 | R9 | "on Windows D2 never exceeds the DXGI budget" uses the local budget PLC-E1-T19 produces; before the split it came through PLC-E1-T04 |
+| New PLC-E1-T20 (M0a), "DXGI adapters with local budget and LUID for E2 (split from PLC-E1-T04)" → PLC-E1-T04; PLC-E1-T04's task text drops the DXGI adapters | PLC-E1-T04, PLC-E1-T20 | R3b, R9 | the DXGI part moves with a fixture test through the trait and development evidence on a Windows host with a GPU. It stays M0a because PLC-E1-T07 (M0a) uses its budget |
+| PLC-E1-T07 → PLC-E1-T20 | PLC-E1-T07 | R9 | "on Windows D2 never exceeds the DXGI budget" uses the local budget PLC-E1-T20 produces; before the split it came through PLC-E1-T04 |

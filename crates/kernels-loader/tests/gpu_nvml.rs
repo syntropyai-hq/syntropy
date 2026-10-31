@@ -31,6 +31,8 @@ struct FakeGpu {
     subsystem: u32,
     total: u64,
     free: u64,
+    /// Driver-reserved VRAM, neither free nor used by processes (`nvmlMemory_v2_t::reserved`).
+    reserved: u64,
     bar1: u64,
     link_cur: (u32, u32),
     link_max: (u32, u32),
@@ -170,8 +172,8 @@ unsafe extern "C" fn memory(d: *mut c_void, out: *mut RawMemory) -> i32 {
         with(|h| h.memory_version = Some((*out).version));
         (*out).total = g.total;
         (*out).free = g.free;
-        (*out).used = g.total - g.free;
-        (*out).reserved = 0;
+        (*out).used = g.total - g.free - g.reserved;
+        (*out).reserved = g.reserved;
     }
     code::SUCCESS
 }
@@ -314,7 +316,8 @@ fn ada() -> FakeGpu {
         subsystem: 0x1675_10DE,
         total: 24 * GIB,
         free: 23 * GIB,
-        bar1: 32 * GIB,
+        reserved: GIB / 2,
+        bar1: 24 * GIB,
         link_cur: (4, 16),
         link_max: (4, 16),
         nvlinks: None,
@@ -335,6 +338,7 @@ fn second() -> FakeGpu {
         subsystem: 0x1459_10DE,
         total: 48 * GIB,
         free: 47 * GIB,
+        reserved: 0,
         bar1: 256 * 1024 * 1024,
         link_cur: (3, 8),
         link_max: (4, 16),
@@ -428,11 +432,13 @@ fn a_present_library_lists_every_gpu() {
             width: 16
         }
     );
-    assert_eq!(pci.resizable_bar, Some(true), "BAR1 32 GiB ≥ VRAM 24 GiB");
+    assert_eq!(pci.resizable_bar, Some(true), "BAR1 24 GiB = VRAM 24 GiB");
     assert_eq!((pci.numa, a.numa), (None, None));
     assert_eq!(a.vram_total, Some(Bytes(24 * GIB)));
+    // The budget is NVML's free figure, not total − used, which would count the 512 MiB the
+    // driver reserves as free.
     assert_eq!(a.vram_budget, Some(Bytes(23 * GIB)));
-    assert_eq!(a.bar1_total, Some(Bytes(32 * GIB)));
+    assert_eq!(a.bar1_total, Some(Bytes(24 * GIB)));
     assert_eq!(a.temperature_c, Some(41));
     assert_eq!(a.nvlinks, 0, "NOT_SUPPORTED is no link");
     let power = a.ext.power.unwrap();
