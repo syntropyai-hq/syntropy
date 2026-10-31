@@ -1409,3 +1409,19 @@ Op conformance compares a kernel with `kernels::reference` and with the referenc
 | COMP-E3-T04 → COMP-E13-T10 | COMP-E3-T04 | R9 | "repacked kernels pass conformance" covers the remaining GGUF types, whose reference dequantisers are COMP-E13-T10's; COMP-E13-T02 covers only the five M0 schemes |
 | COMP-E3-T07 → COMP-E1-T03 | COMP-E3-T07 | R9 | "on an SME2 rig, conformance passes" for the outer-product GEMM tiles, which are checked against the reference `Gemm`; the row depended only on COMP-E3-T01 |
 | COMP-E3-T11 → COMP-E13-T10 | COMP-E3-T11 | R9 | conformance for every M1 scheme includes MXFP4 run as doubled INT8 over the transcribed GGUF `MXFP4` type, whose reference dequantiser is COMP-E13-T10's; COMP-E13-T04's widening tables cover the other schemes |
+
+## The reference ops the GPU kernel tasks are checked against (2026-10-31)
+
+The same gap as the CPU kernel tasks above, in the CUDA, Metal, HIP and Vulkan rows. Op conformance compares a kernel with `kernels::reference` and with the reference dequantisers (RFC-0042 §6.4), but these rows reached no task that builds the references their criteria name. COMP-E5-T09 and COMP-E5-T10 now reach COMP-E1-T03 and COMP-E13-T02 through COMP-E5-T01. As for COMP-E3-T03, no edge to a conformance run is added: where a criterion names one (QUAL-E4-T06, QUAL-E4-T07 through its Metal part QUAL-E4-T16, QUAL-E4-T11, or COMP-E4-T21 on the rigs), that task already depends on the kernel row.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E5-T01 → COMP-E1-T03, COMP-E13-T02 | COMP-E5-T01 | R9 | "the op-conformance tests pass at rows 1–16" for GEMV over Q4_K, Q8_0, Q4_0, BF16 and F16, `GateUpAct` and `Logits`, which needs the reference `Gemv`, `GateUpAct` and `Logits` and the reference dequantisers for the five M0 schemes. The row depended only on COMP-E4-T05 and COMP-E13-T03 |
+| COMP-E5-T02 → COMP-E13-T10 | COMP-E5-T02 | R9 | "conformance per type" for the remaining GGUF types, whose reference dequantisers are COMP-E13-T10's, as for COMP-E3-T04 |
+| COMP-E5-T04 → COMP-E1-T03 | COMP-E5-T04 | R9 | conformance of `MoeRoute`, `MoeGrouped` and `MoeCombine` at the `qwen_moe` shapes; their reference semantics are COMP-E1-T03's, and COMP-E1-T06 (the row's path to `kernels`) builds only the contract types and `assign` |
+| COMP-E5-T05 → COMP-E1-T03 | COMP-E5-T05 | R9 | conformance of `AttnDecode` and `KvWrite` for `Gqa` at the listed contexts, against COMP-E1-T03's reference |
+| COMP-E4-T06 → COMP-E1-T03 | COMP-E4-T06 | R9 | "`TapGather` passes conformance", and the reference `TapGather` is COMP-E1-T03's |
+| COMP-E5-T16 → COMP-E1-T04 | COMP-E5-T16 | R9 | conformance of `SlidingGqa` with sinks and `Mla` decode, whose reference semantics are M1 ops (COMP-E1-T04); the row reached only COMP-E5-T05 |
+| COMP-E6-T05 → COMP-E13-T10 | COMP-E6-T05 | R9 | the Metal GEMV covers "the remaining GGUF types" under "conformance on R-MACF and R-ULTRA"; the row reached COMP-E13-T04's widening tables but not the GGUF dequantisers |
+| COMP-E8-T03 → COMP-E1-T04, COMP-E13-T04, COMP-E13-T10 | COMP-E8-T03 | R9 | "conformance on R-AMD for the M1 roster's ops" needs the M1 reference ops; the row reached only the M0 ones, through COMP-E5-T01. RFC-0040 §11.2 counts coverage per dtype class, and the M1 roster ships FP8 (DeepSeek-V3-class) and MXFP4 (gpt-oss-class) checkpoints; the row names FP8 on RDNA4. Their references are COMP-E13-T04's widening and COMP-E13-T10's GGUF `MXFP4` dequantiser. Raised in review of #2019 |
+| COMP-E8-T06 → COMP-E1-T04, COMP-E13-T04, COMP-E13-T10 | COMP-E8-T06 | R9 | "conformance on the Vulkan rigs" with coverage for the M1 roster and its dtype classes, as COMP-E8-T03 on HIP; the row reached no reference task |
