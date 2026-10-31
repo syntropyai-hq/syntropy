@@ -9,11 +9,13 @@
 //! fails `enumerate` with `DriverTooOld`, `(Kernels, 5)`, and the backend is skipped. `open`
 //! retains the device's primary context, so code that uses the CUDA runtime later shares it.
 //!
-//! `open` also creates the streams of the stream plan; `stream`, `event`, `record`, `wait`, `poll`,
-//! `elapsed`, `synchronize`, `copy` and `copy_batch` are [`stream`]'s (COMP-E4-T04).
+//! [`memory`] allocates device slabs and host-mapped pages, and registers and imports the tier
+//! manager's host memory (COMP-E4-T02). `open` also creates the streams of the stream plan;
+//! `stream`, `event`, `record`, `wait`, `poll`, `elapsed`, `synchronize`, `copy` and `copy_batch`
+//! are [`stream`]'s (COMP-E4-T04), and `copy` takes its addresses from [`memory`].
 //!
-//! Memory, capture and the kernels are later tasks (COMP-E4-T02, COMP-E4-T05 onwards); until then
-//! those methods return [`unsupported`].
+//! Capture and the kernels are later tasks (COMP-E4-T05 onwards); until then those methods return
+//! [`unsupported`].
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
@@ -28,6 +30,7 @@
 
 pub mod describe;
 pub mod driver;
+pub mod memory;
 pub mod stream;
 
 use syntropy_core::resource::Backend;
@@ -42,13 +45,26 @@ use syntropy_kernels::{
 
 use crate::describe::{check_driver, describe, driver_text};
 use crate::driver::{Driver, Fault, RawDevice, SystemDriver};
+use crate::memory::{AllocHook, DeviceMemory, HostRanges, MemoryDriver};
 use crate::stream::{DeviceStreams, StreamDriver, stream_error};
 
 /// The CUDA provider, over a [`Driver`]: the real one by default, a fake in tests.
-#[derive(Debug)]
 pub struct CudaProvider<D: Driver = SystemDriver> {
     driver: D,
     ops: OpRegistry,
+    hook: Option<AllocHook>,
+    /// Host ranges registered with the driver, shared by every device this provider opens.
+    host_ranges: std::sync::Arc<HostRanges>,
+}
+
+impl<D: Driver + std::fmt::Debug> std::fmt::Debug for CudaProvider<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CudaProvider")
+            .field("driver", &self.driver)
+            .field("ops", &self.ops)
+            .field("hook", &self.hook.is_some())
+            .finish()
+    }
 }
 
 impl CudaProvider<SystemDriver> {
@@ -87,6 +103,8 @@ impl<D: Driver> CudaProvider<D> {
         Self {
             driver,
             ops: OpRegistry::new(),
+            hook: None,
+            host_ranges: std::sync::Arc::default(),
         }
     }
 
@@ -130,12 +148,16 @@ pub struct CudaDevice<C> {
     pub ordinal: i32,
     /// The device's record from `enumerate`.
     pub record: ProviderDevice,
-    /// The device's streams and events.
+    /// The device's streams and events. Declared first, so the streams are drained before the
+    /// memory they copy is freed.
     pub streams: DeviceStreams,
+    /// What the tier manager allocated. Declared before the context, so whatever is left is
+    /// freed before the context is released.
+    pub(crate) memory: DeviceMemory,
     _context: C,
 }
 
-impl<D: StreamDriver> CudaProvider<D>
+impl<D: Driver> CudaProvider<D>
 where
     D::Context: 'static,
 {
@@ -158,7 +180,7 @@ where
     }
 }
 
-impl<D: StreamDriver> KernelProvider for CudaProvider<D>
+impl<D: StreamDriver + MemoryDriver> KernelProvider for CudaProvider<D>
 where
     D: Send + Sync,
     D::Context: 'static,
@@ -221,10 +243,16 @@ where
             .stream_api(&context)
             .map_err(|f| stream_error(&f))?;
         let streams = DeviceStreams::open(api, &opts.streams)?;
+        let memory = self.driver.memory(&context).map_err(|f| driver_error(&f))?;
         Ok(DeviceCtx::new(CudaDevice {
             ordinal: claimed.raw.ordinal,
             record: claimed.record,
             streams,
+            memory: DeviceMemory::new(
+                memory,
+                self.hook.clone(),
+                std::sync::Arc::clone(&self.host_ranges),
+            ),
             _context: context,
         }))
     }
@@ -237,18 +265,24 @@ where
         None
     }
 
-    fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> {
-        Err(unsupported())
+    /// A `Device` fixed slab or `HostMapped` doorbell pages (RFC-0040 §5.1; [`memory`]).
+    fn alloc(&self, ctx: &DeviceCtx, req: AllocRequest) -> Result<DeviceBuffer, Error> {
+        self.memory(ctx)?.alloc(req)
     }
 
-    fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
-
-    fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> {
-        Err(unsupported())
+    fn free(&self, ctx: &DeviceCtx, buf: DeviceBuffer) {
+        if let Ok(m) = self.memory(ctx) {
+            m.free(&buf);
+        }
     }
 
-    fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> {
-        Err(unsupported())
+    /// One RFC-0020 §6.1 unit of whole host pages (RFC-0040 §5.2; [`memory`]).
+    fn register_host(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<Registration, Error> {
+        self.memory(ctx)?.register_host(region)
+    }
+
+    fn import(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<DeviceBuffer, Error> {
+        self.memory(ctx)?.import(region)
     }
 
     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> {
@@ -373,13 +407,20 @@ fn copy_addrs<C>(
     Ok((slice_addr(dev, dst)?, slice_addr(dev, src)?, src.bytes.0))
 }
 
-/// The device address of `s`'s first byte, when `s` lies inside a buffer of this device.
-fn slice_addr<C>(_dev: &CudaDevice<C>, s: &BufferSlice) -> Result<u64, Error> {
-    Err(Error::new(
-        ErrorClass::Internal,
-        ErrorCode::new(syntropy_core::Domain::Kernels, 0),
-        format!("no buffer {:#x} on this device", s.buffer),
-    ))
+/// The device address of `s`'s first byte, when `s` lies inside a buffer this device holds from
+/// `alloc` or `import` ([`DeviceMemory::resolve`]). A buffer of another device, a freed one, a
+/// registration or a range past the buffer's end is refused.
+fn slice_addr<C>(dev: &CudaDevice<C>, s: &BufferSlice) -> Result<u64, Error> {
+    dev.memory.resolve(*s).map(|r| r.device).ok_or_else(|| {
+        Error::new(
+            ErrorClass::Internal,
+            ErrorCode::new(syntropy_core::Domain::Kernels, 0),
+            format!(
+                "no buffer {:#x} on this device holds {} bytes at offset {}",
+                s.buffer, s.bytes.0, s.offset.0
+            ),
+        )
+    })
 }
 
 #[cfg(test)]

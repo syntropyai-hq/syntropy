@@ -2,8 +2,9 @@
 #
 # The golden suite of the affected-job rules in `ci/jobs.toml` (RFC-0062 §2.2; QUAL-E1-T07).
 # `lint`'s `jobs` step applies the rules to each golden's paths and fails unless they give exactly
-# its `jobs` (the hosted jobs listed), `hw_required` (the hardware jobs required) and `planned`
-# (the planned jobs whose rule matched). It also fails unless:
+# its `jobs` (the hosted jobs listed), `hw_required` (the hardware jobs required), `planned`
+# (the planned jobs whose rule matched) and `paused` (the paused jobs whose rule matched, which
+# do not run; ADR-0626). It also fails unless:
 # - every job and pattern in the rules is met by some golden;
 # - each pattern and lock dependency of a direct rule has a golden that it alone of its job's
 #   patterns and lock dependencies meets, so dropping it changes that golden;
@@ -20,7 +21,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:77b30f7fd842127c"
+jobs_toml = "fnv1a:c6fe695c27f359e8"
 
 [[golden]]
 name = "plan only"
@@ -72,6 +73,7 @@ paths = [".gitattributes"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "core only"
@@ -80,6 +82,7 @@ paths = ["crates/core/src/plan/stage.rs", "crates/core/tests/plan_serde.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "io"
@@ -88,6 +91,7 @@ paths = ["crates/io/src/os.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "kernels and numerics"
@@ -112,6 +116,7 @@ lock = ["equivalent", "hashbrown", "indexmap", "serde_spanned", "toml", "toml_da
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "kernels-cpu"
@@ -133,6 +138,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "net and bip39"
@@ -149,6 +155,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "net and blake3"
@@ -174,6 +181,7 @@ lock = ["block-buffer", "crypto-common", "curve25519-dalek", "curve25519-dalek-d
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "exec"
@@ -197,6 +205,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "sched"
@@ -213,6 +222,7 @@ paths = [
 jobs = ["build", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "graph"
@@ -228,6 +238,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "tier"
@@ -245,6 +256,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "manifest outside census and kv"
@@ -261,6 +273,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "bench"
@@ -281,6 +294,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "testdata"
@@ -299,6 +313,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "config and ci"
@@ -315,6 +330,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "code owners"
@@ -328,6 +344,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "cargo config"
@@ -348,6 +365,7 @@ lock = ["syntropy-xtask"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "linker wrapper"
@@ -356,6 +374,7 @@ paths = ["ci/link/provider-cc"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "xtask and pr.yml"
@@ -385,6 +404,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "fork kernel change"
@@ -393,6 +413,7 @@ paths = ["crates/kernels-cuda/src/lib.rs"]
 jobs = ["build", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "toolchain pin"
@@ -401,6 +422,7 @@ paths = ["rust-toolchain.toml"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "actions and the root manifest"
@@ -409,6 +431,7 @@ paths = [".github/actions/setup-rust/action.yml", "Cargo.toml"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "governance, licences and version"
@@ -423,6 +446,7 @@ paths = [
 jobs = ["build", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "tolerance tables only"
@@ -431,6 +455,7 @@ paths = ["numerics/tolerances-v1.toml"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "CPU provider only"
@@ -439,6 +464,7 @@ paths = ["crates/kernels-cpu/src/lib.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "kernels only"
@@ -453,6 +479,7 @@ paths = [
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "exec only"
@@ -461,6 +488,7 @@ paths = ["crates/exec/src/lib.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "ipc only"
@@ -469,6 +497,7 @@ paths = ["crates/ipc/src/lib.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "census module file"
@@ -477,6 +506,7 @@ paths = ["crates/manifest/src/census.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "census module directory"
@@ -485,6 +515,7 @@ paths = ["crates/manifest/src/census/scan.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "kv module file"
@@ -493,6 +524,7 @@ paths = ["crates/manifest/src/kv.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "kv module directory"
@@ -501,6 +533,7 @@ paths = ["crates/manifest/src/kv/formula.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "refexec module file"
@@ -509,6 +542,7 @@ paths = ["crates/testkit/src/refexec.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "refexec module directory"
@@ -517,6 +551,7 @@ paths = ["crates/testkit/src/refexec/run.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "parity module file"
@@ -525,6 +560,7 @@ paths = ["crates/testkit/src/parity.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "parity module directory"
@@ -533,6 +569,7 @@ paths = ["crates/testkit/src/parity/report.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "conformance module file"
@@ -541,6 +578,7 @@ paths = ["crates/testkit/src/conformance.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "conformance module directory"
@@ -549,6 +587,7 @@ paths = ["crates/testkit/src/conformance/cases.rs"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "vendored ggml tree"
@@ -557,6 +596,7 @@ paths = ["third_party/ggml/src/ggml.c"]
 jobs = ["build", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "ggml lock file"
@@ -565,30 +605,34 @@ paths = ["third_party/ggml.lock"]
 jobs = ["build", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "toolchain pins"
 source = "constructed: the pins file alone, as a CUDA bump edits it (QUAL-E16-T24)"
 paths = ["ci/toolchains.toml"]
-jobs = ["build", "hosted-test", "lint", "toolchains-linux", "toolchains-macos", "toolchains-windows"]
+jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows", "toolchains-macos", "toolchains-windows"]
 
 [[golden]]
 name = "toolchain step"
 source = "constructed: the step that builds and checks the image alone (QUAL-E16-T24)"
 paths = ["xtask/src/toolchains.rs"]
-jobs = ["build", "hosted-l3", "hosted-test", "lint", "toolchains-linux", "toolchains-macos", "toolchains-windows"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint", "toolchains-linux"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows", "toolchains-macos", "toolchains-windows"]
 
 [[golden]]
 name = "hosted toolchain steps"
 source = "constructed: the Windows and macOS version-print steps alone (QUAL-E16-T30)"
 paths = ["xtask/src/toolchains/hosted.rs"]
-jobs = ["build", "hosted-l3", "hosted-test", "lint", "toolchains-macos", "toolchains-windows"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = []
 planned = ["hosted-parity-nano"]
+paused = ["build-macos-windows", "hosted-test-macos-windows", "toolchains-macos", "toolchains-windows"]
 
 [[golden]]
 name = "CUDA image"
@@ -597,6 +641,7 @@ paths = ["ci/images/cuda-12/Dockerfile"]
 jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 
 [[golden]]
 name = "CUDA binding bump"
@@ -606,4 +651,5 @@ lock = ["cudarc"]
 jobs = ["build", "hosted-l3", "hosted-test", "lint"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+paused = ["build-macos-windows", "hosted-test-macos-windows"]
 

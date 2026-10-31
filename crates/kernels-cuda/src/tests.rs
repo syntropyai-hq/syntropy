@@ -55,6 +55,18 @@ impl StreamDriver for Fake {
     }
 }
 
+/// `memory`'s recorder, which hands out addresses and logs the calls.
+impl crate::memory::MemoryDriver for Fake {
+    fn memory(
+        &self,
+        _: &FakeContext,
+    ) -> Result<std::sync::Arc<dyn crate::memory::MemoryOps>, Fault> {
+        Ok(std::sync::Arc::new(
+            crate::memory::tests::Recorder::default(),
+        ))
+    }
+}
+
 fn gpu(ordinal: i32, cc: (i32, i32)) -> RawDevice {
     RawDevice {
         ordinal,
@@ -325,11 +337,15 @@ fn open_creates_the_plan_and_drop_destroys_it_before_the_context() {
     assert_eq!(p.driver.streams.lock().unwrap().live(), (0, 0));
 }
 
-/// Until the memory module issues buffers, a slice names no buffer of the device, and `copy`
-/// refuses it without reaching the driver.
+/// `copy` and `copy_batch` take their addresses from the device's memory table: a slice of a
+/// buffer from `alloc` reaches the driver at the buffer's address plus its offset. A slice of
+/// another device's buffer, a freed buffer, a range past a buffer's end or a length mismatch is
+/// refused without reaching the driver, and a refused pair in a batch enqueues none of it.
 #[test]
-fn a_copy_of_an_unknown_buffer_is_refused() {
-    let p = fake(13_050, vec![gpu(0, (8, 9))]);
+fn copies_resolve_slices_through_the_devices_memory() {
+    use stream::fake::Call;
+    use syntropy_kernels::{AllocRequest, MemKind};
+    let p = fake(13_050, vec![gpu(0, (8, 9)), gpu(1, (8, 9))]);
     let opts = OpenOptions {
         streams: syntropy_kernels::StreamPlan {
             compute: 1,
@@ -342,27 +358,106 @@ fn a_copy_of_an_unknown_buffer_is_refused() {
         deterministic: false,
         power: syntropy_kernels::PowerHint::Mains,
     };
-    let id = DeviceId {
+    let id = |ordinal| DeviceId {
         node: NodeId([0; 32]),
-        ordinal: 0,
+        ordinal,
     };
-    let ctx = p.open(id, &opts).unwrap();
+    let ctx = p.open(id(0), &opts).unwrap();
+    let other = p.open(id(1), &opts).unwrap();
     let s = p.stream(&ctx, StreamPriority::Compute).unwrap();
-    let slice = |buffer| BufferSlice {
-        buffer,
-        offset: Bytes(0),
-        bytes: Bytes(64),
+    let alloc = |ctx: &DeviceCtx, kind| {
+        p.alloc(
+            ctx,
+            AllocRequest {
+                bytes: Bytes(4096),
+                kind,
+                align: Bytes(256),
+                reserve_only: false,
+            },
+        )
+        .unwrap()
     };
-    p.driver.streams.lock().unwrap().log.clear();
-    let err = p.copy(&ctx, &s, slice(1), slice(2)).unwrap_err();
-    assert_eq!(err.class, ErrorClass::Internal);
-    let short = BufferSlice {
-        bytes: Bytes(8),
-        ..slice(2)
+    let a = alloc(&ctx, MemKind::Device);
+    let b = alloc(&ctx, MemKind::HostMapped);
+    let elsewhere = alloc(&other, MemKind::Device);
+    let slice = |buf: &DeviceBuffer, offset, bytes| BufferSlice {
+        buffer: buf.handle,
+        offset: Bytes(offset),
+        bytes: Bytes(bytes),
     };
-    assert!(p.copy(&ctx, &s, slice(1), short).is_err());
-    assert!(p.copy_batch(&ctx, &s, &[(slice(1), slice(2))]).is_err());
-    assert!(p.driver.streams.lock().unwrap().log.is_empty());
+    let log = || std::mem::take(&mut p.driver.streams.lock().unwrap().log);
+    log();
+
+    p.copy(&ctx, &s, slice(&a, 64, 128), slice(&b, 1024, 128))
+        .unwrap();
+    let raw = p
+        .driver
+        .streams
+        .lock()
+        .unwrap()
+        .streams
+        .keys()
+        .copied()
+        .next()
+        .unwrap();
+    assert_eq!(
+        log(),
+        [Call::Copy {
+            s: raw,
+            dst: b.addr + 1024,
+            src: a.addr + 64,
+            bytes: 128,
+        }]
+    );
+    let pairs = [
+        (slice(&a, 0, 4096), slice(&b, 0, 4096)),
+        (slice(&b, 4000, 96), slice(&a, 0, 96)),
+    ];
+    p.copy_batch(&ctx, &s, &pairs).unwrap();
+    assert_eq!(
+        log(),
+        [
+            Call::Copy {
+                s: raw,
+                dst: b.addr,
+                src: a.addr,
+                bytes: 4096,
+            },
+            Call::Copy {
+                s: raw,
+                dst: a.addr,
+                src: b.addr + 4000,
+                bytes: 96,
+            },
+        ],
+        "the fake driver has no batched entry point, so the loop path runs"
+    );
+
+    let refused = |src, dst| {
+        let err = p.copy(&ctx, &s, src, dst).unwrap_err();
+        assert_eq!(err.class, ErrorClass::Internal);
+        let batch = [(slice(&a, 0, 8), slice(&a, 8, 8)), (src, dst)];
+        assert!(p.copy_batch(&ctx, &s, &batch).is_err());
+        assert_eq!(log(), [], "nothing reaches the driver");
+    };
+    refused(slice(&elsewhere, 0, 64), slice(&a, 0, 64));
+    refused(slice(&a, 0, 64), slice(&elsewhere, 0, 64));
+    refused(slice(&a, 4033, 64), slice(&b, 0, 64));
+    refused(slice(&a, 0, 64), slice(&b, 0, 32));
+    let freed = slice(&b, 0, 64);
+    p.free(&ctx, b);
+    refused(slice(&a, 0, 64), freed);
+    refused(freed, slice(&a, 0, 64));
+    // The other device's buffer is refused by this device and accepted by its own.
+    let s1 = p.stream(&other, StreamPriority::Compute).unwrap();
+    p.copy(
+        &other,
+        &s1,
+        slice(&elsewhere, 0, 64),
+        slice(&elsewhere, 64, 64),
+    )
+    .unwrap();
+    assert_eq!(log().len(), 1);
 }
 
 #[test]

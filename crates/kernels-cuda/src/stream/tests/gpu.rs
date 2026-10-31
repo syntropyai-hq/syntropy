@@ -394,3 +394,92 @@ fn calls_run_in_the_device_context_whatever_is_current() {
     assert!(host.slice().iter().all(|&v| v == 7));
     m.set_current(cuda(&ctx)._context.handle());
 }
+
+/// `copy` and `copy_batch` through the `KernelProvider` trait, on buffers from `alloc`: bytes
+/// written through a `HostMapped` buffer's host address go to a `Device` buffer and back, at the
+/// offsets each slice names, and bytes no slice names keep the sentinel. A freed buffer is
+/// refused.
+#[test]
+#[ignore = "needs the NVIDIA driver and a GPU"]
+fn copies_through_the_trait_move_the_bytes_of_allocated_buffers() {
+    use syntropy_core::Bytes;
+    use syntropy_kernels::{AllocRequest, BufferSlice, DeviceBuffer, MemKind};
+    const N: usize = 1 << 16; // u32s
+    const BYTES: u64 = (N * 4) as u64;
+    const SENTINEL: u32 = 0xDEAD_BEEF;
+    let (p, ctx) = device();
+    let alloc = |kind| {
+        p.alloc(
+            &ctx,
+            AllocRequest {
+                bytes: Bytes(BYTES),
+                kind,
+                align: Bytes(256),
+                reserve_only: false,
+            },
+        )
+        .unwrap()
+    };
+    let slice = |b: &DeviceBuffer, u32s: usize, len: usize| BufferSlice {
+        buffer: b.handle,
+        offset: Bytes((u32s * 4) as u64),
+        bytes: Bytes((len * 4) as u64),
+    };
+    // The host view of a whole `HostMapped` buffer.
+    let host = |b: &DeviceBuffer| {
+        let at = p.resolve(&ctx, slice(b, 0, N)).unwrap().host.unwrap();
+        // SAFETY: `alloc` mapped `N` u32s of page-aligned host memory at `at`, which stays
+        // mapped until the buffer is freed below; no device work touches it while a view lives.
+        unsafe {
+            std::slice::from_raw_parts_mut(std::ptr::with_exposed_provenance_mut(at as usize), N)
+        }
+    };
+    let (src, dev, out) = (
+        alloc(MemKind::HostMapped),
+        alloc(MemKind::Device),
+        alloc(MemKind::HostMapped),
+    );
+    for (i, v) in host(&src).iter_mut().enumerate() {
+        *v = u32::try_from(i).unwrap().wrapping_mul(2_654_435_761);
+    }
+    host(&out).fill(SENTINEL);
+    let s = p.stream(&ctx, StreamPriority::CopyIn).unwrap();
+    p.copy(&ctx, &s, slice(&src, 0, N), slice(&dev, 0, N))
+        .unwrap();
+    // 200 pairs back to the host, more than one chunk, some empty; destinations 300 u32s apart
+    // and at most 250 long, so none overlap.
+    let pairs: Vec<(usize, usize, usize)> = (0..200)
+        .map(|i| {
+            let len = if i % 41 == 3 { 0 } else { 1 + (i * 89) % 250 };
+            (i * 300, (i * 467) % (N - 300), len)
+        })
+        .collect();
+    let batch: Vec<_> = pairs
+        .iter()
+        .map(|&(dst, from, len)| (slice(&dev, from, len), slice(&out, dst, len)))
+        .collect();
+    p.copy_batch(&ctx, &s, &batch).unwrap();
+    p.synchronize(&ctx, &s).unwrap();
+    let (expect, got) = (host(&src).to_vec(), host(&out).to_vec());
+    let mut written = vec![false; N];
+    for &(dst, from, len) in &pairs {
+        assert_eq!(
+            got[dst..dst + len],
+            expect[from..from + len],
+            "pair at {dst}"
+        );
+        written[dst..dst + len].fill(true);
+    }
+    assert!((0..N).filter(|&i| !written[i]).all(|i| got[i] == SENTINEL));
+    eprintln!(
+        "{} u32s written by {} pairs, batched entry point: {}",
+        written.iter().filter(|&&w| w).count(),
+        pairs.len(),
+        cuda(&ctx).streams.batched()
+    );
+    let freed = slice(&src, 0, 16);
+    p.free(&ctx, src);
+    assert!(p.copy(&ctx, &s, freed, slice(&dev, 0, 16)).is_err());
+    p.free(&ctx, dev);
+    p.free(&ctx, out);
+}

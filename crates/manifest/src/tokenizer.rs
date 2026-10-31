@@ -63,6 +63,11 @@ pub const CHAT_TEMPLATE_FILE: &str = "chat_template.jinja";
 /// The domain tag that starts the `TokenizerId` preimage.
 const ID_TAG: &[u8] = b"syntropy/tokenizer-id/v1";
 
+/// The `model.type` values of a `tokenizer.json` the engine loads (RFC-0043 §8.2). A file
+/// without a `type` is read as before; one naming any other type is refused, because no
+/// request could load it.
+pub const MODEL_TYPES: [&str; 4] = ["BPE", "Unigram", "WordLevel", "WordPiece"];
+
 /// The token spellings read as FIM prefix, middle and suffix. Matched against every added
 /// token, marked special or not; a set is taken only when all three of its spellings are
 /// added tokens.
@@ -88,7 +93,7 @@ impl fmt::Display for TokenizerId {
 }
 
 /// The tokenizer's special token IDs (RFC-0043 §8.1).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpecialTokens {
     /// Beginning of sequence.
     pub bos: Option<u32>,
@@ -112,7 +117,7 @@ pub struct SpecialTokens {
 
 /// Where the template in use comes from (RFC-0043 §8.5).
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TemplateSource {
     /// The template the checkpoint ships, [`TokenizerSpec::chat_template`].
     Shipped,
@@ -171,8 +176,11 @@ impl fmt::Display for TokenizerSpecError {
 
 impl std::error::Error for TokenizerSpecError {}
 
-/// A model's tokenizer data (RFC-0043 §8.1).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A model's tokenizer data (RFC-0043 §8.1). It serializes as its parts, without `id`, and
+/// deserializes through [`TokenizerSpec::new`], which computes `id` again, so a stored spec can
+/// never carry an ID that does not match what it covers (the manifest stores it, RFC-0041 §3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "TokenizerSpecParts", from = "TokenizerSpecParts")]
 pub struct TokenizerSpec {
     model: Vec<u8>,
     specials: SpecialTokens,
@@ -181,6 +189,43 @@ pub struct TokenizerSpec {
     chat_template: Option<String>,
     template_source: TemplateSource,
     id: TokenizerId,
+}
+
+/// [`TokenizerSpec`]'s stored form: its parts, without the ID.
+#[derive(Clone, Serialize, Deserialize)]
+struct TokenizerSpecParts {
+    model: Vec<u8>,
+    specials: SpecialTokens,
+    add_bos: bool,
+    add_eos: bool,
+    chat_template: Option<String>,
+    template_source: TemplateSource,
+}
+
+impl From<TokenizerSpec> for TokenizerSpecParts {
+    fn from(spec: TokenizerSpec) -> Self {
+        Self {
+            model: spec.model,
+            specials: spec.specials,
+            add_bos: spec.add_bos,
+            add_eos: spec.add_eos,
+            chat_template: spec.chat_template,
+            template_source: spec.template_source,
+        }
+    }
+}
+
+impl From<TokenizerSpecParts> for TokenizerSpec {
+    fn from(parts: TokenizerSpecParts) -> Self {
+        Self::new(
+            parts.model,
+            parts.specials,
+            parts.add_bos,
+            parts.add_eos,
+            parts.chat_template,
+            parts.template_source,
+        )
+    }
 }
 
 impl TokenizerSpec {
@@ -216,8 +261,9 @@ impl TokenizerSpec {
     ///
     /// # Errors
     ///
-    /// [`TokenizerSpecError`] when a file is not valid JSON, has a field of the wrong kind, or
-    /// names a special token the tokenizer does not hold.
+    /// [`TokenizerSpecError`] when a file is not valid JSON, has a field of the wrong kind,
+    /// names a special token the tokenizer does not hold, or `tokenizer.json` names a model type
+    /// outside [`MODEL_TYPES`].
     pub fn from_sources(src: TokenizerSources<'_>) -> Result<Self, TokenizerSpecError> {
         let tok = object(TOKENIZER_JSON, src.tokenizer_json)?;
         let cfg = src
@@ -579,6 +625,16 @@ impl<'a> Vocab<'a> {
         }
         let (mut vocab, mut unigram) = (None, None);
         if let Some(Json::Object(model)) = get(tok, "model") {
+            match get(model, "type") {
+                None => {}
+                Some(Json::Str(t)) if MODEL_TYPES.contains(&t.as_str()) => {}
+                Some(Json::Str(t)) => {
+                    return Err(bad(format!(
+                        "model type {t:?} is not one of {MODEL_TYPES:?}"
+                    )));
+                }
+                Some(other) => return Err(bad(format!("model type is {}", other.kind()))),
+            }
             match get(model, "vocab") {
                 Some(Json::Object(v)) => vocab = Some(v),
                 Some(Json::Array(v)) => unigram = Some(v.as_slice()),

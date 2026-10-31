@@ -1487,3 +1487,47 @@ The R9 pass over the remaining areas. Each criterion below uses a harness, a pro
 | PLC-E9-T23 → PLC-E9-T09 | PLC-E9-T23 | R9 | "sampled output passes PLC-E9-T09's harness" with a project-synthetic draft head (M3 → M1a) |
 | DIST-E6-T03 → PLC-E2-T11 | DIST-E6-T03 | R9 | "plugging a cable produces exactly one `InterfacesChanged` and new probes (PLC-E2-T11) within 3 s"; the L1 link probes are PLC-E2-T11's; both are M2 |
 | TIER-E9-T04 → COMP-E5-T02 | TIER-E9-T04 | R9 | "on the CUDA rig with a Q4_K pack and an i-quant pack, the fitted split's layer time is within 5% of the best fixed split"; CUDA i-quant GEMV is COMP-E5-T02's, and the row reached no CUDA kernel beyond `Timestamp`; both are M1a |
+
+## DXGI leaves PLC-E1-T04 for its own M0a task (2026-10-31)
+
+PLC-E1-T04's criteria use NVML and IOKit only, and none of its development evidence reaches a Windows host with a GPU, so the DXGI adapters it listed would have closed without a test that runs them. PLC-E1-T07's criterion "on Windows D2 never exceeds the DXGI budget" reads the DXGI local budget that E2 produces, so the DXGI part keeps an M0a producer of its own. Narrowing PLC-E1-T04's task text needs a maintainer's sign-off on the change that closes it (#91).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New PLC-E1-T20 (M0a), "DXGI adapters with local budget and LUID for E2 (split from PLC-E1-T04)" → PLC-E1-T04; PLC-E1-T04's task text drops the DXGI adapters | PLC-E1-T04, PLC-E1-T20 | R3b, R9 | the DXGI part moves with a fixture test through the trait and development evidence on a Windows host with a GPU. It stays M0a because PLC-E1-T07 (M0a) uses its budget |
+| PLC-E1-T07 → PLC-E1-T20 | PLC-E1-T07 | R9 | "on Windows D2 never exceeds the DXGI budget" uses the local budget PLC-E1-T20 produces; before the split it came through PLC-E1-T04 |
+
+## COMP-E10-T07's recorded-header golden moves to the families (2026-10-31)
+
+COMP-E10-T07 (M0a) builds the census. Its criterion asked for "golden census tests on recorded headers". Classifying the recorded M0 headers' real tensor names needs the `llama` and `qwen_moe` families' rules, COMP-E16-T03 and COMP-E16-T04. Both already carry a golden census on the recorded headers, but neither depended on the builder they run through. So COMP-E10-T07 keeps golden censuses on synthetic headers with a test-only family, and the two families gain the edge to it. All three are M0a, and the change came from #2034's review.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T07's "golden census tests on recorded headers" becomes golden censuses on synthetic GGUF and safetensors headers through a test-only family; the recorded-header golden is named as COMP-E16-T03's and COMP-E16-T04's | COMP-E10-T07 | R9 | the real-name classification it needs is the families' work, which COMP-E10-T07 does not depend on |
+| COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | "golden census on recorded headers" runs the `llama` family through COMP-E10-T07's builder |
+| COMP-E16-T04 → COMP-E10-T07 | COMP-E16-T04 | R9 | "on the `qwen_moe` checkpoint, the golden census … run[s] on its recorded safetensors headers" through the same builder; the edge was only transitive, through COMP-E16-T03 |
+
+## COMP-E16-T03's conformance checks re-homed (2026-10-31)
+
+COMP-E16-T03 (the `llama` family) required RFC-0060 §7.2 checks 1–3 on the `nano` and `micro` fixtures and on the nightly checkpoint, but its row reached none of the tasks those checks need. The fixture generators (QUAL-E7-T01, QUAL-E7-T04) and the conformance runner (QUAL-E6-T06) depend on COMP-E16-T03, so edges to them would make a cycle. The checks move to the runner, which already reaches the census builder, the KV byte counters and the parity driver. COMP-E16-T03 keeps the golden census and the KV dtype rule, which its own module shows. Review of #2037 (2026-10-31).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| RFC-0060 §7.2 checks 1–2 on the real `llama` checkpoint's (Qwen3-0.6B) recorded headers, and check 3 on its weights, move to QUAL-E6-T06 | COMP-E16-T03, QUAL-E6-T06 | R9 | check 1's groups and byte total come from the census builder (COMP-E10-T07), check 2 needs the KV byte counters (TIER-E6-T02), and check 3 needs the parity driver (QUAL-E5-T06) and the providers' kernels. QUAL-E6-T06 already depends on all of them. QUAL-E6-T06 named the real-checkpoint checks for `qwen_moe` only, so the `llama` leg had no owner |
+| COMP-E16-T03's checks 1–3 on the `nano` and `micro` fixtures are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T03 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T03's `FamilySpec` |
+
+## COMP-E7-T02's conformance leg (2026-10-31)
+
+COMP-E7-T02's criterion "ggml CPU ops pass conformance against `kernels::reference`" uses `kernels::reference`'s op functions, which COMP-E1-T03 builds. COMP-E7-T02 does not depend on COMP-E1-T03, and COMP-E1-T03 has not landed. The leg moves to COMP-E7-T19, which COMP-E7-T02 split off for the attention, RoPE and MoE mappings and which already depends on COMP-E1-T03. Until then, COMP-E7-T02's tests compare each mapped op with an F64 evaluation of its definition, bit for bit where it is one IEEE operation per element and within a derived F32 rounding bound otherwise. Those tests stay as interim evidence.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Moved: conformance of COMP-E7-T02's mappings against `kernels::reference`'s op functions → COMP-E7-T19 (M0b), which depends on COMP-E7-T02 and COMP-E1-T03 | COMP-E7-T02, COMP-E7-T19 | R9 | the criterion uses COMP-E1-T03's op functions, which no edge of COMP-E7-T02 reaches; COMP-E7-T19 reaches them |
+
+## COMP-E4-T02's arena-test leg moves to the task that builds the arena tests (2026-10-31)
+
+COMP-E4-T02 (M0a) asked that "TIER's arena tests pass on a CUDA device". No arena-construction tests exist in `syntropy-tier` until TIER-E1-T07 builds `Vram` arenas through `KernelProvider::alloc`, and TIER-E1-T07 already depends on COMP-E4-T02, both M0a. `tier` cannot use `kernels-cuda` either, since both are layer 2 (RFC-0001 §4.2 rule 2).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E4-T02's criterion keeps the provider-level arena build on a CUDA device; "TIER's arena tests pass on a CUDA device" moves to TIER-E1-T07, and COMP-E4-T21's R-ADA re-run names each leg's task | COMP-E4-T02, TIER-E1-T07, COMP-E4-T21 | R9 | the tests a criterion runs must exist when the task closes; the existing edge TIER-E1-T07 → COMP-E4-T02 keeps the graph acyclic and within M0a. Proposed, for the maintainers to confirm |

@@ -4,10 +4,11 @@
 //!
 //! - [`Family`] is RFC-0043 §5.1's trait, with the methods whose types exist so far: the tag,
 //!   the accepted architecture names, the version, [`parse_hparams`](Family::parse_hparams),
-//!   [`classify`](Family::classify) and [`required_ops`](Family::required_ops). `build`,
-//!   `kv_formula`, `routing_known`, `speculative_support`, `tp_sharding`, `tokenizer_spec`,
-//!   `chat_format`, `embedding` and `fixture_spec` join it with the tasks that add their types
-//!   (the census, `KvFormula`, `RoutingKnown`, the chat formats, `FamilySpec`).
+//!   [`classify`](Family::classify), [`kv_formula`](Family::kv_formula),
+//!   [`tokenizer_spec`](Family::tokenizer_spec) and [`required_ops`](Family::required_ops).
+//!   `build`, `routing_known`, `speculative_support`, `tp_sharding`, `chat_format`, `embedding`
+//!   and `fixture_spec` join it with the tasks that add their types (the census graph,
+//!   `RoutingKnown`, the chat formats, `FamilySpec`).
 //! - [`MetaView`] reads GGUF metadata or `config.json` plus `generation_config.json` through
 //!   the same accessors, so `parse_hparams` is written once per family (§5.1).
 //! - [`Registry`] holds the compiled-in families; there are no plugins. [`families()`] is the
@@ -18,17 +19,20 @@
 //!   never renamed or reused for another module. [`Registry::check`] holds every registered
 //!   family to the checked-in list, and `tests/family_tags.rs` pins the list itself.
 //!
-//! No family module is registered yet: `llama` and `qwen_moe` come with COMP-E16-T03 and
-//! COMP-E16-T04. Certification gating of [`families()`] is COMP-E16-T02.
+//! [`llama`] is registered (COMP-E16-T03); `qwen_moe` comes with COMP-E16-T04. Certification
+//! gating of [`families()`] is COMP-E16-T02.
 
 use std::fmt;
 
 use syntropy_core::ErrorClass;
 use syntropy_manifest::hparams::HyperParams;
+use syntropy_manifest::kv::{KvFormula, KvSource};
+use syntropy_manifest::tokenizer::{TokenizerSources, TokenizerSpec, TokenizerSpecError};
 
 use crate::classify::Classification;
 use crate::ir::OpSet;
 
+pub mod llama;
 mod meta;
 pub mod tags;
 
@@ -53,6 +57,22 @@ pub trait Family: Send + Sync {
     fn parse_hparams(&self, meta: &MetaView<'_>) -> Result<HyperParams, FamilyError>;
     /// Classifies one tensor from its name and its shape in the source's order (RFC-0043 §4).
     fn classify(&self, name: &str, shape: &[u64], hp: &HyperParams) -> Classification;
+    /// The KV and state size per layer, with the reference's KV dtype, for weights from
+    /// `source` (RFC-0022 §2; RFC-0042 §4.2's rule, `KvDTypeRule`).
+    fn kv_formula(&self, hp: &HyperParams, source: KvSource) -> KvFormula;
+    /// The tokenizer data of a checkpoint's tokenizer side files (RFC-0043 §8.1). The default
+    /// is [`TokenizerSpec::from_sources`]; a family overrides it only to supply what its
+    /// checkpoints leave out.
+    ///
+    /// # Errors
+    ///
+    /// [`TokenizerSpecError`] for a side file that cannot be read as a tokenizer source.
+    fn tokenizer_spec(
+        &self,
+        sources: TokenizerSources<'_>,
+    ) -> Result<TokenizerSpec, TokenizerSpecError> {
+        TokenizerSpec::from_sources(sources)
+    }
     /// The ops its graphs use (RFC-0040 §11.1).
     fn required_ops(&self, hp: &HyperParams) -> OpSet;
 }
@@ -340,9 +360,12 @@ impl Registry {
     }
 }
 
-/// The families this build registers. None yet: `llama` and `qwen_moe` come with
-/// COMP-E16-T03 and COMP-E16-T04.
-pub static REGISTRY: Registry = Registry::new(&[]);
+/// The families this build registers: `llama` (COMP-E16-T03). `qwen_moe` comes with
+/// COMP-E16-T04.
+pub static REGISTRY: Registry = Registry::new(&[Registration {
+    module: llama::MODULE,
+    family: &llama::LLAMA,
+}]);
 
 /// The registry this build serves (RFC-0043 §1 `graph::families()`).
 #[must_use]

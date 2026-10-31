@@ -939,6 +939,10 @@ Errors become the request shape's own error body:
   - Their codes are raised inside a node, and the node handles them there. Selection, the module loader and the tier manager answer the `Unsupported` and `Capacity` ones by choosing another candidate or domain, or by re-planning. None of these is ever the error of a request, so they are exempt:
   - `Kernels`: 0x0001 `OpUnsupported`, 0x0002 `ModuleMissing`, 0x0004 `ModuleAbi`, 0x0005 `DriverTooOld`, 0x0007 `CaptureFailed`, 0x0009 `AllocFailed`, 0x000A `RegisterFailed`, 0x000C `GgmlImportFailed`, 0x000D `AmxDenied`, 0x000F `NoCertifiedCandidate`;
   - The other codes map through a whole-class row: `ParityFailed` (`Correctness`), `DeviceSticky` (`Device`), `DoorbellTimeout` (`Timeout`), and `WorkspaceExceeded` and `ProviderPanicked` (`Internal`). `ModuleIntegrity` and `ManifestInvalid` follow the rule for `Integrity`. Every `Exec` code maps the same way: `RingClosed`, `StepStalled` and `PoolBarrierMissed` (`Internal`).
+- *Note 2026-10-31 (TIER-E1-T02):* the `Tier` domain (RFC-0020 §15, note of this date) follows the same rules.
+  - The tier manager's `Capacity` and `Unsupported` codes fail the runner's Fetching or Loading state, or turn an arena into a fallback, and the coordinator re-plans or the runner degrades. None of these is ever the error of a request, so they are exempt:
+  - `Tier`: 0x0701 `LedgerExceeded`, 0x0702 `VramShort`, 0x0704 `HostReserve`, 0x0706 `RegisterUnsupported`, 0x0707 `VmmUnsupported`;
+  - The other codes map through a whole-class row: `StaleHandle` (`Internal`), and `VramEcReduced`, `PinDegraded`, `PressureExhausted`, `VramBudgetLost` (`Drift`) and `NumaBind` (`Transient`) follow the rule for `Drift` and `Transient`.
 
 The Anthropic shape uses 529 for overload, as the published API does, because Anthropic SDKs retry it. The OpenAI shape uses 429 and 503, which OpenAI SDKs retry.
 
