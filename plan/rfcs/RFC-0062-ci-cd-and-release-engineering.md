@@ -244,6 +244,8 @@ The required-check set differs by event, so that no required check ever waits fo
 - **Merge groups.** `ci-gate` evaluates hosted jobs only. QUAL-E1-T11 adds the `hw:queue` members' statuses.
 - **Re-runs.** A status that lands does not re-run `pr.yml` by itself. So the dispatcher that posts it re-runs `ci-gate`, which QUAL-E2-T02's criterion needs (`ci-gate` turns green only after its status lands).
 
+*Note, 2026-10-31 (ADR-0626, Proposed; QUAL-E1-T37).* Until M1a starts, only Linux gates a merge. `build-macos`, `build-windows`, `hosted-test-macos`, `hosted-test-windows`, `toolchains-macos` and `toolchains-windows` still run when `changes` lists them, and post their own checks. `ci/jobs.toml` marks them advisory, and `ci-gate` neither waits for them nor fails on them. The base branch's `ci-gate` reads the marks, so a PR cannot add to them for itself. At M1a's start the marks go and the jobs return to `ci-gate`'s `needs`.
+
 - **`ci-gate`** is the only check that aggregates conditional jobs, which keeps the required set stable as jobs come and go. Hardware jobs report back as commit statuses `hw/<job>`, which `lab.yml` posts on the SHA it tested. On a PR, `ci-gate` re-evaluates when they arrive.
 - **Post-merge hardware results gate release promotion, not merges.**
   - `rc:start` is refused while any `main` commit since the previous release has a failing or missing post-merge `hw/<job>` status for its `hw_required` set, unless a later commit's run of the same job passes and an issue records the cause.
