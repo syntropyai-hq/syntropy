@@ -3,7 +3,9 @@
 //! Confinement of a short-lived child that reads hostile input: the header parse of a newly
 //! added model (RFC-0034 §10.4, open question 3; DIST-E17-T16).
 //!
-//! [`confine_self`] is called by the child itself, first thing, before it opens the file:
+//! [`confine_and_open`] is called by the child itself, first thing. It sets the limits, closes
+//! what the child inherited, opens the one file the child may read, and then applies the OS
+//! sandbox profile, so the child can open nothing more (DIST-E17-T08):
 //! - **Resources.** On Linux, `setrlimit` caps the address space, CPU seconds, open files and core
 //!   dumps, and is tested here. On macOS it caps CPU seconds, open files and core dumps, but not
 //!   memory: macOS does not enforce the address-space limit, and it refuses the data-segment
@@ -17,13 +19,34 @@
 //!   fail with `EACCES`, and fails with `EPERM`: `io_uring_setup()` (io_uring can open sockets
 //!   itself), `ptrace`, `process_vm_readv`, `process_vm_writev`, `pidfd_open` and `pidfd_getfd`
 //!   (each could reach the daemon's sockets). x32 system calls are refused and a foreign
-//!   architecture kills the process. It is a deny list, not the allow list and landlock of the M4
-//!   sandbox (DIST-E17-T08). It needs no privilege, unlike a network namespace, which Ubuntu 24.04
-//!   denies unprivileged processes by default. The process is also made non-dumpable. On macOS and
-//!   Windows there is no network ban yet: a macOS sandbox profile and an AppContainer are
-//!   DIST-E17-T08's.
+//!   architecture kills the process. After the file is open the filter also fails every call that
+//!   opens or creates a file (`open`, `openat`, `openat2`, `creat`) with `EACCES`, and `execve` and
+//!   `execveat` with `EPERM`. It needs no privilege, unlike a network namespace, which Ubuntu
+//!   24.04 denies unprivileged processes by default. The process is also made non-dumpable.
+//! - **Landlock** (Linux, DIST-E17-T08). Where the kernel has it, a ruleset that handles every
+//!   file-system right of the kernel's ABI and grants none, plus TCP bind and connect from ABI 4
+//!   and the abstract-socket and signal scopes from ABI 6, so the child cannot reach the file
+//!   system by any call the seccomp filter leaves, nor another process. A kernel without Landlock
+//!   leaves the seccomp filter as the file ban, and [`Confined::landlock`] says so.
+//! - **macOS sandbox profile** (DIST-E17-T08). Every inherited descriptor from 3 up is closed, then
+//!   `sandbox_init` applies [`MACOS_PROFILE`]: file reads and writes, sockets and network, process
+//!   execution and forks, Mach service lookups and IOKit are denied. The descriptors already open,
+//!   the file and stdio, still work. macOS still enforces no memory limit, so
+//!   [`Confined::memory`] is false there and the child sizes what it reads to the limit itself.
 
+use std::fs::File;
 use std::io;
+use std::path::Path;
+
+/// The macOS sandbox profile (SBPL) the child runs under: everything a parse of an already open
+/// file needs is allowed, and everything that reaches outside it is denied.
+pub const MACOS_PROFILE: &str = "(version 1)
+(allow default)
+(deny file-read* file-write* file-ioctl)
+(deny network* system-socket)
+(deny process-exec* process-fork)
+(deny mach-lookup iokit-open)
+";
 
 /// The limits a confined child runs under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,35 +60,48 @@ pub struct Limits {
     pub open_files: u64,
 }
 
-/// What [`confine_self`] put in place, for the caller to report.
+/// What [`confine_and_open`] put in place, for the caller to report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Confined {
     /// The resource limits are set: on macOS, all but memory (module docs).
     pub limits: bool,
-    /// New sockets are refused (Linux only, for now).
+    /// The OS enforces [`Limits::memory`]: Linux and Windows. On macOS the caller must keep its
+    /// own use under the limit.
+    pub memory: bool,
+    /// New sockets are refused (Linux and macOS).
     pub network: bool,
+    /// No file but the one opened can be opened (Linux and macOS).
+    pub files: bool,
+    /// The Landlock ABI version the ruleset was built for; 0 where there is none (module docs).
+    pub landlock: u32,
 }
 
-/// Confines the calling process (module docs). Call it once, in a child, before reading any
-/// hostile input: it cannot be undone.
+/// Confines the calling process and opens `path`, the one file it may read, for reading (module
+/// docs). Call it once, in a child, before reading any hostile input: it cannot be undone.
 ///
 /// # Errors
 ///
-/// The OS error of the first step that fails; the caller must then refuse to read the input.
-pub fn confine_self(limits: &Limits) -> io::Result<Confined> {
+/// The OS error of the first step that fails, or the file's open error; the caller must then
+/// refuse to read the input.
+pub fn confine_and_open(limits: &Limits, path: &Path) -> io::Result<(Confined, File)> {
     imp::limit(limits)?;
-    let network = imp::deny_network()?;
-    Ok(Confined {
-        limits: true,
-        network,
-    })
+    imp::sandbox(path)
+}
+
+/// The Landlock ABI version this kernel offers; 0 where it has none (Linux only).
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn landlock_abi() -> u32 {
+    imp::landlock::abi()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod imp {
+    use std::fs::File;
     use std::io;
+    use std::path::Path;
 
-    use super::Limits;
+    use super::{Confined, Limits};
 
     /// Sets `resource`'s soft and hard limits to `value`. A failure names the resource, so a
     /// platform that refuses one says which.
@@ -107,23 +143,199 @@ mod imp {
     }
 
     #[cfg(target_os = "macos")]
-    pub(super) fn deny_network() -> io::Result<bool> {
-        Ok(false)
+    pub(super) fn sandbox(path: &Path) -> io::Result<(Confined, File)> {
+        // The descriptors this process inherited, listed before any is closed. `read_dir` holds
+        // one of its own while it lists, which is closed again by the time the loop runs.
+        let inherited: Vec<libc::c_int> = std::fs::read_dir("/dev/fd")?
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+            .filter(|fd| *fd > 2)
+            .collect();
+        for fd in inherited {
+            // SAFETY: closing a descriptor this process holds and nothing in it uses: the child
+            // opens its own file only below. A descriptor already closed fails with `EBADF`,
+            // which is ignored.
+            unsafe { libc::close(fd) };
+        }
+        let file = File::open(path)?;
+        let profile = std::ffi::CString::new(super::MACOS_PROFILE)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let mut error: *mut libc::c_char = std::ptr::null_mut();
+        // SAFETY: `profile` is NUL-terminated and outlives the call; flags 0 reads it as SBPL text;
+        // `error` is written only on failure.
+        let rc = unsafe { sandbox_init(profile.as_ptr(), 0, &raw mut error) };
+        if rc != 0 {
+            let reason = if error.is_null() {
+                "no reason given".to_owned()
+            } else {
+                // SAFETY: on failure `error` is a NUL-terminated string the call allocated, read
+                // once and freed once here.
+                let text = unsafe { std::ffi::CStr::from_ptr(error) }
+                    .to_string_lossy()
+                    .into_owned();
+                // SAFETY: as above.
+                unsafe { sandbox_free_error(error) };
+                text
+            };
+            return Err(io::Error::other(format!("sandbox_init: {reason}")));
+        }
+        Ok((
+            Confined {
+                limits: true,
+                memory: false,
+                network: true,
+                files: true,
+                landlock: 0,
+            },
+            file,
+        ))
+    }
+
+    // SAFETY: the declarations of `<sandbox.h>`, which libSystem exports.
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        fn sandbox_init(
+            profile: *const libc::c_char,
+            flags: u64,
+            errorbuf: *mut *mut libc::c_char,
+        ) -> libc::c_int;
+        fn sandbox_free_error(errorbuf: *mut libc::c_char);
     }
 
     #[cfg(target_os = "linux")]
-    pub(super) fn deny_network() -> io::Result<bool> {
+    pub(super) fn sandbox(path: &Path) -> io::Result<(Confined, File)> {
         // SAFETY: closing descriptors this process holds; nothing in it uses them afterwards, as
-        // the child opens its file only after confinement.
+        // the child opens its own file only below.
         if unsafe { libc::close_range(3, libc::c_uint::MAX, 0) } != 0 {
             return Err(io::Error::last_os_error());
         }
+        let file = File::open(path)?;
         // SAFETY: `prctl` with these arguments reads nothing from memory.
         if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0 as libc::c_ulong, 0, 0, 0) } != 0 {
             return Err(io::Error::last_os_error());
         }
+        // SAFETY: as above. Landlock and seccomp both need `no_new_privs`.
+        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1 as libc::c_ulong, 0, 0, 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let landlock = landlock::restrict()?;
         seccomp::install()?;
-        Ok(true)
+        Ok((
+            Confined {
+                limits: true,
+                memory: true,
+                network: true,
+                files: true,
+                landlock,
+            },
+            file,
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) mod landlock {
+        //! Landlock through its three system calls (`linux/landlock.h`), with no crate.
+
+        use std::io;
+
+        /// `landlock_create_ruleset`'s flag that asks for the ABI version.
+        const CREATE_RULESET_VERSION: libc::c_uint = 1;
+
+        /// The file-system rights each ABI version handles, cumulatively: ABI 1 bits 0–12
+        /// (execute … make symlink), ABI 2 `REFER`, ABI 3 `TRUNCATE`, ABI 5 `IOCTL_DEV`.
+        #[must_use]
+        pub(crate) fn fs_rights(abi: u32) -> u64 {
+            let mut rights = (1u64 << 13) - 1;
+            if abi >= 2 {
+                rights |= 1 << 13;
+            }
+            if abi >= 3 {
+                rights |= 1 << 14;
+            }
+            if abi >= 5 {
+                rights |= 1 << 15;
+            }
+            rights
+        }
+
+        /// The network rights from ABI 4: TCP bind and connect.
+        #[must_use]
+        pub(crate) fn net_rights(abi: u32) -> u64 {
+            if abi >= 4 { 0b11 } else { 0 }
+        }
+
+        /// The scopes from ABI 6: abstract Unix sockets and signals to processes outside the
+        /// domain.
+        #[must_use]
+        pub(crate) fn scopes(abi: u32) -> u64 {
+            if abi >= 6 { 0b11 } else { 0 }
+        }
+
+        /// `struct landlock_ruleset_attr`, ABI 6's layout.
+        #[repr(C)]
+        struct RulesetAttr {
+            handled_access_fs: u64,
+            handled_access_net: u64,
+            scoped: u64,
+        }
+
+        /// The kernel's Landlock ABI version; 0 when it has none (not built, or disabled).
+        #[must_use]
+        pub(crate) fn abi() -> u32 {
+            // SAFETY: a null attribute with size 0 and the version flag reads no memory.
+            let rc = unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_create_ruleset,
+                    std::ptr::null::<RulesetAttr>(),
+                    0usize,
+                    CREATE_RULESET_VERSION,
+                )
+            };
+            u32::try_from(rc).unwrap_or(0)
+        }
+
+        /// Restricts this process to a ruleset that handles every right of the kernel's ABI and
+        /// grants none. Returns the ABI it used, or 0 when the kernel has no Landlock. Needs
+        /// `no_new_privs`.
+        pub(super) fn restrict() -> io::Result<u32> {
+            let abi = abi();
+            if abi == 0 {
+                return Ok(0);
+            }
+            let attr = RulesetAttr {
+                handled_access_fs: fs_rights(abi),
+                handled_access_net: net_rights(abi),
+                scoped: scopes(abi),
+            };
+            // The struct as long as this ABI knows it, so an older kernel sees no field it lacks.
+            let size = match abi {
+                1..=3 => 8,
+                4 | 5 => 16,
+                _ => size_of::<RulesetAttr>(),
+            };
+            // SAFETY: `attr` lives for the call and is at least `size` bytes.
+            let fd = unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_create_ruleset,
+                    &raw const attr,
+                    size,
+                    0 as libc::c_uint,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let fd = fd as libc::c_int;
+            // SAFETY: `fd` is the ruleset just created; flags must be 0.
+            let rc =
+                unsafe { libc::syscall(libc::SYS_landlock_restrict_self, fd, 0 as libc::c_uint) };
+            let restrict = io::Error::last_os_error();
+            // SAFETY: closing the ruleset's descriptor, which nothing else holds.
+            unsafe { libc::close(fd) };
+            if rc != 0 {
+                return Err(restrict);
+            }
+            Ok(abi)
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -151,9 +363,43 @@ mod imp {
             libc::sock_filter { code, jt, jf, k }
         }
 
+        /// The calls the filter fails, with the errno each gets.
+        fn denied() -> Vec<(u32, i32)> {
+            let calls = vec![
+                // No network: io_uring can open sockets itself.
+                (libc::SYS_socket, libc::EACCES),
+                (libc::SYS_io_uring_setup, libc::EPERM),
+                // No reaching another process's memory or descriptors.
+                (libc::SYS_ptrace, libc::EPERM),
+                (libc::SYS_process_vm_readv, libc::EPERM),
+                (libc::SYS_process_vm_writev, libc::EPERM),
+                (libc::SYS_pidfd_open, libc::EPERM),
+                (libc::SYS_pidfd_getfd, libc::EPERM),
+                // No file but the one already open (DIST-E17-T08).
+                (libc::SYS_openat, libc::EACCES),
+                (libc::SYS_openat2, libc::EACCES),
+                (libc::SYS_execve, libc::EPERM),
+                (libc::SYS_execveat, libc::EPERM),
+            ];
+            // aarch64 has only the `at` forms of `open`.
+            #[cfg(target_arch = "x86_64")]
+            let calls = [
+                calls,
+                vec![
+                    (libc::SYS_open, libc::EACCES),
+                    (libc::SYS_creat, libc::EACCES),
+                ],
+            ]
+            .concat();
+            calls
+                .into_iter()
+                .map(|(nr, errno)| (nr as u32, errno))
+                .collect()
+        }
+
         pub(super) fn install() -> io::Result<()> {
             let errno = |e: i32| libc::SECCOMP_RET_ERRNO | (e as u32 & libc::SECCOMP_RET_DATA);
-            let filter = [
+            let mut filter = vec![
                 // A foreign architecture: kill, since its numbers mean other calls.
                 op(LD_W_ABS, 0, 0, ARCH),
                 op(JEQ_K, 1, 0, AUDIT_ARCH),
@@ -161,26 +407,17 @@ mod imp {
                 op(LD_W_ABS, 0, 0, NR),
                 op(JGE_K, 0, 1, X32_BIT),
                 op(RET_K, 0, 0, errno(libc::EPERM)),
-                op(JEQ_K, 0, 1, libc::SYS_socket as u32),
-                op(RET_K, 0, 0, errno(libc::EACCES)),
-                op(JEQ_K, 5, 0, libc::SYS_io_uring_setup as u32),
-                op(JEQ_K, 4, 0, libc::SYS_ptrace as u32),
-                op(JEQ_K, 3, 0, libc::SYS_process_vm_readv as u32),
-                op(JEQ_K, 2, 0, libc::SYS_process_vm_writev as u32),
-                op(JEQ_K, 1, 0, libc::SYS_pidfd_open as u32),
-                op(JEQ_K, 0, 1, libc::SYS_pidfd_getfd as u32),
-                op(RET_K, 0, 0, errno(libc::EPERM)),
-                op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW),
             ];
+            for (nr, e) in denied() {
+                filter.push(op(JEQ_K, 0, 1, nr));
+                filter.push(op(RET_K, 0, 0, errno(e)));
+            }
+            filter.push(op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW));
             let program = libc::sock_fprog {
                 len: filter.len() as u16,
                 filter: filter.as_ptr().cast_mut(),
             };
-            // SAFETY: `prctl` with these arguments reads nothing from memory.
-            if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1 as libc::c_ulong, 0, 0, 0) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: `program` and the filter it points to live until the call returns; the kernel
+            // `no_new_privs` is set by the caller. SAFETY: `program` and the filter it points to live until the call returns; the kernel
             // copies the filter.
             let rc = unsafe {
                 libc::prctl(
@@ -211,7 +448,10 @@ mod imp {
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-    use super::Limits;
+    use std::fs::File;
+    use std::path::Path;
+
+    use super::{Confined, Limits};
 
     pub(super) fn limit(limits: &Limits) -> io::Result<()> {
         // SAFETY: an unnamed job with default security; the handle is checked.
@@ -247,8 +487,19 @@ mod imp {
         Ok(())
     }
 
-    pub(super) fn deny_network() -> io::Result<bool> {
-        Ok(false)
+    /// Windows has no profile yet: the AppContainer the child must be started in is not built
+    /// (module docs). The file is opened, and the limits stand.
+    pub(super) fn sandbox(path: &Path) -> io::Result<(Confined, File)> {
+        Ok((
+            Confined {
+                limits: true,
+                memory: true,
+                network: false,
+                files: false,
+                landlock: 0,
+            },
+            File::open(path)?,
+        ))
     }
 }
 
@@ -265,7 +516,41 @@ mod imp {
         ))
     }
 
-    pub(super) fn deny_network() -> io::Result<bool> {
-        Ok(false)
+    pub(super) fn sandbox(_: &Path) -> io::Result<(super::Confined, std::fs::File)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no confinement on this platform",
+        ))
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::imp::landlock::{fs_rights, net_rights, scopes};
+
+    /// Each ABI handles every right it defines, and no right it does not, which the kernel
+    /// would refuse with `EINVAL`.
+    #[test]
+    fn landlock_rights_follow_the_abi() {
+        assert_eq!(fs_rights(1), 0x1FFF);
+        assert_eq!(fs_rights(2), 0x3FFF);
+        assert_eq!(fs_rights(3), 0x7FFF);
+        assert_eq!(fs_rights(4), 0x7FFF);
+        assert_eq!(fs_rights(5), 0xFFFF);
+        assert_eq!(fs_rights(6), 0xFFFF);
+        assert_eq!((net_rights(3), net_rights(4)), (0, 0b11));
+        assert_eq!((scopes(5), scopes(6)), (0, 0b11));
+    }
+
+    /// The kernel's ABI, printed for the evidence. On a kernel that lists Landlock among its
+    /// security modules the version is at least 1.
+    #[test]
+    fn the_kernel_reports_its_landlock_abi() {
+        let abi = super::landlock_abi();
+        println!("landlock ABI {abi}");
+        let lsm = std::fs::read_to_string("/sys/kernel/security/lsm").unwrap_or_default();
+        if lsm.split(',').any(|m| m.trim() == "landlock") {
+            assert!(abi >= 1, "{lsm}");
+        }
     }
 }

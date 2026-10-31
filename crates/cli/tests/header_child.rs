@@ -204,9 +204,10 @@ fn a_child_past_the_time_limit_is_killed() {
     fs::remove_dir_all(&dir).ok();
 }
 
-/// On Linux a confined child cannot open a socket, so a connection to a listening address
-/// fails; the same connection from this process succeeds.
-#[cfg(target_os = "linux")]
+/// A confined child cannot open a socket, so a connection to a listening address fails; the
+/// same connection from this process succeeds. Linux's seccomp filter refuses `socket()` with
+/// `EACCES`, and macOS's profile with `EPERM` (DIST-E17-T08); both read as `PermissionDenied`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_confined_child_cannot_connect() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -236,14 +237,16 @@ fn a_confined_child_cannot_connect() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
-    // The seccomp filter's EACCES on socket(), not some other failure.
+    // The profile's refusal of socket(), not some other failure.
     assert!(stderr.contains("PermissionDenied"), "{stderr}");
     fs::remove_dir_all(&dir).ok();
 }
 
 /// A header that needs more memory than the limit is refused, while a small one parses under
-/// the same limit. Linux only: there the address-space limit is enforced and tested here.
-#[cfg(target_os = "linux")]
+/// the same limit. On Linux the address-space limit stops the child; on macOS, which enforces
+/// no memory limit, the child refuses a header longer than the limit over `PEAK_COPIES`
+/// (DIST-E17-T08).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_header_over_the_memory_limit_is_refused() {
     let limits = HeaderLimits {
@@ -256,8 +259,16 @@ fn a_header_over_the_memory_limit_is_refused() {
     let big_dir = scratch("membig");
     let big = safetensors(&big_dir, 96 << 20);
     let reason = invalid_reason(parse(HeaderKind::Safetensors, &big, &limits));
+    #[cfg(target_os = "linux")]
     assert!(
         reason.contains("signal 6") || reason.contains("memory allocation"),
+        "{reason}"
+    );
+    // The cap the child derived: 64 MiB over `PEAK_COPIES` (5) is 13,421,772 bytes, of which the
+    // safetensors JSON may take all but the 8-byte length word.
+    #[cfg(target_os = "macos")]
+    assert!(
+        reason.contains("exited with code 8") && reason.contains("limit of 13421764 bytes"),
         "{reason}"
     );
     // The same header parses with room for it.
@@ -358,5 +369,80 @@ fn the_child_sees_no_environment() {
         !reason.contains("HOME=") && !reason.contains("PATH="),
         "{reason}"
     );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// The `__header` arguments for `path` under the default limits, plus `extra`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn confined(path: &Path, extra: &[&std::ffi::OsStr]) -> std::process::Output {
+    std::process::Command::new(binary())
+        .args(["__header", "--kind", "safetensors"])
+        .arg("--path")
+        .arg(path)
+        .args([
+            "--memory",
+            "1073741824",
+            "--cpu-secs",
+            "30",
+            "--open-files",
+            "32",
+            "--max-header-bytes",
+            "268435456",
+        ])
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+/// DIST-E17-T08: under the profile the child reads the file it was given and can open no other
+/// file, not even that one again, while this process opens both.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_opens_no_other_file() {
+    let dir = scratch("files");
+    let path = safetensors(&dir, 16);
+    let other = dir.join("other.txt");
+    fs::write(&other, "not the header").unwrap();
+    assert!(fs::File::open(&other).is_ok() && fs::File::open(&path).is_ok());
+    let output = confined(&path, &["--check-read".as_ref()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for target in [other.as_path(), path.as_path(), Path::new("/etc/hosts")] {
+        let output = confined(&path, &["--check-open".as_ref(), target.as_os_str()]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{}: {stderr}", target.display());
+        assert!(
+            stderr.contains("PermissionDenied"),
+            "{}: {stderr}",
+            target.display()
+        );
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// DIST-E17-T08: a parser crash under the profile kills only the child. The real child confines
+/// itself and then aborts, as a parser bug would; the daemon reports the file invalid and parses
+/// the next file.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_crash_under_the_profile_kills_only_the_child() {
+    let dir = scratch("crash-profile");
+    let path = safetensors(&dir, 16);
+    let crashing = script(
+        &dir,
+        &format!("exec '{}' \"$@\" --check-crash", binary().display()),
+    );
+    let reason = invalid_reason(parse_in_child(
+        &crashing,
+        HeaderKind::Safetensors,
+        &path,
+        &HeaderLimits::default(),
+        &wall(),
+    ));
+    assert!(reason.contains("signal 6"), "{reason}");
+    assert!(parse(HeaderKind::Safetensors, &path, &HeaderLimits::default()).is_ok());
     fs::remove_dir_all(&dir).ok();
 }

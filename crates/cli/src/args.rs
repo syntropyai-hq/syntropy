@@ -182,6 +182,18 @@ pub struct HeaderArgs {
     /// attempt is refused: the check that the child has no network
     #[arg(long, value_name = "ADDR", hide = true)]
     pub check_network: Option<std::net::SocketAddr>,
+    /// Instead of parsing, try to open this other file once confined, and exit 0 only if the
+    /// attempt is refused: the check that the child can open no file but its own
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub check_open: Option<PathBuf>,
+    /// Instead of parsing, read the given file's first 8 bytes once confined, and exit 0 if that
+    /// works: the check that the profile leaves the child its own file
+    #[arg(long, hide = true)]
+    pub check_read: bool,
+    /// Instead of parsing, abort once confined: the stand-in for a parser that crashes on a
+    /// hostile header under the profile
+    #[arg(long, hide = true)]
+    pub check_crash: bool,
 }
 
 /// A header's format.
