@@ -29,8 +29,9 @@ for slot in $(seq 1 "$slots"); do
   systemctl restart "syntropy-build-runner@$slot"
 done
 # Slots above the count, from an earlier install with more.
-for unit in $(systemctl list-units --plain --no-legend 'syntropy-build-runner@*' | awk '{print $1}'); do
+for unit in $(systemctl list-units --all --plain --no-legend 'syntropy-build-runner@*' | awk '{print $1}'); do
   n="${unit#syntropy-build-runner@}"; n="${n%.service}"
   if [ "$n" -gt "$slots" ]; then systemctl disable --now "$unit"; fi
 done
-systemctl --no-pager --lines=0 status 'syntropy-build-runner@*'
+# Informational: a slot between jobs, or still starting, makes `status` exit non-zero.
+systemctl --no-pager --lines=0 status 'syntropy-build-runner@*' || true

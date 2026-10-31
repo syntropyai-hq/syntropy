@@ -1,6 +1,6 @@
 # The Linux build host
 
-A self-hosted machine that runs the workflows' Linux jobs, so they don't wait for hosted runners ([ADR-0625](../../plan/decisions/ADR-0625-linux-build-host.md)): PRs from branches of this repository, merge groups, pushes, schedules, manual runs and `dep-approval.yml`. Fork PRs, the macOS and Windows jobs and `toolchains-linux` (it needs `docker buildx`) stay on hosted runners. The host is not a lab rig and never runs a lab job.
+A self-hosted machine that runs the workflows' Linux jobs, so they don't wait for hosted runners ([ADR-0625](../../plan/decisions/ADR-0625-linux-build-host.md)): PRs from branches of this repository, merge groups, pushes, schedules and manual runs. Fork PRs, the macOS and Windows jobs, `toolchains-linux` (it needs `docker buildx`) and `dep-approval.yml` (it waits for build-host jobs, so it must not hold a slot) stay on hosted runners. A merge group's run includes the code of every queued PR, a fork's among them once a maintainer has queued it. The host is not a lab rig and never runs a lab job.
 
 | File | What it does |
 |---|---|

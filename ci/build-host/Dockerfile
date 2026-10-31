@@ -73,5 +73,7 @@ RUN curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --re
  && rustup default "$(rustup show active-toolchain | cut -d ' ' -f 1)"
 
 # The supervisor passes the configuration in `JITCONFIG`. It is single-use: once this runner has
-# registered, the configuration registers nothing else.
-ENTRYPOINT ["/bin/bash", "-c", "exec ./run.sh --jitconfig \"$JITCONFIG\""]
+# registered, the configuration registers nothing else. The entrypoint moves it out of the
+# environment before the runner starts, so the job's steps do not inherit it. The runner's own
+# command line still holds it, readable by the job, which runs as the same user.
+ENTRYPOINT ["/bin/bash", "-c", "cfg=\"$JITCONFIG\"; unset JITCONFIG; exec ./run.sh --jitconfig \"$cfg\""]

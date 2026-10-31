@@ -3,9 +3,11 @@
 
 # The build host's job-started hook (ADR-0625 decision 6). The runner runs it before the first
 # step of every job, with the job's context, and fails the job without running a step when it
-# exits non-zero. It accepts a workflow of this repository on one of the events the workflows
-# use, and refuses any event whose payload carries a pull request from another repository, so a
-# fork's PR that names the label, approved by mistake, still runs nothing here. The event payload
+# exits non-zero. It accepts a workflow of this repository on one of the events its build-host
+# jobs use, and refuses any event whose payload carries a pull request from another repository,
+# so a fork's PR that names the label, approved by mistake, still runs nothing here.
+# `issue_comment` is refused outright: its payload names a PR without its head repository, so a
+# comment on a fork's PR could not be told apart. The event payload
 # is the runner's copy of GitHub's, written before any step.
 
 set -euo pipefail
@@ -19,7 +21,7 @@ refuse() {
 
 [ "${GITHUB_REPOSITORY:-}" = "$repo" ] || refuse "repository '${GITHUB_REPOSITORY:-}'"
 case "${GITHUB_EVENT_NAME:-}" in
-  pull_request|merge_group|push|schedule|workflow_dispatch|issue_comment) ;;
+  pull_request|merge_group|push|schedule|workflow_dispatch) ;;
   *) refuse "event '${GITHUB_EVENT_NAME:-}'" ;;
 esac
 case "${GITHUB_WORKFLOW_REF:-}" in

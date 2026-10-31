@@ -36,7 +36,10 @@ jobs:
       github.event.issue.pull_request &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
       (github.event.action != 'created' || contains(github.event.comment.body, 'dep-diff approved'))
-    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
+    # Hosted, not the build host (ADR-0625 decision 1): the job only waits for a `pr-meta` run and
+    # calls the API, and that run's jobs need a build-host slot, so holding one while it waits
+    # could take every slot from the jobs it waits for.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       actions: write
