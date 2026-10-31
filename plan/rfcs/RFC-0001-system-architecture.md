@@ -3199,3 +3199,16 @@ DIST-E17-T16 builds RFC-0034 §10.4's child that parses a newly added model's he
 | A fourth process mode, `syntropy __header`, parses one file's header confined, and `daemon::header_child::parse_in_child` spawns it | §3.1 (the Header row); RFC-0034 §10.4 (dated note) | ADR-0015 decision 1 has one binary run every role, so the child is a hidden mode, as `__runner` is. It needs no shared-memory region and no plan. Proposed, for the maintainers to confirm |
 | The child returns the file's length and the header's bytes on its stdout, not over an IPC channel, and the daemon re-parses those bytes | RFC-0034 §10.4 (dated note) | the child sends one reply and exits, so a pipe is enough; re-parsing the vetted bytes in the daemon needs no new `ipc` message. Proposed, for the maintainers to confirm |
 | On Linux the child's network ban is a seccomp filter at M1, and the macOS and Windows bans stay at M4 with DIST-E17-T08 | RFC-0034 §10.4 (dated note); DIST-E17-T16 and DIST-E17-T08's criteria | accepted by the maintainers on 2026-10-29. A network namespace needs a privilege Ubuntu 24.04 does not give unprivileged processes by default |
+
+### 18.54 An interim dev GPU, and the M0 CUDA path off the lab (2026-10-31)
+
+R-ADA (QUAL-E15-T02), the other M0 rigs (QUAL-E15-T17) and the fixture store's S3 backend (QUAL-E7-T15) all wait on maintainer actions, and the M0 CUDA path and the real-checkpoint chain waited on them. The maintainers decided on 2026-10-31 that agents may use a dev GPU for development evidence in the meantime.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| An RTX 3090 (`sm_86`) on a maintainer's development host, under WSL2, is an interim dev GPU: development evidence only, labelled `[measured, RTX 3090 dev host, not R-ADA]`, never conformance, gating or performance evidence | ADR-0610 decision 4 (dated revision) | the pool's first devices and R-ADA are not online, so no M0 CUDA task could be developed against a real device |
+| The M0 CUDA tasks no longer depend on the rigs; their R-ADA, R-BW and pool-host legs move to one task, COMP-E4-T21, at the same milestone | the COMP, PLC, TIER and PROD epics; `dependency-fixes.md` | each leg still runs on the rig it names before M0a closes, so no gate moves off the lab |
+| QUAL-E7-T06 imports ungated checkpoints through the local fixture store; the gated and lab-only imports, and the lab-credential read, move to QUAL-E7-T15 | the QUAL and COMP epics; `dependency-fixes.md` | the real-checkpoint chain (tokenizers, families, census, templates and the OpenAI API) needed the S3 backend only for gated files |
+
+Taken under the maintainers' decision of 2026-10-31 and their standing instruction, for the maintainers to confirm.
+
