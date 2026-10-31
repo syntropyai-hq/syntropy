@@ -437,6 +437,11 @@ pub trait RefSink {
 - `RefOptions`, the `WeightSource` and `RefSink` traits, `TapSpec` and `HiddenBlock` live in `graph::reference`, beside the interpreter that uses them. That interpreter is production code (the warm-up canary), and `testkit` is a dev-dependency only (rule 9). A `WeightSource` returns F32 values, dequantised with RFC-0042's reference dequantisers, for a `WeightKey`: a `graph::ir::WeightRef` and, for a routed expert, its index.
 - `RefExecutor`, `RefKv` and `RefStats` live in `testkit::refexec`, with the stub sources and sinks tests use.
 
+*Note 2026-10-31 (COMP-E1-T03, the `F32Fixed` order spelled out):* "pairwise over fixed 32-element blocks in index order" is read as two levels, which `kernels::reference::reduce` implements once for every reference op and for `graph::reference`.
+- The terms are cut into blocks of 32 in index order, the last holding the remainder. Each block is summed sequentially in index order into an F32 accumulator that starts at `+0.0`.
+- The block sums are added in neighbouring pairs, level by level, `(s₀ + s₁), (s₂ + s₃), …`, an odd last sum carried to the next level unchanged, until one is left.
+- An empty sum is `+0.0`. A product term is rounded once before it is added. This is the reading the declared-activation-quantisation test of COMP-E13-T03 already used, and a GPU reference (`RefDevice::Gpu`) uses the same tree.
+
 Reference semantics that matter for parity:
 - **Routing ties.** MoE top-k selection breaks score ties toward the lower expert index. RFC-0042 requires every provider to use the same rule, so a tie is never an inter-kernel divergence by construction. Near-ties are real numerics, and the metrics capture them.
 - **Attention** materialises full score rows per head. There is no tiled or online softmax in the reference.

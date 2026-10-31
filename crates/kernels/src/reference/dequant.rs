@@ -180,6 +180,23 @@ fn q4_k(block: &[u8], y: &mut [f32]) {
 /// [`DequantError::Length`] when `src` is not whole blocks; [`DequantError::Unsupported`] for a
 /// type other than `F16`, `BF16`, `Q8_0`, `Q4_0` and `Q4_K`.
 pub fn dequantize(ty: GgmlType, src: &[u8]) -> Result<Vec<f32>, DequantError> {
+    let geometry = block_geometry(ty).ok_or(DequantError::Unsupported(ty))?;
+    let mut out = vec![0.0f32; src.len() / geometry.bytes * geometry.elems];
+    dequantize_into(ty, src, &mut out)?;
+    Ok(out)
+}
+
+/// [`dequantize`], writing into `out` and allocating nothing, for the ops that read quantised
+/// rows ([`row_gather`](super::convert::row_gather), [`convert`](super::convert::convert)).
+///
+/// # Errors
+///
+/// As [`dequantize`]; `out` is untouched then.
+///
+/// # Panics
+///
+/// When `out` does not hold exactly the elements of `src`'s blocks.
+pub fn dequantize_into(ty: GgmlType, src: &[u8], out: &mut [f32]) -> Result<(), DequantError> {
     let decode: fn(&[u8], &mut [f32]) = match ty {
         GgmlType::F16 => |b, y| y[0] = half(b),
         GgmlType::BF16 => |b, y| y[0] = bf16_to_f32(u16::from_le_bytes([b[0], b[1]])),
@@ -195,14 +212,18 @@ pub fn dequantize(ty: GgmlType, src: &[u8]) -> Result<Vec<f32>, DequantError> {
             bytes: src.len(),
         });
     }
-    let mut out = vec![0.0f32; src.len() / geometry.bytes * geometry.elems];
+    assert_eq!(
+        out.len(),
+        src.len() / geometry.bytes * geometry.elems,
+        "dequantize_into: the output holds a different number of elements than the blocks"
+    );
     for (block, y) in src
         .chunks_exact(geometry.bytes)
         .zip(out.chunks_exact_mut(geometry.elems))
     {
         decode(block, y);
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
