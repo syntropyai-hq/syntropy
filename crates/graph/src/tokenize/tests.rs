@@ -795,8 +795,7 @@ fn specials_come_from_their_keys() {
         SpecialTokens {
             bos: Some(eot),
             eos: Some(im_end),
-            // EOT and EOM keys, and the control tokens spelled `<|endoftext|>` and
-            // `<|im_end|>`.
+            // EOS, the EOT and EOM keys, and `<|endoftext|>`, which EOS `<|im_end|>` adds.
             end_of_turn: vec![eot, im_start, im_end, added_id(3)],
             pad: Some(eot),
             unk: Some(5),
@@ -1115,22 +1114,48 @@ proptest! {
 }
 
 #[test]
-fn end_of_turn_adds_the_control_tokens_spelled_as_listed() {
-    // With no EOS, EOT or EOM key, the set is the listed spellings among control tokens:
-    // `<|endoftext|>` and `<|im_end|>`, not `<|im_start|>`.
-    let s = spec(&qwen_like());
-    assert_eq!(s.specials().end_of_turn, [added_id(0), added_id(2)]);
-
-    // A spelling counts only as a control token: as a user-defined token it is left out.
-    let mut kvs = qwen_like();
-    let Kv::I32s(mut types) = kvs[3].1.clone() else {
-        unreachable!()
+fn end_of_turn_adds_the_end_of_text_token_only_for_a_chat_eos() {
+    let (endoftext, im_end) = (added_id(0), added_id(2));
+    let with_eos = |eos: Option<u32>, user_defined: &[u32]| {
+        let mut kvs = qwen_like();
+        match eos {
+            Some(e) => set(&mut kvs, EOS_ID, Kv::U32(e)),
+            None => unset(&mut kvs, EOS_ID),
+        }
+        let Kv::I32s(mut types) = kvs[3].1.clone() else {
+            unreachable!()
+        };
+        for &id in user_defined {
+            types[id as usize] = 4;
+        }
+        set(&mut kvs, TOKEN_TYPE, Kv::I32s(types));
+        spec(&kvs).specials().end_of_turn.clone()
     };
-    types[added_id(0) as usize] = 4;
-    set(&mut kvs, TOKEN_TYPE, Kv::I32s(types));
-    assert_eq!(spec(&kvs).specials().end_of_turn, [added_id(2)]);
+    // A chat-tuned file: EOS `<|im_end|>` adds `<|endoftext|>`, as its source's list holds both.
+    assert_eq!(with_eos(Some(im_end), &[]), [endoftext, im_end]);
+    // A base file: EOS is the end-of-text token, and nothing is added.
+    assert_eq!(with_eos(Some(endoftext), &[]), [endoftext]);
+    // No EOS, no additions.
+    assert_eq!(with_eos(None, &[]), Vec::<u32>::new());
+    // Only control tokens count: neither a user-defined addition nor a user-defined EOS.
+    assert_eq!(with_eos(Some(im_end), &[endoftext]), [im_end]);
+    assert_eq!(with_eos(Some(im_end), &[im_end]), [im_end]);
 
-    // A SentencePiece vocabulary with none of the spellings keeps EOS alone.
+    // Llama 3's spellings, on a SentencePiece vocabulary: EOS `<|eot_id|>` adds the other two.
+    let mut vocab = spm_vocab(true);
+    let first = u32::try_from(vocab.len()).unwrap();
+    for t in ["<|end_of_text|>", "<|eot_id|>", "<|eom_id|>"] {
+        vocab.push((t.into(), 0.0, 3));
+    }
+    let mut kvs = spm_kvs(&vocab);
+    set(&mut kvs, EOS_ID, Kv::U32(first + 1));
+    assert_eq!(
+        spec(&kvs).specials().end_of_turn,
+        [first, first + 1, first + 2]
+    );
+    set(&mut kvs, EOS_ID, Kv::U32(first));
+    assert_eq!(spec(&kvs).specials().end_of_turn, [first]);
+    // An EOS spelled otherwise keeps EOS alone.
     let s = spec(&spm_kvs(&spm_vocab(true)));
     assert_eq!(s.specials().end_of_turn, [2]);
 }

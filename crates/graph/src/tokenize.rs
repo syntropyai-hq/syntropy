@@ -41,10 +41,11 @@
 //! special here.
 //!
 //! **Specials** come from their keys: BOS, EOS, unknown, padding, and the end-of-turn set, which
-//! is EOS with `eot_token_id` and `eom_token_id`, and every control token spelled as in
-//! [`END_OF_TURN_SPELLINGS`]. A GGUF file does not carry `generation_config.json`'s EOS list,
-//! which the `tokenizer.json` path reads, and without the spellings a Qwen3 file would not stop
-//! on `<|endoftext|>` where its source does. FIM prefix, middle and suffix come from
+//! is EOS with `eot_token_id` and `eom_token_id`, and the further end-of-sequence tokens
+//! [`END_OF_TURN_BY_EOS`] lists for EOS's spelling. A GGUF file does not carry
+//! `generation_config.json`'s EOS list, which the `tokenizer.json` path reads: without the
+//! table a chat-tuned Qwen3 file, whose EOS is `<|im_end|>`, would not stop on `<|endoftext|>`
+//! where its source does. A base file's EOS is the end-of-text token itself, and gains nothing. FIM prefix, middle and suffix come from
 //! `fim_pre_token_id`, `fim_mid_token_id` and `fim_suf_token_id` (or the older `prefix_token_id`,
 //! `middle_token_id` and `suffix_token_id`), all three or none; with none set, from the added
 //! tokens spelled as in [`FIM_SPELLINGS`], as for `tokenizer.json` sources. `add_bos` and
@@ -117,17 +118,18 @@ const FIM_KEYS: [[&str; 3]; 2] = [
     ],
 ];
 
-/// The control-token spellings added to the end-of-turn set: the end-of-sequence tokens the M0
-/// checkpoints' `generation_config.json` lists, which their GGUF files cannot carry (Qwen3:
-/// `<|endoftext|>`, `<|im_end|>`; Llama 3: `<|end_of_text|>`, `<|eot_id|>`, `<|eom_id|>`). Only
-/// a control token counts, never a normal or user-defined one. A family whose files need another
-/// spelling adds it here with that family's task.
-pub const END_OF_TURN_SPELLINGS: [&str; 5] = [
-    "<|endoftext|>",
-    "<|im_end|>",
-    "<|end_of_text|>",
-    "<|eot_id|>",
-    "<|eom_id|>",
+/// The end-of-sequence tokens added to the end-of-turn set, keyed on EOS's spelling: the rest of
+/// the `eos_token_id` list in the publishers' `generation_config.json`, which a GGUF file cannot
+/// carry. A chat-tuned checkpoint's EOS is its end-of-turn token, and its list also holds the
+/// end-of-text token; a base checkpoint's EOS is the end-of-text token, and its list holds that
+/// alone, so it matches no key. Qwen3 (Qwen3-0.6B and Qwen3-30B-A3B: `[151645, 151643]`; their
+/// base checkpoints: `151643`). Llama 3, from the layout of its chat checkpoints' files, which
+/// are gated and not checked here. Only a control token is added, never a normal or
+/// user-defined one, and only when EOS is itself a control token. An EOS spelled otherwise gains
+/// nothing: a family that needs an entry adds it with its own task.
+pub const END_OF_TURN_BY_EOS: [(&str, &[&str]); 2] = [
+    ("<|im_end|>", &["<|endoftext|>"]),
+    ("<|eot_id|>", &["<|end_of_text|>", "<|eom_id|>"]),
 ];
 
 /// SentencePiece's whitespace marker.
@@ -630,9 +632,13 @@ fn specials(meta: &MetaView, vocab: &Vocab<'_>) -> Result<SpecialTokens, Tokeniz
         .into_iter()
         .flatten()
         .chain(
-            END_OF_TURN_SPELLINGS
-                .iter()
-                .filter_map(|t| vocab.control_id(t)),
+            eos.and_then(|e| {
+                let text = vocab.tokens[e as usize];
+                vocab.control_id(text)?;
+                END_OF_TURN_BY_EOS.iter().find(|(k, _)| *k == text)
+            })
+            .into_iter()
+            .flat_map(|(_, extra)| extra.iter().filter_map(|t| vocab.control_id(t))),
         )
         .collect();
     Ok(SpecialTokens {
