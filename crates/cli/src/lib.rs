@@ -164,7 +164,8 @@ fn version(output: Output) -> Result<(), CliError> {
 }
 
 /// `syntropy --version`: this binary's own build, with no daemon (RFC-0062 §8.1). With `--json`
-/// it prints the native API's `Build`, with every `BuildId` field.
+/// it prints the native API's `Build`, with every `BuildId` field. As text it also names the ggml
+/// commit the binary's static ggml copy reports (RFC-0051 §1, note of 2026-10-31).
 fn self_version(output: Output) -> Result<(), CliError> {
     let build = build_id::build();
     if output.json {
@@ -183,12 +184,13 @@ fn self_version(output: Output) -> Result<(), CliError> {
     };
     print!(
         "syntropy {}\ncommit     {commit}\nprofile    {}\ntarget     {}\ntoolchain  {}\n\
-         features   {features}\nbuild      {}\n",
+         features   {features}\nbuild      {}\nggml       {}\n",
         id.version,
         id.profile,
         id.target,
         hex(&id.toolchain.0),
         hex(&build.id),
+        output::sanitize(syntropy_kernels_ggml::commit()),
     );
     Ok(())
 }

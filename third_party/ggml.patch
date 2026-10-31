@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Syntropy's changes to the vendored ggml tree (`third_party/ggml/`), applied over the files of
+# the upstream commit `third_party/ggml.lock` names. AGENTS.md's naming rule (D5) covers the
+# vendored tree too, so these changes reword upstream comments and strings that name another
+# project, and remove an optional CPU sub-backend, which the core builds without (RFC-0040 §8.1,
+# note of 2026-10-31).
+#
+# Each section is an ed script, as `diff -e <upstream file> <vendored file>` writes it: line
+# addresses and the new text only, never the text it replaces. Apply a section with
+# `ed -s third_party/ggml/<path>`, giving it the script, then `w` and `q`. `ggml.lock` records the
+# BLAKE3 of this file and of the tree before and after.
+#### include/ggml-cpu.h
+110d
+#### include/ggml.h
+2849c
+    // ref: an upstream ggml discussion
+.
+2645c
+    // ref: an upstream ggml discussion
+.
+1504c
+    // TODO: add backend support: an upstream ggml discussion
+.
+249c
+// TODO: convert to enum an upstream ggml discussion
+.
+240c
+// ref: an upstream ggml discussion
+.
+9c
+//   an upstream ggml discussion
+.
+#### src/ggml-backend-meta.cpp
+1274c
+        // TODO: revisit once the graph allocator has been refactored, see an upstream ggml discussion
+.
+1187c
+    //       ref: an upstream ggml discussion
+.
+497c
+    // Since the operations in question are developed for a specific use this currently does not manifest as a bug there.
+.
+421c
+    // Current solution: rotating set of 2 "compute" containers to hold external views, works correctly for the graphs it was written for.
+.
+#### src/ggml-backend.cpp
+1789c
+            // example: an upstream ggml discussion
+.
+984c
+    // ref: an upstream ggml discussion
+.
+#### src/ggml-cpu/arch-fallback.h
+119c
+// ref: an upstream ggml discussion
+.
+#### src/ggml-cpu/ggml-cpu-impl.h
+496c
+ * @see an upstream ggml discussion
+.
+80c
+// ref: an upstream ggml discussion
+.
+#### src/ggml-cpu/ggml-cpu.c
+3763,3770d
+1431c
+    //   Also, chunking by thread was measured to have perform better on NUMA systems.  See an upstream ggml discussion
+.
+1386,1408d
+1301,1326d
+46,53d
+#### src/ggml-cpu/ggml-cpu.cpp
+629,631d
+#### src/ggml-cpu/ops.cpp
+1808c
+        //       ref an upstream ggml discussion
+.
+#### src/ggml-cpu/ops.h
+11c
+// ref: an upstream ggml discussion
+.
+#### src/ggml-cpu/simd-mappings.h
+1262c
+    // see: an upstream ggml discussion
+.
+148c
+// see: an upstream ggml discussion
+.
+37,38c
+// for old CUDA compilers (<= 11), we use uint16_t: ref an upstream ggml discussion
+// for     MUSA compilers        , we use uint16_t: ref an upstream ggml discussion
+.
+#### src/ggml-cpu/vec.cpp
+459c
+// ref: an upstream ggml discussion
+.
+#### src/ggml-cpu/vec.h
+1075c
+#error "ref: an upstream ggml discussion"
+.
+#### src/ggml.c
+7094c
+                /* ref:  an upstream ggml discussion */
+.
+4044c
+    result->src[2] = a; // note: order is weird due to legacy reasons (an upstream ggml discussion)
+.
+172c
+        fprintf(stderr, "See: an upstream ggml discussion");
+.

@@ -3925,6 +3925,7 @@ dependencies = [
  "syntropy-daemon",
  "syntropy-io",
  "syntropy-ipc",
+ "syntropy-kernels-ggml",
  "syntropy-manifest",
  "syntropy-net",
  "syntropy-obs",
@@ -4099,6 +4100,9 @@ version = "0.0.0"
 [[package]]
 name = "syntropy-kernels-ggml"
 version = "0.0.0"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "syntropy-kernels-hip"
