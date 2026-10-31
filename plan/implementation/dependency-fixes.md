@@ -1506,3 +1506,11 @@ COMP-E10-T07 (M0a) builds the census. Its criterion asked for "golden census tes
 | COMP-E10-T07's "golden census tests on recorded headers" becomes golden censuses on synthetic GGUF and safetensors headers through a test-only family; the recorded-header golden is named as COMP-E16-T03's and COMP-E16-T04's | COMP-E10-T07 | R9 | the real-name classification it needs is the families' work, which COMP-E10-T07 does not depend on |
 | COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | "golden census on recorded headers" runs the `llama` family through COMP-E10-T07's builder |
 | COMP-E16-T04 → COMP-E10-T07 | COMP-E16-T04 | R9 | "on the `qwen_moe` checkpoint, the golden census … run[s] on its recorded safetensors headers" through the same builder; the edge was only transitive, through COMP-E16-T03 |
+
+## PROD-E2-T20's benchmark leg moves to the ingress budgets (2026-10-31)
+
+PROD-E2-T20 (M0a) built the token-ID range check, and one of its criteria measured the check in the RFC-0061 pre-`SequenceOpen` microbenchmark. That benchmark runs in QUAL-E13-T08's harness (M0b), which PROD-E2-T20 does not reach. PROD-E2-T11 (M1a) already owns the pre-`SequenceOpen` budget and depends on the harness, so the leg moves there. Neither task reached the other before, so the edge adds no cycle, and it runs from M1a to M0a.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E2-T20's "the check stays within the pre-`SequenceOpen` budget in the RFC-0061 microbenchmark" → PROD-E2-T11; PROD-E2-T11 → PROD-E2-T20 | PROD-E2-T20, PROD-E2-T11 | R9 | the microbenchmark needs QUAL-E13-T08's harness, which PROD-E2-T20's Depends cell does not reach; PROD-E2-T11 measures the pre-`SequenceOpen` budget in that harness against the fake runner, now with the range check in the measured path. M1a → M0a |
