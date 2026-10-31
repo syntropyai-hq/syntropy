@@ -19,7 +19,7 @@
 //!   never renamed or reused for another module. [`Registry::check`] holds every registered
 //!   family to the checked-in list, and `tests/family_tags.rs` pins the list itself.
 //!
-//! [`llama`] is registered (COMP-E16-T03); `qwen_moe` comes with COMP-E16-T04. Certification
+//! [`llama`] (COMP-E16-T03) and [`qwen_moe`] (COMP-E16-T04) are registered. Certification
 //! gating of [`families()`] is COMP-E16-T02.
 
 use std::fmt;
@@ -34,6 +34,7 @@ use crate::ir::OpSet;
 
 pub mod llama;
 mod meta;
+pub mod qwen_moe;
 pub mod tags;
 
 pub use meta::{Key, MetaView};
@@ -360,12 +361,17 @@ impl Registry {
     }
 }
 
-/// The families this build registers: `llama` (COMP-E16-T03). `qwen_moe` comes with
-/// COMP-E16-T04.
-pub static REGISTRY: Registry = Registry::new(&[Registration {
-    module: llama::MODULE,
-    family: &llama::LLAMA,
-}]);
+/// The families this build registers: `llama` (COMP-E16-T03) and `qwen_moe` (COMP-E16-T04).
+pub static REGISTRY: Registry = Registry::new(&[
+    Registration {
+        module: llama::MODULE,
+        family: &llama::LLAMA,
+    },
+    Registration {
+        module: qwen_moe::MODULE,
+        family: &qwen_moe::QWEN_MOE,
+    },
+]);
 
 /// The registry this build serves (RFC-0043 §1 `graph::families()`).
 #[must_use]

@@ -1523,3 +1523,12 @@ COMP-E7-T02's criterion "ggml CPU ops pass conformance against `kernels::referen
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | Moved: conformance of COMP-E7-T02's mappings against `kernels::reference`'s op functions → COMP-E7-T19 (M0b), which depends on COMP-E7-T02 and COMP-E1-T03 | COMP-E7-T02, COMP-E7-T19 | R9 | the criterion uses COMP-E1-T03's op functions, which no edge of COMP-E7-T02 reaches; COMP-E7-T19 reaches them |
+
+## COMP-E16-T04's conformance checks re-homed (2026-10-31)
+
+COMP-E16-T04 (the `qwen_moe` family) required "as T03 on the Qwen-MoE fixtures" and RFC-0060 §7.2 checks 1–2 on Qwen3-30B-A3B's recorded headers. Its row reaches neither: the `nano` and `micro` fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T04's `FamilySpec`, and check 2 needs the KV byte counters (TIER-E6-T02). The moves are the same as COMP-E16-T03's above. COMP-E16-T04 keeps the golden census on the recorded headers and the KV dtype per source, which its own module shows. Implementation of COMP-E16-T04 (2026-10-31).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| RFC-0060 §7.2 checks 1–2 on the real `qwen_moe` checkpoint's (Qwen3-30B-A3B) recorded headers move to QUAL-E6-T06, which already owned check 3 on that checkpoint | COMP-E16-T04, QUAL-E6-T06 | R9 | check 2 needs the KV byte counters (TIER-E6-T02), which no edge of COMP-E16-T04 reaches; QUAL-E6-T06 depends on them, on the census builder (COMP-E10-T07) and on COMP-E16-T04 |
+| COMP-E16-T04's checks on the `nano` and `micro` fixtures ("as T03 on the Qwen-MoE fixtures") are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T04 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T04's `FamilySpec`, so an edge to them would make a cycle |
