@@ -14,6 +14,8 @@ struct Fake {
     devices: Vec<RawDevice>,
     retained: std::sync::Arc<std::sync::atomic::AtomicI32>,
     streams: stream::fake::Shared,
+    /// The streams and events still live at each memory free, from [`FreeWatch`].
+    frees: std::sync::Arc<std::sync::Mutex<Vec<(usize, usize)>>>,
 }
 
 struct FakeContext(std::sync::Arc<std::sync::atomic::AtomicI32>);
@@ -55,15 +57,58 @@ impl StreamDriver for Fake {
     }
 }
 
-/// `memory`'s recorder, which hands out addresses and logs the calls.
+/// `memory`'s recorder, which hands out addresses, behind a [`FreeWatch`].
 impl crate::memory::MemoryDriver for Fake {
     fn memory(
         &self,
         _: &FakeContext,
     ) -> Result<std::sync::Arc<dyn crate::memory::MemoryOps>, Fault> {
-        Ok(std::sync::Arc::new(
-            crate::memory::tests::Recorder::default(),
-        ))
+        Ok(std::sync::Arc::new(FreeWatch {
+            rec: crate::memory::tests::Recorder::default(),
+            streams: self.streams.clone(),
+            frees: self.frees.clone(),
+        }))
+    }
+}
+
+/// The recorder's memory calls, noting how many streams and events are live at each free, so a
+/// test sees whether memory is freed before or after the streams are destroyed.
+struct FreeWatch {
+    rec: crate::memory::tests::Recorder,
+    streams: stream::fake::Shared,
+    frees: std::sync::Arc<std::sync::Mutex<Vec<(usize, usize)>>>,
+}
+
+impl FreeWatch {
+    fn note(&self) {
+        let live = self.streams.lock().unwrap().live();
+        self.frees.lock().unwrap().push(live);
+    }
+}
+
+impl crate::memory::MemoryOps for FreeWatch {
+    fn device_alloc(&self, bytes: u64) -> Result<u64, Fault> {
+        self.rec.device_alloc(bytes)
+    }
+    fn device_free(&self, addr: u64) -> Result<(), Fault> {
+        self.note();
+        self.rec.device_free(addr)
+    }
+    fn host_alloc(&self, bytes: u64) -> Result<u64, Fault> {
+        self.rec.host_alloc(bytes)
+    }
+    fn host_free(&self, host: u64) -> Result<(), Fault> {
+        self.note();
+        self.rec.host_free(host)
+    }
+    fn host_register(&self, host: u64, bytes: u64) -> Result<(), Fault> {
+        self.rec.host_register(host, bytes)
+    }
+    fn host_unregister(&self, host: u64) -> Result<(), Fault> {
+        self.rec.host_unregister(host)
+    }
+    fn device_pointer(&self, host: u64) -> Result<u64, Fault> {
+        self.rec.device_pointer(host)
     }
 }
 
@@ -335,6 +380,49 @@ fn open_creates_the_plan_and_drop_destroys_it_before_the_context() {
         "4 streams and 2 events, all before the release"
     );
     assert_eq!(p.driver.streams.lock().unwrap().live(), (0, 0));
+}
+
+/// Closing a device drains and destroys its streams before it frees the buffers the tier
+/// manager left allocated, so no copy still queued reads or writes freed memory (`CudaDevice`'s
+/// field order).
+#[test]
+fn closing_a_device_destroys_its_streams_before_freeing_its_memory() {
+    use syntropy_kernels::{AllocRequest, MemKind};
+    let p = fake(13_050, vec![gpu(0, (8, 9))]);
+    let opts = OpenOptions {
+        streams: syntropy_kernels::StreamPlan {
+            compute: 1,
+            copy_in: 1,
+            copy_out: 0,
+            collective: 0,
+        },
+        doorbell_slots: 8,
+        capture: true,
+        deterministic: false,
+        power: syntropy_kernels::PowerHint::Mains,
+    };
+    let id = DeviceId {
+        node: NodeId([0; 32]),
+        ordinal: 0,
+    };
+    let ctx = p.open(id, &opts).unwrap();
+    for kind in [MemKind::Device, MemKind::HostMapped] {
+        let req = AllocRequest {
+            bytes: Bytes(4096),
+            kind,
+            align: Bytes(256),
+            reserve_only: false,
+        };
+        p.alloc(&ctx, req).unwrap();
+    }
+    p.event(&ctx).unwrap();
+    assert_eq!(p.driver.streams.lock().unwrap().live(), (2, 1));
+    drop(ctx);
+    assert_eq!(
+        *p.driver.frees.lock().unwrap(),
+        [(0, 0); 2],
+        "both buffers freed after every stream and event was destroyed"
+    );
 }
 
 /// `copy` and `copy_batch` take their addresses from the device's memory table: a slice of a

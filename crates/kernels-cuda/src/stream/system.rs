@@ -128,7 +128,11 @@ impl SystemStreams {
         // SAFETY: `previous` was current on this thread a moment ago, or null, which leaves no
         // context current.
         let s = unsafe { (self.calls.set_current)(previous) };
-        self.check("cuCtxSetCurrent", s)?;
+        // When the call failed too, its fault is the one to report: a sticky error fails both,
+        // and the call names what the caller asked for.
+        if status == SUCCESS {
+            self.check("cuCtxSetCurrent", s)?;
+        }
         Ok(status)
     }
 
