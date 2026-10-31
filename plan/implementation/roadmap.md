@@ -51,7 +51,7 @@ Begin with the workspace and CI skeleton, the merge gates and the core types eve
 | 25 | COMP-E10-T01 | M0a | `RangeSource` trait with local-file and recorded-fixture replay implementations: coalescing, the… | QUAL-E1-T01 | 2 | 3 | 925 |
 | 26 | COMP-E9-T04 | M0a | Provider-library ABI v1: `kernels::abi::export!` thunks (expanded in the module's `kernels-*`… | COMP-E1-T01, QUAL-E1-T06 | 5 | 7 | 922 |
 | 27 | COMP-E15-T01 | M0a | IR types (`ModelGraph`, `LayerProgram`, `Program`, `Node`, `WeightRef`, `GroupSel`, `TensorRole`… | COMP-E1-T02, QUAL-E1-T03 | 6 | 5 | 906 |
-| 28 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver through `cudarc`, driver ≥ 580 check… | COMP-E1-T01, COMP-E9-T04, QUAL-E1-T07 | 6 | 9 | 902 |
+| 28 | COMP-E4-T01 | M0a | Binding and enumeration: dynamic loading of the driver by its soname alone (`libcuda.so.1`, or… | COMP-E1-T01, COMP-E9-T04, QUAL-E1-T07 | 6 | 9 | 902 |
 | 29 | COMP-E10-T02 | M0a | GGUF reader: v2 and v3, little-endian only; limits on tensor count, KV pairs, string, array and… | COMP-E10-T01 | 3 | 8 | 902 |
 | 30 | QUAL-E3-T24 | M0a | Production clock and entropy sources in `io`, in `syntropy_io::os` (split from QUAL-E3-T01… | QUAL-E1-T03, QUAL-E1-T06, QUAL-E3-T01 | 5 | 7 | 901 |
 <!-- END GENERATED -->
