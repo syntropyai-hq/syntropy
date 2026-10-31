@@ -3,8 +3,8 @@
 # The weekly workflow (RFC-0062 §2.1). This is its skeleton (QUAL-E1-T08): the trigger, the
 # concurrency rule and the conventions its jobs follow. The suites arrive with the tasks that build
 # them: the Tier 2 hardware suites, `chaos-lab`, the A/A and planted-regression runs, the
-# planted-defect job and AMX cloud parity. Until then its one job is a placeholder that costs a
-# few seconds of a hosted runner.
+# planted-defect job and AMX cloud parity. Until then it runs a placeholder that costs a few
+# seconds of a hosted runner, and the `v*` tag ruleset check (QUAL-E17-T01).
 #
 # Concurrency. One group, `weekly`, never cancelled in progress: a run that starts while another is
 # running waits as pending, a newer run replaces a pending one, and the running one finishes.
@@ -46,3 +46,36 @@ jobs:
         run: |
           echo "weekly: skeleton (QUAL-E1-T08). The weekly suites of RFC-0062 §2.1 land with"
           echo "the tasks that build them; lab work goes through the lab dispatcher (§3.2)."
+
+  # The `v*` tag ruleset is in force and the release App is its only bypass actor (RFC-0062 §8.3,
+  # "Testing and validation" item 9). GitHub shows a ruleset's bypass actors only to a token that
+  # can edit it, so the check runs with an installation token of the audit App, which holds
+  # Administration write on this repository; its key is a secret of the `repo-audit`
+  # environment, which deploys only from `main` (**Maintainer action**, QUAL-E17-T01). The token
+  # is minted after the build and given only to the check. The job runs on a hosted runner, so
+  # the key never reaches the build host.
+  tag-ruleset:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: repo-audit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: weekly-tag-ruleset
+      - name: Build xtask
+        run: cargo xtask ci --list
+      - name: Mint the audit App's installation token
+        id: audit-app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.AUDIT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUDIT_APP_PRIVATE_KEY }}
+          permission-administration: write
+          permission-metadata: read
+      - name: Check the v* tag ruleset
+        env:
+          GH_TOKEN: ${{ steps.audit-app.outputs.token }}
+        run: cargo xtask ci tag-ruleset --repo "$GITHUB_REPOSITORY"

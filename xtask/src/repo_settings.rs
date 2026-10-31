@@ -14,13 +14,18 @@
 //! | `actions-selected-actions.json` | `/actions/permissions/selected-actions` | the actions allowed and blocked, ADR-0620 decision 4 |
 //! | `actions-workflow-permissions.json` | `/actions/permissions/workflow` | a read-only default token that cannot approve PRs, for a workflow with no `permissions:` block, RFC-0062 §12.4 |
 //! | `fork-pr-contributor-approval.json` | `/actions/permissions/fork-pr-contributor-approval` | approval for all outside contributors, RFC-0062 §3.3 item 1 |
-//! | `ruleset-*.json` | `/rules/branches/{branch}` | RFC-0062 §2.5, §12.3 and §12.6; ADR-0621 decision 2 |
+//! | `ruleset-*.json`, `target: branch` | `/rules/branches/{branch}` | RFC-0062 §2.5, §12.3 and §12.6; ADR-0621 decision 2 |
+//! | `ruleset-*.json`, `target: tag` | `/rulesets`, then `/rulesets/{id}` | RFC-0062 §8.3 and §12.6; ADR-0621 decision 2 |
 //!
 //! A ruleset file's `rules` must be in force on each branch its `conditions.ref_name.include`
 //! names. `/rules/branches/{branch}` lists the rules of every active ruleset that applies to the
 //! branch, the organisation's included. A `*` in a pattern is read as `probe`, so
 //! `refs/heads/release/*` is checked on `release/probe`, which need not exist. Bypass actors are
 //! not shown there; the organisation audit checks them (QUAL-E1-T23).
+//!
+//! A tag ruleset, such as `ruleset-tags.json` on `refs/tags/v*`, is read whole instead, bypass
+//! actors included, because GitHub lists no rules in force on a tag ([`tags`]). Its bypass actors
+//! must be exactly the declared ones; `cargo xtask ci tag-ruleset` runs that check alone, weekly.
 //!
 //! The live state passes when it contains the declared state:
 //! - an object, when each declared member is present and passes;
@@ -241,6 +246,17 @@ pub fn check(declared: &Path, responses: &mut dyn Responses) -> (Vec<String>, Ve
                 continue;
             }
         };
+        if tags::is_tag_ruleset(&ruleset) {
+            let found = tags::check_ruleset(&ruleset, responses);
+            if found.is_empty() {
+                passed.push(format!(
+                    "{file}: its rules are in force and its bypass actors are the declared ones"
+                ));
+            }
+            let label = format!("`{file}` ({})", tags::REQUIRED_BY);
+            problems.extend(found.into_iter().map(|p| format!("{label}: {p}")));
+            continue;
+        }
         let (patterns, rules) = match ruleset_parts(&ruleset) {
             Ok(parts) => parts,
             Err(error) => {
@@ -554,6 +570,8 @@ pub fn step(context: &Context) -> Result<(), String> {
         Err(problems.join("\n"))
     }
 }
+
+pub mod tags;
 
 #[cfg(test)]
 mod tests;

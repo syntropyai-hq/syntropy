@@ -1,0 +1,19 @@
+# The release-please workflow with the repository's GITHUB_TOKEN in place of the release App's
+# token: its tag push would start no workflow (RFC-0062 §8.2).
+name: release-please
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    environment: release-please
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

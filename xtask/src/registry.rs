@@ -788,6 +788,35 @@ pub const JOBS: &[Entry] = &[
         }],
         pending: &[],
     },
+    Entry {
+        name: "tag-ruleset",
+        summary: "the `v*` tag ruleset is in force and the release App is its only bypass actor, \
+                  read through the REST API; weekly",
+        defined_in: "RFC-0062 §8.3 and \"Testing and validation\" item 9",
+        params: &[
+            Param {
+                name: "--repo",
+                value: "<owner/name>",
+                help: "the repository; else $GITHUB_REPOSITORY, else this checkout's",
+                required: false,
+            },
+            Param {
+                name: "--from",
+                value: "<dir>",
+                help: "read recorded responses from <dir> instead of the API",
+                required: false,
+            },
+        ],
+        steps: &[Step {
+            name: "tag-ruleset",
+            action: Action::Builtin {
+                shown: "ci/repo-settings/ruleset-tags.json is in force with only its declared \
+                        bypass actors",
+                run: repo_settings::tags::step,
+            },
+        }],
+        pending: &[],
+    },
 ];
 
 /// The test suites, called by `cargo xtask test <suite>`. RFC-0060 §1.1 defines the layers.

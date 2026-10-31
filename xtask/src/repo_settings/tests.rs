@@ -67,6 +67,7 @@ fn the_declared_state_passes_on_a_repository_in_that_state() {
             "ruleset-main-code-owners.json: its rules are in force",
             "ruleset-main.json: its rules are in force",
             "ruleset-release.json: its rules are in force",
+            "ruleset-tags.json: its rules are in force and its bypass actors are the declared ones",
         ]
     );
 }
@@ -134,6 +135,9 @@ fn a_repository_on_githubs_defaults_fails_on_every_setting() {
             "`ruleset-release.json` {rules}: rules on `release/probe`: the `non_fast_forward` rule \
              is missing"
         ),
+        "`ruleset-tags.json` (RFC-0062 §8.3, §12.6; ADR-0621 decision 2): the repository has no \
+         ruleset named `release-tags`"
+            .to_owned(),
     ];
     assert_eq!(problems, expected);
 }
@@ -242,6 +246,10 @@ fn removing_or_changing_any_declared_rule_fails() {
     let mut cases = 0;
     for file in ruleset_files(&declared()).unwrap() {
         let ruleset = read_json(&declared().join(&file)).unwrap();
+        // A tag ruleset is read whole; `the_tag_ruleset_is_read_whole` mutates it.
+        if tags::is_tag_ruleset(&ruleset) {
+            continue;
+        }
         let (patterns, rules) = ruleset_parts(&ruleset).unwrap();
         for pattern in patterns {
             let branch = probe_branch(pattern).unwrap();
@@ -432,6 +440,162 @@ fn a_ruleset_this_check_cannot_read_is_refused() {
     ] {
         assert_eq!(ruleset_parts(&bad).unwrap_err(), why);
     }
+}
+
+/// The tag ruleset as `complete` records it, changed by `edit`, checked against the declared one.
+fn tag_problems(edit: impl FnOnce(&mut Value)) -> Vec<String> {
+    let file = tags::ruleset_file(7000004);
+    let mut live: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("complete").join(&file)).unwrap())
+            .unwrap();
+    edit(&mut live);
+    let mut responses = Memory::load("complete");
+    responses.0.insert(file, live.to_string());
+    let declared = read_json(&declared().join(tags::TAG_RULESET)).unwrap();
+    tags::check_ruleset(&declared, &mut responses)
+}
+
+/// The task's criterion (QUAL-E17-T01): the weekly check fails on a fixture ruleset with a second
+/// bypass actor, and names it.
+#[test]
+fn a_second_tag_bypass_actor_fails_the_weekly_check() {
+    let declared = read_json(&declared().join(tags::TAG_RULESET)).unwrap();
+    let problems = tags::check_ruleset(&declared, &mut Recorded(fixture("tag-second-actor")));
+    assert_eq!(
+        problems,
+        [
+            "ruleset `release-tags`: `bypass_actors` has RepositoryRole 5 (always), which is not \
+             declared: only the release App may bypass the tag ruleset (RFC-0062 §8.3)"
+        ]
+    );
+    assert!(tags::check_ruleset(&declared, &mut Recorded(fixture("complete"))).is_empty());
+}
+
+#[test]
+fn the_tag_ruleset_is_read_whole() {
+    assert_eq!(tag_problems(|_| {}), Vec::<String>::new());
+    // Another App in place of the release App.
+    let problems = tag_problems(|live| live["bypass_actors"][0]["actor_id"] = Value::from(99));
+    assert_eq!(
+        problems,
+        [
+            "ruleset `release-tags`: `bypass_actors` lacks Integration 0 (always); the declared \
+             ID 0 stands for the release App until a maintainer records its App ID in the file",
+            "ruleset `release-tags`: `bypass_actors` has Integration 99 (always), which is not \
+             declared: only the release App may bypass the tag ruleset (RFC-0062 §8.3)",
+        ]
+    );
+    // A token that cannot edit the ruleset does not see its bypass actors.
+    let problems = tag_problems(|live| {
+        live.as_object_mut().unwrap().remove("bypass_actors");
+    });
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("does not show `bypass_actors`"),
+        "{problems:?}"
+    );
+    // Each rule, the enforcement and the tag pattern count.
+    for rule in 0..3 {
+        let problems = tag_problems(|live| {
+            live["rules"].as_array_mut().unwrap().remove(rule);
+        });
+        assert_eq!(problems.len(), 1, "rule {rule}: {problems:?}");
+        assert!(problems[0].contains("rule is missing"), "{problems:?}");
+    }
+    let problems = tag_problems(|live| live["enforcement"] = Value::from("evaluate"));
+    assert_eq!(
+        problems,
+        ["ruleset `release-tags`.`enforcement` is `\"evaluate\"`; want `\"active\"`"]
+    );
+    let problems = tag_problems(|live| {
+        live["conditions"]["ref_name"]["exclude"] = serde_json::json!(["refs/tags/v9*"]);
+    });
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("which is not declared"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn the_tag_ruleset_is_found_by_name() {
+    let mut responses = Memory::load("complete");
+    responses.0.insert(
+        tags::RULESETS_FILE.to_owned(),
+        r#"[{"id":1,"name":"release-tags","source_type":"Organization"}]"#.to_owned(),
+    );
+    let declared = read_json(&declared().join(tags::TAG_RULESET)).unwrap();
+    assert_eq!(
+        tags::check_ruleset(&declared, &mut responses),
+        ["the repository has no ruleset named `release-tags`"]
+    );
+    responses.0.insert(
+        tags::RULESETS_FILE.to_owned(),
+        r#"[{"id":1,"name":"release-tags","source_type":"Repository"},
+            {"id":2,"name":"release-tags","source_type":"Repository"}]"#
+            .to_owned(),
+    );
+    assert_eq!(
+        tags::check_ruleset(&declared, &mut responses),
+        [
+            "the repository has 2 rulesets named `release-tags`, so the declared one cannot be \
+             told apart"
+        ]
+    );
+}
+
+#[test]
+fn a_tag_ruleset_this_check_cannot_read_is_refused() {
+    let base = read_json(&declared().join(tags::TAG_RULESET)).unwrap();
+    for (edit, why) in [
+        (
+            serde_json::json!({"enforcement": "disabled"}),
+            "its `enforcement` is not `active`, so it would enforce nothing",
+        ),
+        (
+            serde_json::json!({"name": ""}),
+            "it has no `name` to find it by",
+        ),
+        (
+            serde_json::json!({"conditions": {"ref_name": {"include": ["refs/heads/v*"]}}}),
+            "the pattern `refs/heads/v*` is not a `refs/tags/` pattern",
+        ),
+        (serde_json::json!({"rules": []}), "it has no `rules`"),
+        (
+            serde_json::json!({"bypass_actors": [{"actor_id": "x"}]}),
+            "the bypass actor `{\"actor_id\":\"x\"}` lacks a numeric `actor_id`, an \
+             `actor_type` or a `bypass_mode`",
+        ),
+    ] {
+        let mut ruleset = base.clone();
+        for (key, value) in edit.as_object().unwrap() {
+            ruleset[key] = value.clone();
+        }
+        let problems = tags::check_ruleset(&ruleset, &mut Memory::load("complete"));
+        assert_eq!(problems, [why]);
+    }
+}
+
+#[test]
+fn the_tag_ruleset_protects_v_tags_from_everyone_but_the_release_app() {
+    // RFC-0062 §8.3: creations, updates and deletions of `v*` tags restricted, one bypass actor.
+    let ruleset = read_json(&declared().join(tags::TAG_RULESET)).unwrap();
+    assert_eq!(ruleset["target"], "tag");
+    assert_eq!(
+        ruleset["conditions"]["ref_name"]["include"],
+        serde_json::json!(["refs/tags/v*"])
+    );
+    let rules: Vec<&str> = ruleset["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(rules, ["creation", "update", "deletion"]);
+    let actors = ruleset["bypass_actors"].as_array().unwrap();
+    assert_eq!(actors.len(), 1);
+    assert_eq!(actors[0]["actor_type"], "Integration");
+    assert_eq!(actors[0]["bypass_mode"], "always");
 }
 
 #[test]

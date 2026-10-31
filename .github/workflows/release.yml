@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# The release pipeline (RFC-0062 §9.2 step 4). A `v*` tag push starts it; release-please makes
+# that push with the release App's token (`release-please.yml`), and the `v*` tag ruleset lets no
+# one else make one.
+#
+# This is its skeleton (QUAL-E17-T01): it records the tag and its commit, so the trigger can be
+# tested. The steps of §9.2 arrive with the tasks that build them: the M0 developer tarballs
+# (PROD-E10-T01), then from M1 the release builds, signing in `release-signing`, the RC suites and
+# `rc-gate` (QUAL-E17-T03 and its siblings).
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Record the tag
+        env:
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "release: tag $TAG on $COMMIT, pushed by $ACTOR."
+          echo "release: skeleton (QUAL-E17-T01). The build, signing and RC steps of RFC-0062 §9.2"
+          echo "arrive with the tasks that build them."

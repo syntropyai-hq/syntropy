@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# release-please (RFC-0062 §8.2, §9.2; ADR-0621 decision 2; QUAL-E17-T01). On every push to
+# `main` or a `release/*` branch it updates the release PR from the conventional commits since the
+# last release, and when a release PR has merged it creates the `v*` tag and a draft release at
+# once (`draft`, `force-tag-creation` in `release-please-config.json`).
+#
+# The token. GitHub starts no workflow for a push made with `GITHUB_TOKEN`, so a tag release-please
+# made with it would never start `release.yml`. The job therefore mints an installation token of
+# the release App, an organisation-owned App holding only Contents write and Pull requests write,
+# and passes that to release-please. The App's key is a secret of the `release-please`
+# environment only, which deploys only from `main` and `release/*`. The App is the one bypass
+# actor of the `v*` tag ruleset (`ci/repo-settings/ruleset-tags.json`), so no one else can create,
+# move or delete a release tag. `cargo xtask workflows` fails this file if it passes release-please
+# any other token.
+#
+# The environment's variable `RELEASE_APP_CLIENT_ID` and secret `RELEASE_APP_PRIVATE_KEY` are set
+# by a maintainer (**Maintainer action**, QUAL-E17-T01).
+
+name: release-please
+
+on:
+  push:
+    branches:
+      - main
+      - "release/*"
+
+permissions:
+  contents: read
+
+# One run per branch at a time, never cancelled: a cancelled run could leave a tag without its
+# release. A newer push waits and then sees every commit.
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release-please
+    steps:
+      - name: Mint the release App's installation token
+        id: release-app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Update the release PR, or tag and draft the release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.release-app.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: ${{ github.ref_name }}
