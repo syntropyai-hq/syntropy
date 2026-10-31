@@ -397,13 +397,13 @@ fn is_job_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// A task ID, or several of one epic written `QUAL-E3-T09/T10`.
-/// `ADR-` and four digits.
+/// An ADR ID: `ADR-` and four digits.
 fn is_adr_ref(text: &str) -> bool {
     text.strip_prefix("ADR-")
         .is_some_and(|n| n.len() == 4 && n.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// A task ID, or several of one epic written `QUAL-E3-T09/T10`.
 fn is_task_ref(text: &str) -> bool {
     let mut parts = text.split('/');
     let Some(first) = parts.next() else {
