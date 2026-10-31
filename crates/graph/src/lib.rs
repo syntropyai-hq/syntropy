@@ -11,9 +11,10 @@
 //! family trait, its metadata view, the static registry and the frozen tag list ([`families`],
 //! RFC-0043 §5.1), the `llama` family module ([`families::llama`], RFC-0043 §5.5), the fixture
 //! spec a family supplies ([`spec`], RFC-0043 §9.1), the census classification engine
-//! ([`classify`], RFC-0043 §4), and the census builder ([`census`], RFC-0041 §3), which turns a
-//! checkpoint's headers into its manifest. The other blocks and family modules, segments,
-//! sharding, tokenizers and the interpreter itself come with later tasks.
+//! ([`classify`], RFC-0043 §4), the census builder ([`census`], RFC-0041 §3), which turns a
+//! checkpoint's headers into its manifest, and the GGUF tokenizer conversions ([`tokenize`],
+//! RFC-0043 §8.3). The other blocks and family modules, segments, sharding and the interpreter
+//! itself come with later tasks.
 //!
 //! From `manifest`, the families use `HyperParams`, `TensorClass` and the metadata readers.
 //! [`ir::validate()`] takes the census facts it needs as [`ir::CensusGroup`]s; deriving them from
@@ -29,3 +30,4 @@ pub mod families;
 pub mod ir;
 pub mod reference;
 pub mod spec;
+pub mod tokenize;
