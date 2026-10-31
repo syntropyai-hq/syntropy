@@ -397,7 +397,11 @@ fn this_builds_registry_refuses_architectures_no_family_accepts() {
         .err()
         .unwrap();
     assert_eq!(e.code(), 1);
-    assert!(e.to_string().contains("supported families: llama"), "{e}");
+    assert!(
+        e.to_string()
+            .contains("supported families: llama, qwen_moe"),
+        "{e}"
+    );
 }
 
 #[test]

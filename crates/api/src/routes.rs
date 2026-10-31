@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The route table of RFC-0050 §1.2, and the routes served so far: `GET /healthz`,
-//! `GET /readyz` and `GET /v1/syntropy/version`.
+//! `GET /readyz`, `GET /v1/syntropy/version`, and `POST /v1/syntropy/generate` behind
+//! `debug.bench_api` ([`crate::native`]).
 //!
 //! [`ROUTES`] maps a method and an exact path to a handler. A path with no route gets 404
 //! `unsupported_endpoint`; a path whose route takes another method gets 405 with an `Allow`
@@ -20,6 +21,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::header::{self, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
+use syntropy_config::DebugSection;
 use syntropy_core::error::ErrorClass;
 
 use crate::version::VersionInfo;
@@ -62,6 +64,12 @@ pub const ROUTES: &[Route] = &[
         path: "/readyz",
         handler: readyz,
     },
+    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    Route {
+        method: Method::POST,
+        path: crate::native::PATH,
+        handler: crate::native::generate,
+    },
 ];
 
 /// What the daemon tells the API about the node, for `/readyz`.
@@ -69,6 +77,19 @@ pub trait NodeStatus: Send + Sync + 'static {
     /// Whether the daemon holds a cluster state replica, or runs solo and needs none (RFC-0050
     /// §1.2). Readiness waits for nothing else: no model need be loaded.
     fn has_state_replica(&self) -> bool;
+
+    /// The `debug.*` gates as the node's configuration holds them now (RFC-0054 §7.1). Each is
+    /// a hot key, so the daemon answers from its current configuration. All off by default.
+    fn debug_gates(&self) -> DebugSection {
+        DebugSection::OFF
+    }
+
+    /// The queue to the thread that drives the runner's ingress, when a runner serves
+    /// generation on this node ([`crate::native::drive`]). `None` by default.
+    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    fn generate_queue(&self) -> Option<&crate::native::GenerateQueue> {
+        None
+    }
 }
 
 /// What every handler can read.
@@ -97,13 +118,7 @@ pub async fn dispatch(state: &ApiState, request: Request<Incoming>) -> Response<
     }
     let allow: Vec<&str> = on_path().map(|route| route.method.as_str()).collect();
     if allow.is_empty() {
-        let message = format!("no endpoint at {} {path}", request.method());
-        return error(
-            StatusCode::NOT_FOUND,
-            ErrorClass::Unsupported,
-            "unsupported_endpoint",
-            &message,
-        );
+        return unsupported_endpoint(request.method(), path);
     }
     let allow = allow.join(", ");
     let message = format!("{path} takes {allow}, not {}", request.method());
@@ -152,8 +167,23 @@ pub struct NativeError {
     pub message: String,
 }
 
+/// The 404 for a path with no route, which a gated route also answers while it is closed.
+pub(crate) fn unsupported_endpoint(method: &Method, path: &str) -> Response<Body> {
+    error(
+        StatusCode::NOT_FOUND,
+        ErrorClass::Unsupported,
+        "unsupported_endpoint",
+        &format!("no endpoint at {method} {path}"),
+    )
+}
+
 /// An error response with `status`.
-fn error(status: StatusCode, class: ErrorClass, code: &str, message: &str) -> Response<Body> {
+pub(crate) fn error(
+    status: StatusCode,
+    class: ErrorClass,
+    code: &str,
+    message: &str,
+) -> Response<Body> {
     json(
         status,
         &ErrorBody {

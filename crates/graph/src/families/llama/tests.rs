@@ -105,8 +105,8 @@ fn qwen3_derived_tensors() -> Vec<(String, Vec<u64>)> {
 
 /// A safetensors file holding only `tensors`' header: reads past the header fail, so a census
 /// that reads it reads no weight.
-struct HeaderOnly {
-    header: Vec<u8>,
+pub(in crate::families) struct HeaderOnly {
+    pub(in crate::families) header: Vec<u8>,
     len: u64,
 }
 
@@ -127,7 +127,7 @@ impl RangeSource for HeaderOnly {
 }
 
 /// The 8-byte length and the JSON header of a BF16 safetensors file of `tensors`.
-fn safetensors_header(tensors: &[(String, Vec<u64>)]) -> HeaderOnly {
+pub(in crate::families) fn safetensors_header(tensors: &[(String, Vec<u64>)]) -> HeaderOnly {
     let mut json = String::from(r#"{"__metadata__":{"format":"pt"}"#);
     let mut at = 0u64;
     for (name, shape) in tensors {
@@ -206,14 +206,15 @@ fn code3(c: &HfConfig, key: &str) {
 // ---- A GGUF writer ------------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum Kv {
+pub(in crate::families) enum Kv {
     U32(u32),
     F32(f32),
     Str(&'static str),
+    Bool(bool),
 }
 
 /// A GGUF v3 header of `kvs` and F32 `tensors` (ggml's `ne`), with no data section.
-fn gguf(kvs: &[(&str, Kv)], tensors: &[(&str, &[u64])]) -> Vec<u8> {
+pub(in crate::families) fn gguf(kvs: &[(&str, Kv)], tensors: &[(&str, &[u64])]) -> Vec<u8> {
     fn s(out: &mut Vec<u8>, v: &str) {
         out.extend_from_slice(&(v.len() as u64).to_le_bytes());
         out.extend_from_slice(v.as_bytes());
@@ -237,6 +238,10 @@ fn gguf(kvs: &[(&str, Kv)], tensors: &[(&str, &[u64])]) -> Vec<u8> {
                 out.extend_from_slice(&8u32.to_le_bytes());
                 s(&mut out, x);
             }
+            Kv::Bool(x) => {
+                out.extend_from_slice(&7u32.to_le_bytes());
+                out.push(u8::from(*x));
+            }
         }
     }
     let mut at = 0u64;
@@ -255,7 +260,7 @@ fn gguf(kvs: &[(&str, Kv)], tensors: &[(&str, &[u64])]) -> Vec<u8> {
     out
 }
 
-struct Bytes(Vec<u8>);
+pub(in crate::families) struct Bytes(pub(in crate::families) Vec<u8>);
 
 impl RangeSource for Bytes {
     fn len(&self) -> u64 {
@@ -268,7 +273,7 @@ impl RangeSource for Bytes {
     }
 }
 
-fn header(kvs: &[(&str, Kv)], tensors: &[(&str, &[u64])]) -> GgufHeader {
+pub(in crate::families) fn header(kvs: &[(&str, Kv)], tensors: &[(&str, &[u64])]) -> GgufHeader {
     GgufHeader::read(Bytes(gguf(kvs, tensors)), &Limits::default()).unwrap()
 }
 
@@ -290,7 +295,10 @@ fn qwen3_gguf_kvs() -> Vec<(&'static str, Kv)> {
     ]
 }
 
-fn with(kvs: &[(&'static str, Kv)], extra: &[(&'static str, Kv)]) -> Vec<(&'static str, Kv)> {
+pub(in crate::families) fn with(
+    kvs: &[(&'static str, Kv)],
+    extra: &[(&'static str, Kv)],
+) -> Vec<(&'static str, Kv)> {
     let mut v: Vec<_> = kvs
         .iter()
         .filter(|(k, _)| !extra.iter().any(|(e, _)| e == k))
@@ -420,7 +428,7 @@ fn render_manifest(m: &ModelManifest) -> String {
 
 /// Whether this run rewrites the golden file: only when `SYNTROPY_UPDATE_SNAPSHOTS` is set,
 /// and never under CI.
-fn update_golden() -> bool {
+pub(in crate::families) fn update_golden() -> bool {
     match (
         std::env::var_os("SYNTROPY_UPDATE_SNAPSHOTS"),
         std::env::var_os("CI"),
@@ -1058,18 +1066,23 @@ fn rope_rules_it_does_not_compute_are_code_3() {
 
 #[test]
 fn unknown_architectures_are_code_1() {
-    for (arch, model_type) in [
-        ("Qwen3MoeForCausalLM", "qwen3_moe"),
-        ("GemmaForCausalLM", "gemma"),
-        ("LLaMAForCausalLM", "Llama"),
-    ] {
+    for (arch, model_type) in [("GemmaForCausalLM", "gemma"), ("LLaMAForCausalLM", "Llama")] {
         let c = config_with(arch, model_type, "");
         let e = families().resolve(&MetaView::Config(&c)).err().unwrap();
         assert_eq!(e.code(), 1, "{arch}");
-        assert!(e.to_string().contains("supported families: llama"), "{e}");
+        assert!(
+            e.to_string()
+                .contains("supported families: llama, qwen_moe"),
+            "{e}"
+        );
         let e = parse(&c).unwrap_err();
         assert_eq!(e.code(), 1, "{arch}");
     }
+    // Qwen3-MoE is `qwen_moe`'s: the registry resolves it there, and `llama` refuses it.
+    let c = config_with("Qwen3MoeForCausalLM", "qwen3_moe", "");
+    let f = families().resolve(&MetaView::Config(&c)).unwrap();
+    assert_eq!(f.name(), "qwen_moe");
+    assert_eq!(parse(&c).unwrap_err().code(), 1);
     let h = header(
         &with(
             &qwen3_gguf_kvs(),
@@ -1077,10 +1090,11 @@ fn unknown_architectures_are_code_1() {
         ),
         &[],
     );
-    let e = families()
-        .resolve(&MetaView::Gguf(&h.metadata))
-        .err()
-        .unwrap();
+    let f = families().resolve(&MetaView::Gguf(&h.metadata)).unwrap();
+    assert_eq!(f.name(), "qwen_moe");
+    let e = LLAMA
+        .parse_hparams(&MetaView::Gguf(&h.metadata))
+        .unwrap_err();
     assert_eq!(e.code(), 1);
 }
 
@@ -1279,7 +1293,7 @@ fn shape_mismatches_and_strangers_are_unknown() {
 #[test]
 fn the_registry_binds_llama_to_its_frozen_tag() {
     families().check(FROZEN_TAGS).unwrap();
-    assert_eq!(families().tags(), ["llama"]);
+    assert_eq!(families().tags(), ["llama", "qwen_moe"]);
     assert_eq!(MODULE, "syntropy_graph::families::llama");
     let frozen = FROZEN_TAGS.iter().find(|t| t.tag == TAG).unwrap();
     assert_eq!(frozen.module, MODULE);

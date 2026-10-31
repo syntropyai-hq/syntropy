@@ -19,6 +19,8 @@ Rules, as cited in the "Rule applied" column:
 
 Read "A → B" as "A depends on B".
 
+Adding a section: start its heading with the ID of the task it is about, for example `## COMP-E16-T04: …` (with the date at the end), and insert it among the dated sections in task-ID order, before the first section whose leading ID sorts after it. Compare IDs by area, then epic number, then task number, as numbers: COMP-E4-T02 comes before COMP-E16-T03. Don't append at the end of the file. Pull requests that each add a section then touch different places, and git merges them without a conflict. Sections already in the file stay where they are.
+
 ## Changes
 
 | Change | Tasks | Rule applied | Reason |
@@ -1532,17 +1534,20 @@ COMP-E4-T02 (M0a) asked that "TIER's arena tests pass on a CUDA device". No aren
 |---|---|---|---|
 | COMP-E4-T02's criterion keeps the provider-level arena build on a CUDA device; "TIER's arena tests pass on a CUDA device" moves to TIER-E1-T07, and COMP-E4-T21's R-ADA re-run names each leg's task | COMP-E4-T02, TIER-E1-T07, COMP-E4-T21 | R9 | the tests a criterion runs must exist when the task closes; the existing edge TIER-E1-T07 → COMP-E4-T02 keeps the graph acyclic and within M0a. Proposed, for the maintainers to confirm |
 
-## COMP-E1-T03 split into three slices (2026-10-31)
+## PROD-E2-T20's benchmark leg and `vocab_limit` derivation move out (2026-10-31)
 
-COMP-E1-T03 asked for the reference semantics of 23 M0 ops in one change, and 15 tasks waited on all of it, though most use only a few of the ops. The row is split by the ops' kind. COMP-E1-T03 keeps the reduction helper, the matrix products and the data movement, and two new M0a rows take the rest, each depending on COMP-E1-T03 for its reduction helper. Each dependent now points at the slice that holds the ops its criteria use. `RmsNorm` stays in COMP-E1-T03 because `Logits` is the final norm plus the LM head (RFC-0040 §3.1). `Act` goes with `Rope` and attention, and `TapGather` goes with sampling, since it reads the logits the sampler reads. "Masked positions" moves to the slices that have masks. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction, and listed for the maintainers' sign-off on the PR.
+PROD-E2-T20 (M0a) built the token-ID range check, and one of its criteria measured the check in the RFC-0061 pre-`SequenceOpen` microbenchmark. That benchmark runs in QUAL-E13-T08's harness (M0b), which PROD-E2-T20 does not reach. PROD-E2-T11 (M1a) already owns the pre-`SequenceOpen` budget and depends on the harness, so the leg moves there. Neither task reached the other before, so the edge adds no cycle, and it runs from M1a to M0a.
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| Split: `Rope`, `Act` and `AttnDecode`/`AttnPrefill`/`KvWrite` for `Gqa` → new COMP-E1-T17 (M0a), which depends on COMP-E1-T03 | COMP-E1-T03, COMP-E1-T17 | R9 | the attention ops need masks, KV pages and the software `sin` and `cos`, which no op in COMP-E1-T03's slice uses. The masked-positions property test moves with them |
-| Split: `LogitsProcess`, `TopKTopP`, `SampleSeeded`, `Argmax`, `VerifyAccept`, `TapGather`, `MoeRoute`, `MoeGrouped` and `MoeCombine` → new COMP-E1-T18 (M0a), which depends on COMP-E1-T03 | COMP-E1-T03, COMP-E1-T18 | R9 | the sampling and MoE ops share the tie rule of RFC-0042 §4.2 and the grammar mask, and none of COMP-E1-T03's matrix-product dependents uses them |
-| COMP-E1-T04 → COMP-E1-T17, COMP-E1-T18 (was COMP-E1-T03) | COMP-E1-T04 | R9 | its M1 ops extend `MoeRoute`, `Gqa` attention and `Act`, which are now in the two new slices |
-| COMP-E1-T15 → COMP-E1-T17; COMP-E1-T16 → COMP-E1-T17; COMP-E5-T05 → COMP-E1-T17 (each was COMP-E1-T03) | COMP-E1-T15, COMP-E1-T16, COMP-E5-T05 | R9 | their criteria check against the reference `AttnPrefill`, `KvWrite` and `AttnDecode` for `Gqa` |
-| COMP-E3-T21 → COMP-E1-T18; COMP-E4-T06 → COMP-E1-T18; COMP-E5-T04 → COMP-E1-T18 (each was COMP-E1-T03) | COMP-E3-T21, COMP-E4-T06, COMP-E5-T04 | R9 | their criteria check against the reference `MoeRoute`, `MoeCombine`, `MoeGrouped` and `TapGather` |
-| COMP-E3-T08, COMP-E7-T19, COMP-E15-T03 → COMP-E1-T17, COMP-E1-T18, added beside COMP-E1-T03 | COMP-E3-T08, COMP-E7-T19, COMP-E15-T03 | R9 | each uses ops from all three slices: the CPU norms, attention and sampling; the ggml mappings of RoPE, attention and `MoeRoute`; the interpreter of every M0 op |
-| COMP-E5-T26 → COMP-E1-T17, added beside COMP-E1-T03 | COMP-E5-T26 | R9 | its CUDA `Act` is checked against the reference `Act`; its `RmsNorm`, `Add`, `Mul`, `RowGather` and `Convert` stay with COMP-E1-T03 |
-| COMP-E3-T03, COMP-E3-T07, COMP-E3-T22, COMP-E5-T01 and COMP-E13-T13 keep COMP-E1-T03 alone | — | R9 | their criteria use `Gemv`, `Gemm`, `GateUpAct`, `Logits`, `RowGather`, `Add`, `Mul` and `Convert`, or the bit-exact-class ops, all in COMP-E1-T03 |
+| PROD-E2-T20's "the check stays within the pre-`SequenceOpen` budget in the RFC-0061 microbenchmark" → PROD-E2-T11; PROD-E2-T11 → PROD-E2-T20 | PROD-E2-T20, PROD-E2-T11 | R9 | the microbenchmark needs QUAL-E13-T08's harness, which PROD-E2-T20's Depends cell does not reach; PROD-E2-T11 measures the pre-`SequenceOpen` budget in that harness against the fake runner, now with the range check in the measured path. M1a → M0a |
+| New COMP-E10-T16 (M0a), `ModelManifest` `vocab_limit` with the token embedding marked in the census, → COMP-E10-T07; PROD-E2-T20's task text takes `vocab_limit` through `ModelInfo`; PROD-E2-T08 → COMP-E10-T16 | PROD-E2-T20, COMP-E10-T16, PROD-E2-T08 | R9, R3b | "from the manifest" needs the token embedding's rows, and the census (COMP-E10-T07) does not record which `RowLookup` table is the token embedding, so the derivation needs a census change in the engine lane's crates. PROD-E2-T20 keeps the validator. PROD-E2-T08 fills `ModelInfo` from the new row. M1a → M0a and M0a → M0a; no cycle (#2043, devdaviddr's sign-off) |
+
+## COMP-E16-T04's conformance checks re-homed (2026-10-31)
+
+COMP-E16-T04 (the `qwen_moe` family) required "as T03 on the Qwen-MoE fixtures" and RFC-0060 §7.2 checks 1–2 on Qwen3-30B-A3B's recorded headers. Its row reaches neither: the `nano` and `micro` fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T04's `FamilySpec`, and check 2 needs the KV byte counters (TIER-E6-T02). The moves are the same as COMP-E16-T03's above. COMP-E16-T04 keeps the golden census on the recorded headers and the KV dtype per source, which its own module shows. Implementation of COMP-E16-T04 (2026-10-31).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| RFC-0060 §7.2 checks 1–2 on the real `qwen_moe` checkpoint's (Qwen3-30B-A3B) recorded headers move to QUAL-E6-T06, which already owned check 3 on that checkpoint | COMP-E16-T04, QUAL-E6-T06 | R9 | check 2 needs the KV byte counters (TIER-E6-T02), which no edge of COMP-E16-T04 reaches; QUAL-E6-T06 depends on them, on the census builder (COMP-E10-T07) and on COMP-E16-T04 |
+| COMP-E16-T04's checks on the `nano` and `micro` fixtures ("as T03 on the Qwen-MoE fixtures") are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T04 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T04's `FamilySpec`, so an edge to them would make a cycle |
