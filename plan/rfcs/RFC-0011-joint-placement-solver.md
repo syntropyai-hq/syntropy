@@ -234,6 +234,16 @@ The verify window is `SpeculativeConfig::max_window` = γ_max as RFC-0001 §5.4 
   - `SolveStats` is `path`, `gap`, `mip_nodes`, `simplex_iterations` and `wall`.
 - **The IPC protocol goes to 7.0.** The command channel carries the plan in postcard, which reads fields by position, so a 6.x peer cannot read the longer plan.
 
+*Note 2026-10-31 (PLC-E4-T01, the solver crate's surface as built):*
+- **`solve`, `solve_delta` and `evaluate` return `Result<_, SolveError>`.** `route` already did, and now shares the error type. Their bodies come in later tasks, so until then each returns `SolveError::NotBuilt { entry, task }`, naming the task that builds it: `solve` and `evaluate` PLC-E4-T02, `solve_delta` PLC-E6-T03, `route` PLC-E6-T19. A caller can match on that, which a panic would not allow. `SolveError` is `non_exhaustive`, so §17's failures, such as `Capacity`, become variants as their tasks build them.
+- **`solve_delta` returns `Ok(None)`** when the delta solve cannot improve on the current plan.
+- **Types the block above names are built only as far as `core` can name their fields today.** Each is `non_exhaustive`, and the task named adds the rest:
+  - `WorkloadStats` has `hit_curves`, `union` and `tier_hit`. PLC-E9-T19 adds `acceptance`, `context` and `concurrency` with RFC-0012 §11's types; until then the solver uses their priors;
+  - `SolveReason` has `Load`, `Replan(ReplanReason)` and `Delta`. PLC-E4-T15 adds `Repair { constraints }` with RFC-0033's `RepairConstraints`;
+  - `PlanExplanation` has `epoch` and `assumptions` (PLC-E6-T06, PLC-E6-T07); `InfeasibilityReport` has `conflicting_pins` and `degraded_option` (PLC-E4-T02, PLC-E6-T08); `Evaluation` has `predicted` (PLC-E4-T06);
+  - `RouteRequest`, `RoutingView` and `RouteDecision` (§13) hold the fields whose types `core` has. PLC-E6-T19 adds the model, prefix keys, deadline, routable instances and admission, and PLC-E6-T05 the cluster inputs.
+- **`SolveLimits`' work limits default to no limit** until spike S1 sets them (OQ-PL-01). Only the MILP reads them, and no build has it until §9.5's gate passes.
+
 
 ### 3. Preprocessing: placement nodes, blocks and coefficients
 
