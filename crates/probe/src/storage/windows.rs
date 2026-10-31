@@ -45,6 +45,9 @@ pub fn classify(raw: &WindowsVolume) -> VolumeInfo {
             Some(bus::SATA | bus::ATA) => StorageBus::Sata,
             Some(bus::USB) => StorageBus::Usb,
             Some(bus::VIRTUAL | bus::FILE_BACKED_VIRTUAL) => StorageBus::Virtual,
+            // SCSI (1), iSCSI (9) and SAS (10) land here too: `StorageBus` has no variant for
+            // them yet (RFC-0010 §1.2), and a hosted Windows runner's system disk reports SAS.
+            // Adding the variants is a follow-up to PLC-E1-T06.
             _ => StorageBus::Unknown,
         },
         pci: None,

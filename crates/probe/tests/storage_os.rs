@@ -10,6 +10,9 @@ use syntropy_io::os::volume::{MacVolume, WindowsVolume};
 use syntropy_probe::EnumError;
 use syntropy_probe::storage::{classify_macos, classify_windows, macos_live, windows_live};
 
+/// `STORAGE_BUS_TYPE` SCSI (1), iSCSI (9) and SAS (10), which `StorageBus` has no variant for.
+const UNMODELLED_BUS_TYPES: [u32; 3] = [1, 9, 10];
+
 fn windows(bus: Option<u32>) -> WindowsVolume {
     WindowsVolume {
         root: r"C:\".to_owned(),
@@ -48,10 +51,22 @@ fn windows_bus_types_map() {
         (Some(3), StorageBus::Sata),
         (Some(7), StorageBus::Usb),
         (Some(14), StorageBus::Virtual),
-        (Some(1), StorageBus::Unknown),
         (None, StorageBus::Unknown),
     ] {
         assert_eq!(classify_windows(&windows(raw)).bus, want, "{raw:?}");
+    }
+}
+
+/// SCSI, iSCSI and SAS have no `StorageBus` variant yet (RFC-0010 §1.2), so they classify as
+/// `Unknown`. A follow-up to PLC-E1-T06 adds the variants and changes these expectations.
+#[test]
+fn windows_unmodelled_bus_types_are_unknown() {
+    for raw in UNMODELLED_BUS_TYPES {
+        assert_eq!(
+            classify_windows(&windows(Some(raw))).bus,
+            StorageBus::Unknown,
+            "{raw}"
+        );
     }
 }
 
@@ -150,7 +165,13 @@ fn live_windows_system_volume() {
     eprintln!("{raw:?}");
     assert!(raw.bus_type.is_some(), "{raw:?}");
     let v = windows_live(Path::new(r"C:\")).unwrap();
-    assert_ne!(v.bus, StorageBus::Unknown, "{v:?} from {raw:?}");
+    // A bus `StorageBus` cannot name yet may read `Unknown`; any other unmapped bus fails.
+    if !raw
+        .bus_type
+        .is_some_and(|b| UNMODELLED_BUS_TYPES.contains(&b))
+    {
+        assert_ne!(v.bus, StorageBus::Unknown, "{v:?} from {raw:?}");
+    }
     assert!(
         matches!(v.direct_io, DirectIoSupport::Supported { .. }),
         "{v:?}"
