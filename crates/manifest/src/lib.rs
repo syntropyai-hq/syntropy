@@ -15,8 +15,10 @@
 //! and chunk boundaries with the chunk-table format ([`chunk`], RFC-0041 §6.1, §6.2); and the
 //! identities derived from chunk IDs and the plan: `TensorRecord::hash`, `ShardSpec::digest` and
 //! `ExtentKey` ([`identity`], RFC-0041 §1). It re-exports `core`'s `ShardSpec`, `PackKey`,
-//! `ChunkId` and `LayoutVersion`, which RFC-0041 owns (RFC-0001 §18.28). The census builder, the
-//! manifest and the pack sidecar come with later tasks.
+//! `ChunkId` and `LayoutVersion`, which RFC-0041 owns (RFC-0001 §18.28). The census's records,
+//! groups and totals and the `ModelManifest`, with its stored form, are in [`census`]; their
+//! builder is `syntropy_graph::census`, a layer up, because it resolves the family (RFC-0041 §3).
+//! The pack sidecar comes with a later task.
 
 #![forbid(unsafe_code)]
 

@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 blake3.workspace = true
+# The stored form of a model manifest: postcard, compressed with zstd (RFC-0041 §3.2; COMP-E10-T07).
+postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # `FileDigest`: a source file's SHA-256 (RFC-0041 §1).
@@ -14,6 +16,7 @@ sha2.workspace = true
 # The `kv_dtype` instance key, declared as a section (RFC-0054 §5.4; RFC-0043 §10).
 syntropy-config = { path = "../config" }
 syntropy-core = { path = "../core" }
+zstd.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
