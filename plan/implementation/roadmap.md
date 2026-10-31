@@ -151,7 +151,7 @@ Quoted from RFC-0001 §16, "Recurring operations":
 Quoted from RFC-0001 §16, "M0a: walking skeleton":
 
 > One dense family end to end on one Linux machine, CPU and CUDA, behind every merge gate. It is the first integration point, and nothing in it is built for scale.
-> - The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062). During M0a only the Linux build and tests gate a merge; the macOS and Windows jobs run as advisory (ADR-0626).
+> - The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062). During M0a only the Linux build and tests run and gate a merge; the macOS and Windows jobs are paused (ADR-0626, revised 2026-10-31).
 > - The merge gates of ADR-0021 decision 5 run from the first commit: build, lint and tests; the DCO, licence and dependency checks; the workflow security lint; the independent review-agent job; and the sandbox in which agent runs read untrusted content. The repository's security baseline, the private vulnerability-reporting channel and the agent trust tiers are in place from the first commit too (RFC-0062 §12.5, §12.6, §13; ADR-0021; ADR-0624).
 > - GGUF reader, census and manifest for `llama` at Q4_K and Q8_0. Such a model runs end to end through the OpenAI Chat Completions API with streaming, through the daemon and a real runner, on the CPU provider and on CUDA (RFC-0041, RFC-0043, RFC-0050, RFC-0051).
 > - Execution is eager; this exit needs no captured graphs (RFC-0012).
