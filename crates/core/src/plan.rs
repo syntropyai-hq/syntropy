@@ -9,6 +9,7 @@
 pub mod budget;
 pub mod cost;
 pub mod delta;
+pub mod ext;
 pub mod speculative;
 pub mod stage;
 pub mod validate;
@@ -25,6 +26,7 @@ use crate::units::Bytes;
 pub use budget::*;
 pub use cost::*;
 pub use delta::*;
+pub use ext::*;
 pub use speculative::*;
 pub use stage::*;
 pub use validate::*;
@@ -57,7 +59,7 @@ pub struct PlanEpoch {
 pub struct PlanDigest(pub Blake3);
 
 /// The solver's output for one instance (RFC-0001 §5.4). Immutable once committed.
-/// Owner: RFC-0011, which adds `PlacementPlanExt` (PLC-E4-T01).
+/// Owner: RFC-0011, which adds `PlacementPlanExt` as `ext` (PLC-E4-T01).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlacementPlan {
     /// Where the plan sits in the cluster's order of plans.
@@ -96,6 +98,9 @@ pub struct PlacementPlan {
     pub predicted: PredictedCost,
     /// Inputs that were `Prior` or `Derived` rather than measured. Shown in the dashboard.
     pub assumptions: Vec<Assumption>,
+    /// RFC-0011 §2's additions. Defaults in a plan serialized before them (PLC-E4-T01).
+    #[serde(default)]
+    pub ext: PlacementPlanExt,
 }
 
 /// Where a tensor group lives and which device computes it (RFC-0001 §5.4).
