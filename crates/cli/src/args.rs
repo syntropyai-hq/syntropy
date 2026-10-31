@@ -194,6 +194,10 @@ pub struct HeaderArgs {
     /// hostile header under the profile
     #[arg(long, hide = true)]
     pub check_crash: bool,
+    /// Instead of parsing, try to delete this file once confined, and exit 0 only if the attempt
+    /// is refused: the check that the profile covers the file system, not only opens
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub check_remove: Option<PathBuf>,
 }
 
 /// A header's format.

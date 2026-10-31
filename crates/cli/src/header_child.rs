@@ -55,6 +55,19 @@ pub fn run(args: &HeaderArgs) -> Result<(), CliError> {
     if args.check_crash {
         std::process::abort();
     }
+    if let Some(other) = &args.check_remove {
+        return match std::fs::remove_file(other) {
+            Err(e) => {
+                eprintln!("the removal failed, as it must: {:?}: {e}", e.kind());
+                Ok(())
+            }
+            Ok(()) => Err(refused(format!(
+                "a confined child removed {} (files banned: {})",
+                other.display(),
+                confined.files
+            ))),
+        };
+    }
     if let Some(other) = &args.check_open {
         return match std::fs::File::open(other) {
             Err(e) => {

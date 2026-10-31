@@ -446,3 +446,26 @@ fn a_crash_under_the_profile_kills_only_the_child() {
     assert!(parse(HeaderKind::Safetensors, &path, &HeaderLimits::default()).is_ok());
     fs::remove_dir_all(&dir).ok();
 }
+
+/// DIST-E17-T08: the profile covers the file system, not only opens: the child cannot delete a
+/// file, which Linux's seccomp filter allows and only Landlock refuses. On a Linux kernel without
+/// Landlock the check is skipped, and the test says so.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_cannot_remove_a_file() {
+    #[cfg(target_os = "linux")]
+    if syntropy_io::os::confine::landlock_abi() == 0 {
+        eprintln!("this kernel has no Landlock: nothing refuses unlink here");
+        return;
+    }
+    let dir = scratch("remove");
+    let path = safetensors(&dir, 16);
+    let victim = dir.join("victim.txt");
+    fs::write(&victim, "keep me").unwrap();
+    let output = confined(&path, &["--check-remove".as_ref(), victim.as_os_str()]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("PermissionDenied"), "{stderr}");
+    assert!(victim.exists());
+    fs::remove_dir_all(&dir).ok();
+}
