@@ -57,7 +57,9 @@ pub const HUB_ENDPOINT: &str = "https://huggingface.co";
 /// How a [`HubClient`] reaches the Hub.
 #[derive(Clone)]
 pub struct HubConfig {
-    /// The Hub endpoint: the one origin the token is sent to. Default [`HUB_ENDPOINT`].
+    /// The Hub endpoint: the one origin the token is sent to. Default [`HUB_ENDPOINT`]. The
+    /// client speaks TLS 1.3 only, so a mirror or a TLS-inspecting proxy that offers only
+    /// TLS 1.2 fails the handshake, reported as a failed request (class `Link`).
     pub endpoint: String,
     /// The Hub token, sent as `Authorization: Bearer <token>` to [`endpoint`](Self::endpoint)'s
     /// origin only. `None` reads public files only.
@@ -536,10 +538,10 @@ fn origin_of(url: &Url) -> Url {
     origin
 }
 
-/// `rustls` on `ring`'s provider with the platform's verifier, TLS 1.3 only (RFC-0034 §3, as
-/// `net` pins it), offering HTTP/2 and HTTP/1.1. The Hub and its CDN hosts all offer TLS 1.3.
-/// The version is pinned here rather than left to the defaults: `reqwest`'s `hyper-rustls`
-/// enables `rustls`'s `tls12` feature, so the defaults would allow TLS 1.2.
+/// `rustls` on `ring`'s provider with the platform's verifier, TLS 1.3 only (ADR-0432's note of
+/// 2026-10-31), offering HTTP/2 and HTTP/1.1. The version is pinned here rather than left to the
+/// defaults: `reqwest`'s `hyper-rustls` enables `rustls`'s `tls12` feature, so the defaults
+/// would allow TLS 1.2.
 fn tls_config() -> Result<rustls::ClientConfig, HubError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = rustls_platform_verifier::Verifier::new(provider.clone())

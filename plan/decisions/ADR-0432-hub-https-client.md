@@ -83,3 +83,7 @@ The client, and how it meets the blocking `read_at`:
 - `iroh` drops `reqwest`, so keeping it adds the crate to the lockfile. Then `ureq` or `hyper` may cost less.
 - COMP-E12-T02 needs async reads for its concurrency, and the bridge costs more than an async `RangeSource`.
 - A Tier 3 target cannot build `rustls`'s crypto provider or the platform verifier.
+
+## Revision notes
+
+*2026-10-31 (COMP-E10-T14), TLS versions.* The Hub client offers TLS 1.3 only. This ADR did not say which versions; `net`'s TLS 1.3 rule (RFC-0034 §3) covers Syntropy's own connections, not third-party origins. `reqwest`'s `hyper-rustls` turns on `rustls`'s `tls12` feature for the whole build, so the client pins the version itself instead of taking the defaults. `huggingface.co`, `cdn-lfs.hf.co` and `cas-bridge.xethub.hf.co` each completed a TLS 1.3 handshake (`openssl s_client -tls1_3`, 2026-10-31). The cost: a Hub mirror or a TLS-inspecting proxy that offers only TLS 1.2 cannot be used, and fails the handshake as a `Link` error. Revisit if users report such a mirror or proxy. Proposed, for the maintainers to confirm (RFC-0001 §18.51).

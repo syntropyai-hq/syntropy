@@ -3191,6 +3191,8 @@ COMP-E10-T14 builds the Hub's HTTP range source (RFC-0041 §2, §7.2) on ADR-043
 
 Taken with ADR-0432, accepted 2026-10-29.
 
+Revised 2026-10-31, after a second review of COMP-E10-T14: the Hub client offers TLS 1.3 only (ADR-0432's revision note, proposed for the maintainers to confirm), and a range body whose connection fails partway is `Link`, which RFC-0041 §7.3's errors row retries ("resets retry"), while a body that ends cleanly short stays `Integrity` (COMP-E10-T14's criterion, reworded).
+
 ### 18.52 `ProbeResult`, and probe mode (2026-10-29)
 
 DIST-E1-T17 builds probe mode (§3.1).

@@ -324,8 +324,9 @@ fn a_redirect_to_plain_http_is_refused() {
     );
 }
 
-/// A short, long or cut-off body, a 416, a `Content-Range` for other bytes and a whole-file
-/// reply are `HeaderInvalid`, class `Integrity`.
+/// A body that ends cleanly short or runs long, a 416, a `Content-Range` for other bytes and a
+/// whole-file reply are `HeaderInvalid`, class `Integrity`. A body cut by the connection is
+/// `Link` (`a_stalled_body_is_link`).
 #[test]
 fn a_mismatched_reply_is_integrity() {
     let server = Server::start(sample());
