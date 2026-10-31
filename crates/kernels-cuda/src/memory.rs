@@ -241,7 +241,7 @@ impl SystemMemory {
 impl MemoryOps for SystemMemory {
     fn device_alloc(&self, bytes: u64) -> Result<u64, Fault> {
         let len = size(bytes)?;
-        self.ctx.make_current()?;
+        let _current = self.ctx.scoped()?;
         let mut addr: CUdeviceptr = 0;
         // SAFETY: the device's context is current on this thread; the call writes one address
         // through a pointer to a live local.
@@ -250,7 +250,7 @@ impl MemoryOps for SystemMemory {
     }
 
     fn device_free(&self, addr: u64) -> Result<(), Fault> {
-        self.ctx.make_current()?;
+        let _current = self.ctx.scoped()?;
         // SAFETY: `addr` came from `cuMemAlloc_v2` in this context, and `DeviceMemory` frees
         // each address once.
         let s = unsafe { (self.calls.free)(addr) };
@@ -259,7 +259,7 @@ impl MemoryOps for SystemMemory {
 
     fn host_alloc(&self, bytes: u64) -> Result<u64, Fault> {
         let len = size(bytes)?;
-        self.ctx.make_current()?;
+        let _current = self.ctx.scoped()?;
         let mut host: *mut c_void = std::ptr::null_mut();
         // SAFETY: the device's context is current; the call writes one pointer through a
         // pointer to a live local.
@@ -278,7 +278,7 @@ impl MemoryOps for SystemMemory {
     }
 
     fn host_free(&self, host: u64) -> Result<(), Fault> {
-        self.ctx.make_current()?;
+        let _current = self.ctx.scoped()?;
         // SAFETY: `host` came from `cuMemHostAlloc`, and `DeviceMemory` frees each address once.
         let s = unsafe { (self.calls.free_host)(host as *mut c_void) };
         self.check("cuMemFreeHost", s)
@@ -286,7 +286,7 @@ impl MemoryOps for SystemMemory {
 
     fn host_register(&self, host: u64, bytes: u64) -> Result<(), Fault> {
         let len = size(bytes)?;
-        self.ctx.make_current()?;
+        let _current = self.ctx.scoped()?;
         let flags = CU_MEMHOSTREGISTER_PORTABLE | CU_MEMHOSTREGISTER_DEVICEMAP;
         // SAFETY: the tier manager owns `bytes` of host memory at `host` for at least as long
         // as the registration lives (RFC-0020 §6); the driver only pins and maps the pages, and
@@ -296,7 +296,7 @@ impl MemoryOps for SystemMemory {
     }
 
     fn host_unregister(&self, host: u64) -> Result<(), Fault> {
-        self.ctx.make_current()?;
+        let _current = self.ctx.scoped()?;
         // SAFETY: `host` is the start of a range `cuMemHostRegister_v2` registered, and
         // `DeviceMemory` unregisters each range once.
         let s = unsafe { (self.calls.unregister)(host as *mut c_void) };
@@ -304,7 +304,7 @@ impl MemoryOps for SystemMemory {
     }
 
     fn device_pointer(&self, host: u64) -> Result<u64, Fault> {
-        self.ctx.make_current()?;
+        let _current = self.ctx.scoped()?;
         let mut addr: CUdeviceptr = 0;
         // SAFETY: `host` is device-mapped host memory of this context; flags must be 0; the
         // call writes one address through a pointer to a live local.

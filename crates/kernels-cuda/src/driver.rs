@@ -384,6 +384,41 @@ impl PrimaryContext {
         let s = unsafe { (c.set_current)(self.ctx) };
         self.api.check("cuCtxSetCurrent", s)
     }
+
+    /// Makes this context current on the calling thread until the returned guard drops, which
+    /// puts back the context that was current before (as [`SystemDriver`]'s free-memory read
+    /// does). A call made on another device's dispatcher thread therefore leaves that thread's
+    /// context as it found it.
+    pub(crate) fn scoped(&self) -> Result<Scoped<'_>, Fault> {
+        let c = self.api.calls()?;
+        let mut previous: CUcontext = std::ptr::null_mut();
+        // SAFETY: writes one handle through a pointer to a live local.
+        let s = unsafe { (c.get_current)(&raw mut previous) };
+        self.api.check("cuCtxGetCurrent", s)?;
+        self.make_current()?;
+        Ok(Scoped {
+            api: &self.api,
+            previous,
+        })
+    }
+}
+
+/// The guard [`PrimaryContext::scoped`] returns: restores the previous current context on drop.
+pub(crate) struct Scoped<'a> {
+    api: &'a Api,
+    previous: CUcontext,
+}
+
+impl Drop for Scoped<'_> {
+    fn drop(&mut self) {
+        if let Ok(c) = self.api.calls() {
+            // SAFETY: `previous` was current on this thread when the guard was made (or null,
+            // which makes no context current); setting it takes no pointers. A context
+            // destroyed since then fails the call, which is ignored: nothing is left current
+            // that this guard made current, beyond what the driver keeps.
+            let _ = unsafe { (c.set_current)(self.previous) };
+        }
+    }
 }
 
 impl Driver for SystemDriver {

@@ -8,6 +8,7 @@ use syntropy_kernels::{KernelProvider, OpenOptions};
 
 use super::*;
 use crate::driver::RawDevice;
+use cudarc::driver::sys::CUcontext;
 
 /// One memory call a [`Recorder`] saw.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -620,6 +621,13 @@ fn devices_share_one_driver_registration_per_range() {
             .count()
     };
     let ra = p.register_host(&a, region(ARENA, 16 * MIB)).unwrap();
+    // The same start at another length is not the same unit: refused before the driver.
+    for other in [8 * MIB, 32 * MIB] {
+        let e = p.register_host(&b, region(ARENA, other)).unwrap_err();
+        assert_eq!(e.class, ErrorClass::Internal, "{e}");
+        assert!(p.import(&b, region(ARENA, other)).is_err());
+    }
+    assert_eq!(p.host_ranges.users(ARENA), 1);
     let rb = p.register_host(&b, region(ARENA, 16 * MIB)).unwrap();
     assert_ne!(ra.handle, rb.handle);
     assert_eq!(registers(&rec), 1);
@@ -859,6 +867,8 @@ struct Probe {
     dtoh: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize) -> Status,
     memset32: unsafe extern "C" fn(CUdeviceptr, c_uint, usize) -> Status,
     info: unsafe extern "C" fn(*mut usize, *mut usize) -> Status,
+    get_current: unsafe extern "C" fn(*mut CUcontext) -> Status,
+    set_current: unsafe extern "C" fn(CUcontext) -> Status,
 }
 
 impl Probe {
@@ -873,9 +883,27 @@ impl Probe {
                 dtoh: api.symbol("cuMemcpyDtoH_v2").unwrap(),
                 memset32: api.symbol("cuMemsetD32_v2").unwrap(),
                 info: api.symbol("cuMemGetInfo_v2").unwrap(),
+                get_current: api.symbol("cuCtxGetCurrent").unwrap(),
+                set_current: api.symbol("cuCtxSetCurrent").unwrap(),
                 ctx,
             }
         }
+    }
+
+    /// The calling thread's current context.
+    fn current(&self) -> CUcontext {
+        let mut c: CUcontext = std::ptr::null_mut();
+        // SAFETY: writes one handle through a pointer to a live local.
+        let s = unsafe { (self.get_current)(&raw mut c) };
+        self.ctx.api().check("cuCtxGetCurrent", s).unwrap();
+        c
+    }
+
+    /// Makes no context current on the calling thread.
+    fn clear_current(&self) {
+        // SAFETY: a null context unbinds the calling thread's current one.
+        let s = unsafe { (self.set_current)(std::ptr::null_mut()) };
+        self.ctx.api().check("cuCtxSetCurrent", s).unwrap();
     }
 
     fn write(&self, dst: u64, src: &[u8]) {
@@ -965,6 +993,14 @@ fn arenas_on_a_cuda_device() {
     let ctx = p.open(dev0(), &opts()).unwrap();
     let probe = Probe::new(&ctx);
     let free_before = probe.free_bytes();
+
+    // A memory call leaves the calling thread's current context as it found it, so a release
+    // run on another device's dispatcher thread does not change that thread's context.
+    probe.clear_current();
+    let b = p.alloc(&ctx, req(MemKind::Device, MIB, 256)).unwrap();
+    assert!(probe.current().is_null(), "alloc left a context current");
+    p.free(&ctx, b);
+    assert!(probe.current().is_null(), "free left a context current");
 
     // VRAM: one fixed slab per purpose (RFC-0020 §4.1, fallback row).
     let purposes = [
