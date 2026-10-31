@@ -1531,3 +1531,12 @@ COMP-E4-T02 (M0a) asked that "TIER's arena tests pass on a CUDA device". No aren
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | COMP-E4-T02's criterion keeps the provider-level arena build on a CUDA device; "TIER's arena tests pass on a CUDA device" moves to TIER-E1-T07, and COMP-E4-T21's R-ADA re-run names each leg's task | COMP-E4-T02, TIER-E1-T07, COMP-E4-T21 | R9 | the tests a criterion runs must exist when the task closes; the existing edge TIER-E1-T07 → COMP-E4-T02 keeps the graph acyclic and within M0a. Proposed, for the maintainers to confirm |
+
+## PROD-E2-T20's benchmark leg and `vocab_limit` derivation move out (2026-10-31)
+
+PROD-E2-T20 (M0a) built the token-ID range check, and one of its criteria measured the check in the RFC-0061 pre-`SequenceOpen` microbenchmark. That benchmark runs in QUAL-E13-T08's harness (M0b), which PROD-E2-T20 does not reach. PROD-E2-T11 (M1a) already owns the pre-`SequenceOpen` budget and depends on the harness, so the leg moves there. Neither task reached the other before, so the edge adds no cycle, and it runs from M1a to M0a.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E2-T20's "the check stays within the pre-`SequenceOpen` budget in the RFC-0061 microbenchmark" → PROD-E2-T11; PROD-E2-T11 → PROD-E2-T20 | PROD-E2-T20, PROD-E2-T11 | R9 | the microbenchmark needs QUAL-E13-T08's harness, which PROD-E2-T20's Depends cell does not reach; PROD-E2-T11 measures the pre-`SequenceOpen` budget in that harness against the fake runner, now with the range check in the measured path. M1a → M0a |
+| New COMP-E10-T16 (M0a), `ModelManifest` `vocab_limit` with the token embedding marked in the census, → COMP-E10-T07; PROD-E2-T20's task text takes `vocab_limit` through `ModelInfo`; PROD-E2-T08 → COMP-E10-T16 | PROD-E2-T20, COMP-E10-T16, PROD-E2-T08 | R9, R3b | "from the manifest" needs the token embedding's rows, and the census (COMP-E10-T07) does not record which `RowLookup` table is the token embedding, so the derivation needs a census change in the engine lane's crates. PROD-E2-T20 keeps the validator. PROD-E2-T08 fills `ModelInfo` from the new row. M1a → M0a and M0a → M0a; no cycle (#2043, devdaviddr's sign-off) |

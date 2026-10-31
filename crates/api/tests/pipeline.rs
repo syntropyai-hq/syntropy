@@ -22,6 +22,8 @@ use syntropy_testkit::sim::{SimClock, SimEntropy};
 
 const NODE: NodeId = NodeId([6; 32]);
 const CONTEXT: u32 = 64;
+/// The fake model's `vocab_limit`: one past the last token of [`VOCAB`].
+const VOCAB_LIMIT: u32 = VOCAB.len() as u32;
 
 /// Token `t`'s text.
 const VOCAB: [&str; 10] = [
@@ -36,6 +38,7 @@ impl Stages for FakeStages {
             "m" => Ok(ModelInfo {
                 name: "m".to_owned(),
                 context_length: CONTEXT,
+                vocab_limit: VOCAB_LIMIT,
             }),
             other => Err(ApiError::ModelNotFound(other.to_owned())),
         }

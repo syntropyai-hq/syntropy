@@ -33,6 +33,8 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# The token-ID validator's property test (PROD-E2-T20).
+proptest.workspace = true
 # The fake runner the pipeline's tests run against (QUAL-E3-T18), and its `SimClock`.
 syntropy-testkit = { path = "../testkit" }
 # Parses `api.tls` values in the unit tests.

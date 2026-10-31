@@ -14,6 +14,7 @@ use syntropy_obs::trace::IngressTrace;
 
 use super::ingress::{Ingress, SendError};
 use super::stages::{ClientGone, Detokenize, EventSink, NoStops, Route, StopMatch};
+use super::token_ids::check_request;
 use super::types::{ApiError, GenEvent, GenerateRequest, StopReason, Timings, Usage};
 
 /// Set by the HTTP layer when the client's connection closes (RFC-0050 §5.3): on the socket's
@@ -96,6 +97,8 @@ impl<'r> Ingress<'r> {
     ///
     /// The first stage's error, before any `SequenceOpen` is sent:
     /// - [`ApiError::InvalidRequest`] for `n = 0` or `max_tokens = 0`;
+    /// - [`ApiError::TokenIdOutOfRange`] for a token ID at or above the model's `vocab_limit`
+    ///   (RFC-0050 §2.3), checked after stage 5 and before routing;
     /// - [`ApiError::Unsupported`] for `n > 1` (PROD-E2-T06), or a prompt larger than a ring
     ///   slot;
     /// - [`ApiError::ContextLengthExceeded`] when the prompt plus `max_tokens` exceeds the model's
@@ -124,6 +127,8 @@ impl<'r> Ingress<'r> {
         let model = stages.resolve_model(&request.model)?;
         // Stage 5.
         let prompt = stages.tokenize(&model, &request.input, request.raw_special_tokens)?;
+        // RFC-0050 §2.3: every token ID the request carries, before routing.
+        check_request(request, &prompt, model.vocab_limit)?;
         let prompt_len = u32::try_from(prompt.len()).unwrap_or(u32::MAX);
         let limit = model.context_length;
         let max_tokens = match request.sampling.max_tokens {
