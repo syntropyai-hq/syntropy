@@ -4127,9 +4127,11 @@ name = "syntropy-kernels-ggml"
 version = "0.0.0"
 dependencies = [
  "cc",
+ "proptest",
  "smallvec",
  "syntropy-core",
  "syntropy-kernels",
+ "syntropy-manifest",
  "syntropy-testkit",
 ]
 
@@ -4162,6 +4164,7 @@ name = "syntropy-manifest"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "postcard",
  "proptest",
  "serde",
  "serde_json",
@@ -4169,6 +4172,7 @@ dependencies = [
  "syntropy-config",
  "syntropy-core",
  "syntropy-testkit",
+ "zstd",
 ]
 
 [[package]]

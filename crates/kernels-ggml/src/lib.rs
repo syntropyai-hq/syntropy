@@ -124,6 +124,21 @@ impl GgmlType {
     }
 }
 
+/// The block geometry ggml's type traits give type ID `id` (`enum ggml_type`), as (elements per
+/// block, bytes per block); `None` for an ID past the last type this build defines. The tests
+/// check `kernels::reference`'s layouts and `manifest`'s RFC-0042 §2.1 table against it
+/// (COMP-E13-T02).
+#[must_use]
+pub fn geometry_of_id(id: u32) -> Option<(usize, usize)> {
+    if id >= sys::ggml_type::GGML_TYPE_COUNT.0 {
+        return None;
+    }
+    let ty = sys::ggml_type(id);
+    // SAFETY: pure lookups in ggml's static type table, for an ID below `GGML_TYPE_COUNT`.
+    let (elems, bytes) = unsafe { (sys::ggml_blck_size(ty), sys::ggml_type_size(ty)) };
+    Some((usize::try_from(elems).ok()?, bytes))
+}
+
 /// Why a call into ggml was refused before it was made, or failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GgmlError {
