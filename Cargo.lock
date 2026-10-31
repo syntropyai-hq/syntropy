@@ -4102,6 +4102,10 @@ name = "syntropy-kernels-ggml"
 version = "0.0.0"
 dependencies = [
  "cc",
+ "proptest",
+ "syntropy-core",
+ "syntropy-kernels",
+ "syntropy-manifest",
 ]
 
 [[package]]
