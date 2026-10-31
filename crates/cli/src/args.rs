@@ -198,6 +198,14 @@ pub struct HeaderArgs {
     /// is refused: the check that the profile covers the file system, not only opens
     #[arg(long, value_name = "PATH", hide = true)]
     pub check_remove: Option<PathBuf>,
+    /// Instead of parsing, try to create a UDP socket once confined, and exit 0 only if the
+    /// attempt is refused: the check that the child cannot open a socket of any kind
+    #[arg(long, hide = true)]
+    pub check_socket: bool,
+    /// Instead of parsing, exit 0 only if descriptor N is not open once confined (Linux, through
+    /// `/proc/self/fd`): the check that inherited descriptors are closed
+    #[arg(long, value_name = "N", hide = true)]
+    pub check_fd: Option<u32>,
 }
 
 /// A header's format.

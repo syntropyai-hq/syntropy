@@ -469,3 +469,61 @@ fn a_confined_child_cannot_remove_a_file() {
     assert!(victim.exists());
     fs::remove_dir_all(&dir).ok();
 }
+
+/// DIST-E17-T08: the child cannot open a socket of any kind. A UDP socket is refused at
+/// `socket()` itself, by the seccomp filter on Linux and the profile's `system-socket` rule on
+/// macOS; Landlock, which covers TCP only, does not stand in for either.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_cannot_open_a_socket() {
+    assert!(
+        std::net::UdpSocket::bind("127.0.0.1:0").is_ok(),
+        "the control socket"
+    );
+    let dir = scratch("socket");
+    let path = safetensors(&dir, 16);
+    let output = confined(&path, &["--check-socket".as_ref()]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("PermissionDenied"), "{stderr}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A descriptor the child inherits is closed before it reads anything: the shell opens
+/// descriptor 7 on the header and execs the child with it still open.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_inherited_descriptor_is_closed() {
+    let dir = scratch("fd");
+    let path = safetensors(&dir, 16);
+    let child = script(
+        &dir,
+        &format!(
+            "exec 7<'{}'\nexec '{}' \"$@\" --check-fd 7",
+            path.display(),
+            binary().display()
+        ),
+    );
+    let output = std::process::Command::new(&child)
+        .args(["__header", "--kind", "safetensors"])
+        .arg("--path")
+        .arg(&path)
+        .args([
+            "--memory",
+            "1073741824",
+            "--cpu-secs",
+            "30",
+            "--open-files",
+            "32",
+            "--max-header-bytes",
+            "268435456",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::remove_dir_all(&dir).ok();
+}

@@ -55,6 +55,28 @@ pub fn run(args: &HeaderArgs) -> Result<(), CliError> {
     if args.check_crash {
         std::process::abort();
     }
+    if args.check_socket {
+        return match std::net::UdpSocket::bind("127.0.0.1:0") {
+            Err(e) => {
+                eprintln!("the socket failed, as it must: {:?}: {e}", e.kind());
+                Ok(())
+            }
+            Ok(_) => Err(refused(format!(
+                "a confined child opened a socket (network banned: {})",
+                confined.network
+            ))),
+        };
+    }
+    if let Some(fd) = args.check_fd {
+        let link = format!("/proc/self/fd/{fd}");
+        return if std::fs::symlink_metadata(&link).is_err() {
+            Ok(())
+        } else {
+            Err(refused(format!(
+                "descriptor {fd} is still open in the child"
+            )))
+        };
+    }
     if let Some(other) = &args.check_remove {
         return match std::fs::remove_file(other) {
             Err(e) => {
