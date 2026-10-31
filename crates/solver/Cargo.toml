@@ -6,7 +6,15 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde.workspace = true
+smallvec.workspace = true
 syntropy-core = { path = "../core" }
+# `SolveInput` borrows the model's census (RFC-0011 §2).
+syntropy-manifest = { path = "../manifest" }
 
 [dev-dependencies]
 proptest.workspace = true
+# The RFC-0011 §2 types round-trip through JSON, with exact floats.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+# `StageCost`'s terms map onto RFC-0053's `CostTerm` (PLC-E4-T01).
+syntropy-obs = { path = "../obs" }

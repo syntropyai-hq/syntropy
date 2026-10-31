@@ -339,6 +339,38 @@ The kernel and op items of #1487's comments, applied with R9. RFC-0040's M0 row 
 | COMP-E5-T04 → COMP-E4-T02, COMP-E4-T05 | COMP-E5-T04 | R9 | its router writes host-mapped doorbell pages (COMP-E4-T02, which also reaches the CUDA binding and the rigs), and its stage is captured (COMP-E4-T05) |
 | COMP-E16-T05 → COMP-E10-T05 | COMP-E16-T05 | R9 | its MXFP4 experts load through the `quantization_config` mapping |
 | COMP-E3-T03 drops its "from M1" criterion and its edge to QUAL-E15-T18; COMP-E5-T01 drops its "from M1" criterion; COMP-E2-T09 → COMP-E3-T03, COMP-E5-T01; QUAL-E8-T12 → QUAL-E15-T18 | COMP-E3-T03, COMP-E5-T01, COMP-E2-T09, QUAL-E8-T12 | R9, Definition of done | both criteria were `AC-LATER` throughput targets that COMP-E2-T09 (M1a) already carries on the Tier 1 rigs. COMP-E3-T03 depended on R-LABCPU only for its target, and that host is never timed (ADR-0610). QUAL-E8-T12, whose criteria name R-LABCPU, had reached it only through that edge |
+
+## COMP-E1-T03: split into three slices (2026-10-31)
+
+COMP-E1-T03 asked for the reference semantics of 23 M0 ops in one change, and 15 tasks waited on all of it, though most use only a few of the ops. The row is split by the ops' kind. COMP-E1-T03 keeps the reduction helper, the matrix products and the data movement, and two new M0a rows take the rest, each depending on COMP-E1-T03 for its reduction helper. Each dependent now points at the slice that holds the ops its criteria use. `RmsNorm` stays in COMP-E1-T03 because `Logits` is the final norm plus the LM head (RFC-0040 §3.1). `Act` goes with `Rope` and attention, and `TapGather` goes with sampling, since it reads the logits the sampler reads. "Masked positions" moves to the slices that have masks. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction, and listed for the maintainers' sign-off on the PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Split: `Rope`, `Act` and `AttnDecode`/`AttnPrefill`/`KvWrite` for `Gqa` → new COMP-E1-T17 (M0a), which depends on COMP-E1-T03 | COMP-E1-T03, COMP-E1-T17 | R9 | the attention ops need masks, KV pages and the software `sin` and `cos`, which no op in COMP-E1-T03's slice uses. The masked-positions property test moves with them |
+| Split: `LogitsProcess`, `TopKTopP`, `SampleSeeded`, `Argmax`, `VerifyAccept`, `TapGather`, `MoeRoute`, `MoeGrouped` and `MoeCombine` → new COMP-E1-T18 (M0a), which depends on COMP-E1-T03 | COMP-E1-T03, COMP-E1-T18 | R9 | the sampling and MoE ops share the tie rule of RFC-0042 §4.2 and the grammar mask, and none of COMP-E1-T03's matrix-product dependents uses them |
+| COMP-E1-T04 → COMP-E1-T17, COMP-E1-T18 (was COMP-E1-T03) | COMP-E1-T04 | R9 | its M1 ops extend `MoeRoute`, `Gqa` attention and `Act`, which are now in the two new slices |
+| COMP-E1-T15 → COMP-E1-T17; COMP-E1-T16 → COMP-E1-T17; COMP-E5-T05 → COMP-E1-T17 (each was COMP-E1-T03) | COMP-E1-T15, COMP-E1-T16, COMP-E5-T05 | R9 | their criteria check against the reference `AttnPrefill`, `KvWrite` and `AttnDecode` for `Gqa` |
+| COMP-E3-T21 → COMP-E1-T18; COMP-E4-T06 → COMP-E1-T18; COMP-E5-T04 → COMP-E1-T18 (each was COMP-E1-T03) | COMP-E3-T21, COMP-E4-T06, COMP-E5-T04 | R9 | their criteria check against the reference `MoeRoute`, `MoeCombine`, `MoeGrouped` and `TapGather` |
+| COMP-E3-T08, COMP-E7-T19, COMP-E15-T03 → COMP-E1-T17, COMP-E1-T18, added beside COMP-E1-T03 | COMP-E3-T08, COMP-E7-T19, COMP-E15-T03 | R9 | each uses ops from all three slices: the CPU norms, attention and sampling; the ggml mappings of RoPE, attention and `MoeRoute`; the interpreter of every M0 op |
+| COMP-E5-T26 → COMP-E1-T17, added beside COMP-E1-T03 | COMP-E5-T26 | R9 | its CUDA `Act` is checked against the reference `Act`; its `RmsNorm`, `Add`, `Mul`, `RowGather` and `Convert` stay with COMP-E1-T03 |
+| COMP-E3-T03, COMP-E3-T07, COMP-E3-T22, COMP-E5-T01 and COMP-E13-T13 keep COMP-E1-T03 alone | — | R9 | their criteria use `Gemv`, `Gemm`, `GateUpAct`, `Logits`, `RowGather`, `Add`, `Mul` and `Convert`, or the bit-exact-class ops, all in COMP-E1-T03 |
+
+## COMP-E17-T03: RFC-0060 corpus leg moves to the corpus import (2026-10-31)
+
+COMP-E17-T03 (M0a) asked for token-exact GGUF conversions "on the tokenizer corpus", which is RFC-0060's corpus. QUAL-E5-T22 publishes that corpus and its token streams, and it depends on COMP-E17-T03, so an edge from COMP-E17-T03 would make a cycle. COMP-E17-T03 keeps the check on a project-written corpus in its own crate, run on the publisher's GGUF files of both M0 nightly checkpoints. The rerun on the published corpus goes with the import. The `llama` family's M0 checkpoint is Qwen3-0.6B (RFC-0060 §12.2), and Llama-3.2-1B is lab-only, so the criterion's "M0 families" needs no gated file. Review of #2054.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E17-T03's corpus becomes the project corpus `crates/graph/tests/data/tokenize/corpus.json`, and its checkpoints are named; the rerun on RFC-0060's corpus moves to QUAL-E5-T22 (M0a), which already depends on COMP-E17-T03 | COMP-E17-T03, QUAL-E5-T22 | R9 | the criterion uses the corpus QUAL-E5-T22 publishes, which no edge of COMP-E17-T03 reaches, and the reverse edge exists. Proposed, for the maintainers to confirm |
+
+## COMP-E17-T13: literal-content criterion covers every added token (2026-10-31)
+
+COMP-E17-T04 resolves a `ChatFormat` marker to `Marker::Special(id)` when its text is any added token of the tokenizer, whether or not `tokenizer.json` marks it `special` (RFC-0043 §8.4 note). The Qwen3 repositories ship `<tool_call>`, `</tool_call>`, `<think>` and `</think>` as added but not special. The engine's special-token switch skips only tokens marked `special`, so with T13's criterion as written, a content span holding `<tool_call>` would still encode to its ID and forge a call. RFC-0043 §8.7 step 3 now says the same (review of #2047).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E17-T13's criterion and fuzz target widen from "every special token" to every added token, special or not | COMP-E17-T13 | R9 | the markers its injection cases cover are COMP-E17-T04's, which T13 already depends on; both are M0a, so the graph does not change. Proposed, for the maintainers to confirm |
+
 ## PLC-E1-T02 split (2026-10-21)
 
 | Change | Tasks | Rule | Reason |
@@ -890,6 +922,15 @@ Building DIST-E1-T14 found three field types that no row defined, though its own
 | TIER-E7-T01 computes its page keys as `core`'s `PrefixKey`; its existing edge to DIST-E1-T14 now names `PrefixKey` too | TIER-E7-T01 | R9 | the key is what `PrefixRef::Cached` carries |
 | PROD-E3-T05 uses `core`'s `GrammarRef` and `SamplingParams`; PROD-E3-T05 → DIST-E1-T14 | PROD-E3-T05 | R9 | its criterion ships each grammar hash to a tail once, inside `SamplingParams`. M1a → M0a, no cycle |
 | DIST-E1-T14's view conversion covers every field but the tap block, and refuses a non-empty one either way with a classified error; DIST-E8-T06 gains "`net`'s `TokenEntryView` converts a tap block to and from `core`'s `LogitTap` in both tap modes, with the golden frames unchanged"; no edge | DIST-E1-T14, DIST-E8-T06 | R9 | `core`'s `TokenEntry::tap` is a typed `LogitTap`, while `net` carries the block as bytes until DIST-E8-T06 builds its codec, and the `Token` goldens' tap blocks are fill bytes. DIST-E8-T06 already depends on DIST-E8-T03, whose view it extends. M0's taps travel in-process (PLC-E9-T16) |
+
+## TIER-E1-T02: multi-site layout check moves to TIER-E1-T12 (2026-10-31)
+
+TIER-E1-T02 (M0a) asked `plan_arenas` to make RFC-0020 §7.3's multi-site layout check, from an accepted-layouts argument. Every input the check needs is M1a: the layout pass and its readers (COMP-E2-T13), the pack build's layout choice (COMP-E11-T05) and the `per_site_layout` marking (PLC-E6-T15). An edge from TIER-E1-T02 to them would point at a later milestone, and the one to COMP-E2-T13 would close a cycle, because COMP-E2-T13 already reaches TIER-E1-T02. TIER-E1-T12 (M1a) already depends on all three and reaches TIER-E1-T02 through TIER-E1-T08 and TIER-E1-T07, so the move adds no cycle. devdaviddr approved the move on issue #245. RFC-0020 §3's note of 2026-10-31 records the signature without the argument.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Moved: the accepted-layouts argument, the multi-site layout check, and the criterion "a fixture census giving an MoE expert a CPU-only layout under a GPU+CPU miss split fails the multi-site layout check, and `plan_arenas` returns `Unsupported`" → TIER-E1-T12 (M1a) | TIER-E1-T02, TIER-E1-T12 | R9 | the check reads COMP-E2-T13's readers, COMP-E11-T05's layout choice and PLC-E6-T15's marking, all M1a; TIER-E1-T02 → COMP-E2-T13 would be a cycle |
+| Dropped TIER-E1-T02 → COMP-E1-T02 (`LayoutVersion`, `OpCaps::layout`); added TIER-E1-T12 → COMP-E1-T02 | TIER-E1-T02, TIER-E1-T12 | R9 | only the moved check uses the layout types; TIER-E1-T12's moved criterion now names them |
 
 ## TIER-E5-T08's conformance suite (2026-10-23)
 
