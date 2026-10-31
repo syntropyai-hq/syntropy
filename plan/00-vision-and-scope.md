@@ -411,7 +411,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M4: hardening and 1.0
 
-52 tasks in the epics (`implementation/roadmap.md`, M4).
+53 tasks in the epics (`implementation/roadmap.md`, M4).
 
 - [ ] Tier 2 and Tier 3 platforms per ADR-0020; signed installers and update channels for every Tier 1 OS (RFC-0052, RFC-0062).
 - [ ] Performance regression gates on every Tier 1 rig; published benchmarks tied to commits, comparisons with other engines included (RFC-0061).

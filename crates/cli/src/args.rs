@@ -182,6 +182,38 @@ pub struct HeaderArgs {
     /// attempt is refused: the check that the child has no network
     #[arg(long, value_name = "ADDR", hide = true)]
     pub check_network: Option<std::net::SocketAddr>,
+    /// Instead of parsing, try to open this other file once confined, and exit 0 only if the
+    /// attempt is refused: the check that the child can open no file but its own
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub check_open: Option<PathBuf>,
+    /// Instead of parsing, read the given file's first 8 bytes once confined, and exit 0 if that
+    /// works: the check that the profile leaves the child its own file
+    #[arg(long, hide = true)]
+    pub check_read: bool,
+    /// Instead of parsing, abort once confined: the stand-in for a parser that crashes on a
+    /// hostile header under the profile
+    #[arg(long, hide = true)]
+    pub check_crash: bool,
+    /// Instead of parsing, try to delete this file once confined, and exit 0 only if the attempt
+    /// is refused: the check that the profile covers the file system, not only opens
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub check_remove: Option<PathBuf>,
+    /// Instead of parsing, try to create a UDP socket once confined, and exit 0 only if the
+    /// attempt is refused: the check that the child cannot open a socket of any kind
+    #[arg(long, hide = true)]
+    pub check_socket: bool,
+    /// Instead of parsing, exit 0 only if descriptor N is not open once confined (Linux, through
+    /// `/proc/self/fd`): the check that inherited descriptors are closed
+    #[arg(long, value_name = "N", hide = true)]
+    pub check_fd: Option<u32>,
+    /// Instead of parsing, try to send SIGTERM to this process once confined, and exit 0 only
+    /// if the attempt is refused: the check that the child cannot signal the daemon
+    #[arg(long, value_name = "PID", hide = true)]
+    pub check_signal: Option<u32>,
+    /// Instead of parsing, try to create a POSIX shared-memory object once confined, and exit 0
+    /// only if the attempt is refused
+    #[arg(long, hide = true)]
+    pub check_shm: bool,
 }
 
 /// A header's format.

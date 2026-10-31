@@ -204,9 +204,10 @@ fn a_child_past_the_time_limit_is_killed() {
     fs::remove_dir_all(&dir).ok();
 }
 
-/// On Linux a confined child cannot open a socket, so a connection to a listening address
-/// fails; the same connection from this process succeeds.
-#[cfg(target_os = "linux")]
+/// A confined child cannot open a socket, so a connection to a listening address fails; the
+/// same connection from this process succeeds. Linux's seccomp filter refuses `socket()` with
+/// `EACCES`, and macOS's profile with `EPERM` (DIST-E17-T08); both read as `PermissionDenied`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_confined_child_cannot_connect() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -236,14 +237,16 @@ fn a_confined_child_cannot_connect() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
-    // The seccomp filter's EACCES on socket(), not some other failure.
+    // The profile's refusal of socket(), not some other failure.
     assert!(stderr.contains("PermissionDenied"), "{stderr}");
     fs::remove_dir_all(&dir).ok();
 }
 
 /// A header that needs more memory than the limit is refused, while a small one parses under
-/// the same limit. Linux only: there the address-space limit is enforced and tested here.
-#[cfg(target_os = "linux")]
+/// the same limit. On Linux the address-space limit stops the child; on macOS, which enforces
+/// no memory limit, the child refuses a header longer than the limit over `PEAK_COPIES`
+/// (DIST-E17-T08).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_header_over_the_memory_limit_is_refused() {
     let limits = HeaderLimits {
@@ -256,8 +259,16 @@ fn a_header_over_the_memory_limit_is_refused() {
     let big_dir = scratch("membig");
     let big = safetensors(&big_dir, 96 << 20);
     let reason = invalid_reason(parse(HeaderKind::Safetensors, &big, &limits));
+    #[cfg(target_os = "linux")]
     assert!(
         reason.contains("signal 6") || reason.contains("memory allocation"),
+        "{reason}"
+    );
+    // The cap the child derived: 64 MiB over `PEAK_COPIES` (5) is 13,421,772 bytes, of which the
+    // safetensors JSON may take all but the 8-byte length word.
+    #[cfg(target_os = "macos")]
+    assert!(
+        reason.contains("exited with code 8") && reason.contains("limit of 13421764 bytes"),
         "{reason}"
     );
     // The same header parses with room for it.
@@ -358,5 +369,202 @@ fn the_child_sees_no_environment() {
         !reason.contains("HOME=") && !reason.contains("PATH="),
         "{reason}"
     );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// The `__header` arguments for `path` under the default limits, plus `extra`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn confined(path: &Path, extra: &[&std::ffi::OsStr]) -> std::process::Output {
+    std::process::Command::new(binary())
+        .args(["__header", "--kind", "safetensors"])
+        .arg("--path")
+        .arg(path)
+        .args([
+            "--memory",
+            "1073741824",
+            "--cpu-secs",
+            "30",
+            "--open-files",
+            "32",
+            "--max-header-bytes",
+            "268435456",
+        ])
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+/// DIST-E17-T08: under the profile the child reads the file it was given and can open no other
+/// file, not even that one again, while this process opens both.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_opens_no_other_file() {
+    let dir = scratch("files");
+    let path = safetensors(&dir, 16);
+    let other = dir.join("other.txt");
+    fs::write(&other, "not the header").unwrap();
+    assert!(fs::File::open(&other).is_ok() && fs::File::open(&path).is_ok());
+    let output = confined(&path, &["--check-read".as_ref()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for target in [other.as_path(), path.as_path(), Path::new("/etc/hosts")] {
+        let output = confined(&path, &["--check-open".as_ref(), target.as_os_str()]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{}: {stderr}", target.display());
+        assert!(
+            stderr.contains("PermissionDenied"),
+            "{}: {stderr}",
+            target.display()
+        );
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// DIST-E17-T08: a parser crash under the profile kills only the child. The real child confines
+/// itself and then aborts, as a parser bug would; the daemon reports the file invalid and parses
+/// the next file.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_crash_under_the_profile_kills_only_the_child() {
+    let dir = scratch("crash-profile");
+    let path = safetensors(&dir, 16);
+    let crashing = script(
+        &dir,
+        &format!("exec '{}' \"$@\" --check-crash", binary().display()),
+    );
+    let reason = invalid_reason(parse_in_child(
+        &crashing,
+        HeaderKind::Safetensors,
+        &path,
+        &HeaderLimits::default(),
+        &wall(),
+    ));
+    assert!(reason.contains("signal 6"), "{reason}");
+    assert!(parse(HeaderKind::Safetensors, &path, &HeaderLimits::default()).is_ok());
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// DIST-E17-T08: the profile covers the file system, not only opens: the child cannot delete a
+/// file, which Linux's seccomp filter allows and only Landlock refuses. On a Linux kernel without
+/// Landlock the check is skipped, and the test says so.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_cannot_remove_a_file() {
+    #[cfg(target_os = "linux")]
+    if syntropy_io::os::confine::landlock_abi() == 0 {
+        eprintln!("this kernel has no Landlock: nothing refuses unlink here");
+        return;
+    }
+    let dir = scratch("remove");
+    let path = safetensors(&dir, 16);
+    let victim = dir.join("victim.txt");
+    fs::write(&victim, "keep me").unwrap();
+    let output = confined(&path, &["--check-remove".as_ref(), victim.as_os_str()]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("PermissionDenied"), "{stderr}");
+    assert!(victim.exists());
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// DIST-E17-T08: the child cannot open a socket of any kind. A UDP socket is refused at
+/// `socket()` itself, by the seccomp filter on Linux and the profile's `system-socket` rule on
+/// macOS; Landlock, which covers TCP only, does not stand in for either.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_cannot_open_a_socket() {
+    assert!(
+        std::net::UdpSocket::bind("127.0.0.1:0").is_ok(),
+        "the control socket"
+    );
+    let dir = scratch("socket");
+    let path = safetensors(&dir, 16);
+    let output = confined(&path, &["--check-socket".as_ref()]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("PermissionDenied"), "{stderr}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A descriptor the child inherits is closed before it reads anything: the shell opens
+/// descriptor 7 on the header and execs the child with it still open.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_inherited_descriptor_is_closed() {
+    let dir = scratch("fd");
+    let path = safetensors(&dir, 16);
+    let child = script(
+        &dir,
+        &format!(
+            "exec 7<'{}'\nexec '{}' \"$@\" --check-fd 7",
+            path.display(),
+            binary().display()
+        ),
+    );
+    let output = std::process::Command::new(&child)
+        .args(["__header", "--kind", "safetensors"])
+        .arg("--path")
+        .arg(&path)
+        .args([
+            "--memory",
+            "1073741824",
+            "--cpu-secs",
+            "30",
+            "--open-files",
+            "32",
+            "--max-header-bytes",
+            "268435456",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// DIST-E17-T08: the child cannot signal another process of the same user, such as the daemon:
+/// Linux's seccomp filter lets the signal calls name only the child's own pid, and macOS's
+/// profile denies signals to any target but itself. The target, a `sleep` this test started,
+/// is still running afterwards.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_cannot_signal_another_process() {
+    let dir = scratch("signal");
+    let path = safetensors(&dir, 16);
+    let mut target = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let pid = target.id().to_string();
+    let output = confined(&path, &["--check-signal".as_ref(), pid.as_ref()]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let alive = target.try_wait().unwrap().is_none();
+    target.kill().ok();
+    target.wait().ok();
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("PermissionDenied"), "{stderr}");
+    assert!(alive, "the target was signalled");
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// DIST-E17-T08: the child cannot create a POSIX shared-memory object, which another process
+/// could open: macOS's profile denies `ipc-posix-shm*`, and on Linux `shm_open` is an open under
+/// `/dev/shm`, which the seccomp filter and Landlock refuse. This process can create one.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_cannot_create_shared_memory() {
+    syntropy_io::os::confine::probe_shm().unwrap();
+    let dir = scratch("shm");
+    let path = safetensors(&dir, 16);
+    let output = confined(&path, &["--check-shm".as_ref()]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("PermissionDenied"), "{stderr}");
     fs::remove_dir_all(&dir).ok();
 }

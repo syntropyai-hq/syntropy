@@ -1463,3 +1463,11 @@ The R9 pass over the remaining areas. Each criterion below uses a harness, a pro
 | PLC-E9-T23 → PLC-E9-T09 | PLC-E9-T23 | R9 | "sampled output passes PLC-E9-T09's harness" with a project-synthetic draft head (M3 → M1a) |
 | DIST-E6-T03 → PLC-E2-T11 | DIST-E6-T03 | R9 | "plugging a cable produces exactly one `InterfacesChanged` and new probes (PLC-E2-T11) within 3 s"; the L1 link probes are PLC-E2-T11's; both are M2 |
 | TIER-E9-T04 → COMP-E5-T02 | TIER-E9-T04 | R9 | "on the CUDA rig with a Q4_K pack and an i-quant pack, the fitted split's layer time is within 5% of the best fixed split"; CUDA i-quant GEMV is COMP-E5-T02's, and the row reached no CUDA kernel beyond `Timestamp`; both are M1a |
+
+## DIST-E17-T08's Windows AppContainer becomes DIST-E17-T17 (2026-10-31)
+
+A process cannot move itself into an AppContainer, so the Windows profile needs the daemon to start the header child in one, through a new spawn function in `io`, and to grant the container read access to the one header file. That is a change to the daemon's spawn path, not to the child's own confinement, which is what DIST-E17-T08 builds for Linux and macOS. Narrowing DIST-E17-T08's task text needs a maintainer's sign-off on the change that closes it (#998).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New DIST-E17-T17 (M4), "Windows AppContainer for the header child (split from DIST-E17-T08)" → DIST-E17-T08; DIST-E17-T08's task text and its "connect attempt fails on macOS and Windows" criterion drop Windows | DIST-E17-T08, DIST-E17-T17 | R3b, R9 | the Windows half carries over with the same criteria. It stays M4 with DIST-E17-T08, and no task depends on DIST-E17-T08, so no dependent loses a producer |
