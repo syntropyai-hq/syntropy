@@ -318,6 +318,13 @@ pub trait Family: Send + Sync {
 - **Errors.** `UnknownArchitecture` (1) and `HyperParamInvalid` (3) are `FamilyError` variants, and `code()` gives the number. A wrong type, a missing required key and a value outside the family's range are all code 3. `core` has no `Domain::Graph` yet.
 - **`HyperParams`.** `HyperParams` lives in `syntropy_manifest::hparams`, with the shared fields and `extra`. `LayerSpec` is added with the blocks.
 
+*Note 2026-10-31 (COMP-E10-T07): `kv_formula` and `tokenizer_spec` join the trait.* The census needs both (RFC-0041 §3 step 8), and their types now exist.
+- **`kv_formula(&self, hp, source: KvSource) -> KvFormula`.** The source parameter is `syntropy_manifest::kv::KvSource`, the type RFC-0042 §4.2's rule (`KvDTypeRule`) already takes, in place of the `SourceFormat` named above. It carries what the rule reads: GGUF, or safetensors with its compute dtype and whether the weights are quantised.
+- **`tokenizer_spec(&self, sources: TokenizerSources) -> Result<TokenizerSpec, TokenizerSpecError>`.**
+  - It takes the tokenizer side files, not a `MetaView`, because the spec is built from `tokenizer.json` and its companions (§8.1's note of 2026-10-22), which `MetaView` does not hold.
+  - It has a default, `TokenizerSpec::from_sources`. A family overrides it only to supply what its checkpoints leave out.
+  - GGUF sources, converted from metadata (§8.3), come with that conversion's task.
+
 #### 5.2 Hyperparameters
 
 `HyperParams` (RFC-0001 §5.3) keeps per-family values in `extra`. This RFC fixes the shared fields every family fills: `n_layers`, `hidden`, `vocab`, `residual_streams`, and per layer a `LayerSpec { mixer: MixerKind, ffn: FfnKind, mtp: bool }`, where `MixerKind` and `FfnKind` carry the block parameters of §3. `parse_hparams` normalises names and defaults, so the same model from GGUF and from safetensors yields equal `HyperParams`. `ModelId` does not hash `HyperParams` (RFC-0041 §1), so these types can grow between releases without changing any ID.
