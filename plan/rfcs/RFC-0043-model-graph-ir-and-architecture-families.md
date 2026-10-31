@@ -362,6 +362,31 @@ pub trait Family: Send + Sync {
 
 Facts about each model come from its configuration (`backends-and-portability.md` §4.1). The table names what the module must handle; the conformance gate (§9) decides when each family ships on each backend (RFC-0040 §11.5).
 
+*Note 2026-10-31 (COMP-E16-T03, as built): the `llama` module.* `syntropy_graph::families::llama` is registered in `graph::families()`.
+- **Accepts.** GGUF `llama`, `qwen2` and `qwen3`, and `config.json` `LlamaForCausalLM`, `MistralForCausalLM`, `Qwen2ForCausalLM` and `Qwen3ForCausalLM`, with their `model_type` values. The name picks the variant: Qwen3 has QK-norm, Qwen2 has a bias on Q, K and V, and Llama and Mistral have neither. The variant is stored as the `qk_norm` and `qkv_bias` flags in `HyperParams::extra`. The norm and bias rules apply only where the flag is set, so a tensor the variant does not have is `Unknown`.
+- **Equal across sources.** GGUF and `config.json` give equal `HyperParams`, with floats kept at F32 precision (§5.2). The one exception is tied embeddings: GGUF has no key for them, so a GGUF file reads as untied, and a GGUF file with no `output.weight` is tied by §4.2's first rule.
+- **Tied with a stored head.** When `tie_word_embeddings` is set and the checkpoint also stores `lm_head.weight`, as Qwen3-0.6B does, the head reads the token table, as the reference does. The stored tensor is shape-checked and classified `Ignored`, so it is never fetched.
+- **RoPE parameters.** §3.1 names the Llama-3-style and YaRN rules but lists no parameters. The `Gqa` block's `RopeScaling` now carries them, read from `config.json`'s `rope_scaling`:
+  - Llama-3-style: `factor`, `low_freq_factor`, `high_freq_factor`, `original_max_position_embeddings`.
+  - YaRN: `factor` and `original_max_position_embeddings` (default `max_position_embeddings`); `beta_fast` (default 32) and `beta_slow` (default 1); and `attention_factor`, carried only when stated.
+
+  Each parameter becomes a `rope_*` attribute of `KvWrite` and of the attention op, with `rope_kind` codes 2 and 3.
+- **Refused as `HyperParamInvalid` (3), never ignored:**
+  - a RoPE rule other than plain, linear, Llama-3-style or YaRN;
+  - YaRN with `mscale`, `mscale_all_dim` or `truncate: false`;
+  - YaRN from GGUF, whose parameter keys this module does not map;
+  - the newer `rope_parameters` layout;
+  - a sliding window in effect;
+  - a bias on O or in the FFN;
+  - partial rotary;
+  - an activation other than SiLU.
+- **Llama-3-style scaling in GGUF.** GGUF stores it as a `rope_freqs.weight` table, which no rule classifies. So such a file is refused as `Unknown` until the `Rope` op can take a frequency table.
+- **KV.** `kv_formula` gives `PerToken { 2 · n_kv_heads · d_head }` on every layer, with RFC-0042 §4.2's rule (`KvDTypeRule::reference`): F16 for GGUF and the compute dtype for a BF16 or F16 safetensors checkpoint.
+- **`FamilySpec`.** `syntropy_graph::spec::FamilySpec` lists variants, because QK-norm, QKV bias and tied embeddings are fixed for a whole checkpoint. For `llama` there are four, which between them cover every rule and every RoPE kind. `llama::fixture_spec()` returns it. The trait method joins `Family` with the generator (QUAL-E7-T01).
+- **Chat format.** The chat format is COMP-E17-T04's, which adds `ChatFormat`.
+- **The golden census.** In CI it runs on a header derived from Qwen3-0.6B's published configuration: names and shapes only, with no file of the checkpoint in the repository. An opt-in test runs the same census on the fixture store's recorded Qwen3-0.6B files (QUAL-E7-T06), found through `SYNTROPY_QWEN3_0_6B_DIR`, against the same golden file. CI does not run that test.
+- **Conformance checks.** RFC-0060 §7.2 checks 1–3 for `llama` are QUAL-E6-T06's and QUAL-E6-T22's: on the `nano` and `micro` fixtures, on Qwen3-0.6B's recorded headers (checks 1–2) and on its weights (check 3). See `dependency-fixes.md`, 2026-10-31.
+
 ### 6. Stage cut points, segments and tensor-parallel sharding
 
 #### 6.1 Legal boundaries
@@ -472,6 +497,8 @@ pub struct TokenizerSpec {
 - **The shipped template** is `chat_template.jinja` when present, else the config's `chat_template`: a string, or the entry named `default` of a list.
 - **`TokenizerId`** is BLAKE3 over `"syntropy/tokenizer-id/v1"`, `model`, the specials, `add_bos`, `add_eos` and the template in use, with every field length-prefixed. No input depends on listing order. The specials are single IDs plus the end-of-turn set, which `TokenizerSpec::new` sorts and deduplicates. `model` is hashed as the shipped bytes, so its added tokens and maps are covered through the file and never re-encoded. The two flags are included because they change the tokens of a prompt. The source tag is not hashed, so an override equal to the shipped text keeps the ID. `TokenizerSpec::id` is the value RFC-0022's saved sessions record in their metadata; nothing keys on it (Open question 6, OQ-MF-14).
 - **Errors.** A malformed or inconsistent side file is `TokenizerSpecError`, class `Integrity`, naming the file. No code is assigned yet; the codes are COMP-E10-T09's.
+
+*Note 2026-10-31 (COMP-E17-T14, the real M0 repositories):* the specs of the M0 checkpoints' recorded files (RFC-0060 §12.2) are checked against IDs read from the files by hand, in `crates/manifest/tests/data/tokenizer/real-m0.json`. The test reads the files from the fixture cache, by their `testdata/fixtures.toml` names, and refuses a file pinned to another revision, bytes whose BLAKE3 differs, and a gated or non-OSI file without the lab credential. Qwen3-0.6B (`llama`) and Qwen3-30B-A3B (`qwen_moe`) ship byte-identical tokenizer files: BOS none (`bos_token` is null), EOS 151645, end-of-turn {151643, 151645}, pad 151643, FIM 151659–151661, neither flag set. Llama-3.2-1B's files wait for QUAL-E7-T15's import. A `tokenizer.json` whose `model.type` is outside `MODEL_TYPES` (BPE, Unigram, WordLevel, WordPiece) is now a `TokenizerSpecError`, because §8.2's engine could not load it; a file without a `type` is read as before.
 
 #### 8.2 The engine
 
