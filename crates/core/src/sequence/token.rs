@@ -94,8 +94,9 @@ pub enum FinishReason {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LogprobBlock {
     /// Top-k alternatives per token; 0 for the chosen tokens' logprobs alone, as OpenAI's
-    /// `top_logprobs = 0` asks. The in-process path carries every `k`. RFC-0031 §6.5's
-    /// `logprob_k` has no form for 0 yet, so `net` refuses a 0 block until OQ-NET-35 settles.
+    /// `top_logprobs = 0` asks. The in-process path carries every `k`. On the wire, RFC-0031
+    /// §6.5's `logprob_k` carries 1 to 127 as is and 0 as 0x80, only on a channel that
+    /// negotiated capability bit 16 `CHOSEN_LOGPROBS` (OQ-NET-35).
     pub k: u8,
     /// Per accepted token, the chosen token's logprob.
     #[serde(with = "tap_float::seq")]
