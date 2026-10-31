@@ -24,6 +24,7 @@
 //! The PCI slot's NUMA domain comes from sysfs on Linux ([`sysfs_numa`]), not from NVML.
 
 use std::ffi::{c_char, c_uint, c_void};
+use std::path::{Path, PathBuf};
 
 use syntropy_core::resource::{
     DeviceInfoExt, DeviceKind, DeviceProblem, DriverInfo, PciAddress, PciInfo, PcieLink, PowerInfo,
@@ -470,9 +471,26 @@ pub fn sysfs_numa(bdf: PciAddress) -> Option<u16> {
     if !cfg!(target_os = "linux") {
         return None;
     }
-    let path = format!(
-        "/sys/bus/pci/devices/{:04x}:{:02x}:{:02x}.{:x}/numa_node",
+    numa_node_at(Path::new("/"), bdf)
+}
+
+/// [`sysfs_numa`]'s read under `root` instead of `/`: `root/sys/bus/pci/devices/<bdf>/numa_node`,
+/// with `<bdf>` as sysfs names it (`dddd:bb:dd.f`, lower-case hex). `None` for -1 (no affinity),
+/// a missing file or anything that is not a domain number.
+#[must_use]
+pub fn numa_node_at(root: &Path, bdf: PciAddress) -> Option<u16> {
+    std::fs::read_to_string(numa_node_path(root, bdf))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// The `numa_node` file [`numa_node_at`] reads.
+#[must_use]
+pub fn numa_node_path(root: &Path, bdf: PciAddress) -> PathBuf {
+    root.join(format!(
+        "sys/bus/pci/devices/{:04x}:{:02x}:{:02x}.{:x}/numa_node",
         bdf.domain, bdf.bus, bdf.device, bdf.function
-    );
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    ))
 }

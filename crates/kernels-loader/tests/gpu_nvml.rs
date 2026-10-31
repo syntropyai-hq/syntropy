@@ -623,3 +623,87 @@ fn the_live_host_enumerates_without_error() {
         }
     }
 }
+
+/// The NUMA domain of a GPU's slot comes from sysfs's `numa_node` under the slot's address, as
+/// sysfs spells it (`dddd:bb:dd.f`, lower-case hex): a recorded tree, built in a temporary
+/// directory because `:` cannot appear in a file name checked out on Windows.
+#[cfg(unix)]
+#[test]
+fn the_slot_numa_node_is_read_from_sysfs() {
+    let root = std::env::temp_dir().join(format!("syntropy-sysfs-numa-{}", std::process::id()));
+    let devices = root.join("sys/bus/pci/devices");
+    for (bdf, node) in [
+        ("0000:81:00.0", "1\n"),
+        ("0000:01:00.0", "-1\n"),
+        ("000a:c3:1f.2", "3\n"),
+        ("0000:02:00.0", "garbage\n"),
+    ] {
+        std::fs::create_dir_all(devices.join(bdf)).unwrap();
+        std::fs::write(devices.join(bdf).join("numa_node"), node).unwrap();
+    }
+    let at = |domain, bus, device, function| {
+        nvml::numa_node_at(
+            &root,
+            PciAddress {
+                domain,
+                bus,
+                device,
+                function,
+            },
+        )
+    };
+    assert_eq!(at(0, 0x81, 0, 0), Some(1));
+    assert_eq!(at(0, 0x01, 0, 0), None, "-1 is no affinity");
+    assert_eq!(
+        at(0xa, 0xc3, 0x1f, 2),
+        Some(3),
+        "every field, lower-case hex"
+    );
+    assert_eq!(at(0, 0x02, 0, 0), None, "not a number");
+    assert_eq!(at(0, 0x03, 0, 0), None, "no such slot");
+    // Spelled exactly as sysfs does, which a case-insensitive file system would not show.
+    assert_eq!(
+        nvml::numa_node_path(
+            std::path::Path::new("/"),
+            PciAddress {
+                domain: 0xa,
+                bus: 0xc3,
+                device: 0x1f,
+                function: 2
+            }
+        ),
+        std::path::Path::new("/sys/bus/pci/devices/000a:c3:1f.2/numa_node")
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// On Linux, `sysfs_numa` reads the live `/sys`: for every PCI function the host has, it gives
+/// what that function's `numa_node` file says.
+#[cfg(target_os = "linux")]
+#[test]
+fn sysfs_numa_reads_the_live_sys_on_linux() {
+    let devices = std::path::Path::new("/sys/bus/pci/devices");
+    let Ok(entries) = std::fs::read_dir(devices) else {
+        return; // A container without sysfs has no PCI functions to check.
+    };
+    let mut checked = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().into_string().unwrap();
+        // `dddd:bb:dd.f`
+        let (domain, rest) = name.split_once(':').unwrap();
+        let (bus, rest) = rest.split_once(':').unwrap();
+        let (device, function) = rest.split_once('.').unwrap();
+        let bdf = PciAddress {
+            domain: u32::from_str_radix(domain, 16).unwrap(),
+            bus: u8::from_str_radix(bus, 16).unwrap(),
+            device: u8::from_str_radix(device, 16).unwrap(),
+            function: u8::from_str_radix(function, 16).unwrap(),
+        };
+        let expected = std::fs::read_to_string(entry.path().join("numa_node"))
+            .ok()
+            .and_then(|text| text.trim().parse().ok());
+        assert_eq!(nvml::sysfs_numa(bdf), expected, "{name}");
+        checked += 1;
+    }
+    println!("checked {checked} PCI functions");
+}
