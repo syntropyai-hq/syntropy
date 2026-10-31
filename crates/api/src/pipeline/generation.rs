@@ -235,7 +235,7 @@ fn open(
                 .repetition_penalty
                 .unwrap_or(fallback.repetition_penalty),
             logit_bias: asked.logit_bias.iter().copied().collect(),
-            logprobs: request.logprobs,
+            logprobs: route.tail.ask(request.logprobs),
             ..fallback
         },
         limits: SequenceLimits {

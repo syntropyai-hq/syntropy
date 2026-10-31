@@ -22,6 +22,7 @@
 
 use syntropy_core::{InstanceId, PlanEpoch};
 
+use super::logprobs::TailChannels;
 use super::types::{ApiError, GenEvent, Input, ModelRef};
 
 /// What the pipeline needs to know of a resolved model.
@@ -45,6 +46,10 @@ pub struct Route {
     pub prefill_chunk: u32,
     /// The first verify window; `None` takes the plan's.
     pub initial_window: Option<u16>,
+    /// The tail's channels to this ingress and to the head, which decide whether the tail is
+    /// asked for the chosen tokens' logprobs alone (RFC-0050 §3.1). The default is a tail in
+    /// this ingress's process.
+    pub tail: TailChannels,
 }
 
 /// Stages 3, 5, 7 and 8, and the per-choice text state of stage 10.
