@@ -55,6 +55,26 @@ pub fn run(args: &HeaderArgs) -> Result<(), CliError> {
     if args.check_crash {
         std::process::abort();
     }
+    #[cfg(unix)]
+    if let Some(pid) = args.check_signal {
+        return match syntropy_io::os::confine::terminate(pid) {
+            Err(e) => {
+                eprintln!("the signal failed, as it must: {:?}: {e}", e.kind());
+                Ok(())
+            }
+            Ok(()) => Err(refused(format!("a confined child signalled process {pid}"))),
+        };
+    }
+    #[cfg(unix)]
+    if args.check_shm {
+        return match syntropy_io::os::confine::probe_shm() {
+            Err(e) => {
+                eprintln!("the shared memory failed, as it must: {:?}: {e}", e.kind());
+                Ok(())
+            }
+            Ok(()) => Err(refused("a confined child created shared memory".into())),
+        };
+    }
     if args.check_socket {
         return match std::net::UdpSocket::bind("127.0.0.1:0") {
             Err(e) => {

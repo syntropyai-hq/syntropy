@@ -527,3 +527,44 @@ fn an_inherited_descriptor_is_closed() {
     );
     fs::remove_dir_all(&dir).ok();
 }
+
+/// DIST-E17-T08: the child cannot signal another process of the same user, such as the daemon:
+/// Linux's seccomp filter lets the signal calls name only the child's own pid, and macOS's
+/// profile denies signals to any target but itself. The target, a `sleep` this test started,
+/// is still running afterwards.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_cannot_signal_another_process() {
+    let dir = scratch("signal");
+    let path = safetensors(&dir, 16);
+    let mut target = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let pid = target.id().to_string();
+    let output = confined(&path, &["--check-signal".as_ref(), pid.as_ref()]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let alive = target.try_wait().unwrap().is_none();
+    target.kill().ok();
+    target.wait().ok();
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("PermissionDenied"), "{stderr}");
+    assert!(alive, "the target was signalled");
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// DIST-E17-T08: the child cannot create a POSIX shared-memory object, which another process
+/// could open: macOS's profile denies `ipc-posix-shm*`, and on Linux `shm_open` is an open under
+/// `/dev/shm`, which the seccomp filter and Landlock refuse. This process can create one.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_confined_child_cannot_create_shared_memory() {
+    syntropy_io::os::confine::probe_shm().unwrap();
+    let dir = scratch("shm");
+    let path = safetensors(&dir, 16);
+    let output = confined(&path, &["--check-shm".as_ref()]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("PermissionDenied"), "{stderr}");
+    fs::remove_dir_all(&dir).ok();
+}

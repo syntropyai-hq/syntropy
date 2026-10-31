@@ -206,6 +206,14 @@ pub struct HeaderArgs {
     /// `/proc/self/fd`): the check that inherited descriptors are closed
     #[arg(long, value_name = "N", hide = true)]
     pub check_fd: Option<u32>,
+    /// Instead of parsing, try to send SIGTERM to this process once confined, and exit 0 only
+    /// if the attempt is refused: the check that the child cannot signal the daemon
+    #[arg(long, value_name = "PID", hide = true)]
+    pub check_signal: Option<u32>,
+    /// Instead of parsing, try to create a POSIX shared-memory object once confined, and exit 0
+    /// only if the attempt is refused
+    #[arg(long, hide = true)]
+    pub check_shm: bool,
 }
 
 /// A header's format.

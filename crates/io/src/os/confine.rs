@@ -21,16 +21,20 @@
 //!   (each could reach the daemon's sockets). x32 system calls are refused and a foreign
 //!   architecture kills the process. After the file is open the filter also fails every call that
 //!   opens or creates a file (`open`, `openat`, `openat2`, `creat`) with `EACCES`, and `execve` and
-//!   `execveat` with `EPERM`. It needs no privilege, unlike a network namespace, which Ubuntu
+//!   `execveat` with `EPERM`, every call that changes the file system (unlink, rename, mkdir,
+//!   mknod, link, symlink, chmod, chown, truncate) with `EACCES`, and `pidfd_send_signal`; and
+//!   `kill`, `tkill`, `tgkill`, `rt_sigqueueinfo` and `rt_tgsigqueueinfo` may name only the
+//!   child's own pid, so it cannot signal the daemon. It needs no privilege, unlike a network namespace, which Ubuntu
 //!   24.04 denies unprivileged processes by default. The process is also made non-dumpable.
 //! - **Landlock** (Linux, DIST-E17-T08). Where the kernel has it, a ruleset that handles every
-//!   file-system right of the kernel's ABI and grants none, plus TCP bind and connect from ABI 4
+//!   file-system right up to ABI 6, the newest this code knows, and grants none, plus TCP bind and connect from ABI 4
 //!   and the abstract-socket and signal scopes from ABI 6, so the child cannot reach the file
 //!   system by any call the seccomp filter leaves, nor another process. A kernel without Landlock
 //!   leaves the seccomp filter as the file ban, and [`Confined::landlock`] says so.
 //! - **macOS sandbox profile** (DIST-E17-T08). Every inherited descriptor from 3 up is closed, then
 //!   `sandbox_init` applies [`MACOS_PROFILE`]: file reads and writes, sockets and network, process
-//!   execution and forks, Mach service lookups and IOKit are denied. The descriptors already open,
+//!   execution and forks, Mach service lookups, IOKit, POSIX shared memory and semaphores, and
+//!   signals to any process but itself are denied. The descriptors already open,
 //!   the file and stdio, still work. macOS still enforces no memory limit, so
 //!   [`Confined::memory`] is false there and the child sizes what it reads to the limit itself.
 
@@ -46,6 +50,9 @@ pub const MACOS_PROFILE: &str = "(version 1)
 (deny network* system-socket)
 (deny process-exec* process-fork)
 (deny mach-lookup iokit-open)
+(deny ipc-posix-shm* ipc-posix-sem*)
+(deny signal)
+(allow signal (target self))
 ";
 
 /// The limits a confined child runs under.
@@ -86,6 +93,53 @@ pub struct Confined {
 pub fn confine_and_open(limits: &Limits, path: &Path) -> io::Result<(Confined, File)> {
     imp::limit(limits)?;
     imp::sandbox(path)
+}
+
+/// Sends `SIGTERM` to process `pid`: for the header child's `--check-signal`, which must be
+/// refused under the profile (Unix only).
+///
+/// # Errors
+///
+/// The OS error, `EPERM` under the profile.
+#[cfg(unix)]
+pub fn terminate(pid: u32) -> io::Result<()> {
+    let pid = libc::pid_t::try_from(pid)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pid out of range"))?;
+    // SAFETY: `kill` reads nothing from memory.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Creates and removes a POSIX shared-memory object: for the header child's `--check-shm`, which
+/// must be refused under the profile (Unix only).
+///
+/// # Errors
+///
+/// The OS error of `shm_open`, `EPERM` or `EACCES` under the profile.
+#[cfg(unix)]
+pub fn probe_shm() -> io::Result<()> {
+    let name = std::ffi::CString::new(format!("/syntropy-probe-{}", std::process::id()))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    // SAFETY: `name` is NUL-terminated and outlives the call.
+    let fd = unsafe {
+        libc::shm_open(
+            name.as_ptr(),
+            libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: closing the descriptor just opened and removing the name just created.
+    unsafe {
+        libc::close(fd);
+        libc::shm_unlink(name.as_ptr());
+    }
+    Ok(())
 }
 
 /// The Landlock ABI version this kernel offers; 0 where it has none (Linux only).
@@ -240,6 +294,11 @@ mod imp {
         /// `landlock_create_ruleset`'s flag that asks for the ABI version.
         const CREATE_RULESET_VERSION: libc::c_uint = 1;
 
+        /// The newest ABI whose rights this code knows. A newer kernel is asked for this ABI's
+        /// rights and no others: what a later ABI adds is not handled, so it stays allowed, and
+        /// [`Confined::landlock`](crate::os::confine::Confined::landlock) reports this version.
+        pub(crate) const KNOWN_ABI: u32 = 6;
+
         /// The file-system rights each ABI version handles, cumulatively: ABI 1 bits 0–12
         /// (execute … make symlink), ABI 2 `REFER`, ABI 3 `TRUNCATE`, ABI 5 `IOCTL_DEV`.
         #[must_use]
@@ -296,8 +355,16 @@ mod imp {
         /// Restricts this process to a ruleset that handles every right of the kernel's ABI and
         /// grants none. Returns the ABI it used, or 0 when the kernel has no Landlock. Needs
         /// `no_new_privs`.
+        /// The ABI the ruleset is built for: the kernel's, clamped to [`KNOWN_ABI`]. A newer
+        /// kernel accepts an older ABI's ruleset, so the clamp is a deliberate choice: the rights
+        /// this code knows are handled, and whatever a newer ABI adds stays as the kernel allows
+        /// it until this code learns it.
+        pub(crate) fn effective_abi(kernel: u32) -> u32 {
+            kernel.min(KNOWN_ABI)
+        }
+
         pub(super) fn restrict() -> io::Result<u32> {
-            let abi = abi();
+            let abi = effective_abi(abi());
             if abi == 0 {
                 return Ok(0);
             }
@@ -349,6 +416,9 @@ mod imp {
         const RET_K: u16 = 0x06;
         const NR: u32 = 0;
         const ARCH: u32 = 4;
+        /// The low 32 bits of the first argument, `seccomp_data.args[0]`, on a little-endian
+        /// machine. A pid is a 32-bit `pid_t`, which is all the kernel reads of it.
+        const ARG0_LOW: u32 = 16;
 
         #[cfg(target_arch = "x86_64")]
         const AUDIT_ARCH: u32 = 0xc000_003e;
@@ -380,14 +450,42 @@ mod imp {
                 (libc::SYS_openat2, libc::EACCES),
                 (libc::SYS_execve, libc::EPERM),
                 (libc::SYS_execveat, libc::EPERM),
+                // No changing the file system, for a kernel without Landlock.
+                (libc::SYS_unlinkat, libc::EACCES),
+                (libc::SYS_renameat2, libc::EACCES),
+                (libc::SYS_mkdirat, libc::EACCES),
+                (libc::SYS_mknodat, libc::EACCES),
+                (libc::SYS_symlinkat, libc::EACCES),
+                (libc::SYS_linkat, libc::EACCES),
+                (libc::SYS_fchmodat, libc::EACCES),
+                (libc::SYS_fchownat, libc::EACCES),
+                (libc::SYS_fchmod, libc::EACCES),
+                (libc::SYS_fchown, libc::EACCES),
+                (libc::SYS_truncate, libc::EACCES),
+                // The child only reads its file and writes stdout and stderr, so it truncates
+                // nothing.
+                (libc::SYS_ftruncate, libc::EACCES),
+                // No signal by pidfd; the other signal calls are checked below.
+                (libc::SYS_pidfd_send_signal, libc::EPERM),
             ];
-            // aarch64 has only the `at` forms of `open`.
+            // aarch64 has only the `at` (and `renameat2`) forms of these.
             #[cfg(target_arch = "x86_64")]
             let calls = [
                 calls,
                 vec![
                     (libc::SYS_open, libc::EACCES),
                     (libc::SYS_creat, libc::EACCES),
+                    (libc::SYS_unlink, libc::EACCES),
+                    (libc::SYS_rmdir, libc::EACCES),
+                    (libc::SYS_rename, libc::EACCES),
+                    (libc::SYS_renameat, libc::EACCES),
+                    (libc::SYS_mkdir, libc::EACCES),
+                    (libc::SYS_mknod, libc::EACCES),
+                    (libc::SYS_symlink, libc::EACCES),
+                    (libc::SYS_link, libc::EACCES),
+                    (libc::SYS_chmod, libc::EACCES),
+                    (libc::SYS_chown, libc::EACCES),
+                    (libc::SYS_lchown, libc::EACCES),
                 ],
             ]
             .concat();
@@ -411,6 +509,25 @@ mod imp {
             for (nr, e) in denied() {
                 filter.push(op(JEQ_K, 0, 1, nr));
                 filter.push(op(RET_K, 0, 0, errno(e)));
+            }
+            // Signals only to this process: the first argument, the target pid or thread-group
+            // id, must be its own pid (the child has one thread, so its tid is its pid). That
+            // refuses the daemon and every other process, and pid 0 and negative pids, which
+            // name process groups. `abort` signals itself with `tgkill` and still works.
+            // SAFETY: `getpid` reads nothing from memory.
+            let own = unsafe { libc::getpid() } as u32;
+            for nr in [
+                libc::SYS_kill,
+                libc::SYS_tkill,
+                libc::SYS_tgkill,
+                libc::SYS_rt_sigqueueinfo,
+                libc::SYS_rt_tgsigqueueinfo,
+            ] {
+                filter.push(op(JEQ_K, 0, 4, nr as u32));
+                filter.push(op(LD_W_ABS, 0, 0, ARG0_LOW));
+                filter.push(op(JEQ_K, 1, 0, own));
+                filter.push(op(RET_K, 0, 0, errno(libc::EPERM)));
+                filter.push(op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW));
             }
             filter.push(op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW));
             let program = libc::sock_fprog {
@@ -526,7 +643,19 @@ mod imp {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::imp::landlock::{fs_rights, net_rights, scopes};
+    use super::imp::landlock::{KNOWN_ABI, effective_abi, fs_rights, net_rights, scopes};
+
+    /// A kernel newer than the code is asked for the newest ABI the code knows, never more; an
+    /// older one for its own.
+    #[test]
+    fn landlock_abi_is_clamped_to_the_known_one() {
+        assert_eq!(KNOWN_ABI, 6);
+        assert_eq!(effective_abi(0), 0);
+        assert_eq!(effective_abi(3), 3);
+        assert_eq!(effective_abi(6), 6);
+        assert_eq!(effective_abi(8), 6);
+        assert_eq!(effective_abi(u32::MAX), 6);
+    }
 
     /// Each ABI handles every right it defines, and no right it does not, which the kernel
     /// would refuse with `EINVAL`.
