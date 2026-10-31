@@ -15,7 +15,8 @@
 #   a job may name `syntropy-build` only in the gated form below, which sends every run but a
 #   fork's PR there while the `SYNTROPY_BUILD_HOST` variable is `on`, and a fork's PR to the
 #   hosted label. The workflow lint checks the form;
-# - `ci-gate` waits for every other job, and a new job is added to its `needs`.
+# - `ci-gate` waits for every other job, and a new job is added to its `needs`. The exceptions are
+#   the jobs `ci/jobs.toml` marks advisory, which it does not wait for (ADR-0626).
 
 name: pr
 
@@ -124,26 +125,12 @@ jobs:
       - uses: ./.github/actions/install-actionlint
       - run: cargo xtask ci lint
 
+  # `build-linux`. Its macOS and Windows legs are `build-macos-windows`, below.
   build:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'build')
-    name: build-${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # `build-host` is the label a trusted run gets (ADR-0625): the build host for Linux,
-        # the hosted label for the others.
-        include:
-          - os: linux
-            runner: ubuntu-24.04
-            build-host: syntropy-build
-          - os: macos
-            runner: macos-26
-            build-host: macos-26
-          - os: windows
-            runner: windows-2025
-            build-host: windows-2025
-    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && matrix.build-host || matrix.runner }}
+    name: build-linux
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -155,29 +142,41 @@ jobs:
           cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
       - run: cargo xtask ci build
       - name: cargo xtask ci build-test-release
-        if: matrix.os == 'linux'
         run: cargo xtask ci build-test-release
 
-  hosted-test:
+  # The macOS and Windows legs of `build`, on the same rule. `ci/jobs.toml` marks them advisory
+  # until M1a (ADR-0626): `ci-gate` does not wait for them, so it is not in its `needs`. At M1a
+  # the mark goes and the job rejoins `ci-gate`'s `needs`.
+  build-macos-windows:
     needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-test')
-    name: hosted-test-${{ matrix.os }}
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'build-macos-windows')
+    name: build-${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # `build-host` is the label a trusted run gets (ADR-0625): the build host for Linux,
-        # the hosted label for the others.
         include:
-          - os: linux
-            runner: ubuntu-24.04
-            build-host: syntropy-build
           - os: macos
             runner: macos-26
-            build-host: macos-26
           - os: windows
             runner: windows-2025
-            build-host: windows-2025
-    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && matrix.build-host || matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: build
+          cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
+      - run: cargo xtask ci build
+
+  # `hosted-test-linux`. Its macOS and Windows legs are `hosted-test-macos-windows`, below.
+  hosted-test:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-test')
+    name: hosted-test-linux
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -188,15 +187,38 @@ jobs:
           cache-key: hosted-test
           cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
       # The licence fixtures run cargo-deny on Linux, and in CI they must.
-      - if: matrix.os == 'linux'
-        uses: ./.github/actions/install-cargo-deny
+      - uses: ./.github/actions/install-cargo-deny
       # The second OS account that `syntropy-ipc`'s peer test connects from (DIST-E1-T03,
       # RFC-0034 §6.4). In CI the test fails without it.
-      - if: matrix.os == 'linux'
-        name: Add a second OS account for the IPC peer test
+      - name: Add a second OS account for the IPC peer test
         run: |
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin syntropy-peer
           echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
+      - run: cargo xtask test unit
+
+  # The macOS and Windows legs of `hosted-test`, advisory until M1a as `build-macos-windows` is.
+  hosted-test-macos-windows:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-test-macos-windows')
+    name: hosted-test-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos
+            runner: macos-26
+          - os: windows
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: hosted-test
+          cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
       - if: matrix.os == 'macos'
         name: Add a second OS account for the IPC peer test
         run: |
@@ -354,7 +376,9 @@ jobs:
   # The verdict comes from the base branch's `xtask`, built with no cache, as in `pr-meta.yml`,
   # so a PR cannot change how its own jobs are judged (RFC-0062 §2.2, note 2026-10-22).
   ci-gate:
-    needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano, toolchains-linux, toolchains-windows, toolchains-macos]
+    # Not the advisory jobs `ci/jobs.toml` marks (ADR-0626): `build-macos-windows`,
+    # `hosted-test-macos-windows`, `toolchains-windows` and `toolchains-macos`.
+    needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano, toolchains-linux]
     if: always()
     runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 15

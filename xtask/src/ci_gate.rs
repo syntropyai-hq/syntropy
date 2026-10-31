@@ -37,6 +37,12 @@
 //!
 //! The planned hosted jobs, whose suites later tasks add, are `ci/jobs.toml`'s too: the summary
 //! names each one's task beside its skip.
+//!
+//! **Advisory jobs** (ADR-0626; QUAL-E1-T37). A hosted job `ci/jobs.toml` marks `advisory` runs
+//! when `changes` lists it, but does not gate: `ci-gate` need not wait for it, and when it does,
+//! the job's failure, cancellation or skip is reported and not counted. Until M1a these are the
+//! macOS and Windows jobs. The base branch's rules decide which jobs are advisory, so a PR cannot
+//! mark its own failing job advisory.
 
 use std::collections::BTreeSet;
 
@@ -215,12 +221,25 @@ pub fn evaluate(
 
     // By name, so the report reads the same whatever order the map keeps.
     outcomes.sort_by_key(|(job, _)| *job);
-    let listed = listed_jobs(&needs, &outcomes, &mut evaluation.problems);
+    let listed = listed_jobs(&needs, &outcomes, config, &mut evaluation);
     for (job, outcome) in outcomes {
         if job == CHANGES {
             continue;
         }
         let is_listed = listed.as_ref().is_some_and(|listed| listed.contains(&job));
+        if let Some(adr) = config.job(job).and_then(|j| j.advisory.as_deref())
+            && outcome != Outcome::Success
+        {
+            evaluation.lines.push(format!(
+                "{job}: {}, advisory ({adr}): does not gate",
+                match outcome {
+                    Outcome::Failure => "failure",
+                    Outcome::Cancelled => "cancelled",
+                    _ => "skipped",
+                }
+            ));
+            continue;
+        }
         let line = match (outcome, is_listed) {
             (Outcome::Success, true) => format!("{job}: success"),
             (Outcome::Success, false) => format!("{job}: success (not listed by `{CHANGES}`)"),
@@ -380,12 +399,14 @@ fn hardware(
 }
 
 /// The jobs `changes` listed, or `None` when that list cannot be trusted, with the reason added
-/// to `problems`. Every listed job must be one `ci-gate` waits for.
+/// to the problems. Every listed job must be one `ci-gate` waits for, unless it is advisory.
 fn listed_jobs<'a>(
     needs: &'a Map<String, Value>,
     outcomes: &[(&str, Outcome)],
-    problems: &mut Vec<String>,
+    config: &Config,
+    evaluation: &mut Evaluation,
 ) -> Option<Vec<&'a str>> {
+    let problems = &mut evaluation.problems;
     let Some(changes) = needs.get(CHANGES) else {
         problems.push(format!(
             "`ci-gate` does not wait for `{CHANGES}`, so it cannot tell which jobs had to run"
@@ -440,10 +461,15 @@ fn listed_jobs<'a>(
                     listed.push(job.as_str());
                 }
             }
-            None => problems.push(format!(
-                "`{CHANGES}` lists `{name}`, which `ci-gate` does not wait for; add it to the \
-                 `needs` of `ci-gate`"
-            )),
+            None => match config.job(name).and_then(|j| j.advisory.as_deref()) {
+                Some(adr) => evaluation.lines.push(format!(
+                    "{name}: listed, advisory ({adr}): `ci-gate` does not wait for it"
+                )),
+                None => problems.push(format!(
+                    "`{CHANGES}` lists `{name}`, which `ci-gate` does not wait for; add it to the \
+                     `needs` of `ci-gate`"
+                )),
+            },
         }
     }
     Some(listed)
@@ -502,6 +528,17 @@ when = "closure"
 [job.hosted-test]
 runner = "hosted"
 when = "closure"
+
+[job.hosted-test-macos-windows]
+runner = "hosted"
+when = "closure"
+advisory = "ADR-0626"
+
+[job.toolchains-macos]
+runner = "hosted"
+when = "direct"
+paths = ["ci/toolchains.toml"]
+advisory = "ADR-0626"
 
 [job.hosted-l3]
 runner = "hosted"
@@ -709,6 +746,97 @@ planned = "QUAL-E2-T99"
         assert_eq!(
             evaluation.problems,
             ["`changes` lists itself as a job to run"]
+        );
+    }
+
+    #[test]
+    fn an_advisory_job_the_gate_does_not_wait_for_passes() {
+        let evaluation = hosted(&needs(
+            "success",
+            r#"["lint","hosted-test","hosted-test-macos-windows","toolchains-macos"]"#,
+            &[("lint", "success"), ("hosted-test", "success")],
+        ));
+        assert_eq!(evaluation.problems, Vec::<String>::new());
+        assert!(
+            evaluation.lines.contains(
+                &"hosted-test-macos-windows: listed, advisory (ADR-0626): `ci-gate` does not \
+                  wait for it"
+                    .to_owned()
+            ),
+            "{evaluation:?}"
+        );
+    }
+
+    #[test]
+    fn a_macos_or_windows_failure_does_not_fail_the_gate_but_a_linux_failure_does() {
+        let listed = r#"["lint","hosted-test","hosted-test-macos-windows","toolchains-macos"]"#;
+        for result in ["failure", "cancelled", "skipped"] {
+            let evaluation = hosted(&needs(
+                "success",
+                listed,
+                &[
+                    ("lint", "success"),
+                    ("hosted-test", "success"),
+                    ("hosted-test-macos-windows", result),
+                    ("toolchains-macos", result),
+                ],
+            ));
+            assert_eq!(evaluation.problems, Vec::<String>::new(), "{result}");
+            assert!(
+                evaluation.lines.contains(&format!(
+                    "hosted-test-macos-windows: {result}, advisory (ADR-0626): does not gate"
+                )),
+                "{result}: {evaluation:?}"
+            );
+        }
+        // `hosted-test` holds the Linux leg, which still gates.
+        let evaluation = hosted(&needs(
+            "success",
+            listed,
+            &[
+                ("lint", "success"),
+                ("hosted-test", "failure"),
+                ("hosted-test-macos-windows", "success"),
+            ],
+        ));
+        assert_eq!(evaluation.problems, ["`hosted-test` failed"]);
+        // On a merge group too.
+        let evaluation = evaluate(
+            &needs(
+                "success",
+                listed,
+                &[
+                    ("lint", "success"),
+                    ("hosted-test", "success"),
+                    ("hosted-test-macos-windows", "failure"),
+                ],
+            ),
+            &config(),
+            &Event::MergeGroup,
+            None,
+        );
+        assert_eq!(evaluation.problems, Vec::<String>::new());
+    }
+
+    #[test]
+    fn on_the_real_rules_only_the_macos_and_windows_jobs_are_advisory() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let rules = Config::load(root).expect("ci/jobs.toml parses");
+        let advisory: Vec<(&str, &str)> = rules
+            .jobs
+            .iter()
+            .filter_map(|job| Some((job.name.as_str(), job.advisory.as_deref()?)))
+            .collect();
+        assert_eq!(
+            advisory,
+            [
+                ("build-macos-windows", "ADR-0626"),
+                ("hosted-test-macos-windows", "ADR-0626"),
+                ("toolchains-macos", "ADR-0626"),
+                ("toolchains-windows", "ADR-0626"),
+            ]
         );
     }
 

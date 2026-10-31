@@ -65,15 +65,30 @@ status_creators = []
 runner = "hosted"
 when = "always"
 
-# `build-<os>`: the PR build on each Tier 1 OS.
+# `build-<os>`: the PR build on each Tier 1 OS. `build` is `build-linux`, and
+# `build-macos-windows` holds the other two legs.
 [job.build]
 runner = "hosted"
 when = "closure"
 
-# `hosted-test-<os>`: L1 and L2, the unit, property and simulator tests.
+# Advisory until M1a (ADR-0626): the job runs when its rule says, and `ci-gate` neither waits for
+# it nor fails on it. At M1a's start the marks below go, and the jobs rejoin `ci-gate`'s `needs`
+# in `pr.yml`.
+[job.build-macos-windows]
+runner = "hosted"
+when = "closure"
+advisory = "ADR-0626"
+
+# `hosted-test-<os>`: L1 and L2, the unit, property and simulator tests. `hosted-test` is
+# `hosted-test-linux`, and `hosted-test-macos-windows` holds the other two legs.
 [job.hosted-test]
 runner = "hosted"
 when = "closure"
+
+[job.hosted-test-macos-windows]
+runner = "hosted"
+when = "closure"
+advisory = "ADR-0626"
 
 # L3: the loom models now (QUAL-E3-T09), and Miri and the sanitizer builds with QUAL-E3-T10
 # (RFC-0060 §3.4). RFC-0062 §2.3's five crates, and `spsc`, whose ring the loom models cover, and
@@ -107,6 +122,7 @@ paths = [
 [job.toolchains-windows]
 runner = "hosted"
 when = "direct"
+advisory = "ADR-0626"
 paths = [
     "ci/toolchains.toml",
     "xtask/src/toolchains.rs",
@@ -116,6 +132,7 @@ paths = [
 [job.toolchains-macos]
 runner = "hosted"
 when = "direct"
+advisory = "ADR-0626"
 paths = [
     "ci/toolchains.toml",
     "xtask/src/toolchains.rs",

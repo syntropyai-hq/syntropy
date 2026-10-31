@@ -28,6 +28,10 @@
 //! A job marked `planned` has no suite or rig yet: its rule is evaluated and reported, but a
 //! hosted one is not listed, and `ci-gate` does not hold a same-repository PR for a hardware one.
 //!
+//! A hosted job marked `advisory`, with the ADR that makes it so, is listed and runs as any other,
+//! but `ci-gate` neither waits for it nor fails on it: the macOS and Windows jobs until M1a
+//! (ADR-0626).
+//!
 //! The crate graph is read from the manifests as TOML at both revisions, and the closure is taken
 //! over the union of the two graphs, so an edge the PR adds or removes counts. Nothing from the PR
 //! runs: the diff and the PR's files are read through git, and no cargo command reads the PR's
@@ -160,6 +164,8 @@ pub struct Job {
     pub when: When,
     /// The task that adds the job's suite or rig, while it has none.
     pub planned: Option<String>,
+    /// The ADR under which the job runs without gating a merge (ADR-0626).
+    pub advisory: Option<String>,
 }
 
 /// `ci/jobs.toml`.
@@ -209,6 +215,7 @@ struct RawJob {
     #[serde(default)]
     lock_deps: Vec<String>,
     planned: Option<String>,
+    advisory: Option<String>,
 }
 
 impl Config {
@@ -294,11 +301,24 @@ impl Config {
                     "`planned = \"{task}\"` is not a task ID such as `QUAL-E2-T02`"
                 )));
             }
+            if let Some(adr) = &job.advisory {
+                if !is_adr_ref(adr) {
+                    problems.push(problem(format!(
+                        "`advisory = \"{adr}\"` is not an ADR ID such as `ADR-0626`"
+                    )));
+                }
+                if runner != Runner::Hosted || job.planned.is_some() {
+                    problems.push(problem(
+                        "only a hosted job with a suite can be advisory".into(),
+                    ));
+                }
+            }
             jobs.push(Job {
                 name: name.clone(),
                 runner,
                 when,
                 planned: job.planned.clone(),
+                advisory: job.advisory.clone(),
             });
         }
         if problems.is_empty() {
@@ -378,6 +398,12 @@ fn is_job_name(name: &str) -> bool {
 }
 
 /// A task ID, or several of one epic written `QUAL-E3-T09/T10`.
+/// `ADR-` and four digits.
+fn is_adr_ref(text: &str) -> bool {
+    text.strip_prefix("ADR-")
+        .is_some_and(|n| n.len() == 4 && n.chars().all(|c| c.is_ascii_digit()))
+}
+
 fn is_task_ref(text: &str) -> bool {
     let mut parts = text.split('/');
     let Some(first) = parts.next() else {

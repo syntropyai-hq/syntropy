@@ -251,6 +251,18 @@ fn the_rules_reject_what_they_cannot_mean() {
         "is not a task ID",
     );
     one(
+        "[job.x]\nrunner = \"hosted\"\nwhen = \"always\"\nadvisory = \"M1a\"\n",
+        "is not an ADR ID",
+    );
+    one(
+        "[job.x]\nrunner = \"hosted\"\nwhen = \"always\"\nplanned = \"QUAL-E5-T06\"\nadvisory = \"ADR-0626\"\n",
+        "only a hosted job with a suite can be advisory",
+    );
+    one(
+        "[job.hw-x]\nrunner = \"lab\"\nwhen = \"direct\"\npaths = [\"a\"]\nadvisory = \"ADR-0626\"\n",
+        "only a hosted job with a suite can be advisory",
+    );
+    one(
         "[job.Lint]\nrunner = \"hosted\"\nwhen = \"always\"\n",
         "lowercase words",
     );
