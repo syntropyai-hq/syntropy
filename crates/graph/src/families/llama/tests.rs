@@ -778,14 +778,14 @@ fn rope_scaling_rules_parse_into_block_parameters() {
     let hp = parse(&config_with(
         "Qwen2ForCausalLM",
         "qwen2",
-        r#""rope_scaling": {"type": "yarn", "factor": 4.0}"#,
+        r#""max_position_embeddings": 12288, "rope_scaling": {"type": "yarn", "factor": 4.0}"#,
     ))
     .unwrap();
     assert_eq!(
         rope_params(&hp).unwrap().scaling,
         RopeScaling::Yarn {
             factor: 4.0,
-            original_ctx: 4096,
+            original_ctx: 12_288,
             beta_fast: 32.0,
             beta_slow: 1.0,
             attn_factor: None,
