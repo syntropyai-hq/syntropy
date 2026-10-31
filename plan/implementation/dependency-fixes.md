@@ -1523,3 +1523,11 @@ COMP-E7-T02's criterion "ggml CPU ops pass conformance against `kernels::referen
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | Moved: conformance of COMP-E7-T02's mappings against `kernels::reference`'s op functions → COMP-E7-T19 (M0b), which depends on COMP-E7-T02 and COMP-E1-T03 | COMP-E7-T02, COMP-E7-T19 | R9 | the criterion uses COMP-E1-T03's op functions, which no edge of COMP-E7-T02 reaches; COMP-E7-T19 reaches them |
+
+## COMP-E4-T02's arena-test leg moves to the task that builds the arena tests (2026-10-31)
+
+COMP-E4-T02 (M0a) asked that "TIER's arena tests pass on a CUDA device". No arena-construction tests exist in `syntropy-tier` until TIER-E1-T07 builds `Vram` arenas through `KernelProvider::alloc`, and TIER-E1-T07 already depends on COMP-E4-T02, both M0a. `tier` cannot use `kernels-cuda` either, since both are layer 2 (RFC-0001 §4.2 rule 2).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E4-T02's criterion keeps the provider-level arena build on a CUDA device; "TIER's arena tests pass on a CUDA device" moves to TIER-E1-T07, and COMP-E4-T21's R-ADA re-run names each leg's task | COMP-E4-T02, TIER-E1-T07, COMP-E4-T21 | R9 | the tests a criterion runs must exist when the task closes; the existing edge TIER-E1-T07 → COMP-E4-T02 keeps the graph acyclic and within M0a. Proposed, for the maintainers to confirm |
