@@ -16,8 +16,9 @@
 //! [`CudaDevice`](crate::CudaDevice)).
 //!
 //! The steady-state calls, `record`, `wait`, `poll`, `copy` and `copy_batch`, borrow the tables
-//! and make one driver call each (one per [`BATCH_CHUNK`] pairs for `copy_batch`): no allocation,
-//! no lock and no synchronising call (RFC-0040 §2.4). Events from `event` are created with
+//! and make one driver call each (one per [`BATCH_CHUNK`] pairs for `copy_batch`), after a
+//! `cuCtxGetCurrent` that confirms the device's context is current (and switches to it and back
+//! when it is not): no allocation, no lock and no synchronising call (RFC-0040 §2.4). Events from `event` are created with
 //! timing disabled; [`DeviceStreams::event`] with `timing` makes the events `elapsed` reads,
 //! which only microbenchmarks and sampled telemetry use (RFC-0040 §4.3).
 //!
@@ -39,7 +40,8 @@ pub use system::SystemStreams;
 
 /// A [`Driver`] whose open contexts have streams and events.
 pub trait StreamDriver: Driver {
-    /// The stream calls of `ctx`, made current on the calling thread.
+    /// The stream calls of the device whose context is `ctx`. Each call makes that context
+    /// current for its duration and then puts back the thread's previous one.
     fn stream_api(&self, ctx: &Self::Context) -> Result<Box<dyn StreamApi>, StreamFault>;
 }
 
@@ -421,7 +423,8 @@ impl DeviceStreams {
 
     /// Copies each `(dst, src, bytes)` on `s`, in order: one `cuMemcpyBatchAsync` per
     /// [`BATCH_CHUNK`] pairs where the driver has it, else one `cuMemcpyAsync` per pair. Pairs of
-    /// zero length are skipped.
+    /// zero length are skipped. If any pair is an error, nothing is enqueued. The iterator is
+    /// walked twice, once to check and once to enqueue, so it allocates nothing.
     ///
     /// # Safety
     ///
@@ -429,9 +432,15 @@ impl DeviceStreams {
     pub unsafe fn copy_batch(
         &self,
         s: &Stream,
-        pairs: impl IntoIterator<Item = Result<(u64, u64, u64), Error>>,
+        pairs: impl IntoIterator<Item = Result<(u64, u64, u64), Error>, IntoIter: Clone>,
     ) -> Result<(), Error> {
         let s = self.raw_stream(s)?;
+        let pairs = pairs.into_iter();
+        // Every pair is checked before any is enqueued, so a bad pair leaves the stream as it
+        // was on both paths.
+        for pair in pairs.clone() {
+            length(pair?.2)?;
+        }
         if !self.api.batched() {
             for pair in pairs {
                 let (dst, src, bytes) = pair?;

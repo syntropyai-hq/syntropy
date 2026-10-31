@@ -342,22 +342,28 @@ fn copy_batch_moves_what_a_loop_of_copies_moves() {
     assert_eq!(moved(&calls), expected);
 }
 
+/// A bad pair anywhere in the batch leaves the stream untouched, on the batched path and on the
+/// loop, even when good pairs come before it.
 #[test]
-fn a_failed_pair_stops_the_batch() {
-    let f = fake();
-    f.lock().unwrap().batched = true;
-    let d = open(&f, &plan(0, 1, 0, 0));
-    let s = d.stream(StreamPriority::CopyIn).unwrap();
-    f.lock().unwrap().log.clear();
-    let bad = Error::new(ErrorClass::Internal, codes::OP_UNSUPPORTED, "bad slice");
-    let input = vec![Ok((1, 2, 8)), Err(bad.clone()), Ok((3, 4, 8))];
-    // SAFETY: the fake reads no memory.
-    let err = unsafe { d.copy_batch(&s, input) }.unwrap_err();
-    assert_eq!(err, bad);
-    assert!(
-        log(&f).is_empty(),
-        "nothing is submitted before the slices check out"
-    );
+fn a_failed_pair_enqueues_nothing_on_either_path() {
+    for batched in [true, false] {
+        let f = fake();
+        f.lock().unwrap().batched = batched;
+        let d = open(&f, &plan(0, 1, 0, 0));
+        let s = d.stream(StreamPriority::CopyIn).unwrap();
+        f.lock().unwrap().log.clear();
+        let bad = Error::new(ErrorClass::Internal, codes::OP_UNSUPPORTED, "bad slice");
+        let input = vec![
+            Ok((1, 2, 8)),
+            Ok((5, 6, 8)),
+            Err(bad.clone()),
+            Ok((3, 4, 8)),
+        ];
+        // SAFETY: the fake reads no memory.
+        let err = unsafe { d.copy_batch(&s, input) }.unwrap_err();
+        assert_eq!(err, bad);
+        assert!(log(&f).is_empty(), "batched {batched}: {:?}", log(&f));
+    }
 }
 
 /// Closing the device drains every stream, destroys the events and then the streams, and

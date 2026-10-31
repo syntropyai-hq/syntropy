@@ -9,8 +9,7 @@
 //! fails `enumerate` with `DriverTooOld`, `(Kernels, 5)`, and the backend is skipped. `open`
 //! retains the device's primary context, so code that uses the CUDA runtime later shares it.
 //!
-//! `open` also makes the context current on the calling thread, the device's dispatcher thread,
-//! and creates the streams of the stream plan; `stream`, `event`, `record`, `wait`, `poll`,
+//! `open` also creates the streams of the stream plan; `stream`, `event`, `record`, `wait`, `poll`,
 //! `elapsed`, `synchronize`, `copy` and `copy_batch` are [`stream`]'s (COMP-E4-T04).
 //!
 //! Memory, capture and the kernels are later tasks (COMP-E4-T02, COMP-E4-T05 onwards); until then
@@ -197,8 +196,10 @@ where
         Ok(self.claimed()?.into_iter().map(|c| c.record).collect())
     }
 
-    /// Opens the device at provider-local index `dev.ordinal`, retains its primary context, makes
-    /// it current on the calling thread and creates the streams of `opts.streams`.
+    /// Opens the device at provider-local index `dev.ordinal`, retains its primary context and
+    /// creates the streams of `opts.streams`. Every stream and event call makes the device's
+    /// context current for its duration and restores the thread's previous one, so no call
+    /// depends on what the thread did in between.
     fn open(&self, dev: DeviceId, opts: &OpenOptions) -> Result<DeviceCtx, Error> {
         let claimed = self
             .claimed()?

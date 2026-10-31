@@ -123,10 +123,7 @@ pub(crate) struct Api {
 }
 
 /// One entry point of `lib`, as a plain function pointer of type `F`.
-pub(crate) fn sym<F: Copy>(
-    lib: &libloading::Library,
-    name: &'static str,
-) -> Result<F, &'static str> {
+fn sym<F: Copy>(lib: &libloading::Library, name: &'static str) -> Result<F, &'static str> {
     // SAFETY: `F` is the entry point's C signature from the CUDA 13 driver API, as `cudarc`'s
     // bindings declare it, with the status returned as `c_uint` (`CUresult` is `#[repr(u32)]`, so
     // the ABI is the same); the pointer is used only while `lib` is loaded (see `Api`).
@@ -178,7 +175,7 @@ fn fault(call: &'static str, status: Status, name: Option<String>) -> Fault {
 
 impl Api {
     /// `Ok` for `CUDA_SUCCESS`, else the fault for `call`.
-    fn check(&self, call: &'static str, status: Status) -> Result<(), Fault> {
+    pub(crate) fn check(&self, call: &'static str, status: Status) -> Result<(), Fault> {
         if status == SUCCESS {
             return Ok(());
         }
@@ -186,7 +183,7 @@ impl Api {
     }
 
     /// `cuGetErrorName`'s text for `status`, when the driver knows the code.
-    pub(crate) fn error_name(&self, status: Status) -> Option<String> {
+    fn error_name(&self, status: Status) -> Option<String> {
         let f = self.error_name?;
         let mut text: *const c_char = std::ptr::null();
         // SAFETY: `cuGetErrorName` takes any integer code and writes a pointer to a static
@@ -200,11 +197,6 @@ impl Api {
                 .to_string_lossy()
                 .into_owned(),
         )
-    }
-
-    /// The open driver library, for modules that resolve entry points of their own.
-    pub(crate) fn lib(&self) -> &libloading::Library {
-        &self._lib
     }
 
     fn calls(&self) -> Result<&Calls, Fault> {
@@ -332,11 +324,6 @@ impl PrimaryContext {
     pub fn handle(&self) -> CUcontext {
         self.ctx
     }
-
-    /// The driver library the context was retained through.
-    pub(crate) fn api(&self) -> &Arc<Api> {
-        &self.api
-    }
 }
 
 impl Drop for PrimaryContext {
@@ -346,6 +333,30 @@ impl Drop for PrimaryContext {
             // the matching release, run once, while the library is loaded (`api` holds it).
             let _ = unsafe { (c.release)(self.dev) };
         }
+    }
+}
+
+impl Api {
+    /// The entry point `name` as a function pointer of type `F`, for a module that resolves its
+    /// own calls. The pointer is valid while this `Api` lives, so its user keeps an `Arc<Api>`.
+    ///
+    /// # Safety
+    ///
+    /// `F` must be the entry point's C signature from the CUDA 13 driver API, with the status
+    /// returned as [`Status`].
+    pub(crate) unsafe fn symbol<F: Copy>(&self, name: &'static str) -> Result<F, Fault> {
+        sym(&self._lib, name).map_err(|missing| Fault {
+            call: missing,
+            error: "the driver library lacks this entry point".into(),
+            no_device: false,
+        })
+    }
+}
+
+impl PrimaryContext {
+    /// The driver library this context was retained through.
+    pub(crate) fn api(&self) -> &Arc<Api> {
+        &self.api
     }
 }
 

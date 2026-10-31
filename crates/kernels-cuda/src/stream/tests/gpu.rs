@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The stream tests that need a CUDA device. They run with `--ignored` on a host with the NVIDIA
-//! driver, and pass with a note on a host without one.
+//! driver, and fail on a host without a CUDA device, so a run on the wrong host never reads as a
+//! pass.
 
 use std::ffi::{c_uint, c_void};
 
-use cudarc::driver::sys::{CUdeviceptr, CUstream};
+use cudarc::driver::sys::{CUcontext, CUdeviceptr, CUstream};
 use syntropy_core::{DeviceId, NodeId};
 use syntropy_kernels::{DeviceCtx, KernelProvider, OpenOptions, PowerHint, StreamPriority};
 
 use super::*;
-use crate::driver::{PrimaryContext, Status, sym};
+use crate::driver::{PrimaryContext, Status};
 use crate::{CudaDevice, CudaProvider};
 
 /// The memory calls these tests need, until the provider's own allocation (COMP-E4-T02).
@@ -20,16 +21,34 @@ struct Mem {
     host_alloc: unsafe extern "C" fn(*mut *mut c_void, usize, c_uint) -> Status,
     host_free: unsafe extern "C" fn(*mut c_void) -> Status,
     memset32: unsafe extern "C" fn(CUdeviceptr, c_uint, usize, CUstream) -> Status,
+    get_current: unsafe extern "C" fn(*mut CUcontext) -> Status,
+    set_current: unsafe extern "C" fn(CUcontext) -> Status,
 }
 
-/// An open device, or `None` with a note when the host has no CUDA device.
-fn device() -> Option<(CudaProvider, DeviceCtx)> {
+impl Mem {
+    fn current(&self) -> CUcontext {
+        let mut c: CUcontext = std::ptr::null_mut();
+        // SAFETY: writes one handle through a pointer to a live local.
+        assert_eq!(unsafe { (self.get_current)(&raw mut c) }, 0);
+        c
+    }
+
+    fn set_current(&self, c: CUcontext) {
+        // SAFETY: `c` is a retained primary context or null; only this thread's current context
+        // changes.
+        assert_eq!(unsafe { (self.set_current)(c) }, 0);
+    }
+}
+
+/// The first CUDA device, open. Panics when the host has none: these tests are run on purpose,
+/// with `--ignored`, on a GPU host.
+fn device() -> (CudaProvider, DeviceCtx) {
     let p = CudaProvider::new();
     let devices = p.enumerate().unwrap();
-    if devices.is_empty() {
-        eprintln!("skipped: no CUDA device on this host");
-        return None;
-    }
+    assert!(
+        !devices.is_empty(),
+        "no CUDA device on this host: run these tests on a GPU host"
+    );
     eprintln!(
         "device: {} ({:?}), {:?}",
         devices[0].name,
@@ -53,22 +72,46 @@ fn device() -> Option<(CudaProvider, DeviceCtx)> {
         ordinal: 0,
     };
     let ctx = p.open(id, &opts).unwrap();
-    Some((p, ctx))
+    (p, ctx)
 }
 
 fn cuda(ctx: &DeviceCtx) -> &CudaDevice<PrimaryContext> {
     ctx.downcast_ref().unwrap()
 }
 
+/// The memory calls, with the device's context made current on this thread for them.
 fn mem(ctx: &DeviceCtx) -> Mem {
-    let lib = cuda(ctx)._context.api().lib();
-    Mem {
-        alloc: sym(lib, "cuMemAlloc_v2").unwrap(),
-        free: sym(lib, "cuMemFree_v2").unwrap(),
-        host_alloc: sym(lib, "cuMemHostAlloc").unwrap(),
-        host_free: sym(lib, "cuMemFreeHost").unwrap(),
-        memset32: sym(lib, "cuMemsetD32Async").unwrap(),
-    }
+    let context = &cuda(ctx)._context;
+    let api = context.api();
+    // SAFETY: each type is the entry point's C signature from the CUDA 13 driver API.
+    let m = unsafe {
+        Mem {
+            alloc: api.symbol("cuMemAlloc_v2").unwrap(),
+            free: api.symbol("cuMemFree_v2").unwrap(),
+            host_alloc: api.symbol("cuMemHostAlloc").unwrap(),
+            host_free: api.symbol("cuMemFreeHost").unwrap(),
+            memset32: api.symbol("cuMemsetD32Async").unwrap(),
+            get_current: api.symbol("cuCtxGetCurrent").unwrap(),
+            set_current: api.symbol("cuCtxSetCurrent").unwrap(),
+        }
+    };
+    m.set_current(context.handle());
+    m
+}
+
+/// `memset32` of `n` u32s at `dst` on `s`, a stream of `d`.
+fn fill(m: &Mem, d: &DeviceStreams, s: &Stream, dst: CUdeviceptr, value: u32, n: usize) {
+    let raw = d.raw_stream(s).unwrap();
+    // SAFETY: `dst` holds `n` u32s; `raw` is a live stream of the device.
+    let st = unsafe {
+        (m.memset32)(
+            dst,
+            value,
+            n,
+            std::ptr::with_exposed_provenance_mut(raw as usize),
+        )
+    };
+    assert_eq!(st, 0);
 }
 
 /// A device allocation, freed on drop.
@@ -131,7 +174,7 @@ impl Drop for HostBuf<'_> {
 #[test]
 #[ignore = "needs the NVIDIA driver and a GPU"]
 fn the_plan_has_compute_highest_on_a_real_device() {
-    let Some((_p, ctx)) = device() else { return };
+    let (_p, ctx) = device();
     let d = &cuda(&ctx).streams;
     eprintln!("priority range (least, greatest): {:?}", d.range);
     eprintln!("plan: {:?}", d.priorities());
@@ -152,7 +195,7 @@ fn the_plan_has_compute_highest_on_a_real_device() {
 #[test]
 #[ignore = "needs the NVIDIA driver and a GPU"]
 fn events_order_work_across_the_compute_and_copy_streams() {
-    let Some((p, ctx)) = device() else { return };
+    let (p, ctx) = device();
     let m = mem(&ctx);
     let d = &cuda(&ctx).streams;
     const N: usize = 1 << 20; // u32s per buffer: 4 MiB
@@ -165,7 +208,6 @@ fn events_order_work_across_the_compute_and_copy_streams() {
     let copy_in = p.stream(&ctx, StreamPriority::CopyIn).unwrap();
     let compute = p.stream(&ctx, StreamPriority::Compute).unwrap();
     let copy_out = p.stream(&ctx, StreamPriority::CopyOut).unwrap();
-    let raw_in = d.raw_stream(&copy_in).unwrap();
     let [filled, a_read, b_written, b_read] = [(); 4].map(|()| p.event(&ctx).unwrap());
 
     for round in 0..ROUNDS {
@@ -174,16 +216,7 @@ fn events_order_work_across_the_compute_and_copy_streams() {
         if round > 0 {
             p.wait(&ctx, &copy_in, &a_read).unwrap();
         }
-        // SAFETY: `a` holds `N` u32s; `raw_in` is a live stream of the device.
-        let s = unsafe {
-            (m.memset32)(
-                a.1,
-                value,
-                N,
-                std::ptr::with_exposed_provenance_mut(raw_in as usize),
-            )
-        };
-        assert_eq!(s, 0);
+        fill(&m, d, &copy_in, a.1, value, N);
         p.record(&ctx, &copy_in, &filled).unwrap();
         // Compute: `a` to `b`, once `a` is filled and copy-out has read `b`.
         p.wait(&ctx, &compute, &filled).unwrap();
@@ -228,14 +261,19 @@ fn events_order_work_across_the_compute_and_copy_streams() {
 
 /// `copy_batch` moves the same bytes as a loop of copies, and `elapsed` measures device time
 /// between two timing events.
+///
+/// Both destination buffers are first filled with a sentinel, so bytes no pair writes compare
+/// equal by construction, and every pair's range is then checked against the source.
 #[test]
 #[ignore = "needs the NVIDIA driver and a GPU"]
 fn copy_batch_moves_the_same_bytes_as_a_loop_of_copies() {
-    let Some((p, ctx)) = device() else { return };
+    let (p, ctx) = device();
     let m = mem(&ctx);
     let d = &cuda(&ctx).streams;
     const N: usize = 1 << 18; // u32s
-    // 300 pairs, more than two chunks, of varied lengths and offsets, some empty.
+    const SENTINEL: u32 = 0xDEAD_BEEF;
+    // 300 pairs, more than two chunks, of varied lengths and offsets, some empty. Destinations
+    // are 800 u32s apart and at most 600 long, so no two overlap.
     let pairs: Vec<(usize, usize, usize)> = (0..300)
         .map(|i| {
             let len = if i % 37 == 5 { 0 } else { 1 + (i * 97) % 600 };
@@ -249,6 +287,8 @@ fn copy_batch_moves_the_same_bytes_as_a_loop_of_copies() {
     let (looped, batched) = (DevBuf::new(&m, N * 4), DevBuf::new(&m, N * 4));
     let (out_loop, out_batch) = (HostBuf::new(&m, N), HostBuf::new(&m, N));
     let s = p.stream(&ctx, StreamPriority::CopyIn).unwrap();
+    fill(&m, d, &s, looped.1, SENTINEL, N);
+    fill(&m, d, &s, batched.1, SENTINEL, N);
     let (t0, t1) = (p.timing_event(&ctx).unwrap(), p.timing_event(&ctx).unwrap());
     let at = |base: u64, i: usize| base + (i * 4) as u64;
     for &(dst, from, len) in &pairs {
@@ -278,18 +318,78 @@ fn copy_batch_moves_the_same_bytes_as_a_loop_of_copies() {
             .unwrap();
     }
     p.synchronize(&ctx, &s).unwrap();
+    let elapsed = p.elapsed(&ctx, &t0, &t1);
     eprintln!(
-        "batched: {}; {} pairs; copy_batch took {:?} of device time",
+        "batched: {}; {} pairs; copy_batch took {elapsed:?} of device time",
         d.batched(),
         pairs.len(),
-        p.elapsed(&ctx, &t0, &t1)
     );
-    assert!(p.elapsed(&ctx, &t0, &t1).is_some());
+    assert!(elapsed.is_some());
     assert_eq!(out_loop.slice(), out_batch.slice());
-    // And the bytes are the source's, not two equal wrong answers.
-    let &(dst, from, len) = pairs.iter().find(|p| p.2 > 0).unwrap();
-    assert_eq!(
-        &out_batch.slice()[dst..dst + len],
-        &src.slice()[from..from + len]
+    let (loop_out, batch_out, source) = (out_loop.slice(), out_batch.slice(), src.slice());
+    let mut written = vec![false; N];
+    for &(dst, from, len) in &pairs {
+        assert_eq!(
+            &batch_out[dst..dst + len],
+            &source[from..from + len],
+            "pair at {dst}"
+        );
+        assert_eq!(
+            &loop_out[dst..dst + len],
+            &source[from..from + len],
+            "pair at {dst}"
+        );
+        written[dst..dst + len].fill(true);
+    }
+    let untouched = (0..N).filter(|&i| !written[i]).collect::<Vec<_>>();
+    assert!(untouched.iter().all(|&i| batch_out[i] == SENTINEL));
+    eprintln!(
+        "{} u32s written by the pairs, {} left at the sentinel",
+        N - untouched.len(),
+        untouched.len()
     );
+}
+
+/// No call depends on the thread's current context: with no context current, or with the
+/// device's context popped between calls, streams, events, copies and polls still run in the
+/// device's context, and each call leaves the thread's context as it found it.
+#[test]
+#[ignore = "needs the NVIDIA driver and a GPU"]
+fn calls_run_in_the_device_context_whatever_is_current() {
+    let (p, ctx) = device();
+    let m = mem(&ctx);
+    let d = &cuda(&ctx).streams;
+    let a = DevBuf::new(&m, 4096);
+    let mut host = HostBuf::new(&m, 1024);
+    host.slice_mut().fill(7);
+    let none: CUcontext = std::ptr::null_mut();
+    m.set_current(none);
+    let s = p.stream(&ctx, StreamPriority::Low).unwrap();
+    assert_eq!(
+        m.current(),
+        none,
+        "stream creation restored the thread's context"
+    );
+    let e = p.event(&ctx).unwrap();
+    // SAFETY: both ranges hold 4096 bytes.
+    unsafe { d.copy(&s, a.1, host.addr(), 4096) }.unwrap();
+    p.record(&ctx, &s, &e).unwrap();
+    while !p.poll(&ctx, &e).unwrap() {
+        std::hint::spin_loop();
+    }
+    // The bytes are on the device now; clear the host copy so the way back is visible.
+    host.slice_mut().fill(0);
+    let c = p.stream(&ctx, StreamPriority::Compute).unwrap();
+    p.wait(&ctx, &c, &e).unwrap();
+    let pairs = [Ok((host.addr(), a.1, 4096u64))];
+    // SAFETY: as above.
+    unsafe { d.copy_batch(&c, pairs) }.unwrap();
+    p.synchronize(&ctx, &c).unwrap();
+    assert_eq!(
+        m.current(),
+        none,
+        "every call restored the thread's context"
+    );
+    assert!(host.slice().iter().all(|&v| v == 7));
+    m.set_current(cuda(&ctx)._context.handle());
 }

@@ -12,7 +12,7 @@ use cudarc::driver::sys::{
 };
 
 use super::{StreamApi, StreamFault};
-use crate::driver::{Api, PrimaryContext, SUCCESS, Status, sym};
+use crate::driver::{Api, PrimaryContext, SUCCESS, Status};
 
 type Batch = unsafe extern "C" fn(
     *mut CUdeviceptr,
@@ -29,6 +29,7 @@ type Batch = unsafe extern "C" fn(
 /// returned as `c_uint`.
 #[derive(Clone, Copy)]
 struct Calls {
+    get_current: unsafe extern "C" fn(*mut CUcontext) -> Status,
     set_current: unsafe extern "C" fn(CUcontext) -> Status,
     priority_range: unsafe extern "C" fn(*mut c_int, *mut c_int) -> Status,
     stream_create: unsafe extern "C" fn(*mut CUstream, c_uint, c_int) -> Status,
@@ -65,53 +66,76 @@ fn from_u64<T>(h: u64) -> *mut T {
 }
 
 impl SystemStreams {
-    /// Resolves the entry points and makes `ctx` current on the calling thread, the device's
-    /// dispatcher thread, which every later call runs on (RFC-0040 §2.4).
+    /// Resolves the entry points for the device whose primary context is `ctx`.
     pub fn new(ctx: &PrimaryContext) -> Result<Self, StreamFault> {
         let api = Arc::clone(ctx.api());
-        let lib = api.lib();
-        let missing = |call: &'static str| StreamFault {
-            call,
+        let missing = |f: crate::driver::Fault| StreamFault {
+            call: f.call,
             status: 0,
-            error: "the driver library lacks this entry point".into(),
+            error: f.error,
         };
-        let calls = (|| {
-            Ok(Calls {
-                set_current: sym(lib, "cuCtxSetCurrent")?,
-                priority_range: sym(lib, "cuCtxGetStreamPriorityRange")?,
-                stream_create: sym(lib, "cuStreamCreateWithPriority")?,
-                stream_destroy: sym(lib, "cuStreamDestroy_v2")?,
-                stream_wait: sym(lib, "cuStreamWaitEvent")?,
-                stream_sync: sym(lib, "cuStreamSynchronize")?,
-                event_create: sym(lib, "cuEventCreate")?,
-                event_destroy: sym(lib, "cuEventDestroy_v2")?,
-                event_record: sym(lib, "cuEventRecord")?,
-                event_query: sym(lib, "cuEventQuery")?,
-                event_elapsed: sym(lib, "cuEventElapsedTime_v2")
-                    .or_else(|_| sym(lib, "cuEventElapsedTime"))?,
-                memcpy: sym(lib, "cuMemcpyAsync")?,
-            })
-        })()
-        .map_err(missing)?;
-        let batch = sym::<Batch>(lib, "cuMemcpyBatchAsync_v2").ok();
-        let this = Self {
-            api: Arc::clone(&api),
+        // SAFETY: each type is the entry point's C signature from the CUDA 13 driver API, as
+        // `cudarc` declares it, with the status returned as `Status`.
+        let calls = unsafe {
+            Calls {
+                get_current: api.symbol("cuCtxGetCurrent").map_err(missing)?,
+                set_current: api.symbol("cuCtxSetCurrent").map_err(missing)?,
+                priority_range: api.symbol("cuCtxGetStreamPriorityRange").map_err(missing)?,
+                stream_create: api.symbol("cuStreamCreateWithPriority").map_err(missing)?,
+                stream_destroy: api.symbol("cuStreamDestroy_v2").map_err(missing)?,
+                stream_wait: api.symbol("cuStreamWaitEvent").map_err(missing)?,
+                stream_sync: api.symbol("cuStreamSynchronize").map_err(missing)?,
+                event_create: api.symbol("cuEventCreate").map_err(missing)?,
+                event_destroy: api.symbol("cuEventDestroy_v2").map_err(missing)?,
+                event_record: api.symbol("cuEventRecord").map_err(missing)?,
+                event_query: api.symbol("cuEventQuery").map_err(missing)?,
+                event_elapsed: api
+                    .symbol("cuEventElapsedTime_v2")
+                    .or_else(|_| api.symbol("cuEventElapsedTime"))
+                    .map_err(missing)?,
+                memcpy: api.symbol("cuMemcpyAsync").map_err(missing)?,
+            }
+        };
+        // SAFETY: as above.
+        let batch = unsafe { api.symbol::<Batch>("cuMemcpyBatchAsync_v2") }.ok();
+        Ok(Self {
+            api,
             calls,
             ctx: ctx.handle(),
             batch,
-        };
-        this.make_current()?;
-        Ok(this)
+        })
     }
 
-    /// Makes the device's context current on the calling thread. Streams and events are created
-    /// in the current context, so each creation makes sure it is this device's, even when the
-    /// thread opened another device since.
-    fn make_current(&self) -> Result<(), StreamFault> {
+    /// Runs `f`, a driver call, with this device's context current on the calling thread, and
+    /// then puts back the context that was current before. When this device's context is
+    /// already current, as on its own dispatcher thread, that is one `cuCtxGetCurrent` and no
+    /// switch. No call assumes the thread's current context: a thread that touched another
+    /// device's context in between (a registration dropped there, a second device opened) gets
+    /// its context back as it left it, and the call still runs in this device's.
+    fn in_ctx(&self, f: impl FnOnce() -> Status) -> Result<Status, StreamFault> {
+        let mut previous: CUcontext = std::ptr::null_mut();
+        // SAFETY: writes one handle through a pointer to a live local.
+        let s = unsafe { (self.calls.get_current)(&raw mut previous) };
+        self.check("cuCtxGetCurrent", s)?;
+        if previous == self.ctx {
+            return Ok(f());
+        }
         // SAFETY: `ctx` is a primary context the device keeps retained while this lives; making
         // it current changes only this thread's current context.
         let s = unsafe { (self.calls.set_current)(self.ctx) };
-        self.check("cuCtxSetCurrent", s)
+        self.check("cuCtxSetCurrent", s)?;
+        let status = f();
+        // SAFETY: `previous` was current on this thread a moment ago, or null, which leaves no
+        // context current.
+        let s = unsafe { (self.calls.set_current)(previous) };
+        self.check("cuCtxSetCurrent", s)?;
+        Ok(status)
+    }
+
+    /// `f`'s status, run as [`in_ctx`](Self::in_ctx) runs it, as a result for `call`.
+    fn run(&self, call: &'static str, f: impl FnOnce() -> Status) -> Result<(), StreamFault> {
+        let status = self.in_ctx(f)?;
+        self.check(call, status)
     }
 
     fn check(&self, call: &'static str, status: Status) -> Result<(), StreamFault> {
@@ -123,77 +147,79 @@ impl SystemStreams {
             status,
             error: self
                 .api
-                .error_name(status)
-                .unwrap_or_else(|| format!("CUDA error {status}")),
+                .check(call, status)
+                .err()
+                .map_or_else(|| format!("CUDA error {status}"), |f| f.error),
         })
     }
 }
 
 impl StreamApi for SystemStreams {
     fn priority_range(&self) -> Result<(i32, i32), StreamFault> {
-        self.make_current()?;
         let (mut least, mut greatest): (c_int, c_int) = (0, 0);
-        // SAFETY: writes two integers through pointers to live locals; the context is current.
-        let s = unsafe { (self.calls.priority_range)(&raw mut least, &raw mut greatest) };
-        self.check("cuCtxGetStreamPriorityRange", s)
-            .map(|()| (least, greatest))
+        // SAFETY: writes two integers through pointers to live locals.
+        self.run("cuCtxGetStreamPriorityRange", || unsafe {
+            (self.calls.priority_range)(&raw mut least, &raw mut greatest)
+        })
+        .map(|()| (least, greatest))
     }
 
     fn create_stream(&self, priority: i32) -> Result<u64, StreamFault> {
-        self.make_current()?;
         let mut s: CUstream = std::ptr::null_mut();
         let flags = CUstream_flags::CU_STREAM_NON_BLOCKING as c_uint;
-        // SAFETY: writes one handle through a pointer to a live local; the context is current.
-        let st = unsafe { (self.calls.stream_create)(&raw mut s, flags, priority) };
-        self.check("cuStreamCreateWithPriority", st)
-            .map(|()| to_u64(s))
+        // SAFETY: writes one handle through a pointer to a live local.
+        self.run("cuStreamCreateWithPriority", || unsafe {
+            (self.calls.stream_create)(&raw mut s, flags, priority)
+        })
+        .map(|()| to_u64(s))
     }
 
     fn create_event(&self, timing: bool) -> Result<u64, StreamFault> {
-        self.make_current()?;
         let mut e: CUevent = std::ptr::null_mut();
         let flags = if timing {
             CUevent_flags::CU_EVENT_DEFAULT
         } else {
             CUevent_flags::CU_EVENT_DISABLE_TIMING
         } as c_uint;
-        // SAFETY: writes one handle through a pointer to a live local; the context is current.
-        let st = unsafe { (self.calls.event_create)(&raw mut e, flags) };
-        self.check("cuEventCreate", st).map(|()| to_u64(e))
+        // SAFETY: writes one handle through a pointer to a live local.
+        self.run("cuEventCreate", || unsafe {
+            (self.calls.event_create)(&raw mut e, flags)
+        })
+        .map(|()| to_u64(e))
     }
 
     unsafe fn destroy_stream(&self, s: u64) -> Result<(), StreamFault> {
         // SAFETY: the caller's contract: `s` is a live stream, not used again.
-        let st = unsafe { (self.calls.stream_destroy)(from_u64::<CUstream_st>(s)) };
-        self.check("cuStreamDestroy_v2", st)
+        self.run("cuStreamDestroy_v2", || unsafe {
+            (self.calls.stream_destroy)(from_u64::<CUstream_st>(s))
+        })
     }
 
     unsafe fn destroy_event(&self, e: u64) -> Result<(), StreamFault> {
         // SAFETY: the caller's contract: `e` is a live event, not used again.
-        let st = unsafe { (self.calls.event_destroy)(from_u64::<CUevent_st>(e)) };
-        self.check("cuEventDestroy_v2", st)
+        self.run("cuEventDestroy_v2", || unsafe {
+            (self.calls.event_destroy)(from_u64::<CUevent_st>(e))
+        })
     }
 
     unsafe fn record(&self, e: u64, s: u64) -> Result<(), StreamFault> {
         // SAFETY: the caller's contract: live handles of this context.
-        let st = unsafe {
+        self.run("cuEventRecord", || unsafe {
             (self.calls.event_record)(from_u64::<CUevent_st>(e), from_u64::<CUstream_st>(s))
-        };
-        self.check("cuEventRecord", st)
+        })
     }
 
     unsafe fn wait(&self, s: u64, e: u64) -> Result<(), StreamFault> {
         // SAFETY: the caller's contract: live handles of this context. Flag 0 is
         // `CU_EVENT_WAIT_DEFAULT`.
-        let st = unsafe {
+        self.run("cuStreamWaitEvent", || unsafe {
             (self.calls.stream_wait)(from_u64::<CUstream_st>(s), from_u64::<CUevent_st>(e), 0)
-        };
-        self.check("cuStreamWaitEvent", st)
+        })
     }
 
     unsafe fn query(&self, e: u64) -> Result<bool, StreamFault> {
         // SAFETY: the caller's contract: a live event of this context.
-        let st = unsafe { (self.calls.event_query)(from_u64::<CUevent_st>(e)) };
+        let st = self.in_ctx(|| unsafe { (self.calls.event_query)(from_u64::<CUevent_st>(e)) })?;
         if st == super::NOT_READY {
             return Ok(false);
         }
@@ -203,27 +229,29 @@ impl StreamApi for SystemStreams {
     unsafe fn elapsed_ms(&self, start: u64, end: u64) -> Result<f32, StreamFault> {
         let mut ms = 0f32;
         // SAFETY: the caller's contract: live events; writes one float to a live local.
-        let st = unsafe {
+        self.run("cuEventElapsedTime", || unsafe {
             (self.calls.event_elapsed)(
                 &raw mut ms,
                 from_u64::<CUevent_st>(start),
                 from_u64::<CUevent_st>(end),
             )
-        };
-        self.check("cuEventElapsedTime", st).map(|()| ms)
+        })
+        .map(|()| ms)
     }
 
     unsafe fn synchronize(&self, s: u64) -> Result<(), StreamFault> {
         // SAFETY: the caller's contract: a live stream of this context.
-        let st = unsafe { (self.calls.stream_sync)(from_u64::<CUstream_st>(s)) };
-        self.check("cuStreamSynchronize", st)
+        self.run("cuStreamSynchronize", || unsafe {
+            (self.calls.stream_sync)(from_u64::<CUstream_st>(s))
+        })
     }
 
     unsafe fn copy(&self, s: u64, dst: u64, src: u64, bytes: usize) -> Result<(), StreamFault> {
         // SAFETY: the caller's contract: a live stream, and addresses valid for `bytes` in this
         // context until the copy completes.
-        let st = unsafe { (self.calls.memcpy)(dst, src, bytes, from_u64::<CUstream_st>(s)) };
-        self.check("cuMemcpyAsync", st)
+        self.run("cuMemcpyAsync", || unsafe {
+            (self.calls.memcpy)(dst, src, bytes, from_u64::<CUstream_st>(s))
+        })
     }
 
     fn batched(&self) -> bool {
@@ -255,7 +283,7 @@ impl StreamApi for SystemStreams {
         // SAFETY: the caller's contract: a live stream and valid addresses for every pair. The
         // three arrays hold `dsts.len()` entries, which the driver reads and does not write; one
         // attribute applies from index 0 to every copy.
-        let st = unsafe {
+        self.run("cuMemcpyBatchAsync_v2", || unsafe {
             batch(
                 dsts.as_ptr().cast_mut(),
                 srcs.as_ptr().cast_mut(),
@@ -266,7 +294,6 @@ impl StreamApi for SystemStreams {
                 1,
                 from_u64::<CUstream_st>(s),
             )
-        };
-        self.check("cuMemcpyBatchAsync_v2", st)
+        })
     }
 }
